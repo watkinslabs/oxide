@@ -61,6 +61,10 @@ decl_lock_class! {
     Tty          = 120,
     SocketTable  = 130,
     Socket       = 140,
+    // Heap allocator leaf — independent of PMM/Slab, any subsystem may
+    // call `KAlloc` with its own lock held; kalloc never calls back into
+    // the kernel, so it's the final acquire in any chain.
+    KMalloc      = 200,
 }
 
 // ---------------------------------------------------------------------------
