@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-05-02
+
+- Changed: §3.1 + §3.2 target JSON shapes to match current rustc target-spec format.
+- Why: `nightly-2026-05-01` target-spec parser rejects the spec-as-written. Specifically: `target-c-int-width` removed (default 32 is correct); `target-pointer-width` numeric not string; `is-builtin` field removed (no longer recognized); `-3dnow,-3dnowa` features removed (deprecated in current LLVM); `rustc-abi: "x86-softfloat"` added on x86 + `rustc-abi: "softfloat"` and `abi: "softfloat"` added on aarch64 (kernel disables SSE/NEON; current rustc requires explicit ABI rather than implicit feature-disable); aarch64 data-layout updated to current upstream `e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`.
+- Affected code: `targets/x86_64-unknown-oxide-kernel.json`, `targets/aarch64-unknown-oxide-kernel.json`. Both build a no_std `kernel` rlib via `cargo build -Z build-std`.
+- Test contract change: §9 still applies; both arches now actually pass `xtask kernel --arch <a>` clean-checkout build (verified locally).
+
 One pinned nightly. Four custom target JSONs (kernel×2, user×2). Three build profiles. `panic=abort` everywhere kernel.
 
 ## 1 Toolchain
@@ -53,7 +60,8 @@ Userspace targets `*-unknown-linux-musl` (per `29a§2`): standard Cargo profiles
   "arch":"x86_64", "code-model":"kernel", "cpu":"x86-64-v3",
   "data-layout":"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
   "disable-redzone":true,
-  "features":"-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-3dnow,-3dnowa,-avx,-avx2,+soft-float",
+  "features":"-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,+soft-float",
+  "rustc-abi":"x86-softfloat",
   "linker":"rust-lld", "linker-flavor":"ld.lld",
   "llvm-target":"x86_64-unknown-none",
   "max-atomic-width":64, "panic-strategy":"abort",
@@ -61,8 +69,8 @@ Userspace targets `*-unknown-linux-musl` (per `29a§2`): standard Cargo profiles
   "relro-level":"off", "stack-probes":{"kind":"inline"},
   "static-position-independent-executables":false,
   "supported-sanitizers":[], "supports-stack-protector":true,
-  "target-c-int-width":"32", "target-endian":"little", "target-pointer-width":"64",
-  "vendor":"unknown", "os":"oxide-kernel", "is-builtin":false
+  "target-endian":"little", "target-pointer-width":64,
+  "vendor":"unknown", "os":"oxide-kernel"
 }
 ```
 
@@ -73,16 +81,17 @@ ISA floor `x86-64-v3` (Haswell+) per `03§7`. SSE/AVX off (kernel doesn't save t
 ```json
 {
   "arch":"aarch64", "cpu":"generic",
-  "data-layout":"e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+  "data-layout":"e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
   "disable-redzone":true,
+  "abi":"softfloat", "rustc-abi":"softfloat",
   "features":"+strict-align,-fp-armv8,-neon",
   "linker":"rust-lld", "linker-flavor":"ld.lld",
   "llvm-target":"aarch64-unknown-none",
   "max-atomic-width":128, "panic-strategy":"abort",
   "relocation-model":"static",
   "supported-sanitizers":[], "supports-stack-protector":true,
-  "target-endian":"little", "target-pointer-width":"64",
-  "os":"oxide-kernel", "is-builtin":false
+  "target-endian":"little", "target-pointer-width":64,
+  "os":"oxide-kernel"
 }
 ```
 
