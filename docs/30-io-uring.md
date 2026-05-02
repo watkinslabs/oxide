@@ -1,6 +1,6 @@
 # 30 io_uring
 
-DRAFT 2026-05-02 (v1.x; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
+FROZEN 2026-05-02 (v1.x; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
 ## 1 Purpose
 
 Async I/O surface compatible with Linux io_uring. Submission/completion rings shared with userspace; kernel worker threads perform the work; results returned without per-op syscall.
