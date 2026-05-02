@@ -11,3 +11,8 @@ path = "src/lib.rs"
 kernel = { path = "../../kernel" }
 klog   = { path = "../klog" }
 hal    = { path = "../hal" }
+sync   = { path = "../sync" }
+
+[features]
+default = []
+hosted  = []

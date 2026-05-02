@@ -52,6 +52,7 @@ dependencies = [
  "hal",
  "kernel",
  "klog",
+ "sync",
 ]
 
 [[package]]
