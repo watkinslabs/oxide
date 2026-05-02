@@ -9,6 +9,7 @@ mod doc_lint;
 mod code_lint;
 mod manifest_lint;
 mod walk;
+mod xref_lint;
 
 #[derive(Default)]
 pub struct Findings {
@@ -50,12 +51,14 @@ fn main() -> ExitCode {
         "docs" => doc_lint::run(&root, &mut f),
         "code" => code_lint::run(&root, &mut f),
         "manifest" => manifest_lint::run(&root, &mut f),
+        "xref" => xref_lint::run(&root, &mut f),
         "all" => {
             doc_lint::run(&root, &mut f);
             manifest_lint::run(&root, &mut f);
+            xref_lint::run(&root, &mut f);
             code_lint::run(&root, &mut f);
         }
-        "-h" | "--help" => { eprintln!("usage: spec-lint <docs|code|manifest|all> [root]"); return ExitCode::from(2); }
+        "-h" | "--help" => { eprintln!("usage: spec-lint <docs|code|manifest|xref|all> [root]"); return ExitCode::from(2); }
         other => { eprintln!("spec-lint: unknown subcommand `{other}`"); return ExitCode::from(2); }
     }
     if f.report() { ExitCode::SUCCESS } else { ExitCode::from(1) }
@@ -65,6 +68,23 @@ fn main() -> ExitCode {
 
 pub fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Strip double-quoted and backtick-quoted spans (replace contents with spaces).
+/// Used by lints that should not match patterns inside quoted/example text.
+pub fn strip_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_dq = false;
+    let mut in_bt = false;
+    for c in s.chars() {
+        match c {
+            '"' if !in_bt => { in_dq = !in_dq; out.push(' '); }
+            '`' if !in_dq => { in_bt = !in_bt; out.push(' '); }
+            _ if in_dq || in_bt => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 pub fn is_charter(stem: &str) -> bool {
