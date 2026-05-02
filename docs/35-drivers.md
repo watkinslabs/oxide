@@ -1,6 +1,6 @@
 # 35 Driver Model
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver crate.
+FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver crate.
 ## 1 Purpose
 
 Driver registration, device matching, sysfs publication, hot-plug hooks. Devices come from buses (PCIe primary; virtio-mmio for some arm targets; platform via DT).
@@ -110,8 +110,3 @@ v1 (no IOMMU): coherent uses uncached mapping (x86) / non-cacheable attr (arm). 
 
 `16`/`19` (devfs/sysfs publishing), `22` (IRQ + DMA barriers), `25` (NetDev), `17` (BlockDevice), `28` (Tty), `34` (PCI).
 
-## 12 Open Questions
-
-- Driver hot-plug: PCI hot-plug deferred to v2; virtio-mmio hot-plug v1.x.
-- `bind`/`unbind` from sysfs: defer to v1.x (writeable `/sys/bus/.../driver/{bind,unbind}`).
-- Per-driver `MODULE_DEVICE_TABLE` autogen for udev/initramfs match: defer.
