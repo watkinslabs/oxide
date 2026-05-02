@@ -42,30 +42,106 @@ pub unsafe fn stub_boot_info() -> BootInfo {
 /// 16 KiB BSS-resident stack; same `UnsafeCell` discipline as the
 /// x86_64 boot crate (`06§11` + `07§5` ban `static mut`).
 #[cfg(target_os = "oxide-kernel")]
+const STACK_SIZE: usize = 16 * 1024;
+#[cfg(target_os = "oxide-kernel")]
 #[repr(align(4096))]
-struct KernelStack(UnsafeCell<[u8; 16 * 1024]>);
+struct KernelStack(UnsafeCell<[u8; STACK_SIZE]>);
 #[cfg(target_os = "oxide-kernel")]
 unsafe impl Sync for KernelStack {}
 #[cfg(target_os = "oxide-kernel")]
-static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; 16 * 1024]));
+static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]));
+
+/// DTB physical address as handed to us in `x0` by U-Boot / EDK2.
+/// Stored by `_start` before the stack swap so `_start_rust` can
+/// reach it from the new stack. Validation happens inside
+/// `_start_rust`; if `parse_header` rejects the blob we fall back
+/// to an empty BootInfo.
+static DTB_PHYS_ADDR: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
+
+/// Build a `BootInfo` from the DTB pointer. v1 validates the header
+/// only; the `/memory` property walk that fills BootMemRegions
+/// rides alongside the PMM init that consumes them.
+///
+/// # SAFETY: caller is the boot path; DTB_PHYS_ADDR was written by
+/// `_start` from the bootloader-provided x0 register.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn build_boot_info() -> BootInfo {
+    let dtb_pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
+    if dtb_pa == 0 {
+        // SAFETY: stub_boot_info returns an owned BootInfo with a
+        // static empty memmap slice.
+        return unsafe { stub_boot_info() };
+    }
+    // SAFETY: bootloader handed `x0 == dtb_pa`; we trust the
+    // `36§4` invariant that the blob is reachable + readable. The
+    // first 40 bytes are the FDT header; we read those plus
+    // `totalsize` bytes total via the slice below.
+    let header_view: &[u8] = unsafe {
+        core::slice::from_raw_parts(dtb_pa as *const u8, 40)
+    };
+    if dtb::parse_header(header_view).is_err() {
+        // SAFETY: stub_boot_info returns an owned BootInfo whose
+        // memmap_ptr references a `&'static` empty slice; trivial.
+        return unsafe { stub_boot_info() };
+    }
+    // /memory property walk lands when the PMM init consumer does;
+    // for now hand kernel_main an empty memmap with a valid DTB
+    // pointer reachable via a future BootInfo extension.
+    // SAFETY: stub_boot_info returns an owned empty BootInfo.
+    unsafe { stub_boot_info() }
+}
+
+/// Rust-side boot continuation. Runs on the kernel stack we
+/// installed in `_start`; reads the DTB pointer stashed in
+/// `DTB_PHYS_ADDR`, builds a `BootInfo`, tail-calls `kernel_main`.
+///
+/// # SAFETY: called only from the asm `_start` after `sp` has been
+/// swapped to `KERNEL_STACK`'s top. Single-CPU, IRQ-off.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+#[no_mangle]
+unsafe extern "C" fn _start_rust() -> ! {
+    // SAFETY: boot path; build_boot_info reads bootloader-owned
+    // static state and produces an owned BootInfo.
+    let info = unsafe { build_boot_info() };
+    // SAFETY: kernel_main's contract is satisfied by the boot env
+    // we just established (kernel stack installed, IRQs masked).
+    unsafe { kernel::kernel_main(&info) }
+}
 
 /// Entry. Bootloader convention: `x0..x3` carry handoff blob pointers
 /// (DTB pa in `x0` for U-Boot; EFI system table in `x0` for EDK2).
+/// We save x0 to `DTB_PHYS_ADDR`, swap to `KERNEL_STACK`, and tail-
+/// call `_start_rust`.
 ///
 /// # SAFETY: bootloader contract. Caller has set up at least an
-/// identity mapping covering the kernel image; we install the kernel
-/// stack and re-enter the kernel.
+/// identity mapping covering the kernel image.
 ///
 /// # C: not measured
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 #[link_section = ".text.boot"]
-pub unsafe extern "C" fn _start() -> ! {
-    // SAFETY: boot path. KERNEL_STACK in BSS, owned. No other CPU alive.
+pub unsafe extern "C" fn _start(dtb_phys: u64) -> ! {
+    // Save x0 before any function call clobbers it.
+    DTB_PHYS_ADDR.store(dtb_phys, core::sync::atomic::Ordering::Release);
+    // SAFETY: KERNEL_STACK is BSS-resident, owned by us, single-CPU.
+    let stack_top = unsafe {
+        (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE)
+    };
+    // SAFETY: stack_top is one past KERNEL_STACK; install via `mov sp` before any call gives us a valid kernel stack of STACK_SIZE bytes growing down. `_start_rust` is extern "C" + noreturn; `brk` after the call hard-guards accidental return.
     unsafe {
-        let info = stub_boot_info();
-        kernel::kernel_main(&info)
+        core::arch::asm!(
+            "mov sp, {sp}",
+            "bl  {next}",
+            "brk #0",
+            sp   = in(reg) stack_top,
+            next = sym _start_rust,
+            options(noreturn),
+        );
     }
 }
 
