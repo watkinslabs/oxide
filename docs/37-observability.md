@@ -1,0 +1,127 @@
+# 37 Observability
+
+Status: DRAFT 2026-05-02
+Depends on: `01`,`02`,`04`,`13`,`19`,`23`,`38`.
+Provides to: userspace tools (`dmesg`,`perf`,`bpftrace` v1.x).
+
+## 1 Purpose
+
+Logging surface (`klog`), tracing (static tracepoints, function tracer), perf counters (PMU), eBPF (deferred). Crash dump (defer).
+
+## 2 Invariants (frozen)
+
+1. One logger (`klog`); structured records; per-target levels; format-string interning per `04§4`.
+2. Records ring per-CPU MPSC; drained by `klogd`-equivalent kthread.
+3. `dmesg`/`/dev/kmsg` exposes records in Linux-compatible binary format.
+4. Tracepoints emit binary record with timestamp, cpu, tid, fixed-fields-by-id.
+
+## 3 Public ifc
+
+```rust
+// klog macros (already in `04`).
+trace!(target:"...", k:v, ..., "fmt {}", arg);
+debug!(...); info!(...); warn!(...); error!(...); fatal!(...);
+
+// Tracepoints
+tracepoint!(sched_switch, prev_tid:Tid, next_tid:Tid);
+
+// PMU
+pub fn perf_event_open(attr:&PerfAttr, pid:Pid, cpu:i32, group_fd:RawFd, flags:u32) -> KR<RawFd>;
+```
+
+## 4 Levels + targets per `04§4`.
+
+## 5 Ring buffer
+
+Per-CPU MPSC, lockless on the producer side using `Acquire`/`Release` atomics for head/tail. Capacity 64 KiB per CPU default.
+
+Drain: `klogd` kthread polls per-CPU rings and writes to (a) UART (during boot/early), (b) `/dev/kmsg` ringlet, (c) `journald`-equivalent socket if registered.
+
+## 6 Tracepoints
+
+Static. Defined in source via `tracepoint!` macro:
+
+```rust
+tracepoint! {
+    sched_switch {
+        prev_tid: Tid,
+        next_tid: Tid,
+        prev_state: u8,
+    }
+}
+```
+
+Macro generates:
+- `&'static str` site id in `.tracepoints` linker section.
+- `static AtomicBool ENABLED_<name>` (cheap branch when off).
+- A `tp_<name>(args...)` function: if enabled, push binary record onto per-CPU trace ring.
+
+Userspace `tracefs` (mounted at `/sys/kernel/tracing`) controls per-tracepoint enable; reading `/sys/kernel/tracing/trace_pipe` drains the ring.
+
+## 7 Function tracer (`ftrace`-like)
+
+Defer to v1.x (mcount/fentry hooks; recompile cost). Initial v1: tracepoints only.
+
+## 8 PMU + perf
+
+`perf_event_open` opens a counter (cycles, instructions, cache miss, branch miss, sample-period for sampling). Backed by:
+- x86: PMC MSRs (PMUv3+).
+- arm: PMUv3 (same name, different mechanism; PMCNTENSET_EL0 etc.).
+
+`perf` userspace from Linux works against `perf_event_open` ABI.
+
+v1.0: subset (cycles, instructions, cache events). v1.x: full.
+
+## 9 eBPF
+
+Deferred to v1.x. Spec landing later in `30+`-ish range. v1.0: bpf() returns ENOSYS.
+
+When v1.x: verifier, BPF subset (sockets, kprobes, tracepoint progs, cgroup hooks). Maps: HASH, ARRAY, PERCPU_HASH, RINGBUF, LPM_TRIE.
+
+## 10 Crash dump (kdump)
+
+Defer. v1.x. Requires functional disk in panic path; complicates kernel.
+
+## 11 Concurrency
+
+Per-CPU rings: SPSC (writer = current CPU, reader = klogd). Cross-CPU drain by klogd merging in timestamp order.
+
+PMU access: per-CPU MSR; group locking when multiple counters share a group.
+
+## 12 Perf budget
+
+| Op | p99 cy |
+|---|---|
+| `klog::trace!` (level off) | ≤ 5 (one atomic load + branch) |
+| `klog::info!` (level on) | ≤ 200 (push record) |
+| Tracepoint (off) | ≤ 5 |
+| Tracepoint (on) | ≤ 150 |
+| PMU read self-counters | ≤ 100 |
+
+## 13 Test contract (frozen)
+
+- `klog::trace!` with level `info`: zero-cost (verified via `cargo asm` snapshot).
+- `dmesg` output matches expected substrings on a known boot.
+- Tracepoint enable: `echo 1 > /sys/kernel/tracing/events/sched/sched_switch/enable`; pipe contains records.
+- `perf stat busybox echo` reports nonzero cycles + instructions.
+- Coverage ≥80%.
+
+## 14 Failure modes
+
+- Ring full: increment `dropped` counter, log it once per minute at `warn`.
+- PMU not available (rare): perf_event_open returns ENODEV.
+
+## 15 Debug
+
+`debug-obs`: dump ring stats every 10s; tracepoint-enable history.
+
+## 16 Cross-spec
+
+`04` (logger spec), `19` (`/dev/kmsg`,`/sys/kernel/tracing`), `15` (perf_event_open), `38` (panic→klog drain to UART).
+
+## 17 Open Questions
+
+- Logging back-pressure: drop on full vs block? Lean: drop + counter.
+- BPF subset depth in v1.x: socket filters first, then kprobes.
+- Crash dump format (ELF coredump-like): defer.
+- ftrace function-graph: defer.
