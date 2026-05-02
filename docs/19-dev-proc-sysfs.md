@@ -1,6 +1,6 @@
 # 19 dev/proc/sysfs
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`16`,`18`,`35`. Provides:every userspace tool that introspects (`ps`,`top`,`free`,`udev`,`mount`,`lsmod`,...).
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`16`,`18`,`35`. Provides:every userspace tool that introspects (`ps`,`top`,`free`,`udev`,`mount`,`lsmod`,...).
 ## 1 Purpose
 
 Three pseudo-FSes that present kernel state as a tree of files. Surface defined by Linux compatibility (per `03§5.1–5.3`).
@@ -139,9 +139,3 @@ procfs is not on hot paths; budgets are loose.
 
 `16` (mounted as a Filesystem), `26` (cgroup2 mount), `33` (firmware tables), `35` (driver registration), `18` (`/proc/modules`,`/sys/module/`).
 
-## 13 Open Questions
-
-- `/proc/sys/` (sysctl): generate from a single static schema in `27`, or per-domain? Lean: per-domain registration, central index.
-- Hide-pid default: `0`,`1`,`2`? Lean: `0` for v1 (Linux default); userspace can tighten via `mount -o remount,hidepid=2`.
-- `/proc/<pid>/io` (per-process I/O accounting): defer to v1.x.
-- `/proc/<pid>/oom_score` formula: copy Linux's exactly. Lean: yes.
