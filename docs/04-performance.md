@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-05-02 (R04)
+
+- Changed: §4 backend description tightened. Adds the frozen invariant **"klog producer-side macros are safe in any context"** (process, IRQ, NMI, spinlock-held, preempt-disabled, RCU read-side); pins the per-CPU lockless ring + deferred-drain design so callers don't have to context-audit every call site.
+- Why: Linux's `printk` discipline. Without this contract, every klog call site needs review for "is my caller holding a spinlock? am I in NMI? am I in IRQ?" — which scales linearly with the call graph and silently rots. Locking it down at the producer-API level eliminates the audit burden and matches `printk` semantics.
+- Affected code: `crates/klog/` re-implements the producer + per-CPU ring + drainer kthread once `crates/sync/percpu.rs` lands. Existing call sites stay valid (already pure macro use). Boot-path UART sink unchanged.
+- Test contract change: §4 adds a loom MPSC test (P-ctx + IRQ + NMI producers per CPU) + a stress drop-counter test.
+
 Sister of `03`. Modernity = what; this = how-fast. Perf is design constraint, not tuning phase. Debug per-feature, free-when-off. One logger, structured, per-target levels.
 
 ## 1 Hot paths (frozen budgets)
@@ -112,11 +119,58 @@ Levels:
 
 Rate limit: ≤N events/source-line/sec (default N=10), suppressed-counter logged hourly. Non-negotiable.
 
-Backend: per-CPU MPSC ring drained by kthread. Early boot → UART. Post-init → `dmesg`+`/dev/kmsg`+netlink-style sock for journald-equivalent. Records binary (subsys-id, level, fmt-string-id, typed args); userspace decoder.
+### 4.1 Producer-side safety contract (frozen)
+
+**klog producer macros (`trace!`/`debug!`/`info!`/`warn!`/`error!`/`fatal!`) are safe to call in any context** — process, IRQ, soft-IRQ, NMI, spinlock-held, `lock_irqsave`-held, preempt-disabled, RCU read-side. Consumers may invoke freely; no context audit at the call site.
+
+Mechanism: producer path is fixed-bound work, no allocation, no lock acquired anywhere on this CPU.
+
+| Step | Cost | Notes |
+|---|---|---|
+| `level >= per-target threshold` check | 1 atomic Relaxed load | short-circuit below threshold |
+| Acquire slot in per-CPU ring | 1 atomic CAS (Acquire) | Release-fenced on commit |
+| Copy fixed-size record (≤80 B) | inline `memcpy` | record = `[u16 level, u16 target_id, u32 fmt_id, [u64;8] args]` |
+| Release slot | 1 atomic store (Release) | drainer reads with Acquire |
+
+Per-CPU ring entry count: 4096 records (320 KiB/CPU). Power-of-two; head/tail wrap via mask. Configurable at build per `04§3` debug feature.
+
+`fatal!` is the lone exception: instead of enqueueing, it panics + halts after best-effort flush — by definition unrecoverable, no deferred drain.
+
+### 4.2 Backend (drainer + sinks)
+
+Drainer = per-CPU kthread (post-SMP-init); pre-SMP, the boot CPU's idle loop polls all rings between work. Drainer reads tail with Acquire, decodes records (resolves `fmt_id` against `.klog_strings`, formats typed args), emits to active sinks.
+
+Sinks (priority order on init):
+
+| Stage | Sink | Cost |
+|---|---|---|
+| Pre-paging boot | UART direct write | bounded; serial port speed |
+| Post-paging boot | UART + dmesg ring | dmesg = single global lock-free ring |
+| Post-SMP init | dmesg + `/dev/kmsg` (procfs) + netlink-style socket | journald-equivalent userspace consumer |
+
+Records remain binary across the kernel boundary; userspace decoder maps `fmt_id` → format string + arg types. No runtime format-string parsing in kernel.
+
+### 4.3 NMI ringlet
+
+NMI context cannot share the main per-CPU ring (NMI can preempt a CAS in progress, leaving the slot half-claimed). NMI gets a dedicated 64-entry per-CPU ringlet with the same record format. SPSC: NMI is the sole producer (NMIs don't nest); main-IRQ-exit path drains ringlet → main ring on first opportunity.
+
+### 4.4 Drop policy
+
+Ring full at producer ⇒ increment per-CPU `dropped` counter (Relaxed), abandon record, return. **Producer never spins, never blocks.** Counter is itself logged hourly via a dedicated dropped-records record consumed by drainer.
+
+### 4.5 Per-target thresholds
+
+Per-target levels: cmdline `oxide.log=info,sched=debug,vmm=trace,net::tcp=warn`. Runtime change = single Relaxed store. Below-threshold call: macro short-circuits without touching args (the fixed-bound CAS is the second cost; threshold check is the first).
+
+### 4.6 Forbidden
+
+- Runtime-parsed printk format strings.
+- Separate debug/info buffers (one ring per CPU; level is a record field).
+- Severity numbers >7 (Linux klog convention; we cap at fatal=0..trace=5 + reserved).
+- Acquiring any lock in the producer path. Drainer may take the dmesg ring's lock; producer never does.
+- `Box`/`Vec` in the producer path (no allocation).
 
 Hot-path: never above `trace`; `trace` feature-gated; off = `.klog_strings` entry not even emitted.
-
-Forbidden: runtime-parsed printk format strings; separate debug/info buffers; severity numbers >7; logging from NMI ctx (use NMI-safe ringlet, drained later).
 
 ## 5 Bench / regression
 
