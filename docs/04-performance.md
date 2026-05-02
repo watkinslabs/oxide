@@ -1,6 +1,6 @@
 # 04 Performance + Debug + Logging
 
-DRAFT 2026-05-02. Dep:`02`,`08`.
+FROZEN 2026-05-02. Dep:`02`,`08`.
 
 Sister of `03`. Modernity = what; this = how-fast. Perf is design constraint, not tuning phase. Debug per-feature, free-when-off. One logger, structured, per-target levels.
 
@@ -162,10 +162,3 @@ Per-subsystem spec frozen-section inherits these.
 
 (none)
 
-## 9 OQ
-
-- vDSO `clock_gettime`+`getcpu` v1 day-1 vs eat-syscall? Lean: day-1; impl small, savings huge.
-- Format interning: defmt-style linker section vs tracing-style runtime registry? Lean: linker section (zero runtime cost; custom decoder fine).
-- Bench harness: criterion enough vs custom cycle-accurate (`rdtsc`,`cntvct_el0`)? Lean: criterion policies + custom for hot-path cycles.
-- Adopt `tracing` ecosystem types? Lean: own, smaller; port-on-decode.
-- PerCpu primitive ergonomics in `06§4` settled; HAL impl detail.
