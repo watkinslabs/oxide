@@ -1,9 +1,6 @@
 # 22 IRQ + Exceptions
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`07`,`14`,`20`,`21`.
-Provides to: `13`,`23`,`34`,every driver.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`20`,`21`. Provides:`13`,`23`,`34`,every driver.
 ## 1 Purpose
 
 Vector dispatch + IRQ controller mgmt. Per-arch entry asm, arch-free IRQ subsystem (request/free/handle), softirq + tasklet/workqueue.

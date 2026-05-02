@@ -1,9 +1,6 @@
 # 32 Power + Reset
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`15`,`20`,`21`,`33`.
-Provides to: `reboot` syscall, `init` shutdown.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall, `init` shutdown.
 ## 1 Purpose
 
 Halt, reboot, poweroff. Cpu idle. Frequency scaling stub.

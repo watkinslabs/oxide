@@ -1,9 +1,6 @@
 # 24 IPC: pipes, signals, futex, eventfd, signalfd, timerfd, AF_UNIX
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`12`,`13`,`16`,`23`.
-Provides to: `15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
 ## 1 Purpose
 
 Bundle of small inter-task primitives. Each is small individually; spec'd together because they share patterns (wait queue + fd-as-handle).
