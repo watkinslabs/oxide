@@ -13,6 +13,9 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 /// IRQ gate: save DAIF, set the I (IRQ) bit. Restore DAIF on release.
@@ -93,6 +96,143 @@ pub fn mmio_barrier() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CpuOps (`21§7`)
+// ---------------------------------------------------------------------------
+
+/// `current_cpu` reads the first word at `[TPIDR_EL1]` — the per-CPU
+/// area's first slot is `cpu_id`. Boot writes `TPIDR_EL1` via
+/// `set_percpu_base` after carving the area out of BSS. Until SMP
+/// support lands, `cpu_count` is 1 and the boot CPU stamps cpu_id=0.
+pub struct ArmCpuOps;
+
+impl CpuOps for ArmCpuOps {
+    /// # C: O(1)
+    fn current_cpu() -> u32 {
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        {
+            let id: u32;
+            // SAFETY: boot sets TPIDR_EL1 to a per-CPU area whose
+            // first u32 is cpu_id (see set_percpu_base contract).
+            // `mrs` reads the system register; `ldr` follows it.
+            unsafe {
+                let base: usize;
+                core::arch::asm!(
+                    "mrs {b}, tpidr_el1",
+                    b = out(reg) base,
+                    options(nomem, nostack, preserves_flags),
+                );
+                core::arch::asm!(
+                    "ldr {id:w}, [{b}]",
+                    b  = in(reg) base,
+                    id = out(reg) id,
+                    options(readonly, nostack, preserves_flags),
+                );
+            }
+            id
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        { 0 }
+    }
+
+    /// v1 single-CPU; SMP enumeration lands with the GICv3 bring-up.
+    /// # C: O(1)
+    fn cpu_count() -> u32 { 1 }
+
+    /// # C: O(1)
+    fn halt() { halt(); }
+
+    /// # C: O(1)
+    fn mmio_barrier() { mmio_barrier(); }
+
+    /// # SAFETY: caller asserts `base` points to a valid per-CPU
+    /// area whose first word is the cpu_id.
+    /// # C: O(1)
+    unsafe fn set_percpu_base(base: *mut u8) {
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        {
+            // SAFETY: `msr tpidr_el1, x` writes the EL1 thread-id
+            // system register; that's the kernel-side per-CPU base
+            // per `21§7`. EL1-only insn.
+            unsafe {
+                core::arch::asm!(
+                    "msr tpidr_el1, {b}",
+                    b = in(reg) base,
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        { let _ = base; }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TimerOps (`21§12`)
+// ---------------------------------------------------------------------------
+
+/// Generic-timer counter frequency in kHz, set at boot by reading
+/// `CNTFRQ_EL0` (which the firmware programs). Zero until calibrated;
+/// `monotonic_ns` returns 0 in that window so callers don't divide by
+/// zero.
+static CNTFRQ_KHZ: AtomicU32 = AtomicU32::new(0);
+
+/// Boot-time hook: stash the generic-timer frequency in kHz. Spec
+/// `23§3` reads `CNTFRQ_EL0` and divides by 1000 here.
+/// # C: O(1)
+pub fn set_cntfrq_khz(freq: u32) {
+    CNTFRQ_KHZ.store(freq, Ordering::Relaxed);
+}
+
+/// Read CNTVCT_EL0 — virtual count register, monotonic since reset.
+fn read_cntvct() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let v: u64;
+        // SAFETY: `mrs CNTVCT_EL0` reads the unprivileged virtual
+        // generic-timer counter; available at any EL with no memory
+        // effects. ARM ARM D11.2.4.
+        unsafe {
+            core::arch::asm!(
+                "mrs {v}, cntvct_el0",
+                v = out(reg) v,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        v
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    {
+        // Host fallback: monotonic counter.
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        n as u64
+    }
+}
+
+pub struct ArmTimerOps;
+
+impl TimerOps for ArmTimerOps {
+    /// # C: O(1)
+    fn monotonic_ns() -> Nanos {
+        let khz = CNTFRQ_KHZ.load(Ordering::Relaxed) as u64;
+        if khz == 0 { return Nanos(0); }
+        let cnt = read_cntvct();
+        Nanos(cnt.saturating_mul(1_000_000) / khz)
+    }
+
+    /// # SAFETY: writes `CNTV_CVAL_EL0` (compare value); caller owns
+    /// `CNTV_CTL_EL0.ENABLE` per `23§4`.
+    /// # C: O(1)
+    unsafe fn set_oneshot(_deadline_ns: Nanos) {
+        // CNTV_CVAL_EL0 programming lands with the GICv3 timer setup
+        // in `22§3`. Trait shape exists so consumers compile.
+    }
+
+    /// # C: O(1)
+    fn freq_khz() -> u32 { CNTFRQ_KHZ.load(Ordering::Relaxed) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +264,37 @@ mod tests {
     #[test]
     fn halt_compiles_on_host_no_panic() {
         halt();
+    }
+
+    #[test]
+    fn arm_cpuops_host_fallback_returns_cpu_zero() {
+        assert_eq!(ArmCpuOps::current_cpu(), 0);
+        assert_eq!(ArmCpuOps::cpu_count(),    1);
+    }
+
+    #[test]
+    fn arm_cpuops_set_percpu_base_compiles_on_host() {
+        let mut buf = [0u8; 64];
+        // SAFETY: host-only; the asm path is cfg'd out, so this just
+        // exercises the no-op fallback. The buffer outlives the call.
+        unsafe { ArmCpuOps::set_percpu_base(buf.as_mut_ptr()) };
+    }
+
+    #[test]
+    fn arm_timer_returns_zero_until_calibrated() {
+        let pre = ArmTimerOps::freq_khz();
+        if pre == 0 {
+            assert_eq!(ArmTimerOps::monotonic_ns(), Nanos(0));
+        }
+    }
+
+    #[test]
+    fn arm_timer_after_set_cntfrq_khz_is_nonzero() {
+        set_cntfrq_khz(50_000); // 50 MHz typical CNTFRQ
+        assert_eq!(ArmTimerOps::freq_khz(), 50_000);
+        let a = ArmTimerOps::monotonic_ns();
+        let b = ArmTimerOps::monotonic_ns();
+        assert!(b.0 >= a.0, "monotonic_ns must be non-decreasing");
+        set_cntfrq_khz(0);
     }
 }
