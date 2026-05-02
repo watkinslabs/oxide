@@ -1,0 +1,21 @@
+# Soak image per docs/40§5.
+# Long-running soak runner uses a thinner image: build deps + qemu only.
+# No miri/clippy/proptest needed at soak time.
+
+FROM rust:1.82-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        lld \
+        qemu-system-x86 \
+        qemu-system-arm \
+        zstd \
+        cpio \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup default nightly-2026-05-01 \
+ && rustup component add rust-src
+
+WORKDIR /work
