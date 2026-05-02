@@ -135,6 +135,8 @@ Examples:
 - `freeze: 02 spec-discipline charter`
 - `revise: 03 modernity — drop FAT16/12`
 
+**Push policy.** Auto-push merged commits to `origin/main` after each merge without asking. Auto-push feature branches with `-u` on first push without asking. Force-push remains forbidden per the Never list below.
+
 **PRs.** Every branch merges to `main` via PR. PR-time CI per `docs/40§2` is the gate. PR cannot merge if any check fails.
 
 **Never:**
