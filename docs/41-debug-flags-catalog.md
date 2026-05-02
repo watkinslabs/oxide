@@ -1,6 +1,6 @@
 # 41 Debug Flags Catalog
 
-DRAFT 2026-05-02. Dep:`04`,`07`,`08`.
+FROZEN 2026-05-02. Dep:`04`,`07`,`08`.
 ## 1 Purpose
 
 Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's owning crate, what it does when on, cost when on. Per `04§3` and `07§3`.
@@ -70,7 +70,3 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 
 Every subsystem spec from `10` upward; `04§3`,`07§3.1`.
 
-## 7 Open Questions
-
-- Per-feature build matrix in CI: build every `debug-*` individually nightly to catch bit rot. Lean: yes; cheap.
-- Run-time toggle for some flags via sysctl (without rebuild)? Lean: no; defeats the zero-cost-when-off rule. Build-time only.
