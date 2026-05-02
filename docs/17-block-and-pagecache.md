@@ -1,6 +1,6 @@
 # 17 Block + Page Cache
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`,`11`,`12`,`16`. Provides: every FS; backed by `drv-virtio-blk`,`drv-nvme`,`drv-ahci`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`,`11`,`12`,`16`. Provides: every FS; backed by `drv-virtio-blk`,`drv-nvme`,`drv-ahci`.
 
 Two coupled subsystems:
 - Block layer: dispatch I/O to block devices, batch+merge, async completion.
@@ -136,9 +136,3 @@ Disk-bound workloads = HW-limited, not these budgets.
 
 (none)
 
-## 13 OQ
-
-- `O_DIRECT`: bypass cache; needs user pages pinned+aligned. Lean: v1 (DBs need).
-- Encrypted pagecache (fscrypt): v2.
-- `ioprio` per-process I/O weight: simple weight at submit v1; aggressive impl v1.x.
-- `kflushd` count: 1/device vs shared pool. Lean: 1/device (predictability).
