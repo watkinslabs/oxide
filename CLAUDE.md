@@ -153,7 +153,7 @@ Examples:
 
 **Reverting.** Always `git revert <sha>` to undo merged work. Never delete history on `main`.
 
-**Local Cleanup.** `git branch -d <branch>` only after PR merged. Never `-D` on a branch with unique work that hasn't been merged.
+**Branch retention.** Do NOT delete merged branches. Keep feature branches around even after merge for recoverable history. `git branch -d`/`-D` only when user explicitly says delete. Default = preserve.
 
 ## When in doubt
 
