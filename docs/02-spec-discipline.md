@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:none. Umbrella for all specs.
 
+## Revision 2026-05-02
+
+- Changed: §5. Distinguish "Dep:" line (cross-reference list) from freeze-prereq order. Allow co-frozen groups when cross-references cycle (HAL/IRQ/timer triplet).
+- Why: MANIFEST `Freeze order` puts subsystem leaves (`14`,`23`,`22`,`33`,`36`) before HAL (`20`,`21`), but `20` cross-references `22` and vice versa. Strict reading of original §5 ("freezes only when deps frozen") makes the leaves unfreezeable. Real semantics: `Dep:` is the documentation cross-reference list; freeze order is the design call recorded in MANIFEST.
+- Affected code: none (no kernel code yet); `tools/spec-lint/` already does not enforce dep-frozen-prereq.
+- Test contract change: none.
+
 Specs are contracts. Spec wins; code follows. Spec is the durable artifact.
 
 ## 1 Lifecycle
@@ -68,9 +75,15 @@ DRAFT|FROZEN <date>. Dep:`a`,`b`. Provides:`c`,`d`.
 
 Missing section ⇒ not freezeable.
 
-## 5 Cross-deps
+## 5 Cross-deps + freeze order
 
-Acyclic. Every spec's §2 lists deps by file. A spec freezes only when all deps frozen. Editing a frozen spec marks downstream dependents `REVIEW` in MANIFEST; dependents re-read and confirm-or-flag.
+`Dep:` line on every spec lists docs whose content this one cross-references. Cross-references may cycle (HAL ↔ IRQ ↔ timer); `tools/spec-lint xref` enforces that every reference resolves, regardless of cycle.
+
+Freeze order (linearization of the spec graph for freezing purposes) lives in `docs/MANIFEST.md§Freeze order`. Charters first, then subsystem leaves, then HAL, then mid-tier, then upper. A spec may freeze when its position in that order is reached, regardless of whether one of its cross-referenced docs is still DRAFT — provided no behavior in this spec changes if that DRAFT changes (i.e., the cross-reference is informational, not load-bearing).
+
+Co-frozen group: when N specs cross-reference each other in a cycle (HAL/IRQ/timer is the canonical case), freeze them in one PR. Listed in MANIFEST§Freeze order as a single batch.
+
+Editing a frozen spec marks downstream dependents `REVIEW` in MANIFEST; dependents re-read and confirm-or-flag.
 
 ## 6 MANIFEST
 
