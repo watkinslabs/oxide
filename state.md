@@ -18,15 +18,23 @@ Resumable checkpoint. Update at session exit. Next session reads this first alon
 
 ## Repo state
 
-History rewritten 2026-05-02 to strip `Co-Authored-By:` trailers from all commits (per user instruction; AI attribution forbidden going forward — see CLAUDE.md§Git workflow). All branches force-with-lease pushed to origin.
+History rewritten twice on 2026-05-02:
+1. Strip `Co-Authored-By:` trailers from all commits.
+2. Rename branches to numbered scheme `F<NN>/B<NN>/D<NN>/R<NN>/Z<NN>/C<NN>/P<n>-<NN>` (per CLAUDE.md§Git workflow); merge-commit subjects rewritten to reference new names.
+
+All branches force-pushed to origin. Branch retention preserved (no deletes).
 
 ```
-main (origin/main): e149676 merge: strip-coauthor rule + settings
-├── chore/strip-coauthor             (b250b00) — preserved
-├── chore/state-checkpoint           (39aa71e) — preserved
-├── fix/branch-retention-rule        (99a7672) — preserved
-├── chore/workspace-setup            (2a86403) — preserved
-└── doc/initial-spec-corpus          (4ba1437) — preserved
+main (origin/main): e8524d4 Merge pull request #1 from watkinslabs/C06-branch-naming-and-pr-workflow
+├── D01-initial-spec-corpus           (4ba1437) — preserved
+├── C01-workspace-setup               (f07f0f5) — preserved
+├── B01-branch-retention-rule         (92f0c8e) — preserved
+├── C02-state-checkpoint              (cb6b47c) — preserved
+├── C03-strip-coauthor                (d7d7932) — preserved
+├── C04-state-update-after-coauthor-strip (b553b32) — preserved
+├── C05-spec-lint                     (947b93f) — preserved
+├── D02-status-line-sweep             (967248a) — preserved
+└── C06-branch-naming-and-pr-workflow (cb52d86) — preserved (merged via PR #1)
 ```
 
 Remote `origin = git@github.com:watkinslabs/oxide.git`. Old project (read-only ref) was `chris17453/oxide` at `~/repos/Projects/oxide_os/`.
