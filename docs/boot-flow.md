@@ -1,6 +1,6 @@
 # Boot Flow
 
-DRAFT 2026-05-02. Dep:`20`,`21`,`33`,`36`,`29`. Updates on early-init change per `00§11`.
+FROZEN 2026-05-02. Dep:`20`,`21`,`33`,`36`,`29`. Updates on early-init change per `00§11`.
 
 End-to-end boot sequence both arches. Same logical phases; arch-specific HW interaction in `20`/`21`.
 
@@ -96,7 +96,3 @@ Per `06§12`. Pre-`smp_init`: trivially sequential. Post-`smp_init`: full memory
 
 (none)
 
-## 9 OQ
-
-- KASLR enable point: between memmap parse + kernel relocation, or pre-smp_init? Lean: pre-relocation; v1.x.
-- Initial driver-probe parallelism: serial in `linkme` order vs CPU-bound parallel? Lean: serial v1 (deterministic); parallel v1.x.
