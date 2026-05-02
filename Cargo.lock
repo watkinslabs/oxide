@@ -81,6 +81,7 @@ dependencies = [
 name = "elf"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "hal",
  "klog",
 ]
