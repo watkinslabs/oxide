@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`,`09`.
 
+## Revision 2026-05-02 (R03)
+
+- Changed: §10 glossary adds `UAPI` and `Kernel-internal` terms.
+- Why: defines the boundary `15§6.7` carves out for musl-fork consumption (`29§4.1`, `29a§3`); same delineation Linux draws between `include/uapi/linux/` and the rest. Without it, "kernel-internal type" and "ABI type" had no shared definition across specs.
+- Affected code: none yet; informs the future `crates/uapi/` (kernel side) + `userspace/uapi/` (export tree).
+- Test contract change: none.
+
 Every type referenced by ≥2 subsystems lives here. Single-subsystem types stay in their spec.
 
 Common derives `D` = `Copy,Clone,Eq,PartialEq,Ord,PartialOrd,Hash,Debug` (Hash skipped where Wallclock-like). All newtypes `#[repr(transparent)]` unless noted.
@@ -178,6 +185,8 @@ Const names: `Caps::CAP_<NAME>`.
 | KPTI | kernel/user split PT roots; entry/exit swaps CR3/TTBR; mitigates Meltdown |
 | PCID/ASID | TLB tagging x86/arm; multiple AS coexist in TLB |
 | NMI ctx | non-maskable; reentrancy-safe; logging via NMI ringlet only |
+| UAPI | userspace-visible ABI: syscall numbers (`15§2`), ABI struct layouts (`15§6`), errno (§6), signal numbers (§7), vDSO entry symbols (`15§8`), calling conv (`15§1`); enumerated in `15§6.7` |
+| Kernel-internal | types/fns/crates used only inside the kernel binary; never exported to userspace; subsystem `Error`/`KResult`, lock primitives, slab caches, scheduler state, internal trait sigs |
 
 ## 11 Naming (frozen)
 
