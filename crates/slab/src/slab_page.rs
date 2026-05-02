@@ -16,6 +16,10 @@ pub(crate) const NULL_OFF: u16 = u16::MAX;
 /// distinguishable.
 const OBJ_POISON: u64 = 0xCAFE_F00D_DEAD_BEEF;
 
+/// Public re-export of `OBJ_POISON` for `Cache::free`'s common-path
+/// double-free check. Same magic; pub(crate) for crate consumers.
+pub(crate) const OBJ_POISON_MAGIC_PUB: u64 = OBJ_POISON;
+
 /// Fill byte for the body of a freed object beyond the poison/offset
 /// header. Allocator writes this on free; alloc-time check against it
 /// is feature-gated (debug-alloc per `12§8`).
@@ -95,6 +99,35 @@ impl SlabPage {
         }
     }
 
+    /// Stamp slot's poison cookie + freed-fill at `slot_off` on a
+    /// caller-owned page (used by `Cache::free` common path before the
+    /// fast-path magazine push).
+    ///
+    /// # SAFETY: `slot_off` is a valid slot offset inside cache-owned page.
+    pub(crate) unsafe fn stamp_obj_freed(&self, slot_off: u16, obj_size: usize) {
+        // SAFETY: caller-validated slot inside cache-owned page.
+        unsafe { self.stamp_free_slot(slot_off as usize, NULL_OFF, obj_size) };
+    }
+
+    /// Read slot poison cookie. Used by `Cache::free` to detect
+    /// double-free before stamping.
+    ///
+    /// # SAFETY: `slot_off` is a valid slot offset inside cache-owned page.
+    pub(crate) unsafe fn read_obj_poison(&self, slot_off: u16) -> u64 {
+        // SAFETY: header lives in first 8 B of the slot inside cache-owned page.
+        unsafe { self.read_u64_at(slot_off as usize + SLOT_OFF_POISON) }
+    }
+
+    /// Clear slot poison cookie (used by fast-path alloc to take a
+    /// magazine slot out of "freed" state).
+    ///
+    /// # SAFETY: `slot_off` is a valid slot offset inside cache-owned page.
+    pub(crate) unsafe fn clear_obj_poison(&self, slot_off: u16) {
+        // SAFETY: writing 8 B inside slot inside cache-owned page.
+        unsafe { self.write_u64_at(slot_off as usize + SLOT_OFF_POISON, 0) };
+    }
+
+
     /// Pop the head of the free-list. Verifies poison cookie (panic on
     /// mismatch — corruption per `12§1` I3); clears cookie so the slot
     /// no longer reads as free. Returns the slot offset.
@@ -124,23 +157,20 @@ impl SlabPage {
         head
     }
 
-    /// Push `slot_off` onto the head of the free-list. Verifies that
-    /// the slot is NOT already on the list (poison ⇒ double-free).
-    /// Stamps poison + freed-fill.
+    /// Push `slot_off` onto the head of the slab page's free-list.
+    /// **Cookie management moves to the common-path `Cache::free`** —
+    /// poison stamping + double-free detection happen before mag
+    /// push or this slow-path call. This fn does freelist mechanics
+    /// only: link in, increment free_count.
     ///
-    /// # SAFETY: caller holds the cache lock; page is cache-owned.
-    pub(crate) unsafe fn push_free_obj(&self, slot_off: u16, obj_size: usize) {
-        // Double-free detection: if the slot's first u64 already equals
-        // OBJ_POISON, the slot is already free → double-free.
-        // SAFETY: caller-validated slot_off inside cache-owned page; reading the 8 B poison cookie.
-        let cookie = unsafe { self.read_u64_at(slot_off as usize + SLOT_OFF_POISON) };
-        if cookie == OBJ_POISON {
-            panic!("slab double free detected");
-        }
+    /// # SAFETY: caller holds the cache lock; page is cache-owned;
+    /// slot at `slot_off` has already been poison-stamped by the
+    /// common-path free + the slot's `next` u16 must be writable.
+    pub(crate) unsafe fn push_free_obj(&self, slot_off: u16, _obj_size: usize) {
         // SAFETY: header read inside cache-owned 4 KiB page; OFF_NEXT_FREE_OFF in 64 B header.
         let head = unsafe { self.read_u16(OFF_NEXT_FREE_OFF) };
-        // SAFETY: slot_off pre-validated by caller; stamping inside cache-owned page.
-        unsafe { self.stamp_free_slot(slot_off as usize, head, obj_size) };
+        // SAFETY: writing slot's next-free-off inside cache-owned page.
+        unsafe { self.write_u16_at(slot_off as usize + SLOT_OFF_NEXT, head) };
         // SAFETY: writing OFF_NEXT_FREE_OFF inside cache-owned page header.
         unsafe { self.write_u16(OFF_NEXT_FREE_OFF, slot_off) };
         // SAFETY: reading OFF_FREE_COUNT inside cache-owned page header.
