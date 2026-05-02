@@ -14,7 +14,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `05-pre-mortem.md` | DRAFT | — | `00`,`03`,`04` |
 | `06-memory-model.md` | DRAFT | — | `01`,`02` |
 | `07-toolchain-and-targets.md` | DRAFT | — | `02` |
-| `08-ai-density.md` | DRAFT | — | `02` |
+| `08-ai-density.md` | FROZEN | 2026-05-02 | `02` |
 | `09-abbreviations.md` | DRAFT | — | `08` |
 
 ## Subsystems
