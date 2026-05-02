@@ -19,8 +19,13 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod mmu;
 mod pt_regs;
 pub use context::ContextAArch64;
+pub use mmu::{
+    flush_local_all, flush_local_va, va_to_indices, PteArm64, PteFlags, PtIndices,
+    ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, PTE_PHYS_MASK,
+};
 pub use pt_regs::{oxide_dispatch_from_pt_regs_aarch64, PtRegsAArch64};
 
 /// IRQ gate: save DAIF, set the I (IRQ) bit. Restore DAIF on release.
