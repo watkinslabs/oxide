@@ -1,6 +1,6 @@
 # 02 Spec Discipline
 
-DRAFT 2026-05-02. Dep:none. Umbrella for all specs.
+FROZEN 2026-05-02. Dep:none. Umbrella for all specs.
 
 Specs are contracts. Spec wins; code follows. Spec is the durable artifact.
 
@@ -12,10 +12,10 @@ DRAFT: mutable, no changelog discipline, code may not be written for the subsyst
 
 Freeze gate (all required):
 1. Zero open questions (each → section or `docs/v2/<spec>.md` deferred entry).
-2. All cross-refs resolve to FROZEN sections.
-3. Test contract concrete (numbers, oracles, coverage gates). PR-time gates pass on the implementation. Soak result not required (background diagnostic only).
-4. 48h cool-off on the spec text (edit resets clock). Re-read fresh.
-5. Top-line `Status: FROZEN <date>`; commit `freeze: <spec>`.
+2. All cross-refs resolve via `tools/spec-lint/ xref` (target need not be FROZEN; section must exist).
+3. Test contract concrete (numbers, oracles, coverage gates) where the spec describes a subsystem with executable behavior. Charter / meta specs (this one, `08`, `09`) exempt. PR-time gates pass; soak background diagnostic only.
+4. Cool-off ≥48h on spec text by default (edit resets clock); solo dev may waive when re-read fresh is unblocked. Decision recorded in freeze commit.
+5. Top-line `Status: FROZEN <date>`; commit `freeze: <spec>` on `Z<NN>-<spec>` branch.
 
 Post-freeze change: prepend revision block:
 ```
@@ -74,11 +74,11 @@ Acyclic. Every spec's §2 lists deps by file. A spec freezes only when all deps 
 
 ## 6 MANIFEST
 
-`docs/MANIFEST.md` = authoritative index. Per-spec row: file, status, frozen-date, deps. Same-commit update on status change. CI verifies file presence + Status-line match.
+`docs/MANIFEST.md` = authoritative index. Per-spec row: file, status, frozen-date, deps. Same-commit update on status change. Verification: `tools/spec-lint/` (`docs|code|manifest|xref|all`) checks file-vs-MANIFEST presence diff, status mismatch, status-line form, header form, forbidden phrases, cross-ref resolution.
 
 ## 7 Cool-off (substitute for reviewer)
 
-48h on spec text (edit resets). Then re-read top-to-bottom with no context except the page; deliberately try to break each invariant; mentally implement §4 ifc against §3 invariants. The annoyance is the discipline.
+≥48h default on spec text (edit resets). Then re-read top-to-bottom with no context except the page; deliberately try to break each invariant; mentally implement §4 ifc against §3 invariants. Solo-dev waiver per §1.4: when external pressure (release, blocker) outweighs the cool-off win, freeze early; the freeze commit names the waiver.
 
 ## 8 Not this
 
@@ -93,15 +93,12 @@ Acyclic. Every spec's §2 lists deps by file. A spec freezes only when all deps 
 2. Frozen sections change only via dated revision block + rationale.
 3. OQ are sole ambiguity site; absent in FROZEN.
 4. Drift → revise spec → code. Never reverse.
-5. Cool-off 48h on text, not calendar.
-6. MANIFEST authoritative; CI-verified.
+5. Cool-off ≥48h on text by default; solo-dev waiver per §1.4 + §7.
+6. MANIFEST authoritative; `tools/spec-lint/` enforces.
 7. Cross-deps acyclic, listed in §2 of every spec.
+8. v2 divergences live in `docs/v2/<spec>.md`; never in-file.
+9. Freeze branch form `Z<NN>-<spec>`; revise branch form `R<NN>-<spec>` (per `CLAUDE.md§Git workflow`).
 
 ## 10 Changelog
 
 (none)
-
-## 11 OQ
-
-- `tools/spec-lint/` enforce (status line, revision-block-on-frozen-edit, `# C:` on every pub fn)? Yes; build at first freeze.
-- v2 divergence: branch `docs/v2/` or in-file v1/v2? Lean: branch.
