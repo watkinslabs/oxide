@@ -37,6 +37,16 @@ SECTIONS {
         __rodata_end = .;
     }
 
+    /* Limine protocol request markers per `36§3`. Bootloader scans
+     * for magic header words before kernel entry; section must be
+     * KEEP-retained even with --gc-sections. */
+    .limine_requests ALIGN(8) : {
+        __limine_requests_start = .;
+        KEEP(*(.limine_requests))
+        KEEP(*(.limine_requests.*))
+        __limine_requests_end = .;
+    }
+
     .data ALIGN(4K) : {
         __data_start = .;
         *(.data .data.*)
