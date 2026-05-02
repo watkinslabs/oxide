@@ -44,12 +44,58 @@ pub struct InternedFormat {
     pub bytes: &'static [u8],
 }
 
+/// Byte-level sink installed at boot. The boot crate constructs a
+/// 16550 / PL011 driver and registers a thunk via `set_byte_sink`.
+/// Until that happens (`__klog_emit` called pre-boot, or no UART
+/// available), the emit path is a single Acquire load + branch and
+/// returns without touching the formatter.
+///
+/// Stored as a raw `*mut ()` so we can keep `LogSink` as a plain
+/// `fn(&[u8])` without a `dyn` trait object (`07§5` bans `dyn HAL`).
+pub type LogSink = fn(&[u8]);
+
+static BYTE_SINK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Install a UART-style byte sink. `f` is called with prefix +
+/// message + `\n` for every klog event whose level isn't suppressed.
 /// # C: O(1)
+pub fn set_byte_sink(f: LogSink) {
+    BYTE_SINK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Detach the sink. Subsequent `__klog_emit` calls become no-ops
+/// until `set_byte_sink` is called again.
+/// # C: O(1)
+pub fn clear_byte_sink() {
+    BYTE_SINK.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+}
+
+#[inline]
+fn invoke_sink(bytes: &[u8]) {
+    let raw = BYTE_SINK.load(core::sync::atomic::Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: BYTE_SINK is only ever populated via set_byte_sink, which casts a non-null LogSink fn-pointer into the *mut () slot; reverse-cast restores the original; LogSink has no unsafe contract beyond &[u8] validity, which we hold.
+    let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw) };
+    f(bytes);
+}
+
+/// Format and emit one klog event: `[LEVEL] msg\n`. Falls through to
+/// a no-op when no sink is installed.
+/// # C: O(len(msg))
 #[doc(hidden)]
 #[inline(always)]
-pub fn __klog_emit(_entry: &'static InternedFormat) {
-    // Sink wiring lands with HAL freeze. For now the emit point exists
-    // so call-site expansion typechecks.
+pub fn __klog_emit(entry: &'static InternedFormat) {
+    let prefix: &[u8] = match entry.level {
+        Level::Error => b"[ERROR] ",
+        Level::Warn  => b"[WARN]  ",
+        Level::Info  => b"[INFO]  ",
+        Level::Debug => b"[DEBUG] ",
+        Level::Trace => b"[TRACE] ",
+    };
+    invoke_sink(prefix);
+    invoke_sink(entry.bytes);
+    invoke_sink(b"\n");
 }
 
 /// Emit an interned format string at the given level. `$msg` must be
@@ -111,5 +157,95 @@ mod tests {
         let mut u = VecUart(alloc::vec::Vec::new());
         u.write_bytes(b"abc");
         assert_eq!(u.0, b"abc");
+    }
+
+    // ---------------------------------------------------------------------
+    // Byte-sink tests. The sink is process-global; tests serialize on
+    // SINK_SERIAL to keep concurrent `cargo test` honest.
+    // ---------------------------------------------------------------------
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    static SINK_SERIAL: Mutex<()> = Mutex::new(());
+
+    static SINK_BYTES: Mutex<alloc::vec::Vec<u8>> = Mutex::new(alloc::vec::Vec::new());
+    fn test_sink(bytes: &[u8]) {
+        SINK_BYTES.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
+    }
+
+    fn drain_sink() -> alloc::vec::Vec<u8> {
+        let mut g = SINK_BYTES.lock().unwrap_or_else(|e| e.into_inner());
+        let out = g.clone();
+        g.clear();
+        out
+    }
+
+    fn lock_sink() -> std::sync::MutexGuard<'static, ()> {
+        SINK_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn no_sink_emit_is_noop() {
+        let _g = lock_sink();
+        clear_byte_sink();
+        let _ = drain_sink();
+        kinfo!("vanishes without sink");
+        assert!(drain_sink().is_empty());
+    }
+
+    #[test]
+    fn kinfo_with_sink_writes_prefix_message_newline() {
+        let _g = lock_sink();
+        let _ = drain_sink();
+        set_byte_sink(test_sink);
+        kinfo!("init started");
+        let out = drain_sink();
+        clear_byte_sink();
+        assert_eq!(&out[..], b"[INFO]  init started\n");
+    }
+
+    #[test]
+    fn each_level_uses_its_own_prefix() {
+        let _g = lock_sink();
+        let _ = drain_sink();
+        set_byte_sink(test_sink);
+        kerror!("e");
+        kwarn!("w");
+        kinfo!("i");
+        kdebug!("d");
+        ktrace!("t");
+        let out = drain_sink();
+        clear_byte_sink();
+        let expected = b"[ERROR] e\n[WARN]  w\n[INFO]  i\n[DEBUG] d\n[TRACE] t\n";
+        assert_eq!(&out[..], &expected[..]);
+    }
+
+    #[test]
+    fn clear_byte_sink_stops_emit() {
+        let _g = lock_sink();
+        let _ = drain_sink();
+        set_byte_sink(test_sink);
+        kinfo!("a");
+        clear_byte_sink();
+        kinfo!("b");
+        let out = drain_sink();
+        // Only "a" got through; "b" emitted to the cleared sink.
+        assert_eq!(&out[..], b"[INFO]  a\n");
+    }
+
+    #[test]
+    fn sink_invocations_count() {
+        let _g = lock_sink();
+        let _ = drain_sink();
+        // Replace the sink with one that just counts calls.
+        static N: AtomicUsize = AtomicUsize::new(0);
+        fn counting(_b: &[u8]) { N.fetch_add(1, Ordering::Relaxed); }
+        N.store(0, Ordering::Relaxed);
+        set_byte_sink(counting);
+        kinfo!("hi");
+        clear_byte_sink();
+        // Three calls per event: prefix, message, newline.
+        assert_eq!(N.load(Ordering::Relaxed), 3);
     }
 }
