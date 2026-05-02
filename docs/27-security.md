@@ -1,6 +1,6 @@
 # 27 Security
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
 ## 1 Purpose
 
 Capabilities (Linux v3, 64-bit), seccomp (strict + filter), Landlock (filesystem sandbox), KASLR/KPTI/SMEP/SMAP/PAN/PXN/CET/BTI baseline, signature trust root, taint flags, sysctl tree.
@@ -202,9 +202,3 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 
 `13` (CAP_SYS_NICE for RT scheduling), `18` (sig verify, taint), `26` (caps in user-ns), `15` (capset, seccomp, landlock_*), `11` (W^X enforced at mmap).
 
-## 20 Open Questions
-
-- LSM stacking surface for v2 (Landlock+future): pre-stub the hook surface or wait? Lean: hook surface stubbed in v1; only Landlock plugged. Adds ~50 hook callsites; cheap.
-- IMA (integrity measurement) / EVM: defer to v2.
-- KASLR entropy source: rdrand+timer mix; spec'd.
-- `kallsyms` for unprivileged: hide w/ `kptr_restrict=1` default.
