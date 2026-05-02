@@ -18,14 +18,20 @@ Resumable checkpoint. Update at session exit. Next session reads this first alon
 
 ## Repo state
 
+History rewritten 2026-05-02 to strip `Co-Authored-By:` trailers from all commits (per user instruction; AI attribution forbidden going forward — see CLAUDE.md§Git workflow). All branches force-with-lease pushed to origin.
+
 ```
-main (origin/main): 2922776 merge: branch-retention rule fix
-├── fix/branch-retention-rule  (e5e76d7) — preserved
-├── chore/workspace-setup      (85da35d) — preserved
-└── doc/initial-spec-corpus    (c1eb07a) — preserved
+main (origin/main): e149676 merge: strip-coauthor rule + settings
+├── chore/strip-coauthor             (b250b00) — preserved
+├── chore/state-checkpoint           (39aa71e) — preserved
+├── fix/branch-retention-rule        (99a7672) — preserved
+├── chore/workspace-setup            (2a86403) — preserved
+└── doc/initial-spec-corpus          (4ba1437) — preserved
 ```
 
 Remote `origin = git@github.com:watkinslabs/oxide.git`. Old project (read-only ref) was `chris17453/oxide` at `~/repos/Projects/oxide_os/`.
+
+**Author**: all commits = `Ablative Personality <chris@watkinslabs.com>`. No co-authors. No AI attribution. Discipline rule per CLAUDE.md§Git workflow + memory `feedback_git_workflow.md`.
 
 ## What's NOT done (pending tasks)
 
