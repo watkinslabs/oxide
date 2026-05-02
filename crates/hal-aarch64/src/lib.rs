@@ -19,7 +19,9 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod pt_regs;
 pub use context::ContextAArch64;
+pub use pt_regs::{oxide_dispatch_from_pt_regs_aarch64, PtRegsAArch64};
 
 /// IRQ gate: save DAIF, set the I (IRQ) bit. Restore DAIF on release.
 /// Per `06§3.1` we mask IRQ only — FIQ is not used in our model.
