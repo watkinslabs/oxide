@@ -1,9 +1,6 @@
 # 39 Build + Image
 
-Status: DRAFT 2026-05-02
-Depends on: `02`,`07`,`29`,`36`.
-Provides to: every workflow (`xtask kernel`,`xtask user`,`xtask image`,`xtask qemu`).
-
+DRAFT 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask user`,`xtask image`,`xtask qemu`).
 ## 1 Purpose
 
 Define workspace layout, `xtask` commands, image-build pipeline (kernel ELF + initramfs + ESP partition), QEMU runner.

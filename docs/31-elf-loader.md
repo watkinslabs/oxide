@@ -1,9 +1,6 @@
 # 31 ELF loader + dynamic linker
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`11`,`12`,`16`,`18`,`27`.
-Provides to: `execve` syscall, module loader (shares parser).
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`11`,`12`,`16`,`18`,`27`. Provides:`execve` syscall, module loader (shares parser).
 ## 1 Purpose
 
 Load ELF64 binaries into an `AddressSpace`. Support static + dynamic (PIE). Establish auxv. Hand off to `_start` or `ld.so` interp.

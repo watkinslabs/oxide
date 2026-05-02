@@ -1,9 +1,6 @@
 # 27 Security
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`.
-Provides to: every privilege check.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
 ## 1 Purpose
 
 Capabilities (Linux v3, 64-bit), seccomp (strict + filter), Landlock (filesystem sandbox), KASLR/KPTI/SMEP/SMAP/PAN/PXN/CET/BTI baseline, signature trust root, taint flags, sysctl tree.

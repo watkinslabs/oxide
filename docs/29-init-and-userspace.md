@@ -1,9 +1,6 @@
 # 29 Init + Userspace bring-up
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`.
-Provides to: every running userspace.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`. Provides:every running userspace.
 ## 1 Purpose
 
 PID 1 (init), libc, image build pipeline (initramfs + on-disk root), boot-to-shell sequence.

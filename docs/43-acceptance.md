@@ -1,8 +1,6 @@
 # 43 Acceptance Criteria
 
-Status: DRAFT 2026-05-02
-Depends on: every spec above.
-
+DRAFT 2026-05-02. Dep:every spec above.
 ## 1 Purpose
 
 Enumerate the binary-level acceptance tests for v1, v1.x, v2 milestones. Each binary listed is the *contract*: if a stock build of it from upstream against our libc/syscall ABI fails to run, the milestone is not done.

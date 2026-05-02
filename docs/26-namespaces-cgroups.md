@@ -1,9 +1,6 @@
 # 26 Namespaces + cgroup v2
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`.
-Provides to: `15` (`unshare`,`setns`,`clone3` ns flags), containers.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 ## 1 Purpose
 
 Namespaces (mnt, pid, net, uts, ipc, user, cgroup, time) and cgroup v2 unified hierarchy.

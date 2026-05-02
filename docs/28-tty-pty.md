@@ -1,9 +1,6 @@
 # 28 TTY + PTY
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`16`,`19`,`24`.
-Provides to: `getty`/`login`/shells, `openssh`.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`16`,`19`,`24`. Provides:`getty`/`login`/shells, `openssh`.
 ## 1 Purpose
 
 Terminal subsystem: line discipline (N_TTY canonical mode, raw mode), session/process-group control, signal generation (Ctrl-C, Ctrl-Z), UNIX98 PTY pairs.

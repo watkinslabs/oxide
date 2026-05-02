@@ -1,9 +1,6 @@
 # 36 Bootloader Handoff
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`07`,`20`,`21`,`33`,`39`.
-Provides to: kernel `_start`.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`07`,`20`,`21`,`33`,`39`. Provides:kernel `_start`.
 ## 1 Purpose
 
 Define the boundary between bootloader (Limine on x86, EDK2/U-Boot on arm) and kernel. What state we expect, what we accept, what we reject.
