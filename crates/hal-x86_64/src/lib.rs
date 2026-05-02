@@ -19,6 +19,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
+mod context;
+pub use context::ContextX86_64;
+
 /// IRQ gate: save RFLAGS + clear IF (`cli`) on disable; restore RFLAGS
 /// (which restores IF) on restore. Pairs with `Spinlock::lock_irqsave`
 /// per `06§3.1`.
