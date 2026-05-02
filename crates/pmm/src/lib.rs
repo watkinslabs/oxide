@@ -27,9 +27,10 @@
 #[cfg(test)]
 extern crate std;
 
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 use hal::{Pfn, PAGE_SIZE_BYTES};
-use sync::{Buddy, NoopIrq, Spinlock};
+use sync::{Buddy, IrqGate, NoopIrq, Spinlock};
 
 /// `MAX_ORDER` per `10§1`: 4 KiB (order 0) up to 4 GiB (order 20).
 pub const MAX_ORDER: u8 = 20;
@@ -315,12 +316,16 @@ macro_rules! kassert {
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path
 /// after the firmware memory map is parsed (`10§6.3`). All access goes
-/// through the `Buddy` spinlock per `10§7`.
-pub struct Pmm<B: PageBacking> {
+/// through the `Buddy` spinlock per `10§7`. Generic over `IrqGate` per
+/// `06§3.1`: kernel targets pass `hal_x86_64::X86IrqGate` /
+/// `hal_aarch64::ArmIrqGate` to actually disable IRQs around the lock;
+/// hosted tests use `NoopIrq`.
+pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
     inner: Spinlock<PmmInner<B>, Buddy>,
+    _i: PhantomData<fn() -> I>,
 }
 
-impl<B: PageBacking> Pmm<B> {
+impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// Build a PMM from one or more usable physical regions. Each
     /// region is greedy-largest-aligned-block seeded; the union must
     /// not overlap (caller invariant per `10§6.3`).
@@ -376,7 +381,7 @@ impl<B: PageBacking> Pmm<B> {
             unsafe { inner.seed_range(r.start.0, r.start.0 + r.len_pfn) };
         }
 
-        Ok(Self { inner: Spinlock::new(inner) })
+        Ok(Self { inner: Spinlock::new(inner), _i: PhantomData })
     }
 
     /// Reserve `[start, start+len_pfn)` from the boot path. Called
@@ -387,7 +392,7 @@ impl<B: PageBacking> Pmm<B> {
     /// # C: O(len_pfn × MAX_ORDER)
     /// # Ctx: pre-init, single-CPU
     pub fn reserve_early(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
-        let mut g = self.inner.lock_irqsave::<NoopIrq>();
+        let mut g = self.inner.lock_irqsave::<I>();
         let end = start.0.checked_add(len_pfn).ok_or(Error::OutOfRange)?;
         if end > g.pfn_max { return Err(Error::OutOfRange); }
         let mut p = start.0;
@@ -449,7 +454,7 @@ impl<B: PageBacking> Pmm<B> {
         let pfn;
         let o = order.0;
         {
-            let mut g = self.inner.lock_irqsave::<NoopIrq>();
+            let mut g = self.inner.lock_irqsave::<I>();
             let mut k = o;
             while k <= MAX_ORDER && g.free_heads[k as usize] == PFN_NULL {
                 k += 1;
@@ -476,7 +481,7 @@ impl<B: PageBacking> Pmm<B> {
         // Zero outside the lock per `10§6.1`.
         let span = 1u64 << o;
         for k in 0..span {
-            let g = self.inner.lock_irqsave::<NoopIrq>();
+            let g = self.inner.lock_irqsave::<I>();
             // SAFETY: pfn..pfn+span is the just-allocated block, owned by
             // the caller, no aliasing; PAGE_SIZE_BYTES per page.
             let p = unsafe { g.backing.page_ptr(Pfn(pfn + k)) };
@@ -500,7 +505,7 @@ impl<B: PageBacking> Pmm<B> {
     /// # Lk: Buddy
     pub unsafe fn free(&self, pfn: Pfn, order: Order) {
         kassert!(order.0 <= MAX_ORDER, "pmm free invalid order");
-        let mut g = self.inner.lock_irqsave::<NoopIrq>();
+        let mut g = self.inner.lock_irqsave::<I>();
         let mut p = pfn.0;
         let mut o = order.0;
         kassert!(p < g.pfn_max, "pmm free pfn out of range");
@@ -531,7 +536,7 @@ impl<B: PageBacking> Pmm<B> {
     /// Total free pages across all orders.
     /// # C: O(MAX_ORDER)
     pub fn free_pages(&self) -> u64 {
-        let g = self.inner.lock_irqsave::<NoopIrq>();
+        let g = self.inner.lock_irqsave::<I>();
         let mut sum = 0u64;
         for o in 0..ORDERS { sum += g.free_count[o] << o; }
         sum
@@ -540,13 +545,13 @@ impl<B: PageBacking> Pmm<B> {
     /// Total allocated pages.
     /// # C: O(1)
     pub fn allocated_pages(&self) -> u64 {
-        self.inner.lock_irqsave::<NoopIrq>().allocated
+        self.inner.lock_irqsave::<I>().allocated
     }
 
     /// Total pfn span the PMM owns (`pfn_max`).
     /// # C: O(1)
     pub fn pfn_max(&self) -> u64 {
-        self.inner.lock_irqsave::<NoopIrq>().pfn_max
+        self.inner.lock_irqsave::<I>().pfn_max
     }
 
     /// Page-aligned pointer to `pfn`. Caller has exclusive access to
@@ -557,7 +562,7 @@ impl<B: PageBacking> Pmm<B> {
     pub unsafe fn page_ptr(&self, pfn: Pfn) -> *mut u8 {
         // SAFETY: backing.page_ptr is pure pointer arithmetic; pfn is
         // caller-owned per fn contract; lock guards the field-read only.
-        unsafe { self.inner.lock_irqsave::<NoopIrq>().backing.page_ptr(pfn) }
+        unsafe { self.inner.lock_irqsave::<I>().backing.page_ptr(pfn) }
     }
 
     /// Walk every order's bitmap + free-list; panic on invariant
@@ -568,7 +573,7 @@ impl<B: PageBacking> Pmm<B> {
     /// node; reads 16B header from each free node's first page.
     /// # C: O(N)
     pub unsafe fn audit(&self) {
-        let g = self.inner.lock_irqsave::<NoopIrq>();
+        let g = self.inner.lock_irqsave::<I>();
         let mut total_free = 0u64;
         for o in 0..ORDERS {
             let order = o as u8;
