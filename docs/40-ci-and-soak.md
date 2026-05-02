@@ -1,6 +1,6 @@
 # 40 CI + Soak
 
-DRAFT 2026-05-02. Dep:`02`,`05`,`07`,`39`,`42`,`08`.
+FROZEN 2026-05-02. Dep:`02`,`05`,`07`,`39`,`42`,`08`.
 
 PR-time CI = phase gate. Soak = continuous background diagnostic, NOT gate. Single soak box; v1 release waits 168h on `main`. Else: bugs found by soak file as tickets, don't block phase advance.
 
@@ -143,9 +143,3 @@ CI artifacts (90d retention): full serial log on QEMU jobs, kernel ELF + split d
 
 (none)
 
-## 16 OQ
-
-- Soak rotation order: round-robin or weighted (sched-canary more often)? Lean: weighted, sched-canary 30% (highest-bug-density historically).
-- Cost gate on benches: bench job ~3min; skip on docs-only PRs (path filter)? Yes.
-- Self-hosted runner security: ephemeral mode (fresh container per job) vs persistent? Lean: ephemeral; secret leakage protection.
-- Cloud overflow when soak box busy: spin up GCP/Hetzner instance via terraform? Defer until soak box becomes bottleneck.
