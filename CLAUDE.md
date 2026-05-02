@@ -140,11 +140,12 @@ Examples:
 **Never:**
 - `git push --force` to `main`. Period.
 - `git push --force-with-lease` to anyone else's branch.
-- `git rebase main` on a branch others might be reviewing.
+- `git rebase main` on a branch under review by others.
 - `git commit --amend` on a pushed commit (start a new commit).
 - Skip hooks (`--no-verify`).
 - Skip signing (`--no-gpg-sign`) if signing is configured.
 - Direct commits to `main` outside an explicit emergency-fix-then-PR cycle.
+- **Add `Co-Authored-By:` trailer of any kind to any commit, ever.** Author is the human committer; period. No `Co-Authored-By: Claude`, no `Co-Authored-By: <model>`, no AI attribution trailers. CI lint rejects commits with `Co-Authored-By:` lines.
 
 **Tags.**
 - `v1.0`, `v1.1`, `v2.0` — release tags. Require soak artifact per `40§4`.
