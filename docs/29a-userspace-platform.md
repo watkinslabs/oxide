@@ -1,6 +1,6 @@
 # 29a Userspace Platform
 
-DRAFT 2026-05-02. Dep:`02`,`03`,`07`,`08`,`09`,`15`,`29`,`31`,`39`,`43`.
+FROZEN 2026-05-02. Dep:`02`,`03`,`07`,`08`,`09`,`15`,`29`,`31`,`39`,`43`.
 
 End-to-end userspace runtime story. Resolves the Rust-std question. Names target triples, libc, language runtimes, dev workflow, distribution. v1 boundary frozen here.
 
@@ -183,11 +183,3 @@ App cannot rely on (v1):
 
 (none)
 
-## 16 OQ
-
-- `uname()` `sysname` field: "Linux" (max app compat — bash version checks etc) or "oxide"? Lean: "Linux" for v1 (our charter is run-Linux-binaries-unmodified; lying here is consistent w/ `07§3.3` lying about LLVM target). v2: "oxide" once distinct ABI lands.
-- musl version pin: 1.2.5 today; bump policy = follow upstream tags; document in `tools/musl-bump.sh`.
-- C++ runtime choice when v1.x: libstdc++ (gcc) or libc++ (LLVM)? Lean: libc++; we already use clang/LLVM elsewhere.
-- Static-vs-dynamic default for v1 in-tree apps: **static** (simpler, no dynlink bring-up issues). One demo binary dynlinks to validate ld-oxide.
-- App distribution v1.x: APK vs tarball. Defer pick.
-- Sysroot publication: `xtask user --sysroot` produces `target/sysroot-<arch>/` with `usr/include/` + `usr/lib/`; consumed by external app builds. Document in `39`.
