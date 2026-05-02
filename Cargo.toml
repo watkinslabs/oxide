@@ -1,3 +1,21 @@
 [workspace]
 resolver = "2"
-members = ["tools/spec-lint", "tools/xtask", "crates/klog", "crates/hal"]
+members = ["tools/spec-lint", "tools/xtask", "crates/klog", "crates/hal", "kernel"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "limited"
+overflow-checks = false
+incremental = false
+
+[profile.dev]
+opt-level = 1
+lto = "off"
+codegen-units = 16
+panic = "abort"
+debug = "full"
+overflow-checks = true
+incremental = true
