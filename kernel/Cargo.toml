@@ -1,0 +1,17 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "kernel"
+path = "src/lib.rs"
+
+[dependencies]
+hal  = { path = "../crates/hal" }
+klog = { path = "../crates/klog" }
+
+[features]
+default = []
+debug-all = []
