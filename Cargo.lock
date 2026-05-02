@@ -352,6 +352,7 @@ dependencies = [
 name = "pmm"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "hal",
  "klog",
  "proptest",
