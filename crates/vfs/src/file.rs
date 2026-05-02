@@ -1,0 +1,125 @@
+// `File` per `16§5`. The kernel-side handle that an FD entry points
+// to: cached inode / dentry, current position, open flags. Per-process
+// FD table lives in `fdtable.rs`.
+
+extern crate alloc;
+use alloc::sync::Arc;
+
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+use crate::dentry::Dentry;
+use crate::inode::InodeRef;
+use crate::types::{KResult, OpenFlags, VfsError};
+
+/// Backing handle for an open file. Stored as `Arc<File>` so dup / fork
+/// share the position cursor per POSIX (`15§2`).
+pub struct File {
+    inode:  InodeRef,
+    dentry: Arc<Dentry>,
+    pos:    AtomicU64,
+    flags:  AtomicU32,
+}
+
+impl File {
+    /// # C: O(1)
+    pub fn new(inode: InodeRef, dentry: Arc<Dentry>, flags: OpenFlags) -> Arc<Self> {
+        Arc::new(Self {
+            inode,
+            dentry,
+            pos:   AtomicU64::new(0),
+            flags: AtomicU32::new(flags.bits()),
+        })
+    }
+
+    /// # C: O(1)
+    pub fn inode(&self) -> &InodeRef { &self.inode }
+
+    /// # C: O(1)
+    pub fn dentry(&self) -> &Arc<Dentry> { &self.dentry }
+
+    /// Snapshot of the file position.
+    /// # C: O(1)
+    pub fn pos(&self) -> u64 { self.pos.load(Ordering::Acquire) }
+
+    /// # C: O(1)
+    pub fn set_pos(&self, p: u64) { self.pos.store(p, Ordering::Release); }
+
+    /// Snapshot of open flags.
+    /// # C: O(1)
+    pub fn flags(&self) -> OpenFlags {
+        OpenFlags::from_bits_retain(self.flags.load(Ordering::Acquire))
+    }
+
+    /// # C: O(1)
+    pub fn set_flags(&self, f: OpenFlags) {
+        self.flags.store(f.bits(), Ordering::Release);
+    }
+
+    /// `read(2)` — advances the cursor by the byte count returned by
+    /// the inode's `read`. Rejects writes-only opens with `Ebadf`.
+    /// # C: depends on inode impl
+    pub fn read(&self, buf: &mut [u8]) -> KResult<usize> {
+        let f = self.flags();
+        if f.contains(OpenFlags::O_WRONLY) {
+            return Err(VfsError::Ebadf);
+        }
+        let pos = self.pos.load(Ordering::Acquire);
+        let n = self.inode.read(pos, buf)?;
+        self.pos.store(pos + n as u64, Ordering::Release);
+        Ok(n)
+    }
+
+    /// `write(2)` — advances the cursor by the byte count returned by
+    /// the inode's `write`. Rejects read-only opens with `Ebadf`.
+    /// `O_APPEND` snaps the offset to the current size before writing.
+    /// # C: depends on inode impl
+    pub fn write(&self, buf: &[u8]) -> KResult<usize> {
+        let f = self.flags();
+        if !(f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)) {
+            return Err(VfsError::Ebadf);
+        }
+        let off = if f.contains(OpenFlags::O_APPEND) {
+            self.inode.size()
+        } else {
+            self.pos.load(Ordering::Acquire)
+        };
+        let n = self.inode.write(off, buf)?;
+        self.pos.store(off + n as u64, Ordering::Release);
+        Ok(n)
+    }
+
+    /// `lseek(2)` SEEK_SET / CUR / END. Returns the new position.
+    /// # C: O(1)
+    pub fn seek(&self, whence: SeekFrom, off: i64) -> KResult<u64> {
+        let new_pos = match whence {
+            SeekFrom::Start   => off as u64,
+            SeekFrom::Current => {
+                let cur = self.pos.load(Ordering::Acquire) as i64;
+                cur.checked_add(off).ok_or(VfsError::Einval)? as u64
+            }
+            SeekFrom::End => {
+                let end = self.inode.size() as i64;
+                end.checked_add(off).ok_or(VfsError::Einval)? as u64
+            }
+        };
+        self.pos.store(new_pos, Ordering::Release);
+        Ok(new_pos)
+    }
+}
+
+impl core::fmt::Debug for File {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("File")
+            .field("ino", &self.inode.ino())
+            .field("pos", &self.pos())
+            .field("flags", &self.flags())
+            .finish()
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SeekFrom {
+    Start,
+    Current,
+    End,
+}
