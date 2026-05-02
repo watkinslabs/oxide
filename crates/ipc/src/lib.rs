@@ -1,10 +1,19 @@
 // IPC — pipes, signals, futex, eventfd, AF_UNIX.
 //
-// Skeleton per docs/24 (FROZEN). Public surface placeholder; method
-// bodies land in subsequent P1-N branches.
+// Per docs/24 (FROZEN). `WaitQueue` (`06§6`) lands here as the
+// foundation for `block_on` / `wake_up` (`13§10`), pipe / eventfd /
+// signalfd / timerfd / futex blocking, and the AF_UNIX state machine.
+// Pipe / signal / futex bodies land in subsequent P1-N branches.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
+
+extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
+
+pub mod waitqueue;
+pub use waitqueue::{WaitQueue, WaitQueueInner};
 
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -32,13 +41,11 @@ pub unsafe fn init() -> KResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod stub_tests {
     use super::*;
 
     #[test]
     fn init_returns_not_implemented() {
-        // Skeletons report NotImplemented so build-system can sanity-check
-        // crates link without exercising real behavior.
         // SAFETY: hosted-test entry; nothing else has touched the subsystem; init's preconditions trivially hold.
         let r = unsafe { init() };
         assert_eq!(r, Err(Error::NotImplemented));
