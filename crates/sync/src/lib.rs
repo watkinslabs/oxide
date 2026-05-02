@@ -1,9 +1,17 @@
-// Synchronization primitives per docs/06§3. Crate-level home for
-// Spinlock, RwLock, SeqLock, RCU once those land. This file ships
-// Spinlock + LockClass + IrqGate; the rest land alongside their
-// consumers in the dep order from `boot-flow.md`.
+// Synchronization primitives per docs/06§3 + `06§4`. Crate-level home
+// for Spinlock, LockClass, IrqGate, PerCpu. RwLock + SeqLock + RCU
+// land alongside their first consumers in the dep order from
+// `boot-flow.md`.
 
 #![no_std]
+
+#[cfg(test)]
+extern crate std;
+
+mod percpu;
+pub use percpu::{
+    CacheLine, CpuLocalSource, NoopCpuLocal, PerCpu, CACHELINE_BYTES, MAX_CPUS,
+};
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
