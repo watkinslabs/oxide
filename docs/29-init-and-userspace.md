@@ -1,6 +1,6 @@
 # 29 Init + Userspace bring-up
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`. Provides:every running userspace.
+FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`. Provides:every running userspace.
 ## 1 Purpose
 
 PID 1 (init), libc, image build pipeline (initramfs + on-disk root), boot-to-shell sequence.
@@ -109,9 +109,3 @@ Init is single-threaded. Reaps via `waitid(P_ALL, WEXITED|WNOHANG, &si)` in a SI
 
 `13`+`15` (clone3,execve), `16`+`19` (mounts), `28` (controlling tty for getty), `31` (ELF loader for execve), `39` (image builder).
 
-## 14 Open Questions
-
-- systemd as PID 1 in v1.x or v2? v2.
-- OpenRC vs custom init: stick with custom for v1 (minimal); accept that "service" is reserved.
-- musl vs glibc as primary libc: musl.
-- Static vs dynamic for v1 binaries: static (simpler boot; no dynlink bring-up); dynlink validated via a single test binary.
