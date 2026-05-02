@@ -1,0 +1,5 @@
+Deferred decisions land here per `02§2.3`.
+
+When an OQ resolves to "v2", file is `docs/v2/<spec-stem>.md` with rationale + reference back to original spec.
+
+Empty directory at v1 ships.
