@@ -9,9 +9,11 @@
 extern crate std;
 
 mod percpu;
+mod rwlock;
 pub use percpu::{
     CacheLine, CpuLocalSource, NoopCpuLocal, PerCpu, CACHELINE_BYTES, MAX_CPUS,
 };
+pub use rwlock::{RwLock, RwReadGuard, RwWriteGuard};
 
 #[cfg(any(test, feature = "hosted"))]
 pub use percpu::HostedCpuLocal;

@@ -12,9 +12,11 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod address_space;
 pub mod vma;
 pub mod tree;
 
+pub use address_space::{AddressSpace, MIN_USER_VA};
 pub use vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
 
