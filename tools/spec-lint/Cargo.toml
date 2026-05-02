@@ -1,0 +1,9 @@
+[package]
+name = "spec-lint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "spec-lint"
+path = "src/main.rs"
