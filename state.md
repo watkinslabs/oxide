@@ -1,10 +1,10 @@
-# State 2026-05-02
+# State 2026-05-02 (reconciled)
 
 Resumable checkpoint. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`.
 
 ## Phase
 
-**Spec corpus FROZEN. Build infra + skeleton crates landed. Boot wiring + real implementations pending.** All 44 spec docs are FROZEN as of 2026-05-02 (cool-off waiver per `02§1.4`); only `00 master plan` and `05 pre-mortem` stay DRAFT permanently as living docs. Workspace compiles for host + both kernel targets.
+**Spec corpus FROZEN. Build infra + skeleton crates landed. Boot crate _shells_ landed (no asm yet). pmm public API surface landed (no bodies). GHA + Docker + LICENSE landed.** Workspace compiles for host + both kernel targets; spec-lint clean; 33 hosted tests pass.
 
 ## What's done
 
@@ -26,63 +26,50 @@ Every spec's OQ section was either resolved inline or moved to `docs/v2/<file>.m
 
 ### Tooling
 
-- `tools/spec-lint/`: `docs|code|manifest|xref|all`. Doc rules (status-line, header form, forbidden phrases), MANIFEST presence/status mismatch, xref resolver (every `<doc>§<sec>` resolves), code rules (`#![no_std]`, no `extern crate std`, no `static mut` outside test, no `panic!(fmt)`, `// SAFETY:` ≥30 chars, `# C:` on every `pub fn`). **`spec-lint all` clean across the corpus + every crate.**
-- `tools/xtask/`: `kernel|user|image|test|qemu|soak|bench|spec-lint|doc-check`. Real impls: `spec-lint`, `doc-check`, `kernel` build (-Z build-std + target JSON + softfloat ABIs), `test --hosted`. Stubs return `64 ENOSYS`-style for the rest.
+- `tools/spec-lint/`: `docs|code|manifest|xref|all`. **`spec-lint all` clean.**
+- `tools/xtask/`: `kernel|user|image|test|qemu|soak|bench|spec-lint|doc-check`. Real impls: `spec-lint`, `doc-check`, `kernel` build (-Z build-std + target JSON), `test --hosted`. Stubs return `64 ENOSYS`-style for the rest.
 - `Cargo.toml` (workspace) + `rust-toolchain.toml` (`nightly-2026-05-01`) + workspace profiles per `07§2`.
+- `.github/workflows/pr.yml` — spec-lint + workspace tests + matrix kernel build (PR #39).
+- `tools/docker/Dockerfile.{build,soak}` — digest-pinned per `40§5` (PR #39).
+- `LICENSE` (MIT) — PR #40.
 
 ### Kernel + per-subsystem crates
 
 | Path | Role | Status |
 |---|---|---|
 | `kernel/` | lib; `kernel_main(&BootInfo)` entry; emits "init started" via klog; halt loop | builds host + both kernel targets |
-| `crates/hal/` | trait-only: `MmuOps`, `CpuOps`, `Context`, `IrqOps`, `TimerOps` per `14`/`20`/`21` | builds; 2 hosted tests |
-| `crates/klog/` | macros emit into `.klog_strings`; `Uart` trait; 5 levels | builds; 3 hosted tests |
-| `crates/{pmm,slab,vmm,sched,syscall,vfs,block,modules,procfs,ipc,security,nscg,net,tty,iouring,elf,power,firmware,pci,drv,obs,err}/` | one no_std crate per frozen spec; `Error`/`KResult`/`init() -> NotImplemented` stub; 1 hosted test each | all build; 22 tests pass |
-| `targets/{x86_64,aarch64}-unknown-oxide-kernel.json` | rustc target specs (R02-fixed for current rustc) | both produce `libkernel.rlib` |
-| `link/{x86_64,aarch64}-kernel.ld` | linker scripts per `07§6`; sections `.text.boot/.text/.rodata/.data/.bss/.percpu/.klog_strings/.init_array` | not yet exercised (no boot binary) |
+| `crates/hal/` | trait-only: `MmuOps`, `CpuOps`, `Context`, `IrqOps`, `TimerOps` per `14`/`20`/`21` | builds; hosted tests |
+| `crates/klog/` | macros emit into `.klog_strings`; `Uart` trait; 5 levels | builds; hosted tests |
+| `crates/boot-x86_64/` | `_start` shell, `UnsafeCell` BSS stack, stub `BootInfo` (PR #38) | **shell only — no asm, no Limine handoff** |
+| `crates/boot-aarch64/` | `_start` shell, `UnsafeCell` BSS stack, stub `BootInfo` (PR #38) | **shell only — no asm, no EDK2/U-Boot/DTB handoff** |
+| `crates/pmm/` | full `10§4` public API (175 lines): `Pmm`, `Order`, `Error`/`KResult`, `UsableRegion`, invariants I1–I8 documented (PR #41) | **API surface only — bodies pending** |
+| `crates/{slab,vmm,sched,syscall,vfs,block,modules,procfs,ipc,security,nscg,net,tty,iouring,elf,power,firmware,pci,drv,obs,err}/` | one no_std crate per frozen spec; `Error`/`KResult`/`init() -> NotImplemented` stub + 1 hosted test each | all build |
+| `targets/{x86_64,aarch64}-unknown-oxide-kernel.json` | rustc target specs (R02-fixed) | both produce `libkernel.rlib` |
+| `link/{x86_64,aarch64}-kernel.ld` | linker scripts per `07§6` | not yet exercised (no boot binary) |
+
+Workspace test count: **33 passed, 0 failed**.
 
 ### Discipline + workflow
 
-- **PR-mandatory** (CLAUDE.md§Git workflow updated): every branch goes through `gh pr create` + `gh pr merge --merge --delete-branch=false`. 36 PRs landed this session.
-- **Numbered branch scheme** (CLAUDE.md updated): `F<NN>/B<NN>/D<NN>/R<NN>/Z<NN>/C<NN>/P<n>-<NN>`. All pre-existing branches renamed; main history rewritten so merge subjects use new names.
-- **Auto-allow lists** updated in `.claude/settings.json`: `gh pr/issue/run/workflow/api*`, `git push:*` no longer prompt.
+- **PR-mandatory** (CLAUDE.md§Git workflow): every branch via `gh pr create` + `gh pr merge --merge --delete-branch=false`. **41 PRs landed.**
+- **Numbered branch scheme** (CLAUDE.md): `F<NN>/B<NN>/D<NN>/R<NN>/Z<NN>/C<NN>/P<n>-<NN>`. All pre-existing branches renamed; main history rewritten so merge subjects use new names.
+- **Auto-allow lists** in `.claude/settings.json`: `gh pr/issue/run/workflow/api*`, `git push:*`.
 - All commits authored as `Ablative Personality <chris@watkinslabs.com>`. No co-authors. No AI attribution.
 
 ## Repo state
 
 ```
-main (origin/main): fb440f5 Merge pull request #36 from watkinslabs/P1-01-subsystem-skeletons
+main (origin/main): 0e6a906 Merge pull request #41 from watkinslabs/P1-02-pmm-api-surface
 
-36 PRs landed. Branches preserved (no deletions).
+41 PRs landed. 101 branches preserved (no deletions).
 
-Branch list (sortable):
-  B01-branch-retention-rule
-  B02-fix-broken-xref-01-freeze
-  B03-fix-30-status-line
-  B04-fix-07-revision-forbidden-phrases
-  C01-workspace-setup
-  C02-state-checkpoint
-  C03-strip-coauthor
-  C04-state-update-after-coauthor-strip
-  C05-spec-lint
-  C06-branch-naming-and-pr-workflow
-  C07-state-md-after-rename
-  C08-allow-gh-pr-and-push
-  C09-spec-lint-xref
-  C10-state-md-session-progress
-  C11-state-md-after-freeze-chain
-  D01-initial-spec-corpus
-  D02-status-line-sweep
-  P0-01-target-jsons
-  P0-02-linker-scripts
-  P0-03-xtask-skeleton
-  P0-04-hal-traits
-  P0-05-klog-skeleton
-  P0-06-kernel-binary
-  P1-01-subsystem-skeletons
-  R01-spec-discipline-dep-cycles
-  R02-target-spec-c-int-width
-  Z01-spec-discipline ... Z18-meta-and-acceptance (9 freezes)
+Most recent merges:
+  #41 P1-02-pmm-api-surface       — pmm public API per 10§4
+  #40 D03-license-mit             — MIT LICENSE
+  #39 P0-09-gha-and-dockerfile    — pr.yml + Dockerfile.{build,soak}
+  #38 P0-07-boot-x86_64           — boot-x86_64 + boot-aarch64 skeletons
+  #37 C12-state-md-eod-session    — (this file's prior checkpoint — now stale)
+  #36 P1-01-subsystem-skeletons   — 22 subsystem crates
 ```
 
 Remote: `origin = git@github.com:watkinslabs/oxide.git`.
@@ -91,42 +78,40 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 In rough order:
 
-1. **Boot crates** `crates/boot-x86_64`, `crates/boot-aarch64`. Provide arch-specific `_start` (asm, naked fn, link section `.text.boot`), parse bootloader handoff (Limine on x86; EDK2/U-Boot/DTB on arm), set up minimal env (paging, percpu base, kernel stack), then tail-call `kernel::kernel_main`. **Significant per-arch asm + bootloader integration; expect days each.**
+1. **Boot crates — real bodies.** Shells exist (`crates/boot-{x86_64,aarch64}`); need:
+   - x86_64: `_start` asm (naked fn, `.text.boot`), Limine protocol parse, paging + GDT/IDT setup, percpu base, kernel stack switch, tail-call to `kernel::kernel_main`.
+   - aarch64: `_start` asm, EDK2 or U-Boot + DTB handoff parse, MMU + EL1 setup, kernel stack, tail-call.
+   - **Days each. Significant per-arch asm.**
 
-2. **Real UART backends** for `klog::Uart`. 16550A on x86 (port I/O via `inb`/`outb` asm); PL011 on aarch64 (MMIO at QEMU `virt` 0x09000000). Wire via boot crate before calling `kernel_main`.
+2. **Real UART backends** for `klog::Uart`. 16550A on x86 (port I/O); PL011 on aarch64 (MMIO at QEMU `virt` 0x09000000). Wired via boot crate before `kernel_main`.
 
-3. **HAL impls**: `hal-x86_64`, `hal-aarch64` crates implementing `MmuOps`/`CpuOps`/`Context`/`IrqOps`/`TimerOps`. Significant asm (ctx-switch in `14§5`/`14§6`, IRQ entry, MSR/sys-reg reads/writes).
+3. **HAL impls**: `hal-x86_64`, `hal-aarch64` crates implementing `MmuOps`/`CpuOps`/`Context`/`IrqOps`/`TimerOps`. Significant asm (ctx-switch `14§5`/`14§6`, IRQ entry, MSR/sys-reg).
 
-4. **Subsystem implementations** in dependency order per `boot-flow.md`:
-   - `pmm` (10): buddy + bitmap truth.
-   - `slab` (12): magazines + caches.
-   - `vmm` (11): VMA tree + page-fault handler + COW.
-   - `sched` (13): 3-class + cgroup quota.
-   - `syscall` (15): dispatch table + ABI shapes.
+4. **pmm bodies**: API surface in place; need buddy + bitmap-truth bodies meeting invariants I1–I8 + `10` test contract. **Highest-leverage first subsystem (dep root).**
+
+5. **Subsystem implementations** in dependency order per `boot-flow.md`:
+   - `slab` (12), `vmm` (11), `sched` (13), `syscall` (15).
    - `vfs` (16) → `block` (17) → `procfs` (19) → `ipc` (24) → `security` (27) → `nscg` (26) → `net` (25) → `tty` (28) → `iouring` (30) → `elf` (31) → `pci` (34) → `drv` (35) → `firmware` (33) → `power` (32) → `obs` (37) → `modules` (18) → `err` (38) → `init` (29).
-   - Each spec carries the test contract; meet it before considering the crate done.
+   - Each spec's test contract is the bar.
 
-5. **Userspace platform** per `29a`: musl 1.2.5 fork (`ld-oxide.so.1`), init, busybox-equivalent, demo dynamically-linked binary.
+6. **Userspace platform** per `29a`: musl 1.2.5 fork (`ld-oxide.so.1`), init, busybox-equivalent, demo dynamically-linked binary.
 
-6. **Phase 0 finishing pieces**:
-   - `tools/docker/Dockerfile.{build,soak}` per `40§5`.
-   - `.github/workflows/{pr,bg-soak,release,dockerfile,weekly}.yml` per `40§2`. PR-time gate runs `xtask spec-lint` + `cargo test --workspace` + `xtask kernel --arch x86_64` + same for aarch64.
-   - `xtask qemu` real impl: spawn QEMU with built kernel + initramfs; expect `"init started"` + clean exit.
-   - **Phase 0 exit gate**: hello-world boots both arches via QEMU, prints "init started" on UART, exits cleanly. Mostly gated on items 1+2.
+7. **Phase 0 finishing pieces**:
+   - `xtask qemu` real impl: spawn QEMU with built kernel + initramfs; expect `"init started"` on UART + clean exit.
+   - `.github/workflows/{bg-soak,release,dockerfile,weekly}.yml` per `40§2` (only `pr.yml` exists today).
+   - **Phase 0 exit gate**: hello-world boots both arches via QEMU, prints "init started", exits cleanly. Gated on items 1+2.
 
-7. **Bench history + soak runner** per `40`.
-
-8. **`LICENSE` file** (MIT chosen).
+8. **Bench history + soak runner** per `40`.
 
 ## Active discipline (must hold)
 
-- Spec-before-code: subsystem code only after that spec freezes. (All subsystem specs FROZEN now; cleared.)
+- Spec-before-code: cleared (all subsystem specs FROZEN).
 - Branch-per-feature + PR-mandatory: `gh pr create` + `gh pr merge --merge --delete-branch=false`. **No local `--no-ff` merges to main.**
 - Numbered branch scheme: `F/B/D/R/Z/C/P<n>-<NN>` + kebab title.
 - Cool-off: ≥48h default; solo waiver per `02§1.4` is in active use.
 - AI-density: dense form for new content; existing slack trims on next revision touching it.
 - Lean-mode CI: PR-time = wall; soak = bg diagnostic; no 24h gate.
-- Cross-ref form: `<doc>§<sec>`. `spec-lint xref` enforces; **always run `cargo run -p spec-lint -- all` before commit and abort on findings.** (Two near-misses this session — B02 + B03 + B04 fix-up PRs.)
+- Cross-ref form: `<doc>§<sec>`. **Always `cargo run -p spec-lint -- all` before commit; abort on findings.**
 - `panic = "abort"`, `kassert!` only, no `static mut`, no `dyn HAL`, `// SAFETY:` ≥30 chars.
 - Force-push to main: explicit user instruction only.
 
@@ -136,15 +121,15 @@ In rough order:
 2. Read `CLAUDE.md`.
 3. Read `docs/MANIFEST.md`.
 4. Check `git log --oneline --graph -10` and `git status`.
-5. Run `cargo run -p spec-lint -- all` — should be clean.
-6. Run `cargo test --workspace` — should pass (~25 tests).
-7. Run `cargo run -p xtask -- kernel --arch x86_64 --profile dev` — should produce `libkernel.rlib`.
-8. Pick the next pending task. Highest-value next step is either:
-   - **Boot crate skeletons (P0-07/P0-08)** to get to QEMU-bootable hello-world, or
-   - **`pmm` first real subsystem** (P1-02) — concrete implementation work, dep chain root, exercises spec-lint code rules in anger.
+5. `cargo run -p spec-lint -- all` — should be clean.
+6. `cargo test --workspace` — should pass (33 tests).
+7. `cargo run -p xtask -- kernel --arch x86_64 --profile dev` — should produce `libkernel.rlib`.
+8. Pick next pending task. Two highest-leverage options:
+   - **pmm bodies (P1-02 continuation)** — buddy + bitmap-truth, exercises spec-lint code rules in anger, dep root for everything above.
+   - **Boot crate asm (P0-07/P0-08 real bodies)** — chases Phase 0 exit gate (QEMU hello-world).
 
 ## Open questions for user (deferred)
 
-- LICENSE = MIT (decided 2026-05-02). `LICENSE` file pending.
-- CI status badge in README.md once GHA is up.
-- Whether to ship the live-state of `target/` artifacts in git (currently ignored; bench/soak intentionally tracked).
+- CI status badge in README.md once GHA is fully exercised.
+- Whether to ship `target/` artifacts in git (currently ignored; bench/soak intentionally tracked).
+- LICENSE: MIT decided + landed 2026-05-02.
