@@ -2,7 +2,14 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
-## Revision 2026-05-02
+## Revision 2026-05-02 (R03)
+
+- Changed: added §3.4 "Build chain (kernel-only vs userspace)".
+- Why: §3.3 names target triples but never spells out that the kernel binary needs only the cross-toolchain (`rust-toolchain.toml` + `-Z build-std`), while userspace requires UAPI export → musl-fork → ld-oxide → app, in that order. Linux solves this with `make headers_install`; the spec had no analogue.
+- Affected code: `xtask` will gain a `uapi-export` subcommand; `xtask user` will become the orchestrator of musl + ld + apps build per `29§4.1`.
+- Test contract change: none yet; §9 expands when `xtask uapi-export` lands.
+
+## Revision 2026-05-02 (R02)
 
 - Changed: §3.1 + §3.2 target JSON shapes to match current rustc target-spec format.
 - Why: `nightly-2026-05-01` target-spec parser rejects the spec-as-written. Specifically: `target-c-int-width` removed (default 32 is correct); `target-pointer-width` numeric not string; `is-builtin` field removed (no longer recognized); `-3dnow,-3dnowa` features removed (deprecated in current LLVM); `rustc-abi: "x86-softfloat"` added on x86 + `rustc-abi: "softfloat"` and `abi: "softfloat"` added on aarch64 (kernel disables SSE/NEON; current rustc requires explicit ABI instead of implicit feature-disable); aarch64 data-layout updated to current upstream `e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`.
@@ -111,6 +118,27 @@ These are stock Rust targets. `std` works. Tokio/hyper/serde/etc. build unchange
 Custom `*-unknown-oxide` userspace targets considered + rejected for v1: would require porting `std` (~1yr Redox-style work) for no v1-visible benefit. Migration path to `os=oxide` deferred to v2 when distinct userspace ABI surface emerges.
 
 Userspace dynamic linker still `/lib/ld-oxide.so.1` (our musl-fork ld.so) per `29a§4`. Cross-compile from any Linux/Mac dev box.
+
+### 3.4 Build chain (kernel-only vs userspace)
+
+Kernel binary depends on `rustc` + the kernel target JSON only. No libc, no userspace headers, no UAPI export step. Built directly:
+
+```
+cargo -Z build-std --target ./targets/<arch>-unknown-oxide-kernel.json -p kernel
+```
+
+Userspace follows the LFS pattern (cross-toolchain → kernel-headers → libc → ld → apps):
+
+| Step | Artifact | Source | Consumes |
+|---|---|---|---|
+| 1 | cross-toolchain | `rust-toolchain.toml` (rustc + clang) | — |
+| 2 | UAPI export | `xtask uapi-export` → `userspace/uapi/` | `15§2`+`§6`+`§6.7`, `01§6`+`§7` |
+| 3 | musl fork | `userspace/libc/musl/` → `libc.{so,a}` + `usr/include/` | step 2 |
+| 4 | `ld-oxide.so.1` | `userspace/dynlink/` | step 3 |
+| 5 | apps (in-tree) | `userspace/apps/<name>/` | steps 3 + 4 |
+| 6 | initramfs / image | `xtask image` | kernel binary + step 5 |
+
+Kernel ↔ userspace handshake = `userspace/uapi/`. No other shared code crosses the boundary. Steps 2–5 orchestrated by `xtask user` per `29§4.1`.
 
 ## 4 Build cmds
 

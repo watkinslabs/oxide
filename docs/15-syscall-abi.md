@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 
+## Revision 2026-05-02 (R03)
+
+- Changed: added §6.7 "UAPI surface boundary" enumerating the public-to-userspace contract.
+- Why: §2 lists syscall numbers + §6 lists ABI structs but never says "this and only this is what userspace sees" — leaving the musl fork (`29§4`, `29a§3`) with no precise contract to consume. Linux uses `include/uapi/linux/` for this; we had no analogue.
+- Affected code: future `xtask uapi-export` (`07§3.4`); future `crates/uapi/` (kernel-side single-source-of-truth) and `userspace/uapi/` (export tree the musl fork reads).
+- Test contract change: §9 unchanged; the static-assert that currently lives implicitly in `userspace-abi` becomes the export step's correctness criterion.
+
 Linux-compatible ABI; numbers exactly Linux x86_64. aarch64 reuses x86_64 numbering (deviates from Linux aarch64 numbering — same userspace stub both arches differing only in trap instr).
 
 Rule: **every Linux x86_64 syscall number has a documented disposition. No gaps, no surprises.**
@@ -679,6 +686,27 @@ The following exist in this section but are listed by reference, not duplicated 
 Each subsystem spec mirrors this rule: if the constant is *only* read at one syscall's boundary and never used internally, it lives in the subsystem spec, not here. If a constant is used by ≥2 syscall handlers across subsystems, it lives in this file.
 
 The ones in §6.1–§6.6 above qualify because they are referenced by multiple syscall handlers across subsystem boundaries.
+
+### 6.7 UAPI surface boundary
+
+UAPI = the union of types and numbers userspace can rely on:
+
+| Source | Content |
+|---|---|
+| `15§1` | calling convention per arch |
+| `15§2` | syscall numbers + dispositions |
+| `15§6` | ABI struct layouts |
+| `15§8` | vDSO entry symbols + signatures |
+| `01§6` | errno table |
+| `01§7` | signal numbers |
+
+Everything else is **kernel-internal** per `01§10`: subsystem `Error`/`KResult`, lock primitives, slab caches, scheduler state, internal trait sigs. Userspace must never depend on those.
+
+Mechanical export: `xtask uapi-export` walks the listed sections + their cross-referenced types and emits `userspace/uapi/oxide/*.h` + `*.rs`. The musl fork (`29§4`, `29a§3`) reads from there. Build-chain step 2 per `07§3.4`.
+
+In-tree single source of truth = `crates/uapi/` (kernel side); `userspace/uapi/` is its generated export tree. Kernel code that touches UAPI imports `crates/uapi/`; userspace consumers see the exported tree only.
+
+Static-assert per arch (already in §9 test contract): every ABI struct in `userspace-abi` matches Linux layout. The export step is the production form of that assertion.
 
 ---
 
