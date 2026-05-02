@@ -14,6 +14,13 @@
 #![cfg_attr(target_os = "oxide-kernel", no_main)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
+
+pub mod dtb;
+pub mod pl011;
+
 use core::cell::UnsafeCell;
 use kernel::{BootInfo, BootMemRegion};
 
@@ -34,9 +41,12 @@ pub unsafe fn stub_boot_info() -> BootInfo {
 
 /// 16 KiB BSS-resident stack; same `UnsafeCell` discipline as the
 /// x86_64 boot crate (`06§11` + `07§5` ban `static mut`).
+#[cfg(target_os = "oxide-kernel")]
 #[repr(align(4096))]
 struct KernelStack(UnsafeCell<[u8; 16 * 1024]>);
+#[cfg(target_os = "oxide-kernel")]
 unsafe impl Sync for KernelStack {}
+#[cfg(target_os = "oxide-kernel")]
 static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; 16 * 1024]));
 
 /// Entry. Bootloader convention: `x0..x3` carry handoff blob pointers
