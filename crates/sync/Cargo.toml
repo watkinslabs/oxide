@@ -7,5 +7,10 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[features]
+# Enables `HostedCpuLocal` (uses std::thread_local). Off in kernel
+# builds; on for hosted-test consumers (slab, sched, klog tests).
+hosted = []
+
 [dependencies]
 hal = { path = "../hal" }
