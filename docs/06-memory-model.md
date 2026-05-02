@@ -1,6 +1,6 @@
 # 06 Memory Model
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`08`,`09`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`08`,`09`.
 
 Rust C++11/20 atomics only. No Linux LKMM. No `READ_ONCE`/address-dependency tricks. Pay `Acquire`/`Release` where Linux pays `READ_ONCE`. Trade: ~1–2% on RCU-heavy paths for spec simplicity.
 
@@ -173,10 +173,3 @@ Pre-SMP: 1 CPU, IRQs off, trivially sequential. Post-`smp_init()`: this doc appl
 
 (none)
 
-## 15 OQ
-
-- Spinlock impl: ticket vs MCS vs CLH. Ticket thrashes >16 CPU. Lean: MCS.
-- RCU impl: tree (~6KLOC) vs task-RCU (simple, slower grace). Lean: task-RCU v1; tree v2.
-- Cacheline: hardcode 64 vs detect (Apple 128). Lean: const, default 64, HAL overrides.
-- DMA barriers at HAL level vs per-driver asm. Lean: HAL.
-- `SeqCst` audit lint requiring justification comment. Yes; write.
