@@ -27,6 +27,9 @@
 #[cfg(test)]
 extern crate std;
 
+mod page_meta;
+pub use page_meta::{PageFlags, PageMeta, PageMetaArr};
+
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 use hal::{Pfn, PAGE_SIZE_BYTES};
