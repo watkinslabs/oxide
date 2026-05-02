@@ -1,6 +1,6 @@
 # 33 Firmware Tables (ACPI + DT)
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`19`,`20`,`21`,`34`. Provides:PMM (mem map), `13` (CPU topology), `34` (PCI host bridges, MSI), IrqOps (controller), Time (frequency).
+FROZEN 2026-05-02. Dep:`01`,`02`,`19`,`20`,`21`,`34`. Provides:PMM (mem map), `13` (CPU topology), `34` (PCI host bridges, MSI), IrqOps (controller), Time (frequency).
 ## 1 Purpose
 
 Parse static ACPI tables (x86, optionally arm) and DT (arm primary; x86 fallback never). Expose results to subsystems.
@@ -78,7 +78,3 @@ Read-only post-init; lock-free.
 
 `20`/`21` (controllers from MADT/DT), `34` (MCFG/PCI nodes), `13` (CPU bring-up from MADT/`/cpus`), `19` (`/sys/firmware/`).
 
-## 11 Open Questions
-
-- ACPI on aarch64 (UEFI-shipped): support both DT and ACPI; pick per firmware advertisement.
-- AML in v2: not committed. Userspace handles laptop power policies via tools instead.
