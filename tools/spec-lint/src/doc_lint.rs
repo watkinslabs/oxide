@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{is_charter, read, walk, Findings};
+use crate::{is_charter, read, strip_quoted, walk, Findings};
 
 const FORBIDDEN: &[&str] = &[
     "This document defines",
@@ -164,18 +164,3 @@ fn check_forbidden(path: &Path, text: &str, f: &mut Findings) {
     }
 }
 
-fn strip_quoted(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    let mut in_dq = false;
-    let mut in_bt = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '"' if !in_bt => { in_dq = !in_dq; out.push(' '); }
-            '`' if !in_dq => { in_bt = !in_bt; out.push(' '); }
-            _ if in_dq || in_bt => out.push(' '),
-            _ => out.push(c),
-        }
-    }
-    out
-}
