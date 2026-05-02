@@ -65,7 +65,7 @@ Returns an fd that, when read, yields a `signalfd_siginfo` for the next pending 
 
 ## 9 AF_UNIX
 
-Three flavors: SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET. Per `15` and `25§AF_UNIX`. Path-bound (filesystem) or abstract (`\0`-prefixed). SCM_RIGHTS (fd passing) and SCM_CREDENTIALS (peer cred). Connection state machine like TCP but in-memory.
+Three flavors: SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET. Per `15` and `25§13`. Path-bound (filesystem) or abstract (`\0`-prefixed). SCM_RIGHTS (fd passing) and SCM_CREDENTIALS (peer cred). Connection state machine like TCP but in-memory.
 
 Backing: per-socket pair of intrusive ring buffers; SCM messages out-of-band ring.
 

@@ -72,7 +72,7 @@ Global (`/proc/`):
 | `kallsyms` | sym table; gated by `kptr_restrict` |
 | `interrupts`,`softirqs` | per-cpu counters |
 | `self`,`thread-self` | symlinks |
-| `sys/...` | sysctl tree (sparse subset; see `27§sysctl`) |
+| `sys/...` | sysctl tree (sparse subset; see `27§13`) |
 
 ## 5 sysfs structure
 

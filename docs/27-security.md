@@ -144,7 +144,7 @@ Constraint: every crate `no_std`-able. Vendored at workspace root with version p
 
 Boot: gather entropy from RDRAND/RDSEED (x86) / RNDR-RNDRRS (arm FEAT_RNG) / virtio-rng (always); EFI RNG protocol if present; jitterentropy (timing jitter) as fallback. Mix via SHAKE-256.
 
-Steady state: `getrandom()` (`15§329-`-ish) reads from a per-system DRBG (HMAC-SHA-256 DRBG, NIST SP 800-90A). Reseeded every 2^16 bytes from raw RDRAND/RDSEED/virtio-rng pool.
+Steady state: `getrandom()` (syscall 318 in `15§2`) reads from a per-system DRBG (HMAC-SHA-256 DRBG, NIST SP 800-90A). Reseeded every 2^16 bytes from raw RDRAND/RDSEED/virtio-rng pool.
 
 Per-CPU rapid RNG (for non-cryptographic use): xoshiro256++ seeded from main DRBG; not exposed to userspace.
 
