@@ -21,12 +21,12 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 
 | File | Status | Frozen | Depends |
 |---|---|---|---|
-| `10-pmm.md` | DRAFT | — | `01`,`02`,`06`,`04` |
-| `11-vmm.md` | DRAFT | — | `01`,`02`,`06`,`10`,`14`,`20`,`21` |
-| `12-slab.md` | DRAFT | — | `01`,`02`,`06`,`10` |
-| `13-sched.md` | DRAFT | — | `01`,`02`,`06`,`14` |
+| `10-pmm.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`04` |
+| `11-vmm.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`10`,`14`,`20`,`21` |
+| `12-slab.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`10` |
+| `13-sched.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`14` |
 | `14-context-switch.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`08`,`09` |
-| `15-syscall-abi.md` | DRAFT | — | `01`,`03`,`06` |
+| `15-syscall-abi.md` | FROZEN | 2026-05-02 | `01`,`03`,`06` |
 | `16-vfs.md` | DRAFT | — | `01`,`02`,`06`,`12`,`15` |
 | `17-block-and-pagecache.md` | DRAFT | — | `01`,`02`,`06`,`10`,`11`,`12`,`16` |
 | `18-modules.md` | DRAFT | — | `01`,`02`,`06`,`08`,`09`,`11`,`15`,`27`,`31` |
