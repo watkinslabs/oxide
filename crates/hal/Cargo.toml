@@ -1,0 +1,11 @@
+[package]
+name = "hal"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+bitflags = { version = "2", default-features = false }
