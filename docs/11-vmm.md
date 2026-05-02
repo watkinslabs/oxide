@@ -1,6 +1,6 @@
 # 11 VMM
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`,`14`,`20`,`21`. Provides: every process; backs `mmap`/`mprotect`/`munmap`/`mremap`/`madvise`/page-fault/`fork`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`,`14`,`20`,`21`. Provides: every process; backs `mmap`/`mprotect`/`munmap`/`mremap`/`madvise`/page-fault/`fork`.
 
 Per-process AS, install/remove translations, demand-fault, COW fork, file mmap. Doesn't manage phys (`10`) or kernel mem (`12`).
 
@@ -173,10 +173,3 @@ Flags: DIRTY, REFERENCED, LOCKED, RESERVED, …. mapping: shared/file pages → 
 
 (none)
 
-## 17 OQ
-
-- VMA merge eager vs lazy. Lean: eager.
-- Per-VMA locks v1.x.
-- THP via `MADV_HUGEPAGE`: kernel allocates 2MiB on first fault if VMA aligned + marked. Lean: yes v1.
-- userfaultfd v1 (Go runtime, CRIU). Lean: yes.
-- `MAP_HUGETLB` w/o THP (reserved hugepages): defer v1.x.

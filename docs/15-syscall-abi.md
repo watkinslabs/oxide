@@ -1,6 +1,6 @@
 # 15 Syscall ABI
 
-DRAFT 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
+FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 
 Linux-compatible ABI; numbers exactly Linux x86_64. aarch64 reuses x86_64 numbering (deviates from Linux aarch64 numbering — same userspace stub both arches differing only in trap instr).
 
@@ -715,10 +715,3 @@ Touched by every subsystem spec (user-facing surface):
 
 (none)
 
-## 12 OQ
-
-- aarch64 numbering: keep x86_64 numbers on both arches. Trade: Linux-compat aarch64 binaries need recompile against our libc. Acceptable; libc-controlled.
-- `iopl`/`ioperm` QEMU debug build? No; kernel uses ISA-debug-exit, userspace doesn't.
-- `personality` sub-flags: honor `ADDR_NO_RANDOMIZE` (debuggers); legacy `MMAP_PAGE_ZERO`,`READ_IMPLIES_EXEC` → EINVAL.
-- `seccomp` filter mode without BPF: v1.0 returns ENOSYS (breaks systemd hardening; systemd is v2 anyway).
-- Number ceiling 462 today: size table 1024 for future Linux additions. Lean: yes.
