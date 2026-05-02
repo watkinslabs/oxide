@@ -1,6 +1,6 @@
 # 42 Test Strategy
 
-DRAFT 2026-05-02. Dep:`02`,`05`,`06`,`07`,`08`,`40`.
+FROZEN 2026-05-02. Dep:`02`,`05`,`06`,`07`,`08`,`40`.
 ## 1 Purpose
 
 Concrete patterns: oracle property tests, loom, miri, hosted vs in-kernel tests, fuzz, soak. How each integrates with the workspace and CI.
@@ -139,8 +139,3 @@ Gates per `42§10`. Subsystem-specific in each spec's `Test contract`.
 
 `02`,`05`,`40`. Every subsystem spec's `Test contract` section.
 
-## 14 Open Questions
-
-- Property test seed reproducibility: store last failing seed per crate in `proptest-regressions/`. Lean: yes (proptest does this).
-- Mutation testing (cargo-mutants): nice but expensive. Defer to v1.x.
-- Symbolic execution (kani / creusot): aspirational; defer.

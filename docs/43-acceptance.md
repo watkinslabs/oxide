@@ -1,6 +1,6 @@
 # 43 Acceptance Criteria
 
-DRAFT 2026-05-02. Dep:every spec above.
+FROZEN 2026-05-02. Dep:every spec above.
 ## 1 Purpose
 
 Enumerate the binary-level acceptance tests for v1, v1.x, v2 milestones. Each binary listed is the *contract*: if a stock build of it from upstream against our libc/syscall ABI fails to run, the milestone is not done.
@@ -74,8 +74,3 @@ If acceptance fails for a binary in v1:
 
 Each spec from `10` upward; `00§15` exit criterion; `40` (CI runs acceptance scripts).
 
-## 9 Open Questions
-
-- Hardware acceptance (real bare metal vs QEMU): v1 ships QEMU-only. Bare-metal validation v1.x.
-- Performance acceptance bar (e.g., redis ops/sec target): set at 50% of bare-Linux on same hardware. Lean: not enforced; fix if regression vs Linux is >10×.
-- Static-only vs static+dynamic mix: v1 acceptance allows static-linked; one dynlinked binary in suite to verify ld-oxide.
