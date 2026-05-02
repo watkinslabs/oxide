@@ -1,10 +1,29 @@
-// Scheduler — 3-class (deadline-stub / realtime / CFS).
+// Scheduler — 3-class (RT / Normal-CFS / Idle).
 //
-// Skeleton per docs/13 (FROZEN). Public surface placeholder; method
-// bodies land in subsequent P1-N branches.
+// Per docs/13 (FROZEN). Runqueue + class containers + `pick_next_task`
+// land here; `schedule()` proper, `wake_up`, IPI, SMP load balance,
+// and `timer_tick` ride alongside HAL `Context` in subsequent P1-N
+// branches.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
+
+extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
+
+pub mod cfs;
+pub mod rt;
+pub mod runqueue;
+pub mod task;
+
+pub use cfs::CfsRunqueue;
+pub use rt::{RtRunqueue, RT_PRIO_COUNT};
+pub use runqueue::RunqueueInner;
+pub use task::{SchedClass, SchedPolicy, Task, TaskState};
+
+#[cfg(test)]
+mod tests;
 
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -32,13 +51,11 @@ pub unsafe fn init() -> KResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod stub_tests {
     use super::*;
 
     #[test]
     fn init_returns_not_implemented() {
-        // Skeletons report NotImplemented so build-system can sanity-check
-        // crates link without exercising real behavior.
         // SAFETY: hosted-test entry; nothing else has touched the subsystem; init's preconditions trivially hold.
         let r = unsafe { init() };
         assert_eq!(r, Err(Error::NotImplemented));
