@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use hal::{Pfn, PAGE_SIZE_BYTES};
 use pmm::{kassert, Order, PageBacking, Pmm};
-use sync::{Slab as SlabClass, Spinlock};
+use sync::{IrqGate, NoopIrq, Slab as SlabClass, Spinlock};
 
 mod slab_page;
 
@@ -105,14 +105,21 @@ impl CacheLayout {
 }
 
 /// Cache for objects of type `T`. Single-instance per (cache_id) — see
-/// `Cache::new`. Backed by `Pmm<B>` per `12§2` + `12§10`.
-pub struct Cache<T, B: PageBacking> {
-    pmm: &'static Pmm<B>,
+/// `Cache::new`. Backed by `Pmm<B, I>` per `12§2` + `12§10`.
+///
+/// Generic over `IrqGate` per `06§3.1` — kernel passes the arch gate
+/// (`hal_x86_64::X86IrqGate` / `hal_aarch64::ArmIrqGate`); hosted tests
+/// use `NoopIrq`. Slab is "reachable from softirq" per `12§4` so the
+/// `Slab`-class spinlock MUST take `lock_irqsave` to prevent
+/// process-context-vs-IRQ-context deadlock on a single CPU.
+pub struct Cache<T, B: PageBacking, I: IrqGate = NoopIrq> {
+    pmm: &'static Pmm<B, I>,
     cache_id: u32,
     name: &'static str,
     layout: CacheLayout,
     inner: Spinlock<CacheInner, SlabClass>,
     _t: PhantomData<fn() -> T>,
+    _i: PhantomData<fn() -> I>,
 }
 
 struct CacheInner {
@@ -130,13 +137,13 @@ struct CacheInner {
 
 // SAFETY: T is only ever accessed through Cache::alloc/free which
 // guard with the SlabClass spinlock; Cache itself never mutates T.
-unsafe impl<T: Send, B: PageBacking> Send for Cache<T, B> {}
+unsafe impl<T: Send, B: PageBacking, I: IrqGate> Send for Cache<T, B, I> {}
 // SAFETY: see Send impl.
-unsafe impl<T: Send, B: PageBacking> Sync for Cache<T, B> {}
+unsafe impl<T: Send, B: PageBacking, I: IrqGate> Sync for Cache<T, B, I> {}
 
-impl<T, B: PageBacking> Cache<T, B> {
+impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
     /// # C: O(1)
-    pub fn new(pmm: &'static Pmm<B>, name: &'static str) -> Self {
+    pub fn new(pmm: &'static Pmm<B, I>, name: &'static str) -> Self {
         let layout = CacheLayout::for_type::<T>();
         Self {
             pmm,
@@ -151,6 +158,7 @@ impl<T, B: PageBacking> Cache<T, B> {
                 allocated_objs: 0,
             }),
             _t: PhantomData,
+            _i: PhantomData,
         }
     }
 
@@ -169,14 +177,14 @@ impl<T, B: PageBacking> Cache<T, B> {
     /// Number of objects currently allocated from this cache.
     /// # C: O(1)
     pub fn allocated(&self) -> u64 {
-        self.inner.lock().allocated_objs
+        self.inner.lock_irqsave::<I>().allocated_objs
     }
 
     /// Number of slab pages owned by this cache (partial + drained
     /// reserve + fully-allocated). For tests + observability.
     /// # C: O(1)
     pub fn total_slabs(&self) -> u32 {
-        self.inner.lock().total_slabs
+        self.inner.lock_irqsave::<I>().total_slabs
     }
 
     /// Allocate one `T`-sized slot. Returns a typed `NonNull<T>`.
@@ -184,7 +192,7 @@ impl<T, B: PageBacking> Cache<T, B> {
     /// # C: O(1) amortized
     /// # Lk: SlabClass
     pub fn alloc(&self) -> KResult<NonNull<T>> {
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_irqsave::<I>();
         // Source order: partial → drained → new from PMM.
         let pfn = if g.partial_head != PFN_NULL {
             g.partial_head
@@ -204,7 +212,7 @@ impl<T, B: PageBacking> Cache<T, B> {
             let pfn = self.pmm.alloc(SLAB_ORDER).map_err(|_| Error::NoMem)?.0;
             // SAFETY: pfn is a fresh PMM-allocated page exclusively owned by us.
             unsafe { self.init_slab_page(pfn) };
-            let mut g2 = self.inner.lock();
+            let mut g2 = self.inner.lock_irqsave::<I>();
             g2.total_slabs += 1;
             // SAFETY: pfn freshly initialized, not yet on any list.
             unsafe { self.page(pfn).set_partial_links(g2.partial_head, PFN_NULL) };
@@ -264,7 +272,7 @@ impl<T, B: PageBacking> Cache<T, B> {
         let header_cache_id = unsafe { SlabPage::read_cache_id_from_addr(page_addr as *const u8) };
         kassert!(header_cache_id == self.cache_id, "slab free: wrong cache");
 
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_irqsave::<I>();
         let pfn = header_pfn;
 
         let was_full;
@@ -309,7 +317,7 @@ impl<T, B: PageBacking> Cache<T, B> {
                 // SAFETY: pfn was cache-owned; we just severed all
                 // links + the slab is fully freed (0 outstanding objs).
                 unsafe { self.pmm.free(Pfn(pfn), SLAB_ORDER) };
-                let mut g2 = self.inner.lock();
+                let mut g2 = self.inner.lock_irqsave::<I>();
                 g2.allocated_objs -= 1;
                 return;
             }
