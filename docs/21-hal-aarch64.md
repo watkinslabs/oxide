@@ -1,6 +1,6 @@
 # 21 HAL aarch64
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`22`,`23`,`38`. Provides:kernel.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`22`,`23`,`38`. Provides:kernel.
 ## 1 Purpose
 
 aarch64 impl of HAL traits. Boot trampoline (EL2→EL1 drop). Vector table. GICv3 driver. Generic Timer. Per-CPU via `tpidr_el1`.
@@ -186,9 +186,3 @@ DMA buffers: `dc civac` to flush before device read; `dc ivac` to invalidate bef
 
 `14`,`22`,`23`,`27`,`32`,`33`,`34`,`36`.
 
-## 19 Open Questions
-
-- LPA2 (52-bit PA, 16 KiB granule on FEAT_LPA2)? Defer; v1 is 48-bit + 4 KiB.
-- ACPI on aarch64 vs DT-only: support both; ACPI when EDK2-shipped, DT for U-Boot/embedded.
-- PAC/BTI enable: `aarch64-unknown-oxide-kernel.json` keeps off; v1.x toggle.
-- MTE (memory tagging): defer.
