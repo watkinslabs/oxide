@@ -46,6 +46,11 @@ pub enum PageSize {
     P1G,
 }
 
+/// Base page size in bytes per `01§1`. Both arches use 4 KiB at order 0.
+pub const PAGE_SIZE_BYTES: u64 = 4096;
+/// log2(`PAGE_SIZE_BYTES`); use for `Pfn ↔ PhysAddr` conversion.
+pub const PAGE_SHIFT: u32 = 12;
+
 bitflags::bitflags! {
     /// PTE protection bits (per 20§5 / 21§5).
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
