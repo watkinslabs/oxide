@@ -143,8 +143,13 @@ unsafe fn write_u8(base: *mut u8, off: usize, v: u8) {
 // PmmInner — protected by the Buddy spinlock.
 // ---------------------------------------------------------------------------
 
-struct PmmInner<B: PageBacking> {
-    backing: B,
+// Backing is held outside the lock so `Pmm::page_ptr` is lock-free
+// and slab (Slab class, rank 10) can safely call it while holding its
+// own spinlock — taking the lower-rank Buddy lock at that point would
+// violate the partial order in `06§3.6`. PageBacking trait methods are
+// pure pointer arithmetic over the boot-allocated backing structures
+// and are inherently `Send + Sync`.
+struct PmmInner {
     pfn_max: u64,                                    // exclusive upper bound
     bitmaps: [&'static [AtomicU64]; ORDERS],
     free_heads: [u64; ORDERS],
@@ -153,7 +158,7 @@ struct PmmInner<B: PageBacking> {
     initial_free: u64,
 }
 
-impl<B: PageBacking> PmmInner<B> {
+impl PmmInner {
     fn bitmap_get(&self, order: u8, idx: u64) -> bool {
         let word = (idx >> 6) as usize;
         let bit = (idx & 63) as u32;
@@ -173,15 +178,22 @@ impl<B: PageBacking> PmmInner<B> {
     }
 
     /// Stamp poison + order on every page of the order-o block at `pfn`.
-    /// On the head page only, also write next/prev.
     ///
     /// # SAFETY: block is order-aligned, in-range, currently NOT on any
-    /// free-list; pages are PMM-owned at call site.
-    unsafe fn stamp_block(&self, pfn: u64, order: u8, head_next: u64, head_prev: u64) {
+    /// free-list; pages are PMM-owned at call site; backing is the live
+    /// PageBacking impl handed to `Pmm::init`.
+    unsafe fn stamp_block<B: PageBacking>(
+        &self,
+        backing: &B,
+        pfn: u64,
+        order: u8,
+        head_next: u64,
+        head_prev: u64,
+    ) {
         let span = 1u64 << order;
         for k in 0..span {
             // SAFETY: page within the order-o block; PMM-owned per fn contract.
-            let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
+            let p = unsafe { backing.page_ptr(Pfn(pfn + k)) };
             // SAFETY: write 16-byte header (poison+order) inside the page.
             unsafe {
                 write_u64(p, OFF_POISON, POISON_MAGIC);
@@ -202,13 +214,13 @@ impl<B: PageBacking> PmmInner<B> {
     ///
     /// # SAFETY: `pfn` is order-aligned, in-range, currently NOT on any
     /// free-list; pages are PMM-owned at call site.
-    unsafe fn push_free(&mut self, pfn: u64, order: u8) {
+    unsafe fn push_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8) {
         let head = self.free_heads[order as usize];
         // SAFETY: pfn block PMM-owned per fn contract.
-        unsafe { self.stamp_block(pfn, order, head, PFN_NULL) };
+        unsafe { self.stamp_block(backing, pfn, order, head, PFN_NULL) };
         if head != PFN_NULL {
             // SAFETY: old head's page is on the free-list ⇒ PMM-owned.
-            let hp = unsafe { self.backing.page_ptr(Pfn(head)) };
+            let hp = unsafe { backing.page_ptr(Pfn(head)) };
             // SAFETY: write old head's prev field inside its header.
             unsafe { write_u64(hp, OFF_PREV, pfn) };
         }
@@ -218,16 +230,16 @@ impl<B: PageBacking> PmmInner<B> {
     /// Pop head of free_list[order]. Caller updates bitmap + count.
     ///
     /// # SAFETY: free_list[order] is non-empty.
-    unsafe fn pop_free(&mut self, order: u8) -> u64 {
+    unsafe fn pop_free<B: PageBacking>(&mut self, backing: &B, order: u8) -> u64 {
         let head = self.free_heads[order as usize];
         debug_assert!(head != PFN_NULL);
         // SAFETY: head on free-list ⇒ PMM-owned page.
-        let hp = unsafe { self.backing.page_ptr(Pfn(head)) };
+        let hp = unsafe { backing.page_ptr(Pfn(head)) };
         // SAFETY: header lives in first 32B of a PMM-owned page.
         let next = unsafe { read_u64(hp, OFF_NEXT) };
         if next != PFN_NULL {
             // SAFETY: `next` is on the free-list ⇒ PMM-owned page.
-            let np = unsafe { self.backing.page_ptr(Pfn(next)) };
+            let np = unsafe { backing.page_ptr(Pfn(next)) };
             // SAFETY: write into next-node's prev field; PMM-owned page.
             unsafe { write_u64(np, OFF_PREV, PFN_NULL) };
         }
@@ -238,9 +250,9 @@ impl<B: PageBacking> PmmInner<B> {
     /// Remove `pfn` from free_list[order] (used during merge / reserve).
     ///
     /// # SAFETY: `pfn` is currently on free_list[order]; page PMM-owned.
-    unsafe fn unlink_free(&mut self, pfn: u64, order: u8) {
+    unsafe fn unlink_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8) {
         // SAFETY: pfn on free-list ⇒ PMM-owned page.
-        let p = unsafe { self.backing.page_ptr(Pfn(pfn)) };
+        let p = unsafe { backing.page_ptr(Pfn(pfn)) };
         // SAFETY: header read inside owned page.
         let next = unsafe { read_u64(p, OFF_NEXT) };
         // SAFETY: header read inside owned page.
@@ -249,13 +261,13 @@ impl<B: PageBacking> PmmInner<B> {
             self.free_heads[order as usize] = next;
         } else {
             // SAFETY: prev on free-list ⇒ PMM-owned page.
-            let pp = unsafe { self.backing.page_ptr(Pfn(prev)) };
+            let pp = unsafe { backing.page_ptr(Pfn(prev)) };
             // SAFETY: writing prev's next field inside its header.
             unsafe { write_u64(pp, OFF_NEXT, next) };
         }
         if next != PFN_NULL {
             // SAFETY: next on free-list ⇒ PMM-owned page.
-            let np = unsafe { self.backing.page_ptr(Pfn(next)) };
+            let np = unsafe { backing.page_ptr(Pfn(next)) };
             // SAFETY: writing next's prev field inside its header.
             unsafe { write_u64(np, OFF_PREV, prev) };
         }
@@ -264,11 +276,11 @@ impl<B: PageBacking> PmmInner<B> {
     /// Verify poison on every page of the order-o block at `pfn`.
     ///
     /// # SAFETY: block is order-aligned, in-range, PMM-owned at call.
-    unsafe fn verify_poison(&self, pfn: u64, order: u8) {
+    unsafe fn verify_poison<B: PageBacking>(&self, backing: &B, pfn: u64, order: u8) {
         let span = 1u64 << order;
         for k in 0..span {
             // SAFETY: page within the order-o block; PMM-owned at call.
-            let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
+            let p = unsafe { backing.page_ptr(Pfn(pfn + k)) };
             // SAFETY: read 16B header from PMM-owned page.
             let m = unsafe { read_u64(p, OFF_POISON) };
             kassert!(m == POISON_MAGIC, "pmm poison mismatch on alloc");
@@ -279,7 +291,7 @@ impl<B: PageBacking> PmmInner<B> {
     /// free-lists with bitmap bits set. Used by init + region-replay.
     ///
     /// # SAFETY: `cur..end` is in-range, never previously seeded.
-    unsafe fn seed_range(&mut self, mut cur: u64, end: u64) {
+    unsafe fn seed_range<B: PageBacking>(&mut self, backing: &B, mut cur: u64, end: u64) {
         while cur < end {
             let remaining = end - cur;
             let mut o: u8 = MAX_ORDER;
@@ -291,7 +303,7 @@ impl<B: PageBacking> PmmInner<B> {
             }
             let span = 1u64 << o;
             // SAFETY: cur..cur+span is order-o aligned, in-range, never seeded.
-            unsafe { self.push_free(cur, o) };
+            unsafe { self.push_free(backing, cur, o) };
             self.bitmap_set(o, cur >> o);
             self.free_count[o as usize] += 1;
             cur += span;
@@ -321,7 +333,13 @@ macro_rules! kassert {
 /// `hal_aarch64::ArmIrqGate` to actually disable IRQs around the lock;
 /// hosted tests use `NoopIrq`.
 pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
-    inner: Spinlock<PmmInner<B>, Buddy>,
+    /// Backing held outside the lock so `page_ptr` is lock-free.
+    /// PageBacking::page_ptr is pure pointer arithmetic; concurrent
+    /// callers see the same address. Higher-rank consumers (slab at
+    /// rank Slab=10) can safely call `page_ptr` while holding their
+    /// own spinlock without violating `06§3.6` partial order.
+    backing: B,
+    inner: Spinlock<PmmInner, Buddy>,
     _i: PhantomData<fn() -> I>,
 }
 
@@ -365,8 +383,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             bitmaps[o] = backing.bitmap_storage(o as u8, words);
         }
 
-        let mut inner = PmmInner::<B> {
-            backing,
+        let mut inner = PmmInner {
             pfn_max,
             bitmaps,
             free_heads: [PFN_NULL; ORDERS],
@@ -378,10 +395,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         for r in regions {
             // SAFETY: caller-asserted regions disjoint and in-range; the
             // pages have not been touched by any other subsystem yet.
-            unsafe { inner.seed_range(r.start.0, r.start.0 + r.len_pfn) };
+            unsafe { inner.seed_range(&backing, r.start.0, r.start.0 + r.len_pfn) };
         }
 
-        Ok(Self { inner: Spinlock::new(inner), _i: PhantomData })
+        Ok(Self { backing, inner: Spinlock::new(inner), _i: PhantomData })
     }
 
     /// Reserve `[start, start+len_pfn)` from the boot path. Called
@@ -411,7 +428,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             let mut blk = (p >> o) << o;
             // Remove from free-list at order o.
             // SAFETY: bitmap-truth says blk is on free_list[o].
-            unsafe { g.unlink_free(blk, o) };
+            unsafe { g.unlink_free(&self.backing, blk, o) };
             g.bitmap_clear(o, blk >> o);
             g.free_count[o as usize] -= 1;
             // Split down to order 0 along the half containing p.
@@ -422,14 +439,14 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 if p >= buddy {
                     // SAFETY: half is order-o aligned, in-range, not on
                     // any list (just split out).
-                    unsafe { g.push_free(blk, o) };
+                    unsafe { g.push_free(&self.backing, blk, o) };
                     g.bitmap_set(o, blk >> o);
                     g.free_count[o as usize] += 1;
                     blk = buddy;
                 } else {
                     // SAFETY: buddy is order-o aligned, in-range, not on
                     // any list (just split out).
-                    unsafe { g.push_free(buddy, o) };
+                    unsafe { g.push_free(&self.backing, buddy, o) };
                     g.bitmap_set(o, buddy >> o);
                     g.free_count[o as usize] += 1;
                 }
@@ -461,7 +478,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             }
             if k > MAX_ORDER { return Err(Error::NoMem); }
             // SAFETY: k's list is non-empty by the loop exit condition.
-            pfn = unsafe { g.pop_free(k) };
+            pfn = unsafe { g.pop_free(&self.backing, k) };
             g.bitmap_clear(k, pfn >> k);
             g.free_count[k as usize] -= 1;
             while k > o {
@@ -469,23 +486,22 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 let buddy = pfn + (1u64 << k);
                 // SAFETY: buddy is order-k aligned (lower-half pfn at order
                 // k+1 ⇒ buddy = pfn + 1<<k); in-range; not on any list.
-                unsafe { g.push_free(buddy, k) };
+                unsafe { g.push_free(&self.backing, buddy, k) };
                 g.bitmap_set(k, buddy >> k);
                 g.free_count[k as usize] += 1;
             }
             // SAFETY: pfn is the popped (and possibly split-down) order-o
             // block; PMM-owned; verify poison before releasing the lock.
-            unsafe { g.verify_poison(pfn, o) };
+            unsafe { g.verify_poison(&self.backing, pfn, o) };
             g.allocated += 1u64 << o;
         }
-        // Zero outside the lock per `10§6.1`.
+        // Zero outside the lock per `10§6.1`. Backing is held outside
+        // the spinlock so this loop never re-enters the Buddy lock.
         let span = 1u64 << o;
         for k in 0..span {
-            let g = self.inner.lock_irqsave::<I>();
-            // SAFETY: pfn..pfn+span is the just-allocated block, owned by
-            // the caller, no aliasing; PAGE_SIZE_BYTES per page.
-            let p = unsafe { g.backing.page_ptr(Pfn(pfn + k)) };
-            drop(g);
+            // SAFETY: pfn..pfn+span is the just-allocated block, owned
+            // by the caller; backing.page_ptr is pure ptr arithmetic.
+            let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
             // SAFETY: pointer is page-aligned and points to PAGE_SIZE_BYTES
             // of caller-owned memory; no aliasing for the duration.
             unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE_BYTES as usize) };
@@ -519,7 +535,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             if buddy + (1u64 << o) > g.pfn_max { break; }
             if !g.bitmap_get(o, buddy >> o) { break; }
             // SAFETY: bitmap I3 says buddy is on free_list[o].
-            unsafe { g.unlink_free(buddy, o) };
+            unsafe { g.unlink_free(&self.backing, buddy, o) };
             g.bitmap_clear(o, buddy >> o);
             g.free_count[o as usize] -= 1;
             if buddy < p { p = buddy; }
@@ -527,7 +543,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         }
         // SAFETY: p..p+(1<<o) is order-o aligned, in-range, not on any
         // free-list (just merged out of it or it's the original).
-        unsafe { g.push_free(p, o) };
+        unsafe { g.push_free(&self.backing, p, o) };
         g.bitmap_set(o, p >> o);
         g.free_count[o as usize] += 1;
         g.allocated -= 1u64 << order.0;
@@ -554,15 +570,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         self.inner.lock_irqsave::<I>().pfn_max
     }
 
-    /// Page-aligned pointer to `pfn`. Caller has exclusive access to
-    /// the page (returned by a prior `alloc`, not yet `free`d).
+    /// Page-aligned pointer to `pfn`. **Lock-free** — backing is stored
+    /// outside the Buddy spinlock so callers at higher rank (slab at
+    /// rank Slab=10) can invoke without violating `06§3.6`.
     ///
     /// # SAFETY: caller holds the page (no aliasing); pfn in-range.
-    /// # C: O(1) amortized; brief lock for backing access.
+    /// # C: O(1)
     pub unsafe fn page_ptr(&self, pfn: Pfn) -> *mut u8 {
         // SAFETY: backing.page_ptr is pure pointer arithmetic; pfn is
-        // caller-owned per fn contract; lock guards the field-read only.
-        unsafe { self.inner.lock_irqsave::<I>().backing.page_ptr(pfn) }
+        // caller-owned per fn contract.
+        unsafe { self.backing.page_ptr(pfn) }
     }
 
     /// Walk every order's bitmap + free-list; panic on invariant
@@ -583,8 +600,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 kassert!(g.bitmap_get(order, cur >> o), "I3: free-list node not in bitmap");
                 kassert!(cur & ((1u64 << o) - 1) == 0, "I4: free-list node misaligned");
                 n += 1;
-                // SAFETY: cur on free_list[o] ⇒ PMM-owned page.
-                let p = unsafe { g.backing.page_ptr(Pfn(cur)) };
+                // SAFETY: cur on free_list[o] ⇒ PMM-owned page; backing
+                // accessed lock-free per the Pmm.backing field invariant.
+                let p = unsafe { self.backing.page_ptr(Pfn(cur)) };
                 // SAFETY: read 16B header from PMM-owned page.
                 let m = unsafe { read_u64(p, OFF_POISON) };
                 kassert!(m == POISON_MAGIC, "I7: poison missing on free node");
