@@ -180,6 +180,8 @@ unsafe extern "C" fn _start_rust() -> ! {
     // klog emit will land on the serial port.
     unsafe { BOOT_UART.lock().init(); }
     klog::set_byte_sink(boot_emit);
+    // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
+    unsafe { hal_x86_64::install_default_idt(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
