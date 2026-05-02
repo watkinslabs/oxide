@@ -1,0 +1,30 @@
+# Build image per docs/40§5 + docs/39§docker.
+# Pinned base for reproducibility. Used by PR-time CI and local
+# `xtask` invocations alike.
+
+# rust:1.82-bookworm digest pinned 2024-11 (placeholder until real
+# rebuild; bump policy in 07§1.1 mirrors toolchain pin policy).
+FROM rust:1.82-bookworm
+
+# Build deps for kernel link + image composition (per 39§image-cmd).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        lld \
+        llvm \
+        qemu-system-x86 \
+        qemu-system-arm \
+        zstd \
+        cpio \
+        sgdisk \
+        parted \
+        mtools \
+        dosfstools \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Toolchain matches rust-toolchain.toml; host triple covers x86_64.
+RUN rustup default nightly-2026-05-01 \
+ && rustup component add rust-src rustfmt clippy llvm-tools-preview miri
+
+WORKDIR /work
