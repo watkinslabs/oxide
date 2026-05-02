@@ -1,6 +1,6 @@
 # 38 Error Handling
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`07`,`08`. Provides:every kernel crate.
+FROZEN 2026-05-02. Dep:`01`,`02`,`07`,`08`. Provides:every kernel crate.
 ## 1 Purpose
 
 Define how kernel handles errors at three levels: recoverable (`KR<T>`), oopsable (recoverable with task kill), unrecoverable (panic+halt).
@@ -84,8 +84,3 @@ Userspace fault not from `copy_*_user`:
 
 `07` (panic strategy + kassert), `22` (NMI IPI for cross-CPU halt), `27` (signal delivery), `04` (logging targets).
 
-## 12 Open Questions
-
-- Kdump-style crash dumps to disk? Defer to v1.x (needs functional disk + filesystem in panic path; tricky).
-- Kernel-panic netconsole? Defer.
-- Per-task "soft oops" with backtrace to userspace via `prctl(PR_SET_DEATHSIG)`-like mechanism? Defer.
