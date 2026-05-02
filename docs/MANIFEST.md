@@ -9,7 +9,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `00-master-plan.md` | DRAFT | — | — |
 | `01-glossary-and-types.md` | FROZEN | 2026-05-02 | `02`,`08`,`09` |
 | `02-spec-discipline.md` | FROZEN | 2026-05-02 | — |
-| `03-modernity.md` | DRAFT | — | — |
+| `03-modernity.md` | FROZEN | 2026-05-02 | `02`,`08` |
 | `04-performance.md` | FROZEN | 2026-05-02 | `02`,`08` |
 | `05-pre-mortem.md` | DRAFT | — | `00`,`03`,`04` |
 | `06-memory-model.md` | FROZEN | 2026-05-02 | `01`,`02`,`08`,`09` |
