@@ -55,6 +55,7 @@ decl_lock_class! {
     Inode        = 40,
     Dentry       = 50,
     Superblock   = 60,
+    Modules      = 65,
     MountTable   = 70,
     FdTable      = 80,
     SignalQueue  = 90,
