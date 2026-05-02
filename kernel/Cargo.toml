@@ -9,8 +9,10 @@ name = "kernel"
 path = "src/lib.rs"
 
 [dependencies]
-hal  = { path = "../crates/hal" }
-klog = { path = "../crates/klog" }
+hal     = { path = "../crates/hal" }
+klog    = { path = "../crates/klog" }
+kalloc  = { path = "../crates/kalloc" }
+vmm     = { path = "../crates/vmm" }
 
 [features]
 default = []
