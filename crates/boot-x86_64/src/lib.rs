@@ -85,34 +85,114 @@ pub unsafe fn stub_boot_info() -> BootInfo {
 /// `static mut` (per `06§11` + `07§5`). `Sync` is sound: only the
 /// boot path touches it, single-CPU, before scheduler init.
 #[cfg(target_os = "oxide-kernel")]
+const STACK_SIZE: usize = 16 * 1024;
+#[cfg(target_os = "oxide-kernel")]
 #[repr(align(4096))]
-struct KernelStack(UnsafeCell<[u8; 16 * 1024]>);
+struct KernelStack(UnsafeCell<[u8; STACK_SIZE]>);
 #[cfg(target_os = "oxide-kernel")]
 unsafe impl Sync for KernelStack {}
 #[cfg(target_os = "oxide-kernel")]
-static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; 16 * 1024]));
+static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]));
 
-/// Entry point invoked by Limine.
+/// Storage for `BootInfo`'s memmap slice — populated from Limine's
+/// memmap response by `_start_rust` before `kernel_main` runs.
+/// `MemmapStorage` lives in `.bss` so the cost is N entries × 24 B
+/// = ~6 KiB; QEMU rarely exceeds 32 entries.
+const MAX_BOOT_REGIONS: usize = 256;
+#[repr(C, align(8))]
+struct MemmapStorage(UnsafeCell<[BootMemRegion; MAX_BOOT_REGIONS]>);
+unsafe impl Sync for MemmapStorage {}
+static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
+    BootMemRegion {
+        base_pa: 0,
+        len:     0,
+        kind:    kernel::BootMemKind::Reserved,
+    };
+    MAX_BOOT_REGIONS
+]));
+
+/// Build a `BootInfo` by reading the bootloader-populated Limine
+/// responses. Falls back to an empty memmap if the bootloader didn't
+/// fill the response slot (e.g. running outside Limine).
 ///
-/// # SAFETY: caller is the bootloader; this runs single-CPU with
-/// IRQs masked, paging on, kernel image mapped at the upper-half
-/// linker base, no kernel stack of our own yet (we install one).
+/// # SAFETY: caller is the boot path; the bootloader has either
+/// written real response pointers or left them null; the `seed` /
+/// `boot_ns` slots are zero until ACPI / RTC bring-up populates them.
+/// # C: O(min(entry_count, MAX_BOOT_REGIONS))
+unsafe fn build_boot_info() -> BootInfo {
+    let resp_ptr = LIMINE_MEMMAP.response.load(core::sync::atomic::Ordering::Acquire);
+    if resp_ptr.is_null() {
+        // SAFETY: returns an owned BootInfo whose `memmap_ptr`
+        // references a `&'static` empty slice.
+        return unsafe { stub_boot_info() };
+    }
+    // SAFETY: bootloader wrote a non-null response pointer; the
+    // backing struct lives for the rest of boot per Limine's
+    // memory-map ownership contract (`36§3`).
+    let resp = unsafe { &*resp_ptr };
+    // SAFETY: MEMMAP_STORAGE is owned by this CPU during boot; no
+    // other path mutates it before kernel_main returns.
+    let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
+    // SAFETY: limine::populate_memmap_into expects a valid response
+    // table per its own contract, which the bootloader guarantees.
+    let n = unsafe { limine::populate_memmap_into(storage, resp) };
+    BootInfo {
+        memmap_count: n as u32,
+        memmap_ptr:   storage.as_ptr(),
+        seed:         [0; 32],
+        boot_ns:      0,
+    }
+}
+
+/// Rust-side boot continuation. Runs on the kernel stack we
+/// installed in `_start`. Reads Limine responses, builds a
+/// `BootInfo`, and tail-calls `kernel_main`.
 ///
+/// # SAFETY: called only from the asm `_start` after `rsp` has
+/// been swapped to `KERNEL_STACK`'s top. Single-CPU, IRQ-off.
+/// # C: O(memmap entries)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+#[no_mangle]
+unsafe extern "C" fn _start_rust() -> ! {
+    // SAFETY: boot path per fn contract; build_boot_info reads
+    // bootloader-owned static state and produces an owned BootInfo.
+    let info = unsafe { build_boot_info() };
+    // SAFETY: kernel_main's safety contract is satisfied by the
+    // boot environment we just established (kernel stack installed,
+    // IRQs masked, single CPU, `info` valid).
+    unsafe { kernel::kernel_main(&info) }
+}
+
+/// Entry point invoked by Limine. Swaps to `KERNEL_STACK` and tail-calls
+/// `_start_rust`.
+///
+/// # SAFETY: caller is the bootloader; runs single-CPU with IRQs
+/// masked, paging on, kernel image mapped at upper-half linker base,
+/// bootloader's stack still active.
 /// # C: not measured
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 #[link_section = ".text.boot"]
 pub unsafe extern "C" fn _start() -> ! {
-    // SAFETY: boot path; KERNEL_STACK is BSS-resident, owned by us, no
-    // other CPU is alive; sp install happens before any function call
-    // that would clobber the bootloader stack.
+    // SAFETY: KERNEL_STACK is BSS-resident, owned by us, no other
+    // CPU alive yet. The pointer arithmetic stays within the static
+    // array; the asm `mov rsp, _; call _` then `ud2` swaps the
+    // stack and tail-calls _start_rust which never returns.
+    let stack_top = unsafe {
+        (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE)
+    };
+    // SAFETY: stack_top is one past the last byte of KERNEL_STACK; install via `mov rsp` before any call gives a valid kernel stack of STACK_SIZE bytes growing down. `_start_rust` is extern "C" + noreturn; `ud2` after the call hard-guards accidental return.
     unsafe {
-        // Install our kernel stack: load rsp = &KERNEL_STACK + size,
-        // then jump to kernel_main with a stub BootInfo. Real version
-        // parses Limine markers from the `.limine_reqs` section.
-        let info = stub_boot_info();
-        kernel::kernel_main(&info)
+        core::arch::asm!(
+            "mov rsp, {sp}",
+            "call {next}",
+            "ud2",
+            sp   = in(reg) stack_top,
+            next = sym _start_rust,
+            options(noreturn),
+        );
     }
 }
 
