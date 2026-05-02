@@ -12,8 +12,15 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod signal;
 pub mod waitqueue;
+pub use signal::{
+    SigAction, SigInfo, Signal, SignalSet, SignalState, SIG_DFL, SIG_IGN,
+};
 pub use waitqueue::{WaitQueue, WaitQueueInner};
+
+#[cfg(test)]
+mod signal_tests;
 
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
