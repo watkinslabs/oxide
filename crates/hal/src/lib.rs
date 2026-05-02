@@ -23,6 +23,37 @@ pub struct Pa(pub u64);
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Va(pub u64);
 
+/// 47-bit user virtual address upper bound per `01§1`. Anything `≥`
+/// this is non-canonical user space.
+pub const USER_VA_END: u64 = 0x0000_8000_0000_0000;
+
+/// User virtual address per `01§1`. Newtype with a private constructor
+/// so the only way to obtain one is `UserVirtAddr::new`, which rejects
+/// `≥ USER_VA_END` and any non-canonical bit pattern. No `+usize` impl
+/// — pointer arithmetic goes through `checked_add`.
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct UserVirtAddr(u64);
+
+impl UserVirtAddr {
+    /// Construct from a raw u64. `None` if `≥ USER_VA_END`.
+    /// # C: O(1)
+    pub const fn new(raw: u64) -> Option<Self> {
+        if raw < USER_VA_END { Some(Self(raw)) } else { None }
+    }
+    /// # C: O(1)
+    pub const fn as_u64(self) -> u64 { self.0 }
+    /// Saturating-fail add: returns `None` if the result lands `≥ USER_VA_END`
+    /// or overflows `u64`. Per `01§1` "no `+usize` op on VA types".
+    /// # C: O(1)
+    pub const fn checked_add(self, off: usize) -> Option<Self> {
+        match self.0.checked_add(off as u64) {
+            Some(v) if v < USER_VA_END => Some(Self(v)),
+            _ => None,
+        }
+    }
+}
+
 /// Page Frame Number (per 01§1).
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
