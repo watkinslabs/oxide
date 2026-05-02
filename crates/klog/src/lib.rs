@@ -7,6 +7,12 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
+
+pub mod ring;
+pub use ring::{Full, Record, Ring, MAIN_RING_CAP, NMI_RING_CAP};
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Level {

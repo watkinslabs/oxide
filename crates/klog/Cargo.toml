@@ -6,3 +6,9 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[features]
+default = []
+# Pulls in `std` for hosted tests/benches; see crates/sync/Cargo.toml for
+# the same pattern. Kernel builds never enable this.
+hosted = []
