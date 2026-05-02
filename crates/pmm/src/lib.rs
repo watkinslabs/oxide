@@ -549,6 +549,17 @@ impl<B: PageBacking> Pmm<B> {
         self.inner.lock_irqsave::<NoopIrq>().pfn_max
     }
 
+    /// Page-aligned pointer to `pfn`. Caller has exclusive access to
+    /// the page (returned by a prior `alloc`, not yet `free`d).
+    ///
+    /// # SAFETY: caller holds the page (no aliasing); pfn in-range.
+    /// # C: O(1) amortized; brief lock for backing access.
+    pub unsafe fn page_ptr(&self, pfn: Pfn) -> *mut u8 {
+        // SAFETY: backing.page_ptr is pure pointer arithmetic; pfn is
+        // caller-owned per fn contract; lock guards the field-read only.
+        unsafe { self.inner.lock_irqsave::<NoopIrq>().backing.page_ptr(pfn) }
+    }
+
     /// Walk every order's bitmap + free-list; panic on invariant
     /// violation. Verifies I1, I3, I4, I6, I7. I2 and I5 are guaranteed
     /// by I1 + I4 + the construction algorithm (no separate check).
