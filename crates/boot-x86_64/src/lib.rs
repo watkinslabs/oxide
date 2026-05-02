@@ -18,8 +18,50 @@
 #![cfg_attr(target_os = "oxide-kernel", no_main)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
+
+pub mod limine;
+pub mod uart;
+
 use core::cell::UnsafeCell;
-use kernel::{BootInfo, BootMemKind, BootMemRegion};
+use core::sync::atomic::AtomicPtr;
+use kernel::{BootInfo, BootMemRegion};
+
+use limine::{
+    HhdmResponse, MemmapResponse, RequestHeader, RsdpResponse,
+    HHDM_ID, MEMMAP_ID, REVISION_0, RSDP_ID,
+};
+
+// ---------------------------------------------------------------------------
+// Limine request slots — bootloader scans `.limine_requests` for these
+// markers and writes responses before jumping to `_start`.
+// ---------------------------------------------------------------------------
+
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_MEMMAP: RequestHeader<MemmapResponse> = RequestHeader {
+    id:       MEMMAP_ID,
+    revision: REVISION_0,
+    response: AtomicPtr::new(core::ptr::null_mut()),
+};
+
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_HHDM: RequestHeader<HhdmResponse> = RequestHeader {
+    id:       HHDM_ID,
+    revision: REVISION_0,
+    response: AtomicPtr::new(core::ptr::null_mut()),
+};
+
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_RSDP: RequestHeader<RsdpResponse> = RequestHeader {
+    id:       RSDP_ID,
+    revision: REVISION_0,
+    response: AtomicPtr::new(core::ptr::null_mut()),
+};
 
 /// Build a hard-coded minimal `BootInfo` for compile-test purposes.
 /// Real impl reads Limine's memmap + module list.
@@ -42,9 +84,12 @@ pub unsafe fn stub_boot_info() -> BootInfo {
 /// in `UnsafeCell` so we can take the asm-side write reference without
 /// `static mut` (per `06§11` + `07§5`). `Sync` is sound: only the
 /// boot path touches it, single-CPU, before scheduler init.
+#[cfg(target_os = "oxide-kernel")]
 #[repr(align(4096))]
 struct KernelStack(UnsafeCell<[u8; 16 * 1024]>);
+#[cfg(target_os = "oxide-kernel")]
 unsafe impl Sync for KernelStack {}
+#[cfg(target_os = "oxide-kernel")]
 static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; 16 * 1024]));
 
 /// Entry point invoked by Limine.
@@ -77,6 +122,7 @@ pub unsafe extern "C" fn _start() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kernel::BootMemKind;
 
     #[test]
     fn stub_boot_info_is_empty() {
