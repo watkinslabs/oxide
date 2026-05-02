@@ -1,6 +1,6 @@
 # 22 IRQ + Exceptions
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`20`,`21`. Provides:`13`,`23`,`34`,every driver.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`20`,`21`. Provides:`13`,`23`,`34`,every driver.
 ## 1 Purpose
 
 Vector dispatch + IRQ controller mgmt. Per-arch entry asm, arch-free IRQ subsystem (request/free/handle), softirq + tasklet/workqueue.
@@ -120,8 +120,3 @@ Bottom halves. Static set in `SoftIrqKind`. Runs:
 
 `13` (IPI for resched, preempt_count), `23` (timer IRQ), `34` (MSI-X alloc), `20`/`21` (entry asm + controller backends).
 
-## 16 Open Questions
-
-- IRQ remapping (Intel VT-d / arm SMMU IRQ routing) for IOMMU-protected MSIs: defer to v1.x.
-- Per-CPU softirq priorities: copy Linux order? Yes.
-- Threaded IRQs as default? Linux opt-in. Lean: handler-by-handler choice; default is hard.
