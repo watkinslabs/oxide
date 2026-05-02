@@ -131,6 +131,8 @@ unsafe extern "C" fn _start_rust() -> ! {
     // klog emit will land on the QEMU virt console.
     unsafe { BOOT_UART.lock().init(); }
     klog::set_byte_sink(boot_emit);
+    // SAFETY: single-CPU boot, IRQs masked; install_default_vbar writes VBAR_EL1 to a kernel-owned 0x800-aligned vector table. Subsequent exceptions vector to oxide_default_vector_handler which halts.
+    unsafe { hal_aarch64::install_default_vbar(); }
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };

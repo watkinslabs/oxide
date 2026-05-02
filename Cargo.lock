@@ -50,6 +50,7 @@ name = "boot-aarch64"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hal-aarch64",
  "kernel",
  "klog",
  "sync",
@@ -60,6 +61,7 @@ name = "boot-x86_64"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hal-x86_64",
  "kernel",
  "klog",
  "sync",
