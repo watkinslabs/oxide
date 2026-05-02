@@ -19,8 +19,10 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod fpu;
 mod mmu;
 mod pt_regs;
+pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};
 pub use context::ContextAArch64;
 pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteArm64, PteFlags, PtIndices,
