@@ -51,8 +51,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `36-bootloader-handoff.md` | FROZEN | 2026-05-02 | `01`,`02`,`07`,`20`,`21`,`33`,`39` |
 | `37-observability.md` | FROZEN | 2026-05-02 | `01`,`02`,`04`,`13`,`19`,`23`,`38` |
 | `38-error-handling.md` | FROZEN | 2026-05-02 | `01`,`02`,`07`,`08` |
-| `39-build-and-image.md` | DRAFT | — | `02`,`07`,`29`,`36` |
-| `40-ci-and-soak.md` | DRAFT | — | `02`,`05`,`07`,`39`,`42` |
+| `39-build-and-image.md` | FROZEN | 2026-05-02 | `02`,`07`,`29`,`36` |
+| `40-ci-and-soak.md` | FROZEN | 2026-05-02 | `02`,`05`,`07`,`39`,`42` |
 | `41-debug-flags-catalog.md` | DRAFT | — | `04`,`07`,`08` |
 | `42-test-strategy.md` | DRAFT | — | `02`,`05`,`06`,`07`,`08`,`40` |
 | `43-acceptance.md` | DRAFT | — | every spec |

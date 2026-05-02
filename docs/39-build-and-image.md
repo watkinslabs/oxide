@@ -1,6 +1,6 @@
 # 39 Build + Image
 
-DRAFT 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask user`,`xtask image`,`xtask qemu`).
+FROZEN 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask user`,`xtask image`,`xtask qemu`).
 ## 1 Purpose
 
 Define workspace layout, `xtask` commands, image-build pipeline (kernel ELF + initramfs + ESP partition), QEMU runner.
@@ -166,8 +166,3 @@ qemu-system-aarch64 \
 
 `07` (toolchain + targets), `29` (userspace), `36` (bootloader handoff), `40` (CI uses xtask).
 
-## 13 Open Questions
-
-- `cargo-bake` for image: defer; `xtask` is enough.
-- Reproducible musl build: pin musl source hash; vendored.
-- Multi-arch single-image (one boot.img runs both)?: no; one per arch.
