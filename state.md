@@ -1,15 +1,15 @@
-# State 2026-05-02 (session 4 mid)
+# State 2026-05-02 (session 4 EOD)
 
 Resumable checkpoint. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`.
 
 ## Phase
 
-**HAL-independent kernel foundation broad — extended with FS data path + signals.** 65 PRs landed; 301 hosted tests pass; both kernel targets build clean. Block layer + page cache, pseudo-FS primitive, and per-task signal state added on top of the session-3 base.
+**HAL-independent kernel foundation essentially complete.** 70 PRs landed; 367 hosted tests pass; both kernel targets build clean. Session 4 added FS data path (block + page cache), pseudo-FS primitive, signals, ELF parser, net basics, observability (counters + tracepoints), and the kernel symbol table on top of the session-3 base.
 
-Last verified-green at session-4 mid-checkpoint:
+Last verified-green at session-4 EOD:
 ```
 $ cargo run -p spec-lint -- all   # → clean
-$ cargo test --workspace          # → 301 passed, 0 failed
+$ cargo test --workspace          # → 367 passed, 0 failed
 $ cargo run -p xtask -- kernel --arch x86_64 --profile dev   # → libkernel.rlib
 $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rlib
 ```
@@ -28,7 +28,7 @@ $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rli
 | #60 | `P1-15-ipc-waitqueue` | `crates/ipc/`: `WaitQueue<C>` per `06§6`. `add_waiter` / `remove_waiter` / `wake_one` / `wake_all` / `with_lock_held`. CAS Sleeping→Runnable on wake. |
 | #61 | `P1-16-vfs-foundation` | `crates/vfs/`: `types` (FileType, OpenFlags, StatxMask, PollMask, VfsError), `Inode` trait (subset), `Dentry` (positive+negative), `File` (read/write/seek + O_RDONLY/WRONLY/APPEND), `FdTable` (alloc/close/dup/dup2/cloexec), lexical path splitter. |
 
-## What's done in session 4 mid-checkpoint (PRs #62–#65)
+## What's done in session 4 (PRs #62–#70)
 
 | PR | Branch | Lands |
 |---|---|---|
@@ -36,6 +36,11 @@ $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rli
 | #63 | `P1-17-block-pagecache` | `crates/block/`: `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing; `PageCache` (sync `read_page` / `write_page` / `fsync` / `invalidate`) with `CachedPage` + PG_* flags. Lock discipline: fsync snapshots dirty list under cache lock, calls device outside it. |
 | #64 | `P1-18-procfs-pseudo` | `crates/procfs/`: shared pseudo-FS primitive used by procfs/sysfs/devfs (`19§3`). `PseudoFs` tree of `PseudoLeaf` with `mkdir` / `register` / `unregister` / `read` / `write` / `list` / `exists`. `StaticBytesOps` + `DynamicOps<F>` helpers. |
 | #65 | `P1-19-ipc-signals` | `crates/ipc/`: per-task `SignalState` per `24§4`. `Signal` enum (Linux 1..=31 / 34..=64), `SignalSet(u64)` bitmap, `SigAction` table, `SigInfo`. `send` + `pop_deliverable`; standard signals collapse to pending bit, RT signals enqueue siginfo and may bump `queue_dropped`. SIGKILL+SIGSTOP unmaskable enforced on every mutator. |
+| #66 | `C17-state-mid-session-4` | state.md mid-session-4 checkpoint. |
+| #67 | `P1-20-elf-parser` | `crates/elf/`: ELF64 header validation + program-header walker per `31§4`; `LoadSegment` + `PT_INTERP` extraction; W^X enforcement (`31§2` invariant 3); rejects executable PT_GNU_STACK. |
+| #68 | `P1-21-net-foundation` | `crates/net/`: `MacAddr` / `Ipv4Addr` / `Ipv6Addr` / `IpAddr` / `Port` / `IpProto` / `NetIfaceId` / `eth_p`; `Pkt` packet buffer with `push`/`pop`/`put`/`trim`/`reset`; RFC 9293 11-state TCP machine + `transition` table per `25§7`. |
+| #69 | `P1-22-obs-trace` | `crates/obs/`: software `Counter` (atomic u64 + global registry) + static `TracePoint` (cheap-branch enable bit + global `Tracer` callback) per `37§3`-§6. |
+| #70 | `P1-23-modules-symtab` | `crates/modules/`: kernel symbol table per `18§7`. `KsymEntry`, `export` / `export_module` / `unexport_module` / `resolve` (with GPL gating per invariant 5) / `is_exported` / `snapshot`. Adds `sync::Modules = 65` lock class. |
 
 ## What's done overall
 
@@ -55,7 +60,7 @@ Unchanged: `tools/spec-lint`, `tools/xtask`, `Cargo.toml`, `rust-toolchain.toml`
 | `crates/hal/` | trait-only + `UserVirtAddr` per `01§1` | builds; 2 hosted tests |
 | `crates/hal-x86_64/` | IrqGate + halt + mmio_barrier | builds; 4 hosted tests |
 | `crates/hal-aarch64/` | IrqGate + halt + mmio_barrier | builds; 4 hosted tests |
-| `crates/sync/` | Spinlock + 16 LockClass (incl `KMalloc`) + IrqGate + PerCpu + RwLock | builds; 16 hosted tests |
+| `crates/sync/` | Spinlock + 17 LockClass (incl `KMalloc`, `Modules`) + IrqGate + PerCpu + RwLock | builds; 16 hosted tests |
 | `crates/klog/` | macros + `.klog_strings` + Uart + `Ring<N>` MPSC + NMI ringlet | builds; 13 hosted tests |
 | `crates/boot-x86_64/`, `crates/boot-aarch64/` | shells; no asm | builds |
 | `crates/pmm/` | Linux-class buddy + lock-free page_ptr + `PageMetaArr` | 63 hosted tests; proptest oracle |
@@ -68,11 +73,15 @@ Unchanged: `tools/spec-lint`, `tools/xtask`, `Cargo.toml`, `rust-toolchain.toml`
 | `crates/vfs/` | Inode+Dentry+File+FdTable+path split | 25 hosted tests |
 | `crates/block/` | BlockDevice + BlockRequest + MemDisk + PageCache (sync read/write/fsync/invalidate) | 16 hosted tests |
 | `crates/procfs/` | shared pseudo-FS primitive (procfs/sysfs/devfs use this) | 16 hosted tests |
-| `crates/{modules,security,nscg,net,tty,iouring,elf,power,firmware,pci,drv,obs,err}/` | one no_std crate per frozen spec; `init() -> NotImplemented` stub | all build |
+| `crates/elf/` | ELF64 header + phdr walker + W^X (`31§2`-§4) | 18 hosted tests |
+| `crates/net/` | addr (Mac/Ipv4/Ipv6/IpAddr/IpProto) + Pkt buffer + RFC 9293 TCP states | 30 hosted tests |
+| `crates/obs/` | software Counter + static TracePoint + global registries | 11 hosted tests |
+| `crates/modules/` | kernel symbol table (export / resolve / GPL gating / unload) | 11 hosted tests |
+| `crates/{security,nscg,tty,iouring,power,firmware,pci,drv,err}/` | one no_std crate per frozen spec; `init() -> NotImplemented` stub | all build |
 | `targets/{x86_64,aarch64}-unknown-oxide-kernel.json` | rustc target specs | both produce `libkernel.rlib` |
 | `link/{x86_64,aarch64}-kernel.ld` | linker scripts | not yet exercised |
 
-Workspace test count: **301 passed, 0 failed**.
+Workspace test count: **367 passed, 0 failed**.
 
 ### Linux-discipline rules in place
 
@@ -131,14 +140,14 @@ In rough order. Most of the remaining front-half is HAL-blocked.
 ## Repo state
 
 ```
-main (origin/main): ae59c52 Merge pull request #65 from watkinslabs/P1-19-ipc-signals
+main (origin/main): 0b4204c Merge pull request #70 from watkinslabs/P1-23-modules-symtab
 
-65 PRs landed total. Branches preserved (no deletions).
+70 PRs landed total. Branches preserved (no deletions).
 
 Session 3 (PRs #53–#61, 9 PRs):
   P1-08 → P1-09 → P1-10 → P1-11 → P1-12 → P1-13 → P1-14 → P1-15 → P1-16
-Session 4 mid (PRs #62–#65, 4 PRs):
-  C16 (state) → P1-17 → P1-18 → P1-19
+Session 4 (PRs #62–#70, 9 PRs):
+  C16 → P1-17 → P1-18 → P1-19 → C17 → P1-20 → P1-21 → P1-22 → P1-23
 ```
 
 Active local branches at EOD: `main`. Working tree clean.
@@ -167,19 +176,20 @@ Run these in order; expected outputs in parens.
 4. Read `CLAUDE.md`.
 5. Read `docs/MANIFEST.md` for spec corpus + freeze-order.
 6. `cargo run -p spec-lint -- all` (`spec-lint: clean`)
-7. `cargo test --workspace` (`301 passed, 0 failed` — number grows as new tests land)
+7. `cargo test --workspace` (`367 passed, 0 failed` — number grows as new tests land)
 8. `cargo run -p xtask -- kernel --arch x86_64 --profile dev` (produces `libkernel.rlib`)
 9. `cargo run -p xtask -- kernel --arch aarch64 --profile dev` (same)
 
-Then pick the next branch. Three highest-leverage HAL-free options:
+Then pick the next branch. Most HAL-free skeletons are now in. Remaining hosted-testable HAL-free options:
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **ELF parser** | `P1-20-elf-parser` | Bounded scope (read 64-bit ELF headers + PT_LOAD walk); pure data path; unblocks the userspace exec story once HAL+VMM page-fault land. |
-| **VFS dentry cache + Superblock + Filesystem trait** | `P1-20-vfs-cache` | Uses the foundation that landed in #61; introduces RCU primitive (`06§3.5`) along the way. Larger scope. |
-| **HAL CpuOps / MmuOps stubs** | `P1-20-hal-impl-x86` | Accepting some asm here unblocks the right column of "What's NOT done": vmm fault path, sched.schedule(), syscall_entry. ≤200 LOC asm per HAL surface per `15§4.1`. |
+| **VFS dentry cache + Superblock + Filesystem trait** | `P1-24-vfs-cache` | Builds on #61; introduces RCU primitive (`06§3.5`) along the way. Larger scope. |
+| **security LSM-shaped traits** | `P1-24-security-lsm` | Bounded scope; lands the LSM hook surface (`27`) the rest of the kernel will call into. |
+| **tty/pty line discipline** | `P1-24-tty-foundation` | Pure data structures + state machine; unblocks console + getty; hosted-testable. |
+| **HAL CpuOps / MmuOps asm** | `P1-24-hal-impl-x86` | Accepts ≤200 LOC asm now to unblock vmm fault path, sched.schedule(), syscall_entry, klog ring → macro wiring. |
 
-If unsure: **ELF parser**. It's bounded scope and slots cleanly between FS-side and the eventual exec story.
+If unsure: **HAL CpuOps / MmuOps asm**. The hosted-testable foundation is broad enough that further skeletons add diminishing value; HAL bodies unblock real boot. Phase 0 exit gate is hello-world boots both arches via QEMU — that's where the work is.
 
 ## Open questions for user (deferred)
 
