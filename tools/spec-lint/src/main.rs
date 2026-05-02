@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 mod doc_lint;
 mod code_lint;
+mod length_lint;
 mod manifest_lint;
 mod walk;
 mod xref_lint;
@@ -50,6 +51,7 @@ fn main() -> ExitCode {
     match cmd.as_str() {
         "docs" => doc_lint::run(&root, &mut f),
         "code" => code_lint::run(&root, &mut f),
+        "length" => length_lint::run(&root, &mut f),
         "manifest" => manifest_lint::run(&root, &mut f),
         "xref" => xref_lint::run(&root, &mut f),
         "all" => {
@@ -57,8 +59,9 @@ fn main() -> ExitCode {
             manifest_lint::run(&root, &mut f);
             xref_lint::run(&root, &mut f);
             code_lint::run(&root, &mut f);
+            length_lint::run(&root, &mut f);
         }
-        "-h" | "--help" => { eprintln!("usage: spec-lint <docs|code|manifest|xref|all> [root]"); return ExitCode::from(2); }
+        "-h" | "--help" => { eprintln!("usage: spec-lint <docs|code|length|manifest|xref|all> [root]"); return ExitCode::from(2); }
         other => { eprintln!("spec-lint: unknown subcommand `{other}`"); return ExitCode::from(2); }
     }
     if f.report() { ExitCode::SUCCESS } else { ExitCode::from(1) }
