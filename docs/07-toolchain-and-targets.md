@@ -5,9 +5,9 @@ FROZEN 2026-05-02. Dep:`02`,`08`.
 ## Revision 2026-05-02
 
 - Changed: §3.1 + §3.2 target JSON shapes to match current rustc target-spec format.
-- Why: `nightly-2026-05-01` target-spec parser rejects the spec-as-written. Specifically: `target-c-int-width` removed (default 32 is correct); `target-pointer-width` numeric not string; `is-builtin` field removed (no longer recognized); `-3dnow,-3dnowa` features removed (deprecated in current LLVM); `rustc-abi: "x86-softfloat"` added on x86 + `rustc-abi: "softfloat"` and `abi: "softfloat"` added on aarch64 (kernel disables SSE/NEON; current rustc requires explicit ABI rather than implicit feature-disable); aarch64 data-layout updated to current upstream `e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`.
+- Why: `nightly-2026-05-01` target-spec parser rejects the spec-as-written. Specifically: `target-c-int-width` removed (default 32 is correct); `target-pointer-width` numeric not string; `is-builtin` field removed (no longer recognized); `-3dnow,-3dnowa` features removed (deprecated in current LLVM); `rustc-abi: "x86-softfloat"` added on x86 + `rustc-abi: "softfloat"` and `abi: "softfloat"` added on aarch64 (kernel disables SSE/NEON; current rustc requires explicit ABI instead of implicit feature-disable); aarch64 data-layout updated to current upstream `e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`.
 - Affected code: `targets/x86_64-unknown-oxide-kernel.json`, `targets/aarch64-unknown-oxide-kernel.json`. Both build a no_std `kernel` rlib via `cargo build -Z build-std`.
-- Test contract change: §9 still applies; both arches now actually pass `xtask kernel --arch <a>` clean-checkout build (verified locally).
+- Test contract change: §9 still applies; both arches now pass `xtask kernel --arch <a>` clean-checkout build (verified locally).
 
 One pinned nightly. Four custom target JSONs (kernel×2, user×2). Three build profiles. `panic=abort` everywhere kernel.
 
