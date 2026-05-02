@@ -5,13 +5,16 @@
 
 #![no_std]
 
-#[cfg(test)]
+#[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
 mod percpu;
 pub use percpu::{
     CacheLine, CpuLocalSource, NoopCpuLocal, PerCpu, CACHELINE_BYTES, MAX_CPUS,
 };
+
+#[cfg(any(test, feature = "hosted"))]
+pub use percpu::HostedCpuLocal;
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
