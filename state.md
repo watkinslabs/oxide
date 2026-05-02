@@ -1,15 +1,15 @@
-# State 2026-05-02 (session 3 EOD)
+# State 2026-05-02 (session 4 mid)
 
 Resumable checkpoint. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`.
 
 ## Phase
 
-**HAL-independent kernel foundation broad.** 61 PRs landed; 256 hosted tests pass; both kernel targets build clean. Heap, address space, page metadata, scheduler runqueue, syscall dispatch, wait queue, and VFS foundation all linked into the kernel rlib. What's blocked from here is mostly HAL bodies (Context::switch, MmuOps, IrqOps, TimerOps, syscall_entry asm).
+**HAL-independent kernel foundation broad — extended with FS data path + signals.** 65 PRs landed; 301 hosted tests pass; both kernel targets build clean. Block layer + page cache, pseudo-FS primitive, and per-task signal state added on top of the session-3 base.
 
-Last verified-green at session-3 EOD:
+Last verified-green at session-4 mid-checkpoint:
 ```
 $ cargo run -p spec-lint -- all   # → clean
-$ cargo test --workspace          # → 256 passed, 0 failed
+$ cargo test --workspace          # → 301 passed, 0 failed
 $ cargo run -p xtask -- kernel --arch x86_64 --profile dev   # → libkernel.rlib
 $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rlib
 ```
@@ -27,6 +27,15 @@ $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rli
 | #59 | `P1-14-syscall-dispatch` | `crates/syscall/`: `Errno` (Linux numbers), `SyscallArgs`, `SyscallFn`, 462-entry `SYSCALL_TABLE` (all enosys), `dispatch(nr,args)→i64` with `15§1.3` encoding. `UserPtr<T>` + `UserSlice<T>` range/alignment validation per `15§1.4`. |
 | #60 | `P1-15-ipc-waitqueue` | `crates/ipc/`: `WaitQueue<C>` per `06§6`. `add_waiter` / `remove_waiter` / `wake_one` / `wake_all` / `with_lock_held`. CAS Sleeping→Runnable on wake. |
 | #61 | `P1-16-vfs-foundation` | `crates/vfs/`: `types` (FileType, OpenFlags, StatxMask, PollMask, VfsError), `Inode` trait (subset), `Dentry` (positive+negative), `File` (read/write/seek + O_RDONLY/WRONLY/APPEND), `FdTable` (alloc/close/dup/dup2/cloexec), lexical path splitter. |
+
+## What's done in session 4 mid-checkpoint (PRs #62–#65)
+
+| PR | Branch | Lands |
+|---|---|---|
+| #62 | `C16-state-eod-session-3` | state.md session-3 EOD checkpoint. |
+| #63 | `P1-17-block-pagecache` | `crates/block/`: `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing; `PageCache` (sync `read_page` / `write_page` / `fsync` / `invalidate`) with `CachedPage` + PG_* flags. Lock discipline: fsync snapshots dirty list under cache lock, calls device outside it. |
+| #64 | `P1-18-procfs-pseudo` | `crates/procfs/`: shared pseudo-FS primitive used by procfs/sysfs/devfs (`19§3`). `PseudoFs` tree of `PseudoLeaf` with `mkdir` / `register` / `unregister` / `read` / `write` / `list` / `exists`. `StaticBytesOps` + `DynamicOps<F>` helpers. |
+| #65 | `P1-19-ipc-signals` | `crates/ipc/`: per-task `SignalState` per `24§4`. `Signal` enum (Linux 1..=31 / 34..=64), `SignalSet(u64)` bitmap, `SigAction` table, `SigInfo`. `send` + `pop_deliverable`; standard signals collapse to pending bit, RT signals enqueue siginfo and may bump `queue_dropped`. SIGKILL+SIGSTOP unmaskable enforced on every mutator. |
 
 ## What's done overall
 
@@ -55,13 +64,15 @@ Unchanged: `tools/spec-lint`, `tools/xtask`, `Cargo.toml`, `rust-toolchain.toml`
 | `crates/vmm/` | `Vma`, `VmaTree`, `AddressSpace` (RwLock-wrapped) + invariant audit | 34 hosted tests |
 | `crates/sched/` | Task + SchedClass + RtRunqueue + CfsRunqueue + RunqueueInner::pick_next_task | 20 hosted tests |
 | `crates/syscall/` | Errno + UserPtr/UserSlice + 462-entry dispatch table | 17 hosted tests |
-| `crates/ipc/` | WaitQueue<C> | 9 hosted tests |
+| `crates/ipc/` | WaitQueue<C> + SignalState (per-task signals per `24§4`) | 24 hosted tests |
 | `crates/vfs/` | Inode+Dentry+File+FdTable+path split | 25 hosted tests |
-| `crates/{block,modules,procfs,security,nscg,net,tty,iouring,elf,power,firmware,pci,drv,obs,err}/` | one no_std crate per frozen spec; `init() -> NotImplemented` stub | all build |
+| `crates/block/` | BlockDevice + BlockRequest + MemDisk + PageCache (sync read/write/fsync/invalidate) | 16 hosted tests |
+| `crates/procfs/` | shared pseudo-FS primitive (procfs/sysfs/devfs use this) | 16 hosted tests |
+| `crates/{modules,security,nscg,net,tty,iouring,elf,power,firmware,pci,drv,obs,err}/` | one no_std crate per frozen spec; `init() -> NotImplemented` stub | all build |
 | `targets/{x86_64,aarch64}-unknown-oxide-kernel.json` | rustc target specs | both produce `libkernel.rlib` |
 | `link/{x86_64,aarch64}-kernel.ld` | linker scripts | not yet exercised |
 
-Workspace test count: **256 passed, 0 failed**.
+Workspace test count: **301 passed, 0 failed**.
 
 ### Linux-discipline rules in place
 
@@ -92,13 +103,13 @@ In rough order. Most of the remaining front-half is HAL-blocked.
 
 4. **sched::schedule()**: Context::switch + per-CPU spinlock around `RunqueueInner` + need_resched + preempt_count. `wake_up` cross-CPU IPI (HAL IrqOps). `timer_tick` (HAL TimerOps).
 
-5. **block + page-cache** (`17`): BlockDevice trait, page cache over PMM pages, dirty/writeback. Hosted-testable except for any DMA bits.
+5. **block writeback daemon** (`17§3`-§4): async submit ring + soft-IRQ completion + dirty list. Foundation `BlockDevice` + `PageCache` ✓ (PR #63); writeback timing, radix-tree, PG_LOCKED waiters pending.
 
-6. **procfs / devfs / sysfs** (`19`) — pseudo-FS Inode impls atop the VFS foundation that just landed.
+6. **procfs / devfs / sysfs surface** (`19§4`-§5): per-pid procfs (drives off sched), sysfs KObj tree, devfs DevId multiplexing. Shared pseudo-FS primitive ✓ (PR #64); per-FS surface pending.
 
 7. **VFS extensions**: dentry cache (`16§4` open-addressed RCU), Superblock + Filesystem trait, mount table (`16§6`), full ~30-method Inode surface, `path_lookup` with symlink + RESOLVE_BENEATH + mount crossing.
 
-8. **IPC bodies**: pipe, eventfd, signalfd, timerfd, futex, AF_UNIX. Each rides alongside its VFS file backing.
+8. **IPC bodies**: pipe, eventfd, signalfd, timerfd, futex, AF_UNIX. Each rides alongside its VFS file backing. Per-task `SignalState` data ✓ (PR #65); kernel→user signal *delivery* still pending (vDSO trampoline + syscall return path).
 
 9. **Subsequent subsystems** in `boot-flow.md` order: security → nscg → net → tty → iouring → elf → pci → drv → firmware → power → obs → modules → err.
 
@@ -120,12 +131,14 @@ In rough order. Most of the remaining front-half is HAL-blocked.
 ## Repo state
 
 ```
-main (origin/main): 7e9a107 Merge pull request #61 from watkinslabs/P1-16-vfs-foundation
+main (origin/main): ae59c52 Merge pull request #65 from watkinslabs/P1-19-ipc-signals
 
-61 PRs landed total. Branches preserved (no deletions).
+65 PRs landed total. Branches preserved (no deletions).
 
 Session 3 (PRs #53–#61, 9 PRs):
   P1-08 → P1-09 → P1-10 → P1-11 → P1-12 → P1-13 → P1-14 → P1-15 → P1-16
+Session 4 mid (PRs #62–#65, 4 PRs):
+  C16 (state) → P1-17 → P1-18 → P1-19
 ```
 
 Active local branches at EOD: `main`. Working tree clean.
@@ -154,7 +167,7 @@ Run these in order; expected outputs in parens.
 4. Read `CLAUDE.md`.
 5. Read `docs/MANIFEST.md` for spec corpus + freeze-order.
 6. `cargo run -p spec-lint -- all` (`spec-lint: clean`)
-7. `cargo test --workspace` (`256 passed, 0 failed` — number grows as new tests land)
+7. `cargo test --workspace` (`301 passed, 0 failed` — number grows as new tests land)
 8. `cargo run -p xtask -- kernel --arch x86_64 --profile dev` (produces `libkernel.rlib`)
 9. `cargo run -p xtask -- kernel --arch aarch64 --profile dev` (same)
 
@@ -162,11 +175,11 @@ Then pick the next branch. Three highest-leverage HAL-free options:
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **block + page-cache** | `P1-17-block-pagecache` | Closes the ext4 / fs-tmpfs blocker. BlockDevice trait + page cache over PMM are hosted-testable; DMA bits ride later. |
-| **procfs / devfs / sysfs** | `P1-17-pseudo-fs` | First real users of the VFS foundation just landed. Each is small (single Inode impl per file). Unblocks `/proc/self`, `/dev/null`, `/sys/kernel/*`. |
-| **HAL CpuOps / MmuOps stubs** | `P1-17-hal-impl-x86` | If you accept some asm now, this is the thing that unblocks everything in the right column of "What's NOT done": vmm fault path, sched.schedule(), syscall_entry. ≤200 LOC asm per HAL surface per `15§4.1`. |
+| **ELF parser** | `P1-20-elf-parser` | Bounded scope (read 64-bit ELF headers + PT_LOAD walk); pure data path; unblocks the userspace exec story once HAL+VMM page-fault land. |
+| **VFS dentry cache + Superblock + Filesystem trait** | `P1-20-vfs-cache` | Uses the foundation that landed in #61; introduces RCU primitive (`06§3.5`) along the way. Larger scope. |
+| **HAL CpuOps / MmuOps stubs** | `P1-20-hal-impl-x86` | Accepting some asm here unblocks the right column of "What's NOT done": vmm fault path, sched.schedule(), syscall_entry. ≤200 LOC asm per HAL surface per `15§4.1`. |
 
-If unsure: **block + page-cache**. It's bounded scope and unblocks the FS half of the boot stack.
+If unsure: **ELF parser**. It's bounded scope and slots cleanly between FS-side and the eventual exec story.
 
 ## Open questions for user (deferred)
 
