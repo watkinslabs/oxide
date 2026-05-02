@@ -8,8 +8,8 @@ use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::thread;
-use std::vec;
 use std::vec::Vec;
+use sync::HostedCpuLocal;
 
 const PAGE_BYTES: usize = PAGE_SIZE_BYTES as usize;
 
@@ -201,7 +201,9 @@ fn excess_drained_returns_to_pmm() {
         // SAFETY: p just allocated.
         unsafe { c.free(p) };
     }
-    // After freeing all, slabs above DRAINED_RESERVE should have been returned to PMM.
+    // Magazines hold up to MAG_SIZE freed objs; flush them so all
+    // slabs are eligible for drain/PMM-return.
+    c.drain_local_magazine();
     assert!(c.total_slabs() <= DRAINED_RESERVE,
         "got total_slabs={} expected ≤{}", c.total_slabs(), DRAINED_RESERVE);
 }
@@ -256,8 +258,12 @@ fn misaligned_free_detected() {
 #[test]
 fn concurrent_alloc_free_no_corruption() {
     // 4 threads × 200 alloc-then-free cycles; final state clean.
+    // Uses HostedCpuLocal so each thread gets a unique magazine slot
+    // — NoopCpuLocal would alias all threads onto slot 0 (UB under
+    // PerCpu's preempt-off contract per `06§4`).
     let pmm = build_pmm(128);
-    let cache: Arc<Cache<[u8; 32], HostedBacking>> = Arc::new(Cache::new(pmm, "conc"));
+    let cache: Arc<Cache<[u8; 32], HostedBacking, NoopIrq, HostedCpuLocal>> =
+        Arc::new(Cache::new(pmm, "conc"));
     let mut handles = Vec::new();
     for _ in 0..4 {
         let c = Arc::clone(&cache);
@@ -279,7 +285,8 @@ fn concurrent_alloc_free_no_corruption() {
 #[test]
 fn concurrent_unique_pointers_no_overlap() {
     let pmm = build_pmm(64);
-    let cache: Arc<Cache<[u8; 64], HostedBacking>> = Arc::new(Cache::new(pmm, "uniqc"));
+    let cache: Arc<Cache<[u8; 64], HostedBacking, NoopIrq, HostedCpuLocal>> =
+        Arc::new(Cache::new(pmm, "uniqc"));
     let mut handles = Vec::new();
     for _ in 0..4 {
         let c = Arc::clone(&cache);

@@ -20,17 +20,19 @@ extern crate std;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use hal::{Pfn, PAGE_SIZE_BYTES};
 use pmm::{kassert, Order, PageBacking, Pmm};
-use sync::{IrqGate, NoopIrq, Slab as SlabClass, Spinlock};
+use sync::{CpuLocalSource, IrqGate, NoopCpuLocal, NoopIrq, PerCpu, Slab as SlabClass, Spinlock};
 
+mod magazine;
 mod slab_page;
 
 #[cfg(test)]
 mod tests;
 
+use magazine::Magazine;
 use slab_page::{SlabPage, NULL_OFF};
 
 /// Slab pages are PMM order 0 (4 KiB) for v1. Larger objects → order 3
@@ -112,12 +114,23 @@ impl CacheLayout {
 /// use `NoopIrq`. Slab is "reachable from softirq" per `12§4` so the
 /// `Slab`-class spinlock MUST take `lock_irqsave` to prevent
 /// process-context-vs-IRQ-context deadlock on a single CPU.
-pub struct Cache<T, B: PageBacking, I: IrqGate = NoopIrq> {
+///
+/// Generic over `CpuLocalSource` per `06§4` — kernel passes the arch
+/// per-CPU register reader; hosted tests use `sync::HostedCpuLocal`.
+/// Per-CPU magazines (`12§3.2`) take the alloc / free fast path: pop /
+/// push to the local 32-slot magazine without touching the global
+/// `Slab`-class spinlock. Empty / full magazine ⇒ slow path under lock.
+pub struct Cache<T, B: PageBacking, I: IrqGate = NoopIrq, S: CpuLocalSource = NoopCpuLocal> {
     pmm: &'static Pmm<B, I>,
     cache_id: u32,
     name: &'static str,
     layout: CacheLayout,
     inner: Spinlock<CacheInner, SlabClass>,
+    magazines: PerCpu<Magazine<T>, S>,
+    /// Caller-facing outstanding allocation count. +1 per successful
+    /// `alloc` (fast or slow), -1 per `free` (fast or slow). Lives
+    /// outside the spinlock so the fast path stays lock-free.
+    allocated_objs: AtomicU64,
     _t: PhantomData<fn() -> T>,
     _i: PhantomData<fn() -> I>,
 }
@@ -132,17 +145,17 @@ struct CacheInner {
     drained_head: u64,
     drained_count: u32,
     total_slabs: u32,
-    allocated_objs: u64,
 }
 
 // SAFETY: T is only ever accessed through Cache::alloc/free which
-// guard with the SlabClass spinlock; Cache itself never mutates T.
-unsafe impl<T: Send, B: PageBacking, I: IrqGate> Send for Cache<T, B, I> {}
+// guard with the SlabClass spinlock + per-CPU magazine layer; Cache
+// itself never mutates T. Magazine: Send when T: Send (impl in magazine.rs).
+unsafe impl<T: Send, B: PageBacking, I: IrqGate, S: CpuLocalSource> Send for Cache<T, B, I, S> {}
 // SAFETY: see Send impl.
-unsafe impl<T: Send, B: PageBacking, I: IrqGate> Sync for Cache<T, B, I> {}
+unsafe impl<T: Send, B: PageBacking, I: IrqGate, S: CpuLocalSource> Sync for Cache<T, B, I, S> {}
 
-impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
-    /// # C: O(1)
+impl<T, B: PageBacking, I: IrqGate, S: CpuLocalSource> Cache<T, B, I, S> {
+    /// # C: O(MAX_CPUS) — initializes per-CPU magazine slots.
     pub fn new(pmm: &'static Pmm<B, I>, name: &'static str) -> Self {
         let layout = CacheLayout::for_type::<T>();
         Self {
@@ -155,8 +168,9 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
                 drained_head: PFN_NULL,
                 drained_count: 0,
                 total_slabs: 0,
-                allocated_objs: 0,
             }),
+            magazines: PerCpu::<Magazine<T>, S>::new(),
+            allocated_objs: AtomicU64::new(0),
             _t: PhantomData,
             _i: PhantomData,
         }
@@ -174,10 +188,11 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
     /// # C: O(1)
     pub fn cache_id(&self) -> u32 { self.cache_id }
 
-    /// Number of objects currently allocated from this cache.
+    /// Number of objects currently held by callers (alloc'd, not yet freed).
+    /// Lock-free read; magazine transit doesn't perturb the count.
     /// # C: O(1)
     pub fn allocated(&self) -> u64 {
-        self.inner.lock_irqsave::<I>().allocated_objs
+        self.allocated_objs.load(Ordering::Relaxed)
     }
 
     /// Number of slab pages owned by this cache (partial + drained
@@ -187,11 +202,59 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
         self.inner.lock_irqsave::<I>().total_slabs
     }
 
+    /// Flush this CPU's magazine — pop every cached obj and return it
+    /// to the slab pages. Useful for shutdown, observability
+    /// (`total_slabs` ↓ to drained-reserve floor), and stop-the-world
+    /// reclaim. Counter unchanged (objs already considered freed).
+    /// # C: O(MAG_SIZE × MAX_ORDER)
+    /// # Ctx: preempt-disabled per `06§4`
+    pub fn drain_local_magazine(&self) {
+        while let Some(p) = self.magazines.with_local(|m| m.pop()) {
+            let raw = p.as_ptr() as *mut u8;
+            let page_addr = (raw as usize) & !(PAGE - 1);
+            let off = (raw as usize) - page_addr;
+            // SAFETY: p was a prior cache-allocated obj already
+            // poison-stamped at free time; return_to_slab pushes the
+            // slot onto its slab page's freelist without touching
+            // the caller-facing allocated_objs counter.
+            unsafe { self.return_to_slab(page_addr, off) };
+        }
+    }
+
     /// Allocate one `T`-sized slot. Returns a typed `NonNull<T>`.
     /// Caller initializes the slot before use.
+    ///
+    /// Fast path (mag pop): no lock, no atomic on the slab inner. Slow
+    /// path (mag empty): under `SlabClass` spinlock per `12§4`.
+    ///
     /// # C: O(1) amortized
-    /// # Lk: SlabClass
+    /// # Lk: SlabClass on slow path; none on fast path
     pub fn alloc(&self) -> KResult<NonNull<T>> {
+        // Fast path: pop from this CPU's magazine.
+        if let Some(p) = self.magazines.with_local(|m| m.pop()) {
+            // Verify poison cookie (slot was in "freed" state in mag)
+            // and clear it so the next free can detect double-free.
+            let raw = p.as_ptr() as *mut u8;
+            let page_addr = (raw as usize) & !(PAGE - 1);
+            let off = ((raw as usize) - page_addr) as u16;
+            // SAFETY: pointer was returned by a prior alloc on this
+            // cache → page is cache-owned; off is a valid slot offset.
+            let page = unsafe { self.page_from_addr(page_addr) };
+            // SAFETY: reading 8 B poison cookie inside the slot.
+            let cookie = unsafe { page.read_obj_poison(off) };
+            if cookie != slab_page::OBJ_POISON_MAGIC_PUB {
+                panic!("slab corruption: obj poison mismatch on alloc");
+            }
+            // SAFETY: clearing 8 B inside cache-owned slot.
+            unsafe { page.clear_obj_poison(off) };
+            self.allocated_objs.fetch_add(1, Ordering::Relaxed);
+            return Ok(p);
+        }
+        // Slow path under the SlabClass spinlock.
+        self.alloc_slow()
+    }
+
+    fn alloc_slow(&self) -> KResult<NonNull<T>> {
         let mut g = self.inner.lock_irqsave::<I>();
         // Source order: partial → drained → new from PMM.
         let pfn = if g.partial_head != PFN_NULL {
@@ -236,8 +299,9 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
             unsafe { self.unlink_partial(&mut g, pfn) };
         }
 
-        g.allocated_objs += 1;
-        // SAFETY: page is cache-owned; ptr is page+off, in-range.
+        drop(g);
+        self.allocated_objs.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: page is cache-owned; ptr is page+off, in-range; lock-free page_ptr per B05.
         let ptr = unsafe { self.pmm.page_ptr(Pfn(pfn)).add(off as usize) } as *mut T;
         // SAFETY: page_ptr+off is non-null page-internal address.
         Ok(unsafe { NonNull::new_unchecked(ptr) })
@@ -251,6 +315,9 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
     /// # C: O(1) amortized
     /// # Lk: SlabClass
     pub unsafe fn free(&self, p: NonNull<T>) {
+        // Identity + alignment validation runs even on the fast path so
+        // wrong-cache / misaligned / out-of-range frees panic before
+        // the magazine accepts the pointer.
         let raw = p.as_ptr() as *mut u8;
         let page_addr = (raw as usize) & !(PAGE - 1);
         let off = (raw as usize) - page_addr;
@@ -261,16 +328,67 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
             (off - self.layout.obj_offset as usize) % self.layout.obj_size as usize == 0,
             "slab free: slot misaligned"
         );
-
-        // Identify the owning slab via its self-pfn stamp + cache_id
-        // stamped in the page header at init time.
-        // SAFETY: page_addr is page-aligned (PageBacking::page_ptr
-        // contract); slab pages have a header at offset 0 stamped by
-        // `SlabPage::init`; we only read the pfn + cache_id fields.
-        let header_pfn = unsafe { SlabPage::read_self_pfn_from_addr(page_addr as *const u8) };
-        // SAFETY: same justification as above; header is 64 B at offset 0.
+        // SAFETY: page_addr is page-aligned per PageBacking contract;
+        // slab pages have a 64 B header at offset 0 stamped by init.
         let header_cache_id = unsafe { SlabPage::read_cache_id_from_addr(page_addr as *const u8) };
         kassert!(header_cache_id == self.cache_id, "slab free: wrong cache");
+
+        // Cookie work in the common path so double-free is detected
+        // regardless of fast-vs-slow path. Slot's poison cookie:
+        //   - cleared by alloc (fast or slow)
+        //   - written by free (here)
+        // Reading == POISON before write ⇒ second free without an
+        // intervening alloc → double-free.
+        // SAFETY: page is cache-owned per cache_id check above.
+        let page = unsafe { self.page_from_addr(page_addr) };
+        // SAFETY: slot in cache-owned page; reading 8 B poison cookie.
+        let cookie = unsafe { page.read_obj_poison(off as u16) };
+        if cookie == slab_page::OBJ_POISON_MAGIC_PUB {
+            panic!("slab double free detected");
+        }
+        // SAFETY: stamping the slot inside cache-owned page.
+        unsafe { page.stamp_obj_freed(off as u16, self.layout.obj_size as usize) };
+
+        // Fast path: push to this CPU's magazine.
+        match self.magazines.with_local(|m| m.push(p)) {
+            Ok(()) => {
+                self.allocated_objs.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+            Err(p) => {
+                // Magazine full → fall through to slow path with the
+                // same pointer the caller passed.
+                // SAFETY: caller-supplied valid pointer (verified above).
+                unsafe { self.free_slow(p, page_addr, off) };
+            }
+        }
+    }
+
+    /// Slow-path free — magazine full OR fast path bypassed. Push obj
+    /// back onto its owning slab's freelist + PMM-return on drain;
+    /// decrements caller-facing counter.
+    ///
+    /// # SAFETY: `p` was returned by a prior `Cache::alloc`; `page_addr`
+    /// and `off` are the page-base + slot offset for `p` (validated by
+    /// the caller); slot's poison cookie was stamped by common-path free.
+    unsafe fn free_slow(&self, _p: NonNull<T>, page_addr: usize, off: usize) {
+        // SAFETY: caller-validated page_addr + off; cookie already stamped.
+        unsafe { self.return_to_slab(page_addr, off) };
+        self.allocated_objs.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Push slot at `(page_addr, off)` back onto its slab page's
+    /// freelist; demote slab to drained reserve or return to PMM
+    /// when fully freed. **Counter unchanged** — for callers that
+    /// already accounted for the obj transition (drain_local_magazine).
+    ///
+    /// # SAFETY: page_addr+off references a cache-owned slot whose
+    /// poison cookie has been stamped (by common-path free) but
+    /// whose slab-page freelist position has not yet been updated.
+    unsafe fn return_to_slab(&self, page_addr: usize, off: usize) {
+        // SAFETY: page_addr is page-aligned per PageBacking contract;
+        // header at offset 0 was stamped by SlabPage::init.
+        let header_pfn = unsafe { SlabPage::read_self_pfn_from_addr(page_addr as *const u8) };
 
         let mut g = self.inner.lock_irqsave::<I>();
         let pfn = header_pfn;
@@ -317,13 +435,9 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
                 // SAFETY: pfn was cache-owned; we just severed all
                 // links + the slab is fully freed (0 outstanding objs).
                 unsafe { self.pmm.free(Pfn(pfn), SLAB_ORDER) };
-                let mut g2 = self.inner.lock_irqsave::<I>();
-                g2.allocated_objs -= 1;
                 return;
             }
         }
-
-        g.allocated_objs -= 1;
     }
 
     // ----- internal helpers -----
@@ -338,6 +452,16 @@ impl<T, B: PageBacking, I: IrqGate> Cache<T, B, I> {
         // safe to call for caller-owned pfns per `pmm::Pmm::page_ptr`.
         let p = unsafe { self.pmm.page_ptr(Pfn(pfn)) };
         SlabPage::from_raw(p)
+    }
+
+    /// Get a [`SlabPage`] view from a page-aligned virtual address
+    /// (used by `Cache::free` to peek at the slot's poison cookie
+    /// without computing pfn first).
+    ///
+    /// # SAFETY: `page_addr` is page-aligned and belongs to a slab
+    /// page owned by this cache (verified via cache_id stamp).
+    unsafe fn page_from_addr(&self, page_addr: usize) -> SlabPage {
+        SlabPage::from_raw(page_addr as *mut u8)
     }
 
     /// Initialize a fresh PMM page as a slab for this cache.
