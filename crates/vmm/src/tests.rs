@@ -6,7 +6,10 @@
 use super::*;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 
-use hal::UserVirtAddr;
+use hal::{UserVirtAddr, PAGE_SIZE_BYTES};
+use std::sync::Arc;
+use std::thread;
+use std::vec::Vec;
 
 fn uva(x: u64) -> UserVirtAddr {
     UserVirtAddr::new(x).expect("test address fits user range")
@@ -284,4 +287,168 @@ fn dense_random_pattern_preserves_invariant_1() {
     }
     // After the loop, audit still holds.
     t.audit_no_overlap().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// AddressSpace tests (`11§3`).
+// ---------------------------------------------------------------------------
+
+const PAGE: usize = PAGE_SIZE_BYTES as usize;
+
+fn r_w() -> VmaProt { VmaProt::READ | VmaProt::WRITE }
+fn priv_anon() -> VmaFlags { VmaFlags::PRIVATE | VmaFlags::ANONYMOUS }
+
+#[test]
+fn address_space_new_is_empty() {
+    let a = AddressSpace::new().unwrap();
+    assert_eq!(a.vma_count(), 0);
+    a.audit().unwrap();
+}
+
+#[test]
+fn mmap_no_hint_returns_min_user_va() {
+    let a = AddressSpace::new().unwrap();
+    let va = a.mmap(None, PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    assert_eq!(va.as_u64(), MIN_USER_VA);
+    assert_eq!(a.vma_count(), 1);
+    a.audit().unwrap();
+}
+
+#[test]
+fn mmap_hint_honored_when_clear() {
+    let a = AddressSpace::new().unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let va = a.mmap(Some(h), PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    assert_eq!(va, h);
+}
+
+#[test]
+fn mmap_hint_falls_back_when_overlap() {
+    let a = AddressSpace::new().unwrap();
+    // First map at hint H.
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let _ = a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    // Second mmap with same hint: hint occupied, must succeed elsewhere.
+    let va = a.mmap(Some(h), PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    assert_ne!(va, h);
+    assert_eq!(a.vma_count(), 2);
+    a.audit().unwrap();
+}
+
+#[test]
+fn mmap_fixed_clears_overlap_first() {
+    let a = AddressSpace::new().unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(h), 4 * PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    // Overlapping FIXED replaces the conflicting region.
+    let va = a.mmap(Some(h), 2 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    assert_eq!(va, h);
+    a.audit().unwrap();
+    // The covered range must report the new prot.
+    let v = a.find_vma(h).unwrap();
+    assert_eq!(v.prot, r_w());
+}
+
+#[test]
+fn mmap_rejects_zero_length_and_misalignment() {
+    let a = AddressSpace::new().unwrap();
+    assert_eq!(
+        a.mmap(None, 0, r_w(), priv_anon(), VmaBacking::Anonymous, false),
+        Err(Error::Inval)
+    );
+    assert_eq!(
+        a.mmap(None, 0x123, r_w(), priv_anon(), VmaBacking::Anonymous, false),
+        Err(Error::Inval)
+    );
+    let unaligned = UserVirtAddr::new(0x4000_0001).unwrap();
+    assert_eq!(
+        a.mmap(Some(unaligned), PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true),
+        Err(Error::Inval)
+    );
+}
+
+#[test]
+fn mmap_fixed_without_hint_is_inval() {
+    let a = AddressSpace::new().unwrap();
+    assert_eq!(
+        a.mmap(None, PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true),
+        Err(Error::Inval)
+    );
+}
+
+#[test]
+fn munmap_round_trip() {
+    let a = AddressSpace::new().unwrap();
+    let va = a.mmap(None, 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    a.munmap(va, 4 * PAGE).unwrap();
+    assert_eq!(a.vma_count(), 0);
+    assert!(a.find_vma(va).is_none());
+}
+
+#[test]
+fn munmap_punches_hole() {
+    let a = AddressSpace::new().unwrap();
+    let va = a.mmap(None, 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    let mid = UserVirtAddr::new(va.as_u64() + PAGE as u64).unwrap();
+    a.munmap(mid, PAGE).unwrap();
+    assert_eq!(a.vma_count(), 2);
+    a.audit().unwrap();
+}
+
+#[test]
+fn mprotect_changes_prot() {
+    let a = AddressSpace::new().unwrap();
+    let va = a.mmap(None, 4 * PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, false).unwrap();
+    a.mprotect(va, 4 * PAGE, r_w()).unwrap();
+    let v = a.find_vma(va).unwrap();
+    assert_eq!(v.prot, r_w());
+}
+
+#[test]
+fn mprotect_rejects_hole_inside_range() {
+    let a = AddressSpace::new().unwrap();
+    let h1 = UserVirtAddr::new(0x4000_0000).unwrap();
+    let h2 = UserVirtAddr::new(0x4000_2000).unwrap();
+    a.mmap(Some(h1), PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    a.mmap(Some(h2), PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    // Range straddles the hole between them.
+    assert_eq!(
+        a.mprotect(h1, 3 * PAGE, r_w()),
+        Err(Error::Inval)
+    );
+}
+
+#[test]
+fn mmap_no_mem_when_user_range_full() {
+    let a = AddressSpace::new().unwrap();
+    // Two abutting VMAs that leave a 1-page tail hole. UserVirtAddr
+    // forbids reaching USER_VA_END exactly (`01§1`), so the largest
+    // mapping that ends at USER_VA_END - PAGE consumes everything but
+    // the final reserved page.
+    let h = UserVirtAddr::new(0x1000).unwrap();
+    let span = (hal::USER_VA_END - 0x1000 - PAGE as u64) as usize;
+    a.mmap(Some(h), span, r_w(), priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    // The remaining hole is exactly 1 page; a 2-page request can't fit.
+    assert_eq!(
+        a.mmap(None, 2 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false),
+        Err(Error::NoMem)
+    );
+}
+
+#[test]
+fn concurrent_readers_via_find_vma() {
+    let a = AddressSpace::new().unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let a = Arc::clone(&a);
+        handles.push(thread::spawn(move || {
+            for _ in 0..1_000 {
+                let v = a.find_vma(h).expect("mapped");
+                assert_eq!(v.start, h);
+            }
+        }));
+    }
+    for h in handles { h.join().unwrap(); }
 }
