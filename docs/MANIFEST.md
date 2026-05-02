@@ -25,7 +25,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `11-vmm.md` | DRAFT | — | `01`,`02`,`06`,`10`,`14`,`20`,`21` |
 | `12-slab.md` | DRAFT | — | `01`,`02`,`06`,`10` |
 | `13-sched.md` | DRAFT | — | `01`,`02`,`06`,`14` |
-| `14-context-switch.md` | DRAFT | — | `01`,`02`,`06`,`07` |
+| `14-context-switch.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`08`,`09` |
 | `15-syscall-abi.md` | DRAFT | — | `01`,`03`,`06` |
 | `16-vfs.md` | DRAFT | — | `01`,`02`,`06`,`12`,`15` |
 | `17-block-and-pagecache.md` | DRAFT | — | `01`,`02`,`06`,`10`,`11`,`12`,`16` |
@@ -33,8 +33,8 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `19-dev-proc-sysfs.md` | DRAFT | — | `01`,`02`,`06`,`16`,`18`,`35` |
 | `20-hal-x86_64.md` | DRAFT | — | `01`,`02`,`06`,`07`,`14`,`22`,`23`,`38` |
 | `21-hal-aarch64.md` | DRAFT | — | `01`,`02`,`06`,`07`,`14`,`22`,`23`,`38` |
-| `22-irq-and-exceptions.md` | DRAFT | — | `01`,`02`,`06`,`07`,`14`,`20`,`21` |
-| `23-time.md` | DRAFT | — | `01`,`02`,`06`,`07`,`14`,`20`,`21`,`22` |
+| `22-irq-and-exceptions.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21` |
+| `23-time.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21`,`22` |
 | `24-ipc.md` | DRAFT | — | `01`,`02`,`06`,`12`,`13`,`16`,`23` |
 | `25-net.md` | DRAFT | — | `01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34` |
 | `26-namespaces-cgroups.md` | DRAFT | — | `01`,`02`,`06`,`13`,`16`,`19`,`25`,`27` |
@@ -45,10 +45,10 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `30-io-uring.md` | DRAFT | — | `01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25` |
 | `31-elf-loader.md` | DRAFT | — | `01`,`02`,`11`,`12`,`16`,`18`,`27` |
 | `32-power-reset.md` | DRAFT | — | `01`,`02`,`15`,`20`,`21`,`33` |
-| `33-firmware-tables.md` | DRAFT | — | `01`,`02`,`19`,`20`,`21`,`34` |
+| `33-firmware-tables.md` | FROZEN | 2026-05-02 | `01`,`02`,`19`,`20`,`21`,`34` |
 | `34-pci-and-pcie.md` | DRAFT | — | `01`,`02`,`11`,`19`,`22`,`33`,`35` |
 | `35-drivers.md` | DRAFT | — | `01`,`02`,`16`,`18`,`19`,`22`,`34` |
-| `36-bootloader-handoff.md` | DRAFT | — | `01`,`02`,`07`,`20`,`21`,`33`,`39` |
+| `36-bootloader-handoff.md` | FROZEN | 2026-05-02 | `01`,`02`,`07`,`20`,`21`,`33`,`39` |
 | `37-observability.md` | DRAFT | — | `01`,`02`,`04`,`13`,`19`,`23`,`38` |
 | `38-error-handling.md` | FROZEN | 2026-05-02 | `01`,`02`,`07`,`08` |
 | `39-build-and-image.md` | DRAFT | — | `02`,`07`,`29`,`36` |

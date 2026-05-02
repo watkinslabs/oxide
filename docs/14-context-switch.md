@@ -1,6 +1,6 @@
 # 14 Context Switch
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`08`,`09`. Provides:`13`,`20`,`21`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`07`,`08`,`09`. Provides:`13`,`20`,`21`.
 
 Per-arch ctxsw = one `.S` ≤50 lines saving exactly callee-saved + IP + SP + TLS-base. ABI-doc-line-by-line reviewed. Forever-running register-canary harness. No inline asm. No `#[naked]` Rust. One `.S`/arch with one extern symbol.
 
@@ -277,9 +277,3 @@ Bench: `bench/ctxsw_bench.rs`. Cross-AS includes PT swap (sched's job, not ctxsw
 
 (none)
 
-## 15 OQ
-
-- Stack-switch atomicity arm: between `mov sp, x9` and next `ldp`, IRQ would land on new SP. arm IRQ entry uses `SP_EL1` (set by us, never user SP); safe by HAL design. Verify in `22`.
-- GS-base x86: per-CPU not per-task; NOT saved/restored in switch. Document so reviewer doesn't add.
-- CET shadow stack x86 / GCS arm: when enabled (toolchain OQ), saved rip on regular stack + shadow stack must agree; asm saves/restores SSP. Defer v1.x.
-- PAC arm (ARMv8.3): if kernel uses `pac`, saved `lr` must be signed with same key as source thread; cross-CPU migration may need key rotation. Defer PAC v1.x.
