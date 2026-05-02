@@ -1,0 +1,111 @@
+# Build outputs
+/target/
+/tools/*/target/
+/userspace/*/target/
+**/*.rs.bk
+
+# Image artifacts (regenerated; not source)
+*.img
+*.iso
+*.bin
+*.elf
+*.efi
+*.zst
+initramfs.cpio*
+boot.img*
+
+# Coverage
+*.profraw
+*.profdata
+coverage/
+lcov.info
+*.gcda
+*.gcno
+
+# Debug symbols (split debuginfo)
+*.dSYM/
+*.pdb
+debug-symbols/
+
+# Vendored builds (re-buildable from source)
+/userspace/libc/musl/build/
+/userspace/dynlink/build/
+
+# QEMU runtime
+/qemu-*.log
+/qemu-*.pcap
+/serial-*.log
+*.qcow2
+*.raw
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.fleet/
+.zed/
+.helix/
+
+# Claude Code local
+.claude/settings.local.json
+.claude/.cache/
+
+# Direnv / local env
+.envrc.local
+.env
+.env.local
+.env.*.local
+
+# Python virtualenvs (any tool that uses one)
+.venv/
+__pycache__/
+*.pyc
+
+# Node (if any tooling drags it in)
+node_modules/
+package-lock.json.bak
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Soak runner working dirs (artifacts ARE committed; runtime is not)
+/soak-runner-tmp/
+/soak-runs/
+
+# Bench harness scratch (final history IS committed)
+/bench-tmp/
+/bench-runs/
+
+# OS-pkg scratch
+*.deb
+*.rpm
+*.apk
+
+# Crash dumps
+core
+core.*
+*.core
+vmcore*
+
+# rust-analyzer / cargo cache
+.rust-cache/
+.cargo-cache/
+
+# Per-user xtask scratch
+/xtask-tmp/
+
+# NOT ignored (commit these intentionally):
+# /Cargo.lock              — binary project; lock kernel deps
+# /targets/*.json          — target JSONs are source
+# /link/*.ld               — linker scripts are source
+# /docs/                   — specs are source
+# /bench-history/          — perf-regression baselines per 40§6
+# /soak-artifacts/         — signed soak artifacts per 40§3 (final, not runtime)
+# /tools/docker/Dockerfile.* — image source
+# /.github/workflows/*.yml — CI source
+# /rust-toolchain.toml     — toolchain pin
