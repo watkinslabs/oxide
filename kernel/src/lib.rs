@@ -14,6 +14,21 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
+/// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
+/// replaced by PMM-backed slab routing once a binary stage exists.
+/// Hosts the `BTreeMap` / `Vec` machinery used by `vmm::VmaTree` and
+/// later subsystems.
+///
+/// Gated `cfg(target_os = "oxide-kernel")` so the declaration is
+/// active only when building for the kernel targets in `targets/`.
+/// Host builds (used by hosted tests in this and downstream crates)
+/// keep `std`'s default allocator.
+#[cfg(target_os = "oxide-kernel")]
+#[global_allocator]
+static GLOBAL_ALLOC: kalloc::KAlloc = kalloc::KAlloc::new();
+
 /// Boot info passed by the arch boot stub.
 ///
 /// Layout is bootloader-defined per `36`; the stub parses the
@@ -65,7 +80,33 @@ pub enum BootMemKind {
 /// # C: not measured (one-shot init)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn kernel_main(_info: &BootInfo) -> ! {
+    // Bring up the kernel heap before any subsystem that allocates.
+    // SAFETY: kernel_main is called once per boot from a single CPU
+    // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
+    // by `kalloc`, and not yet referenced by anything else.
+    #[cfg(target_os = "oxide-kernel")]
+    unsafe { GLOBAL_ALLOC.init_static() };
+
     klog::kinfo!("init started");
+
+    // Smoke test: round-trip a `vmm::VmaTree` through the heap so a
+    // boot trace surfaces any allocator-vs-BTreeMap incompatibility
+    // before further subsystems wire up.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let mut tree = vmm::VmaTree::new();
+        // SAFETY: addresses are within the user-VA range (0x1000 < USER_VA_END).
+        let start = hal::UserVirtAddr::new(0x1000).expect("test addr in user range");
+        let end   = hal::UserVirtAddr::new(0x2000).expect("test addr in user range");
+        let _ = tree.insert(vmm::Vma::new(
+            start, end,
+            vmm::VmaProt::READ,
+            vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
+            vmm::VmaBacking::Anonymous,
+        ));
+        let _ = core::hint::black_box(tree.len());
+    }
+
     halt_forever()
 }
 
