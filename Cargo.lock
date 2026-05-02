@@ -16,6 +16,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
 name = "klog"
 version = "0.1.0"
 
