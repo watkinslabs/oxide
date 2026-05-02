@@ -676,6 +676,7 @@ dependencies = [
  "bitflags",
  "hal",
  "klog",
+ "sync",
 ]
 
 [[package]]
