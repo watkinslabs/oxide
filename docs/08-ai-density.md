@@ -1,6 +1,6 @@
 # 08 AI-Density
 
-DRAFT 2026-05-02. Dep:`02`.
+FROZEN 2026-05-02. Dep:`02`.
 
 Audience=AI. Optimize tokens. Never lose capability/invariant/test/constraint. Compress prose only.
 
@@ -75,8 +75,3 @@ Post-sweep rule: future revisions stay dense. Lint (§6) catches drift.
 - `pub fn` doc-comment is only the markers from `09§6`.
 - `unsafe {` followed by `// SAFETY:` line ≥30 chars.
 
-## 7 OQ
-
-- Hard line-cap per spec? No; trust §1+§2.
-- Auto-summarizer that ratchets density score? Worth a `tools/density-meter/` script: outputs prose-line-% per file. Defer.
-- Pure-data spec format (TOML/JSON for invariants, prose only for OQ)? Tempting; loses cross-spec readability. Defer.
