@@ -20,8 +20,13 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod mmu;
 mod pt_regs;
 pub use context::ContextX86_64;
+pub use mmu::{
+    flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,
+    ENTRIES_PER_TABLE, PD_SHIFT, PDPT_SHIFT, PML4_SHIFT, PT_SHIFT, PTE_PHYS_MASK,
+};
 pub use pt_regs::{oxide_dispatch_from_pt_regs_x86_64, PtRegsX86_64};
 
 /// IRQ gate: save RFLAGS + clear IF (`cli`) on disable; restore RFLAGS
