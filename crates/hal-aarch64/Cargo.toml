@@ -8,5 +8,6 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-hal  = { path = "../hal" }
-sync = { path = "../sync" }
+hal     = { path = "../hal" }
+sync    = { path = "../sync" }
+syscall = { path = "../syscall" }
