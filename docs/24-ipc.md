@@ -1,6 +1,6 @@
 # 24 IPC: pipes, signals, futex, eventfd, signalfd, timerfd, AF_UNIX
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
 ## 1 Purpose
 
 Bundle of small inter-task primitives. Each is small individually; spec'd together because they share patterns (wait queue + fd-as-handle).
@@ -113,9 +113,3 @@ Backing: per-socket pair of intrusive ring buffers; SCM messages out-of-band rin
 
 `13` (signal delivery checks at preempt/syscall return), `15` (syscalls), `25` (AF_UNIX as a socket family), `23` (timerfd backing).
 
-## 16 Open Questions
-
-- Robust futex list verification: validate user pointers each access (cost) or trust? Lean: trust + `EFAULT`-on-fault.
-- POSIX message queues (`mq_*`): defer to v2.
-- `eventfd2` with EFD_SEMAPHORE for fairness vs perf: copy Linux exactly.
-- PI futexes: v1.x.
