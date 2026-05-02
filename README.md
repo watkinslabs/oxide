@@ -18,4 +18,4 @@ Pre-code. Spec corpus complete and internally consistent (46 specs, all DRAFT). 
 
 ## License
 
-TBD (lean toward MIT / Apache-2.0 dual; v1 issue).
+MIT
