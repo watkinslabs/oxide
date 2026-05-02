@@ -4,7 +4,15 @@ Resumable checkpoint. Update at session exit. Next session reads this first alon
 
 ## Phase
 
-**Spec corpus FROZEN. Allocator + sync substrate landed with extensive tests + Linux discipline rules.** 50 PRs landed; 126 hosted tests pass; both kernel targets build clean. Boot wiring + bodies for vmm/sched/etc. are next.
+**Spec corpus FROZEN. Allocator + sync substrate landed with extensive tests + Linux discipline rules.** 51 PRs landed; 126 hosted tests pass; both kernel targets build clean. Boot wiring + bodies for vmm/sched/etc. are next.
+
+Last verified-green at session-2 EOD (this commit's parent on `main`):
+```
+$ cargo run -p spec-lint -- all   # → clean
+$ cargo test --workspace          # → 126 passed, 0 failed
+$ cargo run -p xtask -- kernel --arch x86_64 --profile dev   # → libkernel.rlib
+$ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rlib
+```
 
 ## What's done in session 2 (PRs #42–#50)
 
@@ -109,13 +117,16 @@ In rough order:
 ## Repo state
 
 ```
-main (origin/main): 9bee613 Merge pull request #50 from watkinslabs/P1-07-slab-magazines
+main (origin/main): e29adf7 Merge pull request #51 from watkinslabs/C14-state-eod-session-2
 
-50 PRs landed total. Branches preserved (no deletions).
+51 PRs landed total. Branches preserved (no deletions).
 
-Session 2 (PRs #42–#50, 9 PRs):
-  P1-03 → R03 → C13 → P1-04 → P1-05 → R04 → B05 → P1-06 → P1-07
+Session 2 (PRs #42–#51, 10 PRs):
+  P1-03 → R03 → C13 → P1-04 → P1-05 → R04 → B05 → P1-06 → P1-07 → C14
 ```
+
+Active local branches at EOD: just `main` (touchup branch will merge).
+Working tree clean.
 
 Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
@@ -133,16 +144,27 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 ## Resume protocol next session
 
-1. Read `state.md` (this file).
-2. Read `CLAUDE.md`.
-3. Read `docs/MANIFEST.md`.
-4. `git log --oneline -10` and `git status`.
-5. `cargo run -p spec-lint -- all` — clean.
-6. `cargo test --workspace` — 126 tests pass.
-7. `cargo run -p xtask -- kernel --arch x86_64 --profile dev` — `libkernel.rlib`.
-8. Pick next pending. Two highest-leverage options:
-   - **klog real impl (P1-08)** — closes gap between R04 spec and code; unblocks production klog calls.
-   - **vmm VMA tree (P1-09)** — next in `boot-flow.md` dep order; hosted-testable without HAL MmuOps.
+Run these in order; expected outputs in parens.
+
+1. `cd /home/nd/oxide2 && git status` (clean, on `main`)
+2. `git log --oneline -5` (HEAD = the C15 merge or this commit's descendant)
+3. Read this file (`state.md`).
+4. Read `CLAUDE.md`.
+5. Read `docs/MANIFEST.md` for spec corpus + freeze-order.
+6. `cargo run -p spec-lint -- all` (`spec-lint: clean`)
+7. `cargo test --workspace` (`126 passed, 0 failed` — number grows as new tests land)
+8. `cargo run -p xtask -- kernel --arch x86_64 --profile dev` (produces `libkernel.rlib`)
+9. `cargo run -p xtask -- kernel --arch aarch64 --profile dev` (same)
+
+Then pick the next branch. Three highest-leverage options:
+
+| Option | Branch idea | Why pick this |
+|---|---|---|
+| **klog real impl** | `P1-08-klog-percpu-ring` | Closes gap between `04§4` spec and code. Validates R04 contract. Unblocks production klog calls anywhere (no more "is this safe in this ctx?" audits). ~300 LOC + tests. |
+| **vmm VMA tree** | `P1-09-vmm-vma-tree` | Next subsystem in `boot-flow.md` dep order. VMA tree (rbtree) is hosted-testable without HAL MmuOps. Page-fault handler + COW lands later when MmuOps does. |
+| **boot path → "init started"** | `P1-10-boot-x86_64-asm` | Chases Phase 0 exit gate. x86_64 `_start` asm + Limine handoff + 16550 UART backend → kernel actually prints "init started" in QEMU. Multi-day per-arch asm work. |
+
+If unsure: **klog ring**. It's the smallest scope-bounded win and it removes ongoing audit burden across every future call site.
 
 ## Open questions for user (deferred)
 
