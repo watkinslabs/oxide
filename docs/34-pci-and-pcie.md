@@ -1,6 +1,6 @@
 # 34 PCI/PCIe
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`11`,`19`,`22`,`33`,`35`. Provides:every PCIe device driver.
+FROZEN 2026-05-02. Dep:`01`,`02`,`11`,`19`,`22`,`33`,`35`. Provides:every PCIe device driver.
 ## 1 Purpose
 
 Enumerate PCIe devices via ECAM. Allocate BARs (or read pre-assigned). Configure MSI-X. Expose `/sys/bus/pci/devices/`. No legacy 0xCF8/0xCFC config-cycle access.
@@ -95,8 +95,3 @@ Enumeration single-threaded at boot. Post-boot config writes serialized per-brid
 
 `33` (MCFG/DT for ECAM regions), `22` (IRQ alloc/route), `19` (`/sys/bus/pci/`), `35` (driver match by VID/DID).
 
-## 15 Open Questions
-
-- IOMMU enablement timeline: v1.x dependent on driver-friendliness validation.
-- PCI hot-plug: defer to v2.
-- VFIO (PCIe passthrough to userspace): defer to v2.
