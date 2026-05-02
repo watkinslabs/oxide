@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`.
 
+## Revision 2026-05-02 (C13)
+
+- Changed: added §7 "File length cap" (1000-line hard, 500-line soft target).
+- Why: large files defeat AI re-reading — token-load grows linearly while context-window stays fixed. Split-into-submodules keeps each unit under one cache window. Reinforces the §1+§2 density target at the file granularity.
+- Affected code: `tools/spec-lint/` gains `length_lint.rs`; `spec-lint length` + `all` enforce the cap. CLAUDE.md§"File length cap" mirrors.
+- Test contract change: §6 lint enforcement adds the file-length check.
+
 Audience=AI. Optimize tokens. Never lose capability/invariant/test/constraint. Compress prose only.
 
 ## 1 Doc rules
@@ -74,4 +81,23 @@ Post-sweep rule: future revisions stay dense. Lint (§6) catches drift.
 - Forbidden phrases (§4) grep-failed.
 - `pub fn` doc-comment is only the markers from `09§6`.
 - `unsafe {` followed by `// SAFETY:` line ≥30 chars.
+- File length ≤ `MAX_LINES` per §7 (`spec-lint length`).
+
+## 7 File length
+
+Hard cap: 1000 lines per `.rs` or `.md` file. Soft target: 500.
+
+| Path | Tree |
+|---|---|
+| `crates/**/*.rs` | enforced |
+| `kernel/**/*.rs` | enforced |
+| `tools/**/*.rs` | enforced |
+| `docs/**/*.md` | enforced (excludes `docs/v2/`) |
+
+Above 1000 ⇒ build fail. Above 500 ⇒ next-touch split. Splits:
+
+- Rust: `mod foo; foo/{a.rs,b.rs,...}`. Tests: `tests/<feature>.rs` not single `tests.rs`.
+- Markdown: sister doc cited via `<doc>§<sec>`; do not duplicate content.
+
+Why: AI re-reads docs/code repeatedly; token cost compounds. A 2000-line file costs 4× a 500-line file across all future reads. Cap is forcing function for modularity.
 
