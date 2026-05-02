@@ -9,10 +9,66 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
+name = "block"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "drv"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "elf"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "err"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "firmware"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
 name = "hal"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "iouring"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "ipc"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
 ]
 
 [[package]]
@@ -28,8 +84,128 @@ name = "klog"
 version = "0.1.0"
 
 [[package]]
+name = "modules"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "net"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "nscg"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "obs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "pci"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "pmm"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "power"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "procfs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "sched"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "security"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "slab"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
 name = "spec-lint"
 version = "0.1.0"
+
+[[package]]
+name = "syscall"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "tty"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "vfs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
+
+[[package]]
+name = "vmm"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+]
 
 [[package]]
 name = "xtask"

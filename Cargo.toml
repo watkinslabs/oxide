@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tools/spec-lint", "tools/xtask", "crates/klog", "crates/hal", "kernel"]
+members = ["tools/spec-lint", "tools/xtask", "kernel", "crates/hal", "crates/klog", "crates/pmm", "crates/slab", "crates/vmm", "crates/sched", "crates/syscall", "crates/vfs", "crates/block", "crates/modules", "crates/procfs", "crates/ipc", "crates/security", "crates/nscg", "crates/net", "crates/tty", "crates/iouring", "crates/elf", "crates/power", "crates/firmware", "crates/pci", "crates/drv", "crates/obs", "crates/err"]
 
 [profile.release]
 opt-level = 3
