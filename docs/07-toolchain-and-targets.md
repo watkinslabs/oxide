@@ -1,6 +1,6 @@
 # 07 Toolchain + Targets
 
-DRAFT 2026-05-02. Dep:`02`,`08`.
+FROZEN 2026-05-02. Dep:`02`,`08`.
 
 One pinned nightly. Four custom target JSONs (kernel×2, user×2). Three build profiles. `panic=abort` everywhere kernel.
 
@@ -191,10 +191,3 @@ xtask doc-check
 
 (none)
 
-## 12 OQ
-
-- AVX/SSE in select kernel hot paths (`memcpy`/checksum)? Lean: no; cost of save-on-every-entry huge per `14§7`.
-- Stack canaries (`+stack-protector=strong`): kernel default on; `+nostack-protect` cfg for hot paths if bench shows. Provide `__stack_chk_fail`/`__stack_chk_guard`.
-- `code-model` aarch64: not in JSON; PC-relative ±2GiB suffices; document in linker script.
-- Hosted tests for kernel crates: `[target.'cfg(test)']` to host triple; pattern in `42`.
-- Upstream `*-unknown-oxide-kernel` to rustc: after v1 + 2y ABI stability. Userspace `*-unknown-oxide`: only when v2 wants distinct ABI per `29a§2`.
