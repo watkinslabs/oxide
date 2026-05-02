@@ -33,6 +33,13 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 - klog macros only accept `&'static str` format strings (compile-time interned).
 - Names short within scope (`pfn`,`pa`,`va`,`sb`,`ino`,`tid`) per `09`.
 
+## File length cap (`docs/08§7`)
+
+- Hard cap: **1000 lines** per `.rs` or `.md` file. CI fail above. Applies to `crates/**`, `kernel/**`, `tools/**`, `docs/**` (excluding `docs/v2/`).
+- Soft target: **500 lines**. Above 500 → consider splitting at next touch.
+- Split big files into submodules: Rust `mod foo; foo/{a.rs,b.rs}`; markdown into sister docs cross-referenced via `<doc>§<sec>`.
+- Tests count toward the cap — split `tests.rs` into `tests/<feature>.rs` once it grows.
+
 ## Doc style hard rules (`docs/08`)
 
 - Section headers: `## N` (number only) outside charters `00`–`09`.
