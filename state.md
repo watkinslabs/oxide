@@ -88,6 +88,6 @@ In execution order:
 
 ## Open questions for user (deferred)
 
-- LICENSE choice (MIT/Apache-2.0 dual recommended).
+- LICENSE choice MIT
 - Whether to push `state.md` updates as their own branches each session, or amend onto the active feature branch.
 - Whether to add a CI status-badge to README.md once GHA is up.
