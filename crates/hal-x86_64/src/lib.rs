@@ -20,7 +20,9 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod pt_regs;
 pub use context::ContextX86_64;
+pub use pt_regs::{oxide_dispatch_from_pt_regs_x86_64, PtRegsX86_64};
 
 /// IRQ gate: save RFLAGS + clear IF (`cli`) on disable; restore RFLAGS
 /// (which restores IF) on restore. Pairs with `Spinlock::lock_irqsave`
