@@ -1,9 +1,6 @@
 # 33 Firmware Tables (ACPI + DT)
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`19`,`20`,`21`,`34`.
-Provides to: PMM (mem map), `13` (CPU topology), `34` (PCI host bridges, MSI), IrqOps (controller), Time (frequency).
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`19`,`20`,`21`,`34`. Provides:PMM (mem map), `13` (CPU topology), `34` (PCI host bridges, MSI), IrqOps (controller), Time (frequency).
 ## 1 Purpose
 
 Parse static ACPI tables (x86, optionally arm) and DT (arm primary; x86 fallback never). Expose results to subsystems.

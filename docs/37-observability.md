@@ -1,9 +1,6 @@
 # 37 Observability
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`04`,`13`,`19`,`23`,`38`.
-Provides to: userspace tools (`dmesg`,`perf`,`bpftrace` v1.x).
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` v1.x).
 ## 1 Purpose
 
 Logging surface (`klog`), tracing (static tracepoints, function tracer), perf counters (PMU), eBPF (deferred). Crash dump (defer).

@@ -1,9 +1,6 @@
 # 21 HAL aarch64
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`07`,`14`,`22`,`23`,`38`.
-Provides to: kernel.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`22`,`23`,`38`. Provides:kernel.
 ## 1 Purpose
 
 aarch64 impl of HAL traits. Boot trampoline (EL2→EL1 drop). Vector table. GICv3 driver. Generic Timer. Per-CPU via `tpidr_el1`.

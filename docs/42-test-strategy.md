@@ -1,8 +1,6 @@
 # 42 Test Strategy
 
-Status: DRAFT 2026-05-02
-Depends on: `02`,`05`,`06`,`07`,`08`,`40`.
-
+DRAFT 2026-05-02. Dep:`02`,`05`,`06`,`07`,`08`,`40`.
 ## 1 Purpose
 
 Concrete patterns: oracle property tests, loom, miri, hosted vs in-kernel tests, fuzz, soak. How each integrates with the workspace and CI.
@@ -22,7 +20,7 @@ Concrete patterns: oracle property tests, loom, miri, hosted vs in-kernel tests,
 | Hosted unit | `crates/<x>/src/**` `#[cfg(test)]` | `cargo test --target host` | fast |
 | Property (proptest) | `crates/<x>/tests/prop/` | `cargo test prop` | medium |
 | Loom | `crates/<x>/tests/loom/` | `RUSTFLAGS=--cfg loom cargo test` | slow |
-| Miri | hosted unit tests under miri | `cargo +nightly miri test` | very slow |
+| Miri | hosted unit tests under miri | `cargo +nightly miri test` | slow |
 | In-kernel | `tests/integration/` | `xtask test --kernel` boots image w/ test runner | medium |
 | QEMU smoke | `tests/qemu/` | `xtask qemu` w/ expected output match | fast |
 | Bench | `bench/` (criterion or custom) | `xtask bench` | medium |

@@ -1,9 +1,6 @@
 # 25 Networking
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34`.
-Provides to: `15` socket syscalls, drivers, eBPF (v1.x).
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34`. Provides:`15` socket syscalls, drivers, eBPF (v1.x).
 ## 1 Purpose
 
 IPv4 + IPv6 + AF_UNIX + AF_PACKET + AF_NETLINK + AF_VSOCK + AF_XDP. TCP + UDP + ICMP/ICMPv6. Routing, neighbor (ARP/NDP), netfilter-equivalent (basic). Driver model: `NetDev` trait with skb-equivalent buffers.

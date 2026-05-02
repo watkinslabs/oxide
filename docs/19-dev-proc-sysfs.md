@@ -1,9 +1,6 @@
 # 19 dev/proc/sysfs
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`16`,`18`,`35`.
-Provides to: every userspace tool that introspects (`ps`,`top`,`free`,`udev`,`mount`,`lsmod`,...).
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`16`,`18`,`35`. Provides:every userspace tool that introspects (`ps`,`top`,`free`,`udev`,`mount`,`lsmod`,...).
 ## 1 Purpose
 
 Three pseudo-FSes that present kernel state as a tree of files. Surface defined by Linux compatibility (per `03§5.1–5.3`).

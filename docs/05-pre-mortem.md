@@ -17,7 +17,7 @@ systemd≥254 uses BPF: `IPAccounting=`, `IPAddressDeny=`, `RestrictNetworkInter
 Fix: systemd→v2 (`43§4`). v1.x adds BPF subset. Don't quietly miss.
 
 ### A3 runc OCI vs no-FUSE
-Rootless containers need fuse-overlayfs (real overlayfs needs CAP_SYS_ADMIN in init userns until very recent). Privileged runc fine without FUSE.
+Rootless containers need fuse-overlayfs (real overlayfs needs CAP_SYS_ADMIN in init userns until recent kernels). Privileged runc fine without FUSE.
 Fix: v1.x = privileged runc only. Rootless = v2 (`43§3`).
 
 ### A4 ext4+journal in 4 weeks
