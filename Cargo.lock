@@ -17,6 +17,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot-aarch64"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "kernel",
+ "klog",
+]
+
+[[package]]
+name = "boot-x86_64"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "kernel",
+ "klog",
+]
+
+[[package]]
 name = "drv"
 version = "0.1.0"
 dependencies = [
