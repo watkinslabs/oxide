@@ -1,6 +1,6 @@
 # 26 Namespaces + cgroup v2
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 ## 1 Purpose
 
 Namespaces (mnt, pid, net, uts, ipc, user, cgroup, time) and cgroup v2 unified hierarchy.
@@ -125,9 +125,3 @@ pub fn cg_get(path:&str, file:&str) -> KR<String>;
 
 `13` (CFS+RT honor cpu.weight, cpu.max), `27` (capabilities scoped to user-ns), `15` (syscalls), `19` (sysfs `/sys/fs/cgroup/`).
 
-## 12 Open Questions
-
-- Hierarchical group scheduling for CFS (per-cgroup runqueues): defer; v1 uses per-cgroup quota+weight at task pick time, not full hierarchy.
-- Cgroup BPF programs: v1.x with BPF.
-- `delegation` (cgroup.threads vs cgroup.procs in unprivileged subtrees): copy Linux exactly.
-- `misc` controller (devices, etc.): v1.x.

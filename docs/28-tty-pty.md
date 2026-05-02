@@ -1,6 +1,6 @@
 # 28 TTY + PTY
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`16`,`19`,`24`. Provides:`getty`/`login`/shells, `openssh`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`16`,`19`,`24`. Provides:`getty`/`login`/shells, `openssh`.
 ## 1 Purpose
 
 Terminal subsystem: line discipline (N_TTY canonical mode, raw mode), session/process-group control, signal generation (Ctrl-C, Ctrl-Z), UNIX98 PTY pairs.
@@ -91,8 +91,3 @@ Hangup: `vhangup`/loss-of-carrier → SIGHUP to session leader and fg pgrp; tty 
 
 `16` (devpts as FS), `19` (`/dev/pts`,`/dev/ptmx`), `24` (signal delivery), `13` (pgrp for signal targeting).
 
-## 13 Open Questions
-
-- ldisc plugin slot for SLIP/PPP/uart-like: defer to v2 (no dial-up).
-- Console multiplexing (`/dev/console` may be redirected to first tty): support via `console=tty1` cmdline.
-- Wide-char / UTF-8 awareness in canonical edit: treat bytes; let userspace handle UTF-8 width.
