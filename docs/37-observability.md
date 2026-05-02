@@ -1,6 +1,6 @@
 # 37 Observability
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` v1.x).
+FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` v1.x).
 ## 1 Purpose
 
 Logging surface (`klog`), tracing (static tracepoints, function tracer), perf counters (PMU), eBPF (deferred). Crash dump (defer).
@@ -116,9 +116,3 @@ PMU access: per-CPU MSR; group locking when multiple counters share a group.
 
 `04` (logger spec), `19` (`/dev/kmsg`,`/sys/kernel/tracing`), `15` (perf_event_open), `38` (panic→klog drain to UART).
 
-## 17 Open Questions
-
-- Logging back-pressure: drop on full vs block? Lean: drop + counter.
-- BPF subset depth in v1.x: socket filters first, then kprobes.
-- Crash dump format (ELF coredump-like): defer.
-- ftrace function-graph: defer.
