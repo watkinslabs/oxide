@@ -1,15 +1,15 @@
-# State 2026-05-02 (session 4 EOD)
+# State 2026-05-02 (session 5 EOD)
 
 Resumable checkpoint. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`.
 
 ## Phase
 
-**HAL-independent kernel foundation essentially complete.** 70 PRs landed; 367 hosted tests pass; both kernel targets build clean. Session 4 added FS data path (block + page cache), pseudo-FS primitive, signals, ELF parser, net basics, observability (counters + tracepoints), and the kernel symbol table on top of the session-3 base.
+**HAL bodies + boot bring-up.** 80 PRs landed; 437 hosted tests pass; both kernel targets build clean. Session 5 landed the per-arch HAL implementation surface (CpuOps / TimerOps / Context / PtRegs / MMU types + flush asm / FPU lazy-save) and the boot front halves (Limine + Flat Device Tree handoff parsers + 16550 / PL011 UART drivers + real `_start` asm with stack swap). All assembly stays cfg-gated inside the per-arch crates per `07§5`; layout-pinning tests catch any field reorder before silent corruption.
 
-Last verified-green at session-4 EOD:
+Last verified-green at session-5 EOD:
 ```
 $ cargo run -p spec-lint -- all   # → clean
-$ cargo test --workspace          # → 367 passed, 0 failed
+$ cargo test --workspace          # → 437 passed, 0 failed
 $ cargo run -p xtask -- kernel --arch x86_64 --profile dev   # → libkernel.rlib
 $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rlib
 ```
@@ -42,6 +42,21 @@ $ cargo run -p xtask -- kernel --arch aarch64 --profile dev  # → libkernel.rli
 | #69 | `P1-22-obs-trace` | `crates/obs/`: software `Counter` (atomic u64 + global registry) + static `TracePoint` (cheap-branch enable bit + global `Tracer` callback) per `37§3`-§6. |
 | #70 | `P1-23-modules-symtab` | `crates/modules/`: kernel symbol table per `18§7`. `KsymEntry`, `export` / `export_module` / `unexport_module` / `resolve` (with GPL gating per invariant 5) / `is_exported` / `snapshot`. Adds `sync::Modules = 65` lock class. |
 
+## What's done in session 5 (PRs #71–#80)
+
+| PR | Branch | Lands |
+|---|---|---|
+| #71 | `C18-state-eod-session-4` | state.md session-4 EOD checkpoint. |
+| #72 | `P1-24-hal-cpuops-timerops` | `X86CpuOps` + `X86TimerOps` (`mov %gs:0`, `wrgsbase`, `rdtsc` with calibrated `TSC_KHZ`) + `ArmCpuOps` + `ArmTimerOps` (`mrs/msr tpidr_el1`, `mrs cntvct_el0` with calibrated `CNTFRQ_KHZ`). |
+| #73 | `P1-25-hal-context` | `ContextX86_64` + `ContextAArch64` per `14§5` / `14§6`; `oxide_context_switch` + `oxide_trampoline_kernel` global_asm! per arch; layout-pinning tests so any field reorder breaks before silent corruption. |
+| #74 | `P1-26-hal-pt-regs` | `PtRegsX86_64` + `PtRegsAArch64` per `15§1.1`/`§1.2` + `oxide_dispatch_from_pt_regs_*` Rust bridge that converts the saved register frame to `SyscallArgs`, calls `syscall::dispatch`, writes the i64 result back to the userspace-visible return register. |
+| #75 | `P1-27-hal-mmu-types` | `PteX86_64` + `PteArm64` bitflags per `20§5` / `21§5`; 4-level walk constants + `va_to_indices`; native↔arch flag conversion (W^X via NX / PXN+UXN); TLB flush asm (`invlpg` / `mov cr3, cr3` / `tlbi vae1is` / `tlbi vmalle1`). |
+| #76 | `P1-28-hal-fpu` | `FpuStateX86_64` (FXSAVE 512 B) + `FpuStateAArch64` (q0..q31 + fpcr/fpsr 528 B); `fpu_save` / `fpu_restore` (FXSAVE/FXRSTOR ; stp/ldp + mrs/msr fpcr+fpsr); `fpu_disable` / `fpu_enable` (CR0.TS ; CPACR_EL1.FPEN); per-arch `FPU_OWNER: AtomicPtr<_>`. |
+| #77 | `P1-29-boot-x86-start` | `crates/boot-x86_64/`: Limine ≥ 6.0 protocol — request id magic constants, `RequestHeader<R>` with `AtomicPtr` response slot, `LIMINE_MEMMAP` / `_HHDM` / `_RSDP` statics in `.limine_requests`, `MemmapKind → kernel::BootMemKind` mapping. 16550A UART driver (115200-8N1, FIFO) with port-IO asm cfg-gated and host-fallback recorder. Linker script gets `.limine_requests` section. |
+| #78 | `P1-30-boot-aarch64-start` | Mirror for aarch64: PL011 driver per ARM PrimeCell r1p5 (24 MHz QEMU virt clock → IBRD=13/FBRD=1, 8N1, FIFO); FDT header parser per `36§4` with magic / version / totalsize validation. |
+| #79 | `P1-31-boot-x86-real-start` | Real `_start` for x86_64: inline asm swaps RSP to `KERNEL_STACK + STACK_SIZE`, calls `_start_rust` which reads `LIMINE_MEMMAP.response`, populates a `[BootMemRegion; 256]` BSS array via the new `populate_memmap_into` pure helper, tail-calls `kernel_main`. |
+| #80 | `P1-32-boot-aarch64-real-start` | Mirror for aarch64: `_start(dtb_phys: u64)` stashes the DTB pointer in `DTB_PHYS_ADDR: AtomicU64` before swapping `sp`, calls `_start_rust` which validates `dtb::parse_header(view)` and falls back to an empty `BootInfo` on any error. `/memory` walker rides with PMM init. |
+
 ## What's done overall
 
 ### Spec corpus (44 / 46 FROZEN; revised earlier sessions)
@@ -58,11 +73,12 @@ Unchanged: `tools/spec-lint`, `tools/xtask`, `Cargo.toml`, `rust-toolchain.toml`
 |---|---|---|
 | `kernel/` | lib; `kernel_main(&BootInfo)`; `#[global_allocator]` (cfg `oxide-kernel`); VmaTree boot smoke | builds host + both kernel targets |
 | `crates/hal/` | trait-only + `UserVirtAddr` per `01§1` | builds; 2 hosted tests |
-| `crates/hal-x86_64/` | IrqGate + halt + mmio_barrier | builds; 4 hosted tests |
-| `crates/hal-aarch64/` | IrqGate + halt + mmio_barrier | builds; 4 hosted tests |
+| `crates/hal-x86_64/` | IrqGate + halt + mmio_barrier + CpuOps + TimerOps + Context + PtRegs + MMU types + FPU lazy-save | builds; 27 hosted tests |
+| `crates/hal-aarch64/` | IrqGate + halt + mmio_barrier + CpuOps + TimerOps + Context + PtRegs + MMU types + FPU lazy-save | builds; 28 hosted tests |
+| `crates/boot-x86_64/` | Limine request slots + 16550 UART + real `_start` + memmap parser | builds; 13 hosted tests |
+| `crates/boot-aarch64/` | DTB header parser + PL011 UART + real `_start` (DTB ptr stash) | builds; 12 hosted tests |
 | `crates/sync/` | Spinlock + 17 LockClass (incl `KMalloc`, `Modules`) + IrqGate + PerCpu + RwLock | builds; 16 hosted tests |
 | `crates/klog/` | macros + `.klog_strings` + Uart + `Ring<N>` MPSC + NMI ringlet | builds; 13 hosted tests |
-| `crates/boot-x86_64/`, `crates/boot-aarch64/` | shells; no asm | builds |
 | `crates/pmm/` | Linux-class buddy + lock-free page_ptr + `PageMetaArr` | 63 hosted tests; proptest oracle |
 | `crates/slab/` | Cache<T,B,I,S> + per-CPU magazines | 30 hosted tests |
 | `crates/kalloc/` | sorted-hole-list GlobalAlloc on 16 MiB BSS heap | 9 hosted tests |
@@ -81,7 +97,7 @@ Unchanged: `tools/spec-lint`, `tools/xtask`, `Cargo.toml`, `rust-toolchain.toml`
 | `targets/{x86_64,aarch64}-unknown-oxide-kernel.json` | rustc target specs | both produce `libkernel.rlib` |
 | `link/{x86_64,aarch64}-kernel.ld` | linker scripts | not yet exercised |
 
-Workspace test count: **367 passed, 0 failed**.
+Workspace test count: **437 passed, 0 failed**.
 
 ### Linux-discipline rules in place
 
@@ -102,11 +118,19 @@ Workspace test count: **367 passed, 0 failed**.
 
 ## What's NOT done (pending tasks)
 
-In rough order. Most of the remaining front-half is HAL-blocked.
+In rough order. Per-arch HAL bodies + boot front halves landed in session 5; what remains needs the **kernel-side direct-map + IDT/EL1-vector setup + PMM init + per-CPU bring-up** to be threaded together.
 
-1. **HAL impl beyond IrqGate**: `CpuOps::current_cpu` (read GS_BASE/TPIDR_EL1), `MmuOps::map/unmap`, `Context` (asm ctx-switch per `14§5`/`14§6`), `IrqOps` (APIC/GICv3), `TimerOps`, `syscall_entry` trampoline. Each is days of asm. **Blocks: vmm fault path / sched.schedule() / sched.timer_tick / syscall trampoline / klog macro→ring wiring.**
+1. **`MmuOps::map`/`unmap`/`translate` walker**: PTE encoding ✓ (#75); flush asm ✓ (#75). Walker needs the kernel direct-map (linker-resident; needs an HHDM offset pulled from Limine), a PMM handle for intermediate-table allocation, and a global active-PT-root tracker.
 
-2. **Boot crates real bodies**: x86_64 `_start` asm + Limine handoff; aarch64 `_start` asm + EDK2/U-Boot+DTB. UART backends (16550 PIO / PL011 MMIO).
+2. **`oxide_syscall_entry` trampoline asm** (`15§4.1`): `PtRegs` struct + dispatch bridge ✓ (#74). The asm landing pad needs KPTI + per-CPU kernel stack + `syscall` MSR (`LSTAR` / `EFER.SCE`) bring-up.
+
+3. **`IrqOps` (APIC + GICv3)** (`22§*`): IDT install (x86) + VBAR_EL1 install (arm); LVT vector setup; APIC base discovery via ACPI MADT / GIC distributor + redistributor MMIO programming. Once vectors exist, `set_oneshot` body lights up.
+
+4. **VMM page-fault path** (`11§5` + `11§7`): COW, fork, TLB shootdown — needs MmuOps walker + per-AS PT spinlock.
+
+5. **sched::schedule()**: `Context::switch` ✓ (#73); needs per-CPU `Spinlock<RunqueueInner>` + `need_resched` + `preempt_count` plumbing; `wake_up` cross-CPU IPI (IrqOps); `timer_tick` (TimerOps deadline + IRQ vector).
+
+6. **Boot post-`_start` work**: `_start` ✓ (#79, #80); IDT setup + KPTI table bootstrap + UART hookup to klog macros so `kinfo!("init started")` actually emits in QEMU; `/memory` DTB walker + Limine framebuffer / RSDP responses populated through to consumers.
 
 3. **VMM page-fault path** (`11§5` + `11§7`): COW, fork, TLB shootdown. Needs HAL MmuOps + per-AS PT spinlock.
 
@@ -140,14 +164,13 @@ In rough order. Most of the remaining front-half is HAL-blocked.
 ## Repo state
 
 ```
-main (origin/main): 0b4204c Merge pull request #70 from watkinslabs/P1-23-modules-symtab
+main (origin/main): 0868892 Merge pull request #80 from watkinslabs/P1-32-boot-aarch64-real-start
 
-70 PRs landed total. Branches preserved (no deletions).
+80 PRs landed total. Branches preserved (no deletions).
 
-Session 3 (PRs #53–#61, 9 PRs):
-  P1-08 → P1-09 → P1-10 → P1-11 → P1-12 → P1-13 → P1-14 → P1-15 → P1-16
-Session 4 (PRs #62–#70, 9 PRs):
-  C16 → P1-17 → P1-18 → P1-19 → C17 → P1-20 → P1-21 → P1-22 → P1-23
+Session 3 (PRs #53–#61, 9 PRs):  P1-08 → P1-16
+Session 4 (PRs #62–#70, 9 PRs):  C16 → P1-17 → P1-18 → P1-19 → C17 → P1-20 → P1-21 → P1-22 → P1-23
+Session 5 (PRs #71–#80, 10 PRs): C18 → P1-24 → P1-25 → P1-26 → P1-27 → P1-28 → P1-29 → P1-30 → P1-31 → P1-32
 ```
 
 Active local branches at EOD: `main`. Working tree clean.
@@ -176,20 +199,19 @@ Run these in order; expected outputs in parens.
 4. Read `CLAUDE.md`.
 5. Read `docs/MANIFEST.md` for spec corpus + freeze-order.
 6. `cargo run -p spec-lint -- all` (`spec-lint: clean`)
-7. `cargo test --workspace` (`367 passed, 0 failed` — number grows as new tests land)
+7. `cargo test --workspace` (`437 passed, 0 failed` — number grows as new tests land)
 8. `cargo run -p xtask -- kernel --arch x86_64 --profile dev` (produces `libkernel.rlib`)
 9. `cargo run -p xtask -- kernel --arch aarch64 --profile dev` (same)
 
-Then pick the next branch. Most HAL-free skeletons are now in. Remaining hosted-testable HAL-free options:
+Then pick the next branch. HAL primitives + boot front halves are in; next thread is wiring them together for an actual hello-world boot.
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **VFS dentry cache + Superblock + Filesystem trait** | `P1-24-vfs-cache` | Builds on #61; introduces RCU primitive (`06§3.5`) along the way. Larger scope. |
-| **security LSM-shaped traits** | `P1-24-security-lsm` | Bounded scope; lands the LSM hook surface (`27`) the rest of the kernel will call into. |
-| **tty/pty line discipline** | `P1-24-tty-foundation` | Pure data structures + state machine; unblocks console + getty; hosted-testable. |
-| **HAL CpuOps / MmuOps asm** | `P1-24-hal-impl-x86` | Accepts ≤200 LOC asm now to unblock vmm fault path, sched.schedule(), syscall_entry, klog ring → macro wiring. |
+| **IDT + APIC stub** | `P1-33-hal-idt-apic` | x86_64 IDT install + APIC base discovery + LVT timer vector. Unblocks `set_oneshot` body + the syscall trampoline's IRQ-state assumptions. |
+| **MmuOps walker** | `P1-33-mmu-walker` | Builds on #75 PTE encoding. Needs an HHDM offset (parse `LIMINE_HHDM` response) + a PMM handle for intermediate tables. ~400 LOC + tests. |
+| **klog UART hookup** | `P1-33-klog-uart-emit` | Wire `kinfo!`/`kerror!` macro emit path to the boot crate's UART so kernel_main's "init started" actually prints in QEMU. Smallest unit-of-progress. |
 
-If unsure: **HAL CpuOps / MmuOps asm**. The hosted-testable foundation is broad enough that further skeletons add diminishing value; HAL bodies unblock real boot. Phase 0 exit gate is hello-world boots both arches via QEMU — that's where the work is.
+If unsure: **klog UART hookup**. Smallest scope-bounded win and produces a *visible* boot trace, which makes everything else easier to debug.
 
 ## Open questions for user (deferred)
 
