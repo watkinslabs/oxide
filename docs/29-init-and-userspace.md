@@ -1,6 +1,14 @@
 # 29 Init + Userspace bring-up
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`. Provides:every running userspace.
+
+## Revision 2026-05-02 (R03)
+
+- Changed: added §4.1 "Build order".
+- Why: §4 names the musl fork + ld-oxide but never spells out the LFS-style sequence (cross-toolchain → UAPI export → musl → ld → apps → image). `xtask user` was a black box.
+- Affected code: `xtask user` lands as the orchestrator of steps 2–5 below; `xtask image` already covers step 6.
+- Test contract change: none.
+
 ## 1 Purpose
 
 PID 1 (init), libc, image build pipeline (initramfs + on-disk root), boot-to-shell sequence.
@@ -32,6 +40,21 @@ Vendored fork of musl at `userspace/libc/musl/`. Patches:
 - Define `__OXIDE__` macro for any oxide-specific code paths (none expected; goal is unmodified upstream behavior).
 - vDSO lookup via auxv `AT_SYSINFO_EHDR`.
 - Dynamic linker installed at `/lib/ld-oxide.so.1` (ELF interp path).
+
+### 4.1 Build order
+
+Userspace bring-up follows the LFS pattern (cross-toolchain → kernel-headers → libc → ld → apps):
+
+| Step | Artifact | Source | Consumes |
+|---|---|---|---|
+| 1 | cross-toolchain | `07§1` rustc + clang pin | — |
+| 2 | UAPI export | `xtask uapi-export` → `userspace/uapi/` | `15§6.7` |
+| 3 | musl fork | `userspace/libc/musl/` → `libc.{so,a}` + `usr/include/` | step 2 |
+| 4 | `ld-oxide.so.1` | `userspace/dynlink/` | step 3 |
+| 5 | coreutils / busybox / `init` | `userspace/{apps,init}/` | steps 3 + 4 |
+| 6 | initramfs + image | `xtask image` (§5) | kernel binary + step 5 |
+
+Kernel binary is independent of steps 2–5: built off step 1 only per `07§3.4`. Step 6 (image assembly) joins kernel binary + userspace artifacts into `boot.img`.
 
 ## 5 Image pipeline
 
