@@ -85,6 +85,11 @@ fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "aarch64" => "./targets/aarch64-unknown-oxide-kernel.json",
         other => { eprintln!("xtask kernel: unsupported arch `{other}`"); return Err(2); }
     };
+    let boot_pkg = match arch.as_str() {
+        "x86_64"  => "boot-x86_64",
+        "aarch64" => "boot-aarch64",
+        _ => unreachable!(),
+    };
     let mut c = Command::new("cargo");
     c.args([
         "build",
@@ -95,6 +100,7 @@ fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "--target", target,
         "--profile", &profile,
         "-p", "kernel",
+        "-p", boot_pkg,
     ]);
     run(c)
 }
