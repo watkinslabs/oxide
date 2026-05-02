@@ -61,12 +61,12 @@ impl PageBacking for HostedBacking {
 
 fn build(n_pages: u64) -> Pmm<HostedBacking> {
     let b = HostedBacking::new(n_pages);
-    Pmm::init(b, &[UsableRegion { start: Pfn(0), len_pfn: n_pages }]).unwrap()
+    Pmm::<HostedBacking>::init(b, &[UsableRegion { start: Pfn(0), len_pfn: n_pages }]).unwrap()
 }
 
 fn build_regions(total_pages: u64, regions: &[UsableRegion]) -> Pmm<HostedBacking> {
     let b = HostedBacking::new(total_pages);
-    Pmm::init(b, regions).unwrap()
+    Pmm::<HostedBacking>::init(b, regions).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -89,14 +89,14 @@ fn page_size_matches_hal() { assert_eq!(PAGE_SIZE_BYTES, 4096); }
 #[test]
 fn init_empty_regions_returns_err() {
     let b = HostedBacking::new(64);
-    assert_eq!(Pmm::init(b, &[]).err(), Some(Error::OutOfRange));
+    assert_eq!(Pmm::<HostedBacking>::init(b, &[]).err(), Some(Error::OutOfRange));
 }
 
 #[test]
 fn init_overflow_start_plus_len_returns_err() {
     let b = HostedBacking::new(64);
     let r = [UsableRegion { start: Pfn(u64::MAX - 5), len_pfn: 100 }];
-    assert_eq!(Pmm::init(b, &r).err(), Some(Error::OutOfRange));
+    assert_eq!(Pmm::<HostedBacking>::init(b, &r).err(), Some(Error::OutOfRange));
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn init_overflow_total_returns_err() {
         UsableRegion { start: Pfn(u64::MAX / 2 + 2), len_pfn: u64::MAX / 2 + 1 },
     ];
     // Sum overflows even before we check overlap.
-    assert!(matches!(Pmm::init(b, &r).err(), Some(Error::OutOfRange) | Some(Error::Overlap)));
+    assert!(matches!(Pmm::<HostedBacking>::init(b, &r).err(), Some(Error::OutOfRange) | Some(Error::Overlap)));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn init_overlapping_regions_returns_overlap() {
         UsableRegion { start: Pfn(0),   len_pfn: 200 },
         UsableRegion { start: Pfn(100), len_pfn: 100 },  // overlaps [100..200) of first
     ];
-    assert_eq!(Pmm::init(b, &r).err(), Some(Error::Overlap));
+    assert_eq!(Pmm::<HostedBacking>::init(b, &r).err(), Some(Error::Overlap));
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn init_adjacent_regions_ok() {
         UsableRegion { start: Pfn(0),   len_pfn: 100 },
         UsableRegion { start: Pfn(100), len_pfn: 100 },
     ];
-    let pmm = Pmm::init(b, &r).unwrap();
+    let pmm = Pmm::<HostedBacking>::init(b, &r).unwrap();
     assert_eq!(pmm.free_pages(), 200);
 }
 
@@ -139,7 +139,7 @@ fn init_zero_length_region_skipped() {
         UsableRegion { start: Pfn(0), len_pfn: 0 },
         UsableRegion { start: Pfn(0), len_pfn: 64 },
     ];
-    let pmm = Pmm::init(b, &r).unwrap();
+    let pmm = Pmm::<HostedBacking>::init(b, &r).unwrap();
     assert_eq!(pmm.free_pages(), 64);
 }
 
@@ -151,7 +151,7 @@ fn init_reverse_order_regions_ok() {
         UsableRegion { start: Pfn(512), len_pfn: 256 },
         UsableRegion { start: Pfn(0),   len_pfn: 256 },
     ];
-    let pmm = Pmm::init(b, &r).unwrap();
+    let pmm = Pmm::<HostedBacking>::init(b, &r).unwrap();
     // SAFETY: hosted single-thread; audit takes its own lock.
     unsafe { pmm.audit() };
     assert_eq!(pmm.free_pages(), 512);
