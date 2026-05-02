@@ -1,9 +1,6 @@
 # 38 Error Handling
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`07`,`08`.
-Provides to: every kernel crate.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`07`,`08`. Provides:every kernel crate.
 ## 1 Purpose
 
 Define how kernel handles errors at three levels: recoverable (`KR<T>`), oopsable (recoverable with task kill), unrecoverable (panic+halt).

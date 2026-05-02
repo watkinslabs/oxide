@@ -1,9 +1,6 @@
 # 35 Driver Model
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`16`,`18`,`19`,`22`,`34`.
-Provides to: every driver crate.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver crate.
 ## 1 Purpose
 
 Driver registration, device matching, sysfs publication, hot-plug hooks. Devices come from buses (PCIe primary; virtio-mmio for some arm targets; platform via DT).

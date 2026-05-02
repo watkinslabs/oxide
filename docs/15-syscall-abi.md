@@ -453,7 +453,7 @@ Per-arch trampoline ≤200 lines `.S`; reviewed line-by-line. See `20`,`21`.
 
 Each `#[repr(C)]` + `static_assertions::assert_eq_size!` vs Linux struct layout per arch.
 
-## 6. ABI bit-flag tables
+## 6 ABI bit-flag tables
 
 These are the bit-flag constants passed in syscall registers. They are the **syscall surface only** — internal kernel types (e.g., `OpenIntent`, `VmaProt`) are constructed from them at dispatch and used everywhere thereafter. Numeric values match Linux x86_64 exactly.
 
