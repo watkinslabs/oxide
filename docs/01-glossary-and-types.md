@@ -1,6 +1,6 @@
 # 01 Glossary + Shared Types
 
-DRAFT 2026-05-02. Dep:`02`,`08`,`09`.
+FROZEN 2026-05-02. Dep:`02`,`08`,`09`.
 
 Every type referenced by ≥2 subsystems lives here. Single-subsystem types stay in their spec.
 
@@ -191,9 +191,3 @@ If a type isn't here it's: (a) single-subsystem (lives in that spec), (b) ABI st
 
 (none)
 
-## 14 OQ
-
-- 5-level paging: widen `USER_VA_END` runtime vs per-process flag (`prctl(PR_SET_VA_BITS)`)? Lean: per-process opt-in.
-- `Pid` reuse / generation: store inside `Pid`(16b) or alongside in task? Lean: alongside; keep ABI 32-bit.
-- `Errno` 16-bit margin → invent new errno? No; never.
-- `Caps` v3 bits 41+: 64-bit cap stays; new caps need ABI bump.
