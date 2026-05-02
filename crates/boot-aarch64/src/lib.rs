@@ -21,6 +21,28 @@ extern crate std;
 pub mod dtb;
 pub mod pl011;
 
+use klog::Uart;
+use sync::{Spinlock, Tty as UartClass};
+
+use pl011::{Pl011, PL011_VIRT_BASE};
+
+// ---------------------------------------------------------------------------
+// Boot-time UART sink for klog. Single instance behind `Spinlock` so the
+// `klog::LogSink` thunk can drive it without `static mut` (`07§5`).
+// ---------------------------------------------------------------------------
+
+static BOOT_UART: Spinlock<Pl011, UartClass>
+    = Spinlock::new(Pl011::new(PL011_VIRT_BASE));
+
+/// klog `LogSink` adapter — drives `BOOT_UART` for every byte slice
+/// klog emits. Registered via `klog::set_byte_sink` from
+/// `_start_rust` after `BOOT_UART::init()`.
+/// # C: O(len)
+fn boot_emit(bytes: &[u8]) {
+    let mut g = BOOT_UART.lock();
+    g.write_bytes(bytes);
+}
+
 use core::cell::UnsafeCell;
 use kernel::{BootInfo, BootMemRegion};
 
@@ -104,6 +126,11 @@ unsafe fn build_boot_info() -> BootInfo {
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
+    // SAFETY: PL011 owned by us pre-init; no other CPU alive; `init`
+    // programs the UART for 115200-8N1 + FIFO. After this call any
+    // klog emit will land on the QEMU virt console.
+    unsafe { BOOT_UART.lock().init(); }
+    klog::set_byte_sink(boot_emit);
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
