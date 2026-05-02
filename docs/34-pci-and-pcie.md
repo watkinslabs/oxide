@@ -1,9 +1,6 @@
 # 34 PCI/PCIe
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`11`,`19`,`22`,`33`,`35`.
-Provides to: every PCIe device driver.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`11`,`19`,`22`,`33`,`35`. Provides:every PCIe device driver.
 ## 1 Purpose
 
 Enumerate PCIe devices via ECAM. Allocate BARs (or read pre-assigned). Configure MSI-X. Expose `/sys/bus/pci/devices/`. No legacy 0xCF8/0xCFC config-cycle access.

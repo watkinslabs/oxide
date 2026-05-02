@@ -1,9 +1,6 @@
 # 18 Modules
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`08`,`09`,`11`,`15`,`27`,`31`.
-Provides to: drivers, optional FS, optional net protocols.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`11`,`15`,`27`,`31`. Provides:drivers, optional FS, optional net protocols.
 ## 1 Purpose
 
 Load/unload signed `.ko` ELFs at runtime. Resolve against in-kernel symbol table. Per-module W^X memory. Refcount + unload safety.
