@@ -10,3 +10,8 @@ path = "src/lib.rs"
 [dependencies]
 hal  = { path = "../hal" }
 klog = { path = "../klog" }
+pmm  = { path = "../pmm" }
+sync = { path = "../sync" }
+
+[dev-dependencies]
+proptest = "1"
