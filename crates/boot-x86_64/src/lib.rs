@@ -28,11 +28,31 @@ pub mod uart;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicPtr;
 use kernel::{BootInfo, BootMemRegion};
+use klog::Uart;
+use sync::{Spinlock, Tty as UartClass};
 
 use limine::{
     HhdmResponse, MemmapResponse, RequestHeader, RsdpResponse,
     HHDM_ID, MEMMAP_ID, REVISION_0, RSDP_ID,
 };
+use uart::{Uart16550, COM1};
+
+// ---------------------------------------------------------------------------
+// Boot-time UART sink for klog. Single instance behind `Spinlock` so the
+// `klog::LogSink` thunk can drive it without `static mut` (`07§5`).
+// ---------------------------------------------------------------------------
+
+static BOOT_UART: Spinlock<Uart16550, UartClass>
+    = Spinlock::new(Uart16550::new(COM1));
+
+/// klog `LogSink` adapter — drives `BOOT_UART` for every byte slice
+/// klog emits. Registered via `klog::set_byte_sink` from
+/// `_start_rust` after `BOOT_UART::init()`.
+/// # C: O(len)
+fn boot_emit(bytes: &[u8]) {
+    let mut g = BOOT_UART.lock();
+    g.write_bytes(bytes);
+}
 
 // ---------------------------------------------------------------------------
 // Limine request slots — bootloader scans `.limine_requests` for these
@@ -155,6 +175,11 @@ unsafe fn build_boot_info() -> BootInfo {
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
+    // SAFETY: COM1 owned by us pre-init; no other CPU alive; `init`
+    // programs the UART for 115200-8N1 + FIFO. After this call any
+    // klog emit will land on the serial port.
+    unsafe { BOOT_UART.lock().init(); }
+    klog::set_byte_sink(boot_emit);
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
