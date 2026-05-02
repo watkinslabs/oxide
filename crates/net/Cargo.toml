@@ -8,5 +8,10 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-hal  = { path = "../hal" }
-klog = { path = "../klog" }
+hal      = { path = "../hal" }
+klog     = { path = "../klog" }
+bitflags = { version = "2", default-features = false }
+
+[features]
+default = []
+hosted  = []
