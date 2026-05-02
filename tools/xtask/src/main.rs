@@ -90,6 +90,8 @@ fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "build",
         "-Z", "build-std=core,compiler_builtins,alloc",
         "-Z", "build-std-features=compiler-builtins-mem",
+        "-Z", "unstable-options",
+        "-Z", "json-target-spec",
         "--target", target,
         "--profile", &profile,
         "-p", "kernel",
