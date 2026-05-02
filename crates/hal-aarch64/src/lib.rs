@@ -18,6 +18,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
+mod context;
+pub use context::ContextAArch64;
+
 /// IRQ gate: save DAIF, set the I (IRQ) bit. Restore DAIF on release.
 /// Per `06§3.1` we mask IRQ only — FIQ is not used in our model.
 pub struct ArmIrqGate;
