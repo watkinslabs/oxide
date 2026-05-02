@@ -1,6 +1,6 @@
 # 03 Modernity Charter
 
-DRAFT 2026-05-02. Dep:`02`,`08`.
+FROZEN 2026-05-02. Dep:`02`,`08`.
 
 Linux-compatible at modern userspace ABI. Pre-2015 / 4.x-era stuff dropped unless named reason. musl/glibc≥2.34 runs; libc5 doesn't.
 
@@ -210,10 +210,3 @@ Sub-section frozen-unit. Change → revision block (`02§1`). Silent edits = bug
 
 (none)
 
-## 15 OQ
-
-- 5-level paging hard-required vs runtime-detected? Lean: runtime; confirm aarch64 LPA2 symmetry.
-- LSM stub-hook surface in v1 vs Landlock direct-wired? Lean: stubbed surface (cheap, future-proofs v2).
-- Wall clock: TPM-backed monotonic vs RTC + userspace NTP? Lean: latter.
-- io_uring as *only* async I/O surface, drop epoll? Lean: keep epoll permanently — level-trigger FD readiness is its right tool.
-- BPF verifier: scratch vs port vs ship-without v1? Lean: ship without v1; v1.x adds.
