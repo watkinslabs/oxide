@@ -53,9 +53,16 @@ pub struct Order(pub u8);
 /// Subsystem error per `10§10` + `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
+    /// Out of memory at the requested order (or larger).
     NoMem,
+    /// Order > `MAX_ORDER`.
     InvalidOrder,
+    /// `init` empty regions, `free` pfn outside `[0, pfn_max)`,
+    /// `reserve_early` past `pfn_max`, or a length+start overflow.
     OutOfRange,
+    /// `init` regions overlap (caller invariant violated).
+    Overlap,
+    /// Subsystem not initialized.
     NotInit,
 }
 
@@ -328,6 +335,22 @@ impl<B: PageBacking> Pmm<B> {
             let end = r.start.0.checked_add(r.len_pfn).ok_or(Error::OutOfRange)?;
             if end > pfn_max { pfn_max = end; }
             total = total.checked_add(r.len_pfn).ok_or(Error::OutOfRange)?;
+        }
+        // Defensive overlap detection — caller invariant per `10§6.3`,
+        // but seeding the same page twice corrupts the free-list, so
+        // reject at boot rather than crash later.
+        for i in 0..regions.len() {
+            let a = &regions[i];
+            if a.len_pfn == 0 { continue; }
+            let a_end = a.start.0 + a.len_pfn;
+            for j in (i + 1)..regions.len() {
+                let b = &regions[j];
+                if b.len_pfn == 0 { continue; }
+                let b_end = b.start.0 + b.len_pfn;
+                if a.start.0 < b_end && b.start.0 < a_end {
+                    return Err(Error::Overlap);
+                }
+            }
         }
 
         let mut bitmaps = [&[][..]; ORDERS];
