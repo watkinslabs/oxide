@@ -50,11 +50,10 @@ pub static FPU_OWNER: AtomicPtr<FpuStateAArch64> = AtomicPtr::new(core::ptr::nul
 pub unsafe fn fpu_save(state: *mut FpuStateAArch64) {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
-        // SAFETY: 16 stp-pairs + 2 mrs writes; `state` aligned per
-        // contract above; FPEN allows the FP insns to issue without
-        // trapping. ARM ARM C7.2.
+        // SAFETY: 16 stp-pairs + 2 mrs writes; `state` aligned per contract; FPEN allows the FP insns to issue without trapping (ARM ARM C7.2). `.arch_extension fp` re-enables q-reg insns at assembler level since kernel is built -fp-armv8 per 07§3.
         unsafe {
             core::arch::asm!(
+                ".arch_extension fp",
                 "stp  q0,  q1,  [{s}, #0x000]",
                 "stp  q2,  q3,  [{s}, #0x020]",
                 "stp  q4,  q5,  [{s}, #0x040]",
@@ -94,10 +93,10 @@ pub unsafe fn fpu_save(state: *mut FpuStateAArch64) {
 pub unsafe fn fpu_restore(state: *const FpuStateAArch64) {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
-        // SAFETY: 16 ldp-pairs + 2 msr writes; `state` valid per
-        // contract above; FPEN allows the FP insns to issue.
+        // SAFETY: 16 ldp-pairs + 2 msr writes; `state` valid per contract; FPEN allows FP insns to issue. `.arch_extension fp` re-enables q-reg insns at assembler level since kernel is built -fp-armv8 per 07§3.
         unsafe {
             core::arch::asm!(
+                ".arch_extension fp",
                 "ldp  q0,  q1,  [{s}, #0x000]",
                 "ldp  q2,  q3,  [{s}, #0x020]",
                 "ldp  q4,  q5,  [{s}, #0x040]",

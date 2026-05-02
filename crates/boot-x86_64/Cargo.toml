@@ -8,10 +8,11 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-kernel = { path = "../../kernel" }
-klog   = { path = "../klog" }
-hal    = { path = "../hal" }
-sync   = { path = "../sync" }
+kernel     = { path = "../../kernel" }
+klog       = { path = "../klog" }
+hal        = { path = "../hal" }
+hal-x86_64 = { path = "../hal-x86_64" }
+sync       = { path = "../sync" }
 
 [features]
 default = []
