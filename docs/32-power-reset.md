@@ -1,6 +1,6 @@
 # 32 Power + Reset
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall, `init` shutdown.
+FROZEN 2026-05-02. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall, `init` shutdown.
 ## 1 Purpose
 
 Halt, reboot, poweroff. Cpu idle. Frequency scaling stub.
@@ -76,8 +76,3 @@ Shutdown is single-threaded by design; one CPU coordinates, others halt on IPI.
 
 `15` (reboot syscall), `20`/`21` (cpu halt instructions), `33` (UEFI/PSCI), `13` (kthread of init shutdown).
 
-## 13 Open Questions
-
-- AML interpreter for laptop/desktop power: defer to v2.
-- S3/S4 sleep: defer to v2.
-- Thermal mgmt: defer.

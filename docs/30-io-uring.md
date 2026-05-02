@@ -119,9 +119,3 @@ For ops that don't naturally block (NOP, page-cache hit), inline completion save
 
 `16`/`17` (file ops), `25` (socket ops), `15` (syscalls), `13` (worker threads), `23` (timeouts).
 
-## 14 Open Questions
-
-- IOPOLL mode (storage polling without IRQ): defer.
-- Multishot ACCEPT/POLL: defer.
-- Zerocopy SEND (MSG_ZEROCOPY): defer to v1.x.
-- BPF-driven SQE cancel: when BPF lands.

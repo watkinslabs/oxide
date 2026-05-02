@@ -1,6 +1,6 @@
 # 31 ELF loader + dynamic linker
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`11`,`12`,`16`,`18`,`27`. Provides:`execve` syscall, module loader (shares parser).
+FROZEN 2026-05-02. Dep:`01`,`02`,`11`,`12`,`16`,`18`,`27`. Provides:`execve` syscall, module loader (shares parser).
 ## 1 Purpose
 
 Load ELF64 binaries into an `AddressSpace`. Support static + dynamic (PIE). Establish auxv. Hand off to `_start` or `ld.so` interp.
@@ -97,8 +97,3 @@ Mostly disk-bound; budget is non-disk overhead.
 
 `11` (mmap), `15` (execve), `18` (shares ELF parser), `23` (vDSO mapping into auxv).
 
-## 13 Open Questions
-
-- ET_EXEC support: emit warning + load? Yes for v1; require ET_DYN once ASLR mandatory.
-- packed/upx-style binaries: not handled (kernel sees ELF; obfuscated binaries unwrap themselves).
-- Memory-fd execve (`execveat(fd, "", AT_EMPTY_PATH)`): yes; required by some modern launchers.
