@@ -9,7 +9,7 @@ One pinned nightly. Four custom target JSONs (kernel×2, user×2). Three build p
 `rust-toolchain.toml`:
 ```toml
 [toolchain]
-channel = "nightly-2026-05-15"   # bumped per §1.1
+channel = "nightly-2026-05-01"   # bumped per §1.1
 components = ["rust-src","rustfmt","clippy","llvm-tools-preview","miri"]
 targets = []                      # use -Zbuild-std
 profile = "minimal"
