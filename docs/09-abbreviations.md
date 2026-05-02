@@ -1,6 +1,6 @@
 # 09 Abbreviations
 
-DRAFT 2026-05-02. Dep:`08`.
+FROZEN 2026-05-02. Dep:`08`.
 
 Single source of truth for shorthand used across `10+` specs and code. Add here before using.
 
@@ -119,7 +119,3 @@ In tables: `V1` `V1.X` `V2` `STUB` `NEVER` per `15§2`.
 | `# Pre: <expr>` | Precondition (caller responsibility) |
 | `# Post: <expr>` | Postcondition (callee guarantees) |
 
-## 7 Open Questions
-
-- Should `# C:` annotations be machine-checked vs just human-grep? Lean: grep-only v1; ratchet later.
-- A separate machine-readable manifest (TOML next to each doc) for status/deps? Lean: defer; the doc front-matter already serves.
