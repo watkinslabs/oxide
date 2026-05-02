@@ -107,17 +107,19 @@ When user asks about a concept: check this table → read that spec → answer. 
 
 ## Git workflow (mandatory)
 
-**Branch per change.** Never commit directly to `main`. Branch names:
+**Branch per change.** Never commit directly to `main`. Branch names use a single-letter type + zero-padded counter + kebab-case title, sortable globally and within type:
 
-| Prefix | Use |
-|---|---|
-| `feature/<name>` | new functionality |
-| `fix/<name>` | bug fix |
-| `doc/<name>` | spec edits only (no code) |
-| `revise/<spec>` | revision block on FROZEN spec |
-| `freeze/<spec>` | freeze a DRAFT spec |
-| `chore/<name>` | tooling, deps, CI plumbing |
-| `phase-<n>/<name>` | work on phase N (e.g., `phase-1/pmm-buddy`) |
+| Prefix | Use | Example |
+|---|---|---|
+| `F<NN>-<title>` | new functionality | `F01-pmm-buddy` |
+| `B<NN>-<title>` | bug fix | `B01-branch-retention-rule` |
+| `D<NN>-<title>` | spec edits only (no code) | `D02-status-line-sweep` |
+| `R<NN>-<title>` | revision block on FROZEN spec | `R01-modernity-drop-fat` |
+| `Z<NN>-<title>` | freeze a DRAFT spec | `Z01-spec-discipline` |
+| `C<NN>-<title>` | tooling, deps, CI plumbing | `C04-spec-lint` |
+| `P<n>-<NN>-<title>` | phase-N work | `P1-01-pmm-buddy` |
+
+Counter is per-type, monotonically increasing, never reused. Two-digit minimum (`NN`); widen to three (`NNN`) once any single type passes 99. Title is kebab-case, ≤40 chars, no trailing slashes. Old `feature/`, `fix/`, etc. branches predate this scheme and are kept as-is for history.
 
 **Commits.** Small, focused, one logical change per commit. Conventional message form:
 
@@ -137,10 +139,10 @@ Examples:
 
 **Push policy.** Auto-push merged commits to `origin/main` after each merge without asking. Auto-push feature branches with `-u` on first push without asking. Force-push remains forbidden per the Never list below.
 
-**PRs.** Every branch merges to `main` via PR. PR-time CI per `docs/40§2` is the gate. PR cannot merge if any check fails.
+**PRs (mandatory).** Every branch merges to `main` via `gh pr create` then `gh pr merge --merge --delete-branch=false`. No local `--no-ff` merges to `main`. PR-time CI per `docs/40§2` is the gate; until CI exists, manual review then merge. Branch retention rule still applies: `--delete-branch=false`.
 
-**Never:**
-- `git push --force` to `main`. Period.
+**Never (without explicit user confirmation):**
+- `git push --force` / `--force-with-lease` to `main`. Permitted only on explicit user instruction (e.g., history rewrite for branch-rename or trailer-strip). Default = forbidden.
 - `git push --force-with-lease` to anyone else's branch.
 - `git rebase main` on a branch under review by others.
 - `git commit --amend` on a pushed commit (start a new commit).
