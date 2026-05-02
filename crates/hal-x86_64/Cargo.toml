@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-hal     = { path = "../hal" }
-sync    = { path = "../sync" }
-syscall = { path = "../syscall" }
+hal      = { path = "../hal" }
+sync     = { path = "../sync" }
+syscall  = { path = "../syscall" }
+bitflags = { version = "2", default-features = false }
