@@ -1,0 +1,48 @@
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec-lint:
+    name: spec-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust toolchain
+        run: rustup show
+      - name: spec-lint all
+        run: cargo run --quiet -p spec-lint -- all
+
+  test-hosted:
+    name: test --hosted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust toolchain
+        run: rustup show
+      - name: cargo test workspace
+        run: cargo test --workspace --quiet
+
+  build-kernel:
+    name: build kernel ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust toolchain
+        run: rustup show
+      - name: install rust-src
+        run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
+      - name: xtask kernel --arch ${{ matrix.arch }} --profile dev
+        run: cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }} --profile dev
