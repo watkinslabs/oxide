@@ -248,10 +248,10 @@ fn alloc_returns_aligned_pfn_explicit() {
 fn alloc_zeros_returned_pages() {
     let pmm = build(256);
     let p = pmm.alloc(Order(2)).unwrap();
-    let g = pmm.inner.lock();
     for k in 0..(1u64 << 2) {
-        // SAFETY: PMM-owned freshly allocated page; ptr valid for one PAGE.
-        let ptr = unsafe { g.backing.page_ptr(Pfn(p.0 + k)) };
+        // SAFETY: PMM-owned freshly allocated page; backing accessed
+        // lock-free per Pmm's lock-free page_ptr invariant.
+        let ptr = unsafe { pmm.page_ptr(Pfn(p.0 + k)) };
         for off in 0..PAGE {
             // SAFETY: within the 4 KiB freshly-zeroed page.
             let v = unsafe { core::ptr::read(ptr.add(off)) };
@@ -382,13 +382,10 @@ fn free_invalid_order_kasserts() {
 #[should_panic(expected = "poison")]
 fn corrupted_free_page_caught_on_alloc() {
     let pmm = build(64);
-    {
-        let g = pmm.inner.lock();
-        // SAFETY: corrupting page 0 to exercise poison detection.
-        let ptr = unsafe { g.backing.page_ptr(Pfn(0)) };
-        // SAFETY: writing into a free page's poison u64; test-only.
-        unsafe { core::ptr::write_unaligned(ptr as *mut u64, 0) };
-    }
+    // SAFETY: corrupting page 0 to exercise poison detection on next alloc.
+    let ptr = unsafe { pmm.page_ptr(Pfn(0)) };
+    // SAFETY: writing into a free page's poison u64; test-only.
+    unsafe { core::ptr::write_unaligned(ptr as *mut u64, 0) };
     for _ in 0..64 { let _ = pmm.alloc(Order(0)).unwrap(); }
 }
 
