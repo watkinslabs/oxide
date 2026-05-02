@@ -1,0 +1,203 @@
+// Limine boot protocol request types per `36§3` (Limine ≥ 6.0).
+// Each request begins with a `[u64; 4]` magic header the bootloader
+// scans for in our ELF; on match, the bootloader writes a physical
+// address into `response`.
+//
+// We pin only the request shape here. Response parsing (memmap →
+// `kernel::BootInfo`, framebuffer, RSDP) lives in `responses.rs`
+// once the runtime path actually exercises it; until then the
+// `_start` shell hands an empty `BootInfo` to `kernel_main`.
+
+use core::sync::atomic::AtomicPtr;
+
+/// Common Limine header — every request shares these two magic words.
+pub const LIMINE_COMMON_MAGIC_0: u64 = 0xc7b1_dd30_df4c_8b88;
+pub const LIMINE_COMMON_MAGIC_1: u64 = 0x0a82_e883_a194_f07b;
+
+/// 4-word request id: common magic + per-feature words.
+#[repr(C)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct RequestId(pub [u64; 4]);
+
+/// Request-revision word — bootloader inspects to decide which
+/// fields are valid; `0` is the lowest baseline.
+pub const REVISION_0: u64 = 0;
+
+// ---------------------------------------------------------------------------
+// Per-feature request ids
+// ---------------------------------------------------------------------------
+
+/// `LIMINE_MEMMAP_REQUEST` — full memory map per `36§3`.
+pub const MEMMAP_ID: RequestId = RequestId([
+    LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
+    0x67cf_3d9d_378a_806f, 0xe304_acdf_c50c_3c62,
+]);
+
+/// `LIMINE_HHDM_REQUEST` — higher-half direct-map base per `36§3`.
+pub const HHDM_ID: RequestId = RequestId([
+    LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
+    0x48dc_f1cb_8ad2_b852, 0x6342_8723_2167_8025,
+]);
+
+/// `LIMINE_RSDP_REQUEST` — ACPI RSDP physical address.
+pub const RSDP_ID: RequestId = RequestId([
+    LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
+    0xc5e7_7b6b_397e_7b43, 0x2735_2997_5a5f_4444,
+]);
+
+// ---------------------------------------------------------------------------
+// Request structs
+// ---------------------------------------------------------------------------
+
+/// Common request header. Bootloader matches on `id`; on hit, sets
+/// `response` to the physical address of a feature-specific
+/// response struct.
+#[repr(C)]
+pub struct RequestHeader<R> {
+    pub id:       RequestId,
+    pub revision: u64,
+    pub response: AtomicPtr<R>,
+}
+
+// SAFETY: `RequestHeader` is shared with the bootloader before any
+// CPU other than the boot CPU is alive; afterwards it is read-only
+// from the kernel side. The `AtomicPtr` is the bootloader's write
+// port. Response payloads contain raw pointers that aren't `Sync`
+// by default — the bootloader writes them once and the kernel reads
+// them serially, so we assert `Sync` unconditionally on the wrapper.
+unsafe impl<R> Sync for RequestHeader<R> {}
+
+/// Memmap-response. Layout per Limine 6 (variable-length entries
+/// array follows pointer; we keep the pointer + count and chase the
+/// array at parse time).
+#[repr(C)]
+pub struct MemmapResponse {
+    pub revision:    u64,
+    pub entry_count: u64,
+    /// Physical pointer to `[*const MemmapEntry; entry_count]`.
+    pub entries:     *const *const MemmapEntry,
+}
+
+#[repr(C)]
+pub struct MemmapEntry {
+    pub base:   u64,
+    pub length: u64,
+    pub kind:   u64, // see `MemmapKind`
+}
+
+/// Memmap entry kinds per Limine 6.
+#[repr(u64)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MemmapKind {
+    Usable                = 0,
+    Reserved              = 1,
+    AcpiReclaimable       = 2,
+    AcpiNvs               = 3,
+    BadMemory             = 4,
+    BootloaderReclaimable = 5,
+    KernelAndModules      = 6,
+    Framebuffer           = 7,
+}
+
+impl MemmapKind {
+    /// # C: O(1)
+    pub fn from_u64(v: u64) -> Option<Self> {
+        match v {
+            0 => Some(Self::Usable),
+            1 => Some(Self::Reserved),
+            2 => Some(Self::AcpiReclaimable),
+            3 => Some(Self::AcpiNvs),
+            4 => Some(Self::BadMemory),
+            5 => Some(Self::BootloaderReclaimable),
+            6 => Some(Self::KernelAndModules),
+            7 => Some(Self::Framebuffer),
+            _ => None,
+        }
+    }
+
+    /// Map Limine's `MemmapKind` to our generic `BootMemKind` per
+    /// `kernel::BootMemKind`. Unknown kinds are treated as Reserved.
+    /// # C: O(1)
+    pub fn to_kernel_kind(self) -> kernel::BootMemKind {
+        use kernel::BootMemKind as K;
+        match self {
+            Self::Usable                => K::Usable,
+            Self::Reserved              => K::Reserved,
+            Self::AcpiReclaimable       => K::AcpiReclaim,
+            Self::AcpiNvs               => K::AcpiNvs,
+            Self::BadMemory             => K::BadMem,
+            Self::BootloaderReclaimable => K::BootloaderUsed,
+            Self::KernelAndModules      => K::KernelImage,
+            Self::Framebuffer           => K::Reserved,
+        }
+    }
+}
+
+/// HHDM (higher-half direct-map) response.
+#[repr(C)]
+pub struct HhdmResponse {
+    pub revision: u64,
+    pub offset:   u64,
+}
+
+/// RSDP response — physical address of the ACPI RSDP.
+#[repr(C)]
+pub struct RsdpResponse {
+    pub revision: u64,
+    pub address:  u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_magic_constants_match_limine_protocol() {
+        // Pin these — bootloader relies on exact byte match.
+        assert_eq!(LIMINE_COMMON_MAGIC_0, 0xc7b1_dd30_df4c_8b88);
+        assert_eq!(LIMINE_COMMON_MAGIC_1, 0x0a82_e883_a194_f07b);
+    }
+
+    #[test]
+    fn per_feature_ids_carry_common_magic() {
+        for id in [MEMMAP_ID, HHDM_ID, RSDP_ID] {
+            assert_eq!(id.0[0], LIMINE_COMMON_MAGIC_0,
+                "request id {:?} missing common magic 0", id);
+            assert_eq!(id.0[1], LIMINE_COMMON_MAGIC_1,
+                "request id {:?} missing common magic 1", id);
+        }
+    }
+
+    #[test]
+    fn per_feature_ids_distinct() {
+        assert_ne!(MEMMAP_ID, HHDM_ID);
+        assert_ne!(MEMMAP_ID, RSDP_ID);
+        assert_ne!(HHDM_ID,   RSDP_ID);
+    }
+
+    #[test]
+    fn request_header_layout_is_24_plus_ptr() {
+        // 32 B magic + 8 B revision + ptr-size response.
+        let sz = core::mem::size_of::<RequestHeader<MemmapResponse>>();
+        assert_eq!(sz, 32 + 8 + core::mem::size_of::<*mut MemmapResponse>());
+    }
+
+    #[test]
+    fn memmap_kind_round_trip() {
+        for raw in 0..=7u64 {
+            let k = MemmapKind::from_u64(raw).unwrap();
+            assert_eq!(k as u64, raw);
+        }
+        assert!(MemmapKind::from_u64(99).is_none());
+    }
+
+    #[test]
+    fn memmap_kind_to_kernel_kind_maps_usable() {
+        assert_eq!(MemmapKind::Usable.to_kernel_kind(),    kernel::BootMemKind::Usable);
+        assert_eq!(MemmapKind::Reserved.to_kernel_kind(),  kernel::BootMemKind::Reserved);
+        assert_eq!(MemmapKind::AcpiReclaimable.to_kernel_kind(),
+                   kernel::BootMemKind::AcpiReclaim);
+        assert_eq!(MemmapKind::AcpiNvs.to_kernel_kind(),   kernel::BootMemKind::AcpiNvs);
+        assert_eq!(MemmapKind::BadMemory.to_kernel_kind(), kernel::BootMemKind::BadMem);
+    }
+}
