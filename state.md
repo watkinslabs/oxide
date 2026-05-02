@@ -4,7 +4,7 @@ Resumable checkpoint. Update at session exit. Next session reads this first alon
 
 ## Phase
 
-**Pre-code (build-infra layer in progress).** Spec corpus complete + lint-clean. Workspace shell + spec-lint live. PR workflow live. Awaiting charter cool-off (≥2026-05-04) before Z01 freeze sequence; meanwhile expanding tooling.
+**Charter chain frozen (Z01-Z09).** All 9 charters FROZEN 2026-05-02 with cool-off waiver per `02§1.4`. spec-lint clean across corpus. Workspace shell + PR workflow live. **Phase 0 build-infra unblocked for parts not depending on `36`/`39`/`40`** (still DRAFT).
 
 ## What's done
 
@@ -50,9 +50,15 @@ Remote `origin = git@github.com:watkinslabs/oxide.git`. Old project (read-only r
 
 In execution order:
 
-1. **Charter cool-off + freeze**: cool-off ends ≥2026-05-04 (48h after last edit on each charter). Freeze in dependency order: `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Each freeze = `Z<NN>-<spec>` branch + PR. Living docs (`00`, `05`) stay DRAFT.
+1. **P0-<NN> build-infra (partial, unblocked):** target JSONs, linker scripts, `tools/xtask/`, `crates/hal/` (trait defs), `crates/klog/` (skeleton). All depend only on FROZEN charters.
 
-2. `P0-<NN>-build-infra` — Phase 0 deliverables per `00§3` (mostly blocked by spec-before-code on `07`, `36`, `39`, `40`):
+2. **Subsystem-leaf freezes:** `14`, `23`, `22`, `33`, `36` (HAL/firmware leaves) per `MANIFEST§"Freeze order"`. Each unblocks more of Phase 0.
+
+3. **P0-<NN> build-infra (blocked):** bootloader stubs (`crates/boot-*`) need `36` frozen; `Dockerfile.{build,soak}` and `.github/workflows/*.yml` need `40` frozen; `kernel/src/main.rs` hello-world transitively needs `36`.
+
+4. **Charters that stay DRAFT permanently:** `00` master plan and `05` pre-mortem are living docs per `MANIFEST§"Freeze order"`.
+
+5. Original Phase 0 deliverable list per `00§3`:
    - 2 kernel target JSONs (`targets/x86_64-unknown-oxide-kernel.json`, `targets/aarch64-unknown-oxide-kernel.json`).
    - 2 linker scripts (`link/{x86_64,aarch64}-kernel.ld`).
    - `tools/xtask/` Cargo crate (host binary; subcommands per `07§8`).
@@ -64,7 +70,7 @@ In execution order:
    - `.github/workflows/{pr,bg-soak,release,dockerfile,weekly}.yml` — first should wire `spec-lint all` per `40§2`.
    - **Phase 0 exit**: hello-world boots both arches via QEMU, prints "init started" on UART, exits cleanly. PR-time CI green. Docker image published to ghcr.
 
-3. `P1-<NN>-pmm-buddy` — first real subsystem.
+6. `P1-<NN>-pmm-buddy` — first real subsystem (blocked on `10` freeze).
 
 ## Optional spec-lint enhancements (low priority)
 
@@ -81,7 +87,7 @@ In execution order:
 
 ## Active discipline (must hold)
 
-- Spec-before-code: subsystem code only after that spec freezes.
+- Spec-before-code: subsystem code only after that spec + all its deps freeze.
 - **Branch-per-feature + PR-mandatory**: `gh pr create` then `gh pr merge --merge --delete-branch=false`. No local `--no-ff` merges to main.
 - Numbered branch scheme: `F<NN>/B<NN>/D<NN>/R<NN>/Z<NN>/C<NN>/P<n>-<NN>` + kebab title.
 - Cool-off: 48h on text before freeze.
@@ -98,7 +104,7 @@ In execution order:
 3. Read `docs/MANIFEST.md`.
 4. Check `git log --oneline --graph -10` and `git status`.
 5. Run `cargo run -p spec-lint -- all` — should be clean.
-6. If date ≥ 2026-05-04: pick up at `Z01-spec-discipline` (freeze 02). Otherwise: optional spec-lint enhancements or wait.
+6. Pick up at `P0-01-target-jsons` (or whatever's next on the unblocked list above). For each freeze that lands a frozen leaf, immediately reassess Phase 0 unblock status.
 
 ## Open questions for user (deferred)
 
