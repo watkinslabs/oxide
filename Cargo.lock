@@ -304,6 +304,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "sync",
 ]
 
 [[package]]
