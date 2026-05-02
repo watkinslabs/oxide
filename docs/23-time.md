@@ -1,9 +1,6 @@
 # 23 Time
 
-Status: DRAFT 2026-05-02
-Depends on: `01`,`02`,`06`,`07`,`14`,`20`,`21`,`22`.
-Provides to: `13`,`15`,`24` (timerfd),`30` (io_uring timeouts), every driver.
-
+DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`20`,`21`,`22`. Provides:`13`,`15`,`24` (timerfd),`30` (io_uring timeouts), every driver.
 ## 1 Purpose
 
 Monotonic clock, wall clock, oneshot timers per-CPU, NTP slewing, vDSO time. Backed by TSC-deadline (x86) / Generic Timer (arm).

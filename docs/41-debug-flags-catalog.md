@@ -1,8 +1,6 @@
 # 41 Debug Flags Catalog
 
-Status: DRAFT 2026-05-02
-Depends on: `04`,`07`,`08`.
-
+DRAFT 2026-05-02. Dep:`04`,`07`,`08`.
 ## 1 Purpose
 
 Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's owning crate, what it does when on, cost when on. Per `04§3` and `07§3`.
@@ -30,7 +28,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-irq` | `irq` | per-line latency histogram; spurious detect; full pt_regs save | 20% | `22§14` |
 | `debug-vfs` | `vfs` | dentry+inode refcount audit | 40% | `16§10` checks |
 | `debug-pagecache` | `pagecache` | per-page state machine audit on every op | 20% | `17§3` |
-| `debug-net` | `net` | per-pkt L2-L4 trace; conn-state log | 50% | very expensive |
+| `debug-net` | `net` | per-pkt L2-L4 trace; conn-state log | 50% | expensive |
 | `debug-tty` | `tty` | per-byte input/output trace; termios dump | 5× | tty internals only |
 | `debug-fw` | `fw` | dump every parsed table | boot-only | `33§9` |
 | `debug-pci` | `pci` | per-device cfg dump; cap walk trace | boot-only | `34§13` |
@@ -52,7 +50,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-ipc` | `ipc` | pipe/AF_UNIX buffer dumps; futex queue dump; signal trace | 20% | `24§14` |
 | `debug-boot` | `boot-*` | dump Limine responses; full memmap | boot-only | `36§9` |
 | `debug-all` | meta | enables all `debug-*` except `debug-syscalls`, `debug-slab-audit`, `debug-net` (too expensive for general use) | varies | recommended for routine debug work |
-| `paranoid-ci` | meta | substitute for the dropped 24h soak gate. Enables: `debug-pmm` + `debug-alloc` + `debug-lockdep` + `debug-preempt` + `debug-sched-canary` + `debug-vmm` + `debug-vfs` for PR-time CI builds. Catches what soak would catch in a 5-min run by aggressive auditing rather than long randomized workloads. | 5–10× | **MANDATORY in `pr.yml` test-hosted job per `40§2`** |
+| `paranoid-ci` | meta | substitute for the dropped 24h soak gate. Enables: `debug-pmm` + `debug-alloc` + `debug-lockdep` + `debug-preempt` + `debug-sched-canary` + `debug-vmm` + `debug-vfs` for PR-time CI builds. Catches what soak would catch in a 5-min run by aggressive auditing instead of long randomized workloads. | 5–10× | **MANDATORY in `pr.yml` test-hosted job per `40§2`** |
 
 ## 4 Combinations
 
