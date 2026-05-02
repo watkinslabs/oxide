@@ -139,27 +139,31 @@ impl<T, S: CpuLocalSource> PerCpu<T, S> {
     }
 }
 
+/// Hosted-test `CpuLocalSource`: assigns a unique 0..MAX_CPUS-1 id to
+/// each thread on first access. Stable per-thread. Requires std for
+/// `thread_local!`. Gated behind the `hosted` feature so kernel builds
+/// don't accidentally pull std.
+#[cfg(any(test, feature = "hosted"))]
+pub struct HostedCpuLocal;
+#[cfg(any(test, feature = "hosted"))]
+impl CpuLocalSource for HostedCpuLocal {
+    fn current_cpu() -> u16 {
+        use core::sync::atomic::{AtomicU16, Ordering};
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+        std::thread_local! {
+            static MY: u16 = NEXT.fetch_add(1, Ordering::Relaxed) & ((MAX_CPUS as u16) - 1);
+        }
+        MY.with(|c| *c)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::mem::{align_of, size_of};
-    use std::sync::atomic::{AtomicU16, Ordering};
     use std::sync::Arc;
     use std::thread;
     use std::vec::Vec;
-
-    /// Hosted-test CpuLocalSource: assigns a unique 0..MAX_CPUS-1 id to
-    /// each thread on first access. Stable per-thread.
-    pub struct HostedCpuLocal;
-    impl CpuLocalSource for HostedCpuLocal {
-        fn current_cpu() -> u16 {
-            static NEXT: AtomicU16 = AtomicU16::new(0);
-            std::thread_local! {
-                static MY: u16 = NEXT.fetch_add(1, Ordering::Relaxed) & ((MAX_CPUS as u16) - 1);
-            }
-            MY.with(|c| *c)
-        }
-    }
 
     #[test]
     fn cacheline_alignment_and_size() {
