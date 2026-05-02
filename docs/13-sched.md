@@ -1,6 +1,6 @@
 # 13 Scheduler
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`14`. Provides: every kernel thread.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`14`. Provides: every kernel thread.
 
 Pick which task runs which CPU when. Drive ctxsw via `Context`. Implement `sched_*` syscalls.
 
@@ -221,11 +221,3 @@ Bench: `bench/sched_bench.rs` vs oracle.
 
 (none)
 
-## 20 OQ
-
-- CFS v1, EEVDF v1.x. Lean: CFS first; oracle simpler.
-- Group sched (cgroup cpu controller hierarchy): v1 = flat + cgroup-quota (`cpu.max`) only, no weighted hierarchy. v1.x adds.
-- DEADLINE class (EDF + admission): v2.
-- Per-CPU idle: 3-class model wins on simplicity.
-- Lock-held-across-switch alternative (release before, retake after): no — opens window where 2 CPUs pick same task. Keep.
-- Load-balance 10ms cadence: tunable via sysctl-equivalent.

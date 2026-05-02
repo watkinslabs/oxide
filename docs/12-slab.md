@@ -1,6 +1,6 @@
 # 12 Slab
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`. Provides:`kalloc` (GlobalAlloc), every kernel crate.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`. Provides:`kalloc` (GlobalAlloc), every kernel crate.
 
 Small (≤8KiB) kernel objs; low frag, low contention, detectable corruption. Backed by PMM page alloc.
 
@@ -108,8 +108,3 @@ Hot-path round trip ≤ 80 cy per `04§1`.
 
 (none)
 
-## 12 OQ
-
-- Magazine size 32: tune via bench.
-- Per-NUMA caches: v2 (single-NUMA v1).
-- Slab merging (multi types same size+align): defer; complicates type-tracking.
