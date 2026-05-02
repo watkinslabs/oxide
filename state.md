@@ -4,87 +4,92 @@ Resumable checkpoint. Update at session exit. Next session reads this first alon
 
 ## Phase
 
-**Pre-code.** Spec corpus complete. Workspace + Claude config in place. Pushed to origin.
+**Pre-code (build-infra layer in progress).** Spec corpus complete + lint-clean. Workspace shell + spec-lint live. PR workflow live. Awaiting charter cool-off (≥2026-05-04) before Z01 freeze sequence; meanwhile expanding tooling.
 
 ## What's done
 
-- `docs/` — 46 specs all DRAFT, lean-mode applied, cross-refs audited (117 refs all resolve), MANIFEST current.
-- `CLAUDE.md` — project rules (discipline, code style, doc style, git workflow, forbidden patterns, where-things-live).
+- `docs/` — 46 specs all DRAFT, lean-mode applied, cross-refs mechanical-resolved by `spec-lint xref` (no manual audit), MANIFEST current.
+- `CLAUDE.md` — project rules: discipline, code style, doc style, **numbered-branch scheme + PR-mandatory** (updated 2026-05-02), forbidden patterns, where-things-live.
 - `.gitignore` — Rust/QEMU/IDE noise; `bench-history`/`soak-artifacts` intentionally tracked.
 - `README.md` — entry points.
-- `.claude/settings.json` — Bash allowlist (cargo/qemu/git read+commit+merge/gh read-only/file ops/image tools), deny (force-push, rm -rf $HOME, sudo, network curl/wget), ask (push/pr-create/docker-push/cargo-install).
-- Memory: `~/.claude/projects/-home-nd-oxide2/memory/` — 9 entries (project, spec corpus index, lean-mode, AI-density, advise-then-act, no-ceremony, git workflow, toolchain, CI strategy, repo remote).
-- Git: 4 commits on `main`; 3 feature branches preserved; pushed to `watkinslabs/oxide`.
+- `.claude/settings.json` — Bash allowlist incl. `gh pr/issue/run/workflow/api*` and `git push:*` (added 2026-05-02 to remove per-action prompts); deny force-push/sudo/network; ask remains for force-push variants, filter-branch, cargo install, docker push.
+- `Cargo.toml` (workspace) + `rust-toolchain.toml` (`nightly-2026-05-01`).
+- `tools/spec-lint/` — `docs|code|manifest|xref|all`. Doc rules (status-line + header-form + forbidden phrases), MANIFEST presence/status mismatch, xref resolver (every `<doc>§<sec>` against real headers), code rules (`#![no_std]`, no `extern crate std`, no `static mut` outside test, no `panic!(fmt)`, `// SAFETY:` ≥30ch, `# C:` on every `pub fn`). **`spec-lint all` is clean across the corpus.**
+- Memory: `~/.claude/projects/-home-nd-oxide2/memory/` — git workflow updated to PR-mandatory + numbered-branch scheme.
+- Git: 12 commits on `main` via 4 PRs and pre-PR-workflow merges; 11 feature branches preserved; pushed to `watkinslabs/oxide`.
 
 ## Repo state
 
 History rewritten twice on 2026-05-02:
 1. Strip `Co-Authored-By:` trailers from all commits.
-2. Rename branches to numbered scheme `F<NN>/B<NN>/D<NN>/R<NN>/Z<NN>/C<NN>/P<n>-<NN>` (per CLAUDE.md§Git workflow); merge-commit subjects rewritten to reference new names.
+2. Rename branches to numbered scheme; merge-commit subjects rewritten to reference new names.
 
 All branches force-pushed to origin. Branch retention preserved (no deletes).
 
 ```
-main (origin/main): e8524d4 Merge pull request #1 from watkinslabs/C06-branch-naming-and-pr-workflow
-├── D01-initial-spec-corpus           (4ba1437) — preserved
-├── C01-workspace-setup               (f07f0f5) — preserved
-├── B01-branch-retention-rule         (92f0c8e) — preserved
-├── C02-state-checkpoint              (cb6b47c) — preserved
-├── C03-strip-coauthor                (d7d7932) — preserved
+main (origin/main): 00991b7 Merge pull request #4 from watkinslabs/C09-spec-lint-xref
+├── D01-initial-spec-corpus               (4ba1437) — preserved
+├── C01-workspace-setup                   (f07f0f5) — preserved
+├── B01-branch-retention-rule             (92f0c8e) — preserved
+├── C02-state-checkpoint                  (cb6b47c) — preserved
+├── C03-strip-coauthor                    (d7d7932) — preserved
 ├── C04-state-update-after-coauthor-strip (b553b32) — preserved
-├── C05-spec-lint                     (947b93f) — preserved
-├── D02-status-line-sweep             (967248a) — preserved
-└── C06-branch-naming-and-pr-workflow (cb52d86) — preserved (merged via PR #1)
+├── C05-spec-lint                         (947b93f) — preserved
+├── D02-status-line-sweep                 (967248a) — preserved
+├── C06-branch-naming-and-pr-workflow     (cb52d86) — preserved [PR #1]
+├── C07-state-md-after-rename             (4f859e0) — preserved [PR #2]
+├── C08-allow-gh-pr-and-push              (aefe402) — preserved [PR #3]
+└── C09-spec-lint-xref                    (2b2639d) — preserved [PR #4]
 ```
 
 Remote `origin = git@github.com:watkinslabs/oxide.git`. Old project (read-only ref) was `chris17453/oxide` at `~/repos/Projects/oxide_os/`.
 
-**Author**: all commits = `Ablative Personality <chris@watkinslabs.com>`. No co-authors. No AI attribution. Discipline rule per CLAUDE.md§Git workflow + memory `feedback_git_workflow.md`.
+**Author**: all commits = `Ablative Personality <chris@watkinslabs.com>`. No co-authors. No AI attribution.
 
 ## What's NOT done (pending tasks)
 
 In execution order:
 
-1. `chore/spec-lint` — `tools/spec-lint/` Cargo crate. Workspace's first Rust code. Enforces:
-   - Doc rules: status line, FROZEN-revision-block-on-edit, MANIFEST sync, forbidden phrases (`08§4`), `## N` numbering outside charters.
-   - Code rules: `# C:` on every `pub fn`, `// SAFETY:` ≥30ch, `static mut` ban, `panic!(fmt)` ban, klog format-string interning, no `dyn HAL` (post-build symbol grep), `#![no_std]` every kernel crate.
-   - Subcommands: `spec-lint docs|code|manifest|all`.
-   - **Prerequisite for any FROZEN spec.**
+1. **Charter cool-off + freeze**: cool-off ends ≥2026-05-04 (48h after last edit on each charter). Freeze in dependency order: `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Each freeze = `Z<NN>-<spec>` branch + PR. Living docs (`00`, `05`) stay DRAFT.
 
-2. **Charter cool-off + freeze**: 48h cool-off on text per `02§1`, then freeze in dependency order: `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Living docs (`00`, `05`) stay DRAFT.
-
-3. `phase-0/build-infra` — Phase 0 deliverables per `00§3`:
-   - Workspace `Cargo.toml`.
-   - `rust-toolchain.toml` (pinned nightly).
+2. `P0-<NN>-build-infra` — Phase 0 deliverables per `00§3` (mostly blocked by spec-before-code on `07`, `36`, `39`, `40`):
    - 2 kernel target JSONs (`targets/x86_64-unknown-oxide-kernel.json`, `targets/aarch64-unknown-oxide-kernel.json`).
    - 2 linker scripts (`link/{x86_64,aarch64}-kernel.ld`).
    - `tools/xtask/` Cargo crate (host binary; subcommands per `07§8`).
    - `crates/hal/` (trait definitions only).
-   - `crates/klog/` (minimal UART writer; no decoder yet).
-   - `crates/boot-x86_64/`, `crates/boot-aarch64/` — bootloader handoff stubs.
+   - `crates/klog/` (minimal UART writer).
+   - `crates/boot-x86_64/`, `crates/boot-aarch64/` — handoff stubs.
    - `kernel/src/main.rs` — hello-world.
    - `tools/docker/Dockerfile.{build,soak}`.
-   - `.github/workflows/{pr,bg-soak,release,dockerfile,weekly}.yml`.
+   - `.github/workflows/{pr,bg-soak,release,dockerfile,weekly}.yml` — first should wire `spec-lint all` per `40§2`.
    - **Phase 0 exit**: hello-world boots both arches via QEMU, prints "init started" on UART, exits cleanly. PR-time CI green. Docker image published to ghcr.
 
-4. `phase-1/pmm-buddy` — first real subsystem.
+3. `P1-<NN>-pmm-buddy` — first real subsystem.
+
+## Optional spec-lint enhancements (low priority)
+
+- FROZEN-revision-block-on-edit (git-aware diff check).
+- Section-paragraph-density warning per `08§6`.
+- `klog` format-string `&'static str` check (build-time grep).
 
 ## Doc gaps still acceptable v1
 
 - `CONTRIBUTING.md` — defer until external contributors exist.
-- `LICENSE` — TBD (lean MIT/Apache-2.0 dual). v1 issue.
+- `LICENSE` — MIT (per OQ, decided 2026-05-02). Add `LICENSE` file before v1 ship.
 - Bench-artifact + soak-artifact JSON schemas — spec on first artifact write.
 - GHA issue/PR templates — defer.
 
 ## Active discipline (must hold)
 
 - Spec-before-code: subsystem code only after that spec freezes.
-- Branch-per-feature: never commit to `main` directly. `--no-ff` merges. **Don't delete merged branches** — preserve as recoverable history.
+- **Branch-per-feature + PR-mandatory**: `gh pr create` then `gh pr merge --merge --delete-branch=false`. No local `--no-ff` merges to main.
+- Numbered branch scheme: `F<NN>/B<NN>/D<NN>/R<NN>/Z<NN>/C<NN>/P<n>-<NN>` + kebab title.
 - Cool-off: 48h on text before freeze.
 - AI-density: dense form for new content; existing slack trims on next revision touching it.
 - Lean-mode CI: PR-time = wall; soak = bg diagnostic; no 24h gate.
-- Cross-ref form: `<doc>§<sec>`. Every ref resolves to a real section.
+- Cross-ref form: `<doc>§<sec>`. `spec-lint xref` enforces.
 - `panic = "abort"`, `kassert!` only, no `static mut`, no `dyn HAL`, `// SAFETY:` ≥30ch.
+- Force-push to main: explicit user instruction only (used twice 2026-05-02 for trailer-strip + branch-rename).
 
 ## Resume protocol next session
 
@@ -92,10 +97,10 @@ In execution order:
 2. Read `CLAUDE.md`.
 3. Read `docs/MANIFEST.md`.
 4. Check `git log --oneline --graph -10` and `git status`.
-5. Pick up at "What's NOT done" item 1 (`chore/spec-lint`) unless user redirects.
+5. Run `cargo run -p spec-lint -- all` — should be clean.
+6. If date ≥ 2026-05-04: pick up at `Z01-spec-discipline` (freeze 02). Otherwise: optional spec-lint enhancements or wait.
 
 ## Open questions for user (deferred)
 
-- LICENSE choice MIT
-- Whether to push `state.md` updates as their own branches each session, or amend onto the active feature branch.
+- LICENSE: MIT (decided 2026-05-02). Pending `LICENSE` file in repo.
 - Whether to add a CI status-badge to README.md once GHA is up.
