@@ -18,17 +18,28 @@ fn lint_file(path: &PathBuf, f: &mut Findings) {
     let text = read(path);
     let lines: Vec<&str> = text.lines().collect();
     let is_test = is_test_file(path);
+    let is_root = is_crate_root(path);
 
-    check_no_std(path, &lines, f);
+    if is_root { check_no_std(path, &lines, f); }
     check_extern_std(path, &lines, f);
     if !is_test { check_static_mut(path, &text, &lines, f); }
     check_panic_fmt(path, &lines, f);
-    check_unsafe_safety(path, &lines, f);
-    check_pub_fn_complexity(path, &lines, f);
+    if !is_test { check_unsafe_safety(path, &lines, f); }
+    if !is_test { check_pub_fn_complexity(path, &lines, f); }
 }
 
 fn is_test_file(path: &Path) -> bool {
-    path.components().any(|c| matches!(c.as_os_str().to_str(), Some("tests")))
+    if path.components().any(|c| matches!(c.as_os_str().to_str(), Some("tests"))) {
+        return true;
+    }
+    matches!(path.file_name().and_then(|n| n.to_str()), Some("tests.rs"))
+}
+
+fn is_crate_root(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some("lib.rs") | Some("main.rs")
+    )
 }
 
 fn check_no_std(path: &Path, lines: &[&str], f: &mut Findings) {
@@ -39,7 +50,18 @@ fn check_no_std(path: &Path, lines: &[&str], f: &mut Findings) {
 
 fn check_extern_std(path: &Path, lines: &[&str], f: &mut Findings) {
     for (i, l) in lines.iter().enumerate() {
-        if l.trim_start().starts_with("extern crate std") {
+        if !l.trim_start().starts_with("extern crate std") { continue; }
+        // Permitted only when guarded by `#[cfg(test)]` on the immediately
+        // preceding non-blank line. Anywhere else = build fail.
+        let mut back = 1;
+        let mut guarded = false;
+        while i >= back {
+            let prev = lines[i - back].trim_start();
+            if prev.is_empty() { back += 1; continue; }
+            guarded = prev.starts_with("#[cfg(test)]") || prev.starts_with("#[cfg(any(test");
+            break;
+        }
+        if !guarded {
             f.push(path, i + 1, "code/extern-std", "`extern crate std` forbidden in kernel crate");
         }
     }
