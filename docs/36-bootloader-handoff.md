@@ -1,6 +1,6 @@
 # 36 Bootloader Handoff
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`07`,`20`,`21`,`33`,`39`. Provides:kernel `_start`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`07`,`20`,`21`,`33`,`39`. Provides:kernel `_start`.
 ## 1 Purpose
 
 Define the boundary between bootloader (Limine on x86, EDK2/U-Boot on arm) and kernel. What state we expect, what we accept, what we reject.
@@ -90,8 +90,3 @@ Single-threaded boot until `smp_init`.
 
 `33` (RSDP/DTB consumption), `20`/`21` (early arch setup), `39` (image builder produces compatible ESP/initramfs).
 
-## 11 Open Questions
-
-- Coreboot/seabios bypass for direct boot on bare metal: defer; UEFI required.
-- BLS (Bootloader Spec) entries for Limine: nice-to-have, defer.
-- Network boot (PXE/iPXE/HTTP-boot): defer.

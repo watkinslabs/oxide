@@ -1,6 +1,6 @@
 # 23 Time
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`20`,`21`,`22`. Provides:`13`,`15`,`24` (timerfd),`30` (io_uring timeouts), every driver.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`07`,`14`,`20`,`21`,`22`. Provides:`13`,`15`,`24` (timerfd),`30` (io_uring timeouts), every driver.
 ## 1 Purpose
 
 Monotonic clock, wall clock, oneshot timers per-CPU, NTP slewing, vDSO time. Backed by TSC-deadline (x86) / Generic Timer (arm).
@@ -161,10 +161,3 @@ Read path (userspace vDSO):
 
 `13` (timer_tick drives sched), `15` (clock/timer syscalls), `22` (timer ISR), `30` (io_uring timeouts via HrTimer), `24` (timerfd is HrTimer + eventfd).
 
-## 16 Open Questions
-
-- Per-CPU TSC offset (different cores boot at different cycles): synchronize at boot via cross-CPU rendezvous; spec'd; impl detail.
-- TAI/leap seconds: `CLOCK_TAI` separate from REALTIME. Lean: ship; cheap.
-- Time namespaces (`CLONE_NEWTIME`): per-ns offset on MONOTONIC. Implement v1.
-- vDSO `getcpu` cache: store cpu_id in `gs:[..]` / `tpidr_el0`-relative; vDSO reads. Yes.
-- Drift-correction frequency tuning: PI controller? Defer; simple proportional ok for v1.
