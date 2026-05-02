@@ -1,6 +1,6 @@
 # 10 PMM
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`04`,`06`,`08`,`09`. Provides:`11`,`12`,DMA drivers.
+FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`06`,`08`,`09`. Provides:`11`,`12`,DMA drivers.
 
 Buddy allocator owning all phys frames. **Bitmap = source of truth for free state**; free-list = derived index. Disagreement ⇒ panic.
 
@@ -167,9 +167,3 @@ Bench: `bench/pmm_bench.rs` vs hosted oracle; `bench-history/`.
 
 (none)
 
-## 15 OQ
-
-- ZONE_DMA32 (32-bit DMA legacy)? v1 drivers all 64-bit DMA. Lean: 1 zone v1; add only if v1.x driver needs.
-- Per-CPU cache layer: would cut 80cy p99 ~3× at cross-CPU rebalance complexity. Lean: v1.x.
-- PFN metadata array (`struct page`-equivalent, 1 cacheline × N pages ≈ 1.5% RAM): for fast page→VMA lookup, refcount. Lean: yes, allocate at boot, sized by max PFN. Spec'd in `11`.
-- Boot bitmap placement: best-fit / first-fit / lowest-addr-that-fits? Lean: lowest-addr (deterministic, debuggable).
