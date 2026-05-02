@@ -1,6 +1,6 @@
 # 18 Modules
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`11`,`15`,`27`,`31`. Provides:drivers, optional FS, optional net protocols.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`11`,`15`,`27`,`31`. Provides:drivers, optional FS, optional net protocols.
 ## 1 Purpose
 
 Load/unload signed `.ko` ELFs at runtime. Resolve against in-kernel symbol table. Per-module W^X memory. Refcount + unload safety.
@@ -118,9 +118,3 @@ Per-module exports: appended on load; removed on unload. Lookup walks built-in t
 
 (none)
 
-## 15 Open Questions
-
-- BTF/CO-RE for kernel modules? Lean: defer to v1.x with BPF.
-- Module compression (zstd `.ko.zst`)? Lean: yes; saves space, decompress in `pagecache.read` before parse.
-- "Live patching" (kpatch/livepatch)? Defer to v2.
-- Module parameters via sysfs writes (re-tune live)? Lean: yes for those marked `0644`; `0444` is read-only.

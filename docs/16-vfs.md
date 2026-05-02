@@ -1,6 +1,6 @@
 # 16 VFS
 
-DRAFT 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`12`,`15`. Provides:`fs-tmpfs`,`fs-ext4`, etc.; `19`,`28`.
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`12`,`15`. Provides:`fs-tmpfs`,`fs-ext4`, etc.; `19`,`28`.
 
 Single tree of files/dirs/inode-typed objects abstracting underlying FSes. Path resolution, mount, inode/dentry caches, FD surface backing `read`/`write`/`open`/`close`/`stat`/`mmap`/...
 
@@ -126,9 +126,3 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 
 (none)
 
-## 15 OQ
-
-- Per-FS lookup vs generic dentry cache: who owns negative dentries? Lean: VFS; FS consulted on miss only.
-- `O_TMPFILE` (anonymous inode + materialize-on-link): ext4 fine; tmpfs needs tweak. Lean: v1.
-- Idmapped mounts (`MOUNT_ATTR_IDMAP`): rootless containers need; defer v1.x.
-- Filesystem freeze (`FIFREEZE`): ioctl for backup; defer v1.x.
