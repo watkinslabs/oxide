@@ -46,6 +46,12 @@ pub struct BootInfo {
     pub seed: [u8; 32],
     /// Boot-time monotonic counter snapshot in nanoseconds.
     pub boot_ns: u64,
+    /// Higher-half direct-map offset (Limine HHDM, `36§3`). For any
+    /// physical address `pa` covered by HHDM, the kernel-VA mirror
+    /// is `hhdm_offset + pa`. `0` means the bootloader did not
+    /// populate the HHDM response (early-boot diagnostics, hosted
+    /// tests, or stub paths).
+    pub hhdm_offset: u64,
 }
 
 #[repr(C)]
@@ -79,7 +85,7 @@ pub enum BootMemKind {
 ///
 /// # C: not measured (one-shot init)
 /// # Ctx: pre-init, IRQ-off, single-CPU
-pub unsafe fn kernel_main(_info: &BootInfo) -> ! {
+pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
@@ -88,6 +94,16 @@ pub unsafe fn kernel_main(_info: &BootInfo) -> ! {
     unsafe { GLOBAL_ALLOC.init_static() };
 
     klog::kinfo!("init started");
+    if info.hhdm_offset != 0 {
+        klog::kinfo!("hhdm: present");
+    } else {
+        klog::kinfo!("hhdm: absent");
+    }
+    if info.memmap_count != 0 {
+        klog::kinfo!("memmap: present");
+    } else {
+        klog::kinfo!("memmap: absent");
+    }
 
     // Smoke test: round-trip a `vmm::VmaTree` through the heap so a
     // boot trace surfaces any allocator-vs-BTreeMap incompatibility
@@ -127,9 +143,8 @@ mod tests {
     #[test]
     fn boot_info_layout_is_repr_c() {
         // Sanity check: BootInfo size is determinist on a 64-bit host.
-        // size = u32(4) + ptr(8) + [u8;32] + u64(8) = 4 + 4(pad) + 8 + 32 + 8 = 56
-        // with natural alignment.
-        assert!(core::mem::size_of::<BootInfo>() >= 52);
+        // u32 + ptr + [u8;32] + u64 + u64 with natural alignment.
+        assert!(core::mem::size_of::<BootInfo>() >= 60);
     }
 
     #[test]
