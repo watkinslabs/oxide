@@ -122,7 +122,7 @@ extern "C" {
 /// doesn't exist.
 fn default_handler_addr() -> u64 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { oxide_idt_default_handler as usize as u64 }
+    { oxide_idt_default_handler as *const () as usize as u64 }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { 0 }
 }
