@@ -17,6 +17,8 @@
 extern crate alloc;
 
 pub mod acpi;
+#[cfg(target_arch = "aarch64")]
+pub mod pl011;
 pub mod pmm_setup;
 
 /// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
@@ -311,13 +313,17 @@ fn log_memmap(regions: &[BootMemRegion]) {
     klog::write_raw(b" MiB reserved\n");
 }
 
-/// HPET phys base on QEMU q35 (matches what MADT logged).
+/// Kernel device-mapping base VA. Per `21§5` we carve a 4 GiB
+/// sub-region of L4 slot 0x1FE: `VA = KERNEL_DEVICE_BASE | (pa & 0xFFFFFFFF)`.
+/// Disjoint from HHDM (L4[0..0x100]) and kernel image (L4[0x1FF]).
+#[cfg(target_os = "oxide-kernel")]
+const KERNEL_DEVICE_BASE: u64 = 0xffff_ff00_0000_0000;
+
+/// HPET phys base on QEMU q35 (matches MADT log).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const HPET_PHYS: u64 = 0xfed0_0000;
-/// Kernel VA we install HPET at — disjoint from HHDM (L4[0x100..])
-/// and kernel-image (L4[0x1ff]).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-const HPET_VA: u64 = 0xffff_ff00_0000_0000;
+const HPET_VA: u64 = KERNEL_DEVICE_BASE | (HPET_PHYS & 0xFFFF_FFFF);
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn smoke_device_map_x86(
@@ -346,9 +352,14 @@ fn smoke_device_map_x86(
 /// GICv2 distributor base on QEMU virt (matches MADT log).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const GICD_PHYS: u64 = 0x0800_0000;
-/// Kernel VA for GICD — disjoint from HHDM (L0[0]) and kernel image (L0[0x1ff]).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-const GICD_VA: u64 = 0xffff_ff00_0000_0000;
+const GICD_VA: u64 = KERNEL_DEVICE_BASE | (GICD_PHYS & 0xFFFF_FFFF);
+
+/// PL011 phys base on QEMU virt (matches SPCR log).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const PL011_PHYS: u64 = 0x0900_0000;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const PL011_VA: u64 = KERNEL_DEVICE_BASE | (PL011_PHYS & 0xFFFF_FFFF);
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 fn smoke_device_map_arm(
@@ -369,6 +380,24 @@ fn smoke_device_map_arm(
             klog::write_raw(b"\n");
         }
         Err(_) => klog::kerror!("device-map: arm map_device_4k failed"),
+    }
+
+    // Map PL011 + swap klog sink from semihosting to the real UART.
+    let alloc2 = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
+    // SAFETY: same contract; chosen kernel VA disjoint from existing
+    // mappings; phys 0x09000000 is the QEMU virt PL011 base from SPCR.
+    let pr = unsafe {
+        hal_aarch64::vmm::map_device_4k(PL011_VA, PL011_PHYS, hhdm, alloc2)
+    };
+    match pr {
+        Ok(()) => {
+            // SAFETY: PL011_VA is freshly mapped Device-nGnRnE,
+            // covering 4 KiB; we own the device pre-init.
+            unsafe { pl011::enable(PL011_VA); }
+            klog::set_byte_sink(pl011::pl011_emit);
+            klog::kinfo!("pl011: switched klog sink to real UART");
+        }
+        Err(_) => klog::kerror!("device-map: pl011 map_device_4k failed"),
     }
 }
 
