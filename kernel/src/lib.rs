@@ -389,6 +389,24 @@ fn smoke_device_map_x86(
                         klog::write_hex_u64(b as u64);
                         klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
                     }
+                    // Periodic timer + STI: take real timer IRQs at
+                    // vec 0x40 for a brief observation window.
+                    let pre = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                    // SAFETY: LAPIC enabled, IDT[0x40] -> IRQ stub
+                    // (per #124), oxide_irq_dispatch handles EOI.
+                    if unsafe { lapic::timer_periodic(1_000_000) } {
+                        // SAFETY: STI legal at CPL=0; pairs with the
+                        // CLI below; ticks fire during the spin.
+                        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+                        for _ in 0..10_000_000 { core::hint::spin_loop(); }
+                        // SAFETY: CLI restores the pre-STI state
+                        // (IF clear) before further bring-up steps.
+                        unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+                    }
+                    let post = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                    klog::write_raw(b"[INFO]  lapic: timer ticks=");
+                    klog::write_dec_u64(post.wrapping_sub(pre));
+                    klog::write_raw(b"\n");
                 }
             }
         }
