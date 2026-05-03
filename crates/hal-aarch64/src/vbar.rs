@@ -78,6 +78,14 @@ core::arch::global_asm!(
     ".type  oxide_default_vector_handler, %function",
     "oxide_default_vector_handler:",
     "    msr daifset, #0xf",   // mask D, A, I, F
+    // Reserve a 16-aligned scratch area on the stack for the printer
+    // call frame. Prepare ELR_EL1, ESR_EL1, FAR_EL1 in arg regs and
+    // tail-call into the Rust printer; halt on return.
+    "    sub  sp, sp, #16",
+    "    mrs  x0, esr_el1",
+    "    mrs  x1, far_el1",
+    "    mrs  x2, elr_el1",
+    "    bl   oxide_fault_print_rust",
     "1:  wfi",
     "    b 1b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
