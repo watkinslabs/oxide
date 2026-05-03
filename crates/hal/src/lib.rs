@@ -136,6 +136,9 @@ pub trait Context: Sized {
 // MmuOps (20§5 / 21§5)
 // ---------------------------------------------------------------------------
 
+pub mod pt_walker;
+
+
 /// Page-table operations. Owns the active address space.
 ///
 /// # C: see method-level annotations
