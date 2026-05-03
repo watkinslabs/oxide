@@ -1,15 +1,15 @@
-# State 2026-05-03 (session 17 EOD)
+# State 2026-05-03 (session 18 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + MmuOps trait complete (map/translate/unmap for 4K/2M/1G) + production roundtrip smoke for 4K and 2M leaves on both arches.** 157 PRs total; 478 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. MmuOps complete + production-validated; fault path decoder + recoverable handler surface live; Task carries arch_ctx; qemu-mcp tooling ready for the next round of asm-level debugging.** 164 PRs total; 489 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-17 EOD:
+Last verified-green at session-18 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
-$ cargo run -p xtask -- test                 # → 478 hosted tests, 0 failures
+$ cargo run -p xtask -- test                 # → 489 hosted tests, 0 failures
 $ cargo run -p xtask -- kernel  --arch x86_64                   # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                  # builds clean
 $ cargo run -p xtask -- kernel  --arch x86_64  --features debug-all
@@ -31,11 +31,19 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 17` for the per-PR table.
+See `CHANGELOG.md § Session 18` for the per-PR table.
 
-- **#156** (`P1-91-mmuops-smoke`): kernel-side MmuOps end-to-end roundtrip smoke. Alloc → map → write magic → translate (verify PA + R|W flags) → unmap → translate (verify None). Generic over `M: MmuOps`; per-arch entry chooses `X86Mmu`/`ArmMmu`. Both arches now print `mmuops-smoke: ok pa=… magic=cafef00ddeadbeef` every boot.
-- **#157** (`P1-92-mmuops-2m-smoke`): same smoke shape with `PageSize::P2M` + buddy-Order(9) PMM allocation. Validates the huge-page MmuOps path in production. New `pmm_setup::alloc_contig(order)` helper. Both arches now print a second `mmuops-smoke 2m: ok` line every boot.
-- **Session 16 carry-over** (PRs #154–#155): P1-90 huge-leaf translate/unmap, session-16 docs.
+- **#159** (`C36-readme-ci-badge`): README updated from Phase-0 placeholder. CI badge wired to `pr.yml`; status section reflects current state; `make` quick-start; pointers to `state.md` / `CHANGELOG.md`.
+- **#160** (`P1-86a-fault-decode`): per-arch fault printer decodes vectors + PFEC/ESR/DFSC labels. x86 emits `[FAULT] vec=0xe (#PF) … pf=NP-W-K`; arm emits `ec=0x25 (data-abort-same-el) … dfsc=permission-l3 W`. +8 hosted tests.
+- **#161** (`P1-84-task-arch-ctx-buffer`): `crates/sched::Task` now carries `kernel_stack: AtomicPtr<u8>` + `arch_ctx: UnsafeCell<ArchCtxBuf>` (128 B opaque buffer per `13§5`). `Task::arch_ctx_ptr<C>()` cast helper with const size assert; compile-time fits-check in kernel for `ContextX86_64` / `ContextAArch64`. +3 hosted tests (489 total).
+- **#162** (`P1-86b-fault-recover`): per-arch fault stub now branches on the dispatcher's bool return — handled → `iretq`/`eret` retry; not handled → halt as before. New `pub type FaultHandler` + `pub unsafe fn install_fault_handler(h)` per arch. Default handler returns false, behaviour preserved.
+- **#163** (`B07-debug-irq-feature-chain`): latent fix. xtask `--features debug-all` only applies to its `-p`-selected packages; `hal-{x86_64,aarch64}/debug-irq` was unreachable since #160. Chain through `boot-{arch}/Cargo.toml::debug-irq = ["hal-<arch>/debug-irq"]` so the fault decoder is actually live in production builds.
+- **#164** (`C37-qemu-mcp-server`): interactive QEMU+GDB control surface as an MCP server (`tools/qemu-mcp/server.py`). 13 tools (`qemu_start`/`break`/`continue`/`stepi`/`step`/`finish`/`regs`/`mem`/`disasm`/`backtrace`/`info`/`serial`/`stop`). Pure stdlib + `mcp` package; spawns QEMU with `-s -S` + `gdb --interpreter=mi3`. `.mcp.json` at repo root registers it for Claude Code auto-load on next session start.
+
+### Abandoned (need interactive debugging — now unblocked by #164)
+
+- **P1-93 kernel-owned x86 GDT** — silent QEMU hang at the `retfq` after `lgdt`. Tried `.byte 0x48, 0xcb` to force 64-bit far-return encoding; still hung. Branch deleted. Re-attempt next session via `qemu-mcp` to single-step the GDT install asm.
+- **P1-86c page-fault recovery smoke** — handler attached + deliberate fault fired; dispatcher entered twice, then silence. Surfaced #163 along the way (`hal-{arch}/debug-irq` was off in production). Branch deleted. Re-attempt next session via `qemu-mcp` to localise where the second fault originates.
 
 ## What's done overall
 
@@ -63,12 +71,15 @@ Unchanged plus root `Makefile` (`make ci` mirrors PR gate).
 | `kernel/src/pmm_setup.rs` | `pmm_static()` + `alloc_one_frame()` bare-fn for MmuOps frame allocator | extended session 14 |
 | `kernel/src/device_map_smoke.rs` | uses `<X86Mmu/ArmMmu as MmuOps>::map` | migrated session 14 |
 | `kernel/src/mmuops_smoke.rs` | end-to-end MmuOps roundtrip smoke for 4 KiB + 2 MiB leaves | new sessions 16/17 |
+| `crates/sched/src/task.rs` | `Task` carries `kernel_stack: AtomicPtr<u8>` + `arch_ctx: UnsafeCell<ArchCtxBuf>` (128 B opaque) per `13§5` | extended session 18 (#161) |
+| `crates/hal-{x86_64,aarch64}/src/fault.rs` | `FaultHandler` + `install_fault_handler` registry; bool-return dispatch; vector + PFEC/ESR/DFSC label decoders | extended session 18 (#160, #162) |
+| `tools/qemu-mcp/server.py` | 13-tool MCP server for QEMU+GDB control (Claude-side dev only) | new session 18 (#164) |
 | `crates/hal-{x86_64,aarch64}/src/fault.rs` | exception printer body under `debug-irq` | unchanged |
 | `crates/boot-{x86_64,aarch64}/` | per-crate `debug-boot` gate | unchanged |
 | `crates/limine-proto/` | shared protocol types + magic-words pinning | unchanged |
 | Other crates | unchanged from session 8 EOD |
 
-Workspace test count: **478 passed, 0 failed.** (+13 over session 10: pt_walker driver, per-arch pack/unpack roundtrips, MmuOps round-trip per arch, 2M + 1G `map_at_level`, translate/unmap_at_va huge-leaf tests.)
+Workspace test count: **489 passed, 0 failed.** (+24 over session 10: pt_walker driver, per-arch pack/unpack roundtrips, MmuOps round-trip per arch, 2M + 1G `map_at_level`, translate/unmap_at_va huge-leaf tests, fault-vector + PFEC/ESR/DFSC decoders, Task arch_ctx round-trip.)
 
 ### IRQ-exit preemption (R07 — fully implemented)
 
@@ -99,9 +110,9 @@ Per-vector IRQ stub flow (both arches):
 ## Repo state
 
 ```
-main (origin/main): e0f7aea Merge pull request #157 from watkinslabs/P1-92-mmuops-2m-smoke
+main (origin/main): <session-18 docs merge>
 
-157 PRs landed total. Branches preserved (no deletions).
+164 PRs landed total. Branches preserved (no deletions).
 
 Session 9  (PRs #136 – #138):
   C22-makefile               — make wrapper
@@ -139,9 +150,20 @@ Session 16 (PRs #154 – #155):
   P1-90-mmu-huge-translate   — MmuOps translate/unmap recognise huge leaves
   C34-state-eod-session-16   — session-16 docs
 
-Session 17 (PRs #156 – #157):
+Session 17 (PRs #156 – #158):
   P1-91-mmuops-smoke         — MmuOps end-to-end 4 KiB roundtrip smoke
   P1-92-mmuops-2m-smoke      — MmuOps end-to-end 2 MiB roundtrip smoke
+  C35-state-eod-session-17   — session-17 docs
+
+Session 18 (PRs #159 – #164):
+  C36-readme-ci-badge        — README CI badge + Phase-1 status snapshot
+  P1-86a-fault-decode        — per-arch fault vector / PFEC / ESR decoders
+  P1-84-task-arch-ctx-buffer — Task carries kernel_stack + arch_ctx buffer
+  P1-86b-fault-recover       — recoverable fault path (asm + bool dispatcher)
+  B07-debug-irq-feature-chain — chain hal-<arch>/debug-irq via boot crates
+  C37-qemu-mcp-server        — interactive QEMU+GDB MCP server
+  (P1-93 kernel-owned GDT + P1-86c PF-recovery smoke abandoned mid-PR;
+   re-attempt next session via qemu-mcp.)
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
@@ -175,13 +197,15 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 ## Suggested next branches
 
+**First action next session: confirm `qemu-mcp` auto-loaded** (Claude Code reads `.mcp.json` only at session start). If `qemu_start` etc. show up in the available-tools list, the new debugging surface is live.
+
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Cross the Phase 1→2 line. Needs kernel-owned GDT, user CS/SS, eret-to-EL0/CPL3, syscall entry/exit. Largest single jump; significant design surface. Recommend reviewing scope with the user before starting. |
-| **Wire real RunqueueInner** | `P1-84-sched-real-runqueue` | Migrate `kernel/src/ksched.rs` shim to `crates/sched`'s `RunqueueInner` per `13§5`. Plumbing-heavy refactor; doesn't unblock anything immediately. |
-| **Page-fault path** | `P1-86-pf-cow-fork` | `11§5` + `11§7` page-fault entry, COW, fork, TLB shootdown. Substantial. |
-
-If unsure: pause and surface the **userspace eret design surface** to the user before proceeding — it bakes in significant Phase-2 architectural choices (kernel-owned GDT vs Limine-extending, syscall fast-path skeleton, user kstack model).
+| **Re-attempt P1-93 kernel-owned GDT** | `P1-93-kernel-owned-gdt` | Now unblocked by `qemu-mcp`. `qemu_start("x86_64")` → `qemu_break("install_kernel_gdt")` → `qemu_continue` → step through `lgdt` / `retfq` / segment-register reloads watching `qemu_regs` + `qemu_disasm`. Last attempt hung silently after `lgdt`; the gdb-stub will localise the offending instruction. Gates P1-82. |
+| **Re-attempt P1-86c PF-recovery smoke** | `P1-86c-fault-recover-smoke` | Now unblocked. Last attempt: dispatcher entered twice on the deliberate fault, then hung. Step through the second fault to find what's re-faulting. |
+| **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Gated by P1-93. Cross the Phase 1→2 line. Needs the kernel-owned GDT for user CS/SS + a hand-coded user blob + syscall entry/exit. |
+| **Wire real `RunqueueInner` into ksched** | `P1-84b-sched-runqueue-wire` | `Task` now has the fields (#161). Refactor `kernel/src/ksched.rs` shim onto `crates/sched::RunqueueInner`. Plumbing; doesn't unblock anything immediately. |
+| **Real PF handler + VMM AddressSpace integration** | `P1-86d-vmm-addrspace-fault` | Builds on P1-86b's `install_fault_handler`. Wire VMM AS to the dispatcher; demand-paging on fault. Larger; needs design call on per-task AS storage. |
 
 ## Open questions for user (deferred)
 

@@ -325,3 +325,30 @@ End-of-session-17 verified-green:
 - `make qemu-arm --features debug-all` → `mmuops-smoke: ok pa=000000004a6f3000` + `mmuops-smoke 2m: ok pa=000000004e400000`; same.
 
 The MmuOps trait is now exercised in production for both 4 KiB and 2 MiB leaves on every boot, on both arches.
+
+---
+
+## Session 18 (PRs #159 – #164) — 2026-05-03
+
+**Subject**: README + fault-decoder + Task `arch_ctx` + recoverable fault path + latent-bug fix + qemu-mcp tooling. Two attempts (P1-93 kernel-owned GDT, P1-86c PF-recovery smoke) abandoned mid-PR at silent QEMU hangs; the qemu-mcp server (#164) is the unblocker for both in the next session.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #159 | `C36-readme-ci-badge` | README updated from the Phase-0 placeholder. CI badge wired to `pr.yml` (the workflow extended in C29 to cover default + debug-all on both arches). Status section reflects the current state; `make` quick-start; `state.md` + `CHANGELOG.md` linked from the entry points. |
+| #160 | `P1-86a-fault-decode` | Per-arch fault printer decodes vectors + PFEC/ESR/DFSC labels so fault diagnostics are readable at a glance. x86: `vector_label` (Intel SDM Tab. 6-1) + `decode_pfec` (16-way P/W/U/I-fetch label). arm: `ec_label` (ESR_EL1.EC per ARM ARM D17.2.36) + `decode_dfsc` (DFSC sub-field per D17.2.40); for data/insn aborts also emits WnR R/W. Both decoders are `const fn`. +8 hosted tests (4 per arch). |
+| #161 | `P1-84-task-arch-ctx-buffer` | Per `13§5`, extend `crates/sched::Task` with `kernel_stack: AtomicPtr<u8>` + `arch_ctx: UnsafeCell<ArchCtxBuf>` where `ArchCtxBuf` is a `#[repr(C, align(8))]` byte buffer of size `sched::ARCH_CTX_SIZE = 128`. Per-arch HAL `Context` types fit by compile-time assert (kernel/src/lib.rs); `Task::arch_ctx_ptr<C>()` cast helper compile-time-checks the size. Opaque-buffer approach (per session-design call); Task stays arch-agnostic; `Arc<Task>` API unchanged. `unsafe impl Sync for Task` documented under the runqueue's single-mutator-per-active-CPU invariant. +3 hosted tests; bumps `make test` 486 → 489. |
+| #162 | `P1-86b-fault-recover` | First piece of P1-86 page-fault recovery. Per-arch fault path restructured so an installed handler can recover from a fault by returning `true`; default behaviour (halt) preserved when no handler is installed. `oxide_fault_print_rust` now returns `bool` on both arches. Asm: branches on the return — handled → drop frame + `iretq`/`eret`; not handled → park forever. New `pub type FaultHandler` + `pub unsafe fn install_fault_handler` per arch (atomic swap, returns previous for compose). ARM safety: ELR_EL1/SPSR_EL1 don't need explicit save across the `bl`; DAIF.AIF is masked on entry. |
+| #163 | `B07-debug-irq-feature-chain` | Latent fix. xtask `--features debug-all` only applies to packages cargo selects via `-p` (kernel + boot-{arch} + kernel-bin-{arch}); `hal-{x86_64,aarch64}` aren't selected, so their `debug-irq` feature has been silently inactive since #160 added the fault-vector + PFEC/ESR decoder. Chain through the boot crates' `debug-irq`/`debug-all` features so the decoder is actually live in production builds. Found while debugging P1-86c (page-fault recovery), which surfaced the silence. |
+| #164 | `C37-qemu-mcp-server` | Interactive QEMU+GDB control surface as an MCP server (`tools/qemu-mcp/server.py`). 13 tools — `qemu_start`/`break`/`continue`/`stepi`/`step`/`finish`/`regs`/`mem`/`disasm`/`backtrace`/`info`/`serial`/`stop`. Pure stdlib + the `mcp` Python package (already on Claude Code's path); spawns QEMU with `-s -S` + `gdb --interpreter=mi3`. Background reader threads drain serial + MI stdout into ring buffers; tool calls block on the GDB reader (30 s timeout) and on `qemu_continue` (120 s for the next `*stopped` event). `.mcp.json` at repo root registers the server for Claude Code auto-load on next session start. `make qemu-mcp` sanity-checks the module imports + lists its tools. |
+
+### Abandoned mid-PR
+
+- **P1-93 kernel-owned x86 GDT** — silent QEMU hang at the `retfq` after `lgdt`. Tried `.byte 0x48, 0xcb` to force 64-bit far-return encoding; still hung. Branch deleted; need gdb-stub single-stepping (now available via #164) to localise.
+- **P1-86c page-fault recovery smoke** — handler attached + deliberate fault fired; dispatcher entered twice (proven via an unconditional `[FAULT-ENTRY]` print), then silence. Surfaced #163 (`hal-{arch}/debug-irq` was off in production) as a side artifact. Branch deleted; re-attempt via #164.
+
+End-of-session-18 verified-green:
+- `make lint` clean.
+- `make test` → 489 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt + canary + mmuops smokes pass; ticks unchanged from session 17; both reach `boot: kernel ready, halting`.
+- `make qemu-mcp` lists all 13 tools.
