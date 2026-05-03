@@ -36,6 +36,7 @@ fn unbound_slots_default_to_enosys() {
         13,   // sys_rt_sigaction (no-op)
         14,   // sys_rt_sigprocmask (no-op)
         16,   // sys_ioctl (-ENOTTY)
+        20,   // sys_writev
         28,   // sys_madvise (no-op)
         39,   // sys_getpid
         60,   // sys_exit
@@ -65,7 +66,7 @@ fn bound_slots_are_not_enosys() {
     // sys_getrandom returns Enosys but the slot is bound (the
     // is_enosys helper compares fn-pointers so a stub returning
     // Err(Enosys) passes !is_enosys; skip 318 here for clarity).
-    for nr in [1, 3, 9, 10, 11, 12, 13, 14, 16, 28, 39, 60, 72, 89, 102, 104, 107, 108, 186, 218, 273, 302] {
+    for nr in [1, 3, 9, 10, 11, 12, 13, 14, 16, 20, 28, 39, 60, 72, 89, 102, 104, 107, 108, 186, 218, 273, 302] {
         assert!(!is_enosys(nr), "slot {nr} must be bound");
     }
 }
