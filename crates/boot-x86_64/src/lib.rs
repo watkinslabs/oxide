@@ -28,20 +28,33 @@ pub mod uart;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicPtr;
 use kernel::{BootInfo, BootMemRegion};
+#[cfg(feature = "debug-boot")]
 use klog::Uart;
+#[cfg(feature = "debug-boot")]
 use sync::{Spinlock, Tty as UartClass};
 
 use limine::{
     HhdmResponse, MemmapResponse, RequestHeader, RsdpResponse,
     HHDM_ID, MEMMAP_ID, REVISION_0, RSDP_ID,
 };
+#[cfg(feature = "debug-boot")]
 use uart::{Uart16550, COM1};
+
+// Per `04§4.0` (R06): every klog::* call site in this crate sits
+// behind `debug-boot` — UART sink install, CPU/MMU dump, byte
+// emit. Default builds emit zero log bytes; the call sites are
+// absent from the binary, not "filtered at runtime".
+#[cfg(feature = "debug-boot")]
+macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-boot"))]
+macro_rules! debug_boot { ($($t:tt)*) => {} }
 
 // ---------------------------------------------------------------------------
 // Boot-time UART sink for klog. Single instance behind `Spinlock` so the
 // `klog::LogSink` thunk can drive it without `static mut` (`07§5`).
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "debug-boot")]
 static BOOT_UART: Spinlock<Uart16550, UartClass>
     = Spinlock::new(Uart16550::new(COM1));
 
@@ -49,6 +62,7 @@ static BOOT_UART: Spinlock<Uart16550, UartClass>
 /// klog emits. Registered via `klog::set_byte_sink` from
 /// `_start_rust` after `BOOT_UART::init()`.
 /// # C: O(len)
+#[cfg(feature = "debug-boot")]
 fn boot_emit(bytes: &[u8]) {
     let mut g = BOOT_UART.lock();
     g.write_bytes(bytes);
@@ -65,6 +79,7 @@ fn now_ns_x86() -> u64 {
 /// Boot-time CPU identification log. Reads CPUID leaves 0 (vendor)
 /// and 0x80000002..0x80000004 (brand) and emits both via klog.
 /// # C: O(1)
+#[cfg(feature = "debug-boot")]
 fn log_cpu_info() {
     let v = hal_x86_64::cpuid_vendor();
     klog::write_raw(b"[INFO]  cpu vendor: ");
@@ -244,11 +259,14 @@ unsafe fn build_boot_info() -> BootInfo {
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
-    // SAFETY: COM1 owned by us pre-init; no other CPU alive; `init`
-    // programs the UART for 115200-8N1 + FIFO. After this call any
-    // klog emit will land on the serial port.
-    unsafe { BOOT_UART.lock().init(); }
-    klog::set_byte_sink(boot_emit);
+    // UART init + klog sink registration gated behind `debug-boot`
+    // per `04§4.0` (R06): default builds emit zero klog bytes, so
+    // the sink is never installed.
+    debug_boot! {
+        // SAFETY: COM1 owned by us pre-init; no other CPU alive yet; `init` programs the UART for 115200-8N1 + FIFO. After this call any klog emit will land on the serial port.
+        unsafe { BOOT_UART.lock().init(); }
+        klog::set_byte_sink(boot_emit);
+    }
     // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
     unsafe { hal_x86_64::install_default_idt(); }
     // TSC calibration: v1 hardcodes 2.4 GHz, the steady QEMU TSC
@@ -258,7 +276,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // strictly an upgrade from "no time" to "approximate time".
     hal_x86_64::set_tsc_khz(2_400_000);
     klog::set_clock_fn(now_ns_x86);
-    log_cpu_info();
+    debug_boot! { log_cpu_info(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
