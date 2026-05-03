@@ -308,6 +308,70 @@ fn priv_anon() -> VmaFlags { VmaFlags::PRIVATE | VmaFlags::ANONYMOUS }
 
 static ELF_BLOB: [u8; 8] = [b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h'];
 
+// ---------------------------------------------------------------------------
+// AddressSpace::fork — naive VMA-tree clone per docs/11§7 (P2-15a).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fork_clones_empty_as() {
+    let parent = AddressSpace::new(0).unwrap();
+    let child  = parent.fork(0).unwrap();
+    assert_eq!(child.vma_count(), 0);
+    assert_eq!(child.root_pa(), 0);
+    child.audit().unwrap();
+}
+
+#[test]
+fn fork_inherits_vma_tree() {
+    let parent = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    parent.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    let h2 = UserVirtAddr::new(0x4001_0000).unwrap();
+    parent.mmap(Some(h2), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    assert_eq!(parent.vma_count(), 2);
+    let child = parent.fork(0).unwrap();
+    assert_eq!(child.vma_count(), 2);
+    // Child sees the same VMAs at the same VAs.
+    assert!(child.find_vma(h).is_some());
+    assert!(child.find_vma(h2).is_some());
+    child.audit().unwrap();
+}
+
+#[test]
+fn fork_inherits_kernel_bytes_slice() {
+    let parent = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    parent.mmap(Some(h), PAGE, VmaProt::READ | VmaProt::EXEC,
+        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data: &ELF_BLOB },
+        false).unwrap();
+    let child = parent.fork(0xdead_b000).unwrap();
+    assert_eq!(child.root_pa(), 0xdead_b000);
+    let v = child.find_vma(h).expect("inherited");
+    match v.backing {
+        VmaBacking::KernelBytes { data } => assert_eq!(data, &ELF_BLOB),
+        _ => panic!("expected KernelBytes inherited from parent"),
+    }
+}
+
+#[test]
+fn fork_subsequent_changes_dont_alias() {
+    // Insert a VMA in parent, fork, insert a different one in
+    // parent — child should NOT see the post-fork insert.
+    let parent = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    parent.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    let child = parent.fork(0).unwrap();
+    let h2 = UserVirtAddr::new(0x4001_0000).unwrap();
+    parent.mmap(Some(h2), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    assert_eq!(parent.vma_count(), 2);
+    assert_eq!(child.vma_count(), 1, "child must have its own tree");
+    assert!(child.find_vma(h2).is_none());
+}
+
 #[test]
 fn kernel_bytes_never_merges() {
     // Two abutting KernelBytes VMAs with sub-slices of the same blob
