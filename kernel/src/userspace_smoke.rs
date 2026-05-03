@@ -30,17 +30,36 @@ const USER_STACK_VA: u64 = 0x0050_0000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 const KSTACK_SIZE: u64 = 0x1000;
 
-// User blob: `mov $0x42,%eax; syscall; ud2`. Loads nr=0x42 then
-// traps into LSTAR. After sysretq lands user back at the ud2 byte,
-// #UD fires (vec 6) and the handler below logs the round-trip.
+// User blob: write(1, "hi\n", 3); exit(0); ud2. Exercises the real
+// syscall::dispatch table (P2-03) end-to-end: bound slots 1 + 60.
 //
-//   B8 42 00 00 00    mov  $0x42, %eax        offset 0..5
-//   0F 05             syscall                 offset 5..7
-//   0F 0B             ud2                     offset 7..9    ← sysret RIP
-const USER_BLOB: [u8; 9] = [0xB8, 0x42, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x0F, 0x0B];
+//   B8 01 00 00 00       mov  $1,%eax          ; sys_write nr
+//   BF 01 00 00 00       mov  $1,%edi          ; fd = stdout
+//   BE 00 01 40 00       mov  $0x400100,%esi   ; buf addr (32-bit OK)
+//   BA 03 00 00 00       mov  $3,%edx          ; len
+//   0F 05                syscall
+//   B8 3C 00 00 00       mov  $60,%eax         ; sys_exit nr
+//   31 FF                xor  %edi,%edi        ; code = 0
+//   0F 05                syscall
+//   0F 0B                ud2                   ; tripwire
+//
+// Buffer "hi\n" placed at offset 0x100 of the user code page.
+const USER_BLOB: [u8; 33] = [
+    0xB8, 0x01, 0x00, 0x00, 0x00,                   // mov  $1,%eax
+    0xBF, 0x01, 0x00, 0x00, 0x00,                   // mov  $1,%edi
+    0xBE, 0x00, 0x01, 0x40, 0x00,                   // mov  $0x400100,%esi
+    0xBA, 0x03, 0x00, 0x00, 0x00,                   // mov  $3,%edx
+    0x0F, 0x05,                                     // syscall (write)
+    0xB8, 0x3C, 0x00, 0x00, 0x00,                   // mov  $60,%eax
+    0x31, 0xFF,                                     // xor  %edi,%edi
+    0x0F, 0x05,                                     // syscall (exit)
+    0x0F, 0x0B,                                     // ud2
+];
+const USER_BUF_OFF: u64 = 0x100;
+const USER_BUF_BYTES: &[u8] = b"hi\n";
 
-/// User code addr immediately after `syscall`; sysretq lands here.
-const USER_RIP_POST_SYSRET: u64 = USER_CODE_VA + 7;
+/// User code addr of the final `ud2` (sysretq from sys_exit lands here).
+const USER_RIP_POST_SYSRET: u64 = USER_CODE_VA + (USER_BLOB.len() as u64) - 2;
 
 /// Handler that watches for `#UD` from user at the ud2 tripwire —
 /// confirms full ring0→ring3→ring0 round-trip via syscall+sysretq.
@@ -104,11 +123,14 @@ pub unsafe fn run<M: MmuOps>(hhdm_offset: u64) -> ! {
     };
     let _ = code_pa;
 
-    // Write the user blob: `syscall` followed by `ud2` tripwire.
+    // Write the user code blob and the "hi\n" buffer it points at.
     // SAFETY: USER_CODE_VA mapped W|U|EXEC; sole owner this CPU.
     unsafe {
         for (i, b) in USER_BLOB.iter().enumerate() {
             core::ptr::write_volatile((USER_CODE_VA + i as u64) as *mut u8, *b);
+        }
+        for (i, b) in USER_BUF_BYTES.iter().enumerate() {
+            core::ptr::write_volatile((USER_CODE_VA + USER_BUF_OFF + i as u64) as *mut u8, *b);
         }
     }
 

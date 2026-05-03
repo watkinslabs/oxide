@@ -23,13 +23,23 @@ fn table_size_matches_spec() {
 }
 
 #[test]
-fn all_slots_default_to_enosys() {
+fn unbound_slots_default_to_enosys() {
+    // Slots that have a real handler bound — keep this list in sync
+    // with `dispatch::build_table()`.
+    const BOUND: &[u32] = &[1 /* sys_write */, 60 /* sys_exit */];
     for nr in 0..(SYSCALL_TABLE_LEN as u32) {
+        if BOUND.contains(&nr) { continue; }
         assert!(
             is_enosys(nr),
-            "slot {nr} unexpectedly bound — update the test once it lands"
+            "slot {nr} unexpectedly bound — update BOUND list above"
         );
     }
+}
+
+#[test]
+fn bound_slots_are_not_enosys() {
+    assert!(!is_enosys(1),  "sys_write must be bound");
+    assert!(!is_enosys(60), "sys_exit must be bound");
 }
 
 #[test]
