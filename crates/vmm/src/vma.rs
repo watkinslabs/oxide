@@ -21,6 +21,52 @@ bitflags::bitflags! {
     }
 }
 
+impl VmaProt {
+    /// Translate to `hal::PageFlags` for an installed PTE. The USER
+    /// bit is added by the caller (every VMA-backed PTE is U=1 per
+    /// `11§4`/§5). NX semantics: PTE.NX = !VMA.X (x86 NX bit; arm UXN).
+    /// # C: O(1)
+    pub fn to_page_flags(self) -> hal::PageFlags {
+        let mut pf = hal::PageFlags::USER;
+        if self.contains(Self::READ)  { pf |= hal::PageFlags::READ;  }
+        if self.contains(Self::WRITE) { pf |= hal::PageFlags::WRITE; }
+        if self.contains(Self::EXEC)  { pf |= hal::PageFlags::EXEC;  }
+        pf
+    }
+
+    /// True iff this VMA permits the requested access kind. Used
+    /// by `handle_page_fault` per `11§5`.
+    /// # C: O(1)
+    pub fn permits(self, access: FaultAccess) -> bool {
+        match access {
+            FaultAccess::Read  => self.contains(Self::READ),
+            FaultAccess::Write => self.contains(Self::WRITE),
+            FaultAccess::Exec  => self.contains(Self::EXEC),
+        }
+    }
+}
+
+/// Access kind that produced a page fault, per `11§5`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FaultAccess {
+    Read,
+    Write,
+    Exec,
+}
+
+/// Page-fault classification handed to `AddressSpace::handle_page_fault`
+/// per `11§5`. v1 covers `NotPresent` (demand fault); `Write` (COW
+/// upgrade) lands with the per-page metadata + refcount path in P3.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FaultKind {
+    /// CPU translation walk found no present PTE for this VA.
+    NotPresent { access: FaultAccess },
+    /// Present PTE rejected the access (write to RO, exec on NX).
+    /// COW resolves the writable variant; v1 returns EFAULT for
+    /// non-COW protection mismatches → SIGSEGV upstream.
+    Protection { access: FaultAccess },
+}
+
 bitflags::bitflags! {
     /// VMA flags per `11§4`. `SHARED`/`PRIVATE` are mutually exclusive
     /// at construction; not enforced here (caller per `15§6.2 mmap`).
@@ -74,6 +120,13 @@ impl Vma {
     pub fn contains(&self, va: UserVirtAddr) -> bool {
         let v = va.as_u64();
         v >= self.start.as_u64() && v < self.end.as_u64()
+    }
+
+    /// True iff this VMA permits the access kind that triggered the
+    /// fault, per `11§5`. Forwards to `prot.permits`.
+    /// # C: O(1)
+    pub fn permits(&self, access: FaultAccess) -> bool {
+        self.prot.permits(access)
     }
 
     /// Byte length of the VMA range.
