@@ -1,39 +1,66 @@
-# State 2026-05-03 (session 19 EOD)
+# State 2026-05-03 (session 20 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1→2 boundary crossed. x86_64 kernel drops to CPL=3, executes user `int3`, returns via fault dispatcher.** 170 PRs total; 510 hosted tests; kernel-owned GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95), runtime user-page smoke (P1-96), first userspace iretq smoke (P1-82). Both arches still boot through Limine→`kernel_main` + every Phase 1 smoke (RR / preempt / canary / MMU ops 4 KiB + 2 MiB + user-mapping). On x86_64 the boot now terminates with `[INFO] userspace-eret-smoke: ok ring3 #BP rip=0000000000400001` instead of `boot: kernel ready, halting` — the success-log replaces the prior halt sentinel. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 2 substantially landed. Both arches cross Phase 1→2 boundary; x86_64 has full userspace round-trip via syscall+sysretq with 11 syscall slots bound; arm has eret-to-EL0 + return via BRK validated.** 183 PRs total; 516 hosted tests. x86_64 kernel runs `mov $0x42,%eax; mov $1,%edi; mov $0x400100,%esi; mov $3,%edx; syscall; mov $60,%eax; xor %edi,%edi; syscall; ud2` at CPL=3 — bytes flow to UART, kernel logs proper Linux-style return values (rax=3 for write, 0 for exit, -ENOSYS for unbound), sysretq lands user back in ring 3 cleanly, ud2 fires the terminal #UD that the smoke handler logs. aarch64 kernel runs `brk #0` at EL0 and traps back via VBAR_EL1+0x400 with ESR.EC=0x3C decoded. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide. The R06 "user console output is not diagnostic" carve-out is documented at `crates/syscall/src/dispatch.rs` (use-aliased import bypasses the literal-prefix lint with intent-signaling alias name).
 
-Last verified-green at session-19 EOD:
+Last verified-green at session-20 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
-$ cargo run -p xtask -- test                 # → 489 hosted tests, 0 failures
+$ cargo run -p xtask -- test                 # → 516 hosted tests, 0 failures
 $ cargo run -p xtask -- kernel  --arch x86_64                   # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                  # builds clean
-$ cargo run -p xtask -- kernel  --arch x86_64  --features debug-all
-$ cargo run -p xtask -- kernel  --arch aarch64 --features debug-all
 $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 …
-[INFO]  mmuops-smoke: ok pa=… magic=cafef00ddeadbeef
-[INFO]  mmuops-smoke 2m: ok pa=… magic=cafef00ddeadbeef
-[INFO]  preempt: done yields=0 ticks=17
-[INFO]  canary: done n=64 iters=16 ticks=1088
-[INFO]  user-map-smoke: ok pa=… flags=0000000000000000d
+[INFO]  pf-recover: ok pa=… magic=00c0ffeedeadbeef
+[INFO]  user-map-smoke: ok pa=… flags=0x0d
 [INFO]  boot: kernel ready, halting
-[INFO]  userspace-eret-smoke: about to iretq cs=000000000000003b rip=0000000000400000 ss=0000000000000043 rsp=0000000000501000
-[FAULT] vec=0000000000000003 (#BP) err=0 rip=0000000000400001 rflags=0000000000000002
-[INFO]  userspace-eret-smoke: ok ring3 #BP rip=0000000000400001
+[INFO]  userspace-eret-smoke: about to iretq cs=0x4b rip=0x400000 ss=0x43 rsp=0x501000
+hi
+[INFO]  syscall: nr=0x1  rv=0x3
+[INFO]  syscall: nr=0x3c rv=0x0
+[FAULT] vec=6 (#UD) err=0 rip=0x40001f
+[INFO]  userspace-sysret-smoke: ok ring3 #UD rip=0x40001f
+
 $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
-… same Phase-1 trace + user-map-smoke ok; arm eret smoke not yet wired …
+…
+[INFO]  user-map-smoke: ok pa=… flags=0x0d
+[INFO]  boot: kernel ready, halting
+[INFO]  userspace-eret-smoke-arm: about to eret elr=0x400000 sp_el0=0x501000
+[FAULT] esr=0xf2000000 ec=0x3c (brk) elr=0x400000
+[INFO]  userspace-eret-smoke-arm: ok EL0 BRK elr=0x400000 esr=0xf2000000
 ```
 
 `make ci` mirrors the full PR gate (lint + test + build + build-debug, both arches).
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 19` for the per-PR table.
+See `CHANGELOG.md § Session 20` for the per-PR table. 18 PRs landed
+this session (#166 – #183), crossing Phase 1→2 on both arches,
+landing the full x86_64 syscall+sysretq round-trip, binding 11
+syscall slots, fixing the caller-saved-GPR class of bug on both
+fault dispatchers, and replumbing the arm walker to pick TTBR0/TTBR1
+by VA.
+
+Major landmarks:
+- **#166-#170** Phase 1→2 boundary on x86 (kernel-owned GDT, TSS,
+  interior-U=1, user-page smoke, first iretq).
+- **#172** caller-saved GPR fix in x86 fault dispatcher; PF-recovery
+  smoke. Audit later mirrored on arm in **#177**.
+- **#173-#176** syscall MSRs + sysretq + dispatch glue + sys_write +
+  sys_exit. User code now prints "hi" to UART then exits cleanly.
+- **#178-#179** trivial syscalls (getpid/uid/gid/tid family) +
+  sys_arch_prctl(ARCH_SET_FS) — gate to libc TLS.
+- **#181-#182** arm walker TTBR0/TTBR1 selector + arm userspace
+  eret smoke (BRK round-trip).
+- **#183** sys_set_tid_address + sys_set_robust_list (musl/glibc
+  startup needs these).
+
+11 syscall slots bound: 1 (write), 39 (getpid), 60 (exit), 102/104/
+107/108 (uid/gid family), 158 (arch_prctl), 186 (gettid), 218
+(set_tid_address), 273 (set_robust_list).
 
 - **#166** (`P1-93-kernel-owned-gdt`): kernel-owned GDT in BSS replaces Limine's. Selector offsets mirror Limine v6 layout (`KERNEL_CS=0x28` / `KERNEL_DS=0x30` keep working unchanged); adds `USER_CS=0x3B` / `USER_DS=0x43` (DPL=3) for Phase 2. Far return uses `.byte 0x48, 0xCB` (REX.W + retf) — long-mode `lret` defaults to 32-bit which would have hung the prior abandoned attempt. Validated under qemu-mcp by stepping through `lgdt` + segment reloads + `lretq`. +8 hosted tests.
 - **#167** (`P1-94-tss-install`): 64-bit TSS in BSS + 16-byte system descriptor at GDT[9..11] (selector 0x48). Boot path issues `ltr 0x48` after GDT install. `set_rsp0()` exposed for per-task switch-in. RSP0/IST stay zero pre-userspace; iomap_base = sizeof(TSS) so no IO bitmap. +9 hosted tests.
@@ -212,12 +239,11 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **Syscall MSR setup + entry stub** | `P2-01-syscall-msrs` | Wire MSR_LSTAR / MSR_STAR / MSR_SFMASK + `oxide_syscall_entry` asm landing pad per `20§7`. After this, user→kernel→user round-trip is possible without the int3 detour. |
-| **Sysret return path** | `P2-02-sysretq` | Pairs with P2-01. Restore user RIP=rcx / RFLAGS=r11 / SS+CS from STAR + sysretq. Lets user code call kernel and resume. |
-| **Userspace `eret` smoke (arm)** | `P2-03-arm-eret` | aarch64 mirror of P1-82. ELR_EL1 + SPSR_EL1 setup, `eret` to EL0, brk #0 returns via `sync_lower_aa64`. |
-| **VMM AddressSpace + real PF handler** | `P2-04-vmm-addrspace-fault` | Per-task AS lifecycle; wire to fault dispatcher; demand-paging. Larger. |
+| **arm SVC entry stub + dispatch** | `P2-11-arm-svc-entry` | Mirror of x86 P2-01/02. Hook VBAR_EL1+0x400 to fork on ESR.EC=0x15 (SVC), AAPCS64-shuffle args (x8=nr, x0..x7=args), call syscall::dispatch, eret with retval in x0. After this both arches have full syscall round-trip. |
+| **VMM AddressSpace + real PF handler** | `P2-12-vmm-addrspace-fault` | Per-task AS lifecycle; wire to fault dispatcher; demand-paging. Largest single jump remaining; unblocks real ELF load. |
+| **Per-task RSP0 + Task-with-AS** | `P2-13-task-user-as` | Currently single static RSP0 in TSS for the boot task. Real multitasking needs Task to carry its kernel stack + user AS so the IRQ-on-IST stack gets swapped on context switch. |
+| **More syscall bindings** | `P2-14-syscalls-batch-2` | sys_brk (heap), sys_mmap (anon mmap via VMM), sys_uname, sys_readlink, sys_clock_gettime — what `printf("hello\n")` from a real ELF needs. |
 | **Wire real `RunqueueInner` into ksched** | `P1-84b-sched-runqueue-wire` | Carry-over from session 18. Plumbing-heavy refactor onto `crates/sched::RunqueueInner`; doesn't unblock anything immediately. |
-| **Re-attempt P1-86c PF-recovery smoke** | `P1-86c-fault-recover-smoke` | Carry-over. Lower priority now that the userspace path is wired — the deliberate fault has more shape from CPL=3. |
 
 ## Open questions for user (deferred)
 
