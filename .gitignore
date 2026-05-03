@@ -53,6 +53,7 @@ Thumbs.db
 # Claude Code local
 .claude/settings.local.json
 .claude/.cache/
+.claude/scheduled_tasks.lock
 
 # Direnv / local env
 .envrc.local
