@@ -12,6 +12,7 @@ path = "src/lib.rs"
 hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }
 kalloc  = { path = "../crates/kalloc" }
+pmm     = { path = "../crates/pmm" }
 vmm     = { path = "../crates/vmm" }
 
 [features]
