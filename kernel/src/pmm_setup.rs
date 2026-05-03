@@ -273,6 +273,16 @@ pub fn alloc_one_frame() -> Option<u64> {
     p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096)
 }
 
+/// Allocate a single contiguous physical region of `2^order` 4 KiB
+/// frames; return its base PA (aligned to the region size). Used
+/// by huge-page smokes / future huge-leaf consumers. `Order(0)` =
+/// 4 KiB, `Order(9)` = 2 MiB, `Order(18)` = 1 GiB.
+/// # C: O(log heap) (PMM buddy alloc at higher order).
+pub fn alloc_contig(order: pmm::Order) -> Option<u64> {
+    let p = pmm_static()?;
+    p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
