@@ -80,6 +80,7 @@ fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         2u8
     })?;
     let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
+    let features = parse_arg(rest, "--features");
     let target = match arch.as_str() {
         "x86_64"  => "./targets/x86_64-unknown-oxide-kernel.json",
         "aarch64" => "./targets/aarch64-unknown-oxide-kernel.json",
@@ -103,6 +104,9 @@ fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "-p", boot_pkg,
         "-p", bin_pkg,
     ]);
+    if let Some(f) = features.as_ref() {
+        c.args(["--features", f.as_str()]);
+    }
     run(c)
 }
 
