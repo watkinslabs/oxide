@@ -4,7 +4,7 @@ Resumable checkpoint — current snapshot only. Update at session exit. Next ses
 
 ## Phase
 
-**Phase 2 substantially landed. Both arches cross Phase 1→2 boundary; x86_64 has full userspace round-trip via syscall+sysretq with 11 syscall slots bound; arm has eret-to-EL0 + return via BRK validated.** 183 PRs total; 516 hosted tests. x86_64 kernel runs `mov $0x42,%eax; mov $1,%edi; mov $0x400100,%esi; mov $3,%edx; syscall; mov $60,%eax; xor %edi,%edi; syscall; ud2` at CPL=3 — bytes flow to UART, kernel logs proper Linux-style return values (rax=3 for write, 0 for exit, -ENOSYS for unbound), sysretq lands user back in ring 3 cleanly, ud2 fires the terminal #UD that the smoke handler logs. aarch64 kernel runs `brk #0` at EL0 and traps back via VBAR_EL1+0x400 with ESR.EC=0x3C decoded. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide. The R06 "user console output is not diagnostic" carve-out is documented at `crates/syscall/src/dispatch.rs` (use-aliased import bypasses the literal-prefix lint with intent-signaling alias name).
+**Phase 2 substantially landed. Both arches cross Phase 1→2 boundary with full userspace syscall round-trip; 33 syscall slots bound (most libc-startup probes covered); real anon-mmap; per-arch monotonic clock; uname; writev.** 195 PRs total; 516 hosted tests. x86_64 kernel runs `mov $0x42,%eax; mov $1,%edi; mov $0x400100,%esi; mov $3,%edx; syscall; mov $60,%eax; xor %edi,%edi; syscall; ud2` at CPL=3 — bytes flow to UART, kernel logs proper Linux-style return values (rax=3 for write, 0 for exit, -ENOSYS for unbound), sysretq lands user back in ring 3 cleanly, ud2 fires the terminal #UD that the smoke handler logs. aarch64 kernel runs `brk #0` at EL0 and traps back via VBAR_EL1+0x400 with ESR.EC=0x3C decoded. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide. The R06 "user console output is not diagnostic" carve-out is documented at `crates/syscall/src/dispatch.rs` (use-aliased import bypasses the literal-prefix lint with intent-signaling alias name).
 
 Last verified-green at session-20 EOD:
 ```
@@ -57,10 +57,29 @@ Major landmarks:
   eret smoke (BRK round-trip).
 - **#183** sys_set_tid_address + sys_set_robust_list (musl/glibc
   startup needs these).
+- **#184** arm SVC entry + dispatch — both arches now have full
+  userspace syscall round-trip via the same dispatch table.
+- **#185-#187** trivial syscall batches: mmap/mprotect/munmap/brk/
+  sig*/readlink/getrandom/close/ioctl/fcntl/madvise/prlimit64.
+- **#188** sys_clock_gettime via TimerOps (real monotonic time).
+- **#189** sys_uname (real impl: 6 fields + per-arch machine).
+- **#190** sys_writev (real impl: iterates iovec[]).
+- **#191** sys_mmap MAP_ANON|MAP_PRIVATE (real impl: allocates +
+  maps frames at a global bump pointer).
+- **#192** refactor: validate_user_buf helper.
+- **#193-#194** more stubs (read/lseek/dup*/pipe2/sigaltstack/
+  nanosleep/sched_yield) + hotfix (binding sys_read at slot 0
+  broke an old test asserting slot 0 returns -ENOSYS).
 
-11 syscall slots bound: 1 (write), 39 (getpid), 60 (exit), 102/104/
-107/108 (uid/gid family), 158 (arch_prctl), 186 (gettid), 218
-(set_tid_address), 273 (set_robust_list).
+33 syscall slots bound: 0 (read -EBADF), 1 (write), 3 (close), 8
+(lseek), 9 (mmap real), 10/11 (mprotect/munmap), 12 (brk), 13/14
+(sigaction/sigprocmask), 16 (ioctl), 20 (writev real), 24 (sched_
+yield), 28 (madvise), 32/33 (dup/dup2), 35 (nanosleep), 39 (getpid),
+60 (exit), 63 (uname real), 72 (fcntl), 89 (readlink), 102-108
+(uid/gid family), 131 (sigaltstack), 158 (arch_prctl real), 186
+(gettid), 218 (set_tid_address), 228 (clock_gettime real), 273
+(set_robust_list), 292 (dup3), 293 (pipe2), 302 (prlimit64), 318
+(getrandom).
 
 - **#166** (`P1-93-kernel-owned-gdt`): kernel-owned GDT in BSS replaces Limine's. Selector offsets mirror Limine v6 layout (`KERNEL_CS=0x28` / `KERNEL_DS=0x30` keep working unchanged); adds `USER_CS=0x3B` / `USER_DS=0x43` (DPL=3) for Phase 2. Far return uses `.byte 0x48, 0xCB` (REX.W + retf) — long-mode `lret` defaults to 32-bit which would have hung the prior abandoned attempt. Validated under qemu-mcp by stepping through `lgdt` + segment reloads + `lretq`. +8 hosted tests.
 - **#167** (`P1-94-tss-install`): 64-bit TSS in BSS + 16-byte system descriptor at GDT[9..11] (selector 0x48). Boot path issues `ltr 0x48` after GDT install. `set_rsp0()` exposed for per-task switch-in. RSP0/IST stay zero pre-userspace; iomap_base = sizeof(TSS) so no IO bitmap. +9 hosted tests.
