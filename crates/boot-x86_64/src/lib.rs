@@ -54,6 +54,14 @@ fn boot_emit(bytes: &[u8]) {
     g.write_bytes(bytes);
 }
 
+/// klog clock thunk — surfaces `X86TimerOps::monotonic_ns` as the
+/// `klog::ClockFn` after `set_tsc_khz` calibration.
+/// # C: O(1)
+fn now_ns_x86() -> u64 {
+    use hal::TimerOps;
+    hal_x86_64::X86TimerOps::monotonic_ns().0
+}
+
 // ---------------------------------------------------------------------------
 // Limine request slots — bootloader scans `.limine_requests` for these
 // markers and writes responses before jumping to `_start`.
@@ -215,6 +223,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // mapping. monotonic_ns degenerates to 0 if not set, so this is
     // strictly an upgrade from "no time" to "approximate time".
     hal_x86_64::set_tsc_khz(2_400_000);
+    klog::set_clock_fn(now_ns_x86);
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
