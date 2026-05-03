@@ -23,16 +23,31 @@
 
 use core::cell::UnsafeCell;
 
-/// 11 × 8 B = 88 B. Last 2 entries form the 16-byte TSS system
-/// descriptor at selector 0x48 (`tss::TSS_SEL`).
-pub const GDT_LEN: usize = 11;
+/// 12 × 8 B = 96 B. Layout (P2-02 sysretq-compatible):
+///
+///   sel 0x00       null
+///   sel 0x08..0x20 reserved
+///   sel 0x28       kernel CS64 (DPL=0, L=1)        — `idt::KERNEL_CS`
+///   sel 0x30       kernel DS   (DPL=0)             — kernel SS too
+///   sel 0x38       user CS32   (DPL=3, L=0, D=1)   — STAR[63:48] base
+///   sel 0x40       user DS     (DPL=3)             — sysret SS = base+8
+///   sel 0x48       user CS64   (DPL=3, L=1)        — sysret CS = base+16
+///   sel 0x50..0x58 TSS (16-byte system descriptor) — `tss::TSS_SEL`
+///
+/// MSR_STAR with STAR[63:48] = 0x38 satisfies the sysretq selector
+/// triple. STAR[47:32] = 0x28 keeps kernel CS for syscall entry.
+pub const GDT_LEN: usize = 12;
 
-/// User CS64 selector (DPL=3, L=1). Wired in Phase 2 (P1-82).
-/// Kernel CS/DS = 0x28 / 0x30 are exported as `idt::KERNEL_CS` and
-/// hard-coded in `context.rs` per `14§R07`; not redefined here.
-pub const USER_CS: u16 = 0x38 | 3;
-/// User DS selector (DPL=3). Wired in Phase 2 (P1-82).
+/// User CS64 selector (DPL=3, L=1). Used by `iretq` to ring 3 and
+/// returned by `sysretq` (CS = STAR[63:48]+16 with RPL forced 3).
+pub const USER_CS: u16 = 0x48 | 3;
+/// User DS selector (DPL=3). `sysretq` SS = STAR[63:48]+8 with RPL 3.
 pub const USER_DS: u16 = 0x40 | 3;
+/// User CS32 selector (DPL=3, L=0, D=1) — STAR[63:48] base. Not
+/// used at runtime in v1 (no compat-mode userspace) but the
+/// descriptor must be present and well-formed for sysretq's
+/// internal validation.
+pub const USER_CS32: u16 = 0x38 | 3;
 
 /// Access-byte for a 64-bit kernel code segment: P=1 DPL=0 S=1
 /// type=Execute/Read/Accessed (0xA + accessed=1 → 0xB; we set
@@ -48,6 +63,8 @@ const ACCESS_USER_DS: u8 = 0xF2;
 
 /// Flags nibble for code: G=1 (4 KiB granularity), D=0, L=1.
 const FLAGS_CODE64: u8 = 0xA;
+/// Flags nibble for 32-bit code: G=1, D=1, L=0.
+const FLAGS_CODE32: u8 = 0xC;
 /// Flags nibble for data: G=1, D=1 (32-bit default; ignored in 64-bit
 /// mode for data segments but conventional).
 const FLAGS_DATA: u8 = 0xC;
@@ -167,12 +184,13 @@ pub unsafe fn install_kernel_gdt() {
     gdt[4] = 0;
     gdt[5] = segment(ACCESS_KERNEL_CS, FLAGS_CODE64); // 0x28
     gdt[6] = segment(ACCESS_KERNEL_DS, FLAGS_DATA);   // 0x30
-    gdt[7] = segment(ACCESS_USER_CS,   FLAGS_CODE64); // 0x38
+    gdt[7] = segment(ACCESS_USER_CS,   FLAGS_CODE32); // 0x38 (user CS32)
     gdt[8] = segment(ACCESS_USER_DS,   FLAGS_DATA);   // 0x40
+    gdt[9] = segment(ACCESS_USER_CS,   FLAGS_CODE64); // 0x48 (user CS64)
     let tss_base = crate::tss::tss_base_addr();
     let tss_limit = (core::mem::size_of::<crate::tss::Tss64>() - 1) as u32;
-    gdt[9]  = tss_low(tss_base, tss_limit);           // 0x48 (low half)
-    gdt[10] = tss_high(tss_base);                     // 0x48 (high half)
+    gdt[10] = tss_low(tss_base, tss_limit);           // 0x50 (low half)
+    gdt[11] = tss_high(tss_base);                     // 0x50 (high half)
 
     let pointer = GdtPointer {
         limit: (core::mem::size_of::<[u64; GDT_LEN]>() - 1) as u16,
@@ -244,16 +262,26 @@ mod tests {
 
     #[test]
     fn user_selectors_have_dpl_3() {
-        assert_eq!(USER_CS, 0x38 | 3);
-        assert_eq!(USER_DS, 0x40 | 3);
-        assert_eq!(USER_CS & 3, 3);
-        assert_eq!(USER_DS & 3, 3);
+        assert_eq!(USER_CS,   0x48 | 3, "user CS64 = sel 0x48 | DPL=3");
+        assert_eq!(USER_DS,   0x40 | 3, "user DS   = sel 0x40 | DPL=3");
+        assert_eq!(USER_CS32, 0x38 | 3, "user CS32 = sel 0x38 | DPL=3 (sysret base)");
+        assert_eq!(USER_CS   & 3, 3);
+        assert_eq!(USER_DS   & 3, 3);
+        assert_eq!(USER_CS32 & 3, 3);
     }
 
     #[test]
-    fn gdt_static_size_is_88() {
-        // 11 × 8 = 88 bytes; last 16 bytes form the TSS descriptor.
-        assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), 88);
+    fn sysret_selector_triple_is_contiguous() {
+        // sysretq requires:  CS32@N, SS@N+8, CS64@N+16  with RPL=3.
+        let n = USER_CS32 & !3;
+        assert_eq!(USER_DS & !3, n + 8,  "sysret SS  = base+8");
+        assert_eq!(USER_CS & !3, n + 16, "sysret CS  = base+16");
+    }
+
+    #[test]
+    fn gdt_static_size_is_96() {
+        // 12 × 8 = 96 bytes; last 16 bytes form the TSS descriptor.
+        assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), 96);
     }
 
     #[test]
