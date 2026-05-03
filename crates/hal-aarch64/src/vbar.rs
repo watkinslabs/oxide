@@ -86,21 +86,54 @@ core::arch::global_asm!(
     ".balign 4",
     ".globl oxide_default_vector_handler",
     ".type  oxide_default_vector_handler, %function",
+    // Save the AAPCS64 caller-saved set (x0..x18 + x29 + x30) before
+    // calling the Rust printer so a recoverable fault (handler
+    // returns true → `eret`) can retry the faulting instruction with
+    // the original register state intact. Pre-fix this stub clobbered
+    // x0..x18+x30 across the `bl`, so a #PF retry on e.g.
+    //   `str x0, [x9, #disp]`
+    // would re-fault at a garbage VA — same class of bug as the x86
+    // dispatcher fixed in PR #172.
+    //
+    // Frame: 22 × 8 = 176 B (16-aligned).
+    //   [sp+0x00..0x90]  x0..x18 (19 regs across 10 stp pairs +
+    //                    one solo str)  — actually 19 isn't even,
+    //                    so we use 10 pairs covering x0..x18 + x29.
+    //   [sp+0xa0]        x30 (lr)
+    //   [sp+0xa8]        pad (unused; keeps 16-align)
+    ".balign 4",
     "oxide_default_vector_handler:",
-    "    msr daifset, #0xf",   // mask D, A, I, F
-    // Reserve a 16-aligned scratch area on the stack for the printer
-    // call frame. Prepare ELR_EL1, ESR_EL1, FAR_EL1 in arg regs and
-    // call the Rust printer; w0 returns bool (1 = handled → eret).
-    // ELR_EL1/SPSR_EL1 are preserved across the bl since DAIF.AIF
-    // is masked above so no interrupt can clobber them.
-    "    sub  sp, sp, #16",
-    "    mrs  x0, esr_el1",
-    "    mrs  x1, far_el1",
-    "    mrs  x2, elr_el1",
+    "    msr daifset, #0xf",       // mask D, A, I, F
+    "    sub  sp, sp, #176",
+    "    stp  x0,  x1,  [sp, #0]",
+    "    stp  x2,  x3,  [sp, #16]",
+    "    stp  x4,  x5,  [sp, #32]",
+    "    stp  x6,  x7,  [sp, #48]",
+    "    stp  x8,  x9,  [sp, #64]",
+    "    stp  x10, x11, [sp, #80]",
+    "    stp  x12, x13, [sp, #96]",
+    "    stp  x14, x15, [sp, #112]",
+    "    stp  x16, x17, [sp, #128]",
+    "    stp  x18, x29, [sp, #144]",
+    "    str  x30,      [sp, #160]",
+    "    mrs  x0,  esr_el1",
+    "    mrs  x1,  far_el1",
+    "    mrs  x2,  elr_el1",
     "    bl   oxide_fault_print_rust",
-    "    add  sp, sp, #16",
-    "    cbz  w0, 1f",         // not handled → wfi forever
-    "    eret",                 // handled → retry faulting instruction
+    "    cbz  w0, 1f",             // not handled → wfi forever
+    "    ldr  x30,      [sp, #160]",
+    "    ldp  x18, x29, [sp, #144]",
+    "    ldp  x16, x17, [sp, #128]",
+    "    ldp  x14, x15, [sp, #112]",
+    "    ldp  x12, x13, [sp, #96]",
+    "    ldp  x10, x11, [sp, #80]",
+    "    ldp  x8,  x9,  [sp, #64]",
+    "    ldp  x6,  x7,  [sp, #48]",
+    "    ldp  x4,  x5,  [sp, #32]",
+    "    ldp  x2,  x3,  [sp, #16]",
+    "    ldp  x0,  x1,  [sp, #0]",
+    "    add  sp, sp, #176",
+    "    eret",                    // handled → retry with regs intact
     "1:  wfi",
     "    b 1b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
