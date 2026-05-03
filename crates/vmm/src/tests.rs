@@ -23,6 +23,10 @@ fn file(start: u64, end: u64, off: u64, prot: VmaProt) -> Vma {
     Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE, VmaBacking::File { off })
 }
 
+fn kbytes(start: u64, end: u64, data: &'static [u8], prot: VmaProt) -> Vma {
+    Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE, VmaBacking::KernelBytes { data })
+}
+
 #[test]
 fn empty_tree() {
     let t = VmaTree::new();
@@ -297,6 +301,46 @@ const PAGE: usize = PAGE_SIZE_BYTES as usize;
 
 fn r_w() -> VmaProt { VmaProt::READ | VmaProt::WRITE }
 fn priv_anon() -> VmaFlags { VmaFlags::PRIVATE | VmaFlags::ANONYMOUS }
+
+// ---------------------------------------------------------------------------
+// VmaBacking::KernelBytes — ELF-loader bridge per docs/31 + `11§4`.
+// ---------------------------------------------------------------------------
+
+static ELF_BLOB: [u8; 8] = [b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h'];
+
+#[test]
+fn kernel_bytes_never_merges() {
+    // Two abutting KernelBytes VMAs with sub-slices of the same blob
+    // must NOT merge — each PT_LOAD is treated as a distinct
+    // segment per `11§4` mergeable rule.
+    let a = kbytes(0x1000, 0x2000, &ELF_BLOB[0..4], VmaProt::READ);
+    let b = kbytes(0x2000, 0x3000, &ELF_BLOB[4..8], VmaProt::READ);
+    assert!(!a.mergeable_with_next(&b));
+}
+
+#[test]
+fn kernel_bytes_clone_subrange_advances_slice() {
+    // Sub-range starting `off_delta` bytes into the parent should
+    // see the slice advanced by the same amount (BSS tail past
+    // `data.len()` is preserved as an empty slice).
+    let parent = kbytes(0x1000, 0x3000, &ELF_BLOB[0..4], VmaProt::READ);
+    let sub = parent.clone_subrange(uva(0x1800), uva(0x2000));
+    match sub.backing {
+        VmaBacking::KernelBytes { data } => {
+            // off_delta = 0x800 > data.len()=4 → slice is fully
+            // advanced past the file-backed extent.
+            assert_eq!(data.len(), 0);
+        }
+        _ => panic!("expected KernelBytes"),
+    }
+    let sub2 = parent.clone_subrange(uva(0x1002), uva(0x2000));
+    match sub2.backing {
+        VmaBacking::KernelBytes { data } => {
+            assert_eq!(data, &ELF_BLOB[2..4]);
+        }
+        _ => panic!("expected KernelBytes"),
+    }
+}
 
 #[test]
 fn address_space_new_is_empty() {
