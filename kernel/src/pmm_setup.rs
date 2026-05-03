@@ -267,6 +267,7 @@ mod tests {
             memmap_ptr: core::ptr::null(),
             seed: [0; 32],
             boot_ns: 0,
+            rsdp_pa: 0,
             hhdm_offset: 0xFFFF_8000_0000_0000,
         };
         // SAFETY: hosted test; memmap_count is 0 so memmap_ptr is
@@ -282,6 +283,7 @@ mod tests {
             memmap_ptr: r.as_ptr(),
             seed: [0; 32],
             boot_ns: 0,
+            rsdp_pa: 0,
             hhdm_offset: 0,
         };
         // SAFETY: hosted test; r outlives the call.

@@ -108,6 +108,17 @@ pub static LIMINE_MEMMAP: limine::RequestHeader<limine::MemmapResponse>
         response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
     };
 
+/// RSDP request slot per `36§3`. ACPI may not be present on every
+/// arm platform; the response stays null in that case.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_RSDP: limine::RequestHeader<limine::RsdpResponse>
+    = limine::RequestHeader {
+        id:       limine::RSDP_ID,
+        revision: limine::REVISION_0,
+        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    };
+
 use klog::Uart;
 use sync::{Spinlock, Tty as UartClass};
 
@@ -202,6 +213,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         seed: [0; 32],
         boot_ns: 0,
         hhdm_offset: 0,
+        rsdp_pa: 0,
     }
 }
 
@@ -259,6 +271,12 @@ unsafe fn build_boot_info() -> BootInfo {
     }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let r = LIMINE_RSDP.response.load(core::sync::atomic::Ordering::Acquire);
+    if !r.is_null() {
+        // SAFETY: bootloader-owned response per `36§3` ownership
+        // contract; lives for rest of boot.
+        info.rsdp_pa = unsafe { (*r).address };
+    }
 
     // DTB pointer is preserved for future device-tree consumers; not
     // wired into BootInfo yet.
