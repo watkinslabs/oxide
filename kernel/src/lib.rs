@@ -380,6 +380,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
+
+    // First userspace `iretq` smoke (P1-82) — x86_64 only. Diverges
+    // on success (#BP from CPL=3 logs `userspace-eret-smoke: ok` then
+    // halts). Skipped silently on aarch64 until the EL0 smoke lands.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        // SAFETY: every prerequisite established above — kernel-owned
+        // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
+        // PMM + MmuOps initialised; single-CPU; IRQs masked.
+        unsafe { userspace_smoke::run::<hal_x86_64::mmu_ops::X86Mmu>(info.hhdm_offset); }
+    }
+
     halt_forever()
 }
 
@@ -444,6 +456,11 @@ pub mod mmuops_smoke;
 // User-page mapping smoke validating the P1-95 interior-U=1 fix.
 #[cfg(target_os = "oxide-kernel")]
 pub mod user_map_smoke;
+
+// First userspace `iretq` smoke (P1-82). x86_64-only; arm `eret`
+// smoke lands separately once the EL0 path is wired.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod userspace_smoke;
 
 
 /// Park the CPU forever. On the kernel target, uses the per-arch
