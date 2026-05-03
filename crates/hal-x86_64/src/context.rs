@@ -106,6 +106,69 @@ impl Context for ContextX86_64 {
         }
     }
 
+    /// Build a kernel-thread context whose saved kernel stack
+    /// carries a synthetic IRQ frame matching the layout the IRQ
+    /// epilogue (`oxide_irq_resume_user`) expects. Lets the IRQ
+    /// dispatcher tail `Context::switch` directly into a fresh task
+    /// and `iretq` from the same epilogue. Layout pinned in
+    /// `14§R07`; total scaffold = 17 × 8 = 136 B starting at
+    /// `Context.rsp`, growing toward `stack_top`:
+    ///
+    ///   [rsp+0x00]  saved RIP = oxide_irq_resume_user
+    ///   [rsp+0x08..0x50]  saved scratch r11..rax (9×8, zero)
+    ///   [rsp+0x50]  err = 0
+    ///   [rsp+0x58]  vec = 0x40
+    ///   [rsp+0x60]  iretq RIP = oxide_trampoline_kernel
+    ///   [rsp+0x68]  iretq CS  = `KERNEL_CS` (0x28 — Limine GDT 64-bit code)
+    ///   [rsp+0x70]  iretq RFL = 0x202 (IF=1, reserved bit 1)
+    ///   [rsp+0x78]  iretq RSP = stack_top (post-iretq RSP — kthread
+    ///               runs with the entire stack below stack_top)
+    ///   [rsp+0x80]  iretq SS  = `KERNEL_DS` (0x30 — Limine GDT 64-bit data)
+    ///
+    /// `r12 = entry`, `r13 = arg` per the trampoline ABI; iretq
+    /// preserves r12..r15 so the trampoline reads them correctly
+    /// after iretq lands.
+    ///
+    /// # C: O(1)
+    fn new_kernel_with_irq_frame(
+        stack_top: *mut u8,
+        entry: extern "C" fn(usize) -> !,
+        arg: usize,
+    ) -> Self {
+        // SAFETY: caller asserts `stack_top` is the high end of a
+        // writable, 16-byte-aligned kernel stack of at least 136 B.
+        // We write 17 quadwords below stack_top in the layout above.
+        let sp = unsafe {
+            let p = stack_top.cast::<u64>();
+            // iretq frame (offsets 0x60..0x80 from final rsp).
+            // Selectors per Limine v6+ GDT layout: code = 0x28
+            // (64-bit kernel CS), data = 0x30 (64-bit kernel DS/SS).
+            p.sub(1).write(0x30);                        // SS  (kernel data)
+            p.sub(2).write(stack_top as u64);            // RSP_post
+            p.sub(3).write(0x202);                       // RFLAGS, IF=1
+            p.sub(4).write(crate::idt::KERNEL_CS as u64); // CS  (kernel code)
+            p.sub(5).write(trampoline_kernel_addr());    // RIP
+            // synthetic vec/err pad (matches IRQ stub `push 0; push 0x40`).
+            p.sub(6).write(0x40);                        // vec
+            p.sub(7).write(0);                           // err
+            // 9 scratch slots r11..rax — values irrelevant (popped + discarded).
+            for i in 8..=16 { p.sub(i).write(0); }
+            // saved RIP for oxide_context_switch's `ret`.
+            p.sub(17).write(crate::irq::irq_resume_user_addr());
+            p.sub(17)
+        };
+        Self {
+            rsp: sp as u64,
+            rbp: 0,
+            rbx: 0,
+            r12: entry as usize as u64,
+            r13: arg as u64,
+            r14: 0,
+            r15: 0,
+            fs_base: 0,
+        }
+    }
+
     /// Build a context for first-entry into user-mode. The actual
     /// transition (`iretq` to user CS:RIP / SS:RSP) happens in the
     /// syscall/IRQ-exit asm in `20§*` — this just stages the values
@@ -197,6 +260,33 @@ mod tests {
         assert_eq!(ctx.r14, 0x4000_1234, "user_ip parked in r14");
         assert_eq!(ctx.r13, 0x7fff_aaaa, "user_sp parked in r13");
         assert_eq!(ctx.rsp, top as u64);
+    }
+
+    #[test]
+    fn new_kernel_with_irq_frame_layout() {
+        // `14§R07` pins the 17-quadword scaffold layout. Walk every
+        // slot from rsp upward; any reordering of the IRQ stub's
+        // expectations breaks here loud.
+        let mut stack = alloc::vec![0u8; 4096];
+        let top = stack.as_mut_ptr_range().end;
+        let ctx = ContextX86_64::new_kernel_with_irq_frame(top, dummy_entry, 0xC0FFEE);
+        // r12/r13 carry entry/arg per trampoline ABI.
+        assert_eq!(ctx.r12, dummy_entry as usize as u64);
+        assert_eq!(ctx.r13, 0xC0FFEE);
+        // rsp = stack_top - 136 (17 × 8).
+        assert_eq!(ctx.rsp as usize, (top as usize) - 136);
+        // Read the scaffold quadwords.
+        // SAFETY: we own `stack`; rsp..rsp+136 lies inside the buffer.
+        let read = |off: usize| -> u64 { unsafe { *((ctx.rsp as usize + off) as *const u64) } };
+        assert_eq!(read(0x00), crate::irq::irq_resume_user_addr());
+        for i in 0..9 { assert_eq!(read(0x08 + i * 8), 0, "scratch slot {} non-zero", i); }
+        assert_eq!(read(0x50), 0,    "err pad");
+        assert_eq!(read(0x58), 0x40, "vec pad");
+        assert_eq!(read(0x60), super::trampoline_kernel_addr(), "iretq RIP");
+        assert_eq!(read(0x68), crate::idt::KERNEL_CS as u64, "iretq CS (Limine kernel code = 0x28)");
+        assert_eq!(read(0x70), 0x202,          "iretq RFLAGS (IF=1)");
+        assert_eq!(read(0x78), top as u64,     "iretq RSP_post (= stack_top)");
+        assert_eq!(read(0x80), 0x30,           "iretq SS (Limine kernel data = 0x30)");
     }
 
     #[test]

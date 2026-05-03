@@ -63,8 +63,11 @@ pub unsafe fn eoi() {
     unsafe { core::ptr::write_volatile((va + 0xB0) as *mut u32, 0); }
 }
 
-/// Rust IRQ dispatcher invoked from the per-vector asm stub. For
-/// now: bump tick counter + EOI; no per-vector handler table yet.
+/// Rust IRQ dispatcher invoked from the per-vector asm stub. Bumps
+/// the tick counter, EOIs, sets NEED_RESCHED, then asks the
+/// scheduler for the next task and stages it in
+/// `oxide_preempt_next_ctx` so the asm tail switches on IRQ exit
+/// (per `14§R07`).
 ///
 /// # SAFETY: invoked only from the IRQ entry asm with IRQs masked
 /// (interrupt-gate clears IF on entry).
@@ -76,11 +79,12 @@ unsafe extern "C" fn oxide_irq_dispatch(_frame: *const u8) {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
     // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
     unsafe { eoi(); }
-    // Defer reschedule: set the flag and let the resumed task
-    // observe it at its next safe point (post-`hlt` wake). True
-    // IRQ-exit preemption requires every task to carry a synthetic
-    // iretq frame on its stack, which is not yet wired (`14§4`).
     crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
+    // SAFETY: tick_pick_next runs in IRQ context with IRQs masked
+    // (interrupt-gate clears IF); reads/writes the per-CPU SCHED
+    // state which is single-CPU at this point in v1. No-op when
+    // `debug-sched` is off (no kthread scheduler installed).
+    unsafe { crate::preempt::tick_pick_next(); }
 }
 
 /// Outcome reported by `enable`.
