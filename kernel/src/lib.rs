@@ -305,7 +305,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: kernel_main pre-init phase; allocator up; single-CPU,
         // IRQs masked (x86 CLI path, arm DAIF.I masked again post-soak).
         #[cfg(target_os = "oxide-kernel")]
-        unsafe { kthread::smoke(); }
+        unsafe {
+            kthread::smoke();
+            kthread::smoke_yield();
+        }
     }
 
     klog::kinfo!("boot: kernel ready, halting");
