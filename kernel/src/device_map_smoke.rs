@@ -11,7 +11,7 @@
 // per-arch IRQ infrastructure (LAPIC enable, GIC enable, IRQ
 // periodic-timer arm/disarm) lives in `lapic.rs` / `gic.rs`.
 
-use crate::{pmm_setup};
+use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 /// Kernel device-mapping base VA. Per `21§5` we carve a 4 GiB
 /// sub-region of L4 slot 0x1FE: `VA = KERNEL_DEVICE_BASE | (pa & 0xFFFFFFFF)`.
@@ -35,92 +35,86 @@ const LAPIC_PHYS: u64 = 0xfee0_0000;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const LAPIC_VA: u64 = KERNEL_DEVICE_BASE | (LAPIC_PHYS & 0xFFFF_FFFF);
 
+/// Device-MMIO leaf flags: writable kernel mapping, no-cache,
+/// write-through (so x86 packs PCD|PWT = Strong UC; arm packs
+/// AttrIdx=Device-nGnRnE), no exec. Equivalent to the device-leaf
+/// bits the previous-generation `vmm::map_device_4k` packed
+/// directly.
+fn device_flags() -> PageFlags {
+    PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
+}
+
 /// x86 device-MMIO bring-up smoke. Maps HPET + LAPIC at fixed
-/// kernel-VA, enables LAPIC, runs the polled + IRQ-driven timer
-/// smokes (gated `debug-vmm` / `debug-irq`).
+/// kernel-VA via `MmuOps::map` (per-arch impl in
+/// `hal_x86_64::mmu_ops::X86Mmu`), enables LAPIC, runs the polled
+/// + IRQ-driven timer smokes (gated `debug-vmm` / `debug-irq`).
 /// # SAFETY: caller is the boot path; allocator up; PMM ready;
-/// single-CPU; IRQs masked at entry.
+/// `mmu_ops::set_hhdm_offset` + `set_frame_alloc` already invoked
+/// for x86; single-CPU; IRQs masked at entry.
 /// # C: O(walk depth × 2) for the maps; spin loops dominate runtime.
 /// # Ctx: pre-init, IRQ-off (entry), single-CPU
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-pub fn smoke_device_map_x86(
-    p: &'static pmm::Pmm<pmm_setup::HhdmBacking>,
-    hhdm: u64,
-) {
+pub fn smoke_device_map_x86(_hhdm: u64) {
     use crate::lapic;
-    let alloc = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
+    use hal_x86_64::mmu_ops::X86Mmu;
     // SAFETY: single-CPU, IRQs off, PMM owns its frames; we splice
-    // a 4 KiB Device-attr leaf into the kernel-half of the live PML4.
-    let r = unsafe {
-        hal_x86_64::vmm::map_device_4k(HPET_VA, HPET_PHYS, hhdm, alloc)
-    };
-    match r {
-        Ok(()) => {
-            debug_vmm! {
-                // SAFETY: HPET_VA was just mapped Device-attr; the read is
-                // a volatile MMIO load of HPET_GCAP_ID at offset 0.
-                let cap = unsafe { core::ptr::read_volatile(HPET_VA as *const u32) };
-                klog::write_raw(b"[INFO]  device-map: hpet cap=");
-                klog::write_hex_u64(cap as u64);
-                klog::write_raw(b"\n");
-            }
-        }
-        Err(_) => { debug_vmm! { klog::kerror!("device-map: x86 map_device_4k failed"); } }
+    // a 4 KiB Device-attr leaf into the kernel-half of the live
+    // PML4 via the live MmuOps state.
+    unsafe { <X86Mmu as MmuOps>::map(Va(HPET_VA), Pa(HPET_PHYS), device_flags(), PageSize::P4K); }
+    debug_vmm! {
+        // SAFETY: HPET_VA was just mapped Device-attr; the read is
+        // a volatile MMIO load of HPET_GCAP_ID at offset 0.
+        let cap = unsafe { core::ptr::read_volatile(HPET_VA as *const u32) };
+        klog::write_raw(b"[INFO]  device-map: hpet cap=");
+        klog::write_hex_u64(cap as u64);
+        klog::write_raw(b"\n");
     }
 
     // LAPIC enable. Map → set IA32_APIC_BASE.E + SVR.SW_ENABLE → log
     // APIC ID + version.
-    let alloc2 = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
     // SAFETY: chosen kernel VA disjoint from existing mappings; phys
     // 0xFEE00000 is the standard LAPIC base from MADT.
-    let lr = unsafe {
-        hal_x86_64::vmm::map_device_4k(LAPIC_VA, LAPIC_PHYS, hhdm, alloc2)
-    };
-    match lr {
-        Ok(()) => {
-            // SAFETY: LAPIC_VA is freshly Device-attr mapped; single-CPU.
-            let s = unsafe { lapic::enable(LAPIC_VA) };
-            match s {
-                lapic::LapicStatus::AlreadyOn => { debug_irq! { klog::kinfo!("lapic: already on"); } }
-                lapic::LapicStatus::Enabled { apic_id: _apic_id, version: _version } => {
-                    debug_irq! {
-                        klog::write_raw(b"[INFO]  lapic: enabled apic_id=");
-                        klog::write_dec_u64(_apic_id as u64);
-                        klog::write_raw(b" version=");
-                        klog::write_hex_u64(_version as u64);
-                        klog::write_raw(b"\n");
-                        // Polled-timer smoke: verify count register decrements.
-                        // SAFETY: lapic::enable just succeeded so LAPIC is live.
-                        if let Some((a, b)) = unsafe { lapic::timer_smoke(0xFFFF_FFFF) } {
-                            klog::write_raw(b"[INFO]  lapic: timer ");
-                            klog::write_hex_u64(a as u64);
-                            klog::write_raw(b" -> ");
-                            klog::write_hex_u64(b as u64);
-                            klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
-                        }
-                        // Periodic timer + STI: take real timer IRQs at
-                        // vec 0x40 for a brief observation window.
-                        let pre = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                        // SAFETY: LAPIC enabled, IDT[0x40] -> IRQ stub
-                        // (per #124), oxide_irq_dispatch handles EOI.
-                        if unsafe { lapic::timer_periodic(1_000_000) } {
-                            // SAFETY: STI legal at CPL=0; pairs with the
-                            // CLI below; ticks fire during the spin.
-                            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-                            for _ in 0..10_000_000 { core::hint::spin_loop(); }
-                            // SAFETY: CLI restores the pre-STI state
-                            // (IF clear) before further bring-up steps.
-                            unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
-                        }
-                        let post = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                        klog::write_raw(b"[INFO]  lapic: timer ticks=");
-                        klog::write_dec_u64(post.wrapping_sub(pre));
-                        klog::write_raw(b"\n");
-                    }
+    unsafe { <X86Mmu as MmuOps>::map(Va(LAPIC_VA), Pa(LAPIC_PHYS), device_flags(), PageSize::P4K); }
+    // SAFETY: LAPIC_VA is freshly Device-attr mapped; single-CPU.
+    let s = unsafe { lapic::enable(LAPIC_VA) };
+    match s {
+        lapic::LapicStatus::AlreadyOn => { debug_irq! { klog::kinfo!("lapic: already on"); } }
+        lapic::LapicStatus::Enabled { apic_id: _apic_id, version: _version } => {
+            debug_irq! {
+                klog::write_raw(b"[INFO]  lapic: enabled apic_id=");
+                klog::write_dec_u64(_apic_id as u64);
+                klog::write_raw(b" version=");
+                klog::write_hex_u64(_version as u64);
+                klog::write_raw(b"\n");
+                // Polled-timer smoke: verify count register decrements.
+                // SAFETY: lapic::enable just succeeded so LAPIC is live.
+                if let Some((a, b)) = unsafe { lapic::timer_smoke(0xFFFF_FFFF) } {
+                    klog::write_raw(b"[INFO]  lapic: timer ");
+                    klog::write_hex_u64(a as u64);
+                    klog::write_raw(b" -> ");
+                    klog::write_hex_u64(b as u64);
+                    klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
                 }
+                // Periodic timer + STI: take real timer IRQs at
+                // vec 0x40 for a brief observation window.
+                let pre = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                // SAFETY: LAPIC enabled, IDT[0x40] -> IRQ stub
+                // (per #124), oxide_irq_dispatch handles EOI.
+                if unsafe { lapic::timer_periodic(1_000_000) } {
+                    // SAFETY: STI legal at CPL=0; pairs with the
+                    // CLI below; ticks fire during the spin.
+                    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+                    for _ in 0..10_000_000 { core::hint::spin_loop(); }
+                    // SAFETY: CLI restores the pre-STI state
+                    // (IF clear) before further bring-up steps.
+                    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+                }
+                let post = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                klog::write_raw(b"[INFO]  lapic: timer ticks=");
+                klog::write_dec_u64(post.wrapping_sub(pre));
+                klog::write_raw(b"\n");
             }
         }
-        Err(_) => { debug_vmm! { klog::kerror!("device-map: lapic map_device_4k failed"); } }
     }
 }
 
@@ -155,36 +149,24 @@ const PL011_VA: u64 = KERNEL_DEVICE_BASE | (PL011_PHYS & 0xFFFF_FFFF);
 /// # C: O(walk depth × 3) for the maps; spin loops dominate runtime.
 /// # Ctx: pre-init, IRQ-off (entry), single-CPU
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-pub fn smoke_device_map_arm(
-    p: &'static pmm::Pmm<pmm_setup::HhdmBacking>,
-    hhdm: u64,
-) {
+pub fn smoke_device_map_arm(_hhdm: u64) {
     use crate::{arm_timer, gic, pl011};
-    let alloc = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
-    // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active, single-CPU, IRQs off.
-    let r = unsafe {
-        hal_aarch64::vmm::map_device_4k(GICD_VA, GICD_PHYS, hhdm, alloc)
-    };
-    match r {
-        Ok(()) => {
-            debug_vmm! {
-                // SAFETY: GICD_VA was just mapped Device-nGnRnE; read GICD_TYPER at offset 4.
-                let typer = unsafe { core::ptr::read_volatile((GICD_VA + 0x4) as *const u32) };
-                klog::write_raw(b"[INFO]  device-map: gicd typer=");
-                klog::write_hex_u64(typer as u64);
-                klog::write_raw(b"\n");
-            }
-        }
-        Err(_) => { debug_vmm! { klog::kerror!("device-map: arm map_device_4k failed"); } }
+    use hal_aarch64::mmu_ops::ArmMmu;
+    // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active,
+    // single-CPU, IRQs off; mmu_ops state initialised.
+    unsafe { <ArmMmu as MmuOps>::map(Va(GICD_VA), Pa(GICD_PHYS), device_flags(), PageSize::P4K); }
+    debug_vmm! {
+        // SAFETY: GICD_VA was just mapped Device-nGnRnE; read GICD_TYPER at offset 4.
+        let typer = unsafe { core::ptr::read_volatile((GICD_VA + 0x4) as *const u32) };
+        klog::write_raw(b"[INFO]  device-map: gicd typer=");
+        klog::write_hex_u64(typer as u64);
+        klog::write_raw(b"\n");
     }
 
     // GICv2 enable: map GICC and program both halves.
-    let alloc_c = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
     // SAFETY: same contract; GICC at GICD+0x10000 on QEMU virt.
-    let cr = unsafe {
-        hal_aarch64::vmm::map_device_4k(GICC_VA, GICC_PHYS, hhdm, alloc_c)
-    };
-    if cr.is_ok() {
+    unsafe { <ArmMmu as MmuOps>::map(Va(GICC_VA), Pa(GICC_PHYS), device_flags(), PageSize::P4K); }
+    {
         // SAFETY: both VAs are freshly Device-attr mapped; single-CPU pre-init.
         let s = unsafe { gic::enable(GICD_VA, GICC_VA) };
         match s {
@@ -211,28 +193,18 @@ pub fn smoke_device_map_arm(
                 }
             }
         }
-    } else {
-        debug_vmm! { klog::kerror!("device-map: gicc map_device_4k failed"); }
     }
 
     // Map PL011 + swap klog sink from semihosting to the real UART.
-    let alloc2 = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
     // SAFETY: same contract; chosen kernel VA disjoint from existing
     // mappings; phys 0x09000000 is the QEMU virt PL011 base from SPCR.
-    let pr = unsafe {
-        hal_aarch64::vmm::map_device_4k(PL011_VA, PL011_PHYS, hhdm, alloc2)
-    };
-    match pr {
-        Ok(()) => {
-            // SAFETY: PL011_VA is freshly mapped Device-nGnRnE,
-            // covering 4 KiB; we own the device pre-init.
-            unsafe { pl011::enable(PL011_VA); }
-            debug_boot! {
-                klog::set_byte_sink(pl011::pl011_emit);
-                klog::kinfo!("pl011: switched klog sink to real UART");
-            }
-        }
-        Err(_) => { debug_vmm! { klog::kerror!("device-map: pl011 map_device_4k failed"); } }
+    unsafe { <ArmMmu as MmuOps>::map(Va(PL011_VA), Pa(PL011_PHYS), device_flags(), PageSize::P4K); }
+    // SAFETY: PL011_VA is freshly mapped Device-nGnRnE, covering
+    // 4 KiB; we own the device pre-init.
+    unsafe { pl011::enable(PL011_VA); }
+    debug_boot! {
+        klog::set_byte_sink(pl011::pl011_emit);
+        klog::kinfo!("pl011: switched klog sink to real UART");
     }
 
     // ARM virtual generic-timer IRQ smoke. Pure diagnostic — gated.

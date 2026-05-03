@@ -250,6 +250,29 @@ pub unsafe fn init_from_boot_info(
     Ok(pmm_ref)
 }
 
+/// Get a `&'static` reference to the PMM after `init_from_boot_info`
+/// has run, or `None` if PMM is not yet initialised. Used by bare-fn
+/// frame allocators (e.g. the one registered with `MmuOps`) that
+/// can't capture state in a closure.
+/// # C: O(1)
+pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking>> {
+    if !PMM_READY.load(Ordering::Acquire) { return None; }
+    // SAFETY: PMM_READY went true only after the cell was written;
+    // no further writes occur. The reference's lifetime is tied to
+    // `PMM_STORAGE` which is `'static`.
+    Some(unsafe { (*PMM_STORAGE.0.get()).assume_init_ref() })
+}
+
+/// Bare-fn frame allocator wrapping `pmm_static().alloc(Order(0))`.
+/// Suitable for `MmuOps::set_frame_alloc`. Returns the PA of a
+/// fresh, page-aligned, kernel-owned 4 KiB frame, or `None` on
+/// exhaustion / pre-init.
+/// # C: O(1) amortised (PMM buddy alloc).
+pub fn alloc_one_frame() -> Option<u64> {
+    let p = pmm_static()?;
+    p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,7 +26,7 @@ pub unsafe fn set_hhdm_offset(offset: u64) {
 /// the kernel's lifetime; single-CPU; no concurrent MmuOps users.
 /// # C: O(1)
 pub unsafe fn set_frame_alloc(f: fn() -> Option<u64>) {
-    let p = f as *mut ();
+    let p = f as *const () as *mut ();
     let prev = FRAME_ALLOC.swap(p, Ordering::Release);
     kassert!(prev.is_null() || prev == p, "MmuOps frame alloc double-init mismatch");
 }
