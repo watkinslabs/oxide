@@ -35,6 +35,6 @@ pub use schedule::{
     current, mark_done, schedule, schedule_from_irq, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
 };
-pub use spawn::spawn_kernel_thread;
+pub use spawn::{next_tid, spawn_kernel_thread};
 #[cfg(target_arch = "x86_64")]
 pub use spawn::spawn_user_thread;
