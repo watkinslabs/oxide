@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod acpi;
 pub mod pmm_setup;
 
 /// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
@@ -109,6 +110,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::write_raw(b"[INFO]  rsdp: ");
         klog::write_hex_u64(info.rsdp_pa);
         klog::write_raw(b"\n");
+        // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
+        // for the RSDP (HHDM-mapped); the bootloader keeps the
+        // backing memory alive past kernel handoff per `36§3`.
+        unsafe { acpi::try_log_rsdp(info.rsdp_pa); }
     } else {
         klog::kinfo!("rsdp: absent");
     }
