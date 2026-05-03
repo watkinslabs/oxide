@@ -35,12 +35,18 @@ macro_rules! debug_irq  { ($($t:tt)*) => {} }
 macro_rules! debug_acpi { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-acpi"))]
 macro_rules! debug_acpi { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-sched")]
+macro_rules! debug_sched { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-sched"))]
+macro_rules! debug_sched { ($($t:tt)*) => {} }
 
 pub mod acpi;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
 pub mod gic;
+#[cfg(target_os = "oxide-kernel")]
+pub mod kthread;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(target_arch = "aarch64")]
@@ -293,6 +299,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         } else {
             klog::kerror!("kalloc-smoke: VmaTree insert failed");
         }
+    }
+
+    debug_sched! {
+        // SAFETY: kernel_main pre-init phase; allocator up; single-CPU,
+        // IRQs masked (x86 CLI path, arm DAIF.I masked again post-soak).
+        #[cfg(target_os = "oxide-kernel")]
+        unsafe { kthread::smoke(); }
     }
 
     klog::kinfo!("boot: kernel ready, halting");
