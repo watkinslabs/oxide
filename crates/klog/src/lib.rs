@@ -71,6 +71,83 @@ pub fn clear_byte_sink() {
     BYTE_SINK.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
 }
 
+/// Optional clock thunk: returns "ns since boot" for record
+/// timestamping. Boot installs this once the timer is calibrated;
+/// until then klog emits without a timestamp prefix.
+pub type ClockFn = fn() -> u64;
+
+static CLOCK_FN: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Install a `now_ns` callback. Subsequent klog records get a
+/// `[<sec>.<ms>] ` prefix before the level marker.
+/// # C: O(1)
+pub fn set_clock_fn(f: ClockFn) {
+    CLOCK_FN.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Detach the clock. Subsequent klog records skip the timestamp.
+/// # C: O(1)
+pub fn clear_clock_fn() {
+    CLOCK_FN.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+}
+
+#[inline]
+fn now_ns() -> Option<u64> {
+    let raw = CLOCK_FN.load(core::sync::atomic::Ordering::Acquire);
+    if raw.is_null() { return None; }
+    // SAFETY: CLOCK_FN is only ever populated via set_clock_fn,
+    // which casts a non-null fn-pointer into the *mut () slot;
+    // reverse-cast restores the original. ClockFn has no unsafe
+    // contract beyond returning a u64.
+    let f: ClockFn = unsafe { core::mem::transmute::<*mut (), ClockFn>(raw) };
+    Some(f())
+}
+
+/// Write decimal `v` into `out`. If `pad3` is true, zero-pads to 3
+/// digits; otherwise emits the natural width. Returns bytes written.
+fn write_dec(out: &mut [u8], mut v: u64, pad3: bool) -> usize {
+    let mut tmp = [0u8; 20];
+    let mut n = 0usize;
+    if v == 0 {
+        tmp[0] = b'0';
+        n = 1;
+    } else {
+        while v > 0 && n < tmp.len() {
+            tmp[n] = b'0' + (v % 10) as u8;
+            v /= 10;
+            n += 1;
+        }
+    }
+    if pad3 {
+        while n < 3 { tmp[n] = b'0'; n += 1; }
+    }
+    let mut i = 0usize;
+    while n > 0 {
+        n -= 1;
+        if i >= out.len() { break; }
+        out[i] = tmp[n];
+        i += 1;
+    }
+    i
+}
+
+/// Emit `[<sec>.<frac3>] ` via the sink — seconds + millisecond
+/// fractional, padded to 3 digits.
+fn emit_timestamp(ns: u64) {
+    let secs = ns / 1_000_000_000;
+    let ms   = (ns % 1_000_000_000) / 1_000_000;
+    let mut buf = [0u8; 24];
+    let mut i = 0usize;
+    buf[i] = b'['; i += 1;
+    i += write_dec(&mut buf[i..], secs, false);
+    buf[i] = b'.'; i += 1;
+    i += write_dec(&mut buf[i..], ms, true);
+    buf[i] = b']'; i += 1;
+    buf[i] = b' '; i += 1;
+    invoke_sink(&buf[..i]);
+}
+
 #[inline]
 fn invoke_sink(bytes: &[u8]) {
     let raw = BYTE_SINK.load(core::sync::atomic::Ordering::Acquire);
@@ -110,6 +187,9 @@ pub fn write_hex_u64(v: u64) {
 #[doc(hidden)]
 #[inline(always)]
 pub fn __klog_emit(entry: &'static InternedFormat) {
+    if let Some(ns) = now_ns() {
+        emit_timestamp(ns);
+    }
     let prefix: &[u8] = match entry.level {
         Level::Error => b"[ERROR] ",
         Level::Warn  => b"[WARN]  ",
