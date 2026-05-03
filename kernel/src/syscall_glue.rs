@@ -30,6 +30,7 @@ const SYSCALL_NR_CLOCK_GETTIME: u64 = 228;
 const SYSCALL_NR_UNAME: u64          = 63;
 const SYSCALL_NR_MMAP: u64           = 9;
 const SYSCALL_NR_MUNMAP: u64         = 11;
+const SYSCALL_NR_EXIT: u64           = 60;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -81,6 +82,41 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
 /// glue now intercepts nr=11 first so it's dead-path).
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
+}
+
+/// `sys_exit(code)` — slot 60 per docs/15§2. The arch-neutral
+/// dispatch table has a stub that returns 0; this wrapper
+/// upgrades the behaviour to a real lifecycle exit per docs/13§5:
+/// mark the running task Zombie + reschedule. With state=Zombie
+/// the picker won't re-enqueue us, so `schedule()` falls through
+/// to idle (the boot anchor) — boot resumes at its prior
+/// `schedule()` callsite (in `elf_smoke::run_as_task`).
+///
+/// Stores the exit code in `Task.exit_status` per docs/13§5 so a
+/// future `wait4` / `waitid` can read it.
+///
+/// # SAFETY: caller is `oxide_syscall_dispatch` running on the
+/// user task's kernel stack with IRQs masked.
+/// # C: O(log N) CFS pick + O(1) ctxsw
+fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    if let Some(cur) = crate::sched::current() {
+        cur.exit_status.store(args.a0 as i32, Ordering::Release);
+        crate::sched::mark_done(cur);
+    }
+    debug_sched! {
+        klog::write_raw(b"[INFO]  sys_exit: code=");
+        klog::write_dec_u64(args.a0);
+        klog::write_raw(b"\n");
+    }
+    // Schedule away. State=Zombie ⇒ no re-enqueue; picker returns
+    // idle (boot anchor) ⇒ Context::switch loads boot's saved regs
+    // ⇒ control resumes in `elf_smoke::run_as_task` past its
+    // `schedule()` call. We never come back to this task.
+    // SAFETY: process / kthread context (we're on the user task's kernel stack); preempt-off; runqueue installed.
+    unsafe { crate::sched::schedule(); }
+    // Unreachable — Zombie task isn't re-scheduled.
+    loop { core::hint::spin_loop(); }
 }
 
 fn kernel_uname(args: &SyscallArgs) -> i64 {
@@ -196,6 +232,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_UNAME         => kernel_uname(&args),
         SYSCALL_NR_MMAP          => kernel_mmap(&args),
         SYSCALL_NR_MUNMAP        => kernel_munmap(&args),
+        SYSCALL_NR_EXIT          => kernel_sys_exit(&args),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
