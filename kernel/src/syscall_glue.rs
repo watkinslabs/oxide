@@ -31,6 +31,7 @@ const SYSCALL_NR_UNAME: u64          = 63;
 const SYSCALL_NR_MMAP: u64           = 9;
 const SYSCALL_NR_MUNMAP: u64         = 11;
 const SYSCALL_NR_EXIT: u64           = 60;
+const SYSCALL_NR_FORK: u64           = 57;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -82,6 +83,83 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
 /// glue now intercepts nr=11 first so it's dead-path).
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
+}
+
+/// `sys_fork()` — slot 57 per docs/15§5 (Linux x86_64 fork). v0
+/// per docs/11§7: clone the parent's `AddressSpace` (VMA tree
+/// copy; mapped pages NOT copied — child re-demand-pages from
+/// KernelBytes / fresh-zero for Anonymous), spawn a new user
+/// `Task` with `mm = child_as`, return the child's TID to parent.
+///
+/// Child's iretq frame is built by `spawn_user_thread` with rax=0
+/// (the synthesised IRQ frame's scratch slots default to zero, and
+/// the rax slot is consumed by the IRQ epilogue's pop sequence
+/// just before iretq) — so when the child is scheduled in, it
+/// resumes at `user_rip` with rax=0 (the canonical fork return
+/// distinguisher) and `rsp = user_rsp`.
+///
+/// Reads `user_rip`/`user_rsp` from globals captured by the
+/// `oxide_syscall_entry` asm stub.
+///
+/// # C: O(N_vmas) clone + O(log N) enqueue
+#[cfg(target_arch = "x86_64")]
+fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Einval.as_i32() as i64),
+    };
+    let parent_mm = match cur.mm.as_ref() {
+        Some(m) => m,
+        None    => return -(Errno::Einval.as_i32() as i64),
+    };
+
+    // Allocate new PT root for the child.
+    // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
+    let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
+        Some(r) => r,
+        None    => return -(Errno::Enomem.as_i32() as i64),
+    };
+
+    // Clone the AS — VMA tree only per P2-15a.
+    let child_mm = match parent_mm.fork(new_root) {
+        Ok(m) => m,
+        Err(_) => return -(Errno::Enomem.as_i32() as i64),
+    };
+
+    let user_rip = hal_x86_64::oxide_user_rip.load(Ordering::Acquire);
+    let user_rsp = hal_x86_64::oxide_user_rsp.load(Ordering::Acquire);
+    // user_rip points at the instruction RIGHT AFTER the syscall
+    // (rcx is post-syscall in x86_64) — the child resumes there
+    // with rax=0.
+
+    let child_tid = crate::sched::next_tid();
+    // SAFETY: runqueue installed by elf_smoke; child_mm is freshly forked from the parent's AS with kernel-half cloned from master per P2-19; user_rip/user_rsp captured from the parent's syscall frame.
+    let spawn = unsafe {
+        crate::sched::spawn_user_thread(
+            child_tid, "fork-child", user_rip, user_rsp, child_mm,
+        )
+    };
+    let child = match spawn {
+        Ok(t)  => t,
+        Err(_) => return -(Errno::Enomem.as_i32() as i64),
+    };
+
+    debug_sched! {
+        klog::write_raw(b"[INFO]  sys_fork: parent_tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" child_tid=");
+        klog::write_dec_u64(child_tid as u64);
+        klog::write_raw(b" child_root=");
+        klog::write_hex_u64(new_root);
+        klog::write_raw(b"\n");
+    }
+
+    // Drop our local Arc; the runqueue's enqueue clone keeps the
+    // child alive until it Zombies + schedule drops it.
+    drop(child);
+
+    child_tid as i64
 }
 
 /// `sys_exit(code)` — slot 60 per docs/15§2. The arch-neutral
@@ -233,6 +311,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_MMAP          => kernel_mmap(&args),
         SYSCALL_NR_MUNMAP        => kernel_munmap(&args),
         SYSCALL_NR_EXIT          => kernel_sys_exit(&args),
+        #[cfg(target_arch = "x86_64")]
+        SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
