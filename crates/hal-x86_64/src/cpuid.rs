@@ -56,11 +56,11 @@ pub fn brand() -> [u8; 48] {
     {
         // Probe support: leaf 0x80000000 returns the highest extended
         // leaf in EAX. Need ≥ 0x80000004 for the brand string.
-        // SAFETY: see cpuid contract.
+        // SAFETY: cpuid is unprivileged at any CPL with no memory effects; leaf 0x80000000 is safe to query on any 64-bit CPU.
         let (max_ext, _, _, _) = unsafe { cpuid(0x8000_0000) };
         if max_ext >= 0x8000_0004 {
             for (i, leaf) in (0x8000_0002u32..=0x8000_0004u32).enumerate() {
-                // SAFETY: probed support above.
+                // SAFETY: extended leaf support probed above; cpuid has no memory effect or privilege requirement.
                 let (a, b, c, d) = unsafe { cpuid(leaf) };
                 let off = i * 16;
                 buf[off..off + 4].copy_from_slice(&a.to_le_bytes());
