@@ -1,15 +1,15 @@
-# State 2026-05-03 (session 20 EOD)
+# State 2026-05-03 (session 21 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 2 substantially landed. Both arches cross Phase 1→2 boundary with full userspace syscall round-trip; 33 syscall slots bound (most libc-startup probes covered); real anon-mmap; per-arch monotonic clock; uname; writev.** 195 PRs total; 516 hosted tests. x86_64 kernel runs `mov $0x42,%eax; mov $1,%edi; mov $0x400100,%esi; mov $3,%edx; syscall; mov $60,%eax; xor %edi,%edi; syscall; ud2` at CPL=3 — bytes flow to UART, kernel logs proper Linux-style return values (rax=3 for write, 0 for exit, -ENOSYS for unbound), sysretq lands user back in ring 3 cleanly, ud2 fires the terminal #UD that the smoke handler logs. aarch64 kernel runs `brk #0` at EL0 and traps back via VBAR_EL1+0x400 with ESR.EC=0x3C decoded. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide. The R06 "user console output is not diagnostic" carve-out is documented at `crates/syscall/src/dispatch.rs` (use-aliased import bypasses the literal-prefix lint with intent-signaling alias name).
+**Phase 2 demand-paging live. `vmm::AddressSpace::handle_page_fault` per docs/11 §5 wired through both arches; `mmap(MAP_ANON|MAP_PRIVATE)` is now lazy (no upfront frame alloc) and pages fault-in transparently when first touched, then `munmap` unwalks the PT and frees frames back to PMM. 33 syscall slots bound; both arches cross the userspace round-trip (x86 syscall+sysretq, arm SVC+eret).** 197 PRs total; 518 hosted tests. x86_64 kernel runs `mov $0x42,%eax; mov $1,%edi; mov $0x400100,%esi; mov $3,%edx; syscall; mov $60,%eax; xor %edi,%edi; syscall; ud2` at CPL=3 — bytes flow to UART, kernel logs proper Linux-style return values (rax=3 for write, 0 for exit, -ENOSYS for unbound), sysretq lands user back in ring 3 cleanly, ud2 fires the terminal #UD that the smoke handler logs. aarch64 kernel runs `brk #0` at EL0 and traps back via VBAR_EL1+0x400 with ESR.EC=0x3C decoded. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide. The R06 "user console output is not diagnostic" carve-out is documented at `crates/syscall/src/dispatch.rs` (use-aliased import bypasses the literal-prefix lint with intent-signaling alias name).
 
 Last verified-green at session-20 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
-$ cargo run -p xtask -- test                 # → 516 hosted tests, 0 failures
+$ cargo run -p xtask -- test                 # → 518 hosted tests, 0 failures
 $ cargo run -p xtask -- kernel  --arch x86_64                   # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                  # builds clean
 $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
@@ -18,31 +18,77 @@ $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 [INFO]  user-map-smoke: ok pa=… flags=0x0d
 [INFO]  boot: kernel ready, halting
 [INFO]  userspace-eret-smoke: about to iretq cs=0x4b rip=0x400000 ss=0x43 rsp=0x501000
-hi
-[INFO]  syscall: nr=0x1  rv=0x3
+[INFO]  syscall: nr=0x9 rv=0x1000          ← mmap returned base (lazy, no frames yet)
+hi                                           ← user wrote to mmap → demand-page silent
+[INFO]  syscall: nr=0x1 rv=0x3
 [INFO]  syscall: nr=0x3c rv=0x0
-[FAULT] vec=6 (#UD) err=0 rip=0x40001f
-[INFO]  userspace-sysret-smoke: ok ring3 #UD rip=0x40001f
+[INFO]  userspace-sysret-smoke: ok ring3 #UD rip=0x400048
+[FAULT] vec=6 (#UD) rip=0x400048           ← deliberate halt landmark
 
 $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 …
 [INFO]  user-map-smoke: ok pa=… flags=0x0d
 [INFO]  boot: kernel ready, halting
 [INFO]  userspace-eret-smoke-arm: about to eret elr=0x400000 sp_el0=0x501000
-[FAULT] esr=0xf2000000 ec=0x3c (brk) elr=0x400000
-[INFO]  userspace-eret-smoke-arm: ok EL0 BRK elr=0x400000 esr=0xf2000000
+[INFO]  syscall: nr=0x27 rv=0x1                                ← getpid via SVC
+[INFO]  userspace-sysret-smoke-arm: ok EL0 BRK elr=0x400008
+[FAULT] esr=0xf2000000 ec=0x3c (brk) elr=0x400008             ← halt landmark
 ```
+
+**Key change in trace this session vs. last**: the demand-page #PF is now **invisible**. P2-12 restructured the fault dispatcher so resolved faults are silent (matches Linux `vmm::fault` tracepoint semantics per docs/14). The user write to `(%rax)` faults, `vmm::AddressSpace::handle_page_fault` resolves it (zero-fill anon frame from PMM, MmuOps::map with vma.prot, return true), CPU retries silently. Previously this logged a loud `[FAULT]` line; now only unrecoverable faults print.
 
 `make ci` mirrors the full PR gate (lint + test + build + build-debug, both arches).
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 20` for the per-PR table. 18 PRs landed
-this session (#166 – #183), crossing Phase 1→2 on both arches,
-landing the full x86_64 syscall+sysretq round-trip, binding 11
-syscall slots, fixing the caller-saved-GPR class of bug on both
-fault dispatchers, and replumbing the arm walker to pick TTBR0/TTBR1
-by VA.
+See `CHANGELOG.md` for the per-PR table.
+
+**Session 21** (PRs #196 – #197): two PRs, both spec-driven (read
+docs/11 and docs/13 first, then implemented exactly).
+
+- **#196** (`P2-12-vmm-pagefault-integration`): real
+  `vmm::AddressSpace::handle_page_fault` per docs/11 §5. Discovered
+  during read that `crates/vmm` already had real mmap/munmap/find_vma
+  on top of `VmaTree` (BTreeMap) — only PT-side integration + a
+  fault hook were missing.
+  - Added `FaultAccess`/`FaultKind`/`Vma::permits`/`VmaProt::to_page_flags`.
+  - `AddressSpace::handle_page_fault<M, F>(va, fault, hhdm, alloc)`
+    implements §5 verbatim for v1 (Anonymous + NotPresent): VMA lookup,
+    prot check, frame alloc via callback, zero-fill via HHDM mirror,
+    `MmuOps::map` with `vma.prot.to_pte_flags`. COW + File backing
+    return NotImplemented pending `PageMeta::refcount` (§8) and VFS.
+  - New `kernel/src/user_as.rs`: global single-task AS behind
+    AtomicPtr (lock-free reads from fault context); per-arch
+    `classify_*` decoders; `user_fault_handler` registered via
+    `hal::install_fault_handler`; `glue_mmap`/`glue_munmap` for
+    syscall_glue.
+  - `kernel/src/syscall_glue.rs`: `kernel_mmap`/`kernel_munmap`
+    now route through user_as. Replaces #191's bump-pointer mmap
+    that leaked frames.
+  - `userspace_smoke.rs` handler chains to user_as first. Blob
+    extended with `mmap → write to mapped page → write+exit` so
+    demand-paging is exercised at runtime.
+  - **Fault dispatcher logging restructured**: log severity now
+    depends on handler outcome. Resolved demand-page is silent
+    (matches Linux, matches docs/14 trace-level for `vmm::fault`).
+    Loud `[FAULT]` only when handler can't resolve (about to halt).
+    Same fix on both arches. Was a pre-existing bug from #160.
+
+- **#197** (`P2-13a-task-mm`): real `Task.mm: Option<Arc<AddressSpace>>`
+  per docs/13 §5. Replaces the PhantomData<Pfn> placeholder. Two
+  constructors: `Task::new` (kthread, mm=None) + `Task::new_user`
+  (mm=Some). `crates/sched` gains `vmm` path-dep (correct direction:
+  Linux's `include/linux/sched.h` includes `mm_types.h`). Hosted
+  tests confirm CLONE_VM Arc-sharing semantics.
+
+  **Note**: this is the data-shape change only. The runqueue side
+  (per-task switch + AS swap on `schedule()` per §8) needs the real
+  `RunqueueInner` wired into the kernel (currently `kernel/src/ksched.rs`
+  is a Vec-backed cooperative shim from session 9). That's the next
+  big refactor (called P2-13b in suggested-next-branches below).
+
+**Sessions 19–20** (PRs #166 – #195): the big mass-PR session. See
+the prior state.md revisions in git history if needed; brief summary:
 
 Major landmarks:
 - **#166-#170** Phase 1→2 boundary on x86 (kernel-owned GDT, TSS,
@@ -256,18 +302,21 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 ## Suggested next branches
 
-| Option | Branch idea | Why pick this |
-|---|---|---|
-| **arm SVC entry stub + dispatch** | `P2-11-arm-svc-entry` | Mirror of x86 P2-01/02. Hook VBAR_EL1+0x400 to fork on ESR.EC=0x15 (SVC), AAPCS64-shuffle args (x8=nr, x0..x7=args), call syscall::dispatch, eret with retval in x0. After this both arches have full syscall round-trip. |
-| **VMM AddressSpace + real PF handler** | `P2-12-vmm-addrspace-fault` | Per-task AS lifecycle; wire to fault dispatcher; demand-paging. Largest single jump remaining; unblocks real ELF load. |
-| **Per-task RSP0 + Task-with-AS** | `P2-13-task-user-as` | Currently single static RSP0 in TSS for the boot task. Real multitasking needs Task to carry its kernel stack + user AS so the IRQ-on-IST stack gets swapped on context switch. |
-| **More syscall bindings** | `P2-14-syscalls-batch-2` | sys_brk (heap), sys_mmap (anon mmap via VMM), sys_uname, sys_readlink, sys_clock_gettime — what `printf("hello\n")` from a real ELF needs. |
-| **Wire real `RunqueueInner` into ksched** | `P1-84b-sched-runqueue-wire` | Carry-over from session 18. Plumbing-heavy refactor onto `crates/sched::RunqueueInner`; doesn't unblock anything immediately. |
+The "what we have vs. what we need" framing — read the spec first
+in every case, then implement EXACTLY what it says (Linux compat
+surface). docs/MANIFEST.md has the table of which spec covers what.
+
+| Option | Branch idea | Spec ref | Why pick this |
+|---|---|---|---|
+| **Wire real `RunqueueInner` into kernel** | `P2-13b-runqueue-wire` | docs/13 §6, §8 | Replace `kernel/src/ksched.rs` Vec-shim with the real per-CPU `Runqueue` struct (RT bitmap + CFS RB-tree + idle). Implement `schedule()` per §8 — including `if next.mm != prev.mm: switch_address_space(...)`. Makes `Task.mm` (P2-13a) actually functional. **Largest open structural item.** |
+| **TLB shootdown plumbing** | `P2-14-tlb-shootdown` | docs/11 §6 | `munmap` currently does local `flush_va` only. Spec §6 mandates IPI broadcast to every CPU whose `current.mm == self`. Land the IPI machinery + per-CPU current-mm tracking. Single-CPU v1 = no-op fast path; SMP correctness gate. |
+| **PageMeta + COW** | `P2-15-page-meta-cow` | docs/11 §5 (second match arm) + §8 | Per-page refcount + flags array sized by max PFN per §8 (~16 B/page = 0.4% RAM). Unblocks `fork()` (§7) and the COW PTE-downgrade-on-shared-write path. |
+| **First real ELF execution** | `P2-16-elf-loader` | docs/29a + docs/31 | Static-PIE musl ELF embedded via `include_bytes!`; ELF parser walks PT_LOAD, registers VMAs (file-backed needs P2-17), drops to user. Demand-paging (P2-12) populates pages on first access. **The big payoff for Phase 2.** Depends on file-backed VMA support (P2-17) or workaround via memcpy on the kernel side. |
+| **File-backed VMAs (anon-bytes shortcut)** | `P2-17-vma-bytes-backing` | extension of docs/11 §4 | Add a `VmaBacking::KernelBytes(&'static [u8])` variant so the ELF loader can map PT_LOAD segments before VFS exists. Real `File` backing waits for docs/16 (VFS). |
+| **SIGSEGV delivery on user prot-fault** | `P2-18-sigsegv` | docs/27 + docs/11 §5 reject path | Currently a user write to a R-only VMA halts the kernel via the unhandled-fault path. Linux delivers SIGSEGV; needs the signal subsystem (docs/27). Until signals land, halt is "as good as it gets" but it's a real correctness gap. |
 
 ## Open questions for user (deferred)
 
-- README.md CI status badge.
 - Atomic cookie CAS in slab (cross-CPU double-free).
-- Whether to move `kernel/src/ksched.rs` logic into `crates/sched/` (extending `Task` per `13§5`) before Phase 2, or after the userspace `eret` lands.
-- Should production builds be silent on a fault, or should fault printers be unconditionally on (counter to R06 strict reading)? Current state: silent halt unless `--features debug-irq`.
-- v1 GDT design: kernel-owned GDT replacing Limine's at boot, or extend Limine GDT with user descriptors via a small bring-up step? Needed before Phase 2.
+- The autonomous `/loop` cadence — too aggressive? A per-PR explicit "go" felt safer (one bug shipped + hotfixed in #193/#194 during the rapid-fire run); the slower spec-read-then-design pattern in session 21 (PRs #196/#197) felt right but was only 2 PRs across the same wall-clock window.
+- README.md CI status badge.
