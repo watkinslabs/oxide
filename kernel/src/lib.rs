@@ -108,6 +108,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
     if info.memmap_count != 0 {
         klog::kinfo!("memmap: present");
+        // SAFETY: kernel_main fn-contract guarantees memmap_ptr is a
+        // valid slice of length memmap_count for this call.
+        let regions: &[BootMemRegion] = unsafe {
+            core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
+        };
+        log_memmap(regions);
     } else {
         klog::kinfo!("memmap: absent");
     }
@@ -208,6 +214,33 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
     halt_forever()
+}
+
+/// Map `BootMemKind` to a short ASCII tag for memmap dumps.
+fn kind_tag(k: BootMemKind) -> &'static [u8] {
+    match k {
+        BootMemKind::Usable         => b"USABLE",
+        BootMemKind::Reserved       => b"RESV  ",
+        BootMemKind::AcpiReclaim    => b"ACPI-R",
+        BootMemKind::AcpiNvs        => b"ACPI-N",
+        BootMemKind::BadMem         => b"BAD   ",
+        BootMemKind::BootloaderUsed => b"BL-USE",
+        BootMemKind::KernelImage    => b"KERNEL",
+        BootMemKind::Initramfs      => b"INITRD",
+    }
+}
+
+/// Emit one line per memmap region. Cheap O(N) at boot.
+fn log_memmap(regions: &[BootMemRegion]) {
+    for r in regions {
+        klog::write_raw(b"[INFO]    ");
+        klog::write_raw(kind_tag(r.kind));
+        klog::write_raw(b" base=");
+        klog::write_hex_u64(r.base_pa);
+        klog::write_raw(b" len=");
+        klog::write_hex_u64(r.len);
+        klog::write_raw(b"\n");
+    }
 }
 
 /// Spin forever. Used by `kernel_main` and the panic flow until a
