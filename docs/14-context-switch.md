@@ -2,6 +2,27 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`07`,`08`,`09`. Provides:`13`,`20`,`21`.
 
+## Revision 2026-05-03 (R07)
+
+- Added: `Context::new_kernel_with_irq_frame(stack_top, entry, arg) -> Self` per arch. Builds a kernel-thread ctx whose saved kernel stack matches the layout the IRQ epilogue expects, so the dispatcher tail can `Context::switch` directly into the fresh task and `iretq`/`eret` from there. Old `new_kernel` retained for non-IRQ entry paths.
+- Why: cooperative-with-timer-wake (current Phase-1 form) requires every task to be running between IRQs to observe `NEED_RESCHED` at a yield point. True IRQ-exit preemption switches at the IRQ tail itself; that requires the new task's kernel stack to already carry a synthetic IRQ frame (saved scratch GPs, vec/err pad, iretq/eret frame) plus a saved RIP/LR pointing at the IRQ epilogue resume label so `oxide_context_switch`'s `ret` lands in the epilogue continuation.
+- Frame layout (x86_64), low → high addr — total 136 B scaffold:
+  1. saved RIP = `oxide_irq_resume_user`  ← `Context.rsp` points here
+  2. saved scratch r11..rax (9 × 8 B, all zero)
+  3. err = 0, vec = 0x40
+  4. iretq frame: RIP=`oxide_trampoline_kernel`, CS=kernel-CS (0x08), RFLAGS=IF=1 (0x202), RSP=`stack_top`, SS=kernel-SS (0x10)
+  5. unused growth area up to `stack_top`
+  - After the dispatcher's `oxide_context_switch(prev,next)` `ret`s into the new task at `oxide_irq_resume_user`, the epilogue pops scratch (9), drops vec/err (16), `iretq` jumps to the trampoline at CPL=0 with `RSP = stack_top` (full fresh stack). Trampoline loads `entry` from `r12`, `arg` from `r13`, tail-jumps.
+- Frame layout (aarch64), low → high addr from `Context.sp` — total 192 B on-stack scaffold; the saved-LR equivalent lives in `Context.lr` (not on the stack):
+  1. `[sp+0x000..0x0a0]`  saved x0..x18 + x29 + x30 (22 × 8 B, all zero)
+  2. `[sp+0x0b0]`         saved ELR_EL1  = `oxide_trampoline_kernel`
+  3. `[sp+0x0b8]`         saved SPSR_EL1 = EL1h + DAIF.AF masked + IRQ unmasked (0x145)
+  - `Context.lr` = `oxide_irq_resume_user`; `Context.sp` = `stack_top - 192`; `Context.x19 = entry`; `Context.x20 = arg` (per AArch64 trampoline ABI). After `oxide_context_switch` loads the new task's `sp`+`lr`+x19+x20 and `ret`s, control jumps to `oxide_irq_resume_user`. The epilogue restores ELR/SPSR + scratch GPs, `add sp, sp, #192`, `eret` lands at trampoline at EL1h with `SP_EL1 = stack_top`. Trampoline `mov x0, x20; br x19`.
+- ARM bug-fix riding alongside: the existing IRQ stub at `vbar.rs:0x280` saved x0..x18,x29,x30 (176 B) but **not** ELR_EL1/SPSR_EL1. Without those, `eret` after a context switch eret's into whatever ELR/SPSR currently hold — wrong as soon as the dispatcher swaps tasks. The frame is extended to 192 B and the stub now `mrs/msr`s ELR/SPSR around the dispatcher call.
+- Affected code: `crates/hal-{x86_64,aarch64}/src/{context,irq,vbar}.rs`; `kernel/src/{preempt,ksched,lapic,gic}.rs`. Old `Context::new_kernel` constructor + the cooperative `tick_yield` voluntary path retained.
+- Test contract addition: hosted unit per arch verifies the synthetic-IRQ-frame stack image byte-for-byte; layout offsets pinned by `assert_eq!(offset_of!(...), ...)` so any future field reorder breaks loud. QEMU `smoke_preempt_*` runs on both arches show `ticks ≈ 4 × TICK_BUDGET` (every tick now causes a real switch, not just a wake).
+
+
 Per-arch ctxsw = one `.S` ≤50 lines saving exactly callee-saved + IP + SP + TLS-base. ABI-doc-line-by-line reviewed. Forever-running register-canary harness. No inline asm. No `#[naked]` Rust. One `.S`/arch with one extern symbol.
 
 ## 1 Purpose
