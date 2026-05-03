@@ -133,6 +133,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         seed: [0; 32],
         boot_ns: 0,
         hhdm_offset: 0,
+        rsdp_pa: 0,
     }
 }
 
@@ -204,12 +205,23 @@ unsafe fn build_boot_info() -> BootInfo {
             unsafe { (*p).offset }
         }
     };
+    let rsdp_pa = {
+        let p = LIMINE_RSDP.response.load(core::sync::atomic::Ordering::Acquire);
+        if p.is_null() {
+            0
+        } else {
+            // SAFETY: Limine wrote a non-null response pointer; backing
+            // struct lives for the rest of boot per `36§3`.
+            unsafe { (*p).address }
+        }
+    };
     BootInfo {
         memmap_count: n as u32,
         memmap_ptr:   storage.as_ptr(),
         seed:         [0; 32],
         boot_ns:      boot_ns,
         hhdm_offset:  hhdm,
+        rsdp_pa:      rsdp_pa,
     }
 }
 
