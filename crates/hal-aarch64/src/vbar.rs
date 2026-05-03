@@ -65,14 +65,19 @@ core::arch::global_asm!(
     // 0x380: SError, current EL with SP_ELx
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x400: Sync from lower EL, AArch64 — SVC syscall + EL0 faults.
+    "    b oxide_lower_el_sync_handler",
+    "    .balign 0x80",
+    // 0x480: IRQ from lower EL, AArch64
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x500: FIQ from lower EL, AArch64
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x580: SError from lower EL, AArch64
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
-    "    b oxide_default_vector_handler",
-    "    .balign 0x80",
+    // 0x600..0x780: AArch32 vectors — unused (no compat-mode userspace v1).
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
     "    b oxide_default_vector_handler",
@@ -137,6 +142,91 @@ core::arch::global_asm!(
     "1:  wfi",
     "    b 1b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
+
+    // -------- Lower-EL sync vector (VBAR_EL1+0x400) ----------------
+    // Forks on ESR.EC: 0x15 = SVC AArch64 → syscall path; anything
+    // else (BRK, data-abort, instr-abort, ...) falls through to the
+    // default vector handler which logs ESR/FAR/ELR and halts (or
+    // eret-retries if a registered fault handler returned true).
+    //
+    // Linux SVC ABI: x8 = nr, x0..x5 = args, x0 = retval.
+    // We shuffle to Rust SysV (x0=nr, x1..x5=a0..a4) for the
+    // dispatch call. a5 is dropped (no v1 syscall takes 6 args).
+    //
+    // Frame: 208 B (24 GP slots + ELR/SPSR + SP_EL0 + retval slot).
+    //   [sp+0x00] x0..x1
+    //   [sp+0x10] x2..x3
+    //   [sp+0x20] x4..x5
+    //   [sp+0x30] x6..x7
+    //   [sp+0x40] x8..x9
+    //   [sp+0x50] x10..x11
+    //   [sp+0x60] x12..x13
+    //   [sp+0x70] x14..x15
+    //   [sp+0x80] x16..x17
+    //   [sp+0x90] x18..x29
+    //   [sp+0xa0] x30 + pad
+    //   [sp+0xb0] elr_el1 + spsr_el1
+    //   [sp+0xc0] sp_el0
+    //   [sp+0xc8] retval (set after dispatch)
+    ".balign 4",
+    ".globl oxide_lower_el_sync_handler",
+    ".type  oxide_lower_el_sync_handler, %function",
+    "oxide_lower_el_sync_handler:",
+    "    msr daifset, #0xf",
+    "    mrs x9, esr_el1",
+    "    lsr x9, x9, #26",
+    "    and x9, x9, #0x3f",
+    "    cmp x9, #0x15",
+    "    b.ne oxide_default_vector_handler",
+    "    sub  sp, sp, #208",
+    "    stp  x0,  x1,  [sp, #0x00]",
+    "    stp  x2,  x3,  [sp, #0x10]",
+    "    stp  x4,  x5,  [sp, #0x20]",
+    "    stp  x6,  x7,  [sp, #0x30]",
+    "    stp  x8,  x9,  [sp, #0x40]",
+    "    stp  x10, x11, [sp, #0x50]",
+    "    stp  x12, x13, [sp, #0x60]",
+    "    stp  x14, x15, [sp, #0x70]",
+    "    stp  x16, x17, [sp, #0x80]",
+    "    stp  x18, x29, [sp, #0x90]",
+    "    str  x30,      [sp, #0xa0]",
+    "    mrs  x9,  elr_el1",
+    "    mrs  x10, spsr_el1",
+    "    stp  x9,  x10, [sp, #0xb0]",
+    "    mrs  x9,  sp_el0",
+    "    str  x9,       [sp, #0xc0]",
+    // Shuffle Linux SVC args (x8=nr, x0..x4=a0..a4) into Rust SysV
+    // (x0=nr, x1..x5=a0..a4). Bottom-up so we don't clobber sources.
+    "    mov  x5, x4",
+    "    mov  x4, x3",
+    "    mov  x3, x2",
+    "    mov  x2, x1",
+    "    mov  x1, x0",
+    "    mov  x0, x8",
+    "    bl   oxide_syscall_dispatch",
+    "    str  x0,       [sp, #0xc8]",
+    // Restore everything; load x0 LAST from the retval slot so we
+    // override the user's saved x0 with the dispatcher's u64 retval.
+    "    ldp  x9,  x10, [sp, #0xb0]",
+    "    msr  elr_el1,  x9",
+    "    msr  spsr_el1, x10",
+    "    ldr  x9,       [sp, #0xc0]",
+    "    msr  sp_el0,   x9",
+    "    ldr  x30,      [sp, #0xa0]",
+    "    ldp  x18, x29, [sp, #0x90]",
+    "    ldp  x16, x17, [sp, #0x80]",
+    "    ldp  x14, x15, [sp, #0x70]",
+    "    ldp  x12, x13, [sp, #0x60]",
+    "    ldp  x10, x11, [sp, #0x50]",
+    "    ldp  x8,  x9,  [sp, #0x40]",
+    "    ldp  x6,  x7,  [sp, #0x30]",
+    "    ldp  x4,  x5,  [sp, #0x20]",
+    "    ldp  x2,  x3,  [sp, #0x10]",
+    "    ldp  x0,  x1,  [sp, #0x00]",
+    "    ldr  x0,       [sp, #0xc8]",
+    "    add  sp, sp, #208",
+    "    eret",
+    ".size oxide_lower_el_sync_handler, . - oxide_lower_el_sync_handler",
 
     // IRQ entry per `22§5` + `14§R07`. Frame = 192 B = 22 × 8 GP +
     // ELR_EL1 + SPSR_EL1. The ELR/SPSR pair was missing pre-R07; an

@@ -20,17 +20,39 @@ const USER_CODE_VA:   u64 = 0x0000_0000_0040_0000;
 const USER_STACK_VA:  u64 = 0x0000_0000_0050_0000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 
-// `brk #0` little-endian: 0xD4200000 → 00 00 20 D4.
-const USER_BLOB: [u8; 4] = [0x00, 0x00, 0x20, 0xD4];
+// User blob: `mov w8, #39 (sys_getpid); svc #0; brk #0`.
+// Issues a syscall, gets the retval (1) in x0 via the SVC handler's
+// eret epilogue, then traps via `brk #0` so the smoke handler logs
+// the round-trip landmark. All instructions little-endian.
+//
+//   0x52800508  movz w8, #0x0028        ; nr = 39 (sys_getpid)
+//   0xD4000001  svc #0
+//   0xD4200000  brk #0
+//
+// Encoding of `movz w8, #imm16`: 0x52800000 | (imm16 << 5) | rd
+//   imm16 = 39 = 0x27, rd = 8 → 0x52800000 | (0x27 << 5) | 8
+//                            = 0x52800000 | 0x4E0 | 0x08
+//                            = 0x528004E8.
+const USER_BLOB: [u8; 12] = [
+    0xE8, 0x04, 0x80, 0x52,   // movz w8, #39  (LE)
+    0x01, 0x00, 0x00, 0xD4,   // svc  #0
+    0x00, 0x00, 0x20, 0xD4,   // brk  #0
+];
+
+const USER_RIP_POST_SVC: u64 = USER_CODE_VA + 8;  // brk lives here
 
 /// ESR.EC = 0b111100 (0x3C) = "BRK instruction execution in AArch64".
 const EC_BRK_AARCH64: u64 = 0x3C;
 
 fn user_brk_handler(esr: u64, _far: u64, elr: u64) -> bool {
     let ec = (esr >> 26) & 0x3F;
-    if ec == EC_BRK_AARCH64 && elr == USER_CODE_VA {
+    // After SVC + sysret-equivalent eret, user lands at the BRK
+    // instruction at USER_CODE_VA+8 — that's the round-trip success
+    // landmark. The original USER_CODE_VA path stays for older blob
+    // shapes; either is success.
+    if ec == EC_BRK_AARCH64 && (elr == USER_RIP_POST_SVC || elr == USER_CODE_VA) {
         debug_irq! {
-            klog::write_raw(b"[INFO]  userspace-eret-smoke-arm: ok EL0 BRK elr=");
+            klog::write_raw(b"[INFO]  userspace-sysret-smoke-arm: ok EL0 BRK elr=");
             klog::write_hex_u64(elr);
             klog::write_raw(b" esr=");
             klog::write_hex_u64(esr);
