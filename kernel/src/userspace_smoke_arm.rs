@@ -126,20 +126,35 @@ pub unsafe fn run<M: MmuOps>() -> ! {
         }
     }
 
+    // SAFETY: GDT-equivalent (TTBR0/TTBR1, VBAR_EL1) all set; user code+stack mapped USER+EXEC/USER+WRITE; single-CPU; DAIF.I masked. Diverges.
+    unsafe { drop_to_el0(USER_CODE_VA, USER_STACK_TOP, user_brk_handler); }
+}
+
+/// Install `fault_handler` and `eret` into EL0 at `(elr, sp)`.
+/// Diverges. Mirrors x86_64's `userspace_smoke::drop_to_ring3` —
+/// the ELF smoke (P2-16c) reuses this primitive.
+///
+/// SPSR_EL1 = 0x3C0 → M=EL0t (0b0000), DAIF all masked. User runs
+/// IRQs-off through to its first SVC; timer can't race.
+///
+/// # SAFETY: caller has fully initialised TTBR0/TTBR1, VBAR_EL1,
+/// SCTLR_EL1; user code at `elr` is mapped USER+EXEC; user stack
+/// at `sp` is mapped USER+WRITE (or will demand-page from a
+/// registered VMA); EL1; DAIF.I masked.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU; diverges
+pub unsafe fn drop_to_el0(elr: u64, sp: u64, fault_handler: hal_aarch64::FaultHandler) -> ! {
     // SAFETY: handler fn is 'static; pre-init single-CPU swap.
-    let _prev = unsafe { install_fault_handler(user_brk_handler) };
+    let _prev = unsafe { install_fault_handler(fault_handler) };
 
     debug_irq! {
-        klog::write_raw(b"[INFO]  userspace-eret-smoke-arm: about to eret elr=");
-        klog::write_hex_u64(USER_CODE_VA);
+        klog::write_raw(b"[INFO]  drop-to-el0: elr=");
+        klog::write_hex_u64(elr);
         klog::write_raw(b" sp_el0=");
-        klog::write_hex_u64(USER_STACK_TOP);
+        klog::write_hex_u64(sp);
         klog::write_raw(b"\n");
     }
 
-    // SPSR_EL1 = 0x3C0 → M=EL0t (0b0000), DAIF all masked. User
-    // runs IRQs-off through to BRK so the timer can't race.
-    //
     // SAFETY: privileged system-reg writes at EL1; values are
     // kernel-validated constants pointing at freshly-mapped EL0
     // pages. `eret` uses ELR_EL1/SPSR_EL1 to transition.
@@ -149,8 +164,8 @@ pub unsafe fn run<M: MmuOps>() -> ! {
             "msr elr_el1,  {elr_u}",
             "msr spsr_el1, {spsr}",
             "eret",
-            sp_u  = in(reg) USER_STACK_TOP,
-            elr_u = in(reg) USER_CODE_VA,
+            sp_u  = in(reg) sp,
+            elr_u = in(reg) elr,
             spsr  = in(reg) 0x3C0u64,
             options(noreturn),
         );
