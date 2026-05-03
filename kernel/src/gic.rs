@@ -187,6 +187,8 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         }
         // SAFETY: mirrors the IAR read above; same INTID; GIC was mapped Device-attr.
         unsafe { eoi(raw); }
+        // Defer reschedule (see lapic::oxide_irq_dispatch comment).
+        crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
     }
 }
 
