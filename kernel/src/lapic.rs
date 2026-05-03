@@ -130,6 +130,27 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     LapicStatus::Enabled { apic_id, version }
 }
 
+/// Configure the LAPIC timer in periodic mode unmasked at vector
+/// 0x40. Caller must have wired IDT[0x40] to an IRQ stub (the
+/// default `install_default_idt` does) and must `sti` afterwards
+/// to actually receive ticks.
+///
+/// # SAFETY: `enable` has run; LAPIC is mapped + software-enabled.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn timer_periodic(initial_count: u32) -> bool {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return false; }
+    // SAFETY: per fn contract — LAPIC was mapped Device-attr; offsets within the 4 KiB page.
+    unsafe {
+        core::ptr::write_volatile((va + REG_TIMER_DIV  as u64) as *mut u32, 0b1011);
+        core::ptr::write_volatile((va + REG_LVT_TIMER as u64) as *mut u32, 0x40 | (1 << 17));
+        core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, initial_count);
+    }
+    true
+}
+
 /// Configure the LAPIC timer in one-shot mode, masked (no IRQ
 /// delivery yet — this is purely a hardware-tick smoke). Returns
 /// the current count register reading after a brief busy spin so
