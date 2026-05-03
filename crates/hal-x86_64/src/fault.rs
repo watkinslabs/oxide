@@ -83,10 +83,15 @@ core::arch::global_asm!(
     "    cld",
     "    mov rdi, rsp",                  // arg 0 = frame pointer
     "    sub rsp, 8",                    // align to 16 before call
-    "    call oxide_fault_print_rust",
+    "    call oxide_fault_print_rust",   // returns bool in al: 1 = handled
+    "    add rsp, 8",                    // undo align
+    "    test al, al",
+    "    jnz 2f",                        // handled → retry via iretq
     "    cli",
-    "1:  hlt",
+    "1:  hlt",                           // not handled → park forever
     "    jmp 1b",
+    "2:  add rsp, 16",                   // drop synthetic vec + err
+    "    iretq",                         // pop CPU frame + return
     ".size oxide_fault_common, . - oxide_fault_common",
 );
 
@@ -195,9 +200,43 @@ macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-irq"))]
 macro_rules! debug_irq { ($($t:tt)*) => {} }
 
+/// Optional fault handler. Default is `default_handler` which
+/// returns `false` (= asm halts). Kernel installs a real handler
+/// via `install_fault_handler` once VMM AddressSpace integration
+/// is in. The returned `bool` is the recovery signal: `true` =
+/// asm pops the frame and `iretq`s (CPU retries the faulting
+/// instruction); `false` = asm halts forever.
+pub type FaultHandler = fn(vec: u64, error: u64, rip: u64, cr2: u64) -> bool;
+
+fn default_handler(_vec: u64, _error: u64, _rip: u64, _cr2: u64) -> bool { false }
+
+static FAULT_HANDLER: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(default_handler as *const () as *mut ());
+
+/// Install a kernel-side fault handler. Returns the previous one
+/// so callers can compose / restore.
+/// # SAFETY: caller must guarantee `h` lives for the rest of the
+/// kernel's lifetime; single-CPU pre-init context (no concurrent
+/// faults during the swap).
+/// # C: O(1)
+pub unsafe fn install_fault_handler(h: FaultHandler) -> FaultHandler {
+    let new = h as *const () as *mut ();
+    let prev = FAULT_HANDLER.swap(new, core::sync::atomic::Ordering::AcqRel);
+    // SAFETY: `prev` was installed via this same fn (or the default
+    // initialiser) which only writes valid `FaultHandler` values;
+    // the transmute is sound under that single-writer invariant.
+    unsafe { core::mem::transmute::<*mut (), FaultHandler>(prev) }
+}
+
+fn current_handler() -> FaultHandler {
+    let p = FAULT_HANDLER.load(core::sync::atomic::Ordering::Acquire);
+    // SAFETY: non-null by initialisation; written only by `install_fault_handler` with valid `FaultHandler` values.
+    unsafe { core::mem::transmute::<*mut (), FaultHandler>(p) }
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *const FaultFrame) {
+unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *const FaultFrame) -> bool {
     // SAFETY: stub-built frame on the kernel stack, valid for read.
     let f = unsafe { &*frame_ptr };
     debug_irq! {
@@ -223,6 +262,14 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *const FaultFrame) {
     }
     #[cfg(not(feature = "debug-irq"))]
     { let _ = f; }
+
+    // Consult the registered handler. Default returns false (= halt).
+    // For #PF (vec 14) we read CR2; otherwise pass 0.
+    let cr2 = if f.vector == 14 {
+        // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
+        unsafe { read_cr2() }
+    } else { 0 };
+    (current_handler())(f.vector, f.error, f.rip, cr2)
 }
 
 /// Map an Intel-SDM exception vector to a short label (Vol. 3
