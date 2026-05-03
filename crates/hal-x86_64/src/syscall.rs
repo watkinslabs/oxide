@@ -183,7 +183,7 @@ pub unsafe fn install_syscall_msrs() {
             let star: u64 = (0x28u64 << 32) | (0x38u64 << 48);
             wrmsr(IA32_STAR, star);
 
-            wrmsr(IA32_LSTAR, oxide_syscall_entry as usize as u64);
+            wrmsr(IA32_LSTAR, oxide_syscall_entry as *const () as usize as u64);
             wrmsr(IA32_FMASK, SFMASK_BITS);
         }
     }

@@ -187,7 +187,7 @@ pub fn vector_stub_addr(vec: u8) -> u64 {
             28 => oxide_vec_28, 29 => oxide_vec_29, 30 => oxide_vec_30, 31 => oxide_vec_31,
             _  => oxide_vec_default,
         };
-        f as usize as u64
+        f as *const () as usize as u64
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     {
