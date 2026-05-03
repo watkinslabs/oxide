@@ -300,14 +300,14 @@ fn priv_anon() -> VmaFlags { VmaFlags::PRIVATE | VmaFlags::ANONYMOUS }
 
 #[test]
 fn address_space_new_is_empty() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     assert_eq!(a.vma_count(), 0);
     a.audit().unwrap();
 }
 
 #[test]
 fn mmap_no_hint_returns_min_user_va() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let va = a.mmap(None, PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
     assert_eq!(va.as_u64(), MIN_USER_VA);
     assert_eq!(a.vma_count(), 1);
@@ -316,7 +316,7 @@ fn mmap_no_hint_returns_min_user_va() {
 
 #[test]
 fn mmap_hint_honored_when_clear() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let h = UserVirtAddr::new(0x4000_0000).unwrap();
     let va = a.mmap(Some(h), PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
     assert_eq!(va, h);
@@ -324,7 +324,7 @@ fn mmap_hint_honored_when_clear() {
 
 #[test]
 fn mmap_hint_falls_back_when_overlap() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     // First map at hint H.
     let h = UserVirtAddr::new(0x4000_0000).unwrap();
     let _ = a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
@@ -337,7 +337,7 @@ fn mmap_hint_falls_back_when_overlap() {
 
 #[test]
 fn mmap_fixed_clears_overlap_first() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let h = UserVirtAddr::new(0x4000_0000).unwrap();
     a.mmap(Some(h), 4 * PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, false).unwrap();
     // Overlapping FIXED replaces the conflicting region.
@@ -351,7 +351,7 @@ fn mmap_fixed_clears_overlap_first() {
 
 #[test]
 fn mmap_rejects_zero_length_and_misalignment() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     assert_eq!(
         a.mmap(None, 0, r_w(), priv_anon(), VmaBacking::Anonymous, false),
         Err(Error::Inval)
@@ -369,7 +369,7 @@ fn mmap_rejects_zero_length_and_misalignment() {
 
 #[test]
 fn mmap_fixed_without_hint_is_inval() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     assert_eq!(
         a.mmap(None, PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true),
         Err(Error::Inval)
@@ -378,7 +378,7 @@ fn mmap_fixed_without_hint_is_inval() {
 
 #[test]
 fn munmap_round_trip() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let va = a.mmap(None, 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
     a.munmap(va, 4 * PAGE).unwrap();
     assert_eq!(a.vma_count(), 0);
@@ -387,7 +387,7 @@ fn munmap_round_trip() {
 
 #[test]
 fn munmap_punches_hole() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let va = a.mmap(None, 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
     let mid = UserVirtAddr::new(va.as_u64() + PAGE as u64).unwrap();
     a.munmap(mid, PAGE).unwrap();
@@ -397,7 +397,7 @@ fn munmap_punches_hole() {
 
 #[test]
 fn mprotect_changes_prot() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let va = a.mmap(None, 4 * PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, false).unwrap();
     a.mprotect(va, 4 * PAGE, r_w()).unwrap();
     let v = a.find_vma(va).unwrap();
@@ -406,7 +406,7 @@ fn mprotect_changes_prot() {
 
 #[test]
 fn mprotect_rejects_hole_inside_range() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let h1 = UserVirtAddr::new(0x4000_0000).unwrap();
     let h2 = UserVirtAddr::new(0x4000_2000).unwrap();
     a.mmap(Some(h1), PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, true).unwrap();
@@ -420,7 +420,7 @@ fn mprotect_rejects_hole_inside_range() {
 
 #[test]
 fn mmap_no_mem_when_user_range_full() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     // Two abutting VMAs that leave a 1-page tail hole. UserVirtAddr
     // forbids reaching USER_VA_END exactly (`01§1`), so the largest
     // mapping that ends at USER_VA_END - PAGE consumes everything but
@@ -437,7 +437,7 @@ fn mmap_no_mem_when_user_range_full() {
 
 #[test]
 fn concurrent_readers_via_find_vma() {
-    let a = AddressSpace::new().unwrap();
+    let a = AddressSpace::new(0).unwrap();
     let h = UserVirtAddr::new(0x4000_0000).unwrap();
     a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true).unwrap();
     let mut handles = Vec::new();
