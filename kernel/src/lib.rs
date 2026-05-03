@@ -419,18 +419,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
-    // First ELF-loaded userspace per docs/31 (P2-16b) — x86_64 only.
-    // Diverges via the deliberate ud2 landmark after sys_exit's
-    // sysretq. Replaces the prior manual-mapping `userspace_smoke`
-    // path: code + buffer + stack are all backed by VMAs, leaving
-    // demand-paging through the real AS to materialise the pages.
+    // ELF-loaded userspace via real Task on the runqueue (P2-13c).
+    // Spawns the user task with mm=Arc<AddressSpace>, schedule()'s
+    // into it via the IRQ-tail iretq path. Diverges at the ud2
+    // landmark after sys_exit's sysretq.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
         // SAFETY: every prerequisite established above — kernel-owned
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
         // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)
-        // initialised; single-CPU; IRQs masked.
-        unsafe { elf_smoke::run(info.hhdm_offset); }
+        // + runqueue (P2-13b) initialised; single-CPU; IRQs masked.
+        unsafe { elf_smoke::run_as_task(info.hhdm_offset); }
     }
 
     // First ELF-loaded userspace per docs/31 (P2-16c) on aarch64.
