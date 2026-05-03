@@ -11,9 +11,7 @@
 //   sel 0x30       kernel DS   (DPL=0)
 //   sel 0x38       user   CS64 (DPL=3, L=1)
 //   sel 0x40       user   DS   (DPL=3)
-//
-// TSS descriptor + `ltr` lands with the userspace `iretq` smoke
-// (Phase 2, P1-82); not in scope here.
+//   sel 0x48       TSS    (16-byte system descriptor, type=0x9)
 //
 // Descriptor layout per Intel SDM Vol. 3 §3.4.5:
 //   bits  0..15  limit_lo
@@ -25,8 +23,9 @@
 
 use core::cell::UnsafeCell;
 
-/// 9 entries × 8 B = 72 B. Last sel = 0x40 (user DS).
-pub const GDT_LEN: usize = 9;
+/// 11 × 8 B = 88 B. Last 2 entries form the 16-byte TSS system
+/// descriptor at selector 0x48 (`tss::TSS_SEL`).
+pub const GDT_LEN: usize = 11;
 
 /// User CS64 selector (DPL=3, L=1). Wired in Phase 2 (P1-82).
 /// Kernel CS/DS = 0x28 / 0x30 are exported as `idt::KERNEL_CS` and
@@ -52,6 +51,33 @@ const FLAGS_CODE64: u8 = 0xA;
 /// Flags nibble for data: G=1, D=1 (32-bit default; ignored in 64-bit
 /// mode for data segments but conventional).
 const FLAGS_DATA: u8 = 0xC;
+
+/// Access byte for an available 64-bit TSS: P=1 DPL=0 S=0 type=0x9.
+const ACCESS_TSS_AVAIL: u8 = 0x89;
+/// Flags nibble for TSS: G=0 (byte granularity).
+const FLAGS_TSS: u8 = 0x0;
+
+/// Build the low half of a 16-byte TSS system descriptor (the half
+/// stored at GDT[9]). `base` is the linear address of the TSS, `limit`
+/// is sizeof(TSS) - 1.
+/// # C: O(1)
+const fn tss_low(base: u64, limit: u32) -> u64 {
+    let mut d: u64 = 0;
+    d |= (limit & 0xFFFF) as u64;                    // limit_lo
+    d |= (base & 0xFF_FFFF) << 16;                   // base_lo (24)
+    d |= (ACCESS_TSS_AVAIL as u64) << 40;            // access
+    d |= (((limit >> 16) & 0xF) as u64) << 48;       // limit_hi
+    d |= ((FLAGS_TSS & 0xF) as u64) << 52;           // flags nibble
+    d |= ((base >> 24) & 0xFF) << 56;                // base_mid (8)
+    d
+}
+
+/// High half of the TSS system descriptor (stored at GDT[10]). Holds
+/// `base[63:32]` in the low 32 bits; the rest is reserved zero.
+/// # C: O(1)
+const fn tss_high(base: u64) -> u64 {
+    (base >> 32) & 0xFFFF_FFFF
+}
 
 /// Build an 8-byte descriptor: base=0, limit=0xFFFFF, given access +
 /// flags nibble. The CPU ignores base/limit for CS/DS in 64-bit
@@ -143,6 +169,10 @@ pub unsafe fn install_kernel_gdt() {
     gdt[6] = segment(ACCESS_KERNEL_DS, FLAGS_DATA);   // 0x30
     gdt[7] = segment(ACCESS_USER_CS,   FLAGS_CODE64); // 0x38
     gdt[8] = segment(ACCESS_USER_DS,   FLAGS_DATA);   // 0x40
+    let tss_base = crate::tss::tss_base_addr();
+    let tss_limit = (core::mem::size_of::<crate::tss::Tss64>() - 1) as u32;
+    gdt[9]  = tss_low(tss_base, tss_limit);           // 0x48 (low half)
+    gdt[10] = tss_high(tss_base);                     // 0x48 (high half)
 
     let pointer = GdtPointer {
         limit: (core::mem::size_of::<[u64; GDT_LEN]>() - 1) as u16,
@@ -221,9 +251,37 @@ mod tests {
     }
 
     #[test]
-    fn gdt_static_size_is_72() {
-        // 9 × 8 = 72 bytes. Last entry covers selector 0x40.
-        assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), 72);
+    fn gdt_static_size_is_88() {
+        // 11 × 8 = 88 bytes; last 16 bytes form the TSS descriptor.
+        assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), 88);
+    }
+
+    #[test]
+    fn tss_descriptor_encoding() {
+        let base: u64 = 0x0123_4567_89AB_CDEF;
+        let limit: u32 = 103;
+        let lo = tss_low(base, limit);
+        let hi = tss_high(base);
+        // limit_lo
+        assert_eq!(lo & 0xFFFF, 103);
+        // base_lo[23:0] = 0xABCDEF
+        assert_eq!((lo >> 16) & 0xFF_FFFF, 0xABCDEF);
+        // access byte = 0x89
+        assert_eq!((lo >> 40) & 0xFF, 0x89);
+        // limit_hi[19:16] = 0
+        assert_eq!((lo >> 48) & 0xF, 0);
+        // flags nibble = 0 (G=0)
+        assert_eq!((lo >> 52) & 0xF, 0);
+        // base_mid[31:24] = 0x89
+        assert_eq!((lo >> 56) & 0xFF, 0x89);
+        // hi: base[63:32] = 0x01234567
+        assert_eq!(hi, 0x0123_4567);
+    }
+
+    #[test]
+    fn tss_access_byte_marks_avail_64bit_tss() {
+        // P=1, DPL=0, S=0, TYPE=9 ⇒ 0x89.
+        assert_eq!(ACCESS_TSS_AVAIL, 0x89);
     }
 
     #[test]
