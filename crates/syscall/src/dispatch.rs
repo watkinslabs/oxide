@@ -120,6 +120,54 @@ pub fn sys_set_tid_address(_args: &SyscallArgs) -> KResult<u64> { Ok(1) }
 /// # C: O(1)
 pub fn sys_set_robust_list(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
 
+/// `sys_brk(addr)` — slot 12. Linux returns the current program
+/// break on success and the unchanged break on failure (no errno).
+/// v1 has no heap → always return 0 ("no heap"). musl checks for
+/// growth and falls back to mmap; glibc falls back to its arena.
+/// # C: O(1)
+pub fn sys_brk(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_mmap(addr, len, prot, flags, fd, off)` — slot 9. v1 has no
+/// VMM AddressSpace yet; return -ENOMEM so user-side allocators
+/// fall back to whatever they have for "out of memory" (typically
+/// abort or a static-only path). Real anon mmap lands with P2-12.
+/// # C: O(1)
+pub fn sys_mmap(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Enomem) }
+
+/// `sys_munmap(addr, len)` — slot 11. v1: no-op. Real impl lands
+/// with P2-12 alongside sys_mmap.
+/// # C: O(1)
+pub fn sys_munmap(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_mprotect(addr, len, prot)` — slot 10. v1: no-op. Real impl
+/// flips PT entry flags via MmuOps once VMM-AS lands.
+/// # C: O(1)
+pub fn sys_mprotect(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_rt_sigaction(signum, act, oldact, sigsetsize)` — slot 13.
+/// v1: no signal delivery model; accept and return 0. Real impl
+/// lands with `27` IPC/signals.
+/// # C: O(1)
+pub fn sys_rt_sigaction(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_rt_sigprocmask(how, set, oldset, sigsetsize)` — slot 14.
+/// v1: no signal mask; accept and return 0.
+/// # C: O(1)
+pub fn sys_rt_sigprocmask(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_readlink(path, buf, bufsize)` — slot 89. v1: no VFS; the
+/// only path libc commonly readlinks is `/proc/self/exe`. Return
+/// -EINVAL so glibc falls through its non-readlink fallback.
+/// # C: O(1)
+pub fn sys_readlink(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Einval) }
+
+/// `sys_getrandom(buf, len, flags)` — slot 318. v1: no entropy
+/// source; return -ENOSYS so user code falls back to whatever
+/// non-getrandom path it has. Real impl wires DRBG once we have
+/// per-CPU RDRAND/RNDR seeding.
+/// # C: O(1)
+pub fn sys_getrandom(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Enosys) }
+
 /// Build the dispatch table at compile time. Real `sys_*` are filled
 /// in via `set` calls below as their subsystems land.
 const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
@@ -133,8 +181,16 @@ const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     t[107] = sys_geteuid as SyscallFn;
     t[108] = sys_getegid as SyscallFn;
     t[186] = sys_gettid           as SyscallFn;
+    t[9]   = sys_mmap             as SyscallFn;
+    t[10]  = sys_mprotect         as SyscallFn;
+    t[11]  = sys_munmap           as SyscallFn;
+    t[12]  = sys_brk              as SyscallFn;
+    t[13]  = sys_rt_sigaction     as SyscallFn;
+    t[14]  = sys_rt_sigprocmask   as SyscallFn;
+    t[89]  = sys_readlink         as SyscallFn;
     t[218] = sys_set_tid_address  as SyscallFn;
     t[273] = sys_set_robust_list  as SyscallFn;
+    t[318] = sys_getrandom        as SyscallFn;
     // Slots awaiting subsystem landings:
     //   t[0]  = sys_read;     // VFS
     //   t[3]  = sys_close;
