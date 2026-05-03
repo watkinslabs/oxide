@@ -61,9 +61,11 @@ fn boot_emit(bytes: &[u8]) {
 
 /// Base-revision marker per Limine v12 protocol. Required ≥ 6 on
 /// modern Limine; older protocols reject revision 0. Values are
-/// stable across Limine 9..12.
+/// stable across Limine 9..12. MUST appear at the start of
+/// `.limine_requests`; we land it via the `.start` subname which
+/// the linker places before the rest.
 #[used]
-#[link_section = ".limine_requests"]
+#[link_section = ".limine_requests.start"]
 static LIMINE_BASE_REVISION: [u64; 3] = [
     0xf9562b2d5c95a6c8,
     0x6a7b384944536bdc,
