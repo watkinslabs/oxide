@@ -104,25 +104,30 @@ use sync::{Spinlock, Tty as UartClass};
 use pl011::{Pl011, PL011_VIRT_BASE};
 
 // ---------------------------------------------------------------------------
-// Boot-time klog sink. v1: ARM semihosting putc — bypasses MMIO entirely
-// and works regardless of how Limine arranges paging on aarch64. The
-// real PL011 path stays available (boot_emit_pl011 below) for the
-// post-Limine-HHDM-resolution PR.
+// Boot-time klog sink. v1: ARM semihosting putc.
+//
+// Limine v12 with base revision ≥ 6 maps only RAM into HHDM, not
+// device MMIO (`common/protos/limine.c` line ~205, "Map 0->4GiB to
+// HHDM if base revision < 3"). So PL011 phys `0x0900_0000` has no
+// kernel-VA mapping at handoff. Real PL011 access requires our own
+// device-page mapping, which is VMM territory and waits on specs
+// `06`/`13`/`21` freezing. Until then, semihosting is the only
+// sink that works regardless of paging state.
 // ---------------------------------------------------------------------------
 
 static BOOT_UART: Spinlock<Pl011, UartClass>
     = Spinlock::new(Pl011::new(PL011_VIRT_BASE));
 
 /// klog `LogSink` adapter via semihosting. Each byte triggers a
-/// `hlt #0xf000` at EL1; QEMU's semihosting handler intercepts it
-/// and emits the byte to its stdout channel — same place `-serial
-/// stdio` lands, so the boot trace looks identical to the x86 path.
+/// `hlt #0xf000` at EL1; QEMU intercepts and emits the byte to its
+/// stdout — same channel `-serial stdio` lands on.
 /// # C: O(len)
 fn boot_emit(bytes: &[u8]) {
     #[cfg(target_os = "oxide-kernel")]
     {
         for &b in bytes {
-            // SAFETY: privileged opcode legal at EL1; `b` lives across the call.
+            // SAFETY: privileged opcode legal at EL1 with semihosting
+            // enabled by QEMU `-semihosting-config target=native`.
             unsafe { semihost::putc(b); }
         }
     }
@@ -130,10 +135,9 @@ fn boot_emit(bytes: &[u8]) {
     { let _ = bytes; }
 }
 
-/// Alternative klog sink via PL011 MMIO. Unused in v1 because Limine
-/// v12 doesn't fill `LIMINE_HHDM_REQUEST.response` for our request
-/// shape, leaving us without a reliable VA for phys 0x09000000.
-/// Re-wire `_start_rust` to this once the HHDM puzzle is solved.
+/// Alternative klog sink via PL011 MMIO. Inactive until VMM lands a
+/// real device-page mapping for `0x0900_0000` — see module-level
+/// comment.
 #[allow(dead_code)]
 fn boot_emit_pl011(bytes: &[u8]) {
     let mut g = BOOT_UART.lock();
@@ -229,10 +233,21 @@ unsafe extern "C" fn _start_rust() -> ! {
     // writes VBAR_EL1 to a kernel-owned 0x800-aligned vector table.
     unsafe { hal_aarch64::install_default_vbar(); }
 
-    // Wire klog → semihosting. No MMIO, no HHDM dependency: QEMU
-    // intercepts `hlt #0xf000` at EL1 regardless of paging state.
-    // Real PL011 sink (`boot_emit_pl011`) lights up once the
-    // Limine HHDM response question is settled.
+    // Capture the HHDM offset Limine wrote so the PL011 driver has
+    // it ready for when a future VMM PR installs the device mapping.
+    // With correct request magic Limine fills this; with a typo it
+    // stays null. The pinning test against upstream `limine.h` is
+    // the diagnostic — there's nowhere to log a runtime warning yet.
+    let resp = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
+    let hhdm = if resp.is_null() {
+        0
+    } else {
+        // SAFETY: bootloader wrote a non-null response pointer; the
+        // backing struct lives for the rest of boot per `36§3`.
+        unsafe { (*resp).offset }
+    };
+    pl011::set_hhdm_offset(hhdm);
+
     klog::set_byte_sink(boot_emit);
 
     // SAFETY: boot path; build_boot_info reads bootloader-owned
