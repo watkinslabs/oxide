@@ -154,6 +154,14 @@ fn boot_emit_pl011(bytes: &[u8]) {
     g.write_bytes(bytes);
 }
 
+/// klog clock thunk — surfaces `ArmTimerOps::monotonic_ns` as the
+/// `klog::ClockFn` after `set_cntfrq_khz` calibration.
+/// # C: O(1)
+fn now_ns_aarch64() -> u64 {
+    use hal::TimerOps;
+    hal_aarch64::ArmTimerOps::monotonic_ns().0
+}
+
 use core::cell::UnsafeCell;
 use kernel::{BootInfo, BootMemRegion};
 
@@ -295,6 +303,7 @@ unsafe extern "C" fn _start_rust() -> ! {
         );
     }
     hal_aarch64::set_cntfrq_khz((cntfrq_hz / 1000) as u32);
+    klog::set_clock_fn(now_ns_aarch64);
 
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
