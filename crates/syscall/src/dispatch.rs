@@ -168,34 +168,67 @@ pub fn sys_readlink(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Einval) }
 /// # C: O(1)
 pub fn sys_getrandom(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Enosys) }
 
+/// `sys_close(fd)` — slot 3. v1: no fd table; pretend close
+/// succeeded so libc startup that closes inherited fds doesn't
+/// abort. Real impl lands with VFS.
+/// # C: O(1)
+pub fn sys_close(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_ioctl(fd, request, arg)` — slot 16. v1: -ENOTTY (the
+/// standard "not a terminal" return) so startup ioctls like
+/// `TIOCGWINSZ` get a sensible classification rather than
+/// -ENOSYS that would abort.
+/// # C: O(1)
+pub fn sys_ioctl(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Enotty) }
+
+/// `sys_madvise(addr, len, advice)` — slot 28. Userspace hint;
+/// kernel is free to ignore. v1: no-op return 0.
+/// # C: O(1)
+pub fn sys_madvise(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_fcntl(fd, cmd, arg)` — slot 72. Wide-mouthed multiplexer;
+/// v1 has no fd table to inspect. Return 0 for cases like
+/// F_SETFD/CLOEXEC that don't read state; libc will treat 0 as
+/// success. Real impl lands with VFS.
+/// # C: O(1)
+pub fn sys_fcntl(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_prlimit64(pid, resource, new_limit, old_limit)` — slot 302.
+/// v1: ignore writes to old_limit (no rlim model yet); return 0.
+/// libc startup hits this checking RLIMIT_STACK et al.
+/// # C: O(1)
+pub fn sys_prlimit64(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
 /// Build the dispatch table at compile time. Real `sys_*` are filled
 /// in via `set` calls below as their subsystems land.
 const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     let mut t = [sys_enosys as SyscallFn; SYSCALL_TABLE_LEN];
     // Bound subsystems (numbers per Linux x86_64 / `15§2`):
-    t[1]   = sys_write   as SyscallFn;
-    t[39]  = sys_getpid  as SyscallFn;
-    t[60]  = sys_exit    as SyscallFn;
-    t[102] = sys_getuid  as SyscallFn;
-    t[104] = sys_getgid  as SyscallFn;
-    t[107] = sys_geteuid as SyscallFn;
-    t[108] = sys_getegid as SyscallFn;
-    t[186] = sys_gettid           as SyscallFn;
-    t[9]   = sys_mmap             as SyscallFn;
-    t[10]  = sys_mprotect         as SyscallFn;
-    t[11]  = sys_munmap           as SyscallFn;
-    t[12]  = sys_brk              as SyscallFn;
-    t[13]  = sys_rt_sigaction     as SyscallFn;
-    t[14]  = sys_rt_sigprocmask   as SyscallFn;
-    t[89]  = sys_readlink         as SyscallFn;
-    t[218] = sys_set_tid_address  as SyscallFn;
-    t[273] = sys_set_robust_list  as SyscallFn;
-    t[318] = sys_getrandom        as SyscallFn;
+    t[1]   = sys_write           as SyscallFn;
+    t[3]   = sys_close           as SyscallFn;
+    t[9]   = sys_mmap            as SyscallFn;
+    t[10]  = sys_mprotect        as SyscallFn;
+    t[11]  = sys_munmap          as SyscallFn;
+    t[12]  = sys_brk             as SyscallFn;
+    t[13]  = sys_rt_sigaction    as SyscallFn;
+    t[14]  = sys_rt_sigprocmask  as SyscallFn;
+    t[16]  = sys_ioctl           as SyscallFn;
+    t[28]  = sys_madvise         as SyscallFn;
+    t[39]  = sys_getpid          as SyscallFn;
+    t[60]  = sys_exit            as SyscallFn;
+    t[72]  = sys_fcntl           as SyscallFn;
+    t[89]  = sys_readlink        as SyscallFn;
+    t[102] = sys_getuid          as SyscallFn;
+    t[104] = sys_getgid          as SyscallFn;
+    t[107] = sys_geteuid         as SyscallFn;
+    t[108] = sys_getegid         as SyscallFn;
+    t[186] = sys_gettid          as SyscallFn;
+    t[218] = sys_set_tid_address as SyscallFn;
+    t[273] = sys_set_robust_list as SyscallFn;
+    t[302] = sys_prlimit64       as SyscallFn;
+    t[318] = sys_getrandom       as SyscallFn;
     // Slots awaiting subsystem landings:
     //   t[0]  = sys_read;     // VFS
-    //   t[3]  = sys_close;
-    //   t[9]  = sys_mmap;     // vmm::AddressSpace
-    //   t[10] = sys_mprotect;
     //   t[11] = sys_munmap;
     //   t[24] = sys_sched_yield;
     t
