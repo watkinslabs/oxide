@@ -72,6 +72,73 @@ fn alloc_frame() -> Option<u64> {
     f()
 }
 
+/// Kernel master PML4 PA — captured at boot from CR3 before any
+/// per-AS root is created. New per-AS PML4s copy entries 256..512
+/// (the kernel half) from this master so kernel mappings (HHDM,
+/// kernel image, device MMIO) remain reachable after `activate`
+/// switches CR3 to the AS-private root. Per `11§2` invariant 5
+/// (kernel mapping identical in every AS).
+static MASTER_PML4_PA: AtomicU64 = AtomicU64::new(0);
+
+/// Capture the current CR3 as the kernel master PML4 PA. Idempotent
+/// only with the same value. Call once at boot, after every kernel
+/// mapping the user-AS clones must observe is installed.
+///
+/// # SAFETY: caller is the boot path; CR3 references the live
+/// kernel-only PML4 (Limine's, plus any device-MMIO splices); no
+/// per-AS CR3 has been activated yet.
+/// # C: O(1)
+pub unsafe fn capture_kernel_master() -> u64 {
+    // SAFETY: privileged CR3 read at CPL=0; no memory effect.
+    let cr3 = crate::regs::read_cr3() & !0xfff;
+    let prev = MASTER_PML4_PA.swap(cr3, Ordering::Release);
+    kassert!(prev == 0 || prev == cr3, "capture_kernel_master double-init mismatch");
+    cr3
+}
+
+/// Read the captured master PML4 PA, or 0 if `capture_kernel_master`
+/// hasn't run.
+/// # C: O(1)
+pub fn kernel_master() -> u64 {
+    MASTER_PML4_PA.load(Ordering::Acquire)
+}
+
+/// Allocate a fresh user-AS PML4 root: PMM frame, zero, then copy
+/// entries 256..512 from the captured kernel master. Returns the
+/// root PA on success, or `None` if `capture_kernel_master` hasn't
+/// run, the frame allocator is missing, or the alloc fails.
+///
+/// The copied PML4 entries point at the same physical L3 (PDPT)
+/// tables as the master, so mutations to those sub-trees from any
+/// AS are visible in every AS — exactly the kernel-mapping sharing
+/// `11§2` invariant 5 demands.
+///
+/// # SAFETY: caller is the boot path or the AS constructor; HHDM
+/// covers page-table memory; FRAME_ALLOC + MASTER_PML4_PA both set;
+/// single-CPU pre-init.
+/// # C: O(1) (256-entry copy)
+pub unsafe fn new_user_pml4() -> Option<u64> {
+    let hhdm   = HHDM_OFFSET.load(Ordering::Acquire);
+    let master = MASTER_PML4_PA.load(Ordering::Acquire);
+    if hhdm == 0 || master == 0 { return None; }
+    let pa = alloc_frame()?;
+    // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at
+    // hhdm + pa is mapped writable in the kernel master tables; no
+    // other CPU can observe this frame yet.
+    unsafe {
+        let dst = (hhdm.wrapping_add(pa)) as *mut u64;
+        core::ptr::write_bytes(dst, 0, 512);
+        let src = (hhdm.wrapping_add(master)) as *const u64;
+        // Copy kernel-half PML4 entries 256..512. Each entry is one
+        // u64 referencing an L3 (PDPT) table that's shared across
+        // every AS for the lifetime of the kernel.
+        for i in 256..512 {
+            core::ptr::write_volatile(dst.add(i), core::ptr::read_volatile(src.add(i)));
+        }
+    }
+    Some(pa)
+}
+
 /// Marker type implementing `hal::MmuOps` for x86_64. Methods are
 /// stateless; arch state lives in this module's static atomics.
 pub struct X86Mmu;
@@ -151,6 +218,28 @@ impl MmuOps for X86Mmu {
     /// # C: O(1)
     fn flush_all_local() {
         crate::mmu::flush_local_all();
+    }
+
+    /// Install `root_pa` as CR3 — switches the active address space
+    /// per `13§8`. The 12 low bits of CR3 carry PCD/PWT/PCID; v1 sets
+    /// them all to zero (no PCID; cache attributes inherit kernel
+    /// defaults). The implicit TLB flush triggered by every CR3 write
+    /// (when PCID is off) is the AS-switch's TLB invalidation.
+    /// # SAFETY: per trait contract.
+    /// # C: O(1) reg write + implicit TLB flush
+    unsafe fn activate(root_pa: u64) {
+        kassert!(root_pa & 0xfff == 0, "MmuOps::activate root_pa not page-aligned");
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        // SAFETY: privileged CR3 write at CPL=0. Caller asserts the new tree's kernel-half is coherent with the master kernel PML4 (else the next instr-fetch faults).
+        unsafe {
+            core::arch::asm!(
+                "mov cr3, {pa}",
+                pa = in(reg) root_pa,
+                options(nostack, preserves_flags),
+            );
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+        let _ = root_pa;
     }
 }
 

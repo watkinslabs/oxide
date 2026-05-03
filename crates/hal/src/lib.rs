@@ -177,6 +177,22 @@ pub trait MmuOps {
     /// Flush the entire TLB on this CPU.
     /// # C: O(1) local
     fn flush_all_local();
+
+    /// Install `root_pa` as this CPU's active user-half page-table root.
+    ///
+    /// On x86_64 writes `CR3` (single tree covering both halves; the
+    /// caller is expected to have populated kernel-half entries from
+    /// the kernel master PML4 before calling). On aarch64 writes
+    /// `TTBR0_EL1` and invalidates EL1 TLB; `TTBR1_EL1` (kernel half)
+    /// is untouched. Per `13§8` (`schedule()` AS-swap).
+    ///
+    /// # SAFETY: caller is the kernel scheduler or boot path; `root_pa`
+    /// references a valid 4 KiB-aligned root frame whose kernel-half
+    /// mappings are coherent with the active kernel PT (else the very
+    /// next instruction may fault). Single-CPU pre-SMP; preempt-off.
+    /// # C: O(1)
+    /// # Ctx: schedule path; preempt-off
+    unsafe fn activate(root_pa: u64);
 }
 
 // ---------------------------------------------------------------------------
