@@ -47,6 +47,37 @@ const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
 #[cfg(target_arch = "x86_64")]
 static LAPIC_BASE_VA: AtomicU64 = AtomicU64::new(0);
 
+/// Per-CPU tick counter incremented by the timer-IRQ dispatcher.
+#[cfg(target_arch = "x86_64")]
+pub static TICK_COUNT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Send EOI to the LAPIC. No-op if `enable` hasn't run.
+/// # SAFETY: pair with an in-progress IRQ; writes EOI at offset 0xB0.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn eoi() {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return; }
+    // SAFETY: per fn contract — `va` is a Device-attr 4 KiB mapping; offset 0xB0 lies within.
+    unsafe { core::ptr::write_volatile((va + 0xB0) as *mut u32, 0); }
+}
+
+/// Rust IRQ dispatcher invoked from the per-vector asm stub. For
+/// now: bump tick counter + EOI; no per-vector handler table yet.
+///
+/// # SAFETY: invoked only from the IRQ entry asm with IRQs masked
+/// (interrupt-gate clears IF on entry).
+/// # C: O(1)
+/// # Ctx: IRQ
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[no_mangle]
+unsafe extern "C" fn oxide_irq_dispatch(_frame: *const u8) {
+    TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
+    unsafe { eoi(); }
+}
+
 /// Outcome reported by `enable`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LapicStatus {
