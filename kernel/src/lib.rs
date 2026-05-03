@@ -16,6 +16,21 @@
 
 extern crate alloc;
 
+// Compile-time check: the per-arch HAL `Context` type must fit in
+// `Task.arch_ctx` per `13§5`. If a future arch grows past
+// `sched::ARCH_CTX_SIZE`, bump the constant in `crates/sched`
+// rather than working around here.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+const _: () = assert!(
+    core::mem::size_of::<hal_x86_64::ContextX86_64>() <= sched::ARCH_CTX_SIZE,
+    "ContextX86_64 exceeds sched::ARCH_CTX_SIZE — bump the const",
+);
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const _: () = assert!(
+    core::mem::size_of::<hal_aarch64::ContextAArch64>() <= sched::ARCH_CTX_SIZE,
+    "ContextAArch64 exceeds sched::ARCH_CTX_SIZE — bump the const",
+);
+
 // Per-subsystem debug-trace gates per `04§3` (R05) + `04§4.0` (R06).
 // `#[macro_use]` hoists the `debug_<sub>!` macros into all sibling
 // modules so they can use them without per-call `use`.

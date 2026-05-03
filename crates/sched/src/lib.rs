@@ -22,6 +22,16 @@ pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use runqueue::RunqueueInner;
 pub use task::{SchedClass, SchedPolicy, Task, TaskState};
 
+/// Maximum size in bytes of a per-arch HAL `Context` record (per
+/// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer
+/// of this size; per-arch crates assert at compile-time that their
+/// `Context` size does not exceed it. v1 sizes:
+/// - x86_64 `ContextX86_64`: 0x40 (64 B)
+/// - aarch64 `ContextAArch64`: 0x70 (112 B)
+/// 128 leaves headroom for v1.x additions (FPU lazy state ptr,
+/// PCID/ASID, KPTI selector) without bumping every release.
+pub const ARCH_CTX_SIZE: usize = 128;
+
 #[cfg(test)]
 mod tests;
 
