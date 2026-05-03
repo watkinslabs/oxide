@@ -12,7 +12,12 @@ ENTRY(_start)
 OUTPUT_FORMAT(elf64-littleaarch64)
 OUTPUT_ARCH(aarch64)
 
-KERNEL_BASE = 0xFFFF000000000000;
+/* High kernel base; mirrors the x86_64 linker script. Limine ≥ 9
+ * classifies anything below `0xFFFF_FFFF_8000_0000` as "lower half"
+ * on aarch64 and rejects it ("Lower half PHDRs are not allowed").
+ * Using the same -2 GiB region as x86 lets `-mcmodel=kernel` work
+ * uniformly across arches. */
+KERNEL_BASE = 0xFFFFFFFF80000000;
 
 SECTIONS {
     . = KERNEL_BASE;
@@ -35,6 +40,17 @@ SECTIONS {
         __rodata_start = .;
         *(.rodata .rodata.*)
         __rodata_end = .;
+    }
+
+    /* Limine protocol request markers per `36§3` (mirror of x86_64-
+     * kernel.ld §43). ALIGN(4K) so this section starts a fresh
+     * PT_LOAD page — Limine rejects ELFs whose PT_LOADs share a
+     * page across permission classes. */
+    .limine_requests ALIGN(4K) : {
+        __limine_requests_start = .;
+        KEEP(*(.limine_requests))
+        KEEP(*(.limine_requests.*))
+        __limine_requests_end = .;
     }
 
     .data ALIGN(4K) : {
