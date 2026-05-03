@@ -34,7 +34,7 @@ fn main() -> ExitCode {
         "kernel"    => cmd_kernel(rest),
         "test"      => cmd_test(rest),
         "user"      => stub("user", "29a"),
-        "image"     => stub("image", "39"),
+        "image"     => cmd_image(rest),
         "qemu"      => cmd_qemu(rest),
         "soak"      => stub("soak", "40"),
         "bench"     => stub("bench", "04"),
@@ -110,65 +110,173 @@ fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
 // qemu — Limine UEFI boot under qemu-system-{x86_64,aarch64}
 // ---------------------------------------------------------------------------
 
+/// Build the bootable hybrid ISO for `--arch`. Same prerequisites as
+/// `xtask qemu` (kernel ELF + populated `vendor/`).
+fn cmd_image(rest: &[String]) -> Result<(), u8> {
+    let arch = parse_arg(rest, "--arch").ok_or_else(|| {
+        eprintln!("xtask image: --arch <x86_64|aarch64> required");
+        2u8
+    })?;
+    cmd_kernel(rest)?;
+    let repo = repo_root();
+    let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
+    check_vendor(&repo)?;
+    build_iso(&repo, &arch, &kernel_elf).map(|_| ())
+}
+
 fn cmd_qemu(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").ok_or_else(|| {
         eprintln!("xtask qemu: --arch <x86_64|aarch64> required");
         2u8
     })?;
-    let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
-
-    // 1. Build the kernel ELF + boot crate via the existing kernel command.
     cmd_kernel(rest)?;
-
     let repo = repo_root();
-    let vendor = repo.join("vendor");
-    if !vendor.join("limine/BOOTX64.EFI").exists() || !vendor.join("firmware/ovmf-x64.fd").exists() {
-        eprintln!("xtask qemu: vendor/ not populated. Run `tools/fetch-vendor.sh` first.");
-        return Err(2);
-    }
-
-    // dev-profile builds land under `target/<target>/debug/`; release/custom
-    // profile names match the directory.
-    let prof_dir = if profile == "dev" { "debug".to_string() } else { profile.clone() };
-    let kernel_elf = repo.join(format!(
-        "target/{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}",
-    ));
-    if !kernel_elf.exists() {
-        eprintln!("xtask qemu: kernel ELF not at {}", kernel_elf.display());
-        return Err(2);
-    }
-
+    let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
+    check_vendor(&repo)?;
+    let iso = build_iso(&repo, &arch, &kernel_elf)?;
     match arch.as_str() {
-        "x86_64"  => qemu_run_x86_64(&repo, &kernel_elf),
-        "aarch64" => qemu_run_aarch64(&repo, &kernel_elf),
+        "x86_64"  => qemu_run_x86_64(&repo, &iso),
+        "aarch64" => qemu_run_aarch64(&repo, &iso),
         other => { eprintln!("xtask qemu: unsupported arch `{other}`"); Err(2) }
     }
 }
 
+fn check_vendor(repo: &std::path::Path) -> Result<(), u8> {
+    let vendor = repo.join("vendor");
+    let ok = vendor.join("limine/BOOTX64.EFI").exists()
+        && vendor.join("limine/limine-bios-cd.bin").exists()
+        && vendor.join("limine/limine-uefi-cd.bin").exists()
+        && vendor.join("limine/limine").exists()
+        && vendor.join("firmware/ovmf-x64.fd").exists();
+    if !ok {
+        eprintln!("xtask: vendor/ not populated. Run `tools/fetch-vendor.sh` first.");
+        return Err(2);
+    }
+    Ok(())
+}
+
+fn kernel_elf_path(repo: &std::path::Path, arch: &str, rest: &[String]) -> Result<std::path::PathBuf, u8> {
+    let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
+    let prof_dir = if profile == "dev" { "debug".to_string() } else { profile };
+    let p = repo.join(format!("target/{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}"));
+    if !p.exists() {
+        eprintln!("xtask: kernel ELF not at {}", p.display());
+        return Err(2);
+    }
+    Ok(p)
+}
+
 fn repo_root() -> std::path::PathBuf {
-    // CARGO_MANIFEST_DIR is `<repo>/tools/xtask`; pop two levels.
     let here = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
     std::path::PathBuf::from(here)
         .ancestors().nth(2).map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap())
 }
 
-fn qemu_run_x86_64(repo: &std::path::Path, kernel_elf: &std::path::Path) -> Result<(), u8> {
-    let img = build_esp_image(
-        repo, "x86_64",
-        &repo.join("vendor/limine/BOOTX64.EFI"),
-        kernel_elf,
-        "BOOTX64.EFI",
-        "oxide-x86_64",
-    )?;
-    let ovmf = repo.join("vendor/firmware/ovmf-x64.fd");
+/// Assemble the canonical Limine hybrid BIOS+UEFI ISO per `36§7`.
+///
+/// Layout in the ISO root:
+///   `/limine-bios.sys`              ← BIOS stage 2
+///   `/limine-bios-cd.bin`           ← El Torito BIOS boot record
+///   `/limine-uefi-cd.bin`           ← El Torito UEFI boot image
+///   `/EFI/BOOT/<BOOTX64|BOOTAA64>.EFI` ← UEFI loader fallback path
+///   `/boot/limine/limine.conf`      ← config
+///   `/boot/limine/oxide-<arch>`     ← our kernel ELF
+///
+/// `mkisofs` (or genisoimage clone) builds the El Torito CD; the
+/// `limine` host tool then writes the BIOS MBR via `bios-install`
+/// (no-op for aarch64 since ARM has no BIOS path).
+fn build_iso(
+    repo: &std::path::Path,
+    arch: &str,
+    kernel_elf: &std::path::Path,
+) -> Result<std::path::PathBuf, u8> {
+    use std::fs;
+    let limine = repo.join("vendor/limine");
+    let stage = repo.join(format!("target/iso-stage-{arch}"));
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(stage.join("EFI/BOOT")).map_err(|_| 1u8)?;
+    fs::create_dir_all(stage.join("boot/limine")).map_err(|_| 1u8)?;
+
+    // Limine binaries at ISO root + EFI fallback path.
+    fs::copy(limine.join("limine-bios.sys"),    stage.join("limine-bios.sys")).map_err(|_| 1u8)?;
+    fs::copy(limine.join("limine-bios-cd.bin"), stage.join("limine-bios-cd.bin")).map_err(|_| 1u8)?;
+    fs::copy(limine.join("limine-uefi-cd.bin"), stage.join("limine-uefi-cd.bin")).map_err(|_| 1u8)?;
+    let (boot_efi_src, boot_efi_dst, kernel_name) = match arch {
+        "x86_64"  => ("BOOTX64.EFI",  "BOOTX64.EFI",  "oxide-x86_64"),
+        "aarch64" => ("BOOTAA64.EFI", "BOOTAA64.EFI", "oxide-aarch64"),
+        other => { eprintln!("xtask image: unsupported arch `{other}`"); return Err(2); }
+    };
+    fs::copy(limine.join(boot_efi_src),  stage.join(format!("EFI/BOOT/{boot_efi_dst}"))).map_err(|_| 1u8)?;
+    fs::copy(kernel_elf, stage.join(format!("boot/limine/{kernel_name}"))).map_err(|_| 1u8)?;
+
+    // limine.conf next to the UEFI loader (Limine ≥ 9 looks here
+    // first), and at /boot/limine/ for the BIOS path. Keeping both
+    // copies in sync is fine because the kernel path is identical.
+    // `boot():` is the device Limine itself loaded from. On the
+    // BIOS El Torito path that's the ISO directly; on UEFI El
+    // Torito it's the small embedded UEFI image (a Limine ≥ 9 quirk
+    // that requires xorriso's `-isohybrid-gpt-basdat` to work
+    // around). We boot via SeaBIOS for x86 to dodge the UEFI
+    // quirk; aarch64 stays UEFI but doesn't have a BIOS path.
+    let cfg = format!(
+        "timeout: 0\nserial: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
+    );
+    fs::write(stage.join("EFI/BOOT/limine.conf"),    &cfg).map_err(|_| 1u8)?;
+    fs::write(stage.join("boot/limine/limine.conf"), &cfg).map_err(|_| 1u8)?;
+
+    // El Torito CD via xorriso (preferred) or mkisofs/genisoimage.
+    // The `-isohybrid-gpt-basdat` flag is xorriso-only; under
+    // genisoimage we just drop it (the resulting ISO still boots
+    // under QEMU `-cdrom` for both BIOS + UEFI; the GPT-hybrid bit
+    // matters for USB-stick boot, which is not in our v1 test path).
+    let iso_path = repo.join(format!("target/oxide-{arch}.iso"));
+    let xorriso = which("xorriso");
+    let mut c = Command::new(if xorriso.is_some() { "xorriso" } else { "mkisofs" });
+    if xorriso.is_some() {
+        c.args(["-as", "mkisofs"]);
+    }
+    c.args([
+        "-R", "-r", "-J",
+        "-b", "limine-bios-cd.bin",
+        "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table",
+        "-eltorito-alt-boot",
+        "-e", "limine-uefi-cd.bin",
+        "-no-emul-boot",
+    ]);
+    if xorriso.is_some() {
+        c.args(["-isohybrid-gpt-basdat"]);
+    }
+    c.args([
+        "-o", iso_path.to_str().unwrap(),
+        stage.to_str().unwrap(),
+    ]);
+    run(c)?;
+
+    // Stamp the BIOS boot sector (no-op for aarch64; the limine tool
+    // itself just patches the MBR — safe on an aarch64 ISO too).
+    let mut c = Command::new(limine.join("limine"));
+    c.args(["bios-install", iso_path.to_str().unwrap()]);
+    run(c)?;
+
+    eprintln!("xtask image: produced {}", iso_path.display());
+    Ok(iso_path)
+}
+
+fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path) -> Result<(), u8> {
+    // BIOS boot via QEMU's default SeaBIOS + Limine's BIOS El Torito
+    // path. Limine UEFI on a hybrid ISO hits a known v9+ volume-
+    // detection bug ("Could not meaningfully match the boot device
+    // handle...") that requires xorriso's `-isohybrid-gpt-basdat`
+    // flag to fix. Using SeaBIOS dodges the issue entirely; UEFI
+    // path lights up later when xorriso is wired in or we ship a
+    // GPT-partitioned disk image.
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
         "-cpu", "qemu64",
         "-m", "256M",
-        "-bios", ovmf.to_str().unwrap(),
-        "-drive", &format!("format=raw,file={}", img.display()),
+        "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
         "-display", "none",
         "-no-reboot",
@@ -178,18 +286,11 @@ fn qemu_run_x86_64(repo: &std::path::Path, kernel_elf: &std::path::Path) -> Resu
     run(c)
 }
 
-fn qemu_run_aarch64(repo: &std::path::Path, kernel_elf: &std::path::Path) -> Result<(), u8> {
+fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path) -> Result<(), u8> {
     if which("qemu-system-aarch64").is_none() {
         eprintln!("xtask qemu: qemu-system-aarch64 not on PATH; install your distro's qemu-system-aarch64 package.");
         return Err(2);
     }
-    let img = build_esp_image(
-        repo, "aarch64",
-        &repo.join("vendor/limine/BOOTAA64.EFI"),
-        kernel_elf,
-        "BOOTAA64.EFI",
-        "oxide-aarch64",
-    )?;
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
@@ -197,84 +298,13 @@ fn qemu_run_aarch64(repo: &std::path::Path, kernel_elf: &std::path::Path) -> Res
         "-cpu", "cortex-a72",
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
-        "-drive", &format!("format=raw,file={}", img.display()),
+        "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
         "-display", "none",
         "-no-reboot",
     ]);
     eprintln!("xtask qemu: launching qemu-system-aarch64 (Ctrl-A x to quit)");
     run(c)
-}
-
-/// Assemble a 64 MiB FAT32 EFI System Partition image holding the
-/// Limine UEFI bootloader at `EFI/BOOT/<bootname>`, our kernel ELF
-/// at `boot/limine/<kernel-name>`, and a minimal `limine.conf`.
-/// QEMU's built-in `fat:rw:dir` pseudo-disk is FAT16 and OVMF is
-/// finicky about it; mkfs.fat + mcopy gives us a real ESP layout.
-fn build_esp_image(
-    repo: &std::path::Path,
-    arch: &str,
-    boot_efi: &std::path::Path,
-    kernel_elf: &std::path::Path,
-    boot_name: &str,
-    kernel_name: &str,
-) -> Result<std::path::PathBuf, u8> {
-    use std::fs;
-    let img = repo.join(format!("target/qemu-esp-{arch}.img"));
-    let _ = fs::remove_file(&img);
-
-    // 64 MiB FAT32 image — well above mkfs.fat's 32 MiB FAT32 floor.
-    {
-        let mut c = Command::new("dd");
-        c.args(["if=/dev/zero", "bs=1M", "count=64",
-                &format!("of={}", img.display())]);
-        run(c)?;
-    }
-    {
-        let mut c = Command::new("mkfs.fat");
-        c.args(["-F32", "-n", "OXIDE", img.to_str().unwrap()]);
-        run(c)?;
-    }
-
-    // Tiny limine.conf written to a temp file; mtools will copy it in.
-    let cfg_path = repo.join(format!("target/qemu-esp-{arch}.limine.conf"));
-    let cfg = format!(
-        "timeout: 0
-serial: yes
-default_entry: 1
-
-/oxide
-    protocol: limine
-    path: boot():/boot/limine/{kernel_name}
-",
-    );
-    fs::write(&cfg_path, cfg).map_err(|_| 1u8)?;
-
-    // mmd / mcopy: build the layout inside the FAT image.
-    let img_s = img.to_str().unwrap();
-    for dir in ["::/EFI", "::/EFI/BOOT", "::/boot", "::/boot/limine"] {
-        let mut c = Command::new("mmd");
-        c.args(["-i", img_s, dir]);
-        // mmd -D s skip-if-exists isn't portable; allow failure on existing dirs.
-        let _ = c.status();
-    }
-    let mut c = Command::new("mcopy");
-    c.args(["-i", img_s,
-            boot_efi.to_str().unwrap(),
-            &format!("::/EFI/BOOT/{boot_name}")]);
-    run(c)?;
-    let mut c = Command::new("mcopy");
-    c.args(["-i", img_s,
-            kernel_elf.to_str().unwrap(),
-            &format!("::/boot/limine/{kernel_name}")]);
-    run(c)?;
-    let mut c = Command::new("mcopy");
-    c.args(["-i", img_s,
-            cfg_path.to_str().unwrap(),
-            "::/boot/limine/limine.conf"]);
-    run(c)?;
-
-    Ok(img)
 }
 
 fn which(prog: &str) -> Option<std::path::PathBuf> {
