@@ -20,11 +20,13 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod cpuid;
 mod fault;
 mod fpu;
 mod idt;
 mod mmu;
 mod pt_regs;
+pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
 pub use fault::vector_stub_addr;
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};
 pub use idt::{install_default as install_default_idt, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};

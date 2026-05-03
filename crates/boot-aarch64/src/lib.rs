@@ -162,6 +162,15 @@ fn now_ns_aarch64() -> u64 {
     hal_aarch64::ArmTimerOps::monotonic_ns().0
 }
 
+/// Boot-time CPU identification log. Reads MIDR_EL1 and emits as hex.
+/// # C: O(1)
+fn log_cpu_info() {
+    let m = hal_aarch64::midr_el1();
+    klog::write_raw(b"[INFO]  midr_el1=");
+    klog::write_hex_u64(m);
+    klog::write_raw(b"\n");
+}
+
 use core::cell::UnsafeCell;
 use kernel::{BootInfo, BootMemRegion};
 
@@ -304,6 +313,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     }
     hal_aarch64::set_cntfrq_khz((cntfrq_hz / 1000) as u32);
     klog::set_clock_fn(now_ns_aarch64);
+    log_cpu_info();
 
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
