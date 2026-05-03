@@ -13,6 +13,7 @@ hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }
 kalloc  = { path = "../crates/kalloc" }
 pmm     = { path = "../crates/pmm" }
+sched   = { path = "../crates/sched" }
 vmm     = { path = "../crates/vmm" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

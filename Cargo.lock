@@ -276,6 +276,7 @@ dependencies = [
  "kalloc",
  "klog",
  "pmm",
+ "sched",
  "vmm",
 ]
 
