@@ -173,12 +173,23 @@ fn now_ns_aarch64() -> u64 {
     hal_aarch64::ArmTimerOps::monotonic_ns().0
 }
 
-/// Boot-time CPU identification log. Reads MIDR_EL1 and emits as hex.
+/// Boot-time CPU identification log. Reads MIDR_EL1 and the MMU
+/// control registers Limine programmed before handoff.
 /// # C: O(1)
 fn log_cpu_info() {
     let m = hal_aarch64::midr_el1();
     klog::write_raw(b"[INFO]  midr_el1=");
     klog::write_hex_u64(m);
+    klog::write_raw(b"\n[INFO]  mmu sctlr_el1=");
+    klog::write_hex_u64(hal_aarch64::read_sctlr_el1());
+    klog::write_raw(b" tcr_el1=");
+    klog::write_hex_u64(hal_aarch64::read_tcr_el1());
+    klog::write_raw(b" mair_el1=");
+    klog::write_hex_u64(hal_aarch64::read_mair_el1());
+    klog::write_raw(b"\n[INFO]  mmu ttbr0_el1=");
+    klog::write_hex_u64(hal_aarch64::read_ttbr0_el1());
+    klog::write_raw(b" ttbr1_el1=");
+    klog::write_hex_u64(hal_aarch64::read_ttbr1_el1());
     klog::write_raw(b"\n");
 }
 
