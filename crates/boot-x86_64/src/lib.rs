@@ -73,6 +73,14 @@ fn log_cpu_info() {
     let brand_len = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     klog::write_raw(b"\n[INFO]  cpu brand: ");
     klog::write_raw(&b[..brand_len]);
+    klog::write_raw(b"\n[INFO]  mmu cr0=");
+    klog::write_hex_u64(hal_x86_64::read_cr0());
+    klog::write_raw(b" cr3=");
+    klog::write_hex_u64(hal_x86_64::read_cr3());
+    klog::write_raw(b" cr4=");
+    klog::write_hex_u64(hal_x86_64::read_cr4());
+    klog::write_raw(b" efer=");
+    klog::write_hex_u64(hal_x86_64::read_efer());
     klog::write_raw(b"\n");
 }
 
