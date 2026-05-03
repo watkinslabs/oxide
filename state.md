@@ -1,15 +1,15 @@
-# State 2026-05-03 (session 14 EOD)
+# State 2026-05-03 (session 15 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker + MmuOps trait live end-to-end.** 150 PRs total; 474 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker + MmuOps trait live end-to-end (4K + 2 MiB + 1 GiB).** 152 PRs total; 476 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-14 EOD:
+Last verified-green at session-15 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
-$ cargo run -p xtask -- test                 # → 474 hosted tests, 0 failures
+$ cargo run -p xtask -- test                 # → 476 hosted tests, 0 failures
 $ cargo run -p xtask -- kernel  --arch x86_64                   # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                  # builds clean
 $ cargo run -p xtask -- kernel  --arch x86_64  --features debug-all
@@ -29,11 +29,10 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 14` for the per-PR table.
+See `CHANGELOG.md § Session 15` for the per-PR table.
 
-- **#149** (`P1-87-mmuops-impl-4k`): MmuOps trait impl per arch (4 KiB only). `pt_walker` extended with `pack_4k_leaf(pa, PageFlags)` + `map_4k`/`translate_4k`/`unmap_4k`. Per-arch `mmu_ops` modules with marker types `X86Mmu`/`ArmMmu`, static-atomic state, idempotent `set_hhdm_offset`/`set_frame_alloc` setup APIs. `hal::kassert!` macro. +4 hosted tests.
-- **#150** (`P1-88-mmuops-wire-pmm`): end-to-end wire-up. `pmm_setup` exposes `pmm_static()` + `alloc_one_frame()` bare fn; boot path calls `mmu_ops::{set_hhdm_offset, set_frame_alloc}` after PMM init; `device_map_smoke` migrated from `vmm::map_device_4k` to `<X86Mmu/ArmMmu as MmuOps>::map`. MmuOps now used in production by the device-MMIO mapper.
-- **Sessions 9–13 carry-over** (PRs #136–#148): Makefile, R07 preempt, canary, ksched split, pt_walker, lib.rs split, no-dyn-hal lint, CI matrix, xtask split, session docs. See `CHANGELOG.md`.
+- **#152** (`P1-89-mmu-huge-pages`): MmuOps huge-page support (2 MiB / 1 GiB). New `PtWalker::pack_block_leaf` + `pt_walker::map_at_level<W,F>(va, leaf_level, leaf, hhdm, alloc)`. `MmuOps::map` dispatches by `PageSize`; alignment kasserts on `va`/`pa`. Translate/unmap stay 4 KiB only pending a caller. +2 hosted tests for 2M and 1G installs.
+- **Session 14 carry-over** (PRs #149–#151): MmuOps trait impl + end-to-end wire-up + session-14 docs.
 
 ## What's done overall
 
@@ -65,7 +64,7 @@ Unchanged plus root `Makefile` (`make ci` mirrors PR gate).
 | `crates/limine-proto/` | shared protocol types + magic-words pinning | unchanged |
 | Other crates | unchanged from session 8 EOD |
 
-Workspace test count: **474 passed, 0 failed.** (+9 over session 10: pt_walker driver, per-arch pack/unpack roundtrips, MmuOps round-trip per arch.)
+Workspace test count: **476 passed, 0 failed.** (+11 over session 10: pt_walker driver, per-arch pack/unpack roundtrips, MmuOps round-trip per arch, 2M + 1G `map_at_level` tests.)
 
 ### IRQ-exit preemption (R07 — fully implemented)
 
@@ -83,7 +82,7 @@ Per-vector IRQ stub flow (both arches):
 1. **64-task 1h canary soak** (`docs/14§8`) — bounded version landed (#139). The full 64 × 1ms × 1h soak requires the background CI infra per `40§3` which is still spec-only.
 2. **First userspace `iretq`/`eret` smoke** (Phase 2 boundary) — `Context::new_user` exists in HAL crates but the actual transition to ring 3 / EL0 isn't wired. Needs a kernel-owned GDT (Limine's GDT lacks user descriptors), user CS/SS for x86 / SPSR config for arm, user kernel-stack swap, syscall entry path, return-to-user path. Largest single jump.
 3. **Wire `crates/sched`'s real `RunqueueInner` into the kernel** — `kernel/src/ksched.rs` is a kernel-only Vec-based shim. Frozen spec (`13§5`) wants `Task` extended with `kernel_stack` + arch-context fields and the kernel using `RunqueueInner::pick_next_task`. Plumbing-heavy refactor.
-4. **MmuOps huge-page support** (`20§5`/`21§5`) — 4 KiB MmuOps trait surface landed end-to-end in #149/#150; the device-MMIO mapper uses it. Still pending: `PageSize::P2M` / `PageSize::P1G` block-leaf walker support (today's impl `kassert!`s on huge sizes; only caller is the device-MMIO mapper which is 4 KiB by definition).
+4. **MmuOps translate / unmap huge-leaf decode** — `MmuOps::map` now handles 4K/2M/1G (#152). `MmuOps::translate` and `MmuOps::unmap` still 4 KiB only — they bail with `None` on huge entries instead of decoding. Wider support lands when the page-fault handler / userspace mmap path needs it.
 5. **Page-fault path** (`11§5` + `11§7`): COW, fork, TLB shootdown.
 6. **Block writeback / procfs surface / VFS dentry cache / IPC bodies / userspace platform** — unchanged from session 8 EOD pending list.
 7. **CI matrix update** to exercise each `debug-<sub>` feature solo (per `04§3` recipe). Presupposes a real CI workflow file exists; that's still spec-only at `docs/40`.
@@ -96,9 +95,9 @@ Per-vector IRQ stub flow (both arches):
 ## Repo state
 
 ```
-main (origin/main): 93fbaf1 Merge pull request #150 from watkinslabs/P1-88-mmuops-wire-pmm
+main (origin/main): 10d4b0b Merge pull request #152 from watkinslabs/P1-89-mmu-huge-pages
 
-150 PRs landed total. Branches preserved (no deletions).
+152 PRs landed total. Branches preserved (no deletions).
 
 Session 9  (PRs #136 – #138):
   C22-makefile               — make wrapper
@@ -122,10 +121,14 @@ Session 13 (PRs #144 – #147):
   C29-ci-debug-all-matrix    — CI matrix default + debug-all per arch
   C30-xtask-qemu-split       — split xtask main.rs (576 → 184) into image_qemu module
 
-Session 14 (PRs #148 – #150):
+Session 14 (PRs #148 – #151):
   C31-state-eod-session-13   — session-13 docs
   P1-87-mmuops-impl-4k       — MmuOps trait impl per arch (4 KiB)
   P1-88-mmuops-wire-pmm      — wire MmuOps to PMM + migrate device-map smoke
+  C32-state-eod-session-14   — session-14 docs
+
+Session 15 (PR #152):
+  P1-89-mmu-huge-pages       — MmuOps huge-page support (2 MiB / 1 GiB)
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
@@ -161,10 +164,10 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **MmuOps huge-page support** | `P1-89-mmu-huge-pages` | Extend `pt_walker` with block-leaf paths at L1 (1 GiB) / L2 (2 MiB). MmuOps::map dispatches by size. Mechanical follow-up to #149/#150. |
 | **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Cross the Phase 1→2 line. Needs kernel-owned GDT, user CS/SS, eret-to-EL0/CPL3, syscall entry/exit. Largest single jump; significant design surface. Recommend reviewing scope with the user before starting. |
 | **Wire real RunqueueInner** | `P1-84-sched-real-runqueue` | Migrate `kernel/src/ksched.rs` shim to `crates/sched`'s `RunqueueInner` per `13§5`. Plumbing-heavy refactor; doesn't unblock anything immediately. |
 | **Page-fault path** | `P1-86-pf-cow-fork` | `11§5` + `11§7` page-fault entry, COW, fork, TLB shootdown. Substantial. |
+| **MmuOps translate/unmap huge-leaf decode** | `P1-90-mmu-huge-translate` | Extend `pt_walker::translate_4k`/`unmap_4k` to recognise huge entries at L1/L2 and return / clear them. Mechanical; ~80 LOC. |
 
 If unsure: pause and surface the **userspace eret design surface** to the user before proceeding — it bakes in significant Phase-2 architectural choices (kernel-owned GDT vs Limine-extending, syscall fast-path skeleton, user kstack model).
 
