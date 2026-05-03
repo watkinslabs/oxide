@@ -28,11 +28,15 @@ mod semihost {
     /// (SYS_WRITEC = 0x03). QEMU `-semihosting-config target=native`
     /// intercepts the `hlt #0xf000` opcode at EL1, reads x0 = op,
     /// x1 = pointer to char, and emits the char to stdout.
-    /// # SAFETY: privileged opcode legal at EL1; `byte` lives across
-    /// the call.
+    /// # SAFETY: privileged opcode legal at EL1 with semihosting
+    /// enabled; `byte` lives across the call via stack-local `b`.
+    /// # C: O(1) host-syscall trap
     pub unsafe fn putc(byte: u8) {
         let b: u32 = byte as u32;
         let p = &b as *const u32 as u64;
+        // SAFETY: `hlt #0xf000` is the ARMv8 semihosting opcode;
+        // QEMU intercepts it at EL1 when -semihosting-config is on.
+        // x0 = SYS_WRITEC op id, x1 points to a u32 holding the byte.
         unsafe {
             core::arch::asm!(
                 "hlt #0xf000",
@@ -45,20 +49,24 @@ mod semihost {
     }
 
     /// Format a u64 as 16 hex chars and emit each via putc.
+    /// # C: O(16) putc calls
     #[allow(dead_code)]
     pub fn put_hex_u64(v: u64) {
         for i in (0..16).rev() {
             let nibble = ((v >> (i * 4)) & 0xf) as u8;
             let c = if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
-            // SAFETY: see putc.
+            // SAFETY: putc's contract holds at EL1 with semihosting
+            // enabled; nibble→ASCII byte is a value, not a borrow.
             unsafe { putc(c) };
         }
     }
 
+    /// # C: O(s.len()) putc calls
     #[allow(dead_code)]
     pub fn put_str(s: &str) {
         for &b in s.as_bytes() {
-            // SAFETY: see putc.
+            // SAFETY: putc's contract holds at EL1 with semihosting
+            // enabled; `b` is a copy of one byte from the slice.
             unsafe { putc(b) };
         }
     }
