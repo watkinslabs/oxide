@@ -105,6 +105,12 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
         klog::write_raw(b" len=");
         klog::write_dec_u64(tlen as u64);
         klog::write_raw(b"\n");
+        if &tsig == b"APIC" {
+            // SAFETY: per fn contract; HHDM covers ACPI memory and
+            // the table's declared length is bounded above by the
+            // earlier read into `tlen`.
+            unsafe { decode_madt(entry_pa, hhdm_offset); }
+        }
         i += 1;
     }
 }
@@ -174,6 +180,128 @@ unsafe fn parse_and_log_rsdp(rsdp_va: u64) -> RsdpResult {
     };
     klog::write_raw(b"\n");
     RsdpResult::Ok { revision, xsdt_pa }
+}
+
+/// Decode MADT (ACPI 6.5 §5.2.12) entry list and log per-entry info.
+/// Handles common types only; unknown types are logged as `???`.
+///
+/// `pa` is the table's physical address (already-validated by the
+/// XSDT walk); `hhdm_offset` is the Limine HHDM offset.
+///
+/// # SAFETY: caller asserts the table at `hhdm + pa` has a valid
+/// ACPI SDT header + MADT entry list per its declared `length`.
+/// # C: O(entries)
+pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
+    let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
+    // SAFETY: caller-asserted SDT header readable; offset 4..8 valid.
+    let length = unsafe { read_u32_le(p.add(4)) } as usize;
+    if length < 44 {
+        klog::write_raw(b"[ERROR]    madt: too short\n");
+        return;
+    }
+    // SAFETY: ≥44 bytes per length check; offset 36..40 valid.
+    let lapic_pa = unsafe { read_u32_le(p.add(36)) } as u64;
+    klog::write_raw(b"[INFO]    madt lapic_pa=");
+    klog::write_hex_u64(lapic_pa);
+    klog::write_raw(b"\n");
+    let mut off = 44usize;
+    while off + 2 <= length {
+        // SAFETY: per fn contract; we keep the walk strictly within `length` (verified above), so reading the 2-byte type+len header and any subsequent fields up to `elen` stays within the table's declared bounds.
+        let (etype, elen) = unsafe {
+            let t = core::ptr::read_volatile(p.add(off));
+            let l = core::ptr::read_volatile(p.add(off + 1)) as usize;
+            (t, l)
+        };
+        if elen < 2 || off + elen > length { break; }
+        // SAFETY: same — `elen` was bounded against `length` above; every subsequent decode below stays within `[off, off+elen)`.
+        unsafe {
+            match etype {
+                0 if elen >= 8 => {
+                    let acpi_id = core::ptr::read_volatile(p.add(off + 2));
+                    let apic_id = core::ptr::read_volatile(p.add(off + 3));
+                    let flags   = read_u32_le(p.add(off + 4));
+                    klog::write_raw(b"[INFO]      lapic acpi_id=");
+                    klog::write_dec_u64(acpi_id as u64);
+                    klog::write_raw(b" apic_id=");
+                    klog::write_dec_u64(apic_id as u64);
+                    klog::write_raw(b" flags=");
+                    klog::write_hex_u64(flags as u64);
+                    klog::write_raw(b"\n");
+                }
+                1 if elen >= 12 => {
+                    let ioapic_id = core::ptr::read_volatile(p.add(off + 2));
+                    let addr      = read_u32_le(p.add(off + 4));
+                    let gsi_base  = read_u32_le(p.add(off + 8));
+                    klog::write_raw(b"[INFO]      ioapic id=");
+                    klog::write_dec_u64(ioapic_id as u64);
+                    klog::write_raw(b" pa=");
+                    klog::write_hex_u64(addr as u64);
+                    klog::write_raw(b" gsi_base=");
+                    klog::write_dec_u64(gsi_base as u64);
+                    klog::write_raw(b"\n");
+                }
+                5 if elen >= 12 => {
+                    let addr = read_u64_le(p.add(off + 4));
+                    klog::write_raw(b"[INFO]      lapic-override pa=");
+                    klog::write_hex_u64(addr);
+                    klog::write_raw(b"\n");
+                }
+                9 if elen >= 16 => {
+                    let x2apic_id = read_u32_le(p.add(off + 4));
+                    let flags     = read_u32_le(p.add(off + 8));
+                    let acpi_uid  = read_u32_le(p.add(off + 12));
+                    klog::write_raw(b"[INFO]      x2apic id=");
+                    klog::write_dec_u64(x2apic_id as u64);
+                    klog::write_raw(b" uid=");
+                    klog::write_dec_u64(acpi_uid as u64);
+                    klog::write_raw(b" flags=");
+                    klog::write_hex_u64(flags as u64);
+                    klog::write_raw(b"\n");
+                }
+                11 if elen >= 80 => {
+                    let cpu_iface = read_u32_le(p.add(off + 4));
+                    let acpi_uid  = read_u32_le(p.add(off + 8));
+                    let mpidr     = read_u64_le(p.add(off + 60));
+                    klog::write_raw(b"[INFO]      gicc iface=");
+                    klog::write_dec_u64(cpu_iface as u64);
+                    klog::write_raw(b" uid=");
+                    klog::write_dec_u64(acpi_uid as u64);
+                    klog::write_raw(b" mpidr=");
+                    klog::write_hex_u64(mpidr);
+                    klog::write_raw(b"\n");
+                }
+                12 if elen >= 24 => {
+                    let gic_id   = read_u32_le(p.add(off + 4));
+                    let phys     = read_u64_le(p.add(off + 8));
+                    let version  = core::ptr::read_volatile(p.add(off + 20));
+                    klog::write_raw(b"[INFO]      gicd id=");
+                    klog::write_dec_u64(gic_id as u64);
+                    klog::write_raw(b" pa=");
+                    klog::write_hex_u64(phys);
+                    klog::write_raw(b" v=");
+                    klog::write_dec_u64(version as u64);
+                    klog::write_raw(b"\n");
+                }
+                14 if elen >= 16 => {
+                    let phys   = read_u64_le(p.add(off + 4));
+                    let length = read_u32_le(p.add(off + 12));
+                    klog::write_raw(b"[INFO]      gicr pa=");
+                    klog::write_hex_u64(phys);
+                    klog::write_raw(b" len=");
+                    klog::write_hex_u64(length as u64);
+                    klog::write_raw(b"\n");
+                }
+                _ => {
+                    klog::write_raw(b"[INFO]      madt-entry type=");
+                    klog::write_dec_u64(etype as u64);
+                    klog::write_raw(b" len=");
+                    klog::write_dec_u64(elen as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+        off += elen;
+    }
 }
 
 /// Parse RSDP, then if XSDT is present, walk and log each table.
