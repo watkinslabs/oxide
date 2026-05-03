@@ -272,6 +272,9 @@ fn kind_tag(k: BootMemKind) -> &'static [u8] {
 
 /// Emit one line per memmap region. Cheap O(N) at boot.
 fn log_memmap(regions: &[BootMemRegion]) {
+    let mut usable_bytes: u64 = 0;
+    let mut reserved_bytes: u64 = 0;
+    let mut bootloader_bytes: u64 = 0;
     for r in regions {
         klog::write_raw(b"[INFO]    ");
         klog::write_raw(kind_tag(r.kind));
@@ -280,7 +283,24 @@ fn log_memmap(regions: &[BootMemRegion]) {
         klog::write_raw(b" len=");
         klog::write_hex_u64(r.len);
         klog::write_raw(b"\n");
+        match r.kind {
+            BootMemKind::Usable         => usable_bytes     = usable_bytes.saturating_add(r.len),
+            BootMemKind::BootloaderUsed => bootloader_bytes = bootloader_bytes.saturating_add(r.len),
+            BootMemKind::Reserved
+            | BootMemKind::AcpiNvs
+            | BootMemKind::AcpiReclaim
+            | BootMemKind::BadMem
+            | BootMemKind::KernelImage
+            | BootMemKind::Initramfs    => reserved_bytes   = reserved_bytes.saturating_add(r.len),
+        }
     }
+    klog::write_raw(b"[INFO]    memmap totals: ");
+    klog::write_dec_u64(usable_bytes / (1024 * 1024));
+    klog::write_raw(b" MiB usable, ");
+    klog::write_dec_u64(bootloader_bytes / (1024 * 1024));
+    klog::write_raw(b" MiB bootloader-reclaim, ");
+    klog::write_dec_u64(reserved_bytes / (1024 * 1024));
+    klog::write_raw(b" MiB reserved\n");
 }
 
 /// Park the CPU forever. On the kernel target, uses the per-arch
