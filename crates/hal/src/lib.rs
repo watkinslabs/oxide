@@ -111,6 +111,15 @@ pub trait Context: Sized {
     /// # C: O(1)
     fn new_kernel(stack_top: *mut u8, entry: extern "C" fn(usize) -> !, arg: usize) -> Self;
 
+    /// Build a kernel-thread context whose saved stack carries a synthetic
+    /// IRQ frame (saved scratch GPs + vec/err pad + iretq/eret frame), with
+    /// `Context.{rsp,sp}` pointing at a saved RIP/LR equal to the per-arch
+    /// `oxide_irq_resume_user` resume label. Lets the IRQ epilogue of one
+    /// task `Context::switch` directly into a fresh task and `iretq`/`eret`
+    /// from there. Frame layout pinned in `14§R07`.
+    /// # C: O(1)
+    fn new_kernel_with_irq_frame(stack_top: *mut u8, entry: extern "C" fn(usize) -> !, arg: usize) -> Self;
+
     /// # C: O(1)
     fn new_user(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self;
 

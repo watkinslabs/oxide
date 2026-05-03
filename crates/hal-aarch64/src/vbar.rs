@@ -100,15 +100,24 @@ core::arch::global_asm!(
     "    b 1b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
 
-    // IRQ entry: save caller-save GP regs (x0-x18 + x29 + x30),
-    // call Rust dispatcher, restore, eret. SP_EL1 is active per
-    // boot-aarch64's `_start` (SPSel=1). 22 regs * 8 = 176, already
-    // 16-aligned for SysV.
+    // IRQ entry per `22§5` + `14§R07`. Frame = 192 B = 22 × 8 GP +
+    // ELR_EL1 + SPSR_EL1. The ELR/SPSR pair was missing pre-R07; an
+    // `eret` after a context switch would have eret'd into whatever
+    // ELR/SPSR currently held — wrong as soon as the dispatcher
+    // swapped tasks. They sit at [sp+0xb0..0xc0] now.
+    //
+    // After the dispatcher returns, the asm reads
+    // `oxide_preempt_next_ctx`. If non-null, calls
+    // `oxide_context_switch(cur, next)`; the `ret` lands either at
+    // the `1:` label below (no-switch / fall-through) or at
+    // `oxide_irq_resume_user` on the new task's stack (the new
+    // task's `Context.lr` is set to that address by
+    // `Context::new_kernel_with_irq_frame` or by a prior preemption).
     ".balign 4",
     ".globl oxide_irq_vector_handler",
     ".type  oxide_irq_vector_handler, %function",
     "oxide_irq_vector_handler:",
-    "    sub  sp, sp, #176",
+    "    sub  sp, sp, #192",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
     "    stp  x4,  x5,  [sp, #32]",
@@ -120,7 +129,37 @@ core::arch::global_asm!(
     "    stp  x16, x17, [sp, #128]",
     "    stp  x18, x29, [sp, #144]",
     "    stp  x30, xzr, [sp, #160]",
+    "    mrs  x9,  elr_el1",
+    "    mrs  x10, spsr_el1",
+    "    stp  x9,  x10, [sp, #176]",
     "    bl   oxide_arm_irq_dispatch",
+    // -- schedule-on-exit per `14§R07`. Rust dispatcher writes
+    //    `oxide_preempt_next_ctx` if a switch is wanted; null = stay.
+    "    adrp x9,  oxide_preempt_next_ctx",
+    "    add  x9,  x9, :lo12:oxide_preempt_next_ctx",
+    "    ldr  x10, [x9]",
+    "    cbz  x10, 1f",
+    "    adrp x11, oxide_preempt_cur_ctx",
+    "    add  x11, x11, :lo12:oxide_preempt_cur_ctx",
+    "    ldr  x0,  [x11]",
+    "    mov  x1,  x10",
+    "    str  x10, [x11]",                 // CUR := NEXT (commit)
+    "    str  xzr, [x9]",                  // clear NEXT slot
+    "    bl   oxide_context_switch",
+    "    b    oxide_irq_resume_user",      // shared epilogue
+    "1:  b    oxide_irq_resume_user",
+    ".size oxide_irq_vector_handler, . - oxide_irq_vector_handler",
+
+    // Shared IRQ epilogue. Address parked as `Context.lr` on every
+    // task that may be entered via the IRQ tail (per
+    // `Context::new_kernel_with_irq_frame`).
+    ".balign 4",
+    ".globl oxide_irq_resume_user",
+    ".type  oxide_irq_resume_user, %function",
+    "oxide_irq_resume_user:",
+    "    ldp  x9,  x10, [sp, #176]",
+    "    msr  elr_el1,  x9",
+    "    msr  spsr_el1, x10",
     "    ldp  x30, xzr, [sp, #160]",
     "    ldp  x18, x29, [sp, #144]",
     "    ldp  x16, x17, [sp, #128]",
@@ -132,10 +171,26 @@ core::arch::global_asm!(
     "    ldp  x4,  x5,  [sp, #32]",
     "    ldp  x2,  x3,  [sp, #16]",
     "    ldp  x0,  x1,  [sp, #0]",
-    "    add  sp, sp, #176",
+    "    add  sp, sp, #192",
     "    eret",
-    ".size oxide_irq_vector_handler, . - oxide_irq_vector_handler",
+    ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
 );
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+extern "C" {
+    fn oxide_irq_resume_user() -> !;
+}
+
+/// Address of the shared IRQ epilogue (`oxide_irq_resume_user`),
+/// the saved-LR value `Context::new_kernel_with_irq_frame` parks
+/// in `Context.lr`. Returns 0 on host (asm symbol absent).
+/// # C: O(1)
+pub fn irq_resume_user_addr() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { oxide_irq_resume_user as usize as u64 }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { 0 }
+}
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 extern "C" {
