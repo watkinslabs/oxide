@@ -127,7 +127,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
 /// `static mut` (per `06§11` + `07§5`). `Sync` is sound: only the
 /// boot path touches it, single-CPU, before scheduler init.
 #[cfg(target_os = "oxide-kernel")]
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 128 * 1024;
 #[cfg(target_os = "oxide-kernel")]
 #[repr(align(4096))]
 struct KernelStack(UnsafeCell<[u8; STACK_SIZE]>);
