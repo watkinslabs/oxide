@@ -252,3 +252,22 @@ End-of-session-13 verified-green:
 - `make test` → 470 passed, 0 failed.
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt smoke + canary smoke pass; ticks counts unchanged from session 12; both reach `boot: kernel ready, halting`.
+
+---
+
+## Session 14 (PRs #148 – #150) — 2026-05-03
+
+**Subject**: MmuOps trait live end-to-end.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #148 | `C31-state-eod-session-13` | session-13 EOD docs |
+| #149 | `P1-87-mmuops-impl-4k` | MmuOps trait impl per arch (4 KiB only). `pt_walker` extended with `pack_4k_leaf(pa, PageFlags)` + `map_4k`/`translate_4k`/`unmap_4k`. Per-arch `mmu_ops` modules with marker types (`X86Mmu`, `ArmMmu`), static-atomic state (`HHDM_OFFSET`, `FRAME_ALLOC`), idempotent setup APIs (`set_hhdm_offset`, `set_frame_alloc`). `hal::kassert!` macro. Huge-leaf paths (`P2M`/`P1G`) `kassert!` pending follow-up. +4 hosted tests (pack/unpack roundtrip per arch). |
+| #150 | `P1-88-mmuops-wire-pmm` | End-to-end wire-up. `kernel/src/pmm_setup.rs` exposes `pmm_static()` + `alloc_one_frame()` bare fn. Boot path calls `mmu_ops::{set_hhdm_offset, set_frame_alloc}` after PMM init. `device_map_smoke` migrated from `vmm::map_device_4k` to `<X86Mmu/ArmMmu as MmuOps>::map(va, pa, WRITE\|NO_CACHE\|WRITE_THROUGH, P4K)`. MmuOps now used in production by the device-MMIO mapper; trait surface validated end-to-end on both arches via the device bring-up smokes. |
+
+End-of-session-14 verified-green:
+- `make lint` clean.
+- `make test` → 474 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` — HPET cap reads, LAPIC enable + timer IRQs, preempt + canary smokes; halts clean.
+- `make qemu-arm --features debug-all` — GIC enable, PL011 sink swap, CNTV IRQs, preempt + canary smokes; halts clean.
