@@ -1,12 +1,12 @@
-# State 2026-05-03 (session 16 EOD)
+# State 2026-05-03 (session 17 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker + MmuOps trait complete (map/translate/unmap for 4K/2M/1G).** 154 PRs total; 478 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + MmuOps trait complete (map/translate/unmap for 4K/2M/1G) + production roundtrip smoke for 4K and 2M leaves on both arches.** 157 PRs total; 478 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-16 EOD:
+Last verified-green at session-17 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
 $ cargo run -p xtask -- test                 # → 478 hosted tests, 0 failures
@@ -16,6 +16,8 @@ $ cargo run -p xtask -- kernel  --arch x86_64  --features debug-all
 $ cargo run -p xtask -- kernel  --arch aarch64 --features debug-all
 $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 …
+[INFO]  mmuops-smoke: ok pa=… magic=cafef00ddeadbeef
+[INFO]  mmuops-smoke 2m: ok pa=… magic=cafef00ddeadbeef
 [INFO]  preempt: kthread 1..=4 enter / done
 [INFO]  preempt: done yields=0 ticks=17
 [INFO]  canary: install n=64
@@ -29,10 +31,11 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 16` for the per-PR table.
+See `CHANGELOG.md § Session 17` for the per-PR table.
 
-- **#154** (`P1-90-mmu-huge-translate`): MmuOps `translate` and `unmap` recognise huge / block leaves at L1 (1 GiB) and L2 (2 MiB). New `pt_walker::translate_at_va` returns `(pa | offset, leaf, leaf_level)`; `pt_walker::unmap_at_va` zeroes the slot at the first leaf encountered. `MmuOps::unmap` kasserts on caller-size vs leaf-level mismatch. +2 hosted tests.
-- **Session 15 carry-over** (PRs #152–#153): P1-89 huge-page `MmuOps::map`, session-15 docs.
+- **#156** (`P1-91-mmuops-smoke`): kernel-side MmuOps end-to-end roundtrip smoke. Alloc → map → write magic → translate (verify PA + R|W flags) → unmap → translate (verify None). Generic over `M: MmuOps`; per-arch entry chooses `X86Mmu`/`ArmMmu`. Both arches now print `mmuops-smoke: ok pa=… magic=cafef00ddeadbeef` every boot.
+- **#157** (`P1-92-mmuops-2m-smoke`): same smoke shape with `PageSize::P2M` + buddy-Order(9) PMM allocation. Validates the huge-page MmuOps path in production. New `pmm_setup::alloc_contig(order)` helper. Both arches now print a second `mmuops-smoke 2m: ok` line every boot.
+- **Session 16 carry-over** (PRs #154–#155): P1-90 huge-leaf translate/unmap, session-16 docs.
 
 ## What's done overall
 
@@ -59,6 +62,7 @@ Unchanged plus root `Makefile` (`make ci` mirrors PR gate).
 | `crates/hal-{x86_64,aarch64}/src/mmu_ops.rs` | `X86Mmu`/`ArmMmu` markers + `MmuOps` trait impl (4K only) + static-atomic state + setup APIs | new session 14 |
 | `kernel/src/pmm_setup.rs` | `pmm_static()` + `alloc_one_frame()` bare-fn for MmuOps frame allocator | extended session 14 |
 | `kernel/src/device_map_smoke.rs` | uses `<X86Mmu/ArmMmu as MmuOps>::map` | migrated session 14 |
+| `kernel/src/mmuops_smoke.rs` | end-to-end MmuOps roundtrip smoke for 4 KiB + 2 MiB leaves | new sessions 16/17 |
 | `crates/hal-{x86_64,aarch64}/src/fault.rs` | exception printer body under `debug-irq` | unchanged |
 | `crates/boot-{x86_64,aarch64}/` | per-crate `debug-boot` gate | unchanged |
 | `crates/limine-proto/` | shared protocol types + magic-words pinning | unchanged |
@@ -95,9 +99,9 @@ Per-vector IRQ stub flow (both arches):
 ## Repo state
 
 ```
-main (origin/main): 730bb9e Merge pull request #154 from watkinslabs/P1-90-mmu-huge-translate
+main (origin/main): e0f7aea Merge pull request #157 from watkinslabs/P1-92-mmuops-2m-smoke
 
-154 PRs landed total. Branches preserved (no deletions).
+157 PRs landed total. Branches preserved (no deletions).
 
 Session 9  (PRs #136 – #138):
   C22-makefile               — make wrapper
@@ -131,8 +135,13 @@ Session 15 (PRs #152 – #153):
   P1-89-mmu-huge-pages       — MmuOps huge-page support (2 MiB / 1 GiB)
   C33-state-eod-session-15   — session-15 docs
 
-Session 16 (PR #154):
+Session 16 (PRs #154 – #155):
   P1-90-mmu-huge-translate   — MmuOps translate/unmap recognise huge leaves
+  C34-state-eod-session-16   — session-16 docs
+
+Session 17 (PRs #156 – #157):
+  P1-91-mmuops-smoke         — MmuOps end-to-end 4 KiB roundtrip smoke
+  P1-92-mmuops-2m-smoke      — MmuOps end-to-end 2 MiB roundtrip smoke
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
