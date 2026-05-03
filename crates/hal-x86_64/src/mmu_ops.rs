@@ -109,23 +109,32 @@ impl MmuOps for X86Mmu {
     /// # C: O(walk depth) = O(4)
     /// # Ctx: pre-init or under PT-write lock.
     unsafe fn unmap(va: Va, size: PageSize) {
-        kassert!(matches!(size, PageSize::P4K), "MmuOps::unmap huge-leaf NYI");
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::unmap called before set_hhdm_offset");
+        let want_level: u8 = match size {
+            PageSize::P4K => 3,
+            PageSize::P2M => 2,
+            PageSize::P1G => 1,
+        };
         // SAFETY: caller asserts the VA is exclusively owned; HHDM
-        // covers page-table memory.
-        let _ = unsafe { pt_walker::unmap_4k::<PtWalkerX86>(va.0, hhdm) };
+        // covers page-table memory; the walker stops at the first
+        // leaf encountered.
+        if let Some((_leaf, level)) = unsafe { pt_walker::unmap_at_va::<PtWalkerX86>(va.0, hhdm) } {
+            kassert!(level == want_level, "MmuOps::unmap size mismatch with installed leaf");
+        }
     }
 
     /// Translate `va` to (`pa`, flags) by walking the live tables.
-    /// Returns `None` if the leaf is missing or sits at a non-
-    /// bottom level.
+    /// Recognises huge / block leaves at L1 (1 GiB) and L2 (2 MiB)
+    /// in addition to 4 KiB page leaves; the returned `pa` includes
+    /// the in-leaf offset so `va`'s low bits appear in the result.
+    /// Returns `None` if no leaf is present along the walk.
     /// # C: O(walk depth) = O(4)
     fn translate(va: Va) -> Option<(Pa, PageFlags)> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         if hhdm == 0 { return None; }
         // SAFETY: HHDM covers page-table memory; reads only.
-        let (pa, leaf) = unsafe { pt_walker::translate_4k::<PtWalkerX86>(va.0, hhdm)? };
+        let (pa, leaf, _level) = unsafe { pt_walker::translate_at_va::<PtWalkerX86>(va.0, hhdm)? };
         Some((Pa(pa), unpack_flags(leaf)))
     }
 
