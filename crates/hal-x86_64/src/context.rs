@@ -213,6 +213,57 @@ impl Context for ContextX86_64 {
     }
 }
 
+impl ContextX86_64 {
+    /// User-mode flavor of `new_kernel_with_irq_frame`. The synthetic
+    /// IRQ frame uses USER selectors (DPL=3) and `iretq` therefore
+    /// transitions to ring 3 with CS=`USER_CS`, SS=`USER_DS`, RIP=
+    /// `user_ip`, RSP=`user_sp`. RFLAGS=0x002 keeps IF=0 across the
+    /// transition so the user side runs IRQs-off until its first
+    /// safe-point.
+    ///
+    /// Layout matches the kernel-mode flavor — same scratch + vec/err
+    /// + iretq frame shape — so the shared `oxide_irq_resume_user`
+    /// epilogue iretq's into ring 3 instead of staying at CPL=0.
+    /// Inherent on `ContextX86_64` (not on the `hal::Context` trait):
+    /// arm parity rides a follow-up that adds sp_el0 save/restore to
+    /// the IRQ frame.
+    /// # C: O(1)
+    pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
+        // SAFETY: caller asserts `stack_top` is the high end of a
+        // writable, 16-byte-aligned kernel stack of at least 136 B.
+        let sp = unsafe {
+            let p = stack_top.cast::<u64>();
+            // iretq frame (offsets 0x60..0x80 from final rsp). USER
+            // CS/SS per `36-bootloader-handoff` GDT (P1-93): USER_CS
+            // = 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
+            p.sub(1).write(crate::gdt::USER_DS as u64);     // SS  (user data)
+            p.sub(2).write(user_sp);                         // RSP (user stack)
+            p.sub(3).write(0x002);                           // RFLAGS, IF=0
+            p.sub(4).write(crate::gdt::USER_CS as u64);     // CS  (user code)
+            p.sub(5).write(user_ip);                         // RIP (user entry)
+            // synthetic vec/err pad (matches IRQ stub layout).
+            p.sub(6).write(0);                               // vec
+            p.sub(7).write(0);                               // err
+            // 9 scratch slots r11..rax — values irrelevant.
+            for i in 8..=16 { p.sub(i).write(0); }
+            // saved RIP for oxide_context_switch's `ret`. Lands at
+            // the shared epilogue which iretq's the frame above.
+            p.sub(17).write(crate::irq::irq_resume_user_addr());
+            p.sub(17)
+        };
+        Self {
+            rsp: sp as u64,
+            rbp: 0,
+            rbx: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            fs_base: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
