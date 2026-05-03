@@ -225,7 +225,7 @@ extern "C" {
 /// # C: O(1)
 pub fn irq_resume_user_addr() -> u64 {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { oxide_irq_resume_user as usize as u64 }
+    { oxide_irq_resume_user as *const () as usize as u64 }
     #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
     { 0 }
 }
