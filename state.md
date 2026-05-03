@@ -1,15 +1,15 @@
-# State 2026-05-03 (session 10 EOD)
+# State 2026-05-03 (session 11 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green.** 139 PRs total; 465 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker.** 141 PRs total; 470 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-10 EOD:
+Last verified-green at session-11 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
-$ cargo run -p xtask -- test                 # → 465 hosted tests, 0 failures
+$ cargo run -p xtask -- test                 # → 470 hosted tests, 0 failures
 $ cargo run -p xtask -- kernel  --arch x86_64                   # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                  # builds clean
 $ cargo run -p xtask -- kernel  --arch x86_64  --features debug-all
@@ -29,11 +29,10 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 10` for the per-PR table.
+See `CHANGELOG.md § Session 11` for the per-PR table.
 
-- **#139** (`P1-83-ctxsw-canary`): 64-task ctxsw register-canary smoke per `14§8`. Each canary kthread holds a unique per-task mark in callee-saves (r12..r15 on x86; x20..x28 on arm) across `hlt`/`wfi`. On corruption: log fault values + mask IRQs + park CPU so smoke fails to complete. Bounded version (64 × 16-iter ≈ 1024 switches per arch); the 1h soak filed for background CI per `40§3`.
-- **#140** (`C24-ksched-split`): split `kernel/src/ksched.rs` (505 → 367 lines) per the 500-line soft cap. Extracted `smoke_preempt_*` + `preempt_kthread_entry` + `TICK_BUDGET` into new `kernel/src/preempt_smoke.rs` (146 lines). `KSched`/`KThread` fields exposed `pub(crate)` so `preempt_smoke` and `canary` can share the scheduler shim.
-- **Session 9 carry-over** (PRs #136–#138): root `Makefile` (#136), true IRQ-exit preemption R07 (#137), session-9 docs (#138). See `CHANGELOG.md § Session 9`.
+- **#141** (`P1-85-mmu-walker-generic`): extract the 4-level walk loop shared between x86_64 (PML4→PDPT→PD→PT) and aarch64 EL1 (L0→L1→L2→L3) into `crates/hal/src/pt_walker.rs`. Both arches use 4 KiB granule, 512 entries per table, identical 39/30/21/12 VA-bit shifts; only entry bit semantics + privileged-register access differ. Generic `map_device_4k<W: PtWalker, F>` driver; `PtWalkerX86` / `PtWalkerArm` impls. Per-arch `map_device_4k` shims delegate. +5 hosted tests.
+- **Sessions 9–10 carry-over** (PRs #136–#140): Makefile (#136), R07 preempt (#137), session-9 docs (#138), 64-task canary (#139), ksched split (#140). See `CHANGELOG.md`.
 
 ## What's done overall
 
@@ -55,12 +54,14 @@ Unchanged plus root `Makefile` (`make ci` mirrors PR gate).
 | `kernel/src/preempt.rs` | `NEED_RESCHED` flag + `oxide_preempt_{cur,next}_ctx` + `tick_pick_next` hook | unchanged from session 9 |
 | `kernel/src/{lapic,gic}.rs` | dispatchers call `preempt::tick_pick_next` after EOI | unchanged from session 9 |
 | `crates/hal-{x86_64,aarch64}/src/{context,irq,vbar}.rs` | `new_kernel_with_irq_frame` + `oxide_irq_resume_user` + schedule-on-exit asm; ARM frame 192 B saving ELR/SPSR | unchanged from session 9 |
+| `crates/hal/src/pt_walker.rs` | arch-generic `PtWalker` trait + `map_device_4k` driver | new in session 11 |
+| `crates/hal-{x86_64,aarch64}/src/vmm.rs` | `PtWalkerX86`/`PtWalkerArm` impls + thin `map_device_4k` shims | refactored session 11 |
 | `crates/hal-{x86_64,aarch64}/src/fault.rs` | exception printer body under `debug-irq` | unchanged |
 | `crates/boot-{x86_64,aarch64}/` | per-crate `debug-boot` gate | unchanged |
 | `crates/limine-proto/` | shared protocol types + magic-words pinning | unchanged |
 | Other crates | unchanged from session 8 EOD |
 
-Workspace test count: **465 passed, 0 failed.**
+Workspace test count: **470 passed, 0 failed.** (+5 over session 10 — pt_walker driver + per-arch pack/unpack roundtrips.)
 
 ### IRQ-exit preemption (R07 — fully implemented)
 
@@ -78,21 +79,21 @@ Per-vector IRQ stub flow (both arches):
 1. **64-task 1h canary soak** (`docs/14§8`) — bounded version landed (#139). The full 64 × 1ms × 1h soak requires the background CI infra per `40§3` which is still spec-only.
 2. **First userspace `iretq`/`eret` smoke** (Phase 2 boundary) — `Context::new_user` exists in HAL crates but the actual transition to ring 3 / EL0 isn't wired. Needs a kernel-owned GDT (Limine's GDT lacks user descriptors), user CS/SS for x86 / SPSR config for arm, user kernel-stack swap, syscall entry path, return-to-user path. Largest single jump.
 3. **Wire `crates/sched`'s real `RunqueueInner` into the kernel** — `kernel/src/ksched.rs` is a kernel-only Vec-based shim. Frozen spec (`13§5`) wants `Task` extended with `kernel_stack` + arch-context fields and the kernel using `RunqueueInner::pick_next_task`. Plumbing-heavy refactor.
-4. **MmuOps walker** (`20§5`/`21§5`) — PTE encoding ✓; the walker still needs refactoring out of inline `vmm::map_device_4k` and made arch-generic.
+4. **MmuOps trait full surface** (`20§5`/`21§5`) — arch-generic 4 KiB walker landed in #141 (`PtWalker`); the wider `MmuOps::map`/`unmap`/`translate` (with 2 MiB / 1 GiB / 2 MiB block sizes) still needs implementation. Today's `map_device_4k` only covers the 4 KiB Device-attr leaf path.
 5. **Page-fault path** (`11§5` + `11§7`): COW, fork, TLB shootdown.
 6. **Block writeback / procfs surface / VFS dentry cache / IPC bodies / userspace platform** — unchanged from session 8 EOD pending list.
 7. **CI matrix update** to exercise each `debug-<sub>` feature solo (per `04§3` recipe). Presupposes a real CI workflow file exists; that's still spec-only at `docs/40`.
 8. **Files over 500-line soft cap**:
-    - `kernel/src/lib.rs` ~698 (grew with canary smoke wiring)
-    - `tools/spec-lint/src/code_lint.rs` ~444 (under cap)
-    - `kernel/src/ksched.rs` split in session 10 (367) — under cap.
+    - `kernel/src/lib.rs` ~700 (grew with canary smoke wiring; candidate split: extract per-arch device-map smokes to `device_map_smoke.rs`).
+    - `tools/spec-lint/src/code_lint.rs` ~444 (under cap).
+    - `kernel/src/ksched.rs` 367 (under cap, split in session 10).
 
 ## Repo state
 
 ```
-main (origin/main): 68f61c0 Merge pull request #139 from watkinslabs/P1-83-ctxsw-canary
+main (origin/main): 1d8940e Merge pull request #141 from watkinslabs/P1-85-mmu-walker-generic
 
-139 PRs landed total. Branches preserved (no deletions).
+141 PRs landed total. Branches preserved (no deletions).
 
 Session 9  (PRs #136 – #138):
   C22-makefile               — make wrapper
@@ -102,6 +103,9 @@ Session 9  (PRs #136 – #138):
 Session 10 (PRs #139 – #140):
   P1-83-ctxsw-canary         — 64-task ctxsw register canary
   C24-ksched-split           — split ksched.rs into shared core + preempt_smoke
+
+Session 11 (PR #141):
+  P1-85-mmu-walker-generic   — arch-generic 4-level page-table walker
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
@@ -137,9 +141,9 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
+| **MmuOps full surface** | `P1-87-mmu-ops-impl` | Implement `MmuOps::{map,unmap,translate,flush_va,flush_all_local}` for both arches on top of the new `pt_walker`. Includes 2 MiB / 1 GiB block-leaf support. Mechanical, contained. |
 | **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Cross the Phase 1→2 line. Needs kernel-owned GDT, user CS/SS, eret-to-EL0/CPL3, syscall entry/exit. Largest single jump; significant design surface. Recommend reviewing scope with the user before starting. |
 | **Wire real RunqueueInner** | `P1-84-sched-real-runqueue` | Migrate `kernel/src/ksched.rs` shim to `crates/sched`'s `RunqueueInner` per `13§5`. Plumbing-heavy refactor; doesn't unblock anything immediately. |
-| **MmuOps walker refactor** | `P1-85-mmu-walker` | Extract `vmm::map_device_4k` into an arch-generic walker per `20§5`/`21§5`. Contained refactor; mechanical. |
 | **Page-fault path** | `P1-86-pf-cow-fork` | `11§5` + `11§7` page-fault entry, COW, fork, TLB shootdown. Substantial. |
 
 If unsure: pause and surface the **userspace eret design surface** to the user before proceeding — it bakes in significant Phase-2 architectural choices (kernel-owned GDT vs Limine-extending, syscall fast-path skeleton, user kstack model).

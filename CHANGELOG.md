@@ -200,3 +200,19 @@ End-of-session-10 verified-green:
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` → preempt smoke + canary smoke + `boot: kernel ready, halting`.
 - `make qemu-arm --features debug-all` → same trace.
+
+---
+
+## Session 11 (PR #141) — 2026-05-03
+
+**Subject**: arch-generic 4-level page-table walker.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #141 | `P1-85-mmu-walker-generic` | Extract the 4-level walk loop shared between x86_64 (PML4→PDPT→PD→PT) and aarch64 EL1 (L0→L1→L2→L3) into `crates/hal/src/pt_walker.rs`. Both arches use 4 KiB granule, 512 entries per table, identical 39/30/21/12 VA-bit shifts; only entry bit semantics + privileged-register access differ. New `PtWalker` trait supplies per-arch bit semantics; generic `map_device_4k<W: PtWalker, F: FnMut() -> Option<u64>>` driver owns the loop + HHDM access. Per `07§5` no-`dyn`: monomorphizes per impl. `hal-x86_64::PtWalkerX86` (CR3 / INVLPG / P_BIT / PCD\|PWT\|NX) and `hal-aarch64::PtWalkerArm` (TTBR1_EL1 / TLBI VAE1IS / VALID\|TABLE / AttrIdx=Device\|SH=ISh\|AF\|PXN\|UXN). Per-arch `map_device_4k` shims delegate; surface unchanged for callers (kernel device-MMIO mapper). 5 new hosted tests (3 walker driver + 2 per-arch packing roundtrips); 4 KiB-aligned fake allocator via `#[repr(align(4096))]` wrapper since default `Box::new` only guarantees 8-byte alignment and the walker masks low 12 bits off the parent-slot pa. |
+
+End-of-session-11 verified-green:
+- `make lint` clean.
+- `make test` → 470 passed, 0 failed (+5 over 465 baseline).
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt smoke + canary smoke pass; ticks counts unchanged from session 10; both reach `boot: kernel ready, halting`.
