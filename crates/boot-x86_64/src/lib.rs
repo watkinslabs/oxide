@@ -167,9 +167,11 @@ unsafe fn build_boot_info() -> BootInfo {
     // SAFETY: MEMMAP_STORAGE is owned by this CPU during boot; no
     // other path mutates it before kernel_main returns.
     let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
+    use hal::TimerOps;
     // SAFETY: limine::populate_memmap_into expects a valid response
     // table per its own contract, which the bootloader guarantees.
     let n = unsafe { limine::populate_memmap_into(storage, resp) };
+    let boot_ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
     let hhdm = {
         let p = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
         if p.is_null() {
@@ -184,7 +186,7 @@ unsafe fn build_boot_info() -> BootInfo {
         memmap_count: n as u32,
         memmap_ptr:   storage.as_ptr(),
         seed:         [0; 32],
-        boot_ns:      0,
+        boot_ns:      boot_ns,
         hhdm_offset:  hhdm,
     }
 }
@@ -207,6 +209,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     klog::set_byte_sink(boot_emit);
     // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
     unsafe { hal_x86_64::install_default_idt(); }
+    // TSC calibration: v1 hardcodes 2.4 GHz, the steady QEMU TSC
+    // rate when running with `-cpu Haswell-v4`. Real PIT/HPET-based
+    // calibration lands with `23§3` once we have a usable HPET MMIO
+    // mapping. monotonic_ns degenerates to 0 if not set, so this is
+    // strictly an upgrade from "no time" to "approximate time".
+    hal_x86_64::set_tsc_khz(2_400_000);
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
