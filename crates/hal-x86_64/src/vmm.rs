@@ -94,7 +94,11 @@ impl PtWalker for PtWalkerX86 {
     fn is_huge_or_block(entry: u64) -> bool { (entry & PS_BIT) != 0 }
 
     fn pack_table(child_pa: u64) -> u64 {
-        (child_pa & Self::PHYS_MASK) | P_BIT | RW_BIT
+        // Interior entries set U/S=1 unconditionally so any user-leaf
+        // along the walk is reachable; the leaf U bit alone gates user
+        // access. Kernel-only leaves still set U=0 → CPL=3 access
+        // faults at the leaf, regardless of interior bits.
+        (child_pa & Self::PHYS_MASK) | P_BIT | RW_BIT | (1 << 2)
     }
 
     fn pack_device_leaf(pa: u64) -> u64 {
@@ -171,5 +175,32 @@ mod tests {
         assert!(PtWalkerX86::is_valid(table));
         assert!(!PtWalkerX86::is_huge_or_block(table));
         assert_eq!(table & PtWalkerX86::PHYS_MASK, pa);
+    }
+
+    #[test]
+    fn interior_table_entries_grant_user() {
+        // Intel SDM §4.6: every interior entry on a CPL=3 walk must
+        // have U/S=1 or the access faults. The leaf's U bit alone
+        // gates user access; interior U=1 is unconditional.
+        let table = PtWalkerX86::pack_table(0x10_0000);
+        assert!(table & (1 << 2) != 0, "U/S bit must be set on interior entries");
+        assert!(table & RW_BIT != 0, "RW bit must be set on interior entries");
+    }
+
+    #[test]
+    fn user_leaf_packs_user_bit_and_clears_nx() {
+        let pa = 0x4000_u64;
+        let leaf = PtWalkerX86::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::EXEC | hal::PageFlags::USER);
+        assert!(leaf & (1 << 2) != 0, "leaf U/S bit set");
+        assert_eq!(leaf & NX_BIT, 0, "EXEC ⇒ NX clear");
+        assert_eq!(leaf & PtWalkerX86::PHYS_MASK, pa);
+    }
+
+    #[test]
+    fn kernel_only_leaf_clears_user_bit() {
+        let pa = 0x5000_u64;
+        let leaf = PtWalkerX86::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::WRITE);
+        assert_eq!(leaf & (1 << 2), 0, "kernel-only leaf must have U/S=0");
+        assert!(leaf & NX_BIT != 0, "no EXEC ⇒ NX set");
     }
 }
