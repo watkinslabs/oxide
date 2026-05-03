@@ -400,7 +400,12 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path) -> Result
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
-        "-cpu", "qemu64",
+        // x86 baseline = Haswell-v4 (BMI2/AVX2 era, 2013+). LLVM
+        // emits SHRX/etc. by default for the kernel target; older
+        // CPU models (qemu64) trap #UD on those. Future PR: target-
+        // feature gating in `targets/x86_64-unknown-oxide-kernel.json`
+        // so the kernel runs on plain qemu64 too.
+        "-cpu", "Haswell-v4",
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
         "-drive", &format!("format=raw,file={}", img.display()),
@@ -449,7 +454,12 @@ fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path) -> Result<(),
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
-        "-cpu", "qemu64",
+        // x86 baseline = Haswell-v4 (BMI2/AVX2 era, 2013+). LLVM
+        // emits SHRX/etc. by default for the kernel target; older
+        // CPU models (qemu64) trap #UD on those. Future PR: target-
+        // feature gating in `targets/x86_64-unknown-oxide-kernel.json`
+        // so the kernel runs on plain qemu64 too.
+        "-cpu", "Haswell-v4",
         "-m", "256M",
         "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",

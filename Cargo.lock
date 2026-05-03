@@ -178,6 +178,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "hal",
+ "klog",
  "sync",
  "syscall",
 ]
@@ -188,6 +189,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "hal",
+ "klog",
  "sync",
  "syscall",
 ]
