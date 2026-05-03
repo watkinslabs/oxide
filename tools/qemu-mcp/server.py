@@ -1,0 +1,476 @@
+"""qemu-mcp — interactive QEMU + GDB control surface for Claude Code.
+
+Spawns QEMU paused at start with the GDB stub on :1234, attaches a
+GDB/MI session with the kernel ELF as the symbol source, and
+exposes a small tool surface for setting breakpoints, stepping,
+reading registers / memory / disassembly, and inspecting serial
+output.
+
+Tool surface (in invocation order for a typical debug session):
+
+    qemu_start(arch)           — auto-build image, spawn paused QEMU + GDB
+    qemu_break(target)         — set breakpoint at `symbol` or `0xADDR`
+    qemu_continue()            — `-exec-continue`; returns when stopped
+    qemu_stepi(count=1)        — single-instruction step
+    qemu_step(count=1)         — source-level step
+    qemu_finish()              — step out of current frame
+    qemu_regs()                — all CPU registers
+    qemu_mem(addr, count)      — `count` bytes at `addr` (hex)
+    qemu_disasm(addr, n=8)     — disassemble n insns from addr
+    qemu_backtrace()           — call stack
+    qemu_info(what)            — `info <what>` (e.g. "registers", "breakpoints")
+    qemu_serial(clear=False)   — accumulated serial bytes since last call
+    qemu_stop()                — kill QEMU + GDB
+
+Design notes:
+
+* Pure stdlib + `mcp` package; no `pygdbmi` / `pwntools` dep, so it
+  installs cleanly on a vanilla Claude Code box (`mcp` ships with
+  the harness).
+* Background reader threads drain QEMU's serial stdout and GDB's
+  MI stdout into ring buffers. Tool calls block on the GDB reader
+  with a 30 s timeout.
+* QEMU is started in `-S` (paused) mode so the first action after
+  attach is `qemu_break <some_symbol>; qemu_continue` rather than
+  racing the boot path.
+
+Per oxide2's `docs/02§*` lifecycle: this tool is dev-only — it
+doesn't ship in any kernel artifact and isn't on the PR-time CI
+gate's hot path.
+"""
+
+from __future__ import annotations
+
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+GDB_PORT = 1234
+GDB_PROMPT = "(gdb)"
+
+mcp = FastMCP("qemu-mcp")
+
+
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Session:
+    arch: str
+    qemu: subprocess.Popen
+    gdb: subprocess.Popen
+    serial: deque[str]
+    serial_lock: threading.Lock
+    gdb_lines: deque[str]
+    gdb_lock: threading.Lock
+    serial_reader: threading.Thread
+    gdb_reader: threading.Thread
+
+
+_SESSION: Session | None = None
+_SESSION_LOCK = threading.Lock()
+
+
+def _require() -> Session:
+    if _SESSION is None:
+        raise RuntimeError("no active session — call qemu_start first")
+    return _SESSION
+
+
+# ---------------------------------------------------------------------------
+# Reader threads
+# ---------------------------------------------------------------------------
+
+def _drain_to(stream, buf: deque[str], lock: threading.Lock) -> None:
+    """Pump `stream` line-by-line into `buf`. Exits when stream EOFs."""
+    try:
+        for raw in iter(stream.readline, ""):
+            line = raw.rstrip("\n")
+            with lock:
+                buf.append(line)
+    except Exception:
+        # Stream closed or process died; the reader thread just exits.
+        pass
+
+
+def _gdb_wait_prompt(s: Session, timeout: float = 30.0) -> list[str]:
+    """Block until GDB emits its `(gdb)` prompt; return all lines since
+    the last command. Times out if GDB takes longer than `timeout`."""
+    end = time.monotonic() + timeout
+    out: list[str] = []
+    while time.monotonic() < end:
+        with s.gdb_lock:
+            while s.gdb_lines:
+                line = s.gdb_lines.popleft()
+                if line.startswith(GDB_PROMPT):
+                    return out
+                out.append(line)
+        time.sleep(0.02)
+    raise TimeoutError(f"GDB did not return prompt within {timeout}s; partial output:\n" + "\n".join(out))
+
+
+def _gdb_cmd(s: Session, cmd: str, timeout: float = 30.0) -> list[str]:
+    """Send a GDB command, return all lines emitted before the next
+    prompt. Includes both MI records and CLI output."""
+    if s.gdb.poll() is not None:
+        raise RuntimeError("GDB has exited")
+    s.gdb.stdin.write(cmd + "\n")
+    s.gdb.stdin.flush()
+    return _gdb_wait_prompt(s, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Build helper
+# ---------------------------------------------------------------------------
+
+def _build_image(arch: str) -> Path:
+    """Run `cargo run -p xtask -- image --arch <arch>` from the repo
+    root. Returns the path to the produced disk image."""
+    if arch not in ("x86_64", "aarch64"):
+        raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
+    # Build the kernel + boot artifact + GPT disk image.
+    cmd = [
+        "cargo", "run", "--quiet", "-p", "xtask", "--",
+        "image", "--arch", arch, "--features", "debug-all",
+    ]
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"image build failed (exit {proc.returncode})\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+    img = REPO_ROOT / "target" / f"oxide-{arch}.img"
+    if not img.is_file():
+        raise RuntimeError(f"expected image at {img} but it isn't there")
+    return img
+
+
+def _kernel_elf(arch: str) -> Path:
+    """The kernel ELF GDB needs for symbols. xtask kernel writes it
+    under target/<triple>/<profile>/<bin>."""
+    if arch == "x86_64":
+        return REPO_ROOT / "target" / "x86_64-unknown-oxide-kernel" / "release" / "oxide-x86_64"
+    return REPO_ROOT / "target" / "aarch64-unknown-oxide-kernel" / "release" / "oxide-aarch64"
+
+
+# ---------------------------------------------------------------------------
+# Tool surface
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def qemu_start(arch: str) -> str:
+    """Build the kernel image for `arch` (x86_64 or aarch64), spawn
+    QEMU paused at start with the gdb-stub on :1234, and attach a
+    GDB/MI session targeting the kernel ELF for symbols.
+
+    Re-uses the same QEMU args as `xtask qemu --arch <arch>`
+    (q35 + Haswell-v4 + OVMF on x86; virt + cortex-a72 + OVMF on
+    arm) plus `-s -S` for the gdb-stub-paused mode.
+
+    Returns a short status line. Subsequent calls require
+    `qemu_stop` first.
+    """
+    global _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is not None:
+            raise RuntimeError("session already active — call qemu_stop first")
+
+        if not shutil.which("gdb"):
+            raise RuntimeError("`gdb` not on PATH — install gdb to use qemu-mcp")
+        qemu_bin = f"qemu-system-{arch}"
+        if not shutil.which(qemu_bin):
+            raise RuntimeError(f"`{qemu_bin}` not on PATH — install QEMU")
+
+        img = _build_image(arch)
+        elf = _kernel_elf(arch)
+        if not elf.is_file():
+            raise RuntimeError(f"kernel ELF missing at {elf} — image build did not produce it")
+
+        if arch == "x86_64":
+            ovmf = REPO_ROOT / "vendor/firmware/ovmf-x64.fd"
+            qemu_cmd = [
+                qemu_bin,
+                "-machine", "q35",
+                "-cpu", "Haswell-v4",
+                "-m", "256M",
+                "-bios", str(ovmf),
+                "-drive", f"format=raw,file={img}",
+                "-serial", "stdio",
+                "-display", "none",
+                "-no-reboot",
+                "-no-shutdown",
+                "-s", "-S",
+            ]
+        else:
+            ovmf = REPO_ROOT / "vendor/firmware/ovmf-aarch64.fd"
+            qemu_cmd = [
+                qemu_bin,
+                "-machine", "virt",
+                "-cpu", "cortex-a72",
+                "-m", "256M",
+                "-bios", str(ovmf),
+                "-drive", f"format=raw,file={img},if=virtio",
+                "-serial", "stdio",
+                "-display", "none",
+                "-no-reboot",
+                "-semihosting-config", "enable=on,target=native",
+                "-s", "-S",
+            ]
+
+        qemu_proc = subprocess.Popen(
+            qemu_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            preexec_fn=os.setsid,  # own process group; clean kill on stop
+        )
+
+        # Briefly wait for QEMU to bind the gdb-stub port before we
+        # ask GDB to connect; otherwise GDB sees ECONNREFUSED.
+        time.sleep(0.5)
+        if qemu_proc.poll() is not None:
+            raise RuntimeError(f"QEMU exited immediately with code {qemu_proc.returncode}")
+
+        gdb_proc = subprocess.Popen(
+            ["gdb", "--quiet", "--interpreter=mi3", str(elf)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        serial: deque[str] = deque(maxlen=4096)
+        gdb_lines: deque[str] = deque(maxlen=4096)
+        serial_lock = threading.Lock()
+        gdb_lock = threading.Lock()
+        serial_reader = threading.Thread(
+            target=_drain_to, args=(qemu_proc.stdout, serial, serial_lock), daemon=True,
+        )
+        gdb_reader = threading.Thread(
+            target=_drain_to, args=(gdb_proc.stdout, gdb_lines, gdb_lock), daemon=True,
+        )
+        serial_reader.start()
+        gdb_reader.start()
+
+        s = Session(
+            arch=arch,
+            qemu=qemu_proc,
+            gdb=gdb_proc,
+            serial=serial,
+            serial_lock=serial_lock,
+            gdb_lines=gdb_lines,
+            gdb_lock=gdb_lock,
+            serial_reader=serial_reader,
+            gdb_reader=gdb_reader,
+        )
+        _SESSION = s
+
+        # Prime GDB: skip its banner, attach to QEMU's gdb-stub.
+        _gdb_wait_prompt(s, timeout=10.0)
+        attach = _gdb_cmd(s, f"-target-select extended-remote localhost:{GDB_PORT}", timeout=10.0)
+
+        return (
+            f"qemu-mcp: started arch={arch}; QEMU paused at entry; "
+            f"GDB attached to localhost:{GDB_PORT}.\n"
+            f"image={img}\nelf={elf}\n"
+            f"attach response:\n" + "\n".join(attach[-10:])
+        )
+
+
+@mcp.tool()
+def qemu_break(target: str) -> str:
+    """Set a breakpoint at `target` (a symbol name like
+    `kernel_main`, or a hex address like `0xffffffff80100abc`).
+    Returns the breakpoint number + location."""
+    s = _require()
+    out = _gdb_cmd(s, f"-break-insert {target}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_continue() -> str:
+    """Resume execution. Returns when the CPU stops (breakpoint, fault,
+    or other stop event). Output includes the stop reason + frame."""
+    s = _require()
+    # `-exec-continue` returns ^running immediately; the actual stop
+    # event arrives later as `*stopped`. Wait for it explicitly.
+    s.gdb.stdin.write("-exec-continue\n")
+    s.gdb.stdin.flush()
+    _gdb_wait_prompt(s, timeout=2.0)  # consume ^running
+    # Wait for *stopped or process exit.
+    return _wait_stopped(s, timeout=120.0)
+
+
+@mcp.tool()
+def qemu_stepi(count: int = 1) -> str:
+    """Single-step `count` instructions. Returns the new PC + the
+    next instruction's disassembly."""
+    s = _require()
+    if count < 1 or count > 1_000_000:
+        raise ValueError("count must be in [1, 1_000_000]")
+    out: list[str] = []
+    for _ in range(count):
+        out += _gdb_cmd(s, "-exec-step-instruction")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_step(count: int = 1) -> str:
+    """Source-level step `count` lines."""
+    s = _require()
+    if count < 1 or count > 1_000_000:
+        raise ValueError("count must be in [1, 1_000_000]")
+    out: list[str] = []
+    for _ in range(count):
+        out += _gdb_cmd(s, "-exec-step")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_finish() -> str:
+    """Step out of the current frame (continue until the current
+    function returns)."""
+    s = _require()
+    out = _gdb_cmd(s, "-exec-finish")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_regs() -> str:
+    """All CPU registers in hex."""
+    s = _require()
+    out = _gdb_cmd(s, "-data-list-register-values x")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_mem(addr: str, count: int = 64) -> str:
+    """Read `count` bytes starting at `addr`. `addr` may be a
+    symbol name or hex literal."""
+    s = _require()
+    if count < 1 or count > 4096:
+        raise ValueError("count must be in [1, 4096]")
+    out = _gdb_cmd(s, f"-data-read-memory-bytes {shlex.quote(addr)} {count}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_disasm(addr: str, count: int = 8) -> str:
+    """Disassemble `count` instructions starting at `addr`."""
+    s = _require()
+    if count < 1 or count > 4096:
+        raise ValueError("count must be in [1, 4096]")
+    # mode 2 = disassembly with source if available; -- 2 is the
+    # MI form. End computed conservatively as start + 16*count
+    # (max instruction size on x86 is 15 bytes; 16 is safe).
+    end_expr = f"{addr}+{16 * count}"
+    out = _gdb_cmd(s, f"-data-disassemble -s {addr} -e {end_expr} -- 2")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_backtrace() -> str:
+    """Call stack of the current frame."""
+    s = _require()
+    out = _gdb_cmd(s, "-stack-list-frames")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_info(what: str = "registers") -> str:
+    """`info <what>` via the GDB CLI command bridge. Common values:
+    `registers`, `breakpoints`, `frame`, `proc`, `mem`. Forwarded
+    verbatim — caller decides what to query."""
+    s = _require()
+    out = _gdb_cmd(s, f"-interpreter-exec console {shlex.quote('info ' + what)}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_serial(clear: bool = False) -> str:
+    """Accumulated serial output (kernel stdout). Returns everything
+    captured since the session started, or since the last call with
+    `clear=True`."""
+    s = _require()
+    with s.serial_lock:
+        out = "\n".join(s.serial)
+        if clear:
+            s.serial.clear()
+    return out
+
+
+@mcp.tool()
+def qemu_stop() -> str:
+    """Tear down the QEMU + GDB session."""
+    global _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None:
+            return "no active session"
+        s = _SESSION
+        try:
+            s.gdb.stdin.write("-gdb-exit\n")
+            s.gdb.stdin.flush()
+        except Exception:
+            pass
+        try:
+            s.gdb.terminate()
+        except Exception:
+            pass
+        try:
+            os.killpg(os.getpgid(s.qemu.pid), signal.SIGTERM)
+        except Exception:
+            pass
+        # Reap.
+        for proc, name in ((s.gdb, "gdb"), (s.qemu, "qemu")):
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                proc.kill()
+        _SESSION = None
+        return "qemu-mcp: session stopped"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _wait_stopped(s: Session, timeout: float = 30.0) -> str:
+    """Wait for a `*stopped` MI record (or process exit). Returns the
+    accumulated lines until the next prompt after that record."""
+    end = time.monotonic() + timeout
+    collected: list[str] = []
+    saw_stopped = False
+    while time.monotonic() < end:
+        with s.gdb_lock:
+            while s.gdb_lines:
+                line = s.gdb_lines.popleft()
+                collected.append(line)
+                if line.startswith("*stopped"):
+                    saw_stopped = True
+                if saw_stopped and line.startswith(GDB_PROMPT):
+                    return "\n".join(collected)
+        if s.gdb.poll() is not None:
+            return "\n".join(collected) + f"\n[gdb exited code={s.gdb.returncode}]"
+        time.sleep(0.05)
+    raise TimeoutError(
+        f"no *stopped within {timeout}s; partial output:\n" + "\n".join(collected[-30:])
+    )
+
+
+if __name__ == "__main__":
+    mcp.run()
