@@ -83,10 +83,21 @@ bitflags::bitflags! {
 /// VMA backing per `11§4`. `File` is a placeholder until `16` (VFS)
 /// freezes; once `Arc<File>` exists this carries the inode ref.
 /// `Special` covers vDSO / vvar / hugetlb regions which never merge.
+///
+/// `KernelBytes` is a v1-only bridge until VFS lands per `16`:
+/// kernel-side static data (`&'static [u8]`) backs the VMA. Used
+/// by the ELF loader (`31`) to map PT_LOAD segments from a
+/// boot-embedded blob; the demand-page handler copies bytes from
+/// `data` into the freshly-allocated user page on each fault.
+/// `data.len()` may be smaller than the VMA's byte length — bytes
+/// past the slice length zero-fill (PT_LOAD's `p_memsz > p_filesz`
+/// = BSS tail). Slices are zero-sized + 'static so this stays
+/// Copy + Hash.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum VmaBacking {
     Anonymous,
     File { off: u64 },
+    KernelBytes { data: &'static [u8] },
     Special,
 }
 
@@ -149,6 +160,11 @@ impl Vma {
             (VmaBacking::File { off: a }, VmaBacking::File { off: b }) => {
                 a.checked_add(self.len_bytes()).map_or(false, |aend| aend == b)
             }
+            // KernelBytes-backed segments don't merge: each PT_LOAD
+            // is a distinct slice; merging would require carrying the
+            // join in the backing variant. Match Special's behaviour.
+            (VmaBacking::KernelBytes { .. }, _)
+            | (_, VmaBacking::KernelBytes { .. }) => false,
             (VmaBacking::Special, _) | (_, VmaBacking::Special) => false,
             _ => false,
         }
@@ -165,6 +181,14 @@ impl Vma {
         let off_delta = new_start.as_u64() - self.start.as_u64();
         let backing = match self.backing {
             VmaBacking::File { off } => VmaBacking::File { off: off + off_delta },
+            VmaBacking::KernelBytes { data } => {
+                // Sub-range starts `off_delta` bytes into the parent
+                // VMA → the new backing slice starts that far into
+                // `data` (clamped at `data.len()` so a sub-range
+                // inside the BSS tail is left empty).
+                let skip = (off_delta as usize).min(data.len());
+                VmaBacking::KernelBytes { data: &data[skip..] }
+            }
             other => other,
         };
         Vma {
