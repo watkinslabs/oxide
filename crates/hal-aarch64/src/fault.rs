@@ -17,14 +17,47 @@ macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-irq"))]
 macro_rules! debug_irq { ($($t:tt)*) => {} }
 
-/// Rust-side EL1 fault printer.
+/// Optional fault handler. Default is `default_handler` which
+/// returns `false` (= asm halts). Kernel installs a real handler
+/// via `install_fault_handler` once VMM AddressSpace integration
+/// is in. The returned `bool` is the recovery signal: `true` =
+/// asm `eret`s (CPU retries the faulting instruction); `false` =
+/// asm `wfi`s forever.
+pub type FaultHandler = fn(esr: u64, far: u64, elr: u64) -> bool;
+
+fn default_handler(_esr: u64, _far: u64, _elr: u64) -> bool { false }
+
+static FAULT_HANDLER: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(default_handler as *const () as *mut ());
+
+/// Install a kernel-side fault handler. Returns the previous one.
+/// # SAFETY: caller must guarantee `h` lives for the rest of the
+/// kernel's lifetime; single-CPU pre-init context (no concurrent
+/// faults during the swap).
+/// # C: O(1)
+pub unsafe fn install_fault_handler(h: FaultHandler) -> FaultHandler {
+    let new = h as *const () as *mut ();
+    let prev = FAULT_HANDLER.swap(new, core::sync::atomic::Ordering::AcqRel);
+    // SAFETY: `prev` was installed via this same fn (or the default initialiser) which only writes valid `FaultHandler` values; the transmute is sound under that single-writer invariant.
+    unsafe { core::mem::transmute::<*mut (), FaultHandler>(prev) }
+}
+
+fn current_handler() -> FaultHandler {
+    let p = FAULT_HANDLER.load(core::sync::atomic::Ordering::Acquire);
+    // SAFETY: non-null by initialisation; written only by `install_fault_handler` with valid `FaultHandler` values.
+    unsafe { core::mem::transmute::<*mut (), FaultHandler>(p) }
+}
+
+/// Rust-side EL1 fault printer + handler dispatcher. Returns
+/// `true` if the registered handler chose to recover (= caller
+/// asm should `eret`), `false` to halt.
 ///
 /// # SAFETY: caller is the shared default vector handler. We only
 /// read function arguments; klog uses the global byte sink.
 /// # C: O(constant)
 /// # Ctx: exception, IRQ-off (DAIF set by handler)
 #[no_mangle]
-pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) {
+pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) -> bool {
     debug_irq! {
         let ec = ((esr >> 26) & 0x3f) as u32;        // ESR_EL1.EC bits 26..31
         let iss = esr & 0xff_ffff;                   // ESR_EL1.ISS bits 0..24
@@ -52,6 +85,8 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) {
     }
     #[cfg(not(feature = "debug-irq"))]
     { let _ = (esr, far, elr); }
+
+    (current_handler())(esr, far, elr)
 }
 
 /// Map an `ESR_EL1.EC` value to a short label per ARM ARM

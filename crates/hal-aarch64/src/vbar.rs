@@ -90,12 +90,17 @@ core::arch::global_asm!(
     "    msr daifset, #0xf",   // mask D, A, I, F
     // Reserve a 16-aligned scratch area on the stack for the printer
     // call frame. Prepare ELR_EL1, ESR_EL1, FAR_EL1 in arg regs and
-    // tail-call into the Rust printer; halt on return.
+    // call the Rust printer; w0 returns bool (1 = handled → eret).
+    // ELR_EL1/SPSR_EL1 are preserved across the bl since DAIF.AIF
+    // is masked above so no interrupt can clobber them.
     "    sub  sp, sp, #16",
     "    mrs  x0, esr_el1",
     "    mrs  x1, far_el1",
     "    mrs  x2, elr_el1",
     "    bl   oxide_fault_print_rust",
+    "    add  sp, sp, #16",
+    "    cbz  w0, 1f",         // not handled → wfi forever
+    "    eret",                 // handled → retry faulting instruction
     "1:  wfi",
     "    b 1b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
