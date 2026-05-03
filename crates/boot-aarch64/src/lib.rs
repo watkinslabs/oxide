@@ -98,6 +98,16 @@ pub static LIMINE_HHDM: limine::RequestHeader<limine::HhdmResponse>
         response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
     };
 
+/// MEMMAP request slot per `36§3`.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_MEMMAP: limine::RequestHeader<limine::MemmapResponse>
+    = limine::RequestHeader {
+        id:       limine::MEMMAP_ID,
+        revision: limine::REVISION_0,
+        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    };
+
 use klog::Uart;
 use sync::{Spinlock, Tty as UartClass};
 
@@ -147,6 +157,21 @@ fn boot_emit_pl011(bytes: &[u8]) {
 use core::cell::UnsafeCell;
 use kernel::{BootInfo, BootMemRegion};
 
+/// BSS-resident storage for the parsed Limine memmap. ~6 KiB cost
+/// (256 entries × 24 B); QEMU virt rarely exceeds 16 entries.
+const MAX_BOOT_REGIONS: usize = 256;
+#[repr(C, align(8))]
+struct MemmapStorage(UnsafeCell<[BootMemRegion; MAX_BOOT_REGIONS]>);
+unsafe impl Sync for MemmapStorage {}
+static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
+    BootMemRegion {
+        base_pa: 0,
+        len:     0,
+        kind:    kernel::BootMemKind::Reserved,
+    };
+    MAX_BOOT_REGIONS
+]));
+
 /// Stub boot info. Real impl walks the DTB or EDK2 EFI memory map.
 ///
 /// # SAFETY: returned struct's `memmap_ptr` references a `'static` slice.
@@ -193,32 +218,32 @@ static DTB_PHYS_ADDR: core::sync::atomic::AtomicU64
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn build_boot_info() -> BootInfo {
     // SAFETY: stub returns an owned BootInfo with a static empty
-    // memmap; we layer the HHDM offset on top regardless of DTB
-    // status so the kernel's PMM-setup path can detect "memmap
-    // empty, skip" vs "HHDM unknown, halt".
+    // memmap; we overlay HHDM + memmap from Limine before returning.
     let mut info = unsafe { stub_boot_info() };
-    let p = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
-    if !p.is_null() {
+    let h = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
+    if !h.is_null() {
         // SAFETY: Limine wrote a non-null response pointer; backing
         // struct lives for the rest of boot per `36§3`.
-        info.hhdm_offset = unsafe { (*p).offset };
+        info.hhdm_offset = unsafe { (*h).offset };
+    }
+    let m = LIMINE_MEMMAP.response.load(core::sync::atomic::Ordering::Acquire);
+    if !m.is_null() {
+        // SAFETY: bootloader-owned response per `36§3` ownership
+        // contract; lives for rest of boot.
+        let resp = unsafe { &*m };
+        // SAFETY: MEMMAP_STORAGE is owned by this CPU during boot;
+        // no other path mutates it before kernel_main returns.
+        let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
+        // SAFETY: limine::populate_memmap_into walks resp.entries
+        // per its contract, which the bootloader guarantees.
+        let n = unsafe { limine::populate_memmap_into(storage, resp) };
+        info.memmap_count = n as u32;
+        info.memmap_ptr   = storage.as_ptr();
     }
 
-    let dtb_pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
-    if dtb_pa == 0 {
-        return info;
-    }
-    // SAFETY: bootloader handed `x0 == dtb_pa`; we trust the
-    // `36§4` invariant that the blob is reachable + readable. The
-    // first 40 bytes are the FDT header.
-    let header_view: &[u8] = unsafe {
-        core::slice::from_raw_parts(dtb_pa as *const u8, 40)
-    };
-    if dtb::parse_header(header_view).is_err() {
-        return info;
-    }
-    // /memory property walk lands when the PMM init consumer does;
-    // for now hand kernel_main an empty memmap.
+    // DTB pointer is preserved for future device-tree consumers; not
+    // wired into BootInfo yet.
+    let _ = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
     info
 }
 
