@@ -146,3 +146,21 @@ End-of-session-7 verified-green:
 - `cargo run -p xtask -- spec-lint` clean.
 - `cargo run -p xtask -- test` → 463 passed, 0 failed.
 - `xtask qemu --arch x86_64 --features debug-all` and `--arch aarch64` both reach `boot: kernel ready, halting` with cooperative-scheduler smoke output.
+
+---
+
+## Session 8 (PRs #133 – #134) — 2026-05-03
+
+**Subject**: close the R06 sweep project-wide. Boot-crate klog gating + `code/klog-ungated` spec-lint enforcement.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #133 | `R03-klog-gate-boot-crates` | Apply R06 to `crates/boot-{x86_64,aarch64}/`. Each boot crate declares `debug-boot` + `debug-all` features mirroring `kernel`'s; UART sink install, CPU/MMU dump, and pl011 byte-emit helpers all sit behind `#[cfg(feature = "debug-boot")]` or a `debug_boot!` macro pair. Default builds register no klog sink, so even pre-`kernel_main` lines (`cpu vendor`, `cr0/cr3/cr4/efer`, `midr_el1`, `sctlr/tcr/mair`, `ttbr0/1`) are absent from the binary, not filtered at runtime. |
+| #134 | `C20-spec-lint-klog-ungated` | Implements the lint R06 mandates. `tools/spec-lint/src/code_lint.rs` walks each kernel-crate `.rs` file, tokenising braces / `;` to track per-scope gated state. At each `{`, push gated=true if preceded on the same line by `debug_<sub>!`, the prior line carries `#[cfg(feature = "debug-<sub>")]`, or the parent is gated. Detects every spec-listed klog::* call (`write_raw`, `write_hex_u64`, `write_dec_u64`, `set_byte_sink`; `kinfo!`/`kdebug!`/`kerror!`/`kfatal!`/`klog!`) at the column it appears so single-line `debug_<sub>! { klog::...; }` is correctly recognised. Tracks externally-gated submodules (parent-file `#[cfg(...)] pub mod foo;`); skips `crates/klog/**` (logger impl) and test files. Closes the sweep: drops placeholder `klog::kinfo!("X: init stub");` lines from 20 stub crates, gates `crates/hal-{x86_64,aarch64}/src/fault.rs` exception-printer bodies under a new `debug-irq` feature on each hal crate. |
+
+End-of-session-8 verified-green:
+- `cargo run -p xtask -- spec-lint` clean (`code/klog-ungated` rule live).
+- `cargo run -p xtask -- test` → 463 passed, 0 failed.
+- `xtask kernel --arch {x86_64,aarch64}` builds clean default + `--features debug-all`.
+- `xtask qemu --arch x86_64  --features debug-all` reaches `boot: kernel ready, halting` after the cooperative-scheduler smoke.
+- `xtask qemu --arch aarch64 --features debug-all` same trace, identical structure.
