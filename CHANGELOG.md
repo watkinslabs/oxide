@@ -305,3 +305,23 @@ End-of-session-16 verified-green:
 - `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt + canary smokes pass; ticks unchanged from session 15; both reach `boot: kernel ready, halting`.
 
 End of MmuOps phase: trait surface complete (map/translate/unmap for 4K/2M/1G; flush_va + flush_all_local arch-native). Today's only caller is the device-MMIO mapper (4K-only); broader callers land with the page-fault handler / userspace mmap path.
+
+---
+
+## Session 17 (PRs #156 – #157) — 2026-05-03
+
+**Subject**: MmuOps end-to-end roundtrip smokes (4 KiB + 2 MiB).
+
+| PR | Branch | Lands |
+|---|---|---|
+| #156 | `P1-91-mmuops-smoke` | Kernel-side MmuOps end-to-end roundtrip smoke. Alloc 4 KiB frame from PMM → `MmuOps::map` at `SCRATCH_VA = 0xffff_fd00_0000_0000` (L4 slot 0x1FD; disjoint from HHDM/device/kernel-image) → write 64-bit magic via the mapped VA → `MmuOps::translate` (verify PA round-trip + R\|W flags) → `MmuOps::unmap` → `MmuOps::translate` (verify None) → log `[INFO] mmuops-smoke: ok pa=... magic=...`. Generic over `M: MmuOps`; per-arch entry chooses `X86Mmu` / `ArmMmu`. Both arches now print the success line every boot. |
+| #157 | `P1-92-mmuops-2m-smoke` | Same shape with `PageSize::P2M` and a buddy `Order(9)` PMM allocation. Validates the huge-page MmuOps path landed in P1-89/P1-90 in production. Skips silently if PMM lacks an Order-9 buddy. New `pmm_setup::alloc_contig(order)` helper for the higher-order alloc. Both arches now also print `[INFO] mmuops-smoke 2m: ok pa=... magic=...` every boot. |
+
+End-of-session-17 verified-green:
+- `make lint` clean.
+- `make test` → 478 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` → `mmuops-smoke: ok pa=000000000bf2c000` + `mmuops-smoke 2m: ok pa=000000000dc00000`; preempt + canary smokes pass; halts clean.
+- `make qemu-arm --features debug-all` → `mmuops-smoke: ok pa=000000004a6f3000` + `mmuops-smoke 2m: ok pa=000000004e400000`; same.
+
+The MmuOps trait is now exercised in production for both 4 KiB and 2 MiB leaves on every boot, on both arches.
