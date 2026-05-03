@@ -284,10 +284,12 @@ pub unsafe extern "C" fn _start(dtb_phys: u64) -> ! {
     let stack_top = unsafe {
         (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE)
     };
-    // SAFETY: stack_top is one past KERNEL_STACK; install via `mov sp` before any call gives us a valid kernel stack of STACK_SIZE bytes growing down. `_start_rust` is extern "C" + noreturn; `brk` after the call hard-guards accidental return.
+    // SAFETY: stack_top is one past KERNEL_STACK; we force SPSel=1 so SP_EL1 (auto-selected on EL1 exception entry) points at our kernel stack — Limine v12 aarch64 may hand off with SPSel=0; `_start_rust` is extern "C" + noreturn; `brk` hard-guards accidental return.
     unsafe {
         core::arch::asm!(
+            "msr spsel, #1",
             "mov sp, {sp}",
+            "isb",
             "bl  {next}",
             "brk #0",
             sp   = in(reg) stack_top,
