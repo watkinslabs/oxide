@@ -98,6 +98,52 @@ impl Context for ContextAArch64 {
         }
     }
 
+    /// Build a kernel-thread context whose saved kernel stack
+    /// carries a synthetic IRQ frame matching the layout the IRQ
+    /// epilogue (`oxide_irq_resume_user`) expects. Layout pinned in
+    /// `14§R07`; total scaffold = 192 B from `Context.sp` upward:
+    ///
+    ///   [sp+0x000..0x0a0]  saved x0..x18 + x29 + x30 (22 × 8 B, zero)
+    ///   [sp+0x0b0]         saved ELR_EL1  = oxide_trampoline_kernel
+    ///   [sp+0x0b8]         saved SPSR_EL1 = 0x145 (EL1h, DAIF.AF mask, I unmasked)
+    ///
+    /// `Context.lr` = `oxide_irq_resume_user` so
+    /// `oxide_context_switch`'s `ret` lands in the shared IRQ
+    /// epilogue. `x19 = entry`, `x20 = arg` per the trampoline ABI;
+    /// the GP epilogue restores x0..x18 + x29 + x30 (zeros) but
+    /// leaves x19/x20 as `Context::switch` set them, so the
+    /// trampoline reads them correctly post-eret.
+    ///
+    /// # C: O(1)
+    fn new_kernel_with_irq_frame(
+        stack_top: *mut u8,
+        entry: extern "C" fn(usize) -> !,
+        arg: usize,
+    ) -> Self {
+        // SAFETY: caller asserts `stack_top` is the high end of a
+        // writable, 16-byte-aligned kernel stack of at least 192 B.
+        // We zero offsets 0..0xb0 (GPs) and write ELR/SPSR at 0xb0/0xb8.
+        let sp = unsafe {
+            let base = stack_top.cast::<u8>().sub(192) as *mut u64;
+            for i in 0..22 { base.add(i).write(0); }
+            // ELR_EL1 = trampoline (offset 176 = idx 22)
+            base.add(22).write(trampoline_kernel_addr());
+            // SPSR_EL1 = 0x145: M[3:0]=EL1h(0101), DAIF.AF mask, IRQ unmasked.
+            base.add(23).write(0x145);
+            base
+        };
+        Self {
+            sp:    sp as u64,
+            x19:   entry as usize as u64,
+            x20:   arg as u64,
+            x21: 0, x22: 0, x23: 0, x24: 0,
+            x25: 0, x26: 0, x27: 0, x28: 0,
+            x29: 0,
+            lr:    crate::vbar::irq_resume_user_addr(),
+            tpidr: 0,
+        }
+    }
+
     /// Build a context for first-entry into user-mode. The actual
     /// `eret` to EL0 happens in the syscall/IRQ-exit asm in `21§*` —
     /// this stages user_ip in x19 and user_sp in x20 for the user
@@ -183,6 +229,25 @@ mod tests {
         assert_eq!(ctx.x19, 0x4000_1234);
         assert_eq!(ctx.x20, 0x7fff_aaaa);
         assert_eq!(ctx.sp,  top as u64);
+    }
+
+    #[test]
+    fn new_kernel_with_irq_frame_layout() {
+        // `14§R07` pins the 192-byte on-stack scaffold. Walk every
+        // slot from sp upward; any reorder of the IRQ stub's
+        // expectations breaks here loud.
+        let mut stack = alloc::vec![0u8; 4096];
+        let top = stack.as_mut_ptr_range().end;
+        let ctx = ContextAArch64::new_kernel_with_irq_frame(top, dummy_entry, 0xC0FFEE);
+        assert_eq!(ctx.x19, dummy_entry as usize as u64);
+        assert_eq!(ctx.x20, 0xC0FFEE);
+        assert_eq!(ctx.sp as usize, (top as usize) - 192);
+        assert_eq!(ctx.lr,  crate::vbar::irq_resume_user_addr());
+        // SAFETY: we own `stack`; sp..sp+192 lies inside the buffer.
+        let read = |off: usize| -> u64 { unsafe { *((ctx.sp as usize + off) as *const u64) } };
+        for i in 0..22 { assert_eq!(read(i * 8), 0, "GP slot {} non-zero", i); }
+        assert_eq!(read(0xb0), super::trampoline_kernel_addr(), "saved ELR_EL1");
+        assert_eq!(read(0xb8), 0x145,                            "saved SPSR_EL1");
     }
 
     #[test]
