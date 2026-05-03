@@ -49,7 +49,6 @@ pub(crate) type StubResult<T> = core::result::Result<T, Error>;
 /// # C: O(N_pfn) once at boot
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init() -> StubResult<()> {
-    klog::kinfo!("modules: init stub");
     Err(Error::NotImplemented)
 }
 
