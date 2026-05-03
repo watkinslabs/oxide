@@ -320,6 +320,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
         // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
         unsafe { mmuops_smoke::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+
+        // User-page mapping smoke (P1-95 fix validation): map a 4 KiB
+        // user VA with USER|EXEC|READ, verify translate round-trips
+        // the USER+EXEC flags through real CR3 walk + interior U=1
+        // propagation. CPL=3 access lands with P1-82.
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        // SAFETY: PMM + MmuOps state initialised above; USER_VA disjoint from kernel-half mappings; single-CPU pre-init.
+        unsafe { user_map_smoke::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        // SAFETY: PMM + MmuOps state initialised above; USER_VA disjoint from kernel-half mappings; single-CPU pre-init.
+        unsafe { user_map_smoke::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
     }
 
 
@@ -429,6 +440,10 @@ pub mod device_map_smoke;
 // MmuOps end-to-end map/translate/unmap roundtrip smoke.
 #[cfg(target_os = "oxide-kernel")]
 pub mod mmuops_smoke;
+
+// User-page mapping smoke validating the P1-95 interior-U=1 fix.
+#[cfg(target_os = "oxide-kernel")]
+pub mod user_map_smoke;
 
 
 /// Park the CPU forever. On the kernel target, uses the per-arch
