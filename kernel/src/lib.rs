@@ -481,9 +481,10 @@ pub mod user_map_smoke;
 pub mod pf_recover_smoke;
 
 // Syscall dispatch glue: kernel-side `oxide_syscall_dispatch` symbol
-// the hal-x86_64 entry stub references by name. Binds the asm path
-// to `syscall::dispatch`.
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+// both arches' asm stubs reference by name. Binds the asm path to
+// `syscall::dispatch`. arch-specific interceptions live behind cfg
+// gates inside the module.
+#[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue;
 
 // First userspace `iretq` smoke (P1-82). x86_64-only.

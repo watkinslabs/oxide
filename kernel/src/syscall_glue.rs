@@ -1,22 +1,32 @@
-// Glue between the x86_64 syscall asm stub (in `hal-x86_64/syscall.rs`)
-// and the architecture-neutral `syscall::dispatch` table per `15§4`.
+// Glue between the per-arch syscall asm stub and the architecture-
+// neutral `syscall::dispatch` table per `15§4`.
 //
-// The asm stub references `oxide_syscall_dispatch` by symbol;
+// Both arches' asm stubs reference `oxide_syscall_dispatch` by symbol;
 // `extern "C"` + `#[no_mangle]` here makes the linker resolve it to
 // the kernel-side wrapper that:
 //   1. packs the asm-shuffled regs into `SyscallArgs`,
 //   2. calls `syscall::dispatch(nr, &args) -> i64`,
-//   3. returns the result as `u64` (rax) per `15§1.3` so a libc-style
-//      `rv > -4096UL` failure check works userspace-side.
+//   3. returns the result as `u64` placed in rax (x86) / x0 (arm)
+//      per `15§1.3` so a libc-style `rv > -4096UL` failure check
+//      works userspace-side.
+//
+// arch-specific interceptions (e.g., x86 `sys_arch_prctl`) live
+// here behind cfg gates because they need to call into `hal-<arch>`.
 
-#![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+#![cfg(target_os = "oxide-kernel")]
 
 use syscall::{dispatch, SyscallArgs};
+
+#[cfg(target_arch = "x86_64")]
 use syscall::errno::Errno;
+#[cfg(target_arch = "x86_64")]
 use hal::USER_VA_END;
 
+#[cfg(target_arch = "x86_64")]
 const SYSCALL_NR_ARCH_PRCTL: u64 = 158;
+#[cfg(target_arch = "x86_64")]
 const ARCH_SET_FS: u64 = 0x1002;
+#[cfg(target_arch = "x86_64")]
 const ARCH_GET_FS: u64 = 0x1003;
 
 /// x86-specific syscall handled in the kernel-side glue (since
@@ -24,6 +34,7 @@ const ARCH_GET_FS: u64 = 0x1003;
 /// Only `ARCH_SET_FS` and `ARCH_GET_FS` are implemented; other
 /// codes return -EINVAL. v1 single-thread → ARCH_GET_FS reads
 /// IA32_FS_BASE via rdmsr (added if needed); v1 just returns 0.
+#[cfg(target_arch = "x86_64")]
 fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
     let code = args.a0;
     let val  = args.a1;
@@ -60,10 +71,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
     // Arch-specific syscalls handled here (kernel can call hal);
     // others fall through to the arch-neutral dispatch table.
+    #[cfg(target_arch = "x86_64")]
     let rv = match nr {
         SYSCALL_NR_ARCH_PRCTL => kernel_arch_prctl(&args),
         _ => dispatch(nr as u32, &args),
     };
+    #[cfg(target_arch = "aarch64")]
+    let rv = dispatch(nr as u32, &args);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
         klog::write_hex_u64(nr);
