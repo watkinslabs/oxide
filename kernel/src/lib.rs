@@ -96,11 +96,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     unsafe { GLOBAL_ALLOC.init_static() };
 
     klog::kinfo!("init started");
-    if info.boot_ns != 0 {
-        klog::write_raw(b"[INFO]  boot_ns=");
-        klog::write_hex_u64(info.boot_ns);
-        klog::write_raw(b"\n");
-    }
     if info.hhdm_offset != 0 {
         klog::kinfo!("hhdm: present");
     } else {
@@ -195,22 +190,24 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
 
-    // Smoke test: round-trip a `vmm::VmaTree` through the heap so a
-    // boot trace surfaces any allocator-vs-BTreeMap incompatibility
-    // before further subsystems wire up.
+    // kalloc smoke: insert a VMA into a `vmm::VmaTree`, exercising
+    // the global allocator's `BTreeMap` path.
     #[cfg(target_os = "oxide-kernel")]
     {
         let mut tree = vmm::VmaTree::new();
         // SAFETY: addresses are within the user-VA range (0x1000 < USER_VA_END).
         let start = hal::UserVirtAddr::new(0x1000).expect("test addr in user range");
         let end   = hal::UserVirtAddr::new(0x2000).expect("test addr in user range");
-        let _ = tree.insert(vmm::Vma::new(
+        if tree.insert(vmm::Vma::new(
             start, end,
             vmm::VmaProt::READ,
             vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
             vmm::VmaBacking::Anonymous,
-        ));
-        let _ = core::hint::black_box(tree.len());
+        )).is_ok() {
+            klog::kinfo!("kalloc-smoke: VmaTree insert ok");
+        } else {
+            klog::kerror!("kalloc-smoke: VmaTree insert failed");
+        }
     }
 
     halt_forever()
