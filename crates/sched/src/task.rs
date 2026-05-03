@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, Ordering};
@@ -97,6 +98,14 @@ pub struct Task {
     /// concurrent CPU views (read-only on hot paths).
     pub kernel_stack: AtomicPtr<u8>,
 
+    /// Backing storage for the kernel stack — allocated by the
+    /// spawn path, freed when the `Arc<Task>` drops. `None` for
+    /// tasks that don't own a stack (idle, boot frame, hosted tests
+    /// constructing Tasks for runqueue logic only). The pointer
+    /// in `kernel_stack` aliases `stack[stack.len()]` (one past
+    /// the last byte = top-of-stack on x86_64 / aarch64).
+    pub stack: Option<Box<[u8]>>,
+
     /// Opaque storage for the per-arch HAL `Context` (per `14§5.2`/
     /// `14§6.2`). Sized to `ARCH_CTX_SIZE`. Aligned on a u64 so the
     /// arch-specific Context's first field (an `rsp` / `sp`) sits
@@ -170,7 +179,27 @@ impl Task {
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
             mm,
+            stack: None,
         }
+    }
+
+    /// Attach a kernel stack to this task. Stores the top-of-stack
+    /// (one past the last byte) in `kernel_stack` and takes
+    /// ownership of the backing `Box<[u8]>` so it stays alive for
+    /// the task's lifetime.
+    /// # SAFETY: caller is the spawn path; this `Task` is not yet
+    /// scheduled (no concurrent reader of `kernel_stack`).
+    /// # C: O(1)
+    pub unsafe fn install_stack(&mut self, stack: Box<[u8]>) {
+        let len = stack.len();
+        self.stack = Some(stack);
+        // Recompute top from the freshly stored Box. Borrowing
+        // through `as_mut()` is sound because we just took ownership.
+        let s = self.stack.as_mut().expect("just-stored");
+        // SAFETY: `s.as_mut_ptr().add(len)` is the one-past-the-last
+        // byte ptr — well-defined provenance per std slice semantics.
+        let top = unsafe { s.as_mut_ptr().add(len) };
+        self.kernel_stack.store(top, Ordering::Release);
     }
 
     /// Cast the opaque arch-context buffer to `*mut C` for a
