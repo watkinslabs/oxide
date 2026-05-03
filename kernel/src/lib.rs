@@ -16,6 +16,26 @@
 
 extern crate alloc;
 
+// Per-subsystem debug-trace gates per `04§3` (R05). Each macro
+// expands to its body when the matching `debug-<sub>` Cargo feature
+// is on, else to nothing — the call site is absent from the binary.
+#[cfg(feature = "debug-pmm")]
+macro_rules! debug_pmm  { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-pmm"))]
+macro_rules! debug_pmm  { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-vmm")]
+macro_rules! debug_vmm  { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-vmm"))]
+macro_rules! debug_vmm  { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-irq")]
+macro_rules! debug_irq  { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-irq"))]
+macro_rules! debug_irq  { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-acpi")]
+macro_rules! debug_acpi { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-acpi"))]
+macro_rules! debug_acpi { ($($t:tt)*) => {} }
+
 pub mod acpi;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
@@ -115,24 +135,28 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kinfo!("hhdm: absent");
     }
     if info.rsdp_pa != 0 {
-        klog::write_raw(b"[INFO]  rsdp: ");
-        klog::write_hex_u64(info.rsdp_pa);
-        klog::write_raw(b"\n");
-        // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
-        // for the RSDP (HHDM-mapped); the bootloader keeps the
-        // backing memory alive past kernel handoff per `36§3`.
-        unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
+        debug_acpi! {
+            klog::write_raw(b"[INFO]  rsdp: ");
+            klog::write_hex_u64(info.rsdp_pa);
+            klog::write_raw(b"\n");
+            // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
+            // for the RSDP (HHDM-mapped); the bootloader keeps the
+            // backing memory alive past kernel handoff per `36§3`.
+            unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
+        }
     } else {
         klog::kinfo!("rsdp: absent");
     }
     if info.memmap_count != 0 {
         klog::kinfo!("memmap: present");
-        // SAFETY: kernel_main fn-contract guarantees memmap_ptr is a
-        // valid slice of length memmap_count for this call.
-        let regions: &[BootMemRegion] = unsafe {
-            core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
-        };
-        log_memmap(regions);
+        debug_pmm! {
+            // SAFETY: kernel_main fn-contract guarantees memmap_ptr is a
+            // valid slice of length memmap_count for this call.
+            let regions: &[BootMemRegion] = unsafe {
+                core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
+            };
+            log_memmap(regions);
+        }
     } else {
         klog::kinfo!("memmap: absent");
     }
@@ -155,92 +179,95 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // machinery works after init. Removed once a real consumer
     // (slab) wires in.
     if let Ok(p) = pmm {
-        match p.alloc(pmm::Order(0)) {
-            Ok(pfn) => {
-                klog::kinfo!("pmm-smoke: alloc(0) ok");
-                // SAFETY: pfn was just returned by alloc(0); free is
-                // the matching counterpart and is single-threaded
-                // here per pre-init contract.
-                unsafe { p.free(pfn, pmm::Order(0)); }
-                klog::kinfo!("pmm-smoke: free(0) ok");
-            }
-            Err(_) => klog::kerror!("pmm-smoke: alloc(0) failed"),
-        }
-        // Memory summary: `pmm: <free_mib> MiB free, <alloc> page(s) reserved`.
-        let free_pages = p.free_pages();
-        let alloc_pages = p.allocated_pages();
-        // 4 KiB pages -> MiB: pages * 4096 / (1024*1024) = pages / 256.
-        let free_mib = free_pages / 256;
-        klog::write_raw(b"[INFO]  pmm: ");
-        klog::write_dec_u64(free_mib);
-        klog::write_raw(b" MiB free, ");
-        klog::write_dec_u64(alloc_pages);
-        klog::write_raw(b" page(s) reserved\n");
-
-        // PMM stress: alloc 64 order-0 pages, free in reverse, verify
-        // free_pages count matches the baseline. Catches simple
-        // bookkeeping bugs the single-page smoke can't.
-        const STRESS_N: usize = 64;
-        let baseline = p.free_pages();
-        let mut buf: [hal::Pfn; STRESS_N] = [hal::Pfn(0); STRESS_N];
-        let mut got = 0usize;
-        while got < STRESS_N {
+        debug_pmm! {
             match p.alloc(pmm::Order(0)) {
-                Ok(pfn) => { buf[got] = pfn; got += 1; }
-                Err(_)  => break,
+                Ok(pfn) => {
+                    klog::kinfo!("pmm-smoke: alloc(0) ok");
+                    // SAFETY: pfn was just returned by alloc(0); free is
+                    // the matching counterpart and is single-threaded
+                    // here per pre-init contract.
+                    unsafe { p.free(pfn, pmm::Order(0)); }
+                    klog::kinfo!("pmm-smoke: free(0) ok");
+                }
+                Err(_) => klog::kerror!("pmm-smoke: alloc(0) failed"),
             }
-        }
-        // SAFETY: every pfn in `buf[..got]` was returned by alloc(0)
-        // above and not yet freed; reverse-order frees match the
-        // alloc count exactly.
-        unsafe {
-            while got > 0 {
-                got -= 1;
-                p.free(buf[got], pmm::Order(0));
+            // Memory summary: `pmm: <free_mib> MiB free, <alloc> page(s) reserved`.
+            let free_pages = p.free_pages();
+            let alloc_pages = p.allocated_pages();
+            // 4 KiB pages -> MiB: pages * 4096 / (1024*1024) = pages / 256.
+            let free_mib = free_pages / 256;
+            klog::write_raw(b"[INFO]  pmm: ");
+            klog::write_dec_u64(free_mib);
+            klog::write_raw(b" MiB free, ");
+            klog::write_dec_u64(alloc_pages);
+            klog::write_raw(b" page(s) reserved\n");
+
+            // PMM stress: alloc 64 order-0 pages, free in reverse, verify
+            // free_pages count matches the baseline. Catches simple
+            // bookkeeping bugs the single-page smoke can't.
+            const STRESS_N: usize = 64;
+            let baseline = p.free_pages();
+            let mut buf: [hal::Pfn; STRESS_N] = [hal::Pfn(0); STRESS_N];
+            let mut got = 0usize;
+            while got < STRESS_N {
+                match p.alloc(pmm::Order(0)) {
+                    Ok(pfn) => { buf[got] = pfn; got += 1; }
+                    Err(_)  => break,
+                }
             }
-        }
-        let after = p.free_pages();
-        if after == baseline {
-            klog::kinfo!("pmm-stress: 64x alloc/free balanced");
-        } else {
-            klog::kerror!("pmm-stress: free_pages drift");
+            // SAFETY: every pfn in `buf[..got]` was returned by alloc(0)
+            // above and not yet freed; reverse-order frees match the
+            // alloc count exactly.
+            unsafe {
+                while got > 0 {
+                    got -= 1;
+                    p.free(buf[got], pmm::Order(0));
+                }
+            }
+            let after = p.free_pages();
+            if after == baseline {
+                klog::kinfo!("pmm-stress: 64x alloc/free balanced");
+            } else {
+                klog::kerror!("pmm-stress: free_pages drift");
+            }
+
+            // Multi-order stress: one alloc/free per order 0..=10. Exercises
+            // the split-and-merge paths the single-order stress can't.
+            let baseline_mo = p.free_pages();
+            let mut order_buf: [(hal::Pfn, u8); 11] = [(hal::Pfn(0), 0); 11];
+            let mut got_mo = 0usize;
+            for o in 0u8..=10 {
+                match p.alloc(pmm::Order(o)) {
+                    Ok(pfn) => { order_buf[got_mo] = (pfn, o); got_mo += 1; }
+                    Err(_)  => break,
+                }
+            }
+            // SAFETY: each pair in `order_buf[..got_mo]` came from a matching
+            // `alloc(o)` above; we free with the same order, single-threaded.
+            unsafe {
+                while got_mo > 0 {
+                    got_mo -= 1;
+                    let (pfn, o) = order_buf[got_mo];
+                    p.free(pfn, pmm::Order(o));
+                }
+            }
+            if p.free_pages() == baseline_mo {
+                klog::kinfo!("pmm-stress: orders 0..=10 balanced");
+            } else {
+                klog::kerror!("pmm-stress: multi-order drift");
+            }
+            // Re-emit the summary to make the round-trip visible in the trace.
+            klog::write_raw(b"[INFO]  pmm: ");
+            klog::write_dec_u64(p.free_pages() / 256);
+            klog::write_raw(b" MiB free post-stress, ");
+            klog::write_dec_u64(p.allocated_pages());
+            klog::write_raw(b" page(s) reserved\n");
         }
 
-        // Multi-order stress: one alloc/free per order 0..=10. Exercises
-        // the split-and-merge paths the single-order stress can't.
-        let baseline_mo = p.free_pages();
-        let mut order_buf: [(hal::Pfn, u8); 11] = [(hal::Pfn(0), 0); 11];
-        let mut got_mo = 0usize;
-        for o in 0u8..=10 {
-            match p.alloc(pmm::Order(o)) {
-                Ok(pfn) => { order_buf[got_mo] = (pfn, o); got_mo += 1; }
-                Err(_)  => break,
-            }
-        }
-        // SAFETY: each pair in `order_buf[..got_mo]` came from a matching
-        // `alloc(o)` above; we free with the same order, single-threaded.
-        unsafe {
-            while got_mo > 0 {
-                got_mo -= 1;
-                let (pfn, o) = order_buf[got_mo];
-                p.free(pfn, pmm::Order(o));
-            }
-        }
-        if p.free_pages() == baseline_mo {
-            klog::kinfo!("pmm-stress: orders 0..=10 balanced");
-        } else {
-            klog::kerror!("pmm-stress: multi-order drift");
-        }
-        // Re-emit the summary to make the round-trip visible in the trace.
-        klog::write_raw(b"[INFO]  pmm: ");
-        klog::write_dec_u64(p.free_pages() / 256);
-        klog::write_raw(b" MiB free post-stress, ");
-        klog::write_dec_u64(p.allocated_pages());
-        klog::write_raw(b" page(s) reserved\n");
-
-        // Device-mapping smoke: install a Device-attr 4 KiB MMIO
-        // page using a PMM-backed frame allocator, then read one
-        // 32-bit register from the new VA.
+        // Device bring-up: install Device-attr 4 KiB MMIO mappings
+        // via the PMM-backed mapper, enable LAPIC/GIC/UART. The
+        // bring-up is always-on; per-step diagnostic logs are gated
+        // by per-subsystem `debug-vmm`/`debug-irq` features inside.
         #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
         smoke_device_map_x86(p, info.hhdm_offset);
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -273,6 +300,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 }
 
 /// Map `BootMemKind` to a short ASCII tag for memmap dumps.
+#[cfg(feature = "debug-pmm")]
 fn kind_tag(k: BootMemKind) -> &'static [u8] {
     match k {
         BootMemKind::Usable         => b"USABLE",
@@ -287,6 +315,7 @@ fn kind_tag(k: BootMemKind) -> &'static [u8] {
 }
 
 /// Emit one line per memmap region. Cheap O(N) at boot.
+#[cfg(feature = "debug-pmm")]
 fn log_memmap(regions: &[BootMemRegion]) {
     let mut usable_bytes: u64 = 0;
     let mut reserved_bytes: u64 = 0;
@@ -350,12 +379,14 @@ fn smoke_device_map_x86(
     };
     match r {
         Ok(()) => {
-            // SAFETY: HPET_VA was just mapped Device-attr; the read is
-            // a volatile MMIO load of HPET_GCAP_ID at offset 0.
-            let cap = unsafe { core::ptr::read_volatile(HPET_VA as *const u32) };
-            klog::write_raw(b"[INFO]  device-map: hpet cap=");
-            klog::write_hex_u64(cap as u64);
-            klog::write_raw(b"\n");
+            debug_vmm! {
+                // SAFETY: HPET_VA was just mapped Device-attr; the read is
+                // a volatile MMIO load of HPET_GCAP_ID at offset 0.
+                let cap = unsafe { core::ptr::read_volatile(HPET_VA as *const u32) };
+                klog::write_raw(b"[INFO]  device-map: hpet cap=");
+                klog::write_hex_u64(cap as u64);
+                klog::write_raw(b"\n");
+            }
         }
         Err(_) => klog::kerror!("device-map: x86 map_device_4k failed"),
     }
@@ -374,39 +405,41 @@ fn smoke_device_map_x86(
             let s = unsafe { lapic::enable(LAPIC_VA) };
             match s {
                 lapic::LapicStatus::AlreadyOn => klog::kinfo!("lapic: already on"),
-                lapic::LapicStatus::Enabled { apic_id, version } => {
-                    klog::write_raw(b"[INFO]  lapic: enabled apic_id=");
-                    klog::write_dec_u64(apic_id as u64);
-                    klog::write_raw(b" version=");
-                    klog::write_hex_u64(version as u64);
-                    klog::write_raw(b"\n");
-                    // Polled-timer smoke: verify count register decrements.
-                    // SAFETY: lapic::enable just succeeded so LAPIC is live.
-                    if let Some((a, b)) = unsafe { lapic::timer_smoke(0xFFFF_FFFF) } {
-                        klog::write_raw(b"[INFO]  lapic: timer ");
-                        klog::write_hex_u64(a as u64);
-                        klog::write_raw(b" -> ");
-                        klog::write_hex_u64(b as u64);
-                        klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
+                lapic::LapicStatus::Enabled { apic_id: _apic_id, version: _version } => {
+                    debug_irq! {
+                        klog::write_raw(b"[INFO]  lapic: enabled apic_id=");
+                        klog::write_dec_u64(_apic_id as u64);
+                        klog::write_raw(b" version=");
+                        klog::write_hex_u64(_version as u64);
+                        klog::write_raw(b"\n");
+                        // Polled-timer smoke: verify count register decrements.
+                        // SAFETY: lapic::enable just succeeded so LAPIC is live.
+                        if let Some((a, b)) = unsafe { lapic::timer_smoke(0xFFFF_FFFF) } {
+                            klog::write_raw(b"[INFO]  lapic: timer ");
+                            klog::write_hex_u64(a as u64);
+                            klog::write_raw(b" -> ");
+                            klog::write_hex_u64(b as u64);
+                            klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
+                        }
+                        // Periodic timer + STI: take real timer IRQs at
+                        // vec 0x40 for a brief observation window.
+                        let pre = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                        // SAFETY: LAPIC enabled, IDT[0x40] -> IRQ stub
+                        // (per #124), oxide_irq_dispatch handles EOI.
+                        if unsafe { lapic::timer_periodic(1_000_000) } {
+                            // SAFETY: STI legal at CPL=0; pairs with the
+                            // CLI below; ticks fire during the spin.
+                            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+                            for _ in 0..10_000_000 { core::hint::spin_loop(); }
+                            // SAFETY: CLI restores the pre-STI state
+                            // (IF clear) before further bring-up steps.
+                            unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+                        }
+                        let post = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+                        klog::write_raw(b"[INFO]  lapic: timer ticks=");
+                        klog::write_dec_u64(post.wrapping_sub(pre));
+                        klog::write_raw(b"\n");
                     }
-                    // Periodic timer + STI: take real timer IRQs at
-                    // vec 0x40 for a brief observation window.
-                    let pre = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                    // SAFETY: LAPIC enabled, IDT[0x40] -> IRQ stub
-                    // (per #124), oxide_irq_dispatch handles EOI.
-                    if unsafe { lapic::timer_periodic(1_000_000) } {
-                        // SAFETY: STI legal at CPL=0; pairs with the
-                        // CLI below; ticks fire during the spin.
-                        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-                        for _ in 0..10_000_000 { core::hint::spin_loop(); }
-                        // SAFETY: CLI restores the pre-STI state
-                        // (IF clear) before further bring-up steps.
-                        unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
-                    }
-                    let post = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-                    klog::write_raw(b"[INFO]  lapic: timer ticks=");
-                    klog::write_dec_u64(post.wrapping_sub(pre));
-                    klog::write_raw(b"\n");
                 }
             }
         }
@@ -444,11 +477,13 @@ fn smoke_device_map_arm(
     };
     match r {
         Ok(()) => {
-            // SAFETY: GICD_VA was just mapped Device-nGnRnE; read GICD_TYPER at offset 4.
-            let typer = unsafe { core::ptr::read_volatile((GICD_VA + 0x4) as *const u32) };
-            klog::write_raw(b"[INFO]  device-map: gicd typer=");
-            klog::write_hex_u64(typer as u64);
-            klog::write_raw(b"\n");
+            debug_vmm! {
+                // SAFETY: GICD_VA was just mapped Device-nGnRnE; read GICD_TYPER at offset 4.
+                let typer = unsafe { core::ptr::read_volatile((GICD_VA + 0x4) as *const u32) };
+                klog::write_raw(b"[INFO]  device-map: gicd typer=");
+                klog::write_hex_u64(typer as u64);
+                klog::write_raw(b"\n");
+            }
         }
         Err(_) => klog::kerror!("device-map: arm map_device_4k failed"),
     }
@@ -464,23 +499,25 @@ fn smoke_device_map_arm(
         let s = unsafe { gic::enable(GICD_VA, GICC_VA) };
         match s {
             gic::GicStatus::AlreadyOn => klog::kinfo!("gic: already on"),
-            gic::GicStatus::Enabled { typer, gicd_iidr, gicc_iidr } => {
-                klog::write_raw(b"[INFO]  gic: enabled typer=");
-                klog::write_hex_u64(typer as u64);
-                klog::write_raw(b" gicd_iidr=");
-                klog::write_hex_u64(gicd_iidr as u64);
-                klog::write_raw(b" gicc_iidr=");
-                klog::write_hex_u64(gicc_iidr as u64);
-                klog::write_raw(b"\n");
-                // Polled-timer smoke: virtual generic-timer
-                // counts down from 0xFFFF_FFFF over a brief spin.
-                // SAFETY: timer is unprivileged sysreg-only; no IRQ delivery (IMASK set).
-                if let Some((a, b)) = unsafe { arm_timer::timer_smoke(0xFFFF_FFFF) } {
-                    klog::write_raw(b"[INFO]  arm-timer: tval ");
-                    klog::write_hex_u64(a as u64);
-                    klog::write_raw(b" -> ");
-                    klog::write_hex_u64(b as u64);
-                    klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
+            gic::GicStatus::Enabled { typer: _typer, gicd_iidr: _gicd_iidr, gicc_iidr: _gicc_iidr } => {
+                debug_irq! {
+                    klog::write_raw(b"[INFO]  gic: enabled typer=");
+                    klog::write_hex_u64(_typer as u64);
+                    klog::write_raw(b" gicd_iidr=");
+                    klog::write_hex_u64(_gicd_iidr as u64);
+                    klog::write_raw(b" gicc_iidr=");
+                    klog::write_hex_u64(_gicc_iidr as u64);
+                    klog::write_raw(b"\n");
+                    // Polled-timer smoke: virtual generic-timer
+                    // counts down from 0xFFFF_FFFF over a brief spin.
+                    // SAFETY: timer is unprivileged sysreg-only; no IRQ delivery (IMASK set).
+                    if let Some((a, b)) = unsafe { arm_timer::timer_smoke(0xFFFF_FFFF) } {
+                        klog::write_raw(b"[INFO]  arm-timer: tval ");
+                        klog::write_hex_u64(a as u64);
+                        klog::write_raw(b" -> ");
+                        klog::write_hex_u64(b as u64);
+                        klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
+                    }
                 }
             }
         }
@@ -504,6 +541,69 @@ fn smoke_device_map_arm(
             klog::kinfo!("pl011: switched klog sink to real UART");
         }
         Err(_) => klog::kerror!("device-map: pl011 map_device_4k failed"),
+    }
+
+    // ARM virtual generic-timer IRQ smoke. Pure diagnostic — gated.
+    // Production timer arming will live alongside scheduler bring-up.
+    debug_irq! {
+        let pre = gic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+        // SAFETY: GIC is mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
+        unsafe { gic::enable_intid(27); }
+        // SAFETY: timer sysregs are unprivileged at EL1; INTID 27 was just enabled at the distributor.
+        unsafe { arm_timer::timer_periodic(10_000); }
+        // SAFETY: opening DAIF.I lets the GIC deliver the CNTV line via VBAR_EL1[0x280] → oxide_arm_irq_dispatch.
+        unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
+        for _ in 0..2_000_000 { core::hint::spin_loop(); }
+        // Mid-spin diag: ISTATUS in CNTV_CTL, GICD_ISPENDR0 PPI bits, DAIF.
+        let (mid_ctl, mid_daif): (u64, u64);
+        // SAFETY: pure mrs reads of unprivileged sysregs.
+        unsafe {
+            core::arch::asm!("mrs {v}, cntv_ctl_el0", v = out(reg) mid_ctl, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mrs {v}, daif", v = out(reg) mid_daif, options(nomem, nostack, preserves_flags));
+        }
+        // SAFETY: GICD was mapped Device-attr; ISPENDR0 + ISACTIVER0 are within the 4 KiB.
+        let (ispend, isactive) = unsafe {
+            (
+                core::ptr::read_volatile((GICD_VA + 0x200) as *const u32),
+                core::ptr::read_volatile((GICD_VA + 0x300) as *const u32),
+            )
+        };
+        klog::write_raw(b"[INFO]  arm-timer: mid ctl=");
+        klog::write_hex_u64(mid_ctl);
+        klog::write_raw(b" daif=");
+        klog::write_hex_u64(mid_daif);
+        klog::write_raw(b" ispend0=");
+        klog::write_hex_u64(ispend as u64);
+        klog::write_raw(b" isactive0=");
+        klog::write_hex_u64(isactive as u64);
+        klog::write_raw(b"\n");
+        for _ in 0..8_000_000 { core::hint::spin_loop(); }
+        // SAFETY: re-mask before disarming the timer to avoid a spurious tick during teardown.
+        unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: disable CNTV (CTL=0) so no further line assertion.
+        unsafe {
+            let off: u64 = 0;
+            core::arch::asm!("msr cntv_ctl_el0, {c}", c = in(reg) off, options(nomem, nostack, preserves_flags));
+        }
+        let post = gic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+        let (daif, ctl, vbar): (u64, u64, u64);
+        // SAFETY: mrs of unprivileged DAIF / CNTV_CTL / VBAR_EL1; pure reads, no memory effect.
+        unsafe {
+            core::arch::asm!("mrs {v}, daif", v = out(reg) daif, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mrs {v}, cntv_ctl_el0", v = out(reg) ctl, options(nomem, nostack, preserves_flags));
+            core::arch::asm!("mrs {v}, vbar_el1", v = out(reg) vbar, options(nomem, nostack, preserves_flags));
+        }
+        klog::write_raw(b"[INFO]  arm-timer: irq ticks=");
+        klog::write_dec_u64(post.wrapping_sub(pre));
+        klog::write_raw(b" last_intid=");
+        klog::write_hex_u64(gic::LAST_INTID.load(core::sync::atomic::Ordering::Relaxed) as u64);
+        klog::write_raw(b" daif=");
+        klog::write_hex_u64(daif);
+        klog::write_raw(b" cntv_ctl=");
+        klog::write_hex_u64(ctl);
+        klog::write_raw(b" vbar=");
+        klog::write_hex_u64(vbar);
+        klog::write_raw(b"\n");
     }
 }
 
