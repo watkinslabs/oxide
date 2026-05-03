@@ -77,6 +77,18 @@ else
     echo "limine v${LIMINE_VERSION}: present (skip)"
 fi
 
+# The Limine binary release ships `limine.c`, the host tool that
+# writes the BIOS boot record into a hybrid ISO via `bios-install`.
+# Compile it once at fetch time.
+if [ ! -x "$VENDOR/limine/limine" ]; then
+    echo "  building limine host tool from limine.c..."
+    (cd "$VENDOR/limine" && make >/dev/null)
+    [ -x "$VENDOR/limine/limine" ] || { echo "limine host tool build failed" >&2; exit 1; }
+    echo "  limine host tool: ok"
+else
+    echo "  limine host tool: present (skip)"
+fi
+
 # ---------------------------------------------------------------------------
 # OVMF firmware (EDK2 nightly snapshots)
 # ---------------------------------------------------------------------------
