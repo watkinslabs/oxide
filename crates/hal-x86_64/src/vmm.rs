@@ -100,6 +100,20 @@ impl PtWalker for PtWalkerX86 {
     fn pack_device_leaf(pa: u64) -> u64 {
         (pa & Self::PHYS_MASK) | P_BIT | RW_BIT | PCD | PWT | NX_BIT
     }
+
+    fn pack_4k_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
+        // P_BIT (PRESENT) implicit on a leaf. RW from WRITE.
+        // USER from USER. NX = clear iff EXEC. PCD/PWT from
+        // NO_CACHE / WRITE_THROUGH. GLOBAL from GLOBAL.
+        let mut e = (pa & Self::PHYS_MASK) | P_BIT;
+        if flags.contains(hal::PageFlags::WRITE)         { e |= RW_BIT; }
+        if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }   // U/S
+        if flags.contains(hal::PageFlags::WRITE_THROUGH) { e |= PWT;    }
+        if flags.contains(hal::PageFlags::NO_CACHE)      { e |= PCD;    }
+        if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }   // G
+        if !flags.contains(hal::PageFlags::EXEC)         { e |= NX_BIT; }
+        e
+    }
 }
 
 /// Install a 4 KiB Device-attr (PCD|PWT, NX) mapping `va → pa` in
