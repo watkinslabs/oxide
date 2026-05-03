@@ -43,7 +43,6 @@ pub type KResult<T> = core::result::Result<T, Error>;
 /// # C: O(N_pfn) once at boot
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init() -> KResult<()> {
-    klog::kinfo!("ipc: init stub");
     Err(Error::NotImplemented)
 }
 
