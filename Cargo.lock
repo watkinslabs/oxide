@@ -271,6 +271,7 @@ dependencies = [
  "hal",
  "kalloc",
  "klog",
+ "pmm",
  "vmm",
 ]
 
