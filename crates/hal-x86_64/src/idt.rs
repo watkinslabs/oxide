@@ -136,7 +136,10 @@ pub unsafe fn install_default() {
     // `06§11` + `07§5` ban `static mut`.
     let idt = unsafe { &mut *IDT.0.get() };
     for (i, entry) in idt.iter_mut().enumerate() {
-        let h = crate::fault::vector_stub_addr(i as u8);
+        // IRQ stubs win over fault stubs when both exist for `vec`;
+        // the IRQ path saves regs + iretq instead of halt.
+        let h_irq = crate::irq::irq_stub_addr(i as u8);
+        let h = if h_irq != 0 { h_irq } else { crate::fault::vector_stub_addr(i as u8) };
         *entry = IdtEntry::new_int_gate(h, KERNEL_CS, 0);
     }
     // Now load IDTR.
