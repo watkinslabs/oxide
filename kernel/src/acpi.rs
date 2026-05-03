@@ -113,6 +113,7 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
                 b"APIC" => decode_madt(entry_pa, hhdm_offset),
                 b"HPET" => decode_hpet(entry_pa, hhdm_offset),
                 b"SPCR" => decode_spcr(entry_pa, hhdm_offset),
+                b"MCFG" => decode_mcfg(entry_pa, hhdm_offset),
                 _       => {}
             }
         }
@@ -380,6 +381,45 @@ pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
         klog::write_raw(b" baud=");
         klog::write_dec_u64(baud as u64);
         klog::write_raw(b"\n");
+    }
+}
+
+/// Decode the MCFG ACPI table (PCI Express memory-mapped
+/// configuration). Header is 36 SDT bytes + 8 reserved + an array
+/// of 16-byte allocation entries. Each entry pins one ECAM region:
+/// 64-bit base, 16-bit segment, start_bus, end_bus.
+///
+/// # SAFETY: caller asserts standard SDT header + payload backed by
+/// HHDM-covered ACPI memory.
+/// # C: O(entries)
+pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
+    let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
+    // SAFETY: caller-asserted SDT header readable; offset 4..8 within.
+    let length = unsafe { read_u32_le(p.add(4)) } as usize;
+    if length < 44 { return; }
+    let body_off = 44usize;
+    if length <= body_off { return; }
+    let entries = (length - body_off) / 16;
+    let mut i = 0usize;
+    while i < entries {
+        let off = body_off + i * 16;
+        // SAFETY: bounded by `entries` derived from `length`; offsets within table per ACPI 6.5 §5.2.6 + PCI MCFG spec.
+        unsafe {
+            let base       = read_u64_le(p.add(off));
+            let segment    = read_u32_le(p.add(off + 8)) as u16;
+            let start_bus  = core::ptr::read_volatile(p.add(off + 10));
+            let end_bus    = core::ptr::read_volatile(p.add(off + 11));
+            klog::write_raw(b"[INFO]    mcfg ecam pa=");
+            klog::write_hex_u64(base);
+            klog::write_raw(b" segment=");
+            klog::write_dec_u64(segment as u64);
+            klog::write_raw(b" bus=");
+            klog::write_dec_u64(start_bus as u64);
+            klog::write_raw(b"..");
+            klog::write_dec_u64(end_bus as u64);
+            klog::write_raw(b"\n");
+        }
+        i += 1;
     }
 }
 
