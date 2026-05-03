@@ -144,14 +144,7 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
 
 fn kernel_uname(args: &SyscallArgs) -> i64 {
     let tp = args.a0;
-    if tp == 0 { return -(Errno::Efault.as_i32() as i64); }
-    let end = match tp.checked_add(UTSNAME_TOTAL_LEN as u64) {
-        Some(e) => e,
-        None    => return -(Errno::Efault.as_i32() as i64),
-    };
-    if end > USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf(tp, UTSNAME_TOTAL_LEN as u64, 1) { return rv; }
     // SAFETY: range validated above; user-half VA is mapped writable
     // by the userspace-smoke setup. Each field write iterates byte-
     // by-byte so no alignment requirement.
@@ -166,6 +159,24 @@ fn kernel_uname(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// Validate that a user buffer `[ptr, ptr + len)` lies entirely
+/// below `USER_VA_END` and is `align`-byte aligned at `ptr`.
+/// Returns Ok(()) or Err(-EFAULT-as-i64) ready to return from a
+/// glue handler.
+fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
+    if ptr == 0 {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    if align > 1 && (ptr & (align - 1)) != 0 {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    let end = ptr.checked_add(len).ok_or(-(Errno::Efault.as_i32() as i64))?;
+    if end > USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    Ok(())
+}
+
 /// Read the per-arch monotonic clock and write `{tv_sec, tv_nsec}`
 /// to the user `timespec*`. Both arches' `TimerOps::monotonic_ns`
 /// returns 0 until calibrated, so a CLOCK_MONOTONIC reading at
@@ -176,19 +187,7 @@ fn kernel_uname(args: &SyscallArgs) -> i64 {
 fn kernel_clock_gettime(args: &SyscallArgs) -> i64 {
     let _clk_id = args.a0;
     let tp = args.a1;
-    // Validate the 16-byte timespec range lies entirely below USER_VA_END.
-    if tp == 0 { return -(Errno::Efault.as_i32() as i64); }
-    let end = match tp.checked_add(16) {
-        Some(e) => e,
-        None    => return -(Errno::Efault.as_i32() as i64),
-    };
-    if end > USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // Natural alignment for u64.
-    if tp & 7 != 0 {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    if let Err(rv) = validate_user_buf(tp, 16, 8) { return rv; }
 
     #[cfg(target_arch = "x86_64")]
     let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
