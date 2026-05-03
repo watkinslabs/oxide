@@ -29,18 +29,39 @@ use crate::{Error, KResult};
 pub const MIN_USER_VA: u64 = PAGE_SIZE_BYTES;
 
 /// Per-process AS. Public surface mirrors `11§3`. The Page Table side
-/// (`11§9`) lands with HAL `MmuOps` in a follow-up P1-N.
+/// (`11§9`) lives in `root_pa`: the PA of this AS's top-level table
+/// (PML4 on x86_64; L0 on aarch64). `MmuOps::activate(root_pa)`
+/// installs it as the active CR3 / TTBR0_EL1 per `13§8`.
 pub struct AddressSpace {
-    vmas: RwLock<VmaTree, AddressSpaceClass>,
+    vmas:    RwLock<VmaTree, AddressSpaceClass>,
+    root_pa: u64,
 }
 
 impl AddressSpace {
-    /// Construct an empty AS, returning a reference-counted handle so
-    /// `fork` can share VMA-tree state once COW is wired (`11§7`).
+    /// Construct an empty AS over the page-table root at `root_pa`,
+    /// returning a reference-counted handle so `fork` can share VMA-
+    /// tree state once COW is wired (`11§7`).
+    ///
+    /// `root_pa` is the PA of the top-level page-table frame this AS
+    /// owns: PML4 (x86_64, kernel-half cloned from the master per
+    /// `11§2` invariant 5) or L0 (aarch64, user-half only — kernel
+    /// rides TTBR1_EL1 unchanged). Production callers obtain it via
+    /// `hal_<arch>::mmu_ops::new_user_pml4` / `::new_user_l0`. The
+    /// `0` sentinel is reserved for hosted tests that exercise only
+    /// VMA-tree behaviour and never activate the AS.
     /// # C: O(1)
-    pub fn new() -> KResult<Arc<Self>> {
-        Ok(Arc::new(Self { vmas: RwLock::new(VmaTree::new()) }))
+    pub fn new(root_pa: u64) -> KResult<Arc<Self>> {
+        Ok(Arc::new(Self {
+            vmas: RwLock::new(VmaTree::new()),
+            root_pa,
+        }))
     }
+
+    /// PA of this AS's top-level page-table frame. Pass to
+    /// `MmuOps::activate` to make this AS the live address space.
+    /// `0` for hosted-test stub ASes.
+    /// # C: O(1)
+    pub fn root_pa(&self) -> u64 { self.root_pa }
 
     /// Number of VMAs currently mapped.
     /// # C: O(1)

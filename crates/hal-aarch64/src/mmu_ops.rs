@@ -47,6 +47,54 @@ fn alloc_frame() -> Option<u64> {
     f()
 }
 
+/// Captured kernel-half page-table base — TTBR1_EL1 at boot. arm
+/// keeps user (TTBR0_EL1) and kernel (TTBR1_EL1) trees separate, so
+/// there's no kernel-half copy required for new user roots: a fresh
+/// zeroed L0 root suffices. We still record TTBR1 so debug paths
+/// can validate it hasn't drifted across an AS-switch.
+static MASTER_TTBR1: AtomicU64 = AtomicU64::new(0);
+
+/// Capture the current `TTBR1_EL1` as the kernel-half master.
+/// Idempotent only with the same value.
+/// # SAFETY: caller is the boot path; runs at EL1 single-CPU; no
+/// per-AS TTBR0 has been installed yet.
+/// # C: O(1)
+pub unsafe fn capture_kernel_master() -> u64 {
+    let ttbr1 = crate::regs::read_ttbr1_el1() & !0xfff;
+    let prev = MASTER_TTBR1.swap(ttbr1, Ordering::Release);
+    kassert!(prev == 0 || prev == ttbr1, "capture_kernel_master double-init mismatch");
+    ttbr1
+}
+
+/// Read the captured master TTBR1, or 0 if not yet captured.
+/// # C: O(1)
+pub fn kernel_master() -> u64 {
+    MASTER_TTBR1.load(Ordering::Acquire)
+}
+
+/// Allocate a fresh user-AS L0 root: PMM frame, zero. arm separates
+/// user from kernel via TTBR0/TTBR1 so no kernel-half copy is needed
+/// — TTBR1_EL1 (set by Limine, captured by `capture_kernel_master`)
+/// remains live during AS-switch via `MmuOps::activate(root_pa)`
+/// which writes TTBR0_EL1 only.
+///
+/// # SAFETY: caller is the boot path or AS constructor; HHDM covers
+/// page-table memory; FRAME_ALLOC set; single-CPU pre-init.
+/// # C: O(1)
+pub unsafe fn new_user_l0() -> Option<u64> {
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    if hhdm == 0 { return None; }
+    let pa = alloc_frame()?;
+    // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror is
+    // mapped writable in the kernel master tables; no other CPU can
+    // observe this frame yet.
+    unsafe {
+        let dst = (hhdm.wrapping_add(pa)) as *mut u64;
+        core::ptr::write_bytes(dst, 0, 512);
+    }
+    Some(pa)
+}
+
 /// Marker type implementing `hal::MmuOps` for aarch64. Methods are
 /// stateless; arch state lives in this module's static atomics.
 pub struct ArmMmu;
@@ -136,6 +184,31 @@ impl MmuOps for ArmMmu {
                 );
             }
         }
+    }
+
+    /// Install `root_pa` as `TTBR0_EL1` — switches the user-half
+    /// page-table tree per `13§8`. `TTBR1_EL1` (kernel half) is
+    /// untouched. ASID = 0 for v1; PCID-equivalent landings rest
+    /// on the SMP+process-ID work later.
+    /// # SAFETY: per trait contract.
+    /// # C: O(1) reg write + TLBI VMALLE1
+    unsafe fn activate(root_pa: u64) {
+        kassert!(root_pa & 0xfff == 0, "MmuOps::activate root_pa not page-aligned");
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        // SAFETY: privileged TTBR0_EL1 write at EL1; the TLBI VMALLE1 invalidates stale user-half translations; dsb+isb serialize. Caller asserts the new tree is consistent (TTBR1 kernel mappings unaffected).
+        unsafe {
+            core::arch::asm!(
+                "msr ttbr0_el1, {pa}",
+                "isb",
+                "tlbi vmalle1",
+                "dsb ish",
+                "isb",
+                pa = in(reg) root_pa,
+                options(nostack, preserves_flags),
+            );
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        let _ = root_pa;
     }
 }
 
