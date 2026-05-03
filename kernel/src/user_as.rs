@@ -39,28 +39,95 @@ static GLOBAL_AS_PTR: AtomicPtr<AddressSpace> = AtomicPtr::new(core::ptr::null_m
 /// HHDM offset captured at init for demand-paging zero-fill.
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
-/// Initialise the global user AS. Idempotent — second-and-later calls
-/// are no-ops. Called from `kernel_main` after PMM init, before the
-/// fault handler is registered.
+/// Initialise the global user AS, allocate its private page-table
+/// root, copy kernel-half mappings from the captured master, and
+/// activate it as the live CR3 / TTBR0_EL1 per `13§8`. Idempotent —
+/// second-and-later calls are no-ops.
 ///
-/// # SAFETY: caller is the boot path; runs single-CPU with IRQs off.
-/// Allocates an `Arc<AddressSpace>` from the kernel heap (already up).
-/// # C: O(1)
+/// Order of operations:
+/// 1. Capture the live kernel master root (CR3 on x86; TTBR1_EL1 on
+///    arm). All kernel mappings (HHDM, kernel image, device MMIO)
+///    must be installed *before* this call so the master sub-trees
+///    referenced from PML4[256..512] are stable.
+/// 2. Allocate a fresh user-AS root frame. On x86, copy entries
+///    256..512 from the master so kernel-half mappings remain valid
+///    after activation. On arm, the kernel rides TTBR1_EL1 — the
+///    fresh L0 is zeroed, no copy needed.
+/// 3. Build `AddressSpace` carrying the root PA.
+/// 4. `MmuOps::activate(root_pa)` writes CR3 / TTBR0_EL1 → from
+///    here on, every user-half PT op (mmap, demand-page) targets
+///    this AS-private tree.
+///
+/// # SAFETY: caller is the boot path; single-CPU, IRQs off; PMM +
+/// MmuOps state initialised; HHDM is already mapped in the master;
+/// no per-AS root has been activated yet.
+/// # C: O(1) on x86 (256-entry copy); O(1) on arm
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init(hhdm_offset: u64) {
     if !GLOBAL_AS_PTR.load(Ordering::Acquire).is_null() {
         return;
     }
-    let arc = match AddressSpace::new() {
+    HHDM_OFFSET.store(hhdm_offset, Ordering::Release);
+
+    // Step 1: capture kernel master + step 2: alloc AS-private root.
+    #[cfg(target_arch = "x86_64")]
+    let root_pa = {
+        // SAFETY: boot-path; CR3 holds the live kernel master PML4;
+        // single-CPU pre-init.
+        let _master = unsafe { hal_x86_64::mmu_ops::capture_kernel_master() };
+        // SAFETY: PMM up; MASTER_PML4_PA just set; HHDM covers RAM
+        // holding page-table memory; single-CPU pre-init.
+        match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
+            Some(pa) => pa,
+            None => {
+                debug_vmm! { klog::kerror!("user-as: new_user_pml4 failed"); }
+                return;
+            }
+        }
+    };
+    #[cfg(target_arch = "aarch64")]
+    let root_pa = {
+        // SAFETY: boot-path; TTBR1_EL1 holds the live kernel root.
+        let _master = unsafe { hal_aarch64::mmu_ops::capture_kernel_master() };
+        // SAFETY: PMM up; HHDM covers page-table memory; single-CPU pre-init.
+        match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
+            Some(pa) => pa,
+            None => {
+                debug_vmm! { klog::kerror!("user-as: new_user_l0 failed"); }
+                return;
+            }
+        }
+    };
+
+    // Step 3: build AS over that root.
+    let arc = match AddressSpace::new(root_pa) {
         Ok(a) => a,
         Err(_) => {
             debug_vmm! { klog::kerror!("user-as: AddressSpace::new failed"); }
             return;
         }
     };
-    HHDM_OFFSET.store(hhdm_offset, Ordering::Release);
+
+    // Step 4: activate the AS as the live address space. After this
+    // point, every MmuOps walk for a user-half VA targets this AS's
+    // private root; kernel-half mappings ride the master via shared
+    // L3 sub-trees (x86) or TTBR1_EL1 (arm).
+    use hal::MmuOps;
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: root_pa carries kernel-half entries 256..512 cloned from the captured master, so kernel addresses (kernel image, HHDM, device MMIO) translate identically across the CR3 write. Single-CPU pre-init; preempt-off.
+    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(root_pa); }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: TTBR1_EL1 (kernel half) is untouched; only TTBR0_EL1 is rewritten so user-half walks now target the AS-private L0. Single-CPU pre-init; preempt-off.
+    unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(root_pa); }
+
     let raw = Arc::into_raw(arc) as *mut AddressSpace;
     GLOBAL_AS_PTR.store(raw, Ordering::Release);
+
+    debug_vmm! {
+        klog::write_raw(b"[INFO]  user-as: root_pa=");
+        klog::write_hex_u64(root_pa);
+        klog::write_raw(b" activated\n");
+    }
 }
 
 /// Borrow the global AS for the duration of `f`. Returns `None` if
