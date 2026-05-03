@@ -46,6 +46,8 @@ pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
 pub mod gic;
 #[cfg(target_os = "oxide-kernel")]
+pub mod ksched;
+#[cfg(target_os = "oxide-kernel")]
 pub mod kthread;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
@@ -308,6 +310,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe {
             kthread::smoke();
             kthread::smoke_yield();
+            ksched::smoke_rr(4);
         }
     }
 
