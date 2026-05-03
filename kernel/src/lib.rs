@@ -378,6 +378,15 @@ fn smoke_device_map_x86(
                     klog::write_raw(b" version=");
                     klog::write_hex_u64(version as u64);
                     klog::write_raw(b"\n");
+                    // Polled-timer smoke: verify count register decrements.
+                    // SAFETY: lapic::enable just succeeded so LAPIC is live.
+                    if let Some((a, b)) = unsafe { lapic::timer_smoke(0xFFFF_FFFF) } {
+                        klog::write_raw(b"[INFO]  lapic: timer ");
+                        klog::write_hex_u64(a as u64);
+                        klog::write_raw(b" -> ");
+                        klog::write_hex_u64(b as u64);
+                        klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
+                    }
                 }
             }
         }
