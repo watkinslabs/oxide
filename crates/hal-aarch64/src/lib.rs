@@ -23,6 +23,7 @@ mod cpuid;
 mod fault;
 mod fpu;
 mod mmu;
+pub mod mmu_ops;
 mod pt_regs;
 mod regs;
 mod vbar;
