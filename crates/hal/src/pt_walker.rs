@@ -86,6 +86,12 @@ pub trait PtWalker {
     /// according to USER (arm); USER → user-accessible; NO_CACHE +
     /// WRITE_THROUGH → device/non-cacheable bits.
     fn pack_4k_leaf(pa: u64, flags: crate::PageFlags) -> u64;
+
+    /// Pack a huge/block leaf at `pa` (2 MiB or 1 GiB; same bit
+    /// pattern at either level for both arches — x86 sets PS=1
+    /// at PD/PDPT, arm clears the TABLE bit at L1/L2). Native
+    /// flags translate identically to `pack_4k_leaf`.
+    fn pack_block_leaf(pa: u64, flags: crate::PageFlags) -> u64;
 }
 
 /// Install a Device-attr 4 KiB leaf `va → pa` in the active 4-level
@@ -172,6 +178,53 @@ pub unsafe fn map_4k<W: PtWalker, F: FnMut() -> Option<u64>>(
             return Err(WalkErr::AlreadyMapped);
         }
         ptr::write_volatile(slot, W::pack_4k_leaf(pa, flags));
+        W::flush_va(va);
+    }
+    Ok(())
+}
+
+/// Install a leaf at the requested level — `1` = 1 GiB block (L1),
+/// `2` = 2 MiB block (L2), `3` = 4 KiB page (L3). The walker
+/// descends to the parent of `leaf_level`, allocating intermediate
+/// tables as it goes, then writes `leaf` at the parent table's
+/// index for `va`.
+///
+/// `va` and the embedded `pa` in `leaf` must be aligned to the
+/// page size implied by `leaf_level` (caller satisfies; checked by
+/// the `MmuOps::map` wrapper via `kassert!`).
+///
+/// # SAFETY: same contract as `map_4k`.
+/// # C: O(leaf_level) — at most 4
+/// # Ctx: pre-init or under PT lock; single-CPU walker.
+pub unsafe fn map_at_level<W: PtWalker, F: FnMut() -> Option<u64>>(
+    va: u64,
+    leaf_level: u8,
+    leaf: u64,
+    hhdm_offset: u64,
+    mut alloc_pa: F,
+) -> Result<(), WalkErr> {
+    // SAFETY: privileged read; legal in kernel mode.
+    let mut current_pa = unsafe { W::read_pt_base() };
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    // Walk levels 0..(leaf_level - 1), descending into table entries.
+    for level in 0..leaf_level {
+        let idx = ((va >> shifts[level as usize]) & TABLE_IDX_MASK) as usize;
+        // SAFETY: per fn contract; descend through one level of tables.
+        current_pa = unsafe { walk_or_alloc::<W, _>(current_pa, idx, hhdm_offset, &mut alloc_pa)? };
+    }
+    // `current_pa` is the parent of the leaf level. Write the leaf
+    // at the appropriate index.
+    let leaf_idx = ((va >> shifts[leaf_level as usize]) & TABLE_IDX_MASK) as usize;
+    // SAFETY: HHDM covers page-table memory per fn contract; we own
+    // the slot for the duration of the write per single-CPU walker.
+    unsafe {
+        let table_va = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
+        let slot = table_va.add(leaf_idx);
+        let cur = ptr::read_volatile(slot);
+        if W::is_valid(cur) && (cur & W::PHYS_MASK) != (leaf & W::PHYS_MASK) {
+            return Err(WalkErr::AlreadyMapped);
+        }
+        ptr::write_volatile(slot, leaf);
         W::flush_va(va);
     }
     Ok(())
@@ -328,6 +381,16 @@ mod tests {
             // PageFlags to real bits.
             (pa & Self::PHYS_MASK) | 1 | 4
         }
+        fn pack_block_leaf(pa: u64, _flags: crate::PageFlags) -> u64 {
+            // Test stub: bit 5 marks "this is a block/huge leaf"
+            // distinct from the 4 KiB leaf (bit 4) and the table
+            // entry (bit 0 only). is_huge_or_block in this stub
+            // checks bit 1 which we leave clear here — block leaves
+            // at intermediate levels are still detected as "valid
+            // entry" by the walker; the leaf-vs-table distinction
+            // is for future map_at_level + huge translate paths.
+            (pa & Self::PHYS_MASK) | 1 | 0x20
+        }
     }
 
     /// 4 KiB-aligned wrapper so `Box::new(AlignedTable(_))` returns
@@ -384,6 +447,64 @@ mod tests {
         // SAFETY: hosted test; same VA, different PA → AlreadyMapped.
         let r2 = unsafe { map_device_4k::<HostWalker, _>(va, 0xbbbb_b000, 0, &mut alloc) };
         assert_eq!(r2, Err(WalkErr::AlreadyMapped));
+    }
+
+    #[test]
+    fn map_at_level_2m_writes_at_l2_index() {
+        // 2 MiB block leaf: walker descends L0 → L1 → L2, then
+        // writes the leaf at L2[i_l2]. Two table allocs (L1 + L2);
+        // the L3 step is skipped entirely.
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let pages_cell = core::cell::RefCell::new(reset());
+        let mut allocated = 0usize;
+        let mut alloc = || -> Option<u64> {
+            allocated += 1;
+            let p = alloc::boxed::Box::new(AlignedTable([0u64; ENTRIES_PER_TABLE]));
+            let pa = p.0.as_ptr() as u64;
+            pages_cell.borrow_mut().push(p);
+            Some(pa)
+        };
+        let va = 0x0000_1234_0020_0000_u64;             // 2 MiB-aligned
+        let pa = 0x0000_0000_dee0_0000_u64;             // 2 MiB-aligned
+        let leaf = HostWalker::pack_block_leaf(pa, crate::PageFlags::READ | crate::PageFlags::WRITE);
+        // SAFETY: hosted test; synthetic root + boxed children owned by this scope.
+        let r = unsafe { map_at_level::<HostWalker, _>(va, 2, leaf, 0, &mut alloc) };
+        assert_eq!(r, Ok(()));
+        assert_eq!(allocated, 2, "L1 + L2 tables allocated; L3 skipped");
+        let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+        let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+        let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+        // SAFETY: SERIAL held; FAKE_ROOT + child boxes single-thread accessible in-test.
+        unsafe {
+            let l1_pa = FAKE_ROOT[i_l0] & HostWalker::PHYS_MASK;
+            let l1 = l1_pa as *const u64;
+            let l2_pa = (*l1.add(i_l1)) & HostWalker::PHYS_MASK;
+            let l2 = l2_pa as *const u64;
+            assert_eq!(*l2.add(i_l2), leaf);
+        }
+    }
+
+    #[test]
+    fn map_at_level_1g_writes_at_l1_index() {
+        // 1 GiB block leaf: walker descends L0 → L1, writes leaf at
+        // L1[i_l1]. One table alloc.
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let pages_cell = core::cell::RefCell::new(reset());
+        let mut allocated = 0usize;
+        let mut alloc = || -> Option<u64> {
+            allocated += 1;
+            let p = alloc::boxed::Box::new(AlignedTable([0u64; ENTRIES_PER_TABLE]));
+            let pa = p.0.as_ptr() as u64;
+            pages_cell.borrow_mut().push(p);
+            Some(pa)
+        };
+        let va = 0x0000_1234_4000_0000_u64;             // 1 GiB-aligned
+        let pa = 0x0000_0000_4000_0000_u64;             // 1 GiB-aligned
+        let leaf = HostWalker::pack_block_leaf(pa, crate::PageFlags::READ);
+        // SAFETY: hosted test; synthetic root + boxed children owned by this scope.
+        let r = unsafe { map_at_level::<HostWalker, _>(va, 1, leaf, 0, &mut alloc) };
+        assert_eq!(r, Ok(()));
+        assert_eq!(allocated, 1, "L1 table allocated; L2/L3 skipped");
     }
 
     #[test]
