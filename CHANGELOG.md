@@ -271,3 +271,19 @@ End-of-session-14 verified-green:
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` — HPET cap reads, LAPIC enable + timer IRQs, preempt + canary smokes; halts clean.
 - `make qemu-arm --features debug-all` — GIC enable, PL011 sink swap, CNTV IRQs, preempt + canary smokes; halts clean.
+
+---
+
+## Session 15 (PR #152) — 2026-05-03
+
+**Subject**: MmuOps huge-page support.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #152 | `P1-89-mmu-huge-pages` | MmuOps huge-page support (2 MiB / 1 GiB). New `PtWalker::pack_block_leaf(pa, flags) -> u64` per arch packs a block leaf (x86 PD/PDPT with PS=1; arm L1/L2 with TABLE bit cleared). New `pt_walker::map_at_level<W,F>(va, leaf_level, leaf, hhdm, alloc)` generic walk-and-install: walker descends levels 0..N-1 allocating intermediates, then writes the pre-packed leaf at the parent table's index. `MmuOps::map` per arch dispatches by `PageSize` (P4K → leaf at L3; P2M → block leaf at L2; P1G → block leaf at L1) with alignment kasserts on `va`/`pa`. Translate / unmap stay 4 KiB only pending a caller. +2 hosted tests in `pt_walker::tests` for 2 MiB and 1 GiB installs. |
+
+End-of-session-15 verified-green:
+- `make lint` clean.
+- `make test` → 476 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt + canary smokes pass; ticks unchanged from session 14; both reach `boot: kernel ready, halting`.
