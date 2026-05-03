@@ -277,6 +277,7 @@ dependencies = [
  "klog",
  "pmm",
  "sched",
+ "sync",
  "syscall",
  "vmm",
 ]
