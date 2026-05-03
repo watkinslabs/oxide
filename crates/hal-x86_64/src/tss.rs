@@ -29,8 +29,8 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// Selector for the kernel TSS in the GDT (offset 0x48).
-pub const TSS_SEL: u16 = 0x48;
+/// Selector for the kernel TSS in the GDT (offset 0x50, post-P2-02).
+pub const TSS_SEL: u16 = 0x50;
 
 /// 64-bit TSS, repr(C, packed) per Intel SDM Vol. 3 Fig. 7-11. The
 /// 4-byte misalignment of the RSP fields (offsets 0x04/0x0C/0x14)
@@ -183,8 +183,10 @@ mod tests {
     }
 
     #[test]
-    fn tss_sel_is_0x48() {
-        assert_eq!(TSS_SEL, 0x48);
+    fn tss_sel_is_0x50() {
+        // P2-02 moved TSS to sel 0x50 to make room for the
+        // user CS32/DS/CS64 sysret triple at 0x38/0x40/0x48.
+        assert_eq!(TSS_SEL, 0x50);
     }
 
     #[test]
