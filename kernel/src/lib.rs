@@ -113,7 +113,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
-        unsafe { acpi::try_log_rsdp(info.rsdp_pa); }
+        unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
     } else {
         klog::kinfo!("rsdp: absent");
     }
