@@ -159,6 +159,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         memmap_ptr: EMPTY.as_ptr(),
         seed: [0; 32],
         boot_ns: 0,
+        hhdm_offset: 0,
     }
 }
 
@@ -191,29 +192,34 @@ static DTB_PHYS_ADDR: core::sync::atomic::AtomicU64
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn build_boot_info() -> BootInfo {
+    // SAFETY: stub returns an owned BootInfo with a static empty
+    // memmap; we layer the HHDM offset on top regardless of DTB
+    // status so the kernel's PMM-setup path can detect "memmap
+    // empty, skip" vs "HHDM unknown, halt".
+    let mut info = unsafe { stub_boot_info() };
+    let p = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
+    if !p.is_null() {
+        // SAFETY: Limine wrote a non-null response pointer; backing
+        // struct lives for the rest of boot per `36§3`.
+        info.hhdm_offset = unsafe { (*p).offset };
+    }
+
     let dtb_pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
     if dtb_pa == 0 {
-        // SAFETY: stub_boot_info returns an owned BootInfo with a
-        // static empty memmap slice.
-        return unsafe { stub_boot_info() };
+        return info;
     }
     // SAFETY: bootloader handed `x0 == dtb_pa`; we trust the
     // `36§4` invariant that the blob is reachable + readable. The
-    // first 40 bytes are the FDT header; we read those plus
-    // `totalsize` bytes total via the slice below.
+    // first 40 bytes are the FDT header.
     let header_view: &[u8] = unsafe {
         core::slice::from_raw_parts(dtb_pa as *const u8, 40)
     };
     if dtb::parse_header(header_view).is_err() {
-        // SAFETY: stub_boot_info returns an owned BootInfo whose
-        // memmap_ptr references a `&'static` empty slice; trivial.
-        return unsafe { stub_boot_info() };
+        return info;
     }
     // /memory property walk lands when the PMM init consumer does;
-    // for now hand kernel_main an empty memmap with a valid DTB
-    // pointer reachable via a future BootInfo extension.
-    // SAFETY: stub_boot_info returns an owned empty BootInfo.
-    unsafe { stub_boot_info() }
+    // for now hand kernel_main an empty memmap.
+    info
 }
 
 /// Rust-side boot continuation. Runs on the kernel stack we
