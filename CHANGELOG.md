@@ -287,3 +287,21 @@ End-of-session-15 verified-green:
 - `make test` → 476 passed, 0 failed.
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt + canary smokes pass; ticks unchanged from session 14; both reach `boot: kernel ready, halting`.
+
+---
+
+## Session 16 (PR #154) — 2026-05-03
+
+**Subject**: MmuOps translate/unmap recognise huge leaves — completes the trait surface for huge pages.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #154 | `P1-90-mmu-huge-translate` | After P1-89 added `MmuOps::map` huge-page support, `translate` and `unmap` were still 4 KiB only. New `pt_walker::translate_at_va<W>(va, hhdm) -> Option<(pa, leaf, level)>` walks levels 0..3, stops at the first leaf encountered, and reconstructs the resolved PA as `leaf_pa \| in_leaf_offset`. Rejects huge entries at L0 (512 GiB; not legal in v1). New `pt_walker::unmap_at_va<W>(va, hhdm) -> Option<(leaf, level)>` zeroes the slot at the first leaf + locally TLB-invalidates. `MmuOps::translate` migrated; `MmuOps::unmap` migrated and adds a kassert that the torn-down leaf's level matches the caller's `PageSize`. +2 hosted tests in `pt_walker::tests` covering 2 MiB block-leaf translate round-trip + unmap clear. |
+
+End-of-session-16 verified-green:
+- `make lint` clean.
+- `make test` → 478 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt + canary smokes pass; ticks unchanged from session 15; both reach `boot: kernel ready, halting`.
+
+End of MmuOps phase: trait surface complete (map/translate/unmap for 4K/2M/1G; flush_va + flush_all_local arch-native). Today's only caller is the device-MMIO mapper (4K-only); broader callers land with the page-fault handler / userspace mmap path.
