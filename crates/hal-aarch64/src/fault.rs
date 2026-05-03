@@ -58,35 +58,41 @@ fn current_handler() -> FaultHandler {
 /// # Ctx: exception, IRQ-off (DAIF set by handler)
 #[no_mangle]
 pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) -> bool {
-    debug_irq! {
-        let ec = ((esr >> 26) & 0x3f) as u32;        // ESR_EL1.EC bits 26..31
-        let iss = esr & 0xff_ffff;                   // ESR_EL1.ISS bits 0..24
-        klog::write_raw(b"[FAULT] esr=");
-        klog::write_hex_u64(esr);
-        klog::write_raw(b" ec=");
-        klog::write_hex_u64(ec as u64);
-        klog::write_raw(b" (");
-        klog::write_raw(ec_label(ec));
-        klog::write_raw(b") far=");
-        klog::write_hex_u64(far);
-        klog::write_raw(b" elr=");
-        klog::write_hex_u64(elr);
-        // For data/instruction-abort EC values, decode the ISS DFSC
-        // sub-field per ARM ARM D17.2.40 / D17.2.36.
-        if matches!(ec, 0x20 | 0x21 | 0x24 | 0x25) {
-            klog::write_raw(b" dfsc=");
-            klog::write_raw(decode_dfsc(iss as u64));
-            // WnR (bit 6 of ISS) only meaningful for data aborts.
-            if matches!(ec, 0x24 | 0x25) {
-                klog::write_raw(if (iss & (1 << 6)) != 0 { b" W" } else { b" R" });
+    // Consult the registered handler first. A resolved abort (e.g.
+    // demand-page) is normal kernel operation per `11§5` — silent in
+    // production, no log line. Only log loudly when the handler can't
+    // resolve and we're about to halt.
+    let handled = (current_handler())(esr, far, elr);
+    if !handled {
+        debug_irq! {
+            let ec = ((esr >> 26) & 0x3f) as u32;        // ESR_EL1.EC bits 26..31
+            let iss = esr & 0xff_ffff;                   // ESR_EL1.ISS bits 0..24
+            klog::write_raw(b"[FAULT] esr=");
+            klog::write_hex_u64(esr);
+            klog::write_raw(b" ec=");
+            klog::write_hex_u64(ec as u64);
+            klog::write_raw(b" (");
+            klog::write_raw(ec_label(ec));
+            klog::write_raw(b") far=");
+            klog::write_hex_u64(far);
+            klog::write_raw(b" elr=");
+            klog::write_hex_u64(elr);
+            // For data/instruction-abort EC values, decode the ISS DFSC
+            // sub-field per ARM ARM D17.2.40 / D17.2.36.
+            if matches!(ec, 0x20 | 0x21 | 0x24 | 0x25) {
+                klog::write_raw(b" dfsc=");
+                klog::write_raw(decode_dfsc(iss as u64));
+                // WnR (bit 6 of ISS) only meaningful for data aborts.
+                if matches!(ec, 0x24 | 0x25) {
+                    klog::write_raw(if (iss & (1 << 6)) != 0 { b" W" } else { b" R" });
+                }
             }
+            klog::write_raw(b"\n");
         }
-        klog::write_raw(b"\n");
+        #[cfg(not(feature = "debug-irq"))]
+        { let _ = (esr, far, elr); }
     }
-    #[cfg(not(feature = "debug-irq"))]
-    { let _ = (esr, far, elr); }
-
-    (current_handler())(esr, far, elr)
+    handled
 }
 
 /// Map an `ESR_EL1.EC` value to a short label per ARM ARM
