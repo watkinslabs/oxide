@@ -138,6 +138,17 @@ pub trait Context: Sized {
 
 pub mod pt_walker;
 
+/// Local `kassert!` per `07§5` — bridges to `crates/err`'s real
+/// implementation once that crate ships per `38`. Form: `kassert!(cond,
+/// "literal")` only; no `panic!(fmt)` per CLAUDE.md hard rules.
+/// Re-exported `#[macro_export]` so per-arch HAL crates can use it.
+#[macro_export]
+macro_rules! kassert {
+    ($cond:expr, $msg:literal) => {{
+        if !($cond) { panic!($msg); }
+    }};
+}
+
 
 /// Page-table operations. Owns the active address space.
 ///

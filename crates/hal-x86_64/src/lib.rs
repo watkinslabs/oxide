@@ -26,6 +26,7 @@ mod fpu;
 mod idt;
 mod irq;
 mod mmu;
+pub mod mmu_ops;
 mod pt_regs;
 mod regs;
 pub mod vmm;

@@ -79,6 +79,13 @@ pub trait PtWalker {
     /// Pack a 4 KiB Device-attr leaf at `pa` (PCD|PWT|NX on x86;
     /// AttrIdx=Device|Inner-Shareable|AF|PXN|UXN on arm).
     fn pack_device_leaf(pa: u64) -> u64;
+
+    /// Pack a 4 KiB leaf from arch-neutral `PageFlags`. Used by
+    /// `MmuOps::map` per `20§5`/`21§5`. Each impl translates:
+    /// WRITE → writable; EXEC clear → set NX (x86) / UXN+PXN
+    /// according to USER (arm); USER → user-accessible; NO_CACHE +
+    /// WRITE_THROUGH → device/non-cacheable bits.
+    fn pack_4k_leaf(pa: u64, flags: crate::PageFlags) -> u64;
 }
 
 /// Install a Device-attr 4 KiB leaf `va → pa` in the active 4-level
@@ -127,6 +134,128 @@ pub unsafe fn map_device_4k<W: PtWalker, F: FnMut() -> Option<u64>>(
         W::flush_va(va);
     }
     Ok(())
+}
+
+/// Install a 4 KiB leaf with arch-neutral flags `va → pa`. Mirrors
+/// `map_device_4k`'s walk discipline; the only difference is the
+/// leaf bit pattern comes from `W::pack_4k_leaf(pa, flags)` rather
+/// than the hardcoded device-attr packer. Used by `MmuOps::map`
+/// per `20§5`/`21§5`.
+///
+/// # SAFETY: same contract as `map_device_4k`.
+/// # C: O(walk depth) = O(4)
+/// # Ctx: pre-init or under PT lock; single-CPU walker.
+pub unsafe fn map_4k<W: PtWalker, F: FnMut() -> Option<u64>>(
+    va: u64,
+    pa: u64,
+    flags: crate::PageFlags,
+    hhdm_offset: u64,
+    mut alloc_pa: F,
+) -> Result<(), WalkErr> {
+    // SAFETY: privileged read; legal in kernel mode.
+    let l0_pa = unsafe { W::read_pt_base() };
+
+    let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+
+    // SAFETY: per fn contract; mirrors `map_device_4k`'s body.
+    unsafe {
+        let l1_pa = walk_or_alloc::<W, _>(l0_pa, i_l0, hhdm_offset, &mut alloc_pa)?;
+        let l2_pa = walk_or_alloc::<W, _>(l1_pa, i_l1, hhdm_offset, &mut alloc_pa)?;
+        let l3_pa = walk_or_alloc::<W, _>(l2_pa, i_l2, hhdm_offset, &mut alloc_pa)?;
+        let l3_va = (hhdm_offset.wrapping_add(l3_pa)) as *mut u64;
+        let slot = l3_va.add(i_l3);
+        let cur = ptr::read_volatile(slot);
+        if W::is_valid(cur) && (cur & W::PHYS_MASK) != (pa & W::PHYS_MASK) {
+            return Err(WalkErr::AlreadyMapped);
+        }
+        ptr::write_volatile(slot, W::pack_4k_leaf(pa, flags));
+        W::flush_va(va);
+    }
+    Ok(())
+}
+
+/// Translate `va` to (`pa`, raw_leaf_entry) by walking the live
+/// tables. Returns `None` if the leaf is missing or sits at a
+/// non-bottom level (huge/block — caller decides). Reads only;
+/// safe to call without holding a PT-write lock if the caller
+/// accepts a torn-walk view (some entries from before, some from
+/// after a concurrent write).
+///
+/// # SAFETY: caller asserts (a) HHDM covers page-table memory,
+/// (b) the active root is stable for the walk duration. Single-
+/// CPU + IRQ-off makes (b) trivially hold.
+/// # C: O(walk depth) = O(4)
+/// # Ctx: read-only walk
+pub unsafe fn translate_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64, u64)> {
+    // SAFETY: privileged read; legal in kernel mode.
+    let l0_pa = unsafe { W::read_pt_base() };
+    let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+
+    // SAFETY: HHDM covers page-table memory per fn contract; reads only.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(l0_pa)) as *const u64;
+        let e0 = ptr::read_volatile(l0.add(i_l0));
+        if !W::is_valid(e0) || W::is_huge_or_block(e0) { return None; }
+        let l1_pa = e0 & W::PHYS_MASK;
+        let l1 = (hhdm_offset.wrapping_add(l1_pa)) as *const u64;
+        let e1 = ptr::read_volatile(l1.add(i_l1));
+        if !W::is_valid(e1) || W::is_huge_or_block(e1) { return None; }
+        let l2_pa = e1 & W::PHYS_MASK;
+        let l2 = (hhdm_offset.wrapping_add(l2_pa)) as *const u64;
+        let e2 = ptr::read_volatile(l2.add(i_l2));
+        if !W::is_valid(e2) || W::is_huge_or_block(e2) { return None; }
+        let l3_pa = e2 & W::PHYS_MASK;
+        let l3 = (hhdm_offset.wrapping_add(l3_pa)) as *const u64;
+        let leaf = ptr::read_volatile(l3.add(i_l3));
+        if !W::is_valid(leaf) { return None; }
+        Some((leaf & W::PHYS_MASK, leaf))
+    }
+}
+
+/// Tear down a 4 KiB leaf at `va` if present. No-op if not mapped
+/// or if a non-bottom-level entry blocks the walk. Returns the
+/// torn-down leaf entry on success.
+///
+/// # SAFETY: caller asserts (a) HHDM covers page-table memory,
+/// (b) `va` exclusively owned (no concurrent walker/use), (c)
+/// caller will perform any cross-CPU TLB shootdown beyond the
+/// local invalidate this function does.
+/// # C: O(walk depth) = O(4)
+/// # Ctx: pre-init or under PT-write lock.
+pub unsafe fn unmap_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<u64> {
+    // SAFETY: privileged read; legal in kernel mode.
+    let l0_pa = unsafe { W::read_pt_base() };
+    let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+
+    // SAFETY: HHDM covers page-table memory; va owned by caller;
+    // single writer per fn contract.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(l0_pa)) as *const u64;
+        let e0 = ptr::read_volatile(l0.add(i_l0));
+        if !W::is_valid(e0) || W::is_huge_or_block(e0) { return None; }
+        let l1 = (hhdm_offset.wrapping_add(e0 & W::PHYS_MASK)) as *const u64;
+        let e1 = ptr::read_volatile(l1.add(i_l1));
+        if !W::is_valid(e1) || W::is_huge_or_block(e1) { return None; }
+        let l2 = (hhdm_offset.wrapping_add(e1 & W::PHYS_MASK)) as *const u64;
+        let e2 = ptr::read_volatile(l2.add(i_l2));
+        if !W::is_valid(e2) || W::is_huge_or_block(e2) { return None; }
+        let l3 = (hhdm_offset.wrapping_add(e2 & W::PHYS_MASK)) as *mut u64;
+        let slot = l3.add(i_l3);
+        let leaf = ptr::read_volatile(slot);
+        if !W::is_valid(leaf) { return None; }
+        ptr::write_volatile(slot, 0);
+        W::flush_va(va);
+        Some(leaf)
+    }
 }
 
 /// Read entry `[idx]` in the table at PA `parent_pa` (via HHDM).
@@ -193,6 +322,12 @@ mod tests {
         fn is_huge_or_block(e: u64) -> bool { (e & 2) != 0 }
         fn pack_table(child_pa: u64) -> u64 { (child_pa & Self::PHYS_MASK) | 1 }
         fn pack_device_leaf(pa: u64) -> u64 { (pa & Self::PHYS_MASK) | 1 | 4 }
+        fn pack_4k_leaf(pa: u64, _flags: crate::PageFlags) -> u64 {
+            // Test stub: same shape as pack_device_leaf so the
+            // walk loop sees a valid leaf; per-arch impls translate
+            // PageFlags to real bits.
+            (pa & Self::PHYS_MASK) | 1 | 4
+        }
     }
 
     /// 4 KiB-aligned wrapper so `Box::new(AlignedTable(_))` returns

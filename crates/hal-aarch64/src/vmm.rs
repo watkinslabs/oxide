@@ -106,6 +106,42 @@ impl PtWalker for PtWalkerArm {
         // VALID|PAGE, AttrIdx=1, Inner-Shareable, AF, PXN+UXN.
         (pa & Self::PHYS_MASK) | VALID | TABLE | ATTR1 | SH0 | SH1 | AF | PXN | UXN
     }
+
+    fn pack_4k_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
+        // L3 page leaf: VALID|TABLE always; AF set so the CPU
+        // doesn't trap on first access. Inner-Shareable. AttrIdx
+        // picks the MAIR_EL1 byte: byte 0 = Normal WB-cacheable,
+        // byte 1 = Device-nGnRnE. NO_CACHE → Device (AttrIdx=1).
+        let mut e = (pa & Self::PHYS_MASK) | VALID | TABLE | AF | SH0 | SH1;
+        // AP[2:1] in bits 6:7. AP=0b00 = EL1 RW. AP=0b01 = EL0/EL1 RW.
+        // AP=0b10 = EL1 RO. AP=0b11 = EL0/EL1 RO.
+        let user = flags.contains(hal::PageFlags::USER);
+        let writable = flags.contains(hal::PageFlags::WRITE);
+        let ap = match (user, writable) {
+            (false, true)  => 0b00, // kernel RW
+            (false, false) => 0b10, // kernel RO
+            (true,  true)  => 0b01, // user RW
+            (true,  false) => 0b11, // user RO
+        };
+        e |= (ap as u64) << 6;
+        if flags.contains(hal::PageFlags::NO_CACHE) { e |= ATTR1; }
+        // Execute permission. UXN/PXN per `21§5`. Layout per
+        // PageFlags::USER:
+        //   USER=1, EXEC=1: user-executable.   PXN=1, UXN=0.
+        //   USER=1, EXEC=0: user no-exec.      PXN=1, UXN=1.
+        //   USER=0, EXEC=1: kernel executable. PXN=0, UXN=1.
+        //   USER=0, EXEC=0: kernel no-exec.    PXN=1, UXN=1.
+        let exec = flags.contains(hal::PageFlags::EXEC);
+        let (pxn, uxn) = match (user, exec) {
+            (false, true)  => (false, true),
+            (false, false) => (true,  true),
+            (true,  true)  => (true,  false),
+            (true,  false) => (true,  true),
+        };
+        if pxn { e |= PXN; }
+        if uxn { e |= UXN; }
+        e
+    }
 }
 
 /// Install a 4 KiB Device-nGnRnE mapping `va → pa` into TTBR1_EL1.
