@@ -114,6 +114,13 @@ impl PtWalker for PtWalkerX86 {
         if !flags.contains(hal::PageFlags::EXEC)         { e |= NX_BIT; }
         e
     }
+
+    fn pack_block_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
+        // Same translation as `pack_4k_leaf` plus PS=1 (bit 7) which
+        // distinguishes a 2 MiB / 1 GiB leaf at PD/PDPT from a table
+        // entry. The CPU keys off PS at the parent level.
+        Self::pack_4k_leaf(pa, flags) | PS_BIT
+    }
 }
 
 /// Install a 4 KiB Device-attr (PCD|PWT, NX) mapping `va → pa` in
