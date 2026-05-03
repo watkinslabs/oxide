@@ -114,6 +114,7 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
                 b"HPET" => decode_hpet(entry_pa, hhdm_offset),
                 b"SPCR" => decode_spcr(entry_pa, hhdm_offset),
                 b"MCFG" => decode_mcfg(entry_pa, hhdm_offset),
+                b"GTDT" => decode_gtdt(entry_pa, hhdm_offset),
                 _       => {}
             }
         }
@@ -420,6 +421,39 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             klog::write_raw(b"\n");
         }
         i += 1;
+    }
+}
+
+/// Decode the GTDT ACPI table (Generic Timer Description Table) per
+/// ACPI 6.5 §5.2.25. Logs the four ARM EL1/EL2 timer GSIVs which a
+/// future kernel timer-IRQ binder will route through GIC.
+///
+/// # SAFETY: caller asserts standard SDT header + ≥80-byte GTDT
+/// layout backed by HHDM-covered ACPI memory.
+/// # C: O(1)
+pub unsafe fn decode_gtdt(pa: u64, hhdm_offset: u64) {
+    let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
+    // SAFETY: caller-asserted SDT header readable; offset 4..8 within.
+    let length = unsafe { read_u32_le(p.add(4)) } as usize;
+    if length < 80 { return; }
+    // SAFETY: length ≥ 80; offsets 36..76 within ACPI 6.5 §5.2.25 GTDT body.
+    unsafe {
+        let cnt_ctrl_base = read_u64_le(p.add(36));
+        let sec_el1_gsiv  = read_u32_le(p.add(48));
+        let nsec_el1_gsiv = read_u32_le(p.add(56));
+        let virt_el1_gsiv = read_u32_le(p.add(64));
+        let el2_gsiv      = read_u32_le(p.add(72));
+        klog::write_raw(b"[INFO]    gtdt cnt_ctrl_pa=");
+        klog::write_hex_u64(cnt_ctrl_base);
+        klog::write_raw(b" sec_el1=");
+        klog::write_dec_u64(sec_el1_gsiv as u64);
+        klog::write_raw(b" nsec_el1=");
+        klog::write_dec_u64(nsec_el1_gsiv as u64);
+        klog::write_raw(b" virt_el1=");
+        klog::write_dec_u64(virt_el1_gsiv as u64);
+        klog::write_raw(b" el2=");
+        klog::write_dec_u64(el2_gsiv as u64);
+        klog::write_raw(b"\n");
     }
 }
 
