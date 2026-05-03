@@ -105,11 +105,16 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
         klog::write_raw(b" len=");
         klog::write_dec_u64(tlen as u64);
         klog::write_raw(b"\n");
-        if &tsig == b"APIC" {
-            // SAFETY: per fn contract; HHDM covers ACPI memory and
-            // the table's declared length is bounded above by the
-            // earlier read into `tlen`.
-            unsafe { decode_madt(entry_pa, hhdm_offset); }
+        // SAFETY: per fn contract — HHDM covers ACPI memory; the
+        // table's declared length is read inside each decoder and
+        // checked before any further access.
+        unsafe {
+            match &tsig {
+                b"APIC" => decode_madt(entry_pa, hhdm_offset),
+                b"HPET" => decode_hpet(entry_pa, hhdm_offset),
+                b"SPCR" => decode_spcr(entry_pa, hhdm_offset),
+                _       => {}
+            }
         }
         i += 1;
     }
@@ -301,6 +306,80 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
             }
         }
         off += elen;
+    }
+}
+
+/// Decode the HPET ACPI table (high-precision event timer) per
+/// ACPI 6.5 §5.2.21 — 56 bytes total. Logs the MMIO base address.
+///
+/// # SAFETY: caller asserts the table at `hhdm + pa` has the standard
+/// SDT header + 56 bytes of HPET layout (declared length checked first).
+/// # C: O(1)
+pub unsafe fn decode_hpet(pa: u64, hhdm_offset: u64) {
+    let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
+    // SAFETY: caller-asserted SDT header readable; offset 4..8 within.
+    let length = unsafe { read_u32_le(p.add(4)) } as usize;
+    if length < 56 {
+        klog::write_raw(b"[ERROR]    hpet: too short\n");
+        return;
+    }
+    // SAFETY: length ≥ 56; offsets 36..52 are within the HPET-specific tail per ACPI 6.5 §5.2.21.
+    unsafe {
+        let block_id = read_u32_le(p.add(36));
+        // GAS at offset 40: byte 40 address-space, 44..51 64-bit base.
+        let addr_space = core::ptr::read_volatile(p.add(40));
+        let base       = read_u64_le(p.add(44));
+        let hpet_num   = core::ptr::read_volatile(p.add(52));
+        klog::write_raw(b"[INFO]    hpet block_id=");
+        klog::write_hex_u64(block_id as u64);
+        klog::write_raw(b" pa=");
+        klog::write_hex_u64(base);
+        klog::write_raw(b" addr_space=");
+        klog::write_dec_u64(addr_space as u64);
+        klog::write_raw(b" hpet_num=");
+        klog::write_dec_u64(hpet_num as u64);
+        klog::write_raw(b"\n");
+    }
+}
+
+/// Decode the SPCR ACPI table (Serial Port Console Redirection)
+/// per Microsoft SPCR 4.0 — gives the firmware-elected console
+/// UART's interface type + MMIO base. Useful to bypass the
+/// hardcoded PL011 base on aarch64 once VMM lands.
+///
+/// # SAFETY: caller asserts standard SDT header + ≥80-byte SPCR
+/// layout backed by HHDM-covered ACPI memory.
+/// # C: O(1)
+pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
+    let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
+    // SAFETY: caller-asserted SDT header readable; offset 4..8 within.
+    let length = unsafe { read_u32_le(p.add(4)) } as usize;
+    if length < 80 {
+        klog::write_raw(b"[ERROR]    spcr: too short\n");
+        return;
+    }
+    // SAFETY: length ≥ 80; offsets 36..52 within SPCR layout per Microsoft SPCR 4.0.
+    unsafe {
+        let iface  = core::ptr::read_volatile(p.add(36));
+        // GAS at 40: byte 40 addr-space, 44..51 base.
+        let addr_space = core::ptr::read_volatile(p.add(40));
+        let base       = read_u64_le(p.add(44));
+        let irq_type   = core::ptr::read_volatile(p.add(52));
+        let gsi        = read_u32_le(p.add(54));
+        let baud       = core::ptr::read_volatile(p.add(58));
+        klog::write_raw(b"[INFO]    spcr iface=");
+        klog::write_dec_u64(iface as u64);
+        klog::write_raw(b" pa=");
+        klog::write_hex_u64(base);
+        klog::write_raw(b" addr_space=");
+        klog::write_dec_u64(addr_space as u64);
+        klog::write_raw(b" irq_type=");
+        klog::write_dec_u64(irq_type as u64);
+        klog::write_raw(b" gsi=");
+        klog::write_dec_u64(gsi as u64);
+        klog::write_raw(b" baud=");
+        klog::write_dec_u64(baud as u64);
+        klog::write_raw(b"\n");
     }
 }
 
