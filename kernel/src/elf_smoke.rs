@@ -222,7 +222,13 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // SAFETY: process ctx; runqueue installed; preempt-off.
     unsafe { crate::sched::schedule(); }
 
-    // Unreachable — user task halts via ud2 landmark.
+    // Boot resumes here when the user task exits via `sys_exit`
+    // (P2-13d): kernel_sys_exit marks the task Zombie + reschedules,
+    // picker returns to idle (boot anchor), Context::switch lands
+    // back here on boot's saved regs.
+    debug_irq! {
+        klog::kinfo!("elf-smoke: user task exited cleanly, boot resumed");
+    }
     halt_forever();
 }
 
