@@ -141,6 +141,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             }
             Err(_) => klog::kerror!("pmm-smoke: alloc(0) failed"),
         }
+        // Memory summary: `pmm: <free_mib> MiB free, <alloc> page(s) reserved`.
+        let free_pages = p.free_pages();
+        let alloc_pages = p.allocated_pages();
+        // 4 KiB pages -> MiB: pages * 4096 / (1024*1024) = pages / 256.
+        let free_mib = free_pages / 256;
+        klog::write_raw(b"[INFO]  pmm: ");
+        klog::write_dec_u64(free_mib);
+        klog::write_raw(b" MiB free, ");
+        klog::write_dec_u64(alloc_pages);
+        klog::write_raw(b" page(s) reserved\n");
     }
 
 
