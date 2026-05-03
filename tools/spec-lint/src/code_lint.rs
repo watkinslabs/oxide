@@ -43,7 +43,12 @@ fn is_crate_root(path: &Path) -> bool {
 }
 
 fn check_no_std(path: &Path, lines: &[&str], f: &mut Findings) {
-    if !lines.iter().any(|l| l.trim().starts_with("#![no_std]")) {
+    let ok = lines.iter().any(|l| {
+        let t = l.trim();
+        t.starts_with("#![no_std]")
+            || (t.starts_with("#![cfg_attr(") && t.contains("no_std"))
+    });
+    if !ok {
         f.push(path, 1, "code/no-std", "kernel crate file missing `#![no_std]`");
     }
 }

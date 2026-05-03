@@ -273,6 +273,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-bin-aarch64"
+version = "0.1.0"
+dependencies = [
+ "boot-aarch64",
+]
+
+[[package]]
+name = "kernel-bin-x86_64"
+version = "0.1.0"
+dependencies = [
+ "boot-x86_64",
+]
+
+[[package]]
 name = "klog"
 version = "0.1.0"
 
