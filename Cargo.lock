@@ -270,6 +270,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "elf",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

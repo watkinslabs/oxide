@@ -65,6 +65,16 @@ pub mod preempt;
 /// production paths (preempt-on-IRQ-exit, future user-task switch).
 #[cfg(target_os = "oxide-kernel")]
 pub mod sched;
+
+/// ELF loader glue per docs/31. Loads a `&'static [u8]` ELF into
+/// an `AddressSpace` using `VmaBacking::KernelBytes` (P2-17).
+#[cfg(target_os = "oxide-kernel")]
+pub mod elf_load;
+
+/// Boot-path smoke for the ELF loader. x86_64 only for v1; the
+/// arm equivalent rides P2-16b alongside the drop-to-ring3 work.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod elf_smoke;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(target_arch = "aarch64")]
@@ -402,6 +412,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { user_as::init(info.hhdm_offset); }
+    }
+
+    // ELF loader boot smoke (P2-16): parse a hand-synthesised ELF
+    // and register its PT_LOAD as a `VmaBacking::KernelBytes` VMA
+    // in the global AS. Drop-to-ring3 of the loaded image lands
+    // in P2-16b; this PR proves the parse + VMA registration path.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        elf_smoke::run();
     }
 
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
