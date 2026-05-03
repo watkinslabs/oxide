@@ -236,6 +236,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
+    klog::kinfo!("boot: kernel ready, halting");
     halt_forever()
 }
 
@@ -266,12 +267,21 @@ fn log_memmap(regions: &[BootMemRegion]) {
     }
 }
 
-/// Spin forever. Used by `kernel_main` and the panic flow until a
-/// real HAL `halt()` is wired in by the boot crate.
+/// Park the CPU forever. On the kernel target, uses the per-arch
+/// halt instruction (`hlt` / `wfi`) so the host doesn't burn 100%
+/// CPU cycling on a spin loop. Host fallback keeps `spin_loop` for
+/// hosted unit-test compatibility.
 ///
 /// # C: O(∞)
 pub fn halt_forever() -> ! {
     loop {
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        // SAFETY: `hlt` parks the core until next IRQ; legal at CPL=0.
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        // SAFETY: `wfi` parks the core until any wake event; unprivileged at EL1.
+        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)); }
+        #[cfg(not(target_os = "oxide-kernel"))]
         core::hint::spin_loop();
     }
 }
