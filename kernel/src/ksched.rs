@@ -223,8 +223,59 @@ pub unsafe fn tick_yield() {
     } else {
         &s.kts[next - 1].ctx as *const _
     };
-    // SAFETY: both ctx pointers are inside the single-init `KSched`; next_ctx is either freshly built via `new_kernel` (unrun kthread) or saved by a prior IRQ-driven switch (preempted kthread); IRQ frame remains on each task's kernel stack.
+    // SAFETY: both ctx pointers are inside the single-init `KSched`; next_ctx is either freshly built via `new_kernel_with_irq_frame` (unrun kthread) or saved by a prior IRQ-driven switch (preempted kthread); IRQ frame remains on each task's kernel stack.
     unsafe { ArchCtx::switch(prev_ctx, next_ctx); }
+}
+
+/// IRQ-context picker per `14§R07`. Bumps `cur`'s tick counter,
+/// scans for the next not-`done` kthread (round-robin, falling back
+/// to boot if none alive), updates `s.cur`, and stages the
+/// `(prev, next)` Context pointers in
+/// `oxide_preempt_{cur,next}_ctx` so the IRQ asm tail performs the
+/// `oxide_context_switch` and `iretq`s into the new task's stored
+/// IRQ frame. No-op if the picked-next equals the prev (cur stays).
+///
+/// # SAFETY: caller is the IRQ dispatcher (lapic/gic) running with
+/// IRQs masked (interrupt-gate / vector-table entry); single-CPU
+/// pre-init; `SCHED` may or may not be installed.
+/// # C: O(N) scan over kthreads
+/// # Ctx: IRQ
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn tick_pick_next_for_irq_exit() {
+    // SAFETY: caller asserts IRQ context with IRQs masked, single-
+    // CPU pre-init; the only writers to SCHED are the boot path
+    // (install/teardown) and ourselves under the same constraints.
+    let s = unsafe {
+        let p = SCHED.0.get();
+        match (*p).as_mut() { Some(s) => s, None => return }
+    };
+    let prev = s.cur.load(Ordering::Relaxed);
+    let n = s.kts.len();
+    if prev != 0 && prev <= n {
+        s.kts[prev - 1].ticks.fetch_add(1, Ordering::Relaxed);
+    }
+    let mut next = 0usize;
+    for off in 1..=n {
+        let cand = ((prev + off - 1) % n) + 1;
+        if !s.kts[cand - 1].done.load(Ordering::Acquire) {
+            next = cand;
+            break;
+        }
+    }
+    if next == prev { return; }
+    s.cur.store(next, Ordering::Release);
+    let prev_ctx: *mut u8 = if prev == 0 {
+        &mut s.boot as *mut _ as *mut u8
+    } else {
+        &mut s.kts[prev - 1].ctx as *mut _ as *mut u8
+    };
+    let next_ctx: *mut u8 = if next == 0 {
+        &s.boot as *const _ as *mut u8
+    } else {
+        &s.kts[next - 1].ctx as *const _ as *mut u8
+    };
+    crate::preempt::oxide_preempt_cur_ctx.store(prev_ctx, Ordering::Release);
+    crate::preempt::oxide_preempt_next_ctx.store(next_ctx, Ordering::Release);
 }
 
 /// Body shared by per-arch preempt smokes. Builds N kthreads
@@ -261,7 +312,11 @@ pub unsafe fn preempt_install(n: usize) {
     for i in 0..n {
         // SAFETY: stack owned by kthread for the lifetime of SCHED.
         let top = unsafe { s.kts[i]._stack.as_mut_ptr().add(STACK_BYTES) };
-        s.kts[i].ctx = ArchCtx::new_kernel(top, preempt_kthread_entry, i + 1);
+        // `new_kernel_with_irq_frame` per `14§R07`: scaffolds the
+        // kthread's kernel stack with a synthetic IRQ frame so the
+        // IRQ-exit picker can `Context::switch` into a fresh task
+        // and `iretq`/`eret` from the same epilogue.
+        s.kts[i].ctx = ArchCtx::new_kernel_with_irq_frame(top, preempt_kthread_entry, i + 1);
     }
 }
 
@@ -391,11 +446,10 @@ extern "C" fn preempt_kthread_entry(arg: usize) -> ! {
     klog::write_raw(b"[INFO]  preempt: kthread ");
     klog::write_dec_u64(me as u64);
     klog::write_raw(b" enter\n");
-    // Cooperative-with-timer-wake loop: hlt/wfi until the timer IRQ
-    // sets NEED_RESCHED, then cooperatively yield. The IRQ handler
-    // doesn't context-switch directly (would require synthetic
-    // iretq frames per `14§4`); it just sets the flag and lets us
-    // observe it at this safe yield point.
+    // Real IRQ-exit preemption per `14§R07`: the timer-tick picker
+    // increments our ticks + transparently switches us out at the
+    // IRQ tail when another kthread should run. We just hlt/wfi
+    // until our budget exhausts; no NEED_RESCHED polling needed.
     loop {
         // SAFETY: SCHED is single-init; observe own ticks + done.
         let (ticks, done) = unsafe {
@@ -416,17 +470,13 @@ extern "C" fn preempt_kthread_entry(arg: usize) -> ! {
         #[cfg(target_arch = "aarch64")]
         // SAFETY: `wfi` parks the core until any wake event; unprivileged at EL1.
         unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)); }
-        if crate::preempt::need_resched() {
-            // SAFETY: tick_yield called from a normal call site
-            // (not IRQ context); SCHED initialized.
-            unsafe { tick_yield(); }
-        }
     }
     klog::write_raw(b"[INFO]  preempt: kthread ");
     klog::write_dec_u64(me as u64);
     klog::write_raw(b" done\n");
-    // Final yield: scheduler will pick the next not-done kthread or
-    // boot.
+    // Voluntary yield to give boot (or the next not-done kthread)
+    // control. tick_yield runs synchronously (Context::switch);
+    // doesn't go through the IRQ epilogue.
     // SAFETY: tick_yield called from a normal call site (not IRQ context); SCHED initialized; we are the current task.
     unsafe { tick_yield(); }
     loop { core::hint::spin_loop(); }
