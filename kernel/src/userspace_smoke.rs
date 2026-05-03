@@ -167,44 +167,62 @@ pub unsafe fn run<M: MmuOps>(hhdm_offset: u64) -> ! {
         }
     }
 
-    // Per-CPU IRQ landing stack. CPU writes to TSS.RSP0 on CPL3→CPL0
-    // entry; the fault stub then runs on this stack.
+    // Per-CPU IRQ landing stack + fault handler install + drop to
+    // ring 3 — common to every "drop to user mode" path. Factored
+    // into `drop_to_ring3` for reuse by the ELF smoke (P2-16b).
+    // SAFETY: GDT/TSS/IDT/syscall MSRs initialised; user code+stack mapped USER+EXEC/USER+WRITE; single-CPU; IRQs masked.
+    unsafe { drop_to_ring3(USER_CODE_VA, USER_STACK_TOP, hhdm_offset, user_sysret_handler); }
+}
+
+/// Set TSS RSP0 to a fresh kernel stack and `iretq` into user mode
+/// at `(rip, rsp)`. Diverges. Allocates one PMM frame for the
+/// ring-3→ring-0 landing stack and stores its top in TSS.RSP0 so
+/// the next user→kernel transition lands cleanly. Installs
+/// `fault_handler` so the deliberate ud2 / brk landmark at the
+/// end of the user blob can be observed.
+///
+/// # SAFETY: caller has fully initialised GDT, TSS, IDT, syscall
+/// MSRs (P1-93..P1-96); user code at `rip` is mapped USER+EXEC;
+/// user stack at `rsp` is mapped USER+WRITE (or will demand-page
+/// from a registered VMA); CPL=0; IRQs masked.
+/// # C: O(1) modulo PMM alloc
+/// # Ctx: pre-init, IRQ-off, single-CPU; diverges
+pub unsafe fn drop_to_ring3(
+    rip: u64,
+    rsp: u64,
+    hhdm_offset: u64,
+    fault_handler: hal_x86_64::FaultHandler,
+) -> ! {
     let kstack_pa = match crate::pmm_setup::alloc_one_frame() {
         Some(p) => p,
         None => {
-            debug_irq! { klog::kerror!("userspace-eret-smoke: kstack alloc failed"); }
+            debug_irq! { klog::kerror!("drop_to_ring3: kstack alloc failed"); }
             halt_forever();
         }
     };
-    // Use the HHDM kernel-side mapping (already established by Limine
-    // and propagated via PMM/MmuOps init) so we have a kernel VA for
-    // the IRQ stack.
     let kstack_top = hhdm_offset + kstack_pa + KSTACK_SIZE;
-    // SAFETY: TSS in kernel BSS; we serialise pre-init; rsp0 points
-    // at the top of a freshly-allocated, HHDM-mapped 4 KiB frame.
+    // SAFETY: TSS in kernel BSS; serialised pre-init; rsp0 points at top of freshly-allocated, HHDM-mapped 4 KiB frame.
     unsafe { set_rsp0(kstack_top); }
-
-    // Install the #UD-on-sysret-landing handler.
     // SAFETY: handler fn is 'static; pre-init single-CPU swap.
-    let _prev = unsafe { install_fault_handler(user_sysret_handler) };
+    let _prev = unsafe { install_fault_handler(fault_handler) };
 
     debug_irq! {
-        klog::write_raw(b"[INFO]  userspace-eret-smoke: about to iretq cs=");
+        klog::write_raw(b"[INFO]  drop-to-ring3: cs=");
         klog::write_hex_u64(USER_CS as u64);
         klog::write_raw(b" rip=");
-        klog::write_hex_u64(USER_CODE_VA);
+        klog::write_hex_u64(rip);
         klog::write_raw(b" ss=");
         klog::write_hex_u64(USER_DS as u64);
         klog::write_raw(b" rsp=");
-        klog::write_hex_u64(USER_STACK_TOP);
+        klog::write_hex_u64(rsp);
         klog::write_raw(b"\n");
     }
 
-    // Build the iretq frame. CPU pops in order: RIP, CS, RFLAGS, RSP, SS.
+    // CPU pops iretq frame in order: RIP, CS, RFLAGS, RSP, SS.
     // RFLAGS = 0x002 (IF=0, reserved bit 1) — keep IRQs masked while
-    // in user; the smoke fires int3 immediately so timer can't race.
+    // in user; landmarks fire deterministically.
     // SAFETY: synthetic CPL3-bound iretq frame; values built from
-    // kernel-validated constants and freshly-mapped user-VA pages.
+    // kernel-validated constants.
     unsafe {
         core::arch::asm!(
             "push {ss}",
@@ -214,10 +232,10 @@ pub unsafe fn run<M: MmuOps>(hhdm_offset: u64) -> ! {
             "push {rip_u}",
             "iretq",
             ss    = in(reg) USER_DS as u64,
-            rsp_u = in(reg) USER_STACK_TOP,
+            rsp_u = in(reg) rsp,
             rfl   = in(reg) 0x002u64,
             cs    = in(reg) USER_CS as u64,
-            rip_u = in(reg) USER_CODE_VA,
+            rip_u = in(reg) rip,
             options(noreturn),
         );
     }
