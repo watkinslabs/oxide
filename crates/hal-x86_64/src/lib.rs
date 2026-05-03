@@ -102,6 +102,38 @@ impl IrqGate for X86IrqGate {
     }
 }
 
+/// Write IA32_FS_BASE MSR (0xC000_0100) — the per-thread FS-segment
+/// base used by user-space TLS (`fs:0x...`). Single-CPU v1; the
+/// caller (typically `sys_arch_prctl(ARCH_SET_FS, va)`) owns the
+/// invariant that the value is a valid user VA.
+///
+/// # SAFETY: `wrmsr` is privileged at CPL=0; `va` becomes the next
+/// user-mode FS_BASE on this CPU. Caller validates `va` is canonical
+/// and below `USER_VA_END` if user-supplied.
+/// # C: O(1)
+/// # Ctx: syscall context, IRQs off (FMASK clears IF on entry)
+pub unsafe fn set_user_fs_base(va: u64) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let lo = va as u32;
+        let hi = (va >> 32) as u32;
+        // SAFETY: `wrmsr` is a privileged write; ECX selects
+        // IA32_FS_BASE (0xC000_0100). No memory effect; only changes
+        // the architectural FS_BASE register.
+        unsafe {
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") 0xC000_0100u32,
+                in("eax") lo,
+                in("edx") hi,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = va; }
+}
+
 /// Halt this CPU until the next IRQ. `hlt` per `20§4`. On host fallback,
 /// returns immediately so hosted unit tests can exercise call sites.
 /// # C: O(1)
