@@ -17,7 +17,11 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::ksched::{mark_done, preempt_install, preempt_run, preempt_teardown, tick_yield};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use sched::Task;
+
+use crate::sched as ksched;
 
 /// Iteration count per kthread. Each iteration runs one `hlt` /
 /// `wfi`, allowing the timer IRQ to preempt and (likely) switch
@@ -147,14 +151,20 @@ extern "C" fn canary_kthread_entry(arg: usize) -> ! {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn canary_done_and_yield(me: usize) -> ! {
-    // SAFETY: `mark_done` writes our `done` flag; subsequent picks
-    // skip us. We are the current task and SCHED is single-init.
-    unsafe { mark_done(me); }
-    // SAFETY: voluntary yield once we're done; tick_yield runs
-    // synchronously (Context::switch). When all kthreads are done,
-    // the picker picks boot and the smoke driver returns.
-    unsafe { tick_yield(); }
+fn canary_done_and_yield(_me: usize) -> ! {
+    // Mark the running task Zombie so subsequent picks skip it
+    // (`13§5` lifecycle). We are the current task per `13§2`
+    // invariant 2.
+    if let Some(cur) = ksched::current() {
+        ksched::mark_done(cur);
+    }
+    // Voluntary yield. With our state == Zombie, `schedule()`
+    // skips the re-enqueue step (`13§8`); when no other task is
+    // runnable, the picker returns to idle (the boot anchor) and
+    // the smoke driver resumes after its initial `schedule()`.
+    // SAFETY: per `schedule()` contract — process context, IRQs
+    // OK, single-CPU.
+    unsafe { ksched::tick_yield(); }
     loop { core::hint::spin_loop(); }
 }
 
@@ -176,38 +186,40 @@ pub unsafe fn smoke_canary_x86(period: u32) {
     klog::write_raw(b"[INFO]  canary: install n=");
     klog::write_dec_u64(CANARY_N as u64);
     klog::write_raw(b"\n");
-    // SAFETY: SCHED unused; allocator up; pre-init.
-    unsafe { preempt_install(CANARY_N, canary_kthread_entry); }
-    // Reset reschedule flag.
+    // SAFETY: boot path; allocator up; no runqueue currently installed.
+    unsafe { ksched::install_default_runqueue(); }
+    let _kts = spawn_canary_set();
     crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
     // SAFETY: LAPIC was enabled by smoke_device_map_x86; legal at CPL=0.
     let armed = unsafe { crate::lapic::timer_periodic(period) };
     if !armed {
         klog::kerror!("canary: lapic timer not armed");
-        // SAFETY: scheduler is initialized but no kthread is current.
-        let _ = unsafe { preempt_teardown() };
+        // SAFETY: runqueue installed but no kthread is current; teardown drops Tasks + idle.
+        let _ = unsafe { ksched::schedule::uninstall_global_with_stats() };
         return;
     }
     // SAFETY: STI legal at CPL=0; pairs with the CLI on return path.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    // SAFETY: kthread 1 was freshly built via new_kernel_with_irq_frame;
-    // preempt_run synchronously switches into it; the timer ISR drives
-    // subsequent rotations.
-    unsafe { preempt_run(); }
+    // First voluntary `schedule()` from boot saves boot's regs into
+    // idle.arch_ctx (the boot anchor) and switches into the first
+    // CFS-picked kthread. Returns here when every kthread has
+    // marked itself Zombie and the picker falls through to idle.
+    // SAFETY: per `schedule()` — process ctx, single-CPU; IRQ delivery armed above.
+    unsafe { ksched::schedule(); }
     // SAFETY: CLI restores IF=0; matches the boot-path discipline.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
-    // SAFETY: LAPIC enabled; timer_disarm writes 0 to the Initial
-    // Count reg, halting the periodic timer.
+    // SAFETY: LAPIC enabled; timer_disarm halts the periodic timer.
     unsafe { crate::lapic::timer_disarm(); }
-    // SAFETY: preempt_run returned via tick_yield→boot or the
-    // picker's all-done switch; no kthread is current.
-    let (_yields, ticks) = unsafe { preempt_teardown() };
+    // SAFETY: schedule() returned via the boot-anchor restore path; no kthread is current beyond idle.
+    let stats = unsafe { ksched::schedule::uninstall_global_with_stats() }
+        .unwrap_or(ksched::RunStats::default());
+    drop(_kts);
     klog::write_raw(b"[INFO]  canary: done n=");
     klog::write_dec_u64(CANARY_N as u64);
     klog::write_raw(b" iters=");
     klog::write_dec_u64(CANARY_ITERS as u64);
     klog::write_raw(b" ticks=");
-    klog::write_dec_u64(ticks as u64);
+    klog::write_dec_u64(stats.irq_switches as u64);
     klog::write_raw(b"\n");
 }
 
@@ -224,8 +236,9 @@ pub unsafe fn smoke_canary_arm(period: u32) {
     klog::write_raw(b"[INFO]  canary: install n=");
     klog::write_dec_u64(CANARY_N as u64);
     klog::write_raw(b"\n");
-    // SAFETY: SCHED unused; allocator up; pre-init.
-    unsafe { preempt_install(CANARY_N, canary_kthread_entry); }
+    // SAFETY: boot path; allocator up; no runqueue currently installed.
+    unsafe { ksched::install_default_runqueue(); }
+    let _kts = spawn_canary_set();
     crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
     // SAFETY: GIC mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
     unsafe { crate::gic::enable_intid(27); }
@@ -233,24 +246,44 @@ pub unsafe fn smoke_canary_arm(period: u32) {
     unsafe { crate::arm_timer::timer_periodic(period); }
     // SAFETY: opening DAIF.I lets the GIC deliver the CNTV line via VBAR_EL1[0x280] → oxide_arm_irq_dispatch.
     unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
-    // SAFETY: kthread 1 was freshly built via new_kernel_with_irq_frame; preempt_run synchronously switches into it.
-    unsafe { preempt_run(); }
-    // SAFETY: re-mask after preempt_run returns to boot.
+    // SAFETY: per `schedule()` contract — process ctx, single-CPU.
+    unsafe { ksched::schedule(); }
+    // SAFETY: re-mask DAIF.I after schedule returns to boot.
     unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
-    // SAFETY: disable CNTV (CTL=0) to halt the line.
+    // SAFETY: disable CNTV (CTL=0) to halt the timer line.
     unsafe {
         let off: u64 = 0;
         core::arch::asm!("msr cntv_ctl_el0, {c}", c = in(reg) off, options(nomem, nostack, preserves_flags));
     }
-    // SAFETY: preempt_run returned via tick_yield→boot or the picker's all-done switch; no kthread is current.
-    let (_yields, ticks) = unsafe { preempt_teardown() };
+    // SAFETY: schedule() returned via the boot-anchor restore path; no kthread is current beyond idle.
+    let stats = unsafe { ksched::schedule::uninstall_global_with_stats() }
+        .unwrap_or(ksched::RunStats::default());
+    drop(_kts);
     klog::write_raw(b"[INFO]  canary: done n=");
     klog::write_dec_u64(CANARY_N as u64);
     klog::write_raw(b" iters=");
     klog::write_dec_u64(CANARY_ITERS as u64);
     klog::write_raw(b" ticks=");
-    klog::write_dec_u64(ticks as u64);
+    klog::write_dec_u64(stats.irq_switches as u64);
     klog::write_raw(b"\n");
+}
+
+/// Spawn the canary set on the global runqueue. Returns a Vec of
+/// the spawned `Arc<Task>` so the smoke driver can keep the
+/// strong refs alive until teardown — without this, dropping the
+/// only Arc would free the Task while it's still scheduled.
+#[cfg(target_os = "oxide-kernel")]
+fn spawn_canary_set() -> Vec<Arc<Task>> {
+    let mut v = Vec::with_capacity(CANARY_N);
+    for i in 1..=CANARY_N as u32 {
+        // SAFETY: runqueue installed; allocator up; pre-init.
+        let r = unsafe { ksched::spawn_kernel_thread(i, "canary", canary_kthread_entry, i as usize) };
+        match r {
+            Ok(t)  => v.push(t),
+            Err(_) => klog::kerror!("canary: spawn failed"),
+        }
+    }
+    v
 }
 
 /// Hard fail: mask IRQs and `hlt`/`wfi` forever so the smoke
