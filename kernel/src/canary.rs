@@ -17,7 +17,7 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::ksched::{mark_done, preempt_install_with, preempt_run, preempt_teardown, tick_yield};
+use crate::ksched::{mark_done, preempt_install, preempt_run, preempt_teardown, tick_yield};
 
 /// Iteration count per kthread. Each iteration runs one `hlt` /
 /// `wfi`, allowing the timer IRQ to preempt and (likely) switch
@@ -177,7 +177,7 @@ pub unsafe fn smoke_canary_x86(period: u32) {
     klog::write_dec_u64(CANARY_N as u64);
     klog::write_raw(b"\n");
     // SAFETY: SCHED unused; allocator up; pre-init.
-    unsafe { preempt_install_with(CANARY_N, canary_kthread_entry); }
+    unsafe { preempt_install(CANARY_N, canary_kthread_entry); }
     // Reset reschedule flag.
     crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
     // SAFETY: LAPIC was enabled by smoke_device_map_x86; legal at CPL=0.
@@ -225,7 +225,7 @@ pub unsafe fn smoke_canary_arm(period: u32) {
     klog::write_dec_u64(CANARY_N as u64);
     klog::write_raw(b"\n");
     // SAFETY: SCHED unused; allocator up; pre-init.
-    unsafe { preempt_install_with(CANARY_N, canary_kthread_entry); }
+    unsafe { preempt_install(CANARY_N, canary_kthread_entry); }
     crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
     // SAFETY: GIC mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
     unsafe { crate::gic::enable_intid(27); }
