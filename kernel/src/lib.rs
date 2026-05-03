@@ -105,6 +105,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kinfo!("memmap: absent");
     }
 
+
     // Smoke test: round-trip a `vmm::VmaTree` through the heap so a
     // boot trace surfaces any allocator-vs-BTreeMap incompatibility
     // before further subsystems wire up.

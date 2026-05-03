@@ -130,13 +130,14 @@ fn default_handler_addr() -> u64 {
 /// # C: O(IDT_LEN)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn install_default() {
-    let handler = default_handler_addr();
+    let _ = default_handler_addr;  // kept for back-compat; see fault.rs
     // SAFETY: single-CPU boot; we own the IDT static during install.
     // The UnsafeCell is the only legal way to write the array given
     // `06§11` + `07§5` ban `static mut`.
     let idt = unsafe { &mut *IDT.0.get() };
-    for entry in idt.iter_mut() {
-        *entry = IdtEntry::new_int_gate(handler, KERNEL_CS, 0);
+    for (i, entry) in idt.iter_mut().enumerate() {
+        let h = crate::fault::vector_stub_addr(i as u8);
+        *entry = IdtEntry::new_int_gate(h, KERNEL_CS, 0);
     }
     // Now load IDTR.
     let pointer = IdtPointer {

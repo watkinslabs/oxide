@@ -80,6 +80,30 @@ fn invoke_sink(bytes: &[u8]) {
     f(bytes);
 }
 
+/// Emit raw bytes through the configured sink with no prefix or
+/// newline. For exception handlers and bring-up diagnostics that
+/// need to format hex values; production paths use the level macros
+/// which carry the InternedFormat metadata.
+/// # C: O(len(bytes))
+pub fn write_raw(bytes: &[u8]) {
+    invoke_sink(bytes);
+}
+
+/// Emit a 64-bit value as 16 lower-case hex digits, no `0x` prefix,
+/// no surrounding whitespace. Useful inside fault printers where
+/// allocation and formatting machinery are unavailable.
+/// # C: O(16)
+pub fn write_hex_u64(v: u64) {
+    let mut buf = [0u8; 16];
+    let mut i = 0u32;
+    while i < 16 {
+        let nibble = ((v >> ((15 - i) * 4)) & 0xf) as u8;
+        buf[i as usize] = if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
+        i += 1;
+    }
+    invoke_sink(&buf);
+}
+
 /// Format and emit one klog event: `[LEVEL] msg\n`. Falls through to
 /// a no-op when no sink is installed.
 /// # C: O(len(msg))

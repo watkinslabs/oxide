@@ -19,6 +19,7 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod fault;
 mod fpu;
 mod mmu;
 mod pt_regs;
