@@ -49,6 +49,8 @@ pub mod gic;
 pub mod ksched;
 #[cfg(target_os = "oxide-kernel")]
 pub mod kthread;
+#[cfg(target_os = "oxide-kernel")]
+pub mod preempt;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(target_arch = "aarch64")]
@@ -311,6 +313,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             kthread::smoke();
             kthread::smoke_yield();
             ksched::smoke_rr(4);
+            #[cfg(target_arch = "x86_64")]
+            ksched::smoke_preempt_x86(4, 1_000_000);
+            #[cfg(target_arch = "aarch64")]
+            ksched::smoke_preempt_arm(4, 50_000);
         }
     }
 
