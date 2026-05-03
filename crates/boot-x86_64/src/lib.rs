@@ -110,6 +110,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         memmap_ptr: EMPTY.as_ptr(),
         seed: [0; 32],
         boot_ns: 0,
+        hhdm_offset: 0,
     }
 }
 
@@ -169,11 +170,22 @@ unsafe fn build_boot_info() -> BootInfo {
     // SAFETY: limine::populate_memmap_into expects a valid response
     // table per its own contract, which the bootloader guarantees.
     let n = unsafe { limine::populate_memmap_into(storage, resp) };
+    let hhdm = {
+        let p = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
+        if p.is_null() {
+            0
+        } else {
+            // SAFETY: Limine wrote a non-null response pointer; backing
+            // struct lives for the rest of boot per `36§3`.
+            unsafe { (*p).offset }
+        }
+    };
     BootInfo {
         memmap_count: n as u32,
         memmap_ptr:   storage.as_ptr(),
         seed:         [0; 32],
         boot_ns:      0,
+        hhdm_offset:  hhdm,
     }
 }
 
