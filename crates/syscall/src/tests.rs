@@ -35,6 +35,8 @@ fn unbound_slots_default_to_enosys() {
         107,  // sys_geteuid
         108,  // sys_getegid
         186,  // sys_gettid
+        218,  // sys_set_tid_address
+        273,  // sys_set_robust_list
     ];
     for nr in 0..(SYSCALL_TABLE_LEN as u32) {
         if BOUND.contains(&nr) { continue; }
@@ -47,7 +49,7 @@ fn unbound_slots_default_to_enosys() {
 
 #[test]
 fn bound_slots_are_not_enosys() {
-    for nr in [1, 39, 60, 102, 104, 107, 108, 186] {
+    for nr in [1, 39, 60, 102, 104, 107, 108, 186, 218, 273] {
         assert!(!is_enosys(nr), "slot {nr} must be bound");
     }
 }
