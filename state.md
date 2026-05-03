@@ -1,12 +1,12 @@
-# State 2026-05-03 (session 18 EOD)
+# State 2026-05-03 (session 19 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. MmuOps complete + production-validated; fault path decoder + recoverable handler surface live; Task carries arch_ctx; qemu-mcp tooling ready for the next round of asm-level debugging.** 164 PRs total; 489 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1→2 boundary crossed. x86_64 kernel drops to CPL=3, executes user `int3`, returns via fault dispatcher.** 170 PRs total; 510 hosted tests; kernel-owned GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95), runtime user-page smoke (P1-96), first userspace iretq smoke (P1-82). Both arches still boot through Limine→`kernel_main` + every Phase 1 smoke (RR / preempt / canary / MMU ops 4 KiB + 2 MiB + user-mapping). On x86_64 the boot now terminates with `[INFO] userspace-eret-smoke: ok ring3 #BP rip=0000000000400001` instead of `boot: kernel ready, halting` — the success-log replaces the prior halt sentinel. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-18 EOD:
+Last verified-green at session-19 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
 $ cargo run -p xtask -- test                 # → 489 hosted tests, 0 failures
@@ -18,20 +18,28 @@ $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 …
 [INFO]  mmuops-smoke: ok pa=… magic=cafef00ddeadbeef
 [INFO]  mmuops-smoke 2m: ok pa=… magic=cafef00ddeadbeef
-[INFO]  preempt: kthread 1..=4 enter / done
 [INFO]  preempt: done yields=0 ticks=17
-[INFO]  canary: install n=64
 [INFO]  canary: done n=64 iters=16 ticks=1088
-[…] [INFO]  boot: kernel ready, halting
+[INFO]  user-map-smoke: ok pa=… flags=0000000000000000d
+[INFO]  boot: kernel ready, halting
+[INFO]  userspace-eret-smoke: about to iretq cs=000000000000003b rip=0000000000400000 ss=0000000000000043 rsp=0000000000501000
+[FAULT] vec=0000000000000003 (#BP) err=0 rip=0000000000400001 rflags=0000000000000002
+[INFO]  userspace-eret-smoke: ok ring3 #BP rip=0000000000400001
 $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
-… same trace, preempt ticks=16, canary ticks=1088 …
+… same Phase-1 trace + user-map-smoke ok; arm eret smoke not yet wired …
 ```
 
 `make ci` mirrors the full PR gate (lint + test + build + build-debug, both arches).
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 18` for the per-PR table.
+See `CHANGELOG.md § Session 19` for the per-PR table.
+
+- **#166** (`P1-93-kernel-owned-gdt`): kernel-owned GDT in BSS replaces Limine's. Selector offsets mirror Limine v6 layout (`KERNEL_CS=0x28` / `KERNEL_DS=0x30` keep working unchanged); adds `USER_CS=0x3B` / `USER_DS=0x43` (DPL=3) for Phase 2. Far return uses `.byte 0x48, 0xCB` (REX.W + retf) — long-mode `lret` defaults to 32-bit which would have hung the prior abandoned attempt. Validated under qemu-mcp by stepping through `lgdt` + segment reloads + `lretq`. +8 hosted tests.
+- **#167** (`P1-94-tss-install`): 64-bit TSS in BSS + 16-byte system descriptor at GDT[9..11] (selector 0x48). Boot path issues `ltr 0x48` after GDT install. `set_rsp0()` exposed for per-task switch-in. RSP0/IST stay zero pre-userspace; iomap_base = sizeof(TSS) so no IO bitmap. +9 hosted tests.
+- **#168** (`P1-95-user-mapping`): `pack_table` sets U/S=1 unconditionally on interior PT entries. Per Intel SDM §4.6 every interior entry on a CPL=3 walk must have U/S=1; leaf U bit alone gates accessibility. ARM walker untouched (AP[2:1] gates per-leaf). +3 hosted tests.
+- **#169** (`P1-96-user-page-smoke`): runtime smoke maps a 4 KiB user VA at 0x40_0000 with `USER|EXEC|READ` and translates back, asserting USER+EXEC round-trip on real CR3/TTBR0 walks. Validates the P1-95 fix end-to-end on both arches.
+- **#170** (`P1-82-userspace-first-iretq`): drops to CPL=3 by building a synthetic IRET frame and executing `iretq`. User code is `int3`; CPU vectors back through IDT[3] (DPL=3 gate) → fault dispatcher → custom handler logs `userspace-eret-smoke: ok`. Bug surfaced + fixed: IDT[3]/IDT[4] gates now use `GATE_INT64_USER` (0xEE, DPL=3); previously a CPL=3 `int3` produced `#GP(IDT, vec=3)`. **Phase 1→2 boundary crossed.**
 
 - **#159** (`C36-readme-ci-badge`): README updated from Phase-0 placeholder. CI badge wired to `pr.yml`; status section reflects current state; `make` quick-start; pointers to `state.md` / `CHANGELOG.md`.
 - **#160** (`P1-86a-fault-decode`): per-arch fault printer decodes vectors + PFEC/ESR/DFSC labels. x86 emits `[FAULT] vec=0xe (#PF) … pf=NP-W-K`; arm emits `ec=0x25 (data-abort-same-el) … dfsc=permission-l3 W`. +8 hosted tests.
@@ -40,10 +48,10 @@ See `CHANGELOG.md § Session 18` for the per-PR table.
 - **#163** (`B07-debug-irq-feature-chain`): latent fix. xtask `--features debug-all` only applies to its `-p`-selected packages; `hal-{x86_64,aarch64}/debug-irq` was unreachable since #160. Chain through `boot-{arch}/Cargo.toml::debug-irq = ["hal-<arch>/debug-irq"]` so the fault decoder is actually live in production builds.
 - **#164** (`C37-qemu-mcp-server`): interactive QEMU+GDB control surface as an MCP server (`tools/qemu-mcp/server.py`). 13 tools (`qemu_start`/`break`/`continue`/`stepi`/`step`/`finish`/`regs`/`mem`/`disasm`/`backtrace`/`info`/`serial`/`stop`). Pure stdlib + `mcp` package; spawns QEMU with `-s -S` + `gdb --interpreter=mi3`. `.mcp.json` at repo root registers it for Claude Code auto-load on next session start.
 
-### Abandoned (need interactive debugging — now unblocked by #164)
+### Abandoned-then-recovered
 
-- **P1-93 kernel-owned x86 GDT** — silent QEMU hang at the `retfq` after `lgdt`. Tried `.byte 0x48, 0xcb` to force 64-bit far-return encoding; still hung. Branch deleted. Re-attempt next session via `qemu-mcp` to single-step the GDT install asm.
-- **P1-86c page-fault recovery smoke** — handler attached + deliberate fault fired; dispatcher entered twice, then silence. Surfaced #163 along the way (`hal-{arch}/debug-irq` was off in production). Branch deleted. Re-attempt next session via `qemu-mcp` to localise where the second fault originates.
+- **P1-93 kernel-owned GDT** ✅ landed as #166. Root cause of prior hang likely 32-bit `lret` operand-size; new asm uses explicit REX.W.
+- **P1-86c page-fault recovery smoke** — still abandoned. Lower priority post-Phase 1→2 cross; re-attempt with the userspace path intact would let us deliberate-fault from CPL=3 instead of CPL=0, which is closer to the real demand-paging shape.
 
 ## What's done overall
 
@@ -162,8 +170,13 @@ Session 18 (PRs #159 – #164):
   P1-86b-fault-recover       — recoverable fault path (asm + bool dispatcher)
   B07-debug-irq-feature-chain — chain hal-<arch>/debug-irq via boot crates
   C37-qemu-mcp-server        — interactive QEMU+GDB MCP server
-  (P1-93 kernel-owned GDT + P1-86c PF-recovery smoke abandoned mid-PR;
-   re-attempt next session via qemu-mcp.)
+
+Session 19 (PRs #166 – #170):  ← Phase 1→2 boundary crossed
+  P1-93-kernel-owned-gdt     — kernel-owned GDT replaces Limine's
+  P1-94-tss-install          — 64-bit TSS + ltr; set_rsp0 exposed
+  P1-95-user-mapping         — interior PT entries set U/S=1
+  P1-96-user-page-smoke      — runtime user-mapping translate round-trip
+  P1-82-userspace-first-iretq — drops to CPL=3, user int3, returns via #BP
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
@@ -197,15 +210,14 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 ## Suggested next branches
 
-**First action next session: confirm `qemu-mcp` auto-loaded** (Claude Code reads `.mcp.json` only at session start). If `qemu_start` etc. show up in the available-tools list, the new debugging surface is live.
-
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **Re-attempt P1-93 kernel-owned GDT** | `P1-93-kernel-owned-gdt` | Now unblocked by `qemu-mcp`. `qemu_start("x86_64")` → `qemu_break("install_kernel_gdt")` → `qemu_continue` → step through `lgdt` / `retfq` / segment-register reloads watching `qemu_regs` + `qemu_disasm`. Last attempt hung silently after `lgdt`; the gdb-stub will localise the offending instruction. Gates P1-82. |
-| **Re-attempt P1-86c PF-recovery smoke** | `P1-86c-fault-recover-smoke` | Now unblocked. Last attempt: dispatcher entered twice on the deliberate fault, then hung. Step through the second fault to find what's re-faulting. |
-| **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Gated by P1-93. Cross the Phase 1→2 line. Needs the kernel-owned GDT for user CS/SS + a hand-coded user blob + syscall entry/exit. |
-| **Wire real `RunqueueInner` into ksched** | `P1-84b-sched-runqueue-wire` | `Task` now has the fields (#161). Refactor `kernel/src/ksched.rs` shim onto `crates/sched::RunqueueInner`. Plumbing; doesn't unblock anything immediately. |
-| **Real PF handler + VMM AddressSpace integration** | `P1-86d-vmm-addrspace-fault` | Builds on P1-86b's `install_fault_handler`. Wire VMM AS to the dispatcher; demand-paging on fault. Larger; needs design call on per-task AS storage. |
+| **Syscall MSR setup + entry stub** | `P2-01-syscall-msrs` | Wire MSR_LSTAR / MSR_STAR / MSR_SFMASK + `oxide_syscall_entry` asm landing pad per `20§7`. After this, user→kernel→user round-trip is possible without the int3 detour. |
+| **Sysret return path** | `P2-02-sysretq` | Pairs with P2-01. Restore user RIP=rcx / RFLAGS=r11 / SS+CS from STAR + sysretq. Lets user code call kernel and resume. |
+| **Userspace `eret` smoke (arm)** | `P2-03-arm-eret` | aarch64 mirror of P1-82. ELR_EL1 + SPSR_EL1 setup, `eret` to EL0, brk #0 returns via `sync_lower_aa64`. |
+| **VMM AddressSpace + real PF handler** | `P2-04-vmm-addrspace-fault` | Per-task AS lifecycle; wire to fault dispatcher; demand-paging. Larger. |
+| **Wire real `RunqueueInner` into ksched** | `P1-84b-sched-runqueue-wire` | Carry-over from session 18. Plumbing-heavy refactor onto `crates/sched::RunqueueInner`; doesn't unblock anything immediately. |
+| **Re-attempt P1-86c PF-recovery smoke** | `P1-86c-fault-recover-smoke` | Carry-over. Lower priority now that the userspace path is wired — the deliberate fault has more shape from CPL=3. |
 
 ## Open questions for user (deferred)
 
