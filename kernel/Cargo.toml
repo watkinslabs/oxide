@@ -23,5 +23,12 @@ hal-aarch64 = { path = "../crates/hal-aarch64" }
 
 [features]
 default = []
-debug-all = []
+# Per `docs/04§3` (rev R05): per-subsystem debug features. Off = call
+# sites absent from the binary; the hot path emits zero bytes. Names
+# match the spec's bucket list 1:1 — independence guarantee in §3.
+debug-pmm  = []  # PMM smoke + stress + memmap dump
+debug-vmm  = []  # device-map MMIO sanity reads (HPET cap, GICD typer)
+debug-irq  = []  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
+debug-acpi = []  # RSDP/XSDT walk + per-table decoder traces
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi"]
 

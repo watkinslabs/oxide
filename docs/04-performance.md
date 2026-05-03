@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-05-03 (R05)
+
+- Changed: §3 feature list adds `debug-acpi` (RSDP/XSDT/MADT/HPET/SPCR/MCFG/GTDT decoder traces) and folds it into `debug-all`. The existing `debug-pmm`/`debug-vmm`/`debug-irq` buckets stay; ACPI table walking is its own surface and needed its own gate.
+- Why: aarch64 + x86_64 boot-time bring-up needed per-subsystem trace gates so a developer chasing an IRQ-routing bug isn't paying for PMM stress dumps + ACPI walks + memmap pretty-print on every boot. Single `debug-boot` would have collapsed signals across subsystems and is rejected.
+- Affected code: `kernel/Cargo.toml` features; `kernel/src/lib.rs` call-site `cfg(feature=…)`-elided diagnostic blocks (PMM smoke + memmap dump under `debug-pmm`; HPET-cap + GICD-typer device-map dumps under `debug-vmm`; LAPIC/GIC enable diags + polled-timer + IRQ soak under `debug-irq`; ACPI walk under `debug-acpi`).
+- Test contract change: none. CI matrix in `40` already runs no-features + `debug-all`; the new `debug-acpi` rides the same matrix.
+
 ## Revision 2026-05-02 (R04)
 
 - Changed: §4 backend description tightened. Adds the frozen invariant **"klog producer-side macros are safe in any context"** (process, IRQ, NMI, spinlock-held, preempt-disabled, RCU read-side); pins the per-CPU lockless ring + deferred-drain design so callers don't have to context-audit every call site.
@@ -70,11 +77,12 @@ debug-vmm=[]      # PTE walker + AS invariants
 debug-pmm=[]      # buddy invariant audit per op
 debug-vfs=[]      # inode/dentry refcount audit
 debug-net=[]      # packet trace, socket FSM asserts
-debug-irq=[]      # IRQ flag audit, edge/level mismatch
+debug-irq=[]      # IRQ flag audit, edge/level mismatch, timer-IRQ soak
+debug-acpi=[]     # RSDP/XSDT walk + per-table decoder traces
 debug-syscalls=[] # log every syscall (very expensive)
 debug-all=["debug-alloc","debug-lockdep","debug-preempt",
            "debug-sched","debug-vmm","debug-pmm","debug-vfs",
-           "debug-net","debug-irq"]  # not debug-syscalls
+           "debug-net","debug-irq","debug-acpi"]  # not debug-syscalls
 ```
 
 Independence: `debug-sched` doesn't pull `debug-vmm`. (Catalog: `41`.)
