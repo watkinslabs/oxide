@@ -47,6 +47,12 @@ pub fn sys_enosys(_args: &SyscallArgs) -> KResult<u64> {
 /// chunked by the caller. Lifts once the VFS+pipe path lands.
 const WRITE_MAX_BYTES: u64 = 4096;
 
+/// Linux IOV_MAX = 1024; we cap lower at 64 — enough for libc's
+/// stdout buffering pattern (iovec count = 1 or 2 typically) but
+/// bounds the per-syscall work.
+const IOV_MAX: usize = 64;
+const IOV_LEN_BYTES: u64 = 16;  // sizeof(struct iovec) on 64-bit Linux
+
 /// `sys_write(fd, buf, len)` — slot 1 per `15§2`.
 ///
 /// v1 minimal: only fd 1 (stdout) and fd 2 (stderr) accepted, both
@@ -70,6 +76,50 @@ pub fn sys_write(args: &SyscallArgs) -> KResult<u64> {
     };
     user_console_emit(bytes);
     Ok(len)
+}
+
+/// `sys_writev(fd, iov, iovcnt)` — slot 20 per `15§2`. Like
+/// `write` but takes a vector of `iovec { void *base; size_t len }`
+/// pairs. v1: only fd 1/2 (stdout/stderr) accepted; bytes flow to
+/// the kernel UART via the same use-aliased emit path.
+///
+/// libc (musl + glibc) uses `writev` heavily for buffered stdout —
+/// e.g., `printf("%s\n", s)` ends up as a single writev with two
+/// iovs (the string + the newline) instead of two separate writes.
+/// Without binding, line-buffered stdout breaks.
+/// # C: O(iovcnt × iov[i].len)
+pub fn sys_writev(args: &SyscallArgs) -> KResult<u64> {
+    let fd     = args.a0;
+    let iov    = args.a1;
+    let iovcnt = args.a2 as usize;
+    if fd != 1 && fd != 2 { return Err(Errno::Ebadf); }
+    if iovcnt > IOV_MAX  { return Err(Errno::Einval); }
+
+    // Validate the iovec array itself.
+    let array_bytes = (iovcnt as u64).checked_mul(IOV_LEN_BYTES).ok_or(Errno::Efault)?;
+    let _array_slice = UserSlice::<u8>::new(iov, array_bytes as usize)?;
+
+    let mut total: u64 = 0;
+    for i in 0..iovcnt {
+        let iov_i = iov + (i as u64) * IOV_LEN_BYTES;
+        // SAFETY: the iovec array range [iov, iov + iovcnt*16) was validated by UserSlice above; iov_i lies inside that range and is naturally aligned (iov 8-aligned by Linux ABI).
+        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+        // SAFETY: same validated range as the previous read; iov_i+8 is the iov_len field naturally 8-aligned per Linux ABI.
+        let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+        if len == 0 { continue; }
+        if len > WRITE_MAX_BYTES {
+            return Err(Errno::Einval);
+        }
+        // Validate this individual buffer.
+        let _slice = UserSlice::<u8>::new(base, len as usize)?;
+        // SAFETY: range validated; CPL=0 reads U=1 leaves directly.
+        let bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(base as *const u8, len as usize)
+        };
+        user_console_emit(bytes);
+        total = total.saturating_add(len);
+    }
+    Ok(total)
 }
 
 /// `sys_exit(code)` — slot 60 per `15§2`. v1: returns 0 (the user
@@ -213,6 +263,7 @@ const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     t[13]  = sys_rt_sigaction    as SyscallFn;
     t[14]  = sys_rt_sigprocmask  as SyscallFn;
     t[16]  = sys_ioctl           as SyscallFn;
+    t[20]  = sys_writev          as SyscallFn;
     t[28]  = sys_madvise         as SyscallFn;
     t[39]  = sys_getpid          as SyscallFn;
     t[60]  = sys_exit            as SyscallFn;
