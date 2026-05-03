@@ -240,6 +240,8 @@ unsafe fn build_boot_info() -> BootInfo {
         info.memmap_count = n as u32;
         info.memmap_ptr   = storage.as_ptr();
     }
+    use hal::TimerOps;
+    info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
 
     // DTB pointer is preserved for future device-tree consumers; not
     // wired into BootInfo yet.
@@ -280,6 +282,19 @@ unsafe extern "C" fn _start_rust() -> ! {
     pl011::set_hhdm_offset(hhdm);
 
     klog::set_byte_sink(boot_emit);
+
+    // Generic-timer calibration: read CNTFRQ_EL0 (programmed by
+    // firmware) and stash kHz so `ArmTimerOps::monotonic_ns` works.
+    let cntfrq_hz: u64;
+    // SAFETY: `mrs cntfrq_el0` is unprivileged at any EL with no memory effects per ARM ARM D11.2.4; the output is the firmware-programmed counter frequency in Hz.
+    unsafe {
+        core::arch::asm!(
+            "mrs {f}, cntfrq_el0",
+            f = out(reg) cntfrq_hz,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    hal_aarch64::set_cntfrq_khz((cntfrq_hz / 1000) as u32);
 
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.

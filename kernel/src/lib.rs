@@ -96,6 +96,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     unsafe { GLOBAL_ALLOC.init_static() };
 
     klog::kinfo!("init started");
+    if info.boot_ns != 0 {
+        klog::write_raw(b"[INFO]  boot_ns=");
+        klog::write_hex_u64(info.boot_ns);
+        klog::write_raw(b"\n");
+    }
     if info.hhdm_offset != 0 {
         klog::kinfo!("hhdm: present");
     } else {
