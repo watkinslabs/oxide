@@ -49,24 +49,38 @@ pub struct PtWalkerArm;
 impl PtWalker for PtWalkerArm {
     const PHYS_MASK: u64 = PHYS_MASK_ARM;
 
-    /// `mrs x, ttbr1_el1` — privileged at EL1.
-    /// # SAFETY: per trait contract; EL1.
-    unsafe fn read_pt_base() -> u64 {
+    /// Pick TTBR0_EL1 (user-half) or TTBR1_EL1 (kernel-half) by the
+    /// VA's bit 55 — the standard ARM ARM D5.2.4 split-translation
+    /// rule. Bit 55 high → kernel mapping (e.g. 0xFFFF_xxxx_xxxx_xxxx
+    /// HHDM addresses); else user (e.g. low-half 0x0000_0000_0040_0000).
+    /// Letting MmuOps::map(USER_VA, ...) plumb into TTBR0 without a
+    /// separate walker impl.
+    /// # SAFETY: per trait contract; privileged read at EL1.
+    unsafe fn read_pt_base(va: u64) -> u64 {
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
         {
             let v: u64;
-            // SAFETY: `mrs x, ttbr1_el1` is privileged at EL1; no memory effect; result is the EL1 kernel-half page-table base.
+            let kernel_half = (va >> 55) & 1 == 1;
+            // SAFETY: `mrs x, ttbr{0,1}_el1` is privileged at EL1; no memory effect; result is the per-tree page-table root PA.
             unsafe {
-                core::arch::asm!(
-                    "mrs {}, ttbr1_el1",
-                    out(reg) v,
-                    options(nomem, nostack, preserves_flags),
-                );
+                if kernel_half {
+                    core::arch::asm!(
+                        "mrs {}, ttbr1_el1",
+                        out(reg) v,
+                        options(nomem, nostack, preserves_flags),
+                    );
+                } else {
+                    core::arch::asm!(
+                        "mrs {}, ttbr0_el1",
+                        out(reg) v,
+                        options(nomem, nostack, preserves_flags),
+                    );
+                }
             }
             return v & Self::PHYS_MASK;
         }
         #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
-        { 0 }
+        { let _ = va; 0 }
     }
 
     /// `tlbi vae1is, va>>12; dsb ish; isb` — invalidate inner-shareable.

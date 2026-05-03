@@ -53,10 +53,15 @@ pub trait PtWalker {
     /// `0x0000_ffff_ffff_f000` on aarch64.
     const PHYS_MASK: u64;
 
-    /// Read the active page-table base PA for this walker
-    /// (`CR3 & PHYS_MASK` on x86; `TTBR1_EL1 & PHYS_MASK` on arm).
+    /// Read the active page-table base PA for the walk targeting
+    /// `va`. On x86_64 there's a single CR3 so `va` is ignored. On
+    /// aarch64 the TTBR0_EL1 / TTBR1_EL1 split is keyed off bit 55
+    /// of the VA (per ARM ARM D5.2.4): high-half VAs (kernel) use
+    /// TTBR1, low-half (user) use TTBR0. Letting the walker pick
+    /// per-call lets `MmuOps::map(USER_VA, ...)` plumb into the
+    /// user tree without a separate impl.
     /// # SAFETY: privileged read; legal at CPL=0 / EL1.
-    unsafe fn read_pt_base() -> u64;
+    unsafe fn read_pt_base(va: u64) -> u64;
 
     /// Local-CPU TLB invalidate of a single 4 KiB page at `va`.
     /// # SAFETY: privileged.
@@ -118,7 +123,7 @@ pub unsafe fn map_device_4k<W: PtWalker, F: FnMut() -> Option<u64>>(
 ) -> Result<(), WalkErr> {
     // SAFETY: per fn contract — privileged register read, legal in
     // kernel mode; result is the live root-table PA.
-    let l0_pa = unsafe { W::read_pt_base() };
+    let l0_pa = unsafe { W::read_pt_base(va) };
 
     let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
     let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
@@ -159,7 +164,7 @@ pub unsafe fn map_4k<W: PtWalker, F: FnMut() -> Option<u64>>(
     mut alloc_pa: F,
 ) -> Result<(), WalkErr> {
     // SAFETY: privileged read; legal in kernel mode.
-    let l0_pa = unsafe { W::read_pt_base() };
+    let l0_pa = unsafe { W::read_pt_base(va) };
 
     let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
     let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
@@ -204,7 +209,7 @@ pub unsafe fn map_at_level<W: PtWalker, F: FnMut() -> Option<u64>>(
     mut alloc_pa: F,
 ) -> Result<(), WalkErr> {
     // SAFETY: privileged read; legal in kernel mode.
-    let mut current_pa = unsafe { W::read_pt_base() };
+    let mut current_pa = unsafe { W::read_pt_base(va) };
     let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
     // Walk levels 0..(leaf_level - 1), descending into table entries.
     for level in 0..leaf_level {
@@ -244,7 +249,7 @@ pub unsafe fn map_at_level<W: PtWalker, F: FnMut() -> Option<u64>>(
 /// # Ctx: read-only walk
 pub unsafe fn translate_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64, u64)> {
     // SAFETY: privileged read; legal in kernel mode.
-    let l0_pa = unsafe { W::read_pt_base() };
+    let l0_pa = unsafe { W::read_pt_base(va) };
     let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
     let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
     let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
@@ -287,7 +292,7 @@ pub unsafe fn translate_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u6
 /// # Ctx: read-only walk
 pub unsafe fn translate_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64, u64, u8)> {
     // SAFETY: privileged read; legal in kernel mode.
-    let mut current_pa = unsafe { W::read_pt_base() };
+    let mut current_pa = unsafe { W::read_pt_base(va) };
     let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
     for level in 0..4u8 {
         let idx = ((va >> shifts[level as usize]) & TABLE_IDX_MASK) as usize;
@@ -331,7 +336,7 @@ pub unsafe fn translate_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<
 /// # Ctx: pre-init or under PT-write lock.
 pub unsafe fn unmap_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64, u8)> {
     // SAFETY: privileged read; legal in kernel mode.
-    let mut current_pa = unsafe { W::read_pt_base() };
+    let mut current_pa = unsafe { W::read_pt_base(va) };
     let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
     for level in 0..4u8 {
         let idx = ((va >> shifts[level as usize]) & TABLE_IDX_MASK) as usize;
@@ -367,7 +372,7 @@ pub unsafe fn unmap_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64
 /// # Ctx: pre-init or under PT-write lock.
 pub unsafe fn unmap_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<u64> {
     // SAFETY: privileged read; legal in kernel mode.
-    let l0_pa = unsafe { W::read_pt_base() };
+    let l0_pa = unsafe { W::read_pt_base(va) };
     let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
     let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
     let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
@@ -447,7 +452,7 @@ mod tests {
     /// HHDM offset = 0 for the host test (PA == VA on the in-process heap).
     impl PtWalker for HostWalker {
         const PHYS_MASK: u64 = 0xffff_ffff_ffff_f000;
-        unsafe fn read_pt_base() -> u64 {
+        unsafe fn read_pt_base(_va: u64) -> u64 {
             // SAFETY: hosted test; FAKE_ROOT is `static mut` test state.
             unsafe { (&raw mut FAKE_ROOT).cast::<u8>() as u64 }
         }
