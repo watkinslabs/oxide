@@ -17,6 +17,8 @@
 extern crate alloc;
 
 pub mod acpi;
+#[cfg(target_arch = "x86_64")]
+pub mod lapic;
 #[cfg(target_arch = "aarch64")]
 pub mod pl011;
 pub mod pmm_setup;
@@ -325,6 +327,12 @@ const HPET_PHYS: u64 = 0xfed0_0000;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const HPET_VA: u64 = KERNEL_DEVICE_BASE | (HPET_PHYS & 0xFFFF_FFFF);
 
+/// LAPIC phys base (matches MADT `madt lapic_pa=…`).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+const LAPIC_PHYS: u64 = 0xfee0_0000;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+const LAPIC_VA: u64 = KERNEL_DEVICE_BASE | (LAPIC_PHYS & 0xFFFF_FFFF);
+
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn smoke_device_map_x86(
     p: &'static pmm::Pmm<pmm_setup::HhdmBacking>,
@@ -346,6 +354,32 @@ fn smoke_device_map_x86(
             klog::write_raw(b"\n");
         }
         Err(_) => klog::kerror!("device-map: x86 map_device_4k failed"),
+    }
+
+    // LAPIC enable. Map → set IA32_APIC_BASE.E + SVR.SW_ENABLE → log
+    // APIC ID + version.
+    let alloc2 = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
+    // SAFETY: chosen kernel VA disjoint from existing mappings; phys
+    // 0xFEE00000 is the standard LAPIC base from MADT.
+    let lr = unsafe {
+        hal_x86_64::vmm::map_device_4k(LAPIC_VA, LAPIC_PHYS, hhdm, alloc2)
+    };
+    match lr {
+        Ok(()) => {
+            // SAFETY: LAPIC_VA is freshly Device-attr mapped; single-CPU.
+            let s = unsafe { lapic::enable(LAPIC_VA) };
+            match s {
+                lapic::LapicStatus::AlreadyOn => klog::kinfo!("lapic: already on"),
+                lapic::LapicStatus::Enabled { apic_id, version } => {
+                    klog::write_raw(b"[INFO]  lapic: enabled apic_id=");
+                    klog::write_dec_u64(apic_id as u64);
+                    klog::write_raw(b" version=");
+                    klog::write_hex_u64(version as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+        Err(_) => klog::kerror!("device-map: lapic map_device_4k failed"),
     }
 }
 
