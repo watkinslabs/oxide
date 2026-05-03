@@ -1,13 +1,13 @@
 // First userspace `iretq` smoke per `20§3` step 12 / Phase 1→2 boundary.
 //
 // Drops to CPL=3 by building a synthetic IRET frame and executing
-// `iretq`. User code is a single `int3` (0xCC) — the CPU vectors back
-// into the kernel via IDT[3] (#BP), proving:
+// `iretq`. User code is `syscall; ud2` (0F 05 / 0F 0B). The CPU
+// transitions back to CPL=0 via IA32_LSTAR (P2-01); the dispatcher
+// logs receipt and halts. Proves end-to-end:
 //   - kernel-owned GDT user CS/SS descriptors are walkable (P1-93),
 //   - TSS.RSP0 is the kernel-side stack on CPL3→CPL0 (P1-94),
 //   - U/S=1 propagated through every interior PT entry (P1-95),
-//   - the fault dispatcher receives the #BP from CPL=3 with the
-//     CPU-pushed iretq frame intact.
+//   - syscall MSRs (LSTAR/STAR/FMASK + EFER.SCE) are wired (P2-01).
 //
 // Layout:
 //   USER_CODE_VA  0x0040_0000   1 page R|W|X|U  → first byte = 0xCC
@@ -23,30 +23,21 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
-use hal_x86_64::{install_fault_handler, set_rsp0, USER_CS, USER_DS};
+use hal_x86_64::{set_rsp0, USER_CS, USER_DS};
 
 const USER_CODE_VA:  u64 = 0x0040_0000;
 const USER_STACK_VA: u64 = 0x0050_0000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 const KSTACK_SIZE: u64 = 0x1000;
 
-/// User-mode #BP detector. Logs success only if the fault came from
-/// `USER_CODE_VA` (= our int3); otherwise stays silent and returns
-/// false so the default halt path runs (some other unrelated fault).
-fn user_bp_handler(vec: u64, _err: u64, rip: u64, _cr2: u64) -> bool {
-    // Intel SDM Vol. 3 §6.7: #BP from `int3` (0xCC) is a trap, so
-    // CPU pushes RIP = next instruction (= USER_CODE_VA + 1).
-    if vec == 3 && rip == USER_CODE_VA + 1 {
-        debug_irq! {
-            klog::write_raw(b"[INFO]  userspace-eret-smoke: ok ring3 #BP rip=");
-            klog::write_hex_u64(rip);
-            klog::write_raw(b"\n");
-        }
-        // Fall through to halt; #BP from user is a one-shot smoke
-        // landmark, not a recoverable event.
-    }
-    false
-}
+// User blob: `mov $0x42,%eax; syscall; ud2`. Loads nr=0x42 then
+// traps into LSTAR. `ud2` is a tripwire — if syscall ever falls
+// through (it shouldn't, dispatcher halts), #UD fires.
+//
+//   B8 42 00 00 00    mov  $0x42, %eax
+//   0F 05             syscall
+//   0F 0B             ud2
+const USER_BLOB: [u8; 9] = [0xB8, 0x42, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x0F, 0x0B];
 
 /// Map a single 4 KiB user page at `va` with the given flags.
 /// # SAFETY: caller asserts `va` is unmapped on entry; PMM + MmuOps
@@ -97,11 +88,13 @@ pub unsafe fn run<M: MmuOps>(hhdm_offset: u64) -> ! {
     };
     let _ = code_pa;
 
-    // Write the user blob: 0xCC = int3. Subsequent retries land on
-    // 0x00 (NOP-ish) — we never expect a retry since the handler
-    // halts.
-    // SAFETY: USER_CODE_VA mapped W|U|EXEC, sole owner this CPU.
-    unsafe { core::ptr::write_volatile(USER_CODE_VA as *mut u8, 0xCCu8); }
+    // Write the user blob: `syscall` followed by `ud2` tripwire.
+    // SAFETY: USER_CODE_VA mapped W|U|EXEC; sole owner this CPU.
+    unsafe {
+        for (i, b) in USER_BLOB.iter().enumerate() {
+            core::ptr::write_volatile((USER_CODE_VA + i as u64) as *mut u8, *b);
+        }
+    }
 
     // Per-CPU IRQ landing stack. CPU writes to TSS.RSP0 on CPL3→CPL0
     // entry; the fault stub then runs on this stack.
@@ -119,11 +112,6 @@ pub unsafe fn run<M: MmuOps>(hhdm_offset: u64) -> ! {
     // SAFETY: TSS in kernel BSS; we serialise pre-init; rsp0 points
     // at the top of a freshly-allocated, HHDM-mapped 4 KiB frame.
     unsafe { set_rsp0(kstack_top); }
-
-    // Install the #BP handler. Default returns false (halt); ours
-    // logs on user-#BP then also returns false (halt).
-    // SAFETY: handler fn is 'static; pre-init single-CPU swap.
-    let _prev = unsafe { install_fault_handler(user_bp_handler) };
 
     debug_irq! {
         klog::write_raw(b"[INFO]  userspace-eret-smoke: about to iretq cs=");
