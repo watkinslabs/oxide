@@ -2,6 +2,14 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-05-03 (R06)
+
+- Changed: §3 + §4 lock in the **klog-must-be-gated** invariant. Every `klog::*` call site (macros `kinfo!`/`kdebug!`/`kerror!`/`kfatal!`/`klog!` and the byte-emit helpers `write_raw`/`write_hex_u64`/`write_dec_u64`/`set_byte_sink`) MUST be inside a per-subsystem `#[cfg(feature = "debug-<sub>")]` gate or one of the `debug_<sub>!` per-crate macros that erase to `()` when the feature is off. Default builds emit zero log bytes; the call site is absent from the binary, not "filtered at runtime".
+- Why: the runtime level filter described in §4 still costs a load+branch per call site and pulls the format-string entry into `.klog_strings`. For a kernel-class hot path (timer ISR, syscall fast-path, PMM alloc), even that is too much. A user-reported drift on the boot trace (PMM stress dumps + ACPI walks unconditionally compiled in even when nobody wanted them) made it concrete: gating policy belongs at the call site, not inside the logger.
+- Added: `debug-boot` feature for the operational-pulse trace (`init started`, `pmm: ready`, `gic: enabled`, `lapic: enabled`, `boot: kernel ready`, `pl011: switched klog sink`, etc.) so even those lines disappear in production. `debug-all` aggregate adds it.
+- Affected code: `kernel/Cargo.toml` features list; `kernel/src/lib.rs` + every kernel-side `klog::*` call site; per-crate `debug_<sub>!` macro pairs (cfg-on → body, cfg-off → `()`).
+- Test contract: spec-lint adds `code/klog-ungated` rule — flags any `klog::` use whose enclosing scope is not under one of the allowed `cfg(feature = "debug-...")` forms (direct `cfg`, the macro pair pattern, or a function/module that itself carries a matching cfg attr). Initial sweep done in branch `D03-klog-must-be-gated`; lint enforcement lands alongside.
+
 ## Revision 2026-05-03 (R05)
 
 - Changed: §3 feature list adds `debug-acpi` (RSDP/XSDT/MADT/HPET/SPCR/MCFG/GTDT decoder traces) and folds it into `debug-all`. The existing `debug-pmm`/`debug-vmm`/`debug-irq` buckets stay; ACPI table walking is its own surface and needed its own gate.
@@ -79,10 +87,11 @@ debug-vfs=[]      # inode/dentry refcount audit
 debug-net=[]      # packet trace, socket FSM asserts
 debug-irq=[]      # IRQ flag audit, edge/level mismatch, timer-IRQ soak
 debug-acpi=[]     # RSDP/XSDT walk + per-table decoder traces
+debug-boot=[]     # operational-pulse trace (init started, pmm: ready, …)
 debug-syscalls=[] # log every syscall (very expensive)
 debug-all=["debug-alloc","debug-lockdep","debug-preempt",
            "debug-sched","debug-vmm","debug-pmm","debug-vfs",
-           "debug-net","debug-irq","debug-acpi"]  # not debug-syscalls
+           "debug-net","debug-irq","debug-acpi","debug-boot"]  # not debug-syscalls
 ```
 
 Independence: `debug-sched` doesn't pull `debug-vmm`. (Catalog: `41`.)
@@ -100,6 +109,19 @@ CI matrix: release no-features, release `debug-all`, dev each `debug-*` solo.
 ## 4 Logging
 
 One logger. `klog`. Not `println!`/`log`/three traits.
+
+### 4.0 Call-site gating (frozen, R06)
+
+**Every `klog::*` call site is `cfg`-elidable.** Default builds emit zero log bytes. The runtime per-target level filter (§4.5) layers on top — it is *not* a substitute for compile-time elision. Specifically:
+
+- Each call to `kinfo!` / `kdebug!` / `kerror!` / `kfatal!` / `klog!` / `write_raw` / `write_hex_u64` / `write_dec_u64` / `set_byte_sink` MUST be inside one of:
+  - a `#[cfg(feature = "debug-<sub>")]` block, attribute on enclosing fn/mod, or
+  - one of the `debug_<sub>!` macro pairs (cfg-on → `$($t)*`, cfg-off → empty).
+- The `<sub>` is the subsystem the message belongs to (the §3 catalog: `pmm`, `vmm`, `irq`, `acpi`, `boot`, `sched`, …).
+- `fatal!` is the lone exception (panics; spec calls for unconditional emission — but even there the body is a single literal, not a hot path).
+- Spec-lint enforces this via `code/klog-ungated`: any `klog::` use whose enclosing scope is not under one of the allowed cfg forms is a build failure.
+
+Why: the runtime threshold check is one atomic Relaxed load (§4.5). For the kernel's hottest call sites (timer tick, syscall fast-path) one atomic per ungated emit is the difference between perf-budgeted and perf-blown. The discipline is "if you don't need this trace in production, the binary doesn't carry it." Per-feature gates enable a developer to dial in *exactly* the subsystem they're chasing without paying for the rest.
 
 Surface:
 ```rust

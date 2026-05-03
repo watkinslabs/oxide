@@ -39,15 +39,26 @@ macro_rules! debug_acpi { ($($t:tt)*) => {} }
 macro_rules! debug_sched { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-sched"))]
 macro_rules! debug_sched { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-boot")]
+macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-boot"))]
+macro_rules! debug_boot { ($($t:tt)*) => {} }
 
+// Per `04§4.0` (R06): modules whose entire surface is diagnostic
+// trace are gated at the module declaration so their klog call
+// sites are absent from the binary unless the matching debug
+// feature is on. Production-bring-up modules (lapic, gic, pmm_setup)
+// keep their non-trace surface always-on; their klog call sites
+// inside lib.rs are individually wrapped in `debug_<sub>!`.
+#[cfg(feature = "debug-acpi")]
 pub mod acpi;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
 pub mod gic;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod ksched;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
 #[cfg(target_os = "oxide-kernel")]
 pub mod preempt;
@@ -138,11 +149,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     unsafe { GLOBAL_ALLOC.init_static() };
 
-    klog::kinfo!("init started");
-    if info.hhdm_offset != 0 {
-        klog::kinfo!("hhdm: present");
-    } else {
-        klog::kinfo!("hhdm: absent");
+    debug_boot! { klog::kinfo!("init started"); }
+    debug_boot! {
+        if info.hhdm_offset != 0 {
+            klog::kinfo!("hhdm: present");
+        } else {
+            klog::kinfo!("hhdm: absent");
+        }
     }
     if info.rsdp_pa != 0 {
         debug_acpi! {
@@ -155,10 +168,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
         }
     } else {
-        klog::kinfo!("rsdp: absent");
+        debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
     if info.memmap_count != 0 {
-        klog::kinfo!("memmap: present");
+        debug_boot! { klog::kinfo!("memmap: present"); }
         debug_pmm! {
             // SAFETY: kernel_main fn-contract guarantees memmap_ptr is a
             // valid slice of length memmap_count for this call.
@@ -168,22 +181,24 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             log_memmap(regions);
         }
     } else {
-        klog::kinfo!("memmap: absent");
+        debug_boot! { klog::kinfo!("memmap: absent"); }
     }
 
     // Bring up the physical memory manager.
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
     let pmm = unsafe { pmm_setup::init_from_boot_info(info) };
-    match &pmm {
-        Ok(_)                                       => klog::kinfo!("pmm: ready"),
-        Err(pmm_setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
-        Err(pmm_setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
-        Err(pmm_setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
-        Err(pmm_setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
-        Err(pmm_setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
-        Err(pmm_setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
-        Err(pmm_setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
+    debug_boot! {
+        match &pmm {
+            Ok(_)                                       => klog::kinfo!("pmm: ready"),
+            Err(pmm_setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
+            Err(pmm_setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
+            Err(pmm_setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
+            Err(pmm_setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
+            Err(pmm_setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
+            Err(pmm_setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
+            Err(pmm_setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
+        }
     }
     // Runtime smoke: alloc/free at order 0 to prove the buddy
     // machinery works after init. Removed once a real consumer
@@ -293,15 +308,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: addresses are within the user-VA range (0x1000 < USER_VA_END).
         let start = hal::UserVirtAddr::new(0x1000).expect("test addr in user range");
         let end   = hal::UserVirtAddr::new(0x2000).expect("test addr in user range");
-        if tree.insert(vmm::Vma::new(
+        let inserted = tree.insert(vmm::Vma::new(
             start, end,
             vmm::VmaProt::READ,
             vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
             vmm::VmaBacking::Anonymous,
-        )).is_ok() {
-            klog::kinfo!("kalloc-smoke: VmaTree insert ok");
-        } else {
-            klog::kerror!("kalloc-smoke: VmaTree insert failed");
+        )).is_ok();
+        debug_boot! {
+            if inserted {
+                klog::kinfo!("kalloc-smoke: VmaTree insert ok");
+            } else {
+                klog::kerror!("kalloc-smoke: VmaTree insert failed");
+            }
         }
     }
 
@@ -320,7 +338,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
-    klog::kinfo!("boot: kernel ready, halting");
+    debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
     halt_forever()
 }
 
@@ -413,7 +431,7 @@ fn smoke_device_map_x86(
                 klog::write_raw(b"\n");
             }
         }
-        Err(_) => klog::kerror!("device-map: x86 map_device_4k failed"),
+        Err(_) => { debug_vmm! { klog::kerror!("device-map: x86 map_device_4k failed"); } }
     }
 
     // LAPIC enable. Map → set IA32_APIC_BASE.E + SVR.SW_ENABLE → log
@@ -429,7 +447,7 @@ fn smoke_device_map_x86(
             // SAFETY: LAPIC_VA is freshly Device-attr mapped; single-CPU.
             let s = unsafe { lapic::enable(LAPIC_VA) };
             match s {
-                lapic::LapicStatus::AlreadyOn => klog::kinfo!("lapic: already on"),
+                lapic::LapicStatus::AlreadyOn => { debug_irq! { klog::kinfo!("lapic: already on"); } }
                 lapic::LapicStatus::Enabled { apic_id: _apic_id, version: _version } => {
                     debug_irq! {
                         klog::write_raw(b"[INFO]  lapic: enabled apic_id=");
@@ -468,7 +486,7 @@ fn smoke_device_map_x86(
                 }
             }
         }
-        Err(_) => klog::kerror!("device-map: lapic map_device_4k failed"),
+        Err(_) => { debug_vmm! { klog::kerror!("device-map: lapic map_device_4k failed"); } }
     }
 }
 
@@ -510,7 +528,7 @@ fn smoke_device_map_arm(
                 klog::write_raw(b"\n");
             }
         }
-        Err(_) => klog::kerror!("device-map: arm map_device_4k failed"),
+        Err(_) => { debug_vmm! { klog::kerror!("device-map: arm map_device_4k failed"); } }
     }
 
     // GICv2 enable: map GICC and program both halves.
@@ -523,7 +541,7 @@ fn smoke_device_map_arm(
         // SAFETY: both VAs are freshly Device-attr mapped; single-CPU pre-init.
         let s = unsafe { gic::enable(GICD_VA, GICC_VA) };
         match s {
-            gic::GicStatus::AlreadyOn => klog::kinfo!("gic: already on"),
+            gic::GicStatus::AlreadyOn => { debug_irq! { klog::kinfo!("gic: already on"); } }
             gic::GicStatus::Enabled { typer: _typer, gicd_iidr: _gicd_iidr, gicc_iidr: _gicc_iidr } => {
                 debug_irq! {
                     klog::write_raw(b"[INFO]  gic: enabled typer=");
@@ -547,7 +565,7 @@ fn smoke_device_map_arm(
             }
         }
     } else {
-        klog::kerror!("device-map: gicc map_device_4k failed");
+        debug_vmm! { klog::kerror!("device-map: gicc map_device_4k failed"); }
     }
 
     // Map PL011 + swap klog sink from semihosting to the real UART.
@@ -562,10 +580,12 @@ fn smoke_device_map_arm(
             // SAFETY: PL011_VA is freshly mapped Device-nGnRnE,
             // covering 4 KiB; we own the device pre-init.
             unsafe { pl011::enable(PL011_VA); }
-            klog::set_byte_sink(pl011::pl011_emit);
-            klog::kinfo!("pl011: switched klog sink to real UART");
+            debug_boot! {
+                klog::set_byte_sink(pl011::pl011_emit);
+                klog::kinfo!("pl011: switched klog sink to real UART");
+            }
         }
-        Err(_) => klog::kerror!("device-map: pl011 map_device_4k failed"),
+        Err(_) => { debug_vmm! { klog::kerror!("device-map: pl011 map_device_4k failed"); } }
     }
 
     // ARM virtual generic-timer IRQ smoke. Pure diagnostic — gated.
