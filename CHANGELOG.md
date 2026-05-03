@@ -164,3 +164,21 @@ End-of-session-8 verified-green:
 - `xtask kernel --arch {x86_64,aarch64}` builds clean default + `--features debug-all`.
 - `xtask qemu --arch x86_64  --features debug-all` reaches `boot: kernel ready, halting` after the cooperative-scheduler smoke.
 - `xtask qemu --arch aarch64 --features debug-all` same trace, identical structure.
+
+---
+
+## Session 9 (PRs #136 – #137) — 2026-05-03
+
+**Subject**: root Makefile + true IRQ-exit preemption (R07).
+
+| PR | Branch | Lands |
+|---|---|---|
+| #136 | `C22-makefile` | Root `Makefile` wrapping `xtask`. Targets: `make build|x86|arm|*-debug|test|lint|ci|qemu-x86|qemu-arm|clean|help`. `make ci` mirrors PR gate (lint + test + both arches default + debug-all). |
+| #137 | `P1-81-preempt-iret-frames` | **True IRQ-exit preemption (R07).** Replaces cooperative-with-timer-wake with real preemption: timer ISR's epilogue drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task, returning via that task's stored IRQ frame. Per-arch `Context::new_kernel_with_irq_frame` builds a kernel stack with a synthetic IRQ frame (saved scratch GPs + vec/err pad on x86, saved x0..x18+x29+x30+ELR_EL1+SPSR_EL1 on arm) so a fresh task can be entered via the IRQ epilogue's iretq/eret. Shared resume label `oxide_irq_resume_user` per arch — the saved-RIP/LR fresh tasks store at scaffold base. IRQ stub does schedule-on-exit via `oxide_preempt_{cur,next}_ctx`. ARM bug riding alongside: stub at `vbar.rs:0x280` saved x0..x18+x29+x30 (176 B) but **not** ELR_EL1/SPSR_EL1 — frame extended to 192 B. x86 detail: iretq frame uses Limine v6+ GDT selectors (kernel CS=0x28, kernel DS=0x30); initial draft used 0x08 (legacy 16-bit code), iretq into a non-64-bit code segment caused a silent #GP halted via the fault path. R07 spec revision documents the layout. Layout pinned by per-arch hosted units (+2 tests over 463 baseline). |
+
+End-of-session-9 verified-green:
+- `make lint` clean.
+- `make test` → 465 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` reaches `[INFO]  preempt: done yields=0 ticks=17 ... boot: kernel ready, halting` after the 4-kthread preempt smoke.
+- `make qemu-arm --features debug-all` same trace, ticks=16.
