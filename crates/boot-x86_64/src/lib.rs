@@ -62,6 +62,20 @@ fn now_ns_x86() -> u64 {
     hal_x86_64::X86TimerOps::monotonic_ns().0
 }
 
+/// Boot-time CPU identification log. Reads CPUID leaves 0 (vendor)
+/// and 0x80000002..0x80000004 (brand) and emits both via klog.
+/// # C: O(1)
+fn log_cpu_info() {
+    let v = hal_x86_64::cpuid_vendor();
+    klog::write_raw(b"[INFO]  cpu vendor: ");
+    klog::write_raw(&v);
+    let b = hal_x86_64::cpuid_brand();
+    let brand_len = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    klog::write_raw(b"\n[INFO]  cpu brand: ");
+    klog::write_raw(&b[..brand_len]);
+    klog::write_raw(b"\n");
+}
+
 // ---------------------------------------------------------------------------
 // Limine request slots — bootloader scans `.limine_requests` for these
 // markers and writes responses before jumping to `_start`.
@@ -224,6 +238,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // strictly an upgrade from "no time" to "approximate time".
     hal_x86_64::set_tsc_khz(2_400_000);
     klog::set_clock_fn(now_ns_x86);
+    log_cpu_info();
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
