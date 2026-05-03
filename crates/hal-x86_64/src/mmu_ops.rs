@@ -17,7 +17,13 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use hal::{kassert, pt_walker, MmuOps, Pa, PageFlags, PageSize, Va};
+use hal::pt_walker::PtWalker;
 use crate::vmm::PtWalkerX86;
+
+/// Bytes covered by each `PageSize` per `01§1` + `20§5`.
+const PAGE_BYTES_4K: u64 = 4 * 1024;
+const PAGE_BYTES_2M: u64 = 2 * 1024 * 1024;
+const PAGE_BYTES_1G: u64 = 1024 * 1024 * 1024;
 
 /// Kernel HHDM offset (the linear `pa → va` translation Limine
 /// publishes via the HHDM response). 0 = uninitialised; the boot
@@ -78,14 +84,21 @@ impl MmuOps for X86Mmu {
     /// # C: O(walk depth) = O(4)
     /// # Ctx: pre-init or under PT lock.
     unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
-        kassert!(matches!(size, PageSize::P4K), "MmuOps::map huge-leaf NYI");
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map called before set_hhdm_offset");
+        let (leaf_level, page_bytes, leaf) = match size {
+            PageSize::P4K => (3u8, PAGE_BYTES_4K, PtWalkerX86::pack_4k_leaf(pa.0, flags)),
+            PageSize::P2M => (2u8, PAGE_BYTES_2M, PtWalkerX86::pack_block_leaf(pa.0, flags)),
+            PageSize::P1G => (1u8, PAGE_BYTES_1G, PtWalkerX86::pack_block_leaf(pa.0, flags)),
+        };
+        kassert!(va.0 % page_bytes == 0, "MmuOps::map va not aligned to page size");
+        kassert!(pa.0 % page_bytes == 0, "MmuOps::map pa not aligned to page size");
         // SAFETY: caller asserts MmuOps::map preconditions; HHDM
         // covers page-table memory; frame allocator returns kernel-
-        // owned frames.
+        // owned frames; the leaf packer encodes a leaf bit pattern
+        // appropriate to `size`.
         let r = unsafe {
-            pt_walker::map_4k::<PtWalkerX86, _>(va.0, pa.0, flags, hhdm, alloc_frame)
+            pt_walker::map_at_level::<PtWalkerX86, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
         };
         kassert!(r.is_ok(), "MmuOps::map walker failure");
     }

@@ -142,6 +142,14 @@ impl PtWalker for PtWalkerArm {
         if uxn { e |= UXN; }
         e
     }
+
+    fn pack_block_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
+        // L1/L2 block descriptor: same field positions as the L3
+        // page leaf except the TABLE bit must be CLEAR (block) rather
+        // than set (page/table). Mask it off after the 4K packer.
+        let e = Self::pack_4k_leaf(pa, flags);
+        e & !TABLE
+    }
 }
 
 /// Install a 4 KiB Device-nGnRnE mapping `va → pa` into TTBR1_EL1.
