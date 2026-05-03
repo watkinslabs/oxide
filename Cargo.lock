@@ -572,6 +572,7 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+ "vmm",
 ]
 
 [[package]]
