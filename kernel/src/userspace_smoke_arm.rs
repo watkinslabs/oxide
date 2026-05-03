@@ -44,7 +44,14 @@ const USER_RIP_POST_SVC: u64 = USER_CODE_VA + 8;  // brk lives here
 /// ESR.EC = 0b111100 (0x3C) = "BRK instruction execution in AArch64".
 const EC_BRK_AARCH64: u64 = 0x3C;
 
-fn user_brk_handler(esr: u64, _far: u64, elr: u64) -> bool {
+fn user_brk_handler(esr: u64, far: u64, elr: u64) -> bool {
+    // Delegate demand-paging first per `11§5`. user_as routes any
+    // EL0 abort whose FAR is in a registered VMA through the AS
+    // page-fault path; if it resolves the fault we retry. Only
+    // unhandled aborts fall through to the smoke landmark.
+    if crate::user_as::user_fault_handler(esr, far, elr) {
+        return true;
+    }
     let ec = (esr >> 26) & 0x3F;
     // After SVC + sysret-equivalent eret, user lands at the BRK
     // instruction at USER_CODE_VA+8 — that's the round-trip success

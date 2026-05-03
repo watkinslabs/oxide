@@ -389,6 +389,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { pf_recover_smoke::run(); }
     }
 
+    // Initialise the global user AddressSpace + demand-paging fault
+    // hook per `11§3`/`11§5`. Must run before any userspace smoke so
+    // mmap and #PF go through the real AS.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
+        unsafe { user_as::init(info.hhdm_offset); }
+    }
+
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // First userspace `iretq` smoke (P1-82) — x86_64 only. Diverges
@@ -486,6 +495,11 @@ pub mod pf_recover_smoke;
 // gates inside the module.
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue;
+
+// Global user `AddressSpace` per `11§3` + demand-paging fault hook
+// per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
+#[cfg(target_os = "oxide-kernel")]
+pub mod user_as;
 
 // First userspace `iretq` smoke (P1-82). x86_64-only.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]

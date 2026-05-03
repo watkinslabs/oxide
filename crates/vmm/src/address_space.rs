@@ -16,11 +16,11 @@
 
 use alloc::sync::Arc;
 
-use hal::{UserVirtAddr, PAGE_SIZE_BYTES, USER_VA_END};
+use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES, USER_VA_END};
 use sync::{AddressSpace as AddressSpaceClass, RwLock, RwReadGuard};
 
 use crate::tree::VmaTree;
-use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultAccess, FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
 /// Lowest user VA this allocator hands out. Page 0 is reserved as the
@@ -147,6 +147,79 @@ impl AddressSpace {
     /// # C: O(N)
     pub fn audit(&self) -> KResult<()> {
         self.vmas.read().audit_no_overlap()
+    }
+
+    /// Demand-fault handler per `11§5`. v1 covers `NotPresent` of
+    /// an `Anonymous` VMA: zero-fill a fresh frame from `alloc_frame`,
+    /// install the leaf via `M::map`, return Ok. Other variants land
+    /// in subsequent PRs:
+    ///
+    /// - `NotPresent` of a `File`-backed VMA: needs page cache (`16`).
+    /// - `Protection` write on a private writable VMA: COW per `11§5`
+    ///   second match arm; needs `PageMeta::refcount` per `11§8`.
+    ///
+    /// Returns `Ok(())` when the PTE is installed (caller should
+    /// retry the faulting instruction). Returns `Err(EFAULT)` when
+    /// no VMA covers `va` or the VMA's prot rejects the access —
+    /// upstream raises SIGSEGV per `11§5`.
+    ///
+    /// `hhdm_offset` is the kernel HHDM base for zero-filling the
+    /// freshly allocated frame (we write `va + hhdm_offset .. + 4096`
+    /// to clear it before exposing to user).
+    ///
+    /// # SAFETY: `M` is the live per-arch MmuOps with PMM + HHDM
+    /// state initialised; `alloc_frame` returns physically-valid
+    /// page-aligned PFNs from PMM. Caller's fault context already
+    /// disabled IRQs; AS read-lock acquisition here is safe (no
+    /// recursion).
+    /// # C: O(log N) VMA lookup + O(1) frame zero + O(walk depth) map
+    /// # Ctx: fault, IRQ-off
+    pub unsafe fn handle_page_fault<M: MmuOps, F: FnMut() -> Option<u64>>(
+        &self,
+        va: UserVirtAddr,
+        fault: FaultKind,
+        hhdm_offset: u64,
+        mut alloc_frame: F,
+    ) -> KResult<()> {
+        let access = match fault {
+            FaultKind::NotPresent { access } => access,
+            FaultKind::Protection { .. }     => return Err(Error::NotImplemented),
+        };
+
+        // Per spec §5: read VMA tree (concurrent with other faults).
+        let g = self.vmas.read();
+        let vma = match g.find_containing(va) {
+            Some(v) => v,
+            None    => return Err(Error::Inval),    // EFAULT upstream
+        };
+        if !vma.permits(access) {
+            return Err(Error::Inval);                // EFAULT upstream
+        }
+
+        match vma.backing {
+            VmaBacking::Anonymous => {
+                let pa = alloc_frame().ok_or(Error::NoMem)?;
+                // Zero-fill via HHDM kernel mirror per `11§5` "zero_or_loaded".
+                // SAFETY: pa is a freshly-allocated PMM frame; HHDM
+                // mirror at `hhdm_offset + pa` is mapped writable in
+                // the kernel's page tables (Limine-installed); 4096
+                // bytes is the page granule.
+                unsafe {
+                    let dst = (hhdm_offset + pa) as *mut u8;
+                    core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
+                }
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                let pte_flags = vma.prot.to_page_flags();
+                // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
+                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                Ok(())
+            }
+            VmaBacking::File { .. } | VmaBacking::Special => {
+                // File backing requires page cache (`16`); Special
+                // requires per-region wiring (vDSO/vvar/hugetlb).
+                Err(Error::NotImplemented)
+            }
+        }
     }
 }
 

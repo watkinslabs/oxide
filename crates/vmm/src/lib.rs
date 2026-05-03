@@ -17,7 +17,7 @@ pub mod vma;
 pub mod tree;
 
 pub use address_space::{AddressSpace, MIN_USER_VA};
-pub use vma::{Vma, VmaBacking, VmaFlags, VmaProt};
+pub use vma::{FaultAccess, FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
 
 /// Subsystem-level error per `38`.
