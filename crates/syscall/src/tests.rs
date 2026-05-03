@@ -26,7 +26,16 @@ fn table_size_matches_spec() {
 fn unbound_slots_default_to_enosys() {
     // Slots that have a real handler bound — keep this list in sync
     // with `dispatch::build_table()`.
-    const BOUND: &[u32] = &[1 /* sys_write */, 60 /* sys_exit */];
+    const BOUND: &[u32] = &[
+        1,    // sys_write
+        39,   // sys_getpid
+        60,   // sys_exit
+        102,  // sys_getuid
+        104,  // sys_getgid
+        107,  // sys_geteuid
+        108,  // sys_getegid
+        186,  // sys_gettid
+    ];
     for nr in 0..(SYSCALL_TABLE_LEN as u32) {
         if BOUND.contains(&nr) { continue; }
         assert!(
@@ -38,8 +47,20 @@ fn unbound_slots_default_to_enosys() {
 
 #[test]
 fn bound_slots_are_not_enosys() {
-    assert!(!is_enosys(1),  "sys_write must be bound");
-    assert!(!is_enosys(60), "sys_exit must be bound");
+    for nr in [1, 39, 60, 102, 104, 107, 108, 186] {
+        assert!(!is_enosys(nr), "slot {nr} must be bound");
+    }
+}
+
+#[test]
+fn trivial_const_syscalls_return_expected_values() {
+    let args = SyscallArgs::default();
+    assert_eq!(dispatch(39,  &args), 1, "getpid → 1 (single-task v1)");
+    assert_eq!(dispatch(186, &args), 1, "gettid → 1 (single-thread v1)");
+    assert_eq!(dispatch(102, &args), 0, "getuid  → 0 (root)");
+    assert_eq!(dispatch(104, &args), 0, "getgid  → 0");
+    assert_eq!(dispatch(107, &args), 0, "geteuid → 0");
+    assert_eq!(dispatch(108, &args), 0, "getegid → 0");
 }
 
 #[test]
