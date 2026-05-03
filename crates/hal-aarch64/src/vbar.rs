@@ -19,10 +19,12 @@
 //   0x700 FIQ            lower EL using AArch32
 //   0x780 SError         lower EL using AArch32
 //
-// v1 lands the data path: a single default-vector handler that
-// masks DAIF and `wfi`-loops, plus an `install_default` that writes
-// `VBAR_EL1`. Per-cause dispatch (`ESR.EC` decode → SVC syscall /
-// IABT/DABT page fault / etc.) rides alongside the GICv3 bring-up.
+// v1 lands the data path: a default-vector handler that prints
+// (ESR/FAR/ELR) + halts for unexpected synchronous/SError/FIQ paths,
+// and an IRQ handler at slot 0x280 ("Current EL with SP_ELx, IRQ")
+// that saves caller-save GP regs, calls a Rust dispatcher, and
+// `eret`s. Per-cause sync dispatch (`ESR.EC` decode → SVC syscall /
+// IABT/DABT page fault) rides alongside scheduler bring-up.
 
 /// Vector table is exactly 16 × 0x80 = 0x800 bytes per ARM ARM.
 pub const VECTOR_TABLE_SIZE: usize = 0x800;
@@ -39,20 +41,28 @@ core::arch::global_asm!(
     "oxide_vector_table:",
     // 16 entries; each pads to 0x80 bytes via `.balign` after the
     // `b` insn so the next slot lands on the right offset.
+    // 0x000: Sync, current EL with SP_EL0
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x080: IRQ, current EL with SP_EL0
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x100: FIQ, current EL with SP_EL0
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x180: SError, current EL with SP_EL0
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x200: Sync, current EL with SP_ELx
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
+    // 0x280: IRQ, current EL with SP_ELx — kernel-mode IRQs land here.
+    "    b oxide_irq_vector_handler",
+    "    .balign 0x80",
+    // 0x300: FIQ, current EL with SP_ELx
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
-    "    b oxide_default_vector_handler",
-    "    .balign 0x80",
+    // 0x380: SError, current EL with SP_ELx
     "    b oxide_default_vector_handler",
     "    .balign 0x80",
     "    b oxide_default_vector_handler",
@@ -89,6 +99,42 @@ core::arch::global_asm!(
     "1:  wfi",
     "    b 1b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
+
+    // IRQ entry: save caller-save GP regs (x0-x18 + x29 + x30),
+    // call Rust dispatcher, restore, eret. SP_EL1 is active per
+    // boot-aarch64's `_start` (SPSel=1). 22 regs * 8 = 176, already
+    // 16-aligned for SysV.
+    ".balign 4",
+    ".globl oxide_irq_vector_handler",
+    ".type  oxide_irq_vector_handler, %function",
+    "oxide_irq_vector_handler:",
+    "    sub  sp, sp, #176",
+    "    stp  x0,  x1,  [sp, #0]",
+    "    stp  x2,  x3,  [sp, #16]",
+    "    stp  x4,  x5,  [sp, #32]",
+    "    stp  x6,  x7,  [sp, #48]",
+    "    stp  x8,  x9,  [sp, #64]",
+    "    stp  x10, x11, [sp, #80]",
+    "    stp  x12, x13, [sp, #96]",
+    "    stp  x14, x15, [sp, #112]",
+    "    stp  x16, x17, [sp, #128]",
+    "    stp  x18, x29, [sp, #144]",
+    "    stp  x30, xzr, [sp, #160]",
+    "    bl   oxide_arm_irq_dispatch",
+    "    ldp  x30, xzr, [sp, #160]",
+    "    ldp  x18, x29, [sp, #144]",
+    "    ldp  x16, x17, [sp, #128]",
+    "    ldp  x14, x15, [sp, #112]",
+    "    ldp  x12, x13, [sp, #96]",
+    "    ldp  x10, x11, [sp, #80]",
+    "    ldp  x8,  x9,  [sp, #64]",
+    "    ldp  x6,  x7,  [sp, #48]",
+    "    ldp  x4,  x5,  [sp, #32]",
+    "    ldp  x2,  x3,  [sp, #16]",
+    "    ldp  x0,  x1,  [sp, #0]",
+    "    add  sp, sp, #176",
+    "    eret",
+    ".size oxide_irq_vector_handler, . - oxide_irq_vector_handler",
 );
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
