@@ -181,6 +181,32 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         } else {
             klog::kerror!("pmm-stress: free_pages drift");
         }
+
+        // Multi-order stress: one alloc/free per order 0..=10. Exercises
+        // the split-and-merge paths the single-order stress can't.
+        let baseline_mo = p.free_pages();
+        let mut order_buf: [(hal::Pfn, u8); 11] = [(hal::Pfn(0), 0); 11];
+        let mut got_mo = 0usize;
+        for o in 0u8..=10 {
+            match p.alloc(pmm::Order(o)) {
+                Ok(pfn) => { order_buf[got_mo] = (pfn, o); got_mo += 1; }
+                Err(_)  => break,
+            }
+        }
+        // SAFETY: each pair in `order_buf[..got_mo]` came from a matching
+        // `alloc(o)` above; we free with the same order, single-threaded.
+        unsafe {
+            while got_mo > 0 {
+                got_mo -= 1;
+                let (pfn, o) = order_buf[got_mo];
+                p.free(pfn, pmm::Order(o));
+            }
+        }
+        if p.free_pages() == baseline_mo {
+            klog::kinfo!("pmm-stress: orders 0..=10 balanced");
+        } else {
+            klog::kerror!("pmm-stress: multi-order drift");
+        }
         // Re-emit the summary to make the round-trip visible in the trace.
         klog::write_raw(b"[INFO]  pmm: ");
         klog::write_dec_u64(p.free_pages() / 256);
