@@ -216,3 +216,20 @@ End-of-session-11 verified-green:
 - `make test` → 470 passed, 0 failed (+5 over 465 baseline).
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt smoke + canary smoke pass; ticks counts unchanged from session 10; both reach `boot: kernel ready, halting`.
+
+---
+
+## Session 12 (PRs #142 – #143) — 2026-05-03
+
+**Subject**: session-11 docs + lib.rs structural split.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #142 | `C25-state-eod-session-11` | session-11 EOD docs (P1-85 walker) |
+| #143 | `C26-device-map-smoke-split` | Split `kernel/src/lib.rs` (700 → 423 lines, under 500-line soft cap per `08§7`). New `kernel/src/debug_macros.rs` (36) hoisted via `#[macro_use]` so all sibling modules see the `debug_<sub>!` macro pairs. New `kernel/src/device_map_smoke.rs` (300) holds `KERNEL_DEVICE_BASE` + per-arch HPET/LAPIC/GICD/GICC/PL011 phys+VA constants + `smoke_device_map_x86` / `smoke_device_map_arm` bodies. lib.rs `kernel_main` calls `device_map_smoke::*`. Behaviour preserved byte-for-byte. |
+
+End-of-session-12 verified-green:
+- `make lint` clean.
+- `make test` → 470 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt smoke + canary smoke pass; ticks counts unchanged from session 11; both reach `boot: kernel ready, halting`.
