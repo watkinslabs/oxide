@@ -18,17 +18,17 @@ extern crate alloc;
 
 // Compile-time check: the per-arch HAL `Context` type must fit in
 // `Task.arch_ctx` per `13§5`. If a future arch grows past
-// `sched::ARCH_CTX_SIZE`, bump the constant in `crates/sched`
+// `::sched::ARCH_CTX_SIZE`, bump the constant in `crates/sched`
 // rather than working around here.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const _: () = assert!(
-    core::mem::size_of::<hal_x86_64::ContextX86_64>() <= sched::ARCH_CTX_SIZE,
-    "ContextX86_64 exceeds sched::ARCH_CTX_SIZE — bump the const",
+    core::mem::size_of::<hal_x86_64::ContextX86_64>() <= ::sched::ARCH_CTX_SIZE,
+    "ContextX86_64 exceeds ::sched::ARCH_CTX_SIZE — bump the const",
 );
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const _: () = assert!(
-    core::mem::size_of::<hal_aarch64::ContextAArch64>() <= sched::ARCH_CTX_SIZE,
-    "ContextAArch64 exceeds sched::ARCH_CTX_SIZE — bump the const",
+    core::mem::size_of::<hal_aarch64::ContextAArch64>() <= ::sched::ARCH_CTX_SIZE,
+    "ContextAArch64 exceeds ::sched::ARCH_CTX_SIZE — bump the const",
 );
 
 // Per-subsystem debug-trace gates per `04§3` (R05) + `04§4.0` (R06).
@@ -59,6 +59,12 @@ pub mod kthread;
 pub mod preempt_smoke;
 #[cfg(target_os = "oxide-kernel")]
 pub mod preempt;
+/// Real per-CPU runqueue + `schedule()` per `13§6`/§8 (P2-13b).
+/// Replaces the prior `kernel/src/ksched.rs` Vec-shim. Always-on
+/// (not gated on `debug-sched`) so the runqueue is available to
+/// production paths (preempt-on-IRQ-exit, future user-task switch).
+#[cfg(target_os = "oxide-kernel")]
+pub mod sched;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(target_arch = "aarch64")]

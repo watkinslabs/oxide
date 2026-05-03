@@ -1,26 +1,27 @@
 // Per-arch 4-task preempt smoke per `13§3` + `14§R07`.
 //
-// Drives the timer + IRQ-exit picker end-to-end with the simplest
-// possible kthread workload: each kthread enters, hlt/wfi-sleeps
-// until its `ticks` counter reaches `TICK_BUDGET`, marks done,
-// voluntary-yields to boot. Logs `preempt: ...` lines.
-//
-// Companion to `canary.rs` which exercises the same plumbing with
-// callee-save register binding to validate ABI preservation.
+// Drives the timer + IRQ-exit picker end-to-end against the real
+// `Runqueue` (P2-13b). Workload: each kthread enters, hlt/wfi-sleeps
+// while the timer ISR rotates it; after `TICK_BUDGET` rotations it
+// marks itself Zombie + voluntary-yields. When all kthreads have
+// done so, the picker returns idle (boot anchor) and `schedule()`
+// resumes in the smoke driver.
 
 use core::sync::atomic::Ordering;
 
-use crate::ksched::{
-    mark_done, preempt_install, preempt_run, preempt_teardown, sched_mut, tick_yield,
-};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use sched::Task;
 
-/// Per-kthread tick budget for this smoke. After `ticks` reaches
-/// the budget, the kthread marks itself `done` and the picker
-/// stops returning to it.
+use crate::sched as ksched;
+
+/// Per-kthread budget — every loop iteration after `hlt`/`wfi`
+/// implies a timer-tick wake (the only IRQ source armed in these
+/// smokes), so this counts wake-ups → preempt rotations.
 const TICK_BUDGET: u32 = 3;
 
-/// x86 preempt smoke: install N kthreads, arm LAPIC periodic
-/// timer, run until all kthreads exit, disarm.
+/// x86 preempt smoke: install runqueue, spawn N kthreads, arm
+/// LAPIC periodic timer at `period`, schedule() into them, return.
 ///
 /// # SAFETY: caller has fully brought up LAPIC + the kernel
 /// device mapper; allocator up; single-CPU pre-init.
@@ -31,35 +32,37 @@ pub unsafe fn smoke_preempt_x86(n: usize, period: u32) {
     klog::write_raw(b"[INFO]  preempt: install n=");
     klog::write_dec_u64(n as u64);
     klog::write_raw(b"\n");
-    // SAFETY: SCHED unused; allocator up; pre-init.
-    unsafe { preempt_install(n, preempt_kthread_entry); }
+    // SAFETY: boot path; allocator up; no runqueue installed.
+    unsafe { ksched::install_default_runqueue(); }
+    let _kts = spawn_set(n);
     crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
     // SAFETY: LAPIC was enabled by smoke_device_map_x86; legal at CPL=0.
     let armed = unsafe { crate::lapic::timer_periodic(period) };
     if !armed {
         klog::kerror!("preempt: lapic timer not armed");
-        // SAFETY: scheduler is initialized but no kthread is current.
-        let _ = unsafe { preempt_teardown() };
+        // SAFETY: runqueue installed but no kthread is current.
+        let _ = unsafe { ksched::schedule::uninstall_global_with_stats() };
         return;
     }
     // SAFETY: STI legal at CPL=0; pairs with the CLI on return path.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    // SAFETY: kthread 1 was freshly built via new_kernel_with_irq_frame;
-    // preempt_run synchronously switches into it; the timer ISR drives
-    // subsequent rotations.
-    unsafe { preempt_run(); }
+    // First voluntary `schedule()` from boot saves boot's regs into
+    // idle.arch_ctx (the boot anchor) and switches into the first
+    // kthread; returns when all kthreads are Zombie.
+    // SAFETY: process ctx, single-CPU; IRQ delivery armed above.
+    unsafe { ksched::schedule(); }
     // SAFETY: CLI restores IF=0; matches the boot-path discipline.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
-    // SAFETY: LAPIC enabled; timer_disarm writes 0 to the Initial
-    // Count reg, halting the periodic timer cleanly.
+    // SAFETY: LAPIC enabled; timer_disarm halts the periodic timer.
     unsafe { crate::lapic::timer_disarm(); }
-    // SAFETY: preempt_run returned via tick_yield→boot or the
-    // picker's all-done switch; no kthread is current.
-    let (yields, ticks) = unsafe { preempt_teardown() };
+    // SAFETY: schedule() returned via boot-anchor restore; no kthread is current.
+    let stats = unsafe { ksched::schedule::uninstall_global_with_stats() }
+        .unwrap_or(ksched::RunStats::default());
+    drop(_kts);
     klog::write_raw(b"[INFO]  preempt: done yields=");
-    klog::write_dec_u64(yields as u64);
+    klog::write_dec_u64(stats.voluntary_switches as u64);
     klog::write_raw(b" ticks=");
-    klog::write_dec_u64(ticks as u64);
+    klog::write_dec_u64(stats.irq_switches as u64);
     klog::write_raw(b"\n");
 }
 
@@ -76,71 +79,84 @@ pub unsafe fn smoke_preempt_arm(n: usize, period: u32) {
     klog::write_raw(b"[INFO]  preempt: install n=");
     klog::write_dec_u64(n as u64);
     klog::write_raw(b"\n");
-    // SAFETY: SCHED unused; allocator up; pre-init.
-    unsafe { preempt_install(n, preempt_kthread_entry); }
+    // SAFETY: boot path; allocator up; no runqueue installed.
+    unsafe { ksched::install_default_runqueue(); }
+    let _kts = spawn_set(n);
     crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
     // SAFETY: GIC mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
     unsafe { crate::gic::enable_intid(27); }
     // SAFETY: timer sysregs are unprivileged at EL1; INTID 27 enabled.
     unsafe { crate::arm_timer::timer_periodic(period); }
-    // SAFETY: opening DAIF.I lets the GIC deliver the CNTV line via VBAR_EL1[0x280] → oxide_arm_irq_dispatch.
+    // SAFETY: opening DAIF.I lets the GIC deliver the CNTV line.
     unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
-    // SAFETY: kthread 1 was freshly built via new_kernel_with_irq_frame; preempt_run synchronously switches in.
-    unsafe { preempt_run(); }
-    // SAFETY: re-mask after preempt_run returns to boot.
+    // SAFETY: process ctx, single-CPU; IRQs unmasked above.
+    unsafe { ksched::schedule(); }
+    // SAFETY: re-mask DAIF.I after schedule returns.
     unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
     // SAFETY: disable CNTV (CTL=0) to halt the line.
     unsafe {
         let off: u64 = 0;
         core::arch::asm!("msr cntv_ctl_el0, {c}", c = in(reg) off, options(nomem, nostack, preserves_flags));
     }
-    // SAFETY: preempt_run returned via tick_yield→boot or the picker's all-done switch; no kthread is current; IRQs masked above.
-    let (yields, ticks) = unsafe { preempt_teardown() };
+    // SAFETY: schedule() returned via boot-anchor restore; no kthread is current.
+    let stats = unsafe { ksched::schedule::uninstall_global_with_stats() }
+        .unwrap_or(ksched::RunStats::default());
+    drop(_kts);
     klog::write_raw(b"[INFO]  preempt: done yields=");
-    klog::write_dec_u64(yields as u64);
+    klog::write_dec_u64(stats.voluntary_switches as u64);
     klog::write_raw(b" ticks=");
-    klog::write_dec_u64(ticks as u64);
+    klog::write_dec_u64(stats.irq_switches as u64);
     klog::write_raw(b"\n");
 }
 
 #[cfg(target_os = "oxide-kernel")]
+fn spawn_set(n: usize) -> Vec<Arc<Task>> {
+    let mut v = Vec::with_capacity(n);
+    for i in 1..=n as u32 {
+        // SAFETY: runqueue installed; allocator up; pre-init.
+        let r = unsafe { ksched::spawn_kernel_thread(i, "preempt", preempt_kthread_entry, i as usize) };
+        match r {
+            Ok(t)  => v.push(t),
+            Err(_) => klog::kerror!("preempt: spawn failed"),
+        }
+    }
+    v
+}
+
+#[cfg(target_os = "oxide-kernel")]
 extern "C" fn preempt_kthread_entry(arg: usize) -> ! {
-    let me = arg;
+    let me = arg;                       // 1-based tid
     klog::write_raw(b"[INFO]  preempt: kthread ");
     klog::write_dec_u64(me as u64);
     klog::write_raw(b" enter\n");
-    // Real IRQ-exit preemption per `14§R07`: the timer-tick picker
-    // increments our ticks + transparently switches us out at the
-    // IRQ tail when another kthread should run. We just hlt/wfi
-    // until our budget exhausts; no NEED_RESCHED polling needed.
-    loop {
-        // SAFETY: SCHED is single-init; observe own ticks + done.
-        let (ticks, done) = unsafe {
-            let s = sched_mut();
-            (s.kts[me - 1].ticks.load(Ordering::Acquire),
-             s.kts[me - 1].done.load(Ordering::Acquire))
-        };
-        if done { break; }
-        if ticks >= TICK_BUDGET {
-            // Self-mark done so subsequent picks skip this kthread.
-            // SAFETY: SCHED initialized; we are the current task.
-            unsafe { mark_done(me); }
-            break;
-        }
+
+    // Park until our wake-budget exhausts. Each `hlt`/`wfi` returns
+    // when an IRQ delivers + the IRQ-exit picker rotates us back —
+    // i.e. one loop iteration ≈ one preempt rotation. Local count
+    // (no shared state needed; r12+ are callee-saved across the
+    // IRQ tail per the canary smoke).
+    let mut wakes: u32 = 0;
+    while wakes < TICK_BUDGET {
         #[cfg(target_arch = "x86_64")]
-        // SAFETY: `hlt` parks the core until next IRQ; legal at CPL=0.
+        // SAFETY: `hlt` parks until next IRQ; legal at CPL=0.
         unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
         #[cfg(target_arch = "aarch64")]
-        // SAFETY: `wfi` parks the core until any wake event; unprivileged at EL1.
+        // SAFETY: `wfi` parks until any wake event; unprivileged at EL1.
         unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)); }
+        wakes += 1;
     }
     klog::write_raw(b"[INFO]  preempt: kthread ");
     klog::write_dec_u64(me as u64);
     klog::write_raw(b" done\n");
-    // Voluntary yield to give boot (or the next not-done kthread)
-    // control. tick_yield runs synchronously (Context::switch);
-    // doesn't go through the IRQ epilogue.
-    // SAFETY: tick_yield called from a normal call site (not IRQ context); SCHED initialized; we are the current task.
-    unsafe { tick_yield(); }
+
+    // Mark ourselves Zombie and voluntary-yield. With state=Zombie
+    // the picker won't re-enqueue us; once every other kthread is
+    // also Zombie, the picker returns to idle (boot anchor) and
+    // the smoke driver's `schedule()` returns.
+    if let Some(cur) = ksched::current() {
+        ksched::mark_done(cur);
+    }
+    // SAFETY: process ctx; per `tick_yield()` contract.
+    unsafe { ksched::tick_yield(); }
     loop { core::hint::spin_loop(); }
 }
