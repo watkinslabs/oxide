@@ -1,12 +1,46 @@
-# State 2026-05-03 (session 21 EOD)
+# State 2026-05-03 (session 22 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 2 demand-paging live. `vmm::AddressSpace::handle_page_fault` per docs/11 §5 wired through both arches; `mmap(MAP_ANON|MAP_PRIVATE)` is now lazy (no upfront frame alloc) and pages fault-in transparently when first touched, then `munmap` unwalks the PT and frees frames back to PMM. 33 syscall slots bound; both arches cross the userspace round-trip (x86 syscall+sysretq, arm SVC+eret).** 197 PRs total; 518 hosted tests. x86_64 kernel runs `mov $0x42,%eax; mov $1,%edi; mov $0x400100,%esi; mov $3,%edx; syscall; mov $60,%eax; xor %edi,%edi; syscall; ud2` at CPL=3 — bytes flow to UART, kernel logs proper Linux-style return values (rax=3 for write, 0 for exit, -ENOSYS for unbound), sysretq lands user back in ring 3 cleanly, ud2 fires the terminal #UD that the smoke handler logs. aarch64 kernel runs `brk #0` at EL0 and traps back via VBAR_EL1+0x400 with ESR.EC=0x3C decoded. Every spec-listed `klog::*` call site still sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide. The R06 "user console output is not diagnostic" carve-out is documented at `crates/syscall/src/dispatch.rs` (use-aliased import bypasses the literal-prefix lint with intent-signaling alias name).
+**Phase 2 production-shaped userspace path live.** Both arches load a hand-synthesised ELF64 from a kernel-static blob into a per-process `AddressSpace` with its own PT root, demand-page each PT_LOAD's bytes from `VmaBacking::KernelBytes` on first access, and execute at CPL=3 / EL0. On x86_64 the user program runs as a real `Arc<Task>` carrying `mm: Arc<AddressSpace>` — spawned via `sched::spawn_user_thread`, picked by `schedule()`'s CFS, switched into via the IRQ-tail iretq epilogue. `sys_exit` is now a real lifecycle exit: marks the task Zombie and reschedules; the picker falls through to idle (boot anchor) and Context::switch restores boot's saved regs — no more ud2-halt landmark needed, control returns cleanly to `kernel_main`. **207 PRs total; 520 hosted tests.** `make ci` mirrors the full PR gate.
 
-Last verified-green at session-20 EOD:
+Last verified-green at session-22 EOD:
+```
+$ cargo run -p xtask -- spec-lint                              # spec-lint: clean
+$ cargo run -p xtask -- test                                   # 520 passed, 0 failed
+$ cargo run -p xtask -- kernel  --arch x86_64                  # builds clean
+$ cargo run -p xtask -- kernel  --arch aarch64                 # builds clean
+$ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
+…
+[INFO]  user-as: root_pa=…bf4e000 activated                   ← per-AS PML4 active (P2-19)
+[INFO]  boot: kernel ready, halting
+[INFO]  elf-smoke: load ok entry=0x400080 brk=0x401000        ← ELF parse + PT_LOAD register
+[INFO]  elf-smoke: spawned tid=0xC0DE0001 entry=0x400080 sp=0x502000
+el                                                             ← user write(1, "el\n", 3)
+[INFO]  syscall: nr=0x1 rv=0x3
+[INFO]  sys_exit: code=0                                       ← graceful exit (P2-13d)
+[INFO]  elf-smoke: user task exited cleanly, boot resumed     ← schedule() returned to boot
+
+$ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
+…
+[INFO]  user-as: root_pa=…4a6f4000 activated
+[INFO]  boot: kernel ready, halting
+[INFO]  elf-smoke-arm: load ok entry=0x400080 brk=0x401000
+[INFO]  drop-to-el0: elr=0x400080 sp_el0=0x502000
+el
+[INFO]  syscall: nr=0x1 rv=0x3
+[INFO]  syscall: nr=0x3c rv=0x0
+[INFO]  elf-smoke-arm: ok EL0 BRK elr=0x4000a4 esr=0xf2000000  ← arm still uses
+[FAULT] esr=0xf2000000 ec=0x3c (brk) far=…  elr=0x4000a4         direct drop-to-EL0
+                                                                  (no Task wrapper yet —
+                                                                   arm sys_exit unwind
+                                                                   rides P2-13e)
+```
+
+Original verification block (session-20 EOD) preserved below for ref:
+
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
 $ cargo run -p xtask -- test                 # → 518 hosted tests, 0 failures
@@ -42,6 +76,52 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 ## What landed since previous EOD
 
 See `CHANGELOG.md` for the per-PR table.
+
+**Session 22** (PRs #199 – #206): nine merged PRs. Big arc — laid
+the per-AS PT root, wired the runqueue + schedule() AS-swap, then
+built the ELF loader + KernelBytes-backed VMAs on top, drop-to-
+ring3-via-VMA, arm parity, real user `Task` with `mm`, and graceful
+`sys_exit` unwind. Phase 2 production-shaped userspace path is now
+end-to-end on x86_64; arm runs the ELF path but doesn't yet spawn
+as a Task (arm's IRQ frame doesn't save sp_el0 — fix rides next
+session).
+
+- **#199 P2-19** (`P2-19-as-pt-root`): per-AS PT root +
+  `MmuOps::activate(root_pa)`. x86: `capture_kernel_master` +
+  `new_user_pml4` (clones master entries 256..512 per `11§2`
+  inv 5). arm: `capture_kernel_master` + `new_user_l0` (TTBR1
+  unchanged across activate). `AddressSpace::new(root_pa)`.
+  `user_as::init` activates the AS-private root.
+- **#200 P2-13b** (`P2-13b-runqueue-wire`): real per-CPU
+  `Runqueue` (atomics + `Spinlock<RunqueueInner>` per `13§6`),
+  `schedule()` per `13§8` with the AS-swap branch
+  (`MmuOps::activate(next.mm.root_pa)`), `schedule_from_irq`,
+  `update_vruntime(prev)` so CFS rotates among ties. Migrated
+  canary, preempt_smoke, ksched RR to spawn-based API. Idle
+  doubles as the boot anchor (zeroed arch_ctx).
+- **#201 P2-17** (`P2-17-vma-kernel-bytes`):
+  `VmaBacking::KernelBytes { data: &'static [u8] }`. Demand-page
+  copies bytes from the slice; tail past `data.len()` zero-fills.
+- **#202 P2-16** (`P2-16-elf-loader`):
+  `kernel::elf_load::load_static_blob` walks parsed PT_LOADs,
+  MAP_FIXED-mmaps each as `KernelBytes`. Const-builds a 164-B
+  hand-synthesised x86 ELF for the boot smoke.
+- **#203 P2-16b** (`P2-16b-elf-drop-to-ring3`): factor
+  `userspace_smoke::drop_to_ring3`; `elf_smoke::run` is now
+  diverging — parses, loads, registers anon stack VMA, drops to
+  ring 3. Replaces manual-mapping userspace_smoke on x86.
+- **#204 P2-16c** (`P2-16c-elf-arm`): arm parity — factor
+  `userspace_smoke_arm::drop_to_el0`, synthesise a 171-B aarch64
+  ELF (movz/movk for buf VA), `elf_smoke_arm::run` replaces
+  `userspace_smoke_arm::run`.
+- **#205 P2-13c** (`P2-13c-spawn-user-task`):
+  `ContextX86_64::new_user_with_irq_frame` (inherent — arm parity
+  needs sp_el0 in IRQ frame, follow-up). `sched::spawn_user_thread`.
+  `user_as::clone_global_arc()`. `elf_smoke::run_as_task` spawns
+  ELF as `Arc<Task>` with `mm`, schedules into it.
+- **#206 P2-13d** (`P2-13d-sys-exit-clean`): `kernel_sys_exit`
+  intercepts nr=60 — stores exit_status, mark_done, schedule()
+  back to boot. No more ud2-halt landmark; clean lifecycle.
 
 **Session 21** (PRs #196 – #197): two PRs, both spec-driven (read
 docs/11 and docs/13 first, then implemented exactly).
@@ -300,7 +380,22 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 8. `make build` (both arches build clean).
 9. Optional sanity: `make qemu-x86` + `make qemu-arm` — should print the preempt-smoke + reach `boot: kernel ready, halting`.
 
-## Suggested next branches
+## Suggested next branches (post-session-22)
+
+The "what we have vs. what we need" framing — read the spec first
+in every case. docs/MANIFEST.md has the table of which spec covers
+what.
+
+| Option | Branch idea | Spec ref | Why pick this |
+|---|---|---|---|
+| **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 spawns ELF as a real `Arc<Task>`; arm still uses `drop_to_el0` directly. Need `Context::new_user_with_irq_frame` for arm — requires extending the IRQ frame to save/restore sp_el0 (currently a latent bug for multi-user-task on arm). Once landed, both arches share the spawn_user_thread + sys_exit-unwind path. |
+| **`fork()` syscall** | `P2-15a-fork-naive` | docs/11§7 + docs/15§5 | Naive (no COW): `AddressSpace::fork` allocs new PT root, clones VMA tree (KernelBytes inherits same slice; Anonymous starts blank — child re-demand-pages from KernelBytes for code, fresh zero pages for stack/heap). spawn child Task with cloned mm + saved user-RIP/RSP/RFLAGS in arch_ctx so child resumes post-syscall with rax=0. **The shell-spawning prerequisite.** |
+| **`execve()` syscall** | `P2-21-execve-static` | docs/15§5 + docs/31§4 | Wraps `load_static_blob`: take a kernel-side ELF index (until VFS), build new AS, replace `current.mm` with new Arc, build synthetic iretq frame for new entry. Atomic AS swap. Pairs with fork to give shell command-spawning. |
+| **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When a user fault doesn't resolve (write to RO, exec on NX, unmapped read), kernel currently halts via the smoke fault handler. Linux delivers SIGSEGV. Even a minimal "kill task on protection fault" handler would let bad user code die without taking the kernel down — required for shell to survive a child segfaulting. Needs the signal subsystem (docs/27) — sigaction + sa_restorer + signal frame on user stack. |
+| **page-copy in fork** | `P2-15b-fork-pgcopy` | docs/11§7 | Today's fork-naive plan inherits empty Anonymous VMAs. Real fork must copy the parent's mapped pages into child frames so heap/stack state survives. Requires "install PTE in non-active PT" — either temporarily-activate-the-child trick or extend the walker to take an explicit root. |
+| **dual user-task smoke** | `P2-13f-multi-task` | docs/13§2 inv 1+2 | Spawn two user tasks against two different ASes (each load_static_blob'd independently). Validates the AS-swap branch (`MmuOps::activate(next.mm.root_pa)`) end-to-end — currently dead code because `prev.mm == next.mm` for v1's single user task. |
+
+## Legacy suggested next branches (pre-session-22 — superseded)
 
 The "what we have vs. what we need" framing — read the spec first
 in every case, then implement EXACTLY what it says (Linux compat
