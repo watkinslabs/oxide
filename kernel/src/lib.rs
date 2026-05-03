@@ -18,6 +18,8 @@ extern crate alloc;
 
 pub mod acpi;
 #[cfg(target_arch = "aarch64")]
+pub mod arm_timer;
+#[cfg(target_arch = "aarch64")]
 pub mod gic;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
@@ -452,6 +454,16 @@ fn smoke_device_map_arm(
                 klog::write_raw(b" gicc_iidr=");
                 klog::write_hex_u64(gicc_iidr as u64);
                 klog::write_raw(b"\n");
+                // Polled-timer smoke: virtual generic-timer
+                // counts down from 0xFFFF_FFFF over a brief spin.
+                // SAFETY: timer is unprivileged sysreg-only; no IRQ delivery (IMASK set).
+                if let Some((a, b)) = unsafe { arm_timer::timer_smoke(0xFFFF_FFFF) } {
+                    klog::write_raw(b"[INFO]  arm-timer: tval ");
+                    klog::write_hex_u64(a as u64);
+                    klog::write_raw(b" -> ");
+                    klog::write_hex_u64(b as u64);
+                    klog::write_raw(if b < a { b" (counting)\n" } else { b" (stuck)\n" });
+                }
             }
         }
     } else {
