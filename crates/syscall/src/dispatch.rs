@@ -82,13 +82,43 @@ pub fn sys_exit(args: &SyscallArgs) -> KResult<u64> {
     Ok(0)
 }
 
+/// `sys_getpid()` — slot 39. v1: single-task system, return PID 1.
+/// Real per-Task pid lands with the process model.
+/// # C: O(1)
+pub fn sys_getpid(_args: &SyscallArgs) -> KResult<u64> {
+    Ok(1)
+}
+
+// `sys_get{u,e,g,eg}id` — slots 102 / 107 / 104 / 108. v1: no creds
+// model; everything is root (uid/gid=0). Lands with `28` security
+// per-task creds.
+
+/// # C: O(1)
+pub fn sys_getuid(_args: &SyscallArgs)  -> KResult<u64> { Ok(0) }
+/// # C: O(1)
+pub fn sys_geteuid(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+/// # C: O(1)
+pub fn sys_getgid(_args: &SyscallArgs)  -> KResult<u64> { Ok(0) }
+/// # C: O(1)
+pub fn sys_getegid(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_gettid()` — slot 186. v1: single-thread, return 1.
+/// # C: O(1)
+pub fn sys_gettid(_args: &SyscallArgs) -> KResult<u64> { Ok(1) }
+
 /// Build the dispatch table at compile time. Real `sys_*` are filled
 /// in via `set` calls below as their subsystems land.
 const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     let mut t = [sys_enosys as SyscallFn; SYSCALL_TABLE_LEN];
     // Bound subsystems (numbers per Linux x86_64 / `15§2`):
-    t[1]  = sys_write as SyscallFn;
-    t[60] = sys_exit  as SyscallFn;
+    t[1]   = sys_write   as SyscallFn;
+    t[39]  = sys_getpid  as SyscallFn;
+    t[60]  = sys_exit    as SyscallFn;
+    t[102] = sys_getuid  as SyscallFn;
+    t[104] = sys_getgid  as SyscallFn;
+    t[107] = sys_geteuid as SyscallFn;
+    t[108] = sys_getegid as SyscallFn;
+    t[186] = sys_gettid  as SyscallFn;
     // Slots awaiting subsystem landings:
     //   t[0]  = sys_read;     // VFS
     //   t[3]  = sys_close;
