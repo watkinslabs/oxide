@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "qemu": {
+      "command": "python3",
+      "args": ["tools/qemu-mcp/server.py"],
+      "env": {}
+    }
+  }
+}
