@@ -379,6 +379,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
+    // Recoverable page-fault smoke (P1-86c). Validates the fault
+    // dispatcher's `bool` retry path on a real demand-paged write.
+    // Runs at CPL=0 so it doesn't depend on the userspace smoke.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        // SAFETY: PMM + MmuOps initialised; FAULT_VA in the smoke's
+        // private kernel-half slot; single-CPU; IRQs masked.
+        unsafe { pf_recover_smoke::run(); }
+    }
+
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // First userspace `iretq` smoke (P1-82) — x86_64 only. Diverges
@@ -456,6 +466,10 @@ pub mod mmuops_smoke;
 // User-page mapping smoke validating the P1-95 interior-U=1 fix.
 #[cfg(target_os = "oxide-kernel")]
 pub mod user_map_smoke;
+
+// Page-fault recovery smoke (P1-86c). x86_64-only for now.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod pf_recover_smoke;
 
 // First userspace `iretq` smoke (P1-82). x86_64-only; arm `eret`
 // smoke lands separately once the EL0 path is wired.

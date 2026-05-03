@@ -72,26 +72,64 @@ core::arch::global_asm!(
     ".globl oxide_vec_default", "oxide_vec_default:", "VECNE 0xff",
 
     // ----- common path -------------------------------------------------------
-    // Frame layout at entry:
+    // Frame layout at stub-tail entry:
     //   [vec][err][rip][cs][rflags][rsp][ss]  = 7 × 8 = 56 bytes
     // CPU pushed 5 (no-err) or 6 (with-err) words; stub pushed 2 or 1.
-    // Net 7 × 8 = 56 ⇒ rsp is 8-aligned mod 16. SysV ABI requires
-    // rsp 16-aligned at `call`; subtract 8 after capturing frame.
+    //
+    // We save *all* caller-saved GPRs before calling the Rust
+    // dispatcher so that on a recoverable fault (handler returns
+    // true) the retry executes with the original register state
+    // intact. SysV preserves rbx/rbp/r12-r15 across the call, but
+    // rax/rcx/rdx/rsi/rdi/r8-r11 must be saved by us. Without this,
+    // a #PF at e.g. `mov %rax, [%rsi+disp]` would retry with a
+    // clobbered `%rsi` and re-fault at a garbage address.
+    //
+    // Stack after GPR save (10 × 8 = 80 B pushed):
+    //   [rsp+0x00] r11
+    //   [rsp+0x08] r10
+    //   [rsp+0x10] r9
+    //   [rsp+0x18] r8
+    //   [rsp+0x20] rdi
+    //   [rsp+0x28] rsi
+    //   [rsp+0x30] rdx
+    //   [rsp+0x38] rcx
+    //   [rsp+0x40] rax
+    //   [rsp+0x48] (pad — keeps total even × 8 so post-save rsp is
+    //              16-aligned for the SysV ABI call)
+    //   [rsp+0x50..]  fault frame (vec/err/rip/cs/rflags/rsp/ss)
     ".globl oxide_fault_common",
     ".type  oxide_fault_common, @function",
     "oxide_fault_common:",
     "    cld",
-    "    mov rdi, rsp",                  // arg 0 = frame pointer
-    "    sub rsp, 8",                    // align to 16 before call
-    "    call oxide_fault_print_rust",   // returns bool in al: 1 = handled
-    "    add rsp, 8",                    // undo align
+    "    push rax",
+    "    push rcx",
+    "    push rdx",
+    "    push rsi",
+    "    push rdi",
+    "    push r8",
+    "    push r9",
+    "    push r10",
+    "    push r11",
+    "    sub  rsp, 8",                   // align to 16 before call
+    "    lea  rdi, [rsp + 0x50]",        // arg 0 = pointer to fault frame
+    "    call oxide_fault_print_rust",   // returns bool in al
+    "    add  rsp, 8",                   // undo align
     "    test al, al",
-    "    jnz 2f",                        // handled → retry via iretq
+    "    jnz 2f",
     "    cli",
-    "1:  hlt",                           // not handled → park forever
+    "1:  hlt",
     "    jmp 1b",
-    "2:  add rsp, 16",                   // drop synthetic vec + err
-    "    iretq",                         // pop CPU frame + return
+    "2:  pop r11",
+    "    pop r10",
+    "    pop r9",
+    "    pop r8",
+    "    pop rdi",
+    "    pop rsi",
+    "    pop rdx",
+    "    pop rcx",
+    "    pop rax",
+    "    add rsp, 16",                   // drop synthetic vec + err
+    "    iretq",
     ".size oxide_fault_common, . - oxide_fault_common",
 );
 
