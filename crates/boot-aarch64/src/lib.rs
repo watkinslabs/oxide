@@ -19,19 +19,76 @@ extern crate alloc;
 extern crate std;
 
 pub mod dtb;
+pub mod limine;
 pub mod pl011;
+
+#[cfg(target_os = "oxide-kernel")]
+mod semihost {
+    /// ARM semihosting putc per ARMv8 semihosting spec §5.5
+    /// (SYS_WRITEC = 0x03). QEMU `-semihosting-config target=native`
+    /// intercepts the `hlt #0xf000` opcode at EL1, reads x0 = op,
+    /// x1 = pointer to char, and emits the char to stdout.
+    /// # SAFETY: privileged opcode legal at EL1; `byte` lives across
+    /// the call.
+    pub unsafe fn putc(byte: u8) {
+        let b: u32 = byte as u32;
+        let p = &b as *const u32 as u64;
+        unsafe {
+            core::arch::asm!(
+                "hlt #0xf000",
+                in("x0") 0x03_u64,    // SYS_WRITEC
+                in("x1") p,
+                lateout("x0") _,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+
+    /// Format a u64 as 16 hex chars and emit each via putc.
+    #[allow(dead_code)]
+    pub fn put_hex_u64(v: u64) {
+        for i in (0..16).rev() {
+            let nibble = ((v >> (i * 4)) & 0xf) as u8;
+            let c = if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
+            // SAFETY: see putc.
+            unsafe { putc(c) };
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn put_str(s: &str) {
+        for &b in s.as_bytes() {
+            // SAFETY: see putc.
+            unsafe { putc(b) };
+        }
+    }
+}
 
 /// Limine base-revision marker per Limine v12 protocol. Limine scans
 /// `.limine_requests` for this 3-word magic and requires revision ≥ 6
 /// on aarch64; revision 0 is rejected. Values are protocol-stable
-/// across Limine 9..12.
+/// across Limine 9..12. The marker MUST appear at the very start of
+/// `.limine_requests`; we land it via the `.start` subname which the
+/// linker places before the rest.
 #[used]
-#[link_section = ".limine_requests"]
+#[link_section = ".limine_requests.start"]
 static LIMINE_BASE_REVISION: [u64; 3] = [
     0xf9562b2d5c95a6c8,
     0x6a7b384944536bdc,
     6,
 ];
+
+/// HHDM request slot per `36§3`. The bootloader writes a non-null
+/// response pointer here before kernel handoff; `_start_rust` reads
+/// `(*response).offset` to learn where Limine mapped phys memory.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_HHDM: limine::RequestHeader<limine::HhdmResponse>
+    = limine::RequestHeader {
+        id:       limine::HHDM_ID,
+        revision: limine::REVISION_0,
+        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    };
 
 use klog::Uart;
 use sync::{Spinlock, Tty as UartClass};
@@ -39,18 +96,38 @@ use sync::{Spinlock, Tty as UartClass};
 use pl011::{Pl011, PL011_VIRT_BASE};
 
 // ---------------------------------------------------------------------------
-// Boot-time UART sink for klog. Single instance behind `Spinlock` so the
-// `klog::LogSink` thunk can drive it without `static mut` (`07§5`).
+// Boot-time klog sink. v1: ARM semihosting putc — bypasses MMIO entirely
+// and works regardless of how Limine arranges paging on aarch64. The
+// real PL011 path stays available (boot_emit_pl011 below) for the
+// post-Limine-HHDM-resolution PR.
 // ---------------------------------------------------------------------------
 
 static BOOT_UART: Spinlock<Pl011, UartClass>
     = Spinlock::new(Pl011::new(PL011_VIRT_BASE));
 
-/// klog `LogSink` adapter — drives `BOOT_UART` for every byte slice
-/// klog emits. Registered via `klog::set_byte_sink` from
-/// `_start_rust` after `BOOT_UART::init()`.
+/// klog `LogSink` adapter via semihosting. Each byte triggers a
+/// `hlt #0xf000` at EL1; QEMU's semihosting handler intercepts it
+/// and emits the byte to its stdout channel — same place `-serial
+/// stdio` lands, so the boot trace looks identical to the x86 path.
 /// # C: O(len)
 fn boot_emit(bytes: &[u8]) {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        for &b in bytes {
+            // SAFETY: privileged opcode legal at EL1; `b` lives across the call.
+            unsafe { semihost::putc(b); }
+        }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = bytes; }
+}
+
+/// Alternative klog sink via PL011 MMIO. Unused in v1 because Limine
+/// v12 doesn't fill `LIMINE_HHDM_REQUEST.response` for our request
+/// shape, leaving us without a reliable VA for phys 0x09000000.
+/// Re-wire `_start_rust` to this once the HHDM puzzle is solved.
+#[allow(dead_code)]
+fn boot_emit_pl011(bytes: &[u8]) {
     let mut g = BOOT_UART.lock();
     g.write_bytes(bytes);
 }
@@ -138,13 +215,18 @@ unsafe fn build_boot_info() -> BootInfo {
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
-    // SAFETY: PL011 owned by us pre-init; no other CPU alive; `init`
-    // programs the UART for 115200-8N1 + FIFO. After this call any
-    // klog emit will land on the QEMU virt console.
-    unsafe { BOOT_UART.lock().init(); }
-    klog::set_byte_sink(boot_emit);
-    // SAFETY: single-CPU boot, IRQs masked; install_default_vbar writes VBAR_EL1 to a kernel-owned 0x800-aligned vector table. Subsequent exceptions vector to oxide_default_vector_handler which halts.
+    // Install the EL1 vector table so any synchronous fault halts
+    // at our default handler instead of looping on lost exceptions.
+    // SAFETY: single-CPU boot, IRQs masked; install_default_vbar
+    // writes VBAR_EL1 to a kernel-owned 0x800-aligned vector table.
     unsafe { hal_aarch64::install_default_vbar(); }
+
+    // Wire klog → semihosting. No MMIO, no HHDM dependency: QEMU
+    // intercepts `hlt #0xf000` at EL1 regardless of paging state.
+    // Real PL011 sink (`boot_emit_pl011`) lights up once the
+    // Limine HHDM response question is settled.
+    klog::set_byte_sink(boot_emit);
+
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
