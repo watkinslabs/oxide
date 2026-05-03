@@ -229,6 +229,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::write_raw(b" MiB free post-stress, ");
         klog::write_dec_u64(p.allocated_pages());
         klog::write_raw(b" page(s) reserved\n");
+
+        // Device-mapping smoke: install a Device-attr 4 KiB MMIO
+        // page using a PMM-backed frame allocator, then read one
+        // 32-bit register from the new VA.
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        smoke_device_map_x86(p, info.hhdm_offset);
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        smoke_device_map_arm(p, info.hhdm_offset);
     }
 
 
@@ -301,6 +309,67 @@ fn log_memmap(regions: &[BootMemRegion]) {
     klog::write_raw(b" MiB bootloader-reclaim, ");
     klog::write_dec_u64(reserved_bytes / (1024 * 1024));
     klog::write_raw(b" MiB reserved\n");
+}
+
+/// HPET phys base on QEMU q35 (matches what MADT logged).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+const HPET_PHYS: u64 = 0xfed0_0000;
+/// Kernel VA we install HPET at — disjoint from HHDM (L4[0x100..])
+/// and kernel-image (L4[0x1ff]).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+const HPET_VA: u64 = 0xffff_ff00_0000_0000;
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn smoke_device_map_x86(
+    p: &'static pmm::Pmm<pmm_setup::HhdmBacking>,
+    hhdm: u64,
+) {
+    let alloc = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
+    // SAFETY: single-CPU, IRQs off, PMM owns its frames; we splice
+    // a 4 KiB Device-attr leaf into the kernel-half of the live PML4.
+    let r = unsafe {
+        hal_x86_64::vmm::map_device_4k(HPET_VA, HPET_PHYS, hhdm, alloc)
+    };
+    match r {
+        Ok(()) => {
+            // SAFETY: HPET_VA was just mapped Device-attr; the read is
+            // a volatile MMIO load of HPET_GCAP_ID at offset 0.
+            let cap = unsafe { core::ptr::read_volatile(HPET_VA as *const u32) };
+            klog::write_raw(b"[INFO]  device-map: hpet cap=");
+            klog::write_hex_u64(cap as u64);
+            klog::write_raw(b"\n");
+        }
+        Err(_) => klog::kerror!("device-map: x86 map_device_4k failed"),
+    }
+}
+
+/// GICv2 distributor base on QEMU virt (matches MADT log).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const GICD_PHYS: u64 = 0x0800_0000;
+/// Kernel VA for GICD — disjoint from HHDM (L0[0]) and kernel image (L0[0x1ff]).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const GICD_VA: u64 = 0xffff_ff00_0000_0000;
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn smoke_device_map_arm(
+    p: &'static pmm::Pmm<pmm_setup::HhdmBacking>,
+    hhdm: u64,
+) {
+    let alloc = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
+    // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active, single-CPU, IRQs off.
+    let r = unsafe {
+        hal_aarch64::vmm::map_device_4k(GICD_VA, GICD_PHYS, hhdm, alloc)
+    };
+    match r {
+        Ok(()) => {
+            // SAFETY: GICD_VA was just mapped Device-nGnRnE; read GICD_TYPER at offset 4.
+            let typer = unsafe { core::ptr::read_volatile((GICD_VA + 0x4) as *const u32) };
+            klog::write_raw(b"[INFO]  device-map: gicd typer=");
+            klog::write_hex_u64(typer as u64);
+            klog::write_raw(b"\n");
+        }
+        Err(_) => klog::kerror!("device-map: arm map_device_4k failed"),
+    }
 }
 
 /// Park the CPU forever. On the kernel target, uses the per-arch
