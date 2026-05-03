@@ -74,7 +74,7 @@ extern "C" {
 
 fn trampoline_kernel_addr() -> u64 {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { oxide_trampoline_kernel as usize as u64 }
+    { oxide_trampoline_kernel as *const () as usize as u64 }
     #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
     { 0 }
 }
@@ -88,7 +88,7 @@ impl Context for ContextAArch64 {
     fn new_kernel(stack_top: *mut u8, entry: extern "C" fn(usize) -> !, arg: usize) -> Self {
         Self {
             sp:    stack_top as u64,
-            x19:   entry as usize as u64,
+            x19:   entry as *const () as usize as u64,
             x20:   arg as u64,
             x21: 0, x22: 0, x23: 0, x24: 0,
             x25: 0, x26: 0, x27: 0, x28: 0,
@@ -134,7 +134,7 @@ impl Context for ContextAArch64 {
         };
         Self {
             sp:    sp as u64,
-            x19:   entry as usize as u64,
+            x19:   entry as *const () as usize as u64,
             x20:   arg as u64,
             x21: 0, x22: 0, x23: 0, x24: 0,
             x25: 0, x26: 0, x27: 0, x28: 0,
@@ -215,7 +215,7 @@ mod tests {
         let mut stack = alloc::vec![0u8; 4096];
         let top = stack.as_mut_ptr_range().end;
         let ctx = ContextAArch64::new_kernel(top, dummy_entry, 0xCAFE_F00D);
-        assert_eq!(ctx.x19, dummy_entry as usize as u64);
+        assert_eq!(ctx.x19, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.x20, 0xCAFE_F00D);
         assert_eq!(ctx.sp, top as u64);
         assert_eq!(ctx.lr, trampoline_kernel_addr());
@@ -239,7 +239,7 @@ mod tests {
         let mut stack = alloc::vec![0u8; 4096];
         let top = stack.as_mut_ptr_range().end;
         let ctx = ContextAArch64::new_kernel_with_irq_frame(top, dummy_entry, 0xC0FFEE);
-        assert_eq!(ctx.x19, dummy_entry as usize as u64);
+        assert_eq!(ctx.x19, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.x20, 0xC0FFEE);
         assert_eq!(ctx.sp as usize, (top as usize) - 192);
         assert_eq!(ctx.lr,  crate::vbar::irq_resume_user_addr());

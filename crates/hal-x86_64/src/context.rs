@@ -72,7 +72,7 @@ extern "C" {
 /// `Context::switch` is a no-op there anyway.
 fn trampoline_kernel_addr() -> u64 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { oxide_trampoline_kernel as usize as u64 }
+    { oxide_trampoline_kernel as *const () as usize as u64 }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { 0 }
 }
@@ -98,7 +98,7 @@ impl Context for ContextX86_64 {
             rsp: sp as u64,
             rbp: 0,
             rbx: 0,
-            r12: entry as usize as u64,
+            r12: entry as *const () as usize as u64,
             r13: arg as u64,
             r14: 0,
             r15: 0,
@@ -161,7 +161,7 @@ impl Context for ContextX86_64 {
             rsp: sp as u64,
             rbp: 0,
             rbx: 0,
-            r12: entry as usize as u64,
+            r12: entry as *const () as usize as u64,
             r13: arg as u64,
             r14: 0,
             r15: 0,
@@ -240,7 +240,7 @@ mod tests {
         // Take stack_top = end of buffer (high address).
         let top = stack.as_mut_ptr_range().end;
         let ctx = ContextX86_64::new_kernel(top, dummy_entry, 0xDEAD_BEEF);
-        assert_eq!(ctx.r12, dummy_entry as usize as u64);
+        assert_eq!(ctx.r12, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.r13, 0xDEAD_BEEF);
         // rsp lives one u64 below stack_top after we pushed the trampoline.
         let expected_sp = (top as usize) - 8;
@@ -271,7 +271,7 @@ mod tests {
         let top = stack.as_mut_ptr_range().end;
         let ctx = ContextX86_64::new_kernel_with_irq_frame(top, dummy_entry, 0xC0FFEE);
         // r12/r13 carry entry/arg per trampoline ABI.
-        assert_eq!(ctx.r12, dummy_entry as usize as u64);
+        assert_eq!(ctx.r12, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.r13, 0xC0FFEE);
         // rsp = stack_top - 136 (17 × 8).
         assert_eq!(ctx.rsp as usize, (top as usize) - 136);
