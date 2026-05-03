@@ -76,6 +76,11 @@ unsafe extern "C" fn oxide_irq_dispatch(_frame: *const u8) {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
     // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
     unsafe { eoi(); }
+    // Defer reschedule: set the flag and let the resumed task
+    // observe it at its next safe point (post-`hlt` wake). True
+    // IRQ-exit preemption requires every task to carry a synthetic
+    // iretq frame on its stack, which is not yet wired (`14§4`).
+    crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
 }
 
 /// Outcome reported by `enable`.
@@ -128,6 +133,17 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     };
     LAPIC_BASE_VA.store(va, Ordering::Release);
     LapicStatus::Enabled { apic_id, version }
+}
+
+/// Disarm the LAPIC timer (write 0 to the Initial Count reg).
+/// # SAFETY: `enable` ran; LAPIC mapped Device-attr.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn timer_disarm() {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return; }
+    // SAFETY: per fn contract; offset 0x380 within the LAPIC page.
+    unsafe { core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, 0); }
 }
 
 /// Configure the LAPIC timer in periodic mode unmasked at vector
