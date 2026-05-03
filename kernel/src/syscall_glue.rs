@@ -16,11 +16,9 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::{dispatch, SyscallArgs};
-
-#[cfg(target_arch = "x86_64")]
 use syscall::errno::Errno;
-#[cfg(target_arch = "x86_64")]
 use hal::USER_VA_END;
+use hal::TimerOps;
 
 #[cfg(target_arch = "x86_64")]
 const SYSCALL_NR_ARCH_PRCTL: u64 = 158;
@@ -28,6 +26,51 @@ const SYSCALL_NR_ARCH_PRCTL: u64 = 158;
 const ARCH_SET_FS: u64 = 0x1002;
 #[cfg(target_arch = "x86_64")]
 const ARCH_GET_FS: u64 = 0x1003;
+
+const SYSCALL_NR_CLOCK_GETTIME: u64 = 228;
+
+const NS_PER_SEC: u64 = 1_000_000_000;
+
+/// Read the per-arch monotonic clock and write `{tv_sec, tv_nsec}`
+/// to the user `timespec*`. Both arches' `TimerOps::monotonic_ns`
+/// returns 0 until calibrated, so a CLOCK_MONOTONIC reading at
+/// boot-time may legitimately be 0.
+///
+/// v1: ignore clk_id; CLOCK_REALTIME and CLOCK_MONOTONIC alike use
+/// the kernel monotonic counter (no wall-time RTC source yet).
+fn kernel_clock_gettime(args: &SyscallArgs) -> i64 {
+    let _clk_id = args.a0;
+    let tp = args.a1;
+    // Validate the 16-byte timespec range lies entirely below USER_VA_END.
+    if tp == 0 { return -(Errno::Efault.as_i32() as i64); }
+    let end = match tp.checked_add(16) {
+        Some(e) => e,
+        None    => return -(Errno::Efault.as_i32() as i64),
+    };
+    if end > USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // Natural alignment for u64.
+    if tp & 7 != 0 {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+
+    let tv_sec  = ns / NS_PER_SEC;
+    let tv_nsec = ns % NS_PER_SEC;
+    // SAFETY: `tp` validated 16-byte range below USER_VA_END + 8-byte
+    // aligned. CPL=0 ignores the leaf U bit so the kernel can write
+    // the user mapping directly.
+    unsafe {
+        core::ptr::write_volatile(tp as *mut u64,         tv_sec);
+        core::ptr::write_volatile((tp + 8) as *mut u64,   tv_nsec);
+    }
+    0
+}
 
 /// x86-specific syscall handled in the kernel-side glue (since
 /// `crates/syscall` is arch-neutral and can't call `hal-x86_64`).
@@ -69,15 +112,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 ) -> u64 {
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
-    // Arch-specific syscalls handled here (kernel can call hal);
-    // others fall through to the arch-neutral dispatch table.
-    #[cfg(target_arch = "x86_64")]
+    // Arch-specific + per-arch-time syscalls handled here (kernel can
+    // call hal); others fall through to the arch-neutral dispatch.
     let rv = match nr {
-        SYSCALL_NR_ARCH_PRCTL => kernel_arch_prctl(&args),
-        _ => dispatch(nr as u32, &args),
+        #[cfg(target_arch = "x86_64")]
+        SYSCALL_NR_ARCH_PRCTL    => kernel_arch_prctl(&args),
+        SYSCALL_NR_CLOCK_GETTIME => kernel_clock_gettime(&args),
+        _                        => dispatch(nr as u32, &args),
     };
-    #[cfg(target_arch = "aarch64")]
-    let rv = dispatch(nr as u32, &args);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
         klog::write_hex_u64(nr);
