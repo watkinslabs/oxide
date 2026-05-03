@@ -28,8 +28,59 @@ const ARCH_SET_FS: u64 = 0x1002;
 const ARCH_GET_FS: u64 = 0x1003;
 
 const SYSCALL_NR_CLOCK_GETTIME: u64 = 228;
+const SYSCALL_NR_UNAME: u64          = 63;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
+
+/// `struct utsname` field width per Linux. Six fixed-length C
+/// strings, NUL-terminated, total 6 × 65 = 390 bytes.
+const UTSNAME_FIELD_LEN: usize = 65;
+const UTSNAME_TOTAL_LEN: usize = UTSNAME_FIELD_LEN * 6;
+
+/// Per-arch machine identifier returned by `uname.machine`.
+#[cfg(target_arch = "x86_64")]
+const UNAME_MACHINE: &[u8] = b"x86_64";
+#[cfg(target_arch = "aarch64")]
+const UNAME_MACHINE: &[u8] = b"aarch64";
+
+/// Write the 6 utsname fields at consecutive 65-byte slots starting
+/// at `tp`. Each field is the source bytes followed by NUL padding
+/// out to 65 B. Caller validates `tp` range.
+unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
+    let n = src.len().min(UTSNAME_FIELD_LEN - 1);
+    for i in 0..n {
+        // SAFETY: caller validated [tp, tp + UTSNAME_TOTAL_LEN) lies entirely below USER_VA_END and is mapped writable; CPL=0 ignores the leaf U bit so direct writes land in the user page.
+        unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, src[i]); }
+    }
+    for i in n..UTSNAME_FIELD_LEN {
+        // SAFETY: same range as above; pads out the field with NUL.
+        unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
+    }
+}
+
+fn kernel_uname(args: &SyscallArgs) -> i64 {
+    let tp = args.a0;
+    if tp == 0 { return -(Errno::Efault.as_i32() as i64); }
+    let end = match tp.checked_add(UTSNAME_TOTAL_LEN as u64) {
+        Some(e) => e,
+        None    => return -(Errno::Efault.as_i32() as i64),
+    };
+    if end > USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: range validated above; user-half VA is mapped writable
+    // by the userspace-smoke setup. Each field write iterates byte-
+    // by-byte so no alignment requirement.
+    unsafe {
+        write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"oxide");
+        write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, b"oxide");                  // nodename
+        write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"0.1.0-pre");              // release
+        write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"oxide #1 SMP PREEMPT");  // version
+        write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);             // machine
+        write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, b"(none)");                 // domainname
+    }
+    0
+}
 
 /// Read the per-arch monotonic clock and write `{tv_sec, tv_nsec}`
 /// to the user `timespec*`. Both arches' `TimerOps::monotonic_ns`
@@ -118,6 +169,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_ARCH_PRCTL    => kernel_arch_prctl(&args),
         SYSCALL_NR_CLOCK_GETTIME => kernel_clock_gettime(&args),
+        SYSCALL_NR_UNAME         => kernel_uname(&args),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
