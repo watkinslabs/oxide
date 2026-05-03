@@ -288,3 +288,26 @@ fn task_arch_ctx_ptr_round_trips() {
     assert_eq!(rsp,    0xdead_b000_dead_b000);
     assert_eq!(marker, 0xfeedface);
 }
+
+#[test]
+fn task_kthread_has_no_mm() {
+    // `Task::new` is the kthread constructor (per `13§5` field list,
+    // kernel threads have no `mm`).
+    let t = Task::new(1, "kt", SchedClass::Normal { weight: 1024 });
+    assert!(t.mm.is_none(), "kthread Task must not carry an mm");
+}
+
+#[test]
+fn task_user_carries_mm() {
+    // User tasks per `13§5` carry `Arc<AddressSpace>`. The Arc is
+    // shared (CLONE_VM siblings get a clone of the same Arc).
+    let mm = vmm::AddressSpace::new().expect("AddressSpace::new should succeed");
+    let t1 = Task::new_user(10, "u1", SchedClass::Normal { weight: 1024 }, alloc::sync::Arc::clone(&mm));
+    let t2 = Task::new_user(11, "u2", SchedClass::Normal { weight: 1024 }, alloc::sync::Arc::clone(&mm));
+
+    let m1 = t1.mm.as_ref().expect("u1 mm");
+    let m2 = t2.mm.as_ref().expect("u2 mm");
+    assert!(alloc::sync::Arc::ptr_eq(m1, m2), "CLONE_VM siblings must share the same AS instance");
+    // The original handle plus two task clones = 3 strong refs.
+    assert_eq!(alloc::sync::Arc::strong_count(&mm), 3);
+}
