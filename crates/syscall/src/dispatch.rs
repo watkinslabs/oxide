@@ -249,13 +249,61 @@ pub fn sys_fcntl(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
 /// # C: O(1)
 pub fn sys_prlimit64(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
 
+/// `sys_lseek(fd, offset, whence)` — slot 8. Return -ESPIPE
+/// (the standard "not seekable" return) so userspace falls through
+/// to its non-seek code path. Real impl lands with VFS.
+/// # C: O(1)
+pub fn sys_lseek(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Espipe) }
+
+/// `sys_read(fd, buf, count)` — slot 0. v1 has no fd table; return
+/// -EBADF. Real impl lands with VFS.
+/// # C: O(1)
+pub fn sys_read(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Ebadf) }
+
+/// `sys_dup(fd)` — slot 32. -EBADF (no fd table).
+/// # C: O(1)
+pub fn sys_dup(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Ebadf) }
+
+/// `sys_dup2(oldfd, newfd)` — slot 33. -EBADF.
+/// # C: O(1)
+pub fn sys_dup2(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Ebadf) }
+
+/// `sys_dup3(oldfd, newfd, flags)` — slot 292. -EBADF.
+/// # C: O(1)
+pub fn sys_dup3(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Ebadf) }
+
+/// `sys_pipe2(pipefd[2], flags)` — slot 293. v1 no IPC; -ENOSYS so
+/// callers fall back. Real impl lands with `24` IPC.
+/// # C: O(1)
+pub fn sys_pipe2(_args: &SyscallArgs) -> KResult<u64> { Err(Errno::Enosys) }
+
+/// `sys_sigaltstack(ss, old_ss)` — slot 131. v1 no signals; pretend
+/// it succeeded (the user-supplied alternate stack is simply ignored).
+/// # C: O(1)
+pub fn sys_sigaltstack(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_nanosleep(req, rem)` — slot 35. v1 no sleep machinery;
+/// return 0 immediately. Programs calling `nanosleep(0, NULL)` as
+/// a yield-equivalent get correct behaviour; longer sleeps complete
+/// immediately (acceptable until scheduler integration).
+/// # C: O(1)
+pub fn sys_nanosleep(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
+/// `sys_sched_yield()` — slot 24. v1 single-task; just return 0.
+/// Real impl re-enters the scheduler once the runqueue is wired
+/// (P1-84b).
+/// # C: O(1)
+pub fn sys_sched_yield(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
 /// Build the dispatch table at compile time. Real `sys_*` are filled
 /// in via `set` calls below as their subsystems land.
 const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     let mut t = [sys_enosys as SyscallFn; SYSCALL_TABLE_LEN];
     // Bound subsystems (numbers per Linux x86_64 / `15§2`):
+    t[0]   = sys_read            as SyscallFn;
     t[1]   = sys_write           as SyscallFn;
     t[3]   = sys_close           as SyscallFn;
+    t[8]   = sys_lseek           as SyscallFn;
     t[9]   = sys_mmap            as SyscallFn;
     t[10]  = sys_mprotect        as SyscallFn;
     t[11]  = sys_munmap          as SyscallFn;
@@ -264,11 +312,16 @@ const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     t[14]  = sys_rt_sigprocmask  as SyscallFn;
     t[16]  = sys_ioctl           as SyscallFn;
     t[20]  = sys_writev          as SyscallFn;
+    t[24]  = sys_sched_yield     as SyscallFn;
+    t[32]  = sys_dup             as SyscallFn;
+    t[33]  = sys_dup2            as SyscallFn;
+    t[35]  = sys_nanosleep       as SyscallFn;
     t[28]  = sys_madvise         as SyscallFn;
     t[39]  = sys_getpid          as SyscallFn;
     t[60]  = sys_exit            as SyscallFn;
     t[72]  = sys_fcntl           as SyscallFn;
     t[89]  = sys_readlink        as SyscallFn;
+    t[131] = sys_sigaltstack     as SyscallFn;
     t[102] = sys_getuid          as SyscallFn;
     t[104] = sys_getgid          as SyscallFn;
     t[107] = sys_geteuid         as SyscallFn;
@@ -276,6 +329,8 @@ const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     t[186] = sys_gettid          as SyscallFn;
     t[218] = sys_set_tid_address as SyscallFn;
     t[273] = sys_set_robust_list as SyscallFn;
+    t[292] = sys_dup3            as SyscallFn;
+    t[293] = sys_pipe2           as SyscallFn;
     t[302] = sys_prlimit64       as SyscallFn;
     t[318] = sys_getrandom       as SyscallFn;
     // Slots awaiting subsystem landings:
