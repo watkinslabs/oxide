@@ -41,22 +41,22 @@ pub static oxide_preempt_next_ctx: AtomicPtr<u8> = AtomicPtr::new(core::ptr::nul
 
 /// IRQ-exit hook: dispatcher calls this after EOI to ask the
 /// scheduler to pick the next task and stage it in
-/// `oxide_preempt_next_ctx`. No-op when `debug-sched` is off (no
-/// kthread scheduler installed in v1; only the smoke surface
-/// builds the scheduler state).
+/// `oxide_preempt_next_ctx`. Bridges to `sched::schedule_from_irq`
+/// per `14§R07`. No-op when no runqueue is installed (boot phase
+/// pre-`install_default_runqueue`).
 /// # SAFETY: caller is in IRQ context with IRQs masked.
-/// # C: O(n_kthreads) within the smoke; O(1) when no scheduler.
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
+/// # C: O(log N) CFS pick + O(1) stage; O(1) when no runqueue.
+#[cfg(target_os = "oxide-kernel")]
 pub unsafe fn tick_pick_next() {
-    // SAFETY: caller asserts IRQ context; ksched picks next + stages
-    // the pointer pair in `oxide_preempt_{cur,next}_ctx`.
-    unsafe { crate::ksched::tick_pick_next_for_irq_exit(); }
+    // SAFETY: caller asserts IRQ context, IRQs masked, single-CPU.
+    unsafe { crate::sched::schedule_from_irq(); }
 }
 
-/// IRQ-exit hook stub for builds without the kthread scheduler.
+/// IRQ-exit hook stub for non-kernel builds (host tests of the
+/// `kernel` crate's pure-logic helpers).
 /// # SAFETY: trivially safe — no state touched.
 /// # C: O(1)
-#[cfg(any(not(target_os = "oxide-kernel"), not(feature = "debug-sched")))]
+#[cfg(not(target_os = "oxide-kernel"))]
 pub unsafe fn tick_pick_next() {}
 
 /// Reads + clears the flag. Used by the cooperative `tick_yield()`
