@@ -1,26 +1,31 @@
-# State 2026-05-03 (session 22 EOD)
+# State 2026-05-03 (session 22b EOD — fork landed)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 2 production-shaped userspace path live.** Both arches load a hand-synthesised ELF64 from a kernel-static blob into a per-process `AddressSpace` with its own PT root, demand-page each PT_LOAD's bytes from `VmaBacking::KernelBytes` on first access, and execute at CPL=3 / EL0. On x86_64 the user program runs as a real `Arc<Task>` carrying `mm: Arc<AddressSpace>` — spawned via `sched::spawn_user_thread`, picked by `schedule()`'s CFS, switched into via the IRQ-tail iretq epilogue. `sys_exit` is now a real lifecycle exit: marks the task Zombie and reschedules; the picker falls through to idle (boot anchor) and Context::switch restores boot's saved regs — no more ud2-halt landmark needed, control returns cleanly to `kernel_main`. **207 PRs total; 520 hosted tests.** `make ci` mirrors the full PR gate.
+**Phase 2 multi-process userspace live on x86_64.** `sys_fork` (P2-15b, slot 57) clones the parent's `AddressSpace` (VMA-tree copy via P2-15a; mapped pages NOT yet copied — child re-demand-pages from KernelBytes for code, fresh-zero for Anonymous), allocates a fresh PT root, spawns a child user `Task`, returns child_tid to parent via the normal sysret path. Child resumes at the post-syscall RIP with rax=0 — the canonical fork distinguisher — via the synthesised IRQ-tail iretq frame. The CFS runqueue picks both processes; **the AS-swap branch in `schedule()` (`MmuOps::activate(next.mm.root_pa)`) fires for the first time** when the scheduler crosses from parent to child. `sys_exit` (P2-13d) cleanly Zombies + reschedules each; when both are exited, the picker falls through to idle and boot resumes. **209 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
 
-Last verified-green at session-22 EOD:
+Last verified-green at session-22b EOD:
 ```
 $ cargo run -p xtask -- spec-lint                              # spec-lint: clean
-$ cargo run -p xtask -- test                                   # 520 passed, 0 failed
+$ cargo run -p xtask -- test                                   # 524 passed, 0 failed
 $ cargo run -p xtask -- kernel  --arch x86_64                  # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                 # builds clean
 $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 …
-[INFO]  user-as: root_pa=…bf4e000 activated                   ← per-AS PML4 active (P2-19)
+[INFO]  user-as: root_pa=…de73000 activated                   ← per-AS PML4 active (P2-19)
 [INFO]  boot: kernel ready, halting
 [INFO]  elf-smoke: load ok entry=0x400080 brk=0x401000        ← ELF parse + PT_LOAD register
 [INFO]  elf-smoke: spawned tid=0xC0DE0001 entry=0x400080 sp=0x502000
-el                                                             ← user write(1, "el\n", 3)
-[INFO]  syscall: nr=0x1 rv=0x3
-[INFO]  sys_exit: code=0                                       ← graceful exit (P2-13d)
+[INFO]  sys_fork: parent_tid=0xC0DE0001 child_tid=4096 child_root=0x810000 ← P2-15b fork
+[INFO]  syscall: nr=0x39 rv=0x1000                            ← parent gets child_tid
+P                                                              ← parent write
+[INFO]  syscall: nr=0x1 rv=0x2
+[INFO]  sys_exit: code=0                                       ← parent exits
+C                                                              ← child runs (rax=0)
+[INFO]  syscall: nr=0x1 rv=0x2
+[INFO]  sys_exit: code=0                                       ← child exits
 [INFO]  elf-smoke: user task exited cleanly, boot resumed     ← schedule() returned to boot
 
 $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
@@ -77,7 +82,22 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 See `CHANGELOG.md` for the per-PR table.
 
-**Session 22** (PRs #199 – #206): nine merged PRs. Big arc — laid
+**Session 22b** (PRs #208 – #209): two merged PRs landing fork.
+
+- **#208 P2-15a** (`P2-15a-as-fork`): `AddressSpace::fork(new_root_pa)`
+  clones the VMA tree into a fresh AS. KernelBytes-backed VMAs share
+  the source's `&'static [u8]` slice; Anonymous VMAs reset rss=0.
+  Mapped pages NOT copied — child re-demand-pages on first access.
+  Hosted-tested (4 new tests).
+- **#209 P2-15b** (`P2-15b-sys-fork`): `sys_fork` syscall (nr=57).
+  `oxide_user_rip / rflags / rsp` statics in `hal_x86_64::syscall`
+  populated by the syscall asm stub before `call dispatch` so fork
+  can read the user IRET frame without changing the dispatch
+  signature. `sched::next_tid()` monotonic source. ELF blob updated
+  to fork+branch+exit (200 B). x86_64 only this PR (arm sys_fork
+  rides P2-13e arm user-Task parity).
+
+**Session 22** (PRs #199 – #207): nine merged PRs. Big arc — laid
 the per-AS PT root, wired the runqueue + schedule() AS-swap, then
 built the ELF loader + KernelBytes-backed VMAs on top, drop-to-
 ring3-via-VMA, arm parity, real user `Task` with `mm`, and graceful
@@ -380,7 +400,7 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 8. `make build` (both arches build clean).
 9. Optional sanity: `make qemu-x86` + `make qemu-arm` — should print the preempt-smoke + reach `boot: kernel ready, halting`.
 
-## Suggested next branches (post-session-22)
+## Suggested next branches (post-session-22b)
 
 The "what we have vs. what we need" framing — read the spec first
 in every case. docs/MANIFEST.md has the table of which spec covers
@@ -388,9 +408,9 @@ what.
 
 | Option | Branch idea | Spec ref | Why pick this |
 |---|---|---|---|
-| **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 spawns ELF as a real `Arc<Task>`; arm still uses `drop_to_el0` directly. Need `Context::new_user_with_irq_frame` for arm — requires extending the IRQ frame to save/restore sp_el0 (currently a latent bug for multi-user-task on arm). Once landed, both arches share the spawn_user_thread + sys_exit-unwind path. |
-| **`fork()` syscall** | `P2-15a-fork-naive` | docs/11§7 + docs/15§5 | Naive (no COW): `AddressSpace::fork` allocs new PT root, clones VMA tree (KernelBytes inherits same slice; Anonymous starts blank — child re-demand-pages from KernelBytes for code, fresh zero pages for stack/heap). spawn child Task with cloned mm + saved user-RIP/RSP/RFLAGS in arch_ctx so child resumes post-syscall with rax=0. **The shell-spawning prerequisite.** |
-| **`execve()` syscall** | `P2-21-execve-static` | docs/15§5 + docs/31§4 | Wraps `load_static_blob`: take a kernel-side ELF index (until VFS), build new AS, replace `current.mm` with new Arc, build synthetic iretq frame for new entry. Atomic AS swap. Pairs with fork to give shell command-spawning. |
+| **`execve()` syscall** | `P2-21-execve-static` | docs/15§5 + docs/31§4 | Wraps `load_static_blob`: take a kernel-side ELF index (until VFS), build new AS, **replace `current.mm` atomically** (needs `Task.mm` to be UnsafeCell or AtomicPtr — currently it's plain `Option<Arc<>>`), iretq directly to the new entry from the syscall handler (no return through dispatch). Pairs with fork → real "shell spawn process and exec command" cycle. With multiple kernel-static blobs (e.g. "hello", "bye"), parent fork + child execve becomes the demonstrable pattern. |
+| **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 spawns ELF as a real `Arc<Task>` and supports fork; arm still uses `drop_to_el0` directly with no Task wrapper. Need `Context::new_user_with_irq_frame` for arm — requires extending the IRQ frame to save/restore sp_el0 (currently a latent bug for multi-user-task on arm). Once landed, both arches share the spawn_user_thread + sys_exit + sys_fork paths. |
+| **per-page copy in fork** | `P2-15c-fork-pgcopy` | docs/11§7 | Today's fork-naive inherits empty Anonymous VMAs and demand-re-pages KernelBytes. Real POSIX fork must copy the parent's mapped pages so heap/stack survive. Requires "install PTE in non-active PT" — either temporarily-activate-the-child trick or extend the walker to take an explicit root. Until this lands, fork is correct ONLY for static-PIE programs that don't share heap state at fork time. |
 | **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When a user fault doesn't resolve (write to RO, exec on NX, unmapped read), kernel currently halts via the smoke fault handler. Linux delivers SIGSEGV. Even a minimal "kill task on protection fault" handler would let bad user code die without taking the kernel down — required for shell to survive a child segfaulting. Needs the signal subsystem (docs/27) — sigaction + sa_restorer + signal frame on user stack. |
 | **page-copy in fork** | `P2-15b-fork-pgcopy` | docs/11§7 | Today's fork-naive plan inherits empty Anonymous VMAs. Real fork must copy the parent's mapped pages into child frames so heap/stack state survives. Requires "install PTE in non-active PT" — either temporarily-activate-the-child trick or extend the walker to take an explicit root. |
 | **dual user-task smoke** | `P2-13f-multi-task` | docs/13§2 inv 1+2 | Spawn two user tasks against two different ASes (each load_static_blob'd independently). Validates the AS-swap branch (`MmuOps::activate(next.mm.root_pa)`) end-to-end — currently dead code because `prev.mm == next.mm` for v1's single user task. |
