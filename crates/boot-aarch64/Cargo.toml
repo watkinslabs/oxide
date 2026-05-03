@@ -25,4 +25,9 @@ hosted     = []
 # because cargo applies `--features` to every selected `-p`
 # package that declares it.
 debug-boot = []
-debug-all  = ["debug-boot"]
+# Pass-through to `hal-aarch64`'s `debug-irq`. See the matching
+# comment in `crates/boot-x86_64/Cargo.toml` — xtask only `-p`s
+# kernel + boot-aarch64 + kernel-bin-aarch64, so hal-aarch64's
+# debug-irq has to ride through this chain to take effect.
+debug-irq  = ["hal-aarch64/debug-irq"]
+debug-all  = ["debug-boot", "debug-irq"]
