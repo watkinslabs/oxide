@@ -23,6 +23,7 @@ mod context;
 mod cpuid;
 mod fault;
 mod fpu;
+mod gdt;
 mod idt;
 mod irq;
 mod mmu;
@@ -35,6 +36,7 @@ pub use regs::{read_cr0, read_cr3, read_cr4, read_efer};
 pub use fault::{install_fault_handler, vector_stub_addr, FaultHandler};
 pub use irq::irq_stub_addr;
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};
+pub use gdt::{install_kernel_gdt, GdtPointer, GDT_LEN, USER_CS, USER_DS};
 pub use idt::{install_default as install_default_idt, IdtEntry, IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS};
 pub use context::ContextX86_64;
 pub use mmu::{
