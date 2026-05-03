@@ -1,13 +1,16 @@
 // Task / SchedClass / TaskState definitions for the runqueue. Mirrors
-// the spec's `13§5` shape minus the cross-cutting `Arc` payloads
-// (`mm`, `fd_table`, `sig`, `creds`, `ns`, `cgroup`) which depend on
-// subsystems not yet implemented. Those land alongside their consumers
-// (vmm AS already exists; vfs FdTable, signal, etc. are upcoming).
+// the spec's `13§5` shape. `mm` is now real (P2-13a integrates with
+// `vmm::AddressSpace` for per-task address spaces). The other Arc'd
+// payloads (`fd_table`, `sig`, `creds`, `ns`, `cgroup`) land with
+// their consumer subsystems.
 
+extern crate alloc;
+
+use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, Ordering};
 
-use hal::Pfn; // unused placeholder; keeps the dep graph stable when AddressSpace lands here
+use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
@@ -101,8 +104,13 @@ pub struct Task {
     /// with the runqueue invariant; see struct doc-comment.
     pub arch_ctx: UnsafeCell<ArchCtxBuf>,
 
-    /// Placeholder for future `mm: Arc<AddressSpace>`.
-    _mm_phantom: core::marker::PhantomData<Pfn>,
+    /// Per-task user address space per `13§5` / `11§3`. `None` for
+    /// kernel-only threads (kthreads run in the kernel's static
+    /// page tables). Shared via `Arc` per `clone3` semantics so
+    /// `CLONE_VM` siblings share the same VMA tree (`13§5` field
+    /// list). Schedule per `13§8`: switch_address_space called only
+    /// when `next.mm != prev.mm`.
+    pub mm: Option<Arc<AddressSpace>>,
 }
 
 /// 8-byte-aligned byte buffer holding a per-arch HAL `Context`.
@@ -121,11 +129,35 @@ pub struct ArchCtxBuf(pub [u8; ARCH_CTX_SIZE]);
 unsafe impl Sync for Task {}
 
 impl Task {
-    /// Construct a new Runnable task. Tests use this; production
-    /// allocation goes through `spawn_kernel_thread` once HAL `Context`
-    /// is wired (`13§4`).
+    /// Construct a new Runnable kernel-thread task (no `mm`). Tests
+    /// use this; production allocation goes through
+    /// `spawn_kernel_thread` once HAL `Context` is wired (`13§4`).
     /// # C: O(1)
     pub fn new(tid: u32, name: &'static str, class: SchedClass) -> Self {
+        Self::new_with_mm(tid, name, class, None)
+    }
+
+    /// Construct a new Runnable user task with the given address
+    /// space per `13§5`. Production user-task creation
+    /// (clone3 / fork / execve) routes here.
+    /// # C: O(1)
+    pub fn new_user(
+        tid: u32,
+        name: &'static str,
+        class: SchedClass,
+        mm: Arc<AddressSpace>,
+    ) -> Self {
+        Self::new_with_mm(tid, name, class, Some(mm))
+    }
+
+    /// Internal constructor — both kthread and user paths funnel here.
+    /// # C: O(1)
+    fn new_with_mm(
+        tid: u32,
+        name: &'static str,
+        class: SchedClass,
+        mm: Option<Arc<AddressSpace>>,
+    ) -> Self {
         Self {
             tid,
             name,
@@ -137,7 +169,7 @@ impl Task {
             exit_status: AtomicI32::new(0),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
-            _mm_phantom: core::marker::PhantomData,
+            mm,
         }
     }
 
