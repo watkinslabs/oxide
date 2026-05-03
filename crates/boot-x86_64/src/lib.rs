@@ -267,6 +267,8 @@ unsafe extern "C" fn _start_rust() -> ! {
         unsafe { BOOT_UART.lock().init(); }
         klog::set_byte_sink(boot_emit);
     }
+    // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (mirroring Limine's selector offsets so KERNEL_CS=0x28 / KERNEL_DS=0x30 stay valid) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
+    unsafe { hal_x86_64::install_kernel_gdt(); }
     // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
     unsafe { hal_x86_64::install_default_idt(); }
     // TSC calibration: v1 hardcodes 2.4 GHz, the steady QEMU TSC
