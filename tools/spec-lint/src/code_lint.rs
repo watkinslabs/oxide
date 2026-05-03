@@ -92,6 +92,7 @@ fn lint_file(path: &PathBuf, ext_gated: &HashSet<PathBuf>, f: &mut Findings) {
     if !is_test && !is_klog_crate(path) && !ext_gated.contains(path) {
         check_klog_ungated(path, &lines, f);
     }
+    if !is_test { check_no_dyn_hal(path, &lines, f); }
 }
 
 fn is_klog_crate(path: &Path) -> bool {
@@ -277,6 +278,43 @@ fn check_pub_fn_complexity(path: &Path, lines: &[&str], f: &mut Findings) {
         if !found {
             f.push(path, i + 1, "code/pub-fn-complexity",
                 "`pub fn` missing `# C: <expr>` doc-comment marker");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// code/no-dyn-hal: forbid `dyn` on HAL traits per `07§5`. Spec lists
+// the HAL traits whose dispatch must be monomorphized: MmuOps,
+// CpuOps, Context, IrqOps, TimerOps. Any source-level
+// `dyn (MmuOps|CpuOps|Context|IrqOps|TimerOps)` token is flagged
+// before the post-build vtable grep can catch it.
+//
+// Detection is a literal substring match on the stripped line
+// (string + line-comment text removed) so `dyn` inside docs or
+// quoted examples doesn't trigger.
+// ---------------------------------------------------------------------------
+
+fn check_no_dyn_hal(path: &Path, lines: &[&str], f: &mut Findings) {
+    const HAL_TRAITS: &[&str] = &["MmuOps", "CpuOps", "Context", "IrqOps", "TimerOps"];
+    for (i, raw) in lines.iter().enumerate() {
+        let line = strip_for_lint(raw);
+        if !line.contains("dyn ") { continue; }
+        for t in HAL_TRAITS {
+            // Match `dyn <Trait>` with a trailing non-ident character
+            // (or end-of-line) so `dyn IrqOps2` (a different name)
+            // doesn't false-fire. `dyn IrqOps + Send` etc. is still
+            // forbidden — `+` follows the trait name.
+            let needle = format!("dyn {}", t);
+            if let Some(pos) = line.find(&needle) {
+                let after_idx = pos + needle.len();
+                let after_byte = line.as_bytes().get(after_idx).copied().unwrap_or(b' ');
+                let after_c = after_byte as char;
+                if after_c == '_' || after_c.is_ascii_alphanumeric() {
+                    continue; // `dyn FooOps2` etc. — different trait
+                }
+                f.push(path, i + 1, "code/no-dyn-hal",
+                    format!("`dyn {}` forbidden — HAL traits must be monomorphized (07§5)", t));
+            }
         }
     }
 }
