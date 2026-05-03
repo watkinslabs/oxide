@@ -1,18 +1,17 @@
-// Kernel page-table walker — install a Device-attr 4 KiB leaf for
-// MMIO into the live PML4 (CR3) per `20§5`.
+// x86_64 page-table walker per `20§5`. Splices a Device-attr 4 KiB
+// leaf into the live PML4 (CR3) tree.
 //
-// We don't replace Limine's tables; we splice into them. New
-// intermediate tables come from a caller-supplied frame allocator
-// (PMM, or any source that returns a fresh page-aligned PA). The
-// frame is zero-initialized through HHDM before any walker writes.
+// The walk loop is shared with aarch64 in `hal::pt_walker`; this
+// file supplies the x86 bit semantics + privileged-register access
+// via the `PtWalker` trait. Per `07§5` no-`dyn`-on-HAL: the
+// `map_device_4k` shim is generic-only at the call site and
+// monomorphizes to a single instance per arch.
 //
 // PCD|PWT in the leaf maps to PAT slot 3 (Strong UC) by default,
-// or PAT slot 1 (Write Through) if the kernel has reprogrammed PAT.
-// Either is sound for MMIO.
+// or PAT slot 1 (Write Through) if the kernel has reprogrammed
+// PAT. Either is sound for MMIO.
 
-use core::ptr;
-
-const ENTRIES_PER_TABLE: usize = 512;
+use hal::pt_walker::{self, PtWalker, WalkErr};
 
 const P_BIT:  u64 = 1 << 0;
 const RW_BIT: u64 = 1 << 1;
@@ -20,15 +19,11 @@ const PWT:    u64 = 1 << 3;
 const PCD:    u64 = 1 << 4;
 const PS_BIT: u64 = 1 << 7;
 const NX_BIT: u64 = 1 << 63;
-const PHYS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const PHYS_MASK_X86: u64 = 0x000f_ffff_ffff_f000;
 
-const PML4_SHIFT: u32 = 39;
-const PDPT_SHIFT: u32 = 30;
-const PD_SHIFT:   u32 = 21;
-const PT_SHIFT:   u32 = 12;
-const TABLE_IDX:  u64 = 0x1ff;
-
-/// Errors `map_device_4k` can return.
+/// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1; kept
+/// as a separate type so callers don't depend on the hal-internal
+/// generic walker's enum directly.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MapErr {
     /// Frame allocator returned `None` mid-walk.
@@ -40,42 +35,71 @@ pub enum MapErr {
     AlreadyMapped,
 }
 
-/// Read CR3 (BADDR field, 4 KiB-aligned).
-/// # SAFETY: privileged read; legal at CPL=0.
-unsafe fn read_cr3() -> u64 {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let v: u64;
-        // SAFETY: `mov r, cr3` is privileged but legal at CPL=0; no memory effect; result is the CR3 register including PCID bits.
-        unsafe {
-            core::arch::asm!(
-                "mov {}, cr3",
-                out(reg) v,
-                options(nomem, nostack, preserves_flags),
-            );
+impl From<WalkErr> for MapErr {
+    fn from(e: WalkErr) -> Self {
+        match e {
+            WalkErr::AllocFailed   => MapErr::AllocFailed,
+            WalkErr::HitHugeOrBlock => MapErr::HitHugePage,
+            WalkErr::AlreadyMapped => MapErr::AlreadyMapped,
         }
-        return v & PHYS_MASK;
     }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { 0 }
 }
 
-/// `invlpg [va]` — invalidate the local TLB entry for `va`.
-/// # SAFETY: privileged; legal at CPL=0.
-unsafe fn invlpg(va: u64) {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        // SAFETY: `invlpg [m]` is privileged but legal at CPL=0; invalidates a single 4 KiB TLB entry on this CPU.
-        unsafe {
-            core::arch::asm!(
-                "invlpg [{}]",
-                in(reg) va,
-                options(nostack, preserves_flags),
-            );
+/// x86_64 walker bit semantics.
+pub struct PtWalkerX86;
+
+impl PtWalker for PtWalkerX86 {
+    const PHYS_MASK: u64 = PHYS_MASK_X86;
+
+    /// `mov {}, cr3` — privileged but legal at CPL=0.
+    /// # SAFETY: per trait contract; CPL=0.
+    unsafe fn read_pt_base() -> u64 {
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        {
+            let v: u64;
+            // SAFETY: `mov r, cr3` is privileged but legal at CPL=0; no memory effect; result is the CR3 register including PCID bits.
+            unsafe {
+                core::arch::asm!(
+                    "mov {}, cr3",
+                    out(reg) v,
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
+            return v & Self::PHYS_MASK;
         }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+        { 0 }
     }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { let _ = va; }
+
+    /// `invlpg [va]` — invalidate the local TLB entry for `va`.
+    /// # SAFETY: per trait contract; CPL=0.
+    unsafe fn flush_va(va: u64) {
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        {
+            // SAFETY: `invlpg [m]` is privileged but legal at CPL=0; invalidates a single 4 KiB TLB entry on this CPU.
+            unsafe {
+                core::arch::asm!(
+                    "invlpg [{}]",
+                    in(reg) va,
+                    options(nostack, preserves_flags),
+                );
+            }
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+        { let _ = va; }
+    }
+
+    fn is_valid(entry: u64) -> bool { (entry & P_BIT) != 0 }
+
+    fn is_huge_or_block(entry: u64) -> bool { (entry & PS_BIT) != 0 }
+
+    fn pack_table(child_pa: u64) -> u64 {
+        (child_pa & Self::PHYS_MASK) | P_BIT | RW_BIT
+    }
+
+    fn pack_device_leaf(pa: u64) -> u64 {
+        (pa & Self::PHYS_MASK) | P_BIT | RW_BIT | PCD | PWT | NX_BIT
+    }
 }
 
 /// Install a 4 KiB Device-attr (PCD|PWT, NX) mapping `va → pa` in
@@ -97,65 +121,12 @@ pub unsafe fn map_device_4k<F: FnMut() -> Option<u64>>(
     va: u64,
     pa: u64,
     hhdm_offset: u64,
-    mut alloc_pa: F,
+    alloc_pa: F,
 ) -> Result<(), MapErr> {
-    // SAFETY: privileged read, legal at CPL=0.
-    let pml4_pa = unsafe { read_cr3() };
-
-    let i_pml4 = ((va >> PML4_SHIFT) & TABLE_IDX) as usize;
-    let i_pdpt = ((va >> PDPT_SHIFT) & TABLE_IDX) as usize;
-    let i_pd   = ((va >> PD_SHIFT)   & TABLE_IDX) as usize;
-    let i_pt   = ((va >> PT_SHIFT)   & TABLE_IDX) as usize;
-
-    // SAFETY: per fn contract — HHDM covers page-table memory, alloc_pa returns kernel-owned frames, single-CPU walk so no concurrent writers; the leaf write at the end runs after all intermediates are present.
-    unsafe {
-        let pdpt_pa = walk_or_alloc(pml4_pa, i_pml4, hhdm_offset, &mut alloc_pa)?;
-        let pd_pa   = walk_or_alloc(pdpt_pa, i_pdpt, hhdm_offset, &mut alloc_pa)?;
-        let pt_pa   = walk_or_alloc(pd_pa,   i_pd,   hhdm_offset, &mut alloc_pa)?;
-        let pt_va = (hhdm_offset.wrapping_add(pt_pa)) as *mut u64;
-        let slot = pt_va.add(i_pt);
-        let cur = ptr::read_volatile(slot);
-        if (cur & P_BIT) != 0 && (cur & PHYS_MASK) != (pa & PHYS_MASK) {
-            return Err(MapErr::AlreadyMapped);
-        }
-        let leaf = (pa & PHYS_MASK) | P_BIT | RW_BIT | PCD | PWT | NX_BIT;
-        ptr::write_volatile(slot, leaf);
-        invlpg(va);
-    }
-    Ok(())
-}
-
-/// Read entry `[idx]` of the table at PA `parent_pa` (via HHDM).
-/// If empty, allocate + install a child intermediate. Return child PA.
-///
-/// # SAFETY: see `map_device_4k`.
-unsafe fn walk_or_alloc<F: FnMut() -> Option<u64>>(
-    parent_pa: u64,
-    idx: usize,
-    hhdm_offset: u64,
-    alloc_pa: &mut F,
-) -> Result<u64, MapErr> {
-    // SAFETY: parent_pa points at a 4 KiB-aligned page-table page; HHDM maps it into kernel VA; we own the parent slot per `map_device_4k`'s single-CPU/IRQ-off contract.
-    unsafe {
-        let parent_va = (hhdm_offset.wrapping_add(parent_pa)) as *mut u64;
-        let slot = parent_va.add(idx);
-        let entry = ptr::read_volatile(slot);
-        if (entry & P_BIT) == 0 {
-            let child_pa = alloc_pa().ok_or(MapErr::AllocFailed)?;
-            // child_pa is a fresh kernel-owned frame from PMM; HHDM
-            // maps it; zero out all 512 entries before linking.
-            let child_va = (hhdm_offset.wrapping_add(child_pa)) as *mut u64;
-            for k in 0..ENTRIES_PER_TABLE {
-                ptr::write_volatile(child_va.add(k), 0);
-            }
-            ptr::write_volatile(slot, (child_pa & PHYS_MASK) | P_BIT | RW_BIT);
-            return Ok(child_pa);
-        }
-        if (entry & PS_BIT) != 0 {
-            return Err(MapErr::HitHugePage);
-        }
-        Ok(entry & PHYS_MASK)
-    }
+    // SAFETY: delegated to the generic walker; preconditions mirror
+    // ours per its trait contract.
+    unsafe { pt_walker::map_device_4k::<PtWalkerX86, _>(va, pa, hhdm_offset, alloc_pa) }
+        .map_err(MapErr::from)
 }
 
 #[cfg(test)]
@@ -166,5 +137,18 @@ mod tests {
     fn map_err_distinct() {
         assert_ne!(MapErr::AllocFailed, MapErr::HitHugePage);
         assert_ne!(MapErr::HitHugePage, MapErr::AlreadyMapped);
+    }
+
+    #[test]
+    fn host_walker_pack_unpack_roundtrip() {
+        let pa = 0xdead_b000_u64;
+        let leaf = PtWalkerX86::pack_device_leaf(pa);
+        assert!(PtWalkerX86::is_valid(leaf));
+        assert!(!PtWalkerX86::is_huge_or_block(leaf));
+        assert_eq!(leaf & PtWalkerX86::PHYS_MASK, pa);
+        let table = PtWalkerX86::pack_table(pa);
+        assert!(PtWalkerX86::is_valid(table));
+        assert!(!PtWalkerX86::is_huge_or_block(table));
+        assert_eq!(table & PtWalkerX86::PHYS_MASK, pa);
     }
 }
