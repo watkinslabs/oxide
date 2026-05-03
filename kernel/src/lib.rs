@@ -110,7 +110,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Bring up the physical memory manager.
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
-    match unsafe { pmm_setup::init_from_boot_info(info) } {
+    let pmm = unsafe { pmm_setup::init_from_boot_info(info) };
+    match &pmm {
         Ok(_)                                       => klog::kinfo!("pmm: ready"),
         Err(pmm_setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
         Err(pmm_setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
@@ -119,6 +120,22 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         Err(pmm_setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
         Err(pmm_setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
         Err(pmm_setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
+    }
+    // Runtime smoke: alloc/free at order 0 to prove the buddy
+    // machinery works after init. Removed once a real consumer
+    // (slab) wires in.
+    if let Ok(p) = pmm {
+        match p.alloc(pmm::Order(0)) {
+            Ok(pfn) => {
+                klog::kinfo!("pmm-smoke: alloc(0) ok");
+                // SAFETY: pfn was just returned by alloc(0); free is
+                // the matching counterpart and is single-threaded
+                // here per pre-init contract.
+                unsafe { p.free(pfn, pmm::Order(0)); }
+                klog::kinfo!("pmm-smoke: free(0) ok");
+            }
+            Err(_) => klog::kerror!("pmm-smoke: alloc(0) failed"),
+        }
     }
 
 
