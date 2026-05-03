@@ -38,6 +38,26 @@ pub const KTHREAD_STACK_BYTES: usize = 16 * 1024;
 /// spawned kthread runs at nice=0 until `sched_setscheduler` lands.
 pub const DEFAULT_WEIGHT: u32 = 1024;
 
+/// Monotonic TID source per `01§1`. Tids 1..0xFFF reserved for
+/// init / user-space identifiers populated externally; the
+/// kernel-side spawn paths hand out from 0x1000 upward. Wraps to
+/// 0x1000 on overflow (well past v1's expected task count).
+static NEXT_TID: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0x1000);
+
+/// Allocate a fresh kernel-side TID. Strictly monotonic for v1.
+/// # C: O(1)
+pub fn next_tid() -> u32 {
+    let t = NEXT_TID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if t < 0x1000 {
+        // Wrapped — exceedingly unlikely v1 but recover gracefully.
+        NEXT_TID.store(0x1000, core::sync::atomic::Ordering::Relaxed);
+        0x1000
+    } else {
+        t
+    }
+}
+
 /// Errors `spawn_kernel_thread` can return.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SpawnError {

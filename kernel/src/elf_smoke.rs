@@ -15,78 +15,113 @@
 
 use crate::elf_load::load_static_blob;
 
-/// Build a tiny ELF64 image at compile time.
-///   [0..64)    ehdr
-///   [64..120)  PT_LOAD phdr
-///   [120..128) pad
-///   [128..161) code (33 B — write+exit+ud2)
-///   [161..164) "el\n"
-const fn build_elf() -> [u8; 164] {
-    let mut b = [0u8; 164];
+/// Build a fork+branch+exit ELF64 image at compile time. Layout:
+///   [0..64)     ehdr
+///   [64..120)   PT_LOAD phdr
+///   [120..128)  pad
+///   [128..196)  code (68 B): fork + jz child + parent write "P\n"
+///                            + jmp exit + child write "C\n" + exit + ud2
+///   [196..198)  "P\n"
+///   [198..200)  "C\n"
+///
+/// Sequence (entry = 0x400080):
+///   mov  $57, %eax                ; sys_fork
+///   syscall
+///   test %eax, %eax                ; rax=0 in child, rax=child_tid in parent
+///   jz   child
+/// parent:
+///   mov  $1, %eax                  ; sys_write
+///   mov  $1, %edi                  ; fd=1
+///   mov  $0x4000C4, %esi           ; "P\n"
+///   mov  $2, %edx
+///   syscall
+///   jmp  exit
+/// child:
+///   mov  $1, %eax
+///   mov  $1, %edi
+///   mov  $0x4000C6, %esi           ; "C\n"
+///   mov  $2, %edx
+///   syscall
+/// exit:
+///   mov  $60, %eax
+///   xor  %edi, %edi
+///   syscall
+///   ud2                             ; landmark
+const fn build_elf() -> [u8; 200] {
+    let mut b = [0u8; 200];
     // e_ident
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
-    b[4]=2;   // ELFCLASS64
-    b[5]=1;   // ELFDATA2LSB
-    b[6]=1;   // EV_CURRENT
-    // e_type=ET_EXEC, e_machine=EM_X86_64, e_version=1
-    b[16]=2; b[18]=62; b[20]=1;
-    // e_entry = 0x400080
+    b[4]=2; b[5]=1; b[6]=1;             // class64, LE, EV_CURRENT
+    b[16]=2; b[18]=62; b[20]=1;          // ET_EXEC, EM_X86_64, version=1
     let entry: u64 = 0x400080;
     let eb = entry.to_le_bytes();
     let mut i = 0; while i < 8 { b[24 + i] = eb[i]; i += 1; }
-    // e_phoff = 64
-    b[32]=64;
-    // e_ehsize=64, e_phentsize=56, e_phnum=1
-    b[52]=64; b[54]=56; b[56]=1;
+    b[32]=64;                            // e_phoff
+    b[52]=64; b[54]=56; b[56]=1;         // e_ehsize, e_phentsize, e_phnum
 
     // PT_LOAD phdr at offset 64
     let p = 64;
-    b[p+0]=1;     // p_type = PT_LOAD
-    b[p+4]=5;     // p_flags = R|X
-    // p_offset = 0
-    // p_vaddr = 0x400000
+    b[p+0]=1;                            // p_type = PT_LOAD
+    b[p+4]=5;                            // p_flags = R|X
     let v: u64 = 0x400000;
     let vb = v.to_le_bytes();
     i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
-    // p_paddr = same
     i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
-    // p_filesz = 164
-    let fs: u64 = 164;
+    let fs: u64 = 200;
     let fb = fs.to_le_bytes();
     i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
-    // p_memsz = 164
     i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
-    // p_align = 0x1000
     let al: u64 = 0x1000;
     let ab = al.to_le_bytes();
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
-    // Code at file offset 128 (= vaddr 0x400080):
-    //   mov $1, %eax              ; sys_write
-    //   mov $1, %edi              ; fd=1
-    //   mov $0x4000A1, %esi       ; buf
-    //   mov $3, %edx              ; len
-    //   syscall
-    //   mov $60, %eax             ; sys_exit
-    //   xor %edi, %edi
-    //   syscall
-    //   ud2                        ; landmark
+    // Code at file offset 128 (vaddr 0x400080).
     let c = 128;
-    b[c+0]=0xB8; b[c+1]=0x01;
-    b[c+5]=0xBF; b[c+6]=0x01;
-    b[c+10]=0xBE; b[c+11]=0xA1; b[c+12]=0x00; b[c+13]=0x40; b[c+14]=0x00;
-    b[c+15]=0xBA; b[c+16]=0x03;
-    b[c+20]=0x0F; b[c+21]=0x05;
-    b[c+22]=0xB8; b[c+23]=0x3C;
-    b[c+27]=0x31; b[c+28]=0xFF;
-    b[c+29]=0x0F; b[c+30]=0x05;
-    b[c+31]=0x0F; b[c+32]=0x0B;
-    // Buffer "el\n" at file offset 161 = vaddr 0x4000A1
-    b[161]=b'e'; b[162]=b'l'; b[163]=b'\n';
+    // [0x00] B8 39 00 00 00       mov $57, %eax     ; sys_fork
+    b[c+0]=0xB8; b[c+1]=0x39;
+    // [0x05] 0F 05                 syscall
+    b[c+5]=0x0F; b[c+6]=0x05;
+    // [0x07] 85 C0                 test %eax, %eax
+    b[c+7]=0x85; b[c+8]=0xC0;
+    // [0x09] 74 18                 jz +0x18 → 0x23 (child)
+    b[c+9]=0x74; b[c+10]=0x18;
+    // [0x0B] parent: mov $1, %eax
+    b[c+11]=0xB8; b[c+12]=0x01;
+    // [0x10] mov $1, %edi
+    b[c+16]=0xBF; b[c+17]=0x01;
+    // [0x15] mov $0x4000C4, %esi
+    b[c+21]=0xBE; b[c+22]=0xC4; b[c+23]=0x00; b[c+24]=0x40; b[c+25]=0x00;
+    // [0x1A] mov $2, %edx
+    b[c+26]=0xBA; b[c+27]=0x02;
+    // [0x1F] syscall
+    b[c+31]=0x0F; b[c+32]=0x05;
+    // [0x21] jmp +0x16 → 0x39 (exit)
+    b[c+33]=0xEB; b[c+34]=0x16;
+    // [0x23] child: mov $1, %eax
+    b[c+35]=0xB8; b[c+36]=0x01;
+    // [0x28] mov $1, %edi
+    b[c+40]=0xBF; b[c+41]=0x01;
+    // [0x2D] mov $0x4000C6, %esi
+    b[c+45]=0xBE; b[c+46]=0xC6; b[c+47]=0x00; b[c+48]=0x40; b[c+49]=0x00;
+    // [0x32] mov $2, %edx
+    b[c+50]=0xBA; b[c+51]=0x02;
+    // [0x37] syscall
+    b[c+55]=0x0F; b[c+56]=0x05;
+    // [0x39] exit: mov $60, %eax
+    b[c+57]=0xB8; b[c+58]=0x3C;
+    // [0x3E] xor %edi, %edi
+    b[c+62]=0x31; b[c+63]=0xFF;
+    // [0x40] syscall
+    b[c+64]=0x0F; b[c+65]=0x05;
+    // [0x42] ud2
+    b[c+66]=0x0F; b[c+67]=0x0B;
+    // Buffers "P\n" at 0x4000C4 (file offset 196), "C\n" at 0x4000C6.
+    b[196]=b'P'; b[197]=b'\n';
+    b[198]=b'C'; b[199]=b'\n';
     b
 }
 
-const ELF_BLOB_BYTES: [u8; 164] = build_elf();
+const ELF_BLOB_BYTES: [u8; 200] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
 /// User stack VMA placed disjoint from the ELF image. 4 KiB; v1
@@ -96,8 +131,9 @@ const USER_STACK_VA:  u64 = 0x501_000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 
 /// File-side address of the ud2 landmark — entry (0x400080) +
-/// 31 (offset of `0F 0B` inside the synthesised code block).
-const USER_RIP_UD2: u64 = 0x400080 + 31;
+/// 0x42 (offset of `0F 0B` at the end of the fork+branch+exit
+/// code block per `build_elf`).
+const USER_RIP_UD2: u64 = 0x400080 + 0x42;
 
 /// `#UD` landmark handler. Chains to user_as for legitimate
 /// demand-page faults; on the deliberate ud2 from sys_exit's
