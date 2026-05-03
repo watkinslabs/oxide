@@ -24,13 +24,6 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-// Per R06: emit-path klog calls gated under `debug-irq`. Default
-// builds halt silently after the dispatcher; the syscall-smoke
-// success log rides the same gate as the rest of the IRQ surface.
-#[cfg(feature = "debug-irq")]
-macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
-#[cfg(not(feature = "debug-irq"))]
-macro_rules! debug_irq { ($($t:tt)*) => {} }
 
 const IA32_EFER:  u32 = 0xC000_0080;
 const IA32_STAR:  u32 = 0xC000_0081;
@@ -159,30 +152,8 @@ extern "C" {
     fn oxide_syscall_entry();
 }
 
-/// Hook invoked by the asm stub. v1 implementation: log nr + a0,
-/// return a sentinel retval in rax. Real syscall dispatch lands
-/// when `crates/syscall`'s ABI surface is bound.
-///
-/// # SAFETY: invoked only from `oxide_syscall_entry` after stack
-/// switch; runs single-CPU with IF=0 (SFMASK clears IF on entry).
-/// # C: O(1)
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-#[no_mangle]
-pub unsafe extern "C" fn oxide_syscall_dispatch(
-    nr: u64, a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64,
-) -> u64 {
-    debug_irq! {
-        klog::write_raw(b"[INFO]  syscall-smoke: ok nr=");
-        klog::write_hex_u64(nr);
-        klog::write_raw(b" a0=");
-        klog::write_hex_u64(a0);
-        klog::write_raw(b"\n");
-    }
-    let _ = (nr, a0);
-    // Sentinel retval — the round-trip smoke (P2-02 user blob) will
-    // observe this in %rax after sysretq.
-    0xC0DE_0042
-}
+// `oxide_syscall_dispatch` is defined in the kernel crate; the asm
+// stub above references it by symbol. See `kernel/src/syscall_glue.rs`.
 
 /// Set IA32_LSTAR / IA32_STAR / IA32_FMASK + EFER.SCE for `syscall`
 /// entry. One-shot per boot, called by `_start_rust` after the
