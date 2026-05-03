@@ -53,7 +53,7 @@ impl PtWalker for PtWalkerX86 {
 
     /// `mov {}, cr3` — privileged but legal at CPL=0.
     /// # SAFETY: per trait contract; CPL=0.
-    unsafe fn read_pt_base() -> u64 {
+    unsafe fn read_pt_base(_va: u64) -> u64 {
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         {
             let v: u64;
