@@ -15,9 +15,11 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use syscall::{dispatch, SyscallArgs};
 use syscall::errno::Errno;
-use hal::USER_VA_END;
+use hal::{MmuOps, Pa, PageFlags, PageSize, USER_VA_END, Va};
 use hal::TimerOps;
 
 #[cfg(target_arch = "x86_64")]
@@ -29,6 +31,23 @@ const ARCH_GET_FS: u64 = 0x1003;
 
 const SYSCALL_NR_CLOCK_GETTIME: u64 = 228;
 const SYSCALL_NR_UNAME: u64          = 63;
+const SYSCALL_NR_MMAP: u64           = 9;
+
+// Linux mmap flag/prot bits (subset; binary-stable per Linux ABI).
+const PROT_READ:  u64 = 0x1;
+const PROT_WRITE: u64 = 0x2;
+const PROT_EXEC:  u64 = 0x4;
+const MAP_PRIVATE: u64 = 0x02;
+const MAP_ANONYMOUS: u64 = 0x20;
+const MAP_FIXED: u64     = 0x10;
+
+/// User-mapped VA bump pointer for v1 anon-mmap. Real impl uses a
+/// per-task `AddressSpace` with a VMA tree (P2-12). For now: single
+/// global bump, advances as mmap calls succeed; munmap is a no-op
+/// (frames are leaked). Lands cleanly once VMM-AS is wired.
+const MMAP_USER_BASE: u64 = 0x2000_0000;
+const MMAP_MAX_PAGES: u64 = 1024;        // 4 MiB per call cap
+static MMAP_BUMP: AtomicU64 = AtomicU64::new(MMAP_USER_BASE);
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -56,6 +75,71 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
         // SAFETY: same range as above; pads out the field with NUL.
         unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
     }
+}
+
+/// `sys_mmap(addr, len, prot, flags, fd, off)` — slot 9. v1
+/// supports only `MAP_ANONYMOUS | MAP_PRIVATE` with `addr=NULL`
+/// and `fd=-1`. Other shapes (file mmap, MAP_FIXED, MAP_SHARED)
+/// return -ENOSYS / -EINVAL.
+///
+/// On success: allocates `ceil(len / 4K)` PMM frames, maps them at
+/// the next free user VA from a global bump pointer, returns the
+/// base VA. Frames leak until VMM-AS lands.
+fn kernel_mmap(args: &SyscallArgs) -> i64 {
+    let addr  = args.a0;
+    let len   = args.a1;
+    let prot  = args.a2;
+    let flags = args.a3;
+    let fd    = args.a4 as i64;
+    let _off  = args.a5;
+
+    if (flags & MAP_ANONYMOUS) == 0 { return -(Errno::Enosys.as_i32() as i64); }
+    if (flags & MAP_PRIVATE)   == 0 { return -(Errno::Einval.as_i32() as i64); }
+    if (flags & MAP_FIXED)     != 0 { return -(Errno::Enosys.as_i32() as i64); }
+    if fd != -1                     { return -(Errno::Einval.as_i32() as i64); }
+    if addr != 0                    { return -(Errno::Enosys.as_i32() as i64); }
+    if len == 0                     { return -(Errno::Einval.as_i32() as i64); }
+
+    let pages = (len + 0xfff) / 0x1000;
+    if pages > MMAP_MAX_PAGES { return -(Errno::Enomem.as_i32() as i64); }
+
+    // Build PageFlags from prot.
+    let mut pf = PageFlags::USER;
+    if prot & PROT_READ  != 0 { pf |= PageFlags::READ; }
+    if prot & PROT_WRITE != 0 { pf |= PageFlags::WRITE; }
+    if prot & PROT_EXEC  != 0 { pf |= PageFlags::EXEC; }
+    // Linux maps PROT_NONE as no access; we treat it as USER-only no
+    // R/W/X. Better than rejecting for libc compat.
+
+    let base = MMAP_BUMP.fetch_add(pages * 0x1000, Ordering::AcqRel);
+    if base.saturating_add(pages * 0x1000) >= USER_VA_END {
+        // Bump exhausted user range — we don't roll back here; future
+        // calls will keep failing until VMM-AS lands.
+        return -(Errno::Enomem.as_i32() as i64);
+    }
+
+    for i in 0..pages {
+        let va = base + i * 0x1000;
+        let pa = match crate::pmm_setup::alloc_one_frame() {
+            Some(p) => p,
+            None => return -(Errno::Enomem.as_i32() as i64),
+        };
+        // SAFETY: va is in the user-VA range below USER_VA_END (bump
+        // bound-checked above); pa is a fresh PMM frame; PageFlags
+        // carry USER for the leaf U bit. Both arches' MmuOps plumb
+        // user-half VAs to the right tree (TTBR0 on arm via P2-08).
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(
+                Va(va), Pa(pa), pf, PageSize::P4K,
+            );
+            #[cfg(target_arch = "aarch64")]
+            <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(
+                Va(va), Pa(pa), pf, PageSize::P4K,
+            );
+        }
+    }
+    base as i64
 }
 
 fn kernel_uname(args: &SyscallArgs) -> i64 {
@@ -170,6 +254,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_ARCH_PRCTL    => kernel_arch_prctl(&args),
         SYSCALL_NR_CLOCK_GETTIME => kernel_clock_gettime(&args),
         SYSCALL_NR_UNAME         => kernel_uname(&args),
+        SYSCALL_NR_MMAP          => kernel_mmap(&args),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
