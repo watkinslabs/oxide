@@ -271,14 +271,30 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             klog::write_raw(b" page(s) reserved\n");
         }
 
+        // Wire MmuOps for this arch: stash HHDM + bare-fn frame
+        // allocator. After this point the trait surface is live.
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_one_frame is a bare fn that wraps the just-initialised global PMM.
+        unsafe {
+            hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
+            hal_x86_64::mmu_ops::set_frame_alloc(pmm_setup::alloc_one_frame);
+        }
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_one_frame is a bare fn that wraps the just-initialised global PMM.
+        unsafe {
+            hal_aarch64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
+            hal_aarch64::mmu_ops::set_frame_alloc(pmm_setup::alloc_one_frame);
+        }
+        let _ = p;
+
         // Device bring-up: install Device-attr 4 KiB MMIO mappings
         // via the PMM-backed mapper, enable LAPIC/GIC/UART. The
         // bring-up is always-on; per-step diagnostic logs are gated
         // by per-subsystem `debug-vmm`/`debug-irq` features inside.
         #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-        device_map_smoke::smoke_device_map_x86(p, info.hhdm_offset);
+        device_map_smoke::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-        device_map_smoke::smoke_device_map_arm(p, info.hhdm_offset);
+        device_map_smoke::smoke_device_map_arm(info.hhdm_offset);
     }
 
 
