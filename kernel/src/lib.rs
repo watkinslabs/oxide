@@ -54,6 +54,10 @@ pub struct BootInfo {
     /// populate the HHDM response (early-boot diagnostics, hosted
     /// tests, or stub paths).
     pub hhdm_offset: u64,
+    /// Physical address of the ACPI RSDP table, or 0 if the
+    /// bootloader did not surface one (no UEFI / no ACPI on this
+    /// platform).
+    pub rsdp_pa: u64,
 }
 
 #[repr(C)]
@@ -100,6 +104,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kinfo!("hhdm: present");
     } else {
         klog::kinfo!("hhdm: absent");
+    }
+    if info.rsdp_pa != 0 {
+        klog::write_raw(b"[INFO]  rsdp: ");
+        klog::write_hex_u64(info.rsdp_pa);
+        klog::write_raw(b"\n");
+    } else {
+        klog::kinfo!("rsdp: absent");
     }
     if info.memmap_count != 0 {
         klog::kinfo!("memmap: present");
