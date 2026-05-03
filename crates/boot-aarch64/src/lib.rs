@@ -199,7 +199,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
 /// 16 KiB BSS-resident stack; same `UnsafeCell` discipline as the
 /// x86_64 boot crate (`06§11` + `07§5` ban `static mut`).
 #[cfg(target_os = "oxide-kernel")]
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 128 * 1024;
 #[cfg(target_os = "oxide-kernel")]
 #[repr(align(4096))]
 struct KernelStack(UnsafeCell<[u8; STACK_SIZE]>);
