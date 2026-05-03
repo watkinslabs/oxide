@@ -251,3 +251,40 @@ fn task_lift_vruntime_respects_floor() {
     t.lift_vruntime(20);
     assert_eq!(t.vruntime.load(Ordering::Acquire), 100);
 }
+
+#[test]
+fn task_kernel_stack_starts_null() {
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    assert!(t.kernel_stack.load(Ordering::Acquire).is_null());
+}
+
+#[test]
+fn task_arch_ctx_buffer_is_zero_initialised() {
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    // SAFETY: hosted test; we are the sole accessor of `t.arch_ctx`.
+    let buf = unsafe { &*t.arch_ctx.get() };
+    assert!(buf.0.iter().all(|&b| b == 0));
+    assert_eq!(buf.0.len(), crate::ARCH_CTX_SIZE);
+}
+
+#[test]
+fn task_arch_ctx_ptr_round_trips() {
+    // `arch_ctx_ptr::<C>()` aliases the buffer; writing through
+    // it then reading via the buffer view yields the same bytes.
+    #[repr(C)]
+    struct FakeCtx { rsp: u64, marker: u64 }
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    // SAFETY: hosted test; we are the sole accessor of `t.arch_ctx`; FakeCtx is 16 B which fits ARCH_CTX_SIZE.
+    unsafe {
+        let p = t.arch_ctx_ptr::<FakeCtx>();
+        (*p).rsp = 0xdead_b000_dead_b000;
+        (*p).marker = 0xfeedface;
+    }
+    // Read back via the byte buffer.
+    // SAFETY: hosted test; sole accessor; reading the same storage.
+    let buf = unsafe { &*t.arch_ctx.get() };
+    let rsp = u64::from_ne_bytes(buf.0[0..8].try_into().unwrap());
+    let marker = u64::from_ne_bytes(buf.0[8..16].try_into().unwrap());
+    assert_eq!(rsp,    0xdead_b000_dead_b000);
+    assert_eq!(marker, 0xfeedface);
+}

@@ -3,13 +3,13 @@
 // (`mm`, `fd_table`, `sig`, `creds`, `ns`, `cgroup`) which depend on
 // subsystems not yet implemented. Those land alongside their consumers
 // (vmm AS already exists; vfs FdTable, signal, etc. are upcoming).
-//
-// `kernel_stack` + `context: ArchContext` are also out — they require
-// HAL `Context` (`14§4`); the runqueue logic itself doesn't need them.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use hal::Pfn; // unused placeholder; keeps the dep graph stable when AddressSpace lands here
+
+use crate::ARCH_CTX_SIZE;
 
 /// POSIX-style scheduling policy per `13§3`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -68,6 +68,14 @@ impl TaskState {
 /// slab-backed allocation per `12§3.2` once the integration lands. The
 /// runqueue stores `Arc<Task>` clones and re-keys CFS by the current
 /// `vruntime` snapshot on each insert.
+///
+/// `arch_ctx` is an opaque byte buffer sized to fit any per-arch HAL
+/// `Context` record (per `14§4`); access goes through
+/// `arch_ctx_ptr::<C>()` which compile-time-asserts the size fits.
+/// Mutation discipline is the caller's: the kernel scheduler is the
+/// only writer, only when this task is the active one on its CPU
+/// (Context::switch saves prev's, loads next's). `unsafe impl Sync`
+/// is sound under that single-mutator-per-active-CPU invariant.
 pub struct Task {
     pub tid:  u32,
     pub name: &'static str,
@@ -80,9 +88,37 @@ pub struct Task {
 
     pub exit_status: AtomicI32,
 
+    /// Top of this task's kernel stack (one past the last byte).
+    /// Set when the task is constructed alongside its arch ctx.
+    /// `null` until set; AtomicPtr so reads are race-free across
+    /// concurrent CPU views (read-only on hot paths).
+    pub kernel_stack: AtomicPtr<u8>,
+
+    /// Opaque storage for the per-arch HAL `Context` (per `14§5.2`/
+    /// `14§6.2`). Sized to `ARCH_CTX_SIZE`. Aligned on a u64 so the
+    /// arch-specific Context's first field (an `rsp` / `sp`) sits
+    /// at a natural-alignment offset. Caller (kernel) gates access
+    /// with the runqueue invariant; see struct doc-comment.
+    pub arch_ctx: UnsafeCell<ArchCtxBuf>,
+
     /// Placeholder for future `mm: Arc<AddressSpace>`.
     _mm_phantom: core::marker::PhantomData<Pfn>,
 }
+
+/// 8-byte-aligned byte buffer holding a per-arch HAL `Context`.
+/// Per-arch Context types start with `rsp`/`sp` which are u64;
+/// the explicit alignment keeps that field at offset 0 with
+/// natural alignment regardless of the buffer placement.
+#[repr(C, align(8))]
+pub struct ArchCtxBuf(pub [u8; ARCH_CTX_SIZE]);
+
+// SAFETY: `arch_ctx` mutation is gated by the kernel scheduler's
+// runqueue invariant (only the CPU running this task writes the
+// buffer, and only via `Context::switch` which is a single
+// register-dance with no preempt window). Reads are likewise
+// single-CPU per active-task invariant. AtomicPtr fields are
+// inherently Sync.
+unsafe impl Sync for Task {}
 
 impl Task {
     /// Construct a new Runnable task. Tests use this; production
@@ -99,8 +135,25 @@ impl Task {
             vruntime: AtomicU64::new(0),
             class,
             exit_status: AtomicI32::new(0),
+            kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
+            arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
             _mm_phantom: core::marker::PhantomData,
         }
+    }
+
+    /// Cast the opaque arch-context buffer to `*mut C` for a
+    /// per-arch HAL `Context` type. Compile-time-asserts that
+    /// `size_of::<C>() <= ARCH_CTX_SIZE`. Caller's responsibility
+    /// to honour the single-mutator-per-active-CPU invariant.
+    /// # SAFETY: caller is the kernel scheduler holding the
+    /// runqueue invariant for this task; the returned pointer
+    /// aliases `self.arch_ctx`'s storage and must not outlive a
+    /// pending `Context::switch` against this task.
+    /// # C: O(1)
+    pub unsafe fn arch_ctx_ptr<C: Sized>(&self) -> *mut C {
+        const { assert!(core::mem::size_of::<C>() <= ARCH_CTX_SIZE,
+            "Context size exceeds ARCH_CTX_SIZE; bump the constant in `crates/sched`"); }
+        self.arch_ctx.get() as *mut C
     }
 
     /// # C: O(1)
