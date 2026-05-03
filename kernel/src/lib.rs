@@ -402,6 +402,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { userspace_smoke::run::<hal_x86_64::mmu_ops::X86Mmu>(info.hhdm_offset); }
     }
 
+    // First userspace `eret` smoke (P2-09) on aarch64.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    {
+        // SAFETY: PMM + MmuOps initialised; interior-U=1 walker live
+        // (P1-95); TTBR0/TTBR1 selector wired (P2-08); single-CPU;
+        // DAIF.I masked at EL1.
+        unsafe { userspace_smoke_arm::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+    }
+
     halt_forever()
 }
 
@@ -477,10 +486,14 @@ pub mod pf_recover_smoke;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod syscall_glue;
 
-// First userspace `iretq` smoke (P1-82). x86_64-only; arm `eret`
-// smoke lands separately once the EL0 path is wired.
+// First userspace `iretq` smoke (P1-82). x86_64-only.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod userspace_smoke;
+
+// First userspace `eret` smoke (P2-09). aarch64 mirror, unblocked
+// by the P2-08 walker TTBR0/TTBR1 selector fix.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub mod userspace_smoke_arm;
 
 
 /// Park the CPU forever. On the kernel target, uses the per-arch
