@@ -45,6 +45,7 @@ SECTIONS {
      * (`.rodata` is R-only; this lives with `.data` in RW). */
     .limine_requests ALIGN(4K) : {
         __limine_requests_start = .;
+        KEEP(*(.limine_requests.start))
         KEEP(*(.limine_requests))
         KEEP(*(.limine_requests.*))
         __limine_requests_end = .;
