@@ -9,6 +9,14 @@
 // Emits a one-line summary via `klog::write_raw` then returns; the
 // asm caller halts via `wfi` after `bl`.
 
+// Per `04§4.0` (R06): emit-path call sites gated under `debug-irq`.
+// Default builds halt silently on a fault; the diagnostic dump rides
+// the same gate as the rest of the IRQ/exception trace surface.
+#[cfg(feature = "debug-irq")]
+macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-irq"))]
+macro_rules! debug_irq { ($($t:tt)*) => {} }
+
 /// Rust-side EL1 fault printer.
 ///
 /// # SAFETY: caller is the shared default vector handler. We only
@@ -17,11 +25,15 @@
 /// # Ctx: exception, IRQ-off (DAIF set by handler)
 #[no_mangle]
 pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) {
-    klog::write_raw(b"[FAULT] esr=");
-    klog::write_hex_u64(esr);
-    klog::write_raw(b" far=");
-    klog::write_hex_u64(far);
-    klog::write_raw(b" elr=");
-    klog::write_hex_u64(elr);
-    klog::write_raw(b"\n");
+    debug_irq! {
+        klog::write_raw(b"[FAULT] esr=");
+        klog::write_hex_u64(esr);
+        klog::write_raw(b" far=");
+        klog::write_hex_u64(far);
+        klog::write_raw(b" elr=");
+        klog::write_hex_u64(elr);
+        klog::write_raw(b"\n");
+    }
+    #[cfg(not(feature = "debug-irq"))]
+    { let _ = (esr, far, elr); }
 }
