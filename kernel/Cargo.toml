@@ -31,5 +31,6 @@ debug-vmm  = []  # device-map MMIO sanity reads (HPET cap, GICD typer)
 debug-irq  = []  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = []  # RSDP/XSDT walk + per-table decoder traces
 debug-sched = []  # first-kthread coroutine smoke + Context::switch trace
-debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched"]
+debug-boot = []  # operational-pulse trace (init started, pmm: ready, …)
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot"]
 
