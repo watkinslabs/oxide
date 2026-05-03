@@ -1,12 +1,12 @@
-# State 2026-05-03 (session 9 EOD)
+# State 2026-05-03 (session 10 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07).** 137 PRs total; 465 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, and run a 4-kthread preempt smoke. The timer ISR now drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green.** 139 PRs total; 465 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-9 EOD:
+Last verified-green at session-10 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
 $ cargo run -p xtask -- test                 # → 465 hosted tests, 0 failures
@@ -16,22 +16,24 @@ $ cargo run -p xtask -- kernel  --arch x86_64  --features debug-all
 $ cargo run -p xtask -- kernel  --arch aarch64 --features debug-all
 $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 …
-[INFO]  preempt: kthread 1..=4 enter
-[INFO]  preempt: kthread 1..=4 done
+[INFO]  preempt: kthread 1..=4 enter / done
 [INFO]  preempt: done yields=0 ticks=17
+[INFO]  canary: install n=64
+[INFO]  canary: done n=64 iters=16 ticks=1088
 […] [INFO]  boot: kernel ready, halting
 $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
-… same trace, ticks=16 …
+… same trace, preempt ticks=16, canary ticks=1088 …
 ```
 
 `make ci` mirrors the full PR gate (lint + test + build + build-debug, both arches).
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 9` for the per-PR table.
+See `CHANGELOG.md § Session 10` for the per-PR table.
 
-- **#136** (`C22-makefile`): root `Makefile` wrapping `xtask` for common workflows (`make build|x86|arm|test|lint|ci|qemu-x86|qemu-arm|clean`).
-- **#137** (`P1-81-preempt-iret-frames`): true IRQ-exit preemption (R07). Per-arch `Context::new_kernel_with_irq_frame` constructor; shared `oxide_irq_resume_user` epilogue label; per-vector IRQ stub does schedule-on-exit via `oxide_preempt_{cur,next}_ctx`; ARM IRQ frame extended to 192 B saving ELR_EL1+SPSR_EL1 (latent bug); x86 iretq frame uses Limine GDT selectors (`KERNEL_CS=0x28`, kernel SS=0x30).
+- **#139** (`P1-83-ctxsw-canary`): 64-task ctxsw register-canary smoke per `14§8`. Each canary kthread holds a unique per-task mark in callee-saves (r12..r15 on x86; x20..x28 on arm) across `hlt`/`wfi`. On corruption: log fault values + mask IRQs + park CPU so smoke fails to complete. Bounded version (64 × 16-iter ≈ 1024 switches per arch); the 1h soak filed for background CI per `40§3`.
+- **#140** (`C24-ksched-split`): split `kernel/src/ksched.rs` (505 → 367 lines) per the 500-line soft cap. Extracted `smoke_preempt_*` + `preempt_kthread_entry` + `TICK_BUDGET` into new `kernel/src/preempt_smoke.rs` (146 lines). `KSched`/`KThread` fields exposed `pub(crate)` so `preempt_smoke` and `canary` can share the scheduler shim.
+- **Session 9 carry-over** (PRs #136–#138): root `Makefile` (#136), true IRQ-exit preemption R07 (#137), session-9 docs (#138). See `CHANGELOG.md § Session 9`.
 
 ## What's done overall
 
@@ -42,24 +44,23 @@ Unchanged structurally. R07 added in session 9:
 
 ### Tooling
 
-Unchanged plus:
-- Root `Makefile` (`make ci` mirrors PR gate).
+Unchanged plus root `Makefile` (`make ci` mirrors PR gate).
 
 ### Kernel + per-subsystem crates
 
 | Path | Role | Status |
 |---|---|---|
-| `kernel/` | lib + `kernel_main(&BootInfo)` + `#[global_allocator]` + per-arch device-bringup smoke + preempt scheduler smoke | builds host + both kernel targets; default builds emit zero kernel klog |
-| `kernel/src/{acpi,kthread,ksched}.rs` | cfg-gated at module declaration | unchanged |
-| `kernel/src/preempt.rs` | `NEED_RESCHED` flag + `oxide_preempt_{cur,next}_ctx` + `tick_pick_next` hook | new in session 9 |
-| `kernel/src/{lapic,gic}.rs` | dispatchers now call `preempt::tick_pick_next` after EOI | updated session 9 |
-| `crates/hal-{x86_64,aarch64}/src/{context,irq,vbar}.rs` | `new_kernel_with_irq_frame` + `oxide_irq_resume_user` + schedule-on-exit asm; ARM frame extended to 192 B saving ELR/SPSR | new session 9 |
-| `crates/hal-{x86_64,aarch64}/src/fault.rs` | exception printer body under `debug-irq` | unchanged from session 8 |
+| `kernel/` | lib + `kernel_main(&BootInfo)` + `#[global_allocator]` + per-arch device-bringup smoke + preempt + canary smoke | builds host + both kernel targets; default builds emit zero kernel klog |
+| `kernel/src/{acpi,kthread,ksched,preempt_smoke,canary}.rs` | cfg-gated at module declaration (`debug-acpi`/`debug-sched`) | `preempt_smoke` + `canary` new in session 10 |
+| `kernel/src/preempt.rs` | `NEED_RESCHED` flag + `oxide_preempt_{cur,next}_ctx` + `tick_pick_next` hook | unchanged from session 9 |
+| `kernel/src/{lapic,gic}.rs` | dispatchers call `preempt::tick_pick_next` after EOI | unchanged from session 9 |
+| `crates/hal-{x86_64,aarch64}/src/{context,irq,vbar}.rs` | `new_kernel_with_irq_frame` + `oxide_irq_resume_user` + schedule-on-exit asm; ARM frame 192 B saving ELR/SPSR | unchanged from session 9 |
+| `crates/hal-{x86_64,aarch64}/src/fault.rs` | exception printer body under `debug-irq` | unchanged |
 | `crates/boot-{x86_64,aarch64}/` | per-crate `debug-boot` gate | unchanged |
 | `crates/limine-proto/` | shared protocol types + magic-words pinning | unchanged |
 | Other crates | unchanged from session 8 EOD |
 
-Workspace test count: **465 passed, 0 failed.** (+2 over session 8 — `new_kernel_with_irq_frame_layout` per arch.)
+Workspace test count: **465 passed, 0 failed.**
 
 ### IRQ-exit preemption (R07 — fully implemented)
 
@@ -74,7 +75,7 @@ Per-vector IRQ stub flow (both arches):
 
 ## What's NOT done (pending tasks)
 
-1. **64-task 1ms canary** (`docs/14§8`) — register-canary harness validating P1-81 preserves callee-saves under stress. Spec calls for 64 tasks × 1ms preempt × 1h; bounded shorter version (e.g. 64 × 16-iter) is feasible as a kernel-side smoke this session.
+1. **64-task 1h canary soak** (`docs/14§8`) — bounded version landed (#139). The full 64 × 1ms × 1h soak requires the background CI infra per `40§3` which is still spec-only.
 2. **First userspace `iretq`/`eret` smoke** (Phase 2 boundary) — `Context::new_user` exists in HAL crates but the actual transition to ring 3 / EL0 isn't wired. Needs a kernel-owned GDT (Limine's GDT lacks user descriptors), user CS/SS for x86 / SPSR config for arm, user kernel-stack swap, syscall entry path, return-to-user path. Largest single jump.
 3. **Wire `crates/sched`'s real `RunqueueInner` into the kernel** — `kernel/src/ksched.rs` is a kernel-only Vec-based shim. Frozen spec (`13§5`) wants `Task` extended with `kernel_stack` + arch-context fields and the kernel using `RunqueueInner::pick_next_task`. Plumbing-heavy refactor.
 4. **MmuOps walker** (`20§5`/`21§5`) — PTE encoding ✓; the walker still needs refactoring out of inline `vmm::map_device_4k` and made arch-generic.
@@ -82,20 +83,25 @@ Per-vector IRQ stub flow (both arches):
 6. **Block writeback / procfs surface / VFS dentry cache / IPC bodies / userspace platform** — unchanged from session 8 EOD pending list.
 7. **CI matrix update** to exercise each `debug-<sub>` feature solo (per `04§3` recipe). Presupposes a real CI workflow file exists; that's still spec-only at `docs/40`.
 8. **Files over 500-line soft cap**:
-    - `kernel/src/lib.rs` ~640
-    - `kernel/src/ksched.rs` ~480 (grew with R07 picker)
-    - `tools/spec-lint/src/code_lint.rs` ~444
+    - `kernel/src/lib.rs` ~698 (grew with canary smoke wiring)
+    - `tools/spec-lint/src/code_lint.rs` ~444 (under cap)
+    - `kernel/src/ksched.rs` split in session 10 (367) — under cap.
 
 ## Repo state
 
 ```
-main (origin/main): 3ccf85f Merge pull request #137 from watkinslabs/P1-81-preempt-iret-frames
+main (origin/main): 68f61c0 Merge pull request #139 from watkinslabs/P1-83-ctxsw-canary
 
-137 PRs landed total. Branches preserved (no deletions).
+139 PRs landed total. Branches preserved (no deletions).
 
-Session 9 (PRs #136 – #137, 2 PRs):
-  C22-makefile        — make wrapper
-  P1-81-preempt-iret-frames — true IRQ-exit preemption (R07)
+Session 9  (PRs #136 – #138):
+  C22-makefile               — make wrapper
+  P1-81-preempt-iret-frames  — true IRQ-exit preemption (R07)
+  C23-state-eod-session-9    — session-9 docs
+
+Session 10 (PRs #139 – #140):
+  P1-83-ctxsw-canary         — 64-task ctxsw register canary
+  C24-ksched-split           — split ksched.rs into shared core + preempt_smoke
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
@@ -131,11 +137,12 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 
 | Option | Branch idea | Why pick this |
 |---|---|---|
-| **64-task ctxsw canary smoke** | `P1-83-ctxsw-canary` | Implements the test contract from `docs/14§8`. Bounded version (64 × 16-iter), validates P1-81 preserves callee-saves under stress. Small + high-value. |
-| **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Cross the Phase 1→2 line. Needs kernel-owned GDT, user CS/SS, eret-to-EL0/CPL3, syscall entry/exit. Largest single jump; significant design surface. |
+| **First userspace `eret` smoke** | `P1-82-userspace-first-eret` | Cross the Phase 1→2 line. Needs kernel-owned GDT, user CS/SS, eret-to-EL0/CPL3, syscall entry/exit. Largest single jump; significant design surface. Recommend reviewing scope with the user before starting. |
 | **Wire real RunqueueInner** | `P1-84-sched-real-runqueue` | Migrate `kernel/src/ksched.rs` shim to `crates/sched`'s `RunqueueInner` per `13§5`. Plumbing-heavy refactor; doesn't unblock anything immediately. |
+| **MmuOps walker refactor** | `P1-85-mmu-walker` | Extract `vmm::map_device_4k` into an arch-generic walker per `20§5`/`21§5`. Contained refactor; mechanical. |
+| **Page-fault path** | `P1-86-pf-cow-fork` | `11§5` + `11§7` page-fault entry, COW, fork, TLB shootdown. Substantial. |
 
-If unsure: **64-task ctxsw canary** validates the just-landed preempt mechanism.
+If unsure: pause and surface the **userspace eret design surface** to the user before proceeding — it bakes in significant Phase-2 architectural choices (kernel-owned GDT vs Limine-extending, syscall fast-path skeleton, user kstack model).
 
 ## Open questions for user (deferred)
 

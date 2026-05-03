@@ -62,6 +62,8 @@ pub mod canary;
 pub mod ksched;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
+pub mod preempt_smoke;
 #[cfg(target_os = "oxide-kernel")]
 pub mod preempt;
 #[cfg(target_arch = "x86_64")]
@@ -334,9 +336,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             kthread::smoke_yield();
             ksched::smoke_rr(4);
             #[cfg(target_arch = "x86_64")]
-            ksched::smoke_preempt_x86(4, 1_000_000);
+            preempt_smoke::smoke_preempt_x86(4, 1_000_000);
             #[cfg(target_arch = "aarch64")]
-            ksched::smoke_preempt_arm(4, 50_000);
+            preempt_smoke::smoke_preempt_arm(4, 50_000);
             // 64-task ctxsw register-canary per `14§8`. Bounded
             // version (CANARY_N × CANARY_ITERS); the 1h soak rides
             // background CI per `40§3`.
