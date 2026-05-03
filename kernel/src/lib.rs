@@ -295,6 +295,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         device_map_smoke::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
         device_map_smoke::smoke_device_map_arm(info.hhdm_offset);
+
+        // MmuOps end-to-end smoke: map/write/translate/unmap a fresh
+        // PMM frame at a scratch VA. Per-arch wrapper picks the
+        // marker type implementing `MmuOps`.
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
+        unsafe { mmuops_smoke::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
+        unsafe { mmuops_smoke::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
     }
 
 
@@ -400,6 +410,10 @@ fn log_memmap(regions: &[BootMemRegion]) {
 // (extracted to keep lib.rs under the 500-line soft cap).
 #[cfg(target_os = "oxide-kernel")]
 pub mod device_map_smoke;
+
+// MmuOps end-to-end map/translate/unmap roundtrip smoke.
+#[cfg(target_os = "oxide-kernel")]
+pub mod mmuops_smoke;
 
 
 /// Park the CPU forever. On the kernel target, uses the per-arch
