@@ -17,6 +17,8 @@
 extern crate alloc;
 
 pub mod acpi;
+#[cfg(target_arch = "aarch64")]
+pub mod gic;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(target_arch = "aarch64")]
@@ -389,6 +391,12 @@ const GICD_PHYS: u64 = 0x0800_0000;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const GICD_VA: u64 = KERNEL_DEVICE_BASE | (GICD_PHYS & 0xFFFF_FFFF);
 
+/// GICv2 CPU-interface base on QEMU virt (GICD + 0x10000 by convention).
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const GICC_PHYS: u64 = 0x0801_0000;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+const GICC_VA: u64 = KERNEL_DEVICE_BASE | (GICC_PHYS & 0xFFFF_FFFF);
+
 /// PL011 phys base on QEMU virt (matches SPCR log).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const PL011_PHYS: u64 = 0x0900_0000;
@@ -414,6 +422,31 @@ fn smoke_device_map_arm(
             klog::write_raw(b"\n");
         }
         Err(_) => klog::kerror!("device-map: arm map_device_4k failed"),
+    }
+
+    // GICv2 enable: map GICC and program both halves.
+    let alloc_c = || p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096);
+    // SAFETY: same contract; GICC at GICD+0x10000 on QEMU virt.
+    let cr = unsafe {
+        hal_aarch64::vmm::map_device_4k(GICC_VA, GICC_PHYS, hhdm, alloc_c)
+    };
+    if cr.is_ok() {
+        // SAFETY: both VAs are freshly Device-attr mapped; single-CPU pre-init.
+        let s = unsafe { gic::enable(GICD_VA, GICC_VA) };
+        match s {
+            gic::GicStatus::AlreadyOn => klog::kinfo!("gic: already on"),
+            gic::GicStatus::Enabled { typer, gicd_iidr, gicc_iidr } => {
+                klog::write_raw(b"[INFO]  gic: enabled typer=");
+                klog::write_hex_u64(typer as u64);
+                klog::write_raw(b" gicd_iidr=");
+                klog::write_hex_u64(gicd_iidr as u64);
+                klog::write_raw(b" gicc_iidr=");
+                klog::write_hex_u64(gicc_iidr as u64);
+                klog::write_raw(b"\n");
+            }
+        }
+    } else {
+        klog::kerror!("device-map: gicc map_device_4k failed");
     }
 
     // Map PL011 + swap klog sink from semihosting to the real UART.
