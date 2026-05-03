@@ -38,6 +38,12 @@ pub struct IdtEntry {
 /// gate type = 0xE).
 pub const GATE_INT64_KERNEL: u8 = 0x8e;
 
+/// `type_attr` for a 64-bit interrupt gate at DPL=3 (P=1, DPL=3,
+/// gate type = 0xE). User-initiable software interrupts (#BP / #OF)
+/// must use this so a CPL=3 `int3` / `into` is dispatched instead
+/// of #GP'd. Hardware-only vectors keep `GATE_INT64_KERNEL`.
+pub const GATE_INT64_USER: u8 = 0xee;
+
 impl IdtEntry {
     /// # C: O(1)
     pub const fn empty() -> Self {
@@ -141,6 +147,12 @@ pub unsafe fn install_default() {
         let h_irq = crate::irq::irq_stub_addr(i as u8);
         let h = if h_irq != 0 { h_irq } else { crate::fault::vector_stub_addr(i as u8) };
         *entry = IdtEntry::new_int_gate(h, KERNEL_CS, 0);
+        // Vectors 3 (#BP) + 4 (#OF) are user-initiable via `int3` /
+        // `into`; their gate DPL must be 3 or a CPL=3 dispatch
+        // raises #GP(IDT,vec) instead. Override the type_attr.
+        if i == 3 || i == 4 {
+            entry.type_attr = GATE_INT64_USER;
+        }
     }
     // Now load IDTR.
     let pointer = IdtPointer {
@@ -184,6 +196,14 @@ mod tests {
     fn gate_int64_kernel_bits_match_spec() {
         // P=1, DPL=00, S=0, type=0xE ⇒ 0x8E.
         assert_eq!(GATE_INT64_KERNEL, 0x8e);
+    }
+
+    #[test]
+    fn gate_int64_user_bits_match_spec() {
+        // P=1, DPL=11, S=0, type=0xE ⇒ 0xEE. User-initiable softint.
+        assert_eq!(GATE_INT64_USER, 0xee);
+        // DPL field = bits 5..6.
+        assert_eq!((GATE_INT64_USER >> 5) & 3, 3);
     }
 
     #[test]
