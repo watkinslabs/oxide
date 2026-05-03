@@ -130,9 +130,18 @@ core::arch::global_asm!(
     "    pop  r9",                                     // a4
     "    pop  r10",                                    // a5 (discarded; r10 reused below)
     // After 7 pops, rsp is at the 3-quadword tail (RIP / RFLAGS /
-    // RSP). The pops consumed 56 B; 10×8 - 7×8 = 24 B remain. SysV
-    // requires rsp 16-aligned at `call`; current offset is -24
-    // mod 16 = 8 → subtract 8 to align.
+    // RSP). Snapshot those into the global user-frame statics so
+    // `kernel_sys_fork` (P2-15b) can read them without extending
+    // the dispatch signature. Uses rax as scratch — it's free here
+    // (about to be clobbered by the call's return value anyway).
+    "    mov  rax, qword ptr [rsp + 0]",                // user RIP
+    "    mov  qword ptr [rip + oxide_user_rip], rax",
+    "    mov  rax, qword ptr [rsp + 8]",                // user RFLAGS
+    "    mov  qword ptr [rip + oxide_user_rflags], rax",
+    "    mov  rax, qword ptr [rsp + 16]",               // user RSP
+    "    mov  qword ptr [rip + oxide_user_rsp], rax",
+    // SysV requires rsp 16-aligned at `call`; current offset is
+    // -24 mod 16 = 8 → subtract 8 to align.
     "    sub  rsp, 8",
     "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
     "    add  rsp, 8",                                 // undo align
@@ -151,6 +160,22 @@ core::arch::global_asm!(
 extern "C" {
     fn oxide_syscall_entry();
 }
+
+/// User RIP at the moment of the most recent `syscall` instruction.
+/// Captured by `oxide_syscall_entry` before calling
+/// `oxide_syscall_dispatch` so `kernel_sys_fork` (and any other
+/// syscall that needs to construct a child IRET frame) can read
+/// the post-`syscall` user RIP / RFLAGS / RSP. Single-CPU UP v1 —
+/// per-CPU once SMP lands.
+#[no_mangle]
+pub static oxide_user_rip:    core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
+#[no_mangle]
+pub static oxide_user_rflags: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
+#[no_mangle]
+pub static oxide_user_rsp:    core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
 
 // `oxide_syscall_dispatch` is defined in the kernel crate; the asm
 // stub above references it by symbol. See `kernel/src/syscall_glue.rs`.
