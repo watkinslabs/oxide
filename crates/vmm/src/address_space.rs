@@ -63,6 +63,40 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn root_pa(&self) -> u64 { self.root_pa }
 
+    /// Clone this AS into a new one with a fresh PT root per
+    /// docs/11§7. v0 (this PR): copies the VMA tree only — each
+    /// VMA is cloned (KernelBytes-backed VMAs share the same
+    /// `&'static [u8]` slice; Anonymous VMAs reset rss=0).
+    /// **Mapped pages are NOT copied**: the child AS has empty PT
+    /// entries, so first access to a code page demand-pages from
+    /// the shared KernelBytes slice and first access to an
+    /// Anonymous page allocates a fresh zero frame.
+    ///
+    /// This is a deliberately-incomplete fork:
+    /// - Correct for the static-PIE shell-spawn case where the
+    ///   parent and child both run from the same KernelBytes blob
+    ///   and don't share heap state.
+    /// - **Incorrect** for general POSIX fork where heap/stack
+    ///   contents must survive into the child. Real per-page copy
+    ///   (or COW upgrade) lands in P2-15b alongside the syscall.
+    ///
+    /// `new_root_pa` is the PA of an already-allocated PT root
+    /// frame for the child — caller obtains it via the per-arch
+    /// `mmu_ops::new_user_pml4` / `new_user_l0`. `0` is reserved
+    /// for hosted-test stubs (no real PT root).
+    /// # C: O(N) over VMA count.
+    pub fn fork(&self, new_root_pa: u64) -> KResult<Arc<Self>> {
+        let src = self.vmas.read();
+        let mut dst = VmaTree::new();
+        for vma in src.iter() {
+            dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+        }
+        Ok(Arc::new(Self {
+            vmas: RwLock::new(dst),
+            root_pa: new_root_pa,
+        }))
+    }
+
     /// Number of VMAs currently mapped.
     /// # C: O(1)
     pub fn vma_count(&self) -> usize {
