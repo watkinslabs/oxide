@@ -104,6 +104,14 @@ fn now_ns() -> Option<u64> {
     Some(f())
 }
 
+/// Emit `v` as a decimal natural-width integer through the sink.
+/// # C: O(log10(v)) ≤ 20 bytes for u64::MAX.
+pub fn write_dec_u64(v: u64) {
+    let mut buf = [0u8; 20];
+    let n = write_dec(&mut buf, v, false);
+    invoke_sink(&buf[..n]);
+}
+
 /// Write decimal `v` into `out`. If `pad3` is true, zero-pads to 3
 /// digits; otherwise emits the natural width. Returns bytes written.
 fn write_dec(out: &mut [u8], mut v: u64, pad3: bool) -> usize {
