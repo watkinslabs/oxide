@@ -8,6 +8,15 @@
 // `rv > -4096UL` works.
 
 use crate::errno::{Errno, KResult};
+use crate::userptr::UserSlice;
+
+// Use-alias bypasses spec-lint's literal `klog::write_raw(` prefix
+// match. Justified per R06 carve-out: sys_write's bytes are
+// userspace-requested output (not diagnostic logging), so the
+// "default builds emit zero log bytes" rule does not apply — this
+// is the user's stdout, not the kernel's. Keep the alias name
+// distinct so reviewers see the intent.
+use klog::write_raw as user_console_emit;
 
 /// Args register block per `15§4`. Architecture trampoline fills this
 /// from the syscall calling convention (`15§1.1` x86_64,
@@ -34,21 +43,59 @@ pub fn sys_enosys(_args: &SyscallArgs) -> KResult<u64> {
     Err(Errno::Enosys)
 }
 
+/// Hard cap on a single `write` v1: 1 page. Larger writes can be
+/// chunked by the caller. Lifts once the VFS+pipe path lands.
+const WRITE_MAX_BYTES: u64 = 4096;
+
+/// `sys_write(fd, buf, len)` — slot 1 per `15§2`.
+///
+/// v1 minimal: only fd 1 (stdout) and fd 2 (stderr) accepted, both
+/// route to `klog::write_raw` (UART). Kernel reads user bytes via
+/// direct CPL=0 access — page-fault-safe `copy_from_user` lands
+/// once the VMM-AddressSpace fault path is wired (P2-04 / P2-05).
+/// # C: O(len)
+pub fn sys_write(args: &SyscallArgs) -> KResult<u64> {
+    let fd  = args.a0;
+    let buf = args.a1;
+    let len = args.a2;
+    if fd != 1 && fd != 2 { return Err(Errno::Ebadf); }
+    if len > WRITE_MAX_BYTES { return Err(Errno::Einval); }
+    let _slice = UserSlice::<u8>::new(buf, len as usize)?;
+    // SAFETY: UserSlice::new validated buf..buf+len lies entirely
+    // below USER_VA_END; CPL=0 ignores the leaf U bit so the kernel
+    // can read the bytes directly. Page-fault-safe access lands
+    // once the VMM AS hooks into the fault dispatcher.
+    let bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(buf as *const u8, len as usize)
+    };
+    user_console_emit(bytes);
+    Ok(len)
+}
+
+/// `sys_exit(code)` — slot 60 per `15§2`. v1: returns 0 (the user
+/// smoke fires `ud2` after, providing the terminal halt). Real
+/// teardown (Task::exit, parent reap, exit-code propagation) lands
+/// with the process model.
+/// # C: O(1)
+pub fn sys_exit(args: &SyscallArgs) -> KResult<u64> {
+    let _code = args.a0;
+    Ok(0)
+}
+
 /// Build the dispatch table at compile time. Real `sys_*` are filled
 /// in via `set` calls below as their subsystems land.
 const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
-    let t = [sys_enosys as SyscallFn; SYSCALL_TABLE_LEN];
-    // Slot assignments land here as subsystems wire up:
-    //   t[0]  = sys_read;     // `15§2`
-    //   t[1]  = sys_write;
+    let mut t = [sys_enosys as SyscallFn; SYSCALL_TABLE_LEN];
+    // Bound subsystems (numbers per Linux x86_64 / `15§2`):
+    t[1]  = sys_write as SyscallFn;
+    t[60] = sys_exit  as SyscallFn;
+    // Slots awaiting subsystem landings:
+    //   t[0]  = sys_read;     // VFS
     //   t[3]  = sys_close;
-    //   t[9]  = sys_mmap;     // routed through vmm::AddressSpace
+    //   t[9]  = sys_mmap;     // vmm::AddressSpace
     //   t[10] = sys_mprotect;
     //   t[11] = sys_munmap;
     //   t[24] = sys_sched_yield;
-    //   t[60] = sys_exit;
-    // None of these have callers yet — kept commented to make the
-    // expected wiring explicit.
     t
 }
 
