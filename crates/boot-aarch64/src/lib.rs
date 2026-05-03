@@ -119,9 +119,21 @@ pub static LIMINE_RSDP: limine::RequestHeader<limine::RsdpResponse>
         response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
     };
 
+// Per `04§4.0` (R06): every klog::* call site in this crate sits
+// behind `debug-boot` — UART sink install, CPU/MMU dump, byte
+// emit. Default builds emit zero log bytes; the call sites are
+// absent from the binary, not "filtered at runtime".
+#[cfg(feature = "debug-boot")]
+macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-boot"))]
+macro_rules! debug_boot { ($($t:tt)*) => {} }
+
+#[cfg(feature = "debug-boot")]
 use klog::Uart;
+#[cfg(feature = "debug-boot")]
 use sync::{Spinlock, Tty as UartClass};
 
+#[cfg(feature = "debug-boot")]
 use pl011::{Pl011, PL011_VIRT_BASE};
 
 // ---------------------------------------------------------------------------
@@ -136,6 +148,7 @@ use pl011::{Pl011, PL011_VIRT_BASE};
 // sink that works regardless of paging state.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "debug-boot")]
 static BOOT_UART: Spinlock<Pl011, UartClass>
     = Spinlock::new(Pl011::new(PL011_VIRT_BASE));
 
@@ -143,6 +156,7 @@ static BOOT_UART: Spinlock<Pl011, UartClass>
 /// `hlt #0xf000` at EL1; QEMU intercepts and emits the byte to its
 /// stdout — same channel `-serial stdio` lands on.
 /// # C: O(len)
+#[cfg(feature = "debug-boot")]
 fn boot_emit(bytes: &[u8]) {
     #[cfg(target_os = "oxide-kernel")]
     {
@@ -159,6 +173,7 @@ fn boot_emit(bytes: &[u8]) {
 /// Alternative klog sink via PL011 MMIO. Inactive until VMM lands a
 /// real device-page mapping for `0x0900_0000` — see module-level
 /// comment.
+#[cfg(feature = "debug-boot")]
 #[allow(dead_code)]
 fn boot_emit_pl011(bytes: &[u8]) {
     let mut g = BOOT_UART.lock();
@@ -176,6 +191,7 @@ fn now_ns_aarch64() -> u64 {
 /// Boot-time CPU identification log. Reads MIDR_EL1 and the MMU
 /// control registers Limine programmed before handoff.
 /// # C: O(1)
+#[cfg(feature = "debug-boot")]
 fn log_cpu_info() {
     let m = hal_aarch64::midr_el1();
     klog::write_raw(b"[INFO]  midr_el1=");
@@ -327,7 +343,10 @@ unsafe extern "C" fn _start_rust() -> ! {
     };
     pl011::set_hhdm_offset(hhdm);
 
-    klog::set_byte_sink(boot_emit);
+    // Sink registration is gated behind `debug-boot` per
+    // `04§4.0` (R06): default builds emit zero klog bytes, so the
+    // semihosting sink is never installed.
+    debug_boot! { klog::set_byte_sink(boot_emit); }
 
     // Generic-timer calibration: read CNTFRQ_EL0 (programmed by
     // firmware) and stash kHz so `ArmTimerOps::monotonic_ns` works.
@@ -342,7 +361,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     }
     hal_aarch64::set_cntfrq_khz((cntfrq_hz / 1000) as u32);
     klog::set_clock_fn(now_ns_aarch64);
-    log_cpu_info();
+    debug_boot! { log_cpu_info(); }
 
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.

@@ -16,5 +16,12 @@ limine-proto = { path = "../limine-proto" }
 sync         = { path = "../sync" }
 
 [features]
-default = []
-hosted  = []
+default    = []
+hosted     = []
+# Per `04§4.0` (R06): gates this crate's klog call sites
+# (UART sink install + CPU/MMU dump) so default builds emit
+# zero log bytes. Mirrors `kernel`'s `debug-boot`; xtask
+# `--features debug-boot` enables both because cargo applies
+# `--features` to every selected `-p` package that declares it.
+debug-boot = []
+debug-all  = ["debug-boot"]
