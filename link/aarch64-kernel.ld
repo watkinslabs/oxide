@@ -45,9 +45,12 @@ SECTIONS {
     /* Limine protocol request markers per `36§3` (mirror of x86_64-
      * kernel.ld §43). ALIGN(4K) so this section starts a fresh
      * PT_LOAD page — Limine rejects ELFs whose PT_LOADs share a
-     * page across permission classes. */
+     * page across permission classes. Limine v12 also requires the
+     * base-revision tag to appear FIRST inside the section; we
+     * place it via the `.limine_requests.start` subname. */
     .limine_requests ALIGN(4K) : {
         __limine_requests_start = .;
+        KEEP(*(.limine_requests.start))
         KEEP(*(.limine_requests))
         KEEP(*(.limine_requests.*))
         __limine_requests_end = .;
