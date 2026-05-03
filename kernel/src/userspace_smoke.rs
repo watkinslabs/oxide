@@ -30,30 +30,54 @@ const USER_STACK_VA: u64 = 0x0050_0000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 const KSTACK_SIZE: u64 = 0x1000;
 
-// User blob: write(1, "hi\n", 3); exit(0); ud2. Exercises the real
-// syscall::dispatch table (P2-03) end-to-end: bound slots 1 + 60.
+// User blob: mmap+write+write+exit+ud2 — exercises real demand-paging
+// (P2-12) end-to-end on top of the bound syscall slots.
 //
-//   B8 01 00 00 00       mov  $1,%eax          ; sys_write nr
-//   BF 01 00 00 00       mov  $1,%edi          ; fd = stdout
-//   BE 00 01 40 00       mov  $0x400100,%esi   ; buf addr (32-bit OK)
-//   BA 03 00 00 00       mov  $3,%edx          ; len
-//   0F 05                syscall
-//   B8 3C 00 00 00       mov  $60,%eax         ; sys_exit nr
-//   31 FF                xor  %edi,%edi        ; code = 0
-//   0F 05                syscall
-//   0F 0B                ud2                   ; tripwire
+// Sequence:
+//   1. mmap(NULL, 4096, R|W, PRIVATE|ANON, -1, 0)  -> rax = base VA
+//   2. movl $0xDEADBEEF, (%rax)                    -> #PF, demand-page resolves
+//   3. write(1, "hi\n", 3)                          -> rax = 3
+//   4. exit(0)                                      -> rax = 0
+//   5. ud2                                          -> tripwire (smoke landmark)
 //
-// Buffer "hi\n" placed at offset 0x100 of the user code page.
-const USER_BLOB: [u8; 33] = [
-    0xB8, 0x01, 0x00, 0x00, 0x00,                   // mov  $1,%eax
-    0xBF, 0x01, 0x00, 0x00, 0x00,                   // mov  $1,%edi
-    0xBE, 0x00, 0x01, 0x40, 0x00,                   // mov  $0x400100,%esi
-    0xBA, 0x03, 0x00, 0x00, 0x00,                   // mov  $3,%edx
-    0x0F, 0x05,                                     // syscall (write)
-    0xB8, 0x3C, 0x00, 0x00, 0x00,                   // mov  $60,%eax
-    0x31, 0xFF,                                     // xor  %edi,%edi
-    0x0F, 0x05,                                     // syscall (exit)
-    0x0F, 0x0B,                                     // ud2
+// Encoding (74 bytes):
+//   B8 09 00 00 00          mov  $9, %eax           ; sys_mmap nr
+//   31 FF                    xor  %edi, %edi          ; addr=NULL
+//   BE 00 10 00 00          mov  $0x1000, %esi       ; len=4096
+//   BA 03 00 00 00          mov  $3, %edx            ; prot=R|W
+//   41 BA 22 00 00 00       mov  $0x22, %r10d        ; flags=PRIV|ANON
+//   49 C7 C0 FF FF FF FF    mov  $-1, %r8            ; fd=-1
+//   45 31 C9                 xor  %r9d, %r9d          ; off=0
+//   0F 05                    syscall
+//   C7 00 EF BE AD DE        movl $0xDEADBEEF, (%rax) ; demand-page on first write
+//   B8 01 00 00 00          mov  $1, %eax            ; sys_write nr
+//   BF 01 00 00 00          mov  $1, %edi            ; fd=stdout
+//   BE 00 01 40 00          mov  $0x400100, %esi     ; buf
+//   BA 03 00 00 00          mov  $3, %edx            ; len
+//   0F 05                    syscall
+//   B8 3C 00 00 00          mov  $60, %eax           ; sys_exit nr
+//   31 FF                    xor  %edi, %edi          ; code=0
+//   0F 05                    syscall
+//   0F 0B                    ud2                       ; tripwire
+const USER_BLOB: [u8; 74] = [
+    0xB8, 0x09, 0x00, 0x00, 0x00,                       // mov  $9, %eax
+    0x31, 0xFF,                                         // xor  %edi, %edi
+    0xBE, 0x00, 0x10, 0x00, 0x00,                       // mov  $0x1000, %esi
+    0xBA, 0x03, 0x00, 0x00, 0x00,                       // mov  $3, %edx
+    0x41, 0xBA, 0x22, 0x00, 0x00, 0x00,                 // mov  $0x22, %r10d
+    0x49, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF,           // mov  $-1, %r8
+    0x45, 0x31, 0xC9,                                   // xor  %r9d, %r9d
+    0x0F, 0x05,                                         // syscall (mmap)
+    0xC7, 0x00, 0xEF, 0xBE, 0xAD, 0xDE,                 // movl $0xDEADBEEF, (%rax)
+    0xB8, 0x01, 0x00, 0x00, 0x00,                       // mov  $1, %eax
+    0xBF, 0x01, 0x00, 0x00, 0x00,                       // mov  $1, %edi
+    0xBE, 0x00, 0x01, 0x40, 0x00,                       // mov  $0x400100, %esi
+    0xBA, 0x03, 0x00, 0x00, 0x00,                       // mov  $3, %edx
+    0x0F, 0x05,                                         // syscall (write)
+    0xB8, 0x3C, 0x00, 0x00, 0x00,                       // mov  $60, %eax
+    0x31, 0xFF,                                         // xor  %edi, %edi
+    0x0F, 0x05,                                         // syscall (exit)
+    0x0F, 0x0B,                                         // ud2
 ];
 const USER_BUF_OFF: u64 = 0x100;
 const USER_BUF_BYTES: &[u8] = b"hi\n";
@@ -63,7 +87,16 @@ const USER_RIP_POST_SYSRET: u64 = USER_CODE_VA + (USER_BLOB.len() as u64) - 2;
 
 /// Handler that watches for `#UD` from user at the ud2 tripwire —
 /// confirms full ring0→ring3→ring0 round-trip via syscall+sysretq.
-fn user_sysret_handler(vec: u64, _err: u64, rip: u64, _cr2: u64) -> bool {
+fn user_sysret_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
+    // Delegate demand-paging first per `11§5`: any user #PF whose VA
+    // lies inside a registered VMA gets resolved by `user_as`. If
+    // the demand-paging path returns true (handled), the dispatcher
+    // retries the faulting instruction and we never see the smoke
+    // landmark. Only faults user_as didn't recognize fall through
+    // to the smoke's #UD landmark check below.
+    if crate::user_as::user_fault_handler(vec, err, rip, cr2) {
+        return true;
+    }
     if vec == 6 && rip == USER_RIP_POST_SYSRET {
         debug_irq! {
             klog::write_raw(b"[INFO]  userspace-sysret-smoke: ok ring3 #UD rip=");

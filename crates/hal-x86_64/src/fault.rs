@@ -277,37 +277,40 @@ fn current_handler() -> FaultHandler {
 unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *const FaultFrame) -> bool {
     // SAFETY: stub-built frame on the kernel stack, valid for read.
     let f = unsafe { &*frame_ptr };
-    debug_irq! {
-        klog::write_raw(b"[FAULT] vec=");
-        klog::write_hex_u64(f.vector);
-        klog::write_raw(b" (");
-        klog::write_raw(vector_label(f.vector));
-        klog::write_raw(b") err=");
-        klog::write_hex_u64(f.error);
-        klog::write_raw(b" rip=");
-        klog::write_hex_u64(f.rip);
-        klog::write_raw(b" rflags=");
-        klog::write_hex_u64(f.rflags);
-        if f.vector == 14 {
-            klog::write_raw(b" cr2=");
-            // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
-            let cr2 = unsafe { read_cr2() };
-            klog::write_hex_u64(cr2);
-            klog::write_raw(b" pf=");
-            klog::write_raw(decode_pfec(f.error));
-        }
-        klog::write_raw(b"\n");
-    }
-    #[cfg(not(feature = "debug-irq"))]
-    { let _ = f; }
-
-    // Consult the registered handler. Default returns false (= halt).
-    // For #PF (vec 14) we read CR2; otherwise pass 0.
     let cr2 = if f.vector == 14 {
         // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
         unsafe { read_cr2() }
     } else { 0 };
-    (current_handler())(f.vector, f.error, f.rip, cr2)
+
+    // Consult the registered handler first. A resolved fault (e.g.
+    // demand-page) is normal kernel operation per `11§5` — silent in
+    // production, no log line. Only log loudly when we're about to
+    // halt (handler returned false → unrecoverable).
+    let handled = (current_handler())(f.vector, f.error, f.rip, cr2);
+    if !handled {
+        debug_irq! {
+            klog::write_raw(b"[FAULT] vec=");
+            klog::write_hex_u64(f.vector);
+            klog::write_raw(b" (");
+            klog::write_raw(vector_label(f.vector));
+            klog::write_raw(b") err=");
+            klog::write_hex_u64(f.error);
+            klog::write_raw(b" rip=");
+            klog::write_hex_u64(f.rip);
+            klog::write_raw(b" rflags=");
+            klog::write_hex_u64(f.rflags);
+            if f.vector == 14 {
+                klog::write_raw(b" cr2=");
+                klog::write_hex_u64(cr2);
+                klog::write_raw(b" pf=");
+                klog::write_raw(decode_pfec(f.error));
+            }
+            klog::write_raw(b"\n");
+        }
+        #[cfg(not(feature = "debug-irq"))]
+        { let _ = f; }
+    }
+    handled
 }
 
 /// Map an Intel-SDM exception vector to a short label (Vol. 3

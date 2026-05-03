@@ -283,6 +283,21 @@ pub fn alloc_contig(order: pmm::Order) -> Option<u64> {
     p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
 }
 
+/// Free a single 4 KiB frame back to the kernel-owned PMM. Pair of
+/// `alloc_one_frame`; the PA must originally have come from a PMM
+/// alloc and not be currently mapped in any live page table (caller's
+/// responsibility — `vmm::munmap` walks PTs first, then frees here).
+/// # SAFETY: `pa` is a page-aligned PA originally returned by
+/// `alloc_one_frame` (or huge-leaf split that wasn't promoted), no
+/// longer reachable via any live PTE; single-CPU pre-userspace v1.
+/// # C: O(1) amortised (PMM buddy free).
+pub unsafe fn free_one_frame(pa: u64) {
+    let p = match pmm_static() { Some(p) => p, None => return };
+    let pfn = hal::Pfn(pa / 4096);
+    // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; pmm::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.
+    unsafe { p.free(pfn, pmm::Order(0)); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
