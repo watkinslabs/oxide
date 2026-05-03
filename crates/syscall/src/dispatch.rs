@@ -106,6 +106,20 @@ pub fn sys_getegid(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
 /// # C: O(1)
 pub fn sys_gettid(_args: &SyscallArgs) -> KResult<u64> { Ok(1) }
 
+/// `sys_set_tid_address(tidptr)` — slot 218. Linux uses this to
+/// register a clear_child_tid pointer that's zeroed on thread exit
+/// (futex wake). v1 single-task → no-op; return tid=1 like gettid.
+/// musl/glibc both call this at startup.
+/// # C: O(1)
+pub fn sys_set_tid_address(_args: &SyscallArgs) -> KResult<u64> { Ok(1) }
+
+/// `sys_set_robust_list(head, len)` — slot 273. Registers a futex
+/// robust list head per `man set_robust_list`. v1 has no futex
+/// machinery; accept the call and return 0. glibc calls this at
+/// thread startup.
+/// # C: O(1)
+pub fn sys_set_robust_list(_args: &SyscallArgs) -> KResult<u64> { Ok(0) }
+
 /// Build the dispatch table at compile time. Real `sys_*` are filled
 /// in via `set` calls below as their subsystems land.
 const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
@@ -118,7 +132,9 @@ const fn build_table() -> [SyscallFn; SYSCALL_TABLE_LEN] {
     t[104] = sys_getgid  as SyscallFn;
     t[107] = sys_geteuid as SyscallFn;
     t[108] = sys_getegid as SyscallFn;
-    t[186] = sys_gettid  as SyscallFn;
+    t[186] = sys_gettid           as SyscallFn;
+    t[218] = sys_set_tid_address  as SyscallFn;
+    t[273] = sys_set_robust_list  as SyscallFn;
     // Slots awaiting subsystem landings:
     //   t[0]  = sys_read;     // VFS
     //   t[3]  = sys_close;
