@@ -151,6 +151,41 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::write_raw(b" MiB free, ");
         klog::write_dec_u64(alloc_pages);
         klog::write_raw(b" page(s) reserved\n");
+
+        // PMM stress: alloc 64 order-0 pages, free in reverse, verify
+        // free_pages count matches the baseline. Catches simple
+        // bookkeeping bugs the single-page smoke can't.
+        const STRESS_N: usize = 64;
+        let baseline = p.free_pages();
+        let mut buf: [hal::Pfn; STRESS_N] = [hal::Pfn(0); STRESS_N];
+        let mut got = 0usize;
+        while got < STRESS_N {
+            match p.alloc(pmm::Order(0)) {
+                Ok(pfn) => { buf[got] = pfn; got += 1; }
+                Err(_)  => break,
+            }
+        }
+        // SAFETY: every pfn in `buf[..got]` was returned by alloc(0)
+        // above and not yet freed; reverse-order frees match the
+        // alloc count exactly.
+        unsafe {
+            while got > 0 {
+                got -= 1;
+                p.free(buf[got], pmm::Order(0));
+            }
+        }
+        let after = p.free_pages();
+        if after == baseline {
+            klog::kinfo!("pmm-stress: 64x alloc/free balanced");
+        } else {
+            klog::kerror!("pmm-stress: free_pages drift");
+        }
+        // Re-emit the summary to make the round-trip visible in the trace.
+        klog::write_raw(b"[INFO]  pmm: ");
+        klog::write_dec_u64(p.free_pages() / 256);
+        klog::write_raw(b" MiB free post-stress, ");
+        klog::write_dec_u64(p.allocated_pages());
+        klog::write_raw(b" page(s) reserved\n");
     }
 
 
