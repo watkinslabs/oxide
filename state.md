@@ -1,12 +1,12 @@
-# State 2026-05-03 (session 11 EOD)
+# State 2026-05-03 (session 12 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker.** 141 PRs total; 470 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker.** 143 PRs total; 470 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-11 EOD:
+Last verified-green at session-12 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
 $ cargo run -p xtask -- test                 # → 470 hosted tests, 0 failures
@@ -29,10 +29,11 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 11` for the per-PR table.
+See `CHANGELOG.md § Session 12` for the per-PR table.
 
-- **#141** (`P1-85-mmu-walker-generic`): extract the 4-level walk loop shared between x86_64 (PML4→PDPT→PD→PT) and aarch64 EL1 (L0→L1→L2→L3) into `crates/hal/src/pt_walker.rs`. Both arches use 4 KiB granule, 512 entries per table, identical 39/30/21/12 VA-bit shifts; only entry bit semantics + privileged-register access differ. Generic `map_device_4k<W: PtWalker, F>` driver; `PtWalkerX86` / `PtWalkerArm` impls. Per-arch `map_device_4k` shims delegate. +5 hosted tests.
-- **Sessions 9–10 carry-over** (PRs #136–#140): Makefile (#136), R07 preempt (#137), session-9 docs (#138), 64-task canary (#139), ksched split (#140). See `CHANGELOG.md`.
+- **#143** (`C26-device-map-smoke-split`): split debug-macros + per-arch device-map smokes from `kernel/src/lib.rs` (700 → 423 lines, under the 500-line soft cap). New `kernel/src/debug_macros.rs` (36 lines) hoisted via `#[macro_use]`; new `kernel/src/device_map_smoke.rs` (300 lines) holds the per-arch HPET/LAPIC/GICD/GICC/PL011 constants + bring-up smoke bodies. Behaviour preserved byte-for-byte.
+- **#141** (`P1-85-mmu-walker-generic`): arch-generic 4-level walker. New `crates/hal/src/pt_walker.rs` with `PtWalker` trait + generic `map_device_4k<W, F>` driver; `PtWalkerX86`/`PtWalkerArm` impls supply bit semantics. Per-arch `map_device_4k` shims delegate; surface unchanged for callers. +5 hosted tests.
+- **Sessions 9–11 carry-over** (PRs #136–#142): Makefile (#136), R07 preempt (#137), session-9 docs (#138), 64-task canary (#139), ksched split (#140), pt_walker (#141), session-11 docs (#142). See `CHANGELOG.md`.
 
 ## What's done overall
 
@@ -83,17 +84,14 @@ Per-vector IRQ stub flow (both arches):
 5. **Page-fault path** (`11§5` + `11§7`): COW, fork, TLB shootdown.
 6. **Block writeback / procfs surface / VFS dentry cache / IPC bodies / userspace platform** — unchanged from session 8 EOD pending list.
 7. **CI matrix update** to exercise each `debug-<sub>` feature solo (per `04§3` recipe). Presupposes a real CI workflow file exists; that's still spec-only at `docs/40`.
-8. **Files over 500-line soft cap**:
-    - `kernel/src/lib.rs` ~700 (grew with canary smoke wiring; candidate split: extract per-arch device-map smokes to `device_map_smoke.rs`).
-    - `tools/spec-lint/src/code_lint.rs` ~444 (under cap).
-    - `kernel/src/ksched.rs` 367 (under cap, split in session 10).
+8. **Files over 500-line soft cap**: none. Recent splits: `ksched.rs` (session 10 → 367), `kernel/src/lib.rs` (session 12 → 423). All workspace files now under cap.
 
 ## Repo state
 
 ```
-main (origin/main): 1d8940e Merge pull request #141 from watkinslabs/P1-85-mmu-walker-generic
+main (origin/main): 4c47ae7 Merge pull request #143 from watkinslabs/C26-device-map-smoke-split
 
-141 PRs landed total. Branches preserved (no deletions).
+143 PRs landed total. Branches preserved (no deletions).
 
 Session 9  (PRs #136 – #138):
   C22-makefile               — make wrapper
@@ -106,6 +104,10 @@ Session 10 (PRs #139 – #140):
 
 Session 11 (PR #141):
   P1-85-mmu-walker-generic   — arch-generic 4-level page-table walker
+
+Session 12 (PRs #142 – #143):
+  C25-state-eod-session-11   — session-11 docs
+  C26-device-map-smoke-split — split lib.rs (700 → 423) into debug_macros + device_map_smoke
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
