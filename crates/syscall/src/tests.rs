@@ -100,8 +100,10 @@ fn dispatch_unknown_number_returns_enosys() {
 
 #[test]
 fn dispatch_in_range_unimplemented_returns_enosys() {
+    // Pick a slot that is in-range but reliably unbound.
+    // 461 is the high end of the table (-1 from SYSCALL_TABLE_LEN).
     let args = SyscallArgs::default();
-    let rv = dispatch(0, &args);
+    let rv = dispatch(461, &args);
     assert_eq!(rv, -(Errno::Enosys.as_i32() as i64));
 }
 
