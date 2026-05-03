@@ -116,8 +116,119 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     false
 }
 
-/// Parse + load + drop to ring 3. Diverges. Replaces
-/// `userspace_smoke::run` for the x86_64 boot path.
+/// Spawn the loaded ELF as a real user `Task` on the runqueue
+/// and `schedule()` into it. The task carries
+/// `Arc<AddressSpace>`, so future fork/execve can reach it via
+/// `sched::current().mm`. Diverges via the deliberate ud2
+/// landmark after sys_exit's sysretq → smoke fault handler.
+///
+/// Foundation for fork/execve: introduces a real "current user
+/// task" backed by `mm`, replacing the prior `drop_to_ring3`
+/// flow that ran user code without any Task wrapper.
+///
+/// Installs a fresh runqueue if one isn't already present.
+///
+/// # SAFETY: caller is the boot path; user_as::init has run; PMM
+/// + GDT + TSS + IDT + syscall MSRs initialised; single-CPU;
+/// IRQs masked.
+/// # C: O(phdrs) parse + O(log N) enqueue
+/// # Ctx: pre-init, IRQ-off, single-CPU; diverges
+pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
+    if !crate::sched::runqueue_active() {
+        // SAFETY: boot path; allocator up; no concurrent runqueue users.
+        unsafe { crate::sched::install_default_runqueue(); }
+    }
+    use vmm::{VmaBacking, VmaFlags, VmaProt};
+    use hal::UserVirtAddr;
+
+    let img = match crate::user_as::with(|as_| {
+        let img = load_static_blob(ELF_BLOB, as_)?;
+        // Stack VMA — anonymous, demand-paged on first push.
+        let stack_hint = UserVirtAddr::new(USER_STACK_VA)
+            .ok_or(crate::elf_load::LoadError::Einval)?;
+        as_.mmap(
+            Some(stack_hint), 0x1000,
+            VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+            VmaBacking::Anonymous,
+            true,
+        ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
+        Ok::<_, crate::elf_load::LoadError>(img)
+    }) {
+        Some(Ok(i))  => i,
+        Some(Err(e)) => {
+            debug_irq! {
+                klog::write_raw(b"[FAULT] elf-smoke: setup failed err=");
+                klog::write_dec_u64(e as u64);
+                klog::write_raw(b"\n");
+            }
+            let _ = e;
+            halt_forever();
+        }
+        None => {
+            debug_irq! { klog::kerror!("elf-smoke: user_as not initialised"); }
+            halt_forever();
+        }
+    };
+
+    debug_irq! {
+        klog::write_raw(b"[INFO]  elf-smoke: load ok entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b" brk=");
+        klog::write_hex_u64(img.brk.as_u64());
+        klog::write_raw(b"\n");
+    }
+
+    // Install the smoke fault handler.
+    // SAFETY: handler fn is 'static; pre-init single-CPU swap.
+    unsafe { hal_x86_64::install_fault_handler(elf_smoke_fault_handler); }
+
+    let mm = match crate::user_as::clone_global_arc() {
+        Some(a) => a,
+        None    => { debug_irq! { klog::kerror!("elf-smoke: AS clone failed"); } halt_forever(); }
+    };
+
+    // Spawn the user task on the runqueue.
+    // SAFETY: runqueue installed by kernel_main earlier; mm matches active CR3.
+    let _task = match unsafe {
+        crate::sched::spawn_user_thread(
+            0xC0DE_0001, "elf-user",
+            img.entry.as_u64(),
+            USER_STACK_TOP,
+            mm,
+        )
+    } {
+        Ok(t)  => t,
+        Err(_) => { debug_irq! { klog::kerror!("elf-smoke: spawn failed"); } halt_forever(); }
+    };
+
+    debug_irq! {
+        klog::write_raw(b"[INFO]  elf-smoke: spawned tid=0xC0DE0001 entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b" sp=");
+        klog::write_hex_u64(USER_STACK_TOP);
+        klog::write_raw(b"\n");
+    }
+
+    // STI so timer IRQs can drive preempt-on-IRQ-exit if the
+    // task ever yields back to kernel; our smoke task runs IF=0
+    // through to its first sys_exit so this is a no-op for now.
+    // SAFETY: STI legal at CPL=0; pairs with the boot-path discipline that masked IRQs at entry; the runqueue + IRQ epilogue tolerate timer-driven preemption.
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    // schedule() picks the user task (lowest vruntime in CFS),
+    // updates current, and Context::switch's into the synthetic
+    // iretq frame → drop to ring 3 at e_entry. User runs to ud2
+    // landmark; #UD halts in the smoke fault handler.
+    // SAFETY: process ctx; runqueue installed; preempt-off.
+    unsafe { crate::sched::schedule(); }
+
+    // Unreachable — user task halts via ud2 landmark.
+    halt_forever();
+}
+
+/// Parse + load + drop to ring 3 directly (no Task wrapper).
+/// Diverges. Retained for the boot path that hasn't yet
+/// installed a runqueue (or for debugging).
 ///
 /// # SAFETY: caller is the boot path; user_as::init has run; PMM
 /// + MmuOps + GDT + TSS + IDT + syscall MSRs all initialised;
