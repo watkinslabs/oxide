@@ -235,6 +235,42 @@ impl AddressSpace {
                 unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
                 Ok(())
             }
+            VmaBacking::KernelBytes { data } => {
+                // ELF-loader-style demand-fault path per docs/31 §4
+                // step 3: copy the file-backed bytes for this page
+                // into a fresh PMM frame; bytes past `data.len()`
+                // (BSS tail of a PT_LOAD with `p_memsz > p_filesz`)
+                // are zero-filled.
+                let pa = alloc_frame().ok_or(Error::NoMem)?;
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                let off = (va_page - vma.start.as_u64()) as usize;
+                let page = PAGE_SIZE_BYTES as usize;
+                // SAFETY: pa is a freshly-allocated PMM frame; HHDM
+                // mirror at hhdm_offset+pa is mapped writable; we
+                // own the full page exclusively until M::map below
+                // makes it user-visible.
+                unsafe {
+                    let dst = (hhdm_offset + pa) as *mut u8;
+                    if off >= data.len() {
+                        // Entirely BSS (past file-backed extent).
+                        core::ptr::write_bytes(dst, 0, page);
+                    } else {
+                        let avail = (data.len() - off).min(page);
+                        // SAFETY: src is a valid &'static [u8] slice covering [off..off+avail]; dst owns `page` bytes; non-overlapping.
+                        core::ptr::copy_nonoverlapping(
+                            data.as_ptr().add(off), dst, avail,
+                        );
+                        if avail < page {
+                            // SAFETY: dst+avail is within the freshly-allocated frame; tail zero-fills the BSS portion of this page.
+                            core::ptr::write_bytes(dst.add(avail), 0, page - avail);
+                        }
+                    }
+                }
+                let pte_flags = vma.prot.to_page_flags();
+                // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
+                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                Ok(())
+            }
             VmaBacking::File { .. } | VmaBacking::Special => {
                 // File backing requires page cache (`16`); Special
                 // requires per-region wiring (vDSO/vvar/hugetlb).
