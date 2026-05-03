@@ -23,6 +23,7 @@ use core::sync::atomic::Ordering;
 
 use hal::Context;
 use sched::{SchedClass, Task};
+use vmm::AddressSpace;
 
 #[cfg(target_arch = "x86_64")]
 type ArchCtx = hal_x86_64::ContextX86_64;
@@ -89,6 +90,59 @@ pub unsafe fn spawn_kernel_thread(
     }
 
     // 4. Wrap, enqueue, return.
+    let arc = Arc::new(task);
+    {
+        let mut inner = rq.inner.lock();
+        inner.enqueue(Arc::clone(&arc));
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    }
+    Ok(arc)
+}
+
+/// Spawn a user-mode task. Allocates a 16 KiB kernel stack,
+/// builds the per-arch HAL `Context` scaffold via the user-mode
+/// flavor of `new_*_with_irq_frame`, attaches `mm`, wraps in
+/// `Arc<Task>`, and enqueues on the runqueue's CFS class. When
+/// `schedule()` later picks this task, the asm IRQ epilogue
+/// iretq/eret's into ring 3 / EL0 at `entry_va` with the stack
+/// pointer at `user_sp`.
+///
+/// x86_64 only this PR. arm parity follows in a subsequent PR
+/// that adds sp_el0 save/restore to the IRQ frame.
+///
+/// # SAFETY: caller is the boot path or kernel context on the
+/// same CPU as the runqueue; user_as has been activated so the
+/// new task's mm matches the live CR3; PMM + per-arch HAL up.
+/// The task's stack memory is owned by the returned `Arc<Task>`.
+/// # C: O(stack_size) zero-fill + O(log N) CFS insert
+/// # Ctx: pre-init or kernel ctx; preempt-off
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn spawn_user_thread(
+    tid: u32,
+    name: &'static str,
+    entry_va: u64,
+    user_sp: u64,
+    mm: Arc<AddressSpace>,
+) -> Result<Arc<Task>, SpawnError> {
+    let rq = match super::runqueue::global() {
+        Some(r) => r,
+        None    => return Err(SpawnError::NoRunqueue),
+    };
+
+    let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
+    let mut task = Task::new_user(tid, name, class, mm);
+
+    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
+    // SAFETY: task is local; no concurrent reader.
+    unsafe { task.install_stack(stack); }
+    let stack_top = task.kernel_stack.load(Ordering::Acquire);
+
+    // SAFETY: stack_top is freshly-installed top-of-stack; entry_va + user_sp are caller-validated user addresses; the synthetic iretq frame uses USER selectors so iretq from the shared epilogue lands at CPL=3.
+    unsafe {
+        let p = task.arch_ctx_ptr::<ArchCtx>();
+        core::ptr::write(p, ArchCtx::new_user_with_irq_frame(stack_top, entry_va, user_sp));
+    }
+
     let arc = Arc::new(task);
     {
         let mut inner = rq.inner.lock();

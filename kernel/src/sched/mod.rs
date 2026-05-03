@@ -36,3 +36,5 @@ pub use schedule::{
     install_default_runqueue, runqueue_active, RunStats,
 };
 pub use spawn::spawn_kernel_thread;
+#[cfg(target_arch = "x86_64")]
+pub use spawn::spawn_user_thread;
