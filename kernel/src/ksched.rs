@@ -54,9 +54,20 @@ static SCHED: SchedCell = SchedCell(UnsafeCell::new(None));
 /// Reborrow as a uniquely-owned reference. SAFETY: caller is the
 /// boot path or a kthread running under `SCHED` exclusively
 /// (single-CPU pre-init); no concurrent borrows exist.
-unsafe fn sched_mut<'a>() -> &'a mut KSched {
+pub(crate) unsafe fn sched_mut<'a>() -> &'a mut KSched {
     // SAFETY: SCHED.0 is single-init in `smoke_rr()`; kthreads run on the same CPU; no concurrent writers.
     unsafe { (*SCHED.0.get()).as_mut().unwrap() }
+}
+
+/// Mark kthread `idx_1based` (1..=N) as `done`. Subsequent picks
+/// skip it; once all N are done, the picker switches back to boot.
+/// # SAFETY: caller runs as the addressed kthread or holds the
+/// per-CPU pre-init invariant; `SCHED` initialized.
+/// # C: O(1)
+pub(crate) unsafe fn mark_done(idx_1based: usize) {
+    // SAFETY: sched_mut's invariants delegated to caller; the field
+    // store is a plain atomic Release write.
+    unsafe { sched_mut().kts[idx_1based - 1].done.store(true, Ordering::Release); }
 }
 
 extern "C" fn rr_kthread_entry(arg: usize) -> ! {
@@ -279,19 +290,19 @@ pub unsafe fn tick_pick_next_for_irq_exit() {
 }
 
 /// Body shared by per-arch preempt smokes. Builds N kthreads
-/// running `hlt`/`wfi` loops, registers them in `SCHED`, and
-/// returns the address of `KSched.boot` so the caller can perform
-/// the cooperative boot→kthread1 switch after enabling IRQs.
+/// each running `entry` (1-based kthread index passed in `arg`),
+/// registers them in `SCHED`. Caller performs the boot→kthread1
+/// switch via `preempt_run` after enabling IRQs.
 ///
 /// # SAFETY: caller is the boot path; allocator up; single-CPU
 /// pre-init; `SCHED` not currently in use.
 /// # C: O(n)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
-pub unsafe fn preempt_install(n: usize) {
+pub unsafe fn preempt_install_with(n: usize, entry: extern "C" fn(usize) -> !) {
     let mut kts: Vec<KThread> = Vec::with_capacity(n);
     for _ in 0..n {
-        // SAFETY: zeroed ArchCtx is overwritten by `new_kernel` below.
+        // SAFETY: zeroed ArchCtx is overwritten by `new_kernel_with_irq_frame` below.
         let ctx: ArchCtx = unsafe { core::mem::zeroed() };
         let stack: Box<[u8]> = alloc::vec![0u8; STACK_BYTES].into_boxed_slice();
         kts.push(KThread {
@@ -316,8 +327,19 @@ pub unsafe fn preempt_install(n: usize) {
         // kthread's kernel stack with a synthetic IRQ frame so the
         // IRQ-exit picker can `Context::switch` into a fresh task
         // and `iretq`/`eret` from the same epilogue.
-        s.kts[i].ctx = ArchCtx::new_kernel_with_irq_frame(top, preempt_kthread_entry, i + 1);
+        s.kts[i].ctx = ArchCtx::new_kernel_with_irq_frame(top, entry, i + 1);
     }
+}
+
+/// Build N kthreads running the default `preempt_kthread_entry`
+/// (the existing 4-task hlt/wfi smoke).
+/// # SAFETY: see `preempt_install_with`.
+/// # C: O(n)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn preempt_install(n: usize) {
+    // SAFETY: delegated; same invariants as preempt_install_with.
+    unsafe { preempt_install_with(n, preempt_kthread_entry); }
 }
 
 /// Switch to the first kthread (the boot→kthread1 cooperative
