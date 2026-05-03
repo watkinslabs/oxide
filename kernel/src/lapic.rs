@@ -19,6 +19,14 @@ const REG_ID:      usize = 0x020;
 const REG_VERSION: usize = 0x030;
 #[cfg(target_arch = "x86_64")]
 const REG_SVR:     usize = 0x0F0;
+#[cfg(target_arch = "x86_64")]
+const REG_LVT_TIMER:  usize = 0x320;
+#[cfg(target_arch = "x86_64")]
+const REG_TIMER_INIT: usize = 0x380;
+#[cfg(target_arch = "x86_64")]
+const REG_TIMER_CUR:  usize = 0x390;
+#[cfg(target_arch = "x86_64")]
+const REG_TIMER_DIV:  usize = 0x3E0;
 
 /// SVR bit 8: APIC software enable.
 #[cfg(target_arch = "x86_64")]
@@ -89,6 +97,44 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     };
     LAPIC_BASE_VA.store(va, Ordering::Release);
     LapicStatus::Enabled { apic_id, version }
+}
+
+/// Configure the LAPIC timer in one-shot mode, masked (no IRQ
+/// delivery yet — this is purely a hardware-tick smoke). Returns
+/// the current count register reading after a brief busy spin so
+/// the caller can confirm the counter is decrementing.
+///
+/// `initial_count` is loaded into the timer's Initial Count
+/// Register; with divide=0b1011 (1) the LAPIC bus clock decrements
+/// the count register by one per cycle.
+///
+/// # SAFETY: caller asserts `enable` has run and `LAPIC_BASE_VA`
+/// is non-zero. Single-CPU, IRQ-off.
+/// # C: O(spin)
+/// # Ctx: pre-init, single-CPU
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn timer_smoke(initial_count: u32) -> Option<(u32, u32)> {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return None; }
+    // SAFETY: LAPIC was previously mapped Device-attr; `va` lives
+    // inside that 4 KiB page.
+    let (a, b) = unsafe {
+        // Divide config: `1011` = divide-by-1 (full bus rate).
+        core::ptr::write_volatile((va + REG_TIMER_DIV  as u64) as *mut u32, 0b1011);
+        // Mask LVT timer (bit 16 = 1) — no IRQ delivery; just count.
+        // Vector 0x40 is set so when we later unmask, it has a valid value.
+        core::ptr::write_volatile((va + REG_LVT_TIMER as u64) as *mut u32, 0x40 | (1 << 16));
+        // Load initial count — the timer starts decrementing.
+        core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, initial_count);
+        let a = core::ptr::read_volatile((va + REG_TIMER_CUR as u64) as *const u32);
+        // Brief busy spin so the count visibly decreases.
+        for _ in 0..1024 { core::hint::spin_loop(); }
+        let b = core::ptr::read_volatile((va + REG_TIMER_CUR as u64) as *const u32);
+        // Stop the timer (initial count = 0 disables one-shot).
+        core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, 0);
+        (a, b)
+    };
+    Some((a, b))
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
