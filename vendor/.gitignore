@@ -1,0 +1,7 @@
+# Bootloader + firmware binaries fetched by `tools/fetch-vendor.sh`.
+# Not committed: keeps repo size down + sidesteps redistribution
+# license-tracking. Run the fetch script (or `xtask vendor`) to
+# populate.
+*
+!.gitignore
+!README.md

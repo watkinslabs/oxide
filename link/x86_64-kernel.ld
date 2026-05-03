@@ -39,8 +39,11 @@ SECTIONS {
 
     /* Limine protocol request markers per `36§3`. Bootloader scans
      * for magic header words before kernel entry; section must be
-     * KEEP-retained even with --gc-sections. */
-    .limine_requests ALIGN(8) : {
+     * KEEP-retained even with --gc-sections. ALIGN(4K) so this
+     * section starts a fresh PT_LOAD page — Limine rejects ELFs
+     * whose PT_LOADs share a page across permission classes
+     * (`.rodata` is R-only; this lives with `.data` in RW). */
+    .limine_requests ALIGN(4K) : {
         __limine_requests_start = .;
         KEEP(*(.limine_requests))
         KEEP(*(.limine_requests.*))
