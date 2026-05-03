@@ -53,6 +53,7 @@ dependencies = [
  "hal-aarch64",
  "kernel",
  "klog",
+ "limine-proto",
  "sync",
 ]
 
@@ -64,6 +65,7 @@ dependencies = [
  "hal-x86_64",
  "kernel",
  "klog",
+ "limine-proto",
  "sync",
 ]
 
@@ -304,6 +306,13 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "limine-proto"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+]
 
 [[package]]
 name = "linux-raw-sys"
