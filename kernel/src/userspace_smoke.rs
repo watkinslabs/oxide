@@ -37,9 +37,11 @@ fn user_bp_handler(vec: u64, _err: u64, rip: u64, _cr2: u64) -> bool {
     // Intel SDM Vol. 3 §6.7: #BP from `int3` (0xCC) is a trap, so
     // CPU pushes RIP = next instruction (= USER_CODE_VA + 1).
     if vec == 3 && rip == USER_CODE_VA + 1 {
-        klog::write_raw(b"[INFO]  userspace-eret-smoke: ok ring3 #BP rip=");
-        klog::write_hex_u64(rip);
-        klog::write_raw(b"\n");
+        debug_irq! {
+            klog::write_raw(b"[INFO]  userspace-eret-smoke: ok ring3 #BP rip=");
+            klog::write_hex_u64(rip);
+            klog::write_raw(b"\n");
+        }
         // Fall through to halt; #BP from user is a one-shot smoke
         // landmark, not a recoverable event.
     }
