@@ -271,6 +271,90 @@ pub unsafe fn translate_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u6
     }
 }
 
+/// Translate `va` walking the live tables, recognising huge/block
+/// leaves at intermediate levels. Returns
+/// `Some((pa_for_va, raw_leaf, leaf_level))` where:
+/// - `pa_for_va` includes the in-leaf offset (so `va`'s low bits
+///   appear in the result).
+/// - `raw_leaf` is the unmodified leaf entry (caller decodes flags).
+/// - `leaf_level` ∈ {1 (1 GiB block), 2 (2 MiB block), 3 (4 KiB page)}.
+///
+/// Returns `None` if no leaf is present along the walk.
+///
+/// # SAFETY: caller asserts (a) HHDM covers page-table memory,
+/// (b) the active root is stable for the walk duration. Reads only.
+/// # C: O(walk depth) = O(4)
+/// # Ctx: read-only walk
+pub unsafe fn translate_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64, u64, u8)> {
+    // SAFETY: privileged read; legal in kernel mode.
+    let mut current_pa = unsafe { W::read_pt_base() };
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    for level in 0..4u8 {
+        let idx = ((va >> shifts[level as usize]) & TABLE_IDX_MASK) as usize;
+        // SAFETY: HHDM covers page-table memory per fn contract; reads only.
+        let entry = unsafe {
+            let table = (hhdm_offset.wrapping_add(current_pa)) as *const u64;
+            ptr::read_volatile(table.add(idx))
+        };
+        if !W::is_valid(entry) { return None; }
+        if level == 3 {
+            // L3 page leaf — final descent.
+            let page_pa = entry & W::PHYS_MASK;
+            let offset = va & ((1u64 << L3_SHIFT) - 1);
+            return Some((page_pa | offset, entry, 3));
+        }
+        if W::is_huge_or_block(entry) {
+            // Block leaf at L1 (1 GiB) or L2 (2 MiB). L0 huge isn't
+            // legal on either arch in v1 — bail to avoid a 512 GiB
+            // misread.
+            if level == 0 { return None; }
+            let block_pa = entry & W::PHYS_MASK;
+            let offset = va & ((1u64 << shifts[level as usize]) - 1);
+            return Some((block_pa | offset, entry, level));
+        }
+        current_pa = entry & W::PHYS_MASK;
+    }
+    None
+}
+
+/// Tear down a leaf at `va` regardless of size. Walks live tables,
+/// stops at the first leaf encountered (4 KiB page or huge block),
+/// zeroes its slot, and locally flushes the TLB. Returns the
+/// `(torn_leaf, leaf_level)` on success or `None` if no leaf is
+/// present.
+///
+/// # SAFETY: caller asserts (a) HHDM covers page-table memory,
+/// (b) `va` exclusively owned (no concurrent walker/use), (c)
+/// caller will perform any cross-CPU TLB shootdown beyond the
+/// local invalidate this function does.
+/// # C: O(walk depth) = O(4)
+/// # Ctx: pre-init or under PT-write lock.
+pub unsafe fn unmap_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u64, u8)> {
+    // SAFETY: privileged read; legal in kernel mode.
+    let mut current_pa = unsafe { W::read_pt_base() };
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    for level in 0..4u8 {
+        let idx = ((va >> shifts[level as usize]) & TABLE_IDX_MASK) as usize;
+        // SAFETY: HHDM covers page-table memory; va exclusively owned per fn contract.
+        unsafe {
+            let table = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
+            let slot = table.add(idx);
+            let entry = ptr::read_volatile(slot);
+            if !W::is_valid(entry) { return None; }
+            let is_leaf = level == 3 || (W::is_huge_or_block(entry) && level != 0);
+            if is_leaf {
+                ptr::write_volatile(slot, 0);
+                W::flush_va(va);
+                return Some((entry, level));
+            }
+            // L0 with huge bit set is malformed; bail.
+            if W::is_huge_or_block(entry) { return None; }
+            current_pa = entry & W::PHYS_MASK;
+        }
+    }
+    None
+}
+
 /// Tear down a 4 KiB leaf at `va` if present. No-op if not mapped
 /// or if a non-bottom-level entry blocks the walk. Returns the
 /// torn-down leaf entry on success.
@@ -382,14 +466,11 @@ mod tests {
             (pa & Self::PHYS_MASK) | 1 | 4
         }
         fn pack_block_leaf(pa: u64, _flags: crate::PageFlags) -> u64 {
-            // Test stub: bit 5 marks "this is a block/huge leaf"
-            // distinct from the 4 KiB leaf (bit 4) and the table
-            // entry (bit 0 only). is_huge_or_block in this stub
-            // checks bit 1 which we leave clear here — block leaves
-            // at intermediate levels are still detected as "valid
-            // entry" by the walker; the leaf-vs-table distinction
-            // is for future map_at_level + huge translate paths.
-            (pa & Self::PHYS_MASK) | 1 | 0x20
+            // Test stub: bit 0 = valid, bit 1 = huge-or-block (so
+            // `is_huge_or_block` returns true for translate/unmap
+            // walks), bit 5 marks "this is a block/huge leaf"
+            // distinct from the 4 KiB page leaf (bit 4).
+            (pa & Self::PHYS_MASK) | 1 | 2 | 0x20
         }
     }
 
@@ -505,6 +586,63 @@ mod tests {
         let r = unsafe { map_at_level::<HostWalker, _>(va, 1, leaf, 0, &mut alloc) };
         assert_eq!(r, Ok(()));
         assert_eq!(allocated, 1, "L1 table allocated; L2/L3 skipped");
+    }
+
+    #[test]
+    fn translate_at_va_recognises_2m_block_leaf() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let pages_cell = core::cell::RefCell::new(reset());
+        let mut alloc = || -> Option<u64> {
+            let p = alloc::boxed::Box::new(AlignedTable([0u64; ENTRIES_PER_TABLE]));
+            let pa = p.0.as_ptr() as u64;
+            pages_cell.borrow_mut().push(p);
+            Some(pa)
+        };
+        let va = 0x0000_1234_0020_0000_u64;
+        let pa = 0x0000_0000_dee0_0000_u64;
+        let leaf = HostWalker::pack_block_leaf(pa, crate::PageFlags::READ | crate::PageFlags::WRITE);
+        // SAFETY: hosted test; SERIAL mutex serializes the FAKE_ROOT static accessed by HostWalker.
+        let r = unsafe { map_at_level::<HostWalker, _>(va, 2, leaf, 0, &mut alloc) };
+        assert_eq!(r, Ok(()));
+
+        // Pick an in-block offset whose only set bits are below the
+        // 4 KiB page-frame boundary so `resolved & PHYS_MASK` still
+        // equals `pa`. Larger offsets within the 2 MiB block also
+        // work but mask differently; the tested invariant here is
+        // that the walker reconstructs `pa | offset` verbatim.
+        let off = 0xa3_u64;
+        // SAFETY: hosted test; SERIAL mutex serializes the FAKE_ROOT static accessed by HostWalker.
+        let t = unsafe { translate_at_va::<HostWalker>(va | off, 0) };
+        let (resolved, raw, level) = t.expect("leaf should be present");
+        assert_eq!(level, 2);
+        assert_eq!(raw, leaf);
+        assert_eq!(resolved, pa | off);
+    }
+
+    #[test]
+    fn unmap_at_va_clears_2m_block_leaf() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let pages_cell = core::cell::RefCell::new(reset());
+        let mut alloc = || -> Option<u64> {
+            let p = alloc::boxed::Box::new(AlignedTable([0u64; ENTRIES_PER_TABLE]));
+            let pa = p.0.as_ptr() as u64;
+            pages_cell.borrow_mut().push(p);
+            Some(pa)
+        };
+        let va = 0x0000_1234_0020_0000_u64;
+        let pa = 0x0000_0000_dee0_0000_u64;
+        let leaf = HostWalker::pack_block_leaf(pa, crate::PageFlags::READ);
+        // SAFETY: hosted test; SERIAL mutex serializes the FAKE_ROOT static accessed by HostWalker.
+        let _ = unsafe { map_at_level::<HostWalker, _>(va, 2, leaf, 0, &mut alloc) };
+
+        // SAFETY: hosted test; SERIAL mutex serializes the FAKE_ROOT static accessed by HostWalker.
+        let u = unsafe { unmap_at_va::<HostWalker>(va, 0) };
+        let (got, level) = u.expect("leaf should have been there");
+        assert_eq!(level, 2);
+        assert_eq!(got, leaf);
+        // After unmap, translate returns None.
+        // SAFETY: hosted test; SERIAL mutex serializes the FAKE_ROOT static accessed by HostWalker.
+        assert_eq!(unsafe { translate_at_va::<HostWalker>(va, 0) }, None);
     }
 
     #[test]
