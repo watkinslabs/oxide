@@ -71,10 +71,12 @@ pub mod sched;
 #[cfg(target_os = "oxide-kernel")]
 pub mod elf_load;
 
-/// Boot-path smoke for the ELF loader. x86_64 only for v1; the
-/// arm equivalent rides P2-16b alongside the drop-to-ring3 work.
+/// Per-arch ELF execution smoke. Parses a hand-synthesised
+/// ELF64 and drops to ring 3 / EL0 via the demand-page path.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod elf_smoke;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub mod elf_smoke_arm;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(target_arch = "aarch64")]
@@ -431,13 +433,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { elf_smoke::run(info.hhdm_offset); }
     }
 
-    // First userspace `eret` smoke (P2-09) on aarch64.
+    // First ELF-loaded userspace per docs/31 (P2-16c) on aarch64.
+    // Diverges via the deliberate brk landmark after sys_exit's
+    // eret. Parallel to the x86_64 elf_smoke path; uses
+    // `VmaBacking::KernelBytes` + demand-paging through the AS.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
-        // SAFETY: PMM + MmuOps initialised; interior-U=1 walker live
-        // (P1-95); TTBR0/TTBR1 selector wired (P2-08); single-CPU;
-        // DAIF.I masked at EL1.
-        unsafe { userspace_smoke_arm::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+        // SAFETY: PMM + MmuOps + VBAR_EL1 + per-AS PT root (P2-19) +
+        // SVC dispatch all initialised; single-CPU; DAIF.I masked.
+        unsafe { elf_smoke_arm::run(); }
     }
 
     halt_forever()
