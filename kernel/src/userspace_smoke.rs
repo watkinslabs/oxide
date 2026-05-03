@@ -23,7 +23,7 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
-use hal_x86_64::{set_rsp0, USER_CS, USER_DS};
+use hal_x86_64::{install_fault_handler, set_rsp0, USER_CS, USER_DS};
 
 const USER_CODE_VA:  u64 = 0x0040_0000;
 const USER_STACK_VA: u64 = 0x0050_0000;
@@ -31,13 +31,29 @@ const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 const KSTACK_SIZE: u64 = 0x1000;
 
 // User blob: `mov $0x42,%eax; syscall; ud2`. Loads nr=0x42 then
-// traps into LSTAR. `ud2` is a tripwire — if syscall ever falls
-// through (it shouldn't, dispatcher halts), #UD fires.
+// traps into LSTAR. After sysretq lands user back at the ud2 byte,
+// #UD fires (vec 6) and the handler below logs the round-trip.
 //
-//   B8 42 00 00 00    mov  $0x42, %eax
-//   0F 05             syscall
-//   0F 0B             ud2
+//   B8 42 00 00 00    mov  $0x42, %eax        offset 0..5
+//   0F 05             syscall                 offset 5..7
+//   0F 0B             ud2                     offset 7..9    ← sysret RIP
 const USER_BLOB: [u8; 9] = [0xB8, 0x42, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x0F, 0x0B];
+
+/// User code addr immediately after `syscall`; sysretq lands here.
+const USER_RIP_POST_SYSRET: u64 = USER_CODE_VA + 7;
+
+/// Handler that watches for `#UD` from user at the ud2 tripwire —
+/// confirms full ring0→ring3→ring0 round-trip via syscall+sysretq.
+fn user_sysret_handler(vec: u64, _err: u64, rip: u64, _cr2: u64) -> bool {
+    if vec == 6 && rip == USER_RIP_POST_SYSRET {
+        debug_irq! {
+            klog::write_raw(b"[INFO]  userspace-sysret-smoke: ok ring3 #UD rip=");
+            klog::write_hex_u64(rip);
+            klog::write_raw(b"\n");
+        }
+    }
+    false
+}
 
 /// Map a single 4 KiB user page at `va` with the given flags.
 /// # SAFETY: caller asserts `va` is unmapped on entry; PMM + MmuOps
@@ -112,6 +128,10 @@ pub unsafe fn run<M: MmuOps>(hhdm_offset: u64) -> ! {
     // SAFETY: TSS in kernel BSS; we serialise pre-init; rsp0 points
     // at the top of a freshly-allocated, HHDM-mapped 4 KiB frame.
     unsafe { set_rsp0(kstack_top); }
+
+    // Install the #UD-on-sysret-landing handler.
+    // SAFETY: handler fn is 'static; pre-init single-CPU swap.
+    let _prev = unsafe { install_fault_handler(user_sysret_handler) };
 
     debug_irq! {
         klog::write_raw(b"[INFO]  userspace-eret-smoke: about to iretq cs=");

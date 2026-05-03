@@ -1,7 +1,7 @@
-// Syscall entry path per `20§7`. Phase 2 P2-01 minimal landing:
-// MSR setup (EFER.SCE, LSTAR, STAR, SFMASK) + the `oxide_syscall_entry`
-// asm stub. Sysretq return path lands with P2-02; until then the
-// kernel-side dispatcher halts after logging.
+// Syscall entry + sysretq return path per `20§7`. P2-01 landed the
+// MSR setup + entry stub (halting dispatcher); P2-02 wires the
+// sysretq epilogue and the GDT descriptors at sel 0x38/0x40/0x48
+// that sysretq's selector arithmetic requires.
 //
 // `syscall` semantics (Intel SDM Vol. 2 + AMD APM Vol. 3):
 //   - User RIP saved in rcx, user RFLAGS saved in r11.
@@ -102,11 +102,11 @@ core::arch::global_asm!(
     ".globl oxide_syscall_entry",
     ".type  oxide_syscall_entry, @function",
     "oxide_syscall_entry:",
-    "    mov  r12, rsp",                              // stash user RSP (callee-saved by syscall)
+    "    mov  r12, rsp",                              // stash user RSP (syscall preserves r12)
     "    mov  rsp, [rip + OXIDE_SYSCALL_KSTACK]",     // switch to kernel scratch stack
-    // Push everything we'll need to restore on sysret + the
-    // syscall-arg regs in source order. Order on the stack
-    // (low→high after the seven pushes):
+    // Push everything we'll need to restore on sysretq + the
+    // syscall-arg regs in source order. Stack layout after the
+    // 10 pushes (low→high):
     //   [rsp+0x00] rax (nr)
     //   [rsp+0x08] rdi (a0)
     //   [rsp+0x10] rsi (a1)
@@ -114,9 +114,9 @@ core::arch::global_asm!(
     //   [rsp+0x20] r10 (a3)
     //   [rsp+0x28] r8  (a4)
     //   [rsp+0x30] r9  (a5)
-    //   [rsp+0x38] rcx (user RIP)
-    //   [rsp+0x40] r11 (user RFLAGS)
-    //   [rsp+0x48] r12 (user RSP)
+    //   [rsp+0x38] rcx (user RIP)         ← reloaded into rcx pre-sysretq
+    //   [rsp+0x40] r11 (user RFLAGS)      ← reloaded into r11 pre-sysretq
+    //   [rsp+0x48] r12 (user RSP)         ← reloaded into rsp pre-sysretq
     "    push r12",                                    // user RSP
     "    push r11",                                    // user RFLAGS
     "    push rcx",                                    // user RIP
@@ -127,25 +127,30 @@ core::arch::global_asm!(
     "    push rsi",                                    // a1
     "    push rdi",                                    // a0
     "    push rax",                                    // nr
-    // Now pop into the SysV ABI arg-reg order for
-    // oxide_syscall_dispatch(nr, a0, a1, a2, a3, a4).
+    // Pop into SysV arg-reg order for oxide_syscall_dispatch(nr,
+    // a0..a4) returning u64 retval in rax.
     "    pop  rdi",                                    // nr
     "    pop  rsi",                                    // a0
     "    pop  rdx",                                    // a1
     "    pop  rcx",                                    // a2
     "    pop  r8",                                     // a3
     "    pop  r9",                                     // a4
-    "    pop  rax",                                    // a5 (discarded)
-    // SysV ABI: rsp must be 16-aligned at the `call`. After 10
-    // pushes (80 B) and 7 pops (56 B), net +24 B since stub entry —
-    // misaligned by 8. Subtract 8 to align.
+    "    pop  r10",                                    // a5 (discarded; r10 reused below)
+    // After 7 pops, rsp is at the 3-quadword tail (RIP / RFLAGS /
+    // RSP). The pops consumed 56 B; 10×8 - 7×8 = 24 B remain. SysV
+    // requires rsp 16-aligned at `call`; current offset is -24
+    // mod 16 = 8 → subtract 8 to align.
     "    sub  rsp, 8",
-    "    call oxide_syscall_dispatch",
-    // Dispatcher halts in P2-01; this halt-loop is the unreachable
-    // tail in case the dispatcher ever returns prematurely.
-    "    cli",
-    "1:  hlt",
-    "    jmp 1b",
+    "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
+    "    add  rsp, 8",                                 // undo align
+    // Restore user state from the 3-quadword tail and sysretq.
+    // sysretq pops user RIP from rcx, RFLAGS from r11, sets CS =
+    // STAR[63:48]+16 / SS = STAR[63:48]+8 (RPL forced 3). The Rust
+    // dispatcher's u64 return value remains in rax across this.
+    "    pop  rcx",                                    // user RIP
+    "    pop  r11",                                    // user RFLAGS
+    "    pop  rsp",                                    // user RSP (CPU sets RSP last; we mirror)
+    "    sysretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
 );
 
@@ -155,8 +160,8 @@ extern "C" {
 }
 
 /// Hook invoked by the asm stub. v1 implementation: log nr + a0,
-/// then halt. Real syscall dispatch lands when `crates/syscall`'s
-/// ABI surface is bound + sysretq lands (P2-02).
+/// return a sentinel retval in rax. Real syscall dispatch lands
+/// when `crates/syscall`'s ABI surface is bound.
 ///
 /// # SAFETY: invoked only from `oxide_syscall_entry` after stack
 /// switch; runs single-CPU with IF=0 (SFMASK clears IF on entry).
@@ -165,7 +170,7 @@ extern "C" {
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64,
-) -> ! {
+) -> u64 {
     debug_irq! {
         klog::write_raw(b"[INFO]  syscall-smoke: ok nr=");
         klog::write_hex_u64(nr);
@@ -174,11 +179,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_raw(b"\n");
     }
     let _ = (nr, a0);
-    loop {
-        // SAFETY: `hlt` parks the CPU until next IRQ; with IF=0 this
-        // is the terminal state for this one-shot smoke.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
-    }
+    // Sentinel retval — the round-trip smoke (P2-02 user blob) will
+    // observe this in %rax after sysretq.
+    0xC0DE_0042
 }
 
 /// Set IA32_LSTAR / IA32_STAR / IA32_FMASK + EFER.SCE for `syscall`
@@ -203,11 +206,10 @@ pub unsafe fn install_syscall_msrs() {
             wrmsr(IA32_EFER, efer | EFER_SCE);
 
             // STAR[47:32] = kernel CS base = 0x28 → kernel SS = 0x30.
-            // STAR[63:48] = user CS32 base = 0x18 (placeholder; the
-            // P2-02 sysretq PR will populate the GDT slot pair at
-            // 0x18/0x20/0x28 properly. Until then sysretq is not
-            // exercised, so this value is benign.)
-            let star: u64 = (0x28u64 << 32) | (0x18u64 << 48);
+            // STAR[63:48] = 0x38 → sysret-compat CS=0x38, sysret SS=0x40,
+            // sysretq CS=0x48 (RPL forced to 3 by the instruction).
+            // Matches `gdt::USER_CS32` / `gdt::USER_DS` / `gdt::USER_CS`.
+            let star: u64 = (0x28u64 << 32) | (0x38u64 << 48);
             wrmsr(IA32_STAR, star);
 
             wrmsr(IA32_LSTAR, oxide_syscall_entry as usize as u64);
