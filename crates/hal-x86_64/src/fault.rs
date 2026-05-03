@@ -187,24 +187,36 @@ unsafe fn read_cr2() -> u64 {
 /// `FaultFrame` on the kernel stack. We only read.
 /// # C: O(constant)
 /// # Ctx: exception context, IRQs off
+// Per `04§4.0` (R06): emit-path call sites gated under `debug-irq`.
+// Default builds halt silently on a fault; the diagnostic dump rides
+// the same gate as the rest of the IRQ/exception trace surface.
+#[cfg(feature = "debug-irq")]
+macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-irq"))]
+macro_rules! debug_irq { ($($t:tt)*) => {} }
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *const FaultFrame) {
     // SAFETY: stub-built frame on the kernel stack, valid for read.
     let f = unsafe { &*frame_ptr };
-    klog::write_raw(b"[FAULT] vec=");
-    klog::write_hex_u64(f.vector);
-    klog::write_raw(b" err=");
-    klog::write_hex_u64(f.error);
-    klog::write_raw(b" rip=");
-    klog::write_hex_u64(f.rip);
-    klog::write_raw(b" rflags=");
-    klog::write_hex_u64(f.rflags);
-    if f.vector == 14 {
-        klog::write_raw(b" cr2=");
-        // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
-        let cr2 = unsafe { read_cr2() };
-        klog::write_hex_u64(cr2);
+    debug_irq! {
+        klog::write_raw(b"[FAULT] vec=");
+        klog::write_hex_u64(f.vector);
+        klog::write_raw(b" err=");
+        klog::write_hex_u64(f.error);
+        klog::write_raw(b" rip=");
+        klog::write_hex_u64(f.rip);
+        klog::write_raw(b" rflags=");
+        klog::write_hex_u64(f.rflags);
+        if f.vector == 14 {
+            klog::write_raw(b" cr2=");
+            // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
+            let cr2 = unsafe { read_cr2() };
+            klog::write_hex_u64(cr2);
+        }
+        klog::write_raw(b"\n");
     }
-    klog::write_raw(b"\n");
+    #[cfg(not(feature = "debug-irq"))]
+    { let _ = f; }
 }
