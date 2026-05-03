@@ -34,15 +34,17 @@ pub const MEMMAP_ID: RequestId = RequestId([
 ]);
 
 /// `LIMINE_HHDM_REQUEST` — higher-half direct-map base per `36§3`.
+/// Magic pinned against `limine-protocol/include/limine.h` v12 line 143.
 pub const HHDM_ID: RequestId = RequestId([
     LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
-    0x48dc_f1cb_8ad2_b852, 0x6342_8723_2167_8025,
+    0x48dc_f1cb_8ad2_b852, 0x6398_4e95_9a98_244b,
 ]);
 
 /// `LIMINE_RSDP_REQUEST` — ACPI RSDP physical address.
+/// Magic pinned against `limine-protocol/include/limine.h` v12 line 478.
 pub const RSDP_ID: RequestId = RequestId([
     LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
-    0xc5e7_7b6b_397e_7b43, 0x2735_2997_5a5f_4444,
+    0xc5e7_7b6b_397e_7b43, 0x2763_7845_accd_cf3c,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -203,6 +205,23 @@ mod tests {
             assert_eq!(id.0[1], LIMINE_COMMON_MAGIC_1,
                 "request id {:?} missing common magic 1", id);
         }
+    }
+
+    #[test]
+    fn per_feature_magic_matches_limine_protocol_v12() {
+        // Pin canonical magic words from
+        // `limine-protocol/include/limine.h` (v12.x):
+        //   LIMINE_MEMMAP_REQUEST_ID = { ..., 0x67cf3d9d378a806f, 0xe304acdfc50c3c62 }
+        //   LIMINE_HHDM_REQUEST_ID   = { ..., 0x48dcf1cb8ad2b852, 0x63984e959a98244b }
+        //   LIMINE_RSDP_REQUEST_ID   = { ..., 0xc5e77b6b397e7b43, 0x27637845accdcf3c }
+        // A typo here means the bootloader scans for our marker and
+        // never finds it, leaving `response` null — and silently so.
+        assert_eq!(MEMMAP_ID.0[2], 0x67cf_3d9d_378a_806f);
+        assert_eq!(MEMMAP_ID.0[3], 0xe304_acdf_c50c_3c62);
+        assert_eq!(HHDM_ID.0[2],   0x48dc_f1cb_8ad2_b852);
+        assert_eq!(HHDM_ID.0[3],   0x6398_4e95_9a98_244b);
+        assert_eq!(RSDP_ID.0[2],   0xc5e7_7b6b_397e_7b43);
+        assert_eq!(RSDP_ID.0[3],   0x2763_7845_accd_cf3c);
     }
 
     #[test]

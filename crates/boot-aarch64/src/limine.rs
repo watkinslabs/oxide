@@ -16,9 +16,10 @@ pub struct RequestId(pub [u64; 4]);
 
 pub const REVISION_0: u64 = 0;
 
+// Magic pinned against `limine-protocol/include/limine.h` v12 line 143.
 pub const HHDM_ID: RequestId = RequestId([
     LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
-    0x48dc_f1cb_8ad2_b852, 0x6342_8723_2167_8025,
+    0x48dc_f1cb_8ad2_b852, 0x6398_4e95_9a98_244b,
 ]);
 
 #[repr(C)]
