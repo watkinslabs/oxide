@@ -15,12 +15,9 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
 use syscall::{dispatch, SyscallArgs};
 use syscall::errno::Errno;
-use hal::{MmuOps, Pa, PageFlags, PageSize, USER_VA_END, Va};
-use hal::TimerOps;
+use hal::{TimerOps, USER_VA_END};
 
 #[cfg(target_arch = "x86_64")]
 const SYSCALL_NR_ARCH_PRCTL: u64 = 158;
