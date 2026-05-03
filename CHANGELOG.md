@@ -182,3 +182,21 @@ End-of-session-9 verified-green:
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` reaches `[INFO]  preempt: done yields=0 ticks=17 ... boot: kernel ready, halting` after the 4-kthread preempt smoke.
 - `make qemu-arm --features debug-all` same trace, ticks=16.
+
+---
+
+## Session 10 (PRs #139 – #140) — 2026-05-03
+
+**Subject**: 64-task ctxsw register canary + ksched.rs split.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #139 | `P1-83-ctxsw-canary` | 64-task ctxsw register-canary smoke per `docs/14§8`. Each canary kthread holds a unique per-task mark in callee-saved GP regs (r12..r15 on x86; x20..x28 on arm) across `hlt`/`wfi`. The IRQ may preempt; picker may switch to another kthread; eventually we get switched back; every reg must still hold the mark. On corruption: log fault values + `cli;hlt`/`daifset+wfi` so the smoke fails to complete (absence of `canary: done` line is the operator-visible signature). LLVM forbids `rbx`/`rbp` and `x18`/`x19`/`x29`/`x30` as `inout` operands; remaining callee-saves cover the test surface; `x19` exercised implicitly via the trampoline (loads `entry` from it). Bounded version (64 × 16-iter ≈ 1024 switches per arch); the full 1h soak is filed for background CI per `40§3`. Refactors `ksched::preempt_install_with(n, entry)` so the canary supplies its own kthread body; adds `mark_done` helper. |
+| #140 | `C24-ksched-split` | Per the 500-line soft-cap discipline (`08§7`), split `kernel/src/ksched.rs` (505 → 367 lines). Extracted `smoke_preempt_x86` / `smoke_preempt_arm` / `preempt_kthread_entry` / `TICK_BUDGET` into new `kernel/src/preempt_smoke.rs` (146 lines). `KSched`/`KThread` fields exposed `pub(crate)` so `preempt_smoke` and `canary` can read scheduler state through the same shim. Behaviour preserved byte-for-byte: identical QEMU output on both arches (`preempt: done yields=0 ticks=17` x86 / `ticks=16` arm; `canary: done n=64 iters=16 ticks=1088` both arches). |
+
+End-of-session-10 verified-green:
+- `make lint` clean.
+- `make test` → 465 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` → preempt smoke + canary smoke + `boot: kernel ready, halting`.
+- `make qemu-arm --features debug-all` → same trace.
