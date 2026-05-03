@@ -414,26 +414,21 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { user_as::init(info.hhdm_offset); }
     }
 
-    // ELF loader boot smoke (P2-16): parse a hand-synthesised ELF
-    // and register its PT_LOAD as a `VmaBacking::KernelBytes` VMA
-    // in the global AS. Drop-to-ring3 of the loaded image lands
-    // in P2-16b; this PR proves the parse + VMA registration path.
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    {
-        elf_smoke::run();
-    }
 
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
-    // First userspace `iretq` smoke (P1-82) — x86_64 only. Diverges
-    // on success (#BP from CPL=3 logs `userspace-eret-smoke: ok` then
-    // halts). Skipped silently on aarch64 until the EL0 smoke lands.
+    // First ELF-loaded userspace per docs/31 (P2-16b) — x86_64 only.
+    // Diverges via the deliberate ud2 landmark after sys_exit's
+    // sysretq. Replaces the prior manual-mapping `userspace_smoke`
+    // path: code + buffer + stack are all backed by VMAs, leaving
+    // demand-paging through the real AS to materialise the pages.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
         // SAFETY: every prerequisite established above — kernel-owned
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
-        // PMM + MmuOps initialised; single-CPU; IRQs masked.
-        unsafe { userspace_smoke::run::<hal_x86_64::mmu_ops::X86Mmu>(info.hhdm_offset); }
+        // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)
+        // initialised; single-CPU; IRQs masked.
+        unsafe { elf_smoke::run(info.hhdm_offset); }
     }
 
     // First userspace `eret` smoke (P2-09) on aarch64.

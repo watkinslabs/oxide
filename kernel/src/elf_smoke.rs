@@ -1,12 +1,14 @@
-// ELF loader boot smoke per docs/31. Validates that
-// `kernel::elf_load::load_static_blob` parses a hand-synthesised
-// ELF64 and registers each PT_LOAD as a `VmaBacking::KernelBytes`
-// VMA in the global user `AddressSpace`.
+// ELF execution smoke per docs/31§4. Parses a hand-synthesised
+// ELF64, loads it into the global user `AddressSpace` via
+// `VmaBacking::KernelBytes` (P2-17), registers an anonymous stack
+// VMA, and drops to ring 3 at `e_entry`. Demand-paging copies
+// the ELF bytes into freshly-allocated user pages on first
+// access — no manual `MmuOps::map` calls.
 //
-// Drop-to-ring3 of the loaded image lives in a follow-up PR
-// (P2-16b) which factors `userspace_smoke`'s iretq frame builder
-// into a reusable primitive. Today's smoke proves the parse +
-// VMA registration path lights up cleanly under the boot trace.
+// The user blob does `write(1, "el\\n", 3); exit(0); ud2`; the
+// `#UD` landmark at the end is caught by the smoke handler so we
+// have a deterministic halt point matching the prior
+// `userspace_smoke` shape.
 
 #![cfg(target_os = "oxide-kernel")]
 #![cfg(target_arch = "x86_64")]
@@ -87,29 +89,48 @@ const fn build_elf() -> [u8; 164] {
 const ELF_BLOB_BYTES: [u8; 164] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
-/// Parse + load the synthesised ELF into the global user AS.
-/// Logs `elf-smoke: load ok entry=...` on success and the error
-/// code on failure. Idempotent across multiple boots in the same
-/// build (the AS is populated with overlapping MAP_FIXED, which
-/// the loader handles via clear-then-place per `11§6`).
+/// User stack VMA placed disjoint from the ELF image. 4 KiB; v1
+/// stand-in for the docs/31§4 8 MiB MAP_GROWSDOWN stack, which
+/// rides P2-18 alongside SIGSEGV delivery.
+const USER_STACK_VA:  u64 = 0x501_000;
+const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
+
+/// File-side address of the ud2 landmark — entry (0x400080) +
+/// 31 (offset of `0F 0B` inside the synthesised code block).
+const USER_RIP_UD2: u64 = 0x400080 + 31;
+
+/// `#UD` landmark handler. Chains to user_as for legitimate
+/// demand-page faults; on the deliberate ud2 from sys_exit's
+/// sysretq landing, logs the success line.
+fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
+    if crate::user_as::user_fault_handler(vec, err, rip, cr2) {
+        return true;
+    }
+    if vec == 6 && rip == USER_RIP_UD2 {
+        debug_irq! {
+            klog::write_raw(b"[INFO]  elf-smoke: ok ring3 #UD rip=");
+            klog::write_hex_u64(rip);
+            klog::write_raw(b"\n");
+        }
+    }
+    false
+}
+
+/// Parse + load + drop to ring 3. Diverges. Replaces
+/// `userspace_smoke::run` for the x86_64 boot path.
 ///
 /// # SAFETY: caller is the boot path; user_as::init has run; PMM
-/// + MmuOps state initialised; single-CPU pre-init.
-/// # C: O(phdrs) parse + O(phdrs) mmap
-/// # Ctx: pre-init, IRQ-off, single-CPU
-pub fn run() {
-    let r = crate::user_as::with(|as_| load_static_blob(ELF_BLOB, as_));
-    match r {
-        Some(Ok(img)) => {
-            debug_irq! {
-                klog::write_raw(b"[INFO]  elf-smoke: load ok entry=");
-                klog::write_hex_u64(img.entry.as_u64());
-                klog::write_raw(b" brk=");
-                klog::write_hex_u64(img.brk.as_u64());
-                klog::write_raw(b"\n");
-            }
-            let _ = img;
-        }
+/// + MmuOps + GDT + TSS + IDT + syscall MSRs all initialised;
+/// single-CPU; IRQs masked.
+/// # C: O(phdrs) parse + O(1) drop
+/// # Ctx: pre-init, IRQ-off, single-CPU; diverges
+pub unsafe fn run(hhdm_offset: u64) -> ! {
+    use vmm::{VmaBacking, VmaFlags, VmaProt};
+    use hal::UserVirtAddr;
+
+    // 1. Load the ELF into the global AS.
+    let img = match crate::user_as::with(|as_| load_static_blob(ELF_BLOB, as_)) {
+        Some(Ok(i))  => i,
         Some(Err(e)) => {
             debug_irq! {
                 klog::write_raw(b"[FAULT] elf-smoke: load failed err=");
@@ -117,11 +138,60 @@ pub fn run() {
                 klog::write_raw(b"\n");
             }
             let _ = e;
+            halt_forever();
         }
         None => {
-            debug_irq! {
-                klog::kerror!("elf-smoke: user_as not initialised");
-            }
+            debug_irq! { klog::kerror!("elf-smoke: user_as not initialised"); }
+            halt_forever();
         }
+    };
+
+    debug_irq! {
+        klog::write_raw(b"[INFO]  elf-smoke: load ok entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b" brk=");
+        klog::write_hex_u64(img.brk.as_u64());
+        klog::write_raw(b"\n");
+    }
+
+    // 2. Register an anonymous user-stack VMA. Demand-paging
+    //    on first push gives us a fresh zeroed frame.
+    let stack_hint = match UserVirtAddr::new(USER_STACK_VA) {
+        Some(u) => u,
+        None    => { debug_irq! { klog::kerror!("elf-smoke: bad stack VA"); } halt_forever(); }
+    };
+    let stack_r = crate::user_as::with(|as_| {
+        as_.mmap(
+            Some(stack_hint), 0x1000,
+            VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+            VmaBacking::Anonymous,
+            true,                          // MAP_FIXED at USER_STACK_VA
+        )
+    });
+    if !matches!(stack_r, Some(Ok(_))) {
+        debug_irq! { klog::kerror!("elf-smoke: stack mmap failed"); }
+        halt_forever();
+    }
+
+    // 3. Drop to ring 3 at e_entry. iretq's instruction-fetch at
+    //    `entry` will take a #PF that user_as_fault_handler
+    //    resolves via the KernelBytes-backed VMA — that's the
+    //    real demand-page path the spec wants.
+    // SAFETY: GDT/TSS/IDT/syscall MSRs initialised by kernel_main; entry & stack VMAs registered above; CPL=0; IRQs masked.
+    unsafe {
+        crate::userspace_smoke::drop_to_ring3(
+            img.entry.as_u64(),
+            USER_STACK_TOP,
+            hhdm_offset,
+            elf_smoke_fault_handler,
+        );
+    }
+}
+
+fn halt_forever() -> ! {
+    loop {
+        // SAFETY: cli+hlt parks the CPU until next IRQ; with IRQs masked there's no wake — terminal halt.
+        unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags)); }
     }
 }
