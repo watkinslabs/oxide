@@ -21,6 +21,18 @@ extern crate std;
 pub mod dtb;
 pub mod pl011;
 
+/// Limine base-revision marker per Limine v12 protocol. Limine scans
+/// `.limine_requests` for this 3-word magic and requires revision ≥ 6
+/// on aarch64; revision 0 is rejected. Values are protocol-stable
+/// across Limine 9..12.
+#[used]
+#[link_section = ".limine_requests"]
+static LIMINE_BASE_REVISION: [u64; 3] = [
+    0xf9562b2d5c95a6c8,
+    0x6a7b384944536bdc,
+    6,
+];
+
 use klog::Uart;
 use sync::{Spinlock, Tty as UartClass};
 
