@@ -146,6 +146,33 @@ where
     Some(f(as_ref))
 }
 
+/// Bump the global AS's strong refcount and return a fresh
+/// `Arc<AddressSpace>`. The returned Arc keeps the AS alive
+/// independently of the leaked `GLOBAL_AS_PTR` slot — used by
+/// `Task::new_user` to attach `mm`. Returns `None` if `init`
+/// hasn't run.
+/// # C: O(1)
+pub fn clone_global_arc() -> Option<Arc<AddressSpace>> {
+    let p = GLOBAL_AS_PTR.load(Ordering::Acquire);
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: p was installed via Arc::into_raw and never freed;
+    // bumping the strong count + reconstructing an Arc from the
+    // same raw pointer is the canonical "borrow as Arc" idiom.
+    unsafe { Arc::increment_strong_count(p); }
+    // SAFETY: matching Arc::from_raw consumes the bumped count.
+    Some(unsafe { Arc::from_raw(p) })
+}
+
+/// Cached HHDM offset captured at `init`. Used by demand-page
+/// callers that need the kernel-VA of a freshly-allocated frame.
+/// Returns 0 if `init` hasn't run.
+/// # C: O(1)
+pub fn hhdm_offset() -> u64 {
+    HHDM_OFFSET.load(Ordering::Acquire)
+}
+
 /// Translate Linux `PROT_*` bits (per `15§6.2`) to `VmaProt`.
 /// # C: O(1)
 pub fn prot_from_linux(prot: u64) -> VmaProt {
