@@ -19,11 +19,13 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
+mod cpuid;
 mod fault;
 mod fpu;
 mod mmu;
 mod pt_regs;
 mod vbar;
+pub use cpuid::midr_el1;
 pub use vbar::{install_default as install_default_vbar, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};
 pub use context::ContextAArch64;
