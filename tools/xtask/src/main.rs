@@ -429,6 +429,9 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path) -> Resul
         "-serial", "stdio",
         "-display", "none",
         "-no-reboot",
+        // Semihosting target=native lets the boot crate emit debug
+        // chars via `hlt #0xf000` while we're still pre-MMIO.
+        "-semihosting-config", "enable=on,target=native",
     ]);
     eprintln!("xtask qemu: launching qemu-system-aarch64 with GPT disk image (UEFI)");
     run(c)

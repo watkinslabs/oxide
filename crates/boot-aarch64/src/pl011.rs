@@ -10,12 +10,30 @@
 extern crate alloc;
 
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use klog::Uart;
+#[cfg(any(test, not(target_os = "oxide-kernel")))]
 use sync::{Spinlock, Tty as UartClass};
 
-/// Default PL011 base on the QEMU `virt` machine.
+/// Default PL011 *physical* base on the QEMU `virt` machine. Real
+/// MMIO goes through `HHDM_OFFSET + base + reg`; with `HHDM_OFFSET
+/// == 0` (test fallback or no Limine handoff) it degenerates to the
+/// raw PA, which is what host tests assert against.
 pub const PL011_VIRT_BASE: usize = 0x0900_0000;
+
+/// Limine HHDM (higher-half direct-map) offset per `36§3`. After
+/// handoff Limine maps all physical memory at this VA offset; the
+/// kernel can't dereference raw phys addresses without it. Boot
+/// writes this once from the LIMINE_HHDM response before the first
+/// MMIO access.
+static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// One-shot setter; boot calls after parsing the HHDM response.
+/// # C: O(1)
+pub fn set_hhdm_offset(offset: u64) {
+    HHDM_OFFSET.store(offset, Ordering::Release);
+}
 
 /// PL011 register offsets.
 mod reg {
@@ -40,33 +58,38 @@ const LCR_H_8BITS_FIFO: u32 = (0x3 << 5) | (1 << 4);
 const CR_ENABLE: u32 = (1 << 9) | (1 << 8) | (1 << 0);
 
 #[inline]
-unsafe fn mmio_read(addr: usize) -> u32 {
+fn pa_to_va(phys: usize) -> usize {
+    (HHDM_OFFSET.load(Ordering::Acquire) as usize).wrapping_add(phys)
+}
+
+#[inline]
+unsafe fn mmio_read(phys: usize) -> u32 {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
-        // SAFETY: caller asserts `addr` is a PL011 MMIO register
-        // owned by the boot path; volatile read sees no compiler
-        // reordering with surrounding stores.
-        unsafe { ptr::read_volatile(addr as *const u32) }
+        // SAFETY: caller asserts `phys` is a PL011 MMIO register
+        // owned by the boot path; we offset by the bootloader-
+        // supplied HHDM to get a kernel-space VA. Volatile read sees
+        // no compiler reordering with surrounding stores.
+        unsafe { ptr::read_volatile(pa_to_va(phys) as *const u32) }
     }
     #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
     {
-        let _ = addr;
+        let _ = phys;
         // Pretend FR.BUSY is clear and TX FIFO has room.
         0
     }
 }
 
 #[inline]
-unsafe fn mmio_write(addr: usize, val: u32) {
+unsafe fn mmio_write(phys: usize, val: u32) {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
-        // SAFETY: caller asserts `addr` is a PL011 MMIO register
-        // owned by the boot path; the device byte-orders u32 stores
-        // per its TRM.
-        unsafe { ptr::write_volatile(addr as *mut u32, val) };
+        // SAFETY: caller asserts `phys` is a PL011 MMIO register
+        // owned by the boot path; we offset by HHDM as above.
+        unsafe { ptr::write_volatile(pa_to_va(phys) as *mut u32, val) };
     }
     #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
-    { record_host(addr, val); }
+    { record_host(phys, val); }
 }
 
 /// PL011 UART. `base` is the MMIO base; `init` programs the device.
