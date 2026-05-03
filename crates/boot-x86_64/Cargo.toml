@@ -24,4 +24,13 @@ hosted     = []
 # `--features debug-boot` enables both because cargo applies
 # `--features` to every selected `-p` package that declares it.
 debug-boot = []
-debug-all  = ["debug-boot"]
+# Pass-through to `hal-x86_64`'s `debug-irq`. xtask's
+# `--features debug-irq|debug-all` only applies to the packages
+# it selects via `-p` (kernel + boot-x86_64 + kernel-bin-x86_64);
+# `hal-x86_64` is not on that list, so its debug-irq has to ride
+# through one of the selected packages' feature graphs to take
+# effect. Without this chain, the fault-printer + decoder in
+# `hal-x86_64::fault` were silently disabled in production
+# (latent since P1-86a / #160).
+debug-irq  = ["hal-x86_64/debug-irq"]
+debug-all  = ["debug-boot", "debug-irq"]
