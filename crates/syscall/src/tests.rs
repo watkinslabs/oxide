@@ -27,9 +27,11 @@ fn unbound_slots_default_to_enosys() {
     // Slots that have a real handler bound — keep this list in sync
     // with `dispatch::build_table()`.
     const BOUND: &[u32] = &[
+        0,    // sys_read (-EBADF)
         1,    // sys_write
         3,    // sys_close
-        9,    // sys_mmap (-ENOMEM stub)
+        8,    // sys_lseek (-ESPIPE)
+        9,    // sys_mmap
         10,   // sys_mprotect (no-op)
         11,   // sys_munmap (no-op)
         12,   // sys_brk (returns 0)
@@ -37,7 +39,11 @@ fn unbound_slots_default_to_enosys() {
         14,   // sys_rt_sigprocmask (no-op)
         16,   // sys_ioctl (-ENOTTY)
         20,   // sys_writev
+        24,   // sys_sched_yield
         28,   // sys_madvise (no-op)
+        32,   // sys_dup (-EBADF)
+        33,   // sys_dup2 (-EBADF)
+        35,   // sys_nanosleep
         39,   // sys_getpid
         60,   // sys_exit
         72,   // sys_fcntl (returns 0)
@@ -46,9 +52,12 @@ fn unbound_slots_default_to_enosys() {
         104,  // sys_getgid
         107,  // sys_geteuid
         108,  // sys_getegid
+        131,  // sys_sigaltstack
         186,  // sys_gettid
         218,  // sys_set_tid_address
         273,  // sys_set_robust_list
+        292,  // sys_dup3 (-EBADF)
+        293,  // sys_pipe2 (-ENOSYS)
         302,  // sys_prlimit64
         318,  // sys_getrandom (-ENOSYS — explicit not silent)
     ];
@@ -66,7 +75,7 @@ fn bound_slots_are_not_enosys() {
     // sys_getrandom returns Enosys but the slot is bound (the
     // is_enosys helper compares fn-pointers so a stub returning
     // Err(Enosys) passes !is_enosys; skip 318 here for clarity).
-    for nr in [1, 3, 9, 10, 11, 12, 13, 14, 16, 20, 28, 39, 60, 72, 89, 102, 104, 107, 108, 186, 218, 273, 302] {
+    for nr in [0, 1, 3, 8, 9, 10, 11, 12, 13, 14, 16, 20, 24, 28, 32, 33, 35, 39, 60, 72, 89, 102, 104, 107, 108, 131, 186, 218, 273, 292, 302] {
         assert!(!is_enosys(nr), "slot {nr} must be bound");
     }
 }
