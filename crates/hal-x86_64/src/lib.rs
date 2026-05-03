@@ -27,6 +27,7 @@ mod idt;
 mod mmu;
 mod pt_regs;
 mod regs;
+pub mod vmm;
 pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
 pub use regs::{read_cr0, read_cr3, read_cr4, read_efer};
 pub use fault::vector_stub_addr;
