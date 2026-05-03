@@ -1,12 +1,12 @@
-# State 2026-05-03 (session 12 EOD)
+# State 2026-05-03 (session 13 EOD)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker.** 143 PRs total; 470 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
+**Phase 1 substantially done. True IRQ-exit preemption live (R07) + 64-task ctxsw canary green + arch-generic page-table walker.** 147 PRs total; 470 hosted tests pass; both arches boot through Limine into `kernel_main`, parse ACPI, bring up PMM, splice kernel-device MMIO mappings into the live page tables (PMM-backed walker), enable LAPIC (x86) / GIC (arm), take real timer IRQs, run a 4-kthread preempt smoke, then a 64-kthread × 16-iter ctxsw register-canary smoke that validates callee-save preservation across `oxide_context_switch` (per `14§8`). The timer ISR drains `NEED_RESCHED` and `oxide_context_switch`s into the chosen task at the IRQ epilogue tail; fresh kthreads built via `Context::new_kernel_with_irq_frame` are entered via the synthetic IRQ frame's `iretq`/`eret`. Every spec-listed `klog::*` call site sits inside a `#[cfg(feature = "debug-<sub>")]` or `debug_<sub>!` macro-pair scope; default builds emit zero log bytes. `spec-lint code/klog-ungated` enforces project-wide.
 
-Last verified-green at session-12 EOD:
+Last verified-green at session-13 EOD:
 ```
 $ cargo run -p xtask -- spec-lint            # → spec-lint: clean
 $ cargo run -p xtask -- test                 # → 470 hosted tests, 0 failures
@@ -29,11 +29,12 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 ## What landed since previous EOD
 
-See `CHANGELOG.md § Session 12` for the per-PR table.
+See `CHANGELOG.md § Session 13` for the per-PR table.
 
-- **#143** (`C26-device-map-smoke-split`): split debug-macros + per-arch device-map smokes from `kernel/src/lib.rs` (700 → 423 lines, under the 500-line soft cap). New `kernel/src/debug_macros.rs` (36 lines) hoisted via `#[macro_use]`; new `kernel/src/device_map_smoke.rs` (300 lines) holds the per-arch HPET/LAPIC/GICD/GICC/PL011 constants + bring-up smoke bodies. Behaviour preserved byte-for-byte.
-- **#141** (`P1-85-mmu-walker-generic`): arch-generic 4-level walker. New `crates/hal/src/pt_walker.rs` with `PtWalker` trait + generic `map_device_4k<W, F>` driver; `PtWalkerX86`/`PtWalkerArm` impls supply bit semantics. Per-arch `map_device_4k` shims delegate; surface unchanged for callers. +5 hosted tests.
-- **Sessions 9–11 carry-over** (PRs #136–#142): Makefile (#136), R07 preempt (#137), session-9 docs (#138), 64-task canary (#139), ksched split (#140), pt_walker (#141), session-11 docs (#142). See `CHANGELOG.md`.
+- **#145** (`C28-spec-lint-no-dyn-hal`): `code/no-dyn-hal` lint rule per `07§5`. Forbids `dyn (MmuOps|CpuOps|Context|IrqOps|TimerOps)` at source-edit time so the post-build vtable grep doesn't have to be the only gate.
+- **#146** (`C29-ci-debug-all-matrix`): extends `.github/workflows/pr.yml` build-kernel matrix to cover both default + `debug-all` per arch (4 jobs total) per `04§3` recipe.
+- **#147** (`C30-xtask-qemu-split`): split `tools/xtask/src/main.rs` (576 → 184 lines) into `main.rs` + `image_qemu.rs` (404). All command helpers + `cmd_image` + `cmd_qemu` moved.
+- **Sessions 9–12 carry-over** (PRs #136–#144): Makefile, R07 preempt, canary, ksched split, pt_walker, lib.rs split, session docs. See `CHANGELOG.md`.
 
 ## What's done overall
 
@@ -84,14 +85,18 @@ Per-vector IRQ stub flow (both arches):
 5. **Page-fault path** (`11§5` + `11§7`): COW, fork, TLB shootdown.
 6. **Block writeback / procfs surface / VFS dentry cache / IPC bodies / userspace platform** — unchanged from session 8 EOD pending list.
 7. **CI matrix update** to exercise each `debug-<sub>` feature solo (per `04§3` recipe). Presupposes a real CI workflow file exists; that's still spec-only at `docs/40`.
-8. **Files over 500-line soft cap**: none. Recent splits: `ksched.rs` (session 10 → 367), `kernel/src/lib.rs` (session 12 → 423). All workspace files now under cap.
+8. **Files over 500-line soft cap** (deferred — non-kernel code or test files):
+    - `crates/pmm/src/tests.rs` (751) — split candidate per CLAUDE.md test-file rule.
+    - `crates/pmm/src/lib.rs` (626).
+    - `crates/slab/src/lib.rs` (508).
+   All kernel-side code files now under cap. Recent splits: `ksched.rs` (367), `kernel/src/lib.rs` (423), `tools/xtask/src/main.rs` (184).
 
 ## Repo state
 
 ```
-main (origin/main): 4c47ae7 Merge pull request #143 from watkinslabs/C26-device-map-smoke-split
+main (origin/main): b2ed85a Merge pull request #147 from watkinslabs/C30-xtask-qemu-split
 
-143 PRs landed total. Branches preserved (no deletions).
+147 PRs landed total. Branches preserved (no deletions).
 
 Session 9  (PRs #136 – #138):
   C22-makefile               — make wrapper
@@ -108,6 +113,12 @@ Session 11 (PR #141):
 Session 12 (PRs #142 – #143):
   C25-state-eod-session-11   — session-11 docs
   C26-device-map-smoke-split — split lib.rs (700 → 423) into debug_macros + device_map_smoke
+
+Session 13 (PRs #144 – #147):
+  C27-state-eod-session-12   — session-12 docs
+  C28-spec-lint-no-dyn-hal   — lint dyn HAL traits
+  C29-ci-debug-all-matrix    — CI matrix default + debug-all per arch
+  C30-xtask-qemu-split       — split xtask main.rs (576 → 184) into image_qemu module
 ```
 
 Active local branches at EOD: `main` (working tree clean). Recent feature branches preserved.
