@@ -16,6 +16,8 @@
 
 extern crate alloc;
 
+pub mod pmm_setup;
+
 /// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
 /// replaced by PMM-backed slab routing once a binary stage exists.
 /// Hosts the `BTreeMap` / `Vec` machinery used by `vmm::VmaTree` and
@@ -103,6 +105,20 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kinfo!("memmap: present");
     } else {
         klog::kinfo!("memmap: absent");
+    }
+
+    // Bring up the physical memory manager.
+    // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
+    // outlives the call.
+    match unsafe { pmm_setup::init_from_boot_info(info) } {
+        Ok(_)                                       => klog::kinfo!("pmm: ready"),
+        Err(pmm_setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
+        Err(pmm_setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
+        Err(pmm_setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
+        Err(pmm_setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
+        Err(pmm_setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
+        Err(pmm_setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
+        Err(pmm_setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
     }
 
 
