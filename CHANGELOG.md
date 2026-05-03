@@ -233,3 +233,22 @@ End-of-session-12 verified-green:
 - `make test` → 470 passed, 0 failed.
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt smoke + canary smoke pass; ticks counts unchanged from session 11; both reach `boot: kernel ready, halting`.
+
+---
+
+## Session 13 (PRs #144 – #147) — 2026-05-03
+
+**Subject**: spec-lint + CI hardening + tooling split.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #144 | `C27-state-eod-session-12` | session-12 EOD docs (lib.rs split) |
+| #145 | `C28-spec-lint-no-dyn-hal` | `code/no-dyn-hal` lint rule per `07§5`. Forbids `dyn (MmuOps\|CpuOps\|Context\|IrqOps\|TimerOps)` at source level so the post-build vtable grep isn't the only gate. Detection: literal `dyn <Trait>` followed by a non-ident character; strings + line comments stripped. Verified via 3-line fixture (2 violations flagged, 1 prefix-clash control skipped). |
+| #146 | `C29-ci-debug-all-matrix` | Extend `.github/workflows/pr.yml` build-kernel matrix to cover both default + `debug-all` per arch (4 jobs total) per `04§3` recipe. Per-debug-`<sub>` solo runs deferred (mostly redundant with `debug-all` aggregate). |
+| #147 | `C30-xtask-qemu-split` | Split `tools/xtask/src/main.rs` (576 → 184 lines, well under cap). New `tools/xtask/src/image_qemu.rs` (404) holds `cmd_image`, `cmd_qemu`, and shared helpers (`repo_root`, `kernel_elf_path`, `check_vendor`, `build_disk_image`, `build_iso`, per-arch `qemu_run_*`, `which`). `parse_arg`, `run`, `cmd_kernel` exposed `pub(crate)` so the new module can call them. Behaviour unchanged. |
+
+End-of-session-13 verified-green:
+- `make lint` clean (`code/no-dyn-hal` rule live).
+- `make test` → 470 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt smoke + canary smoke pass; ticks counts unchanged from session 12; both reach `boot: kernel ready, halting`.
