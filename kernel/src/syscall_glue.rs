@@ -152,12 +152,13 @@ fn kernel_sys_read(args: &SyscallArgs) -> i64 {
         Ok(f)  => f,
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // Build a user-side &mut [u8] of length min(cnt, 1) — the
-    // ConsoleInode protocol returns at most 1 byte per call. A
-    // future fd_table-aware copy_to_user would handle larger
-    // counts by ranging over `cnt` bytes safely.
-    let len = (cnt as usize).min(1);
-    // SAFETY: caller validated buf < USER_VA_END; user page mapped (caller's task already executed from this AS); CPL=0 writes through user mapping.
+    // ConsoleInode produces 1 byte/call (line discipline); pipes
+    // and /dev/zero|random fill the full buffer. Inode chooses.
+    if buf.checked_add(cnt).map_or(true, |e| e > USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let len = cnt as usize;
+    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END; user pages mapped via active CR3 (caller's AS); CPL=0 writes through user mapping; demand-paging resolves any not-present user pages on first kernel-side write.
     let user_buf: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(buf as *mut u8, len)
     };
