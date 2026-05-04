@@ -162,6 +162,84 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
+/// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
+/// v1: writes a minimal `struct statx` (256 B) for the file at
+/// `path` resolved through devfs, OR for `dirfd` if `path` is
+/// empty + AT_EMPTY_PATH set. Mask reports STATX_TYPE|MODE|INO.
+/// # C: O(1)
+pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
+    use vfs::FileType;
+    const AT_EMPTY_PATH: u32 = 0x1000;
+    let dirfd     = args.a0 as i32;
+    let path_ptr  = args.a1;
+    let flags     = args.a2 as u32;
+    let _mask     = args.a3 as u32;
+    let buf       = args.a4;
+    if let Err(rv) = validate_user_buf(buf, 256, 8) { return rv; }
+
+    if path_ptr == 0 || path_ptr >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
+    let path_opt = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
+    let inode = match path_opt {
+        Some(p) if !p.is_empty() => {
+            let s = match core::str::from_utf8(p) {
+                Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
+            };
+            match crate::devfs::lookup(s) {
+                Some(i) => i,
+                None    => return -(Errno::Enoent.as_i32() as i64),
+            }
+        }
+        _ if (flags & AT_EMPTY_PATH) != 0 => {
+            let cur = match crate::sched::current() {
+                Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+            };
+            // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+            let fdt = match unsafe { cur.fd_table_ref() } {
+                Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+            };
+            let f = match fdt.get(dirfd) {
+                Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+            };
+            f.inode().clone()
+        }
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+
+    let (mode_type, rdev): (u16, u32) = match inode.file_type() {
+        FileType::CharDev   => (0o020000, 0x0103),
+        FileType::BlockDev  => (0o060000, 0),
+        FileType::Directory => (0o040000, 0),
+        FileType::Regular   => (0o100000, 0),
+        FileType::Symlink   => (0o120000, 0),
+        FileType::Fifo      => (0o010000, 0),
+        FileType::Socket    => (0o140000, 0),
+    };
+    let mode = mode_type | 0o600;
+    // statx layout per linux/stat.h. Zero everything then fill the
+    // fields we actually have.
+    // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
+    unsafe {
+        for off in (0..256u64).step_by(8) {
+            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+        }
+        const STATX_TYPE: u32 = 1;
+        const STATX_MODE: u32 = 2;
+        const STATX_INO:  u32 = 0x100;
+        core::ptr::write_volatile( buf            as *mut u32, STATX_TYPE | STATX_MODE | STATX_INO); // stx_mask
+        core::ptr::write_volatile((buf +   4)     as *mut u32, 4096);                                // stx_blksize
+        core::ptr::write_volatile((buf +  16)     as *mut u32, 1);                                   // stx_nlink
+        core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
+        core::ptr::write_volatile((buf +  32)     as *mut u64, inode.ino());                         // stx_ino
+        core::ptr::write_volatile((buf +  40)     as *mut u64, inode.size());                        // stx_size
+        core::ptr::write_volatile((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
+        core::ptr::write_volatile((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
+    }
+    0
+}
+
 /// `sys_readlink(path, buf, bufsize)` — slot 89. v1 special-
 /// cases the paths libc commonly probes: `/proc/self/exe` →
 /// "/init"; `/proc/self/cwd` → "/". All other paths return

@@ -122,6 +122,20 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_rseq(rseq, len, flags, sig)` — slot 334. Linux's
+/// restartable-sequences ABI for fast cancellation. v1: musl
+/// happily falls back when this returns -ENOSYS.
+/// # C: O(1)
+pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 {
+    -(syscall::errno::Errno::Enosys.as_i32() as i64)
+}
+
+/// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
+/// CPU UP: every memory op is already globally ordered, so any
+/// MEMBARRIER_CMD_* request succeeds vacuously.
+/// # C: O(1)
+pub fn kernel_sys_membarrier(_args: &SyscallArgs) -> i64 { 0 }
+
 /// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
 /// v1: ignores clk_id + flags, reuses `kernel_sys_nanosleep` on
 /// the req timespec. TIMER_ABSTIME would compute deadline from
