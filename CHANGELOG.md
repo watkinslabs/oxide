@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #295) — 2026-05-04
+## Session 23 (PRs #234 – #299) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -556,6 +556,10 @@ End-of-session-22 verified-green (final, post-22g):
 | #293 | `P3-55-state-changelog` | docs catch-up through #292. |
 | #294 | `P3-56-statx-test` | Boot-time `exec-path-smoke` kasserts each registered path resolves to a blob with the ELF magic; negative case must miss. |
 | #295 | `P3-57-state-changelog-final` | docs catch-up through #294. |
+| #296 | `P3-58-state-eod` | session-23 closeout docs. |
+| #297 | `P3-59-musl-helloworld` | **M1 baseline reached.** First non-hand-rolled real-toolchain ELF binary running through the kernel: `gcc -nostdlib -static-pie -fPIE` static-PIE blob in `kernel/blobs/hello.elf` prints `hello asm-pie`. Substrate: `PIE_LOAD_BIAS=0x10000000` for ET_DYN; biased entry/phdr_va; pre-applies `R_X86_64_RELATIVE` from `DT_RELA`; `hal_x86_64::enable_sse()` at boot (CR0.MP, CR4.OSFXSR/OSXMMEXCPT for user-mode SSE2); fault handler installed BEFORE `load_static_blob` so PIE relocation kernel-side writes resolve via `user_fault_handler`; `build_user_stack` called for the spawned task (was only on execve before). musl libc full helloworld is M1b: faults inside `__libc_start_main_stage1` after `arch_prctl` + `set_tid_address` — investigation continues. |
+| #298 | `B11-hotfix-blob-not-committed` | hotfix: P3-59's `kernel/blobs/hello.elf` matched the broad `*.elf` gitignore rule; fresh clones build-failed. Adds `!kernel/blobs/*.elf` exception + commits the blob (8.9 KB). |
+| #299 | `P3-61-fork-fdtable-copy` | **M2 substrate.** fork now uses `FdTable::fork_clone()` (per-entry copy of files+cloexec arrays into a fresh table) instead of Arc-sharing the parent's table; child's close/dup don't disturb parent. execve calls `close_on_exec()` on the active fd_table before the new program runs, dropping FDs marked `FD_CLOEXEC`. Real shells rely on both. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
