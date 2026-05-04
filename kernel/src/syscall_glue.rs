@@ -329,17 +329,18 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     // Record parent_tid for `wait4` (P2-22).
     child.parent_tid.store(cur.tid, Ordering::Release);
 
-    // Inherit parent's fd table (P2-30a). v1 simplification:
-    // share the same Arc — POSIX's "copy fd table" semantics
-    // for default fork (non-CLONE_FILES) reduce in v1 to
-    // sharing because no one calls dup/close yet to diverge.
-    // Real per-entry copy lands when the FdTable's CLOSE_ON_EXEC
-    // semantics differentiate.
+    // Inherit parent's fd table (P3-61): clone per-entry into a
+    // fresh FdTable so child's close/dup don't disturb parent's
+    // slots. The underlying `Arc<File>` is still shared, matching
+    // POSIX (parent + child share open-file descriptions but
+    // each has its own fd-table). For CLONE_FILES the original
+    // Arc-share would apply; v1 fork is the non-CLONE_FILES path.
     // SAFETY: we're sole writer on the parent's fd_table read; child not yet scheduled (sole writer there too).
     let parent_fdt = unsafe { cur.fd_table_ref().cloned() };
     if let Some(fdt) = parent_fdt {
+        let child_fdt = alloc::sync::Arc::new(fdt.fork_clone());
         // SAFETY: child task hasn't been scheduled yet (just spawned); we are the sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
-        unsafe { child.replace_fd_table(Some(fdt)); }
+        unsafe { child.replace_fd_table(Some(child_fdt)); }
     }
 
     debug_sched! {
@@ -568,6 +569,12 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(new_root); }
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
+
+    // P3-61: drop FD_CLOEXEC fds before the new program runs.
+    // SAFETY: same single-mutator invariant on fd_table as mm.
+    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+        fdt.close_on_exec();
+    }
 
     // 4. Build the SysV initial stack (argc/argv/envp/auxv) per
     //    docs/31§4 step 5. v1 passes empty argv/envp; auxv carries
