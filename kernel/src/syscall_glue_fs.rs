@@ -650,12 +650,12 @@ pub fn kernel_sys_faccessat(args: &SyscallArgs) -> i64 {
     kernel_sys_access(&inner)
 }
 
-/// `sys_readlink(path, buf, bufsize)` — slot 89. v1 special-
-/// cases the paths libc commonly probes: `/proc/self/exe` →
-/// "/init"; `/proc/self/cwd` → "/". All other paths return
-/// -EINVAL so glibc falls through to its non-readlink fallback.
-/// Returns the byte count written (excluding NUL, per Linux).
-/// # C: O(1)
+/// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
+/// procfs symlinks `/proc/self/{exe,cwd,root}` and per-pid
+/// `/proc/<tid>/{exe,cwd,root}`. `exe` reports argv[0] from the
+/// task's cmdline snapshot (`/init` when unset). All other paths
+/// return -EINVAL.
+/// # C: O(1) + O(N_tasks) for per-pid lookup
 pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf_ptr  = args.a1;
@@ -670,11 +670,12 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
         Some(p) if !p.is_empty() => p,
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
-    let target: &[u8] = match path {
-        b"/proc/self/exe"     => b"/init",
-        b"/proc/self/cwd"     => b"/",
-        b"/proc/self/root"    => b"/",
-        _                     => return -(Errno::Einval.as_i32() as i64),
+    let path_s = match core::str::from_utf8(path) {
+        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    let target: alloc::vec::Vec<u8> = match resolve_proc_link(path_s) {
+        Some(t) => t,
+        None    => return -(Errno::Einval.as_i32() as i64),
     };
     let n = (target.len() as u64).min(bufsize) as usize;
     // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
@@ -684,6 +685,42 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
         }
     }
     n as i64
+}
+
+fn task_exe_path(tid_opt: Option<u32>) -> alloc::vec::Vec<u8> {
+    let task = match tid_opt {
+        Some(tid) => crate::sched::registry::lookup(tid),
+        None      => crate::sched::current().and_then(|c|
+            crate::sched::registry::lookup(c.tid)),
+    };
+    if let Some(t) = task {
+        // SAFETY: cmdline slot single-mutator per `13§5`; reading a snapshot.
+        if let Some(s) = unsafe { (*t.cmdline.get()).clone() } {
+            // argv[0] is everything before the first NUL.
+            let bytes = s.as_bytes();
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            if end > 0 { return bytes[..end].to_vec(); }
+        }
+    }
+    b"/init".to_vec()
+}
+
+fn resolve_proc_link(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    let rest = path.strip_prefix("/proc/")?;
+    let mut parts = rest.splitn(2, '/');
+    let head = parts.next()?;
+    let leaf = parts.next()?;
+    let tid_opt: Option<u32> = if head == "self" { None } else { head.parse().ok() };
+    if head != "self" && tid_opt.is_none() { return None; }
+    if let Some(tid) = tid_opt {
+        if crate::sched::registry::lookup(tid).is_none() { return None; }
+    }
+    match leaf {
+        "exe"  => Some(task_exe_path(tid_opt)),
+        "cwd"  => Some(b"/".to_vec()),
+        "root" => Some(b"/".to_vec()),
+        _      => None,
+    }
 }
 
 /// `sys_readlinkat(dirfd, path, buf, bufsize)` — slot 267.
