@@ -287,6 +287,29 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_getdents64(fd, dirp, count)` — slot 217. v1: every
+/// fd we hand out points at a Regular or CharDev file (not a
+/// directory), so getdents always returns 0 (= end-of-dir).
+/// Real Inode::lookup-driven dirent enumeration rides VFS work
+/// per docs/16. Validates `dirp` user range.
+/// # C: O(1)
+pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
+    let fd = args.a0 as i32;
+    let dirp = args.a1;
+    let count = args.a2;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if fdt.get(fd).is_err() { return -(Errno::Ebadf.as_i32() as i64); }
+    if count == 0 { return 0; }
+    if let Err(rv) = validate_user_buf(dirp, count, 1) { return rv; }
+    0
+}
+
 /// `sys_dup(oldfd)` — slot 32. Lowest free fd → same File.
 /// # C: O(N_fds)
 pub fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
