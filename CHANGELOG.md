@@ -488,9 +488,9 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #265) — 2026-05-04
+## Session 23 (PRs #234 – #270) — 2026-05-04
 
-**Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, and aarch64 PL011 RX parity.
+**Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
 | PR | Branch | Lands |
 |---|---|---|
@@ -526,6 +526,11 @@ End-of-session-22 verified-green (final, post-22g):
 | #263 | `P3-25-mremap-msync` | Slots 25/26/27/149/150/151/152. mremap returns -ENOMEM (libc falls back to mmap+memcpy+munmap which we support). msync 0 (no file VMAs to flush yet). mincore reports every page resident. mlock/munlock/mlockall/munlockall 0 (no swap). |
 | #264 | `P3-26-getpgrp-setsid` | Slots 21/95/109/111/112/121/124/269. getpgrp/getpgid/getsid → `current().tid`. setpgid no-op. setsid returns tid (no actual session-leader bookkeeping yet). umask returns 0o022 prior. access/faccessat resolve via devfs lookup. |
 | #265 | `P3-27-eventfd-timerfd` | Slots 284/290. EventfdInode counter (AtomicU64) — read swaps to 0 and returns prior value as 8-byte u64; write adds. Allocated as Fifo-typed Inode + RDWR File at lowest-free fd. dup/dup2/dup3 also moved out of `syscall_glue.rs` into `syscall_glue_fs.rs` for length cap. |
+| #266 | `D03-changelog-fix-sessions-19-23` | CHANGELOG backfill — fills sessions 19/20/21/22 (PRs #166–#233) and rewrites session 23 in the canonical Subject+table+verified-green format used through session 18. Reconstructed from the merge log + branch names. |
+| #267 | `P3-28-getcpu-sched-info` | Slots 143/144/145/146/147/157/203/204/309. getcpu reports CPU 0 / NUMA 0 (UP). sched_getparam writes priority 0. sched_getscheduler returns SCHED_OTHER. sched_get_priority_max/min report 99/1 for FIFO/RR else 0. sched_getaffinity reports a 1-bit mask. sched_setaffinity 0 (no-op). prctl honours PR_SET_NAME / PR_GET_NAME / PR_SET_DUMPABLE / PR_GET_DUMPABLE; other options 0. |
+| #268 | `P3-29-pipe-smoke-test` | Boot-time `pipe-evt-smoke` round-trips a 5-byte string through PipeInode and a u64 counter through EventfdInode; kasserts the buf/counter contracts. |
+| #269 | `P3-30-clock-getres` | Slots 96/201/227/229. clock_getres reports 1 ns resolution. clock_settime accepts and forgets (no RTC). gettimeofday and time use the same monotonic counter as clock_gettime. New `kernel/src/syscall_glue_time.rs` houses the time-shaped syscalls. |
+| #270 | `P3-31-etc-hostname` | Static /etc/{hostname, passwd (root only), group, nsswitch.conf, resolv.conf, localtime} and /proc/{self/oom_score{,_adj}, sys/kernel/{pid_max, ngroups_max, cap_last_cap, random/{uuid,boot_id}}}. Common shell/libc startup probes. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
