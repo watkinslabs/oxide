@@ -11,6 +11,7 @@ use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
+use vfs::FdTable;
 use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
@@ -132,6 +133,15 @@ pub struct Task {
     /// on the same CPU — single-mutator-per-active-CPU per `13§5`
     /// (same invariant the `arch_ctx` field relies on).
     pub mm: UnsafeCell<Option<Arc<AddressSpace>>>,
+
+    /// Per-task open-file table per `13§5` / `16§3`. `None` for
+    /// tasks that don't carry one (kthreads, the boot-anchor
+    /// idle). Shared via `Arc` per `clone3` semantics: `CLONE_FILES`
+    /// siblings share the same table; default fork copies entries
+    /// (v1: shares the Arc, deferring per-entry copy until needed).
+    /// Wrapped in `UnsafeCell` for `dup2` / `close` / `execve`
+    /// (CLOEXEC) — single-mutator-per-active-CPU invariant.
+    pub fd_table: UnsafeCell<Option<Arc<FdTable>>>,
 }
 
 impl Task {
@@ -219,7 +229,30 @@ impl Task {
             mm: UnsafeCell::new(mm),
             stack: None,
             parent_tid: AtomicU32::new(0),
+            fd_table: UnsafeCell::new(None),
         }
+    }
+
+    /// Borrow the fd table. Returns `None` for tasks without one
+    /// (kthreads, idle).
+    /// # SAFETY: caller is in IRQ-off / preempt-off context, OR
+    /// holds a guarantee that no concurrent `replace_fd_table` runs
+    /// against this task on another CPU.
+    /// # C: O(1)
+    pub unsafe fn fd_table_ref(&self) -> Option<&Arc<FdTable>> {
+        // SAFETY: caller asserts no concurrent writer; UnsafeCell::get is the supported deref pattern under documented external synchronization.
+        unsafe { (&*self.fd_table.get()).as_ref() }
+    }
+
+    /// Replace the fd table — used by `init` to install the
+    /// boot console table, by fork to clone a parent's table,
+    /// and by execve when CLOEXEC entries get cleared.
+    /// # SAFETY: caller is the running task on this CPU OR holds
+    /// the runqueue invariant for this task; preempt-off; UP.
+    /// # C: O(1) + Arc drop
+    pub unsafe fn replace_fd_table(&self, new: Option<Arc<FdTable>>) {
+        // SAFETY: see fn-level contract; single-mutator on this CPU.
+        unsafe { *self.fd_table.get() = new; }
     }
 
     /// Attach a kernel stack to this task. Stores the top-of-stack
