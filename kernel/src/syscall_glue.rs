@@ -6,7 +6,9 @@
 
 use syscall::{dispatch, SyscallArgs};
 use syscall::errno::Errno;
-use hal::{TimerOps, USER_VA_END};
+use hal::{USER_VA_END};
+#[cfg(target_arch = "x86_64")]
+use hal::TimerOps;
 
 #[cfg(target_arch = "x86_64")]
 const SYSCALL_NR_ARCH_PRCTL: u64 = 158;
@@ -15,7 +17,11 @@ const ARCH_SET_FS: u64 = 0x1002;
 #[cfg(target_arch = "x86_64")]
 const ARCH_GET_FS: u64 = 0x1003;
 
-const SYSCALL_NR_CLOCK_GETTIME: u64 = 228;
+const SYSCALL_NR_CLOCK_GETTIME: u64  = 228;
+const SYSCALL_NR_CLOCK_GETRES: u64   = 229;
+const SYSCALL_NR_CLOCK_SETTIME: u64  = 227;
+const SYSCALL_NR_GETTIMEOFDAY: u64   = 96;
+const SYSCALL_NR_TIME: u64           = 201;
 const SYSCALL_NR_UNAME: u64          = 63;
 const SYSCALL_NR_MMAP: u64           = 9;
 const SYSCALL_NR_MUNMAP: u64         = 11;
@@ -785,34 +791,6 @@ pub(crate) fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i6
     Ok(())
 }
 
-/// Read the per-arch monotonic clock and write `{tv_sec, tv_nsec}`
-/// to the user `timespec*`. Both arches' `TimerOps::monotonic_ns`
-/// returns 0 until calibrated, so a CLOCK_MONOTONIC reading at
-/// boot-time may legitimately be 0.
-///
-/// v1: ignore clk_id; CLOCK_REALTIME and CLOCK_MONOTONIC alike use
-/// the kernel monotonic counter (no wall-time RTC source yet).
-fn kernel_clock_gettime(args: &SyscallArgs) -> i64 {
-    let _clk_id = args.a0;
-    let tp = args.a1;
-    if let Err(rv) = validate_user_buf(tp, 16, 8) { return rv; }
-
-    #[cfg(target_arch = "x86_64")]
-    let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
-    #[cfg(target_arch = "aarch64")]
-    let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-
-    let tv_sec  = ns / NS_PER_SEC;
-    let tv_nsec = ns % NS_PER_SEC;
-    // SAFETY: `tp` validated 16-byte range below USER_VA_END + 8-byte
-    // aligned. CPL=0 ignores the leaf U bit so the kernel can write
-    // the user mapping directly.
-    unsafe {
-        core::ptr::write_volatile(tp as *mut u64,         tv_sec);
-        core::ptr::write_volatile((tp + 8) as *mut u64,   tv_nsec);
-    }
-    0
-}
 
 /// x86-specific syscall handled in the kernel-side glue (since
 /// `crates/syscall` is arch-neutral and can't call `hal-x86_64`).
@@ -859,7 +837,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let rv = match nr {
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_ARCH_PRCTL    => kernel_arch_prctl(&args),
-        SYSCALL_NR_CLOCK_GETTIME => kernel_clock_gettime(&args),
+        SYSCALL_NR_CLOCK_GETTIME => crate::syscall_glue_time::kernel_clock_gettime(&args),
+        SYSCALL_NR_CLOCK_GETRES  => crate::syscall_glue_time::kernel_clock_getres(&args),
+        SYSCALL_NR_CLOCK_SETTIME => crate::syscall_glue_time::kernel_clock_settime(&args),
+        SYSCALL_NR_GETTIMEOFDAY  => crate::syscall_glue_time::kernel_gettimeofday(&args),
+        SYSCALL_NR_TIME          => crate::syscall_glue_time::kernel_time(&args),
         SYSCALL_NR_UNAME         => kernel_uname(&args),
         SYSCALL_NR_MMAP          => kernel_mmap(&args),
         SYSCALL_NR_MUNMAP        => kernel_munmap(&args),
