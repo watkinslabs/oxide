@@ -245,7 +245,7 @@ core::arch::global_asm!(
     ".globl oxide_irq_vector_handler",
     ".type  oxide_irq_vector_handler, %function",
     "oxide_irq_vector_handler:",
-    "    sub  sp, sp, #192",
+    "    sub  sp, sp, #208",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
     "    stp  x4,  x5,  [sp, #32]",
@@ -260,6 +260,8 @@ core::arch::global_asm!(
     "    mrs  x9,  elr_el1",
     "    mrs  x10, spsr_el1",
     "    stp  x9,  x10, [sp, #176]",
+    "    mrs  x9,  sp_el0",
+    "    str  x9,       [sp, #192]",
     "    bl   oxide_arm_irq_dispatch",
     // -- schedule-on-exit per `14§R07`. Rust dispatcher writes
     //    `oxide_preempt_next_ctx` if a switch is wanted; null = stay.
@@ -285,6 +287,8 @@ core::arch::global_asm!(
     ".globl oxide_irq_resume_user",
     ".type  oxide_irq_resume_user, %function",
     "oxide_irq_resume_user:",
+    "    ldr  x9,       [sp, #192]",
+    "    msr  sp_el0,   x9",
     "    ldp  x9,  x10, [sp, #176]",
     "    msr  elr_el1,  x9",
     "    msr  spsr_el1, x10",
@@ -299,7 +303,7 @@ core::arch::global_asm!(
     "    ldp  x4,  x5,  [sp, #32]",
     "    ldp  x2,  x3,  [sp, #16]",
     "    ldp  x0,  x1,  [sp, #0]",
-    "    add  sp, sp, #192",
+    "    add  sp, sp, #208",
     "    eret",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
 );

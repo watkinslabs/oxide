@@ -576,6 +576,14 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
 fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use alloc::sync::Arc;
+    let _ = args;
+    // No runqueue installed (e.g. arm's direct drop_to_el0 path
+    // before P2-13e completes): nothing to Zombie or schedule
+    // away. Return 0 so the user falls through to its own halt
+    // landmark (ud2 / brk). Pre-P2-22 behavior preserved.
+    if crate::sched::global().is_none() {
+        return 0;
+    }
     if let Some(rq) = crate::sched::global() {
         // Snapshot exit code + state before parking — the
         // current task's strong ref needs to live in the zombie
