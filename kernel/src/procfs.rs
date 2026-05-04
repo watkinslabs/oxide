@@ -46,6 +46,63 @@ impl Inode for StaticFileInode {
     }
 }
 
+/// `/proc/self/maps` per `19§4`. Walks the current task's
+/// AddressSpace VMA tree and emits one line per VMA in
+/// `<start>-<end> <perms> <off> 00:00 <ino> <path>` form. v1
+/// path/offset/inode are stubs.
+pub struct ProcSelfMapsInode;
+
+impl ProcSelfMapsInode {
+    fn body() -> alloc::vec::Vec<u8> {
+        let mut out = alloc::vec::Vec::with_capacity(1024);
+        let cur = match crate::sched::current() { Some(c) => c, None => return out };
+        // SAFETY: running task on this CPU; preempt-off; sole reader of the mm slot per the single-mutator invariant in `13§5`.
+        let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return out };
+        for vma in mm.snapshot_vmas() {
+            push_hex(&mut out, vma.start.as_u64());
+            out.push(b'-');
+            push_hex(&mut out, vma.end.as_u64());
+            out.push(b' ');
+            // perms: rwxp / rwxs (we only support PRIVATE backing today)
+            let p = vma.prot;
+            out.push(if p.contains(vmm::VmaProt::READ)  { b'r' } else { b'-' });
+            out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
+            out.push(if p.contains(vmm::VmaProt::EXEC)  { b'x' } else { b'-' });
+            out.push(b'p');
+            push(&mut out, b" 00000000 00:00 0 \n");
+        }
+        out
+    }
+}
+
+impl Inode for ProcSelfMapsInode {
+    fn ino(&self) -> Ino { 0x3000_1300 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body = Self::body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let avail = &body[off..];
+        let n = avail.len().min(buf.len());
+        buf[..n].copy_from_slice(&avail[..n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+fn push_hex(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
+    if n == 0 { v.push(b'0'); return; }
+    let mut buf = [0u8; 16]; let mut i = 0;
+    while n > 0 {
+        let nib = (n & 0xf) as u8;
+        buf[i] = if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) };
+        n >>= 4; i += 1;
+    }
+    while i > 0 { i -= 1; v.push(buf[i]); }
+}
+
 /// `/proc/self/cmdline` per `19§4`. v1: synthesises argv[0] from
 /// the task's `name` field (tracking real argv at execve rides
 /// the per-task argv-storage follow-up). NUL-separated argv,
@@ -182,10 +239,10 @@ pub fn init() {
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
-    crate::devfs::register("/proc/self/maps",   StaticFileInode::new(b"")              as InodeRef);
     crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
     crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
+    crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
