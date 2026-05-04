@@ -185,6 +185,98 @@ pub fn take_lowest_pending() -> Option<u32> {
     Some(sig)
 }
 
+/// `sys_getrlimit(res, rlim)` — slot 97. Writes (rlim_cur,
+/// rlim_max) for the resource. v1: every limit is unbounded
+/// (RLIM_INFINITY = u64::MAX). `rlim` is `struct rlimit { u64
+/// rlim_cur; u64 rlim_max; }`.
+/// # C: O(1)
+pub fn kernel_sys_getrlimit(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let _resource = args.a0;
+    let rlim = args.a1;
+    if rlim == 0 || rlim >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: rlim validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 writes through user mapping.
+    unsafe {
+        core::ptr::write_volatile( rlim       as *mut u64, u64::MAX);
+        core::ptr::write_volatile((rlim + 8)  as *mut u64, u64::MAX);
+    }
+    0
+}
+
+/// `sys_setrlimit(res, rlim)` — slot 160. v1 accepts any new
+/// limit and forgets it (no enforcement yet).
+/// # C: O(1)
+pub fn kernel_sys_setrlimit(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_getrusage(who, usage)` — slot 98. Writes a 144-byte
+/// `struct rusage` of zeros. v1 has no per-task accounting.
+/// # C: O(1)
+pub fn kernel_sys_getrusage(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let _who = args.a0;
+    let buf = args.a1;
+    if buf == 0 || buf >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: validated 144-byte user buf < USER_VA_END; CPL=0 writes through caller's AS.
+    unsafe {
+        for off in (0..144u64).step_by(8) {
+            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+        }
+    }
+    0
+}
+
+/// `sys_times(tms)` — slot 100. Writes `struct tms { utime,
+/// stime, cutime, cstime }` (4 × i64) of zeros and returns the
+/// monotonic clock in CLK_TCK ticks (100 Hz).
+/// # C: O(1)
+pub fn kernel_sys_times(args: &SyscallArgs) -> i64 {
+    use hal::TimerOps;
+    let buf = args.a0;
+    if buf != 0 && buf < hal::USER_VA_END {
+        // SAFETY: validated 32-byte user buf below USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe {
+            for off in (0..32u64).step_by(8) {
+                core::ptr::write_volatile((buf + off) as *mut u64, 0);
+            }
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    (ns / 10_000_000) as i64
+}
+
+/// `sys_sysinfo(info)` — slot 99. Writes a minimal struct
+/// sysinfo (112 B) — uptime, loads, totalram, freeram, etc.
+/// v1 fills uptime + zero everything else.
+/// # C: O(1)
+pub fn kernel_sys_sysinfo(args: &SyscallArgs) -> i64 {
+    use hal::TimerOps;
+    use syscall::errno::Errno;
+    let buf = args.a0;
+    if buf == 0 || buf >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    #[cfg(target_arch = "x86_64")]
+    let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let uptime = (ns / 1_000_000_000) as i64;
+    // SAFETY: 112-byte user buffer validated < USER_VA_END; CPL=0 writes through caller's AS.
+    unsafe {
+        for off in (0..112u64).step_by(8) {
+            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+        }
+        core::ptr::write_volatile(buf as *mut i64, uptime);
+    }
+    0
+}
+
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
 /// CPU UP: every memory op is already globally ordered, so any
 /// MEMBARRIER_CMD_* request succeeds vacuously.
