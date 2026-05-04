@@ -49,6 +49,9 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 276 | `P3-37-net-stubs` | socket family ENOSYS until docs/25 net stack lands. |
 | 277 | `P3-38-state-changelog` | docs catch-up. |
 | 278 | `P3-39-fchmod-fchown-stub` | Canonical syscall_nrs.rs (Linux x86_64 0..451) + chmod/utime/link/statfs coverage. |
+| 279 | `P3-40-state-changelog-update` | docs catch-up. |
+| 280 | `P3-41-epoll-stubs` | epoll/inotify/signalfd/timerfd/io_uring/bpf/seccomp/landlock ENOSYS so probes fall through. |
+| 281 | `P3-42-tkill-tgkill-real` | tkill + rt_sigpending + rt_sigsuspend + rt_sigreturn. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
