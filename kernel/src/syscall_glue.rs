@@ -124,7 +124,7 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_pipe2(pipefd, flags)` — slot 293; anon PipeInode+R/W fds.
+/// sys_pipe2: anon PipeInode + R/W fds.
 fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
@@ -462,11 +462,12 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
             path_len = (i + 1) as usize;
         }
         let path = &path_buf[..path_len];
-        // Path-string lookup first; fall back to single-byte
-        // selector form (existing iter_block in init blob).
+        // Path-string lookup first; fall back to first-byte
+        // selector form (init blob's iter_block uses non-NUL-
+        // terminated single-byte selectors at known VAs).
         if let Some(b) = crate::elf_smoke::lookup_blob_by_path(path) {
             b
-        } else if path_len == 1 {
+        } else if path_len >= 1 {
             match crate::elf_smoke::lookup_blob(path[0]) {
                 Some(b) => b,
                 None    => return -(Errno::Enoent.as_i32() as i64),
@@ -978,8 +979,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     if let Some(p) = crate::syscall_glue_proc::take_lowest_pending() {
         match p.handler {
             0 => {
-                let exit_args = SyscallArgs { a0: (128 + p.sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
-                let _ = kernel_sys_exit(&exit_args);
+                // SIG_DFL — Linux per signal(7) defaults: SIGCHLD (17),
+                // SIGURG (23), SIGWINCH (28) ignore; others terminate.
+                if !matches!(p.sig, 17 | 23 | 28) {
+                    let exit_args = SyscallArgs { a0: (128 + p.sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+                    let _ = kernel_sys_exit(&exit_args);
+                }
             }
             1 => {  /* SIG_IGN: drop */ }
             #[cfg(target_arch = "x86_64")]
