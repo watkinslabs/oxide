@@ -187,6 +187,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         }
         // SAFETY: mirrors the IAR read above; same INTID; GIC was mapped Device-attr.
         unsafe { eoi(raw); }
+        // P3-23: drain PL011 RX FIFO + wake stdin waiters.
+        // SAFETY: timer ISR context, IRQs masked; tty path is single-CPU UP.
+        unsafe { crate::tty::tick_poll_uart(); }
         crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked
         // (vector entry clears DAIF.I); reads/writes the per-CPU
