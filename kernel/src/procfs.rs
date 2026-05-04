@@ -234,6 +234,50 @@ const STAT_BODY:    &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
 const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
 const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
 
+/// `/proc/self/fd` directory. Walks `current().fd_table` and emits
+/// each live fd as a decimal name. lookup(name) parses the fd back
+/// and returns a placeholder inode mirroring the underlying File.
+pub struct ProcSelfFdInode;
+
+impl Inode for ProcSelfFdInode {
+    fn ino(&self) -> Ino { 0x3000_1500 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let fd: i32 = name.parse().map_err(|_| VfsError::Enoent)?;
+        let cur = crate::sched::current().ok_or(VfsError::Enoent)?;
+        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+        let fdt = unsafe { cur.fd_table_ref() }.ok_or(VfsError::Enoent)?.clone();
+        fdt.get(fd).map(|f| f.inode().clone()).map_err(|_| VfsError::Enoent)
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        let cur = match crate::sched::current() { Some(c) => c, None => return Ok(off) };
+        // SAFETY: sole reader; single-mutator per `13§5`.
+        let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Ok(off) };
+        let fds = fdt.live_fds();
+        let mut idx = off as usize;
+        while idx < fds.len() {
+            let next = idx as u64 + 1;
+            let fd = fds[idx];
+            let mut buf = [0u8; 11];
+            let mut n = 0; let mut t = fd as u32;
+            if t == 0 { buf[0] = b'0'; n = 1; }
+            else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
+            buf[..n].reverse();
+            let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
+            if !f(next, s, FileType::Symlink) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eisdir) }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
 /// `/proc` root directory inode. readdir emits live tids (decimal
 /// names) plus `self`. lookup parses tids and returns a per-pid dir.
 pub struct ProcRootInode;
@@ -455,6 +499,7 @@ pub fn init() {
     crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
     crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
+    crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
