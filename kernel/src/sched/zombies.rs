@@ -30,11 +30,20 @@ static ZOMBIES: Spinlock<Vec<Arc<Task>>, TaskListClass>
 /// Move `task` to the Zombie registry. Caller (sys_exit handler)
 /// has already set the task's state to Zombie via
 /// `sched::mark_done` and wants the Arc kept alive until the
-/// parent reaps it.
+/// parent reaps it. P3-67: also posts SIGCHLD (sig 17) into the
+/// parent's sigpending bitmap — bash's job-control SIGCHLD handler
+/// triggers off this.
 /// # SAFETY: caller is the sys_exit handler running on the task's
 /// own kernel stack, preempt-off, single-CPU UP.
-/// # C: O(1) push
+/// # C: O(1) push + Weak upgrade
 pub fn park_zombie(task: Arc<Task>) {
+    use core::sync::atomic::Ordering;
+    // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
+    let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
+    if let Some(p) = parent {
+        // SIGCHLD = 17; bit (17 - 1) = 16 in the 64-bit pending bitmap.
+        p.sigpending.fetch_or(1u64 << 16, Ordering::Release);
+    }
     ZOMBIES.lock().push(task);
 }
 
