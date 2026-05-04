@@ -1,4 +1,4 @@
-# State 2026-05-03 (session 22f EOD — blocking sys_read + TTY arch note)
+# State 2026-05-03 (session 22g EOD — fd_table + /dev/console)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
@@ -6,7 +6,7 @@ Resumable checkpoint — current snapshot only. Update at session exit. Next ses
 
 **Phase 2 init-loop userspace live on x86_64.** Full lifecycle: `fork → execve → wait4 → exit` runs end-to-end. The init-like blob spawned at boot now performs **2 iterations of the canonical shell pattern** (`for sel in ['y','h']: if fork()==0: execve(&sel) | exit(1); wait4(-1, NULL, 0, NULL); exit(0)`), producing `yo\n` and `hi\n` deterministically via `wait4`-enforced ordering, then exits cleanly. Three processes per iteration × 2 iterations = real init-loop semantics.
 
-Per-task syscall stack (P2-22a) + per-task user_frame slot (P2-22b) replace the buggy global state that exposed itself when wait4 first surfaced multi-task syscall interleaving. Syscall asm now: each task syscalls onto its own kernel stack, with saved (rip, rflags, rsp) at `top-24..top` for fork/execve to read/write. `sched::zombies` registry keeps Zombie tasks alive past schedule's swap until `wait4` reaps. `Task.parent_tid` set by sys_fork. `sys_getpid`/`sys_getppid` introspect via `current()`. `sys_read(fd=0)` polls COM1 RX as a v1 stand-in for full TTY input. **218 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
+Per-task syscall stack (P2-22a) + per-task user_frame slot (P2-22b) replace the buggy global state that exposed itself when wait4 first surfaced multi-task syscall interleaving. Syscall asm now: each task syscalls onto its own kernel stack, with saved (rip, rflags, rsp) at `top-24..top` for fork/execve to read/write. `sched::zombies` registry keeps Zombie tasks alive past schedule's swap until `wait4` reaps. `Task.parent_tid` set by sys_fork. `sys_getpid`/`sys_getppid` introspect via `current()`. **`Task.fd_table: Arc<FdTable>` mediates sys_read/sys_write per docs/13§5 + docs/16; `/dev/console` is a real `Inode` impl with timer-tick-driven blocking read + UART write.** `init` installs fd 0/1/2 → console at boot; fork inherits the Arc. **222 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
 
 The shell-spawning cycle is real now — the loop a busybox `init` runs is what the boot-time blob does, just with hand-synthesised mini-binaries instead of `/bin/*`. Remaining gap to a literal `$ ` prompt: TTY input (UART RX → user fd=0 with a sleep/wake wait queue), a real ELF binary (static-PIE musl is the next milestone), and arm user-Task parity (arm still uses single-Task `drop_to_el0`).
 
@@ -88,6 +88,37 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 ## What landed since previous EOD
 
 See `CHANGELOG.md` for the per-PR table.
+
+**Session 22g** (PRs #221 – #222): TTY architecture note +
+per-task fd_table + /dev/console char-device.
+
+- **#221 C50** (`C50-state-tty-arch`): docs-only, captures the
+  TTY architectural debt called out in user feedback —
+  /dev/console + /dev/tty0..6 + /dev/tty + foreground-VT alias
+  semantics (Linux ships 6 VTs; tty0 dynamically aliases the
+  foreground VT, usually tty1; ttyS0 = serial). v1's hard-wired
+  fd=0/1/2 is a stub; proper resolution requires VFS + devfs +
+  per-task fd_table.
+- **#222 P2-30a** (`P2-30a-fd-table`): first concrete step.
+  - `Task.fd_table: UnsafeCell<Option<Arc<FdTable>>>` (vfs crate
+    already had `FdTable`); single-mutator-per-active-CPU per
+    `13§5`; sched gains `vfs` dep.
+  - `kernel/src/dev_console.rs` — `ConsoleInode` impl: read
+    blocks on TTY ringbuffer + WaitQueue; write emits via
+    use-aliased `console_emit` (R06 carve-out). `init_console_fd_table()`
+    builds an `Arc<FdTable>` with fd 0/1/2 → console.
+  - `elf_smoke::run_as_task` installs the console fd_table on
+    the spawned `init` user task before scheduling.
+  - `kernel_sys_fork` clones parent's fd_table Arc into child
+    (POSIX-style; v1 simplification of "copy entries" defers
+    per-entry copy until dup/close diverges).
+  - `kernel_sys_read` (nr=0) + new `kernel_sys_write` (nr=1)
+    look up fd in current.fd_table → `File::read`/`File::write`
+    → ConsoleInode dispatch. Falls back to in-table sys_write
+    for kthread context.
+  - Init-loop trace identical externally — yo/hi via
+    fork+execve+wait4+exit — but path now mediated through
+    real fd_table indirection.
 
 **Session 22f** (PR #220): blocking sys_read on fd=0 via timer-
 tick UART poll + WaitQueue.
@@ -514,7 +545,7 @@ what. Top picks ordered by impact toward bash:
 
 | Option | Branch idea | Spec ref | Why pick this |
 |---|---|---|---|
-| **VFS + devfs + fd_table** | `P2-30-vfs-devfs` | docs/16 + docs/13§5 | The TTY architecture debt above. VFS skeleton (Inode/Dentry/Superblock), devfs at `/dev`, char-device trait, per-task `fd_table: Arc<FdTable>`, `/dev/console` + `/dev/tty0..6` + `/dev/tty` registration, `init` opens `/dev/console` for fd 0/1/2 inheritance. **Foundational** — once this lands the existing `tty.rs` ringbuffer becomes the backing for `/dev/console`'s char-device methods, and `sys_read`/`sys_write` route through fd_table indirection per spec. Substantial multi-PR effort. |
+| **VFS + devfs path resolution** | `P2-30b-devfs` | docs/16 | fd_table + ConsoleInode landed in P2-30a; sys_read/sys_write route through fd → File → Inode. Next step: a path → InodeRef registry (devfs at `/dev`) so `open("/dev/console")` resolves; then split into distinct `/dev/tty0..6` Inode instances and add foreground-VT alias for tty0. Once registered, `init` would do `open("/dev/console")` instead of the kernel-side `init_console_fd_table` shortcut. Followup needs `sys_open` + path-resolve glue. |
 | **TTY input full IRQ-driven** | `P2-23b-tty-rx-irq` | docs/28 | Replace the timer-tick polling in `tty::tick_poll_uart` with a proper UART RX IRQ. Needs IOAPIC routing (or PIC fallback) for IRQ4 (COM1) to a kernel vector. Reduces wakeup latency from ≤1ms (timer tick) to <µs (per-byte IRQ). Polls work for v1 demos; IRQ-driven is required for any throughput-sensitive case. |
 | **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 has full multi-binary fork+exec+wait+exit; arm still uses single-Task `drop_to_el0` directly. Need (a) `ContextAArch64::new_user_with_irq_frame` synthesising an eret frame on the kernel stack, (b) extending the arm IRQ frame to save+restore sp_el0 (frame size 192 → 200 B; affects `oxide_irq_resume_user` epilogue), (c) arm `spawn_user_thread`, (d) arm syscall stub that captures user frame to per-task stack like x86. Substantial but mechanical mirror of the x86 work. |
 | **per-page copy in fork** | `P2-15c-fork-pgcopy` | docs/11§7 | Today's naive fork inherits empty Anonymous VMAs. Real POSIX fork must copy parent's mapped pages so heap/stack survive. Requires "install PTE in non-active PT" — temporarily-activate-the-child trick OR extend the walker to take an explicit root. Until this, fork is correct ONLY for static-PIE programs that don't share heap state at fork time. |
