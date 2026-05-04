@@ -100,6 +100,20 @@ const SYSCALL_NR_PREAD64: u64        = 17;
 const SYSCALL_NR_PWRITE64: u64       = 18;
 const SYSCALL_NR_PREADV: u64         = 295;
 const SYSCALL_NR_PWRITEV: u64        = 296;
+const SYSCALL_NR_MKDIR: u64          = 83;
+const SYSCALL_NR_RMDIR: u64          = 84;
+const SYSCALL_NR_UNLINK: u64         = 87;
+const SYSCALL_NR_UNLINKAT: u64       = 263;
+const SYSCALL_NR_MKDIRAT: u64        = 258;
+const SYSCALL_NR_OPENAT: u64         = 257;
+const SYSCALL_NR_RENAME: u64         = 82;
+const SYSCALL_NR_RENAMEAT: u64       = 264;
+const SYSCALL_NR_RENAMEAT2: u64      = 316;
+const SYSCALL_NR_TRUNCATE: u64       = 76;
+const SYSCALL_NR_FTRUNCATE: u64      = 77;
+const SYSCALL_NR_FSYNC: u64          = 74;
+const SYSCALL_NR_FDATASYNC: u64      = 75;
+const SYSCALL_NR_SYNC: u64           = 162;
 const SYSCALL_NR_GETCPU: u64         = 309;
 const SYSCALL_NR_SCHED_GETPARAM: u64 = 143;
 const SYSCALL_NR_SCHED_SETSCHEDULER: u64 = 144;
@@ -907,6 +921,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_PWRITE64      => crate::syscall_glue_fs::kernel_sys_pwrite64(&args),
         SYSCALL_NR_PREADV | SYSCALL_NR_PWRITEV
                                  => -(Errno::Enosys.as_i32() as i64),
+        SYSCALL_NR_MKDIR | SYSCALL_NR_RMDIR | SYSCALL_NR_UNLINK
+            | SYSCALL_NR_UNLINKAT | SYSCALL_NR_MKDIRAT
+            | SYSCALL_NR_RENAME | SYSCALL_NR_RENAMEAT | SYSCALL_NR_RENAMEAT2
+            | SYSCALL_NR_TRUNCATE | SYSCALL_NR_FTRUNCATE
+                                 => -(Errno::Erofs.as_i32() as i64),
+        SYSCALL_NR_OPENAT        => crate::syscall_glue_fs::kernel_sys_openat(&args),
+        SYSCALL_NR_FSYNC | SYSCALL_NR_FDATASYNC | SYSCALL_NR_SYNC
+                                 => 0,
         SYSCALL_NR_GETCPU        => crate::syscall_glue_proc::kernel_sys_getcpu(&args),
         SYSCALL_NR_SCHED_GETPARAM => crate::syscall_glue_proc::kernel_sys_sched_getparam(&args),
         SYSCALL_NR_SCHED_SETSCHEDULER | SYSCALL_NR_SCHED_GETSCHEDULER
