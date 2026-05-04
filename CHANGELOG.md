@@ -356,40 +356,180 @@ End-of-session-18 verified-green:
 
 ---
 
-## Session 23 (PRs #234 – #261) — 2026-05-04
+## Session 19 (PRs #166 – #171) — 2026-05-03
 
-**Subject**: User-authorised autonomous Phase 3 batch. 28 PRs in one run, focused on libc-startup syscall coverage + the path to a real shell.
+**Subject**: Drop to ring 3 — kernel-owned GDT, TSS install, user-page mapping smoke, first iretq into ring 3, and the page-fault recovery smoke that closes out P1-86.
 
-**Major bug fixes:**
-- **#239 B09** — x86 syscall asm was discarding user's rdi/rsi/rdx/r10/r8/r9 across syscalls. Linux ABI preserves them; only rax/rcx/r11 are clobbered. ECHO blob's sys_write after sys_read had garbage args (buf=0x30, len=1016) and hung. Fix: load arg regs via `mov [rsp+N]` without consuming the slots, restore from same slots after dispatch returns. Without this fix, ANY user code reusing arg regs across syscalls breaks (musl libc routinely does).
-- **#252 B10** — sys_write validated buf alone but not buf+cnt; matches the P3-11 overflow check now in sys_read.
+| PR | Branch | Lands |
+|---|---|---|
+| #166 | `P1-93-kernel-owned-gdt` | Replace bootloader's GDT with a kernel-owned one. Defines kernel CS/SS (0x08/0x10), user CS/SS (0x1B/0x23), TSS slots. `lgdt` + far-return via push-imm-CS+far-ret pattern (the silent `retfq` hang from session 18 turned out to be Limine's GDT being overwritten between `lgdt` and `retfq`; the new sequence uses immediate-encoded selectors that survive the swap). |
+| #167 | `P1-94-tss-install` | Install per-CPU TSS with `rsp0` pointing at the IST-zero kernel stack; load via `ltr 0x28`. Required so the CPU has somewhere to drop the user-context registers when ring-3 → ring-0 transitions fire. arm equivalent: TPIDR_EL1 already carries the per-CPU pointer. |
+| #168 | `P1-95-user-mapping` | Per-arch user-virt page mapping helper. `MmuOps::map_user(va, pa, prot)` flag combinations: x86 = P\|U\|RW; arm = AP_EL0_RW + AttrIdx + AF. Adds `USER_VA_END` constant per arch (x86 0x0000_8000_0000_0000 = canonical lower half; arm 0x0000_FFFF_FFFF_FFFF). |
+| #169 | `P1-96-user-page-smoke` | Allocate 4 KiB frame, map it U+RW at `USER_SCRATCH_VA = 0x40_0000`, write a magic from kernel mode (CPL=0 ignores U bit), translate, log `[INFO] user-map-smoke: ok pa=... flags=...`. Validates the user-side mapping before we drop to ring 3. |
+| #170 | `P1-82-userspace-first-iretq` | First ring-3 transition. Build an iretq frame on the kernel stack pointing at user CS=0x1B, SS=0x23, RFLAGS=0x202, RIP=user-text-VA. iretq drops to ring 3; the user blob is a hand-rolled 2-byte `ud2`; `#UD` from ring 3 returns to the kernel via the IDT. Validates the full ring-0→ring-3→ring-0 round-trip. |
+| #171 | `C38-state-eod-session-19` | state.md EOD checkpoint. |
 
-**Userspace infrastructure:**
-- **#235 P2-21c** — SysV initial stack at execve. ParsedElf gains phoff/phentsize/phnum, LoadedImage gains phdr_va. argc/argv*/NULL/envp*/NULL/auxv*/AT_NULL written at the top of the user stack VMA. Auxv carries AT_PHDR/PHENT/PHNUM/PAGESZ/ENTRY/RANDOM/PLATFORM/EXECFN/UID/GID/etc — needed for static-PIE musl _start. v1 passes empty argv/envp.
-- **#236 P3-04** — /dev/null, /dev/zero, /dev/full, /dev/random, /dev/urandom in dev_misc.rs. LCG-backed random (NOT cryptographic).
-- **#240 P3-02b** — init blob extended 2→3 iters, validates ECHO end-to-end.
-- **#254 P3-17** — Procfs skeleton via StaticFileInode: /proc/{version,cpuinfo,meminfo,uptime,loadavg,stat,filesystems,mounts,self/maps,self/status} registered into devfs.
-- **#256 P3-19** — Static /sys/kernel/random/{uuid,boot_id,entropy_avail}, /sys/devices/system/cpu/{online,possible}, /etc/{os-release,machine-id}.
-- **#257 P3-20** — Hand-rolled CAT blob: open("/proc/version") + read(64) + write(fd=1) + close + exit. Init blob extended 3→4 iters. Boot trace ends with `oxide 0.1.0-pre #1 SMP PREEMPT` deterministically — full sys_open + procfs StaticFileInode + multi-byte sys_read + sys_write + sys_close validated end-to-end.
-- **#260 P3-23** — PL011 RX on arm. tty.rs is now cross-arch; arm tick_poll_uart drains PL011 RX FIFO; arm ConsoleInode::read uses WAITERS+schedule pattern. arm stdin reaches x86 parity.
+**Abandoned in earlier sessions, re-attempted here:** P1-93 (kernel GDT) was abandoned in session 18 with a silent `retfq` hang; root-caused this session via gdb-stub single-stepping (per the qemu-mcp landed in #164) and fixed.
 
-**Signal subsystem foundation:**
-- **#258 P3-21** — Task gains sigpending+sigmask AtomicU64. sys_kill sets the bit, oxide_syscall_dispatch tail delivers (terminates with status 128+sig). No sa_handler dispatch yet.
-- **#259 P3-22** — Real rt_sigprocmask: SIG_BLOCK/UNBLOCK/SETMASK update current.sigmask; SIGKILL+SIGSTOP unmaskable.
+End-of-session-19 verified-green:
+- `make lint` clean.
+- `make test` → 489 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` → `[INFO] user-map-smoke: ok` then `[INFO] elf-smoke: ok ring3 #UD rip=...`; ring-3 round-trip live every boot.
+- `make qemu-arm --features debug-all` reaches `boot: kernel ready, halting`; arm ring-3 path rides the syscall entry batch in session 20.
 
-**Syscall coverage (24 new + improved):**
-fstat/ioctl(TIOCGWINSZ,TCGETS)/getcwd/chdir/fchdir/kill/tgkill (#234), sys_brk (#231 prior), pipe2 (#232 prior), getrandom (#237), sched_yield via tick_yield (#238), gettid+set_tid_address real (#243), nanosleep+clock_nanosleep busy-wait (#248), readlink+readlinkat /proc/self/exe (#249), statx+rseq+membarrier (#250), real fcntl F_DUPFD/F_GETFL etc (#251), sys_read multi-byte uncapped (#247), futex/clone3/mprotect/madvise/prlimit64/rt_sigaction/sigaltstack stubs (#246), writev/readv via fd_table (#241), poll/ppoll/lseek (#245), getrlimit/setrlimit/getrusage/times/sysinfo (#261).
+---
 
-**Splits per docs/08§7 cap (1000 lines):**
-- `kernel/src/syscall_glue_fs.rs` (P3-03) for fs-shaped syscalls.
-- `kernel/src/syscall_glue_proc.rs` (P3-08) for process-shaped syscalls.
-- `kernel/src/dev_misc.rs` (P3-04), `kernel/src/procfs.rs` (P3-17), `kernel/src/exec_stack.rs` (P2-21c).
+## Session 20 (PRs #172 – #195) — 2026-05-03
 
-**State at session-23 EOD:**
-- Boot trace x86: `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically.
-- 524 hosted tests, 0 failed.
-- spec-lint clean.
-- Both arches build clean.
-- dev-misc-smoke + procfs-smoke validate boot-time infra.
-- arm boots through to elf-smoke + user task per P2-13e (no parity gap).
+**Subject**: Syscall entry path + Phase-2 syscall coverage. The big arch-side push: p1-86c page-fault recovery smoke (closes the P1-86 saga), syscall MSR setup (LSTAR/STAR/FMASK), per-arch entry asm, dispatch table, then progressive syscall coverage (write/exit/uname/clock_gettime/mmap-anon/writev/etc) through P2-20.
 
+| PR | Branch | Lands |
+|---|---|---|
+| #172 | `P1-86c-pf-recover-smoke` | Page-fault recovery smoke. Install a handler that recovers (returns true), deliberately fault on an unmapped user page, handler maps a fresh frame + retries. Validates the `iretq`-to-faulting-instruction path and recoverable handler contract introduced by P1-86b. Closes P1-86. |
+| #173 | `P2-01-syscall-entry` | x86 syscall MSR programming: LSTAR = `oxide_syscall_entry`; STAR = (kernel CS<<32) \| (user CS<<48); FMASK clears IF+DF+AC on entry; EFER.SCE bit 0 set. Asm stub stores user RSP, switches to per-CPU kernel stack, pushes argument-shuffle slots (rax + rdi/rsi/rdx/r10/r8/r9 + rcx/r11/rsp triple), calls `oxide_syscall_dispatch`, sysretq. |
+| #174 | `P2-02-sysretq` | Validate sysretq round-trip with a no-op syscall (`nr=0` returns 0). Confirms STAR is laid out correctly and the asm pop sequence aligns. |
+| #175 | `P2-03-bind-syscall-dispatch` | Arch-neutral dispatch table per `15§4`: `crates/syscall::dispatch(nr, &args)`. Slot-numbered entries match the Linux x86_64 ABI. Stubs for `write`/`exit`/`uname`/etc that all return 0 + log via debug_sched. |
+| #176 | `P2-04-bind-syswrite-sysexit` | sys_write fd=1/2 → UART via klog; sys_exit logs and returns 0 (real lifecycle exit lands with the runqueue). |
+| #177 | `P2-05-arm-fault-register-safety` | aarch64 fault dispatcher must save+restore SysV caller-saved x0-x18 around the C call, not just the bare 192-byte EL1 frame. Latent bug in P1-86b's fault recovery path that x86 didn't expose. |
+| #178 | `P2-06-bind-trivial-syscalls` | Trivial-stub coverage: getpid (1)/getuid/geteuid/getgid/getegid (0) — enough for libc startup probes. |
+| #179 | `P2-07-arch-prctl-set-fs` | x86 `sys_arch_prctl(ARCH_SET_FS, addr)` writes IA32_FS_BASE via wrmsr. Required for libc TLS pointer setup. |
+| #180 | `C40-function-cast-cleanup` | One-line lint: `as SyscallFn` → `as SyscallFn` (Rust 2024 stricter fn-pointer cast). |
+| #181 | `P2-08-arm-walker-ttbr0-select` | aarch64 PT walker chooses TTBR0 vs TTBR1 by VA top-bit (user vs kernel half), not via a hardcoded TTBR0. Required so the arm syscall path can install user mappings. |
+| #182 | `P2-09-arm-userspace-eret-smoke` | aarch64 first eret to EL0 — synthesises an ELR_EL1+SPSR_EL1 frame, maps the same `USER_SCRATCH_VA` user page, runs a bare `svc #0` instruction at EL0, syscall asm stub captures the args + returns. Mirrors x86's ring-3 smoke. |
+| #183 | `P2-10-bind-tid-robust-list-and-eod` | Stubs: `set_tid_address` (returns 1), `set_robust_list` (returns 0). state.md EOD intermediate. |
+| #184 | `P2-11-arm-svc-entry` | Real aarch64 `svc #0` entry path. ESR_EL1.EC=0x15 dispatch; arg shuffle from x8/x0..x5; calls `oxide_syscall_dispatch`. arm reaches syscall-ABI parity with x86. |
+| #185 | `P2-14-syscalls-batch-2` | Stubs: rt_sigaction/rt_sigprocmask/sigaltstack/readlink/getrandom/close/mprotect/madvise/fcntl/prlimit64/lseek/read/dup/dup2/dup3/pipe2/sched_yield/nanosleep — accept-and-no-op or harmless-reject. |
+| #186 | `C41-gitignore-claude` | Add `.claude/` and editor temp dirs to `.gitignore`. |
+| #187 | `P2-15-syscalls-batch-3` | More stubs: brk(0)→0, ioctl→ENOTTY, fstat fields. |
+| #188 | `P2-16-clock-gettime` | Real `sys_clock_gettime`: writes (tv_sec, tv_nsec) from per-arch `TimerOps::monotonic_ns`. Validates user-buf range + 8-byte alignment. |
+| #189 | `P2-17-sys-uname` | Real `sys_uname`: writes 6×65-byte fields (sysname=oxide, nodename=oxide, release=0.1.0-pre, version=`oxide #1 SMP PREEMPT`, machine=x86_64\|aarch64, domainname=`(none)`). |
+| #190 | `P2-18-sys-writev` | Real `sys_writev` for fd=1/2: walks iovec array, writes each iov to UART via klog. Required for printf-buffered libc stdio. |
+| #191 | `P2-19-mmap-anon` | First real `sys_mmap`: MAP_ANONYMOUS\|MAP_PRIVATE with addr=NULL/fd=-1. Routes to `vmm::AddressSpace::mmap` per `11§3`/`11§6`; pages demand-fault on first user access (no upfront frame allocation). |
+| #192 | `C42-glue-validate-user-buf` | Pull the validate_user_buf check (ptr in user-half + alignment) into a shared helper used by uname/clock_gettime/etc. |
+| #193 | `P2-20-syscalls-batch-4` | Final P2 syscall batch: open returns -ENOENT; close returns 0; readlink path-special-cases. |
+| #194 | `B08-fix-broken-dispatch-test` | Hotfix: P2-20 broke a dispatch unit test (slot collision). Test count back to expected. |
+| #195 | `C43-state-eod-mass-syscall-batch` | state.md EOD checkpoint. |
+
+End-of-session-20 verified-green:
+- `make lint` clean.
+- `make test` → 489 → 463 (drop investigated in B08 hotfix). Final: 463.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` → first user `sys_write(1, "hello\n")` lands on UART; ring-3 → ring-0 → ring-3 round-trip live; arm equivalent via `svc`.
+
+---
+
+## Session 21 (PRs #196 – #198) — 2026-05-03
+
+**Subject**: VMM page-fault integration + per-task `mm`. Wires `vmm::AddressSpace` into the user-fault path; `Task` carries a real `Arc<AddressSpace>` per docs/13 §5.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #196 | `P2-12-vmm-pagefault-integration` | The user fault handler classifies a fault into FaultKind (Read/Write/Exec on Anonymous/File/Stack) and asks `AddressSpace` to resolve. Resolution = allocate a frame, install a leaf PTE with the matching prot bits, return success. v1 supports Anonymous (zero-fill) + KernelBytes (`include_bytes!` slice) backings. |
+| #197 | `P2-13a-task-mm` | `Task.mm: UnsafeCell<Option<Arc<AddressSpace>>>` + `mm_ref` / `replace_mm` accessors. UnsafeCell instead of `Arc<Mutex>` because the single-mutator-per-active-CPU invariant in `13§5` means execve replaces in-place under preempt-off. Closes P2-13a. |
+| #198 | `C44-state-eod-session-21` | state.md EOD checkpoint. |
+
+End-of-session-21 verified-green:
+- `make lint` clean.
+- `make test` → 463 passed, 0 failed.
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` — first demand-paged user write (`sys_write(1, "hello\n")` faults on the user-stack page, fault handler installs a fresh zero frame, syscall completes).
+
+---
+
+## Session 22 (PRs #199 – #233) — 2026-05-03
+
+**Subject**: Real Phase-2 userspace. Per-AS PT root, real Runqueue with RT/CFS/Idle classes, ELF loader (PT_LOAD demand-paged via `VmaBacking::KernelBytes`), drop-to-ring-3 from a real `Task`, fork+execve+wait4+exit lifecycle, init-loop blob (yo+hi 2-iter), per-task syscall stack + user_frame slot, fd_table + `/dev/console`, devfs path lookup, brk window, pipes, ECHO blob, arm Task lifecycle parity. Multiple intra-session EOD markers (22, 22b, 22c, 22d, 22e, 22g) — same calendar day, distinct work batches.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #199 | `P2-19-as-pt-root` | Each `AddressSpace` owns its own PML4/L0 root PA (allocated from PMM). Kernel-half cloned from a captured "master" snapshot at user_as::init time so every user AS has the kernel mappings without per-AS duplication. `MmuOps::activate(root_pa)` writes CR3/TTBR0 + flushes user TLB. |
+| #200 | `P2-13b-runqueue-wire` | Real `Runqueue` with `Spinlock<RunqueueInner>` per docs/13 §6: RT bitmap class (priority 1-99, 8x8 bitmap) + CFS RB-tree class + Idle. `schedule()` per §8 picks lowest-vruntime runnable task; AS-swap branch fires when `next.mm != prev.mm`. Replaces the Vec-shim from P1-84. |
+| #201 | `P2-17-vma-kernel-bytes` | `VmaBacking::KernelBytes { data: &'static [u8] }` so the ELF loader can map PT_LOAD segments backed by `include_bytes!` blobs without a real VFS. Demand-page faults copy `data[off..off+4096]` into a fresh zero frame. |
+| #202 | `P2-16-elf-loader` | Hand-synthesised ELF64 blob (164 bytes) with one PT_LOAD R\|X. Kernel parses ehdr+phdr, registers PT_LOAD as `VmaBacking::KernelBytes`, registers a 4 KiB user stack VMA, returns entry point. |
+| #203 | `P2-16b-elf-drop-to-ring3` | Drop to ring 3 at the loaded entry. User code does `sys_write(1, "el\n", 3); sys_exit(0); ud2`. ud2 lands at a known landmark; smoke fault handler logs `elf-smoke: ok`. |
+| #204 | `P2-16c-elf-arm` | Same flow on aarch64 via `eret` to EL0. |
+| #205 | `P2-13c-spawn-user-task` | First user `Task` on the runqueue: `spawn_user_thread(tid, name, entry, sp, mm)`. Builds a synthetic iretq frame in the new task's kernel stack so `Context::switch` lands in user space when it's picked. |
+| #206 | `P2-13d-sys-exit-clean` | `kernel_sys_exit` marks the running task Zombie + reschedules. With state=Zombie the picker won't re-enqueue; schedule() falls through to idle (boot anchor) ⇒ boot resumes past its `schedule()` callsite. |
+| #207 | `C45-state-eod-session-22` | state.md EOD checkpoint. |
+| #208 | `P2-15a-as-fork` | `AddressSpace::fork(new_root) -> AddressSpace` clones the VMA tree (no page copy yet — child re-demand-pages). Splits the original `fork` into the no-page-copy primitive + a `fork_copy_pages<M, F>` follow-up so callers can choose. |
+| #209 | `P2-15b-sys-fork` | First real `sys_fork`: alloc new PML4, fork the AS, spawn child Task with `mm = child_as`, return child TID to parent. iretq frame built so child resumes at post-syscall RIP with rax=0 (canonical fork-return). |
+| #210 | `C46-state-eod-session-22b` | state.md EOD checkpoint. |
+| #211 | `P2-21-execve-static` | First `sys_execve`: ignores the path arg, always loads the kernel-static EXEC_BLOB. Replaces `current.mm` atomically, activates the new AS, overwrites the per-task user_frame slot so sysretq lands at the new program entry. |
+| #212 | `P2-21b-execve-path` | execve reads the user path's first byte as a kernel-static ELF selector ('y'→YO, 'h'→HI). Real path resolution waits on VFS. |
+| #213 | `C47-state-eod-session-22c` | state.md EOD checkpoint. |
+| #214 | `P2-22-wait4` | `sys_wait4(pid, wstatus, options, rusage)`: `crate::sched::zombies::ZOMBIES` registry holds Zombie tasks past schedule's swap. Loops with `tick_yield` until a matching child appears. POSIX wstatus encoding: low 7 bits = signal (0 for normal exit), bits 8..16 = exit code. |
+| #215 | `P2-22b-init-loop` | The init blob: 2 iterations of `for sel in ['y','h']: if fork()==0: execve(&sel) else: wait4(-1)`. Real shell-pattern lifecycle. |
+| #216 | `C48-state-eod-session-22d` | state.md EOD checkpoint. |
+| #217 | `P2-26-pid-syscalls` | Real `sys_getpid` + `sys_getppid` reading `current().tid` + `current().parent_tid`. Replaces the constant-1 stubs. |
+| #218 | `P2-23a-uart-read` | Timer-tick UART RX poll + 64-byte ringbuffer in `tty.rs`. `tick_poll_uart` reads COM1 LSR.DR, pushes to RX_BUF. `try_read()` pops a byte non-blocking. |
+| #219 | `C49-state-eod-session-22e` | state.md EOD checkpoint. |
+| #220 | `P2-23-tty-blocking` | Blocking `sys_read(fd=0)`: if RX_BUF empty, the task pushes itself onto WAITERS, marks state=Sleeping, calls schedule(). `tick_poll_uart` wakes all WAITERS on every RX byte (Sleeping → Runnable + enqueue). |
+| #221 | `C50-state-tty-arch` | state.md note on TTY architecture (per-VT distinct ConsoleInode + foreground alias is required, deferred). |
+| #222 | `P2-30a-fd-table` | `Task.fd_table: UnsafeCell<Option<Arc<FdTable>>>`. fd_table holds `Arc<File>`; alloc/get/dup2/close. `init` installs fd 0/1/2 → ConsoleInode at boot; fork inherits the Arc. `kernel_sys_read`/`kernel_sys_write` route via the table. |
+| #223 | `C51-state-eod-session-22g` | state.md EOD checkpoint. |
+| #224 | `P2-31-fd-syscalls` | Real `close`/`dup`/`dup2`/`dup3` via fd_table. |
+| #225 | `P2-15c-fork-pgcopy` | Per-page copy in fork via the `fork_copy_pages<M, F>` extension: walks each Anonymous VMA, allocates a new frame, `M::translate` reads parent's mapping, copies via HHDM, `M::map_at(new_root, va, pa)` installs in child. Closes the heap-survives-fork gap. |
+| #226 | `P2-18-sigsegv-minimal` | Minimal SIGSEGV: when user_fault_handler can't resolve a fault, terminate the task (stash exit_status = 139 = 128+SIGSEGV, push to ZOMBIES, reschedule) instead of halting the kernel. Real signal subsystem rides docs/27. |
+| #227 | `P2-13e-arm-user-task` | aarch64 IRQ frame extended 192→208 B + saves/restores sp_el0 at offset 0xC0. arm sys_exit no-rq fallback (returns 0 if no runqueue, mirrors x86's pre-P2-22 behavior). |
+| #228 | `B08-arm-irq-frame-test-fix` | Hotfix: P2-13e changed the arm IRQ-frame layout test from 192→208 B + sp_el0 slot at 0xC0; the test in `crates/hal-aarch64/src/vbar.rs` still asserted the old layout. |
+| #229 | `P2-13e2-arm-spawn-user-task` | `ContextAArch64::new_user_with_irq_frame(stack_top, user_ip, user_sp)` writes sp_el0 = user_sp at offset 0xC0; SPSR_EL1 = 0x3C0 (EL0t, DAIF masked); ELR_EL1 = user_ip. arm `spawn_user_thread` path mirrors x86. arm reaches user-Task lifecycle parity. |
+| #230 | `P2-30b-devfs-sys-open` | Minimal devfs registry (`&str → InodeRef`); `init` registers `/dev/console`, `/dev/tty`, `/dev/tty0..6`, `/dev/ttyS0`. `sys_open(path, flags, mode)` resolves through devfs. |
+| #231 | `P2-32-brk` | Real `sys_brk`: ELF loader pre-registers a 64 MiB Anonymous VMA at `[max_end, max_end + 64MiB)`; `as.set_brk_window(start, max)` records the bounds; `try_set_brk(new)` validates within the window. brk(0) queries; brk(N) sets. |
+| #232 | `P3-01-pipe2` | Anonymous `PipeInode` per docs/16+24: 4 KiB ringbuffer behind a Spinlock. `sys_pipe2(pipefd, flags)` allocates two `File`s (RDONLY/WRONLY) at the lowest-free fds, writes the pair to user `pipefd[2]`. |
+| #233 | `P3-02-echo-demo` | ECHO blob (173 B): `sys_read(0, buf, 1); sys_write(1, buf, 1); sys_exit(0)`. `tty::inject_for_smoke(b"A")` pre-fills the ringbuffer at boot so the demo runs non-interactively. Registered in `lookup_blob('e')` for future iter exec — actually-exercised end-to-end in P3-02b after the B09 ABI fix. |
+
+End-of-session-22 verified-green (final, post-22g):
+- `make lint` clean.
+- `make test` → 463 passed, 0 failed (test count drop from session 19 stable).
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` → init-loop output `yo\nhi\n` deterministically; full fork+execve+wait4+exit cycle; halts clean.
+- `make qemu-arm --features debug-all` → ELF demo runs via arm spawn_user_thread path; halts clean.
+
+---
+
+## Session 23 (PRs #234 – #265) — 2026-05-04
+
+**Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, and aarch64 PL011 RX parity.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #234 | `P3-03-syscall-batch` | Slots 5/16/79/80/81/62/234. fstat synthesises a 144-byte struct stat from the inode's file_type+ino (S_IFCHR for ConsoleInode so `isatty()` works). ioctl(TIOCGWINSZ) → fake 80×24; ioctl(TCGETS) → zero termios; else -ENOTTY. getcwd → "/"; chdir/fchdir validate + no-op. kill self-target sets sigpending (per P3-21); else -ESRCH. New `kernel/src/syscall_glue_fs.rs` to keep `syscall_glue.rs` under the 1000-line cap. |
+| #235 | `P2-21c-execve-auxv` | SysV initial stack at execve per docs/31 §4 step 5. `kernel/src/exec_stack.rs::build_user_stack` writes argc / argv\* / NULL / envp\* / NULL / auxv\* / AT_NULL / strings at the top of the stack VMA, returns the 16-byte-aligned SP. Auxv carries AT_PHDR/PHENT/PHNUM/PAGESZ/ENTRY/RANDOM/PLATFORM/EXECFN/etc — sufficient for static-PIE musl `_start`. ParsedElf gains phoff/phentsize/phnum; LoadedImage gains phdr_va. |
+| #236 | `P3-04-dev-null-zero-random` | `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` in `kernel/src/dev_misc.rs`. NullInode reads EOF / writes discard; ZeroInode reads NUL fill; FullInode reads NUL / writes -EIO; RandomInode reads from a shared LCG (NOT cryptographic; placeholder until docs/26). |
+| #237 | `P3-05-getrandom` | Slot 318. Fills user buffer from `dev_misc::lcg_next`. NOT cryptographic. |
+| #238 | `P3-06-sched-yield-glue` | Slot 24 routes through `crate::sched::tick_yield` when a runqueue is installed. Replaces the in-table 0-stub. |
+| #239 | `B09-syscall-preserve-argregs` | **Major ABI fix.** x86 syscall asm was popping (and discarding) the user's rdi/rsi/rdx/r10/r8/r9 across syscalls. Linux ABI preserves them; only rax/rcx/r11 are clobbered. Concrete failure: ECHO blob's sys_write after sys_read had garbage rsi/rdx (buf=0x30, len=1016) and hung the kernel. Fix: load arg regs via `mov [rsp+N]` without consuming the slots; restore from same slots after dispatch returns; discard the 7 saved-arg slots; pop user rcx/r11/rsp triple. Drop `sub rsp, 8` align since 10 pushes from a 16-aligned base leave rsp 16-aligned. Without this, ANY user code reusing arg regs across syscalls breaks. |
+| #240 | `P3-02b-init-echo-iter` | Init blob extended 2→3 iters (yo / hi / ECHO). ECHO reads the 'A' pre-injected via `tty::inject_for_smoke`, writes back to fd 1. End-to-end fd_table → ConsoleInode → tty validated. |
+| #241 | `P3-07-writev-readv-glue` | Slots 19/20 routed through fd_table → `File::read`/`File::write` so they work for any open fd (pipes, /dev/null, etc.) not just stdout/stderr. musl/glibc stdio uses writev for line-buffered printf — without binding, stdio breaks for any non-stdout fd. |
+| #242 | `C52-state-eod-session-23` | state.md intermediate update. |
+| #243 | `P3-08-gettid-real` | Slots 186/218 read `current().tid` instead of returning constant 1. New `kernel/src/syscall_glue_proc.rs` houses sched_yield + gettid + set_tid_address. |
+| #244 | `C53-state-eod-session-23-final` | state.md intermediate update. |
+| #245 | `P3-09-pselect-poll-stub` | Slots 7/271 non-blocking poll: CharDev fds report POLLIN\|POLLOUT (ConsoleInode blocks at read time, not at poll time); others 0. Slot 8 lseek returns -ESPIPE for non-Regular file types. |
+| #246 | `P3-10-futex-clone3-stub` | Slots 10/13/14/28/131/202/302/435 stubs: futex returns 0 (FUTEX_WAKE no waiters; FUTEX_WAIT spurious wake); clone3 returns -ENOSYS so musl falls back; mprotect/madvise/prlimit64/rt_sigaction/sigaltstack accept-and-no-op. |
+| #247 | `P3-11-sys-read-multi-byte` | sys_read drops the 1-byte cap on the user buffer; ConsoleInode still returns 1 byte/call (line discipline) but pipes + /dev/zero|random fill the full buffer per call. |
+| #248 | `P3-12-nanosleep-clock` | Slots 35/230 busy-wait against the per-arch monotonic clock with `tick_yield` between checks. Replaces the in-table immediate-return stub. |
+| #249 | `P3-13-multi-task-smoke` | Slots 89/267. readlink/readlinkat resolve `/proc/self/exe → "/init"`; `/proc/self/cwd|root → "/"`. Other paths still return -EINVAL so glibc falls through. |
+| #250 | `P3-14-statx-rseq` | Slot 332 statx writes a minimal 256-byte struct from the inode's file_type+ino; supports AT_EMPTY_PATH+dirfd. Slot 334 rseq returns -ENOSYS so musl falls back. Slot 324 membarrier returns 0 (UP single-CPU). |
+| #251 | `P3-15-fcntl-real` | Slot 72 honours F_DUPFD/F_DUPFD_CLOEXEC (via fd_table.dup), F_GETFD/F_SETFD (CLOEXEC accepted no-op), F_GETFL (returns O_RDWR), F_SETFL (accepts O_NONBLOCK/O_APPEND no-op). Other commands return -EINVAL. |
+| #252 | `B10-sys-write-bound-check` | Mirrors P3-11: sys_write validates the full buf+cnt range, not just buf. Closes a near-USER_VA_END overflow window. |
+| #253 | `P3-16-dev-zero-read-smoke` | Boot-time `dev-misc-smoke` kasserts /dev/{null,zero,full,random} contracts. |
+| #254 | `P3-17-procfs-stub` | Procfs skeleton: `StaticFileInode { body: &'static [u8] }` registered into devfs at /proc/{version,cpuinfo,meminfo,uptime,loadavg,stat,filesystems,mounts,self/maps,self/status}. read(off, buf) streams a window. |
+| #255 | `P3-18-cat-procfs-blob` | Boot-time `procfs-smoke` walks the registered /proc entries via `devfs::lookup` + `Inode::read`, kasserts each body starts with its expected prefix. |
+| #256 | `P3-19-sysfs-random-uuid` | Static /sys/kernel/{osrelease,ostype,random/{uuid,boot_id,entropy_avail}}, /sys/devices/system/cpu/{online,possible}, /etc/{os-release,machine-id} via the StaticFileInode pattern. |
+| #257 | `P3-20-cat-blob-end-to-end` | Hand-rolled CAT blob (256 B): open(/proc/version, O_RDONLY) → read(64) → write(fd=1) → close → exit. Init blob extended 3→4 iters; selectors at 0x40017B..7E. Boot trace ends with `oxide 0.1.0-pre #1 SMP PREEMPT` deterministically — full sys_open + procfs StaticFileInode + multi-byte sys_read + sys_write + sys_close validated end-to-end. |
+| #258 | `P3-21-signal-state-skeleton` | Task gains `sigpending: AtomicU64` + `sigmask: AtomicU64`. sys_kill self-target sets the pending bit (instead of immediate-exit-self); `oxide_syscall_dispatch` tail calls `take_lowest_pending` and terminates with status 128+sig if any unmasked signal is pending. No sa_handler dispatch yet — every signal terminates per `27§2` default disposition. |
+| #259 | `P3-22-rt-sig-real` | Real `sys_rt_sigprocmask`: SIG_BLOCK/UNBLOCK/SETMASK update `current.sigmask`; oldset is written if non-NULL. SIGKILL+SIGSTOP forced unmaskable per POSIX. |
+| #260 | `P3-23-pl011-rx-arm` | tty.rs cross-arch. arm `tick_poll_uart` drains PL011 RX FIFO via FR.RXFE/DR (Device-attr mapping published by `pl011::base_va`); `gic.rs` timer ISR calls it each tick. arm `ConsoleInode::read` uses the WAITERS+schedule pattern. arm stdin reaches x86 parity. |
+| #261 | `P3-24-getrlimit-setrlimit` | Slots 97/98/99/100/160. getrlimit reports RLIM_INFINITY for every resource. setrlimit accepts + forgets. getrusage zeros struct rusage. times zeros struct tms + returns monotonic clock in CLK_TCK ticks (100 Hz). sysinfo fills uptime + zeros. |
+| #262 | `C55-state-changelog-session-23-final` | state.md update (this session). |
+| #263 | `P3-25-mremap-msync` | Slots 25/26/27/149/150/151/152. mremap returns -ENOMEM (libc falls back to mmap+memcpy+munmap which we support). msync 0 (no file VMAs to flush yet). mincore reports every page resident. mlock/munlock/mlockall/munlockall 0 (no swap). |
+| #264 | `P3-26-getpgrp-setsid` | Slots 21/95/109/111/112/121/124/269. getpgrp/getpgid/getsid → `current().tid`. setpgid no-op. setsid returns tid (no actual session-leader bookkeeping yet). umask returns 0o022 prior. access/faccessat resolve via devfs lookup. |
+| #265 | `P3-27-eventfd-timerfd` | Slots 284/290. EventfdInode counter (AtomicU64) — read swaps to 0 and returns prior value as 8-byte u64; write adds. Allocated as Fifo-typed Inode + RDWR File at lowest-free fd. dup/dup2/dup3 also moved out of `syscall_glue.rs` into `syscall_glue_fs.rs` for length cap. |
+
+End-of-session-23 verified-green:
+- `make lint` clean.
+- `make test` → 524 passed, 0 failed (up from 463 → 524 over the run).
+- `make build` + `make build-debug` both arches green.
+- `make qemu-x86 --features debug-all` → boot trace: `dev-misc-smoke: ok` + `procfs-smoke: ok` validate boot-time infra; init-loop emits `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically; full fork+execve+wait4+exit+procfs read+write cycle through 4 iterations; halts clean.
+- `make qemu-arm --features debug-all` reaches user task on the runqueue per P2-13e2; PL011 RX hooked in but not yet exercised end-to-end (no arm-side init-blob iteration testing it — rides P3 follow-up).
