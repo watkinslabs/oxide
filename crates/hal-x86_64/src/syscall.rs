@@ -144,14 +144,18 @@ core::arch::global_asm!(
     // -24 mod 16 = 8 → subtract 8 to align.
     "    sub  rsp, 8",
     "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
-    "    add  rsp, 8",                                 // undo align
-    // Restore user state from the 3-quadword tail and sysretq.
-    // sysretq pops user RIP from rcx, RFLAGS from r11, sets CS =
-    // STAR[63:48]+16 / SS = STAR[63:48]+8 (RPL forced 3). The Rust
-    // dispatcher's u64 return value remains in rax across this.
-    "    pop  rcx",                                    // user RIP
-    "    pop  r11",                                    // user RFLAGS
-    "    pop  rsp",                                    // user RSP (CPU sets RSP last; we mirror)
+    // Restore user state from the global snapshot slots populated
+    // by the entry path. For normal syscalls the globals still
+    // hold the original user RIP/RFLAGS/RSP (no handler touched
+    // them); for `execve` (P2-21) the handler overwrites them so
+    // sysretq lands the user at the new program entry. The 3
+    // saved-state quadwords on the kernel scratch stack are
+    // abandoned — rsp is reloaded from `oxide_user_rsp` directly,
+    // and the kernel scratch stack is restored fresh on every
+    // next syscall via `OXIDE_SYSCALL_KSTACK`.
+    "    mov  rcx, qword ptr [rip + oxide_user_rip]",  // user RIP
+    "    mov  r11, qword ptr [rip + oxide_user_rflags]",// user RFLAGS
+    "    mov  rsp, qword ptr [rip + oxide_user_rsp]",  // user RSP (last write per sysretq spec)
     "    sysretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
 );
