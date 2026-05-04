@@ -17,6 +17,7 @@ pmm     = { path = "../crates/pmm" }
 sched   = { path = "../crates/sched" }
 sync    = { path = "../crates/sync" }
 syscall = { path = "../crates/syscall" }
+vfs     = { path = "../crates/vfs" }
 vmm     = { path = "../crates/vmm" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

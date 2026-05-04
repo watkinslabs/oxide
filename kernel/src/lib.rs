@@ -76,6 +76,11 @@ pub mod elf_load;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod tty;
 
+/// `/dev/console` char-device per docs/16 + docs/28. v1 stub
+/// of the real /dev plumbing; full VFS + devfs ride P2-30.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod dev_console;
+
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
