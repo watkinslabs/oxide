@@ -280,6 +280,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "vfs",
  "vmm",
 ]
 
@@ -574,6 +575,7 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+ "vfs",
  "vmm",
 ]
 

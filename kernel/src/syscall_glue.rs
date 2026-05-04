@@ -37,6 +37,7 @@ const SYSCALL_NR_WAIT4: u64          = 61;
 const SYSCALL_NR_GETPID: u64         = 39;
 const SYSCALL_NR_GETPPID: u64        = 110;
 const SYSCALL_NR_READ: u64           = 0;
+const SYSCALL_NR_WRITE: u64          = 1;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -90,46 +91,86 @@ fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
 
-/// `sys_read(fd, buf, count)` — slot 0. v1 stand-in: only fd=0
-/// (stdin) is wired, blocking on the kernel TTY ringbuffer per
-/// docs/28. Other fds fall through to the arch-neutral table's
-/// `-EBADF` stub.
+/// `sys_read(fd, buf, count)` — slot 0. Routes through the
+/// current task's `fd_table` (P2-30a): looks up the open `File`
+/// at `fd`, calls `File::read` which delegates to the underlying
+/// inode (e.g. `ConsoleInode` for fd=0/1/2 in v1).
 ///
-/// Blocks via `tty::park_current_for_tty` + `schedule()` if no
-/// data is ready; the timer-tick UART poller (`tty::tick_poll_uart`,
-/// hooked in `lapic::oxide_irq_dispatch`) wakes parked tasks
-/// after pushing a byte. v1 wakes ALL waiters per push (no
-/// fd-keyed wait queue); each waiter retries `sys_read` on
-/// resume and exactly one consumes the byte.
+/// `ConsoleInode::read` blocks via `tty::park_current_for_tty`
+/// + `schedule()` if no UART byte is ready; the timer-tick poller
+/// (`tty::tick_poll_uart`) wakes parked tasks per `28§3`.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let cnt = args.a2;
-    if fd != 0 {
-        return -(Errno::Ebadf.as_i32() as i64);
-    }
-    if cnt == 0 {
-        return 0;
-    }
+    if cnt == 0 { return 0; }
     if buf == 0 || buf >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // Block-and-retry loop per `06§6` no-lost-wakeups discipline:
-    // park on the wait queue BEFORE the final empty-check race
-    // window. Anything pushed after we observe empty-and-park
-    // will fire NEED_RESCHED + wake us via `tty::tick_poll_uart`.
-    loop {
-        if let Some(byte) = crate::tty::try_read() {
-            // SAFETY: caller validated buf < USER_VA_END; user page mapped (caller's task already executed from this AS); CPL=0 writes through user mapping.
-            unsafe { core::ptr::write_volatile(buf as *mut u8, byte); }
-            return 1;
-        }
-        // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
-        unsafe { crate::tty::park_current_for_tty(); }
-        // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wakeup from `tick_poll_uart` will.
-        unsafe { crate::sched::schedule(); }
-        // Resumed via wakeup. Retry the read.
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f)  => f,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // Build a user-side &mut [u8] of length min(cnt, 1) — the
+    // ConsoleInode protocol returns at most 1 byte per call. A
+    // future fd_table-aware copy_to_user would handle larger
+    // counts by ranging over `cnt` bytes safely.
+    let len = (cnt as usize).min(1);
+    // SAFETY: caller validated buf < USER_VA_END; user page mapped (caller's task already executed from this AS); CPL=0 writes through user mapping.
+    let user_buf: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(buf as *mut u8, len)
+    };
+    match file.read(user_buf) {
+        Ok(n)  => n as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_write(fd, buf, count)` — slot 1 wrapper. Routes through
+/// the current task's `fd_table` (P2-30a) so fd 1/2 and any
+/// future opened fd dispatch via `File::write`. v1 falls back to
+/// the arch-neutral in-table `sys_write` (which writes to UART
+/// for fd=1/2, EBADF otherwise) when no fd_table is installed —
+/// preserves behaviour for kthread-context kernel-side syscalls.
+fn kernel_sys_write(args: &SyscallArgs) -> i64 {
+    let fd  = args.a0 as i32;
+    let buf = args.a1;
+    let cnt = args.a2;
+    if cnt == 0 { return 0; }
+    if buf == 0 || buf >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return dispatch(1, args),
+    };
+    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return dispatch(1, args),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f)  => f,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let len = cnt as usize;
+    // SAFETY: caller validated buf < USER_VA_END; user page mapped; CPL=0 reads through user mapping.
+    let user_buf: &[u8] = unsafe {
+        core::slice::from_raw_parts(buf as *const u8, len)
+    };
+    match file.write(user_buf) {
+        Ok(n)  => n as i64,
+        Err(e) => -(e as i64),
     }
 }
 
@@ -215,6 +256,19 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
 
     // Record parent_tid for `wait4` (P2-22).
     child.parent_tid.store(cur.tid, Ordering::Release);
+
+    // Inherit parent's fd table (P2-30a). v1 simplification:
+    // share the same Arc — POSIX's "copy fd table" semantics
+    // for default fork (non-CLONE_FILES) reduce in v1 to
+    // sharing because no one calls dup/close yet to diverge.
+    // Real per-entry copy lands when the FdTable's CLOSE_ON_EXEC
+    // semantics differentiate.
+    // SAFETY: we're sole writer on the parent's fd_table read; child not yet scheduled (sole writer there too).
+    let parent_fdt = unsafe { cur.fd_table_ref().cloned() };
+    if let Some(fdt) = parent_fdt {
+        // SAFETY: child task hasn't been scheduled yet (just spawned); we are the sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
+        unsafe { child.replace_fd_table(Some(fdt)); }
+    }
 
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_fork: parent_tid=");
@@ -577,6 +631,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_GETPPID       => kernel_sys_getppid(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_READ          => kernel_sys_read(&args),
+        SYSCALL_NR_WRITE         => kernel_sys_write(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
