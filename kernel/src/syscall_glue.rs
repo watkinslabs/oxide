@@ -94,6 +94,8 @@ const SYSCALL_NR_FACCESSAT: u64      = 269;
 const SYSCALL_NR_ACCESS: u64         = 21;
 const SYSCALL_NR_EVENTFD2: u64       = 290;
 const SYSCALL_NR_EVENTFD: u64        = 284;
+const SYSCALL_NR_GETDENTS64: u64     = 217;
+const SYSCALL_NR_GETDENTS: u64       = 78;
 const SYSCALL_NR_GETCPU: u64         = 309;
 const SYSCALL_NR_SCHED_GETPARAM: u64 = 143;
 const SYSCALL_NR_SCHED_SETSCHEDULER: u64 = 144;
@@ -895,6 +897,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_FACCESSAT     => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
         SYSCALL_NR_EVENTFD | SYSCALL_NR_EVENTFD2
                                  => crate::syscall_glue_fs::kernel_sys_eventfd2(&args),
+        SYSCALL_NR_GETDENTS | SYSCALL_NR_GETDENTS64
+                                 => crate::syscall_glue_fs::kernel_sys_getdents64(&args),
         SYSCALL_NR_GETCPU        => crate::syscall_glue_proc::kernel_sys_getcpu(&args),
         SYSCALL_NR_SCHED_GETPARAM => crate::syscall_glue_proc::kernel_sys_sched_getparam(&args),
         SYSCALL_NR_SCHED_SETSCHEDULER | SYSCALL_NR_SCHED_GETSCHEDULER
