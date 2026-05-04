@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #273) — 2026-05-04
+## Session 23 (PRs #234 – #276) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -534,6 +534,9 @@ End-of-session-22 verified-green (final, post-22g):
 | #271 | `P3-32-state-changelog-update` | docs catch-up: state.md + CHANGELOG.md through #270. |
 | #272 | `P3-33-getdents64` | Slots 78/217 stub: validate fd + dirp range, return 0 (EOD). Real Inode::lookup-driven enumeration rides docs/16. |
 | #273 | `P3-34-pread-pwrite` | Slots 17/18 routed via fd_table → Inode::read/write with explicit offset (procfs StaticFileInode honours it for streaming). preadv/pwritev (295/296) → ENOSYS. |
+| #274 | `P3-35-state-changelog` | docs catch-up through #273. |
+| #275 | `P3-36-mkdir-rmdir-stub` | Slots 74/75/76/77/82/83/84/87/162/257/258/263/264/316. Mutating fs ops (mkdir/rmdir/unlink/rename/truncate) → -EROFS (devfs is read-only). openat routes through devfs lookup. fsync/fdatasync/sync → 0. |
+| #276 | `P3-37-net-stubs` | Slots 41-55 + 288. socket/bind/listen/accept(4)/connect/sendto/recvfrom/sendmsg/recvmsg/shutdown/getsockname/getpeername/socketpair/setsockopt/getsockopt all return -ENOSYS until docs/25 net stack lands. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
