@@ -335,6 +335,26 @@ pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
     }
 }
 
+/// Path-string lookup for `sys_execve`. Recognises POSIX-shape
+/// paths like `/bin/yo`, `/init`, `/bin/cat`. v1 stand-in for
+/// VFS path resolution. Returns `None` if no matching blob.
+/// # C: O(N_paths)
+pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
+    match path {
+        b"/init" | b"/sbin/init"            => Some(ELF_BLOB_PUB),
+        b"/bin/yo" | b"/usr/bin/yo"         => Some(YO_BLOB),
+        b"/bin/hi" | b"/usr/bin/hi"         => Some(HI_BLOB),
+        b"/bin/echo" | b"/usr/bin/echo"     => Some(ECHO_BLOB),
+        b"/bin/cat"  | b"/usr/bin/cat"      => Some(CAT_BLOB),
+        _ => None,
+    }
+}
+
+/// Re-export ELF_BLOB for the path-string lookup. Internal const
+/// can't be `pub` directly without touching the existing access
+/// patterns; this wrapper exposes it under a dedicated name.
+pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
+
 /// Default blob for the `path = NULL` legacy path (P2-21 v0).
 /// Retained so older test paths keep working.
 pub const EXEC_BLOB: &'static [u8] = HI_BLOB;
