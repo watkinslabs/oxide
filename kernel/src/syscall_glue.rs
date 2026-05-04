@@ -320,9 +320,7 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_close(fd)` — slot 3 per docs/15§5. Removes the entry
-/// from the current task's fd table; subsequent operations on
-/// `fd` return `-EBADF`.
+/// `sys_close(fd)` — slot 3. Removes the fd_table entry.
 fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cur = match crate::sched::current() {
@@ -378,9 +376,8 @@ fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_dup3(oldfd, newfd, flags)` — slot 292 per docs/15§5.
-/// Like `dup2` but rejects `oldfd == newfd` and accepts
-/// `O_CLOEXEC` (ignored in v1).
+/// `sys_dup3(oldfd, newfd, flags)` — slot 292. Like dup2 but
+/// rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
 fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
@@ -419,22 +416,11 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(0)
 }
 
-/// `sys_fork()` — slot 57 per docs/15§5 (Linux x86_64 fork). v0
-/// per docs/11§7: clone the parent's `AddressSpace` (VMA tree
-/// copy; mapped pages NOT copied — child re-demand-pages from
-/// KernelBytes / fresh-zero for Anonymous), spawn a new user
-/// `Task` with `mm = child_as`, return the child's TID to parent.
-///
-/// Child's iretq frame is built by `spawn_user_thread` with rax=0
-/// (the synthesised IRQ frame's scratch slots default to zero, and
-/// the rax slot is consumed by the IRQ epilogue's pop sequence
-/// just before iretq) — so when the child is scheduled in, it
-/// resumes at `user_rip` with rax=0 (the canonical fork return
-/// distinguisher) and `rsp = user_rsp`.
-///
-/// Reads `user_rip`/`user_rsp` from globals captured by the
-/// `oxide_syscall_entry` asm stub.
-///
+/// `sys_fork()` — slot 57 per docs/15§5 + docs/11§7. Clones
+/// parent's AS (VMA tree + per-page copy via P2-15c), spawns
+/// child Task with rax=0 in its iretq frame so it resumes at
+/// the post-syscall RIP with the canonical fork-return
+/// distinguisher. Returns child TID to parent.
 /// # C: O(N_vmas) clone + O(log N) enqueue
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
@@ -795,21 +781,22 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     written as i64
 }
 
-/// `sys_kill(pid, sig)` — slot 62. v1 minimal: self-targeted
-/// signals (`pid == current.tid` or `pid == 0`) for SIGKILL/
-/// SIGTERM/SIGABRT route to `kernel_sys_exit(128 + sig)` so libc
-/// `abort()` and `raise()` produce a real exit. Other targets
-/// return -ESRCH (no task registry yet — P3 follow-up).
+/// `sys_kill(pid, sig)` — slot 62. P3-21: sets sigpending bit;
+/// dispatch tail delivers (terminates) on syscall return. Self-
+/// target only (pid == tid or 0); others return -ESRCH.
 fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
     let pid = args.a0 as i32;
     let sig = args.a1 as i32;
+    if !(1..=64).contains(&sig) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let cur = match crate::sched::current() {
         Some(c) => c,
         None    => return -(Errno::Esrch.as_i32() as i64),
     };
     if pid == 0 || pid == cur.tid as i32 {
-        let exit_args = SyscallArgs { a0: (128 + sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
-        let _ = kernel_sys_exit(&exit_args);
+        cur.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
         return 0;
     }
     -(Errno::Esrch.as_i32() as i64)
@@ -995,6 +982,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_raw(b" rv=");
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
+    }
+    // P3-21: check pending unblocked signals at syscall return.
+    if let Some(sig) = crate::syscall_glue_proc::take_lowest_pending() {
+        let exit_args = SyscallArgs { a0: (128 + sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+        let _ = kernel_sys_exit(&exit_args);
     }
     rv as u64
 }
