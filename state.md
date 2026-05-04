@@ -58,6 +58,8 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 285 | `P3-46-keyctl-ipc` | syscall_compat.rs::try_compat helper; SysV IPC + POSIX MQ + keyring + timer_* + kexec + xattr + sendfile/splice + memfd + pidfd + fanotify all wired (ENOSYS / EPERM as appropriate). Real impls for stat/lstat/creat/pipe/exit_group/newfstatat. |
 | 286 | `P3-47-state-changelog` | docs catch-up. |
 | 287 | `P3-49-syscall-coverage-banner` | Boot banner: `[INFO] syscall: ~200 slots wired (real impls + compat stubs)`. |
+| 288 | `P3-50-state-changelog-final` | docs catch-up. |
+| 289 | `P3-51-execve-real-argv` | execve real argv/envp pass-through (8×64 cap) via pre-activate snapshot into kernel buffers. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
