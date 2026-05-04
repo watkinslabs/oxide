@@ -66,6 +66,10 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 293 | `P3-55-state-changelog` | docs catch-up. |
 | 294 | `P3-56-statx-test` | Boot-time exec-path-smoke validates lookup_blob_by_path. |
 | 295 | `P3-57-state-changelog-final` | docs catch-up. |
+| 296 | `P3-58-state-eod` | session-23 closeout. |
+| 297 | `P3-59-musl-helloworld` | **M1 baseline.** First real-toolchain static-PIE binary running: `hello asm-pie` (gcc -nostdlib -static-pie). PIE_LOAD_BIAS, R_X86_64_RELATIVE, CR4.OSFXSR, build_user_stack for spawned task. |
+| 298 | `B11-hotfix-blob-not-committed` | hotfix gitignore — `!kernel/blobs/*.elf` exception. |
+| 299 | `P3-61-fork-fdtable-copy` | **M2 substrate** — per-entry fd_table fork copy + CLOEXEC at execve. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
