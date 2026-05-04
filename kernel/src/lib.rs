@@ -566,6 +566,11 @@ pub mod syscall_glue_proc;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_nrs;
 
+// P3-46 compat-stub dispatch table — pulls the broad
+// accept-and-no-op + ENOSYS + EPERM tail out of `syscall_glue`.
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_compat;
+
 // P3-30 time-shaped syscalls (clock_gettime + family).
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_time;
