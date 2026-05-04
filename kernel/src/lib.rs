@@ -71,6 +71,11 @@ pub mod sched;
 #[cfg(target_os = "oxide-kernel")]
 pub mod elf_load;
 
+/// TTY input per docs/28. v1: timer-tick UART poll + ringbuffer
+/// + WaitQueue-based blocking sys_read. x86_64 only.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod tty;
+
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
