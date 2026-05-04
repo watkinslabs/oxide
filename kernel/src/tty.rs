@@ -140,6 +140,20 @@ pub fn try_read() -> Option<u8> {
     RX_BUF.lock().pop()
 }
 
+/// Inject `bytes` into the RX ringbuffer as if they had arrived
+/// from the UART. v1 boot smoke uses this to pre-load test
+/// input non-interactively so the ECHO program can demonstrate
+/// the full read+write path without requiring user typing.
+/// In production a UART RX IRQ replaces this at runtime.
+/// # SAFETY: caller is the boot path; single-CPU pre-init.
+/// # C: O(N)
+pub fn inject_for_smoke(bytes: &[u8]) {
+    let mut g = RX_BUF.lock();
+    for &b in bytes {
+        let _ = g.push(b);
+    }
+}
+
 /// Park the current task on the TTY input wait queue. Caller is
 /// responsible for marking state=Sleeping + invoking `schedule()`
 /// after; this just registers the wakeup target.
