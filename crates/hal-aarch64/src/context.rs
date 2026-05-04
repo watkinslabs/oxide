@@ -189,6 +189,39 @@ impl Context for ContextAArch64 {
     }
 }
 
+impl ContextAArch64 {
+    /// User-mode flavor of `new_kernel_with_irq_frame` per
+    /// `14§R07`. The synthetic IRQ frame's saved sp_el0 is set to
+    /// `user_sp`, ELR_EL1 to `user_ip`, SPSR_EL1 to `0x3C0`
+    /// (M=EL0t, DAIF all masked); the shared `oxide_irq_resume_user`
+    /// epilogue's eret therefore transitions to EL0 at `user_ip`
+    /// with `sp_el0 = user_sp`. Inherent on `ContextAArch64` (not
+    /// on the `hal::Context` trait — mirrors x86's P2-13c shape).
+    /// # C: O(1)
+    pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
+        // SAFETY: caller asserts `stack_top` is the high end of a
+        // writable, 16-byte-aligned kernel stack of at least 208 B.
+        let sp = unsafe {
+            let base = stack_top.cast::<u8>().sub(208) as *mut u64;
+            for i in 0..22 { base.add(i).write(0); }
+            base.add(22).write(user_ip);          // ELR_EL1 = user entry
+            // SPSR_EL1 = 0x3C0: M=EL0t (0b0000), DAIF=0xF (all masked).
+            base.add(23).write(0x3C0);
+            base.add(24).write(user_sp);          // sp_el0
+            base.add(25).write(0);                // pad
+            base
+        };
+        Self {
+            sp:    sp as u64,
+            x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
+            x25: 0, x26: 0, x27: 0, x28: 0,
+            x29: 0,
+            lr:    crate::vbar::irq_resume_user_addr(),
+            tpidr: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
