@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #299) — 2026-05-04
+## Session 23 (PRs #234 – #306) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -560,6 +560,13 @@ End-of-session-22 verified-green (final, post-22g):
 | #297 | `P3-59-musl-helloworld` | **M1 baseline reached.** First non-hand-rolled real-toolchain ELF binary running through the kernel: `gcc -nostdlib -static-pie -fPIE` static-PIE blob in `kernel/blobs/hello.elf` prints `hello asm-pie`. Substrate: `PIE_LOAD_BIAS=0x10000000` for ET_DYN; biased entry/phdr_va; pre-applies `R_X86_64_RELATIVE` from `DT_RELA`; `hal_x86_64::enable_sse()` at boot (CR0.MP, CR4.OSFXSR/OSXMMEXCPT for user-mode SSE2); fault handler installed BEFORE `load_static_blob` so PIE relocation kernel-side writes resolve via `user_fault_handler`; `build_user_stack` called for the spawned task (was only on execve before). musl libc full helloworld is M1b: faults inside `__libc_start_main_stage1` after `arch_prctl` + `set_tid_address` — investigation continues. |
 | #298 | `B11-hotfix-blob-not-committed` | hotfix: P3-59's `kernel/blobs/hello.elf` matched the broad `*.elf` gitignore rule; fresh clones build-failed. Adds `!kernel/blobs/*.elf` exception + commits the blob (8.9 KB). |
 | #299 | `P3-61-fork-fdtable-copy` | **M2 substrate.** fork now uses `FdTable::fork_clone()` (per-entry copy of files+cloexec arrays into a fresh table) instead of Arc-sharing the parent's table; child's close/dup don't disturb parent. execve calls `close_on_exec()` on the active fd_table before the new program runs, dropping FDs marked `FD_CLOEXEC`. Real shells rely on both. |
+| #300 | `P3-63-state-changelog-m1` | docs catch-up through M1 baseline + M2 substrate. |
+| #301 | `P3-64-sigaction-storage` | **M2 substrate.** Task gains `sigactions: UnsafeCell<[SaHandler; 64]>` array. `rt_sigaction` (slot 13) reads + stores the user `struct sigaction`; writes prior to oldact. Foundation for sa_handler dispatch in #302. |
+| #302 | `P3-65-sa-handler-dispatch` | **M2 substrate — real signal-handler dispatch.** When a pending unblocked signal has a registered user handler (not SIG_DFL/IGN), the dispatch tail builds a 40-byte signal frame on the user stack `(magic, rflags, rsp, rip, restorer)`, rewrites the per-task user_frame so sysretq enters the handler with `sig` in `rdi`. Handler ret's to sa_restorer which calls `rt_sigreturn` (slot 15); kernel pops the frame and restores rip/rflags/rsp. New `kernel/src/sig_dispatch.rs`. x86_64 only; SA_SIGINFO not honored (no siginfo_t/ucontext_t). |
+| #303 | `P3-66-signal-smoke` | Hand-rolled `kernel/blobs/sigtest.elf` validates the full sigaction → kill → dispatch → handler → restorer → rt_sigreturn → resume chain end-to-end. Boot trace prints `before h after` deterministically. Includes one bugfix (rt_sigreturn frame_base was 32 below cur_rsp; correct is 40). |
+| #304 | `P3-67-sigchld` | **M2 substrate — SIGCHLD on Zombie.** Task gains `parent_arc: Weak<Task>` set at fork time. `park_zombie` upgrades the Weak; if parent alive, sets bit 16 (signal 17, SIGCHLD) in `parent.sigpending`. Bash + getty rely on this for job tracking. |
+| #305 | `P3-68-sigchld-default-ignore` | **Bugfix.** SIG_DFL case in dispatch tail was always terminating; Linux per `signal(7)` defaults SIGCHLD/SIGURG/SIGWINCH to ignore. Without this, parents would be killed by their first child's Zombie posting SIGCHLD without a handler. Also: execve path-string lookup falls back to first-byte selector for any path_len ≥ 1 so init blob's non-NUL-terminated 1-byte selectors continue to resolve. |
+| #306 | `B12-line-cap-hotfix` | Trims doc comments in syscall_glue.rs to bring it back under the 1000-line cap (1004→997). |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
