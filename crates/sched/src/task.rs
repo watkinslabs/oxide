@@ -7,7 +7,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
@@ -162,6 +162,15 @@ pub struct Task {
     /// non-NULL = build frame + jump). Wrapped in `UnsafeCell` for
     /// the same single-mutator-per-active-CPU invariant as `mm`.
     pub sigactions: UnsafeCell<[SaHandler; 64]>,
+
+    /// Weak-ref to parent Task per `27§5` SIGCHLD delivery. Set
+    /// by `sys_fork` when this task is constructed; `None` for
+    /// tasks with no parent (boot-anchor idle, kthreads). Read by
+    /// `park_zombie` to upgrade + post SIGCHLD pending bit on the
+    /// parent. Wrapped in `UnsafeCell` because spawn writes it
+    /// once before the runqueue sees the task; same single-
+    /// mutator invariant as `mm`.
+    pub parent_arc: UnsafeCell<Option<Weak<Task>>>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -271,6 +280,7 @@ impl Task {
             sigpending: AtomicU64::new(0),
             sigmask:    AtomicU64::new(0),
             sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
+            parent_arc: UnsafeCell::new(None),
         }
     }
 
