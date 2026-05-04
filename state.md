@@ -52,6 +52,8 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 279 | `P3-40-state-changelog-update` | docs catch-up. |
 | 280 | `P3-41-epoll-stubs` | epoll/inotify/signalfd/timerfd/io_uring/bpf/seccomp/landlock ENOSYS so probes fall through. |
 | 281 | `P3-42-tkill-tgkill-real` | tkill + rt_sigpending + rt_sigsuspend + rt_sigreturn. |
+| 282 | `P3-43-state-changelog-final` | docs catch-up. |
+| 283 | `P3-44-getitimer-setitimer` | Wide ABI-compat batch (itimer/alarm/uid-gid/xattr/sendfile/mount/etc.) |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
