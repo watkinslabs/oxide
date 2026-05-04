@@ -85,6 +85,12 @@ unsafe fn read_reg(va: u64, off: usize) -> u32 {
     unsafe { core::ptr::read_volatile((va + off as u64) as *const u32) }
 }
 
+/// Current PL011 base VA — `0` if `enable` hasn't run yet.
+/// Used by `tty::tick_poll_uart` (arm RX path).
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn base_va() -> u64 { PL011_BASE_VA.load(Ordering::Acquire) }
+
 /// klog `LogSink` thunk. No-op if `enable` hasn't run yet.
 /// # C: O(len)
 #[cfg(target_os = "oxide-kernel")]
