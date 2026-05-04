@@ -95,6 +95,9 @@ pub mod dev_misc;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 
+#[cfg(target_os = "oxide-kernel")]
+pub mod tmpfs;
+
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
