@@ -52,8 +52,15 @@ impl From<ElfError> for LoadError {
 /// `entry` per docs/31§3 `LoadedExe`.
 #[derive(Copy, Clone, Debug)]
 pub struct LoadedImage {
-    pub entry: UserVirtAddr,
-    pub brk:   UserVirtAddr,
+    pub entry:      UserVirtAddr,
+    pub brk:        UserVirtAddr,
+    /// User VA where the program-header table lives. Computed by
+    /// finding the PT_LOAD whose file range covers `e_phoff` and
+    /// translating: `phdr_va = seg.vaddr + (phoff - seg.file_off)`.
+    /// Auxv AT_PHDR per `31§4`. `0` if no PT_LOAD covers phoff.
+    pub phdr_va:    u64,
+    pub phentsize:  u16,
+    pub phnum:      u16,
 }
 
 /// Load `blob` into `as_` per docs/31§4. Each PT_LOAD becomes a
@@ -109,6 +116,18 @@ pub fn load_static_blob(
     let entry = UserVirtAddr::new(parsed.entry).ok_or(LoadError::Einval)?;
     let brk   = UserVirtAddr::new(max_end).ok_or(LoadError::Einval)?;
 
+    // Compute phdr_va: the user VA the program header table lives
+    // at after load. Find the PT_LOAD whose file range covers
+    // `phoff` and translate file→virt.
+    let phoff = parsed.phoff;
+    let mut phdr_va: u64 = 0;
+    for seg in &parsed.loads {
+        if phoff >= seg.file_off && phoff < seg.file_off + seg.file_sz {
+            phdr_va = seg.vaddr + (phoff - seg.file_off);
+            break;
+        }
+    }
+
     // Register a heap region per docs/15§5 `brk(2)`: an Anonymous
     // VMA covering [max_end, max_end + HEAP_RESERVE) so `sys_brk`
     // can extend lazily via demand-paging. v1: 64 MiB heap.
@@ -130,7 +149,10 @@ pub fn load_static_blob(
     ).map_err(|_| LoadError::Enomem)?;
     as_.set_brk_window(heap_start, heap_end);
 
-    Ok(LoadedImage { entry, brk })
+    Ok(LoadedImage {
+        entry, brk,
+        phdr_va, phentsize: parsed.phentsize, phnum: parsed.phnum,
+    })
 }
 
 #[inline]
