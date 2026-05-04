@@ -76,10 +76,47 @@ pub fn kernel_sys_prlimit64(_args: &SyscallArgs) -> i64 { 0 }
 /// # C: O(1)
 pub fn kernel_sys_rt_sigaction(_args: &SyscallArgs) -> i64 { 0 }
 
-/// `sys_rt_sigprocmask(how, set, oldset, sz)` — slot 14. v1
-/// stub: signal mask is implicit-block-all; returns 0.
+/// `sys_rt_sigprocmask(how, set, oldset, sz)` — slot 14. P3-22:
+/// updates `current.sigmask` per Linux semantics:
+/// - SIG_BLOCK   (0): mask |= set
+/// - SIG_UNBLOCK (1): mask &= !set
+/// - SIG_SETMASK (2): mask = set
+/// Writes the prior mask to `oldset` if non-NULL. `sz` must be 8.
 /// # C: O(1)
-pub fn kernel_sys_rt_sigprocmask(_args: &SyscallArgs) -> i64 { 0 }
+pub fn kernel_sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    const SIG_BLOCK:   u64 = 0;
+    const SIG_UNBLOCK: u64 = 1;
+    const SIG_SETMASK: u64 = 2;
+    let how    = args.a0;
+    let set    = args.a1;
+    let oldset = args.a2;
+    let sz     = args.a3;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return 0,
+    };
+    let prior = cur.sigmask.load(Ordering::Acquire);
+    if oldset != 0 && oldset < hal::USER_VA_END {
+        // SAFETY: oldset validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 writes through user mapping.
+        unsafe { core::ptr::write_volatile(oldset as *mut u64, prior); }
+    }
+    if set == 0 { return 0; }
+    if set >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: set validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 reads through user mapping.
+    let new_set = unsafe { core::ptr::read_volatile(set as *const u64) };
+    let new_mask = match how {
+        SIG_BLOCK   => prior | new_set,
+        SIG_UNBLOCK => prior & !new_set,
+        SIG_SETMASK => new_set,
+        _           => return -(Errno::Einval.as_i32() as i64),
+    };
+    // SIGKILL (9) and SIGSTOP (19) cannot be blocked — clear those bits.
+    let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
+    cur.sigmask.store(new_mask, Ordering::Release);
+    0
+}
 
 /// `sys_sigaltstack(ss, oldss)` — slot 131. v1 stub: signal
 /// frames don't exist yet; accept and ignore.
