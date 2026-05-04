@@ -54,6 +54,8 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 281 | `P3-42-tkill-tgkill-real` | tkill + rt_sigpending + rt_sigsuspend + rt_sigreturn. |
 | 282 | `P3-43-state-changelog-final` | docs catch-up. |
 | 283 | `P3-44-getitimer-setitimer` | Wide ABI-compat batch (itimer/alarm/uid-gid/xattr/sendfile/mount/etc.) |
+| 284 | `P3-45-state-changelog` | docs catch-up. |
+| 285 | `P3-46-keyctl-ipc` | syscall_compat.rs::try_compat helper; SysV IPC + POSIX MQ + keyring + timer_* + kexec + xattr + sendfile/splice + memfd + pidfd + fanotify all wired (ENOSYS / EPERM as appropriate). Real impls for stat/lstat/creat/pipe/exit_group/newfstatat. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
