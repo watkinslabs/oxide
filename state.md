@@ -65,6 +65,7 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 292 | `P3-54-execve-path-string` | execve real path-string lookup: /init, /bin/{yo,hi,echo,cat}, /usr/bin/* via lookup_blob_by_path. |
 | 293 | `P3-55-state-changelog` | docs catch-up. |
 | 294 | `P3-56-statx-test` | Boot-time exec-path-smoke validates lookup_blob_by_path. |
+| 295 | `P3-57-state-changelog-final` | docs catch-up. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
