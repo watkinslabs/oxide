@@ -27,11 +27,11 @@ use crate::elf_load::load_static_blob;
 ///   [0..64)     ehdr
 ///   [64..120)   PT_LOAD phdr
 ///   [120..128)  pad
-///   [128..308)  code (180 B): 3 iterations × 60 B
-///   [308..319)  final exit (11 B)
-///   [319..322)  'y','h','e' at vaddrs 0x40013F/40/41
-const fn build_elf() -> [u8; 322] {
-    let mut b = [0u8; 322];
+///   [128..368)  code (240 B): 4 iterations × 60 B
+///   [368..379)  final exit (11 B)
+///   [379..383)  'y','h','e','c' at vaddrs 0x4001/7B/7C/7D/7E
+const fn build_elf() -> [u8; 383] {
+    let mut b = [0u8; 383];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
     b[4]=2; b[5]=1; b[6]=1;
     b[16]=2; b[18]=62; b[20]=1;
@@ -47,7 +47,7 @@ const fn build_elf() -> [u8; 322] {
     let vb = v.to_le_bytes();
     i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
     i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
-    let fs: u64 = 322;
+    let fs: u64 = 383;
     let fb = fs.to_le_bytes();
     i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
     i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
@@ -55,24 +55,27 @@ const fn build_elf() -> [u8; 322] {
     let ab = al.to_le_bytes();
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
-    // 3 iterations × 60 B each. Selectors:
-    //   iter 1: 'y' at vaddr 0x40013F (sel_lo = 0x3F)
-    //   iter 2: 'h' at vaddr 0x400140 (sel_lo = 0x40)
-    //   iter 3: 'e' at vaddr 0x400141 (sel_lo = 0x41) — ECHO
+    // 4 iterations × 60 B each. Selectors at vaddrs 0x40017B..7E:
+    //   iter 1: 'y' (sel_lo = 0x7B)
+    //   iter 2: 'h' (sel_lo = 0x7C)
+    //   iter 3: 'e' (sel_lo = 0x7D) — ECHO
+    //   iter 4: 'c' (sel_lo = 0x7E) — CAT (open /proc/version + write)
     let c = 128;
-    iter_block(&mut b, c,        0x3F);
-    iter_block(&mut b, c + 60,   0x40);
-    iter_block(&mut b, c + 120,  0x41);
-    // Final exit at offset 180.
-    let e = c + 180;
+    iter_block(&mut b, c,        0x7B);
+    iter_block(&mut b, c + 60,   0x7C);
+    iter_block(&mut b, c + 120,  0x7D);
+    iter_block(&mut b, c + 180,  0x7E);
+    // Final exit at offset 240.
+    let e = c + 240;
     b[e+0]=0xB8; b[e+1]=0x3C;             // mov $60, %eax
     b[e+5]=0x31; b[e+6]=0xFF;             // xor %edi, %edi
     b[e+7]=0x0F; b[e+8]=0x05;             // syscall (exit)
     b[e+9]=0x0F; b[e+10]=0x0B;            // ud2
-    // Selectors at file offsets 319/320/321 → vaddrs 0x40013F/40/41.
-    b[319]=b'y';
-    b[320]=b'h';
-    b[321]=b'e';
+    // Selectors at file offsets 379..382 → vaddrs 0x40017B..7E.
+    b[379]=b'y';
+    b[380]=b'h';
+    b[381]=b'e';
+    b[382]=b'c';
     b
 }
 
@@ -80,7 +83,7 @@ const fn build_elf() -> [u8; 322] {
 /// at file-offset `off` within `b`. `sel_lo` is the low byte of
 /// the selector VA (0x400000 | (sel_lo as u32)) — the selector
 /// itself sits at file offset == vaddr & 0xfff. Block size = 60 B.
-const fn iter_block(b: &mut [u8; 322], off: usize, sel_lo: u8) {
+const fn iter_block(b: &mut [u8; 383], off: usize, sel_lo: u8) {
     // [0x00] mov $57, %eax            ; sys_fork
     b[off+0]=0xB8; b[off+1]=0x39;
     // [0x05] syscall
@@ -123,7 +126,7 @@ const fn iter_block(b: &mut [u8; 322], off: usize, sel_lo: u8) {
     b[off+58]=0x0F; b[off+59]=0x05;
 }
 
-const ELF_BLOB_BYTES: [u8; 322] = build_elf();
+const ELF_BLOB_BYTES: [u8; 383] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
 /// Build a "writes 2-char message + exit" ELF64. `c0`/`c1` are
@@ -244,6 +247,80 @@ const ECHO_BLOB_BYTES: [u8; 173] = build_echo_blob();
 /// exit. Selector: 'e'.
 pub const ECHO_BLOB: &'static [u8] = &ECHO_BLOB_BYTES;
 
+/// Build a CAT ELF: open("/proc/version", O_RDONLY), read 64
+/// bytes into the heap, write them to fd=1, close, exit. Validates
+/// sys_open + procfs + multi-byte sys_read + sys_write + sys_close
+/// end-to-end from a real ring-3 binary. Path string sits at file
+/// offset 220 (vaddr 0x4000DC).
+const fn build_cat_blob() -> [u8; 256] {
+    let mut b = [0u8; 256];
+    b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
+    b[4]=2; b[5]=1; b[6]=1;
+    b[16]=2; b[18]=62; b[20]=1;
+    let entry: u64 = 0x400080;
+    let eb = entry.to_le_bytes();
+    let mut i = 0; while i < 8 { b[24 + i] = eb[i]; i += 1; }
+    b[32]=64;
+    b[52]=64; b[54]=56; b[56]=1;
+
+    let p = 64;
+    b[p+0]=1; b[p+4]=5;                          // PT_LOAD R|X
+    let v: u64 = 0x400000;
+    let vb = v.to_le_bytes();
+    i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
+    i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
+    let fs: u64 = 256;
+    let fb = fs.to_le_bytes();
+    i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
+    i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
+    let al: u64 = 0x1000;
+    let ab = al.to_le_bytes();
+    i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
+
+    // Code at file offset 128 (vaddr 0x400080).
+    let c = 128;
+    // open("/proc/version", O_RDONLY, 0)
+    b[c+0]=0xB8; b[c+1]=0x02;                                   // mov $2, %eax
+    b[c+5]=0xBF; b[c+6]=0xDC; b[c+7]=0x00; b[c+8]=0x40; b[c+9]=0x00; // mov $0x4000DC, %edi
+    b[c+10]=0x31; b[c+11]=0xF6;                                 // xor %esi, %esi
+    b[c+12]=0x31; b[c+13]=0xD2;                                 // xor %edx, %edx
+    b[c+14]=0x0F; b[c+15]=0x05;                                 // syscall (open)
+    // mov %eax, %ebx
+    b[c+16]=0x89; b[c+17]=0xC3;
+    // read(fd, 0x401000, 64)
+    b[c+18]=0x31; b[c+19]=0xC0;                                 // xor %eax, %eax (read=0)
+    b[c+20]=0x89; b[c+21]=0xDF;                                 // mov %ebx, %edi
+    b[c+22]=0xBE; b[c+23]=0x00; b[c+24]=0x10; b[c+25]=0x40; b[c+26]=0x00; // mov $0x401000, %esi
+    b[c+27]=0xBA; b[c+28]=0x40; b[c+29]=0x00; b[c+30]=0x00; b[c+31]=0x00; // mov $64, %edx
+    b[c+32]=0x0F; b[c+33]=0x05;                                 // syscall (read)
+    // write(1, 0x401000, len)  — len from rax above goes to rdx
+    b[c+34]=0x89; b[c+35]=0xC2;                                 // mov %eax, %edx
+    b[c+36]=0xB8; b[c+37]=0x01;                                 // mov $1, %eax
+    b[c+41]=0xBF; b[c+42]=0x01;                                 // mov $1, %edi
+    b[c+46]=0xBE; b[c+47]=0x00; b[c+48]=0x10; b[c+49]=0x40; b[c+50]=0x00; // mov $0x401000, %esi
+    b[c+51]=0x0F; b[c+52]=0x05;                                 // syscall (write)
+    // close(fd)
+    b[c+53]=0xB8; b[c+54]=0x03;                                 // mov $3, %eax
+    b[c+58]=0x89; b[c+59]=0xDF;                                 // mov %ebx, %edi
+    b[c+60]=0x0F; b[c+61]=0x05;                                 // syscall (close)
+    // exit(0)
+    b[c+62]=0xB8; b[c+63]=0x3C;                                 // mov $60, %eax
+    b[c+67]=0x31; b[c+68]=0xFF;                                 // xor %edi, %edi
+    b[c+69]=0x0F; b[c+70]=0x05;                                 // syscall (exit)
+    b[c+71]=0x0F; b[c+72]=0x0B;                                 // ud2
+
+    // Path "/proc/version\0" at file offset 220 (vaddr 0x4000DC).
+    let path = b"/proc/version\0";
+    let mut k = 0;
+    while k < path.len() { b[220 + k] = path[k]; k += 1; }
+    b
+}
+
+const CAT_BLOB_BYTES: [u8; 256] = build_cat_blob();
+/// "cat" program: opens /proc/version, reads 64 bytes, writes to
+/// fd=1, exits. Selector: 'c'.
+pub const CAT_BLOB: &'static [u8] = &CAT_BLOB_BYTES;
+
 /// Look up the kernel-static ELF for a given path's first byte
 /// (v1 selector — full path lookup waits on VFS per docs/16).
 /// Returns the matching blob or `None` for unknown paths.
@@ -253,6 +330,7 @@ pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
         b'h' => Some(HI_BLOB),
         b'y' => Some(YO_BLOB),
         b'e' => Some(ECHO_BLOB),
+        b'c' => Some(CAT_BLOB),
         _    => None,
     }
 }
@@ -279,7 +357,8 @@ const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 const USER_RIP_UD2_ITER1_FS: u64 = 0x400080 + 0x27;
 const USER_RIP_UD2_ITER2_FS: u64 = 0x400080 + 60 + 0x27;
 const USER_RIP_UD2_ITER3_FS: u64 = 0x400080 + 2*60 + 0x27;
-const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 3*60 + 9;
+const USER_RIP_UD2_ITER4_FS: u64 = 0x400080 + 3*60 + 0x27;
+const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 4*60 + 9;
 const USER_RIP_UD2_EXEC:     u64 = 0x400080 + 0x1F;
 const USER_RIP_UD2_ECHO:     u64 = 0x400080 + 0x2B;
 
@@ -293,6 +372,7 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     if vec == 6 && (rip == USER_RIP_UD2_ITER1_FS
                     || rip == USER_RIP_UD2_ITER2_FS
                     || rip == USER_RIP_UD2_ITER3_FS
+                    || rip == USER_RIP_UD2_ITER4_FS
                     || rip == USER_RIP_UD2_FINAL
                     || rip == USER_RIP_UD2_EXEC
                     || rip == USER_RIP_UD2_ECHO) {
