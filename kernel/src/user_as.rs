@@ -267,35 +267,49 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     handle(far, kind)
 }
 
-/// Dispatch the classified fault into the global AS. Allocates a
-/// PMM frame and installs the leaf via per-arch MmuOps; flushes the
-/// faulting VA's TLB. Returns true to retry, false to halt.
+/// Run the demand-page resolver against a specific AS.
+fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
+    -> Result<(), vmm::Error>
+{
+    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally).
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        let r = as_.handle_page_fault::<hal_x86_64::mmu_ops::X86Mmu, _>(
+            uva, fault, hhdm, || crate::pmm_setup::alloc_one_frame());
+        #[cfg(target_arch = "aarch64")]
+        let r = as_.handle_page_fault::<hal_aarch64::mmu_ops::ArmMmu, _>(
+            uva, fault, hhdm, || crate::pmm_setup::alloc_one_frame());
+        r
+    }
+}
+
+/// Dispatch the classified fault into the **current task's** AS.
+/// Falls back to the global AS for boot-time faults that arrive
+/// before any task is current (e.g. the demand-page smoke). Allocates
+/// a PMM frame and installs the leaf via per-arch MmuOps; flushes
+/// the faulting VA's TLB. Returns true to retry, false to halt.
 fn handle(va_raw: u64, fault: FaultKind) -> bool {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     let uva = match UserVirtAddr::new(va_raw) {
         Some(u) => u,
         None    => return false,
     };
-    let r = with(|as_| {
-        // SAFETY: live per-arch MmuOps state initialised by kernel_main pre-init; alloc closure is the kernel-owned PMM allocator; AS borrow is read-only at entry (the AS internally takes its own RwLock); fault context has IRQs masked.
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            let r = as_.handle_page_fault::<hal_x86_64::mmu_ops::X86Mmu, _>(
-                uva,
-                fault,
-                hhdm,
-                || crate::pmm_setup::alloc_one_frame(),
-            );
-            #[cfg(target_arch = "aarch64")]
-            let r = as_.handle_page_fault::<hal_aarch64::mmu_ops::ArmMmu, _>(
-                uva,
-                fault,
-                hhdm,
-                || crate::pmm_setup::alloc_one_frame(),
-            );
-            r
+    // Pick the AS the active CR3/TTBR0 actually targets: the
+    // current task's mm if there is one (post-execve this is the
+    // new AS, not the boot global). With `Task.mm` wrapped in
+    // UnsafeCell we read via `mm_ref` under the single-mutator
+    // invariant (preempt-off, single-CPU UP).
+    let r = if let Some(cur) = crate::sched::current() {
+        // SAFETY: caller is the fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            Some(do_handle(mm, uva, fault, hhdm))
+        } else {
+            // kthread; no user AS — fall back to global.
+            with(|as_| do_handle(as_, uva, fault, hhdm))
         }
-    });
+    } else {
+        with(|as_| do_handle(as_, uva, fault, hhdm))
+    };
     match r {
         Some(Ok(())) => {
             // Flush the faulting VA so the retry sees the new PTE.
