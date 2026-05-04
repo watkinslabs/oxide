@@ -142,6 +142,18 @@ pub struct Task {
     /// Wrapped in `UnsafeCell` for `dup2` / `close` / `execve`
     /// (CLOEXEC) — single-mutator-per-active-CPU invariant.
     pub fd_table: UnsafeCell<Option<Arc<FdTable>>>,
+
+    /// Pending signal bitmap per `27§3` (Linux kernel_sigset_t = 64
+    /// bits). Bit i set ⇔ signal i+1 pending. Updated atomically by
+    /// `kill`/`tgkill` from any CPU; checked at syscall return per
+    /// `27§5` ("signals delivered on transition to user mode").
+    /// # C: O(1)
+    pub sigpending: AtomicU64,
+
+    /// Per-task signal mask per `27§3`. Bit i set ⇔ signal i+1
+    /// blocked. `rt_sigprocmask` writes; signal-delivery checks.
+    /// # C: O(1)
+    pub sigmask: AtomicU64,
 }
 
 impl Task {
@@ -230,6 +242,8 @@ impl Task {
             stack: None,
             parent_tid: AtomicU32::new(0),
             fd_table: UnsafeCell::new(None),
+            sigpending: AtomicU64::new(0),
+            sigmask:    AtomicU64::new(0),
         }
     }
 
