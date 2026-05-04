@@ -9,6 +9,7 @@
 *.iso
 *.bin
 *.elf
+!kernel/blobs/*.elf
 *.efi
 *.zst
 initramfs.cpio*
