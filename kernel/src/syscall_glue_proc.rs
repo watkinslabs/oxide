@@ -318,6 +318,31 @@ pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_mlock_family(_args: &SyscallArgs) -> i64 { 0 }
 
+/// `sys_getpgrp` / `sys_getpgid` / `sys_getsid` — slots 111/121/124.
+/// v1 single-process group → return current().tid (which is also
+/// the pid, since v1 is single-thread).
+/// # C: O(1)
+pub fn kernel_sys_getpgrp(_args: &SyscallArgs) -> i64 {
+    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+}
+
+/// `sys_setpgid(pid, pgid)` — slot 109. v1 no-op.
+/// # C: O(1)
+pub fn kernel_sys_setpgid(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_setsid()` — slot 112. Returns the new session id (== tid
+/// in v1's single-process model). No actual session-leader
+/// bookkeeping yet.
+/// # C: O(1)
+pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
+    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+}
+
+/// `sys_umask(mask)` — slot 95. v1 returns 0o022 as the prior
+/// mask and forgets the new one.
+/// # C: O(1)
+pub fn kernel_sys_umask(_args: &SyscallArgs) -> i64 { 0o022 }
+
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
 /// CPU UP: every memory op is already globally ordered, so any
 /// MEMBARRIER_CMD_* request succeeds vacuously.
