@@ -359,22 +359,11 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     child_tid as i64
 }
 
-/// `sys_wait4(pid, wstatus, options, rusage)` — slot 61 per
-/// docs/15§5. Reaps a Zombie child of the current task and
-/// optionally writes the exit status to user memory at `wstatus`.
-/// `pid == -1` matches any child; `pid > 0` matches that
-/// specific TID. `options` (WNOHANG etc.) ignored for v1.
-/// `rusage` ignored.
-///
-/// If no Zombie child is currently queued, the parent yields via
-/// `schedule()` and re-checks. With UP single-CPU + non-preempt
-/// schedule, the child is guaranteed to run + Zombie before the
-/// parent's loop terminates (unless the child is itself blocked).
-///
-/// Returns the reaped child's TID, or -ECHILD if the caller has
-/// no eligible children at all.
-///
-/// # C: O(N_zombies × N_yield_iters) — bounded by child runtime
+/// `sys_wait4(pid, wstatus, options, rusage)` — slot 61. Reaps
+/// a Zombie child via `sched::reap_one`; if none queued, yields
+/// + retries. `pid==-1` matches any child; `pid>0` matches tid.
+/// `options`/`rusage` ignored. Returns child tid or -ECHILD.
+/// # C: O(N_zombies × N_yield_iters)
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -869,6 +858,75 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_proc::kernel_sys_rt_sigpending(&args),
         crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_proc::kernel_sys_rt_sigsuspend(&args),
         crate::syscall_nrs::NR_RT_SIGRETURN  => 0,    // no signal frame yet
+        crate::syscall_nrs::NR_GETITIMER     => 0,
+        crate::syscall_nrs::NR_SETITIMER     => 0,
+        crate::syscall_nrs::NR_ALARM         => 0,
+        crate::syscall_nrs::NR_PAUSE         => -(Errno::Eintr.as_i32() as i64),
+        crate::syscall_nrs::NR_GETPRIORITY   => 0,
+        crate::syscall_nrs::NR_SETPRIORITY   => 0,
+        crate::syscall_nrs::NR_GETGROUPS     => 0,
+        crate::syscall_nrs::NR_SETGROUPS     => 0,
+        crate::syscall_nrs::NR_SETUID
+            | crate::syscall_nrs::NR_SETGID
+            | crate::syscall_nrs::NR_SETREUID
+            | crate::syscall_nrs::NR_SETREGID
+            | crate::syscall_nrs::NR_SETRESUID
+            | crate::syscall_nrs::NR_SETRESGID
+            | crate::syscall_nrs::NR_SETFSUID
+            | crate::syscall_nrs::NR_SETFSGID
+                                 => 0,
+        crate::syscall_nrs::NR_GETRESUID
+            | crate::syscall_nrs::NR_GETRESGID
+                                 => crate::syscall_glue_proc::kernel_sys_getres_uid(&args),
+        crate::syscall_nrs::NR_CAPGET        => 0,
+        crate::syscall_nrs::NR_CAPSET        => 0,
+        crate::syscall_nrs::NR_PERSONALITY   => 0,
+        crate::syscall_nrs::NR_VHANGUP       => 0,
+        crate::syscall_nrs::NR_SYSLOG        => 0,
+        crate::syscall_nrs::NR_REBOOT        => -(Errno::Eperm.as_i32() as i64),
+        crate::syscall_nrs::NR_SETHOSTNAME   => 0,
+        crate::syscall_nrs::NR_SETDOMAINNAME => 0,
+        crate::syscall_nrs::NR_PTRACE        => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_FALLOCATE     => 0,
+        crate::syscall_nrs::NR_READAHEAD     => 0,
+        crate::syscall_nrs::NR_FADVISE64     => 0,
+        crate::syscall_nrs::NR_FLOCK         => 0,
+        crate::syscall_nrs::NR_SYNC_FILE_RANGE => 0,
+        crate::syscall_nrs::NR_COPY_FILE_RANGE => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_SENDFILE      => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_SPLICE        => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_TEE           => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_VMSPLICE      => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_MEMFD_CREATE  => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_MEMFD_SECRET  => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_PIDFD_OPEN
+            | crate::syscall_nrs::NR_PIDFD_GETFD
+            | crate::syscall_nrs::NR_PIDFD_SEND_SIGNAL
+                                 => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_GETXATTR
+            | crate::syscall_nrs::NR_LGETXATTR
+            | crate::syscall_nrs::NR_FGETXATTR
+            | crate::syscall_nrs::NR_LISTXATTR
+            | crate::syscall_nrs::NR_LLISTXATTR
+            | crate::syscall_nrs::NR_FLISTXATTR
+                                 => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_SETXATTR
+            | crate::syscall_nrs::NR_LSETXATTR
+            | crate::syscall_nrs::NR_FSETXATTR
+            | crate::syscall_nrs::NR_REMOVEXATTR
+            | crate::syscall_nrs::NR_LREMOVEXATTR
+            | crate::syscall_nrs::NR_FREMOVEXATTR
+                                 => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_MOUNT
+            | crate::syscall_nrs::NR_UMOUNT2
+            | crate::syscall_nrs::NR_CHROOT
+                                 => -(Errno::Eperm.as_i32() as i64),
+        crate::syscall_nrs::NR_SWAPON | crate::syscall_nrs::NR_SWAPOFF
+                                 => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_INIT_MODULE
+            | crate::syscall_nrs::NR_DELETE_MODULE
+            | crate::syscall_nrs::NR_FINIT_MODULE
+                                 => -(Errno::Eperm.as_i32() as i64),
         crate::syscall_nrs::NR_RT_SIGTIMEDWAIT
             | crate::syscall_nrs::NR_RT_SIGQUEUEINFO
             | crate::syscall_nrs::NR_RT_TGSIGQUEUEINFO
