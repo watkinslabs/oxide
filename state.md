@@ -1,4 +1,4 @@
-# State 2026-05-03 (session 22d EOD — wait4 + init-loop landed)
+# State 2026-05-03 (session 22e EOD — pid syscalls + UART read)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
@@ -6,7 +6,7 @@ Resumable checkpoint — current snapshot only. Update at session exit. Next ses
 
 **Phase 2 init-loop userspace live on x86_64.** Full lifecycle: `fork → execve → wait4 → exit` runs end-to-end. The init-like blob spawned at boot now performs **2 iterations of the canonical shell pattern** (`for sel in ['y','h']: if fork()==0: execve(&sel) | exit(1); wait4(-1, NULL, 0, NULL); exit(0)`), producing `yo\n` and `hi\n` deterministically via `wait4`-enforced ordering, then exits cleanly. Three processes per iteration × 2 iterations = real init-loop semantics.
 
-Per-task syscall stack (P2-22a) + per-task user_frame slot (P2-22b) replace the buggy global state that exposed itself when wait4 first surfaced multi-task syscall interleaving. Syscall asm now: each task syscalls onto its own kernel stack, with saved (rip, rflags, rsp) at `top-24..top` for fork/execve to read/write. `sched::zombies` registry keeps Zombie tasks alive past schedule's swap until `wait4` reaps. `Task.parent_tid` set by sys_fork. **215 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
+Per-task syscall stack (P2-22a) + per-task user_frame slot (P2-22b) replace the buggy global state that exposed itself when wait4 first surfaced multi-task syscall interleaving. Syscall asm now: each task syscalls onto its own kernel stack, with saved (rip, rflags, rsp) at `top-24..top` for fork/execve to read/write. `sched::zombies` registry keeps Zombie tasks alive past schedule's swap until `wait4` reaps. `Task.parent_tid` set by sys_fork. `sys_getpid`/`sys_getppid` introspect via `current()`. `sys_read(fd=0)` polls COM1 RX as a v1 stand-in for full TTY input. **218 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
 
 The shell-spawning cycle is real now — the loop a busybox `init` runs is what the boot-time blob does, just with hand-synthesised mini-binaries instead of `/bin/*`. Remaining gap to a literal `$ ` prompt: TTY input (UART RX → user fd=0 with a sleep/wake wait queue), a real ELF binary (static-PIE musl is the next milestone), and arm user-Task parity (arm still uses single-Task `drop_to_el0`).
 
@@ -89,7 +89,18 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 See `CHANGELOG.md` for the per-PR table.
 
-**Session 22d** (PRs #214 – #215): wait4 + init-loop demo.
+**Session 22e** (PRs #217 – #218): pid syscalls + UART polling read.
+
+- **#217 P2-26** (`P2-26-pid-syscalls`): glue intercepts for
+  `sys_getpid` (returns `current().tid` instead of in-table
+  fixed `1`) and new `sys_getppid` (returns
+  `current().parent_tid`).
+- **#218 P2-23a** (`P2-23a-uart-read`): non-blocking
+  `sys_read(fd=0, buf, count)` polling COM1 LSR + RBR. Returns
+  0 on no data — userspace polls. Foundation for the full TTY
+  input PR (P2-23) which adds RX IRQ + ringbuffer + WaitQueue.
+
+**Session 22d** (PRs #214 – #216): wait4 + init-loop demo.
 
 - **#214 P2-22** (`P2-22-wait4`): `sys_wait4` (nr=61). New
   `sched::zombies` registry (`Spinlock<Vec<Arc<Task>>, TaskList>`)
@@ -458,7 +469,7 @@ what. Top picks ordered by impact toward bash:
 
 | Option | Branch idea | Spec ref | Why pick this |
 |---|---|---|---|
-| **TTY input** | `P2-23-tty-stdin` | docs/28 + docs/22 | UART RX → user fd=0. Configure 16550 RX-data IRQ; route through LAPIC vector to a kernel handler that pushes bytes to a kernel ringbuffer. `sys_read(fd=0)`: if buffer has data, pop one byte; else mark current task `Sleeping`, push to a `WaitQueue` keyed on the ringbuffer, schedule(). RX IRQ wakes any blocked tasks. **The biggest piece between us and an interactive shell.** Without it the user can't type commands; with it + a bigger ELF blob (or a real busybox), oxide gets a literal `$ ` prompt. |
+| **TTY input (full)** | `P2-23-tty-stdin` | docs/28 + docs/22 | Polling read landed in P2-23a; the next step is RX IRQ + ringbuffer + WaitQueue so `sys_read(fd=0)` blocks rather than busy-loops. Needs IOAPIC routing (or PIC fallback) to direct IRQ4 (COM1) to a kernel vector, plus a per-fd `Sleeping`/`Runnable` lifecycle in sched. **The biggest single piece between us and an interactive shell.** With it + a bigger user blob (or real busybox), oxide gets a literal `$ ` prompt. |
 | **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 has full multi-binary fork+exec+wait+exit; arm still uses single-Task `drop_to_el0` directly. Need (a) `ContextAArch64::new_user_with_irq_frame` synthesising an eret frame on the kernel stack, (b) extending the arm IRQ frame to save+restore sp_el0 (frame size 192 → 200 B; affects `oxide_irq_resume_user` epilogue), (c) arm `spawn_user_thread`, (d) arm syscall stub that captures user frame to per-task stack like x86. Substantial but mechanical mirror of the x86 work. |
 | **per-page copy in fork** | `P2-15c-fork-pgcopy` | docs/11§7 | Today's naive fork inherits empty Anonymous VMAs. Real POSIX fork must copy parent's mapped pages so heap/stack survive. Requires "install PTE in non-active PT" — temporarily-activate-the-child trick OR extend the walker to take an explicit root. Until this, fork is correct ONLY for static-PIE programs that don't share heap state at fork time. |
 | **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When user faults aren't resolvable (write to RO, exec on NX, unmapped), kernel halts via the smoke handler. Linux delivers SIGSEGV; even a minimal "kill task on protection fault — push to ZOMBIES + schedule" handler would let bad user code die without taking the kernel down. Required so a shell can survive a child crashing. Needs the signal subsystem (docs/27); at minimum: `sigaction`, signal frame on user stack, sa_restorer stub. |
