@@ -439,6 +439,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Register `/dev/console` + `/dev/tty*` in the v1 devfs
         // registry per docs/19. `sys_open(2)` resolves through here.
         devfs::init();
+        // P3-16 boot-time smoke for the misc char devices.
+        dev_misc::smoke_test();
     }
 
 
