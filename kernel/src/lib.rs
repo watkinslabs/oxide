@@ -561,6 +561,10 @@ pub mod syscall_glue_fs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_proc;
 
+// P3-30 time-shaped syscalls (clock_gettime + family).
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_time;
+
 // P2-21c initial user-stack builder per docs/31§4 step 5.
 // SysV argc/argv/envp/auxv layout written at execve time.
 #[cfg(target_os = "oxide-kernel")]
