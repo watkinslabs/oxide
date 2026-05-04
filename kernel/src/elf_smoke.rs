@@ -474,7 +474,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     unsafe { hal_x86_64::install_fault_handler(elf_smoke_fault_handler); }
 
     let img = match crate::user_as::with(|as_| {
-        let img = load_static_blob(SIGTEST_BLOB, as_)?;
+        let img = load_static_blob(ELF_BLOB, as_)?;
         // Stack VMA — anonymous, demand-paged on first push.
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
             .ok_or(crate::elf_load::LoadError::Einval)?;
