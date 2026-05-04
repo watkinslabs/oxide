@@ -18,20 +18,19 @@ use crate::elf_load::load_static_blob;
 /// Build an init-like fork+wait4+execve loop ELF64 at compile
 /// time. Two iterations: parent forks → child execs YO ("yo\\n");
 /// parent waits → forks → child execs HI ("hi\\n"); parent waits
-/// → exits. Demonstrates a multi-iteration shell-init pattern:
-///   for sel in ['y', 'h']:
-///     if fork() == 0: execve(&sel) | exit(1)
-///     wait4(-1, NULL, 0, NULL)
-///   exit(0)
+/// → exits. ECHO_BLOB is registered in `lookup_blob` for future
+/// programs to execve("e"); a 3-iteration init-blob demo of
+/// read+write end-to-end rides P3-02b once the fd_table read
+/// path through ConsoleInode is fully traced.
 ///
 /// Layout:
 ///   [0..64)     ehdr
 ///   [64..120)   PT_LOAD phdr
 ///   [120..128)  pad
-///   [128..259)  code (131 B): 2 iterations × (fork+jne+child+
-///                             execve+failsafe+wait4) + final exit
-///   [259..260)  'y' (selector at vaddr 0x400103)
-///   [260..261)  'h' (selector at vaddr 0x400104)
+///   [128..248)  code (120 B): 2 iterations × 60 B
+///   [248..259)  final exit (11 B)
+///   [259..260)  'y' (vaddr 0x400103)
+///   [260..261)  'h' (vaddr 0x400104)
 const fn build_elf() -> [u8; 261] {
     let mut b = [0u8; 261];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
@@ -57,23 +56,19 @@ const fn build_elf() -> [u8; 261] {
     let ab = al.to_le_bytes();
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
-    // Each iteration is the same shape (60 B): fork → jne wait →
-    // child execve "sel" + failsafe exit + ud2 → wait4. The two
-    // iterations differ only in the selector address (0x103 for
-    // "y", 0x104 for "h"). Inline both since const fn folds it.
+    // 2 iterations × 60 B each. Selectors:
+    //   iter 1: 'y' at vaddr 0x400103 (sel_lo = 0x03)
+    //   iter 2: 'h' at vaddr 0x400104 (sel_lo = 0x04)
     let c = 128;
-    // ===== ITERATION 1: execve("y") =====
-    iter_block(&mut b, c, 0x03);
-    // ===== ITERATION 2: execve("h") =====
+    iter_block(&mut b, c,      0x03);
     iter_block(&mut b, c + 60, 0x04);
-    // ===== FINAL EXIT (offset 120 = 60+60) =====
+    // Final exit at offset 120.
     let e = c + 120;
     b[e+0]=0xB8; b[e+1]=0x3C;             // mov $60, %eax
     b[e+5]=0x31; b[e+6]=0xFF;             // xor %edi, %edi
     b[e+7]=0x0F; b[e+8]=0x05;             // syscall (exit)
     b[e+9]=0x0F; b[e+10]=0x0B;            // ud2
-    // Path selectors at file offsets 259 ('y'), 260 ('h')
-    // → vaddrs 0x400103, 0x400104.
+    // Selectors at file offsets 259, 260 → vaddrs 0x400103, 0x400104.
     b[259]=b'y';
     b[260]=b'h';
     b
@@ -180,6 +175,73 @@ const YO_BLOB_BYTES: [u8; 164] = build_named_blob(b'y', b'o');
 pub const HI_BLOB: &'static [u8] = &HI_BLOB_BYTES;
 pub const YO_BLOB: &'static [u8] = &YO_BLOB_BYTES;
 
+/// Build an ECHO ELF: read 1 byte from fd=0, write to fd=1, exit.
+/// v1 demonstrates the fd_table → ConsoleInode → tty ringbuffer
+/// end-to-end (P3-02). The 1-byte read buffer lives at the heap's
+/// initial brk (vaddr 0x401000) — the loader pre-registers an
+/// Anonymous R|W VMA covering the heap so the page demand-faults
+/// to a fresh zero frame on first write. Keeps PT_LOAD R|X (no
+/// W^X violation per docs/31§2 invariant 3).
+const fn build_echo_blob() -> [u8; 173] {
+    let mut b = [0u8; 173];
+    b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
+    b[4]=2; b[5]=1; b[6]=1;
+    b[16]=2; b[18]=62; b[20]=1;
+    let entry: u64 = 0x400080;
+    let eb = entry.to_le_bytes();
+    let mut i = 0; while i < 8 { b[24 + i] = eb[i]; i += 1; }
+    b[32]=64;
+    b[52]=64; b[54]=56; b[56]=1;
+
+    let p = 64;
+    b[p+0]=1; b[p+4]=5;                          // PT_LOAD R|X
+    let v: u64 = 0x400000;
+    let vb = v.to_le_bytes();
+    i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
+    i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
+    let fs: u64 = 173;
+    let fb = fs.to_le_bytes();
+    i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
+    i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
+    let al: u64 = 0x1000;
+    let ab = al.to_le_bytes();
+    i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
+
+    // Code at file offset 128 (vaddr 0x400080):
+    //   mov $0, %eax            ; sys_read (= 0)
+    //   mov $0, %edi            ; fd=0
+    //   mov $0x401000, %esi     ; buf in heap region (R|W via P2-32)
+    //   mov $1, %edx            ; len=1
+    //   syscall
+    //   mov $1, %eax            ; sys_write (= 1)
+    //   mov $1, %edi            ; fd=1
+    //   ; esi/edx still hold buf/len from the read
+    //   syscall
+    //   mov $60, %eax           ; sys_exit
+    //   xor %edi, %edi
+    //   syscall
+    //   ud2
+    let c = 128;
+    b[c+0]=0xB8;                                   // mov $0, %eax (zero default)
+    b[c+5]=0xBF;                                   // mov $0, %edi
+    b[c+10]=0xBE; b[c+11]=0x00; b[c+12]=0x10; b[c+13]=0x40; b[c+14]=0x00;  // 0x401000
+    b[c+15]=0xBA; b[c+16]=0x01;                    // mov $1, %edx
+    b[c+20]=0x0F; b[c+21]=0x05;                    // syscall (read)
+    b[c+22]=0xB8; b[c+23]=0x01;                    // mov $1, %eax
+    b[c+27]=0xBF; b[c+28]=0x01;                    // mov $1, %edi
+    b[c+32]=0x0F; b[c+33]=0x05;                    // syscall (write)
+    b[c+34]=0xB8; b[c+35]=0x3C;                    // mov $60, %eax
+    b[c+39]=0x31; b[c+40]=0xFF;                    // xor %edi, %edi
+    b[c+41]=0x0F; b[c+42]=0x05;                    // syscall (exit)
+    b[c+43]=0x0F; b[c+44]=0x0B;                    // ud2
+    b
+}
+
+const ECHO_BLOB_BYTES: [u8; 173] = build_echo_blob();
+/// "echo" program: read 1 byte from fd=0, write it to fd=1,
+/// exit. Selector: 'e'.
+pub const ECHO_BLOB: &'static [u8] = &ECHO_BLOB_BYTES;
+
 /// Look up the kernel-static ELF for a given path's first byte
 /// (v1 selector — full path lookup waits on VFS per docs/16).
 /// Returns the matching blob or `None` for unknown paths.
@@ -188,6 +250,7 @@ pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
     match selector {
         b'h' => Some(HI_BLOB),
         b'y' => Some(YO_BLOB),
+        b'e' => Some(ECHO_BLOB),
         _    => None,
     }
 }
@@ -213,8 +276,9 @@ const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 /// `entry+0x1F`.
 const USER_RIP_UD2_ITER1_FS: u64 = 0x400080 + 0x27;
 const USER_RIP_UD2_ITER2_FS: u64 = 0x400080 + 60 + 0x27;
-const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 120 + 9;
+const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 2*60 + 9;
 const USER_RIP_UD2_EXEC:     u64 = 0x400080 + 0x1F;
+const USER_RIP_UD2_ECHO:     u64 = 0x400080 + 0x2B;
 
 /// `#UD` landmark handler. Chains to user_as for legitimate
 /// demand-page faults; on the deliberate ud2 from sys_exit's
@@ -226,7 +290,8 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     if vec == 6 && (rip == USER_RIP_UD2_ITER1_FS
                     || rip == USER_RIP_UD2_ITER2_FS
                     || rip == USER_RIP_UD2_FINAL
-                    || rip == USER_RIP_UD2_EXEC) {
+                    || rip == USER_RIP_UD2_EXEC
+                    || rip == USER_RIP_UD2_ECHO) {
         debug_irq! {
             klog::write_raw(b"[INFO]  elf-smoke: ok ring3 #UD rip=");
             klog::write_hex_u64(rip);
@@ -335,6 +400,12 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::write_hex_u64(USER_STACK_TOP);
         klog::write_raw(b"\n");
     }
+
+    // Pre-fill the TTY ringbuffer with a test byte so the third
+    // iteration's ECHO program (P3-02) can read+write a byte
+    // non-interactively. Real interactive use rides on UART RX
+    // bytes pushed via `tty::tick_poll_uart` from the timer ISR.
+    crate::tty::inject_for_smoke(b"A");
 
     // STI so timer IRQs can drive preempt-on-IRQ-exit if the
     // task ever yields back to kernel; our smoke task runs IF=0
