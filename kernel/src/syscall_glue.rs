@@ -45,6 +45,13 @@ const SYSCALL_NR_DUP3: u64           = 292;
 const SYSCALL_NR_OPEN: u64           = 2;
 const SYSCALL_NR_BRK: u64            = 12;
 const SYSCALL_NR_PIPE2: u64          = 293;
+const SYSCALL_NR_FSTAT: u64          = 5;
+const SYSCALL_NR_GETCWD: u64         = 79;
+const SYSCALL_NR_CHDIR: u64          = 80;
+const SYSCALL_NR_FCHDIR: u64         = 81;
+const SYSCALL_NR_IOCTL: u64          = 16;
+const SYSCALL_NR_KILL: u64           = 62;
+const SYSCALL_NR_TGKILL: u64         = 234;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -738,6 +745,34 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     loop { core::hint::spin_loop(); }
 }
 
+
+/// `sys_kill(pid, sig)` — slot 62. v1 minimal: self-targeted
+/// signals (`pid == current.tid` or `pid == 0`) for SIGKILL/
+/// SIGTERM/SIGABRT route to `kernel_sys_exit(128 + sig)` so libc
+/// `abort()` and `raise()` produce a real exit. Other targets
+/// return -ESRCH (no task registry yet — P3 follow-up).
+fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
+    let pid = args.a0 as i32;
+    let sig = args.a1 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Esrch.as_i32() as i64),
+    };
+    if pid == 0 || pid == cur.tid as i32 {
+        let exit_args = SyscallArgs { a0: (128 + sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+        let _ = kernel_sys_exit(&exit_args);
+        return 0;
+    }
+    -(Errno::Esrch.as_i32() as i64)
+}
+
+/// `sys_tgkill(tgid, tid, sig)` — slot 234. v1: route through
+/// `kernel_sys_kill` keyed on `tid`. Same self-only restriction.
+fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
+    let kill_args = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
+    kernel_sys_kill(&kill_args)
+}
+
 fn kernel_uname(args: &SyscallArgs) -> i64 {
     let tp = args.a0;
     if let Err(rv) = validate_user_buf(tp, UTSNAME_TOTAL_LEN as u64, 1) { return rv; }
@@ -759,7 +794,8 @@ fn kernel_uname(args: &SyscallArgs) -> i64 {
 /// below `USER_VA_END` and is `align`-byte aligned at `ptr`.
 /// Returns Ok(()) or Err(-EFAULT-as-i64) ready to return from a
 /// glue handler.
-fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
+/// # C: O(1)
+pub(crate) fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
     if ptr == 0 {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
@@ -860,6 +896,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_OPEN          => kernel_sys_open(&args),
         SYSCALL_NR_BRK           => kernel_sys_brk(&args),
         SYSCALL_NR_PIPE2         => kernel_sys_pipe2(&args),
+        SYSCALL_NR_FSTAT         => crate::syscall_glue_fs::kernel_sys_fstat(&args),
+        SYSCALL_NR_IOCTL         => crate::syscall_glue_fs::kernel_sys_ioctl(&args),
+        SYSCALL_NR_GETCWD        => crate::syscall_glue_fs::kernel_sys_getcwd(&args),
+        SYSCALL_NR_CHDIR         => crate::syscall_glue_fs::kernel_sys_chdir(&args),
+        SYSCALL_NR_FCHDIR        => crate::syscall_glue_fs::kernel_sys_fchdir(&args),
+        SYSCALL_NR_KILL          => kernel_sys_kill(&args),
+        SYSCALL_NR_TGKILL        => kernel_sys_tgkill(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
