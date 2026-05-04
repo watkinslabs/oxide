@@ -101,13 +101,49 @@ pub fn lookup_or_create(path: &str) -> InodeRef {
     inode
 }
 
-/// Boot-time registry seeding. Currently empty — callers create
-/// files on demand via `lookup_or_create`.
+/// `/tmp` directory inode. v1: synthetic — reads the flat registry
+/// and emits each `/tmp/<name>` entry. lookup(name) reverses that.
+pub struct TmpfsRootInode;
+
+impl Inode for TmpfsRootInode {
+    fn ino(&self) -> Ino { 0x4000_0000 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let mut p = String::with_capacity(5 + name.len());
+        p.push_str("/tmp/");
+        p.push_str(name);
+        lookup(&p).ok_or(VfsError::Enoent)
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        let g = REGISTRY.lock();
+        let mut idx = off as usize;
+        while idx < g.len() {
+            let (path, inode) = &g[idx];
+            if let Some(name) = path.strip_prefix("/tmp/") {
+                if !name.is_empty() && !name.contains('/') {
+                    let next = idx as u64 + 1;
+                    if !f(next, name, inode.file_type()) {
+                        return Ok(next);
+                    }
+                }
+            }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+/// Boot-time registry seeding. Registers the `/tmp` directory inode
+/// so `open("/tmp", O_DIRECTORY)` + `getdents64` enumerate.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    // Reserved for well-known seeded paths (e.g. /tmp/.X11-unix
-    // dir markers) once VFS lands real directory inodes.
+    register("/tmp".into(), Arc::new(TmpfsRootInode) as InodeRef);
 }
 
 /// Boot-time round-trip smoke for the tmpfs path. Creates an
