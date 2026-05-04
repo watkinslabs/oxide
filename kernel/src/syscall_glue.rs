@@ -182,7 +182,7 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
 /// user task's kernel stack with IRQs masked.
 /// # C: O(phdrs) parse + O(N_vmas) AS build + O(1) activate
 #[cfg(target_arch = "x86_64")]
-fn kernel_sys_execve(_args: &SyscallArgs) -> i64 {
+fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
@@ -190,6 +190,27 @@ fn kernel_sys_execve(_args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
+    };
+
+    // Read the first byte of the path argument as a kernel-static
+    // ELF selector (v1 stand-in for VFS path lookup per docs/16).
+    // `path = NULL` falls back to the default blob — preserves the
+    // P2-21 legacy behavior. CPL=0 reads through user pages
+    // directly per `15§3` (kernel can read user memory while
+    // running on its kernel stack with CR3 = user AS).
+    let path_ptr = args.a0;
+    let blob = if path_ptr == 0 {
+        crate::elf_smoke::EXEC_BLOB
+    } else {
+        if path_ptr >= USER_VA_END {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        // SAFETY: path_ptr < USER_VA_END validated above; the user page is mapped (user code already executed from this AS); we read a single byte.
+        let sel = unsafe { core::ptr::read_volatile(path_ptr as *const u8) };
+        match crate::elf_smoke::lookup_blob(sel) {
+            Some(b) => b,
+            None    => return -(Errno::Enoent.as_i32() as i64),
+        }
     };
 
     // 1. Allocate new PT root for the post-execve AS.
@@ -204,7 +225,7 @@ fn kernel_sys_execve(_args: &SyscallArgs) -> i64 {
         Ok(a)  => a,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
-    let img = match crate::elf_load::load_static_blob(crate::elf_smoke::EXEC_BLOB, &new_as) {
+    let img = match crate::elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
