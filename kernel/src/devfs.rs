@@ -21,7 +21,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::{Inode, InodeRef};
+use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 /// Flat path → inode map. v1 single-CPU UP with `TaskList` lock
 /// class (matching the rank used elsewhere for boot-time
@@ -78,6 +78,78 @@ pub fn init() {
     let rand: InodeRef = Arc::new(crate::dev_misc::RandomInode);
     register("/dev/random",  Arc::clone(&rand));
     register("/dev/urandom", rand);
+
+    // Top-level directory inodes synthesised over the registry. Each
+    // emits the leaf children under its own prefix. Must come AFTER
+    // leaf registration so they are not themselves enumerated as
+    // children of `/`.
+    register_dir("/",         0x5000_0001);
+    register_dir("/dev",      0x5000_0002);
+    register_dir("/sys",      0x5000_0003);
+    register_dir("/etc",      0x5000_0004);
+    register_dir("/bin",      0x5000_0005);
+    register_dir("/usr",      0x5000_0006);
+    register_dir("/usr/bin",  0x5000_0007);
+    register_dir("/proc/sys", 0x5000_0008);
+}
+
+fn register_dir(path: &'static str, ino: Ino) {
+    register(path, Arc::new(PrefixDirInode { prefix: path, ino }) as InodeRef);
+}
+
+/// Synthetic directory inode: emits every registered leaf whose
+/// path is `<prefix>/<name>` (single component, no further `/`).
+/// `lookup(name)` reverses to `<prefix>/<name>` (or `/<name>` for
+/// `prefix == "/"`).
+pub struct PrefixDirInode {
+    pub prefix: &'static str,
+    pub ino:    Ino,
+}
+
+impl PrefixDirInode {
+    fn build_child_path(&self, name: &str) -> alloc::string::String {
+        let mut p = alloc::string::String::with_capacity(self.prefix.len() + 1 + name.len());
+        if self.prefix == "/" { p.push('/'); }
+        else { p.push_str(self.prefix); p.push('/'); }
+        p.push_str(name);
+        p
+    }
+}
+
+impl Inode for PrefixDirInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let p = self.build_child_path(name);
+        lookup(&p).ok_or(VfsError::Enoent)
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        let g = REGISTRY.lock();
+        let mut idx = off as usize;
+        while idx < g.len() {
+            let (path, inode) = &g[idx];
+            let leaf_opt = if self.prefix == "/" {
+                path.strip_prefix('/').filter(|s| !s.is_empty() && !s.contains('/'))
+            } else {
+                path.strip_prefix(self.prefix)
+                    .and_then(|r| r.strip_prefix('/'))
+                    .filter(|s| !s.is_empty() && !s.contains('/'))
+            };
+            if let Some(name) = leaf_opt {
+                let next = idx as u64 + 1;
+                if !f(next, name, inode.file_type()) {
+                    return Ok(next);
+                }
+            }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
 }
 
 /// Read a NUL-terminated string from user memory at `ptr`,
