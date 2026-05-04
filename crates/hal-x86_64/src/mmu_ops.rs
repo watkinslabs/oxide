@@ -220,6 +220,31 @@ impl MmuOps for X86Mmu {
         crate::mmu::flush_local_all();
     }
 
+    /// Install a 4 KiB / 2 MiB / 1 GiB leaf into the tree rooted at
+    /// `root_pa` instead of CR3. Mirror of `map` but for a non-active
+    /// PT root (the child PT during `fork`).
+    /// # SAFETY: per trait contract.
+    /// # C: O(walk depth)
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        kassert!(hhdm != 0, "MmuOps::map_at called before set_hhdm_offset");
+        let (leaf_level, page_bytes, leaf) = match size {
+            PageSize::P4K => (3u8, PAGE_BYTES_4K, PtWalkerX86::pack_4k_leaf(pa.0, flags)),
+            PageSize::P2M => (2u8, PAGE_BYTES_2M, PtWalkerX86::pack_block_leaf(pa.0, flags)),
+            PageSize::P1G => (1u8, PAGE_BYTES_1G, PtWalkerX86::pack_block_leaf(pa.0, flags)),
+        };
+        kassert!(va.0 % page_bytes == 0, "MmuOps::map_at va misaligned");
+        kassert!(pa.0 % page_bytes == 0, "MmuOps::map_at pa misaligned");
+        let mut alloc = alloc_frame;
+        // SAFETY: caller asserts root_pa valid + caller holds PT lock; HHDM covers PT memory; alloc_frame returns kernel-owned frames.
+        let r = unsafe {
+            pt_walker::map_at_level_with_root::<PtWalkerX86, _>(
+                root_pa, va.0, leaf_level, leaf, hhdm, &mut alloc,
+            )
+        };
+        kassert!(r.is_ok(), "MmuOps::map_at walker failure");
+    }
+
     /// Install `root_pa` as CR3 — switches the active address space
     /// per `13§8`. The 12 low bits of CR3 carry PCD/PWT/PCID; v1 sets
     /// them all to zero (no PCID; cache attributes inherit kernel

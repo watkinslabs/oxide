@@ -316,8 +316,15 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Enomem.as_i32() as i64),
     };
 
-    // Clone the AS — VMA tree only per P2-15a.
-    let child_mm = match parent_mm.fork(new_root) {
+    // Clone the AS — VMA tree + per-page copy of Anonymous-backed
+    // pages (P2-15c). KernelBytes-backed VMAs re-fault in the
+    // child against the shared `&'static [u8]` slice.
+    let hhdm = crate::user_as::hhdm_offset();
+    let child_mm = match parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
+        new_root,
+        hhdm,
+        || crate::pmm_setup::alloc_one_frame(),
+    ) {
         Ok(m) => m,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
