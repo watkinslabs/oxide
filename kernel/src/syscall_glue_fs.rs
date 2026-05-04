@@ -162,6 +162,96 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
+/// `sys_poll(fds, nfds, timeout)` — slot 7. v1 non-blocking:
+/// reports POLLIN|POLLOUT for CharDev fds (always ready in v1
+/// since ConsoleInode reads block at the syscall layer instead
+/// of returning EAGAIN); 0 (timeout/no events) for everything
+/// else. Returns the number of fds with non-zero revents.
+///
+/// `pollfd { fd: i32, events: i16, revents: i16 }` = 8 bytes
+/// each on Linux x86_64.
+/// # C: O(nfds)
+pub fn kernel_sys_poll(args: &SyscallArgs) -> i64 {
+    const POLLIN:  i16 = 0x0001;
+    const POLLOUT: i16 = 0x0004;
+    const NFDS_MAX: u64 = 4096;
+    let fds_ptr = args.a0;
+    let nfds    = args.a1;
+    let _timeout = args.a2 as i32;
+    if nfds == 0 { return 0; }
+    if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
+    let bytes = match nfds.checked_mul(8) {
+        Some(v) => v,
+        None    => return -(Errno::Efault.as_i32() as i64),
+    };
+    if let Err(rv) = validate_user_buf(fds_ptr, bytes, 4) { return rv; }
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let mut ready: i64 = 0;
+    for i in 0..nfds {
+        let p = fds_ptr + i * 8;
+        // SAFETY: pollfd[i] inside the validated nfds*8-byte range; 4-byte aligned per Linux ABI.
+        let fd     = unsafe { core::ptr::read_volatile( p        as *const i32) };
+        // SAFETY: same validated range; events at +4 is 2-byte aligned.
+        let events = unsafe { core::ptr::read_volatile((p + 4)   as *const i16) };
+        let mut revents: i16 = 0;
+        if let Ok(file) = fdt.get(fd) {
+            if file.inode().file_type() == vfs::FileType::CharDev {
+                revents = events & (POLLIN | POLLOUT);
+            }
+        }
+        // SAFETY: revents at p+6 inside validated range; 2-byte aligned.
+        unsafe { core::ptr::write_volatile((p + 6) as *mut i16, revents); }
+        if revents != 0 { ready += 1; }
+    }
+    ready
+}
+
+/// `sys_ppoll(fds, nfds, ts, sigmask, sigsz)` — slot 271. Same
+/// non-blocking shape as poll; signal mask + timespec ignored
+/// (real pselect/ppoll wait support rides P3 follow-up).
+/// # C: O(nfds)
+pub fn kernel_sys_ppoll(args: &SyscallArgs) -> i64 {
+    let pf = SyscallArgs { a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0 };
+    kernel_sys_poll(&pf)
+}
+
+/// `sys_lseek(fd, offset, whence)` — slot 8. v1: returns
+/// `-ESPIPE` for non-Regular file types (CharDev / Fifo / Socket)
+/// per POSIX; returns 0 (start of file) for Regular if such
+/// inodes appear later. Real seek state lives on `File` once
+/// VFS gains it.
+/// # C: O(1)
+pub fn kernel_sys_lseek(args: &SyscallArgs) -> i64 {
+    let fd = args.a0 as i32;
+    let _off = args.a1 as i64;
+    let _whence = args.a2 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f)  => f,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match file.inode().file_type() {
+        vfs::FileType::Regular | vfs::FileType::BlockDev => 0,
+        _                                                 => -(Errno::Espipe.as_i32() as i64),
+    }
+}
+
 /// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed
 /// version: looks up the open `File`, walks the iovec array,
 /// calls `File::write` for each non-empty buffer. Returns total
