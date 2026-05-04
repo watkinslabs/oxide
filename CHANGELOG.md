@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #310) — 2026-05-04
+## Session 23 (PRs #234 – #314) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -571,6 +571,10 @@ End-of-session-22 verified-green (final, post-22g):
 | #308 | `P3-72-proc-self-dynamic` | **M2 substrate.** `ProcSelfStatusInode` synthesises body from `current()` at read time — Name (task.name), Tgid/Pid (tid), PPid (parent_tid), State R, uids/gids 0, Threads 1. bash + libc parse this. Foundation for /proc/self/cmdline, /maps. |
 | #309 | `P3-73-proc-self-cmdline` | **M2 substrate.** `ProcSelfCmdlineInode` (NUL-separated argv from task.name) + `ProcSelfStatInode` (52-field stat line: pid, comm, R, ppid, zeros). |
 | #310 | `P3-74-proc-self-maps` | **M2 substrate.** `ProcSelfMapsInode` walks `current().mm.snapshot_vmas()` and emits Linux-format `<start>-<end> <perms> <off> 00:00 <ino> <path>` lines. New `AddressSpace::snapshot_vmas()` helper. |
+| #311 | `P3-75-state-changelog-m2-procfs` | docs catch-up. |
+| #312 | `P3-76-tmpfs-stub` | **M2 substrate — minimal /tmp filesystem.** New `kernel/src/tmpfs.rs`: `TmpfsFileInode` wraps `Spinlock<Vec<u8>>`; flat `&str → InodeRef` registry with `lookup_or_create`. `sys_open` lookup order is now devfs → tmpfs → tmpfs::lookup_or_create when O_CREAT set + path under /tmp/. Lets shells `echo > /tmp/x; cat /tmp/x`. |
+| #313 | `P3-77-tmpfs-smoke` | Boot-time `tmpfs-smoke: ok` validates write+read round-trip + partial overwrite. |
+| #314 | `P3-78-tmpfs-user-blob` | **End-to-end validation.** kernel/blobs/tmpfstest.elf prints `tmpfs!` after `open(/tmp/x, O_CREAT)` + write + close + reopen + read + write(stdout) cycle. Real shells can now use /tmp/. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
