@@ -167,6 +167,20 @@ pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 {
     -(syscall::errno::Errno::Enosys.as_i32() as i64)
 }
 
+/// `sys_getresuid(ruid, euid, suid)` / `sys_getresgid` — slots
+/// 118/120. Writes (0,0,0) into all three user pointers — root
+/// everywhere, no separate saved-uid concept in v1.
+/// # C: O(1)
+pub fn kernel_sys_getres_uid(args: &SyscallArgs) -> i64 {
+    for &p in &[args.a0, args.a1, args.a2] {
+        if p != 0 && p < hal::USER_VA_END {
+            // SAFETY: each pointer validated < USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe { core::ptr::write_volatile(p as *mut u32, 0); }
+        }
+    }
+    0
+}
+
 /// `sys_rt_sigpending(set, sz)` — slot 127. Writes
 /// `current.sigpending` to user `set` (8 B). `sz` must be 8.
 /// # C: O(1)
