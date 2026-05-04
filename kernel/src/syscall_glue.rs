@@ -462,6 +462,58 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         }
     };
 
+    // 1a. Snapshot argv + envp from the OLD user AS into kernel
+    //     storage. After we activate the new AS, the old user
+    //     pages are unmapped and the user-side argv/envp pointers
+    //     would resolve to nothing. v1 caps: 8 entries each, 64
+    //     bytes per string.
+    const MAX_VEC: usize = 8;
+    const MAX_STR: usize = 64;
+    let mut argv_buf = [[0u8; MAX_STR]; MAX_VEC];
+    let mut argv_len = [0usize; MAX_VEC];
+    let mut argc: usize = 0;
+    let mut envp_buf = [[0u8; MAX_STR]; MAX_VEC];
+    let mut envp_len = [0usize; MAX_VEC];
+    let mut envc: usize = 0;
+    if args.a1 != 0 && args.a1 < USER_VA_END {
+        let argv_uva = args.a1;
+        for i in 0..MAX_VEC {
+            let p = argv_uva + (i as u64) * 8;
+            if p >= USER_VA_END { break; }
+            // SAFETY: argv array entries are 8-byte aligned per Linux ABI; we bound at MAX_VEC; CPL=0 reads through user mapping pre-activate.
+            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
+            if s == 0 { break; }
+            if s >= USER_VA_END { break; }
+            for j in 0..MAX_STR {
+                // SAFETY: bounded read of user string up to MAX_STR; CPL=0 reads through caller's AS.
+                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
+                if b == 0 { argv_len[i] = j; break; }
+                argv_buf[i][j] = b;
+                argv_len[i] = j + 1;
+            }
+            argc += 1;
+        }
+    }
+    if args.a2 != 0 && args.a2 < USER_VA_END {
+        let envp_uva = args.a2;
+        for i in 0..MAX_VEC {
+            let p = envp_uva + (i as u64) * 8;
+            if p >= USER_VA_END { break; }
+            // SAFETY: envp array entries 8-byte aligned per Linux ABI; bounded MAX_VEC; CPL=0 reads through user mapping pre-activate.
+            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
+            if s == 0 { break; }
+            if s >= USER_VA_END { break; }
+            for j in 0..MAX_STR {
+                // SAFETY: bounded read of user string up to MAX_STR; CPL=0 reads through caller's AS.
+                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
+                if b == 0 { envp_len[i] = j; break; }
+                envp_buf[i][j] = b;
+                envp_len[i] = j + 1;
+            }
+            envc += 1;
+        }
+    }
+
     // 1. Allocate new PT root for the post-execve AS.
     // SAFETY: master PML4 captured at user_as::init; PMM up.
     let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
@@ -510,11 +562,20 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
+    // Materialise stack-allocated &[&[u8]] slices for the snapshot
+    // we took on the OLD AS. We can't use alloc here cheaply (the
+    // execve frame is already deep), so a 16-element fixed array
+    // of slice references suffices.
+    let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
+    for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
+    let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
+    for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         crate::exec_stack::build_user_stack(
             crate::elf_smoke::EXEC_USER_STACK_TOP,
-            &[], &[],
+            &argv_slices[..argc],
+            &envp_slices[..envc],
             &img,
             &random16,
         )
