@@ -114,6 +114,22 @@ const SYSCALL_NR_FTRUNCATE: u64      = 77;
 const SYSCALL_NR_FSYNC: u64          = 74;
 const SYSCALL_NR_FDATASYNC: u64      = 75;
 const SYSCALL_NR_SYNC: u64           = 162;
+const SYSCALL_NR_SOCKET: u64         = 41;
+const SYSCALL_NR_BIND: u64           = 49;
+const SYSCALL_NR_LISTEN: u64         = 50;
+const SYSCALL_NR_ACCEPT: u64         = 43;
+const SYSCALL_NR_ACCEPT4: u64        = 288;
+const SYSCALL_NR_CONNECT: u64        = 42;
+const SYSCALL_NR_SENDTO: u64         = 44;
+const SYSCALL_NR_RECVFROM: u64       = 45;
+const SYSCALL_NR_SENDMSG: u64        = 46;
+const SYSCALL_NR_RECVMSG: u64        = 47;
+const SYSCALL_NR_SHUTDOWN: u64       = 48;
+const SYSCALL_NR_GETSOCKNAME: u64    = 51;
+const SYSCALL_NR_GETPEERNAME: u64    = 52;
+const SYSCALL_NR_SOCKETPAIR: u64     = 53;
+const SYSCALL_NR_SETSOCKOPT: u64     = 54;
+const SYSCALL_NR_GETSOCKOPT: u64     = 55;
 const SYSCALL_NR_GETCPU: u64         = 309;
 const SYSCALL_NR_SCHED_GETPARAM: u64 = 143;
 const SYSCALL_NR_SCHED_SETSCHEDULER: u64 = 144;
@@ -137,17 +153,15 @@ const UNAME_MACHINE: &[u8] = b"x86_64";
 #[cfg(target_arch = "aarch64")]
 const UNAME_MACHINE: &[u8] = b"aarch64";
 
-/// Write the 6 utsname fields at consecutive 65-byte slots starting
-/// at `tp`. Each field is the source bytes followed by NUL padding
-/// out to 65 B. Caller validates `tp` range.
+/// Write a utsname field at offset `off`: `src` then NUL pad to 65 B.
 unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     let n = src.len().min(UTSNAME_FIELD_LEN - 1);
     for i in 0..n {
-        // SAFETY: caller validated [tp, tp + UTSNAME_TOTAL_LEN) lies entirely below USER_VA_END and is mapped writable; CPL=0 ignores the leaf U bit so direct writes land in the user page.
+        // SAFETY: caller validated [tp, tp + UTSNAME_TOTAL_LEN) lies below USER_VA_END and is mapped writable; CPL=0 ignores leaf U-bit.
         unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, src[i]); }
     }
     for i in n..UTSNAME_FIELD_LEN {
-        // SAFETY: same range as above; pads out the field with NUL.
+        // SAFETY: same validated range as the byte writes above; NUL pad to 65-byte slot length.
         unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
     }
 }
@@ -812,11 +826,8 @@ pub(crate) fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i6
 }
 
 
-/// x86-specific syscall handled in the kernel-side glue (since
-/// `crates/syscall` is arch-neutral and can't call `hal-x86_64`).
-/// Only `ARCH_SET_FS` and `ARCH_GET_FS` are implemented; other
-/// codes return -EINVAL. v1 single-thread → ARCH_GET_FS reads
-/// IA32_FS_BASE via rdmsr (added if needed); v1 just returns 0.
+/// x86 sys_arch_prctl — slot 158. ARCH_SET_FS writes IA32_FS_BASE
+/// via wrmsr; ARCH_GET_FS returns 0 (rdmsr stub); else -EINVAL.
 #[cfg(target_arch = "x86_64")]
 fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
     let code = args.a0;
@@ -841,11 +852,8 @@ fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// SysV-ABI hook invoked by `oxide_syscall_entry`. Stack-switched +
-/// arg-shuffled by the asm stub before this is called.
-///
-/// # SAFETY: caller is the syscall asm stub; runs single-CPU with
-/// IF=0 (FMASK cleared). Returns a u64 placed in rax for sysretq.
+/// SysV-ABI hook invoked by `oxide_syscall_entry`. Returns u64 in rax.
+/// # SAFETY: caller is the syscall asm; single-CPU; IF=0 (FMASK).
 /// # C: O(1) + dispatch fn cost
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(
@@ -929,6 +937,16 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_OPENAT        => crate::syscall_glue_fs::kernel_sys_openat(&args),
         SYSCALL_NR_FSYNC | SYSCALL_NR_FDATASYNC | SYSCALL_NR_SYNC
                                  => 0,
+        // Net family — no stack yet per docs/25; ENOSYS.
+        SYSCALL_NR_SOCKET | SYSCALL_NR_BIND | SYSCALL_NR_LISTEN
+            | SYSCALL_NR_ACCEPT | SYSCALL_NR_ACCEPT4 | SYSCALL_NR_CONNECT
+            | SYSCALL_NR_SENDTO | SYSCALL_NR_RECVFROM
+            | SYSCALL_NR_SENDMSG | SYSCALL_NR_RECVMSG
+            | SYSCALL_NR_SHUTDOWN
+            | SYSCALL_NR_GETSOCKNAME | SYSCALL_NR_GETPEERNAME
+            | SYSCALL_NR_SOCKETPAIR
+            | SYSCALL_NR_SETSOCKOPT | SYSCALL_NR_GETSOCKOPT
+                                 => -(Errno::Enosys.as_i32() as i64),
         SYSCALL_NR_GETCPU        => crate::syscall_glue_proc::kernel_sys_getcpu(&args),
         SYSCALL_NR_SCHED_GETPARAM => crate::syscall_glue_proc::kernel_sys_sched_getparam(&args),
         SYSCALL_NR_SCHED_SETSCHEDULER | SYSCALL_NR_SCHED_GETSCHEDULER
