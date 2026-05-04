@@ -71,6 +71,13 @@ const SYSCALL_NR_SETRLIMIT: u64      = 160;
 const SYSCALL_NR_GETRUSAGE: u64      = 98;
 const SYSCALL_NR_TIMES: u64          = 100;
 const SYSCALL_NR_SYSINFO: u64        = 99;
+const SYSCALL_NR_MREMAP: u64         = 25;
+const SYSCALL_NR_MSYNC: u64          = 26;
+const SYSCALL_NR_MINCORE: u64        = 27;
+const SYSCALL_NR_MLOCK: u64          = 149;
+const SYSCALL_NR_MUNLOCK: u64        = 150;
+const SYSCALL_NR_MLOCKALL: u64       = 151;
+const SYSCALL_NR_MUNLOCKALL: u64     = 152;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -100,12 +107,9 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     }
 }
 
-/// `sys_mmap(addr, len, prot, flags, fd, off)` — slot 9. Routes to
-/// the real `vmm::AddressSpace::mmap` per `11§3`/`11§6` via the
-/// `crate::user_as` integration. v1 supports only
-/// `MAP_ANONYMOUS | MAP_PRIVATE` with `addr=NULL` / `fd=-1`; pages
-/// are demand-faulted in by `user_as::user_fault_handler` per
-/// `11§5`. No upfront frame allocation — first user access faults.
+/// `sys_mmap(addr, len, prot, flags, fd, off)` — slot 9. Routes
+/// to `vmm::AddressSpace::mmap` per `11§3`/`11§6`. v1: only
+/// MAP_ANONYMOUS|MAP_PRIVATE with addr=NULL/fd=-1; demand-paged.
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
     match crate::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
@@ -115,11 +119,7 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_munmap(addr, len)` — slot 11. Routes to
-/// `vmm::AddressSpace::munmap` + per-page PT unmap + frame free per
-/// `11§6` via the `crate::user_as` integration. Replaces the no-op
-/// stub in `crates/syscall::dispatch::sys_munmap` (the in-table
-/// stub still exists as a fallback when glue isn't routing — but
-/// glue now intercepts nr=11 first so it's dead-path).
+/// `vmm::AddressSpace::munmap` + per-page unmap + frame free.
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
@@ -208,9 +208,7 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_pipe2(pipefd, flags)` — slot 293. Anonymous `PipeInode`
-/// + two `File`s (R/W) at lowest-free fds; writes fd pair to
-/// user `pipefd[2]`. See docs/24.
+/// `sys_pipe2(pipefd, flags)` — slot 293; anon PipeInode+R/W fds.
 fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
@@ -252,16 +250,10 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_brk(addr)` — slot 12 per docs/15§5. Extends or shrinks
-/// the data segment ("heap") of the calling task. v1: the ELF
-/// loader pre-registers a 64 MiB Anonymous VMA above the last
-/// PT_LOAD; this syscall just adjusts the brk pointer within
-/// `[initial, initial + 64MiB]`. Pages demand-fault as the user
-/// touches them.
-///
-/// glibc/musl ABI: `brk(0)` queries; `brk(N)` attempts to set;
-/// returns the post-operation brk on success, the unchanged
-/// current brk on failure.
+/// `sys_brk(addr)` — slot 12. Adjusts heap brk within the
+/// 64 MiB ELF-loader-reserved Anonymous VMA. brk(0) queries.
+/// glibc/musl ABI: returns post-op brk on success, unchanged
+/// brk on failure.
 fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     let req = args.a0;
     let cur = match crate::sched::current() {
@@ -960,6 +952,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
         SYSCALL_NR_TIMES         => crate::syscall_glue_proc::kernel_sys_times(&args),
         SYSCALL_NR_SYSINFO       => crate::syscall_glue_proc::kernel_sys_sysinfo(&args),
+        SYSCALL_NR_MREMAP        => crate::syscall_glue_proc::kernel_sys_mremap(&args),
+        SYSCALL_NR_MSYNC         => crate::syscall_glue_proc::kernel_sys_msync(&args),
+        SYSCALL_NR_MINCORE       => crate::syscall_glue_proc::kernel_sys_mincore(&args),
+        SYSCALL_NR_MLOCK | SYSCALL_NR_MUNLOCK | SYSCALL_NR_MLOCKALL | SYSCALL_NR_MUNLOCKALL
+                                 => crate::syscall_glue_proc::kernel_sys_mlock_family(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
