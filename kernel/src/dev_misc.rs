@@ -55,7 +55,11 @@ impl Inode for FullInode {
 /// shape but NOT for cryptographic use.
 static PRNG_STATE: AtomicU64 = AtomicU64::new(0x9E37_79B9_7F4A_7C15);
 
-fn lcg_next() -> u64 {
+/// Pull one 64-bit pseudo-random value from the shared LCG.
+/// Used by `RandomInode` and `kernel_sys_getrandom`.
+/// SECURITY: NOT cryptographic — placeholder until docs/26.
+/// # C: O(1)
+pub fn lcg_next() -> u64 {
     let mut s = PRNG_STATE.load(Ordering::Relaxed);
     s = s.wrapping_mul(0x5851_F42D_4C95_7F2D).wrapping_add(0x14057B7E_F767_814F);
     PRNG_STATE.store(s, Ordering::Relaxed);

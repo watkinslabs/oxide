@@ -52,6 +52,7 @@ const SYSCALL_NR_FCHDIR: u64         = 81;
 const SYSCALL_NR_IOCTL: u64          = 16;
 const SYSCALL_NR_KILL: u64           = 62;
 const SYSCALL_NR_TGKILL: u64         = 234;
+const SYSCALL_NR_GETRANDOM: u64      = 318;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -768,6 +769,31 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
 }
 
 
+/// `sys_getrandom(buf, len, flags)` — slot 318 per docs/15§5.
+/// v1 fills via the shared LCG in dev_misc. NOT cryptographic;
+/// docs/26 CPRNG replaces this. `flags` ignored (GRND_NONBLOCK
+/// is a no-op since we never block).
+fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
+    let buf  = args.a0;
+    let len  = args.a1;
+    let _fl  = args.a2;
+    if len == 0 { return 0; }
+    if let Err(rv) = validate_user_buf(buf, len, 1) { return rv; }
+    let mut written: u64 = 0;
+    while written < len {
+        let v = crate::dev_misc::lcg_next().to_le_bytes();
+        let n = (len - written).min(8);
+        // SAFETY: validated [buf, buf+len) below USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe {
+            for i in 0..n {
+                core::ptr::write_volatile((buf + written + i) as *mut u8, v[i as usize]);
+            }
+        }
+        written += n;
+    }
+    written as i64
+}
+
 /// `sys_kill(pid, sig)` — slot 62. v1 minimal: self-targeted
 /// signals (`pid == current.tid` or `pid == 0`) for SIGKILL/
 /// SIGTERM/SIGABRT route to `kernel_sys_exit(128 + sig)` so libc
@@ -925,6 +951,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_FCHDIR        => crate::syscall_glue_fs::kernel_sys_fchdir(&args),
         SYSCALL_NR_KILL          => kernel_sys_kill(&args),
         SYSCALL_NR_TGKILL        => kernel_sys_tgkill(&args),
+        SYSCALL_NR_GETRANDOM     => kernel_sys_getrandom(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
