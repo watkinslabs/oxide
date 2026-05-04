@@ -72,8 +72,8 @@ pub mod sched;
 pub mod elf_load;
 
 /// TTY input per docs/28. v1: timer-tick UART poll + ringbuffer
-/// + WaitQueue-based blocking sys_read. x86_64 only.
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+/// + WaitQueue-based blocking sys_read. Both arches per P3-23.
+#[cfg(target_os = "oxide-kernel")]
 pub mod tty;
 
 /// `/dev/console` char-device per docs/16 + docs/28. v1 stub
