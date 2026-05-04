@@ -35,6 +35,14 @@ pub const MIN_USER_VA: u64 = PAGE_SIZE_BYTES;
 pub struct AddressSpace {
     vmas:    RwLock<VmaTree, AddressSpaceClass>,
     root_pa: u64,
+    /// Current `brk` per docs/15§5. Initialised by the ELF loader
+    /// to the page-rounded end of the last PT_LOAD; `sys_brk` adjusts
+    /// in `[initial, brk_max]` and demand-pages from a co-registered
+    /// Anonymous VMA covering the heap region.
+    brk:     core::sync::atomic::AtomicU64,
+    /// Upper bound of the loader-reserved heap region. `sys_brk(N)`
+    /// fails for `N > brk_max`.
+    brk_max: core::sync::atomic::AtomicU64,
 }
 
 impl AddressSpace {
@@ -54,7 +62,52 @@ impl AddressSpace {
         Ok(Arc::new(Self {
             vmas: RwLock::new(VmaTree::new()),
             root_pa,
+            brk:     core::sync::atomic::AtomicU64::new(0),
+            brk_max: core::sync::atomic::AtomicU64::new(0),
         }))
+    }
+
+    /// Initialise the brk region. Called by the ELF loader once the
+    /// last PT_LOAD has been registered: pass page-aligned start
+    /// (=> the initial brk) and the upper-bound max (initial + heap
+    /// reservation). Caller must also have inserted the Anonymous
+    /// VMA covering `[start, max)` so demand-paging works for the
+    /// heap pages.
+    /// # C: O(1)
+    pub fn set_brk_window(&self, start: u64, max: u64) {
+        use core::sync::atomic::Ordering;
+        self.brk.store(start, Ordering::Release);
+        self.brk_max.store(max, Ordering::Release);
+    }
+
+    /// Current `brk` value (0 before the loader runs).
+    /// # C: O(1)
+    pub fn brk(&self) -> u64 {
+        self.brk.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Upper-bound of the brk region (page-aligned). 0 means
+    /// "loader didn't reserve a heap region".
+    /// # C: O(1)
+    pub fn brk_max(&self) -> u64 {
+        self.brk_max.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Try to set `brk` to `new`. Returns the post-operation brk
+    /// value (matching glibc's `brk(2)` ABI: success ⇒ `new`,
+    /// failure ⇒ unchanged old value).
+    /// # C: O(1)
+    pub fn try_set_brk(&self, new: u64) -> u64 {
+        use core::sync::atomic::Ordering;
+        let cur = self.brk.load(Ordering::Acquire);
+        let max = self.brk_max.load(Ordering::Acquire);
+        if max == 0 { return cur; }                  // no heap reserved
+        if new < (cur & !0xfff) || new > max { return cur; }
+        // Page-round up.
+        let rounded = (new + 0xfff) & !0xfff;
+        if rounded > max { return cur; }
+        self.brk.store(rounded, Ordering::Release);
+        rounded
     }
 
     /// PA of this AS's top-level page-table frame. Pass to
@@ -81,6 +134,8 @@ impl AddressSpace {
         Ok(Arc::new(Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
+            brk:     core::sync::atomic::AtomicU64::new(self.brk()),
+            brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
         }))
     }
 
@@ -137,6 +192,8 @@ impl AddressSpace {
         Ok(Arc::new(Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
+            brk:     core::sync::atomic::AtomicU64::new(self.brk()),
+            brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
         }))
     }
 
