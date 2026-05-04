@@ -14,7 +14,7 @@
 // with the runqueue-wire PR (P1-84b).
 //
 // Argument shuffle: `syscall` ABI passes args in (rdi, rsi, rdx, r10,
-// r8, r9) with nr in rax — `r10` substitutes for `rcx` because the
+// r8, r9) with nr in rax -- `r10` substitutes for `rcx` because the
 // instruction itself clobbers rcx with the user RIP. The Rust
 // dispatcher `oxide_syscall_dispatch(nr, a0..a4)` takes 6 SysV args
 // in (rdi, rsi, rdx, rcx, r8, r9). We push all source regs to the
@@ -123,7 +123,7 @@ core::arch::global_asm!(
     // Move SysV-arg regs into target order WITHOUT consuming the
     // saved-arg slots. Linux x86_64 syscall ABI preserves user's
     // rdi/rsi/rdx/r10/r8/r9 across syscalls (only rax/rcx/r11 are
-    // clobbered) — we restore them from the on-stack copies after
+    // clobbered) -- we restore them from the on-stack copies after
     // dispatch returns. Per docs/15§1.3.
     "    mov  rdi, [rsp + 0x00]",                      // nr
     "    mov  rsi, [rsp + 0x08]",                      // a0
@@ -133,12 +133,12 @@ core::arch::global_asm!(
     "    mov  r9,  [rsp + 0x28]",                      // a4
     // SysV requires rsp 16-aligned at `call`. After 10 pushes
     // from a 16-aligned base rsp = K - 0x50 (still 16-aligned, since
-    // 0x50 = 5*16) — call pushes 8 putting it at the canonical 8
+    // 0x50 = 5*16) -- call pushes 8 putting it at the canonical 8
     // mod 16 inside the callee. No extra alignment needed.
     "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
     // Restore user-side rdi/rsi/rdx/r10/r8/r9 from the saved
     // copies (Linux ABI preserve rule). rax holds the syscall
-    // return value from dispatch — leave it.
+    // return value from dispatch -- leave it.
     "    mov  rdi, [rsp + 0x08]",
     "    mov  rsi, [rsp + 0x10]",
     "    mov  rdx, [rsp + 0x18]",
@@ -173,7 +173,7 @@ extern "C" {
 /// the child's iretq frame) and `kernel_sys_execve` (write to
 /// redirect sysretq into the new program's entry without
 /// returning to the caller). The asm sysretq pops from these
-/// same slots — modifying them in-place is equivalent to "return
+/// same slots -- modifying them in-place is equivalent to "return
 /// from the syscall as if the user had been at this RIP all
 /// along".
 ///
@@ -182,19 +182,29 @@ extern "C" {
 /// already pushed the user RIP/RFLAGS/RSP triple at top-24..top
 /// before calling dispatch (B09: arg regs are now mov'd, not
 /// popped, so the slot positions stay the same). Single-CPU UP
-/// v1 — per-CPU pointer once SMP lands.
+/// v1 -- per-CPU pointer once SMP lands.
 /// # C: O(1)
 pub fn current_user_frame() -> *mut [u64; 3] {
     let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
-    // 3-quadword tail (RIP, RFLAGS, RSP) begins 24 B below top —
+    // 3-quadword tail (RIP, RFLAGS, RSP) begins 24 B below top --
     // pushed in reverse order so layout is RIP@-24, RFLAGS@-16, RSP@-8.
     (top - 24) as *mut [u64; 3]
+}
+
+/// Top of the active task's per-task syscall kernel stack -- same
+/// pointer the asm prologue loads via `OXIDE_SYSCALL_KSTACK`.
+/// `0` when the global hasn't been set yet (boot-only kthread
+/// path). The signal-dispatch helper writes the saved-rdi slot at
+/// `top - 0x48` so sysretq leaves rdi = sig.
+/// # C: O(1)
+pub fn current_kstack_top() -> u64 {
+    OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire)
 }
 
 // `oxide_syscall_dispatch` is defined in the kernel crate; the asm
 // stub above references it by symbol. See `kernel/src/syscall_glue.rs`.
 
-/// Update `OXIDE_SYSCALL_KSTACK` to `top` — the next syscall from
+/// Update `OXIDE_SYSCALL_KSTACK` to `top` -- the next syscall from
 /// user mode will switch to this stack via the asm prologue. The
 /// scheduler calls this on every task-switch in tandem with
 /// `set_rsp0` so each user task syscalls onto its own kernel
