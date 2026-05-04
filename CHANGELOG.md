@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #292) — 2026-05-04
+## Session 23 (PRs #234 – #294) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -553,11 +553,13 @@ End-of-session-22 verified-green (final, post-22g):
 | #290 | `P3-52-state-changelog` | docs catch-up through #289. |
 | #291 | `P3-53-execve-args-trace` | sys_execve trace now logs `argc=N envc=M` so the boot trace confirms argv pass-through is on the live path. |
 | #292 | `P3-54-execve-path-string` | execve real path-string resolution: reads up to 64 user bytes, looks up `/init`, `/sbin/init`, `/bin/{yo,hi,echo,cat}`, `/usr/bin/*` via new `crate::elf_smoke::lookup_blob_by_path`. Falls back to single-byte selector for the existing init-blob iter_block. Shells calling `execve("/bin/cat", argv, envp)` resolve correctly. |
+| #293 | `P3-55-state-changelog` | docs catch-up through #292. |
+| #294 | `P3-56-statx-test` | Boot-time `exec-path-smoke` kasserts each registered path resolves to a blob with the ELF magic; negative case must miss. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
 - `make test` → 524 passed, 0 failed (up from 463 → 524 over the run).
 - `make build` + `make build-debug` both arches green.
-- `make qemu-x86 --features debug-all` → boot trace: `dev-misc-smoke: ok` + `procfs-smoke: ok` + `pipe-evt-smoke: ok` + `syscall: ~200 slots wired` validate boot-time infra; init-loop emits `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically; full fork+execve+wait4+exit+procfs read+write cycle through 4 iterations; halts clean.
+- `make qemu-x86 --features debug-all` → boot trace: `dev-misc-smoke: ok` + `procfs-smoke: ok` + `pipe-evt-smoke: ok` + `syscall: ~200 slots wired` + `exec-path-smoke: ok` validate boot-time infra; init-loop emits `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically; full fork+execve+wait4+exit+procfs read+write cycle through 4 iterations; halts clean.
 - `make qemu-arm --features debug-all` reaches user task on the runqueue per P2-13e2; ELF demo runs (`el` written, exit clean); all boot-time smokes pass; PL011 RX hooked in (P3-23) but not yet exercised end-to-end (no arm-side init-blob iteration — rides P3 follow-up).
 - ~200 syscall slots wired across `syscall_glue.rs` real-impl arms + `syscall_glue_fs/proc/time.rs` glue helpers + `syscall_compat.rs::try_compat`. Linux x86_64 ABI surface-coverage substantially complete for libc/shell startup probes.
