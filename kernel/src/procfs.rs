@@ -95,6 +95,32 @@ pub fn init() {
         StaticFileInode::new(b"NAME=oxide\nID=oxide\nVERSION=\"0.1.0-pre\"\n") as InodeRef);
     crate::devfs::register("/etc/machine-id",
         StaticFileInode::new(b"00000000000000000000000000000001\n") as InodeRef);
+    crate::devfs::register("/etc/hostname",
+        StaticFileInode::new(b"oxide\n") as InodeRef);
+    crate::devfs::register("/etc/passwd",
+        StaticFileInode::new(b"root:x:0:0:root:/:/bin/sh\n") as InodeRef);
+    crate::devfs::register("/etc/group",
+        StaticFileInode::new(b"root:x:0:\n") as InodeRef);
+    crate::devfs::register("/etc/nsswitch.conf",
+        StaticFileInode::new(b"passwd: files\ngroup: files\nhosts: files\n") as InodeRef);
+    crate::devfs::register("/etc/resolv.conf",
+        StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/etc/localtime",
+        StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/self/oom_score",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/self/oom_score_adj",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/random/boot_id",
+        StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/pid_max",
+        StaticFileInode::new(b"32768\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/random/uuid",
+        StaticFileInode::new(b"00000000-0000-0000-0000-000000000001\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/ngroups_max",
+        StaticFileInode::new(b"65536\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/cap_last_cap",
+        StaticFileInode::new(b"40\n") as InodeRef);
 }
 
 /// Boot-time smoke: open every registered /proc entry via the
