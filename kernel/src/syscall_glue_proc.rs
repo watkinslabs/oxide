@@ -85,3 +85,49 @@ pub fn kernel_sys_rt_sigprocmask(_args: &SyscallArgs) -> i64 { 0 }
 /// frames don't exist yet; accept and ignore.
 /// # C: O(1)
 pub fn kernel_sys_sigaltstack(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_nanosleep(req, rem)` — slot 35. v1 busy-wait: spins on
+/// the per-arch monotonic clock until the requested ns has
+/// elapsed, yielding via `tick_yield` between checks so other
+/// runnable tasks can make progress. `rem` ignored (no signal
+/// interruption yet). `req` is `timespec { tv_sec: i64, tv_nsec: i64 }`.
+/// # C: O(req_ns / yield_quantum)
+pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
+    use hal::TimerOps;
+    use syscall::errno::Errno;
+    let req = args.a0;
+    if req == 0 || req >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: req validated < USER_VA_END; user page mapped (caller's AS); CPL=0 reads via active CR3.
+    let secs = unsafe { core::ptr::read_volatile(req as *const i64) };
+    // SAFETY: same validated range; tv_nsec at +8 is 8-byte aligned per Linux ABI.
+    let nsec = unsafe { core::ptr::read_volatile((req + 8) as *const i64) };
+    if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let total = (secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
+    #[cfg(target_arch = "x86_64")]
+    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let start = now();
+    let deadline = start.saturating_add(total);
+    while now() < deadline {
+        if crate::sched::global().is_some() {
+            // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
+            unsafe { crate::sched::tick_yield(); }
+        } else {
+            core::hint::spin_loop();
+        }
+    }
+    0
+}
+
+/// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
+/// v1: ignores clk_id + flags, reuses `kernel_sys_nanosleep` on
+/// the req timespec. TIMER_ABSTIME would compute deadline from
+/// the timespec directly; v1 treats all values as relative.
+/// # C: same as nanosleep
+pub fn kernel_sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
+    let inner = SyscallArgs { a0: args.a2, a1: args.a3, a2: 0, a3: 0, a4: 0, a5: 0 };
+    kernel_sys_nanosleep(&inner)
+}
