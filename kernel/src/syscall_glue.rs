@@ -62,6 +62,9 @@ const SYSCALL_NR_NANOSLEEP: u64       = 35;
 const SYSCALL_NR_CLOCK_NANOSLEEP: u64 = 230;
 const SYSCALL_NR_READLINK: u64       = 89;
 const SYSCALL_NR_READLINKAT: u64     = 267;
+const SYSCALL_NR_STATX: u64          = 332;
+const SYSCALL_NR_RSEQ: u64           = 334;
+const SYSCALL_NR_MEMBARRIER: u64     = 324;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -199,11 +202,9 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_pipe2(pipefd, flags)` — slot 293 per docs/15§5 +
-/// docs/24. Creates an anonymous `PipeInode`, allocates two
-/// `File`s (read end O_RDONLY, write end O_WRONLY), inserts
-/// them at the lowest-free fds in the current task's fd_table,
-/// and writes the two fd numbers to user `pipefd[2]`.
+/// `sys_pipe2(pipefd, flags)` — slot 293. Anonymous `PipeInode`
+/// + two `File`s (R/W) at lowest-free fds; writes fd pair to
+/// user `pipefd[2]`. See docs/24.
 fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
@@ -963,6 +964,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_LSEEK         => crate::syscall_glue_fs::kernel_sys_lseek(&args),
         SYSCALL_NR_READLINK      => crate::syscall_glue_fs::kernel_sys_readlink(&args),
         SYSCALL_NR_READLINKAT    => crate::syscall_glue_fs::kernel_sys_readlinkat(&args),
+        SYSCALL_NR_STATX         => crate::syscall_glue_fs::kernel_sys_statx(&args),
+        SYSCALL_NR_RSEQ          => crate::syscall_glue_proc::kernel_sys_rseq(&args),
+        SYSCALL_NR_MEMBARRIER    => crate::syscall_glue_proc::kernel_sys_membarrier(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
