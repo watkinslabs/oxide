@@ -239,35 +239,52 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
     }
 }
 
-/// Per-arch fault handler installed by `kernel_main`. Demand-pages
-/// `NotPresent` faults via `AddressSpace::handle_page_fault`; on
-/// unresolved user faults delivers the v1 minimal form of SIGSEGV
-/// per docs/27 — terminate the current task instead of halting
-/// the kernel. Without signal handlers the default action for
-/// SIGSEGV is "terminate", which is exactly what we do.
-/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1)
-/// terminate path
+/// Per-arch fault handler installed by `kernel_main`. v1 handles
+/// only `NotPresent` on Anonymous + KernelBytes VMAs (demand-paging
+/// path). Returns true if the fault was resolved (caller retries
+/// the faulting instruction); false otherwise. The caller (typically
+/// a smoke fault handler) decides whether to deliver SIGSEGV via
+/// `sigsegv_terminate_<arch>` or treat as a smoke landmark.
+/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "x86_64")]
-pub fn user_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
-    if vec == 14 {
-        if let Some(kind) = classify_x86_pf(err, cr2) {
-            if handle(cr2, kind) {
-                return true;
-            }
-        }
+pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
+    if vec != 14 {
+        return false;
     }
+    let kind = match classify_x86_pf(err, cr2) {
+        Some(k) => k,
+        None    => return false,
+    };
+    handle(cr2, kind)
+}
+
+/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
+#[cfg(target_arch = "aarch64")]
+pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
+    let kind = match classify_arm_abort(esr, far) {
+        Some(k) => k,
+        None    => return false,
+    };
+    handle(far, kind)
+}
+
+/// Public wrapper around `sigsegv_terminate_x86` so other modules
+/// (e.g. smoke fault handlers, syscall handlers) can deliver
+/// SIGSEGV without re-importing the helper visibility surface.
+/// # SAFETY: caller is in fault / IRQ-off context with the
+/// runqueue installed (else no current task to terminate).
+/// # C: O(1) — diverges
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     sigsegv_terminate_x86(vec, err, rip, cr2);
 }
 
-/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1)
-/// terminate path
+/// arm wrapper for SIGSEGV delivery. Same shape as the x86 form.
+/// # SAFETY: caller is in fault / IRQ-off context with the
+/// runqueue installed.
+/// # C: O(1) — diverges
 #[cfg(target_arch = "aarch64")]
-pub fn user_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
-    if let Some(kind) = classify_arm_abort(esr, far) {
-        if handle(far, kind) {
-            return true;
-        }
-    }
+pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
     sigsegv_terminate_arm(esr, far, elr);
 }
 
