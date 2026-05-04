@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #285) — 2026-05-04
+## Session 23 (PRs #234 – #287) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -546,10 +546,13 @@ End-of-session-22 verified-green (final, post-22g):
 | #283 | `P3-44-getitimer-setitimer` | Wide ABI-compat batch covering libc/shell startup probes. itimer/alarm/pause/priority/groups/setuid family → 0. getresuid/getresgid write (0,0,0). capget/capset/personality/vhangup/syslog/sethostname → 0. reboot/mount/umount2/chroot → EPERM. ptrace/init_module/swapon/sendfile/splice/tee/vmsplice/copy_file_range/memfd_create/pidfd_*/xattr family → ENOSYS. flock/fallocate/readahead/fadvise64/sync_file_range → 0. |
 | #284 | `P3-45-state-changelog` | docs catch-up through #283. |
 | #285 | `P3-46-keyctl-ipc` | **Refactor + coverage**: pulls the giant dispatch tail into `kernel/src/syscall_compat.rs::try_compat -> Option<i64>` so the main `oxide_syscall_dispatch` arm stays under the line cap. Adds SysV IPC (shm/sem/msg) ENOSYS, POSIX MQ ENOSYS, keyring ENOSYS, timer_* ENOSYS, kexec/iopl/adjtimex EPERM, sendfile/splice/tee/vmsplice/memfd ENOSYS, pidfd ENOSYS, xattr ENOSYS, fanotify ENOSYS, mount-setattr/openat2/etc ENOSYS. Real-impl shadows for STAT/LSTAT/CREAT/PIPE/EXIT_GROUP/NEWFSTATAT/RT_SIGRETURN/GETRESUID/GETRESGID. syscall_glue.rs ~1100 → 890 lines. |
+| #286 | `P3-47-state-changelog` | docs catch-up through #285. |
+| #287 | `P3-49-syscall-coverage-banner` | Boot banner `[INFO] syscall: ~200 slots wired (real impls + compat stubs)` after dev-misc + procfs + pipe-evt smokes. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
 - `make test` → 524 passed, 0 failed (up from 463 → 524 over the run).
 - `make build` + `make build-debug` both arches green.
-- `make qemu-x86 --features debug-all` → boot trace: `dev-misc-smoke: ok` + `procfs-smoke: ok` validate boot-time infra; init-loop emits `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically; full fork+execve+wait4+exit+procfs read+write cycle through 4 iterations; halts clean.
-- `make qemu-arm --features debug-all` reaches user task on the runqueue per P2-13e2; PL011 RX hooked in but not yet exercised end-to-end (no arm-side init-blob iteration testing it — rides P3 follow-up).
+- `make qemu-x86 --features debug-all` → boot trace: `dev-misc-smoke: ok` + `procfs-smoke: ok` + `pipe-evt-smoke: ok` + `syscall: ~200 slots wired` validate boot-time infra; init-loop emits `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically; full fork+execve+wait4+exit+procfs read+write cycle through 4 iterations; halts clean.
+- `make qemu-arm --features debug-all` reaches user task on the runqueue per P2-13e2; ELF demo runs (`el` written, exit clean); all boot-time smokes pass; PL011 RX hooked in (P3-23) but not yet exercised end-to-end (no arm-side init-blob iteration — rides P3 follow-up).
+- ~200 syscall slots wired across `syscall_glue.rs` real-impl arms + `syscall_glue_fs/proc/time.rs` glue helpers + `syscall_compat.rs::try_compat`. Linux x86_64 ABI surface-coverage substantially complete for libc/shell startup probes.
