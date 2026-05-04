@@ -70,6 +70,13 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 297 | `P3-59-musl-helloworld` | **M1 baseline.** First real-toolchain static-PIE binary running: `hello asm-pie` (gcc -nostdlib -static-pie). PIE_LOAD_BIAS, R_X86_64_RELATIVE, CR4.OSFXSR, build_user_stack for spawned task. |
 | 298 | `B11-hotfix-blob-not-committed` | hotfix gitignore — `!kernel/blobs/*.elf` exception. |
 | 299 | `P3-61-fork-fdtable-copy` | **M2 substrate** — per-entry fd_table fork copy + CLOEXEC at execve. |
+| 300 | `P3-63-state-changelog-m1` | docs catch-up. |
+| 301 | `P3-64-sigaction-storage` | **M2** Task SaHandler[64] + real rt_sigaction storage. |
+| 302 | `P3-65-sa-handler-dispatch` | **M2** sa_handler dispatch + rt_sigreturn (sig_dispatch.rs). |
+| 303 | `P3-66-signal-smoke` | sigtest.elf validates full sigaction→kill→handler→sigreturn chain. Trace: 'before h after'. |
+| 304 | `P3-67-sigchld` | **M2** SIGCHLD posted to parent on Zombie via Weak<Task>. |
+| 305 | `P3-68-sigchld-default-ignore` | bugfix: SIGCHLD/SIGURG/SIGWINCH default ignore + execve first-byte fallback. |
+| 306 | `B12-line-cap-hotfix` | trim docs to fit 1000-line cap. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
