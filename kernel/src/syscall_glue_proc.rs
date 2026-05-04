@@ -343,6 +343,105 @@ pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_umask(_args: &SyscallArgs) -> i64 { 0o022 }
 
+/// `sys_getcpu(cpu, node, tcache)` — slot 309. v1 single-CPU UP →
+/// always returns CPU 0, NUMA node 0.
+/// # C: O(1)
+pub fn kernel_sys_getcpu(args: &SyscallArgs) -> i64 {
+    let cpu  = args.a0;
+    let node = args.a1;
+    if cpu  != 0 && cpu  < hal::USER_VA_END {
+        // SAFETY: cpu pointer validated < USER_VA_END; CPL=0 writes through caller's AS via active CR3.
+        unsafe { core::ptr::write_volatile(cpu  as *mut u32, 0); }
+    }
+    if node != 0 && node < hal::USER_VA_END {
+        // SAFETY: node pointer validated < USER_VA_END; same AS as above.
+        unsafe { core::ptr::write_volatile(node as *mut u32, 0); }
+    }
+    0
+}
+
+/// `sys_sched_getparam(pid, param)` — slot 143. v1: writes
+/// sched_priority=0 (only meaningful for RT classes).
+/// # C: O(1)
+pub fn kernel_sys_sched_getparam(args: &SyscallArgs) -> i64 {
+    let p = args.a1;
+    if p != 0 && p < hal::USER_VA_END {
+        // SAFETY: p validated < USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe { core::ptr::write_volatile(p as *mut i32, 0); }
+    }
+    0
+}
+
+/// `sys_sched_setscheduler` / `sys_sched_getscheduler` —
+/// slots 144/145. v1 always reports SCHED_OTHER (0); set is no-op.
+/// # C: O(1)
+pub fn kernel_sys_sched_getscheduler(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_sched_get_priority_max(policy)` — slot 146. v1: 99 for
+/// SCHED_FIFO/RR, 0 otherwise.
+/// # C: O(1)
+pub fn kernel_sys_sched_get_priority_max(args: &SyscallArgs) -> i64 {
+    let policy = args.a0 as i32;
+    match policy { 1 | 2 => 99, _ => 0 }
+}
+
+/// `sys_sched_get_priority_min(policy)` — slot 147. v1: 1 for
+/// SCHED_FIFO/RR, 0 otherwise.
+/// # C: O(1)
+pub fn kernel_sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
+    let policy = args.a0 as i32;
+    match policy { 1 | 2 => 1, _ => 0 }
+}
+
+/// `sys_sched_getaffinity(pid, cpusetsize, mask)` — slot 204.
+/// v1: writes a single-bit mask covering CPU 0; returns 8.
+/// # C: O(1)
+pub fn kernel_sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
+    let cpusetsize = args.a1;
+    let mask = args.a2;
+    if mask == 0 || mask >= hal::USER_VA_END || cpusetsize < 8 {
+        return -(syscall::errno::Errno::Einval.as_i32() as i64);
+    }
+    // SAFETY: mask validated < USER_VA_END; cpusetsize >= 8 guarantees the 8-byte write fits; CPL=0 writes through caller's AS.
+    unsafe { core::ptr::write_volatile(mask as *mut u64, 1); }
+    8
+}
+
+/// `sys_sched_setaffinity` — slot 203. v1 single-CPU → no-op.
+/// # C: O(1)
+pub fn kernel_sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_prctl(option, ...)` — slot 157. v1 honours
+/// PR_SET_NAME / PR_GET_NAME (no-op since name is &'static str)
+/// and PR_SET_DUMPABLE / PR_GET_DUMPABLE; returns 0 elsewhere.
+/// # C: O(1)
+pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
+    const PR_SET_NAME:     u64 = 15;
+    const PR_GET_NAME:     u64 = 16;
+    const PR_SET_DUMPABLE: u64 = 4;
+    const PR_GET_DUMPABLE: u64 = 3;
+    match args.a0 {
+        PR_SET_NAME | PR_SET_DUMPABLE => 0,
+        PR_GET_DUMPABLE              => 1,
+        PR_GET_NAME => {
+            let p = args.a1;
+            if p != 0 && p < hal::USER_VA_END {
+                let name = crate::sched::current().map(|c| c.name).unwrap_or("oxide");
+                let n = name.len().min(15);
+                // SAFETY: p validated < USER_VA_END; n bytes from a 'static str fit in the user 16-byte name buf.
+                unsafe {
+                    for i in 0..n {
+                        core::ptr::write_volatile((p + i as u64) as *mut u8, name.as_bytes()[i]);
+                    }
+                    core::ptr::write_volatile((p + n as u64) as *mut u8, 0);
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
 /// CPU UP: every memory op is already globally ordered, so any
 /// MEMBARRIER_CMD_* request succeeds vacuously.
