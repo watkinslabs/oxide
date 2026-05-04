@@ -65,6 +65,7 @@ const SYSCALL_NR_READLINKAT: u64     = 267;
 const SYSCALL_NR_STATX: u64          = 332;
 const SYSCALL_NR_RSEQ: u64           = 334;
 const SYSCALL_NR_MEMBARRIER: u64     = 324;
+const SYSCALL_NR_FCNTL: u64          = 72;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -339,8 +340,7 @@ fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_dup(oldfd)` — slot 32 per docs/15§5. Allocates the
-/// lowest free fd pointing at the same `File` as `oldfd`.
+/// `sys_dup(oldfd)` — slot 32. Lowest free fd → same `File`.
 fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let cur = match crate::sched::current() {
@@ -358,9 +358,8 @@ fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_dup2(oldfd, newfd)` — slot 33 per docs/15§5. Atomically
-/// closes `newfd` (if open) and installs a clone of `oldfd`
-/// at `newfd`. If `oldfd == newfd`, returns `newfd` unchanged.
+/// `sys_dup2(oldfd, newfd)` — slot 33. Closes newfd, clones
+/// oldfd into it. `oldfd == newfd` returns newfd unchanged.
 fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
@@ -965,6 +964,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_READLINK      => crate::syscall_glue_fs::kernel_sys_readlink(&args),
         SYSCALL_NR_READLINKAT    => crate::syscall_glue_fs::kernel_sys_readlinkat(&args),
         SYSCALL_NR_STATX         => crate::syscall_glue_fs::kernel_sys_statx(&args),
+        SYSCALL_NR_FCNTL         => crate::syscall_glue_fs::kernel_sys_fcntl(&args),
         SYSCALL_NR_RSEQ          => crate::syscall_glue_proc::kernel_sys_rseq(&args),
         SYSCALL_NR_MEMBARRIER    => crate::syscall_glue_proc::kernel_sys_membarrier(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
