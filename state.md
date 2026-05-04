@@ -60,6 +60,9 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 287 | `P3-49-syscall-coverage-banner` | Boot banner: `[INFO] syscall: ~200 slots wired (real impls + compat stubs)`. |
 | 288 | `P3-50-state-changelog-final` | docs catch-up. |
 | 289 | `P3-51-execve-real-argv` | execve real argv/envp pass-through (8×64 cap) via pre-activate snapshot into kernel buffers. |
+| 290 | `P3-52-state-changelog` | docs catch-up. |
+| 291 | `P3-53-execve-args-trace` | sys_execve trace logs argc + envc. |
+| 292 | `P3-54-execve-path-string` | execve real path-string lookup: /init, /bin/{yo,hi,echo,cat}, /usr/bin/* via lookup_blob_by_path. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
