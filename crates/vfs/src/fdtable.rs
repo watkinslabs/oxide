@@ -153,6 +153,21 @@ impl FdTable {
         }
     }
 
+    /// `fork(2)` semantics — produce a new `FdTable` whose entries
+    /// are Arc-clones of the parent's. Subsequent close/dup/etc.
+    /// in either table don't disturb the other (the underlying
+    /// `Arc<File>` is still shared, which matches POSIX: parent
+    /// and child share the open-file description but not the
+    /// fd-table slots).
+    /// # C: O(N)
+    pub fn fork_clone(&self) -> Self {
+        let g = self.inner.lock();
+        Self { inner: Spinlock::new(FdTableInner {
+            files:   g.files.clone(),
+            cloexec: g.cloexec.clone(),
+        }) }
+    }
+
     /// `execve` semantics: drop every FD with FD_CLOEXEC set.
     /// # C: O(N)
     pub fn close_on_exec(&self) {
