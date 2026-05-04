@@ -53,6 +53,40 @@ impl PipeBuf {
     }
 }
 
+/// Boot-time smoke for PipeInode + EventfdInode. Round-trips a
+/// short message through a freshly-constructed pipe; round-trips
+/// a u64 counter through a freshly-constructed eventfd; kasserts
+/// the byte / counter contracts.
+/// # SAFETY: caller is the boot path; PMM up; single-CPU pre-init.
+/// # C: O(N_bytes)
+pub fn smoke_test() {
+    use vfs::Inode;
+    use hal::kassert;
+
+    // Pipe round-trip: write 5 bytes → read 5 bytes back.
+    let pipe = PipeInode::new();
+    let n = pipe.write(0, b"hello").expect("pipe.write");
+    kassert!(n == 5, "pipe write len");
+    let mut buf = [0u8; 8];
+    let n = pipe.read(0, &mut buf).expect("pipe.read");
+    kassert!(n == 5, "pipe read len");
+    kassert!(&buf[..5] == b"hello", "pipe round-trip body");
+    let n = pipe.read(0, &mut buf).expect("pipe.read empty");
+    kassert!(n == 0, "pipe drained");
+
+    // Eventfd round-trip: write 0x1234 → read swaps to 0,
+    // returns prior value as 8-byte LE.
+    let evt = EventfdInode::new(0);
+    let n = evt.write(0, &0x1234u64.to_ne_bytes()).expect("evt.write");
+    kassert!(n == 8, "evt write len");
+    let mut ev = [0u8; 8];
+    let n = evt.read(0, &mut ev).expect("evt.read");
+    kassert!(n == 8, "evt read len");
+    kassert!(u64::from_ne_bytes(ev) == 0x1234, "evt counter round-trip");
+
+    debug_boot! { klog::write_raw(b"[INFO]  pipe-evt-smoke: ok\n"); }
+}
+
 /// `Inode`-backed eventfd counter per `24§3` + Linux eventfd(2).
 /// Read drains the counter to a u64; write adds to it. v1: no
 /// blocking — read returns -EAGAIN if counter is 0; write returns
