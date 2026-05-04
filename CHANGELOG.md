@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #294) — 2026-05-04
+## Session 23 (PRs #234 – #295) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -555,6 +555,7 @@ End-of-session-22 verified-green (final, post-22g):
 | #292 | `P3-54-execve-path-string` | execve real path-string resolution: reads up to 64 user bytes, looks up `/init`, `/sbin/init`, `/bin/{yo,hi,echo,cat}`, `/usr/bin/*` via new `crate::elf_smoke::lookup_blob_by_path`. Falls back to single-byte selector for the existing init-blob iter_block. Shells calling `execve("/bin/cat", argv, envp)` resolve correctly. |
 | #293 | `P3-55-state-changelog` | docs catch-up through #292. |
 | #294 | `P3-56-statx-test` | Boot-time `exec-path-smoke` kasserts each registered path resolves to a blob with the ELF magic; negative case must miss. |
+| #295 | `P3-57-state-changelog-final` | docs catch-up through #294. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
