@@ -47,6 +47,8 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 274 | `P3-35-state-changelog` | docs catch-up. |
 | 275 | `P3-36-mkdir-rmdir-stub` | mkdir/rmdir/unlink/rename/truncate EROFS; openat via devfs; fsync/sync 0. |
 | 276 | `P3-37-net-stubs` | socket family ENOSYS until docs/25 net stack lands. |
+| 277 | `P3-38-state-changelog` | docs catch-up. |
+| 278 | `P3-39-fchmod-fchown-stub` | Canonical syscall_nrs.rs (Linux x86_64 0..451) + chmod/utime/link/statfs coverage. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
