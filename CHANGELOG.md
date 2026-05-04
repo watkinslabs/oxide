@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #306) — 2026-05-04
+## Session 23 (PRs #234 – #310) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -567,6 +567,10 @@ End-of-session-22 verified-green (final, post-22g):
 | #304 | `P3-67-sigchld` | **M2 substrate — SIGCHLD on Zombie.** Task gains `parent_arc: Weak<Task>` set at fork time. `park_zombie` upgrades the Weak; if parent alive, sets bit 16 (signal 17, SIGCHLD) in `parent.sigpending`. Bash + getty rely on this for job tracking. |
 | #305 | `P3-68-sigchld-default-ignore` | **Bugfix.** SIG_DFL case in dispatch tail was always terminating; Linux per `signal(7)` defaults SIGCHLD/SIGURG/SIGWINCH to ignore. Without this, parents would be killed by their first child's Zombie posting SIGCHLD without a handler. Also: execve path-string lookup falls back to first-byte selector for any path_len ≥ 1 so init blob's non-NUL-terminated 1-byte selectors continue to resolve. |
 | #306 | `B12-line-cap-hotfix` | Trims doc comments in syscall_glue.rs to bring it back under the 1000-line cap (1004→997). |
+| #307 | `P3-69-state-changelog-m2` | docs catch-up. |
+| #308 | `P3-72-proc-self-dynamic` | **M2 substrate.** `ProcSelfStatusInode` synthesises body from `current()` at read time — Name (task.name), Tgid/Pid (tid), PPid (parent_tid), State R, uids/gids 0, Threads 1. bash + libc parse this. Foundation for /proc/self/cmdline, /maps. |
+| #309 | `P3-73-proc-self-cmdline` | **M2 substrate.** `ProcSelfCmdlineInode` (NUL-separated argv from task.name) + `ProcSelfStatInode` (52-field stat line: pid, comm, R, ppid, zeros). |
+| #310 | `P3-74-proc-self-maps` | **M2 substrate.** `ProcSelfMapsInode` walks `current().mm.snapshot_vmas()` and emits Linux-format `<start>-<end> <perms> <off> 00:00 <ino> <path>` lines. New `AddressSpace::snapshot_vmas()` helper. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.

@@ -77,6 +77,10 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 304 | `P3-67-sigchld` | **M2** SIGCHLD posted to parent on Zombie via Weak<Task>. |
 | 305 | `P3-68-sigchld-default-ignore` | bugfix: SIGCHLD/SIGURG/SIGWINCH default ignore + execve first-byte fallback. |
 | 306 | `B12-line-cap-hotfix` | trim docs to fit 1000-line cap. |
+| 307 | `P3-69-state-changelog-m2` | docs. |
+| 308 | `P3-72-proc-self-dynamic` | **M2** `/proc/self/status` synthesises from current(). |
+| 309 | `P3-73-proc-self-cmdline` | **M2** `/proc/self/{cmdline,stat}`. |
+| 310 | `P3-74-proc-self-maps` | **M2** `/proc/self/maps` walks AS VMA tree. AddressSpace::snapshot_vmas(). |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
