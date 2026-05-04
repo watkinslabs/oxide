@@ -61,6 +61,14 @@ const SYSCALL_NR_SET_TID_ADDRESS: u64 = 218;
 const SYSCALL_NR_POLL: u64           = 7;
 const SYSCALL_NR_PPOLL: u64          = 271;
 const SYSCALL_NR_LSEEK: u64          = 8;
+const SYSCALL_NR_FUTEX: u64          = 202;
+const SYSCALL_NR_CLONE3: u64         = 435;
+const SYSCALL_NR_MPROTECT: u64       = 10;
+const SYSCALL_NR_MADVISE: u64        = 28;
+const SYSCALL_NR_PRLIMIT64: u64      = 302;
+const SYSCALL_NR_RT_SIGACTION: u64   = 13;
+const SYSCALL_NR_RT_SIGPROCMASK: u64 = 14;
+const SYSCALL_NR_SIGALTSTACK: u64    = 131;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -719,28 +727,19 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_exit(code)` — slot 60 per docs/15§2. The arch-neutral
-/// dispatch table has a stub that returns 0; this wrapper
-/// upgrades the behaviour to a real lifecycle exit per docs/13§5:
-/// mark the running task Zombie + reschedule. With state=Zombie
-/// the picker won't re-enqueue us, so `schedule()` falls through
-/// to idle (the boot anchor) — boot resumes at its prior
-/// `schedule()` callsite (in `elf_smoke::run_as_task`).
-///
-/// Stores the exit code in `Task.exit_status` per docs/13§5 so a
-/// future `wait4` / `waitid` can read it.
-///
-/// # SAFETY: caller is `oxide_syscall_dispatch` running on the
-/// user task's kernel stack with IRQs masked.
+/// `sys_exit(code)` per docs/15§2 + docs/13§5: mark running
+/// task Zombie + reschedule. State=Zombie ⇒ picker won't
+/// re-enqueue; schedule() falls through to idle (boot anchor)
+/// ⇒ boot resumes past its `schedule()` callsite. Exit code
+/// stashed in `Task.exit_status` for wait4 to read.
+/// # SAFETY: caller is dispatch on the task's kernel stack, IRQs masked.
 /// # C: O(log N) CFS pick + O(1) ctxsw
 fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use alloc::sync::Arc;
     let _ = args;
-    // No runqueue installed (e.g. arm's direct drop_to_el0 path
-    // before P2-13e completes): nothing to Zombie or schedule
-    // away. Return 0 so the user falls through to its own halt
-    // landmark (ud2 / brk). Pre-P2-22 behavior preserved.
+    // No runqueue (arm direct drop_to_el0 pre-P2-13e): nothing
+    // to Zombie. Pre-P2-22 fallthrough behavior.
     if crate::sched::global().is_none() {
         return 0;
     }
@@ -968,6 +967,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_POLL          => crate::syscall_glue_fs::kernel_sys_poll(&args),
         SYSCALL_NR_PPOLL         => crate::syscall_glue_fs::kernel_sys_ppoll(&args),
         SYSCALL_NR_LSEEK         => crate::syscall_glue_fs::kernel_sys_lseek(&args),
+        SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
+        SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
+        SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
+        SYSCALL_NR_MADVISE       => crate::syscall_glue_proc::kernel_sys_madvise(&args),
+        SYSCALL_NR_PRLIMIT64     => crate::syscall_glue_proc::kernel_sys_prlimit64(&args),
+        SYSCALL_NR_RT_SIGACTION  => crate::syscall_glue_proc::kernel_sys_rt_sigaction(&args),
+        SYSCALL_NR_RT_SIGPROCMASK => crate::syscall_glue_proc::kernel_sys_rt_sigprocmask(&args),
+        SYSCALL_NR_SIGALTSTACK   => crate::syscall_glue_proc::kernel_sys_sigaltstack(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
