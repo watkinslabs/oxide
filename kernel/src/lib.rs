@@ -92,6 +92,8 @@ pub mod devfs;
 pub mod dev_pipe;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_misc;
+#[cfg(target_os = "oxide-kernel")]
+pub mod procfs;
 
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
@@ -439,6 +441,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Register `/dev/console` + `/dev/tty*` in the v1 devfs
         // registry per docs/19. `sys_open(2)` resolves through here.
         devfs::init();
+        // P3-17 procfs static-file entries.
+        procfs::init();
         // P3-16 boot-time smoke for the misc char devices.
         dev_misc::smoke_test();
     }
