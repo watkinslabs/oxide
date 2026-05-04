@@ -57,11 +57,16 @@ impl Inode for ConsoleInode {
             // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` will.
             unsafe { crate::sched::schedule(); }
         }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = buf;
-            // arm: PL011 ringbuffer + RX IRQ wiring rides P2-30c.
-            Err(VfsError::Enosys)
+        #[cfg(target_arch = "aarch64")]
+        loop {
+            if let Some(b) = crate::tty::try_read() {
+                buf[0] = b;
+                return Ok(1);
+            }
+            // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
+            unsafe { crate::tty::park_current_for_tty(); }
+            // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` will.
+            unsafe { crate::sched::schedule(); }
         }
     }
 

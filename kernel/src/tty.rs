@@ -17,7 +17,7 @@
 // Single-CPU UP. Per-CPU partitioning + a real RX-IRQ rewrite
 // rides full TTY support per docs/28.
 
-#![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -70,6 +70,7 @@ static WAITERS: Spinlock<Vec<Arc<Task>>, TtyClass> = Spinlock::new(Vec::new());
 /// `tick_poll_uart` (timer ISR ctx) and `kernel_sys_read`
 /// (process ctx).
 /// # SAFETY: privileged port I/O legal at CPL=0.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 unsafe fn uart_inb(port: u16) -> u8 {
     let v: u8;
@@ -96,6 +97,7 @@ unsafe fn uart_inb(port: u16) -> u8 {
 /// COM1 port range.
 /// # C: O(W) waiter wake — bounded by the small set of tasks
 /// blocked on stdin
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn tick_poll_uart() {
     // SAFETY: per fn contract — privileged port I/O.
     let lsr = unsafe { uart_inb(0x3FD) };
@@ -104,16 +106,42 @@ pub unsafe fn tick_poll_uart() {
     }
     // SAFETY: per fn contract — privileged port I/O at CPL=0; LSR.DR was just observed set so RBR has a byte.
     let b = unsafe { uart_inb(0x3F8) };
-    let pushed = RX_BUF.lock().push(b);
-    if !pushed {
-        // Ringbuffer full — drop the byte. v1 doesn't surface
-        // overrun; a real impl would return -EIO via the next
-        // `sys_read` and clear an overrun flag.
-        return;
+    push_and_wake(b);
+}
+
+/// PL011 RX poll for arm timer-tick context. Reads `FR.RXFE` to
+/// check for pending bytes; on each available byte pulls from
+/// `DR` and feeds the same `RX_BUF` + WAITERS path as x86.
+///
+/// # SAFETY: caller is the timer IRQ dispatcher running with
+/// IRQs masked; single-CPU UP. Reads through the published
+/// PL011_BASE_VA Device-attr mapping.
+/// # C: O(N_bytes_drained × W_waiters)
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn tick_poll_uart() {
+    const PL011_DR: u64 = 0x00;
+    const PL011_FR: u64 = 0x18;
+    const FR_RXFE:  u32 = 1 << 4;
+    let va = crate::pl011::base_va();
+    if va == 0 { return; }
+    // Drain up to 16 bytes per tick (one full PL011 RX FIFO).
+    let mut n = 0;
+    while n < 16 {
+        // SAFETY: va is a published Device-nGnRnE 4 KiB mapping over the PL011 register page; FR/DR offsets sit inside it.
+        let fr = unsafe { core::ptr::read_volatile((va + PL011_FR) as *const u32) };
+        if (fr & FR_RXFE) != 0 { break; }
+        // SAFETY: same Device mapping; DR low byte is the received byte.
+        let b = unsafe { core::ptr::read_volatile((va + PL011_DR) as *const u32) } as u8;
+        push_and_wake(b);
+        n += 1;
     }
-    // Wake every waiter. We don't know which task wants this
-    // specific byte (no fd-keyed wait queue yet); each waiter
-    // re-tries `sys_read` on resume.
+}
+
+/// Push `b` to the ringbuffer + wake all WAITERS. Shared between
+/// the per-arch tick poll thunks.
+fn push_and_wake(b: u8) {
+    let pushed = RX_BUF.lock().push(b);
+    if !pushed { return; }
     let mut waiters = WAITERS.lock();
     if waiters.is_empty() { return; }
     let rq = match crate::sched::global() {
@@ -123,8 +151,6 @@ pub unsafe fn tick_poll_uart() {
     let mut inner = rq.inner.lock();
     while let Some(task) = waiters.pop() {
         task.set_state(TaskState::Runnable);
-        // Lift vruntime to current min so the woken task enters
-        // CFS at a fair position per `13§5` invariant 5.
         task.lift_vruntime(inner.cfs.min_vruntime());
         inner.enqueue(task);
     }
