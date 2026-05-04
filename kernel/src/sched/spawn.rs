@@ -123,6 +123,7 @@ pub unsafe fn spawn_kernel_thread(
 
     // 4. Wrap, enqueue, return.
     let arc = Arc::new(task);
+    super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
         inner.enqueue(Arc::clone(&arc));
@@ -176,6 +177,7 @@ pub unsafe fn spawn_user_thread(
     }
 
     let arc = Arc::new(task);
+    super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
         inner.enqueue(Arc::clone(&arc));
