@@ -1,6 +1,46 @@
-# State 2026-05-03 (session 22g EOD — fd_table + /dev/console)
+# State 2026-05-03 (session 23 EOD — autonomous Phase 3 batch + B09 ABI fix)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
+
+## Session 23 highlights (PRs #234–#241)
+
+User authorised an autonomous overnight run ("continue working until all of this is complete through phase 3 work autonomously, no hacks, follow specs"). 8 PRs merged:
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 234 | `P3-03-syscall-batch` | fstat/ioctl(TIOCGWINSZ,TCGETS)/getcwd/chdir/fchdir/kill/tgkill in `kernel/src/syscall_glue_fs.rs`. Self-kill routes via kernel_sys_exit so libc abort()/raise() exits cleanly. |
+| 235 | `P2-21c-execve-auxv` | SysV initial stack at execve in `kernel/src/exec_stack.rs`. ParsedElf gains phoff/phentsize/phnum, LoadedImage gains phdr_va. Auxv carries AT_PHDR/PHENT/PHNUM/PAGESZ/ENTRY/RANDOM/PLATFORM/EXECFN — needed for static-PIE musl `_start`. |
+| 236 | `P3-04-dev-null-zero-random` | `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` in `kernel/src/dev_misc.rs`. LCG-backed random (NOT cryptographic; placeholder until docs/26). |
+| 237 | `P3-05-getrandom` | slot 318 → dev_misc LCG. |
+| 238 | `P3-06-sched-yield-glue` | slot 24 → real `crate::sched::tick_yield`. |
+| 239 | **`B09-syscall-preserve-argregs`** | **MAJOR ABI BUG** — x86 syscall asm was popping (and discarding) user's rdi/rsi/rdx/r10/r8/r9. Linux ABI preserves these. Concrete failure: ECHO's sys_write after sys_read had garbage args (buf=0x30 len=1016) and hung. Fix: `mov [rsp+N]` load without consuming, restore from same slots after dispatch returns. Without this, ANY user code reusing arg regs across syscalls breaks (musl libc routinely does). |
+| 240 | `P3-02b-init-echo-iter` | Init blob 2→3 iters: yo, hi, ECHO. End-to-end fd_table → ConsoleInode → tty validated; 'A' is `tty::inject_for_smoke`'d at boot, ECHO reads it from fd 0 and writes back to fd 1. |
+| 241 | `P3-07-writev-readv-glue` | slots 19/20 fd_table-routed (was UART-only). musl/glibc stdio uses writev for line-buffered printf — without binding stdio breaks for any non-stdout fd. |
+
+Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
+
+## Notable bug fix detail — B09 ABI preserve
+
+```text
+; OLD: pops consumed user arg regs:
+push rdi rsi rdx r10 r8 r9 + rip rflags rsp + nr (10 pushes)
+pop  rdi rsi rdx rcx r8 r9 r10 (7 pops shuffle into SysV args)
+call dispatch
+pop  rcx r11 rsp ; sysretq
+
+; NEW: arg regs read in place, restored after dispatch:
+push (same 10)
+mov rdi,[rsp+0x00] ; nr
+mov rsi,[rsp+0x08] ; a0
+... (load args via mov, slots stay)
+call dispatch
+mov rdi,[rsp+0x08] ; restore user rdi
+... (restore 6 arg regs from same slots)
+add rsp, 0x38      ; discard 7 saved-arg slots
+pop rcx r11 rsp ; sysretq
+```
+
+Stack alignment math: 10 pushes from a 16-aligned base = K-0x50 (still 16-aligned), so `call` lands callee with the canonical SysV alignment. No extra `sub rsp, 8` needed.
 
 ## Phase
 
