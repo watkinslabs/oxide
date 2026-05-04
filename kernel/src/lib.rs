@@ -86,6 +86,11 @@ pub mod dev_console;
 #[cfg(target_os = "oxide-kernel")]
 pub mod devfs;
 
+/// Anonymous pipe per docs/16 + docs/24. PipeInode + sys_pipe2
+/// glue for the canonical `cmd1 | cmd2` shell IPC pattern.
+#[cfg(target_os = "oxide-kernel")]
+pub mod dev_pipe;
+
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
