@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #278) — 2026-05-04
+## Session 23 (PRs #234 – #281) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -539,6 +539,9 @@ End-of-session-22 verified-green (final, post-22g):
 | #276 | `P3-37-net-stubs` | Slots 41-55 + 288. socket/bind/listen/accept(4)/connect/sendto/recvfrom/sendmsg/recvmsg/shutdown/getsockname/getpeername/socketpair/setsockopt/getsockopt all return -ENOSYS until docs/25 net stack lands. |
 | #277 | `P3-38-state-changelog` | docs catch-up through #276. |
 | #278 | `P3-39-fchmod-fchown-stub` | **Refactor + coverage**: new `kernel/src/syscall_nrs.rs` holds the full Linux x86_64 syscall number table (NR_READ=0 through NR_CACHESTAT=451 + io_uring/landlock/etc). `syscall_glue.rs` drops 147 inline const declarations; references `crate::syscall_nrs::NR_*`. Plus chmod/fchmod/chown/fchown/lchown/utime/utimes/utimensat → 0 (silent accept on RO devfs); link/symlink/mknod variants → -EROFS; statfs/fstatfs writes minimal 120-byte struct. syscall_glue.rs ~1030 → 883 lines. Per user feedback: "why don't we just ADD all of the syscall numbers ... they aren't going to change." |
+| #279 | `P3-40-state-changelog-update` | docs catch-up through #278. |
+| #280 | `P3-41-epoll-stubs` | Explicit -ENOSYS for substrates we don't have yet so libraries probing for them fall through to supported alternatives: epoll family (NR_EPOLL_*), inotify (NR_INOTIFY_*), signalfd/timerfd/userfaultfd, libaio (NR_IO_*) + io_uring (NR_IO_URING_*), perf/bpf/seccomp/landlock, unshare/setns/pivot_root. |
+| #281 | `P3-42-tkill-tgkill-real` | Slots 15/127/130/200. tkill self-target routes to sys_kill (sets sigpending bit). rt_sigpending writes current.sigpending. rt_sigsuspend swaps the mask + returns -EINTR (dispatch tail's take_lowest_pending handles delivery). rt_sigreturn returns 0 (no signal frame yet). rt_sigtimedwait/rt_sigqueueinfo/rt_tgsigqueueinfo → -ENOSYS. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
