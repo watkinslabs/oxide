@@ -191,18 +191,59 @@ pub unsafe fn run() -> ! {
         halt_forever();
     }
 
-    // Drop to EL0. eret's instruction-fetch at `entry` faults via
-    // VBAR_EL1+0x400 (sync from lower EL); user_as_fault_handler
-    // resolves the fault from the KernelBytes VMA. User runs the
-    // write+exit+brk sequence; brk landmark logs success.
-    // SAFETY: VBAR_EL1 + TTBR0/TTBR1 + SVC dispatch initialised; entry & stack VMAs registered above; EL1; DAIF.I masked.
-    unsafe {
-        crate::userspace_smoke_arm::drop_to_el0(
+    // Spawn the loaded ELF as a user `Task` (mirrors x86 P2-13c).
+    // schedule() switches into it via the IRQ-tail eret epilogue
+    // using the synthetic frame from `new_user_with_irq_frame`.
+    if !crate::sched::runqueue_active() {
+        // SAFETY: boot path; allocator up; no concurrent runqueue users.
+        unsafe { crate::sched::install_default_runqueue(); }
+    }
+
+    // SAFETY: handler 'static; pre-init swap.
+    unsafe { hal_aarch64::install_fault_handler(elf_smoke_fault_handler); }
+
+    let mm = match crate::user_as::clone_global_arc() {
+        Some(a) => a,
+        None    => { debug_irq! { klog::kerror!("elf-smoke-arm: AS clone failed"); } halt_forever(); }
+    };
+    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
+    let task = match unsafe {
+        crate::sched::spawn_user_thread(
+            0xC0DE_0001, "elf-user-arm",
             img.entry.as_u64(),
             USER_STACK_TOP,
-            elf_smoke_fault_handler,
-        );
+            mm,
+        )
+    } {
+        Ok(t)  => t,
+        Err(_) => { debug_irq! { klog::kerror!("elf-smoke-arm: spawn failed"); } halt_forever(); }
+    };
+    debug_irq! {
+        klog::write_raw(b"[INFO]  elf-smoke-arm: spawned tid=0xC0DE0001 entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b" sp=");
+        klog::write_hex_u64(USER_STACK_TOP);
+        klog::write_raw(b"\n");
     }
+
+    // arm doesn't yet install /dev/console fd_table — sys_write
+    // falls through to the in-table arch-neutral handler which
+    // writes fd 1/2 to UART via klog. fd_table-mediated I/O on
+    // arm rides P2-30c (when arm tty.rs gets a PL011 driver).
+    let _task = task;
+
+    // Open DAIF.I so the timer + future RX IRQs can fire.
+    // SAFETY: opening DAIF.I lets GIC deliver IRQs.
+    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
+    // SAFETY: process ctx, runqueue installed, preempt-off; idle is the boot anchor.
+    unsafe { crate::sched::schedule(); }
+    // SAFETY: msr daifset re-masks DAIF.I after schedule returns to boot — matches the post-smoke discipline used elsewhere in the boot path.
+    unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
+
+    debug_irq! {
+        klog::kinfo!("elf-smoke-arm: user task exited cleanly, boot resumed");
+    }
+    halt_forever();
 }
 
 fn halt_forever() -> ! {
