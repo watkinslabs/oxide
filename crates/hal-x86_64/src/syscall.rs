@@ -110,38 +110,47 @@ core::arch::global_asm!(
     //   [rsp+0x38] rcx (user RIP)         ← reloaded into rcx pre-sysretq
     //   [rsp+0x40] r11 (user RFLAGS)      ← reloaded into r11 pre-sysretq
     //   [rsp+0x48] r12 (user RSP)         ← reloaded into rsp pre-sysretq
-    "    push r12",                                    // user RSP
-    "    push r11",                                    // user RFLAGS
-    "    push rcx",                                    // user RIP
-    "    push r9",                                     // a5
-    "    push r8",                                     // a4
-    "    push r10",                                    // a3
-    "    push rdx",                                    // a2
-    "    push rsi",                                    // a1
-    "    push rdi",                                    // a0
-    "    push rax",                                    // nr
-    // Pop into SysV arg-reg order for oxide_syscall_dispatch(nr,
-    // a0..a4) returning u64 retval in rax.
-    "    pop  rdi",                                    // nr
-    "    pop  rsi",                                    // a0
-    "    pop  rdx",                                    // a1
-    "    pop  rcx",                                    // a2
-    "    pop  r8",                                     // a3
-    "    pop  r9",                                     // a4
-    "    pop  r10",                                    // a5 (discarded; r10 reused below)
-    // After 7 pops, rsp is at the 3-quadword tail (RIP / RFLAGS /
-    // RSP) on the current task's per-task syscall stack
-    // (`oxide_current_kstack` updated by schedule per `13§5`).
-    // SysV requires rsp 16-aligned at `call`; current offset is
-    // -24 mod 16 = 8 → subtract 8 to align.
-    "    sub  rsp, 8",
+    "    push r12",                                    // [rsp+0x48] user RSP
+    "    push r11",                                    // [rsp+0x40] user RFLAGS
+    "    push rcx",                                    // [rsp+0x38] user RIP
+    "    push r9",                                     // [rsp+0x30] a5
+    "    push r8",                                     // [rsp+0x28] a4
+    "    push r10",                                    // [rsp+0x20] a3
+    "    push rdx",                                    // [rsp+0x18] a2
+    "    push rsi",                                    // [rsp+0x10] a1
+    "    push rdi",                                    // [rsp+0x08] a0
+    "    push rax",                                    // [rsp+0x00] nr
+    // Move SysV-arg regs into target order WITHOUT consuming the
+    // saved-arg slots. Linux x86_64 syscall ABI preserves user's
+    // rdi/rsi/rdx/r10/r8/r9 across syscalls (only rax/rcx/r11 are
+    // clobbered) — we restore them from the on-stack copies after
+    // dispatch returns. Per docs/15§1.3.
+    "    mov  rdi, [rsp + 0x00]",                      // nr
+    "    mov  rsi, [rsp + 0x08]",                      // a0
+    "    mov  rdx, [rsp + 0x10]",                      // a1
+    "    mov  rcx, [rsp + 0x18]",                      // a2
+    "    mov  r8,  [rsp + 0x20]",                      // a3
+    "    mov  r9,  [rsp + 0x28]",                      // a4
+    // SysV requires rsp 16-aligned at `call`. After 10 pushes
+    // from a 16-aligned base rsp = K - 0x50 (still 16-aligned, since
+    // 0x50 = 5*16) — call pushes 8 putting it at the canonical 8
+    // mod 16 inside the callee. No extra alignment needed.
     "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
-    "    add  rsp, 8",                                 // undo align
+    // Restore user-side rdi/rsi/rdx/r10/r8/r9 from the saved
+    // copies (Linux ABI preserve rule). rax holds the syscall
+    // return value from dispatch — leave it.
+    "    mov  rdi, [rsp + 0x08]",
+    "    mov  rsi, [rsp + 0x10]",
+    "    mov  rdx, [rsp + 0x18]",
+    "    mov  r10, [rsp + 0x20]",
+    "    mov  r8,  [rsp + 0x28]",
+    "    mov  r9,  [rsp + 0x30]",
+    // Discard the 7 saved-arg slots (nr + a0..a5).
+    "    add  rsp, 0x38",
     // Restore user state from the per-task syscall-stack tail.
-    // For normal syscalls the values are exactly the captured
-    // user RIP/RFLAGS/RSP from entry; `execve` (P2-21) modifies
-    // them in-place via `current_user_frame()` so sysretq lands
-    // the user at the new program entry.
+    // `execve` (P2-21) modifies these in-place via
+    // `current_user_frame()` so sysretq lands the user at the new
+    // program entry.
     "    pop  rcx",                                    // user RIP
     "    pop  r11",                                    // user RFLAGS
     "    pop  rsp",                                    // user RSP (last write per sysretq spec)
@@ -170,14 +179,15 @@ extern "C" {
 ///
 /// # SAFETY: caller is `oxide_syscall_dispatch` running on the
 /// active task's per-task kernel stack; the syscall asm has
-/// already executed its 7 pops and the `sub rsp, 8` align before
-/// calling dispatch, so this layout is current. Single-CPU UP
+/// already pushed the user RIP/RFLAGS/RSP triple at top-24..top
+/// before calling dispatch (B09: arg regs are now mov'd, not
+/// popped, so the slot positions stay the same). Single-CPU UP
 /// v1 — per-CPU pointer once SMP lands.
 /// # C: O(1)
 pub fn current_user_frame() -> *mut [u64; 3] {
     let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
-    // Top of per-task syscall stack; the 3-quadword tail begins
-    // 24 B below top after the 10-pushes-then-7-pops sequence.
+    // 3-quadword tail (RIP, RFLAGS, RSP) begins 24 B below top —
+    // pushed in reverse order so layout is RIP@-24, RFLAGS@-16, RSP@-8.
     (top - 24) as *mut [u64; 3]
 }
 
