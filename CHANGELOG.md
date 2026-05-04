@@ -352,3 +352,44 @@ End-of-session-18 verified-green:
 - `make build` + `make build-debug` both arches green.
 - `make qemu-x86 --features debug-all` + `make qemu-arm --features debug-all` — preempt + canary + mmuops smokes pass; ticks unchanged from session 17; both reach `boot: kernel ready, halting`.
 - `make qemu-mcp` lists all 13 tools.
+
+
+---
+
+## Session 23 (PRs #234 – #261) — 2026-05-04
+
+**Subject**: User-authorised autonomous Phase 3 batch. 28 PRs in one run, focused on libc-startup syscall coverage + the path to a real shell.
+
+**Major bug fixes:**
+- **#239 B09** — x86 syscall asm was discarding user's rdi/rsi/rdx/r10/r8/r9 across syscalls. Linux ABI preserves them; only rax/rcx/r11 are clobbered. ECHO blob's sys_write after sys_read had garbage args (buf=0x30, len=1016) and hung. Fix: load arg regs via `mov [rsp+N]` without consuming the slots, restore from same slots after dispatch returns. Without this fix, ANY user code reusing arg regs across syscalls breaks (musl libc routinely does).
+- **#252 B10** — sys_write validated buf alone but not buf+cnt; matches the P3-11 overflow check now in sys_read.
+
+**Userspace infrastructure:**
+- **#235 P2-21c** — SysV initial stack at execve. ParsedElf gains phoff/phentsize/phnum, LoadedImage gains phdr_va. argc/argv*/NULL/envp*/NULL/auxv*/AT_NULL written at the top of the user stack VMA. Auxv carries AT_PHDR/PHENT/PHNUM/PAGESZ/ENTRY/RANDOM/PLATFORM/EXECFN/UID/GID/etc — needed for static-PIE musl _start. v1 passes empty argv/envp.
+- **#236 P3-04** — /dev/null, /dev/zero, /dev/full, /dev/random, /dev/urandom in dev_misc.rs. LCG-backed random (NOT cryptographic).
+- **#240 P3-02b** — init blob extended 2→3 iters, validates ECHO end-to-end.
+- **#254 P3-17** — Procfs skeleton via StaticFileInode: /proc/{version,cpuinfo,meminfo,uptime,loadavg,stat,filesystems,mounts,self/maps,self/status} registered into devfs.
+- **#256 P3-19** — Static /sys/kernel/random/{uuid,boot_id,entropy_avail}, /sys/devices/system/cpu/{online,possible}, /etc/{os-release,machine-id}.
+- **#257 P3-20** — Hand-rolled CAT blob: open("/proc/version") + read(64) + write(fd=1) + close + exit. Init blob extended 3→4 iters. Boot trace ends with `oxide 0.1.0-pre #1 SMP PREEMPT` deterministically — full sys_open + procfs StaticFileInode + multi-byte sys_read + sys_write + sys_close validated end-to-end.
+- **#260 P3-23** — PL011 RX on arm. tty.rs is now cross-arch; arm tick_poll_uart drains PL011 RX FIFO; arm ConsoleInode::read uses WAITERS+schedule pattern. arm stdin reaches x86 parity.
+
+**Signal subsystem foundation:**
+- **#258 P3-21** — Task gains sigpending+sigmask AtomicU64. sys_kill sets the bit, oxide_syscall_dispatch tail delivers (terminates with status 128+sig). No sa_handler dispatch yet.
+- **#259 P3-22** — Real rt_sigprocmask: SIG_BLOCK/UNBLOCK/SETMASK update current.sigmask; SIGKILL+SIGSTOP unmaskable.
+
+**Syscall coverage (24 new + improved):**
+fstat/ioctl(TIOCGWINSZ,TCGETS)/getcwd/chdir/fchdir/kill/tgkill (#234), sys_brk (#231 prior), pipe2 (#232 prior), getrandom (#237), sched_yield via tick_yield (#238), gettid+set_tid_address real (#243), nanosleep+clock_nanosleep busy-wait (#248), readlink+readlinkat /proc/self/exe (#249), statx+rseq+membarrier (#250), real fcntl F_DUPFD/F_GETFL etc (#251), sys_read multi-byte uncapped (#247), futex/clone3/mprotect/madvise/prlimit64/rt_sigaction/sigaltstack stubs (#246), writev/readv via fd_table (#241), poll/ppoll/lseek (#245), getrlimit/setrlimit/getrusage/times/sysinfo (#261).
+
+**Splits per docs/08§7 cap (1000 lines):**
+- `kernel/src/syscall_glue_fs.rs` (P3-03) for fs-shaped syscalls.
+- `kernel/src/syscall_glue_proc.rs` (P3-08) for process-shaped syscalls.
+- `kernel/src/dev_misc.rs` (P3-04), `kernel/src/procfs.rs` (P3-17), `kernel/src/exec_stack.rs` (P2-21c).
+
+**State at session-23 EOD:**
+- Boot trace x86: `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically.
+- 524 hosted tests, 0 failed.
+- spec-lint clean.
+- Both arches build clean.
+- dev-misc-smoke + procfs-smoke validate boot-time infra.
+- arm boots through to elf-smoke + user task per P2-13e (no parity gap).
+
