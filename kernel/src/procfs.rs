@@ -103,10 +103,9 @@ fn push_hex(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     while i > 0 { i -= 1; v.push(buf[i]); }
 }
 
-/// `/proc/self/cmdline` per `19§4`. v1: synthesises argv[0] from
-/// the task's `name` field (tracking real argv at execve rides
-/// the per-task argv-storage follow-up). NUL-separated argv,
-/// NUL-terminated.
+/// `/proc/self/cmdline` per `19§4`. Reads `Task.cmdline` snapshot
+/// (NUL-joined argv from the most recent execve). Falls back to
+/// `Task.name` + NUL when no execve has run yet.
 pub struct ProcSelfCmdlineInode;
 
 impl Inode for ProcSelfCmdlineInode {
@@ -116,9 +115,17 @@ impl Inode for ProcSelfCmdlineInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = alloc::vec::Vec::with_capacity(64);
-        let name = crate::sched::current().map(|c| c.name).unwrap_or("init");
-        push(&mut body, name.as_bytes());
-        body.push(0);
+        let cur = crate::sched::current();
+        // SAFETY: single-mutator per `13§5`; current task is the sole
+        // writer to its own cmdline slot, and we are it on this CPU.
+        let snapshot = cur.and_then(|c| unsafe { (*c.cmdline.get()).clone() });
+        if let Some(s) = snapshot {
+            push(&mut body, s.as_bytes());
+        } else {
+            let name = cur.map(|c| c.name).unwrap_or("init");
+            push(&mut body, name.as_bytes());
+            body.push(0);
+        }
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
         let avail = &body[off..];
