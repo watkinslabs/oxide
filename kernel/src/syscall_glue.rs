@@ -594,7 +594,11 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     frame[2] = new_sp;
 
     debug_sched! {
-        klog::write_raw(b"[INFO]  sys_execve: new entry=");
+        klog::write_raw(b"[INFO]  sys_execve: argc=");
+        klog::write_dec_u64(argc as u64);
+        klog::write_raw(b" envc=");
+        klog::write_dec_u64(envc as u64);
+        klog::write_raw(b" entry=");
         klog::write_hex_u64(img.entry.as_u64());
         klog::write_raw(b" sp=");
         klog::write_hex_u64(new_sp);
