@@ -102,9 +102,12 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
     // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
     let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
     let cur_rsp = frame[2];
-    // The handler did `ret` to restorer, so rsp is now AT restorer
-    // (sp+32). The frame magic is at sp = rsp - 32.
-    let frame_base = cur_rsp.saturating_sub(32);
+    // Handler entered with rsp=sp+32 (pointing at restorer addr).
+    // Handler `ret` popped restorer (rsp=sp+40, jumped to restorer).
+    // sa_restorer issues `mov rax, 15; syscall` — at syscall the
+    // user rsp is sp+40. Our magic is at sp+0, so frame_base =
+    // cur_rsp - 40.
+    let frame_base = cur_rsp.saturating_sub(40);
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
     }
