@@ -307,7 +307,14 @@ pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     let inode = match crate::devfs::lookup(s) {
-        Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
+        Some(i) => i,
+        None => match crate::procfs::lookup_dynamic(s) {
+            Some(i) => i,
+            None => match crate::tmpfs::lookup(s) {
+                Some(i) => i,
+                None => return -(Errno::Enoent.as_i32() as i64),
+            },
+        },
     };
     let (mode_type, rdev): (u32, u64) = match inode.file_type() {
         vfs::FileType::CharDev   => (0o020000, 0x0103),
@@ -378,7 +385,14 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
         Ok(s)  => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     let inode = match crate::devfs::lookup(s) {
-        Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
+        Some(i) => i,
+        None => match crate::procfs::lookup_dynamic(s) {
+            Some(i) => i,
+            None => match crate::tmpfs::lookup(s) {
+                Some(i) => i,
+                None => return -(Errno::Enoent.as_i32() as i64),
+            },
+        },
     };
     let cur = match crate::sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),

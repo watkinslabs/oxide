@@ -234,6 +234,209 @@ const STAT_BODY:    &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
 const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
 const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
 
+/// `/proc` root directory inode. readdir emits live tids (decimal
+/// names) plus `self`. lookup parses tids and returns a per-pid dir.
+pub struct ProcRootInode;
+
+impl Inode for ProcRootInode {
+    fn ino(&self) -> Ino { 0x3000_0001 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        if name == "self" {
+            // /proc/self resolves via existing devfs entries; the dir
+            // marker itself is synthetic — return a directory inode.
+            return Ok(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef);
+        }
+        match name.parse::<u32>() {
+            Ok(tid) if crate::sched::registry::lookup(tid).is_some() =>
+                Ok(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef),
+            _ => Err(VfsError::Enoent),
+        }
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        let mut idx = off as usize;
+        let tids = crate::sched::registry::live_tids();
+        let total = tids.len() + 1; // +1 for "self"
+        while idx < total {
+            let next = idx as u64 + 1;
+            if idx == 0 {
+                if !f(next, "self", FileType::Directory) { return Ok(next); }
+            } else {
+                let tid = tids[idx - 1];
+                let mut buf = [0u8; 11];
+                let mut n = 0; let mut t = tid;
+                if t == 0 { buf[0] = b'0'; n = 1; }
+                else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
+                buf[..n].reverse();
+                let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
+                if !f(next, s, FileType::Directory) { return Ok(next); }
+            }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+/// Per-pid `/proc/<tid>` directory. Synthesises status/cmdline/stat/maps.
+pub struct ProcPidDirInode { pub tid: u32, pub is_self: bool }
+
+impl Inode for ProcPidDirInode {
+    fn ino(&self) -> Ino { 0x3000_0100 | self.tid as Ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        if self.is_self {
+            // Delegate to existing /proc/self/<name> entries.
+            let mut p = alloc::string::String::with_capacity(11 + name.len());
+            p.push_str("/proc/self/");
+            p.push_str(name);
+            return crate::devfs::lookup(&p).ok_or(VfsError::Enoent);
+        }
+        match name {
+            "status"  => Ok(Arc::new(ProcPidStatusInode  { tid: self.tid }) as InodeRef),
+            "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
+            "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
+            "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
+            _         => Err(VfsError::Enoent),
+        }
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps"];
+        let mut idx = off as usize;
+        while idx < ENTRIES.len() {
+            let next = idx as u64 + 1;
+            if !f(next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+/// Per-pid status. Body mirrors `ProcSelfStatusInode` but resolves
+/// the target via `sched::registry::lookup(tid)`.
+pub struct ProcPidStatusInode { pub tid: u32 }
+pub struct ProcPidCmdlineInode { pub tid: u32 }
+pub struct ProcPidStatInode { pub tid: u32 }
+pub struct ProcPidMapsInode { pub tid: u32 }
+
+fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
+    use core::sync::atomic::Ordering;
+    let mut out = alloc::vec::Vec::with_capacity(256);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
+    push(&mut out, b"Name:\t"); push(&mut out, task.name.as_bytes()); push(&mut out, b"\n");
+    push(&mut out, b"State:\tR (running)\n");
+    push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid as u64); push(&mut out, b"\n");
+    push(&mut out, b"Pid:\t");  push_u64(&mut out, tid as u64); push(&mut out, b"\n");
+    push(&mut out, b"PPid:\t"); push_u64(&mut out, ppid); push(&mut out, b"\n");
+    push(&mut out, b"Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nThreads:\t1\n");
+    out
+}
+
+fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(64);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    // SAFETY: snapshot of cmdline slot; written only by the task itself per `13§5`.
+    let snap = unsafe { (*task.cmdline.get()).clone() };
+    if let Some(s) = snap { push(&mut out, s.as_bytes()); }
+    else { push(&mut out, task.name.as_bytes()); out.push(0); }
+    out
+}
+
+fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
+    use core::sync::atomic::Ordering;
+    let mut out = alloc::vec::Vec::with_capacity(192);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
+    push_u64(&mut out, tid as u64);
+    push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") R ");
+    push_u64(&mut out, ppid);
+    for _ in 0..48 { push(&mut out, b" 0"); }
+    out.push(b'\n');
+    out
+}
+
+fn pid_maps_body(tid: u32) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(1024);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    // SAFETY: mm slot read-only borrow; single-mutator per `13§5`.
+    let mm = match unsafe { (*task.mm.get()).as_ref() } { Some(m) => m.clone(), None => return out };
+    for vma in mm.snapshot_vmas() {
+        push_hex(&mut out, vma.start.as_u64());
+        out.push(b'-');
+        push_hex(&mut out, vma.end.as_u64());
+        out.push(b' ');
+        let p = vma.prot;
+        out.push(if p.contains(vmm::VmaProt::READ)  { b'r' } else { b'-' });
+        out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
+        out.push(if p.contains(vmm::VmaProt::EXEC)  { b'x' } else { b'-' });
+        out.push(b'p');
+        push(&mut out, b" 00000000 00:00 0 \n");
+    }
+    out
+}
+
+macro_rules! pid_inode_impl {
+    ($t:ident, $body:ident, $ino:expr) => {
+        impl Inode for $t {
+            fn ino(&self) -> Ino { $ino | self.tid as Ino }
+            fn file_type(&self) -> FileType { FileType::Regular }
+            fn size(&self) -> u64 { 0 }
+            fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+            fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+                let body = $body(self.tid);
+                let off = off as usize;
+                if off >= body.len() { return Ok(0); }
+                let n = (body.len() - off).min(buf.len());
+                buf[..n].copy_from_slice(&body[off..off + n]);
+                Ok(n)
+            }
+            fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+        }
+    };
+}
+
+pid_inode_impl!(ProcPidStatusInode,  pid_status_body,  0x3000_2000);
+pid_inode_impl!(ProcPidCmdlineInode, pid_cmdline_body, 0x3000_2100);
+pid_inode_impl!(ProcPidStatInode,    pid_stat_body,    0x3000_2200);
+pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
+
+/// Resolve dynamic `/proc/<tid>[/<file>]` paths. Returns `None` for
+/// non-procfs paths; callers fall back to the static devfs registry.
+/// # C: O(N_tasks)
+pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
+    let rest = path.strip_prefix("/proc/")?;
+    if rest.is_empty() { return None; }
+    let mut parts = rest.splitn(2, '/');
+    let head = parts.next()?;
+    let tail = parts.next();
+    if head == "self" {
+        return match tail {
+            None => Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
+            Some(_) => None, // /proc/self/<file> already in devfs
+        };
+    }
+    let tid: u32 = head.parse().ok()?;
+    if crate::sched::registry::lookup(tid).is_none() { return None; }
+    match tail {
+        None             => Some(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef),
+        Some("status")   => Some(Arc::new(ProcPidStatusInode  { tid }) as InodeRef),
+        Some("cmdline")  => Some(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
+        Some("stat")     => Some(Arc::new(ProcPidStatInode    { tid }) as InodeRef),
+        Some("maps")     => Some(Arc::new(ProcPidMapsInode    { tid }) as InodeRef),
+        _ => None,
+    }
+}
+
 /// Register the v1 procfs entries into devfs.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
@@ -246,6 +449,8 @@ pub fn init() {
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
+    // /proc root inode for getdents64 enumeration of live tids.
+    crate::devfs::register("/proc",              Arc::new(ProcRootInode)        as InodeRef);
     crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
     crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
