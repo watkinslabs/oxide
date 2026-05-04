@@ -38,6 +38,10 @@ const SYSCALL_NR_GETPID: u64         = 39;
 const SYSCALL_NR_GETPPID: u64        = 110;
 const SYSCALL_NR_READ: u64           = 0;
 const SYSCALL_NR_WRITE: u64          = 1;
+const SYSCALL_NR_CLOSE: u64          = 3;
+const SYSCALL_NR_DUP: u64            = 32;
+const SYSCALL_NR_DUP2: u64           = 33;
+const SYSCALL_NR_DUP3: u64           = 292;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -170,6 +174,90 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     };
     match file.write(user_buf) {
         Ok(n)  => n as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_close(fd)` — slot 3 per docs/15§5. Removes the entry
+/// from the current task's fd table; subsequent operations on
+/// `fd` return `-EBADF`.
+fn kernel_sys_close(args: &SyscallArgs) -> i64 {
+    let fd = args.a0 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.close(fd) {
+        Ok(())  => 0,
+        Err(e)  => -(e as i64),
+    }
+}
+
+/// `sys_dup(oldfd)` — slot 32 per docs/15§5. Allocates the
+/// lowest free fd pointing at the same `File` as `oldfd`.
+fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
+    let oldfd = args.a0 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.dup(oldfd) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_dup2(oldfd, newfd)` — slot 33 per docs/15§5. Atomically
+/// closes `newfd` (if open) and installs a clone of `oldfd`
+/// at `newfd`. If `oldfd == newfd`, returns `newfd` unchanged.
+fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
+    let oldfd = args.a0 as i32;
+    let newfd = args.a1 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.dup2(oldfd, newfd) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_dup3(oldfd, newfd, flags)` — slot 292 per docs/15§5.
+/// Like `dup2` but rejects `oldfd == newfd` and accepts
+/// `O_CLOEXEC` (ignored in v1).
+fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
+    let oldfd = args.a0 as i32;
+    let newfd = args.a1 as i32;
+    if oldfd == newfd {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.dup2(oldfd, newfd) {
+        Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
 }
@@ -632,6 +720,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_READ          => kernel_sys_read(&args),
         SYSCALL_NR_WRITE         => kernel_sys_write(&args),
+        SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
+        SYSCALL_NR_DUP           => kernel_sys_dup(&args),
+        SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
+        SYSCALL_NR_DUP3          => kernel_sys_dup3(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
