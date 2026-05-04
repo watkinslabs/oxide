@@ -162,6 +162,51 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
+/// `sys_readlink(path, buf, bufsize)` — slot 89. v1 special-
+/// cases the paths libc commonly probes: `/proc/self/exe` →
+/// "/init"; `/proc/self/cwd` → "/". All other paths return
+/// -EINVAL so glibc falls through to its non-readlink fallback.
+/// Returns the byte count written (excluding NUL, per Linux).
+/// # C: O(1)
+pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
+    let path_ptr = args.a0;
+    let buf_ptr  = args.a1;
+    let bufsize  = args.a2;
+    if path_ptr == 0 || path_ptr >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf(buf_ptr, bufsize, 1) { return rv; }
+    // SAFETY: ptr in user range; user page mapped (caller already executed user code from this AS); bounded read.
+    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
+        Some(p) if !p.is_empty() => p,
+        _                        => return -(Errno::Einval.as_i32() as i64),
+    };
+    let target: &[u8] = match path {
+        b"/proc/self/exe"     => b"/init",
+        b"/proc/self/cwd"     => b"/",
+        b"/proc/self/root"    => b"/",
+        _                     => return -(Errno::Einval.as_i32() as i64),
+    };
+    let n = (target.len() as u64).min(bufsize) as usize;
+    // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
+    unsafe {
+        for i in 0..n {
+            core::ptr::write_volatile((buf_ptr + i as u64) as *mut u8, target[i]);
+        }
+    }
+    n as i64
+}
+
+/// `sys_readlinkat(dirfd, path, buf, bufsize)` — slot 267.
+/// v1 ignores `dirfd` (no real cwd resolution) and routes
+/// through `kernel_sys_readlink`.
+/// # C: O(1)
+pub fn kernel_sys_readlinkat(args: &SyscallArgs) -> i64 {
+    let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: args.a3, a3: 0, a4: 0, a5: 0 };
+    kernel_sys_readlink(&inner)
+}
+
 /// `sys_poll(fds, nfds, timeout)` — slot 7. v1 non-blocking:
 /// reports POLLIN|POLLOUT for CharDev fds (always ready in v1
 /// since ConsoleInode reads block at the syscall layer instead
