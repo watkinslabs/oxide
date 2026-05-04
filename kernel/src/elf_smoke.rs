@@ -310,7 +310,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
 
     // Spawn the user task on the runqueue.
     // SAFETY: runqueue installed by kernel_main earlier; mm matches active CR3.
-    let _task = match unsafe {
+    let task = match unsafe {
         crate::sched::spawn_user_thread(
             0xC0DE_0001, "elf-user",
             img.entry.as_u64(),
@@ -321,6 +321,12 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         Ok(t)  => t,
         Err(_) => { debug_irq! { klog::kerror!("elf-smoke: spawn failed"); } halt_forever(); }
     };
+
+    // Install init's fd table — fd 0/1/2 → /dev/console (P2-30a).
+    let fdt = crate::dev_console::init_console_fd_table();
+    // SAFETY: task isn't yet scheduled (we just spawned it); we are sole writer.
+    unsafe { task.replace_fd_table(Some(fdt)); }
+    let _task = task;
 
     debug_irq! {
         klog::write_raw(b"[INFO]  elf-smoke: spawned tid=0xC0DE0001 entry=");
