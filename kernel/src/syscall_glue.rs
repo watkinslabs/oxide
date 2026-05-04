@@ -258,12 +258,9 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(0)
 }
 
-/// `sys_fork()` — slot 57 per docs/15§5 + docs/11§7. Clones
-/// parent's AS (VMA tree + per-page copy via P2-15c), spawns
-/// child Task with rax=0 in its iretq frame so it resumes at
-/// the post-syscall RIP with the canonical fork-return
-/// distinguisher. Returns child TID to parent.
-/// # C: O(N_vmas) clone + O(log N) enqueue
+/// sys_fork: clone AS+pages (P2-15c), spawn child with rax=0
+/// at post-syscall RIP. Returns child tid to parent.
+/// # C: O(N_vmas) + O(log N)
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -367,11 +364,7 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     child_tid as i64
 }
 
-/// `sys_wait4(pid, wstatus, options, rusage)` — slot 61. Reaps
-/// a Zombie child via `sched::reap_one`; if none queued, yields
-/// + retries. `pid==-1` matches any child; `pid>0` matches tid.
-/// `options`/`rusage` ignored. Returns child tid or -ECHILD.
-/// # C: O(N_zombies × N_yield_iters)
+/// sys_wait4: reap_one + yield-poll until match. -ECHILD if none.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
