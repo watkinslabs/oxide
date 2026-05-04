@@ -15,39 +15,38 @@
 
 use crate::elf_load::load_static_blob;
 
-/// Build a fork+branch+execve+exit ELF64 image at compile time.
+/// Build a fork+execve("y"|"h")+exit ELF64 at compile time. The
+/// init-like parent forks once: parent execve's "y" → prints
+/// "yo\\n", child execve's "h" → prints "hi\\n". Demonstrates
+/// path-driven execve dispatch (P2-21b).
+///
 ///   [0..64)     ehdr
 ///   [64..120)   PT_LOAD phdr
 ///   [120..128)  pad
-///   [128..187)  code (59 B): fork + jz child + parent write "P\n"
-///                            + jmp exit + child execve + exit + ud2
-///   [187..189)  "P\n"
+///   [128..171)  code (43 B): fork + default path "y" + test rax
+///                            + jne parent + override path "h"
+///                            + execve + exit + ud2
+///   [171..172)  'y' (selector for parent → YO_BLOB)
+///   [172..173)  'h' (selector for child → HI_BLOB)
 ///
 /// Sequence (entry = 0x400080):
 ///   mov  $57, %eax                ; sys_fork
 ///   syscall
+///   mov  $0x4000AB, %edi           ; default path = "y"
 ///   test %eax, %eax                ; rax=0 in child, rax=child_tid in parent
-///   jz   child
-/// parent:
-///   mov  $1, %eax                  ; sys_write
-///   mov  $1, %edi
-///   mov  $0x4000BB, %esi           ; "P\n"
-///   mov  $2, %edx
-///   syscall
-///   jmp  exit
-/// child:
+///   jne  parent_path               ; rax != 0 → keep "y"
+///   mov  $0x4000AC, %edi           ; child overrides to "h"
+/// parent_path:
 ///   mov  $59, %eax                 ; sys_execve
-///   xor  %edi, %edi                ; path = NULL (ignored)
 ///   xor  %esi, %esi                ; argv = NULL
 ///   xor  %edx, %edx                ; envp = NULL
-///   syscall                         ; doesn't return on success — kernel iretqs to new entry
-/// exit:                            ; reachable on execve failure or parent path
-///   mov  $60, %eax
+///   syscall                         ; doesn't return on success
+///   mov  $60, %eax                 ; (fallback exit if execve failed)
 ///   xor  %edi, %edi
 ///   syscall
-///   ud2                             ; landmark
-const fn build_elf() -> [u8; 189] {
-    let mut b = [0u8; 189];
+///   ud2
+const fn build_elf() -> [u8; 173] {
+    let mut b = [0u8; 173];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
     b[4]=2; b[5]=1; b[6]=1;
     b[16]=2; b[18]=62; b[20]=1;
@@ -63,7 +62,7 @@ const fn build_elf() -> [u8; 189] {
     let vb = v.to_le_bytes();
     i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
     i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
-    let fs: u64 = 189;
+    let fs: u64 = 173;
     let fb = fs.to_le_bytes();
     i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
     i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
@@ -76,52 +75,44 @@ const fn build_elf() -> [u8; 189] {
     b[c+0]=0xB8; b[c+1]=0x39;
     // [0x05] 0F 05                 syscall
     b[c+5]=0x0F; b[c+6]=0x05;
-    // [0x07] 85 C0                 test %eax, %eax
-    b[c+7]=0x85; b[c+8]=0xC0;
-    // [0x09] 74 18                 jz +0x18 → 0x23 (child)
-    b[c+9]=0x74; b[c+10]=0x18;
-    // [0x0B] parent: mov $1, %eax
-    b[c+11]=0xB8; b[c+12]=0x01;
-    // [0x10] mov $1, %edi
-    b[c+16]=0xBF; b[c+17]=0x01;
-    // [0x15] mov $0x4000BB, %esi   (P\n at file offset 0xBB = 187)
-    b[c+21]=0xBE; b[c+22]=0xBB; b[c+23]=0x00; b[c+24]=0x40; b[c+25]=0x00;
-    // [0x1A] mov $2, %edx
-    b[c+26]=0xBA; b[c+27]=0x02;
-    // [0x1F] syscall
-    b[c+31]=0x0F; b[c+32]=0x05;
-    // [0x21] jmp +0x0D → 0x30 (exit)
-    b[c+33]=0xEB; b[c+34]=0x0D;
-    // [0x23] child: mov $59, %eax  ; sys_execve
-    b[c+35]=0xB8; b[c+36]=0x3B;
-    // [0x28] xor %edi, %edi
-    b[c+40]=0x31; b[c+41]=0xFF;
-    // [0x2A] xor %esi, %esi
-    b[c+42]=0x31; b[c+43]=0xF6;
-    // [0x2C] xor %edx, %edx
-    b[c+44]=0x31; b[c+45]=0xD2;
-    // [0x2E] syscall (execve — kernel iretqs to new program; falls through on error)
-    b[c+46]=0x0F; b[c+47]=0x05;
-    // [0x30] exit: mov $60, %eax
-    b[c+48]=0xB8; b[c+49]=0x3C;
-    // [0x35] xor %edi, %edi
-    b[c+53]=0x31; b[c+54]=0xFF;
-    // [0x37] syscall
-    b[c+55]=0x0F; b[c+56]=0x05;
-    // [0x39] ud2
-    b[c+57]=0x0F; b[c+58]=0x0B;
-    // Buffer "P\n" at file offset 187 = vaddr 0x4000BB.
-    b[187]=b'P'; b[188]=b'\n';
+    // [0x07] BF AB 00 40 00        mov $0x4000AB, %edi  ; default path = 'y' selector
+    b[c+7]=0xBF; b[c+8]=0xAB; b[c+9]=0x00; b[c+10]=0x40; b[c+11]=0x00;
+    // [0x0C] 85 C0                 test %eax, %eax
+    b[c+12]=0x85; b[c+13]=0xC0;
+    // [0x0E] 75 05                 jne +5 → 0x15 (parent keeps "y")
+    b[c+14]=0x75; b[c+15]=0x05;
+    // [0x10] BF AC 00 40 00        mov $0x4000AC, %edi  ; child overrides to "h"
+    b[c+16]=0xBF; b[c+17]=0xAC; b[c+18]=0x00; b[c+19]=0x40; b[c+20]=0x00;
+    // [0x15] B8 3B 00 00 00        mov $59, %eax        ; sys_execve
+    b[c+21]=0xB8; b[c+22]=0x3B;
+    // [0x1A] 31 F6                 xor %esi, %esi
+    b[c+26]=0x31; b[c+27]=0xF6;
+    // [0x1C] 31 D2                 xor %edx, %edx
+    b[c+28]=0x31; b[c+29]=0xD2;
+    // [0x1E] 0F 05                 syscall (execve; doesn't return on success)
+    b[c+30]=0x0F; b[c+31]=0x05;
+    // [0x20] B8 3C 00 00 00        mov $60, %eax (fallback exit)
+    b[c+32]=0xB8; b[c+33]=0x3C;
+    // [0x25] 31 FF                 xor %edi, %edi
+    b[c+37]=0x31; b[c+38]=0xFF;
+    // [0x27] 0F 05                 syscall
+    b[c+39]=0x0F; b[c+40]=0x05;
+    // [0x29] 0F 0B                 ud2
+    b[c+41]=0x0F; b[c+42]=0x0B;
+    // Path selectors at file offsets 171 ('y'), 172 ('h')
+    // → vaddrs 0x4000AB, 0x4000AC.
+    b[171]=b'y'; b[172]=b'h';
     b
 }
 
-const ELF_BLOB_BYTES: [u8; 189] = build_elf();
+const ELF_BLOB_BYTES: [u8; 173] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
-/// Build a tiny "execed" ELF64: writes "X\n" + exit. Loaded by
-/// `kernel_sys_execve` (P2-21) to demonstrate fork+exec.
-const fn build_exec_elf() -> [u8; 163] {
-    let mut b = [0u8; 163];
+/// Build a "writes 2-char message + exit" ELF64. `c0`/`c1` are
+/// the two output chars; the program writes `[c0, c1, '\n']` then
+/// exits cleanly.
+const fn build_named_blob(c0: u8, c1: u8) -> [u8; 164] {
+    let mut b = [0u8; 164];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
     b[4]=2; b[5]=1; b[6]=1;
     b[16]=2; b[18]=62; b[20]=1;
@@ -137,7 +128,7 @@ const fn build_exec_elf() -> [u8; 163] {
     let vb = v.to_le_bytes();
     i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
     i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
-    let fs: u64 = 163;
+    let fs: u64 = 164;
     let fb = fs.to_le_bytes();
     i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
     i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
@@ -145,36 +136,44 @@ const fn build_exec_elf() -> [u8; 163] {
     let ab = al.to_le_bytes();
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
-    // Code at file offset 128 (vaddr 0x400080):
-    //   mov $1, %eax                  ; sys_write
-    //   mov $1, %edi                  ; fd=1
-    //   mov $0x4000A1, %esi           ; "X\n" buf
-    //   mov $2, %edx
-    //   syscall
-    //   mov $60, %eax                 ; sys_exit
-    //   xor %edi, %edi
-    //   syscall
-    //   ud2                            ; landmark
+    // Code at file offset 128 (vaddr 0x400080) — write 3 bytes
+    // (c0, c1, '\n') + exit. Buffer at file offset 161 = vaddr
+    // 0x4000A1.
     let c = 128;
-    b[c+0]=0xB8; b[c+1]=0x01;
-    b[c+5]=0xBF; b[c+6]=0x01;
-    b[c+10]=0xBE; b[c+11]=0xA1; b[c+12]=0x00; b[c+13]=0x40; b[c+14]=0x00;
-    b[c+15]=0xBA; b[c+16]=0x02;
-    b[c+20]=0x0F; b[c+21]=0x05;
-    b[c+22]=0xB8; b[c+23]=0x3C;
-    b[c+27]=0x31; b[c+28]=0xFF;
-    b[c+29]=0x0F; b[c+30]=0x05;
-    b[c+31]=0x0F; b[c+32]=0x0B;
-    // Buffer "X\n" at file offset 161 = vaddr 0x4000A1
-    b[161]=b'X'; b[162]=b'\n';
+    b[c+0]=0xB8; b[c+1]=0x01;                                  // mov $1, %eax
+    b[c+5]=0xBF; b[c+6]=0x01;                                  // mov $1, %edi
+    b[c+10]=0xBE; b[c+11]=0xA1; b[c+12]=0x00; b[c+13]=0x40; b[c+14]=0x00; // mov $0x4000A1, %esi
+    b[c+15]=0xBA; b[c+16]=0x03;                                // mov $3, %edx
+    b[c+20]=0x0F; b[c+21]=0x05;                                // syscall
+    b[c+22]=0xB8; b[c+23]=0x3C;                                // mov $60, %eax
+    b[c+27]=0x31; b[c+28]=0xFF;                                // xor %edi, %edi
+    b[c+29]=0x0F; b[c+30]=0x05;                                // syscall
+    b[c+31]=0x0F; b[c+32]=0x0B;                                // ud2
+    b[161]=c0; b[162]=c1; b[163]=b'\n';
     b
 }
 
-const EXEC_BLOB_BYTES: [u8; 163] = build_exec_elf();
-/// ELF that `sys_execve` loads in the child. v1: ignores the path
-/// argument from user — always loads this blob. With VFS later this
-/// becomes inode-driven.
-pub const EXEC_BLOB: &'static [u8] = &EXEC_BLOB_BYTES;
+const HI_BLOB_BYTES: [u8; 164] = build_named_blob(b'h', b'i');
+const YO_BLOB_BYTES: [u8; 164] = build_named_blob(b'y', b'o');
+/// Programs the table-driven `sys_execve` can load by name (P2-21b).
+pub const HI_BLOB: &'static [u8] = &HI_BLOB_BYTES;
+pub const YO_BLOB: &'static [u8] = &YO_BLOB_BYTES;
+
+/// Look up the kernel-static ELF for a given path's first byte
+/// (v1 selector — full path lookup waits on VFS per docs/16).
+/// Returns the matching blob or `None` for unknown paths.
+/// # C: O(1)
+pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
+    match selector {
+        b'h' => Some(HI_BLOB),
+        b'y' => Some(YO_BLOB),
+        _    => None,
+    }
+}
+
+/// Default blob for the `path = NULL` legacy path (P2-21 v0).
+/// Retained so older test paths keep working.
+pub const EXEC_BLOB: &'static [u8] = HI_BLOB;
 
 /// Stack VA for an execve'd program. v1: same per-process VA as
 /// the original ELF's stack (different AS, so no clash).
@@ -187,11 +186,9 @@ pub const EXEC_USER_STACK_TOP: u64 = EXEC_USER_STACK_VA + 0x1000;
 const USER_STACK_VA:  u64 = 0x501_000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 
-/// File-side address of ud2 landmarks. The original ELF's ud2
-/// is at `0x400080 + 0x39` (post-execve fall-through path);
-/// `EXEC_BLOB`'s ud2 is at `0x400080 + 0x1F`. Either lands us at
-/// the smoke handler's success log.
-const USER_RIP_UD2_ORIG: u64 = 0x400080 + 0x39;
+/// ud2 landmark addresses. The init-like ELF's ud2 is at
+/// `0x400080 + 0x29`; the named blobs' ud2 is at `0x400080 + 0x1F`.
+const USER_RIP_UD2_ORIG: u64 = 0x400080 + 0x29;
 const USER_RIP_UD2_EXEC: u64 = 0x400080 + 0x1F;
 
 /// `#UD` landmark handler. Chains to user_as for legitimate
