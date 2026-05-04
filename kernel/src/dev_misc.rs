@@ -8,6 +8,43 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
+/// Boot-time smoke test: each Inode read fills the right bytes.
+/// `/dev/zero` returns NUL, `/dev/null` returns 0 (EOF), `/dev/random`
+/// fills with non-deterministic bytes (we just check len). Run from
+/// `kernel_main` after `devfs::init()`.
+/// # SAFETY: caller is the boot path; PMM up; single-CPU pre-init.
+/// # C: O(1) per inode
+pub fn smoke_test() {
+    use vfs::Inode;
+
+    let mut buf = [0xAAu8; 16];
+    let n = ZeroInode.read(0, &mut buf).expect("zero.read");
+    kassert!(n == 16, "zero read len");
+    for b in buf.iter() { kassert!(*b == 0, "zero read fills NUL"); }
+
+    let mut buf2 = [0xBBu8; 16];
+    let n = NullInode.read(0, &mut buf2).expect("null.read");
+    kassert!(n == 0, "null read EOF");
+    for b in buf2.iter() { kassert!(*b == 0xBB, "null read leaves buf"); }
+
+    let mut buf3 = [0u8; 32];
+    let n = RandomInode.read(0, &mut buf3).expect("random.read");
+    kassert!(n == 32, "random read len");
+    let nz = buf3.iter().filter(|b| **b != 0).count();
+    kassert!(nz > 0, "random read produces non-zero bytes");
+
+    let n = NullInode.write(0, b"hello").expect("null.write");
+    kassert!(n == 5, "null write accepts all");
+    let n = ZeroInode.write(0, b"hello").expect("zero.write");
+    kassert!(n == 5, "zero write accepts all");
+    let r = FullInode.write(0, b"hello");
+    kassert!(r.is_err(), "full write returns Eio");
+
+    debug_boot! { klog::write_raw(b"[INFO]  dev-misc-smoke: ok\n"); }
+}
+
+use hal::kassert;
+
 /// `/dev/null` — read returns 0 (EOF), write discards.
 pub struct NullInode;
 impl Inode for NullInode {
