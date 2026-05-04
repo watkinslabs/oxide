@@ -16,8 +16,23 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 239 | **`B09-syscall-preserve-argregs`** | **MAJOR ABI BUG** — x86 syscall asm was popping (and discarding) user's rdi/rsi/rdx/r10/r8/r9. Linux ABI preserves these. Concrete failure: ECHO's sys_write after sys_read had garbage args (buf=0x30 len=1016) and hung. Fix: `mov [rsp+N]` load without consuming, restore from same slots after dispatch returns. Without this, ANY user code reusing arg regs across syscalls breaks (musl libc routinely does). |
 | 240 | `P3-02b-init-echo-iter` | Init blob 2→3 iters: yo, hi, ECHO. End-to-end fd_table → ConsoleInode → tty validated; 'A' is `tty::inject_for_smoke`'d at boot, ECHO reads it from fd 0 and writes back to fd 1. |
 | 241 | `P3-07-writev-readv-glue` | slots 19/20 fd_table-routed (was UART-only). musl/glibc stdio uses writev for line-buffered printf — without binding stdio breaks for any non-stdout fd. |
-| 242 | `C52-state-eod-session-23` | This document (intermediate). |
+| 242 | `C52-state-eod-session-23` | Intermediate state.md update. |
 | 243 | `P3-08-gettid-real` | slots 186/218 → `current().tid`. New `kernel/src/syscall_glue_proc.rs` houses sched_yield + gettid + set_tid_address. |
+| 244 | `C53-state-eod-session-23-final` | Intermediate state.md update. |
+| 248 | `P3-12-nanosleep-clock` | nanosleep + clock_nanosleep busy-wait against monotonic clock with `tick_yield` between checks. |
+| 249 | `P3-13-multi-task-smoke` | readlink + readlinkat — `/proc/self/{exe,cwd,root}` resolve to `/init` and `/`. |
+| 250 | `P3-14-statx-rseq` | statx writes minimal 256-byte struct. rseq returns ENOSYS. membarrier returns 0 (UP). |
+| 251 | `P3-15-fcntl-real` | F_DUPFD/F_DUPFD_CLOEXEC via fd_table. F_GETFD/F_SETFD/F_GETFL/F_SETFL accept-and-no-op. |
+| 252 | `B10-sys-write-bound-check` | Range overflow validation in sys_write to mirror P3-11's sys_read fix. |
+| 253 | `P3-16-dev-zero-read-smoke` | Boot-time `dev-misc-smoke` kasserts /dev/{null,zero,full,random} contracts. |
+| 254 | `P3-17-procfs-stub` | Minimal procfs: StaticFileInode for /proc/{version,cpuinfo,meminfo,uptime,loadavg,stat,filesystems,mounts,...}. |
+| 255 | `P3-18-cat-procfs-blob` | Boot-time `procfs-smoke` walks the registered /proc entries. |
+| 256 | `P3-19-sysfs-random-uuid` | Static /sys/kernel/random/{uuid,boot_id,entropy_avail}, /etc/{os-release,machine-id}. |
+| 257 | `P3-20-cat-blob-end-to-end` | Hand-rolled CAT blob: open(/proc/version) + read(64) + write(fd=1) + close + exit; init blob extended 3→4 iters. Boot trace ends with `oxide 0.1.0-pre #1 SMP PREEMPT`. |
+| 258 | `P3-21-signal-state-skeleton` | Task gains sigpending+sigmask AtomicU64. sys_kill self-target sets the bit; dispatch tail terminates with status 128+sig on first unmasked pending signal. |
+| 259 | `P3-22-rt-sig-real` | Real rt_sigprocmask: SIG_BLOCK/UNBLOCK/SETMASK update current.sigmask; SIGKILL/SIGSTOP unmaskable. |
+| 260 | `P3-23-pl011-rx-arm` | tty.rs cross-arch. arm tick_poll_uart drains PL011 RX FIFO via FR.RXFE/DR; gic timer ISR calls it. arm ConsoleInode::read uses WAITERS+schedule pattern. arm stdin reaches x86 parity. |
+| 261 | `P3-24-getrlimit-setrlimit` | getrlimit/setrlimit/getrusage/times/sysinfo glue (RLIM_INFINITY everywhere; uptime exposed). |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
