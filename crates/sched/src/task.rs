@@ -154,6 +154,32 @@ pub struct Task {
     /// blocked. `rt_sigprocmask` writes; signal-delivery checks.
     /// # C: O(1)
     pub sigmask: AtomicU64,
+
+    /// Per-task `struct sigaction` array per `27§4`. Slot i holds
+    /// the handler/flags/mask/restorer for signal i+1 (1..=64).
+    /// `rt_sigaction` writes; signal-delivery reads to choose the
+    /// dispatch path (SIG_DFL = terminate; SIG_IGN = drop;
+    /// non-NULL = build frame + jump). Wrapped in `UnsafeCell` for
+    /// the same single-mutator-per-active-CPU invariant as `mm`.
+    pub sigactions: UnsafeCell<[SaHandler; 64]>,
+}
+
+/// Linux `struct sigaction` core fields per `27§3`. Stored
+/// per-task at signal-1 indices.
+#[repr(C, align(8))]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SaHandler {
+    /// Handler entry. `0` = SIG_DFL (default disposition); `1` =
+    /// SIG_IGN (ignore). Anything else = user fn pointer.
+    pub handler:   u64,
+    /// `SA_*` flags (Linux: SA_SIGINFO=0x4, SA_RESTART=0x10000000,
+    /// SA_NOCLDSTOP, SA_NODEFER, etc.).
+    pub flags:     u64,
+    /// Optional return-trampoline (sa_restorer). musl + glibc set
+    /// this to a libc-private stub that issues `rt_sigreturn`.
+    pub restorer:  u64,
+    /// Per-handler additional mask applied during dispatch.
+    pub mask:      u64,
 }
 
 impl Task {
@@ -244,6 +270,7 @@ impl Task {
             fd_table: UnsafeCell::new(None),
             sigpending: AtomicU64::new(0),
             sigmask:    AtomicU64::new(0),
+            sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
         }
     }
 
