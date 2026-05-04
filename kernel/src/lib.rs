@@ -549,6 +549,10 @@ pub mod syscall_glue;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_fs;
 
+// P3-08 process-shaped syscalls (sched_yield, gettid, set_tid_address).
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_proc;
+
 // P2-21c initial user-stack builder per docs/31§4 step 5.
 // SysV argc/argv/envp/auxv layout written at execve time.
 #[cfg(target_os = "oxide-kernel")]

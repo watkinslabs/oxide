@@ -56,6 +56,8 @@ const SYSCALL_NR_GETRANDOM: u64      = 318;
 const SYSCALL_NR_SCHED_YIELD: u64    = 24;
 const SYSCALL_NR_WRITEV: u64         = 20;
 const SYSCALL_NR_READV: u64          = 19;
+const SYSCALL_NR_GETTID: u64         = 186;
+const SYSCALL_NR_SET_TID_ADDRESS: u64 = 218;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -772,19 +774,6 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
 }
 
 
-/// `sys_sched_yield()` — slot 24 per docs/15§5. Cooperative
-/// reschedule per `13§7`: if a runqueue is installed, calls
-/// `tick_yield` which picks a different runnable task and
-/// switches into it. Returns 0 unconditionally per the Linux
-/// ABI.
-fn kernel_sys_sched_yield(_args: &SyscallArgs) -> i64 {
-    if crate::sched::global().is_some() {
-        // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
-        unsafe { crate::sched::tick_yield(); }
-    }
-    0
-}
-
 /// `sys_getrandom(buf, len, flags)` — slot 318 per docs/15§5.
 /// v1 fills via the shared LCG in dev_misc. NOT cryptographic;
 /// docs/26 CPRNG replaces this. `flags` ignored (GRND_NONBLOCK
@@ -968,7 +957,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_KILL          => kernel_sys_kill(&args),
         SYSCALL_NR_TGKILL        => kernel_sys_tgkill(&args),
         SYSCALL_NR_GETRANDOM     => kernel_sys_getrandom(&args),
-        SYSCALL_NR_SCHED_YIELD   => kernel_sys_sched_yield(&args),
+        SYSCALL_NR_SCHED_YIELD   => crate::syscall_glue_proc::kernel_sys_sched_yield(&args),
+        SYSCALL_NR_GETTID        => crate::syscall_glue_proc::kernel_sys_gettid(&args),
+        SYSCALL_NR_SET_TID_ADDRESS => crate::syscall_glue_proc::kernel_sys_set_tid_address(&args),
         SYSCALL_NR_WRITEV        => crate::syscall_glue_fs::kernel_sys_writev(&args),
         SYSCALL_NR_READV         => crate::syscall_glue_fs::kernel_sys_readv(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
