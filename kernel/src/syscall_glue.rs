@@ -865,6 +865,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_EXECVE        => kernel_sys_execve(&args),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_WAIT4         => kernel_sys_wait4(&args),
+        crate::syscall_nrs::NR_TKILL         => kernel_sys_kill(&args),
+        crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_proc::kernel_sys_rt_sigpending(&args),
+        crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_proc::kernel_sys_rt_sigsuspend(&args),
+        crate::syscall_nrs::NR_RT_SIGRETURN  => 0,    // no signal frame yet
+        crate::syscall_nrs::NR_RT_SIGTIMEDWAIT
+            | crate::syscall_nrs::NR_RT_SIGQUEUEINFO
+            | crate::syscall_nrs::NR_RT_TGSIGQUEUEINFO
+                                 => -(Errno::Enosys.as_i32() as i64),
         // epoll family — no event-poll yet per docs/24; ENOSYS so
         // libraries fall back to poll() which we do support.
         crate::syscall_nrs::NR_EPOLL_CREATE

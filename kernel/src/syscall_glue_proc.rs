@@ -167,6 +167,50 @@ pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 {
     -(syscall::errno::Errno::Enosys.as_i32() as i64)
 }
 
+/// `sys_rt_sigpending(set, sz)` — slot 127. Writes
+/// `current.sigpending` to user `set` (8 B). `sz` must be 8.
+/// # C: O(1)
+pub fn kernel_sys_rt_sigpending(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let set = args.a0;
+    let sz  = args.a1;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if set == 0 || set >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let p = cur.sigpending.load(Ordering::Acquire);
+    // SAFETY: set validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 writes through user mapping.
+    unsafe { core::ptr::write_volatile(set as *mut u64, p); }
+    0
+}
+
+/// `sys_rt_sigsuspend(mask, sz)` — slot 130. Temporarily
+/// replaces sigmask with `mask`. v1 has no real wait — returns
+/// -EINTR immediately; `take_lowest_pending` at the dispatch
+/// tail will terminate the task if any unmasked signal is
+/// already pending under the new mask.
+/// # C: O(1)
+pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let mask = args.a0;
+    let sz   = args.a1;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if mask == 0 || mask >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
+    };
+    // SAFETY: mask validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 reads through user mapping.
+    let m = unsafe { core::ptr::read_volatile(mask as *const u64) };
+    let m = m & !(1u64 << 8) & !(1u64 << 18); // SIGKILL/SIGSTOP unmaskable
+    cur.sigmask.store(m, Ordering::Release);
+    -(Errno::Eintr.as_i32() as i64)
+}
+
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
 /// clear the lowest bit and return its 1-based signal number for
 /// the caller to deliver. v1 has no sa_handler dispatch — caller
