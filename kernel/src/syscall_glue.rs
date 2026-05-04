@@ -454,11 +454,28 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         if path_ptr >= USER_VA_END {
             return -(Errno::Efault.as_i32() as i64);
         }
-        // SAFETY: path_ptr < USER_VA_END validated above; the user page is mapped (user code already executed from this AS); we read a single byte.
-        let sel = unsafe { core::ptr::read_volatile(path_ptr as *const u8) };
-        match crate::elf_smoke::lookup_blob(sel) {
-            Some(b) => b,
-            None    => return -(Errno::Enoent.as_i32() as i64),
+        // Read up to 64 bytes of the user path, NUL-terminated.
+        let mut path_buf = [0u8; 64];
+        let mut path_len = 0;
+        for i in 0..64 {
+            // SAFETY: bounded read up to 64 bytes from a user pointer < USER_VA_END; CPL=0 reads through user mapping pre-activate.
+            let b = unsafe { core::ptr::read_volatile((path_ptr + i) as *const u8) };
+            if b == 0 { break; }
+            path_buf[i as usize] = b;
+            path_len = (i + 1) as usize;
+        }
+        let path = &path_buf[..path_len];
+        // Path-string lookup first; fall back to single-byte
+        // selector form (existing iter_block in init blob).
+        if let Some(b) = crate::elf_smoke::lookup_blob_by_path(path) {
+            b
+        } else if path_len == 1 {
+            match crate::elf_smoke::lookup_blob(path[0]) {
+                Some(b) => b,
+                None    => return -(Errno::Enoent.as_i32() as i64),
+            }
+        } else {
+            return -(Errno::Enoent.as_i32() as i64);
         }
     };
 
