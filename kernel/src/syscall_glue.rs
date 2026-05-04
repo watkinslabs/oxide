@@ -865,6 +865,51 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_EXECVE        => kernel_sys_execve(&args),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_WAIT4         => kernel_sys_wait4(&args),
+        // epoll family — no event-poll yet per docs/24; ENOSYS so
+        // libraries fall back to poll() which we do support.
+        crate::syscall_nrs::NR_EPOLL_CREATE
+            | crate::syscall_nrs::NR_EPOLL_CREATE1
+            | crate::syscall_nrs::NR_EPOLL_CTL
+            | crate::syscall_nrs::NR_EPOLL_WAIT
+            | crate::syscall_nrs::NR_EPOLL_PWAIT
+            | crate::syscall_nrs::NR_EPOLL_PWAIT2
+                                 => -(Errno::Enosys.as_i32() as i64),
+        // inotify family — no fs-watch yet; ENOSYS.
+        crate::syscall_nrs::NR_INOTIFY_INIT
+            | crate::syscall_nrs::NR_INOTIFY_INIT1
+            | crate::syscall_nrs::NR_INOTIFY_ADD_WATCH
+            | crate::syscall_nrs::NR_INOTIFY_RM_WATCH
+                                 => -(Errno::Enosys.as_i32() as i64),
+        // signalfd / timerfd / userfaultfd — no event-fd machinery
+        // beyond the basic eventfd2 yet; ENOSYS.
+        crate::syscall_nrs::NR_SIGNALFD
+            | crate::syscall_nrs::NR_SIGNALFD4
+            | crate::syscall_nrs::NR_TIMERFD_CREATE
+            | crate::syscall_nrs::NR_TIMERFD_SETTIME
+            | crate::syscall_nrs::NR_TIMERFD_GETTIME
+            | crate::syscall_nrs::NR_USERFAULTFD
+                                 => -(Errno::Enosys.as_i32() as i64),
+        // io_uring + perf + bpf + landlock + seccomp + namespaces —
+        // none of these substrates exist yet; ENOSYS so libraries
+        // probe and fall through.
+        crate::syscall_nrs::NR_IO_URING_SETUP
+            | crate::syscall_nrs::NR_IO_URING_ENTER
+            | crate::syscall_nrs::NR_IO_URING_REGISTER
+            | crate::syscall_nrs::NR_IO_SETUP
+            | crate::syscall_nrs::NR_IO_DESTROY
+            | crate::syscall_nrs::NR_IO_GETEVENTS
+            | crate::syscall_nrs::NR_IO_SUBMIT
+            | crate::syscall_nrs::NR_IO_CANCEL
+            | crate::syscall_nrs::NR_PERF_EVENT_OPEN
+            | crate::syscall_nrs::NR_BPF
+            | crate::syscall_nrs::NR_SECCOMP
+            | crate::syscall_nrs::NR_LANDLOCK_CREATE_RULESET
+            | crate::syscall_nrs::NR_LANDLOCK_ADD_RULE
+            | crate::syscall_nrs::NR_LANDLOCK_RESTRICT_SELF
+            | crate::syscall_nrs::NR_UNSHARE
+            | crate::syscall_nrs::NR_SETNS
+            | crate::syscall_nrs::NR_PIVOT_ROOT
+                                 => -(Errno::Enosys.as_i32() as i64),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
