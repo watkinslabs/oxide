@@ -186,6 +186,30 @@ impl MmuOps for ArmMmu {
         }
     }
 
+    /// Like `map` but installs into the tree rooted at `root_pa`
+    /// instead of the active TTBR0/TTBR1. Used by `AddressSpace::fork`
+    /// per docs/11§7 for child PT population.
+    /// # SAFETY: per trait contract.
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        kassert!(hhdm != 0, "MmuOps::map_at called before set_hhdm_offset");
+        let (leaf_level, page_bytes, leaf) = match size {
+            PageSize::P4K => (3u8, PAGE_BYTES_4K, PtWalkerArm::pack_4k_leaf(pa.0, flags)),
+            PageSize::P2M => (2u8, PAGE_BYTES_2M, PtWalkerArm::pack_block_leaf(pa.0, flags)),
+            PageSize::P1G => (1u8, PAGE_BYTES_1G, PtWalkerArm::pack_block_leaf(pa.0, flags)),
+        };
+        kassert!(va.0 % page_bytes == 0, "MmuOps::map_at va misaligned");
+        kassert!(pa.0 % page_bytes == 0, "MmuOps::map_at pa misaligned");
+        let mut alloc = alloc_frame;
+        // SAFETY: per trait contract — caller asserts root_pa is a kernel-owned PT root + holds the per-AS PT lock; HHDM covers PT memory; alloc_frame returns kernel-owned frames.
+        let r = unsafe {
+            pt_walker::map_at_level_with_root::<PtWalkerArm, _>(
+                root_pa, va.0, leaf_level, leaf, hhdm, &mut alloc,
+            )
+        };
+        kassert!(r.is_ok(), "MmuOps::map_at walker failure");
+    }
+
     /// Install `root_pa` as `TTBR0_EL1` — switches the user-half
     /// page-table tree per `13§8`. `TTBR1_EL1` (kernel half) is
     /// untouched. ASID = 0 for v1; PCID-equivalent landings rest
