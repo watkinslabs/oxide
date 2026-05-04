@@ -363,6 +363,13 @@ pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
 /// segments, real auxv consumption).
 pub const HELLO_BLOB: &'static [u8] = include_bytes!("../blobs/hello.elf");
 
+/// P3-66 sa_handler dispatch smoke. Hand-rolled static-PIE ELF
+/// that registers a SIGUSR1 handler, raises SIGUSR1 to itself
+/// via sys_kill, and verifies the handler ran + rt_sigreturn
+/// restored execution. Boot trace shows "before h after" if the
+/// signal-dispatch chain works end-to-end.
+pub const SIGTEST_BLOB: &'static [u8] = include_bytes!("../blobs/sigtest.elf");
+
 /// Boot-time smoke: kassert each registered path resolves to a
 /// non-empty ELF blob with the expected magic bytes.
 /// # SAFETY: caller is the boot path; pre-init.
@@ -467,7 +474,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     unsafe { hal_x86_64::install_fault_handler(elf_smoke_fault_handler); }
 
     let img = match crate::user_as::with(|as_| {
-        let img = load_static_blob(HELLO_BLOB, as_)?;
+        let img = load_static_blob(SIGTEST_BLOB, as_)?;
         // Stack VMA — anonymous, demand-paged on first push.
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
             .ok_or(crate::elf_load::LoadError::Einval)?;
