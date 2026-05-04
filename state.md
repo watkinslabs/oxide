@@ -4,7 +4,7 @@ Resumable checkpoint — current snapshot only. Update at session exit. Next ses
 
 ## Session 23 highlights (PRs #234–#241)
 
-User authorised an autonomous overnight run ("continue working until all of this is complete through phase 3 work autonomously, no hacks, follow specs"). 8 PRs merged:
+User authorised an autonomous overnight run ("continue working until all of this is complete through phase 3 work autonomously, no hacks, follow specs"). 10 PRs merged:
 
 | # | Branch | Why it matters |
 |---|---|---|
@@ -16,6 +16,8 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 239 | **`B09-syscall-preserve-argregs`** | **MAJOR ABI BUG** — x86 syscall asm was popping (and discarding) user's rdi/rsi/rdx/r10/r8/r9. Linux ABI preserves these. Concrete failure: ECHO's sys_write after sys_read had garbage args (buf=0x30 len=1016) and hung. Fix: `mov [rsp+N]` load without consuming, restore from same slots after dispatch returns. Without this, ANY user code reusing arg regs across syscalls breaks (musl libc routinely does). |
 | 240 | `P3-02b-init-echo-iter` | Init blob 2→3 iters: yo, hi, ECHO. End-to-end fd_table → ConsoleInode → tty validated; 'A' is `tty::inject_for_smoke`'d at boot, ECHO reads it from fd 0 and writes back to fd 1. |
 | 241 | `P3-07-writev-readv-glue` | slots 19/20 fd_table-routed (was UART-only). musl/glibc stdio uses writev for line-buffered printf — without binding stdio breaks for any non-stdout fd. |
+| 242 | `C52-state-eod-session-23` | This document (intermediate). |
+| 243 | `P3-08-gettid-real` | slots 186/218 → `current().tid`. New `kernel/src/syscall_glue_proc.rs` houses sched_yield + gettid + set_tid_address. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
