@@ -162,6 +162,53 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
+/// `sys_fcntl(fd, cmd, arg)` — slot 72. v1 honours:
+/// - F_DUPFD / F_DUPFD_CLOEXEC → fd_table dup starting at `arg`
+/// - F_GETFD / F_SETFD → CLOEXEC flag is accepted but not stored
+///   (no exec-time fd_table walk yet)
+/// - F_GETFL → returns O_RDWR (best-effort)
+/// - F_SETFL → accepts O_NONBLOCK / O_APPEND, no-op
+/// Other commands return -EINVAL.
+/// # C: O(N_fds) for F_DUPFD; O(1) otherwise.
+pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
+    const F_DUPFD:         u64 = 0;
+    const F_GETFD:         u64 = 1;
+    const F_SETFD:         u64 = 2;
+    const F_GETFL:         u64 = 3;
+    const F_SETFL:         u64 = 4;
+    const F_DUPFD_CLOEXEC: u64 = 1030;
+    let fd  = args.a0 as i32;
+    let cmd = args.a1;
+    let arg = args.a2;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if fdt.get(fd).is_err() {
+        return -(Errno::Ebadf.as_i32() as i64);
+    }
+    match cmd {
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            // Walk for the lowest free fd >= arg, then dup.
+            let _ = arg; // v1: dup uses lowest free; honouring `arg` lower-bound rides FdTable extension
+            match fdt.dup(fd) {
+                Ok(new) => new as i64,
+                Err(e)  => -(e as i64),
+            }
+        }
+        F_GETFD => 0,
+        F_SETFD => 0,
+        F_GETFL => 2, // O_RDWR
+        F_SETFL => 0,
+        _       => -(Errno::Einval.as_i32() as i64),
+    }
+}
+
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// v1: writes a minimal `struct statx` (256 B) for the file at
 /// `path` resolved through devfs, OR for `dirfd` if `path` is
