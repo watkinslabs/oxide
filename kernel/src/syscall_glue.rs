@@ -32,6 +32,7 @@ const SYSCALL_NR_MMAP: u64           = 9;
 const SYSCALL_NR_MUNMAP: u64         = 11;
 const SYSCALL_NR_EXIT: u64           = 60;
 const SYSCALL_NR_FORK: u64           = 57;
+const SYSCALL_NR_EXECVE: u64         = 59;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -109,7 +110,8 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
-    let parent_mm = match cur.mm.as_ref() {
+    // SAFETY: we are the running task on this CPU; no concurrent writer to our mm; preempt-off through the syscall handler.
+    let parent_mm = match unsafe { cur.mm_ref() } {
         Some(m) => m,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
@@ -160,6 +162,93 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     drop(child);
 
     child_tid as i64
+}
+
+/// `sys_execve(path, argv, envp)` — slot 59 per docs/15§5. v0
+/// per docs/31§4: ignores the path argument, always loads the
+/// kernel-static `EXEC_BLOB`. Replaces `current.mm` atomically,
+/// activates the new AS, and updates `oxide_user_rip`/`rsp` so
+/// the syscall epilogue's `sysretq` lands at the new program's
+/// `e_entry` instead of returning to the caller.
+///
+/// argv/envp/auxv build is skipped for v1 (the test program
+/// doesn't read them); P2-21b adds the auxv table per docs/31§5.
+///
+/// On error returns -ENOMEM / -ENOEXEC and the caller resumes
+/// at the post-execve instruction. On success doesn't return —
+/// the new program runs from `e_entry`.
+///
+/// # SAFETY: caller is `oxide_syscall_dispatch` running on the
+/// user task's kernel stack with IRQs masked.
+/// # C: O(phdrs) parse + O(N_vmas) AS build + O(1) activate
+#[cfg(target_arch = "x86_64")]
+fn kernel_sys_execve(_args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use hal::UserVirtAddr;
+
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Einval.as_i32() as i64),
+    };
+
+    // 1. Allocate new PT root for the post-execve AS.
+    // SAFETY: master PML4 captured at user_as::init; PMM up.
+    let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
+        Some(r) => r,
+        None    => return -(Errno::Enomem.as_i32() as i64),
+    };
+
+    // 2. Build the new AS shell + load the ELF + register stack.
+    let new_as = match AddressSpace::new(new_root) {
+        Ok(a)  => a,
+        Err(_) => return -(Errno::Enomem.as_i32() as i64),
+    };
+    let img = match crate::elf_load::load_static_blob(crate::elf_smoke::EXEC_BLOB, &new_as) {
+        Ok(i)  => i,
+        Err(_) => return -(Errno::Enoexec.as_i32() as i64),
+    };
+    let stack_hint = UserVirtAddr::new(crate::elf_smoke::EXEC_USER_STACK_VA)
+        .expect("EXEC_USER_STACK_VA in user range");
+    if new_as.mmap(
+        Some(stack_hint), 0x1000,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    ).is_err() {
+        return -(Errno::Enomem.as_i32() as i64);
+    }
+
+    // 3. Replace `current.mm` with the new AS and activate it.
+    //    Order: activate BEFORE replace_mm so CR3 doesn't dangle
+    //    if drop runs concurrently — but on UP single-CPU the
+    //    order is purely defensive.
+    use hal::MmuOps;
+    // SAFETY: new_root carries kernel-half cloned from master per P2-19; activate writes CR3 + flushes user TLB; preempt-off; single-CPU.
+    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(new_root); }
+    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
+    unsafe { cur.replace_mm(Some(new_as)); }
+
+    // 4. Update the syscall-return globals so the asm epilogue
+    //    sysretq's into the new program's entry.
+    hal_x86_64::oxide_user_rip.store(img.entry.as_u64(), Ordering::Release);
+    hal_x86_64::oxide_user_rsp.store(crate::elf_smoke::EXEC_USER_STACK_TOP, Ordering::Release);
+    hal_x86_64::oxide_user_rflags.store(0x002, Ordering::Release);
+
+    debug_sched! {
+        klog::write_raw(b"[INFO]  sys_execve: new entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b" sp=");
+        klog::write_hex_u64(crate::elf_smoke::EXEC_USER_STACK_TOP);
+        klog::write_raw(b" new_root=");
+        klog::write_hex_u64(new_root);
+        klog::write_raw(b"\n");
+    }
+
+    // Return value irrelevant — sysretq goes to new program; rax
+    // gets clobbered by the new program's first mov.
+    0
 }
 
 /// `sys_exit(code)` — slot 60 per docs/15§2. The arch-neutral
@@ -313,6 +402,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_EXIT          => kernel_sys_exit(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
+        #[cfg(target_arch = "x86_64")]
+        SYSCALL_NR_EXECVE        => kernel_sys_execve(&args),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
