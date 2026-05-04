@@ -239,32 +239,107 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
     }
 }
 
-/// Per-arch fault handler installed by `kernel_main`. v1 handles
-/// only `NotPresent` on Anonymous VMAs (demand-paging path). Other
-/// fault classes return `false` so the dispatcher halts with the
-/// existing fault-printer log — that's effectively segfault behavior
-/// until P2 wires SIGSEGV delivery.
-/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
+/// Per-arch fault handler installed by `kernel_main`. Demand-pages
+/// `NotPresent` faults via `AddressSpace::handle_page_fault`; on
+/// unresolved user faults delivers the v1 minimal form of SIGSEGV
+/// per docs/27 — terminate the current task instead of halting
+/// the kernel. Without signal handlers the default action for
+/// SIGSEGV is "terminate", which is exactly what we do.
+/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1)
+/// terminate path
 #[cfg(target_arch = "x86_64")]
-pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
-    if vec != 14 {
-        return false;
+pub fn user_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
+    if vec == 14 {
+        if let Some(kind) = classify_x86_pf(err, cr2) {
+            if handle(cr2, kind) {
+                return true;
+            }
+        }
     }
-    let kind = match classify_x86_pf(err, cr2) {
-        Some(k) => k,
-        None    => return false,
-    };
-    handle(cr2, kind)
+    sigsegv_terminate_x86(vec, err, rip, cr2);
 }
 
-/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
+/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1)
+/// terminate path
 #[cfg(target_arch = "aarch64")]
-pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
-    let kind = match classify_arm_abort(esr, far) {
-        Some(k) => k,
-        None    => return false,
-    };
-    handle(far, kind)
+pub fn user_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
+    if let Some(kind) = classify_arm_abort(esr, far) {
+        if handle(far, kind) {
+            return true;
+        }
+    }
+    sigsegv_terminate_arm(esr, far, elr);
+}
+
+/// Minimal SIGSEGV (signal 11) delivery per docs/27 v1: log the
+/// fault, mark the current user task `Zombie` with `exit_status =
+/// 11` (POSIX wstatus low 7 bits = signal number), park to the
+/// zombie registry, `schedule()` away. Diverges. Parent's
+/// `wait4` reaps the corpse.
+#[cfg(target_arch = "x86_64")]
+fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
+    use core::sync::atomic::Ordering;
+    use alloc::sync::Arc;
+    debug_irq! {
+        klog::write_raw(b"[FAULT] sigsegv: kill tid=");
+        if let Some(c) = crate::sched::current() { klog::write_dec_u64(c.tid as u64); }
+        klog::write_raw(b" vec=");      klog::write_hex_u64(vec);
+        klog::write_raw(b" err=");      klog::write_hex_u64(err);
+        klog::write_raw(b" rip=");      klog::write_hex_u64(rip);
+        klog::write_raw(b" cr2=");      klog::write_hex_u64(cr2);
+        klog::write_raw(b"\n");
+    }
+    if let Some(rq) = crate::sched::global() {
+        let raw = rq.current.load(Ordering::Acquire);
+        if !raw.is_null() {
+            // SAFETY: rq.current non-null after install; matching Arc bump.
+            unsafe { Arc::increment_strong_count(raw); }
+            // SAFETY: matching Arc::from_raw consumes the bumped count.
+            let arc = unsafe { Arc::from_raw(raw) };
+            arc.exit_status.store(11, Ordering::Release);
+            crate::sched::mark_done(&arc);
+            crate::sched::park_zombie(arc);
+        }
+    }
+    // SAFETY: kernel ctx (fault dispatcher), preempt-off, runqueue installed.
+    unsafe { crate::sched::schedule(); }
+    loop {
+        // SAFETY: cli+hlt at CPL=0; final terminal halt if schedule returns.
+        unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags)); }
+    }
+}
+
+/// arm minimal SIGSEGV delivery — same shape as x86 path.
+#[cfg(target_arch = "aarch64")]
+fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
+    use core::sync::atomic::Ordering;
+    use alloc::sync::Arc;
+    debug_irq! {
+        klog::write_raw(b"[FAULT] sigsegv: kill tid=");
+        if let Some(c) = crate::sched::current() { klog::write_dec_u64(c.tid as u64); }
+        klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
+        klog::write_raw(b" far=");      klog::write_hex_u64(far);
+        klog::write_raw(b" elr=");      klog::write_hex_u64(elr);
+        klog::write_raw(b"\n");
+    }
+    if let Some(rq) = crate::sched::global() {
+        let raw = rq.current.load(Ordering::Acquire);
+        if !raw.is_null() {
+            // SAFETY: rq.current non-null after install; matching Arc bump.
+            unsafe { Arc::increment_strong_count(raw); }
+            // SAFETY: matching Arc::from_raw consumes the bumped count.
+            let arc = unsafe { Arc::from_raw(raw) };
+            arc.exit_status.store(11, Ordering::Release);
+            crate::sched::mark_done(&arc);
+            crate::sched::park_zombie(arc);
+        }
+    }
+    // SAFETY: kernel ctx, preempt-off, runqueue installed.
+    unsafe { crate::sched::schedule(); }
+    loop {
+        // SAFETY: msr daifset+wfi at EL1; final halt path.
+        unsafe { core::arch::asm!("msr daifset, #2; wfi", options(nomem, nostack, preserves_flags)); }
+    }
 }
 
 /// Run the demand-page resolver against a specific AS.
