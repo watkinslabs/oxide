@@ -36,6 +36,7 @@ const SYSCALL_NR_EXECVE: u64         = 59;
 const SYSCALL_NR_WAIT4: u64          = 61;
 const SYSCALL_NR_GETPID: u64         = 39;
 const SYSCALL_NR_GETPPID: u64        = 110;
+const SYSCALL_NR_READ: u64           = 0;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -87,6 +88,72 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
 /// glue now intercepts nr=11 first so it's dead-path).
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
+}
+
+/// Poll the COM1 UART (I/O port 0x3F8) for one byte. Returns
+/// `Some(byte)` if RX data is ready, `None` otherwise. v1 stand-
+/// in for full TTY input plumbing per docs/28: a real UART RX
+/// IRQ + ringbuffer + WaitQueue lands with the interactive shell
+/// PR (P2-23). This polling form is enough to demonstrate the
+/// syscall path; userspace reads `0` until input arrives.
+///
+/// # SAFETY: privileged port I/O legal at CPL=0; reads two bytes
+/// at most from the COM1 device range.
+#[cfg(target_arch = "x86_64")]
+unsafe fn uart_poll_read() -> Option<u8> {
+    // SAFETY: port I/O at CPL=0; LSR + RBR are read-only; no memory effect.
+    unsafe {
+        let lsr: u8;
+        core::arch::asm!(
+            "in al, dx",
+            out("al") lsr,
+            in("dx") 0x3FDu16,
+            options(nomem, nostack, preserves_flags),
+        );
+        if lsr & 0x01 == 0 {
+            return None;
+        }
+        let b: u8;
+        core::arch::asm!(
+            "in al, dx",
+            out("al") b,
+            in("dx") 0x3F8u16,
+            options(nomem, nostack, preserves_flags),
+        );
+        Some(b)
+    }
+}
+
+/// `sys_read(fd, buf, count)` — slot 0. v1 stand-in: only fd=0
+/// (stdin) is wired, polling COM1 RX. Other fds fall through to
+/// the arch-neutral table's `-EBADF` stub.
+///
+/// Polling, non-blocking: if RX data is ready returns the byte
+/// count read (currently always 1 on a hit, 0 on no data). A real
+/// blocking implementation rides the WaitQueue work for P2-23.
+#[cfg(target_arch = "x86_64")]
+fn kernel_sys_read(args: &SyscallArgs) -> i64 {
+    let fd  = args.a0 as i32;
+    let buf = args.a1;
+    let cnt = args.a2;
+    if fd != 0 {
+        // Not stdin — defer to in-table stub via -EBADF.
+        return -(Errno::Ebadf.as_i32() as i64);
+    }
+    if cnt == 0 {
+        return 0;
+    }
+    if buf == 0 || buf >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: port I/O at CPL=0; non-blocking poll.
+    let byte = match unsafe { uart_poll_read() } {
+        Some(b) => b,
+        None    => return 0, // EAGAIN-equivalent: caller polls again.
+    };
+    // SAFETY: caller validated buf < USER_VA_END; user page mapped (caller's task already executed from this AS); CPL=0 writes through user mapping.
+    unsafe { core::ptr::write_volatile(buf as *mut u8, byte); }
+    1
 }
 
 /// `sys_getpid()` — slot 39 per docs/15§5. Returns the current
@@ -531,6 +598,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_EXIT          => kernel_sys_exit(&args),
         SYSCALL_NR_GETPID        => kernel_sys_getpid(&args),
         SYSCALL_NR_GETPPID       => kernel_sys_getppid(&args),
+        #[cfg(target_arch = "x86_64")]
+        SYSCALL_NR_READ          => kernel_sys_read(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
