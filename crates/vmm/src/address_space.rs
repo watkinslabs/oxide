@@ -63,33 +63,76 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn root_pa(&self) -> u64 { self.root_pa }
 
-    /// Clone this AS into a new one with a fresh PT root per
-    /// docs/11§7. v0 (this PR): copies the VMA tree only — each
-    /// VMA is cloned (KernelBytes-backed VMAs share the same
-    /// `&'static [u8]` slice; Anonymous VMAs reset rss=0).
-    /// **Mapped pages are NOT copied**: the child AS has empty PT
-    /// entries, so first access to a code page demand-pages from
-    /// the shared KernelBytes slice and first access to an
-    /// Anonymous page allocates a fresh zero frame.
+    /// Clone this AS's VMA tree into a new AS with the supplied
+    /// PT root PA. Mapped pages are NOT copied — child PT entries
+    /// start empty; first user access demand-pages from
+    /// KernelBytes (code/rodata) or zero-fills (Anonymous).
+    /// Hosted tests + the original P2-15a fork path use this.
     ///
-    /// This is a deliberately-incomplete fork:
-    /// - Correct for the static-PIE shell-spawn case where the
-    ///   parent and child both run from the same KernelBytes blob
-    ///   and don't share heap state.
-    /// - **Incorrect** for general POSIX fork where heap/stack
-    ///   contents must survive into the child. Real per-page copy
-    ///   (or COW upgrade) lands in P2-15b alongside the syscall.
-    ///
-    /// `new_root_pa` is the PA of an already-allocated PT root
-    /// frame for the child — caller obtains it via the per-arch
-    /// `mmu_ops::new_user_pml4` / `new_user_l0`. `0` is reserved
-    /// for hosted-test stubs (no real PT root).
+    /// For full POSIX fork semantics including Anonymous-page copy,
+    /// see [`fork_copy_pages`].
     /// # C: O(N) over VMA count.
     pub fn fork(&self, new_root_pa: u64) -> KResult<Arc<Self>> {
         let src = self.vmas.read();
         let mut dst = VmaTree::new();
         for vma in src.iter() {
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+        }
+        Ok(Arc::new(Self {
+            vmas: RwLock::new(dst),
+            root_pa: new_root_pa,
+        }))
+    }
+
+    /// Full POSIX fork per docs/11§7: clone the VMA tree AND copy
+    /// every mapped page of every Anonymous VMA into fresh PMM
+    /// frames installed in the child PT at `new_root_pa`. KernelBytes-
+    /// backed VMAs re-fault in the child against the shared
+    /// `&'static [u8]` slice (functionally identical to copy-on-fault
+    /// since the data is read-only).
+    ///
+    /// `new_root_pa` must be an already-allocated PT root with
+    /// kernel-half cloned from master per `11§2` invariant 5.
+    ///
+    /// # SAFETY: source AS is the active CR3 / TTBR0 (so
+    /// `M::translate` resolves source PTEs); single-CPU UP;
+    /// preempt-off; caller is the `sys_fork` handler.
+    /// # C: O(N_vmas + P_anon_pages)
+    pub fn fork_copy_pages<M: MmuOps, F: FnMut() -> Option<u64>>(
+        &self,
+        new_root_pa: u64,
+        hhdm_offset: u64,
+        mut alloc_frame: F,
+    ) -> KResult<Arc<Self>> {
+        let src = self.vmas.read();
+        let mut dst = VmaTree::new();
+        for vma in src.iter() {
+            dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+        }
+        for vma in src.iter() {
+            if !matches!(vma.backing, VmaBacking::Anonymous) { continue; }
+            let mut va = vma.start.as_u64();
+            let end = vma.end.as_u64();
+            while va < end {
+                if let Some((src_pa, _)) = M::translate(Va(va)) {
+                    let dst_pa = match alloc_frame() {
+                        Some(p) => p,
+                        None    => return Err(Error::NoMem),
+                    };
+                    // SAFETY: src_pa came from the active PT walk; HHDM mirror at hhdm + (src_pa&!0xfff) is read-mapped; dst_pa is fresh PMM frame; non-overlapping copy.
+                    unsafe {
+                        let s = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
+                        let d = (hhdm_offset + dst_pa) as *mut u8;
+                        core::ptr::copy_nonoverlapping(s, d, PAGE_SIZE_BYTES as usize);
+                    }
+                    let pte_flags = vma.prot.to_page_flags();
+                    // SAFETY: new_root_pa carries kernel-half clone of master per P2-19; va page-aligned in user range; dst_pa fresh; flags carry USER per `11§5`.
+                    unsafe {
+                        M::map_at(new_root_pa, Va(va), Pa(dst_pa), pte_flags, PageSize::P4K);
+                    }
+                }
+                va += PAGE_SIZE_BYTES;
+            }
         }
         Ok(Arc::new(Self {
             vmas: RwLock::new(dst),

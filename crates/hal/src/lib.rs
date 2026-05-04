@@ -178,6 +178,17 @@ pub trait MmuOps {
     /// # C: O(1) local
     fn flush_all_local();
 
+    /// Like `map` but installs into the page-table tree rooted at
+    /// `root_pa` instead of the active CR3 / TTBR0. Used by
+    /// `AddressSpace::fork` per docs/11§7 to populate child page
+    /// tables without temporarily activating them.
+    /// # SAFETY: caller asserts `root_pa` is a valid kernel-owned
+    /// PT root frame; `va` and `pa` aligned per `size`; per-AS PT
+    /// lock held.
+    /// # C: O(1)
+    /// # Ctx: under PT lock per `06§3.6`
+    unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize);
+
     /// Install `root_pa` as this CPU's active user-half page-table root.
     ///
     /// On x86_64 writes `CR3` (single tree covering both halves; the
