@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #289) — 2026-05-04
+## Session 23 (PRs #234 – #292) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -550,6 +550,9 @@ End-of-session-22 verified-green (final, post-22g):
 | #287 | `P3-49-syscall-coverage-banner` | Boot banner `[INFO] syscall: ~200 slots wired (real impls + compat stubs)` after dev-misc + procfs + pipe-evt smokes. |
 | #288 | `P3-50-state-changelog-final` | docs catch-up through #287; verified-green block updated. |
 | #289 | `P3-51-execve-real-argv` | execve now snapshots up to 8×64 argv/envp strings from the OLD AS into stack-allocated kernel buffers BEFORE activating the new AS, then materialises `&[&[u8]]` slices into `exec_stack::build_user_stack`. Real shells passing argv/envp to fork/execve children will now see them. |
+| #290 | `P3-52-state-changelog` | docs catch-up through #289. |
+| #291 | `P3-53-execve-args-trace` | sys_execve trace now logs `argc=N envc=M` so the boot trace confirms argv pass-through is on the live path. |
+| #292 | `P3-54-execve-path-string` | execve real path-string resolution: reads up to 64 user bytes, looks up `/init`, `/sbin/init`, `/bin/{yo,hi,echo,cat}`, `/usr/bin/*` via new `crate::elf_smoke::lookup_blob_by_path`. Falls back to single-byte selector for the existing init-blob iter_block. Shells calling `execve("/bin/cat", argv, envp)` resolve correctly. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
