@@ -586,7 +586,7 @@ End-of-session-23 verified-green:
 
 ---
 
-## Session 24 (PRs #316 – #318) — 2026-05-04
+## Session 24 (PRs #316 – #323) — 2026-05-04
 
 **Subject**: M2 follow-ups — real argv in /proc/self/cmdline; real getdents64 over a /tmp directory inode; tid registry plus dynamic per-pid /proc/<tid>/.
 
@@ -595,6 +595,11 @@ End-of-session-23 verified-green:
 | #316 | `P3-80-task-cmdline` | Task gains `cmdline: UnsafeCell<Option<String>>`. `kernel_sys_execve` snapshots argv[0..argc] (NUL-joined) into the slot per `13§5` single-mutator. `ProcSelfCmdlineInode` reads the snapshot; falls back to `Task.name` + NUL when no execve has run. /proc/self/cmdline now reflects real argv per `19§4`. |
 | #317 | `P3-81-tmpfs-readdir` | `TmpfsRootInode` synthesises a directory view over the flat tmpfs path registry — `lookup(name)` reverses the `/tmp/<name>` mapping; `readdir` walks REGISTRY filtering `/tmp/<leaf>` entries. Registered at boot so `open("/tmp", O_DIRECTORY)` returns it. `kernel_sys_getdents64` now drives `Inode::readdir` and emits real `linux_dirent64` records (d_ino / d_off cookie / d_reclen 8B-padded / d_type / NUL-terminated name); `File.pos()` carries the cookie across calls. ENOTDIR for regular fds. |
 | #318 | `P3-82-tid-registry` | New `kernel/src/sched/registry.rs`: global `Spinlock<Vec<(tid, Weak<Task>)>>`. `spawn_user_thread` inserts on every spawn; entries decay via `Weak::upgrade`. `procfs::lookup_dynamic(path)` resolves `/proc/<tid>` directories and per-pid status/cmdline/stat/maps. `ProcRootInode` emits live tids + `self` via getdents64. `sys_open`/`sys_openat`/`sys_stat` consult the dynamic resolver after a devfs miss. |
+| #319 | `C54-state-eod-session-24` | Session-24 EOD docs catch-up. |
+| #320 | `P3-83-devfs-root-readdir` | `PrefixDirInode` walks the flat devfs path registry and emits children whose paths are `<prefix>/<single-segment>`. Registered for `/`, `/dev`, `/sys`, `/etc`, `/bin`, `/usr`, `/usr/bin`, `/proc/sys`. `open("/dev", O_DIRECTORY) + getdents64` enumerates the real char-dev set. |
+| #321 | `P3-84-proc-self-fd` | `ProcSelfFdInode` (FileType::Directory) — readdir emits decimal fd names; lookup parses the name and returns the underlying File's inode. New `FdTable::live_fds()` helper. Bash + lsof + busybox `ls /proc/self/fd` rely on this. |
+| #322 | `P3-85-readlink-real-exe` | `sys_readlink` and `sys_readlinkat` now resolve `/proc/<tid>/{exe,cwd,root}` and `/proc/self/{exe,cwd,root}`. `exe` returns argv[0] from the target task's cmdline snapshot (P3-80); fallback `/init`. cwd/root still report `/`. |
+| #323 | `P3-86-close-range` | Linux 5.9+ slot 436. Walks `FdTable::live_fds()` and closes (or sets cloexec under `CLOSE_RANGE_CLOEXEC`) every fd in [first, last]. Removed from syscall_compat ENOSYS bucket. Modern shells use this to drop inherited fds before exec. |
 
 End-of-session-24 verified-green:
 - `make lint` clean.

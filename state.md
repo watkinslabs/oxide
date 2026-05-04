@@ -1,12 +1,16 @@
 # State 2026-05-04 (session 24 EOD — M2 follow-ups: cmdline / getdents64 / tid registry)
 
-## Session 24 highlights (PRs #316 – #318)
+## Session 24 highlights (PRs #316 – #323)
 
 | # | Branch | Why it matters |
 |---|---|---|
 | 316 | `P3-80-task-cmdline` | Task gains `cmdline: UnsafeCell<Option<String>>` populated at execve from argv[0..argc]; `/proc/self/cmdline` reads the real snapshot per `19§4`. |
 | 317 | `P3-81-tmpfs-readdir` | TmpfsRootInode (synthetic dir view over the flat registry) + real `linux_dirent64` packing in kernel_sys_getdents64. `open("/tmp", O_DIRECTORY)` + getdents64 enumerates. |
 | 318 | `P3-82-tid-registry` | Global tid → Weak<Task> registry populated at spawn; `procfs::lookup_dynamic` resolves `/proc/<tid>/{status,cmdline,stat,maps}`; ProcRootInode readdir emits live tids + `self`. |
+| 320 | `P3-83-devfs-root-readdir` | `PrefixDirInode` over flat devfs registry; registered for `/`, `/dev`, `/sys`, `/etc`, `/bin`, `/usr`, `/usr/bin`, `/proc/sys`. Real getdents64 enumeration of these dirs. |
+| 321 | `P3-84-proc-self-fd` | `/proc/self/fd` directory walks `current().fd_table.live_fds()`; lookup parses the fd back to the underlying File's inode. New `FdTable::live_fds()`. |
+| 322 | `P3-85-readlink-real-exe` | `/proc/<tid>/exe` symlink target now reports argv[0] from cmdline snapshot. cwd/root still `/`. |
+| 323 | `P3-86-close-range` | Real `sys_close_range` (slot 436). Modern shells use this for fd cleanup before exec. |
 
 524 tests; both arches build clean; spec-lint clean. M2 progress: shells/getty now have real argv visibility, real /tmp directory iteration, and per-pid /proc enumeration. Remaining for full M2: build static busybox; ld.so / dynamic linker; PTY (`/dev/ptmx` + `/dev/pts/*`); job control (tcsetpgrp).
 
