@@ -41,6 +41,9 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 268 | `P3-29-pipe-smoke-test` | Boot-time pipe-evt-smoke (5-byte pipe round-trip + u64 eventfd counter). |
 | 269 | `P3-30-clock-getres` | clock_getres / clock_settime / gettimeofday / time + new syscall_glue_time module. |
 | 270 | `P3-31-etc-hostname` | /etc/{hostname,passwd,group,nsswitch.conf,resolv.conf,localtime} + /proc/sys/kernel/* static entries. |
+| 271 | `P3-32-state-changelog-update` | docs through #270. |
+| 272 | `P3-33-getdents64` | getdents/getdents64 stub returns 0 (EOD). |
+| 273 | `P3-34-pread-pwrite` | pread64/pwrite64 via Inode read/write with offset; preadv/pwritev ENOSYS. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
