@@ -78,8 +78,13 @@ pub mod tty;
 
 /// `/dev/console` char-device per docs/16 + docs/28. v1 stub
 /// of the real /dev plumbing; full VFS + devfs ride P2-30.
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+#[cfg(target_os = "oxide-kernel")]
 pub mod dev_console;
+
+/// Minimal devfs registry per docs/16 + docs/19. Path → InodeRef
+/// table for `/dev/console` + `/dev/tty*`. Resolved by `sys_open`.
+#[cfg(target_os = "oxide-kernel")]
+pub mod devfs;
 
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
@@ -424,6 +429,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { user_as::init(info.hhdm_offset); }
+        // Register `/dev/console` + `/dev/tty*` in the v1 devfs
+        // registry per docs/19. `sys_open(2)` resolves through here.
+        devfs::init();
     }
 
 
