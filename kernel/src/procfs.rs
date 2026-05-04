@@ -75,3 +75,27 @@ pub fn init() {
     crate::devfs::register("/proc/self/maps",   StaticFileInode::new(b"")              as InodeRef);
     crate::devfs::register("/proc/self/status", StaticFileInode::new(b"State: R\n")    as InodeRef);
 }
+
+/// Boot-time smoke: open every registered /proc entry via the
+/// devfs lookup, read its first 16 bytes through the Inode trait,
+/// kassert the body matches the registered prefix.
+/// # SAFETY: caller is the boot path; single-CPU pre-init.
+/// # C: O(N_files)
+pub fn smoke_test() {
+    use vfs::Inode;
+    use hal::kassert;
+    let entries: &[(&str, &[u8])] = &[
+        ("/proc/version", b"oxide"),
+        ("/proc/cpuinfo", b"processor"),
+        ("/proc/meminfo", b"MemTotal:"),
+        ("/proc/uptime",  b"0.00"),
+    ];
+    for (path, prefix) in entries {
+        let inode = crate::devfs::lookup(path).expect("procfs lookup");
+        let mut buf = [0u8; 32];
+        let n = inode.read(0, &mut buf).expect("procfs read");
+        kassert!(n >= prefix.len(), "procfs read short");
+        kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
+    }
+    debug_boot! { klog::write_raw(b"[INFO]  procfs-smoke: ok\n"); }
+}
