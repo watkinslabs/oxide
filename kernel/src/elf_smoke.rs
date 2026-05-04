@@ -16,23 +16,22 @@
 use crate::elf_load::load_static_blob;
 
 /// Build an init-like fork+wait4+execve loop ELF64 at compile
-/// time. Two iterations: parent forks → child execs YO ("yo\\n");
-/// parent waits → forks → child execs HI ("hi\\n"); parent waits
-/// → exits. ECHO_BLOB is registered in `lookup_blob` for future
-/// programs to execve("e"); a 3-iteration init-blob demo of
-/// read+write end-to-end rides P3-02b once the fd_table read
-/// path through ConsoleInode is fully traced.
+/// time. Three iterations: parent forks → child execs YO
+/// ("yo\\n"); parent waits → forks → child execs HI ("hi\\n");
+/// parent waits → forks → child execs ECHO (read 1 byte from
+/// fd 0, write it back to fd 1); parent waits → exits. ECHO is
+/// fed by `tty::inject_for_smoke(b"A")` at boot so the smoke
+/// runs non-interactively — boot trace shows yo / hi / A.
 ///
 /// Layout:
 ///   [0..64)     ehdr
 ///   [64..120)   PT_LOAD phdr
 ///   [120..128)  pad
-///   [128..248)  code (120 B): 2 iterations × 60 B
-///   [248..259)  final exit (11 B)
-///   [259..260)  'y' (vaddr 0x400103)
-///   [260..261)  'h' (vaddr 0x400104)
-const fn build_elf() -> [u8; 261] {
-    let mut b = [0u8; 261];
+///   [128..308)  code (180 B): 3 iterations × 60 B
+///   [308..319)  final exit (11 B)
+///   [319..322)  'y','h','e' at vaddrs 0x40013F/40/41
+const fn build_elf() -> [u8; 322] {
+    let mut b = [0u8; 322];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
     b[4]=2; b[5]=1; b[6]=1;
     b[16]=2; b[18]=62; b[20]=1;
@@ -48,7 +47,7 @@ const fn build_elf() -> [u8; 261] {
     let vb = v.to_le_bytes();
     i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
     i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
-    let fs: u64 = 261;
+    let fs: u64 = 322;
     let fb = fs.to_le_bytes();
     i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
     i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
@@ -56,21 +55,24 @@ const fn build_elf() -> [u8; 261] {
     let ab = al.to_le_bytes();
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
-    // 2 iterations × 60 B each. Selectors:
-    //   iter 1: 'y' at vaddr 0x400103 (sel_lo = 0x03)
-    //   iter 2: 'h' at vaddr 0x400104 (sel_lo = 0x04)
+    // 3 iterations × 60 B each. Selectors:
+    //   iter 1: 'y' at vaddr 0x40013F (sel_lo = 0x3F)
+    //   iter 2: 'h' at vaddr 0x400140 (sel_lo = 0x40)
+    //   iter 3: 'e' at vaddr 0x400141 (sel_lo = 0x41) — ECHO
     let c = 128;
-    iter_block(&mut b, c,      0x03);
-    iter_block(&mut b, c + 60, 0x04);
-    // Final exit at offset 120.
-    let e = c + 120;
+    iter_block(&mut b, c,        0x3F);
+    iter_block(&mut b, c + 60,   0x40);
+    iter_block(&mut b, c + 120,  0x41);
+    // Final exit at offset 180.
+    let e = c + 180;
     b[e+0]=0xB8; b[e+1]=0x3C;             // mov $60, %eax
     b[e+5]=0x31; b[e+6]=0xFF;             // xor %edi, %edi
     b[e+7]=0x0F; b[e+8]=0x05;             // syscall (exit)
     b[e+9]=0x0F; b[e+10]=0x0B;            // ud2
-    // Selectors at file offsets 259, 260 → vaddrs 0x400103, 0x400104.
-    b[259]=b'y';
-    b[260]=b'h';
+    // Selectors at file offsets 319/320/321 → vaddrs 0x40013F/40/41.
+    b[319]=b'y';
+    b[320]=b'h';
+    b[321]=b'e';
     b
 }
 
@@ -78,7 +80,7 @@ const fn build_elf() -> [u8; 261] {
 /// at file-offset `off` within `b`. `sel_lo` is the low byte of
 /// the selector VA (0x400000 | (sel_lo as u32)) — the selector
 /// itself sits at file offset == vaddr & 0xfff. Block size = 60 B.
-const fn iter_block(b: &mut [u8; 261], off: usize, sel_lo: u8) {
+const fn iter_block(b: &mut [u8; 322], off: usize, sel_lo: u8) {
     // [0x00] mov $57, %eax            ; sys_fork
     b[off+0]=0xB8; b[off+1]=0x39;
     // [0x05] syscall
@@ -121,7 +123,7 @@ const fn iter_block(b: &mut [u8; 261], off: usize, sel_lo: u8) {
     b[off+58]=0x0F; b[off+59]=0x05;
 }
 
-const ELF_BLOB_BYTES: [u8; 261] = build_elf();
+const ELF_BLOB_BYTES: [u8; 322] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
 /// Build a "writes 2-char message + exit" ELF64. `c0`/`c1` are
@@ -276,7 +278,8 @@ const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 /// `entry+0x1F`.
 const USER_RIP_UD2_ITER1_FS: u64 = 0x400080 + 0x27;
 const USER_RIP_UD2_ITER2_FS: u64 = 0x400080 + 60 + 0x27;
-const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 2*60 + 9;
+const USER_RIP_UD2_ITER3_FS: u64 = 0x400080 + 2*60 + 0x27;
+const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 3*60 + 9;
 const USER_RIP_UD2_EXEC:     u64 = 0x400080 + 0x1F;
 const USER_RIP_UD2_ECHO:     u64 = 0x400080 + 0x2B;
 
@@ -289,6 +292,7 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     }
     if vec == 6 && (rip == USER_RIP_UD2_ITER1_FS
                     || rip == USER_RIP_UD2_ITER2_FS
+                    || rip == USER_RIP_UD2_ITER3_FS
                     || rip == USER_RIP_UD2_FINAL
                     || rip == USER_RIP_UD2_EXEC
                     || rip == USER_RIP_UD2_ECHO) {
