@@ -57,6 +57,32 @@ pub fn read_cr4() -> u64 {
     { 0 }
 }
 
+/// Enable CR4 bits required to let user code execute SSE/SSE2
+/// instructions: OSFXSR (bit 9, FXSAVE/FXRSTOR enable +
+/// SSE-via-XMM legal) and OSXMMEXCPT (bit 10, allow #XF). Also
+/// clears CR0.EM (bit 2 — emulate-x87) so SSE doesn't redirect
+/// to #UD/#NM, and sets CR0.MP (bit 1 — task-switched FPU is
+/// monitored). musl's libc startup uses `movq %rbx, %xmm0` and
+/// similar SSE2 instructions; without this they raise #UD.
+/// # SAFETY: privileged CR0/CR4 writes legal at CPL=0; called
+/// once at boot before any user code runs.
+/// # C: O(1)
+pub unsafe fn enable_sse() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn-level contract — privileged CR0/CR4 reads/writes legal at CPL=0; called once at boot pre-userspace; no concurrent CPU modifies CR4 in v1 single-CPU UP.
+    unsafe {
+        let mut cr0: u64;
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
+        cr0 &= !(1u64 << 2); // clear EM
+        cr0 |=  (1u64 << 1); // set MP
+        asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
+        let mut cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        cr4 |= (1u64 << 9) | (1u64 << 10);
+        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// Read IA32_EFER MSR (long-mode + NX enable).
 /// # C: O(1)
 pub fn read_efer() -> u64 {

@@ -34,7 +34,7 @@ mod pt_regs;
 mod regs;
 pub mod vmm;
 pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
-pub use regs::{read_cr0, read_cr3, read_cr4, read_efer};
+pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use fault::{install_fault_handler, vector_stub_addr, FaultHandler};
 pub use irq::irq_stub_addr;
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};

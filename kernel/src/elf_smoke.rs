@@ -346,6 +346,7 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
         b"/bin/hi" | b"/usr/bin/hi"         => Some(HI_BLOB),
         b"/bin/echo" | b"/usr/bin/echo"     => Some(ECHO_BLOB),
         b"/bin/cat"  | b"/usr/bin/cat"      => Some(CAT_BLOB),
+        b"/bin/hello" | b"/usr/bin/hello"   => Some(HELLO_BLOB),
         _ => None,
     }
 }
@@ -354,6 +355,13 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
 /// can't be `pub` directly without touching the existing access
 /// patterns; this wrapper exposes it under a dedicated name.
 pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
+
+/// musl static-PIE helloworld blob (P3-59 / M1). Built with
+/// `musl-gcc -static-pie -fPIE -O2`. First non-hand-rolled binary
+/// the kernel executes — validates the ELF loader against a real
+/// toolchain output (DT_RELA self-relocs, .text/.rodata/.data
+/// segments, real auxv consumption).
+pub const HELLO_BLOB: &'static [u8] = include_bytes!("../blobs/hello.elf");
 
 /// Boot-time smoke: kassert each registered path resolves to a
 /// non-empty ELF blob with the expected magic bytes.
@@ -452,8 +460,14 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     use vmm::{VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 
+    // Install the fault handler BEFORE load: PIE relocation
+    // application writes through user mappings that may need
+    // demand-fault resolution (kernel-mode #PF on user VA).
+    // SAFETY: handler fn is 'static; pre-init single-CPU swap.
+    unsafe { hal_x86_64::install_fault_handler(elf_smoke_fault_handler); }
+
     let img = match crate::user_as::with(|as_| {
-        let img = load_static_blob(ELF_BLOB, as_)?;
+        let img = load_static_blob(HELLO_BLOB, as_)?;
         // Stack VMA — anonymous, demand-paged on first push.
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
             .ok_or(crate::elf_load::LoadError::Einval)?;
@@ -490,9 +504,25 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::write_raw(b"\n");
     }
 
-    // Install the smoke fault handler.
-    // SAFETY: handler fn is 'static; pre-init single-CPU swap.
-    unsafe { hal_x86_64::install_fault_handler(elf_smoke_fault_handler); }
+    // Build the SysV initial stack (argc/argv/envp/auxv) for the
+    // user task per docs/31§4. The musl `_start` entry expects to
+    // find argc at SP; without this it reads garbage and faults.
+    let random16 = {
+        use hal::TimerOps;
+        let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        let mut r = [0u8; 16];
+        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
+        r
+    };
+    // SAFETY: global user AS is the active CR3 per init; build_user_stack writes via that mapping; user_fault_handler resolves the demand-faulted stack page.
+    let new_sp = unsafe {
+        crate::exec_stack::build_user_stack(
+            USER_STACK_TOP,
+            &[b"/init"], &[],
+            &img,
+            &random16,
+        )
+    }.unwrap_or(USER_STACK_TOP);
 
     let mm = match crate::user_as::clone_global_arc() {
         Some(a) => a,
@@ -505,7 +535,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         crate::sched::spawn_user_thread(
             0xC0DE_0001, "elf-user",
             img.entry.as_u64(),
-            USER_STACK_TOP,
+            new_sp,
             mm,
         )
     } {
@@ -523,7 +553,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::write_raw(b"[INFO]  elf-smoke: spawned tid=0xC0DE0001 entry=");
         klog::write_hex_u64(img.entry.as_u64());
         klog::write_raw(b" sp=");
-        klog::write_hex_u64(USER_STACK_TOP);
+        klog::write_hex_u64(new_sp);
         klog::write_raw(b"\n");
     }
 
