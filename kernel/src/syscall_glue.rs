@@ -58,6 +58,9 @@ const SYSCALL_NR_WRITEV: u64         = 20;
 const SYSCALL_NR_READV: u64          = 19;
 const SYSCALL_NR_GETTID: u64         = 186;
 const SYSCALL_NR_SET_TID_ADDRESS: u64 = 218;
+const SYSCALL_NR_POLL: u64           = 7;
+const SYSCALL_NR_PPOLL: u64          = 271;
+const SYSCALL_NR_LSEEK: u64          = 8;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -962,6 +965,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_SET_TID_ADDRESS => crate::syscall_glue_proc::kernel_sys_set_tid_address(&args),
         SYSCALL_NR_WRITEV        => crate::syscall_glue_fs::kernel_sys_writev(&args),
         SYSCALL_NR_READV         => crate::syscall_glue_fs::kernel_sys_readv(&args),
+        SYSCALL_NR_POLL          => crate::syscall_glue_fs::kernel_sys_poll(&args),
+        SYSCALL_NR_PPOLL         => crate::syscall_glue_fs::kernel_sys_ppoll(&args),
+        SYSCALL_NR_LSEEK         => crate::syscall_glue_fs::kernel_sys_lseek(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
