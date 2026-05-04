@@ -88,6 +88,15 @@ const SYSCALL_NR_FACCESSAT: u64      = 269;
 const SYSCALL_NR_ACCESS: u64         = 21;
 const SYSCALL_NR_EVENTFD2: u64       = 290;
 const SYSCALL_NR_EVENTFD: u64        = 284;
+const SYSCALL_NR_GETCPU: u64         = 309;
+const SYSCALL_NR_SCHED_GETPARAM: u64 = 143;
+const SYSCALL_NR_SCHED_SETSCHEDULER: u64 = 144;
+const SYSCALL_NR_SCHED_GETSCHEDULER: u64 = 145;
+const SYSCALL_NR_SCHED_GET_PRIORITY_MAX: u64 = 146;
+const SYSCALL_NR_SCHED_GET_PRIORITY_MIN: u64 = 147;
+const SYSCALL_NR_SCHED_GETAFFINITY: u64 = 204;
+const SYSCALL_NR_SCHED_SETAFFINITY: u64 = 203;
+const SYSCALL_NR_PRCTL: u64          = 157;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -904,6 +913,19 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_FACCESSAT     => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
         SYSCALL_NR_EVENTFD | SYSCALL_NR_EVENTFD2
                                  => crate::syscall_glue_fs::kernel_sys_eventfd2(&args),
+        SYSCALL_NR_GETCPU        => crate::syscall_glue_proc::kernel_sys_getcpu(&args),
+        SYSCALL_NR_SCHED_GETPARAM => crate::syscall_glue_proc::kernel_sys_sched_getparam(&args),
+        SYSCALL_NR_SCHED_SETSCHEDULER | SYSCALL_NR_SCHED_GETSCHEDULER
+                                 => crate::syscall_glue_proc::kernel_sys_sched_getscheduler(&args),
+        SYSCALL_NR_SCHED_GET_PRIORITY_MAX
+                                 => crate::syscall_glue_proc::kernel_sys_sched_get_priority_max(&args),
+        SYSCALL_NR_SCHED_GET_PRIORITY_MIN
+                                 => crate::syscall_glue_proc::kernel_sys_sched_get_priority_min(&args),
+        SYSCALL_NR_SCHED_GETAFFINITY
+                                 => crate::syscall_glue_proc::kernel_sys_sched_getaffinity(&args),
+        SYSCALL_NR_SCHED_SETAFFINITY
+                                 => crate::syscall_glue_proc::kernel_sys_sched_setaffinity(&args),
+        SYSCALL_NR_PRCTL         => crate::syscall_glue_proc::kernel_sys_prctl(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
