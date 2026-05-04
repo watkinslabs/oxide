@@ -542,6 +542,11 @@ pub mod pf_recover_smoke;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue;
 
+// P3-03 fs-shaped syscalls split out of `syscall_glue` to keep that
+// file under the 1000-line cap per `08§7`.
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_fs;
+
 // Global user `AddressSpace` per `11§3` + demand-paging fault hook
 // per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
 #[cfg(target_os = "oxide-kernel")]
