@@ -275,6 +275,8 @@ unsafe extern "C" fn _start_rust() -> ! {
     unsafe { hal_x86_64::install_default_idt(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT in place so STAR's kernel CS=0x28 / SS=0x30 selectors are valid; sets IA32_LSTAR to oxide_syscall_entry, EFER.SCE=1, FMASK clears IF/DF/AC on entry. User-side `syscall` becomes legal but no user task exists pre-userspace_smoke.
     unsafe { hal_x86_64::install_syscall_msrs(); }
+    // SAFETY: single-CPU boot; CR0/CR4 writes legal at CPL=0; enables CR0.MP + clears CR0.EM + sets CR4.OSFXSR/OSXMMEXCPT so user-mode SSE/SSE2 instructions execute (musl libc startup uses SSE2 movq/punpcklqdq).
+    unsafe { hal_x86_64::enable_sse(); }
     // TSC calibration: v1 hardcodes 2.4 GHz, the steady QEMU TSC
     // rate when running with `-cpu Haswell-v4`. Real PIT/HPET-based
     // calibration lands with `23§3` once we have a usable HPET MMIO
