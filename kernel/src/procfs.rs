@@ -46,6 +46,55 @@ impl Inode for StaticFileInode {
     }
 }
 
+/// `/proc/self/status` per `19§4`. Synthesises body at read time
+/// from the current task; bash and many libc fns parse this.
+pub struct ProcSelfStatusInode;
+
+impl ProcSelfStatusInode {
+    fn body() -> alloc::vec::Vec<u8> {
+        use core::sync::atomic::Ordering;
+        let mut out = alloc::vec::Vec::with_capacity(256);
+        let cur = crate::sched::current();
+        let tid    = cur.map(|c| c.tid as u64).unwrap_or(1);
+        let ppid   = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
+        let name   = cur.map(|c| c.name).unwrap_or("oxide");
+        push(&mut out, b"Name:\t");        push(&mut out, name.as_bytes()); push(&mut out, b"\n");
+        push(&mut out, b"State:\tR (running)\n");
+        push(&mut out, b"Tgid:\t");        push_u64(&mut out, tid); push(&mut out, b"\n");
+        push(&mut out, b"Pid:\t");         push_u64(&mut out, tid); push(&mut out, b"\n");
+        push(&mut out, b"PPid:\t");        push_u64(&mut out, ppid); push(&mut out, b"\n");
+        push(&mut out, b"Uid:\t0\t0\t0\t0\n");
+        push(&mut out, b"Gid:\t0\t0\t0\t0\n");
+        push(&mut out, b"Threads:\t1\n");
+        out
+    }
+}
+
+impl Inode for ProcSelfStatusInode {
+    fn ino(&self) -> Ino { 0x3000_1000 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let body = Self::body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let avail = &body[off..];
+        let n = avail.len().min(buf.len());
+        buf[..n].copy_from_slice(&avail[..n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+fn push(v: &mut alloc::vec::Vec<u8>, s: &[u8]) { v.extend_from_slice(s); }
+fn push_u64(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
+    if n == 0 { v.push(b'0'); return; }
+    let mut buf = [0u8; 20]; let mut i = 0;
+    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
+    while i > 0 { i -= 1; v.push(buf[i]); }
+}
+
 const VERSION_BODY: &[u8] = b"oxide 0.1.0-pre #1 SMP PREEMPT\n";
 
 #[cfg(target_arch = "x86_64")]
@@ -73,7 +122,7 @@ pub fn init() {
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
     crate::devfs::register("/proc/self/maps",   StaticFileInode::new(b"")              as InodeRef);
-    crate::devfs::register("/proc/self/status", StaticFileInode::new(b"State: R\n")    as InodeRef);
+    crate::devfs::register("/proc/self/status", Arc::new(ProcSelfStatusInode) as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
