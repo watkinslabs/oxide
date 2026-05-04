@@ -1,6 +1,4 @@
-// Glue between the per-arch syscall asm stub and the dispatch
-// table per `15§4`. Wraps `syscall::dispatch` with arch-specific
-// interceptions (e.g. x86 sys_arch_prctl) that need hal-<arch>.
+// Glue between per-arch syscall asm stub and dispatch table per `15§4`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -10,15 +8,9 @@ use hal::{USER_VA_END};
 #[cfg(target_arch = "x86_64")]
 use hal::TimerOps;
 
-
-const NS_PER_SEC: u64 = 1_000_000_000;
-
-/// `struct utsname` field width per Linux. Six fixed-length C
-/// strings, NUL-terminated, total 6 × 65 = 390 bytes.
 const UTSNAME_FIELD_LEN: usize = 65;
 const UTSNAME_TOTAL_LEN: usize = UTSNAME_FIELD_LEN * 6;
 
-/// Per-arch machine identifier returned by `uname.machine`.
 #[cfg(target_arch = "x86_64")]
 const UNAME_MACHINE: &[u8] = b"x86_64";
 #[cfg(target_arch = "aarch64")]
@@ -586,6 +578,17 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // of slice references suffices.
     let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
+
+    // P3-80: snapshot argv → Task.cmdline (NUL-joined) for /proc/self/cmdline.
+    {
+        let mut cl = alloc::string::String::with_capacity(64);
+        for i in 0..argc {
+            for &b in argv_slices[i] { if b < 0x80 { cl.push(b as char); } }
+            cl.push('\0');
+        }
+        // SAFETY: single-mutator per `13§5`; current task is sole writer on this CPU.
+        unsafe { *cur.cmdline.get() = Some(cl); }
+    }
     let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
