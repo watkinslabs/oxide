@@ -583,3 +583,21 @@ End-of-session-23 verified-green:
 - `make qemu-x86 --features debug-all` → boot trace: `dev-misc-smoke: ok` + `procfs-smoke: ok` + `pipe-evt-smoke: ok` + `syscall: ~200 slots wired` + `exec-path-smoke: ok` validate boot-time infra; init-loop emits `yo\nhi\nA\noxide 0.1.0-pre #1 SMP PREEMPT` deterministically; full fork+execve+wait4+exit+procfs read+write cycle through 4 iterations; halts clean.
 - `make qemu-arm --features debug-all` reaches user task on the runqueue per P2-13e2; ELF demo runs (`el` written, exit clean); all boot-time smokes pass; PL011 RX hooked in (P3-23) but not yet exercised end-to-end (no arm-side init-blob iteration — rides P3 follow-up).
 - ~200 syscall slots wired across `syscall_glue.rs` real-impl arms + `syscall_glue_fs/proc/time.rs` glue helpers + `syscall_compat.rs::try_compat`. Linux x86_64 ABI surface-coverage substantially complete for libc/shell startup probes.
+
+---
+
+## Session 24 (PRs #316 – #318) — 2026-05-04
+
+**Subject**: M2 follow-ups — real argv in /proc/self/cmdline; real getdents64 over a /tmp directory inode; tid registry plus dynamic per-pid /proc/<tid>/.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #316 | `P3-80-task-cmdline` | Task gains `cmdline: UnsafeCell<Option<String>>`. `kernel_sys_execve` snapshots argv[0..argc] (NUL-joined) into the slot per `13§5` single-mutator. `ProcSelfCmdlineInode` reads the snapshot; falls back to `Task.name` + NUL when no execve has run. /proc/self/cmdline now reflects real argv per `19§4`. |
+| #317 | `P3-81-tmpfs-readdir` | `TmpfsRootInode` synthesises a directory view over the flat tmpfs path registry — `lookup(name)` reverses the `/tmp/<name>` mapping; `readdir` walks REGISTRY filtering `/tmp/<leaf>` entries. Registered at boot so `open("/tmp", O_DIRECTORY)` returns it. `kernel_sys_getdents64` now drives `Inode::readdir` and emits real `linux_dirent64` records (d_ino / d_off cookie / d_reclen 8B-padded / d_type / NUL-terminated name); `File.pos()` carries the cookie across calls. ENOTDIR for regular fds. |
+| #318 | `P3-82-tid-registry` | New `kernel/src/sched/registry.rs`: global `Spinlock<Vec<(tid, Weak<Task>)>>`. `spawn_user_thread` inserts on every spawn; entries decay via `Weak::upgrade`. `procfs::lookup_dynamic(path)` resolves `/proc/<tid>` directories and per-pid status/cmdline/stat/maps. `ProcRootInode` emits live tids + `self` via getdents64. `sys_open`/`sys_openat`/`sys_stat` consult the dynamic resolver after a devfs miss. |
+
+End-of-session-24 verified-green:
+- `make lint` clean.
+- `make test` → 524 passed, 0 failed.
+- `make build` both arches green.
+- `make qemu-x86 --features debug-all` → boot trace through all elf-smoke iterations; halts clean.

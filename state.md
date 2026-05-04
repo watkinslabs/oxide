@@ -1,3 +1,17 @@
+# State 2026-05-04 (session 24 EOD — M2 follow-ups: cmdline / getdents64 / tid registry)
+
+## Session 24 highlights (PRs #316 – #318)
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 316 | `P3-80-task-cmdline` | Task gains `cmdline: UnsafeCell<Option<String>>` populated at execve from argv[0..argc]; `/proc/self/cmdline` reads the real snapshot per `19§4`. |
+| 317 | `P3-81-tmpfs-readdir` | TmpfsRootInode (synthetic dir view over the flat registry) + real `linux_dirent64` packing in kernel_sys_getdents64. `open("/tmp", O_DIRECTORY)` + getdents64 enumerates. |
+| 318 | `P3-82-tid-registry` | Global tid → Weak<Task> registry populated at spawn; `procfs::lookup_dynamic` resolves `/proc/<tid>/{status,cmdline,stat,maps}`; ProcRootInode readdir emits live tids + `self`. |
+
+524 tests; both arches build clean; spec-lint clean. M2 progress: shells/getty now have real argv visibility, real /tmp directory iteration, and per-pid /proc enumeration. Remaining for full M2: build static busybox; ld.so / dynamic linker; PTY (`/dev/ptmx` + `/dev/pts/*`); job control (tcsetpgrp).
+
+---
+
 # State 2026-05-03 (session 23 EOD — autonomous Phase 3 batch + B09 ABI fix)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
