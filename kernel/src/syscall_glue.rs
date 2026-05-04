@@ -44,6 +44,7 @@ const SYSCALL_NR_DUP2: u64           = 33;
 const SYSCALL_NR_DUP3: u64           = 292;
 const SYSCALL_NR_OPEN: u64           = 2;
 const SYSCALL_NR_BRK: u64            = 12;
+const SYSCALL_NR_PIPE2: u64          = 293;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -178,6 +179,52 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
         Ok(n)  => n as i64,
         Err(e) => -(e as i64),
     }
+}
+
+/// `sys_pipe2(pipefd, flags)` — slot 293 per docs/15§5 +
+/// docs/24. Creates an anonymous `PipeInode`, allocates two
+/// `File`s (read end O_RDONLY, write end O_WRONLY), inserts
+/// them at the lowest-free fds in the current task's fd_table,
+/// and writes the two fd numbers to user `pipefd[2]`.
+fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
+    use alloc::string::ToString;
+    use vfs::{Dentry, File, OpenFlags};
+    let pipefd = args.a0;
+    let _flags = args.a1 as u32;
+    if pipefd == 0 || pipefd >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: we are running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let inode = crate::dev_pipe::PipeInode::new();
+    let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
+    let r_file = File::new(inode.clone(), dentry.clone(), OpenFlags::O_RDONLY);
+    let w_file = File::new(inode, dentry, OpenFlags::O_WRONLY);
+    let r_fd = match fdt.alloc(r_file)  { Ok(f) => f, Err(e) => return -(e as i64) };
+    let w_fd = match fdt.alloc(w_file)  { Ok(f) => f, Err(e) => {
+        let _ = fdt.close(r_fd);
+        return -(e as i64);
+    }};
+    // SAFETY: pipefd validated < USER_VA_END; user page mapped per active CR3 = caller's AS.
+    unsafe {
+        core::ptr::write_volatile(pipefd as *mut i32,         r_fd);
+        core::ptr::write_volatile((pipefd + 4) as *mut i32,   w_fd);
+    }
+    debug_sched! {
+        klog::write_raw(b"[INFO]  sys_pipe2: read_fd=");
+        klog::write_dec_u64(r_fd as u64);
+        klog::write_raw(b" write_fd=");
+        klog::write_dec_u64(w_fd as u64);
+        klog::write_raw(b"\n");
+    }
+    0
 }
 
 /// `sys_brk(addr)` — slot 12 per docs/15§5. Extends or shrinks
@@ -812,6 +859,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_WRITE         => kernel_sys_write(&args),
         SYSCALL_NR_OPEN          => kernel_sys_open(&args),
         SYSCALL_NR_BRK           => kernel_sys_brk(&args),
+        SYSCALL_NR_PIPE2         => kernel_sys_pipe2(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
