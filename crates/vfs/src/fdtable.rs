@@ -73,6 +73,18 @@ impl FdTable {
         self.inner.lock().files.iter().filter(|s| s.is_some()).count()
     }
 
+    /// Snapshot of live fd indices in ascending order. Used by
+    /// procfs `/proc/<pid>/fd` enumeration per `19§4`.
+    /// # C: O(N)
+    pub fn live_fds(&self) -> Vec<i32> {
+        let g = self.inner.lock();
+        let mut v = Vec::with_capacity(g.files.len());
+        for (i, s) in g.files.iter().enumerate() {
+            if s.is_some() { v.push(i as i32); }
+        }
+        v
+    }
+
     /// Install `file` at the lowest free fd; returns the fd number.
     /// # C: O(N)
     pub fn alloc(&self, file: Arc<File>) -> KResult<i32> {
