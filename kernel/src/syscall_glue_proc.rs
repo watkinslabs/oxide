@@ -130,6 +130,24 @@ pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 {
     -(syscall::errno::Errno::Enosys.as_i32() as i64)
 }
 
+/// Inspect `current.sigpending & !current.sigmask`; if non-zero,
+/// clear the lowest bit and return its 1-based signal number for
+/// the caller to deliver. v1 has no sa_handler dispatch — caller
+/// terminates the task per the default-disposition table in
+/// `27§2`.
+/// # C: O(1)
+pub fn take_lowest_pending() -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    let cur = crate::sched::current()?;
+    let pending = cur.sigpending.load(Ordering::Acquire);
+    let masked  = cur.sigmask.load(Ordering::Acquire);
+    let deliver = pending & !masked;
+    if deliver == 0 { return None; }
+    let sig = deliver.trailing_zeros() + 1;
+    cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+    Some(sig)
+}
+
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
 /// CPU UP: every memory op is already globally ordered, so any
 /// MEMBARRIER_CMD_* request succeeds vacuously.
