@@ -287,6 +287,88 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_dup(oldfd)` — slot 32. Lowest free fd → same File.
+/// # C: O(N_fds)
+pub fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
+    let oldfd = args.a0 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.dup(oldfd) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_dup2(oldfd, newfd)` — slot 33. Closes newfd, clones
+/// oldfd. oldfd==newfd returns newfd unchanged.
+/// # C: O(1) + close
+pub fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
+    let oldfd = args.a0 as i32;
+    let newfd = args.a1 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.dup2(oldfd, newfd) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_dup3(oldfd, newfd, flags)` — slot 292. Like dup2 but
+/// rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
+/// # C: O(1) + close
+pub fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
+    let oldfd = args.a0 as i32;
+    let newfd = args.a1 as i32;
+    if oldfd == newfd { return -(Errno::Einval.as_i32() as i64); }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.dup2(oldfd, newfd) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_eventfd2(initval, flags)` — slot 290. Allocates a new
+/// EventfdInode initialised to `initval`, wraps in a File at the
+/// lowest-free fd. flags ignored (EFD_NONBLOCK is the default).
+/// `sys_eventfd` (slot 284) routes here with flags=0.
+/// # C: O(1)
+pub fn kernel_sys_eventfd2(args: &SyscallArgs) -> i64 {
+    use alloc::string::ToString;
+    use vfs::{Dentry, File, OpenFlags};
+    let initval = args.a0;
+    let _flags  = args.a1;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let inode = crate::dev_pipe::EventfdInode::new(initval);
+    let dentry = Dentry::new(None, "eventfd".to_string(), inode.clone());
+    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
+    match fdt.alloc(file) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
+    }
+}
+
 /// `sys_access(path, mode)` — slot 21. v1: returns 0 if path
 /// resolves in devfs, -ENOENT otherwise. No actual permission
 /// check (mode ignored).

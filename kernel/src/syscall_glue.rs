@@ -86,6 +86,8 @@ const SYSCALL_NR_GETSID: u64         = 124;
 const SYSCALL_NR_UMASK: u64          = 95;
 const SYSCALL_NR_FACCESSAT: u64      = 269;
 const SYSCALL_NR_ACCESS: u64         = 21;
+const SYSCALL_NR_EVENTFD2: u64       = 290;
+const SYSCALL_NR_EVENTFD: u64        = 284;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -331,66 +333,6 @@ fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_dup(oldfd)` — slot 32. Lowest free fd → same `File`.
-fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
-    let oldfd = args.a0 as i32;
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    match fdt.dup(oldfd) {
-        Ok(fd) => fd as i64,
-        Err(e) => -(e as i64),
-    }
-}
-
-/// `sys_dup2(oldfd, newfd)` — slot 33. Closes newfd, clones
-/// oldfd into it. `oldfd == newfd` returns newfd unchanged.
-fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
-    let oldfd = args.a0 as i32;
-    let newfd = args.a1 as i32;
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    match fdt.dup2(oldfd, newfd) {
-        Ok(fd) => fd as i64,
-        Err(e) => -(e as i64),
-    }
-}
-
-/// `sys_dup3(oldfd, newfd, flags)` — slot 292. Like dup2 but
-/// rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
-fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
-    let oldfd = args.a0 as i32;
-    let newfd = args.a1 as i32;
-    if oldfd == newfd {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    match fdt.dup2(oldfd, newfd) {
-        Ok(fd) => fd as i64,
-        Err(e) => -(e as i64),
-    }
-}
 
 /// `sys_getpid()` — slot 39. Returns current().tid.
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
@@ -960,6 +902,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_UMASK         => crate::syscall_glue_proc::kernel_sys_umask(&args),
         SYSCALL_NR_ACCESS        => crate::syscall_glue_fs::kernel_sys_access(&args),
         SYSCALL_NR_FACCESSAT     => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
+        SYSCALL_NR_EVENTFD | SYSCALL_NR_EVENTFD2
+                                 => crate::syscall_glue_fs::kernel_sys_eventfd2(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
@@ -971,9 +915,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_NANOSLEEP     => crate::syscall_glue_proc::kernel_sys_nanosleep(&args),
         SYSCALL_NR_CLOCK_NANOSLEEP => crate::syscall_glue_proc::kernel_sys_clock_nanosleep(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
-        SYSCALL_NR_DUP           => kernel_sys_dup(&args),
-        SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
-        SYSCALL_NR_DUP3          => kernel_sys_dup3(&args),
+        SYSCALL_NR_DUP           => crate::syscall_glue_fs::kernel_sys_dup(&args),
+        SYSCALL_NR_DUP2          => crate::syscall_glue_fs::kernel_sys_dup2(&args),
+        SYSCALL_NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
