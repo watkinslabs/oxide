@@ -74,6 +74,27 @@ pub fn init() {
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
     crate::devfs::register("/proc/self/maps",   StaticFileInode::new(b"")              as InodeRef);
     crate::devfs::register("/proc/self/status", StaticFileInode::new(b"State: R\n")    as InodeRef);
+
+    // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
+    // probes look these up before falling back.
+    crate::devfs::register("/sys/kernel/osrelease",
+        StaticFileInode::new(b"0.1.0-pre\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/ostype",
+        StaticFileInode::new(b"oxide\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/random/uuid",
+        StaticFileInode::new(b"00000000-0000-0000-0000-000000000001\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/random/boot_id",
+        StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/random/entropy_avail",
+        StaticFileInode::new(b"4096\n") as InodeRef);
+    crate::devfs::register("/sys/devices/system/cpu/online",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/sys/devices/system/cpu/possible",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/etc/os-release",
+        StaticFileInode::new(b"NAME=oxide\nID=oxide\nVERSION=\"0.1.0-pre\"\n") as InodeRef);
+    crate::devfs::register("/etc/machine-id",
+        StaticFileInode::new(b"00000000000000000000000000000001\n") as InodeRef);
 }
 
 /// Boot-time smoke: open every registered /proc entry via the
@@ -89,6 +110,9 @@ pub fn smoke_test() {
         ("/proc/cpuinfo", b"processor"),
         ("/proc/meminfo", b"MemTotal:"),
         ("/proc/uptime",  b"0.00"),
+        ("/sys/kernel/random/uuid",  b"00000000"),
+        ("/sys/kernel/random/boot_id", b"00000000"),
+        ("/etc/os-release",          b"NAME=oxide"),
     ];
     for (path, prefix) in entries {
         let inode = crate::devfs::lookup(path).expect("procfs lookup");
