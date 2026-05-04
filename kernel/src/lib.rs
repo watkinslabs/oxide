@@ -443,8 +443,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         devfs::init();
         // P3-17 procfs static-file entries.
         procfs::init();
-        // P3-16 boot-time smoke for the misc char devices.
+        // P3-16/P3-18 boot-time smokes for char devs + procfs.
         dev_misc::smoke_test();
+        procfs::smoke_test();
     }
 
 
