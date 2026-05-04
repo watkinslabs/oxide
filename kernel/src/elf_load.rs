@@ -131,9 +131,10 @@ pub fn load_static_blob(
     }
 
     // Apply DT_RELA self-relocations for PIE static-pie images.
-    // Linux's binfmt_elf does this for kernel-loaded static-pie
-    // binaries; without it musl's _start jumps via init_array[0]
-    // through an unrelocated 0-bias offset and #PFs at rip=offset.
+    // Linux's binfmt_elf does this for kernel-loaded static-pie;
+    // musl's _start_c also applies them but only after walking
+    // PT_DYNAMIC, so we apply pre-emptively (idempotent re-write
+    // by musl is harmless).
     if matches!(parsed.elf_type, ElfType::Dyn) && bias != 0 {
         apply_relative_relocs(blob, &parsed, bias)?;
     }
