@@ -60,6 +60,8 @@ const SYSCALL_NR_RT_SIGPROCMASK: u64 = 14;
 const SYSCALL_NR_SIGALTSTACK: u64    = 131;
 const SYSCALL_NR_NANOSLEEP: u64       = 35;
 const SYSCALL_NR_CLOCK_NANOSLEEP: u64 = 230;
+const SYSCALL_NR_READLINK: u64       = 89;
+const SYSCALL_NR_READLINKAT: u64     = 267;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -959,6 +961,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_POLL          => crate::syscall_glue_fs::kernel_sys_poll(&args),
         SYSCALL_NR_PPOLL         => crate::syscall_glue_fs::kernel_sys_ppoll(&args),
         SYSCALL_NR_LSEEK         => crate::syscall_glue_fs::kernel_sys_lseek(&args),
+        SYSCALL_NR_READLINK      => crate::syscall_glue_fs::kernel_sys_readlink(&args),
+        SYSCALL_NR_READLINKAT    => crate::syscall_glue_fs::kernel_sys_readlinkat(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
