@@ -212,6 +212,14 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
+    /// Snapshot every VMA into a Vec for callers that need a stable
+    /// view (e.g. /proc/self/maps). Read-locks the tree briefly.
+    /// # C: O(N) clone
+    pub fn snapshot_vmas(&self) -> alloc::vec::Vec<Vma> {
+        let g: RwReadGuard<'_, _, _> = self.vmas.read();
+        g.iter().cloned().collect()
+    }
+
     /// Place a new VMA per `11§3` `mmap`.
     ///
     /// - `hint`: candidate placement; with `fixed = true` the request
