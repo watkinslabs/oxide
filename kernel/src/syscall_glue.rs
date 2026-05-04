@@ -176,7 +176,7 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     let buf = args.a1;
     let cnt = args.a2;
     if cnt == 0 { return 0; }
-    if buf == 0 || buf >= USER_VA_END {
+    if buf == 0 || buf.checked_add(cnt).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Efault.as_i32() as i64);
     }
     let cur = match crate::sched::current() {
@@ -193,7 +193,7 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let len = cnt as usize;
-    // SAFETY: caller validated buf < USER_VA_END; user page mapped; CPL=0 reads through user mapping.
+    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END above; user pages mapped via active CR3 (caller's AS); CPL=0 reads through user mapping.
     let user_buf: &[u8] = unsafe {
         core::slice::from_raw_parts(buf as *const u8, len)
     };
