@@ -277,6 +277,47 @@ pub fn kernel_sys_sysinfo(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_mremap(old, old_sz, new_sz, flags, new_addr)` — slot 25.
+/// v1: returns -ENOMEM unconditionally; libc falls back to
+/// mmap+memcpy+munmap which we already support.
+/// # C: O(1)
+pub fn kernel_sys_mremap(_args: &SyscallArgs) -> i64 {
+    -(syscall::errno::Errno::Enomem.as_i32() as i64)
+}
+
+/// `sys_msync(addr, len, flags)` — slot 26. v1 has no
+/// file-backed VMAs to flush; succeed.
+/// # C: O(1)
+pub fn kernel_sys_msync(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_mincore(addr, len, vec)` — slot 27. Reports residency
+/// of pages in [addr, addr+len) into `vec`. v1 conservatively
+/// reports every page resident (bit 0 set per byte).
+/// # C: O(len/4096)
+pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let _addr = args.a0;
+    let len   = args.a1;
+    let vec   = args.a2;
+    let pages = (len + 0xfff) / 0x1000;
+    if vec == 0 || vec.checked_add(pages).map_or(true, |e| e >= hal::USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: validated user range below USER_VA_END; CPL=0 writes through caller's AS; pages bytes inside the validated range.
+    unsafe {
+        for i in 0..pages {
+            core::ptr::write_volatile((vec + i) as *mut u8, 1);
+        }
+    }
+    0
+}
+
+/// `sys_mlock` / `sys_munlock` / `sys_mlockall` / `sys_munlockall`
+/// — slots 149/150/151/152. v1 has no swap; every page is
+/// effectively locked. Accept and return 0.
+/// # C: O(1)
+pub fn kernel_sys_mlock_family(_args: &SyscallArgs) -> i64 { 0 }
+
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
 /// CPU UP: every memory op is already globally ordered, so any
 /// MEMBARRIER_CMD_* request succeeds vacuously.
