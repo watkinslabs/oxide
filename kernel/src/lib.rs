@@ -547,6 +547,11 @@ pub mod syscall_glue;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_fs;
 
+// P2-21c initial user-stack builder per docs/31§4 step 5.
+// SysV argc/argv/envp/auxv layout written at execve time.
+#[cfg(target_os = "oxide-kernel")]
+pub mod exec_stack;
+
 // Global user `AddressSpace` per `11§3` + demand-paging fault hook
 // per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
 #[cfg(target_os = "oxide-kernel")]
