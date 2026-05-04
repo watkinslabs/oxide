@@ -355,6 +355,28 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
 /// patterns; this wrapper exposes it under a dedicated name.
 pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
 
+/// Boot-time smoke: kassert each registered path resolves to a
+/// non-empty ELF blob with the expected magic bytes.
+/// # SAFETY: caller is the boot path; pre-init.
+/// # C: O(N_paths)
+pub fn lookup_smoke() {
+    use hal::kassert;
+    let paths: &[&[u8]] = &[
+        b"/init", b"/sbin/init",
+        b"/bin/yo", b"/bin/hi", b"/bin/echo", b"/bin/cat",
+        b"/usr/bin/yo", b"/usr/bin/hi", b"/usr/bin/echo", b"/usr/bin/cat",
+    ];
+    for &p in paths {
+        let b = lookup_blob_by_path(p).expect("lookup_blob_by_path");
+        kassert!(b.len() >= 4, "blob too short");
+        kassert!(b[0] == 0x7F && b[1] == b'E' && b[2] == b'L' && b[3] == b'F',
+                 "blob ELF magic");
+    }
+    let miss = lookup_blob_by_path(b"/nonexistent");
+    kassert!(miss.is_none(), "negative lookup should miss");
+    debug_boot! { klog::write_raw(b"[INFO]  exec-path-smoke: ok\n"); }
+}
+
 /// Default blob for the `path = NULL` legacy path (P2-21 v0).
 /// Retained so older test paths keep working.
 pub const EXEC_BLOB: &'static [u8] = HI_BLOB;
