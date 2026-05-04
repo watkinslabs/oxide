@@ -34,6 +34,8 @@ const SYSCALL_NR_EXIT: u64           = 60;
 const SYSCALL_NR_FORK: u64           = 57;
 const SYSCALL_NR_EXECVE: u64         = 59;
 const SYSCALL_NR_WAIT4: u64          = 61;
+const SYSCALL_NR_GETPID: u64         = 39;
+const SYSCALL_NR_GETPPID: u64        = 110;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -85,6 +87,23 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
 /// glue now intercepts nr=11 first so it's dead-path).
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
+}
+
+/// `sys_getpid()` — slot 39 per docs/15§5. Returns the current
+/// task's `tid` per `13§5`. Replaces the in-table stub that
+/// returns a fixed `1`.
+fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
+    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+}
+
+/// `sys_getppid()` — slot 110 per docs/15§5. Returns the current
+/// task's `parent_tid`; `0` for tasks with no parent (boot's
+/// init-like task, kthreads).
+fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    crate::sched::current()
+        .map(|c| c.parent_tid.load(Ordering::Acquire) as i64)
+        .unwrap_or(0)
 }
 
 /// `sys_fork()` — slot 57 per docs/15§5 (Linux x86_64 fork). v0
@@ -510,6 +529,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_MMAP          => kernel_mmap(&args),
         SYSCALL_NR_MUNMAP        => kernel_munmap(&args),
         SYSCALL_NR_EXIT          => kernel_sys_exit(&args),
+        SYSCALL_NR_GETPID        => kernel_sys_getpid(&args),
+        SYSCALL_NR_GETPPID       => kernel_sys_getppid(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
