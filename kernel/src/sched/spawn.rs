@@ -30,6 +30,18 @@ type ArchCtx = hal_x86_64::ContextX86_64;
 #[cfg(target_arch = "aarch64")]
 type ArchCtx = hal_aarch64::ContextAArch64;
 
+/// Per-arch shim invoking `<ArchCtx>::new_user_with_irq_frame`.
+/// Both impls are inherent (not on the `hal::Context` trait) so
+/// dispatch goes through this thin shim.
+#[cfg(target_arch = "x86_64")]
+fn build_user_arch_ctx(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> ArchCtx {
+    ArchCtx::new_user_with_irq_frame(stack_top, user_ip, user_sp)
+}
+#[cfg(target_arch = "aarch64")]
+fn build_user_arch_ctx(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> ArchCtx {
+    ArchCtx::new_user_with_irq_frame(stack_top, user_ip, user_sp)
+}
+
 /// Default kthread stack size. Mirrors the prior ksched.rs shim;
 /// `13§5` doesn't pin a number — Linux uses 16 KiB on x86_64 too.
 pub const KTHREAD_STACK_BYTES: usize = 16 * 1024;
@@ -127,16 +139,16 @@ pub unsafe fn spawn_kernel_thread(
 /// iretq/eret's into ring 3 / EL0 at `entry_va` with the stack
 /// pointer at `user_sp`.
 ///
-/// x86_64 only this PR. arm parity follows in a subsequent PR
-/// that adds sp_el0 save/restore to the IRQ frame.
+/// Both arches now supported. arm sp_el0 save/restore lives in
+/// the IRQ frame asm + `Context::new_user_with_irq_frame` (P2-13e).
 ///
 /// # SAFETY: caller is the boot path or kernel context on the
 /// same CPU as the runqueue; user_as has been activated so the
-/// new task's mm matches the live CR3; PMM + per-arch HAL up.
-/// The task's stack memory is owned by the returned `Arc<Task>`.
+/// new task's mm matches the live CR3 / TTBR0; PMM + per-arch
+/// HAL up. The task's stack memory is owned by the returned
+/// `Arc<Task>`.
 /// # C: O(stack_size) zero-fill + O(log N) CFS insert
 /// # Ctx: pre-init or kernel ctx; preempt-off
-#[cfg(target_arch = "x86_64")]
 pub unsafe fn spawn_user_thread(
     tid: u32,
     name: &'static str,
@@ -157,10 +169,10 @@ pub unsafe fn spawn_user_thread(
     unsafe { task.install_stack(stack); }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
-    // SAFETY: stack_top is freshly-installed top-of-stack; entry_va + user_sp are caller-validated user addresses; the synthetic iretq frame uses USER selectors so iretq from the shared epilogue lands at CPL=3.
+    // SAFETY: stack_top is freshly-installed top-of-stack; entry_va + user_sp are caller-validated user addresses; the synthetic IRQ frame uses USER selectors / EL0 SPSR so the shared epilogue's iretq/eret lands at CPL=3 / EL0.
     unsafe {
         let p = task.arch_ctx_ptr::<ArchCtx>();
-        core::ptr::write(p, ArchCtx::new_user_with_irq_frame(stack_top, entry_va, user_sp));
+        core::ptr::write(p, build_user_arch_ctx(stack_top, entry_va, user_sp));
     }
 
     let arc = Arc::new(task);
