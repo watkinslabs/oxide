@@ -101,11 +101,13 @@ impl Context for ContextAArch64 {
     /// Build a kernel-thread context whose saved kernel stack
     /// carries a synthetic IRQ frame matching the layout the IRQ
     /// epilogue (`oxide_irq_resume_user`) expects. Layout pinned in
-    /// `14§R07`; total scaffold = 192 B from `Context.sp` upward:
+    /// `14§R07`; total scaffold = 208 B from `Context.sp` upward:
     ///
     ///   [sp+0x000..0x0a0]  saved x0..x18 + x29 + x30 (22 × 8 B, zero)
     ///   [sp+0x0b0]         saved ELR_EL1  = oxide_trampoline_kernel
     ///   [sp+0x0b8]         saved SPSR_EL1 = 0x145 (EL1h, DAIF.AF mask, I unmasked)
+    ///   [sp+0x0c0]         saved sp_el0   = 0 (kthreads at EL1; sp_el0 unused)
+    ///   [sp+0x0c8]         pad
     ///
     /// `Context.lr` = `oxide_irq_resume_user` so
     /// `oxide_context_switch`'s `ret` lands in the shared IRQ
@@ -121,15 +123,18 @@ impl Context for ContextAArch64 {
         arg: usize,
     ) -> Self {
         // SAFETY: caller asserts `stack_top` is the high end of a
-        // writable, 16-byte-aligned kernel stack of at least 192 B.
+        // writable, 16-byte-aligned kernel stack of at least 208 B.
         // We zero offsets 0..0xb0 (GPs) and write ELR/SPSR at 0xb0/0xb8.
         let sp = unsafe {
-            let base = stack_top.cast::<u8>().sub(192) as *mut u64;
+            let base = stack_top.cast::<u8>().sub(208) as *mut u64;
             for i in 0..22 { base.add(i).write(0); }
             // ELR_EL1 = trampoline (offset 176 = idx 22)
             base.add(22).write(trampoline_kernel_addr());
             // SPSR_EL1 = 0x145: M[3:0]=EL1h(0101), DAIF.AF mask, IRQ unmasked.
             base.add(23).write(0x145);
+            // sp_el0 = 0 + pad = 0 (offsets 192/200 = idx 24/25)
+            base.add(24).write(0);
+            base.add(25).write(0);
             base
         };
         Self {
