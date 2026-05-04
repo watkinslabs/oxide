@@ -53,6 +53,55 @@ impl PipeBuf {
     }
 }
 
+/// `Inode`-backed eventfd counter per `24§3` + Linux eventfd(2).
+/// Read drains the counter to a u64; write adds to it. v1: no
+/// blocking — read returns -EAGAIN if counter is 0; write returns
+/// -EAGAIN if counter would overflow.
+pub struct EventfdInode {
+    counter: core::sync::atomic::AtomicU64,
+    ino:     vfs::Ino,
+}
+
+static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0x4000_0000);
+
+impl EventfdInode {
+    /// # C: O(1)
+    pub fn new(initial: u64) -> alloc::sync::Arc<Self> {
+        let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
+        alloc::sync::Arc::new(Self {
+            counter: core::sync::atomic::AtomicU64::new(initial),
+            ino,
+        })
+    }
+}
+
+impl vfs::Inode for EventfdInode {
+    fn ino(&self) -> vfs::Ino { self.ino }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Fifo }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _name: &str) -> vfs::KResult<vfs::InodeRef> {
+        Err(vfs::VfsError::Enotdir)
+    }
+    fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
+        let v = self.counter.swap(0, Ordering::AcqRel);
+        if v == 0 { return Err(vfs::VfsError::Einval); }
+        let bytes = v.to_ne_bytes();
+        buf[..8].copy_from_slice(&bytes);
+        Ok(8)
+    }
+    fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
+        let mut a = [0u8; 8];
+        a.copy_from_slice(&buf[..8]);
+        let add = u64::from_ne_bytes(a);
+        if add == u64::MAX { return Err(vfs::VfsError::Einval); }
+        self.counter.fetch_add(add, Ordering::AcqRel);
+        Ok(8)
+    }
+}
+
 /// `Inode`-backed anonymous pipe. One instance is shared by both
 /// the read-end and the write-end `File` wrappers.
 pub struct PipeInode {
