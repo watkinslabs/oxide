@@ -66,6 +66,11 @@ const SYSCALL_NR_STATX: u64          = 332;
 const SYSCALL_NR_RSEQ: u64           = 334;
 const SYSCALL_NR_MEMBARRIER: u64     = 324;
 const SYSCALL_NR_FCNTL: u64          = 72;
+const SYSCALL_NR_GETRLIMIT: u64      = 97;
+const SYSCALL_NR_SETRLIMIT: u64      = 160;
+const SYSCALL_NR_GETRUSAGE: u64      = 98;
+const SYSCALL_NR_TIMES: u64          = 100;
+const SYSCALL_NR_SYSINFO: u64        = 99;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -399,16 +404,12 @@ fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_getpid()` — slot 39 per docs/15§5. Returns the current
-/// task's `tid` per `13§5`. Replaces the in-table stub that
-/// returns a fixed `1`.
+/// `sys_getpid()` — slot 39. Returns current().tid.
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
     crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
 }
 
-/// `sys_getppid()` — slot 110 per docs/15§5. Returns the current
-/// task's `parent_tid`; `0` for tasks with no parent (boot's
-/// init-like task, kthreads).
+/// `sys_getppid()` — slot 110. Returns current().parent_tid.
 fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     crate::sched::current()
@@ -954,6 +955,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_FCNTL         => crate::syscall_glue_fs::kernel_sys_fcntl(&args),
         SYSCALL_NR_RSEQ          => crate::syscall_glue_proc::kernel_sys_rseq(&args),
         SYSCALL_NR_MEMBARRIER    => crate::syscall_glue_proc::kernel_sys_membarrier(&args),
+        SYSCALL_NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
+        SYSCALL_NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
+        SYSCALL_NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
+        SYSCALL_NR_TIMES         => crate::syscall_glue_proc::kernel_sys_times(&args),
+        SYSCALL_NR_SYSINFO       => crate::syscall_glue_proc::kernel_sys_sysinfo(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
