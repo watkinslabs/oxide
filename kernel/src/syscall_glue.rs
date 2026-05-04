@@ -43,6 +43,7 @@ const SYSCALL_NR_DUP: u64            = 32;
 const SYSCALL_NR_DUP2: u64           = 33;
 const SYSCALL_NR_DUP3: u64           = 292;
 const SYSCALL_NR_OPEN: u64           = 2;
+const SYSCALL_NR_BRK: u64            = 12;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -177,6 +178,33 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
         Ok(n)  => n as i64,
         Err(e) => -(e as i64),
     }
+}
+
+/// `sys_brk(addr)` — slot 12 per docs/15§5. Extends or shrinks
+/// the data segment ("heap") of the calling task. v1: the ELF
+/// loader pre-registers a 64 MiB Anonymous VMA above the last
+/// PT_LOAD; this syscall just adjusts the brk pointer within
+/// `[initial, initial + 64MiB]`. Pages demand-fault as the user
+/// touches them.
+///
+/// glibc/musl ABI: `brk(0)` queries; `brk(N)` attempts to set;
+/// returns the post-operation brk on success, the unchanged
+/// current brk on failure.
+fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
+    let req = args.a0;
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return 0,
+    };
+    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent mm writer.
+    let mm = match unsafe { cur.mm_ref() } {
+        Some(m) => m.clone(),
+        None    => return 0,
+    };
+    if req == 0 {
+        return mm.brk() as i64;
+    }
+    mm.try_set_brk(req) as i64
 }
 
 /// `sys_open(path, flags, _mode)` — slot 2 per docs/15§5.
@@ -783,6 +811,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_READ          => kernel_sys_read(&args),
         SYSCALL_NR_WRITE         => kernel_sys_write(&args),
         SYSCALL_NR_OPEN          => kernel_sys_open(&args),
+        SYSCALL_NR_BRK           => kernel_sys_brk(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
