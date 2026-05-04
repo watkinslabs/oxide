@@ -1,14 +1,16 @@
-# State 2026-05-03 (session 22c EOD — fork+execve landed)
+# State 2026-05-03 (session 22d EOD — wait4 + init-loop landed)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
 ## Phase
 
-**Phase 2 multi-binary fork+execve userspace live on x86_64.** `sys_fork` clones the parent's `AddressSpace`, spawns a child `Task`, returns child_tid to parent / rax=0 to child. `sys_execve` (P2-21+P2-21b) reads `path[0]` from user memory, looks up an ELF blob in a kernel-static name table (v1 stand-in for VFS), allocates a fresh PT root, builds the new AS, atomically replaces `current.mm`, activates the new AS, and updates `oxide_user_*` so the syscall epilogue's `sysretq` lands the user at the new program's `e_entry`. The init-like blob spawned at boot does **fork → parent execve("y") + child execve("h")**: the runqueue picks both, AS-swap fires when crossing processes, the parent-then-child pattern outputs `yo\n` followed by `hi\n` and both exit cleanly. **212 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
+**Phase 2 init-loop userspace live on x86_64.** Full lifecycle: `fork → execve → wait4 → exit` runs end-to-end. The init-like blob spawned at boot now performs **2 iterations of the canonical shell pattern** (`for sel in ['y','h']: if fork()==0: execve(&sel) | exit(1); wait4(-1, NULL, 0, NULL); exit(0)`), producing `yo\n` and `hi\n` deterministically via `wait4`-enforced ordering, then exits cleanly. Three processes per iteration × 2 iterations = real init-loop semantics.
 
-The shell-spawning cycle (fork → child execve a different binary → both exit) is the real-shell pattern. With path-by-name dispatch in execve, oxide can already simulate `init` running multiple programs. Remaining gap to a literal `$ ` prompt: TTY input (read from UART), a real ELF binary (static-PIE musl helloworld is the next milestone; full bash is far further out), and waitpid for ordering across forks.
+Per-task syscall stack (P2-22a) + per-task user_frame slot (P2-22b) replace the buggy global state that exposed itself when wait4 first surfaced multi-task syscall interleaving. Syscall asm now: each task syscalls onto its own kernel stack, with saved (rip, rflags, rsp) at `top-24..top` for fork/execve to read/write. `sched::zombies` registry keeps Zombie tasks alive past schedule's swap until `wait4` reaps. `Task.parent_tid` set by sys_fork. **215 PRs total; 524 hosted tests.** `make ci` mirrors the full PR gate.
 
-Last verified-green at session-22c EOD:
+The shell-spawning cycle is real now — the loop a busybox `init` runs is what the boot-time blob does, just with hand-synthesised mini-binaries instead of `/bin/*`. Remaining gap to a literal `$ ` prompt: TTY input (UART RX → user fd=0 with a sleep/wake wait queue), a real ELF binary (static-PIE musl is the next milestone), and arm user-Task parity (arm still uses single-Task `drop_to_el0`).
+
+Last verified-green at session-22d EOD:
 ```
 $ cargo run -p xtask -- spec-lint                              # spec-lint: clean
 $ cargo run -p xtask -- test                                   # 524 passed, 0 failed
@@ -16,21 +18,22 @@ $ cargo run -p xtask -- kernel  --arch x86_64                  # builds clean
 $ cargo run -p xtask -- kernel  --arch aarch64                 # builds clean
 $ cargo run -p xtask -- qemu    --arch x86_64  --features debug-all
 …
-[INFO]  user-as: root_pa=…bf4e000 activated                   ← per-AS PML4 active (P2-19)
+[INFO]  user-as: root_pa=…de73000 activated                   ← per-AS PML4 active (P2-19)
 [INFO]  boot: kernel ready, halting
-[INFO]  elf-smoke: load ok entry=0x400080 brk=0x401000        ← ELF parse + PT_LOAD register
+[INFO]  elf-smoke: load ok entry=0x400080 brk=0x401000
 [INFO]  elf-smoke: spawned tid=0xC0DE0001 entry=0x400080 sp=0x502000
-[INFO]  sys_fork: parent_tid=0xC0DE0001 child_tid=4096 child_root=…  ← P2-15b fork
-[INFO]  syscall: nr=0x39 rv=0x1000                            ← parent gets child_tid
-[INFO]  sys_execve: new entry=0x400080 sp=0x502000 new_root=… ← P2-21 parent execs "y"
-[INFO]  syscall: nr=0x3b rv=0x0
-yo                                                             ← YO_BLOB writes
-[INFO]  sys_exit: code=0                                       ← parent process done
-[INFO]  sys_execve: new entry=0x400080 sp=0x502000 new_root=… ← child execs "h" (P2-21b)
-[INFO]  syscall: nr=0x3b rv=0x0
-hi                                                             ← HI_BLOB writes
-[INFO]  sys_exit: code=0                                       ← child process done
-[INFO]  elf-smoke: user task exited cleanly, boot resumed     ← schedule() returned
+[INFO]  sys_fork: parent_tid=…  child_tid=4096                ← iter 1 fork
+[INFO]  sys_execve: new entry=0x400080 new_root=…             ← child execs YO_BLOB
+yo                                                             ← child writes
+[INFO]  sys_exit: tid=4096 code=0                             ← child Zombie
+[INFO]  sys_wait4: parent=… reaped tid=4096 code=0            ← parent reaps via P2-22
+[INFO]  sys_fork: parent_tid=…  child_tid=4097                ← iter 2 fork
+[INFO]  sys_execve: new entry=0x400080 new_root=…             ← child execs HI_BLOB
+hi
+[INFO]  sys_exit: tid=4097 code=0
+[INFO]  sys_wait4: parent=… reaped tid=4097 code=0
+[INFO]  sys_exit: tid=… code=0                                ← parent exits
+[INFO]  elf-smoke: user task exited cleanly, boot resumed
 
 $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 …
@@ -86,7 +89,28 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 
 See `CHANGELOG.md` for the per-PR table.
 
-**Session 22c** (PRs #211 – #212): execve done, multi-binary
+**Session 22d** (PRs #214 – #215): wait4 + init-loop demo.
+
+- **#214 P2-22** (`P2-22-wait4`): `sys_wait4` (nr=61). New
+  `sched::zombies` registry (`Spinlock<Vec<Arc<Task>>, TaskList>`)
+  keeps Zombies alive past schedule's swap. `Task.parent_tid`
+  set by sys_fork. `kernel_sys_exit` parks current to ZOMBIES.
+  Two latent-bug fixes the wait4 work surfaced:
+  (a) Per-task syscall stack — schedule() updates
+  `OXIDE_SYSCALL_KSTACK` to `current.kernel_stack` on each
+  switch via `set_syscall_kstack`. Without this, multi-task
+  syscall interleaving clobbered each other's saved frames.
+  (b) Per-task user_frame slot — replaces global `oxide_user_*`
+  with `current_user_frame()` returning `*mut [u64;3]` pointing
+  at the saved (rip, rflags, rsp) tail on the per-task syscall
+  stack. fork reads / execve writes through this; asm sysretq
+  pops from these same slots.
+- **#215 P2-22b** (`P2-22b-init-loop`): Init-like ELF rewritten
+  to 2 iterations of fork+execve+wait4 (yo, hi). 261 B blob;
+  one 60-byte iter_block helper emits each iteration.
+  Validates the lifecycle survives multiple iterations.
+
+**Session 22c** (PRs #211 – #213): execve done, multi-binary
 dispatch.
 
 - **#211 P2-21** (`P2-21-execve-static`): `sys_execve` syscall.
@@ -426,7 +450,7 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 8. `make build` (both arches build clean).
 9. Optional sanity: `make qemu-x86` + `make qemu-arm` — should print the preempt-smoke + reach `boot: kernel ready, halting`.
 
-## Suggested next branches (post-session-22c)
+## Suggested next branches (post-session-22d)
 
 The "what we have vs. what we need" framing — read the spec first
 in every case. docs/MANIFEST.md has the table of which spec covers
@@ -434,12 +458,13 @@ what. Top picks ordered by impact toward bash:
 
 | Option | Branch idea | Spec ref | Why pick this |
 |---|---|---|---|
-| **`wait4()` / `waitpid()`** | `P2-22-wait4` | docs/15§5 + docs/13§5 | Without this, parent can't synchronise on child completion — current trace order ("yo" then "hi") is incidental, not enforced. With wait4 the init-like loop becomes deterministic: fork → wait → fork → wait. Plumbs into `Task.exit_status` (already populated by `kernel_sys_exit`) and `WaitQueue` (`13§5`). Foundation for a real `init` loop. |
-| **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 has full multi-binary fork+exec; arm still uses single-Task `drop_to_el0` directly. Need `Context::new_user_with_irq_frame` for arm — requires extending the IRQ frame to save/restore sp_el0 (currently a latent bug for multi-user-task on arm). Mechanical mirror of x86. |
-| **TTY input** | `P2-23-tty-stdin` | docs/28 + docs/22 | Wire UART RX byte stream to user fd=0. Read syscall on fd=0 blocks the task on a `WaitQueue` (sched), UART RX IRQ wakes it. Lets a user program actually accept commands — the missing half of an interactive shell. |
-| **per-page copy in fork** | `P2-15c-fork-pgcopy` | docs/11§7 | Today's naive fork inherits empty Anonymous VMAs. Real POSIX fork must copy parent's mapped pages so heap/stack survive. Requires "install PTE in non-active PT" — temporarily-activate-the-child trick or extend the walker to take an explicit root. Until this, fork is correct ONLY for static-PIE programs that don't share heap state at fork time. |
-| **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When user faults aren't resolvable (write to RO, exec on NX, unmapped), kernel halts via the smoke handler. Linux delivers SIGSEGV; even a minimal "kill task on protection fault" handler would let bad user code die without taking the kernel down — required so a shell can survive a child crashing. Needs the signal subsystem (docs/27). |
-| **static-PIE musl helloworld** | `P2-24-musl-helloworld` | docs/29a + docs/31§4-§5 | Replace the hand-synthesised ELF with a real upstream-toolchain-built binary embedded via `include_bytes!`. Validates the loader against real-world ELF (PT_INTERP, PT_TLS, PT_DYNAMIC noted but not acted on; PT_GNU_RELRO; .got/.plt). Once this works, swapping in a busybox build is mostly tooling. |
+| **TTY input** | `P2-23-tty-stdin` | docs/28 + docs/22 | UART RX → user fd=0. Configure 16550 RX-data IRQ; route through LAPIC vector to a kernel handler that pushes bytes to a kernel ringbuffer. `sys_read(fd=0)`: if buffer has data, pop one byte; else mark current task `Sleeping`, push to a `WaitQueue` keyed on the ringbuffer, schedule(). RX IRQ wakes any blocked tasks. **The biggest piece between us and an interactive shell.** Without it the user can't type commands; with it + a bigger ELF blob (or a real busybox), oxide gets a literal `$ ` prompt. |
+| **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 has full multi-binary fork+exec+wait+exit; arm still uses single-Task `drop_to_el0` directly. Need (a) `ContextAArch64::new_user_with_irq_frame` synthesising an eret frame on the kernel stack, (b) extending the arm IRQ frame to save+restore sp_el0 (frame size 192 → 200 B; affects `oxide_irq_resume_user` epilogue), (c) arm `spawn_user_thread`, (d) arm syscall stub that captures user frame to per-task stack like x86. Substantial but mechanical mirror of the x86 work. |
+| **per-page copy in fork** | `P2-15c-fork-pgcopy` | docs/11§7 | Today's naive fork inherits empty Anonymous VMAs. Real POSIX fork must copy parent's mapped pages so heap/stack survive. Requires "install PTE in non-active PT" — temporarily-activate-the-child trick OR extend the walker to take an explicit root. Until this, fork is correct ONLY for static-PIE programs that don't share heap state at fork time. |
+| **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When user faults aren't resolvable (write to RO, exec on NX, unmapped), kernel halts via the smoke handler. Linux delivers SIGSEGV; even a minimal "kill task on protection fault — push to ZOMBIES + schedule" handler would let bad user code die without taking the kernel down. Required so a shell can survive a child crashing. Needs the signal subsystem (docs/27); at minimum: `sigaction`, signal frame on user stack, sa_restorer stub. |
+| **static-PIE musl helloworld** | `P2-24-musl-helloworld` | docs/29a + docs/31§4-§5 | Replace the hand-synthesised ELF with a real upstream-toolchain-built binary embedded via `include_bytes!`. Validates the loader against real-world ELF (PT_INTERP, PT_TLS, PT_DYNAMIC, PT_GNU_RELRO, .got/.plt). Once this works, swapping in a busybox build is mostly tooling work. |
+| **sys_read/sys_write to fd=0/1/2 properly** | `P2-25-fd-stdio` | docs/15§5 + docs/16 (partial) | Currently `sys_write` blindly writes to UART regardless of fd. Add a minimal fd table per `13§5` so fd=1/2 → UART TX, fd=0 → TTY input (pairs with P2-23). Simple `Task.fd_table: Arc<FdTable>` (already in `13§5` field list). |
+| **getpid/getppid via current()** | `P2-26-pid-syscalls` | docs/15§5 | Tiny: replace the in-table `sys_getpid` returning `1` with a glue intercept returning `current().tid`; add `sys_getppid` returning `current().parent_tid`. Lets user programs introspect themselves. |
 | **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When a user fault doesn't resolve (write to RO, exec on NX, unmapped read), kernel currently halts via the smoke fault handler. Linux delivers SIGSEGV. Even a minimal "kill task on protection fault" handler would let bad user code die without taking the kernel down — required for shell to survive a child segfaulting. Needs the signal subsystem (docs/27) — sigaction + sa_restorer + signal frame on user stack. |
 | **page-copy in fork** | `P2-15b-fork-pgcopy` | docs/11§7 | Today's fork-naive plan inherits empty Anonymous VMAs. Real fork must copy the parent's mapped pages into child frames so heap/stack state survives. Requires "install PTE in non-active PT" — either temporarily-activate-the-child trick or extend the walker to take an explicit root. |
 | **dual user-task smoke** | `P2-13f-multi-task` | docs/13§2 inv 1+2 | Spawn two user tasks against two different ASes (each load_static_blob'd independently). Validates the AS-swap branch (`MmuOps::activate(next.mm.root_pa)`) end-to-end — currently dead code because `prev.mm == next.mm` for v1's single user task. |
