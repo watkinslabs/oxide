@@ -109,3 +109,24 @@ pub fn init() {
     // Reserved for well-known seeded paths (e.g. /tmp/.X11-unix
     // dir markers) once VFS lands real directory inodes.
 }
+
+/// Boot-time round-trip smoke for the tmpfs path. Creates an
+/// inode, writes "shell-test", reads back, verifies, drops.
+/// # SAFETY: caller is the boot path; PMM up; pre-userspace.
+/// # C: O(1)
+pub fn smoke_test() {
+    use vfs::Inode;
+    use hal::kassert;
+    let inode = lookup_or_create("/tmp/.smoke");
+    let n = inode.write(0, b"shell-test").expect("tmpfs.write");
+    kassert!(n == 10, "tmpfs write len");
+    let mut buf = [0u8; 16];
+    let n = inode.read(0, &mut buf).expect("tmpfs.read");
+    kassert!(n == 10, "tmpfs read len");
+    kassert!(&buf[..10] == b"shell-test", "tmpfs round-trip body");
+    // Re-write at offset 5 to validate partial overwrite.
+    let _ = inode.write(5, b"WORK").expect("tmpfs.write part");
+    let n = inode.read(0, &mut buf).expect("tmpfs.read 2");
+    kassert!(&buf[..n] == b"shellWORKt", "tmpfs partial overwrite");
+    debug_boot! { klog::write_raw(b"[INFO]  tmpfs-smoke: ok\n"); }
+}
