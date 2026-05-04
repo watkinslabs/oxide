@@ -857,126 +857,22 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_TKILL         => kernel_sys_kill(&args),
         crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_proc::kernel_sys_rt_sigpending(&args),
         crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_proc::kernel_sys_rt_sigsuspend(&args),
-        crate::syscall_nrs::NR_RT_SIGRETURN  => 0,    // no signal frame yet
-        crate::syscall_nrs::NR_GETITIMER     => 0,
-        crate::syscall_nrs::NR_SETITIMER     => 0,
-        crate::syscall_nrs::NR_ALARM         => 0,
-        crate::syscall_nrs::NR_PAUSE         => -(Errno::Eintr.as_i32() as i64),
-        crate::syscall_nrs::NR_GETPRIORITY   => 0,
-        crate::syscall_nrs::NR_SETPRIORITY   => 0,
-        crate::syscall_nrs::NR_GETGROUPS     => 0,
-        crate::syscall_nrs::NR_SETGROUPS     => 0,
-        crate::syscall_nrs::NR_SETUID
-            | crate::syscall_nrs::NR_SETGID
-            | crate::syscall_nrs::NR_SETREUID
-            | crate::syscall_nrs::NR_SETREGID
-            | crate::syscall_nrs::NR_SETRESUID
-            | crate::syscall_nrs::NR_SETRESGID
-            | crate::syscall_nrs::NR_SETFSUID
-            | crate::syscall_nrs::NR_SETFSGID
-                                 => 0,
+        // Real-impl arms that overlap with compat-stub categories.
+        crate::syscall_nrs::NR_PIPE          => kernel_sys_pipe2(&args),
+        crate::syscall_nrs::NR_CREAT         => kernel_sys_open(&args),
+        crate::syscall_nrs::NR_EXIT_GROUP    => kernel_sys_exit(&args),
+        crate::syscall_nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
+        crate::syscall_nrs::NR_STAT
+            | crate::syscall_nrs::NR_LSTAT   => crate::syscall_glue_fs::kernel_sys_stat(&args),
         crate::syscall_nrs::NR_GETRESUID
             | crate::syscall_nrs::NR_GETRESGID
                                  => crate::syscall_glue_proc::kernel_sys_getres_uid(&args),
-        crate::syscall_nrs::NR_CAPGET        => 0,
-        crate::syscall_nrs::NR_CAPSET        => 0,
-        crate::syscall_nrs::NR_PERSONALITY   => 0,
-        crate::syscall_nrs::NR_VHANGUP       => 0,
-        crate::syscall_nrs::NR_SYSLOG        => 0,
-        crate::syscall_nrs::NR_REBOOT        => -(Errno::Eperm.as_i32() as i64),
-        crate::syscall_nrs::NR_SETHOSTNAME   => 0,
-        crate::syscall_nrs::NR_SETDOMAINNAME => 0,
-        crate::syscall_nrs::NR_PTRACE        => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_FALLOCATE     => 0,
-        crate::syscall_nrs::NR_READAHEAD     => 0,
-        crate::syscall_nrs::NR_FADVISE64     => 0,
-        crate::syscall_nrs::NR_FLOCK         => 0,
-        crate::syscall_nrs::NR_SYNC_FILE_RANGE => 0,
-        crate::syscall_nrs::NR_COPY_FILE_RANGE => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_SENDFILE      => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_SPLICE        => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_TEE           => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_VMSPLICE      => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_MEMFD_CREATE  => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_MEMFD_SECRET  => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_PIDFD_OPEN
-            | crate::syscall_nrs::NR_PIDFD_GETFD
-            | crate::syscall_nrs::NR_PIDFD_SEND_SIGNAL
-                                 => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_GETXATTR
-            | crate::syscall_nrs::NR_LGETXATTR
-            | crate::syscall_nrs::NR_FGETXATTR
-            | crate::syscall_nrs::NR_LISTXATTR
-            | crate::syscall_nrs::NR_LLISTXATTR
-            | crate::syscall_nrs::NR_FLISTXATTR
-                                 => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_SETXATTR
-            | crate::syscall_nrs::NR_LSETXATTR
-            | crate::syscall_nrs::NR_FSETXATTR
-            | crate::syscall_nrs::NR_REMOVEXATTR
-            | crate::syscall_nrs::NR_LREMOVEXATTR
-            | crate::syscall_nrs::NR_FREMOVEXATTR
-                                 => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_MOUNT
-            | crate::syscall_nrs::NR_UMOUNT2
-            | crate::syscall_nrs::NR_CHROOT
-                                 => -(Errno::Eperm.as_i32() as i64),
-        crate::syscall_nrs::NR_SWAPON | crate::syscall_nrs::NR_SWAPOFF
-                                 => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_INIT_MODULE
-            | crate::syscall_nrs::NR_DELETE_MODULE
-            | crate::syscall_nrs::NR_FINIT_MODULE
-                                 => -(Errno::Eperm.as_i32() as i64),
-        crate::syscall_nrs::NR_RT_SIGTIMEDWAIT
-            | crate::syscall_nrs::NR_RT_SIGQUEUEINFO
-            | crate::syscall_nrs::NR_RT_TGSIGQUEUEINFO
-                                 => -(Errno::Enosys.as_i32() as i64),
-        // epoll family — no event-poll yet per docs/24; ENOSYS so
-        // libraries fall back to poll() which we do support.
-        crate::syscall_nrs::NR_EPOLL_CREATE
-            | crate::syscall_nrs::NR_EPOLL_CREATE1
-            | crate::syscall_nrs::NR_EPOLL_CTL
-            | crate::syscall_nrs::NR_EPOLL_WAIT
-            | crate::syscall_nrs::NR_EPOLL_PWAIT
-            | crate::syscall_nrs::NR_EPOLL_PWAIT2
-                                 => -(Errno::Enosys.as_i32() as i64),
-        // inotify family — no fs-watch yet; ENOSYS.
-        crate::syscall_nrs::NR_INOTIFY_INIT
-            | crate::syscall_nrs::NR_INOTIFY_INIT1
-            | crate::syscall_nrs::NR_INOTIFY_ADD_WATCH
-            | crate::syscall_nrs::NR_INOTIFY_RM_WATCH
-                                 => -(Errno::Enosys.as_i32() as i64),
-        // signalfd / timerfd / userfaultfd — no event-fd machinery
-        // beyond the basic eventfd2 yet; ENOSYS.
-        crate::syscall_nrs::NR_SIGNALFD
-            | crate::syscall_nrs::NR_SIGNALFD4
-            | crate::syscall_nrs::NR_TIMERFD_CREATE
-            | crate::syscall_nrs::NR_TIMERFD_SETTIME
-            | crate::syscall_nrs::NR_TIMERFD_GETTIME
-            | crate::syscall_nrs::NR_USERFAULTFD
-                                 => -(Errno::Enosys.as_i32() as i64),
-        // io_uring + perf + bpf + landlock + seccomp + namespaces —
-        // none of these substrates exist yet; ENOSYS so libraries
-        // probe and fall through.
-        crate::syscall_nrs::NR_IO_URING_SETUP
-            | crate::syscall_nrs::NR_IO_URING_ENTER
-            | crate::syscall_nrs::NR_IO_URING_REGISTER
-            | crate::syscall_nrs::NR_IO_SETUP
-            | crate::syscall_nrs::NR_IO_DESTROY
-            | crate::syscall_nrs::NR_IO_GETEVENTS
-            | crate::syscall_nrs::NR_IO_SUBMIT
-            | crate::syscall_nrs::NR_IO_CANCEL
-            | crate::syscall_nrs::NR_PERF_EVENT_OPEN
-            | crate::syscall_nrs::NR_BPF
-            | crate::syscall_nrs::NR_SECCOMP
-            | crate::syscall_nrs::NR_LANDLOCK_CREATE_RULESET
-            | crate::syscall_nrs::NR_LANDLOCK_ADD_RULE
-            | crate::syscall_nrs::NR_LANDLOCK_RESTRICT_SELF
-            | crate::syscall_nrs::NR_UNSHARE
-            | crate::syscall_nrs::NR_SETNS
-            | crate::syscall_nrs::NR_PIVOT_ROOT
-                                 => -(Errno::Enosys.as_i32() as i64),
-        _                        => dispatch(nr as u32, &args),
+        crate::syscall_nrs::NR_RT_SIGRETURN  => 0,
+        // Compat-stub fall-through table per P3-46.
+        _ => match crate::syscall_compat::try_compat(nr, &args) {
+            Some(rv) => rv,
+            None     => dispatch(nr as u32, &args),
+        },
     };
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
