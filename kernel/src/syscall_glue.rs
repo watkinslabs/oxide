@@ -33,6 +33,7 @@ const SYSCALL_NR_MUNMAP: u64         = 11;
 const SYSCALL_NR_EXIT: u64           = 60;
 const SYSCALL_NR_FORK: u64           = 57;
 const SYSCALL_NR_EXECVE: u64         = 59;
+const SYSCALL_NR_WAIT4: u64          = 61;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -129,8 +130,10 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
 
-    let user_rip = hal_x86_64::oxide_user_rip.load(Ordering::Acquire);
-    let user_rsp = hal_x86_64::oxide_user_rsp.load(Ordering::Acquire);
+    // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
+    let frame = unsafe { &*hal_x86_64::current_user_frame() };
+    let user_rip = frame[0];
+    let user_rsp = frame[2];
     // user_rip points at the instruction RIGHT AFTER the syscall
     // (rcx is post-syscall in x86_64) — the child resumes there
     // with rax=0.
@@ -147,6 +150,9 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
 
+    // Record parent_tid for `wait4` (P2-22).
+    child.parent_tid.store(cur.tid, Ordering::Release);
+
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_fork: parent_tid=");
         klog::write_dec_u64(cur.tid as u64);
@@ -158,10 +164,75 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     }
 
     // Drop our local Arc; the runqueue's enqueue clone keeps the
-    // child alive until it Zombies + schedule drops it.
+    // child alive until it Zombies + parks to the zombie registry.
     drop(child);
 
     child_tid as i64
+}
+
+/// `sys_wait4(pid, wstatus, options, rusage)` — slot 61 per
+/// docs/15§5. Reaps a Zombie child of the current task and
+/// optionally writes the exit status to user memory at `wstatus`.
+/// `pid == -1` matches any child; `pid > 0` matches that
+/// specific TID. `options` (WNOHANG etc.) ignored for v1.
+/// `rusage` ignored.
+///
+/// If no Zombie child is currently queued, the parent yields via
+/// `schedule()` and re-checks. With UP single-CPU + non-preempt
+/// schedule, the child is guaranteed to run + Zombie before the
+/// parent's loop terminates (unless the child is itself blocked).
+///
+/// Returns the reaped child's TID, or -ECHILD if the caller has
+/// no eligible children at all.
+///
+/// # C: O(N_zombies × N_yield_iters) — bounded by child runtime
+#[cfg(target_arch = "x86_64")]
+fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let pid     = args.a0 as i32;
+    let wstatus = args.a1;
+    let _options = args.a2;
+    let _rusage  = args.a3;
+
+    let parent_tid = match crate::sched::current() {
+        Some(c) => c.tid,
+        None    => return -(Errno::Einval.as_i32() as i64),
+    };
+
+    // Loop: try to reap; if no match, yield + retry. Bounded
+    // because schedule() picks runnable children which eventually
+    // exit + park.
+    loop {
+        if let Some((tid, code)) = crate::sched::reap_one(parent_tid, pid) {
+            // POSIX wstatus encoding: low 7 bits = signal (0 for
+            // normal exit), bit 7 = core flag, bits 8..16 =
+            // exit code. v1 only handles normal exits.
+            let wstat: i32 = (code & 0xff) << 8;
+            if wstatus != 0 && wstatus < USER_VA_END {
+                // SAFETY: wstatus validated < USER_VA_END; user page mapped (caller's user code already executed from this AS); CPL=0 reads/writes through the user mapping.
+                unsafe { core::ptr::write_volatile(wstatus as *mut i32, wstat); }
+            }
+            debug_sched! {
+                klog::write_raw(b"[INFO]  sys_wait4: parent=");
+                klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b" reaped tid=");
+                klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" code=");
+                klog::write_dec_u64(code as u64);
+                klog::write_raw(b"\n");
+            }
+            return tid as i64;
+        }
+        // No zombie ready — yield and retry. schedule() saves
+        // our state into current.arch_ctx + switches; we resume
+        // here when a child eventually exits + reschedule picks
+        // us back.
+        // SAFETY: process ctx; runqueue installed; preempt-off.
+        unsafe { crate::sched::tick_yield(); }
+        // After resume, ZOMBIES likely contains a new entry.
+        // Loop body re-tries.
+        let _ = Ordering::Acquire; // touch to keep ordering import live
+    }
 }
 
 /// `sys_execve(path, argv, envp)` — slot 59 per docs/15§5. v0
@@ -251,11 +322,15 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
 
-    // 4. Update the syscall-return globals so the asm epilogue
-    //    sysretq's into the new program's entry.
-    hal_x86_64::oxide_user_rip.store(img.entry.as_u64(), Ordering::Release);
-    hal_x86_64::oxide_user_rsp.store(crate::elf_smoke::EXEC_USER_STACK_TOP, Ordering::Release);
-    hal_x86_64::oxide_user_rflags.store(0x002, Ordering::Release);
+    // 4. Overwrite the per-task syscall stack's saved user-frame
+    //    so the asm epilogue's `pop rcx; pop r11; pop rsp; sysretq`
+    //    lands the user at the new program entry instead of
+    //    returning to the execve caller.
+    // SAFETY: we are running on cur's per-task syscall stack; current_user_frame() points at the live saved tail; the syscall asm pops from these same slots after we return.
+    let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
+    frame[0] = img.entry.as_u64();
+    frame[1] = 0x002;
+    frame[2] = crate::elf_smoke::EXEC_USER_STACK_TOP;
 
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve: new entry=");
@@ -288,14 +363,28 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
 /// # C: O(log N) CFS pick + O(1) ctxsw
 fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    if let Some(cur) = crate::sched::current() {
-        cur.exit_status.store(args.a0 as i32, Ordering::Release);
-        crate::sched::mark_done(cur);
-    }
-    debug_sched! {
-        klog::write_raw(b"[INFO]  sys_exit: code=");
-        klog::write_dec_u64(args.a0);
-        klog::write_raw(b"\n");
+    use alloc::sync::Arc;
+    if let Some(rq) = crate::sched::global() {
+        // Snapshot exit code + state before parking — the
+        // current task's strong ref needs to live in the zombie
+        // registry until wait4 reaps it.
+        let raw = rq.current.load(Ordering::Acquire);
+        if !raw.is_null() {
+            // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because we then matching `from_raw` to materialise an owned Arc.
+            unsafe { Arc::increment_strong_count(raw); }
+            // SAFETY: matching from_raw consumes the bumped count.
+            let arc = unsafe { Arc::from_raw(raw) };
+            arc.exit_status.store(args.a0 as i32, Ordering::Release);
+            crate::sched::mark_done(&arc);
+            debug_sched! {
+                klog::write_raw(b"[INFO]  sys_exit: tid=");
+                klog::write_dec_u64(arc.tid as u64);
+                klog::write_raw(b" code=");
+                klog::write_dec_u64(args.a0);
+                klog::write_raw(b"\n");
+            }
+            crate::sched::park_zombie(arc);
+        }
     }
     // Schedule away. State=Zombie ⇒ no re-enqueue; picker returns
     // idle (boot anchor) ⇒ Context::switch loads boot's saved regs
@@ -425,6 +514,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_FORK          => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_EXECVE        => kernel_sys_execve(&args),
+        #[cfg(target_arch = "x86_64")]
+        SYSCALL_NR_WAIT4         => kernel_sys_wait4(&args),
         _                        => dispatch(nr as u32, &args),
     };
     debug_sched! {
