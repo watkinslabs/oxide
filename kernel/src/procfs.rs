@@ -46,6 +46,67 @@ impl Inode for StaticFileInode {
     }
 }
 
+/// `/proc/self/cmdline` per `19§4`. v1: synthesises argv[0] from
+/// the task's `name` field (tracking real argv at execve rides
+/// the per-task argv-storage follow-up). NUL-separated argv,
+/// NUL-terminated.
+pub struct ProcSelfCmdlineInode;
+
+impl Inode for ProcSelfCmdlineInode {
+    fn ino(&self) -> Ino { 0x3000_1100 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut body = alloc::vec::Vec::with_capacity(64);
+        let name = crate::sched::current().map(|c| c.name).unwrap_or("init");
+        push(&mut body, name.as_bytes());
+        body.push(0);
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let avail = &body[off..];
+        let n = avail.len().min(buf.len());
+        buf[..n].copy_from_slice(&avail[..n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+/// `/proc/self/stat` per `19§4` — single space-separated line of
+/// fields. v1: pid, comm in parens, state R, ppid, then zeros to
+/// pad to the canonical 52 fields.
+pub struct ProcSelfStatInode;
+
+impl Inode for ProcSelfStatInode {
+    fn ino(&self) -> Ino { 0x3000_1200 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        use core::sync::atomic::Ordering;
+        let mut body = alloc::vec::Vec::with_capacity(192);
+        let cur = crate::sched::current();
+        let tid  = cur.map(|c| c.tid as u64).unwrap_or(1);
+        let ppid = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
+        let name = cur.map(|c| c.name).unwrap_or("init");
+        push_u64(&mut body, tid);
+        push(&mut body, b" (");
+        push(&mut body, name.as_bytes());
+        push(&mut body, b") R ");
+        push_u64(&mut body, ppid);
+        // pad with zeros to fill enough fields for libc parsers.
+        for _ in 0..48 { push(&mut body, b" 0"); }
+        body.push(b'\n');
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let avail = &body[off..];
+        let n = avail.len().min(buf.len());
+        buf[..n].copy_from_slice(&avail[..n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
 /// `/proc/self/status` per `19§4`. Synthesises body at read time
 /// from the current task; bash and many libc fns parse this.
 pub struct ProcSelfStatusInode;
@@ -122,7 +183,9 @@ pub fn init() {
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
     crate::devfs::register("/proc/self/maps",   StaticFileInode::new(b"")              as InodeRef);
-    crate::devfs::register("/proc/self/status", Arc::new(ProcSelfStatusInode) as InodeRef);
+    crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
+    crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
+    crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
