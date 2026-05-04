@@ -1,4 +1,4 @@
-# State 2026-05-03 (session 22e EOD — pid syscalls + UART read)
+# State 2026-05-03 (session 22f EOD — blocking sys_read + TTY arch note)
 
 Resumable checkpoint — current snapshot only. Update at session exit. Next session reads this first along with `CLAUDE.md` and `docs/MANIFEST.md`. **For per-session history of what landed see `CHANGELOG.md`** — this file is no longer the historical log.
 
@@ -88,6 +88,19 @@ $ cargo run -p xtask -- qemu    --arch aarch64 --features debug-all
 ## What landed since previous EOD
 
 See `CHANGELOG.md` for the per-PR table.
+
+**Session 22f** (PR #220): blocking sys_read on fd=0 via timer-
+tick UART poll + WaitQueue.
+
+- **#220 P2-23** (`P2-23-tty-blocking`): `kernel/src/tty.rs`
+  with `RxBuf` (64 B fixed cap), `WAITERS` list (`Spinlock<Vec<Arc<Task>>, Tty>`),
+  `tick_poll_uart` hooked into the LAPIC timer ISR after EOI.
+  `kernel_sys_read(fd=0)` now blocks via `park_current_for_tty` +
+  `schedule()` and resumes on wake. Existing init-loop trace
+  unchanged — infrastructure dormant until a user program calls
+  `sys_read`. **Architectural debt acknowledged**: this hard-wires
+  fd=0 to COM1 without /dev plumbing; real `/dev/console`/`tty*`
+  rides VFS+devfs (P2-30; see "TTY architecture note" above).
 
 **Session 22e** (PRs #217 – #218): pid syscalls + UART polling read.
 
@@ -461,7 +474,39 @@ Remote: `origin = git@github.com:watkinslabs/oxide.git`.
 8. `make build` (both arches build clean).
 9. Optional sanity: `make qemu-x86` + `make qemu-arm` — should print the preempt-smoke + reach `boot: kernel ready, halting`.
 
-## Suggested next branches (post-session-22d)
+## TTY architecture note (debt acknowledged 22e)
+
+The current `sys_read(fd=0)` and `sys_write(fd=1/2)` paths are
+**v1 stubs that hard-wire fd=0/1/2 to COM1** without any of the
+real `/dev` plumbing. Real Linux:
+
+- `/dev/console` — kernel-selected console (boot param `console=ttyS0`).
+- `/dev/tty0`    — alias for the foreground VT (usually tty1).
+- `/dev/tty1..6` — six default virtual terminals.
+- `/dev/tty`     — calling process's controlling terminal (per-task).
+- `/dev/ttyS0..` — serial lines (PC COM1 = ttyS0).
+
+For oxide to honour this shape we need:
+1. **VFS skeleton** (docs/16): `Inode`, `Dentry`, `Superblock`,
+   mount tree, char/block-device dispatch.
+2. **devfs** mounted at `/dev` registering char/block devices.
+3. **Char-device trait** — `read/write/ioctl/poll` per device.
+4. **Per-task `fd_table: Arc<FdTable>`** (already in `13§5`
+   field list, not yet wired).
+5. **`/dev/console`** char-device backed by the kernel's UART.
+6. **`/dev/tty0..6`** as distinct char devices; `tty0` dynamically
+   aliases the foreground VT.
+7. **`/dev/tty`** resolved per-process via controlling-terminal.
+8. **`init` opens `/dev/console`** before fork/exec; fd 0/1/2
+   inherited by children via fd_table clone semantics.
+
+Today's `sys_read(fd=0)` polls COM1 directly through `tty.rs`'s
+ringbuffer + WaitQueue (P2-23); fd=1/2 in `sys_write` writes to
+the UART via `klog`. Neither goes through a fd_table; both
+hard-code the underlying device. Migrating to the real shape is
+the next big architectural chunk after VFS.
+
+## Suggested next branches (post-session-22e)
 
 The "what we have vs. what we need" framing — read the spec first
 in every case. docs/MANIFEST.md has the table of which spec covers
@@ -469,7 +514,8 @@ what. Top picks ordered by impact toward bash:
 
 | Option | Branch idea | Spec ref | Why pick this |
 |---|---|---|---|
-| **TTY input (full)** | `P2-23-tty-stdin` | docs/28 + docs/22 | Polling read landed in P2-23a; the next step is RX IRQ + ringbuffer + WaitQueue so `sys_read(fd=0)` blocks rather than busy-loops. Needs IOAPIC routing (or PIC fallback) to direct IRQ4 (COM1) to a kernel vector, plus a per-fd `Sleeping`/`Runnable` lifecycle in sched. **The biggest single piece between us and an interactive shell.** With it + a bigger user blob (or real busybox), oxide gets a literal `$ ` prompt. |
+| **VFS + devfs + fd_table** | `P2-30-vfs-devfs` | docs/16 + docs/13§5 | The TTY architecture debt above. VFS skeleton (Inode/Dentry/Superblock), devfs at `/dev`, char-device trait, per-task `fd_table: Arc<FdTable>`, `/dev/console` + `/dev/tty0..6` + `/dev/tty` registration, `init` opens `/dev/console` for fd 0/1/2 inheritance. **Foundational** — once this lands the existing `tty.rs` ringbuffer becomes the backing for `/dev/console`'s char-device methods, and `sys_read`/`sys_write` route through fd_table indirection per spec. Substantial multi-PR effort. |
+| **TTY input full IRQ-driven** | `P2-23b-tty-rx-irq` | docs/28 | Replace the timer-tick polling in `tty::tick_poll_uart` with a proper UART RX IRQ. Needs IOAPIC routing (or PIC fallback) for IRQ4 (COM1) to a kernel vector. Reduces wakeup latency from ≤1ms (timer tick) to <µs (per-byte IRQ). Polls work for v1 demos; IRQ-driven is required for any throughput-sensitive case. |
 | **arm user-Task parity** | `P2-13e-arm-user-task` | docs/14§R07 | x86_64 has full multi-binary fork+exec+wait+exit; arm still uses single-Task `drop_to_el0` directly. Need (a) `ContextAArch64::new_user_with_irq_frame` synthesising an eret frame on the kernel stack, (b) extending the arm IRQ frame to save+restore sp_el0 (frame size 192 → 200 B; affects `oxide_irq_resume_user` epilogue), (c) arm `spawn_user_thread`, (d) arm syscall stub that captures user frame to per-task stack like x86. Substantial but mechanical mirror of the x86 work. |
 | **per-page copy in fork** | `P2-15c-fork-pgcopy` | docs/11§7 | Today's naive fork inherits empty Anonymous VMAs. Real POSIX fork must copy parent's mapped pages so heap/stack survive. Requires "install PTE in non-active PT" — temporarily-activate-the-child trick OR extend the walker to take an explicit root. Until this, fork is correct ONLY for static-PIE programs that don't share heap state at fork time. |
 | **SIGSEGV delivery** | `P2-18-sigsegv` | docs/27 + docs/11§5 | When user faults aren't resolvable (write to RO, exec on NX, unmapped), kernel halts via the smoke handler. Linux delivers SIGSEGV; even a minimal "kill task on protection fault — push to ZOMBIES + schedule" handler would let bad user code die without taking the kernel down. Required so a shell can survive a child crashing. Needs the signal subsystem (docs/27); at minimum: `sigaction`, signal frame on user stack, sa_restorer stub. |
