@@ -268,13 +268,23 @@ pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     -(Errno::Eintr.as_i32() as i64)
 }
 
+/// One signal ready for delivery: number + the registered
+/// sa_handler. `handler == 0` ⇒ SIG_DFL (terminate per `27§2`);
+/// `handler == 1` ⇒ SIG_IGN (drop); else user fn pointer.
+#[derive(Copy, Clone, Debug)]
+pub struct PendingSignal {
+    pub sig:      u32,
+    pub handler:  u64,
+    pub flags:    u64,
+    pub restorer: u64,
+}
+
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
-/// clear the lowest bit and return its 1-based signal number for
-/// the caller to deliver. v1 has no sa_handler dispatch — caller
-/// terminates the task per the default-disposition table in
-/// `27§2`.
+/// clear the lowest bit and return the `PendingSignal`. The
+/// caller decides delivery: SIG_DFL→terminate, SIG_IGN→drop,
+/// other→build a signal frame and jump.
 /// # C: O(1)
-pub fn take_lowest_pending() -> Option<u32> {
+pub fn take_lowest_pending() -> Option<PendingSignal> {
     use core::sync::atomic::Ordering;
     let cur = crate::sched::current()?;
     let pending = cur.sigpending.load(Ordering::Acquire);
@@ -283,7 +293,15 @@ pub fn take_lowest_pending() -> Option<u32> {
     if deliver == 0 { return None; }
     let sig = deliver.trailing_zeros() + 1;
     cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-    Some(sig)
+    // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
+    let table = unsafe { &*cur.sigactions.get() };
+    let h = table[(sig - 1) as usize];
+    Some(PendingSignal {
+        sig,
+        handler:  h.handler,
+        flags:    h.flags,
+        restorer: h.restorer,
+    })
 }
 
 /// `sys_getrlimit(res, rlim)` — slot 97. Writes (rlim_cur,
