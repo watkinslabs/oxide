@@ -663,21 +663,43 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
 
-    // 4. Overwrite the per-task syscall stack's saved user-frame
+    // 4. Build the SysV initial stack (argc/argv/envp/auxv) per
+    //    docs/31§4 step 5. v1 passes empty argv/envp; auxv carries
+    //    AT_PHDR/PHENT/PHNUM/PAGESZ/ENTRY/RANDOM so static-PIE musl
+    //    `_start` can locate its phdrs and seed its RNG.
+    let random16 = {
+        let ns = <hal_x86_64::X86TimerOps as TimerOps>::monotonic_ns().0;
+        let mut r = [0u8; 16];
+        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
+        r
+    };
+    // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
+    let new_sp = match unsafe {
+        crate::exec_stack::build_user_stack(
+            crate::elf_smoke::EXEC_USER_STACK_TOP,
+            &[], &[],
+            &img,
+            &random16,
+        )
+    } {
+        Some(sp) => sp,
+        None     => return -(Errno::Enomem.as_i32() as i64),
+    };
+
+    // 5. Overwrite the per-task syscall stack's saved user-frame
     //    so the asm epilogue's `pop rcx; pop r11; pop rsp; sysretq`
-    //    lands the user at the new program entry instead of
-    //    returning to the execve caller.
+    //    lands the user at the new program entry on the built stack.
     // SAFETY: we are running on cur's per-task syscall stack; current_user_frame() points at the live saved tail; the syscall asm pops from these same slots after we return.
     let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
     frame[0] = img.entry.as_u64();
     frame[1] = 0x002;
-    frame[2] = crate::elf_smoke::EXEC_USER_STACK_TOP;
+    frame[2] = new_sp;
 
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve: new entry=");
         klog::write_hex_u64(img.entry.as_u64());
         klog::write_raw(b" sp=");
-        klog::write_hex_u64(crate::elf_smoke::EXEC_USER_STACK_TOP);
+        klog::write_hex_u64(new_sp);
         klog::write_raw(b" new_root=");
         klog::write_hex_u64(new_root);
         klog::write_raw(b"\n");

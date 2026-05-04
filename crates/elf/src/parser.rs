@@ -113,6 +113,12 @@ pub struct ParsedElf<'a> {
     /// Slice of the raw file holding the interp path (with the
     /// trailing NUL trimmed).
     pub interp:     Option<&'a [u8]>,
+    /// Program-header table file offset, entry size, count.
+    /// Auxv build (AT_PHDR/AT_PHENT/AT_PHNUM per `31§4 step 5`)
+    /// reads these.
+    pub phoff:      u64,
+    pub phentsize:  u16,
+    pub phnum:      u16,
 }
 
 impl<'a> ParsedElf<'a> {
@@ -210,7 +216,10 @@ pub fn parse(file: &[u8], arch_machine: u16) -> KResult<ParsedElf<'_>> {
         }
     }
 
-    Ok(ParsedElf { raw: file, elf_type, machine, entry, loads, interp })
+    Ok(ParsedElf {
+        raw: file, elf_type, machine, entry, loads, interp,
+        phoff: phoff as u64, phentsize: phentsize as u16, phnum: phnum as u16,
+    })
 }
 
 #[inline]
