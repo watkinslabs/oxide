@@ -130,32 +130,21 @@ core::arch::global_asm!(
     "    pop  r9",                                     // a4
     "    pop  r10",                                    // a5 (discarded; r10 reused below)
     // After 7 pops, rsp is at the 3-quadword tail (RIP / RFLAGS /
-    // RSP). Snapshot those into the global user-frame statics so
-    // `kernel_sys_fork` (P2-15b) can read them without extending
-    // the dispatch signature. Uses rax as scratch — it's free here
-    // (about to be clobbered by the call's return value anyway).
-    "    mov  rax, qword ptr [rsp + 0]",                // user RIP
-    "    mov  qword ptr [rip + oxide_user_rip], rax",
-    "    mov  rax, qword ptr [rsp + 8]",                // user RFLAGS
-    "    mov  qword ptr [rip + oxide_user_rflags], rax",
-    "    mov  rax, qword ptr [rsp + 16]",               // user RSP
-    "    mov  qword ptr [rip + oxide_user_rsp], rax",
+    // RSP) on the current task's per-task syscall stack
+    // (`oxide_current_kstack` updated by schedule per `13§5`).
     // SysV requires rsp 16-aligned at `call`; current offset is
     // -24 mod 16 = 8 → subtract 8 to align.
     "    sub  rsp, 8",
     "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
-    // Restore user state from the global snapshot slots populated
-    // by the entry path. For normal syscalls the globals still
-    // hold the original user RIP/RFLAGS/RSP (no handler touched
-    // them); for `execve` (P2-21) the handler overwrites them so
-    // sysretq lands the user at the new program entry. The 3
-    // saved-state quadwords on the kernel scratch stack are
-    // abandoned — rsp is reloaded from `oxide_user_rsp` directly,
-    // and the kernel scratch stack is restored fresh on every
-    // next syscall via `OXIDE_SYSCALL_KSTACK`.
-    "    mov  rcx, qword ptr [rip + oxide_user_rip]",  // user RIP
-    "    mov  r11, qword ptr [rip + oxide_user_rflags]",// user RFLAGS
-    "    mov  rsp, qword ptr [rip + oxide_user_rsp]",  // user RSP (last write per sysretq spec)
+    "    add  rsp, 8",                                 // undo align
+    // Restore user state from the per-task syscall-stack tail.
+    // For normal syscalls the values are exactly the captured
+    // user RIP/RFLAGS/RSP from entry; `execve` (P2-21) modifies
+    // them in-place via `current_user_frame()` so sysretq lands
+    // the user at the new program entry.
+    "    pop  rcx",                                    // user RIP
+    "    pop  r11",                                    // user RFLAGS
+    "    pop  rsp",                                    // user RSP (last write per sysretq spec)
     "    sysretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
 );
@@ -165,24 +154,50 @@ extern "C" {
     fn oxide_syscall_entry();
 }
 
-/// User RIP at the moment of the most recent `syscall` instruction.
-/// Captured by `oxide_syscall_entry` before calling
-/// `oxide_syscall_dispatch` so `kernel_sys_fork` (and any other
-/// syscall that needs to construct a child IRET frame) can read
-/// the post-`syscall` user RIP / RFLAGS / RSP. Single-CPU UP v1 —
-/// per-CPU once SMP lands.
-#[no_mangle]
-pub static oxide_user_rip:    core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(0);
-#[no_mangle]
-pub static oxide_user_rflags: core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(0);
-#[no_mangle]
-pub static oxide_user_rsp:    core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(0);
+/// Per-task user-frame slot per `13§5`. Pointers to the saved
+/// (user_rip, user_rflags, user_rsp) quadwords on the current
+/// task's syscall kernel stack (the 3-quadword tail left by
+/// `oxide_syscall_entry` after its 7 pops, before the call to
+/// dispatch). Layout: indices [0]=rip, [1]=rflags, [2]=rsp.
+///
+/// Used by `kernel_sys_fork` (read user RIP/RSP/RFLAGS to build
+/// the child's iretq frame) and `kernel_sys_execve` (write to
+/// redirect sysretq into the new program's entry without
+/// returning to the caller). The asm sysretq pops from these
+/// same slots — modifying them in-place is equivalent to "return
+/// from the syscall as if the user had been at this RIP all
+/// along".
+///
+/// # SAFETY: caller is `oxide_syscall_dispatch` running on the
+/// active task's per-task kernel stack; the syscall asm has
+/// already executed its 7 pops and the `sub rsp, 8` align before
+/// calling dispatch, so this layout is current. Single-CPU UP
+/// v1 — per-CPU pointer once SMP lands.
+/// # C: O(1)
+pub fn current_user_frame() -> *mut [u64; 3] {
+    let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
+    // Top of per-task syscall stack; the 3-quadword tail begins
+    // 24 B below top after the 10-pushes-then-7-pops sequence.
+    (top - 24) as *mut [u64; 3]
+}
 
 // `oxide_syscall_dispatch` is defined in the kernel crate; the asm
 // stub above references it by symbol. See `kernel/src/syscall_glue.rs`.
+
+/// Update `OXIDE_SYSCALL_KSTACK` to `top` — the next syscall from
+/// user mode will switch to this stack via the asm prologue. The
+/// scheduler calls this on every task-switch in tandem with
+/// `set_rsp0` so each user task syscalls onto its own kernel
+/// stack (per-task isolation per `13§5`). Without this, two
+/// user tasks sharing a single boot-time scratch stack would
+/// clobber each other's syscall state if one ctx-switches mid-
+/// syscall.
+/// # SAFETY: caller holds the runqueue invariant for the task
+/// owning this stack; preempt-off; single-CPU UP.
+/// # C: O(1)
+pub unsafe fn set_syscall_kstack(top: u64) {
+    OXIDE_SYSCALL_KSTACK.store(top, core::sync::atomic::Ordering::Release);
+}
 
 /// Set IA32_LSTAR / IA32_STAR / IA32_FMASK + EFER.SCE for `syscall`
 /// entry. One-shot per boot, called by `_start_rust` after the
