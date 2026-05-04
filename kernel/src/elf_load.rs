@@ -108,6 +108,28 @@ pub fn load_static_blob(
 
     let entry = UserVirtAddr::new(parsed.entry).ok_or(LoadError::Einval)?;
     let brk   = UserVirtAddr::new(max_end).ok_or(LoadError::Einval)?;
+
+    // Register a heap region per docs/15§5 `brk(2)`: an Anonymous
+    // VMA covering [max_end, max_end + HEAP_RESERVE) so `sys_brk`
+    // can extend lazily via demand-paging. v1: 64 MiB heap.
+    const HEAP_RESERVE: u64 = 64 * 1024 * 1024;
+    let heap_start = max_end;
+    let heap_end   = heap_start.checked_add(HEAP_RESERVE)
+        .ok_or(LoadError::Einval)?;
+    let heap_hint  = UserVirtAddr::new(heap_start).ok_or(LoadError::Einval)?;
+    if heap_end <= heap_start {
+        return Err(LoadError::Einval);
+    }
+    let _ = as_.mmap(
+        Some(heap_hint),
+        (heap_end - heap_start) as usize,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    ).map_err(|_| LoadError::Enomem)?;
+    as_.set_brk_window(heap_start, heap_end);
+
     Ok(LoadedImage { entry, brk })
 }
 
