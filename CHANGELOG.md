@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #270) — 2026-05-04
+## Session 23 (PRs #234 – #273) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -531,6 +531,9 @@ End-of-session-22 verified-green (final, post-22g):
 | #268 | `P3-29-pipe-smoke-test` | Boot-time `pipe-evt-smoke` round-trips a 5-byte string through PipeInode and a u64 counter through EventfdInode; kasserts the buf/counter contracts. |
 | #269 | `P3-30-clock-getres` | Slots 96/201/227/229. clock_getres reports 1 ns resolution. clock_settime accepts and forgets (no RTC). gettimeofday and time use the same monotonic counter as clock_gettime. New `kernel/src/syscall_glue_time.rs` houses the time-shaped syscalls. |
 | #270 | `P3-31-etc-hostname` | Static /etc/{hostname, passwd (root only), group, nsswitch.conf, resolv.conf, localtime} and /proc/{self/oom_score{,_adj}, sys/kernel/{pid_max, ngroups_max, cap_last_cap, random/{uuid,boot_id}}}. Common shell/libc startup probes. |
+| #271 | `P3-32-state-changelog-update` | docs catch-up: state.md + CHANGELOG.md through #270. |
+| #272 | `P3-33-getdents64` | Slots 78/217 stub: validate fd + dirp range, return 0 (EOD). Real Inode::lookup-driven enumeration rides docs/16. |
+| #273 | `P3-34-pread-pwrite` | Slots 17/18 routed via fd_table → Inode::read/write with explicit offset (procfs StaticFileInode honours it for streaming). preadv/pwritev (295/296) → ENOSYS. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
