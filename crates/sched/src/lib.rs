@@ -20,7 +20,7 @@ pub mod task;
 pub use cfs::CfsRunqueue;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use runqueue::RunqueueInner;
-pub use task::{SchedClass, SchedPolicy, Task, TaskState};
+pub use task::{SaHandler, SchedClass, SchedPolicy, Task, TaskState};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer
