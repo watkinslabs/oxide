@@ -171,8 +171,10 @@ pub unsafe fn schedule() {
     // in v1 share the single global Arc<AddressSpace>).
     // SAFETY: prev_raw is non-null after install_global.
     let prev_ref = unsafe { &*prev_raw };
-    let prev_root = prev_ref.mm.as_ref().map(|a| a.root_pa()).unwrap_or(0);
-    let next_root = next_arc.mm.as_ref().map(|a| a.root_pa()).unwrap_or(0);
+    // SAFETY: schedule path holds the runqueue invariant for both prev and next; preempt-off + single-CPU; no concurrent execve.
+    let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
+    // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
+    let next_root = unsafe { next_arc.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
     if next_root != 0 && next_root != prev_root {
         // SAFETY: root_pa is the AS-private root populated with kernel-half mappings per P2-19; activate writes CR3/TTBR0 + flushes user TLB; preempt-off + single-CPU.
         unsafe { ActiveMmu::activate(next_root); }
@@ -261,8 +263,10 @@ pub unsafe fn schedule_from_irq() {
     // `oxide_context_switch`.
     // SAFETY: prev_raw came from rq.current AtomicPtr (non-null after install_global); strong ref held by current AtomicPtr keeps the pointee alive for this critical section.
     let prev_ref = unsafe { &*prev_raw };
-    let prev_root = prev_ref.mm.as_ref().map(|a| a.root_pa()).unwrap_or(0);
-    let next_root = next_arc.mm.as_ref().map(|a| a.root_pa()).unwrap_or(0);
+    // SAFETY: schedule path holds the runqueue invariant for both prev and next; preempt-off + single-CPU; no concurrent execve.
+    let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
+    // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
+    let next_root = unsafe { next_arc.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
     if next_root != 0 && next_root != prev_root {
         // SAFETY: root_pa is the AS-private root populated with kernel-half mappings per P2-19; activate writes CR3/TTBR0 + flushes user TLB; IRQs masked + single-CPU.
         unsafe { ActiveMmu::activate(next_root); }

@@ -119,7 +119,39 @@ pub struct Task {
     /// `CLONE_VM` siblings share the same VMA tree (`13§5` field
     /// list). Schedule per `13§8`: switch_address_space called only
     /// when `next.mm != prev.mm`.
-    pub mm: Option<Arc<AddressSpace>>,
+    ///
+    /// Wrapped in `UnsafeCell` so `execve` (P2-21) can replace it
+    /// in-place: the running task is the sole writer, and reads
+    /// from `schedule()`'s AS-swap branch happen with preempt-off
+    /// on the same CPU — single-mutator-per-active-CPU per `13§5`
+    /// (same invariant the `arch_ctx` field relies on).
+    pub mm: UnsafeCell<Option<Arc<AddressSpace>>>,
+}
+
+impl Task {
+    /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;
+    /// callers must observe the single-mutator invariant per the
+    /// `mm` field doc.
+    /// # SAFETY: caller is in IRQ-off / preempt-off context, OR
+    /// holds a guarantee that no concurrent execve runs against
+    /// this task on another CPU.
+    /// # C: O(1)
+    pub unsafe fn mm_ref(&self) -> Option<&Arc<AddressSpace>> {
+        // SAFETY: caller asserts no concurrent writer; UnsafeCell::get is the supported deref pattern for shared interior mutability under documented external synchronization.
+        unsafe { (&*self.mm.get()).as_ref() }
+    }
+
+    /// Atomically replace `mm` with `new`, dropping the old Arc.
+    /// Used by `execve` per `15§5` and `Task::new_user_with_mm`.
+    /// # SAFETY: caller is the running task on its CPU OR holds
+    /// the runqueue invariant for this task; preempt-off; single-
+    /// CPU UP. Not safe to call on an actively-scheduled task from
+    /// another CPU.
+    /// # C: O(1) + Arc drop
+    pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
+        // SAFETY: see fn-level contract; single-mutator on this CPU.
+        unsafe { *self.mm.get() = new; }
+    }
 }
 
 /// 8-byte-aligned byte buffer holding a per-arch HAL `Context`.
@@ -178,7 +210,7 @@ impl Task {
             exit_status: AtomicI32::new(0),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
-            mm,
+            mm: UnsafeCell::new(mm),
             stack: None,
         }
     }
