@@ -115,44 +115,40 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// sys_pipe2: anon PipeInode + R/W fds.
+/// sys_pipe2: anon PipeInode + R/W fds. Honors O_CLOEXEC + O_NONBLOCK.
 fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     let pipefd = args.a0;
-    let _flags = args.a1 as u32;
+    let flags  = args.a1 as u32;
+    const O_NONBLOCK: u32 = 0o4000;
+    const O_CLOEXEC:  u32 = 0o2000000;
     if pipefd == 0 || pipefd >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: we are running task on this CPU; preempt-off.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let cur = match crate::sched::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    // SAFETY: running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let inode = crate::dev_pipe::PipeInode::new();
     let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
-    let r_file = File::new(inode.clone(), dentry.clone(), OpenFlags::O_RDONLY);
-    let w_file = File::new(inode, dentry, OpenFlags::O_WRONLY);
+    let mut r_oflags = OpenFlags::O_RDONLY;
+    let mut w_oflags = OpenFlags::O_WRONLY;
+    if (flags & O_NONBLOCK) != 0 { r_oflags |= OpenFlags::O_NONBLOCK; w_oflags |= OpenFlags::O_NONBLOCK; }
+    let r_file = File::new(inode.clone(), dentry.clone(), r_oflags);
+    let w_file = File::new(inode, dentry, w_oflags);
     let r_fd = match fdt.alloc(r_file)  { Ok(f) => f, Err(e) => return -(e as i64) };
     let w_fd = match fdt.alloc(w_file)  { Ok(f) => f, Err(e) => {
         let _ = fdt.close(r_fd);
         return -(e as i64);
     }};
+    if (flags & O_CLOEXEC) != 0 {
+        let _ = fdt.set_cloexec(r_fd, true);
+        let _ = fdt.set_cloexec(w_fd, true);
+    }
     // SAFETY: pipefd validated < USER_VA_END; user page mapped per active CR3 = caller's AS.
     unsafe {
         core::ptr::write_volatile(pipefd as *mut i32,         r_fd);
         core::ptr::write_volatile((pipefd + 4) as *mut i32,   w_fd);
-    }
-    debug_sched! {
-        klog::write_raw(b"[INFO]  sys_pipe2: read_fd=");
-        klog::write_dec_u64(r_fd as u64);
-        klog::write_raw(b" write_fd=");
-        klog::write_dec_u64(w_fd as u64);
-        klog::write_raw(b"\n");
     }
     0
 }
