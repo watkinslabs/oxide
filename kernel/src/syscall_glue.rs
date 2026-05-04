@@ -37,9 +37,7 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     }
 }
 
-/// `sys_mmap(addr, len, prot, flags, fd, off)` — slot 9. Routes
-/// to `vmm::AddressSpace::mmap` per `11§3`/`11§6`. v1: only
-/// MAP_ANONYMOUS|MAP_PRIVATE with addr=NULL/fd=-1; demand-paged.
+/// sys_mmap → AddressSpace::mmap. v1 anon-only, demand-paged.
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
     match crate::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
@@ -48,15 +46,12 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_munmap(addr, len)` — slot 11. Routes to
-/// `vmm::AddressSpace::munmap` + per-page unmap + frame free.
+/// sys_munmap → AddressSpace::munmap.
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
 
-/// `sys_read(fd, buf, count)` — slot 0. fd_table → File::read.
-/// ConsoleInode blocks via WAITERS+schedule until tick_poll_uart
-/// wakes the parked task per `28§3`.
+/// sys_read via fd_table → File::read; ConsoleInode blocks.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
@@ -171,10 +166,8 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_brk(addr)` — slot 12. Adjusts heap brk within the
-/// 64 MiB ELF-loader-reserved Anonymous VMA. brk(0) queries.
-/// glibc/musl ABI: returns post-op brk on success, unchanged
-/// brk on failure.
+/// `sys_brk(addr)` — slot 12. Adjust brk within ELF-reserved
+/// 64 MiB heap VMA. brk(0) queries; brk(N) sets-or-fails.
 fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     let req = args.a0;
     let cur = match crate::sched::current() {
@@ -192,8 +185,7 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-/// `sys_open(path, flags, _mode)` — slot 2. devfs lookup →
-/// File wrapping InodeRef at lowest-free fd; -ENOENT on miss.
+/// sys_open via devfs; -ENOENT on miss.
 fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use alloc::sync::Arc;
@@ -235,7 +227,6 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_close(fd)` — slot 3. Removes the fd_table entry.
 fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cur = match crate::sched::current() {
@@ -326,8 +317,24 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
 
-    // Record parent_tid for `wait4` (P2-22).
+    // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
+    // for `park_zombie` SIGCHLD delivery (P3-67).
     child.parent_tid.store(cur.tid, Ordering::Release);
+    // Materialise an Arc<Task> for the parent by bumping its
+    // strong count (the runqueue's `current` AtomicPtr already
+    // holds one), then downgrade to Weak<Task>. Drops the bumped
+    // Arc immediately — Weak alone keeps the slot live.
+    if let Some(rq) = crate::sched::global() {
+        let raw = rq.current.load(Ordering::Acquire);
+        if !raw.is_null() {
+            // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because the conceptual Arc held by current is alive while we run on it.
+            unsafe { alloc::sync::Arc::increment_strong_count(raw); }
+            // SAFETY: matching from_raw consumes the bumped count.
+            let parent_arc = unsafe { alloc::sync::Arc::from_raw(raw) };
+            // SAFETY: child task hasn't been scheduled yet (just spawned); we are sole writer to its parent_arc slot per the single-mutator-per-active-CPU invariant in `13§5`.
+            unsafe { *child.parent_arc.get() = Some(alloc::sync::Arc::downgrade(&parent_arc)); }
+        }
+    }
 
     // Inherit parent's fd table (P3-61): clone per-entry into a
     // fresh FdTable so child's close/dup don't disturb parent's
@@ -699,9 +706,8 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     written as i64
 }
 
-/// `sys_kill(pid, sig)` — slot 62. P3-21: sets sigpending bit;
-/// dispatch tail delivers (terminates) on syscall return. Self-
-/// target only (pid == tid or 0); others return -ESRCH.
+/// `sys_kill(pid, sig)` — slot 62. Self-target sets sigpending;
+/// others return -ESRCH (no live-task lookup yet).
 fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid = args.a0 as i32;
