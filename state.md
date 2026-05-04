@@ -33,6 +33,14 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 259 | `P3-22-rt-sig-real` | Real rt_sigprocmask: SIG_BLOCK/UNBLOCK/SETMASK update current.sigmask; SIGKILL/SIGSTOP unmaskable. |
 | 260 | `P3-23-pl011-rx-arm` | tty.rs cross-arch. arm tick_poll_uart drains PL011 RX FIFO via FR.RXFE/DR; gic timer ISR calls it. arm ConsoleInode::read uses WAITERS+schedule pattern. arm stdin reaches x86 parity. |
 | 261 | `P3-24-getrlimit-setrlimit` | getrlimit/setrlimit/getrusage/times/sysinfo glue (RLIM_INFINITY everywhere; uptime exposed). |
+| 263 | `P3-25-mremap-msync` | mremap ENOMEM (libc fallback). msync/mincore/mlock-family no-op. |
+| 264 | `P3-26-getpgrp-setsid` | getpgrp/getpgid/getsid → current().tid; setpgid no-op; setsid returns tid; umask 0o022; access/faccessat via devfs. |
+| 265 | `P3-27-eventfd-timerfd` | EventfdInode counter; eventfd/eventfd2 syscalls; dup family moved to syscall_glue_fs. |
+| 266 | `D03-changelog-fix-sessions-19-23` | CHANGELOG.md backfill for sessions 19/20/21/22 + rewrite session 23 in canonical format. |
+| 267 | `P3-28-getcpu-sched-info` | getcpu/sched_getparam/sched_getscheduler/sched_get_priority_max+min/sched_getaffinity/sched_setaffinity/prctl. |
+| 268 | `P3-29-pipe-smoke-test` | Boot-time pipe-evt-smoke (5-byte pipe round-trip + u64 eventfd counter). |
+| 269 | `P3-30-clock-getres` | clock_getres / clock_settime / gettimeofday / time + new syscall_glue_time module. |
+| 270 | `P3-31-etc-hostname` | /etc/{hostname,passwd,group,nsswitch.conf,resolv.conf,localtime} + /proc/sys/kernel/* static entries. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
