@@ -80,10 +80,14 @@ unsafe extern "C" fn oxide_irq_dispatch(_frame: *const u8) {
     // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
     unsafe { eoi(); }
     crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
+    // TTY input poll per docs/28: scrape any pending UART RX
+    // byte into the ringbuffer + wake stdin waiters before the
+    // pre-empt-on-IRQ-exit picker runs.
+    // SAFETY: timer ISR ctx with IRQs masked, single-CPU.
+    unsafe { crate::tty::tick_poll_uart(); }
     // SAFETY: tick_pick_next runs in IRQ context with IRQs masked
     // (interrupt-gate clears IF); reads/writes the per-CPU SCHED
-    // state which is single-CPU at this point in v1. No-op when
-    // `debug-sched` is off (no kthread scheduler installed).
+    // state which is single-CPU at this point in v1.
     unsafe { crate::preempt::tick_pick_next(); }
 }
 

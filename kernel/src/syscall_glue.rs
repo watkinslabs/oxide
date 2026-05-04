@@ -90,54 +90,23 @@ fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
 
-/// Poll the COM1 UART (I/O port 0x3F8) for one byte. Returns
-/// `Some(byte)` if RX data is ready, `None` otherwise. v1 stand-
-/// in for full TTY input plumbing per docs/28: a real UART RX
-/// IRQ + ringbuffer + WaitQueue lands with the interactive shell
-/// PR (P2-23). This polling form is enough to demonstrate the
-/// syscall path; userspace reads `0` until input arrives.
-///
-/// # SAFETY: privileged port I/O legal at CPL=0; reads two bytes
-/// at most from the COM1 device range.
-#[cfg(target_arch = "x86_64")]
-unsafe fn uart_poll_read() -> Option<u8> {
-    // SAFETY: port I/O at CPL=0; LSR + RBR are read-only; no memory effect.
-    unsafe {
-        let lsr: u8;
-        core::arch::asm!(
-            "in al, dx",
-            out("al") lsr,
-            in("dx") 0x3FDu16,
-            options(nomem, nostack, preserves_flags),
-        );
-        if lsr & 0x01 == 0 {
-            return None;
-        }
-        let b: u8;
-        core::arch::asm!(
-            "in al, dx",
-            out("al") b,
-            in("dx") 0x3F8u16,
-            options(nomem, nostack, preserves_flags),
-        );
-        Some(b)
-    }
-}
-
 /// `sys_read(fd, buf, count)` — slot 0. v1 stand-in: only fd=0
-/// (stdin) is wired, polling COM1 RX. Other fds fall through to
-/// the arch-neutral table's `-EBADF` stub.
+/// (stdin) is wired, blocking on the kernel TTY ringbuffer per
+/// docs/28. Other fds fall through to the arch-neutral table's
+/// `-EBADF` stub.
 ///
-/// Polling, non-blocking: if RX data is ready returns the byte
-/// count read (currently always 1 on a hit, 0 on no data). A real
-/// blocking implementation rides the WaitQueue work for P2-23.
+/// Blocks via `tty::park_current_for_tty` + `schedule()` if no
+/// data is ready; the timer-tick UART poller (`tty::tick_poll_uart`,
+/// hooked in `lapic::oxide_irq_dispatch`) wakes parked tasks
+/// after pushing a byte. v1 wakes ALL waiters per push (no
+/// fd-keyed wait queue); each waiter retries `sys_read` on
+/// resume and exactly one consumes the byte.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let cnt = args.a2;
     if fd != 0 {
-        // Not stdin — defer to in-table stub via -EBADF.
         return -(Errno::Ebadf.as_i32() as i64);
     }
     if cnt == 0 {
@@ -146,14 +115,22 @@ fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     if buf == 0 || buf >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: port I/O at CPL=0; non-blocking poll.
-    let byte = match unsafe { uart_poll_read() } {
-        Some(b) => b,
-        None    => return 0, // EAGAIN-equivalent: caller polls again.
-    };
-    // SAFETY: caller validated buf < USER_VA_END; user page mapped (caller's task already executed from this AS); CPL=0 writes through user mapping.
-    unsafe { core::ptr::write_volatile(buf as *mut u8, byte); }
-    1
+    // Block-and-retry loop per `06§6` no-lost-wakeups discipline:
+    // park on the wait queue BEFORE the final empty-check race
+    // window. Anything pushed after we observe empty-and-park
+    // will fire NEED_RESCHED + wake us via `tty::tick_poll_uart`.
+    loop {
+        if let Some(byte) = crate::tty::try_read() {
+            // SAFETY: caller validated buf < USER_VA_END; user page mapped (caller's task already executed from this AS); CPL=0 writes through user mapping.
+            unsafe { core::ptr::write_volatile(buf as *mut u8, byte); }
+            return 1;
+        }
+        // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
+        unsafe { crate::tty::park_current_for_tty(); }
+        // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wakeup from `tick_poll_uart` will.
+        unsafe { crate::sched::schedule(); }
+        // Resumed via wakeup. Retry the read.
+    }
 }
 
 /// `sys_getpid()` — slot 39 per docs/15§5. Returns the current
