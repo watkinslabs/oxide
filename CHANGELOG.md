@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #287) — 2026-05-04
+## Session 23 (PRs #234 – #289) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -548,6 +548,8 @@ End-of-session-22 verified-green (final, post-22g):
 | #285 | `P3-46-keyctl-ipc` | **Refactor + coverage**: pulls the giant dispatch tail into `kernel/src/syscall_compat.rs::try_compat -> Option<i64>` so the main `oxide_syscall_dispatch` arm stays under the line cap. Adds SysV IPC (shm/sem/msg) ENOSYS, POSIX MQ ENOSYS, keyring ENOSYS, timer_* ENOSYS, kexec/iopl/adjtimex EPERM, sendfile/splice/tee/vmsplice/memfd ENOSYS, pidfd ENOSYS, xattr ENOSYS, fanotify ENOSYS, mount-setattr/openat2/etc ENOSYS. Real-impl shadows for STAT/LSTAT/CREAT/PIPE/EXIT_GROUP/NEWFSTATAT/RT_SIGRETURN/GETRESUID/GETRESGID. syscall_glue.rs ~1100 → 890 lines. |
 | #286 | `P3-47-state-changelog` | docs catch-up through #285. |
 | #287 | `P3-49-syscall-coverage-banner` | Boot banner `[INFO] syscall: ~200 slots wired (real impls + compat stubs)` after dev-misc + procfs + pipe-evt smokes. |
+| #288 | `P3-50-state-changelog-final` | docs catch-up through #287; verified-green block updated. |
+| #289 | `P3-51-execve-real-argv` | execve now snapshots up to 8×64 argv/envp strings from the OLD AS into stack-allocated kernel buffers BEFORE activating the new AS, then materialises `&[&[u8]]` slices into `exec_stack::build_user_stack`. Real shells passing argv/envp to fork/execve children will now see them. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
