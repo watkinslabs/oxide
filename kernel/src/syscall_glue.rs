@@ -414,23 +414,12 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_execve(path, argv, envp)` — slot 59 per docs/15§5. v0
-/// per docs/31§4: ignores the path argument, always loads the
-/// kernel-static `EXEC_BLOB`. Replaces `current.mm` atomically,
-/// activates the new AS, and updates `oxide_user_rip`/`rsp` so
-/// the syscall epilogue's `sysretq` lands at the new program's
-/// `e_entry` instead of returning to the caller.
-///
-/// argv/envp/auxv build is skipped for v1 (the test program
-/// doesn't read them); P2-21b adds the auxv table per docs/31§5.
-///
-/// On error returns -ENOMEM / -ENOEXEC and the caller resumes
-/// at the post-execve instruction. On success doesn't return —
-/// the new program runs from `e_entry`.
-///
-/// # SAFETY: caller is `oxide_syscall_dispatch` running on the
-/// user task's kernel stack with IRQs masked.
-/// # C: O(phdrs) parse + O(N_vmas) AS build + O(1) activate
+/// `sys_execve(path, argv, envp)` per docs/15§5+31§4. Loads
+/// path-resolved blob; replaces current.mm; activates new AS;
+/// builds argv/envp/auxv stack; rewrites user_frame so sysretq
+/// lands at e_entry. -ENOMEM/-ENOEXEC on error.
+/// # SAFETY: dispatch ctx, IRQs masked.
+/// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -956,6 +945,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_GETRESUID
             | crate::syscall_nrs::NR_GETRESGID
                                  => crate::syscall_glue_proc::kernel_sys_getres_uid(&args),
+        #[cfg(target_arch = "x86_64")]
+        crate::syscall_nrs::NR_RT_SIGRETURN  => {
+            // SAFETY: dispatch tail runs on cur's per-task syscall stack; current_user_frame() points at the live saved tail; rt_sigreturn_x86 only reads/writes the user-frame slots and user-stack frame the dispatcher previously installed.
+            unsafe { crate::sig_dispatch::rt_sigreturn_x86() }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         crate::syscall_nrs::NR_RT_SIGRETURN  => 0,
         // Compat-stub fall-through table per P3-46.
         _ => match crate::syscall_compat::try_compat(nr, &args) {
@@ -970,10 +965,29 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
     }
-    // P3-21: check pending unblocked signals at syscall return.
-    if let Some(sig) = crate::syscall_glue_proc::take_lowest_pending() {
-        let exit_args = SyscallArgs { a0: (128 + sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
-        let _ = kernel_sys_exit(&exit_args);
+    // P3-65: deliver pending signals at syscall return. SIG_DFL →
+    // terminate (per `27§2`); SIG_IGN → drop; user handler → build
+    // a minimal signal frame and route the user back to the handler
+    // on resume (sa_restorer issues rt_sigreturn).
+    if let Some(p) = crate::syscall_glue_proc::take_lowest_pending() {
+        match p.handler {
+            0 => {
+                let exit_args = SyscallArgs { a0: (128 + p.sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+                let _ = kernel_sys_exit(&exit_args);
+            }
+            1 => {  /* SIG_IGN: drop */ }
+            #[cfg(target_arch = "x86_64")]
+            handler => {
+                // SAFETY: dispatch tail runs on cur's per-task syscall stack; current_user_frame() points at the live saved tail; we rewrite it so sysretq enters the user handler with the constructed frame on the user stack.
+                unsafe { crate::sig_dispatch::deliver_x86(handler, p.restorer, p.sig); }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            _handler => {
+                // arm sa_handler dispatch is M2 follow-up; terminate as fallback.
+                let exit_args = SyscallArgs { a0: (128 + p.sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
+                let _ = kernel_sys_exit(&exit_args);
+            }
+        }
     }
     rv as u64
 }
