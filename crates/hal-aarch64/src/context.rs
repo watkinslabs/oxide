@@ -238,21 +238,23 @@ mod tests {
 
     #[test]
     fn new_kernel_with_irq_frame_layout() {
-        // `14§R07` pins the 192-byte on-stack scaffold. Walk every
-        // slot from sp upward; any reorder of the IRQ stub's
-        // expectations breaks here loud.
+        // `14§R07` pins the 208-byte on-stack scaffold (was 192
+        // pre-P2-13e; sp_el0 added at offset 0xC0 + pad at 0xC8).
+        // Walk every slot from sp upward; any reorder of the IRQ
+        // stub's expectations breaks here loud.
         let mut stack = alloc::vec![0u8; 4096];
         let top = stack.as_mut_ptr_range().end;
         let ctx = ContextAArch64::new_kernel_with_irq_frame(top, dummy_entry, 0xC0FFEE);
         assert_eq!(ctx.x19, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.x20, 0xC0FFEE);
-        assert_eq!(ctx.sp as usize, (top as usize) - 192);
+        assert_eq!(ctx.sp as usize, (top as usize) - 208);
         assert_eq!(ctx.lr,  crate::vbar::irq_resume_user_addr());
-        // SAFETY: we own `stack`; sp..sp+192 lies inside the buffer.
+        // SAFETY: we own `stack`; sp..sp+208 lies inside the buffer.
         let read = |off: usize| -> u64 { unsafe { *((ctx.sp as usize + off) as *const u64) } };
         for i in 0..22 { assert_eq!(read(i * 8), 0, "GP slot {} non-zero", i); }
         assert_eq!(read(0xb0), super::trampoline_kernel_addr(), "saved ELR_EL1");
         assert_eq!(read(0xb8), 0x145,                            "saved SPSR_EL1");
+        assert_eq!(read(0xc0), 0,                                "saved sp_el0 (kthread)");
     }
 
     #[test]
