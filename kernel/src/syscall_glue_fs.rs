@@ -287,6 +287,28 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_statfs(path, buf)` / `sys_fstatfs(fd, buf)` — slots
+/// 137/138. Writes a 120-byte `struct statfs` describing the
+/// devfs root: f_type=0x57AC6E9D (TMPFS_MAGIC stand-in),
+/// 4096 block size, no usage tracking.
+/// # C: O(1)
+pub fn kernel_sys_statfs(args: &SyscallArgs) -> i64 {
+    // Slot 137 takes (path, buf); slot 138 takes (fd, buf). The
+    // user-buf is the second arg in both cases.
+    let buf = args.a1;
+    if let Err(rv) = validate_user_buf(buf, 120, 8) { return rv; }
+    // SAFETY: 120-byte user buf validated < USER_VA_END + 8-aligned; CPL=0 writes through caller's AS.
+    unsafe {
+        for off in (0..120u64).step_by(8) {
+            core::ptr::write_volatile((buf + off) as *mut u64, 0);
+        }
+        core::ptr::write_volatile( buf            as *mut u64, 0x5774_8958_5780_F4B5); // f_type
+        core::ptr::write_volatile((buf +   8)     as *mut u64, 4096);                  // f_bsize
+        core::ptr::write_volatile((buf +  88)     as *mut u32, 256);                   // f_namelen
+    }
+    0
+}
+
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257. v1
 /// ignores `dirfd` (devfs is flat); routes `path` through the
 /// existing devfs-backed `sys_open` glue.

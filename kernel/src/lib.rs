@@ -561,6 +561,11 @@ pub mod syscall_glue_fs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_proc;
 
+// Linux x86_64 syscall number table per `15§5`. One canonical
+// place — `syscall_glue` references `syscall_nrs::NR_*`.
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_nrs;
+
 // P3-30 time-shaped syscalls (clock_gettime + family).
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_time;
