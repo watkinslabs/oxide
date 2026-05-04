@@ -70,6 +70,14 @@ pub fn init() {
     register("/dev/tty5",    Arc::clone(&console));
     register("/dev/tty6",    Arc::clone(&console));
     register("/dev/ttyS0",   console);
+
+    // P3-04 misc char devices.
+    register("/dev/null",    Arc::new(crate::dev_misc::NullInode)   as InodeRef);
+    register("/dev/zero",    Arc::new(crate::dev_misc::ZeroInode)   as InodeRef);
+    register("/dev/full",    Arc::new(crate::dev_misc::FullInode)   as InodeRef);
+    let rand: InodeRef = Arc::new(crate::dev_misc::RandomInode);
+    register("/dev/random",  Arc::clone(&rand));
+    register("/dev/urandom", rand);
 }
 
 /// Read a NUL-terminated string from user memory at `ptr`,

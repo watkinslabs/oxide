@@ -90,6 +90,8 @@ pub mod devfs;
 /// glue for the canonical `cmd1 | cmd2` shell IPC pattern.
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_pipe;
+#[cfg(target_os = "oxide-kernel")]
+pub mod dev_misc;
 
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
