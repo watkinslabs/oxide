@@ -171,6 +171,13 @@ pub struct Task {
     /// once before the runqueue sees the task; same single-
     /// mutator invariant as `mm`.
     pub parent_arc: UnsafeCell<Option<Weak<Task>>>,
+
+    /// User-side argv string per `19§4` for `/proc/self/cmdline`.
+    /// Set at `sys_execve` time to a NUL-separated copy of argv;
+    /// `None` for tasks without an execve (boot's init-anchor
+    /// uses `task.name` as a fallback). Wrapped in `UnsafeCell`
+    /// for the same single-mutator invariant as `mm`.
+    pub cmdline: UnsafeCell<Option<alloc::string::String>>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -281,6 +288,7 @@ impl Task {
             sigmask:    AtomicU64::new(0),
             sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
             parent_arc: UnsafeCell::new(None),
+            cmdline:    UnsafeCell::new(None),
         }
     }
 
