@@ -287,6 +287,35 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_access(path, mode)` — slot 21. v1: returns 0 if path
+/// resolves in devfs, -ENOENT otherwise. No actual permission
+/// check (mode ignored).
+/// # C: O(N_devfs_entries)
+pub fn kernel_sys_access(args: &SyscallArgs) -> i64 {
+    let path_ptr = args.a0;
+    if path_ptr == 0 || path_ptr >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
+    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
+        Some(p) if !p.is_empty() => p,
+        _                        => return -(Errno::Einval.as_i32() as i64),
+    };
+    if path == b"/" { return 0; }
+    let s = match core::str::from_utf8(path) {
+        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
+}
+
+/// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1
+/// ignores `dirfd` + `flags`; same semantics as `sys_access`.
+/// # C: O(N_devfs_entries)
+pub fn kernel_sys_faccessat(args: &SyscallArgs) -> i64 {
+    let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
+    kernel_sys_access(&inner)
+}
+
 /// `sys_readlink(path, buf, bufsize)` — slot 89. v1 special-
 /// cases the paths libc commonly probes: `/proc/self/exe` →
 /// "/init"; `/proc/self/cwd` → "/". All other paths return
