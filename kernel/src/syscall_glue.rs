@@ -96,6 +96,10 @@ const SYSCALL_NR_EVENTFD2: u64       = 290;
 const SYSCALL_NR_EVENTFD: u64        = 284;
 const SYSCALL_NR_GETDENTS64: u64     = 217;
 const SYSCALL_NR_GETDENTS: u64       = 78;
+const SYSCALL_NR_PREAD64: u64        = 17;
+const SYSCALL_NR_PWRITE64: u64       = 18;
+const SYSCALL_NR_PREADV: u64         = 295;
+const SYSCALL_NR_PWRITEV: u64        = 296;
 const SYSCALL_NR_GETCPU: u64         = 309;
 const SYSCALL_NR_SCHED_GETPARAM: u64 = 143;
 const SYSCALL_NR_SCHED_SETSCHEDULER: u64 = 144;
@@ -899,6 +903,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => crate::syscall_glue_fs::kernel_sys_eventfd2(&args),
         SYSCALL_NR_GETDENTS | SYSCALL_NR_GETDENTS64
                                  => crate::syscall_glue_fs::kernel_sys_getdents64(&args),
+        SYSCALL_NR_PREAD64       => crate::syscall_glue_fs::kernel_sys_pread64(&args),
+        SYSCALL_NR_PWRITE64      => crate::syscall_glue_fs::kernel_sys_pwrite64(&args),
+        SYSCALL_NR_PREADV | SYSCALL_NR_PWRITEV
+                                 => -(Errno::Enosys.as_i32() as i64),
         SYSCALL_NR_GETCPU        => crate::syscall_glue_proc::kernel_sys_getcpu(&args),
         SYSCALL_NR_SCHED_GETPARAM => crate::syscall_glue_proc::kernel_sys_sched_getparam(&args),
         SYSCALL_NR_SCHED_SETSCHEDULER | SYSCALL_NR_SCHED_GETSCHEDULER
