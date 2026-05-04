@@ -446,10 +446,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         devfs::init();
         // P3-17 procfs static-file entries.
         procfs::init();
-        // P3-16/P3-18/P3-29 boot-time smokes for char devs + procfs + pipes/eventfd.
+        // P3-16/P3-18/P3-29/P3-77 boot-time smokes.
         dev_misc::smoke_test();
         procfs::smoke_test();
         dev_pipe::smoke_test();
+        tmpfs::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
         // bumped whenever a new arm or compat-table entry lands.
         debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
