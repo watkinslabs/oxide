@@ -209,7 +209,29 @@ pub unsafe fn map_at_level<W: PtWalker, F: FnMut() -> Option<u64>>(
     mut alloc_pa: F,
 ) -> Result<(), WalkErr> {
     // SAFETY: privileged read; legal in kernel mode.
-    let mut current_pa = unsafe { W::read_pt_base(va) };
+    let root_pa = unsafe { W::read_pt_base(va) };
+    // SAFETY: delegated; root_pa is the active root.
+    unsafe { map_at_level_with_root::<W, _>(root_pa, va, leaf_level, leaf, hhdm_offset, &mut alloc_pa) }
+}
+
+/// Like `map_at_level` but installs into the tree rooted at
+/// `root_pa` instead of reading from the active CR3 / TTBR0.
+/// Used by `AddressSpace::fork` per docs/11§7 to populate child
+/// page tables without temporarily activating them.
+///
+/// # SAFETY: caller asserts (a) `root_pa` is a valid kernel-owned
+/// PT root, (b) other map_at_level preconditions per the
+/// active-root form. Single-CPU walker; per-AS PT lock held.
+/// # C: O(leaf_level)
+pub unsafe fn map_at_level_with_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64,
+    va: u64,
+    leaf_level: u8,
+    leaf: u64,
+    hhdm_offset: u64,
+    mut alloc_pa: &mut F,
+) -> Result<(), WalkErr> {
+    let mut current_pa = root_pa;
     let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
     // Walk levels 0..(leaf_level - 1), descending into table entries.
     for level in 0..leaf_level {
