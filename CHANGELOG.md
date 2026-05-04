@@ -488,7 +488,7 @@ End-of-session-22 verified-green (final, post-22g):
 
 ---
 
-## Session 23 (PRs #234 – #281) — 2026-05-04
+## Session 23 (PRs #234 – #283) — 2026-05-04
 
 **Subject**: User-authorised autonomous Phase-3 batch. The big libc-startup syscall coverage push, plus the B09 ABI fix that unblocks any user code reusing arg regs across syscalls, the SysV initial-stack build at execve (foundation for static-PIE musl), procfs/sysfs/etc skeletons, the CAT blob that exercises sys_open(/proc/version)+read+write+close end-to-end, the signal subsystem foundation, aarch64 PL011 RX parity, and the changelog backfill for sessions 19–22.
 
@@ -542,6 +542,8 @@ End-of-session-22 verified-green (final, post-22g):
 | #279 | `P3-40-state-changelog-update` | docs catch-up through #278. |
 | #280 | `P3-41-epoll-stubs` | Explicit -ENOSYS for substrates we don't have yet so libraries probing for them fall through to supported alternatives: epoll family (NR_EPOLL_*), inotify (NR_INOTIFY_*), signalfd/timerfd/userfaultfd, libaio (NR_IO_*) + io_uring (NR_IO_URING_*), perf/bpf/seccomp/landlock, unshare/setns/pivot_root. |
 | #281 | `P3-42-tkill-tgkill-real` | Slots 15/127/130/200. tkill self-target routes to sys_kill (sets sigpending bit). rt_sigpending writes current.sigpending. rt_sigsuspend swaps the mask + returns -EINTR (dispatch tail's take_lowest_pending handles delivery). rt_sigreturn returns 0 (no signal frame yet). rt_sigtimedwait/rt_sigqueueinfo/rt_tgsigqueueinfo → -ENOSYS. |
+| #282 | `P3-43-state-changelog-final` | docs catch-up through #281. |
+| #283 | `P3-44-getitimer-setitimer` | Wide ABI-compat batch covering libc/shell startup probes. itimer/alarm/pause/priority/groups/setuid family → 0. getresuid/getresgid write (0,0,0). capget/capset/personality/vhangup/syslog/sethostname → 0. reboot/mount/umount2/chroot → EPERM. ptrace/init_module/swapon/sendfile/splice/tee/vmsplice/copy_file_range/memfd_create/pidfd_*/xattr family → ENOSYS. flock/fallocate/readahead/fadvise64/sync_file_range → 0. |
 
 End-of-session-23 verified-green:
 - `make lint` clean.
