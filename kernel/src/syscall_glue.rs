@@ -90,8 +90,7 @@ fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_write(fd, buf, count)` — slot 1. fd_table → File::write,
-/// fall back to in-table UART path for kthread-context syscalls.
+/// sys_write via fd_table; in-table UART fallback for kthreads.
 fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
@@ -166,8 +165,7 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_brk(addr)` — slot 12. Adjust brk within ELF-reserved
-/// 64 MiB heap VMA. brk(0) queries; brk(N) sets-or-fails.
+/// sys_brk: adjust brk within ELF heap VMA. brk(0) queries.
 fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     let req = args.a0;
     let cur = match crate::sched::current() {
@@ -205,9 +203,17 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         Ok(s)  => s,
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
+    // Lookup order: devfs → tmpfs (with O_CREAT fallback) → ENOENT.
+    const O_CREAT: u32 = 0o100;
     let inode = match crate::devfs::lookup(path_str) {
         Some(i) => i,
-        None    => return -(Errno::Enoent.as_i32() as i64),
+        None => match crate::tmpfs::lookup(path_str) {
+            Some(i) => i,
+            None if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") => {
+                crate::tmpfs::lookup_or_create(path_str)
+            }
+            None => return -(Errno::Enoent.as_i32() as i64),
+        },
     };
     let cur = match crate::sched::current() {
         Some(c) => c,
@@ -245,12 +251,10 @@ fn kernel_sys_close(args: &SyscallArgs) -> i64 {
 }
 
 
-/// `sys_getpid()` — slot 39. Returns current().tid.
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
     crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
 }
 
-/// `sys_getppid()` — slot 110. Returns current().parent_tid.
 fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     crate::sched::current()
@@ -626,13 +630,9 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_exit(code)` per docs/15§2 + docs/13§5: mark running
-/// task Zombie + reschedule. State=Zombie ⇒ picker won't
-/// re-enqueue; schedule() falls through to idle (boot anchor)
-/// ⇒ boot resumes past its `schedule()` callsite. Exit code
-/// stashed in `Task.exit_status` for wait4 to read.
-/// # SAFETY: caller is dispatch on the task's kernel stack, IRQs masked.
-/// # C: O(log N) CFS pick + O(1) ctxsw
+/// sys_exit: mark Zombie, stash exit_status, schedule away.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # C: O(log N) + O(1)
 fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use alloc::sync::Arc;
