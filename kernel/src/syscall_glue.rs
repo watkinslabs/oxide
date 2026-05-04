@@ -1,17 +1,6 @@
-// Glue between the per-arch syscall asm stub and the architecture-
-// neutral `syscall::dispatch` table per `15§4`.
-//
-// Both arches' asm stubs reference `oxide_syscall_dispatch` by symbol;
-// `extern "C"` + `#[no_mangle]` here makes the linker resolve it to
-// the kernel-side wrapper that:
-//   1. packs the asm-shuffled regs into `SyscallArgs`,
-//   2. calls `syscall::dispatch(nr, &args) -> i64`,
-//   3. returns the result as `u64` placed in rax (x86) / x0 (arm)
-//      per `15§1.3` so a libc-style `rv > -4096UL` failure check
-//      works userspace-side.
-//
-// arch-specific interceptions (e.g., x86 `sys_arch_prctl`) live
-// here behind cfg gates because they need to call into `hal-<arch>`.
+// Glue between the per-arch syscall asm stub and the dispatch
+// table per `15§4`. Wraps `syscall::dispatch` with arch-specific
+// interceptions (e.g. x86 sys_arch_prctl) that need hal-<arch>.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -69,6 +58,8 @@ const SYSCALL_NR_PRLIMIT64: u64      = 302;
 const SYSCALL_NR_RT_SIGACTION: u64   = 13;
 const SYSCALL_NR_RT_SIGPROCMASK: u64 = 14;
 const SYSCALL_NR_SIGALTSTACK: u64    = 131;
+const SYSCALL_NR_NANOSLEEP: u64       = 35;
+const SYSCALL_NR_CLOCK_NANOSLEEP: u64 = 230;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -976,6 +967,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_RT_SIGACTION  => crate::syscall_glue_proc::kernel_sys_rt_sigaction(&args),
         SYSCALL_NR_RT_SIGPROCMASK => crate::syscall_glue_proc::kernel_sys_rt_sigprocmask(&args),
         SYSCALL_NR_SIGALTSTACK   => crate::syscall_glue_proc::kernel_sys_sigaltstack(&args),
+        SYSCALL_NR_NANOSLEEP     => crate::syscall_glue_proc::kernel_sys_nanosleep(&args),
+        SYSCALL_NR_CLOCK_NANOSLEEP => crate::syscall_glue_proc::kernel_sys_clock_nanosleep(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
