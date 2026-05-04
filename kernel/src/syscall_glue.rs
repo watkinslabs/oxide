@@ -78,6 +78,14 @@ const SYSCALL_NR_MLOCK: u64          = 149;
 const SYSCALL_NR_MUNLOCK: u64        = 150;
 const SYSCALL_NR_MLOCKALL: u64       = 151;
 const SYSCALL_NR_MUNLOCKALL: u64     = 152;
+const SYSCALL_NR_GETPGRP: u64        = 111;
+const SYSCALL_NR_GETPGID: u64        = 121;
+const SYSCALL_NR_SETPGID: u64        = 109;
+const SYSCALL_NR_SETSID: u64         = 112;
+const SYSCALL_NR_GETSID: u64         = 124;
+const SYSCALL_NR_UMASK: u64          = 95;
+const SYSCALL_NR_FACCESSAT: u64      = 269;
+const SYSCALL_NR_ACCESS: u64         = 21;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -124,14 +132,9 @@ fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
 
-/// `sys_read(fd, buf, count)` — slot 0. Routes through the
-/// current task's `fd_table` (P2-30a): looks up the open `File`
-/// at `fd`, calls `File::read` which delegates to the underlying
-/// inode (e.g. `ConsoleInode` for fd=0/1/2 in v1).
-///
-/// `ConsoleInode::read` blocks via `tty::park_current_for_tty`
-/// + `schedule()` if no UART byte is ready; the timer-tick poller
-/// (`tty::tick_poll_uart`) wakes parked tasks per `28§3`.
+/// `sys_read(fd, buf, count)` — slot 0. fd_table → File::read.
+/// ConsoleInode blocks via WAITERS+schedule until tick_poll_uart
+/// wakes the parked task per `28§3`.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
@@ -170,12 +173,8 @@ fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_write(fd, buf, count)` — slot 1 wrapper. Routes through
-/// the current task's `fd_table` (P2-30a) so fd 1/2 and any
-/// future opened fd dispatch via `File::write`. v1 falls back to
-/// the arch-neutral in-table `sys_write` (which writes to UART
-/// for fd=1/2, EBADF otherwise) when no fd_table is installed —
-/// preserves behaviour for kthread-context kernel-side syscalls.
+/// `sys_write(fd, buf, count)` — slot 1. fd_table → File::write,
+/// fall back to in-table UART path for kthread-context syscalls.
 fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
@@ -271,11 +270,8 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-/// `sys_open(path, flags, _mode)` — slot 2 per docs/15§5.
-/// v1 path resolution: looks up the path in the kernel-side
-/// devfs registry (P2-30b). On hit, allocates a `File` wrapping
-/// the InodeRef and installs it at the lowest-free fd in the
-/// current task's fd_table. Returns the new fd or -ENOENT.
+/// `sys_open(path, flags, _mode)` — slot 2. devfs lookup →
+/// File wrapping InodeRef at lowest-free fd; -ENOENT on miss.
 fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use alloc::sync::Arc;
@@ -957,6 +953,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_MINCORE       => crate::syscall_glue_proc::kernel_sys_mincore(&args),
         SYSCALL_NR_MLOCK | SYSCALL_NR_MUNLOCK | SYSCALL_NR_MLOCKALL | SYSCALL_NR_MUNLOCKALL
                                  => crate::syscall_glue_proc::kernel_sys_mlock_family(&args),
+        SYSCALL_NR_GETPGRP | SYSCALL_NR_GETPGID | SYSCALL_NR_GETSID
+                                 => crate::syscall_glue_proc::kernel_sys_getpgrp(&args),
+        SYSCALL_NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),
+        SYSCALL_NR_SETSID        => crate::syscall_glue_proc::kernel_sys_setsid(&args),
+        SYSCALL_NR_UMASK         => crate::syscall_glue_proc::kernel_sys_umask(&args),
+        SYSCALL_NR_ACCESS        => crate::syscall_glue_fs::kernel_sys_access(&args),
+        SYSCALL_NR_FACCESSAT     => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
         SYSCALL_NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         SYSCALL_NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         SYSCALL_NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
