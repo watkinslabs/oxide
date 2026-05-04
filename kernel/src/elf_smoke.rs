@@ -370,6 +370,11 @@ pub const HELLO_BLOB: &'static [u8] = include_bytes!("../blobs/hello.elf");
 /// signal-dispatch chain works end-to-end.
 pub const SIGTEST_BLOB: &'static [u8] = include_bytes!("../blobs/sigtest.elf");
 
+/// P3-77 tmpfs end-to-end smoke. Hand-rolled static-PIE ELF that
+/// open(O_CREAT)+write+close /tmp/x then open(RD)+read+write(1)
+/// to validate the tmpfs path through `sys_open` + `tmpfs::lookup_or_create`.
+pub const TMPFSTEST_BLOB: &'static [u8] = include_bytes!("../blobs/tmpfstest.elf");
+
 /// Boot-time smoke: kassert each registered path resolves to a
 /// non-empty ELF blob with the expected magic bytes.
 /// # SAFETY: caller is the boot path; pre-init.
