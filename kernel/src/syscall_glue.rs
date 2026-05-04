@@ -54,6 +54,8 @@ const SYSCALL_NR_KILL: u64           = 62;
 const SYSCALL_NR_TGKILL: u64         = 234;
 const SYSCALL_NR_GETRANDOM: u64      = 318;
 const SYSCALL_NR_SCHED_YIELD: u64    = 24;
+const SYSCALL_NR_WRITEV: u64         = 20;
+const SYSCALL_NR_READV: u64          = 19;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -967,6 +969,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         SYSCALL_NR_TGKILL        => kernel_sys_tgkill(&args),
         SYSCALL_NR_GETRANDOM     => kernel_sys_getrandom(&args),
         SYSCALL_NR_SCHED_YIELD   => kernel_sys_sched_yield(&args),
+        SYSCALL_NR_WRITEV        => crate::syscall_glue_fs::kernel_sys_writev(&args),
+        SYSCALL_NR_READV         => crate::syscall_glue_fs::kernel_sys_readv(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
