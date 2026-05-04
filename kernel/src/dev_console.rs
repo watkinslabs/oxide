@@ -12,7 +12,7 @@
 // programs reach it via the standard fd indirection rather than
 // kernel-side hard-wiring.
 
-#![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+#![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::ToString;
 use alloc::sync::Arc;
@@ -41,8 +41,12 @@ impl Inode for ConsoleInode {
     /// Block-and-retry read from the kernel TTY ringbuffer per
     /// `28§3` console semantics. Returns `Ok(1)` on success
     /// (one byte at a time — line discipline lands later).
+    /// arm v1: ringbuffer + RX wiring not yet implemented (PL011
+    /// driver lands with P2-30c follow-up); returns Eagain so
+    /// userspace polls.
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
+        #[cfg(target_arch = "x86_64")]
         loop {
             if let Some(b) = crate::tty::try_read() {
                 buf[0] = b;
@@ -52,6 +56,12 @@ impl Inode for ConsoleInode {
             unsafe { crate::tty::park_current_for_tty(); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` will.
             unsafe { crate::sched::schedule(); }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = buf;
+            // arm: PL011 ringbuffer + RX IRQ wiring rides P2-30c.
+            Err(VfsError::Enosys)
         }
     }
 

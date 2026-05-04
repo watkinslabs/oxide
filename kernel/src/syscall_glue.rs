@@ -42,6 +42,7 @@ const SYSCALL_NR_CLOSE: u64          = 3;
 const SYSCALL_NR_DUP: u64            = 32;
 const SYSCALL_NR_DUP2: u64           = 33;
 const SYSCALL_NR_DUP3: u64           = 292;
+const SYSCALL_NR_OPEN: u64           = 2;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
@@ -175,6 +176,52 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     match file.write(user_buf) {
         Ok(n)  => n as i64,
         Err(e) => -(e as i64),
+    }
+}
+
+/// `sys_open(path, flags, _mode)` — slot 2 per docs/15§5.
+/// v1 path resolution: looks up the path in the kernel-side
+/// devfs registry (P2-30b). On hit, allocates a `File` wrapping
+/// the InodeRef and installs it at the lowest-free fd in the
+/// current task's fd_table. Returns the new fd or -ENOENT.
+fn kernel_sys_open(args: &SyscallArgs) -> i64 {
+    use alloc::string::ToString;
+    use alloc::sync::Arc;
+    use vfs::{Dentry, File, OpenFlags};
+    let path_ptr = args.a0;
+    let flags    = args.a1 as u32;
+    let _mode    = args.a2;
+    if path_ptr == 0 || path_ptr >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: ptr in user range; user page mapped (caller already executed user code from this AS); path bounded at 256 B.
+    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
+        Some(p) if !p.is_empty() => p,
+        _                        => return -(Errno::Einval.as_i32() as i64),
+    };
+    let path_str = match core::str::from_utf8(path) {
+        Ok(s)  => s,
+        Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    let inode = match crate::devfs::lookup(path_str) {
+        Some(i) => i,
+        None    => return -(Errno::Enoent.as_i32() as i64),
+    };
+    let cur = match crate::sched::current() {
+        Some(c) => c,
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: we are running task on this CPU; preempt-off.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None    => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let dentry = Dentry::new(None, path_str.to_string(), Arc::clone(&inode));
+    let oflags = OpenFlags::from_bits_truncate(flags);
+    let file = File::new(inode, dentry, oflags);
+    match fdt.alloc(file) {
+        Ok(fd)  => fd as i64,
+        Err(e)  => -(e as i64),
     }
 }
 
@@ -735,6 +782,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         #[cfg(target_arch = "x86_64")]
         SYSCALL_NR_READ          => kernel_sys_read(&args),
         SYSCALL_NR_WRITE         => kernel_sys_write(&args),
+        SYSCALL_NR_OPEN          => kernel_sys_open(&args),
         SYSCALL_NR_CLOSE         => kernel_sys_close(&args),
         SYSCALL_NR_DUP           => kernel_sys_dup(&args),
         SYSCALL_NR_DUP2          => kernel_sys_dup2(&args),
