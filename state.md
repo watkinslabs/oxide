@@ -81,6 +81,10 @@ User authorised an autonomous overnight run ("continue working until all of this
 | 308 | `P3-72-proc-self-dynamic` | **M2** `/proc/self/status` synthesises from current(). |
 | 309 | `P3-73-proc-self-cmdline` | **M2** `/proc/self/{cmdline,stat}`. |
 | 310 | `P3-74-proc-self-maps` | **M2** `/proc/self/maps` walks AS VMA tree. AddressSpace::snapshot_vmas(). |
+| 311 | `P3-75-state-changelog-m2-procfs` | docs. |
+| 312 | `P3-76-tmpfs-stub` | **M2** Minimal /tmp filesystem (TmpfsFileInode + sys_open(O_CREAT)). |
+| 313 | `P3-77-tmpfs-smoke` | Boot-time tmpfs round-trip validation. |
+| 314 | `P3-78-tmpfs-user-blob` | **M2** End-to-end: tmpfstest.elf prints 'tmpfs!' via open(O_CREAT)+write+close+reopen+read+write. |
 
 Boot trace now ends with `yo\nhi\nA` deterministically. 524 tests; both arches build clean; spec-lint clean.
 
