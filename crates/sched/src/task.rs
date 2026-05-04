@@ -9,7 +9,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use vmm::AddressSpace;
 
@@ -91,6 +91,12 @@ pub struct Task {
     pub class:    SchedClass,
 
     pub exit_status: AtomicI32,
+
+    /// Parent TID per `13§5` / `15§5`. Set by `sys_fork` when the
+    /// child Task is constructed; `0` for tasks with no parent
+    /// (boot-anchor idle, kthreads spawned at boot). Read by
+    /// `wait4` to find Zombie children of the current task.
+    pub parent_tid: AtomicU32,
 
     /// Top of this task's kernel stack (one past the last byte).
     /// Set when the task is constructed alongside its arch ctx.
@@ -212,6 +218,7 @@ impl Task {
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
             mm: UnsafeCell::new(mm),
             stack: None,
+            parent_tid: AtomicU32::new(0),
         }
     }
 

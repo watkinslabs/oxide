@@ -15,38 +15,25 @@
 
 use crate::elf_load::load_static_blob;
 
-/// Build a fork+execve("y"|"h")+exit ELF64 at compile time. The
-/// init-like parent forks once: parent execve's "y" → prints
-/// "yo\\n", child execve's "h" → prints "hi\\n". Demonstrates
-/// path-driven execve dispatch (P2-21b).
+/// Build an init-like fork+wait4+execve+exit ELF64 at compile
+/// time. Demonstrates the canonical shell pattern: parent forks
+/// a child, child execve's a different program, parent waits for
+/// it to exit, parent exits cleanly. Layout:
 ///
 ///   [0..64)     ehdr
 ///   [64..120)   PT_LOAD phdr
 ///   [120..128)  pad
-///   [128..171)  code (43 B): fork + default path "y" + test rax
-///                            + jne parent + override path "h"
-///                            + execve + exit + ud2
-///   [171..172)  'y' (selector for parent → YO_BLOB)
-///   [172..173)  'h' (selector for child → HI_BLOB)
+///   [128..199)  code (71 B)
+///   [199..200)  'y' (selector → YO_BLOB)
 ///
-/// Sequence (entry = 0x400080):
-///   mov  $57, %eax                ; sys_fork
-///   syscall
-///   mov  $0x4000AB, %edi           ; default path = "y"
-///   test %eax, %eax                ; rax=0 in child, rax=child_tid in parent
-///   jne  parent_path               ; rax != 0 → keep "y"
-///   mov  $0x4000AC, %edi           ; child overrides to "h"
-/// parent_path:
-///   mov  $59, %eax                 ; sys_execve
-///   xor  %esi, %esi                ; argv = NULL
-///   xor  %edx, %edx                ; envp = NULL
-///   syscall                         ; doesn't return on success
-///   mov  $60, %eax                 ; (fallback exit if execve failed)
-///   xor  %edi, %edi
-///   syscall
-///   ud2
-const fn build_elf() -> [u8; 173] {
-    let mut b = [0u8; 173];
+/// Pseudo-code:
+///   if (pid = fork()) == 0:
+///     execve("y")                  ; child runs YO_BLOB
+///     exit(1)                       ; failsafe
+///   wait4(-1, NULL, 0, NULL)       ; parent reaps child
+///   exit(0)
+const fn build_elf() -> [u8; 200] {
+    let mut b = [0u8; 200];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
     b[4]=2; b[5]=1; b[6]=1;
     b[16]=2; b[18]=62; b[20]=1;
@@ -62,7 +49,7 @@ const fn build_elf() -> [u8; 173] {
     let vb = v.to_le_bytes();
     i = 0; while i < 8 { b[p+16+i] = vb[i]; i += 1; }
     i = 0; while i < 8 { b[p+24+i] = vb[i]; i += 1; }
-    let fs: u64 = 173;
+    let fs: u64 = 200;
     let fb = fs.to_le_bytes();
     i = 0; while i < 8 { b[p+32+i] = fb[i]; i += 1; }
     i = 0; while i < 8 { b[p+40+i] = fb[i]; i += 1; }
@@ -75,37 +62,57 @@ const fn build_elf() -> [u8; 173] {
     b[c+0]=0xB8; b[c+1]=0x39;
     // [0x05] 0F 05                 syscall
     b[c+5]=0x0F; b[c+6]=0x05;
-    // [0x07] BF AB 00 40 00        mov $0x4000AB, %edi  ; default path = 'y' selector
-    b[c+7]=0xBF; b[c+8]=0xAB; b[c+9]=0x00; b[c+10]=0x40; b[c+11]=0x00;
-    // [0x0C] 85 C0                 test %eax, %eax
-    b[c+12]=0x85; b[c+13]=0xC0;
-    // [0x0E] 75 05                 jne +5 → 0x15 (parent keeps "y")
-    b[c+14]=0x75; b[c+15]=0x05;
-    // [0x10] BF AC 00 40 00        mov $0x4000AC, %edi  ; child overrides to "h"
-    b[c+16]=0xBF; b[c+17]=0xAC; b[c+18]=0x00; b[c+19]=0x40; b[c+20]=0x00;
-    // [0x15] B8 3B 00 00 00        mov $59, %eax        ; sys_execve
-    b[c+21]=0xB8; b[c+22]=0x3B;
-    // [0x1A] 31 F6                 xor %esi, %esi
-    b[c+26]=0x31; b[c+27]=0xF6;
-    // [0x1C] 31 D2                 xor %edx, %edx
-    b[c+28]=0x31; b[c+29]=0xD2;
-    // [0x1E] 0F 05                 syscall (execve; doesn't return on success)
-    b[c+30]=0x0F; b[c+31]=0x05;
-    // [0x20] B8 3C 00 00 00        mov $60, %eax (fallback exit)
-    b[c+32]=0xB8; b[c+33]=0x3C;
-    // [0x25] 31 FF                 xor %edi, %edi
-    b[c+37]=0x31; b[c+38]=0xFF;
-    // [0x27] 0F 05                 syscall
-    b[c+39]=0x0F; b[c+40]=0x05;
-    // [0x29] 0F 0B                 ud2
-    b[c+41]=0x0F; b[c+42]=0x0B;
-    // Path selectors at file offsets 171 ('y'), 172 ('h')
-    // → vaddrs 0x4000AB, 0x4000AC.
-    b[171]=b'y'; b[172]=b'h';
+    // [0x07] 85 C0                 test %eax, %eax
+    b[c+7]=0x85; b[c+8]=0xC0;
+    // [0x09] 75 1E                 jne +0x1E → 0x29 (parent → wait1)
+    b[c+9]=0x75; b[c+10]=0x1E;
+    // CHILD PATH:
+    // [0x0B] BF C7 00 40 00       mov $0x4000C7, %edi   ; "y" selector
+    b[c+11]=0xBF; b[c+12]=0xC7; b[c+13]=0x00; b[c+14]=0x40; b[c+15]=0x00;
+    // [0x10] B8 3B 00 00 00       mov $59, %eax         ; sys_execve
+    b[c+16]=0xB8; b[c+17]=0x3B;
+    // [0x15] 31 F6                 xor %esi, %esi
+    b[c+21]=0x31; b[c+22]=0xF6;
+    // [0x17] 31 D2                 xor %edx, %edx
+    b[c+23]=0x31; b[c+24]=0xD2;
+    // [0x19] 0F 05                 syscall (execve)
+    b[c+25]=0x0F; b[c+26]=0x05;
+    // [0x1B] B8 3C 00 00 00       mov $60, %eax (failsafe)
+    b[c+27]=0xB8; b[c+28]=0x3C;
+    // [0x20] BF 01 00 00 00       mov $1, %edi
+    b[c+32]=0xBF; b[c+33]=0x01;
+    // [0x25] 0F 05                 syscall (exit)
+    b[c+37]=0x0F; b[c+38]=0x05;
+    // [0x27] 0F 0B                 ud2
+    b[c+39]=0x0F; b[c+40]=0x0B;
+    // PARENT PATH (wait1):
+    // [0x29] B8 3D 00 00 00       mov $61, %eax         ; sys_wait4
+    b[c+41]=0xB8; b[c+42]=0x3D;
+    // [0x2E] BF FF FF FF FF       mov $-1, %edi         ; pid = -1 (any child)
+    b[c+46]=0xBF; b[c+47]=0xFF; b[c+48]=0xFF; b[c+49]=0xFF; b[c+50]=0xFF;
+    // [0x33] 31 F6                 xor %esi, %esi       ; wstatus = NULL
+    b[c+51]=0x31; b[c+52]=0xF6;
+    // [0x35] 31 D2                 xor %edx, %edx       ; options = 0
+    b[c+53]=0x31; b[c+54]=0xD2;
+    // [0x37] 45 31 D2              xor %r10d, %r10d     ; rusage = NULL
+    b[c+55]=0x45; b[c+56]=0x31; b[c+57]=0xD2;
+    // [0x3A] 0F 05                 syscall (wait4)
+    b[c+58]=0x0F; b[c+59]=0x05;
+    // PARENT EXIT:
+    // [0x3C] B8 3C 00 00 00       mov $60, %eax
+    b[c+60]=0xB8; b[c+61]=0x3C;
+    // [0x41] 31 FF                 xor %edi, %edi
+    b[c+65]=0x31; b[c+66]=0xFF;
+    // [0x43] 0F 05                 syscall (exit)
+    b[c+67]=0x0F; b[c+68]=0x05;
+    // [0x45] 0F 0B                 ud2
+    b[c+69]=0x0F; b[c+70]=0x0B;
+    // Path selector 'y' at file offset 199 = vaddr 0x4000C7.
+    b[199]=b'y';
     b
 }
 
-const ELF_BLOB_BYTES: [u8; 173] = build_elf();
+const ELF_BLOB_BYTES: [u8; 200] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
 /// Build a "writes 2-char message + exit" ELF64. `c0`/`c1` are
@@ -186,10 +193,14 @@ pub const EXEC_USER_STACK_TOP: u64 = EXEC_USER_STACK_VA + 0x1000;
 const USER_STACK_VA:  u64 = 0x501_000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 
-/// ud2 landmark addresses. The init-like ELF's ud2 is at
-/// `0x400080 + 0x29`; the named blobs' ud2 is at `0x400080 + 0x1F`.
-const USER_RIP_UD2_ORIG: u64 = 0x400080 + 0x29;
-const USER_RIP_UD2_EXEC: u64 = 0x400080 + 0x1F;
+/// ud2 landmark addresses. The init-like ELF has ud2 at
+/// `0x400080 + 0x27` (child failsafe) and `0x400080 + 0x45`
+/// (parent post-exit, never reached on clean exits since
+/// `sys_exit` unwinds via Zombie + reschedule). Named blobs'
+/// ud2 is at `0x400080 + 0x1F`.
+const USER_RIP_UD2_CHILD_FS: u64 = 0x400080 + 0x27;
+const USER_RIP_UD2_PARENT:   u64 = 0x400080 + 0x45;
+const USER_RIP_UD2_EXEC:     u64 = 0x400080 + 0x1F;
 
 /// `#UD` landmark handler. Chains to user_as for legitimate
 /// demand-page faults; on the deliberate ud2 from sys_exit's
@@ -198,7 +209,9 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     if crate::user_as::user_fault_handler(vec, err, rip, cr2) {
         return true;
     }
-    if vec == 6 && (rip == USER_RIP_UD2_ORIG || rip == USER_RIP_UD2_EXEC) {
+    if vec == 6 && (rip == USER_RIP_UD2_CHILD_FS
+                    || rip == USER_RIP_UD2_PARENT
+                    || rip == USER_RIP_UD2_EXEC) {
         debug_irq! {
             klog::write_raw(b"[INFO]  elf-smoke: ok ring3 #UD rip=");
             klog::write_hex_u64(rip);

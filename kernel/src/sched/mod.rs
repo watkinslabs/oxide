@@ -29,6 +29,7 @@
 pub mod runqueue;
 pub mod schedule;
 pub mod spawn;
+pub mod zombies;
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
@@ -36,5 +37,6 @@ pub use schedule::{
     install_default_runqueue, runqueue_active, RunStats,
 };
 pub use spawn::{next_tid, spawn_kernel_thread};
+pub use zombies::{park_zombie, reap_one};
 #[cfg(target_arch = "x86_64")]
 pub use spawn::spawn_user_thread;

@@ -201,8 +201,11 @@ pub unsafe fn schedule() {
         let now = unsafe { rq.current_ref() };
         let top = now.kernel_stack.load(Ordering::Acquire);
         if !top.is_null() {
-            // SAFETY: top is the next task's top-of-stack; set_rsp0 writes the RSP0 field of the live TSS, used by ring-3→ring-0 transitions per `14§3`.
-            unsafe { hal_x86_64::set_rsp0(top as u64); }
+            // SAFETY: top is the next task's top-of-stack; set_rsp0 writes the RSP0 field of the live TSS used by ring-3→ring-0 transitions per `14§3`; set_syscall_kstack updates the per-task syscall scratch stack so the next `syscall` instruction lands here (per-task isolation per `13§5`).
+            unsafe {
+                hal_x86_64::set_rsp0(top as u64);
+                hal_x86_64::set_syscall_kstack(top as u64);
+            }
         }
     }
 
@@ -292,8 +295,11 @@ pub unsafe fn schedule_from_irq() {
         let now = unsafe { rq.current_ref() };
         let top = now.kernel_stack.load(Ordering::Acquire);
         if !top.is_null() {
-            // SAFETY: top is the next task's top-of-stack; set_rsp0 writes RSP0 of the live TSS used by ring-3→ring-0 transitions per `14§3`.
-            unsafe { hal_x86_64::set_rsp0(top as u64); }
+            // SAFETY: top is the next task's top-of-stack; set_rsp0 writes RSP0 of the live TSS used by ring-3→ring-0 transitions per `14§3`; set_syscall_kstack updates the per-task syscall scratch stack so the next `syscall` instruction lands here.
+            unsafe {
+                hal_x86_64::set_rsp0(top as u64);
+                hal_x86_64::set_syscall_kstack(top as u64);
+            }
         }
     }
 
