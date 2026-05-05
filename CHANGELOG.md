@@ -586,7 +586,7 @@ End-of-session-23 verified-green:
 
 ---
 
-## Session 24 (PRs #316 – #329) — 2026-05-04
+## Session 24 (PRs #316 – #338) — 2026-05-04
 
 **Subject**: M2 follow-ups — real argv in /proc/self/cmdline; real getdents64 over a /tmp directory inode; tid registry plus dynamic per-pid /proc/<tid>/.
 
@@ -606,6 +606,15 @@ End-of-session-23 verified-green:
 | #327 | `T02-tests-proc-paths` | **Tests-discipline.** Extracts `/proc/<tid>` parser (`parse_proc_path -> ProcPath`) and synthetic-directory `child_under` filter into `crates/procfs::paths`. kernel/src/procfs.rs::lookup_dynamic + kernel/src/devfs.rs::PrefixDirInode delegate. Tests cover SelfDir/SelfChild/PidDir/PidChild/NotProc, u32 overflow, prefix matching at root vs nested. |
 | #328 | `T03-tmpfs-uses-child-under` | **Tests-discipline.** Tmpfs uses `child_under`. New `crates/sched::cmdline::argv_to_cmdline` helper pinned by 5 tests; kernel_sys_execve delegates. |
 | #329 | `T04-registry-promote` | **Tests-discipline.** Promotes the tid → Weak<Task> registry into `crates/sched/src/registry.rs`. 5 hosted tests cover insert/lookup, unknown lookup, Weak decay after Arc drop, live_tids pruning, idempotent overwrite. |
+
+| #331 | `P3-88-pty-core` | **PTY core** — `crates/tty/src/pty.rs` introduces `Ring` (4 KiB capacity-capped VecDeque) + `Pair` (master + slave rings + pts_num + hung_up). 12 hosted tests cover ring + pair semantics. |
+| #332 | `P3-89-pty-devices` | `kernel/src/dev_pty.rs` wraps `tty::Pair` in a Spinlock; `PtyMasterInode` + `PtySlaveInode` as CharDev. `open("/dev/ptmx")` special-cases through `allocate_pair` — fresh pair, slave registered at `/dev/pts/<n>`. ioctl(TIOCGPTN/TIOCSPTLCK) wired. devfs registry now String-keyed (register_owned for runtime paths). |
+| #333 | `P3-90-pty-smoke` | `dev_pty::smoke_test()` boot-time round-trip — validates inode-marker encoding, pts/<n> registration, both-direction byte transfer. Boot trace shows `pty-smoke: ok`. |
+| #334 | `P3-91-pgrp-tracking` | Task gains `pgid` + `sid` AtomicU32 (default tid). Fork inherits both per POSIX. `sys_setpgid/setsid/getpgrp/getpgid/getsid` now read+write the real fields via the registry. |
+| #335 | `P3-92-tiocspgrp` | `tty::Pair` gains `foreground_pgid`. `dev_pty` indexes pairs by pts_num so ioctl(TIOCGPGRP/TIOCSPGRP) reaches the field via the inode marker. Shells call `tcsetpgrp` for job control. |
+| #336 | `P3-93-pty-cooked-mode` | Termios + ldisc: `lflag` (DEFAULT = ICANON\|ECHO\|ISIG), `pending_sigint`. master_write under ECHO enqueues echo bytes; under ISIG, ^C drops the byte + sets pending_sigint + echoes "^C". slave_read under ICANON line-buffers until \n. ioctl(TCGETS/TCSETS) wires c_lflag at offset 12. ioctl moved to syscall_glue_ioctl.rs. +9 hosted tests. |
+| #337 | `P3-94-sigint-pgrp` | `crates/sched::registry::tasks_in_pgrp(pgid)` returns live tasks matching pgid. `PtyMasterInode::write` checks `pending_sigint` after `master_write`; on set + foreground_pgid != 0, posts SIGINT (bit 1) into every matching task's sigpending. ^C now interrupts. +1 hosted test. |
+| #338 | `P3-95-kill-pgrp` | Real POSIX `sys_kill` semantics: pid>0 / pid==0 (own pgrp) / pid<-1 (pgrp -pid) / sig==0 probe / -EPERM for pid==-1. Moved to syscall_glue_proc.rs. |
 
 End-of-session-24 verified-green (post test-discipline batch T01–T04):
 - `make lint` clean.
