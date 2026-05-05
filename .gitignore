@@ -6,6 +6,7 @@
 
 # Image artifacts (regenerated; not source)
 *.img
+!crates/ext4/tests/*.img
 *.iso
 *.bin
 *.elf
