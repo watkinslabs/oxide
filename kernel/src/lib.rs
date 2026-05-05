@@ -536,6 +536,21 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
 
+    // SMP bring-up: iterate enumerate_aps() and start each. With
+    // -smp 1 (default) the topology has only the boot CPU so this
+    // is a no-op. With -smp N>=2 the per-arch path issues PSCI
+    // CPU_ON / INIT-IPI for each. Per `13§11`.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    {
+        // SAFETY: kernel_main post-init; PSCI conduit on QEMU virt is SMC #0; cpu_topology populated by ACPI; boot CPU is sole writer.
+        let started = unsafe { crate::smp_arm::bring_up_aps_arm() };
+        debug_boot! {
+            klog::write_raw(b"[INFO]  smp: aps_started=");
+            klog::write_dec_u64(started as u64);
+            klog::write_raw(b"\n");
+        }
+    }
+
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
