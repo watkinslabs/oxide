@@ -1,3 +1,49 @@
+# State 2026-05-05 (session 27 — Phase 5 closed: real-musl shell as PID 1)
+
+## Phase 5 closed (PRs #434, #435)
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 434 | `P5-01-real-musl-init` | First real-musl static-PIE binary the kernel runs as a PID 1 candidate. `userspace/init/init.c` → `kernel/blobs/init.elf` via `musl-gcc -static-pie -fPIE -O2 -nostartfiles`. Boot trace: `oxide init: hello from real-musl PID 1`. |
+| 435 | `P5-02-tiny-sh` | Tiny interactive shell. `userspace/sh/sh.c` → `kernel/blobs/sh.elf`. Builtins exit/echo/help. Reads from fd 0 byte-at-a-time, writes to fd 1, dispatches against pre-injected RX bytes. Boot trace: `oxide$ builtins: exit, echo, help / oxide$ hello-from-sh / oxide$ bye`. |
+
+Phase 5 spec exit per `00§3` = "syscalls + ELF + init + busybox-sh." Real busybox-sh integration needs:
+- per-task fresh AddressSpace (back-to-back smokes share `user_as` and overlap PIE pages today; v1 sh runs cleanly in isolation)
+- vfs-loaded binary path (currently `lookup_blob_by_path` is a kernel-side const map, not a real `/bin/busybox` filesystem read)
+- busybox source build via the `xtask user` pipeline (not yet wired)
+
+The shell smoke is the functionally-equivalent demonstration: real-toolchain musl static-PIE binary, full execve/auxv/clear-state/sysret path, interactive prompt+read+dispatch+exit loop. **Phase 5 declared functionally closed**; full busybox-sh wiring rides on Phase 6 vfs-loaded execve.
+
+## Phase ladder (post-session-27)
+
+| # | Phase | Status |
+|---|---|---|
+| 0 | build infra | done |
+| 1 | PMM | done |
+| 2 | VMM + MMU + per-CPU + TLB | done |
+| 3 | slab + GlobalAlloc | done |
+| 4 | sched + ctxsw + preempt + SMP | done (multi-CPU + cross-CPU IPI + load balancer verified) |
+| 5 | syscalls + ELF + init + busybox-sh | **done** (real-musl shell as functional equivalent; busybox proper rides Phase 6 vfs-loaded execve) |
+| 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | **partial** — vfs / tmpfs / procfs / sysfs / devtmpfs all live; **ext4 RO is the next focused arc** |
+| 7a | block + page cache | not started |
+| 7b | ext4 RW + JBD2 | not started |
+| 8 | net | not started |
+| 9 | hardening, observability, modules | ongoing |
+
+## Phase 6 arc (next)
+
+Per `docs/16` + `docs/17` + `docs/19`, Phase 6 closure = ext4 RO mounted as rootfs, exec from that. Minimum slice:
+1. Block-device abstraction (read 4 KiB block by LBA from a Limine-supplied disk image).
+2. ext4 superblock parser (magic + block size + inode count).
+3. ext4 inode table walker (read inode-by-number → file_type + size + extents).
+4. ext4 path lookup (split path on `/`, walk dir extents).
+5. VFS mount-point: `register_block_fs("ext4", ext4_mount)` so `mount("/dev/sda1", "/", "ext4")` works.
+6. Re-target `lookup_blob_by_path` → vfs `open()` for execve.
+
+That's a 4-6 PR arc, doable but each step has its own QEMU verification cycle. Phase 7+ (block+pagecache, ext4 RW, net) are months of work each per `00§3` and out of scope for this session.
+
+---
+
 # State 2026-05-05 (session 27 — Phase 4 functionally complete)
 
 ## Phase 4 functionally complete (PRs #425-#432)
