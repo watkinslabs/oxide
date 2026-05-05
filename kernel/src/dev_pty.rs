@@ -242,6 +242,36 @@ fn sigint_chain_smoke() {
 
     debug_boot! { klog::write_raw(b"[INFO]  pty-sigint-chain: ok\n"); }
     drop(fake); // task drops; registry's Weak decays naturally
+
+    termios_winsize_smoke();
+}
+
+/// Boot-time termios + winsize round-trip smoke. Validates that
+/// the Pair carries the configured state across reads/writes
+/// without going through the kernel ioctl path.
+fn termios_winsize_smoke() {
+    use hal::kassert;
+    let (_master, n) = allocate_pair();
+    let pair = pair_for(n).expect("pair_for");
+
+    pair.with_pair(|p| {
+        kassert!(p.lflag() == tty::pty::DEFAULT_LFLAG, "default cooked lflag");
+        kassert!(p.iflag() == tty::pty::DEFAULT_IFLAG, "default cooked iflag");
+        kassert!(p.oflag() == tty::pty::DEFAULT_OFLAG, "default cooked oflag");
+        kassert!(p.vintr() == tty::pty::DEFAULT_VINTR, "default cooked vintr");
+        kassert!(p.winsize == tty::pty::Winsize::default_pty(), "default 24x80");
+    });
+
+    pair.with_pair(|p| {
+        p.set_winsize(tty::pty::Winsize { rows: 50, cols: 132, xpixel: 0, ypixel: 0 });
+        kassert!(p.pending_sigwinch, "set_winsize on change → pending");
+        kassert!(p.winsize.rows == 50 && p.winsize.cols == 132, "winsize round-trip");
+        p.pending_sigwinch = false;
+        p.set_winsize(tty::pty::Winsize { rows: 50, cols: 132, xpixel: 0, ypixel: 0 });
+        kassert!(!p.pending_sigwinch, "no-op set must NOT fire SIGWINCH");
+    });
+
+    debug_boot! { klog::write_raw(b"[INFO]  pty-termios-winsize: ok\n"); }
 }
 
 fn push_dec(s: &mut alloc::string::String, mut n: u32) {
