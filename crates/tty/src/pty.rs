@@ -92,6 +92,47 @@ pub fn read_lflag(t: &[u8; TERMIOS_BYTES]) -> u32 {
 /// # C: O(1)
 pub fn read_vintr(t: &[u8; TERMIOS_BYTES]) -> u8 { t[TERMIOS_OFF_CC + cc::VINTR] }
 
+/// Linux `struct winsize` per ioctl_tty(2): rows, cols, xpixel, ypixel
+/// (each u16). TIOCGWINSZ reads, TIOCSWINSZ writes; SIGWINCH is sent
+/// to the foreground pgrp on change (28§5).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Winsize {
+    pub rows:   u16,
+    pub cols:   u16,
+    pub xpixel: u16,
+    pub ypixel: u16,
+}
+
+impl Winsize {
+    /// Default 24×80, matching Linux pty defaults + most terminal emulators.
+    /// # C: O(1)
+    pub const fn default_pty() -> Self {
+        Self { rows: 24, cols: 80, xpixel: 0, ypixel: 0 }
+    }
+
+    /// Encode into the 8-byte little-endian buffer userspace expects.
+    /// # C: O(1)
+    pub fn to_le_bytes(&self) -> [u8; 8] {
+        let mut b = [0u8; 8];
+        b[0..2].copy_from_slice(&self.rows.to_le_bytes());
+        b[2..4].copy_from_slice(&self.cols.to_le_bytes());
+        b[4..6].copy_from_slice(&self.xpixel.to_le_bytes());
+        b[6..8].copy_from_slice(&self.ypixel.to_le_bytes());
+        b
+    }
+
+    /// Decode from the 8-byte little-endian wire form (TIOCSWINSZ arg).
+    /// # C: O(1)
+    pub fn from_le_bytes(b: &[u8; 8]) -> Self {
+        Self {
+            rows:   u16::from_le_bytes([b[0], b[1]]),
+            cols:   u16::from_le_bytes([b[2], b[3]]),
+            xpixel: u16::from_le_bytes([b[4], b[5]]),
+            ypixel: u16::from_le_bytes([b[6], b[7]]),
+        }
+    }
+}
+
 /// VINTR character (^C). Hardcoded — Linux lets c_cc[VINTR] override,
 /// not yet wired.
 pub const VINTR: u8 = 0x03;
@@ -176,10 +217,17 @@ pub struct Pair {
     /// TCSETS copies in wholesale. Hot-path readers (`master_write`,
     /// `slave_read`) consult `read_lflag` / `read_vintr`.
     pub termios: [u8; TERMIOS_BYTES],
+    /// Window size per `ioctl_tty(2)`. TIOCGWINSZ reads; TIOCSWINSZ
+    /// writes + sets `pending_sigwinch` so the kernel-side adapter
+    /// posts SIGWINCH to the foreground pgrp.
+    pub winsize: Winsize,
     /// Set when a ^C (or whatever c_cc[VINTR] points at) hits
     /// master_write while `lflag & ISIG`. Kernel-side adapter
     /// inspects + clears this to deliver SIGINT to `foreground_pgid`.
     pub pending_sigint: bool,
+    /// Set on TIOCSWINSZ when the new size differs. Cleared by the
+    /// kernel-side ioctl handler after posting SIGWINCH.
+    pub pending_sigwinch: bool,
 }
 
 impl Pair {
@@ -201,7 +249,19 @@ impl Pair {
             m_to_s: Ring::new(), s_to_m: Ring::new(),
             hung_up: false, foreground_pgid: 0,
             termios: [0u8; TERMIOS_BYTES],
+            winsize: Winsize::default_pty(),
             pending_sigint: false,
+            pending_sigwinch: false,
+        }
+    }
+
+    /// Update `winsize`. Sets `pending_sigwinch` if the new size
+    /// differs from the old (kernel-side will dispatch SIGWINCH).
+    /// # C: O(1)
+    pub fn set_winsize(&mut self, ws: Winsize) {
+        if ws != self.winsize {
+            self.winsize = ws;
+            self.pending_sigwinch = true;
         }
     }
 
