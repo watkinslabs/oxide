@@ -625,3 +625,61 @@ pub fn kernel_sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     let inner = SyscallArgs { a0: args.a2, a1: args.a3, a2: 0, a3: 0, a4: 0, a5: 0 };
     kernel_sys_nanosleep(&inner)
 }
+
+/// `sys_kill(pid, sig)` — slot 62. pgrp-aware per `28§4`:
+///   pid > 0 — signal that tid via the registry.
+///   pid == 0 — fan to caller's pgrp.
+///   pid == -1 — not implemented; -EPERM.
+///   pid <  -1 — fan to pgrp `(-pid)`.
+/// `sig == 0` is a permission probe.
+/// # C: O(N_tasks) on pgrp fan; O(N_tasks) lookup for non-self pid
+pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let pid = args.a0 as i32;
+    let sig = args.a1 as i32;
+    if !(0..=64).contains(&sig) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    };
+    let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
+    if pid > 0 {
+        if pid as u32 == cur.tid {
+            if sig != 0 { cur.sigpending.fetch_or(bit, Ordering::Release); }
+            return 0;
+        }
+        match crate::sched::registry::lookup(pid as u32) {
+            Some(t) => {
+                if sig != 0 { t.sigpending.fetch_or(bit, Ordering::Release); }
+                0
+            }
+            None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
+        }
+    } else if pid == 0 {
+        let pgid = cur.pgid.load(Ordering::Acquire);
+        let n = post_pgrp(pgid, bit, sig);
+        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
+    } else if pid == -1 {
+        -(syscall::errno::Errno::Eperm.as_i32() as i64)
+    } else {
+        let n = post_pgrp((-pid) as u32, bit, sig);
+        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
+    }
+}
+
+fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
+    use core::sync::atomic::Ordering;
+    let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
+    let n = tasks.len();
+    if sig != 0 {
+        for t in &tasks { t.sigpending.fetch_or(bit, Ordering::Release); }
+    }
+    n
+}
+
+/// `sys_tgkill(tgid, tid, sig)` — slot 234. v1: routes via
+/// `kernel_sys_kill` keyed on tid.
+/// # C: same as kill
+pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
+    let kill_args = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
+    kernel_sys_kill(&kill_args)
+}

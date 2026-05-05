@@ -700,32 +700,7 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     written as i64
 }
 
-/// `sys_kill(pid, sig)` — slot 62. Self-target sets sigpending;
-/// others return -ESRCH (no live-task lookup yet).
-fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let pid = args.a0 as i32;
-    let sig = args.a1 as i32;
-    if !(1..=64).contains(&sig) {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Esrch.as_i32() as i64),
-    };
-    if pid == 0 || pid == cur.tid as i32 {
-        cur.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-        return 0;
-    }
-    -(Errno::Esrch.as_i32() as i64)
-}
-
-/// `sys_tgkill(tgid, tid, sig)` — slot 234. v1: route through
-/// `kernel_sys_kill` keyed on `tid`. Same self-only restriction.
-fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
-    let kill_args = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
-    kernel_sys_kill(&kill_args)
-}
+use crate::syscall_glue_proc::{kernel_sys_kill, kernel_sys_tgkill};
 
 fn kernel_uname(args: &SyscallArgs) -> i64 {
     let tp = args.a0;
