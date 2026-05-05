@@ -307,6 +307,22 @@ impl Pair {
         }
     }
 
+    /// True iff `master_read` would return at least one byte (i.e.
+    /// the slave→master ring has data). Used by `poll(POLLIN)`.
+    /// # C: O(1)
+    pub fn master_readable(&self) -> bool { !self.s_to_m.is_empty() }
+
+    /// True iff `slave_read` would return at least one byte. Under
+    /// ICANON requires a `\n` in the master→slave ring; raw mode
+    /// just requires any buffered byte.
+    /// # C: O(N)
+    pub fn slave_readable(&self) -> bool {
+        if (self.lflag() & lflag::ICANON) == 0 {
+            return !self.m_to_s.is_empty();
+        }
+        self.m_to_s.buf.iter().any(|&b| b == b'\n')
+    }
+
     /// Update `winsize`. Sets `pending_sigwinch` if the new size
     /// differs from the old (kernel-side will dispatch SIGWINCH).
     /// # C: O(1)
