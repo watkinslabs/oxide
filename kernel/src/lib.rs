@@ -97,6 +97,8 @@ pub mod dev_pty;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_pidfd;
 #[cfg(target_os = "oxide-kernel")]
+pub mod dev_inotify;
+#[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs_static;
