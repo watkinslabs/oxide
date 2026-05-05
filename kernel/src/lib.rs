@@ -96,6 +96,8 @@ pub mod dev_misc;
 pub mod dev_pty;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
+#[cfg(target_os = "oxide-kernel")]
+pub mod procfs_static;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod tmpfs;
