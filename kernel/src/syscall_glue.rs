@@ -924,9 +924,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
         crate::syscall_nrs::NR_STAT
             | crate::syscall_nrs::NR_LSTAT   => crate::syscall_glue_fs::kernel_sys_stat(&args),
-        crate::syscall_nrs::NR_GETRESUID
-            | crate::syscall_nrs::NR_GETRESGID
+        crate::syscall_nrs::NR_GETRESUID | crate::syscall_nrs::NR_GETRESGID
                                  => crate::syscall_glue_proc::kernel_sys_getres_uid(&args),
+        crate::syscall_nrs::NR_GETUID | crate::syscall_nrs::NR_GETEUID
+        | crate::syscall_nrs::NR_GETGID | crate::syscall_nrs::NR_GETEGID
+                                 => crate::syscall_glue_proc::kernel_sys_getuid_zero(&args),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_RT_SIGRETURN  => {
             // SAFETY: dispatch tail runs on cur's per-task syscall stack; current_user_frame() points at the live saved tail; rt_sigreturn_x86 only reads/writes the user-frame slots and user-stack frame the dispatcher previously installed.
