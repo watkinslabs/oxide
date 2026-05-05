@@ -35,7 +35,7 @@ use sync::{Spinlock, Tty as UartClass};
 
 use limine::{
     HhdmResponse, MemmapResponse, RequestHeader, RsdpResponse,
-    HHDM_ID, MEMMAP_ID, REVISION_0, RSDP_ID,
+    SmpRequest, HHDM_ID, MEMMAP_ID, REVISION_0, RSDP_ID, SMP_ID,
 };
 #[cfg(feature = "debug-boot")]
 use uart::{Uart16550, COM1};
@@ -141,6 +141,20 @@ pub static LIMINE_RSDP: RequestHeader<RsdpResponse> = RequestHeader {
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
+/// SMP enumeration request — Limine starts each AP, parks it
+/// spinning on `SmpInfoX86::goto_address`, and gives us the
+/// `[*mut SmpInfoX86; cpu_count]` table via the response.
+/// `flags=0` keeps APs in xAPIC mode (sufficient for QEMU virt
+/// CPU counts; X2APIC mode lands when we add x2APIC support).
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_SMP: SmpRequest = SmpRequest {
+    id:       SMP_ID,
+    revision: REVISION_0,
+    response: AtomicPtr::new(core::ptr::null_mut()),
+    flags:    0,
+};
+
 /// Build a hard-coded minimal `BootInfo` for compile-test purposes.
 /// Real impl reads Limine's memmap + module list.
 ///
@@ -157,6 +171,10 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         boot_ns: 0,
         hhdm_offset: 0,
         rsdp_pa: 0,
+        smp_info_array: 0,
+        smp_count: 0,
+        bsp_lapic_id: 0,
+        _pad: 0,
     }
 }
 
@@ -238,6 +256,17 @@ unsafe fn build_boot_info() -> BootInfo {
             unsafe { (*p).address }
         }
     };
+    let (smp_info_array, smp_count, bsp_lapic_id) = {
+        let p = LIMINE_SMP.response.load(core::sync::atomic::Ordering::Acquire);
+        if p.is_null() {
+            (0u64, 0u64, 0u32)
+        } else {
+            // SAFETY: Limine wrote a non-null response pointer; backing
+            // struct + cpus array live for the rest of boot per `36§3`.
+            let r = unsafe { &*p };
+            (r.cpus as u64, r.cpu_count, r.bsp_lapic_id)
+        }
+    };
     BootInfo {
         memmap_count: n as u32,
         memmap_ptr:   storage.as_ptr(),
@@ -245,6 +274,10 @@ unsafe fn build_boot_info() -> BootInfo {
         boot_ns:      boot_ns,
         hhdm_offset:  hhdm,
         rsdp_pa:      rsdp_pa,
+        smp_info_array,
+        smp_count,
+        bsp_lapic_id,
+        _pad: 0,
     }
 }
 

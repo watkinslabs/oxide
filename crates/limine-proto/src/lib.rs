@@ -53,6 +53,13 @@ pub const RSDP_ID: RequestId = RequestId([
     0xc5e7_7b6b_397e_7b43, 0x2763_7845_accd_cf3c,
 ]);
 
+/// `LIMINE_SMP_REQUEST` — SMP CPU enumeration + AP startup hook.
+/// Magic pinned against `limine-protocol/include/limine.h` v12.
+pub const SMP_ID: RequestId = RequestId([
+    LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
+    0x95a6_7b81_9a1b_857e, 0x3a7e_3a8a_18ab_9168,
+]);
+
 // ---------------------------------------------------------------------------
 // Request structs
 // ---------------------------------------------------------------------------
@@ -192,6 +199,61 @@ pub struct RsdpResponse {
     pub address:  u64,
 }
 
+// ---------------------------------------------------------------------------
+// SMP request / response (Limine ≥ 6, x86_64 layout)
+// ---------------------------------------------------------------------------
+
+/// SMP request flag bit 0 = "request X2APIC mode if available".
+/// v1 leaves this off; xAPIC is fine for QEMU virt CPU counts.
+pub const SMP_FLAG_X2APIC: u64 = 1 << 0;
+
+/// `limine_smp_request` — the request struct's flags word follows
+/// the response pointer, so we can't reuse the generic
+/// `RequestHeader<R>`. Layout matches `limine-protocol/include/limine.h`
+/// v12 verbatim.
+#[repr(C)]
+pub struct SmpRequest {
+    pub id:       RequestId,
+    pub revision: u64,
+    pub response: AtomicPtr<SmpResponse>,
+    pub flags:    u64,
+}
+
+// SAFETY: same rationale as `RequestHeader`: bootloader writes
+// `response` once before the kernel touches it; afterwards the
+// pointer is read-only from the kernel side.
+unsafe impl Sync for SmpRequest {}
+
+/// `limine_smp_response` (x86_64) per Limine v6+.
+///
+/// `cpus` points to `[*const SmpInfoX86; cpu_count]` — the same
+/// indirection pattern as `MemmapResponse::entries`.
+#[repr(C)]
+pub struct SmpResponse {
+    pub revision:     u64,
+    pub flags:        u32,
+    pub bsp_lapic_id: u32,
+    pub cpu_count:    u64,
+    pub cpus:         *const *mut SmpInfoX86,
+}
+
+/// `limine_smp_info` x86_64 layout. AP spinwaits on `goto_address`;
+/// when the boot CPU stores a non-null fn pointer there, the AP
+/// jumps to it with `rdi = &SmpInfoX86` and an `extra_argument`
+/// the kernel chose. The fn signature is
+/// `unsafe extern "C" fn(*mut SmpInfoX86) -> !`.
+#[repr(C)]
+pub struct SmpInfoX86 {
+    pub processor_id:   u32,
+    pub lapic_id:       u32,
+    pub reserved:       u64,
+    /// Atomic pointer the AP polls; boot CPU writes the entry fn.
+    pub goto_address:   AtomicPtr<()>,
+    /// Stored verbatim in `extra_argument`; passed via the
+    /// per-AP context (we use it for the per-AP context pointer).
+    pub extra_argument: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +297,41 @@ mod tests {
         assert_ne!(MEMMAP_ID, HHDM_ID);
         assert_ne!(MEMMAP_ID, RSDP_ID);
         assert_ne!(HHDM_ID,   RSDP_ID);
+        assert_ne!(SMP_ID,    MEMMAP_ID);
+        assert_ne!(SMP_ID,    HHDM_ID);
+        assert_ne!(SMP_ID,    RSDP_ID);
+    }
+
+    #[test]
+    fn smp_request_id_matches_limine_v12() {
+        assert_eq!(SMP_ID.0[0], LIMINE_COMMON_MAGIC_0);
+        assert_eq!(SMP_ID.0[1], LIMINE_COMMON_MAGIC_1);
+        assert_eq!(SMP_ID.0[2], 0x95a6_7b81_9a1b_857e);
+        assert_eq!(SMP_ID.0[3], 0x3a7e_3a8a_18ab_9168);
+    }
+
+    #[test]
+    fn smp_request_layout_has_flags_after_response() {
+        // Pin the struct shape — the bootloader walks fields by offset.
+        // Layout: id(32) + revision(8) + response_ptr(8) + flags(8) = 56.
+        assert_eq!(core::mem::size_of::<SmpRequest>(), 32 + 8 + 8 + 8);
+        // flags lives immediately after response.
+        let r = SmpRequest {
+            id: SMP_ID,
+            revision: 0,
+            response: AtomicPtr::new(core::ptr::null_mut()),
+            flags: 0,
+        };
+        let base   = (&r as *const SmpRequest) as usize;
+        let flag_o = (&r.flags as *const u64) as usize - base;
+        assert_eq!(flag_o, 32 + 8 + 8);
+    }
+
+    #[test]
+    fn smp_info_x86_layout() {
+        // Limine v6 SmpInfoX86: processor_id(4) + lapic_id(4) +
+        // reserved(8) + goto_address(8) + extra_argument(8) = 32.
+        assert_eq!(core::mem::size_of::<SmpInfoX86>(), 32);
     }
 
     #[test]

@@ -317,6 +317,10 @@ mod tests {
             boot_ns: 0,
             rsdp_pa: 0,
             hhdm_offset: 0xFFFF_8000_0000_0000,
+            smp_info_array: 0,
+            smp_count: 0,
+            bsp_lapic_id: 0,
+            _pad: 0,
         };
         // SAFETY: hosted test; memmap_count is 0 so memmap_ptr is
         // never dereferenced.
@@ -333,6 +337,10 @@ mod tests {
             boot_ns: 0,
             rsdp_pa: 0,
             hhdm_offset: 0,
+            smp_info_array: 0,
+            smp_count: 0,
+            bsp_lapic_id: 0,
+            _pad: 0,
         };
         // SAFETY: hosted test; r outlives the call.
         assert_eq!(unsafe { init_from_boot_info(&info).err() }, Some(SetupError::NoHhdm));
