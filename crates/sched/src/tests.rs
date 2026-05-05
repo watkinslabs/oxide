@@ -467,3 +467,27 @@ fn registry_tasks_in_pgrp_filters_by_pgid() {
     let in_none = crate::registry::tasks_in_pgrp(7777);
     assert!(in_none.is_empty());
 }
+
+#[test]
+fn try_wake_stopped_flips_only_stopped_tasks() {
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    assert_eq!(t.state(), TaskState::Runnable);
+    // No-op when already Runnable.
+    assert!(!crate::registry::try_wake_stopped(&t));
+    assert_eq!(t.state(), TaskState::Runnable);
+    // Flip Stopped → Runnable.
+    t.set_state(TaskState::Stopped);
+    assert!(crate::registry::try_wake_stopped(&t));
+    assert_eq!(t.state(), TaskState::Runnable);
+    // Repeat: now Runnable, returns false again.
+    assert!(!crate::registry::try_wake_stopped(&t));
+}
+
+#[test]
+fn try_wake_stopped_ignores_zombie() {
+    let t = Task::new(2, "t", SchedClass::Normal { weight: 1024 });
+    t.set_state(TaskState::Zombie);
+    // SIGCONT must not resurrect a Zombie.
+    assert!(!crate::registry::try_wake_stopped(&t));
+    assert_eq!(t.state(), TaskState::Zombie);
+}
