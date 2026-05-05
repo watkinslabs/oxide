@@ -189,6 +189,12 @@ pub struct Task {
     /// uses `task.name` as a fallback). Wrapped in `UnsafeCell`
     /// for the same single-mutator invariant as `mm`.
     pub cmdline: UnsafeCell<Option<alloc::string::String>>,
+
+    /// Current working directory per POSIX getcwd(3) / chdir(2).
+    /// Always an absolute path. `sys_chdir` / `sys_fchdir` write,
+    /// `sys_getcwd` reads. Default "/" for boot tasks; fork inherits
+    /// from parent. Same single-mutator invariant per `13§5`.
+    pub cwd: UnsafeCell<alloc::string::String>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -302,6 +308,7 @@ impl Task {
             sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
+            cwd:        UnsafeCell::new(alloc::string::String::from("/")),
         }
     }
 
