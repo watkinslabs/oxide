@@ -29,7 +29,7 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     }
 }
 
-/// sys_mmap → AddressSpace::mmap. v1 anon-only, demand-paged.
+/// sys_mmap — anon-only, demand-paged.
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
     match crate::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
@@ -82,7 +82,7 @@ fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// sys_write via fd_table; in-table UART fallback for kthreads.
+/// sys_write via fd_table.
 fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
@@ -152,7 +152,7 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// sys_brk: adjust brk within ELF heap VMA. brk(0) queries.
+/// sys_brk — adjust brk within ELF heap VMA.
 fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     let req = args.a0;
     let cur = match crate::sched::current() {
@@ -170,6 +170,17 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
+/// Resolve relative path against current.cwd; len <= 1 falls through
+/// (1-byte selector legacy). Returns None when no resolution applies.
+/// # C: O(N)
+fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
+    if path_raw.starts_with('/') || path_raw.len() <= 1 { return None; }
+    let cur = crate::sched::current()?;
+    // SAFETY: cwd slot single-mutator per `13§5`.
+    let cwd = unsafe { (*cur.cwd.get()).clone() };
+    vfs::path::resolve_against_cwd(&cwd, path_raw)
+}
+
 fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use alloc::sync::Arc;
@@ -185,10 +196,12 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         Some(p) if !p.is_empty() => p,
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
-    let path_str = match core::str::from_utf8(path) {
+    let path_raw = match core::str::from_utf8(path) {
         Ok(s)  => s,
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
+    let resolved = resolve_path_for_open(path_raw);
+    let path_str: &str = resolved.as_deref().unwrap_or(path_raw);
     const O_CREAT: u32 = 0o100;
     const O_TRUNC: u32 = 0o1000;
     // /dev/ptmx is a factory: each open allocates a fresh master inode
@@ -395,15 +408,7 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
                 // SAFETY: wstatus validated < USER_VA_END; user page mapped (caller's user code already executed from this AS); CPL=0 reads/writes through the user mapping.
                 unsafe { core::ptr::write_volatile(wstatus as *mut i32, wstat); }
             }
-            debug_sched! {
-                klog::write_raw(b"[INFO]  sys_wait4: parent=");
-                klog::write_dec_u64(parent_tid as u64);
-                klog::write_raw(b" reaped tid=");
-                klog::write_dec_u64(tid as u64);
-                klog::write_raw(b" code=");
-                klog::write_dec_u64(code as u64);
-                klog::write_raw(b"\n");
-            }
+            debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
             return tid as i64;
         }
         if (options & WNOHANG) != 0 { return 0; }
@@ -664,21 +669,14 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
             crate::sched::park_zombie(arc);
         }
     }
-    // Schedule away. State=Zombie ⇒ no re-enqueue; picker returns
-    // idle (boot anchor) ⇒ Context::switch loads boot's saved regs
-    // ⇒ control resumes in `elf_smoke::run_as_task` past its
-    // `schedule()` call. We never come back to this task.
-    // SAFETY: process / kthread context (we're on the user task's kernel stack); preempt-off; runqueue installed.
+    // SAFETY: process ctx; preempt-off; Zombie state means no re-enqueue.
     unsafe { crate::sched::schedule(); }
     // Unreachable — Zombie task isn't re-scheduled.
     loop { core::hint::spin_loop(); }
 }
 
 
-/// `sys_getrandom(buf, len, flags)` — slot 318 per docs/15§5.
-/// v1 fills via the shared LCG in dev_misc. NOT cryptographic;
-/// docs/26 CPRNG replaces this. `flags` ignored (GRND_NONBLOCK
-/// is a no-op since we never block).
+/// `sys_getrandom(buf, len, flags)` — slot 318. NOT cryptographic.
 fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     let buf  = args.a0;
     let len  = args.a1;
