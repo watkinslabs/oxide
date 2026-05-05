@@ -602,6 +602,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_dec_u64(crate::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
                 klog::write_raw(b"\n");
             }
+            // Load balancer smoke per `13§11`: with idle-only
+            // queues across all CPUs the delta is 0 so balance_once
+            // returns 0, but the call exercises the
+            // global_for/lock/scan path under multi-CPU.
+            // SAFETY: BSP holds boot context; cpu_topology populated; per-CPU runqueues installed.
+            let migrated = unsafe { crate::sched::balance::balance_once() };
+            debug_boot! {
+                klog::write_raw(b"[INFO]  smp: balance_once: migrated=");
+                klog::write_dec_u64(migrated as u64);
+                klog::write_raw(b"\n");
+            }
         }
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]

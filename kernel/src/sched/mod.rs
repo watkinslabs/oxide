@@ -26,6 +26,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+pub mod balance;
 pub mod registry;
 pub mod runqueue;
 pub mod schedule;
