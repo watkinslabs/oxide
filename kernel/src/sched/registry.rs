@@ -26,4 +26,10 @@ pub fn wake_if_stopped(task: &Arc<Task>) {
         inner.enqueue(Arc::clone(task));
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
     }
+    // try_wake_stopped already set need_resched per 13§9; the
+    // post-enqueue set here is redundant on this CPU but harmless,
+    // and stays correct after the future cross-CPU IPI wakeup
+    // path lands (P4-12+) where the wakeup-issuing CPU also wants
+    // its own reschedule check on syscall return.
+    ::sched::preempt::set_need_resched();
 }
