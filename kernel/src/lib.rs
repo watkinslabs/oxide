@@ -677,11 +677,23 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                     if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
                 }
             }
-            // Verify /bin/sh resolves + size matches the embedded
-            // sh.elf (sanity-check that execve-from-ext4 will work).
+            // Read /bin/sh twice to prove the page cache: first
+            // call is all misses; second is all hits.
             if let Some(bytes) = crate::dev_ext4::read_file(b"/bin/sh") {
                 klog::write_raw(b"[INFO]  ext4 /bin/sh size=");
                 klog::write_dec_u64(bytes.len() as u64);
+                let (h1, m1) = crate::dev_ext4::cache_stats();
+                klog::write_raw(b" cache after pass1: hits=");
+                klog::write_dec_u64(h1);
+                klog::write_raw(b" misses=");
+                klog::write_dec_u64(m1);
+                klog::write_raw(b"\n");
+                let _ = crate::dev_ext4::read_file(b"/bin/sh");
+                let (h2, m2) = crate::dev_ext4::cache_stats();
+                klog::write_raw(b"[INFO]  ext4 /bin/sh cache after pass2: hits=");
+                klog::write_dec_u64(h2);
+                klog::write_raw(b" misses=");
+                klog::write_dec_u64(m2);
                 klog::write_raw(b"\n");
             }
         }
