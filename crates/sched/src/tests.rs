@@ -620,3 +620,28 @@ fn settimeofday_offset_wraps_when_target_below_mono() {
     let off = settimeofday_offset(mono, target);
     assert_eq!(apply_offset(mono, off), target);
 }
+
+#[test]
+fn ns_to_clk_tck_100hz() {
+    use crate::clock::ns_to_clk_tck;
+    assert_eq!(ns_to_clk_tck(0),                    0);
+    assert_eq!(ns_to_clk_tck(10_000_000),           1);   // 10 ms = 1 tick
+    assert_eq!(ns_to_clk_tck(1_000_000_000),      100);   // 1 s
+    assert_eq!(ns_to_clk_tck(1_234_567_890),      123);   // truncates
+}
+
+#[test]
+fn ns_to_timespec_split() {
+    use crate::clock::ns_to_timespec;
+    assert_eq!(ns_to_timespec(0),               (0, 0));
+    assert_eq!(ns_to_timespec(1_500_000_000),   (1, 500_000_000));
+    assert_eq!(ns_to_timespec(999_999_999),     (0, 999_999_999));
+}
+
+#[test]
+fn ns_to_timeval_split() {
+    use crate::clock::ns_to_timeval;
+    assert_eq!(ns_to_timeval(0),                (0, 0));
+    assert_eq!(ns_to_timeval(1_500_000_000),    (1, 500_000));
+    assert_eq!(ns_to_timeval(1_999_999),        (0, 1_999));
+}

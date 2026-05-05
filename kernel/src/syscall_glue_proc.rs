@@ -400,45 +400,70 @@ pub fn kernel_sys_setrlimit(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_getrusage(who, usage)` — slot 98. Writes a 144-byte
-/// `struct rusage` of zeros. v1 has no per-task accounting.
+/// `sys_getrusage(who, usage)` — slot 98. ru_utime reports
+/// `monotonic_ns - spawn_ns` for the calling task; ru_stime + the
+/// 14 trailing counters all zero.
 /// # C: O(1)
 pub fn kernel_sys_getrusage(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use hal::TimerOps;
     use syscall::errno::Errno;
     let _who = args.a0;
     let buf = args.a1;
     if buf == 0 || buf >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let now = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    };
+    let elapsed = now.saturating_sub(cur.spawn_ns.load(Ordering::Acquire));
+    let (sec, usec) = sched::clock::ns_to_timeval(elapsed);
     // SAFETY: validated 144-byte user buf < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
-        for off in (0..144u64).step_by(8) {
+        core::ptr::write_volatile( buf       as *mut u64, sec);
+        core::ptr::write_volatile((buf + 8)  as *mut u64, usec);
+        for off in (16..144u64).step_by(8) {
             core::ptr::write_volatile((buf + off) as *mut u64, 0);
         }
     }
     0
 }
 
-/// `sys_times(tms)` — slot 100. Writes `struct tms { utime,
-/// stime, cutime, cstime }` (4 × i64) of zeros and returns the
-/// monotonic clock in CLK_TCK ticks (100 Hz).
+/// `sys_times(tms)` — slot 100. tms_utime reports
+/// `(monotonic_ns - spawn_ns)` in CLK_TCK (100 Hz) ticks; the rest
+/// of the struct stays zero. Return value: monotonic ticks total.
 /// # C: O(1)
 pub fn kernel_sys_times(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
     use hal::TimerOps;
     let buf = args.a0;
+    let now = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    };
+    let elapsed = match crate::sched::current() {
+        Some(c) => now.saturating_sub(c.spawn_ns.load(Ordering::Acquire)),
+        None    => 0,
+    };
+    let utime_ticks = sched::clock::ns_to_clk_tck(elapsed);
     if buf != 0 && buf < hal::USER_VA_END {
         // SAFETY: validated 32-byte user buf below USER_VA_END; CPL=0 writes through caller's AS.
         unsafe {
-            for off in (0..32u64).step_by(8) {
-                core::ptr::write_volatile((buf + off) as *mut u64, 0);
-            }
+            core::ptr::write_volatile( buf       as *mut u64, utime_ticks);
+            core::ptr::write_volatile((buf + 8)  as *mut u64, 0); // stime
+            core::ptr::write_volatile((buf + 16) as *mut u64, 0); // cutime
+            core::ptr::write_volatile((buf + 24) as *mut u64, 0); // cstime
         }
     }
-    #[cfg(target_arch = "x86_64")]
-    let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
-    #[cfg(target_arch = "aarch64")]
-    let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    (ns / 10_000_000) as i64
+    sched::clock::ns_to_clk_tck(now) as i64
 }
 
 /// `sys_sysinfo(info)` — slot 99. Writes a minimal struct
