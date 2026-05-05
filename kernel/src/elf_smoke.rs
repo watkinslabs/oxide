@@ -609,25 +609,23 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::kinfo!("elf-smoke: user task exited cleanly, boot resumed");
     }
 
-    // P5-02: tiny interactive shell smoke. Pre-injects a few
-    // commands into the console RX ring then spawns SH_BLOB
-    // (musl-gcc -static-pie -fPIE). Shell loops on prompt + read
-    // + dispatch until it processes the trailing `exit`.
+    // Real-musl interactive shell as PID 1. Spawns SH_BLOB and
+    // schedule()s into it; the shell blocks on `read(fd=0)`
+    // which parks the task until the timer-ISR `tick_poll_uart`
+    // drains UART RX into RX_BUF and wakes the sleeper. With
+    // `-serial stdio` (xtask qemu default) QEMU forwards the
+    // host's stdin → UART, so typing at the terminal reaches
+    // the shell.
     //
-    // We pick the shell over the simpler `INIT_REAL_BLOB` here
-    // because the shared global `user_as` would have init.elf's
-    // PIE pages still mapped at the same VAs as sh.elf — back-
-    // to-back smokes overlap. Per-task fresh AS lands with real
-    // execve-from-disk (Phase 6 vfs path); v1 uses the shell as
-    // the single representative real-musl userspace boot smoke.
-    crate::tty::inject_for_smoke(b"help\necho hello-from-sh\nexit\n");
-    // SAFETY: same as above; injected RX bytes feed fd 0 reads.
+    // After schedule() returns (shell parked, no other runnable
+    // task), `halt_forever` enters sti+hlt — timer IRQs keep
+    // firing, RX bytes arrive, shell wakes, prompt loop
+    // continues.
+    // SAFETY: same boot-path discipline as the elf-smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
     }
-    // INIT_REAL_BLOB is kept linked into the kernel for offline
-    // inspection / future per-task-AS spawn; reference it so
-    // dead-code elimination doesn't drop the bytes.
+    // Keep INIT_REAL_BLOB linked for future per-task-AS spawn.
     let _ = INIT_REAL_BLOB.len();
 
     halt_forever();
@@ -719,14 +717,14 @@ unsafe fn spawn_user_blob_smoke(
         klog::write_raw(b"\n");
     }
 
+    // schedule() into the user task. Returns to the boot anchor
+    // when (a) the task exits via sys_exit, or (b) the task
+    // parks (e.g. blocks on `read`) and no other runnable task
+    // is on this CPU's runqueue. In case (b), the boot caller's
+    // `halt_forever()` (sti+hlt loop) keeps timer IRQs firing,
+    // which drains UART RX + wakes the parked task next round.
     // SAFETY: process ctx; runqueue installed; preempt-off.
     unsafe { crate::sched::schedule(); }
-
-    debug_irq! {
-        klog::write_raw(b"[INFO]  user-blob: exited cleanly name=");
-        klog::write_raw(name.as_bytes());
-        klog::write_raw(b"\n");
-    }
 }
 
 /// Parse + load + drop to ring 3 directly (no Task wrapper).
@@ -804,8 +802,12 @@ pub unsafe fn run(hhdm_offset: u64) -> ! {
 }
 
 fn halt_forever() -> ! {
+    // sti+hlt — boot CPU keeps taking timer IRQs so the user
+    // shell parked on `read(fd=0)` wakes when UART RX bytes
+    // arrive (timer ISR's `tick_poll_uart` drains stdin into
+    // RX_BUF). cli+hlt would kill input forever.
     loop {
-        // SAFETY: cli+hlt parks the CPU until next IRQ; with IRQs masked there's no wake — terminal halt.
-        unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: STI legal at CPL=0; HLT parks until next IRQ; combined they idle while IF=1 so timer IRQs fire and tasks can be scheduled back in.
+        unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack, preserves_flags)); }
     }
 }
