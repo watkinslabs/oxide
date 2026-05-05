@@ -54,6 +54,11 @@ pub fn live_tids() -> Vec<u32> {
 pub fn try_wake_stopped(task: &Task) -> bool {
     if task.state() != TaskState::Stopped { return false; }
     task.set_state(TaskState::Runnable);
+    // Per `13§9` wakeup→resched: a newly-runnable task may outrank
+    // current; flag a reschedule so the next preempt-enable or
+    // syscall-return point picks it up. Cheaper than calling
+    // schedule() directly here (registry holds no runqueue lock).
+    crate::preempt::set_need_resched();
     true
 }
 
