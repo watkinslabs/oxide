@@ -5,4 +5,4 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub use sched::registry::{insert, live_tids, lookup};
+pub use sched::registry::{insert, live_tids, lookup, tasks_in_pgrp};
