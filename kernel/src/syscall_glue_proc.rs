@@ -649,7 +649,10 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
         }
         match crate::sched::registry::lookup(pid as u32) {
             Some(t) => {
-                if sig != 0 { t.sigpending.fetch_or(bit, Ordering::Release); }
+                if sig != 0 {
+                    t.sigpending.fetch_or(bit, Ordering::Release);
+                    if sig == 18 { crate::sched::registry::wake_if_stopped(&t); }
+                }
                 0
             }
             None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
@@ -671,7 +674,11 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
     let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
     let n = tasks.len();
     if sig != 0 {
-        for t in &tasks { t.sigpending.fetch_or(bit, Ordering::Release); }
+        for t in &tasks {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+            // SIGCONT (18) wakes a Stopped target per signal(7).
+            if sig == 18 { crate::sched::registry::wake_if_stopped(t); }
+        }
     }
     n
 }
