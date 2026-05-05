@@ -908,6 +908,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_FORK          => kernel_sys_fork(&args),
+        crate::syscall_nrs::NR_VFORK         => kernel_sys_fork(&args), // v1: vfork == fork
+        crate::syscall_nrs::NR_CLONE         => kernel_sys_fork(&args), // v1: clone(SIGCHLD) only
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_EXECVE        => kernel_sys_execve(&args),
         #[cfg(target_arch = "x86_64")]
