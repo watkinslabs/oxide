@@ -52,6 +52,16 @@ pub fn clamp_pair(cur: u64, max: u64) -> Option<(u64, u64)> {
     if cur > max { None } else { Some((cur, max)) }
 }
 
+/// Clamp a setpriority(2) `nice` argument to the POSIX `[-20, 19]`
+/// range. Out-of-range values silently saturate (Linux returns
+/// EINVAL on out-of-range; v1 saturates for shell-friendliness).
+/// # C: O(1)
+pub fn clamp_nice(nice: i32) -> i8 {
+    if nice < -20 { -20 }
+    else if nice > 19 { 19 }
+    else { nice as i8 }
+}
+
 /// Render an rlimit `cur` field as either a decimal number or
 /// `"unlimited"` for the /proc/<pid>/limits text. Returns the byte
 /// count written into `buf` or `None` if the buffer is too small.
