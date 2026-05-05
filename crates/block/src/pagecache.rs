@@ -96,10 +96,43 @@ impl PageCache {
         self.entries.lock().get(&(inode, page_offset)).cloned()
     }
 
+    /// `read_page_with` per `17§4.2` — generic miss path. The
+    /// caller-supplied `fetch` closure produces the page bytes
+    /// when the cache misses; this lets filesystems that need
+    /// logical-to-physical translation (ext4 extents) plug in
+    /// without the cache knowing about FS metadata. Returns
+    /// the cached page (hit) or the freshly-fetched one (miss).
+    /// # C: O(log N) hit; O(fetch) miss
+    pub fn read_page_with<F>(
+        &self,
+        inode: InodeId,
+        page_offset: u64,
+        fetch: F,
+    ) -> KResult<Arc<CachedPage>>
+    where
+        F: FnOnce() -> KResult<Vec<u8>>,
+    {
+        if page_offset % PAGE_BYTES as u64 != 0 { return Err(BlockError::Einval); }
+        if let Some(p) = self.lookup(inode, page_offset) {
+            p.set_flags(PageFlags::REFERENCED);
+            return Ok(p);
+        }
+        let bytes = fetch()?;
+        let p = CachedPage::new(inode, page_offset, bytes);
+        let mut g = self.entries.lock();
+        if let Some(existing) = g.get(&(inode, page_offset)).cloned() {
+            return Ok(existing);
+        }
+        g.insert((inode, page_offset), Arc::clone(&p));
+        Ok(p)
+    }
+
     /// `read_page` per `17§4.2`. Returns the cached page; on miss,
     /// reads from `dev` (one PAGE_BYTES-sized transfer aligned to
     /// `page_offset`), inserts, returns. `page_offset` must be
-    /// PAGE_BYTES-aligned.
+    /// PAGE_BYTES-aligned. Assumes file-offset == device-offset
+    /// — use `read_page_with` for filesystems that translate
+    /// logical → physical block ranges.
     /// # C: O(log N) cache hit; O(I/O cost) on miss
     pub fn read_page(
         &self,
