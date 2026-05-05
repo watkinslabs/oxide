@@ -330,6 +330,110 @@ fn fdtable_concurrent_alloc_close() {
     assert_eq!(t.count(), 0);
 }
 
+#[test]
+fn fdtable_live_fds_empty() {
+    let t = FdTable::new();
+    assert!(t.live_fds().is_empty());
+}
+
+#[test]
+fn fdtable_live_fds_ascending_skips_holes() {
+    let t = FdTable::new();
+    let a = t.alloc(mk_file()).unwrap();
+    let b = t.alloc(mk_file()).unwrap();
+    let c = t.alloc(mk_file()).unwrap();
+    t.close(b).unwrap();
+    let live = t.live_fds();
+    assert_eq!(live, alloc::vec![a, c]);
+}
+
+#[test]
+fn fdtable_live_fds_after_dup_then_close_range_semantics() {
+    // Mirrors the close_range loop in kernel/src/syscall_glue_fs.rs.
+    let t = FdTable::new();
+    let a = t.alloc(mk_file()).unwrap(); // 0
+    let b = t.alloc(mk_file()).unwrap(); // 1
+    let c = t.alloc(mk_file()).unwrap(); // 2
+    let d = t.alloc(mk_file()).unwrap(); // 3
+    let (first, last) = (b, d);
+    for fd in t.live_fds() {
+        if fd >= first && fd <= last { t.close(fd).unwrap(); }
+    }
+    assert_eq!(t.live_fds(), alloc::vec![a]);
+    let _ = (b, c, d); // touched
+}
+
+#[test]
+fn fdtable_live_fds_cloexec_only_range() {
+    let t = FdTable::new();
+    let a = t.alloc(mk_file()).unwrap();
+    let b = t.alloc(mk_file()).unwrap();
+    let c = t.alloc(mk_file()).unwrap();
+    let (first, last) = (a, b);
+    for fd in t.live_fds() {
+        if fd >= first && fd <= last { t.set_cloexec(fd, true).unwrap(); }
+    }
+    assert!(t.cloexec(a).unwrap());
+    assert!(t.cloexec(b).unwrap());
+    assert!(!t.cloexec(c).unwrap());
+    // No fd was closed.
+    assert_eq!(t.live_fds(), alloc::vec![a, b, c]);
+}
+
+// ---------------------------------------------------------------------------
+// dirent64 packing — `19§4` Linux ABI byte layout
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dirent64_reclen_pads_to_8_bytes() {
+    // header(19) + name + NUL, padded to multiple of 8.
+    assert_eq!(crate::dirent::dirent64_reclen(0),  24);  // 19+1=20 → 24
+    assert_eq!(crate::dirent::dirent64_reclen(1),  24);  // 19+2=21 → 24
+    assert_eq!(crate::dirent::dirent64_reclen(4),  24);  // 19+5=24 → 24
+    assert_eq!(crate::dirent::dirent64_reclen(5),  32);  // 19+6=25 → 32
+    assert_eq!(crate::dirent::dirent64_reclen(13), 40);  // 19+14=33 → 40
+}
+
+#[test]
+fn dirent64_pack_layout_matches_linux_abi() {
+    let mut buf = [0xAAu8; 64];
+    let n = crate::dirent::dirent64_pack(&mut buf, 0x1122_3344_5566_7788, 0x42, 8, b"foo")
+        .unwrap();
+    assert_eq!(n, 24);
+    // d_ino LE
+    assert_eq!(&buf[0..8], &0x1122_3344_5566_7788u64.to_le_bytes());
+    // d_off LE
+    assert_eq!(&buf[8..16], &0x42u64.to_le_bytes());
+    // d_reclen LE u16
+    assert_eq!(&buf[16..18], &24u16.to_le_bytes());
+    // d_type
+    assert_eq!(buf[18], 8);
+    // name + NUL pad
+    assert_eq!(&buf[19..22], b"foo");
+    assert_eq!(&buf[22..24], &[0, 0]);
+}
+
+#[test]
+fn dirent64_pack_returns_none_when_buf_too_small() {
+    let mut buf = [0u8; 8];
+    assert_eq!(crate::dirent::dirent64_pack(&mut buf, 0, 0, 8, b"x"), None);
+}
+
+#[test]
+fn dirent64_pack_many_stops_at_first_overflow() {
+    let mut buf = [0u8; 48]; // exactly 2 records with name "x" (24 each)
+    let names = [b"a".as_slice(), b"b", b"c"];
+    let n = crate::dirent::dirent64_pack_many(
+        &mut buf,
+        names.iter().enumerate(),
+        |(i, name)| (i as u64, (i + 1) as u64, 8, name.to_vec()),
+    );
+    assert_eq!(n, 48);
+    // First record d_off (cookie) = 1, second = 2.
+    assert_eq!(&buf[8..16], &1u64.to_le_bytes());
+    assert_eq!(&buf[24+8..24+16], &2u64.to_le_bytes());
+}
+
 // Touch the warning-silencer.
 #[allow(dead_code)]
 fn _unused_silence() {
