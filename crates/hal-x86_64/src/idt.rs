@@ -206,7 +206,7 @@ pub unsafe fn load_idtr_for_ap() {
 }
 
 /// Hosted-build stub matching the kernel-side surface.
-/// # SAFETY: trivially safe — no asm.
+/// # SAFETY: trivially safe -- no asm.
 /// # C: O(1)
 #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 pub unsafe fn load_idtr_for_ap() {}
