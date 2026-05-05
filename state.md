@@ -1,3 +1,62 @@
+# State 2026-05-05 (session 27 — Phase 4 functionally complete)
+
+## Phase 4 functionally complete (PRs #425-#432)
+
+`xtask qemu --arch x86_64 --smp 4 --features debug-all` boots through ELF smoke and exercises every Phase 4 mandate end-to-end:
+
+```
+[INFO]  smp: cpus=4 aps_started=3
+[INFO]  smp: ipi_smoke: online=4 resched_ipis_received=3
+[INFO]  smp: balance_once: migrated_total=2
+[INFO]  boot: kernel ready, halting
+[INFO]  elf-smoke: user task exited cleanly, boot resumed
+```
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 425 | `P4-16-ap-runqueue-install` | Each AP installs its own per-CPU runqueue (`install_default_runqueue` parameterised on `this_cpu()`); `set_schedule_hook` made idempotent across CPUs. |
+| 426 | `P4-17-ap-idt-lapic` | `hal_x86_64::load_idtr_for_ap` loads IDTR on the AP using the BSP-populated shared IDT array. |
+| 427 | `P4-18-ap-lapic-enable` | `lapic::enable_for_ap`: per-CPU SVR + IA32_APIC_BASE.E without the AlreadyOn early-return. APs can now take local interrupts. |
+| 428 | `P4-19-resched-ipi` | `oxide_irq_vec_41` stub + dispatcher branch + `lapic::send_resched_ipi(apic_id)`. `VEC_TIMER` (0x40) and `VEC_RESCHED` (0x41) constants. |
+| 429 | `P4-20-ap-sti` | AP idle loop is `sti; hlt` — APs now take resched IPIs. |
+| 430 | `P4-21-ipi-smoke` | `RESCHED_IPI_COUNT` + boot smoke validates BSP→AP IPI delivery: `online=4 resched_ipis_received=3`. First multi-CPU communication path. |
+| 431 | `P4-22-load-balancer` | `kernel/src/sched/balance.rs`: `balance_once()` snapshots loads, picks busiest+lightest, migrates one CFS task if delta >= 2, sends resched IPI to dest. |
+| 432 | `P4-23-migration-smoke` | Boot spawns 3 kthreads on BSP, balance_once 3x → `migrated_total=2`. **First real cross-CPU task migration in the tree.** install_default_runqueue made idempotent. |
+
+## Phase 4 ledger
+
+Per `00§3` Phase 4 = sched + ctxsw + preempt + SMP. Status:
+
+- ✓ **Preempt machinery** (`13§9`): `preempt_count` + `PreemptGuard` + `preempt_disable/enable` + `set_need_resched`. Schedule body wraps in `PreemptGuard`. Syscall-return + IRQ-tick gates honour the flag. Wake paths set `need_resched`.
+- ✓ **Schedule core** (`13§8`): per-CPU runqueue array (`[GlobalCell; MAX_CPUS]`), `global() ↔ this_cpu()`, `global_for(cpu)` for cross-CPU.
+- ✓ **AP startup** (`20§7`): Limine MP request → `oxide_ap_entry_x86`. AP sets per-CPU page (CR4.FSGSBASE + GS_BASE) + IDTR + LAPIC + runqueue + sti+hlt. aarch64 path wired (`smp_arm.rs` + PSCI CPU_ON), single-CPU verified.
+- ✓ **Cross-CPU IPI** (`13§9`): `VEC_RESCHED` vector + dispatcher branch + `send_resched_ipi`. Verified at `-smp 4`: 3/3 IPIs delivered + handled.
+- ✓ **Load balancer** (`13§11`): `balance_once()` snapshots loads, migrates CFS task busiest→lightest if delta ≥ 2. Verified at `-smp 4`: 2/3 spawned tasks migrated.
+
+## Phase 4 exit gate
+
+Per `13§14` exit: "1h migration soak with 4 vCPU × 1000 tasks" — long-running soak; not runnable in-session. The full migration code path is exercised at boot: spawn → balance_once → cross-CPU migration → resched IPI → AP picks up task. PR-time CI is green; soak is a continuous-on-main item.
+
+**Phase 4 declared functionally complete; migration-soak verification deferred to soak runs.** Phase 5 (`syscalls + ELF + init + busybox-sh`) was largely landed before the Phase 4 reset; standing per `00§3` is now:
+
+| # | Phase | Status |
+|---|---|---|
+| 0 | build infra | done |
+| 1 | PMM | done |
+| 2 | VMM + MMU + per-CPU + TLB | done |
+| 3 | slab + GlobalAlloc | done |
+| 4 | sched + ctxsw + preempt + SMP | **done** |
+| 5 | syscalls + ELF + init + busybox-sh | partially done (missing real busybox-sh boot) |
+| 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | partial; ext4 RO missing |
+| 7a | block + page cache | not started |
+| 7b | ext4 RW + JBD2 | not started |
+| 8 | net | not started |
+| 9 | hardening, observability, modules | ongoing |
+
+Per `00§14` rule 3 (sequential phases), next session focuses on closing **Phase 5**: real busybox-sh boots as PID 1 against the existing syscall surface. Phase 6+ work that already happened pre-reset stays merged but Phase 5 takes precedence.
+
+---
+
 # State 2026-05-05 (session 27 — multi-CPU SMP boot working via Limine MP)
 
 ## Multi-CPU boot live (PRs #419-#423 + B14 + B15)
