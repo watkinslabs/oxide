@@ -80,6 +80,15 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
         hal_x86_64::X86CpuOps::set_percpu_base(ctx.percpu_base as *mut u8);
     }
 
+    // Install this AP's per-CPU runqueue + idle task per `13§6`.
+    // The AP's `this_cpu()` (gs:0) now returns lapic_id; the per-CPU
+    // runqueue array indexes by that, so install_default_runqueue
+    // populates the AP's slot specifically.
+    // SAFETY: AP runs single-threaded for its own slot; GS_BASE just
+    // installed; allocator has been brought up by the BSP and is
+    // safely shared across CPUs (kalloc uses internal locking).
+    unsafe { crate::sched::install_default_runqueue(); }
+
     // Mark ourselves online.
     let _ = crate::smp::ap_arrived();
 
