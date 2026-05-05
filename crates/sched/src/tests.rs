@@ -558,3 +558,40 @@ fn rlimit_indices_match_linux_layout() {
     assert_eq!(rlim::NICE, 13);
     assert_eq!(rlim::COUNT, 16);
 }
+
+#[test]
+fn clamp_nice_saturates_below_minus_20() {
+    use crate::rlimit::clamp_nice;
+    assert_eq!(clamp_nice(-100), -20);
+    assert_eq!(clamp_nice(-21),  -20);
+}
+
+#[test]
+fn clamp_nice_saturates_above_19() {
+    use crate::rlimit::clamp_nice;
+    assert_eq!(clamp_nice(20), 19);
+    assert_eq!(clamp_nice(100), 19);
+}
+
+#[test]
+fn clamp_nice_passes_through_in_range() {
+    use crate::rlimit::clamp_nice;
+    assert_eq!(clamp_nice(-20), -20);
+    assert_eq!(clamp_nice(0),    0);
+    assert_eq!(clamp_nice(19),  19);
+}
+
+#[test]
+fn task_state_linux_char() {
+    assert_eq!(TaskState::Runnable.linux_char(), b'R');
+    assert_eq!(TaskState::Sleeping.linux_char(), b'S');
+    assert_eq!(TaskState::Stopped .linux_char(), b'T');
+    assert_eq!(TaskState::Zombie  .linux_char(), b'Z');
+}
+
+#[test]
+fn task_state_linux_status_label() {
+    assert_eq!(TaskState::Runnable.linux_status_label(), "R (running)");
+    assert_eq!(TaskState::Stopped .linux_status_label(), "T (stopped)");
+    assert_eq!(TaskState::Zombie  .linux_status_label(), "Z (zombie)");
+}

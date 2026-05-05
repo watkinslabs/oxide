@@ -25,7 +25,6 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
     match nr {
         // ---- accept silently ----
         NR_GETITIMER | NR_SETITIMER | NR_ALARM
-        | NR_GETPRIORITY | NR_SETPRIORITY
         | NR_GETGROUPS  | NR_SETGROUPS
         | NR_SETUID | NR_SETGID
         | NR_SETREUID | NR_SETREGID
