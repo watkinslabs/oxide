@@ -176,6 +176,41 @@ pub unsafe fn install_default() {
     let _ = pointer;
 }
 
+/// Load IDTR on this CPU using the IDT already populated by an
+/// earlier `install_default` call. Used by AP startup so each AP
+/// gets the same vector dispatch table without rewriting the
+/// shared array.
+///
+/// # SAFETY: caller asserts `install_default` has run on the boot
+/// CPU before any AP calls this; runs in CPL=0 IRQ-off context;
+/// the IDT static remains valid for the lifetime of the kernel.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn load_idtr_for_ap() {
+    // SAFETY: caller asserts the IDT was populated by install_default; this only reads `idt.as_ptr()`.
+    let pointer = unsafe {
+        let idt = &*IDT.0.get();
+        IdtPointer {
+            limit: (core::mem::size_of::<[IdtEntry; IDT_LEN]>() - 1) as u16,
+            base:  idt.as_ptr() as u64,
+        }
+    };
+    // SAFETY: `lidt [m16:64]` loads IDTR from a stack-local operand the asm reads as input; legal at CPL=0.
+    unsafe {
+        core::arch::asm!(
+            "lidt [{p}]",
+            p = in(reg) &pointer,
+            options(readonly, nostack, preserves_flags),
+        );
+    }
+}
+
+/// Hosted-build stub matching the kernel-side surface.
+/// # SAFETY: trivially safe — no asm.
+/// # C: O(1)
+#[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+pub unsafe fn load_idtr_for_ap() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
