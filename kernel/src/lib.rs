@@ -455,6 +455,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::smoke_test();
         dev_pipe::smoke_test();
         tmpfs::smoke_test();
+        dev_pty::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
         // bumped whenever a new arm or compat-table entry lands.
         debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
