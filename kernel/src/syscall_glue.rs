@@ -767,6 +767,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_SETPRIORITY => crate::syscall_glue_proc::kernel_sys_setpriority(&args),
         crate::syscall_nrs::NR_ALARM     => crate::syscall_glue_proc::kernel_sys_alarm(&args),
         crate::syscall_nrs::NR_PAUSE     => crate::syscall_glue_proc::kernel_sys_pause(&args),
+        crate::syscall_nrs::NR_GETITIMER => crate::syscall_glue_proc::kernel_sys_getitimer(&args),
+        crate::syscall_nrs::NR_SETITIMER => crate::syscall_glue_proc::kernel_sys_setitimer(&args),
         crate::syscall_nrs::NR_GETPGID   => crate::syscall_glue_proc::kernel_sys_getpgid(&args),
         crate::syscall_nrs::NR_GETSID    => crate::syscall_glue_proc::kernel_sys_getsid(&args),
         crate::syscall_nrs::NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),
@@ -900,7 +902,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             #[cfg(target_arch = "aarch64")]
             let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
             if now >= deadline {
-                cur.alarm_ns.store(0, Ordering::Release);
+                let interval = cur.alarm_interval_ns.load(Ordering::Acquire);
+                cur.alarm_ns.store(
+                    if interval != 0 { now.saturating_add(interval) } else { 0 },
+                    Ordering::Release,
+                );
                 cur.sigpending.fetch_or(1u64 << 13, Ordering::Release);
             }
         }
