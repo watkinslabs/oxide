@@ -43,7 +43,9 @@ mod debug_macros;
 // feature is on. Production-bring-up modules (lapic, gic, pmm_setup)
 // keep their non-trace surface always-on; their klog call sites
 // inside lib.rs are individually wrapped in `debug_<sub>!`.
-#[cfg(feature = "debug-acpi")]
+// `acpi` parses the RSDP/XSDT/MADT unconditionally so cpu_topology
+// gets populated for SMP enumeration; only the per-line klog calls
+// inside acpi.rs are gated on `debug-acpi`.
 pub mod acpi;
 #[cfg(target_os = "oxide-kernel")]
 pub mod cpu_topology;
@@ -220,11 +222,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             klog::write_raw(b"[INFO]  rsdp: ");
             klog::write_hex_u64(info.rsdp_pa);
             klog::write_raw(b"\n");
-            // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
-            // for the RSDP (HHDM-mapped); the bootloader keeps the
-            // backing memory alive past kernel handoff per `36§3`.
-            unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
         }
+        // Run unconditionally so cpu_topology gets populated even
+        // without debug-acpi; alog_* helpers gate the trace lines.
+        // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
+        // for the RSDP (HHDM-mapped); the bootloader keeps the
+        // backing memory alive past kernel handoff per `36§3`.
+        unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
