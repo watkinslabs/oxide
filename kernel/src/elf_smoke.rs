@@ -335,11 +335,25 @@ pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
     }
 }
 
-/// Path-string lookup for `sys_execve`. Recognises POSIX-shape
-/// paths like `/bin/yo`, `/init`, `/bin/cat`. v1 stand-in for
-/// VFS path resolution. Returns `None` if no matching blob.
-/// # C: O(N_paths)
+/// Path-string lookup for `sys_execve`. Tries the real ext4
+/// rootfs first (P6-08); falls back to the const-blob table for
+/// the hand-synthesized orchestrator binaries that aren't on
+/// disk. Returns `None` if no matching binary anywhere.
+///
+/// ext4 reads return owned `Vec<u8>` which we leak so the
+/// caller gets `&'static [u8]` (matching the const-blob path).
+/// One leak per execve is fine for v1 — Phase 7a page-cache
+/// integration replaces this with cached pages.
+/// # C: O(path lookup) ext4 / O(1) const-table fallback
 pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if let Some(bytes) = crate::dev_ext4::read_file(path) {
+            // Leak to 'static: kernel-lifetime stable storage.
+            let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
+            return Some(leaked);
+        }
+    }
     match path {
         b"/init" | b"/sbin/init"            => Some(ELF_BLOB_PUB),
         b"/bin/yo" | b"/usr/bin/yo"         => Some(YO_BLOB),
