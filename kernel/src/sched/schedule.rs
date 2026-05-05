@@ -87,13 +87,22 @@ fn build_idle_task(cpu: u16) -> Arc<Task> {
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn install_default_runqueue() {
-    let idle = build_idle_task(0);
-    let rq = Runqueue::new(0, idle);
+    let cpu = {
+        use hal::CpuOps;
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::X86CpuOps::current_cpu() as u16 }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::ArmCpuOps::current_cpu() as u16 }
+    };
+    let idle = build_idle_task(cpu);
+    let rq = Runqueue::new(cpu, idle);
     // SAFETY: per fn contract; first writer wins.
     unsafe { install_global(rq); }
     // Wire preempt_enable() → schedule() per `13§9`. The hook fires
     // whenever preempt_count drops to zero with need_resched set.
-    // SAFETY: install_default_runqueue is the boot-path single-writer;
+    // Idempotent — APs may call this on their own bring-up; the
+    // pointer store is already a no-op for repeats.
+    // SAFETY: install_default_runqueue is the per-CPU bring-up path;
     // preempt_enable hook is read at every decrement-to-zero with
     // appropriate barriers via the count atomic.
     unsafe { sched::preempt::set_schedule_hook(schedule_hook_trampoline); }
