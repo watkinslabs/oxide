@@ -686,6 +686,20 @@ fn task_exe_path(tid_opt: Option<u32>) -> alloc::vec::Vec<u8> {
     b"/init".to_vec()
 }
 
+fn task_cwd_path(tid_opt: Option<u32>) -> alloc::vec::Vec<u8> {
+    let task = match tid_opt {
+        Some(tid) => crate::sched::registry::lookup(tid),
+        None      => crate::sched::current().and_then(|c|
+            crate::sched::registry::lookup(c.tid)),
+    };
+    if let Some(t) = task {
+        // SAFETY: cwd slot single-mutator per `13§5`.
+        let snap = unsafe { (*t.cwd.get()).clone() };
+        if !snap.is_empty() { return snap.into_bytes(); }
+    }
+    b"/".to_vec()
+}
+
 fn resolve_proc_link(path: &str) -> Option<alloc::vec::Vec<u8>> {
     let rest = path.strip_prefix("/proc/")?;
     let mut parts = rest.splitn(2, '/');
@@ -698,7 +712,7 @@ fn resolve_proc_link(path: &str) -> Option<alloc::vec::Vec<u8>> {
     }
     match leaf {
         "exe"  => Some(task_exe_path(tid_opt)),
-        "cwd"  => Some(b"/".to_vec()),
+        "cwd"  => Some(task_cwd_path(tid_opt)),
         "root" => Some(b"/".to_vec()),
         _      => None,
     }
