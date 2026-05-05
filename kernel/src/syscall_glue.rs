@@ -579,21 +579,16 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    // Materialise stack-allocated &[&[u8]] slices for the snapshot
-    // we took on the OLD AS. We can't use alloc here cheaply (the
-    // execve frame is already deep), so a 16-element fixed array
-    // of slice references suffices.
+    // Materialise stack-allocated &[&[u8]] slices for the OLD-AS snapshot.
     let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
-
-    // P3-80: snapshot argv → Task.cmdline (NUL-joined) for /proc/self/cmdline.
-    {
-        let cl = sched::argv_to_cmdline(&argv_slices[..argc]);
-        // SAFETY: single-mutator per `13§5`; current task is sole writer on this CPU.
-        unsafe { *cur.cmdline.get() = Some(cl); }
-    }
     let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
+    // SAFETY: single-mutator per `13§5` for both cmdline + environ slots.
+    unsafe {
+        *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
+        *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
+    }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         crate::exec_stack::build_user_stack(
