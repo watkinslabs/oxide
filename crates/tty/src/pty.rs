@@ -74,14 +74,41 @@ pub const TERMIOS_OFF_OSPEED: usize = 40;
 /// Number of c_cc control characters in Linux termios.
 pub const NCCS: usize = 19;
 
-/// c_cc indexes we honour. Linux's termios.h has many more; v1
-/// reads VINTR for ldisc dispatch.
+/// c_cc indices per Linux termios.h. v1 honours VINTR + VEOF +
+/// VERASE + VKILL via ldisc dispatch; the rest are stored in the
+/// termios image but ignored.
 pub mod cc {
-    pub const VINTR: usize = 0;
+    pub const VINTR:    usize = 0;
+    pub const VQUIT:    usize = 1;
+    pub const VERASE:   usize = 2;
+    pub const VKILL:    usize = 3;
+    pub const VEOF:     usize = 4;
+    pub const VTIME:    usize = 5;
+    pub const VMIN:     usize = 6;
+    pub const VSWTC:    usize = 7;
+    pub const VSTART:   usize = 8;
+    pub const VSTOP:    usize = 9;
+    pub const VSUSP:    usize = 10;
+    pub const VEOL:     usize = 11;
+    pub const VREPRINT: usize = 12;
+    pub const VDISCARD: usize = 13;
+    pub const VWERASE:  usize = 14;
+    pub const VLNEXT:   usize = 15;
+    pub const VEOL2:    usize = 16;
 }
 
 /// Default c_cc[VINTR] = 0x03 (^C).
-pub const DEFAULT_VINTR: u8 = 0x03;
+pub const DEFAULT_VINTR:  u8 = 0x03;
+/// Default c_cc[VEOF]   = 0x04 (^D).
+pub const DEFAULT_VEOF:   u8 = 0x04;
+/// Default c_cc[VERASE] = 0x7F (DEL).
+pub const DEFAULT_VERASE: u8 = 0x7F;
+/// Default c_cc[VKILL]  = 0x15 (^U).
+pub const DEFAULT_VKILL:  u8 = 0x15;
+/// Default c_cc[VQUIT]  = 0x1C (^\).
+pub const DEFAULT_VQUIT:  u8 = 0x1C;
+/// Default c_cc[VSUSP]  = 0x1A (^Z).
+pub const DEFAULT_VSUSP:  u8 = 0x1A;
 
 /// Build a default termios byte image. Matches Linux pty defaults:
 /// c_lflag = ICANON|ECHO|ISIG, c_iflag = ICRNL, c_oflag = OPOST|ONLCR,
@@ -104,7 +131,12 @@ pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     t[TERMIOS_OFF_LFLAG + 1] = lf[1];
     t[TERMIOS_OFF_LFLAG + 2] = lf[2];
     t[TERMIOS_OFF_LFLAG + 3] = lf[3];
-    t[TERMIOS_OFF_CC + cc::VINTR] = DEFAULT_VINTR;
+    t[TERMIOS_OFF_CC + cc::VINTR ] = DEFAULT_VINTR;
+    t[TERMIOS_OFF_CC + cc::VQUIT ] = DEFAULT_VQUIT;
+    t[TERMIOS_OFF_CC + cc::VERASE] = DEFAULT_VERASE;
+    t[TERMIOS_OFF_CC + cc::VKILL ] = DEFAULT_VKILL;
+    t[TERMIOS_OFF_CC + cc::VEOF  ] = DEFAULT_VEOF;
+    t[TERMIOS_OFF_CC + cc::VSUSP ] = DEFAULT_VSUSP;
     t
 }
 
