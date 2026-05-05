@@ -110,9 +110,16 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
     // Mark ourselves online.
     let _ = crate::smp::ap_arrived();
 
+    // Unmask IRQs so this AP can take resched IPIs (and any future
+    // per-AP timer ticks). Idle loop is `sti; hlt`: the hlt halts
+    // until an IRQ wakes us, the dispatcher EOIs + sets
+    // need_resched + runs the picker, the IRQ-tail asm switches
+    // to whatever this CPU's runqueue picked.
     loop {
-        // SAFETY: hlt is always legal at CPL=0; idle hint, IRQs masked so we wake only on NMI.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: AP has GS_BASE + IDT + LAPIC + per-CPU runqueue installed; sti enables the IF flag, hlt parks until next IRQ. Both legal at CPL=0.
+        unsafe {
+            core::arch::asm!("sti; hlt", options(nomem, nostack, preserves_flags));
+        }
     }
 }
 
