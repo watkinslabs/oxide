@@ -97,6 +97,20 @@ fn pair_hangup_flag_set() {
 }
 
 #[test]
+fn pair_foreground_pgid_defaults_zero() {
+    let p = Pair::new(0);
+    assert_eq!(p.foreground_pgid, 0);
+}
+
+#[test]
+fn pair_foreground_pgid_round_trip() {
+    // Mirrors TIOCSPGRP then TIOCGPGRP from userspace.
+    let mut p = Pair::new(0);
+    p.foreground_pgid = 4099;
+    assert_eq!(p.foreground_pgid, 4099);
+}
+
+#[test]
 fn pair_buffered_data_survives_hangup() {
     // Linux: hangup makes *empty* reads return EOF, but already-buffered
     // bytes can still be drained.

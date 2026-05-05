@@ -87,12 +87,20 @@ pub struct Pair {
     /// True after either side calls `hangup` (slave close on the
     /// final fd). Subsequent reads on the opposite side return EOF.
     pub hung_up: bool,
+    /// Foreground process group id per `28§4` / TIOCSPGRP. 0 = no
+    /// foreground group set yet (TIOCGPGRP returns 0 in that case).
+    /// Shells write this with TIOCSPGRP on fork-then-exec.
+    pub foreground_pgid: u32,
 }
 
 impl Pair {
     /// # C: O(1)
     pub fn new(pts_num: u32) -> Self {
-        Self { pts_num, m_to_s: Ring::new(), s_to_m: Ring::new(), hung_up: false }
+        Self {
+            pts_num,
+            m_to_s: Ring::new(), s_to_m: Ring::new(),
+            hung_up: false, foreground_pgid: 0,
+        }
     }
 
     /// Master writes input (keystrokes). Returns bytes accepted.
