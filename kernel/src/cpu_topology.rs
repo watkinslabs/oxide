@@ -7,8 +7,6 @@
 // (boot CPU during ACPI walk); readers come up post-init when
 // the count is stable. Lock-free.
 
-#![cfg(target_os = "oxide-kernel")]
-
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Hard cap. Linux x86 default is 8192 (NR_CPUS); v1 picks 64
