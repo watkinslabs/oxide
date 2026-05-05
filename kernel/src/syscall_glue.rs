@@ -368,12 +368,15 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
 }
 
 /// sys_wait4: reap_one + yield-poll until match. -ECHILD if none.
+/// WNOHANG (options bit 0) returns 0 immediately when no child has
+/// exited, matching POSIX `wait(2)` semantics for shells.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
+    const WNOHANG: u64 = 1;
     let pid     = args.a0 as i32;
     let wstatus = args.a1;
-    let _options = args.a2;
+    let options = args.a2;
     let _rusage  = args.a3;
 
     let parent_tid = match crate::sched::current() {
@@ -405,6 +408,7 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
             }
             return tid as i64;
         }
+        if (options & WNOHANG) != 0 { return 0; }
         // No zombie ready — yield and retry. schedule() saves
         // our state into current.arch_ctx + switches; we resume
         // here when a child eventually exits + reschedule picks
