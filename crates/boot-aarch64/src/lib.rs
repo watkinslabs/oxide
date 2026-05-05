@@ -86,6 +86,16 @@ static LIMINE_BASE_REVISION: [u64; 3] = [
     6,
 ];
 
+/// Limine v9+ requests-region markers. Without these v12+ may
+/// silently skip request scanning. Mirror the x86_64 boot crate.
+#[used]
+#[link_section = ".limine_requests.start"]
+static LIMINE_REQUESTS_START: [u64; 4] = limine::REQUESTS_START_MARKER;
+
+#[used]
+#[link_section = ".limine_requests.end"]
+static LIMINE_REQUESTS_END: [u64; 2] = limine::REQUESTS_END_MARKER;
+
 /// HHDM request slot per `36§3`. The bootloader writes a non-null
 /// response pointer here before kernel handoff; `_start_rust` reads
 /// `(*response).offset` to learn where Limine mapped phys memory.
