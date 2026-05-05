@@ -119,6 +119,9 @@ dependencies = [
 [[package]]
 name = "ext4"
 version = "0.1.0"
+dependencies = [
+ "block",
+]
 
 [[package]]
 name = "fastrand"
