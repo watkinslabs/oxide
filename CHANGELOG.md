@@ -675,3 +675,31 @@ End-of-session-25 verified-green:
 - `make qemu-x86 --features debug-all` → all boot-time smokes pass; init-loop iterations exit cleanly.
 
 Surface coverage state at end of session 25: ~280 syscall slots wired; full PTY (ptmx + pts + 60-byte termios image + winsize + ldisc + cooked-mode + ^C → SIGINT + blocking master/slave reads + 17 c_cc chars); SIGSTOP/SIGCONT scheduler hooks; per-task pgid/sid + cwd + cmdline + environ slots; 80+ /proc and /etc paths; wait4 WNOHANG; sys_sendfile; O_TRUNC + ftruncate; uname Linux-compat; real hostname; cwd-relative path resolution in sys_open. Remaining for v1 shell: musl libc unblock (NX violation in __libc_start_main_stage1), real disk I/O, networking — each requires deeper debugging or major new subsystems.
+
+---
+
+## Session 26 (PRs #383 – #395) — 2026-05-05
+
+**Subject**: bigger-bundle discipline (no more 10-min micro-PRs); real per-task time + rlimit + priority + alarm/itimer; Linux-compat polish.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #383 | `B13-fix-arm-fork-vfork` | Hotfix: gate NR_VFORK/NR_CLONE dispatch behind cfg(x86_64). P3-134 broke aarch64 link; CI ran failed. |
+| #384 | `P3-136-status-vm` | Rich /proc/self/status (VmPeak/Size/RSS/Data/Stk/Exe/Lib + FDSize + Sig{Pnd,Blk,Ign,Cgt} + Cap{Inh,Prm,Eff,Bnd} + Cpus_/Mems_allowed). Split init() into procfs_static.rs to keep procfs.rs under cap. |
+| #385 | `P3-137-veof-eof` | Cooked-mode VEOF (^D) drops the byte and flags pending_eof; slave_read on empty queue returns 0 (real EOF). +4 tests. |
+| #386 | `P3-138-verase` | VERASE / VKILL line editing under ICANON; destructive `\b \b` echo. +4 tests. |
+| #387 | `P3-139-ixon-flow` | IXON flow control: VSTOP (^S) suspends slave_write; VSTART (^Q) resumes. Default termios populates VSTART/VSTOP. +3 tests. |
+| #388 | `P3-140-vsusp-sigtstp` | VSUSP→SIGTSTP, VQUIT→SIGQUIT delivery via unified post_signal_pgrp helper. README refresh for M2 milestone. +5 tests. |
+| #389 | `P3-141-rlimits-priorities` | Per-task rlimits: `[(u64,u64); 16]` slot on Task, getrlimit/setrlimit/prlimit64 read+write the slot, /proc/<tid>/limits renders dynamically. New `crates/sched::rlimit` with clamp_pair / validate_setrlimit / format_rlim helpers + 7 hosted tests. |
+| #390 | `P3-142-priority-state` | Real getpriority/setpriority via Task.nice; clamp_nice helper; /proc/<tid>/{stat,status} state field reads task.state() (R/S/T/Z) instead of hardcoded R. +5 tests. |
+| #391 | `P3-143-clock-time-real` | `crates/sched/src/clock.rs` with settimeofday_offset/apply_offset helpers. REALTIME_OFFSET_NS atomic; clock_gettime(CLOCK_REALTIME) returns monotonic + offset; clock_settime + sys_settimeofday update it. +3 tests. |
+| #392 | `P3-144-open-flags` | O_DIRECTORY enforcement on sys_open / sys_openat (-ENOTDIR if non-dir). Refactor: split sys_open + sys_openat + resolve_path_for_open into new syscall_glue_open.rs. |
+| #393 | `P3-145-real-time-syscalls` | Task.spawn_ns set in spawn_*_thread. getrusage reports ru_utime as (now - spawn_ns); times reports tms_utime in 100 Hz ticks. New ns_to_clk_tck / ns_to_timespec / ns_to_timeval helpers. +3 tests. |
+| #394 | `P3-146-alarm-pause-sigsuspend` | Real sys_alarm / sys_pause via Task.alarm_ns + dispatch-tail SIGALRM post. Removed from compat. |
+| #395 | `P3-147-itimer-devlog` | Real sys_setitimer / sys_getitimer (ITIMER_REAL via alarm_ns + alarm_interval_ns; periodic re-arm in dispatch tail). /dev/kmsg + /dev/log as NullInode. |
+
+End-of-session-26 verified-green:
+- `make lint` clean.
+- `make test` → 637 passed, 0 failed (603 → 637).
+- `make x86`, `make arm` clean — verified BEFORE every merge after the B13 hotfix incident.
+- `make qemu-x86 --features debug-all` → all boot-time smokes pass; init-loop iterations exit cleanly.
