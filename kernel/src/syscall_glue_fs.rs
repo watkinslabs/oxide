@@ -76,6 +76,8 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCGETS:     u64 = 0x5401;
     const TCSETS:     u64 = 0x5402;
     const TIOCGWINSZ: u64 = 0x5413;
+    const TIOCGPTN:   u64 = 0x80045430; // _IOR('T', 0x30, int)
+    const TIOCSPTLCK: u64 = 0x40045431; // _IOW('T', 0x31, int) — accepted as no-op
     let fd  = args.a0 as i32;
     let req = args.a1;
     let arg = args.a2;
@@ -118,6 +120,20 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         TCSETS => 0,
+        TIOCGPTN => {
+            // PTY master inode-number marker: high bits 0x6000_0000.
+            // pts_num is encoded in the low 15 bits per dev_pty::LockedPair::new.
+            let ino = file.inode().ino();
+            if (ino & 0xFFFF_8000) != 0x6000_0000 {
+                return -(Errno::Enotty.as_i32() as i64);
+            }
+            let pts_num = (ino & 0x7FFF) as u32;
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            // SAFETY: arg validated 4-byte aligned; CPL=0 writes through caller's AS.
+            unsafe { core::ptr::write_volatile(arg as *mut u32, pts_num); }
+            0
+        }
+        TIOCSPTLCK => 0, // ptmx unlock — v1 ignores locking
         _      => -(Errno::Enotty.as_i32() as i64),
     }
 }

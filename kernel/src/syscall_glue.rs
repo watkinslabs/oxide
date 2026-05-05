@@ -192,7 +192,12 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     const O_CREAT: u32 = 0o100;
-    let inode = if let Some(i) = crate::devfs::lookup(path_str) { i }
+    // /dev/ptmx is a factory: each open allocates a fresh master inode
+    // and registers a /dev/pts/<n> slave. See `28§5`.
+    let inode = if path_str == "/dev/ptmx" {
+        let (master, _n) = crate::dev_pty::allocate_pair();
+        master
+    } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
         else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
         else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
