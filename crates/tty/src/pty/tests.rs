@@ -221,12 +221,14 @@ fn raw_mode_no_echo_on_master_write() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn default_termios_has_canonical_lflag_and_vintr() {
+fn default_termios_has_canonical_flags_and_vintr() {
     let t = default_termios();
     assert_eq!(read_lflag(&t), DEFAULT_LFLAG);
+    assert_eq!(read_iflag(&t), DEFAULT_IFLAG);
+    assert_eq!(read_oflag(&t), DEFAULT_OFLAG);
     assert_eq!(read_vintr(&t), DEFAULT_VINTR);
-    // No other fields default-set.
-    for off in 0..TERMIOS_OFF_LFLAG { assert_eq!(t[off], 0, "iflag/oflag/cflag must default zero"); }
+    // c_cflag defaults zero in v1 (no baud / parity tracking yet).
+    assert_eq!(read_termios_u32(&t, TERMIOS_OFF_CFLAG), 0);
     assert_eq!(t[TERMIOS_OFF_LINE], 0);
 }
 
@@ -328,4 +330,85 @@ fn pair_set_winsize_no_op_when_unchanged() {
     let mut p = Pair::new(0);
     p.set_winsize(Winsize::default_pty());
     assert!(!p.pending_sigwinch, "no-op set must not fire SIGWINCH");
+}
+
+// ---------------------------------------------------------------------------
+// iflag / oflag — line-discipline byte translation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cooked_icrnl_translates_carriage_return_to_newline() {
+    // Default iflag has ICRNL. Terminal Enter sends \r; ldisc converts
+    // it to \n so cooked-mode slave_read can complete a line.
+    let mut p = cooked(0);
+    p.master_write(b"hello\r");
+    let mut buf = [0u8; 16];
+    // ICRNL turned \r into \n → line is complete.
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 6);
+    assert_eq!(&buf[..6], b"hello\n");
+}
+
+#[test]
+fn cooked_igncr_drops_carriage_return() {
+    let mut p = cooked(0);
+    let iflag = read_iflag(&p.termios);
+    let new_iflag = (iflag & !iflag::ICRNL) | iflag::IGNCR;
+    p.termios[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4]
+        .copy_from_slice(&new_iflag.to_le_bytes());
+    p.master_write(b"a\rb\n");
+    let mut buf = [0u8; 16];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 3);
+    assert_eq!(&buf[..3], b"ab\n");
+}
+
+#[test]
+fn cooked_inlcr_translates_newline_to_cr() {
+    let mut p = cooked(0);
+    let iflag = read_iflag(&p.termios);
+    let new_iflag = (iflag & !iflag::ICRNL) | iflag::INLCR;
+    p.termios[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4]
+        .copy_from_slice(&new_iflag.to_le_bytes());
+    // \n becomes \r — no longer a line terminator under ICANON.
+    p.master_write(b"hi\n");
+    let mut buf = [0u8; 16];
+    // No newline in m_to_s after INLCR translation → slave_read = 0.
+    assert_eq!(p.slave_read(&mut buf), 0);
+}
+
+#[test]
+fn cooked_onlcr_expands_newline_on_slave_write() {
+    // Default oflag = OPOST | ONLCR. Slave writes "ok\n" → master sees "ok\r\n".
+    let mut p = cooked(0);
+    p.slave_write(b"ok\n");
+    let mut buf = [0u8; 16];
+    let n = p.master_read(&mut buf);
+    assert_eq!(n, 4);
+    assert_eq!(&buf[..4], b"ok\r\n");
+}
+
+#[test]
+fn raw_slave_write_skips_oflag_transformations() {
+    // Pair::new starts raw (oflag = 0); slave_write is verbatim.
+    let mut p = Pair::new(0);
+    p.slave_write(b"raw\n");
+    let mut buf = [0u8; 16];
+    let n = p.master_read(&mut buf);
+    assert_eq!(n, 4);
+    assert_eq!(&buf[..4], b"raw\n");
+}
+
+#[test]
+fn cooked_opost_off_disables_onlcr() {
+    let mut p = cooked(0);
+    let oflag = read_oflag(&p.termios);
+    let new_oflag = oflag & !oflag::OPOST;
+    p.termios[TERMIOS_OFF_OFLAG..TERMIOS_OFF_OFLAG + 4]
+        .copy_from_slice(&new_oflag.to_le_bytes());
+    p.slave_write(b"x\n");
+    let mut buf = [0u8; 16];
+    let n = p.master_read(&mut buf);
+    assert_eq!(n, 2, "OPOST off → no expansion");
+    assert_eq!(&buf[..2], b"x\n");
 }
