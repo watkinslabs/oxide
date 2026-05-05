@@ -15,6 +15,7 @@ extern crate std;
 pub mod cfs;
 pub mod clock;
 pub mod cmdline;
+pub mod preempt;
 pub mod registry;
 pub mod rlimit;
 pub mod rt;
