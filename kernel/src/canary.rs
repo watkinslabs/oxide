@@ -189,7 +189,7 @@ pub unsafe fn smoke_canary_x86(period: u32) {
     // SAFETY: boot path; allocator up; no runqueue currently installed.
     unsafe { ksched::install_default_runqueue(); }
     let _kts = spawn_canary_set();
-    crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
+    let _ = crate::preempt::clear_need_resched();
     // SAFETY: LAPIC was enabled by smoke_device_map_x86; legal at CPL=0.
     let armed = unsafe { crate::lapic::timer_periodic(period) };
     if !armed {
@@ -239,7 +239,7 @@ pub unsafe fn smoke_canary_arm(period: u32) {
     // SAFETY: boot path; allocator up; no runqueue currently installed.
     unsafe { ksched::install_default_runqueue(); }
     let _kts = spawn_canary_set();
-    crate::preempt::NEED_RESCHED.store(false, Ordering::Release);
+    let _ = crate::preempt::clear_need_resched();
     // SAFETY: GIC mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
     unsafe { crate::gic::enable_intid(27); }
     // SAFETY: timer sysregs are unprivileged at EL1; INTID 27 enabled.
