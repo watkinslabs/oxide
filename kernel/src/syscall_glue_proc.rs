@@ -68,7 +68,47 @@ pub fn kernel_sys_madvise(_args: &SyscallArgs) -> i64 { 0 }
 /// `sys_prlimit64(pid, resource, new, old)` — slot 302. v1
 /// returns 0 — no rlimit enforcement yet.
 /// # C: O(1)
-pub fn kernel_sys_prlimit64(_args: &SyscallArgs) -> i64 { 0 }
+pub fn kernel_sys_prlimit64(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let pid      = args.a0 as u32;
+    let resource = args.a1 as usize;
+    let new_ptr  = args.a2;
+    let old_ptr  = args.a3;
+    if resource >= sched::rlimit::rlim::COUNT {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let task = if pid == 0 {
+        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+    } else {
+        crate::sched::registry::lookup(pid)
+    };
+    let task = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
+
+    if old_ptr != 0 && old_ptr < hal::USER_VA_END {
+        // SAFETY: same single-mutator invariant as getrlimit.
+        let (rcur, rmax) = unsafe { (*task.rlimits.get())[resource] };
+        // SAFETY: old_ptr validated; CPL=0 writes through caller's AS.
+        unsafe {
+            core::ptr::write_volatile( old_ptr       as *mut u64, rcur);
+            core::ptr::write_volatile((old_ptr + 8)  as *mut u64, rmax);
+        }
+    }
+    if new_ptr != 0 && new_ptr < hal::USER_VA_END {
+        // SAFETY: validated; CPL=0 reads through caller's AS.
+        let (nc, nm) = unsafe {
+            let c = core::ptr::read_volatile( new_ptr       as *const u64);
+            let m = core::ptr::read_volatile((new_ptr + 8)  as *const u64);
+            (c, m)
+        };
+        let pair = match sched::rlimit::clamp_pair(nc, nm) {
+            Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        // SAFETY: rlimits write — task may not be `current` but the slot
+        // is single-mutator in v1's UP scheduler model (no preemption mid-syscall).
+        unsafe { (*task.rlimits.get())[resource] = pair; }
+    }
+    0
+}
 
 /// `sys_rt_sigaction(sig, act, oldact, sz)` — slot 13. P3-64:
 /// reads + stores the user-supplied `struct sigaction` into the
@@ -304,30 +344,61 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     })
 }
 
-/// `sys_getrlimit(res, rlim)` — slot 97. Writes (rlim_cur,
-/// rlim_max) for the resource. v1: every limit is unbounded
-/// (RLIM_INFINITY = u64::MAX). `rlim` is `struct rlimit { u64
-/// rlim_cur; u64 rlim_max; }`.
+/// `sys_getrlimit(res, rlim)` — slot 97. Reads the per-task
+/// rlimit slot for `res` and writes `(cur, max)` to user `rlim`.
 /// # C: O(1)
 pub fn kernel_sys_getrlimit(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
-    let _resource = args.a0;
+    let resource = args.a0 as usize;
     let rlim = args.a1;
     if rlim == 0 || rlim >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: rlim validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 writes through user mapping.
+    if resource >= sched::rlimit::rlim::COUNT {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    // SAFETY: rlimits slot single-mutator per `13§5`; current task is the running task on this CPU.
+    let (rcur, rmax) = unsafe { (*cur.rlimits.get())[resource] };
+    // SAFETY: rlim validated < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
-        core::ptr::write_volatile( rlim       as *mut u64, u64::MAX);
-        core::ptr::write_volatile((rlim + 8)  as *mut u64, u64::MAX);
+        core::ptr::write_volatile( rlim       as *mut u64, rcur);
+        core::ptr::write_volatile((rlim + 8)  as *mut u64, rmax);
     }
     0
 }
 
-/// `sys_setrlimit(res, rlim)` — slot 160. v1 accepts any new
-/// limit and forgets it (no enforcement yet).
+/// `sys_setrlimit(res, rlim)` — slot 160. Reads `(cur, max)` from
+/// user `rlim`, validates `cur <= max`, writes to per-task slot.
 /// # C: O(1)
-pub fn kernel_sys_setrlimit(_args: &SyscallArgs) -> i64 { 0 }
+pub fn kernel_sys_setrlimit(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let resource = args.a0 as usize;
+    let rlim = args.a1;
+    if rlim == 0 || rlim >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    if resource >= sched::rlimit::rlim::COUNT {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // SAFETY: rlim validated < USER_VA_END; CPL=0 reads through caller's AS.
+    let (new_cur, new_max) = unsafe {
+        let c = core::ptr::read_volatile( rlim       as *const u64);
+        let m = core::ptr::read_volatile((rlim + 8)  as *const u64);
+        (c, m)
+    };
+    let pair = match sched::rlimit::clamp_pair(new_cur, new_max) {
+        Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    // SAFETY: same single-mutator invariant as the getrlimit reader.
+    unsafe { (*cur.rlimits.get())[resource] = pair; }
+    0
+}
 
 /// `sys_getrusage(who, usage)` — slot 98. Writes a 144-byte
 /// `struct rusage` of zeros. v1 has no per-task accounting.

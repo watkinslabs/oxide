@@ -623,7 +623,7 @@ impl Inode for ProcPidDirInode {
             "loginuid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "sessionid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "io"       => Ok(StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n") as InodeRef),
-            "limits"   => Ok(StaticFileInode::new(LIMITS_BODY) as InodeRef),
+            "limits"   => Ok(Arc::new(ProcPidLimitsInode { tid: self.tid }) as InodeRef),
             "personality" => Ok(StaticFileInode::new(b"00000000\n") as InodeRef),
             "sched"   => Ok(Arc::new(ProcPidSchedInode { tid: self.tid }) as InodeRef),
             "schedstat" => Ok(StaticFileInode::new(b"0 0 0\n") as InodeRef),
@@ -660,6 +660,7 @@ pub struct ProcPidMapsInode { pub tid: u32 }
 pub struct ProcPidCommInode { pub tid: u32 }
 pub struct ProcPidEnvironInode { pub tid: u32 }
 pub struct ProcPidStatmInode { pub tid: u32 }
+pub struct ProcPidLimitsInode { pub tid: u32 }
 pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -746,6 +747,50 @@ pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
 pid_inode_impl!(ProcPidCommInode,    pid_comm_body,    0x3000_2400);
 pid_inode_impl!(ProcPidEnvironInode, pid_environ_body, 0x3000_2500);
 pid_inode_impl!(ProcPidStatmInode,   pid_statm_body,   0x3000_2600);
+pid_inode_impl!(ProcPidLimitsInode,  pid_limits_body,  0x3000_2800);
+
+/// Render /proc/<pid>/limits from the live per-task rlimit slot.
+fn pid_limits_body(tid: u32) -> alloc::vec::Vec<u8> {
+    use sched::rlimit::{rlim, format_rlim};
+    let mut out = alloc::vec::Vec::with_capacity(2048);
+    let task = match crate::sched::registry::lookup(tid) {
+        Some(t) => t, None => return out,
+    };
+    push(&mut out, b"Limit                     Soft Limit           Hard Limit           Units\n");
+    let names: &[(usize, &[u8], &[u8])] = &[
+        (rlim::CPU,        b"Max cpu time             ", b"seconds"),
+        (rlim::FSIZE,      b"Max file size            ", b"bytes"),
+        (rlim::DATA,       b"Max data size            ", b"bytes"),
+        (rlim::STACK,      b"Max stack size           ", b"bytes"),
+        (rlim::CORE,       b"Max core file size       ", b"bytes"),
+        (rlim::RSS,        b"Max resident set         ", b"bytes"),
+        (rlim::NPROC,      b"Max processes            ", b"processes"),
+        (rlim::NOFILE,     b"Max open files           ", b"files"),
+        (rlim::MEMLOCK,    b"Max locked memory        ", b"bytes"),
+        (rlim::AS,         b"Max address space        ", b"bytes"),
+        (rlim::LOCKS,      b"Max file locks           ", b"locks"),
+        (rlim::SIGPENDING, b"Max pending signals      ", b"signals"),
+        (rlim::MSGQUEUE,   b"Max msgqueue size        ", b"bytes"),
+        (rlim::NICE,       b"Max nice priority        ", b""),
+        (rlim::RTPRIO,     b"Max realtime priority    ", b""),
+        (rlim::RTTIME,     b"Max realtime timeout     ", b"us"),
+    ];
+    // SAFETY: rlimits slot single-mutator per `13§5`; reading a snapshot.
+    let limits = unsafe { *task.rlimits.get() };
+    let mut buf = [0u8; 32];
+    for (i, label, units) in names {
+        push(&mut out, label);
+        let n = format_rlim(&mut buf, limits[*i].0).unwrap_or(0);
+        push(&mut out, &buf[..n]);
+        for _ in n..21 { out.push(b' '); }
+        let n = format_rlim(&mut buf, limits[*i].1).unwrap_or(0);
+        push(&mut out, &buf[..n]);
+        for _ in n..21 { out.push(b' '); }
+        push(&mut out, units);
+        out.push(b'\n');
+    }
+    out
+}
 pid_inode_impl!(ProcPidSchedInode,   pid_sched_body,   0x3000_2700);
 
 fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
