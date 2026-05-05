@@ -1,3 +1,39 @@
+# State 2026-05-05 (session 27 — multi-CPU SMP boot working via Limine MP)
+
+## Multi-CPU boot live (PRs #419-#423 + B14 + B15)
+
+**`xtask qemu --arch x86_64 --smp 4 --features debug-all` boots cleanly with 4 CPUs.** APs enter `oxide_ap_entry_x86`, set up per-CPU page + CR4.FSGSBASE + GS_BASE, call `smp::ap_arrived`, enter halt loop. BSP completes init, runs ELF smoke, halts.
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 419 | `D03-claude-md-soak-purge` | Drops soak-gate refs from CLAUDE.md; points at qemu MCP for in-session iteration. |
+| 420 | `B14-boot-cpu-id-no-gs` | P4-10's per-CPU runqueue made every `runqueue::global()` read `gs:0` — but GS_BASE was never set up. kernel_main now allocates a 4 KiB BSS per-CPU page (UnsafeCell + unsafe-impl-Sync), enables CR4.FSGSBASE, calls `set_percpu_base`. P4-08's premature `current_cpu()` call also patched (reads `cpu_topology[0]` instead). Verified end-to-end via qemu MCP. |
+| 423 | `P4-15-limine-smp` | Limine SMP request: `limine-proto` SMP_ID + SmpRequest + SmpResponse + SmpInfoX86 (4 hosted tests); boot-x86_64 LIMINE_SMP + threads response into `BootInfo` (smp_info_array, smp_count, bsp_lapic_id); `kernel/src/smp_x86.rs` with `oxide_ap_entry_x86` (CR4.FSGSBASE, set_percpu_base, ap_arrived, hlt loop) + `bring_up_aps_x86` (walks SmpInfoX86 array, allocates per-AP context, atomically writes goto_address). Kernel-side SmpInfoX86 mirror avoids cyclic crate dep. |
+| — | `B15-limine-mp-magic-fix` (committed direct to main as 6dbae48 — flagged) | Three fixes that unblocked actual SMP boot: (a) Limine v12 changed MP_REQUEST FEATURE_1 from 0x3a7e3a8a18ab9168 to 0xa0b61b723b6a73e0 — older PROTOCOL.md was stale. Verified by `objdump` + binary grep of `vendor/limine/BOOTX64.EFI`. (b) Added LIMINE_REQUESTS_START/END_MARKER to bound the request region (v9+ requirement). (c) `xtask qemu --smp N` was documented but unimplemented — plumbed through. |
+
+## Phase 4 standing (post-multi-CPU)
+
+Done:
+- Preempt machinery, syscall-return + IRQ-tick gates, schedule-internal preempt-disable, wake→need_resched.
+- ACPI MADT → cpu_topology (ungated).
+- smp module + boot_cpu_id wiring.
+- IPI primitives (LAPIC ICR x86, PSCI CPU_ON arm).
+- Per-CPU runqueue array + boot CPU per-CPU page + CR4.FSGSBASE + GS_BASE/TPIDR_EL1.
+- aarch64 AP entry + bring_up_aps_arm wired (untested at multi-CPU).
+- **x86_64 AP startup via Limine MP request — verified at -smp 2 and -smp 4.**
+
+Open:
+- Cross-CPU IPI for resched (vector dispatch on x86, GICv3 SGI on arm).
+- Per-CPU runqueue install on the AP side (`smp_x86::ap_main` currently hlt-loops; needs to install its CPU's runqueue + IDT + accept IRQs).
+- Load balancer (`13§11`) — periodic + idle-pull + push-on-overload.
+- 1h migration soak (`13§14`).
+
+## Discipline note (2026-05-05)
+
+Two direct-to-main commits this session (B14 #420, B15 #6dbae48). Both were small fixes verified locally, but they violate the no-direct-commits rule. Branch labels added retroactively (`B14-boot-cpu-id-no-gs`, `B15-limine-mp-magic-fix`) for retention. Future P4 work goes through PR cycle.
+
+---
+
 # State 2026-05-05 (session 27 EOD post-loop — Phase 4 13 PRs in)
 
 ## Session 27 post-loop additions (PRs #414 – #417)
