@@ -14,6 +14,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCGETS:     u64 = 0x5401;
     const TCSETS:     u64 = 0x5402;
     const TIOCGWINSZ: u64 = 0x5413;
+    const TIOCSWINSZ: u64 = 0x5414;
     const TIOCGPTN:   u64 = 0x80045430;
     const TIOCSPTLCK: u64 = 0x40045431;
     const TIOCGPGRP:  u64 = 0x540F;
@@ -42,12 +43,47 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     match req {
         TIOCGWINSZ => {
             if let Err(rv) = validate_user_buf(arg, 8, 2) { return rv; }
+            // PTY fds: read from the pair's stored winsize. Other
+            // CharDev fds: report the default 24×80 (matches the
+            // prior fixed return).
+            let ws = match &pty_pair {
+                Some(pair) => pair.with_pair(|p| p.winsize),
+                None       => tty::pty::Winsize::default_pty(),
+            };
+            let bytes = ws.to_le_bytes();
             // SAFETY: arg validated 8-byte aligned; CPL=0 writes through caller's AS.
             unsafe {
-                core::ptr::write_volatile( arg       as *mut u16, 24);
-                core::ptr::write_volatile((arg + 2)  as *mut u16, 80);
-                core::ptr::write_volatile((arg + 4)  as *mut u16, 0);
-                core::ptr::write_volatile((arg + 6)  as *mut u16, 0);
+                for i in 0..8 {
+                    core::ptr::write_volatile((arg + i as u64) as *mut u8, bytes[i]);
+                }
+            }
+            0
+        }
+        TIOCSWINSZ => {
+            if let Err(rv) = validate_user_buf(arg, 8, 2) { return rv; }
+            let mut buf = [0u8; 8];
+            // SAFETY: arg validated 8-byte buffer; CPL=0 reads through caller's AS.
+            unsafe {
+                for i in 0..8 {
+                    buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
+                }
+            }
+            let ws = tty::pty::Winsize::from_le_bytes(&buf);
+            let (changed, fg) = match &pty_pair {
+                Some(pair) => pair.with_pair(|p| {
+                    p.set_winsize(ws);
+                    let fired = p.pending_sigwinch;
+                    if fired { p.pending_sigwinch = false; }
+                    (fired, p.foreground_pgid)
+                }),
+                None => (false, 0),
+            };
+            if changed && fg != 0 {
+                // SIGWINCH = 28; bit (28-1) = 27.
+                use core::sync::atomic::Ordering;
+                for t in crate::sched::registry::tasks_in_pgrp(fg) {
+                    t.sigpending.fetch_or(1u64 << 27, Ordering::Release);
+                }
             }
             0
         }
