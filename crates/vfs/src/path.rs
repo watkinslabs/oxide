@@ -60,6 +60,21 @@ pub fn is_absolute(path: &str) -> bool {
     path.starts_with('/')
 }
 
+/// Resolve `path` against `cwd`. If `path` is absolute, returns
+/// the lexically-normalized form. Otherwise joins as `cwd/path`
+/// then normalizes. `cwd` must itself be absolute.
+/// # C: O(len)
+pub fn resolve_against_cwd(cwd: &str, path: &str) -> Option<String> {
+    if is_absolute(path) {
+        return lexical_normalize(path);
+    }
+    let mut joined = String::with_capacity(cwd.len() + 1 + path.len());
+    joined.push_str(cwd);
+    if !cwd.ends_with('/') { joined.push('/'); }
+    joined.push_str(path);
+    lexical_normalize(&joined)
+}
+
 /// Normalize a path lexically (resolve `..` and `.` against an
 /// absolute prefix). Does NOT consult the FS. Returns `None` if a
 /// `..` would escape the root.
