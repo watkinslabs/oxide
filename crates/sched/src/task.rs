@@ -239,10 +239,15 @@ pub struct Task {
     /// hosted-test tasks where `Task::new` is the constructor.
     pub spawn_ns: AtomicU64,
 
-    /// alarm(2) deadline in monotonic ns. `0` = no alarm pending.
-    /// Dispatch tail compares against monotonic_ns() and posts
-    /// SIGALRM (signal 14) when reached.
+    /// alarm(2)/setitimer ITIMER_REAL deadline in monotonic ns.
+    /// `0` = no alarm pending. Dispatch tail compares against
+    /// monotonic_ns() and posts SIGALRM (signal 14) when reached.
     pub alarm_ns: AtomicU64,
+
+    /// ITIMER_REAL period in ns. `0` = one-shot. When the deadline
+    /// fires, dispatch tail re-arms `alarm_ns = now + interval` if
+    /// non-zero. setitimer(0) sets; getitimer(0) reads.
+    pub alarm_interval_ns: AtomicU64,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -362,6 +367,7 @@ impl Task {
             nice:       AtomicI8::new(0),
             spawn_ns:   AtomicU64::new(0),
             alarm_ns:   AtomicU64::new(0),
+            alarm_interval_ns: AtomicU64::new(0),
         }
     }
 
