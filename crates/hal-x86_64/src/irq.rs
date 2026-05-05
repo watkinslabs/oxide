@@ -49,6 +49,31 @@ core::arch::global_asm!(
     "2:  jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_40, . - oxide_irq_vec_40",
 
+    // ----- vec 0x41 -- cross-CPU resched IPI per `13§9`. Same shape
+    //       as the timer stub; oxide_irq_dispatch differentiates by
+    //       reading the saved vec tag. -----------------------------
+    ".globl oxide_irq_vec_41",
+    ".type  oxide_irq_vec_41, @function",
+    "oxide_irq_vec_41:",
+    "    push 0",
+    "    push 0x41",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld",
+    "    mov rdi, rsp",
+    "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax",
+    "    jz   3f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "3:  jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_41, . - oxide_irq_vec_41",
+
     // ----- shared IRQ epilogue --------------------------------------------
     // Globally addressable so `Context::new_kernel_with_irq_frame`
     // can park its address as the saved-RIP at scaffold base.
@@ -66,8 +91,14 @@ core::arch::global_asm!(
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_irq_vec_40();
+    fn oxide_irq_vec_41();
     fn oxide_irq_resume_user() -> !;
 }
+
+/// LAPIC timer vector (`22§4`).
+pub const VEC_TIMER:   u8 = 0x40;
+/// Cross-CPU resched IPI vector per `13§9`.
+pub const VEC_RESCHED: u8 = 0x41;
 
 /// Address of the IRQ stub for `vec`, or `0` if no IRQ stub is
 /// registered for that vector (caller falls back to fault stub).
@@ -75,8 +106,10 @@ extern "C" {
 pub fn irq_stub_addr(vec: u8) -> u64 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
-        if vec == 0x40 {
-            return oxide_irq_vec_40 as *const () as usize as u64;
+        match vec {
+            VEC_TIMER   => return oxide_irq_vec_40 as *const () as usize as u64,
+            VEC_RESCHED => return oxide_irq_vec_41 as *const () as usize as u64,
+            _ => {}
         }
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
