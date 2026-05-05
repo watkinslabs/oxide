@@ -124,7 +124,7 @@ pub fn allocate_pair() -> (InodeRef, u32) {
     let pair = LockedPair::new(n);
     // Linux pty default: ICANON | ECHO | ISIG. tty::Pair::new starts
     // raw; flip to cooked here so userspace sees the expected default.
-    pair.with_pair(|p| p.lflag = tty::pty::DEFAULT_LFLAG);
+    pair.with_pair(|p| p.termios = tty::pty::default_termios());
     {
         let mut g = PAIRS.lock();
         if g.len() <= n as usize { g.resize_with(n as usize + 1, || Arc::clone(&pair)); }
@@ -223,7 +223,7 @@ fn sigint_chain_smoke() {
     let (master, n) = allocate_pair();
     let pair = pair_for(n).expect("pair_for");
     pair.with_pair(|p| {
-        kassert!(p.lflag != 0, "cooked default");
+        kassert!(p.lflag() != 0, "cooked default");
         p.foreground_pgid = fake_tid;
     });
 
