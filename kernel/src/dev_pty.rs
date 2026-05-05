@@ -50,8 +50,17 @@ impl Inode for PtyMasterInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut g = self.pair.inner.lock();
-        Ok(g.master_read(buf))
+        // Yield-block until the slave has written something. Mirrors
+        // PtySlaveInode::read.
+        loop {
+            let n = {
+                let mut g = self.pair.inner.lock();
+                if g.master_readable() { g.master_read(buf) } else { 0 }
+            };
+            if n > 0 { return Ok(n); }
+            // SAFETY: process ctx; runqueue installed; preempt-off.
+            unsafe { crate::sched::tick_yield(); }
+        }
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
         let (n, sigint_target) = {
