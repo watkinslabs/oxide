@@ -567,6 +567,42 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             klog::write_dec_u64(started as u64);
             klog::write_raw(b"\n");
         }
+        // Cross-CPU IPI smoke per `13§9`. Wait for every AP to
+        // come online (smp::online_count() reaches smp_count) so
+        // their LAPICs are enabled + IRQs unmasked, then send a
+        // resched IPI to each non-BSP and confirm the handler
+        // ran via RESCHED_IPI_COUNT.
+        if started > 0 {
+            // Wait up to ~100ms for APs to flip online.
+            let target = info.smp_count as u32;
+            let mut spins = 0u32;
+            while crate::smp::online_count() < target && spins < 1_000_000 {
+                core::hint::spin_loop();
+                spins += 1;
+            }
+            // SAFETY: BSP holds boot context; LAPIC enabled; cpu_topology populated by ACPI walk.
+            unsafe {
+                let n = crate::cpu_topology::count() as usize;
+                let bsp = crate::smp::boot_cpu_id();
+                for i in 0..n {
+                    if let Some((id, _)) = crate::cpu_topology::get(i) {
+                        if id != bsp {
+                            let _ = crate::lapic::send_resched_ipi(id);
+                        }
+                    }
+                }
+            }
+            // Brief settle for IPIs to deliver + handlers to run.
+            for _ in 0..1_000_000u32 { core::hint::spin_loop(); }
+            debug_boot! {
+                use core::sync::atomic::Ordering;
+                klog::write_raw(b"[INFO]  smp: ipi_smoke: online=");
+                klog::write_dec_u64(crate::smp::online_count() as u64);
+                klog::write_raw(b" resched_ipis_received=");
+                klog::write_dec_u64(crate::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
+                klog::write_raw(b"\n");
+            }
+        }
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {

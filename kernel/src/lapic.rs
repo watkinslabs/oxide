@@ -52,6 +52,13 @@ static LAPIC_BASE_VA: AtomicU64 = AtomicU64::new(0);
 pub static TICK_COUNT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// Cross-CPU resched IPI receive counter. Incremented by the
+/// `VEC_RESCHED` arm of `oxide_irq_dispatch`. v1 smoke uses this
+/// to validate the IPI path end-to-end (BSP → AP → handler).
+#[cfg(target_arch = "x86_64")]
+pub static RESCHED_IPI_COUNT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 /// Send EOI to the LAPIC. No-op if `enable` hasn't run.
 /// # SAFETY: pair with an in-progress IRQ; writes EOI at offset 0xB0.
 /// # C: O(1)
@@ -102,6 +109,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             unsafe { crate::preempt::tick_pick_next(); }
         }
         hal_x86_64::VEC_RESCHED => {
+            RESCHED_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
             // Cross-CPU resched IPI: another CPU asked us to pick
             // a new task. Set need_resched + run the picker; the
             // IRQ-tail asm stages oxide_preempt_next_ctx for switch
