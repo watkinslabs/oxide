@@ -314,3 +314,41 @@ fn task_user_carries_mm() {
     // The original handle plus two task clones = 3 strong refs.
     assert_eq!(alloc::sync::Arc::strong_count(&mm), 3);
 }
+
+// ---------------------------------------------------------------------------
+// argv_to_cmdline — `/proc/<pid>/cmdline` byte sequence per `19§4`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cmdline_empty_argv_is_empty_string() {
+    assert_eq!(crate::argv_to_cmdline(&[]).as_bytes(), b"");
+}
+
+#[test]
+fn cmdline_single_arg_has_trailing_nul() {
+    let argv: &[&[u8]] = &[b"/init"];
+    assert_eq!(crate::argv_to_cmdline(argv).as_bytes(), b"/init\0");
+}
+
+#[test]
+fn cmdline_multiple_args_nul_separated() {
+    let argv: &[&[u8]] = &[b"sh", b"-c", b"echo hi"];
+    assert_eq!(
+        crate::argv_to_cmdline(argv).as_bytes(),
+        b"sh\0-c\0echo hi\0",
+    );
+}
+
+#[test]
+fn cmdline_drops_non_ascii_bytes() {
+    // Lossy UTF-8: bytes >= 0x80 are dropped (not replaced) per the
+    // single-byte ASCII contract. NUL separators are still emitted.
+    let argv: &[&[u8]] = &[b"a\xC3\xA9b"]; // "a" 0xC3 0xA9 "b"
+    assert_eq!(crate::argv_to_cmdline(argv).as_bytes(), b"ab\0");
+}
+
+#[test]
+fn cmdline_preserves_internal_spaces() {
+    let argv: &[&[u8]] = &[b"hello world"];
+    assert_eq!(crate::argv_to_cmdline(argv).as_bytes(), b"hello world\0");
+}
