@@ -571,6 +571,8 @@ pub mod syscall_glue;
 // file under the 1000-line cap per `08§7`.
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_fs;
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_ioctl;
 
 // P3-08 process-shaped syscalls (sched_yield, gettid, set_tid_address).
 #[cfg(target_os = "oxide-kernel")]
