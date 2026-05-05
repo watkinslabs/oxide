@@ -35,13 +35,14 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
 }
 
 /// Replace the hostname. Trims to HOST_NAME_MAX bytes; trailing
-/// newlines (from /proc/sys/kernel/hostname writes) are stripped.
+/// newlines (from /proc/sys/kernel/hostname writes) are stripped
+/// via `vfs::path::trim_hostname` (hosted-tested).
 /// # C: O(N)
 pub fn set(new: &[u8]) {
+    let trimmed = vfs::path::trim_hostname(new, HOST_NAME_MAX);
     let mut g = HOSTNAME.lock();
-    let mut end = new.len().min(HOST_NAME_MAX);
-    while end > 0 && (new[end - 1] == b'\n' || new[end - 1] == 0) { end -= 1; }
-    g.bytes[..end].copy_from_slice(&new[..end]);
+    let end = trimmed.len();
+    g.bytes[..end].copy_from_slice(trimmed);
     for i in end..g.len { g.bytes[i] = 0; }
     g.len = end;
 }
