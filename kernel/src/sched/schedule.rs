@@ -91,6 +91,24 @@ pub unsafe fn install_default_runqueue() {
     let rq = Runqueue::new(0, idle);
     // SAFETY: per fn contract; first writer wins.
     unsafe { install_global(rq); }
+    // Wire preempt_enable() → schedule() per `13§9`. The hook fires
+    // whenever preempt_count drops to zero with need_resched set.
+    // SAFETY: install_default_runqueue is the boot-path single-writer;
+    // preempt_enable hook is read at every decrement-to-zero with
+    // appropriate barriers via the count atomic.
+    unsafe { sched::preempt::set_schedule_hook(schedule_hook_trampoline); }
+}
+
+/// Trampoline matching the `unsafe fn()` shape `sched::preempt`
+/// expects. Forwards to `schedule()` proper.
+///
+/// # SAFETY: caller (`preempt_enable`) asserts a safe schedule
+/// point per `13§9`: process / kthread context, no spinlocks held.
+/// # C: O(log N) CFS pick + O(1) ctx switch
+unsafe fn schedule_hook_trampoline() {
+    // SAFETY: per fn contract; schedule() preconditions match
+    // preempt_enable's "safe schedule point" guarantee.
+    unsafe { schedule(); }
 }
 
 /// True iff the global runqueue is installed.

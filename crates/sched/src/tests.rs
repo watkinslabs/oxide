@@ -645,3 +645,56 @@ fn ns_to_timeval_split() {
     assert_eq!(ns_to_timeval(1_500_000_000),    (1, 500_000));
     assert_eq!(ns_to_timeval(1_999_999),        (0, 1_999));
 }
+
+// ----- preempt-count machinery (`13§9`) -----
+
+#[test]
+fn preempt_count_default_zero() {
+    crate::preempt::_test_reset();
+    assert_eq!(crate::preempt::preempt_count(), 0);
+    assert!(!crate::preempt::need_resched());
+}
+
+#[test]
+fn preempt_disable_bumps_count() {
+    crate::preempt::_test_reset();
+    crate::preempt::preempt_disable();
+    assert_eq!(crate::preempt::preempt_count(), 1);
+    crate::preempt::preempt_enable_no_check();
+    assert_eq!(crate::preempt::preempt_count(), 0);
+}
+
+#[test]
+fn preempt_guard_pairs_balanced() {
+    crate::preempt::_test_reset();
+    {
+        let _g = crate::preempt::PreemptGuard::new();
+        assert_eq!(crate::preempt::preempt_count(), 1);
+        let _g2 = crate::preempt::PreemptGuard::new();
+        assert_eq!(crate::preempt::preempt_count(), 2);
+    }
+    assert_eq!(crate::preempt::preempt_count(), 0);
+}
+
+#[test]
+fn need_resched_set_take_clears() {
+    crate::preempt::_test_reset();
+    crate::preempt::set_need_resched();
+    assert!(crate::preempt::need_resched());
+    assert!(crate::preempt::take_need_resched());
+    assert!(!crate::preempt::need_resched());
+    assert!(!crate::preempt::take_need_resched());
+}
+
+#[test]
+fn preempt_enable_no_check_does_not_fire_hook() {
+    // Even with need_resched set, the no_check variant must not
+    // trigger the schedule hook. Hosted test runs without a hook
+    // installed, but the behaviour is the same on bare metal.
+    crate::preempt::_test_reset();
+    crate::preempt::preempt_disable();
+    crate::preempt::set_need_resched();
+    crate::preempt::preempt_enable_no_check();
+    // Still set; only `preempt_enable()` would have cleared it.
+    assert!(crate::preempt::need_resched());
+}
