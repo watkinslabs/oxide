@@ -182,3 +182,41 @@ pub fn read_file(path: &[u8]) -> Option<Vec<u8>> {
 pub fn mounted() -> bool {
     !MOUNT_PTR.load(Ordering::Acquire).is_null()
 }
+
+/// VFS Inode wrapping a snapshot of a regular file's bytes.
+/// `read(off, buf)` slices into the snapshot; `size` reports
+/// the total length. Constructed by `lookup_inode(path)` for
+/// regular files only — directories not yet wired through VFS.
+struct Ext4FileInode {
+    ino:   u32,
+    bytes: Vec<u8>,
+}
+
+impl vfs::Inode for Ext4FileInode {
+    fn ino(&self) -> vfs::Ino { (0x6E54_0000u64 | (self.ino as u64)) as vfs::Ino }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.bytes.len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let off = off as usize;
+        if off >= self.bytes.len() { return Ok(0); }
+        let n = (self.bytes.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&self.bytes[off..off+n]);
+        Ok(n)
+    }
+}
+
+/// Look up `path` and return a VFS Inode wrapping the file
+/// contents. Returns `None` for not-found / not-regular /
+/// not-mounted. Used by `kernel_sys_open` to extend the open
+/// path lookup chain to the real ext4 fs.
+/// # C: O(file size) on first call (read), O(log N) on cache hit
+pub fn lookup_inode(path: &[u8]) -> Option<vfs::InodeRef> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR was published via init(); pointer is stable for the kernel lifetime.
+    let mount = unsafe { &*p };
+    let ino = mount.lookup_path(path).ok()?;
+    let bytes = read_file(path)?;
+    Some(alloc::sync::Arc::new(Ext4FileInode { ino, bytes }) as vfs::InodeRef)
+}
