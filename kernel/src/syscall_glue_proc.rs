@@ -690,3 +690,21 @@ pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
     let kill_args = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
     kernel_sys_kill(&kill_args)
 }
+
+/// `sys_sethostname(name, len)` — slot 170. Writes the global
+/// hostname slot read by uname.nodename + /proc/sys/kernel/hostname.
+/// # C: O(N)
+pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let ptr = args.a0;
+    let len = args.a1 as usize;
+    if len > crate::hostname::HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = crate::syscall_glue::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    let mut buf = [0u8; crate::hostname::HOST_NAME_MAX];
+    // SAFETY: ptr range validated < USER_VA_END; CPL=0 reads through caller's AS.
+    unsafe {
+        for i in 0..len { buf[i] = core::ptr::read_volatile((ptr + i as u64) as *const u8); }
+    }
+    crate::hostname::set(&buf[..len]);
+    0
+}
