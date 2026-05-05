@@ -464,3 +464,10 @@ fn resolve_against_cwd_handles_dotdot() {
     assert_eq!(resolve_against_cwd("/tmp", "..").as_deref(),       Some("/"));
     assert_eq!(resolve_against_cwd("/", ".."), None, "above-root must reject");
 }
+
+#[test]
+fn inode_default_truncate_returns_erofs() {
+    // MemFile doesn't override truncate → uses the trait default.
+    let i = MemFile::new(1);
+    assert_eq!(i.truncate(0), Err(VfsError::Erofs));
+}
