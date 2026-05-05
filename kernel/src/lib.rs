@@ -100,6 +100,11 @@ pub mod devfs;
 /// glue for the canonical `cmd1 | cmd2` shell IPC pattern.
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_pipe;
+/// ext4 RO root fs: real driver from `crates/ext4` mounted at
+/// boot from a kernel-embedded image. Linux's CONFIG_EXT4_FS=y
+/// equivalent (built-in, not a module).
+#[cfg(target_os = "oxide-kernel")]
+pub mod dev_ext4;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_misc;
 #[cfg(target_os = "oxide-kernel")]
@@ -649,6 +654,29 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Spawns the user task with mm=Arc<AddressSpace>, schedule()'s
     // into it via the IRQ-tail iretq path. Diverges at the ud2
     // landmark after sys_exit's sysretq.
+    // Mount the embedded ext4 root fs (P6-07). Linux's
+    // CONFIG_EXT4_FS=y equivalent: real driver from crates/ext4
+    // built into the kernel binary. No-op if already mounted.
+    // SAFETY: post-PMM/allocator init; no other CPU has yet observed MOUNT_PTR.
+    #[cfg(target_os = "oxide-kernel")]
+    unsafe {
+        crate::dev_ext4::init();
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        debug_boot! {
+            klog::write_raw(b"[INFO]  ext4: mounted=");
+            klog::write_dec_u64(crate::dev_ext4::mounted() as u64);
+            klog::write_raw(b"\n");
+            // Quick smoke: read /hello.txt from the embedded fs.
+            if let Some(bytes) = crate::dev_ext4::read_file(b"/hello.txt") {
+                klog::write_raw(b"[INFO]  ext4: /hello.txt = ");
+                klog::write_raw(&bytes);
+                if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
+            }
+        }
+    }
+
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
         // SAFETY: every prerequisite established above — kernel-owned
