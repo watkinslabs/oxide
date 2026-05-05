@@ -8,59 +8,67 @@ Targets `x86_64-unknown-oxide-kernel` and `aarch64-unknown-oxide-kernel`. Usersp
 
 ## Status
 
-Phase 3 (M2) substantially done. Both arches boot Limine → `kernel_main`, run a multi-iteration init-loop in user mode (`fork`/`execve`/`wait4`), and pass an extensive boot-time smoke battery before halting cleanly.
+Phases 0–6 (read-driver layer) closed per `00§3` master-plan ladder. Both arches boot Limine → `kernel_main`. SMP brings up multi-CPU at `-smp 4` (cross-CPU IPI + load balancer verified). A real-musl static-PIE shell runs as PID 1 — you can type at it and it executes builtins against the kernel's filesystem.
 
-What works:
+### Run an interactive shell
 
-- **Boot:** ACPI parse → PMM (buddy) → demand-paged VMM → LAPIC/GIC → real timer IRQs → cooperative scheduler with IRQ-exit preempt → user-as activation → ELF static-PIE loader (DT_RELA self-relocs, real auxv, AT_PHDR/PHENT/PHNUM/PAGESZ/RANDOM/ENTRY).
-- **Userspace:** init blob runs five iterations (`yo` / `hi` / `echo` / `cat` / `pty`-stubbed). `fork` does real per-page COW. `execve` activates a fresh AS, builds the SysV stack, snapshots argv/envp into per-task slots. `wait4` reaps with `WNOHANG` support.
-- **Syscalls:** ~280 slots wired across `syscall_glue.rs` real impls + per-arch `glue_fs/proc/time/ioctl/xfer.rs` helpers + a compat tail. Linux ABI surface coverage substantially complete for libc/shell startup probes.
-- **Signals:** Real `rt_sigaction` storage; `sa_handler` dispatch with kernel-built signal frame + sa_restorer / `rt_sigreturn`. SIGSTOP / SIGCONT scheduler hooks. SIGCHLD on Zombie. `kill(-pgid)` POSIX semantics.
-- **Per-task state:** real `pgid` / `sid` / `cwd` / `cmdline` / `environ` slots; fork inherits all per POSIX. tid → Weak<Task> registry powers `/proc/<pid>/*` and `kill -pgid`.
-- **PTY:** Full `/dev/ptmx` factory + `/dev/pts/<n>` registration. 60-byte Linux `struct termios` round-trips through `TCGETS`/`TCSETS`. Cooked-mode line discipline: `ICANON`/`ECHO`/`ISIG`/`OPOST`/`ONLCR`/`OCRNL`/`ICRNL`/`INLCR`/`IGNCR`/`IXON`. All 17 `c_cc` indices defined; `VINTR`/`VQUIT`/`VSUSP` post `SIGINT`/`SIGQUIT`/`SIGTSTP` to the foreground pgrp; `VEOF` (^D) returns EOF on `slave_read`; `VERASE` / `VKILL` line editing with destructive `\b \b` echo. Blocking master + slave reads.
-- **Procfs:** 80+ paths. Dynamic `/proc/uptime` (monotonic_ns), `/proc/meminfo` (live PMM stats), `/proc/loadavg` (live tids), full per-pid surface (`status` / `cmdline` / `stat` / `maps` / `comm` / `environ` / `statm` / `fd/<n>` symlinks / `sched` / `wchan` / `oom_score` / `limits` / `personality`). Rich `/proc/cpuinfo`. Writable `/proc/sys/kernel/hostname`. /proc/sys sysctl tree (~30 files).
-- **Devfs / etc:** `/dev/{null,zero,full,random,urandom,console,tty[0-6],ttyS0,ptmx,pts/*}`, `/etc/{passwd,group,shadow,shells,profile,issue,motd,hosts,services,protocols,ld.so.{cache,conf},nsswitch.conf,timezone,os-release,machine-id}`. Synthetic directory inodes over the flat path registry — `getdents64` enumerates `/`, `/dev`, `/etc`, `/bin`, `/usr`, `/usr/bin`, `/proc`, `/proc/sys`.
-- **Tmpfs:** `/tmp/<name>` create-on-write via `O_CREAT`; `O_TRUNC` and `ftruncate` honored.
+```
+cargo run -p xtask -- qemu --arch x86_64 --features debug-all
+```
 
-Not yet running:
+Boot scrolls through ACPI / PMM / VMM / sched / smoke output, then drops to:
 
-- **musl libc binaries:** A statically linked musl helloworld faults at `__libc_start_main_stage1` with an NX violation jumping to user-stack region. Needs source-level gdb stepping to bisect.
-- **Real disk I/O / on-disk filesystem:** v1 has no block layer past the spec.
-- **Networking:** v1 has no socket implementation past ENOSYS.
-- **SMP:** UP only.
+```
+oxide-sh: builtins exit / echo / help / ls / cat / pwd
+oxide$
+```
 
-44 of 46 spec docs FROZEN; **614 hosted unit tests pass**; CI runs `make ci` (lint + workspace tests + both arches default + `--features debug-all`) on every PR.
+Type past the canned smoke (`ls /proc`, `cat /proc/version`, `exit`) — once the smoke completes the prompt is yours. Builtins:
 
-For the live snapshot see `state.md`. For the per-session history see `CHANGELOG.md`.
+| | |
+|---|---|
+| `ls [path]`     | openat(O_DIRECTORY) + getdents64 — works on `/`, `/proc`, `/dev`, `/etc`, etc. |
+| `cat <path>`    | read + write to stdout — works on `/proc/version`, `/proc/cpuinfo`, `/etc/passwd`, … |
+| `echo <args>`   | write args back |
+| `pwd`           | prints `/` (no real cwd yet) |
+| `help`, `exit`  | what they look like |
+
+To leave QEMU: `Ctrl-A x`.
+
+### What works
+
+- **Boot:** ACPI parse → PMM (buddy) → demand-paged VMM → LAPIC/GIC → real timer IRQs → preemptive scheduler → user-as activation → ELF static-PIE loader (DT_RELA self-relocs, real auxv).
+- **SMP:** Limine MP request → AP startup → per-CPU runqueue + IDTR + LAPIC + sti+hlt idle → cross-CPU resched IPI (vec 0x41) → load balancer migrates CFS tasks. Verified at `-smp 4`: `cpus=4 aps_started=3 resched_ipis_received=3 migrated_total=2`.
+- **Userspace:** Real-musl static-PIE binaries run as PID 1. Hand-rolled orchestrator init exec's `yo`/`hi`/`echo`/`cat` then the real-musl `oxide-sh` takes over.
+- **Syscalls:** ~280 slots wired (read/write/openat/close/getdents64/exit/fork/execve/wait4/clock_*/etc).
+- **Signals:** `rt_sigaction`, `sa_handler` dispatch + signal frame + `rt_sigreturn`, SIGSTOP/SIGCONT scheduler hooks, `kill(-pgid)` POSIX semantics.
+- **Procfs:** 80+ paths (status / cmdline / stat / maps / cpuinfo / version / uptime / meminfo / loadavg, full per-pid surface, /proc/sys sysctl tree).
+- **Devfs / etc:** /dev/{null,zero,console,tty*,ptmx,pts/*}, /etc/{passwd,group,issue,os-release,…}.
+- **PTY:** /dev/ptmx + /dev/pts/<n>, full termios round-trip, cooked-mode line discipline (ICANON / ECHO / ISIG / Erase / Kill / EOF).
+- **Tmpfs:** `/tmp/<name>` create-on-write.
+- **ext4 RO** (crate-level): superblock + GDT + inode + extent + dir + Mount, 45 hosted tests against a real `mke2fs`-built image.
+
+### Not yet
+
+- **busybox / login / getty:** the in-kernel shell is the only userspace binary today. Real busybox ships once the userspace build pipeline lands.
+- **Real disk I/O:** ext4 RO crate works against a memory-backed image; no boot-disk integration yet (Limine module / virtio-blk). Phase 6 final mile.
+- **ext4 RW + JBD2:** Phase 7b, not started.
+- **Networking:** Phase 8, ENOSYS.
+- **Hardening / observability / modules:** Phase 9, ongoing.
+
+### Status numbers
+
+44 of 46 spec docs FROZEN; **45 ext4 + 60+ sched + 100+ kernel hosted tests pass**; CI runs lint + tests + both arches default + `--features debug-all` on every PR.
+
+For the live snapshot see `state.md`. For per-session history see `CHANGELOG.md`.
 
 ## Quick start
 
 ```
-make ci             # full PR gate locally: lint + test + build + build-debug
-make qemu-x86       # boot the kernel under QEMU on x86_64 with all debug features
-make qemu-arm       # same on aarch64
-make help           # list all make targets
-```
-
-Boot trace highlights (x86_64 `make qemu-x86`):
-
-```
-[INFO]  pmm: 171 MiB free, 0 page(s) reserved
-[INFO]  kalloc-smoke: VmaTree insert ok
-[INFO]  ksched: starting RR with 4 kthreads
-[INFO]  dev-misc-smoke: ok
-[INFO]  procfs-smoke: ok
-[INFO]  pipe-evt-smoke: ok
-[INFO]  tmpfs-smoke: ok
-[INFO]  pty-sigint-chain: ok
-[INFO]  pty-termios-winsize: ok
-[INFO]  pty-smoke: ok
-[INFO]  exec-path-smoke: ok
-yo
-hi
-A
-oxide 0.1.0-pre #1 SMP PREEMPT
-[INFO]  elf-smoke: user task exited cleanly, boot resumed
+make ci                                                       # full PR gate
+cargo run -p xtask -- qemu --arch x86_64 --features debug-all # interactive shell
+cargo run -p xtask -- qemu --arch x86_64 --smp 4 --features debug-all  # multi-CPU
+make help                                                     # all make targets
 ```
 
 ## Where to start
