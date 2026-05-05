@@ -524,6 +524,7 @@ impl Inode for ProcPidDirInode {
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
+            "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -532,7 +533,7 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps", "comm", "environ"];
+        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps", "comm", "environ", "statm"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
@@ -551,6 +552,7 @@ pub struct ProcPidStatInode { pub tid: u32 }
 pub struct ProcPidMapsInode { pub tid: u32 }
 pub struct ProcPidCommInode { pub tid: u32 }
 pub struct ProcPidEnvironInode { pub tid: u32 }
+pub struct ProcPidStatmInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
@@ -635,6 +637,25 @@ pid_inode_impl!(ProcPidStatInode,    pid_stat_body,    0x3000_2200);
 pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
 pid_inode_impl!(ProcPidCommInode,    pid_comm_body,    0x3000_2400);
 pid_inode_impl!(ProcPidEnvironInode, pid_environ_body, 0x3000_2500);
+pid_inode_impl!(ProcPidStatmInode,   pid_statm_body,   0x3000_2600);
+
+fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
+    // statm fields (in pages of 4 KiB): size resident shared text lib data dt
+    // v1: report total VMA range as size + resident; others 0.
+    let mut out = alloc::vec::Vec::with_capacity(48);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    // SAFETY: mm slot single-mutator per `13§5`.
+    let pages = match unsafe { (*task.mm.get()).as_ref() } {
+        Some(mm) => mm.snapshot_vmas().iter()
+            .map(|v| (v.end.as_u64() - v.start.as_u64()) / 4096)
+            .sum::<u64>(),
+        None => 0,
+    };
+    push_u64(&mut out, pages); out.push(b' ');
+    push_u64(&mut out, pages); out.push(b' ');
+    push(&mut out, b"0 0 0 0 0\n");
+    out
+}
 
 fn pid_comm_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(32);
