@@ -30,6 +30,68 @@ pub mod lflag {
 /// Linux's pty default and what shells expect to inherit.
 pub const DEFAULT_LFLAG: u32 = lflag::ICANON | lflag::ECHO | lflag::ISIG;
 
+/// Linux x86_64 `struct termios` size. Userspace tcgetattr / tcsetattr
+/// pass exactly this many bytes through TCGETS / TCSETS.
+pub const TERMIOS_BYTES: usize = 60;
+
+/// Layout of the Linux `struct termios`:
+///   off 0..4   c_iflag (u32)
+///   off 4..8   c_oflag (u32)
+///   off 8..12  c_cflag (u32)
+///   off 12..16 c_lflag (u32)
+///   off 16     c_line  (u8)
+///   off 17..36 c_cc[19] (u8 each)
+///   off 36..40 c_ispeed (u32)
+///   off 40..44 c_ospeed (u32)
+///   off 44..60 padding
+pub const TERMIOS_OFF_IFLAG:  usize = 0;
+pub const TERMIOS_OFF_OFLAG:  usize = 4;
+pub const TERMIOS_OFF_CFLAG:  usize = 8;
+pub const TERMIOS_OFF_LFLAG:  usize = 12;
+pub const TERMIOS_OFF_LINE:   usize = 16;
+pub const TERMIOS_OFF_CC:     usize = 17;
+pub const TERMIOS_OFF_ISPEED: usize = 36;
+pub const TERMIOS_OFF_OSPEED: usize = 40;
+
+/// Number of c_cc control characters in Linux termios.
+pub const NCCS: usize = 19;
+
+/// c_cc indexes we honour. Linux's termios.h has many more; v1
+/// reads VINTR for ldisc dispatch.
+pub mod cc {
+    pub const VINTR: usize = 0;
+}
+
+/// Default c_cc[VINTR] = 0x03 (^C).
+pub const DEFAULT_VINTR: u8 = 0x03;
+
+/// Build a default termios byte image. Matches Linux pty defaults:
+/// c_lflag = ICANON|ECHO|ISIG, c_cc[VINTR] = 0x03, others 0.
+/// # C: O(1)
+pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
+    let mut t = [0u8; TERMIOS_BYTES];
+    let lf = DEFAULT_LFLAG.to_le_bytes();
+    t[TERMIOS_OFF_LFLAG    ] = lf[0];
+    t[TERMIOS_OFF_LFLAG + 1] = lf[1];
+    t[TERMIOS_OFF_LFLAG + 2] = lf[2];
+    t[TERMIOS_OFF_LFLAG + 3] = lf[3];
+    t[TERMIOS_OFF_CC + cc::VINTR] = DEFAULT_VINTR;
+    t
+}
+
+/// Read the c_lflag field out of a termios byte image.
+/// # C: O(1)
+pub fn read_lflag(t: &[u8; TERMIOS_BYTES]) -> u32 {
+    u32::from_le_bytes([
+        t[TERMIOS_OFF_LFLAG    ], t[TERMIOS_OFF_LFLAG + 1],
+        t[TERMIOS_OFF_LFLAG + 2], t[TERMIOS_OFF_LFLAG + 3],
+    ])
+}
+
+/// Read c_cc[VINTR] out of a termios byte image.
+/// # C: O(1)
+pub fn read_vintr(t: &[u8; TERMIOS_BYTES]) -> u8 { t[TERMIOS_OFF_CC + cc::VINTR] }
+
 /// VINTR character (^C). Hardcoded — Linux lets c_cc[VINTR] override,
 /// not yet wired.
 pub const VINTR: u8 = 0x03;
@@ -108,57 +170,62 @@ pub struct Pair {
     /// True after either side calls `hangup` (slave close on the
     /// final fd). Subsequent reads on the opposite side return EOF.
     pub hung_up: bool,
-    /// Foreground process group id per `28§4` / TIOCSPGRP. 0 = no
-    /// foreground group set yet (TIOCGPGRP returns 0 in that case).
-    /// Shells write this with TIOCSPGRP on fork-then-exec.
+    /// Foreground process group id per `28§4` / TIOCSPGRP.
     pub foreground_pgid: u32,
-    /// Termios c_lflag bits. Default `DEFAULT_LFLAG` (cooked mode).
-    /// Updated by TCSETS; read by TCGETS.
-    pub lflag: u32,
-    /// Set when a ^C (VINTR) appears in master_write while
-    /// `lflag & ISIG`. Kernel-side adapter inspects + clears this
-    /// to deliver SIGINT to `foreground_pgid`. v1 records intent only.
+    /// Linux `struct termios` byte image (60 B). TCGETS copies out;
+    /// TCSETS copies in wholesale. Hot-path readers (`master_write`,
+    /// `slave_read`) consult `read_lflag` / `read_vintr`.
+    pub termios: [u8; TERMIOS_BYTES],
+    /// Set when a ^C (or whatever c_cc[VINTR] points at) hits
+    /// master_write while `lflag & ISIG`. Kernel-side adapter
+    /// inspects + clears this to deliver SIGINT to `foreground_pgid`.
     pub pending_sigint: bool,
 }
 
 impl Pair {
-    /// Construct a raw-mode pair (`lflag == 0`). Existing callers
-    /// expect direct-passthrough semantics. Cooked-mode ptys flip
-    /// `lflag = DEFAULT_LFLAG` after construction (kernel adapter).
+    /// Convenience accessor for the c_lflag field.
+    /// # C: O(1)
+    pub fn lflag(&self) -> u32 { read_lflag(&self.termios) }
+
+    /// Convenience accessor for c_cc[VINTR].
+    /// # C: O(1)
+    pub fn vintr(&self) -> u8 { read_vintr(&self.termios) }
+
+    /// Construct a raw-mode pair (termios all-zero). Existing callers
+    /// expect direct-passthrough semantics. Cooked-mode ptys overwrite
+    /// `termios = default_termios()` after construction.
     /// # C: O(1)
     pub fn new(pts_num: u32) -> Self {
         Self {
             pts_num,
             m_to_s: Ring::new(), s_to_m: Ring::new(),
             hung_up: false, foreground_pgid: 0,
-            lflag: 0,
+            termios: [0u8; TERMIOS_BYTES],
             pending_sigint: false,
         }
     }
 
     /// Master writes input (keystrokes). With ECHO, every accepted
     /// byte is also enqueued to s_to_m (echoed back to master read).
-    /// With ISIG, a VINTR byte is dropped from the input stream and
-    /// `pending_sigint` is set instead — kernel-side dispatches.
-    /// Returns total bytes consumed from `src` (including any byte
-    /// that triggered SIGINT — the byte is *removed* from the input
-    /// stream, matching Linux ldisc behaviour).
+    /// With ISIG, a c_cc[VINTR] byte is dropped from the input stream
+    /// and `pending_sigint` is set instead — kernel-side dispatches.
+    /// Returns total bytes consumed from `src`.
     /// # C: O(N)
     pub fn master_write(&mut self, src: &[u8]) -> usize {
-        let isig   = (self.lflag & lflag::ISIG)   != 0;
-        let echo   = (self.lflag & lflag::ECHO)   != 0;
+        let lflag = self.lflag();
+        let vintr = self.vintr();
+        let isig  = (lflag & lflag::ISIG) != 0 && vintr != 0;
+        let echo  = (lflag & lflag::ECHO) != 0;
         let mut consumed = 0;
         for &b in src {
-            if isig && b == VINTR {
+            if isig && b == vintr {
                 self.pending_sigint = true;
                 consumed += 1;
                 if echo {
-                    // Visual ^C — Linux echoes "^C" to the terminal.
                     let _ = self.s_to_m.write(b"^C");
                 }
                 continue;
             }
-            // No room → stop here; caller retries / EAGAIN.
             if self.m_to_s.space() == 0 { break; }
             self.m_to_s.write(&[b]);
             if echo { let _ = self.s_to_m.write(&[b]); }
@@ -172,7 +239,7 @@ impl Pair {
     /// up to dst.len()). Raw mode drains whatever is available.
     /// # C: O(N)
     pub fn slave_read(&mut self, dst: &mut [u8]) -> usize {
-        if (self.lflag & lflag::ICANON) == 0 {
+        if (self.lflag() & lflag::ICANON) == 0 {
             return self.m_to_s.read(dst);
         }
         // ICANON: drain only if a complete line is buffered.

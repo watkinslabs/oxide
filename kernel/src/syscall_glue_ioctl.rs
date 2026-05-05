@@ -52,26 +52,32 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         TCGETS => {
-            if let Err(rv) = validate_user_buf(arg, 60, 4) { return rv; }
-            // SAFETY: arg validated 60-byte 4-byte aligned; zero-fill termios.
+            if let Err(rv) = validate_user_buf(arg, tty::pty::TERMIOS_BYTES as u64, 4) { return rv; }
+            // For pty fds copy the pair's termios image; for non-pty
+            // CharDevs zero-fill (matches the prior isatty-probe behaviour).
+            let snap = match &pty_pair {
+                Some(pair) => pair.with_pair(|p| p.termios),
+                None       => [0u8; tty::pty::TERMIOS_BYTES],
+            };
+            // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
             unsafe {
-                for off in (0..60).step_by(4) {
-                    core::ptr::write_volatile((arg + off as u64) as *mut u32, 0);
+                for i in 0..tty::pty::TERMIOS_BYTES {
+                    core::ptr::write_volatile((arg + i as u64) as *mut u8, snap[i]);
                 }
-            }
-            if let Some(pair) = &pty_pair {
-                let lflag = pair.with_pair(|p| p.lflag);
-                // SAFETY: arg validated; offset 12 is c_lflag in struct termios.
-                unsafe { core::ptr::write_volatile((arg + 12) as *mut u32, lflag); }
             }
             0
         }
         TCSETS => {
-            if let Err(rv) = validate_user_buf(arg, 60, 4) { return rv; }
+            if let Err(rv) = validate_user_buf(arg, tty::pty::TERMIOS_BYTES as u64, 4) { return rv; }
             if let Some(pair) = &pty_pair {
-                // SAFETY: arg validated; read c_lflag at offset 12.
-                let lflag = unsafe { core::ptr::read_volatile((arg + 12) as *const u32) };
-                pair.with_pair(|p| p.lflag = lflag);
+                let mut buf = [0u8; tty::pty::TERMIOS_BYTES];
+                // SAFETY: arg validated 60-byte buffer; CPL=0 reads through caller's AS.
+                unsafe {
+                    for i in 0..tty::pty::TERMIOS_BYTES {
+                        buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
+                    }
+                }
+                pair.with_pair(|p| p.termios = buf);
             }
             0
         }
