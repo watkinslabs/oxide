@@ -572,11 +572,7 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
 
     // P3-80: snapshot argv → Task.cmdline (NUL-joined) for /proc/self/cmdline.
     {
-        let mut cl = alloc::string::String::with_capacity(64);
-        for i in 0..argc {
-            for &b in argv_slices[i] { if b < 0x80 { cl.push(b as char); } }
-            cl.push('\0');
-        }
+        let cl = sched::argv_to_cmdline(&argv_slices[..argc]);
         // SAFETY: single-mutator per `13§5`; current task is sole writer on this CPU.
         unsafe { *cur.cmdline.get() = Some(cl); }
     }
