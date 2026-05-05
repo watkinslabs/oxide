@@ -577,6 +577,8 @@ pub mod syscall_glue_ioctl;
 pub mod syscall_glue_xfer;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
+#[cfg(target_os = "oxide-kernel")]
+pub mod hostname;
 
 // P3-08 process-shaped syscalls (sched_yield, gettid, set_tid_address).
 #[cfg(target_os = "oxide-kernel")]
