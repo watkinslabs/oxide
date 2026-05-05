@@ -10,7 +10,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as TaskListClass};
 
-use crate::Task;
+use crate::{Task, TaskState};
 
 static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass>
     = Spinlock::new(Vec::new());
@@ -42,6 +42,19 @@ pub fn live_tids() -> Vec<u32> {
     let mut g = REG.lock();
     g.retain(|(_, w)| w.strong_count() > 0);
     g.iter().map(|(t, _)| *t).collect()
+}
+
+/// Flip `task.state` Stopped → Runnable. Returns `true` if the
+/// transition actually happened (caller is then responsible for
+/// re-enqueueing into the runqueue); `false` if the task wasn't
+/// Stopped to begin with. Used by SIGCONT delivery per signal(7):
+/// the state-flip half is hosted-testable here, the re-enqueue
+/// half lives in kernel-side `wake_if_stopped`.
+/// # C: O(1)
+pub fn try_wake_stopped(task: &Task) -> bool {
+    if task.state() != TaskState::Stopped { return false; }
+    task.set_state(TaskState::Runnable);
+    true
 }
 
 /// Snapshot every live task whose pgid matches. Used by tty
