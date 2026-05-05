@@ -93,9 +93,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_SET_MEMPOLICY_HOME_NODE
         | NR_VSERVER | NR__SYSCTL
         | NR_EXECVEAT | NR_PREADV2 | NR_PWRITEV2
-        // epoll + inotify + signalfd + timerfd + userfaultfd.
-        | NR_EPOLL_CREATE | NR_EPOLL_CREATE1 | NR_EPOLL_CTL
-        | NR_EPOLL_WAIT | NR_EPOLL_PWAIT | NR_EPOLL_PWAIT2
+        // userfaultfd; epoll moved to real impl.
         | NR_USERFAULTFD
         // io_uring + libaio + perf + bpf + seccomp + landlock + ns.
         | NR_IO_URING_SETUP | NR_IO_URING_ENTER | NR_IO_URING_REGISTER
