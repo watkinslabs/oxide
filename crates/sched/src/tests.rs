@@ -595,3 +595,28 @@ fn task_state_linux_status_label() {
     assert_eq!(TaskState::Stopped .linux_status_label(), "T (stopped)");
     assert_eq!(TaskState::Zombie  .linux_status_label(), "Z (zombie)");
 }
+
+#[test]
+fn settimeofday_offset_satisfies_apply() {
+    use crate::clock::{settimeofday_offset, apply_offset};
+    let mono = 1_000_000_000u64; // 1 second of uptime
+    let target = 1_700_000_000_000_000_000u64; // wall-clock ns
+    let off = settimeofday_offset(mono, target);
+    assert_eq!(apply_offset(mono, off), target);
+}
+
+#[test]
+fn settimeofday_offset_zero_when_target_eq_mono() {
+    use crate::clock::settimeofday_offset;
+    assert_eq!(settimeofday_offset(42, 42), 0);
+}
+
+#[test]
+fn settimeofday_offset_wraps_when_target_below_mono() {
+    use crate::clock::{settimeofday_offset, apply_offset};
+    // target < mono: offset wraps via two's complement; apply still inverts.
+    let mono = 1_000u64;
+    let target = 100u64;
+    let off = settimeofday_offset(mono, target);
+    assert_eq!(apply_offset(mono, off), target);
+}
