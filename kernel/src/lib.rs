@@ -47,7 +47,6 @@ mod debug_macros;
 // gets populated for SMP enumeration; only the per-line klog calls
 // inside acpi.rs are gated on `debug-acpi`.
 pub mod acpi;
-#[cfg(target_os = "oxide-kernel")]
 pub mod cpu_topology;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
