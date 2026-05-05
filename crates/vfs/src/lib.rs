@@ -21,6 +21,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod dentry;
+pub mod dirent;
 pub mod fdtable;
 pub mod file;
 pub mod inode;
@@ -28,6 +29,7 @@ pub mod path;
 pub mod types;
 
 pub use dentry::Dentry;
+pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
 pub use file::{File, SeekFrom};
 pub use inode::{Inode, InodeRef};
