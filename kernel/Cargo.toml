@@ -18,6 +18,7 @@ procfs  = { path = "../crates/procfs" }
 sched   = { path = "../crates/sched" }
 sync    = { path = "../crates/sync" }
 syscall = { path = "../crates/syscall" }
+tty     = { path = "../crates/tty" }
 vfs     = { path = "../crates/vfs" }
 vmm     = { path = "../crates/vmm" }
 
