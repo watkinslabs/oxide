@@ -13,11 +13,13 @@ extern crate alloc;
 extern crate std;
 
 pub mod cfs;
+pub mod cmdline;
 pub mod rt;
 pub mod runqueue;
 pub mod task;
 
 pub use cfs::CfsRunqueue;
+pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use runqueue::RunqueueInner;
 pub use task::{SaHandler, SchedClass, SchedPolicy, Task, TaskState};

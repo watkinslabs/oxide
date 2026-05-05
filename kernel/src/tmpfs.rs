@@ -124,12 +124,10 @@ impl Inode for TmpfsRootInode {
         let mut idx = off as usize;
         while idx < g.len() {
             let (path, inode) = &g[idx];
-            if let Some(name) = path.strip_prefix("/tmp/") {
-                if !name.is_empty() && !name.contains('/') {
-                    let next = idx as u64 + 1;
-                    if !f(next, name, inode.file_type()) {
-                        return Ok(next);
-                    }
+            if let Some(name) = procfs::paths::child_under("/tmp", path) {
+                let next = idx as u64 + 1;
+                if !f(next, name, inode.file_type()) {
+                    return Ok(next);
                 }
             }
             idx += 1;
