@@ -87,6 +87,10 @@ fn build_idle_task(cpu: u16) -> Arc<Task> {
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn install_default_runqueue() {
+    // Idempotent: callers like elf_smoke + balance smoke + AP
+    // bring-up may all hit this; the runqueue is created exactly
+    // once per CPU. Skip if already populated.
+    if global().is_some() { return; }
     let cpu = {
         use hal::CpuOps;
         #[cfg(target_arch = "x86_64")]
@@ -96,7 +100,7 @@ pub unsafe fn install_default_runqueue() {
     };
     let idle = build_idle_task(cpu);
     let rq = Runqueue::new(cpu, idle);
-    // SAFETY: per fn contract; first writer wins.
+    // SAFETY: per fn contract; first writer wins; we just confirmed `global().is_none()`.
     unsafe { install_global(rq); }
     // Wire preempt_enable() → schedule() per `13§9`. The hook fires
     // whenever preempt_count drops to zero with need_resched set.
