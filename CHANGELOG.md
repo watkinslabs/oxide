@@ -648,9 +648,16 @@ End-of-session-24 verified-green (post test-discipline batch T01–T04):
 | #355 | `P3-112-proc-meminfo-dyn` | /proc/meminfo from live PMM stats (free/allocated). |
 | #356 | `P3-113-proc-loadavg` | /proc/loadavg with live registry tids (run/total + last_pid dynamic). |
 | #357 | `P3-114-wait4-wnohang` | wait4 honors WNOHANG — returns 0 immediately when no zombie ready. |
+| #359 | `P3-115-fcntl-extra` | fcntl real F_GETFD/SETFD (CLOEXEC), F_GETPIPE_SZ/F_SETPIPE_SZ, F_GETOWN/F_SETOWN. |
+| #360 | `P3-116-uname-linux-compat` | uname.sysname = "Linux", release "5.15.0-oxide" so libc/configure scripts that gate on these pass. /proc/version matches. |
+| #361 | `P3-117-proc-statm` | /proc/<tid>/statm memory stats from VMA snapshot. |
+| #362 | `P3-118-cpuinfo-rich` | Full Linux x86_64/aarch64 /proc/cpuinfo schema (vendor_id, flags, bogomips, etc). |
+| #363 | `P3-119-sendfile` | Real sys_sendfile via 4 KiB staging buffer. New syscall_glue_xfer.rs. |
+| #364 | `P3-120-sysctls` | 16 more /proc/sys static files (kernel/fs/vm/net/inotify). |
+| #365 | `P3-121-pty-termios-smoke` | Boot-time termios + winsize round-trip smoke. |
 
 End-of-session-25 verified-green:
 - `make lint` clean.
 - `make test` → 599 passed, 0 failed (550 → 599).
 - `make build` both arches green.
-- `make qemu-x86 --features debug-all` → all boot-time smokes (pty-smoke, pty-sigint-chain, etc) pass; init-loop iterations exit cleanly.
+- `make qemu-x86 --features debug-all` → all boot-time smokes (pty-smoke, pty-sigint-chain, pty-termios-winsize) pass; init-loop iterations exit cleanly.
