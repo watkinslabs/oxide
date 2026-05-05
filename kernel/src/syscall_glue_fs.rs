@@ -62,27 +62,35 @@ pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
 
 pub use crate::syscall_glue_ioctl::kernel_sys_ioctl;
 
-/// `sys_getcwd(buf, size)` — slot 79. v1 has no per-task cwd
-/// state; always returns "/". Linux returns the path length
-/// including the trailing NUL on success per `man 2 getcwd`.
-/// # C: O(1)
+/// `sys_getcwd(buf, size)` — slot 79. Reads `current.cwd` slot.
+/// Returns the path length including the trailing NUL per
+/// `man 2 getcwd`; -ERANGE if `size` is too small.
+/// # C: O(N_cwd)
 pub fn kernel_sys_getcwd(args: &SyscallArgs) -> i64 {
     let buf  = args.a0;
     let size = args.a1;
-    if size < 2 { return -(Errno::Erange.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf(buf, 2, 1) { return rv; }
-    // SAFETY: validated 2-byte user buffer below USER_VA_END; CPL=0 writes through caller's AS.
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    // SAFETY: cwd slot single-mutator per `13§5`; we are the running task on this CPU and the sole writer.
+    let cwd_bytes = unsafe { (*cur.cwd.get()).clone() };
+    let cwd = cwd_bytes.as_bytes();
+    let need = (cwd.len() + 1) as u64;
+    if size < need { return -(Errno::Erange.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf(buf, need, 1) { return rv; }
+    // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
-        core::ptr::write_volatile( buf       as *mut u8, b'/');
-        core::ptr::write_volatile((buf + 1)  as *mut u8, 0);
+        for (i, &b) in cwd.iter().enumerate() {
+            core::ptr::write_volatile((buf + i as u64) as *mut u8, b);
+        }
+        core::ptr::write_volatile((buf + cwd.len() as u64) as *mut u8, 0);
     }
-    2
+    need as i64
 }
 
-/// `sys_chdir(path)` — slot 80. v1 has no per-task cwd state;
-/// validates the user pointer + accepts any path that resolves
-/// in devfs or equals "/". Returns 0 on success, -ENOENT
-/// otherwise.
+/// `sys_chdir(path)` — slot 80. Validates the path resolves in
+/// devfs / procfs / tmpfs (or is `/`), then writes the new cwd
+/// into `current.cwd`. Returns 0 on success, -ENOENT on miss.
 /// # C: O(N_devfs_entries)
 pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
@@ -94,12 +102,21 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
         Some(p) if !p.is_empty() => p,
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
-    if path == b"/" { return 0; }
     let s = match core::str::from_utf8(path) {
         Ok(s)  => s,
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
+    let resolves = s == "/"
+        || crate::devfs::lookup(s).is_some()
+        || crate::procfs::lookup_dynamic(s).is_some()
+        || crate::tmpfs::lookup(s).is_some();
+    if !resolves { return -(Errno::Enoent.as_i32() as i64); }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    // SAFETY: single-mutator per `13§5`; current task is sole writer.
+    unsafe { *cur.cwd.get() = alloc::string::String::from(s); }
+    0
 }
 
 /// `sys_fcntl(fd, cmd, arg)` — slot 72. v1 honours:
