@@ -30,6 +30,7 @@ pub mod iflag {
     pub const IGNCR:  u32 = 0o000200; // drop \r from input
     pub const ICRNL:  u32 = 0o000400; // translate \r to \n on input
     pub const INLCR:  u32 = 0o000100; // translate \n to \r on input
+    pub const IXON:   u32 = 0o002000; // ^S/^Q flow control on output
 }
 
 /// Linux c_oflag bits — output processing on slave_write.
@@ -109,6 +110,10 @@ pub const DEFAULT_VKILL:  u8 = 0x15;
 pub const DEFAULT_VQUIT:  u8 = 0x1C;
 /// Default c_cc[VSUSP]  = 0x1A (^Z).
 pub const DEFAULT_VSUSP:  u8 = 0x1A;
+/// Default c_cc[VSTART] = 0x11 (^Q).
+pub const DEFAULT_VSTART: u8 = 0x11;
+/// Default c_cc[VSTOP]  = 0x13 (^S).
+pub const DEFAULT_VSTOP:  u8 = 0x13;
 
 /// Build a default termios byte image. Matches Linux pty defaults:
 /// c_lflag = ICANON|ECHO|ISIG, c_iflag = ICRNL, c_oflag = OPOST|ONLCR,
@@ -137,6 +142,8 @@ pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     t[TERMIOS_OFF_CC + cc::VKILL ] = DEFAULT_VKILL;
     t[TERMIOS_OFF_CC + cc::VEOF  ] = DEFAULT_VEOF;
     t[TERMIOS_OFF_CC + cc::VSUSP ] = DEFAULT_VSUSP;
+    t[TERMIOS_OFF_CC + cc::VSTART] = DEFAULT_VSTART;
+    t[TERMIOS_OFF_CC + cc::VSTOP ] = DEFAULT_VSTOP;
     t
 }
 
@@ -308,6 +315,10 @@ pub struct Pair {
     /// slave_read returning an empty queue with this set yields 0
     /// (EOF). Cleared on the next non-empty slave_read.
     pub pending_eof: bool,
+    /// IXON output-flow-control: VSTOP (^S) sets, VSTART (^Q) clears.
+    /// While set, slave_write enqueues into a holding buffer instead
+    /// of s_to_m; v1 simplification: slave_write is a no-op (drops).
+    pub output_stopped: bool,
 }
 
 impl Pair {
@@ -341,6 +352,7 @@ impl Pair {
             pending_sigint: false,
             pending_sigwinch: false,
             pending_eof: false,
+            output_stopped: false,
         }
     }
 
@@ -401,6 +413,22 @@ impl Pair {
             } else {
                 raw
             };
+            // IXON flow control: VSTOP suspends slave_write; VSTART resumes.
+            // Both bytes are consumed (not enqueued / not echoed).
+            if (iflag_v & iflag::IXON) != 0 {
+                let vstop  = self.termios[TERMIOS_OFF_CC + cc::VSTOP];
+                let vstart = self.termios[TERMIOS_OFF_CC + cc::VSTART];
+                if vstop != 0 && b == vstop {
+                    self.output_stopped = true;
+                    consumed += 1;
+                    continue;
+                }
+                if vstart != 0 && b == vstart {
+                    self.output_stopped = false;
+                    consumed += 1;
+                    continue;
+                }
+            }
             if isig && b == vintr {
                 self.pending_sigint = true;
                 consumed += 1;
@@ -487,9 +515,12 @@ impl Pair {
 
     /// Slave writes output (program text). With c_oflag & OPOST,
     /// applies output transformations: ONLCR translates \n → \r\n,
-    /// OCRNL translates \r → \n. Returns bytes consumed from `src`.
+    /// OCRNL translates \r → \n. While `output_stopped` (^S), drops
+    /// bytes silently — caller perceives full consumption per Linux
+    /// IXON semantics. Returns bytes consumed from `src`.
     /// # C: O(N)
     pub fn slave_write(&mut self, src: &[u8]) -> usize {
+        if self.output_stopped { return src.len(); }
         let oflag_v = self.oflag();
         if (oflag_v & oflag::OPOST) == 0 {
             return self.s_to_m.write(src);
