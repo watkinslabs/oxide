@@ -765,6 +765,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_GETPGRP   => crate::syscall_glue_proc::kernel_sys_getpgrp(&args),
         crate::syscall_nrs::NR_GETPRIORITY => crate::syscall_glue_proc::kernel_sys_getpriority(&args),
         crate::syscall_nrs::NR_SETPRIORITY => crate::syscall_glue_proc::kernel_sys_setpriority(&args),
+        crate::syscall_nrs::NR_ALARM     => crate::syscall_glue_proc::kernel_sys_alarm(&args),
+        crate::syscall_nrs::NR_PAUSE     => crate::syscall_glue_proc::kernel_sys_pause(&args),
         crate::syscall_nrs::NR_GETPGID   => crate::syscall_glue_proc::kernel_sys_getpgid(&args),
         crate::syscall_nrs::NR_GETSID    => crate::syscall_glue_proc::kernel_sys_getsid(&args),
         crate::syscall_nrs::NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),
@@ -887,10 +889,23 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
     }
-    // P3-65: deliver pending signals at syscall return. SIG_DFL →
-    // terminate (per `27§2`); SIG_IGN → drop; user handler → build
-    // a minimal signal frame and route the user back to the handler
-    // on resume (sa_restorer issues rt_sigreturn).
+    // alarm(2) deadline check: post SIGALRM (sig 14, bit 13) if the
+    // task's alarm_ns has passed.
+    if let Some(cur) = crate::sched::current() {
+        use core::sync::atomic::Ordering;
+        let deadline = cur.alarm_ns.load(Ordering::Acquire);
+        if deadline != 0 {
+            #[cfg(target_arch = "x86_64")]
+            let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
+            #[cfg(target_arch = "aarch64")]
+            let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
+            if now >= deadline {
+                cur.alarm_ns.store(0, Ordering::Release);
+                cur.sigpending.fetch_or(1u64 << 13, Ordering::Release);
+            }
+        }
+    }
+    // P3-65: deliver pending signals at syscall return.
     if let Some(p) = crate::syscall_glue_proc::take_lowest_pending() {
         // Job-control signals come first — their default action is
         // stop / continue, not terminate, regardless of handler.
