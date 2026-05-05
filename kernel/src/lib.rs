@@ -93,6 +93,8 @@ pub mod dev_pipe;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_misc;
 #[cfg(target_os = "oxide-kernel")]
+pub mod dev_pty;
+#[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -447,6 +449,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // P3-17 procfs static-file entries.
         procfs::init();
         tmpfs::init();
+        dev_pty::init();
         // P3-16/P3-18/P3-29/P3-77 boot-time smokes.
         dev_misc::smoke_test();
         procfs::smoke_test();
