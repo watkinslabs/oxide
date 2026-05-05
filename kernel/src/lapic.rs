@@ -59,7 +59,7 @@ pub static TICK_COUNT: core::sync::atomic::AtomicU64 =
 pub unsafe fn eoi() {
     let va = LAPIC_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return; }
-    // SAFETY: per fn contract — `va` is a Device-attr 4 KiB mapping; offset 0xB0 lies within.
+    // SAFETY: per fn contract -- `va` is a Device-attr 4 KiB mapping; offset 0xB0 lies within.
     unsafe { core::ptr::write_volatile((va + 0xB0) as *mut u32, 0); }
 }
 
@@ -75,20 +75,43 @@ pub unsafe fn eoi() {
 /// # Ctx: IRQ
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_irq_dispatch(_frame: *const u8) {
-    TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
+    // Frame layout (push order in oxide_irq_vec_NN):
+    //   err(0) vec(8) r11..rax -- `mov rdi,rsp` happens AFTER the
+    //   9 reg pushes, so frame[0..8] = r11 ... frame[72..80] = vec.
+    // SAFETY: caller is the per-vector IRQ asm stub which always pushes the same scaffold; offset 72 lies within.
+    let vec_tag = unsafe {
+        core::ptr::read_volatile(frame.add(72) as *const u64)
+    } as u8;
+
+    // EOI on every IRQ vector -- both timer and IPIs need it.
     // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
     unsafe { eoi(); }
-    crate::preempt::set_need_resched();
-    // TTY input poll per docs/28: scrape any pending UART RX
-    // byte into the ringbuffer + wake stdin waiters before the
-    // pre-empt-on-IRQ-exit picker runs.
-    // SAFETY: timer ISR ctx with IRQs masked, single-CPU.
-    unsafe { crate::tty::tick_poll_uart(); }
-    // SAFETY: tick_pick_next runs in IRQ context with IRQs masked
-    // (interrupt-gate clears IF); reads/writes the per-CPU SCHED
-    // state which is single-CPU at this point in v1.
-    unsafe { crate::preempt::tick_pick_next(); }
+
+    match vec_tag {
+        hal_x86_64::VEC_TIMER => {
+            TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::preempt::set_need_resched();
+            // TTY input poll per docs/28: scrape any pending UART RX
+            // byte into the ringbuffer + wake stdin waiters before the
+            // pre-empt-on-IRQ-exit picker runs. Boot CPU only -- APs
+            // don't own the UART.
+            // SAFETY: timer ISR ctx with IRQs masked.
+            unsafe { crate::tty::tick_poll_uart(); }
+            // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
+            unsafe { crate::preempt::tick_pick_next(); }
+        }
+        hal_x86_64::VEC_RESCHED => {
+            // Cross-CPU resched IPI: another CPU asked us to pick
+            // a new task. Set need_resched + run the picker; the
+            // IRQ-tail asm stages oxide_preempt_next_ctx for switch
+            // on iretq.
+            crate::preempt::set_need_resched();
+            // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
+            unsafe { crate::preempt::tick_pick_next(); }
+        }
+        _ => { /* unknown vector -- EOI'd, fall through */ }
+    }
 }
 
 /// Outcome reported by `enable`.
@@ -114,7 +137,7 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
         return LapicStatus::AlreadyOn;
     }
     // Make sure IA32_APIC_BASE.E is set (Limine leaves it on, but
-    // be defensive — bit 11 is the global enable).
+    // be defensive -- bit 11 is the global enable).
     // SAFETY: rdmsr/wrmsr on IA32_APIC_BASE are privileged but
     // legal at CPL=0; bit 11 is the well-defined global-enable bit.
     unsafe {
@@ -141,6 +164,28 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     };
     LAPIC_BASE_VA.store(va, Ordering::Release);
     LapicStatus::Enabled { apic_id, version }
+}
+
+/// Send a resched IPI to the LAPIC `target_apic_id`. The receiver
+/// vectors through `oxide_irq_vec_41`, sets need_resched, and the
+/// IRQ-exit picker switches if eligible. Returns false if the
+/// LAPIC isn't mapped yet.
+///
+/// # SAFETY: LAPIC enabled on this CPU; IRQs may be masked or not
+/// (ICR write is non-blocking -- wait_icr_idle handles serialization).
+/// # C: O(spin) bounded by hardware delivery latency
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn send_resched_ipi(target_apic_id: u32) -> bool {
+    // SAFETY: LAPIC enabled per fn contract; ICR delivery completes asynchronously, wait_icr_idle bounds prior write.
+    unsafe { wait_icr_idle(); }
+    let lo = build_icr_lo(hal_x86_64::VEC_RESCHED, 0b000, true, false);
+    // SAFETY: same -- ICR write triggers IPI delivery to target.
+    let ok = unsafe { write_icr(target_apic_id, lo) };
+    if ok {
+        // SAFETY: same -- ensure ICR settled before caller assumes delivery.
+        unsafe { wait_icr_idle(); }
+    }
+    ok
 }
 
 /// Enable the LAPIC on this AP. Same software-enable + APIC-base
@@ -171,7 +216,7 @@ pub unsafe fn enable_for_ap() -> (u32, u32) {
         let new = (cur & !0xFF) | SPURIOUS_VECTOR | SVR_ENABLE;
         core::ptr::write_volatile(svr_addr, new);
     }
-    // SAFETY: same — read this AP's APIC id + version.
+    // SAFETY: same -- read this AP's APIC id + version.
     unsafe {
         let id  = core::ptr::read_volatile((va + REG_ID as u64) as *const u32);
         let ver = core::ptr::read_volatile((va + REG_VERSION as u64) as *const u32);
@@ -202,7 +247,7 @@ pub unsafe fn timer_disarm() {
 pub unsafe fn timer_periodic(initial_count: u32) -> bool {
     let va = LAPIC_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return false; }
-    // SAFETY: per fn contract — LAPIC was mapped Device-attr; offsets within the 4 KiB page.
+    // SAFETY: per fn contract -- LAPIC was mapped Device-attr; offsets within the 4 KiB page.
     unsafe {
         core::ptr::write_volatile((va + REG_TIMER_DIV  as u64) as *mut u32, 0b1011);
         core::ptr::write_volatile((va + REG_LVT_TIMER as u64) as *mut u32, 0x40 | (1 << 17));
@@ -212,7 +257,7 @@ pub unsafe fn timer_periodic(initial_count: u32) -> bool {
 }
 
 /// Configure the LAPIC timer in one-shot mode, masked (no IRQ
-/// delivery yet — this is purely a hardware-tick smoke). Returns
+/// delivery yet -- this is purely a hardware-tick smoke). Returns
 /// the current count register reading after a brief busy spin so
 /// the caller can confirm the counter is decrementing.
 ///
@@ -233,10 +278,10 @@ pub unsafe fn timer_smoke(initial_count: u32) -> Option<(u32, u32)> {
     let (a, b) = unsafe {
         // Divide config: `1011` = divide-by-1 (full bus rate).
         core::ptr::write_volatile((va + REG_TIMER_DIV  as u64) as *mut u32, 0b1011);
-        // Mask LVT timer (bit 16 = 1) — no IRQ delivery; just count.
+        // Mask LVT timer (bit 16 = 1) -- no IRQ delivery; just count.
         // Vector 0x40 is set so when we later unmask, it has a valid value.
         core::ptr::write_volatile((va + REG_LVT_TIMER as u64) as *mut u32, 0x40 | (1 << 16));
-        // Load initial count — the timer starts decrementing.
+        // Load initial count -- the timer starts decrementing.
         core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, initial_count);
         let a = core::ptr::read_volatile((va + REG_TIMER_CUR as u64) as *const u32);
         // Brief busy spin so the count visibly decreases.
@@ -290,7 +335,7 @@ const REG_ICR_LO: usize = 0x300;
 #[cfg(target_arch = "x86_64")]
 const REG_ICR_HI: usize = 0x310;
 
-/// Build an ICR-low value. Pure helper — hosted-testable.
+/// Build an ICR-low value. Pure helper -- hosted-testable.
 /// Layout per Intel SDM Vol 3 §10.6.1:
 ///   bits 0-7: vector
 ///   bits 8-10: delivery mode
@@ -332,7 +377,7 @@ pub unsafe fn write_icr(target_apic_id: u32, lo: u32) -> bool {
     let va = LAPIC_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return false; }
     // ICR-hi: target APIC ID in bits 24-31 (xAPIC physical-dest).
-    // SAFETY: per fn contract — `va` covers a valid LAPIC page; offsets 0x300/0x310 lie within.
+    // SAFETY: per fn contract -- `va` covers a valid LAPIC page; offsets 0x300/0x310 lie within.
     unsafe {
         core::ptr::write_volatile((va + REG_ICR_HI as u64) as *mut u32, target_apic_id << 24);
         core::ptr::write_volatile((va + REG_ICR_LO as u64) as *mut u32, lo);
@@ -341,17 +386,17 @@ pub unsafe fn write_icr(target_apic_id: u32, lo: u32) -> bool {
 }
 
 /// Spin until the LAPIC ICR's delivery-status bit (bit 12 of low DW)
-/// clears — the previous IPI has been accepted by the bus.
+/// clears -- the previous IPI has been accepted by the bus.
 ///
 /// # SAFETY: caller is the boot path during AP startup; LAPIC is
 /// mapped; IRQs masked.
-/// # C: O(spin) — bounded by hardware delivery latency
+/// # C: O(spin) -- bounded by hardware delivery latency
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn wait_icr_idle() {
     let va = LAPIC_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return; }
     loop {
-        // SAFETY: per fn contract — LAPIC mapped; offset 0x300 within.
+        // SAFETY: per fn contract -- LAPIC mapped; offset 0x300 within.
         let lo = unsafe { core::ptr::read_volatile((va + REG_ICR_LO as u64) as *const u32) };
         if (lo & (1 << 12)) == 0 { break; }
         // SAFETY: spin loop hint; pause has no side effect outside microarch hinting.
