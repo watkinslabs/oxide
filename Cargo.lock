@@ -278,7 +278,9 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "block",
  "elf",
+ "ext4",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
