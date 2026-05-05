@@ -48,6 +48,7 @@ mod debug_macros;
 // inside acpi.rs are gated on `debug-acpi`.
 pub mod acpi;
 pub mod cpu_topology;
+pub mod smp;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
