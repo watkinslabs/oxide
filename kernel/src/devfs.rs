@@ -17,6 +17,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -26,14 +27,21 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 /// Flat path → inode map. v1 single-CPU UP with `TaskList` lock
 /// class (matching the rank used elsewhere for boot-time
 /// kernel-state registries).
-static REGISTRY: Spinlock<Vec<(&'static str, InodeRef)>, TaskListClass>
+static REGISTRY: Spinlock<Vec<(String, InodeRef)>, TaskListClass>
     = Spinlock::new(Vec::new());
 
-/// Register a path → inode mapping. Idempotent: re-registering
-/// the same path replaces the prior entry (last writer wins).
+/// Register a path → inode mapping (boot-time, &'static str).
+/// Idempotent: last writer wins.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N)
 pub fn register(path: &'static str, inode: InodeRef) {
+    register_owned(String::from(path), inode);
+}
+
+/// Same as `register` but accepts an owned String — used at runtime
+/// for dynamically-allocated paths (e.g. `/dev/pts/<n>` per `28§5`).
+/// # C: O(N)
+pub fn register_owned(path: String, inode: InodeRef) {
     let mut g = REGISTRY.lock();
     if let Some(slot) = g.iter_mut().find(|(p, _)| *p == path) {
         slot.1 = inode;
@@ -46,7 +54,7 @@ pub fn register(path: &'static str, inode: InodeRef) {
 /// # C: O(N)
 pub fn lookup(path: &str) -> Option<InodeRef> {
     let g = REGISTRY.lock();
-    g.iter().find(|(p, _)| *p == path).map(|(_, i)| Arc::clone(i))
+    g.iter().find(|(p, _)| p.as_str() == path).map(|(_, i)| Arc::clone(i))
 }
 
 /// Boot-time devfs population per docs/19. Registers the v1

@@ -281,6 +281,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "tty",
  "vfs",
  "vmm",
 ]
