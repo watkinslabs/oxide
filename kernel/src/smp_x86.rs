@@ -80,6 +80,14 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
         hal_x86_64::X86CpuOps::set_percpu_base(ctx.percpu_base as *mut u8);
     }
 
+    // Install IDTR on this AP so it can vector exceptions through
+    // the BSP-populated IDT. The IDT array itself is shared; only
+    // the per-CPU IDTR register needs loading here.
+    // SAFETY: BSP ran install_default_idt before bring_up_aps_x86;
+    // load_idtr_for_ap reads only IDT.as_ptr() to build the IDTR
+    // operand and issues `lidt`. Legal at CPL=0.
+    unsafe { hal_x86_64::load_idtr_for_ap(); }
+
     // Install this AP's per-CPU runqueue + idle task per `13§6`.
     // The AP's `this_cpu()` (gs:0) now returns lapic_id; the per-CPU
     // runqueue array indexes by that, so install_default_runqueue
