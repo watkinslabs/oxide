@@ -204,6 +204,44 @@ pub enum BootMemKind {
 /// # C: not measured (one-shot init)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn kernel_main(info: &BootInfo) -> ! {
+    // Boot CPU's per-CPU page (B14): a 4 KiB BSS array whose first
+    // 4 bytes are the cpu_id (0). Call set_percpu_base with its
+    // address before any code path reads `gs:0` via `current_cpu`
+    // — the per-CPU runqueue array (P4-10) and several other
+    // helpers depend on this. The 16-byte alignment matches what
+    // wrgsbase wants, and 4 KiB is the spec's per-CPU area size
+    // per `06§4`. UnsafeCell + unsafe-impl-Sync wrapper avoids
+    // `static mut` per `07§5`.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        #[repr(align(16))]
+        struct PerCpuBootPage(core::cell::UnsafeCell<[u8; 4096]>);
+        // SAFETY: BSS-resident; sole writer is the boot CPU during its own bring-up here, before any other context can observe the cell.
+        unsafe impl Sync for PerCpuBootPage {}
+        static BOOT_PERCPU: PerCpuBootPage =
+            PerCpuBootPage(core::cell::UnsafeCell::new([0u8; 4096]));
+
+        let p = BOOT_PERCPU.0.get() as *mut u8;
+        // SAFETY: BSS-resident page; this is the boot path's single writer; cpu_id=0 stamped at offset 0 matches `current_cpu`'s gs:0 (x86) / TPIDR_EL1 (arm) read.
+        unsafe { core::ptr::write_volatile(p as *mut u32, 0u32); }
+        // Enable CR4.FSGSBASE (bit 16) so wrgsbase is legal at CPL=0;
+        // Limine leaves it off, but boot CPU is the single writer here.
+        // SAFETY: kernel_main runs single-CPU pre-init; toggling CR4.FSGSBASE has no side effect beyond enabling rd/wrgsbase + rd/wrfsbase, which we use immediately below.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use hal::CpuOps;
+            let mut cr4: u64;
+            core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
+            cr4 |= 1u64 << 16;
+            core::arch::asm!("mov cr4, {cr4}", cr4 = in(reg) cr4, options(nomem, nostack, preserves_flags));
+            // SAFETY: per fn contract — boot path; per-CPU page allocated above with cpu_id=0 at offset 0; called once before any current_cpu read.
+            hal_x86_64::X86CpuOps::set_percpu_base(p);
+        }
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: same — boot path single writer; per-CPU page initialised with cpu_id=0 at offset 0; called before any TPIDR_EL1 read.
+        unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
+    }
+
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
@@ -231,18 +269,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
         unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
-        // SMP bring-up scaffolding: capture the boot CPU id (HAL
-        // returns 0 until SMP enumeration lands; that's still the
-        // correct value for the boot CPU on every platform we run).
-        // Subsequent AP-startup PRs read cpu_topology + boot_cpu_id
-        // to drive INIT-IPI / PSCI CPU_ON.
-        // SAFETY: kernel_main runs single-CPU pre-init per fn contract; this is the sole writer to BOOT_CPU_ID before any AP observes it.
-        unsafe {
-            use hal::CpuOps;
-            #[cfg(target_arch = "x86_64")]
-            crate::smp::set_boot_cpu_id(hal_x86_64::X86CpuOps::current_cpu());
-            #[cfg(target_arch = "aarch64")]
-            crate::smp::set_boot_cpu_id(hal_aarch64::ArmCpuOps::current_cpu());
+        // SMP bring-up scaffolding: capture the boot CPU id from
+        // the first cpu_topology entry. ACPI 6.5 §5.2.12.2 lists
+        // the boot CPU first in MADT, so cpu_topology[0] is the
+        // boot CPU's APIC id / MPIDR. Avoids reading `gs:0` here —
+        // GS_BASE is set up later by per-CPU init, and an early
+        // `current_cpu()` would null-deref the boot CPU's missing
+        // per-CPU page (B14).
+        if let Some((id, _flags)) = crate::cpu_topology::get(0) {
+            // SAFETY: kernel_main runs single-CPU pre-init per fn contract; sole writer for BOOT_CPU_ID before any AP observes it.
+            unsafe { crate::smp::set_boot_cpu_id(id); }
         }
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
