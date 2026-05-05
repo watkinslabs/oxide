@@ -233,6 +233,11 @@ pub struct Task {
     /// ignores it (CFS weight is fixed); v1 stores for visibility
     /// via getpriority + /proc/<pid>/stat field 19.
     pub nice: AtomicI8,
+
+    /// Monotonic ns at task spawn. getrusage / times / proc stat
+    /// utime are computed as `monotonic_ns() - spawn_ns`. `0` for
+    /// hosted-test tasks where `Task::new` is the constructor.
+    pub spawn_ns: AtomicU64,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -350,6 +355,7 @@ impl Task {
             environ:    UnsafeCell::new(None),
             rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
             nice:       AtomicI8::new(0),
+            spawn_ns:   AtomicU64::new(0),
         }
     }
 

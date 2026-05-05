@@ -21,9 +21,17 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use hal::Context;
+use hal::{Context, TimerOps};
 use sched::{SchedClass, Task};
 use vmm::AddressSpace;
+
+#[inline]
+fn monotonic_ns() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
 
 #[cfg(target_arch = "x86_64")]
 type ArchCtx = hal_x86_64::ContextX86_64;
@@ -123,6 +131,7 @@ pub unsafe fn spawn_kernel_thread(
 
     // 4. Wrap, enqueue, return.
     let arc = Arc::new(task);
+    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
@@ -177,6 +186,7 @@ pub unsafe fn spawn_user_thread(
     }
 
     let arc = Arc::new(task);
+    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
