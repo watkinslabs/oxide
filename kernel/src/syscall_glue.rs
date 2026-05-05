@@ -309,6 +309,11 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
     // for `park_zombie` SIGCHLD delivery (P3-67).
     child.parent_tid.store(cur.tid, Ordering::Release);
+    // Inherit parent's pgid + sid per POSIX fork(2). setpgid/setsid in
+    // child override later. Without inheritance every fork would land
+    // in its own pgrp and shells couldn't track job state.
+    child.pgid.store(cur.pgid.load(Ordering::Acquire), Ordering::Release);
+    child.sid.store(cur.sid.load(Ordering::Acquire), Ordering::Release);
     // Materialise an Arc<Task> for the parent by bumping its
     // strong count (the runqueue's `current` AtomicPtr already
     // holds one), then downgrade to Weak<Task>. Drops the bumped
@@ -847,8 +852,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_MINCORE       => crate::syscall_glue_proc::kernel_sys_mincore(&args),
         crate::syscall_nrs::NR_MLOCK | crate::syscall_nrs::NR_MUNLOCK | crate::syscall_nrs::NR_MLOCKALL | crate::syscall_nrs::NR_MUNLOCKALL
                                  => crate::syscall_glue_proc::kernel_sys_mlock_family(&args),
-        crate::syscall_nrs::NR_GETPGRP | crate::syscall_nrs::NR_GETPGID | crate::syscall_nrs::NR_GETSID
-                                 => crate::syscall_glue_proc::kernel_sys_getpgrp(&args),
+        crate::syscall_nrs::NR_GETPGRP   => crate::syscall_glue_proc::kernel_sys_getpgrp(&args),
+        crate::syscall_nrs::NR_GETPGID   => crate::syscall_glue_proc::kernel_sys_getpgid(&args),
+        crate::syscall_nrs::NR_GETSID    => crate::syscall_glue_proc::kernel_sys_getsid(&args),
         crate::syscall_nrs::NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),
         crate::syscall_nrs::NR_SETSID        => crate::syscall_glue_proc::kernel_sys_setsid(&args),
         crate::syscall_nrs::NR_UMASK         => crate::syscall_glue_proc::kernel_sys_umask(&args),
