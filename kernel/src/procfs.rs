@@ -591,6 +591,9 @@ impl Inode for ProcPidDirInode {
             "io"       => Ok(StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n") as InodeRef),
             "limits"   => Ok(StaticFileInode::new(LIMITS_BODY) as InodeRef),
             "personality" => Ok(StaticFileInode::new(b"00000000\n") as InodeRef),
+            "sched"   => Ok(Arc::new(ProcPidSchedInode { tid: self.tid }) as InodeRef),
+            "schedstat" => Ok(StaticFileInode::new(b"0 0 0\n") as InodeRef),
+            "autogroup" => Ok(StaticFileInode::new(b"/autogroup-1 nice 0\n") as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -602,7 +605,7 @@ impl Inode for ProcPidDirInode {
         const ENTRIES: &[&str] = &[
             "status", "cmdline", "stat", "maps", "comm", "environ", "statm",
             "wchan", "oom_score", "oom_score_adj", "loginuid", "sessionid",
-            "io", "limits", "personality",
+            "io", "limits", "personality", "sched", "schedstat", "autogroup",
         ];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
@@ -623,6 +626,7 @@ pub struct ProcPidMapsInode { pub tid: u32 }
 pub struct ProcPidCommInode { pub tid: u32 }
 pub struct ProcPidEnvironInode { pub tid: u32 }
 pub struct ProcPidStatmInode { pub tid: u32 }
+pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
@@ -708,6 +712,24 @@ pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
 pid_inode_impl!(ProcPidCommInode,    pid_comm_body,    0x3000_2400);
 pid_inode_impl!(ProcPidEnvironInode, pid_environ_body, 0x3000_2500);
 pid_inode_impl!(ProcPidStatmInode,   pid_statm_body,   0x3000_2600);
+pid_inode_impl!(ProcPidSchedInode,   pid_sched_body,   0x3000_2700);
+
+fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(128);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    push(&mut out, task.name.as_bytes());
+    push(&mut out, b" (");
+    push_u64(&mut out, tid as u64);
+    push(&mut out, b", #threads: 1)\n");
+    push(&mut out, b"-------------------------------------------------------------------\n");
+    push(&mut out, b"se.exec_start                                :         0.000000\n");
+    push(&mut out, b"se.vruntime                                  :         0.000000\n");
+    push(&mut out, b"se.sum_exec_runtime                          :         0.000000\n");
+    push(&mut out, b"nr_switches                                  :                0\n");
+    push(&mut out, b"prio                                         :              120\n");
+    push(&mut out, b"policy                                       :                0\n");
+    out
+}
 
 fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
     // statm fields (in pages of 4 KiB): size resident shared text lib data dt
