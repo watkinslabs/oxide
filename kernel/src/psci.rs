@@ -64,8 +64,12 @@ pub unsafe fn smc(fn_id: u32, a1: u64, a2: u64, a3: u64) -> i64 {
     // virt. Inputs go in x0..x3 per ARM DEN 0022D §5.1 calling
     // convention; the secure monitor returns the status code in x0.
     unsafe {
+        // `smc #0` requires the `sec` arch extension to assemble;
+        // many AArch64 assembler defaults reject it. Emit the
+        // instruction encoding directly via `.inst` (0xd4000003)
+        // — same opcode, no arch-extension dance.
         core::arch::asm!(
-            "smc #0",
+            ".inst 0xd4000003",
             inout("x0") fn_id as u64 => ret,
             in("x1") a1,
             in("x2") a2,
