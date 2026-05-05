@@ -22,3 +22,7 @@ pub mod inode;
 pub use inode::{Inode, InodeError, ExtentHeader, Extent,
                 S_IFMT, S_IFREG, S_IFDIR, S_IFLNK,
                 EXT4_EXT_MAGIC, parse_extent_header, parse_inline_extent};
+
+pub mod dir;
+pub use dir::{DirEntry, DirError, next_entry, iter_active, lookup,
+              DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK};
