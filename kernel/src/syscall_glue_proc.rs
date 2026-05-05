@@ -29,12 +29,16 @@ pub fn kernel_sys_gettid(_args: &SyscallArgs) -> i64 {
     crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
 }
 
-/// `sys_set_tid_address(tidptr)` — slot 218. Linux stores
-/// `tidptr` for CLONE_CHILD_CLEARTID futex wake on thread exit.
-/// v1 single-thread → no-op; return current tid.
+/// `sys_set_tid_address(tidptr)` — slot 218. Stores the user
+/// pointer in `Task.clear_child_tid` per CLONE_CHILD_CLEARTID
+/// semantics. v1 single-thread doesn't yet wake-on-exit; the
+/// storage is for musl + glibc visibility.
 /// # C: O(1)
-pub fn kernel_sys_set_tid_address(_args: &SyscallArgs) -> i64 {
-    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 1 };
+    cur.clear_child_tid.store(args.a0, Ordering::Release);
+    cur.tid as i64
 }
 
 /// `sys_futex(uaddr, op, val, ts, uaddr2, val3)` — slot 202.
@@ -605,7 +609,12 @@ pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
 /// `sys_umask(mask)` — slot 95. v1 returns 0o022 as the prior
 /// mask and forgets the new one.
 /// # C: O(1)
-pub fn kernel_sys_umask(_args: &SyscallArgs) -> i64 { 0o022 }
+pub fn kernel_sys_umask(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let new_mask = (args.a0 as u32) & 0o777;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0o022 };
+    cur.umask.swap(new_mask, Ordering::AcqRel) as i64
+}
 
 /// `sys_getcpu(cpu, node, tcache)` — slot 309. v1 single-CPU UP →
 /// always returns CPU 0, NUMA node 0.
