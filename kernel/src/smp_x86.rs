@@ -88,6 +88,16 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
     // operand and issues `lidt`. Legal at CPL=0.
     unsafe { hal_x86_64::load_idtr_for_ap(); }
 
+    // Software-enable this AP's LAPIC + set IA32_APIC_BASE.E. The
+    // LAPIC MMIO virtual address (LAPIC_BASE_VA, set by the BSP)
+    // aliases per-CPU on x86 — each CPU sees its own LAPIC page
+    // through the same VA. Required before this AP can take any
+    // local interrupt (timer, IPI).
+    // SAFETY: BSP ran lapic::enable() so LAPIC_BASE_VA is non-zero;
+    // CPU is at CPL=0 IRQs masked; sole writer for this CPU's
+    // SVR + IA32_APIC_BASE MSR.
+    let _ = unsafe { crate::lapic::enable_for_ap() };
+
     // Install this AP's per-CPU runqueue + idle task per `13§6`.
     // The AP's `this_cpu()` (gs:0) now returns lapic_id; the per-CPU
     // runqueue array indexes by that, so install_default_runqueue
