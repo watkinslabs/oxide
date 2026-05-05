@@ -24,7 +24,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
 
     match nr {
         // ---- accept silently ----
-        NR_GETITIMER | NR_SETITIMER | NR_ALARM
+        NR_GETITIMER | NR_SETITIMER
         | NR_GETGROUPS  | NR_SETGROUPS
         | NR_SETUID | NR_SETGID
         | NR_SETREUID | NR_SETREGID
@@ -41,7 +41,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
                                        => Some(0),
 
         // ---- POSIX shape: pause/sigsuspend behaviour ----
-        NR_PAUSE | NR_RESTART_SYSCALL  => Some(eintr),
+        NR_RESTART_SYSCALL  => Some(eintr),
 
         // ---- privileged-op refuse ----
         NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_CHROOT

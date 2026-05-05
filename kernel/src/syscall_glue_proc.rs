@@ -854,3 +854,43 @@ pub fn kernel_sys_setpriority(args: &SyscallArgs) -> i64 {
         None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
     }
 }
+
+/// `sys_alarm(seconds)` — slot 37. Sets a per-task SIGALRM
+/// deadline at monotonic_ns + seconds*1e9. Returns the seconds
+/// remaining on the previous alarm, or 0 if none.
+/// # C: O(1)
+pub fn kernel_sys_alarm(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use hal::TimerOps;
+    let secs = args.a0;
+    let now = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    };
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let prev = cur.alarm_ns.load(Ordering::Acquire);
+    let prev_remaining = if prev > now { (prev - now) / 1_000_000_000 } else { 0 };
+    let new = if secs == 0 { 0 } else { now.saturating_add(secs.saturating_mul(1_000_000_000)) };
+    cur.alarm_ns.store(new, Ordering::Release);
+    prev_remaining as i64
+}
+
+/// `sys_pause()` — slot 34. Yield-loops until the calling task has
+/// a non-masked signal pending, then returns -EINTR.
+/// # C: O(yields)
+pub fn kernel_sys_pause(_args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
+    };
+    loop {
+        let pending = cur.sigpending.load(Ordering::Acquire);
+        let masked  = cur.sigmask.load(Ordering::Acquire);
+        if (pending & !masked) != 0 { return -(Errno::Eintr.as_i32() as i64); }
+        // SAFETY: process ctx; runqueue installed.
+        unsafe { crate::sched::tick_yield(); }
+    }
+}
