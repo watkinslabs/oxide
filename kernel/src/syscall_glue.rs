@@ -324,12 +324,12 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     // in its own pgrp and shells couldn't track job state.
     child.pgid.store(cur.pgid.load(Ordering::Acquire), Ordering::Release);
     child.sid.store(cur.sid.load(Ordering::Acquire), Ordering::Release);
-    // Inherit cwd per POSIX fork(2).
-    // SAFETY: child not yet scheduled; we are sole writer to its cwd slot;
-    // parent cwd read is the running task on this CPU per single-mutator invariant.
+    // Inherit cwd + rlimits per POSIX fork(2).
+    // SAFETY: child not yet scheduled; we are sole writer to its slots;
+    // parent reads are the running task on this CPU per single-mutator invariant.
     unsafe {
-        let parent_cwd = (*cur.cwd.get()).clone();
-        *child.cwd.get() = parent_cwd;
+        *child.cwd.get() = (*cur.cwd.get()).clone();
+        *child.rlimits.get() = *cur.rlimits.get();
     }
     // Materialise an Arc<Task> for the parent by bumping its
     // strong count (the runqueue's `current` AtomicPtr already

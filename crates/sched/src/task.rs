@@ -199,6 +199,12 @@ pub struct Task {
     /// User-side envp string per `19§4` for `/proc/<pid>/environ`.
     /// NUL-separated copy of `envp[0..envc]`, written at execve time.
     pub environ: UnsafeCell<Option<alloc::string::String>>,
+
+    /// Per-task rlimits per POSIX getrlimit(2) / prlimit64(2).
+    /// 16 slots indexed by `RLIMIT_*`; each is `(cur, max)`. Default
+    /// `(RLIM_INFINITY, RLIM_INFINITY)` for every resource. Fork
+    /// inherits per POSIX. Same single-mutator invariant as `mm`.
+    pub rlimits: UnsafeCell<[(u64, u64); 16]>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -314,6 +320,7 @@ impl Task {
             cmdline:    UnsafeCell::new(None),
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
             environ:    UnsafeCell::new(None),
+            rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
         }
     }
 

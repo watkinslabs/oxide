@@ -491,3 +491,70 @@ fn try_wake_stopped_ignores_zombie() {
     assert!(!crate::registry::try_wake_stopped(&t));
     assert_eq!(t.state(), TaskState::Zombie);
 }
+
+// ---------------------------------------------------------------------------
+// rlimit clamping + format helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rlimit_clamp_pair_accepts_cur_le_max() {
+    use crate::rlimit::clamp_pair;
+    assert_eq!(clamp_pair(0,    100), Some((0, 100)));
+    assert_eq!(clamp_pair(50,   100), Some((50, 100)));
+    assert_eq!(clamp_pair(100,  100), Some((100, 100)));
+    assert_eq!(clamp_pair(0,    0),   Some((0, 0)));
+}
+
+#[test]
+fn rlimit_clamp_pair_rejects_cur_above_max() {
+    use crate::rlimit::clamp_pair;
+    assert_eq!(clamp_pair(101, 100), None);
+    assert_eq!(clamp_pair(1,   0),   None);
+}
+
+#[test]
+fn rlimit_validate_setrlimit_round_trip() {
+    use crate::rlimit::validate_setrlimit;
+    let old = (10, 100);
+    assert_eq!(validate_setrlimit(old, (5,   50)),  Ok((5,   50)));
+    assert_eq!(validate_setrlimit(old, (50,  200)), Ok((50,  200)));
+    assert_eq!(validate_setrlimit(old, (51,  50)),  Err(()));
+}
+
+#[test]
+fn rlimit_format_unlimited() {
+    use crate::rlimit::{format_rlim, INFINITY};
+    let mut b = [0u8; 16];
+    let n = format_rlim(&mut b, INFINITY).unwrap();
+    assert_eq!(&b[..n], b"unlimited");
+}
+
+#[test]
+fn rlimit_format_decimal() {
+    use crate::rlimit::format_rlim;
+    let mut b = [0u8; 16];
+    assert_eq!(format_rlim(&mut b, 0).unwrap(), 1);
+    assert_eq!(&b[..1], b"0");
+    let n = format_rlim(&mut b, 1024).unwrap();
+    assert_eq!(&b[..n], b"1024");
+    let n = format_rlim(&mut b, 8388608).unwrap();
+    assert_eq!(&b[..n], b"8388608");
+}
+
+#[test]
+fn rlimit_format_buf_too_small_returns_none() {
+    use crate::rlimit::{format_rlim, INFINITY};
+    let mut b = [0u8; 3];
+    assert_eq!(format_rlim(&mut b, INFINITY), None); // "unlimited" is 9
+    assert_eq!(format_rlim(&mut b, 99999),     None); // 5 digits won't fit
+}
+
+#[test]
+fn rlimit_indices_match_linux_layout() {
+    use crate::rlimit::rlim;
+    assert_eq!(rlim::CPU, 0);
+    assert_eq!(rlim::NOFILE, 7);
+    assert_eq!(rlim::AS, 9);
+    assert_eq!(rlim::NICE, 13);
+    assert_eq!(rlim::COUNT, 16);
+}
