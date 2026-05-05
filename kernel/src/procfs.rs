@@ -816,6 +816,35 @@ pub fn init() {
         StaticFileInode::new(b"") as InodeRef);
     crate::devfs::register("/etc/localtime",
         StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/etc/shadow",
+        StaticFileInode::new(b"root::0:0:99999:7:::\n") as InodeRef);
+    crate::devfs::register("/etc/shells",
+        StaticFileInode::new(b"/bin/sh\n") as InodeRef);
+    crate::devfs::register("/etc/profile",
+        StaticFileInode::new(b"export PATH=/bin:/usr/bin\nexport PS1='$ '\n") as InodeRef);
+    crate::devfs::register("/etc/issue",
+        StaticFileInode::new(b"oxide \\r \\l\n\n") as InodeRef);
+    crate::devfs::register("/etc/motd",
+        StaticFileInode::new(b"Welcome to oxide.\n") as InodeRef);
+    crate::devfs::register("/etc/hosts",
+        StaticFileInode::new(b"127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost\n") as InodeRef);
+    crate::devfs::register("/etc/services",
+        StaticFileInode::new(b"\
+ssh\t\t22/tcp\nssh\t\t22/udp\n\
+http\t\t80/tcp\nhttp\t\t80/udp\n\
+https\t\t443/tcp\nhttps\t\t443/udp\n\
+domain\t\t53/tcp\ndomain\t\t53/udp\n\
+") as InodeRef);
+    crate::devfs::register("/etc/protocols",
+        StaticFileInode::new(b"\
+ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
+") as InodeRef);
+    crate::devfs::register("/etc/ld.so.cache",
+        StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/etc/ld.so.conf",
+        StaticFileInode::new(b"include /etc/ld.so.conf.d/*.conf\n") as InodeRef);
+    crate::devfs::register("/etc/timezone",
+        StaticFileInode::new(b"UTC\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score",
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score_adj",
