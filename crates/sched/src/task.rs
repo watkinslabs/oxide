@@ -99,6 +99,17 @@ pub struct Task {
     /// `wait4` to find Zombie children of the current task.
     pub parent_tid: AtomicU32,
 
+    /// Process group id per `28§4` / POSIX setpgid(2). Initialised
+    /// to `tid` (each task is its own pgrp leader by default).
+    /// Updated by `sys_setpgid` / `sys_setsid`. Job control + `kill(-pgid)`
+    /// signal delivery rely on this; getty / shells rewrite it.
+    pub pgid: AtomicU32,
+
+    /// Session id per POSIX setsid(2). Initialised to `tid`.
+    /// `sys_setsid` sets both `pgid` and `sid` to `tid`, making the
+    /// caller a session leader.
+    pub sid:  AtomicU32,
+
     /// Top of this task's kernel stack (one past the last byte).
     /// Set when the task is constructed alongside its arch ctx.
     /// `null` until set; AtomicPtr so reads are race-free across
@@ -283,6 +294,8 @@ impl Task {
             mm: UnsafeCell::new(mm),
             stack: None,
             parent_tid: AtomicU32::new(0),
+            pgid:       AtomicU32::new(tid),
+            sid:        AtomicU32::new(tid),
             fd_table: UnsafeCell::new(None),
             sigpending: AtomicU64::new(0),
             sigmask:    AtomicU64::new(0),

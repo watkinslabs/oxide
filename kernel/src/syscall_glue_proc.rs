@@ -437,24 +437,73 @@ pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_mlock_family(_args: &SyscallArgs) -> i64 { 0 }
 
-/// `sys_getpgrp` / `sys_getpgid` / `sys_getsid` — slots 111/121/124.
-/// v1 single-process group → return current().tid (which is also
-/// the pid, since v1 is single-thread).
+/// `sys_getpgrp` — slot 111. Returns the current task's pgid.
 /// # C: O(1)
 pub fn kernel_sys_getpgrp(_args: &SyscallArgs) -> i64 {
-    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+    use core::sync::atomic::Ordering;
+    crate::sched::current().map(|c| c.pgid.load(Ordering::Acquire) as i64).unwrap_or(1)
 }
 
-/// `sys_setpgid(pid, pgid)` — slot 109. v1 no-op.
-/// # C: O(1)
-pub fn kernel_sys_setpgid(_args: &SyscallArgs) -> i64 { 0 }
+/// `sys_getpgid(pid)` — slot 121. `pid==0` means the current task.
+/// # C: O(N_tasks) for non-self lookup
+pub fn kernel_sys_getpgid(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let pid = args.a0 as u32;
+    let task = if pid == 0 {
+        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+    } else {
+        crate::sched::registry::lookup(pid)
+    };
+    match task {
+        Some(t) => t.pgid.load(Ordering::Acquire) as i64,
+        None    => -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    }
+}
 
-/// `sys_setsid()` — slot 112. Returns the new session id (== tid
-/// in v1's single-process model). No actual session-leader
-/// bookkeeping yet.
+/// `sys_getsid(pid)` — slot 124. `pid==0` means the current task.
+/// # C: O(N_tasks) for non-self lookup
+pub fn kernel_sys_getsid(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let pid = args.a0 as u32;
+    let task = if pid == 0 {
+        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+    } else {
+        crate::sched::registry::lookup(pid)
+    };
+    match task {
+        Some(t) => t.sid.load(Ordering::Acquire) as i64,
+        None    => -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    }
+}
+
+/// `sys_setpgid(pid, pgid)` — slot 109. Sets target task's pgid.
+/// `pid==0` means current; `pgid==0` means use the target's tid.
+/// Returns -ESRCH if the target task isn't live.
+/// # C: O(N_tasks)
+pub fn kernel_sys_setpgid(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let pid  = args.a0 as u32;
+    let pgid = args.a1 as u32;
+    let task = if pid == 0 {
+        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+    } else {
+        crate::sched::registry::lookup(pid)
+    };
+    let t = match task { Some(t) => t, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64) };
+    let new_pgid = if pgid == 0 { t.tid } else { pgid };
+    t.pgid.store(new_pgid, Ordering::Release);
+    0
+}
+
+/// `sys_setsid()` — slot 112. Makes the caller a session leader:
+/// new sid = new pgid = tid. Returns the new sid.
 /// # C: O(1)
 pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
-    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+    use core::sync::atomic::Ordering;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 1 };
+    cur.sid.store(cur.tid, Ordering::Release);
+    cur.pgid.store(cur.tid, Ordering::Release);
+    cur.tid as i64
 }
 
 /// `sys_umask(mask)` — slot 95. v1 returns 0o022 as the prior
