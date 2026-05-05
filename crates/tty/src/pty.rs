@@ -18,17 +18,35 @@
 extern crate alloc;
 use alloc::collections::VecDeque;
 
-/// Linux c_lflag bits we honour. Many more exist; kernel ignores
-/// the rest (Linux returns success on TCSETS regardless).
+/// Linux c_lflag bits we honour.
 pub mod lflag {
     pub const ISIG:   u32 = 0o000001;
     pub const ICANON: u32 = 0o000002;
     pub const ECHO:   u32 = 0o000010;
 }
 
-/// Default c_lflag at pair creation: ICANON | ECHO | ISIG. Matches
-/// Linux's pty default and what shells expect to inherit.
+/// Linux c_iflag bits — input processing on master_write.
+pub mod iflag {
+    pub const IGNCR:  u32 = 0o000200; // drop \r from input
+    pub const ICRNL:  u32 = 0o000400; // translate \r to \n on input
+    pub const INLCR:  u32 = 0o000100; // translate \n to \r on input
+}
+
+/// Linux c_oflag bits — output processing on slave_write.
+pub mod oflag {
+    pub const OPOST:  u32 = 0o000001; // master switch for output processing
+    pub const ONLCR:  u32 = 0o000004; // translate \n to \r\n on output
+    pub const OCRNL:  u32 = 0o000010; // translate \r to \n on output
+    pub const ONOCR:  u32 = 0o000020; // no \r at column 0 (ignored — no col tracking)
+    pub const ONLRET: u32 = 0o000040; // \n moves to col 0 (ignored)
+}
+
+/// Default c_lflag at pair creation: ICANON | ECHO | ISIG.
 pub const DEFAULT_LFLAG: u32 = lflag::ICANON | lflag::ECHO | lflag::ISIG;
+/// Default c_iflag at pair creation: ICRNL (Enter sends \r → \n).
+pub const DEFAULT_IFLAG: u32 = iflag::ICRNL;
+/// Default c_oflag at pair creation: OPOST | ONLCR (\n → \r\n on output).
+pub const DEFAULT_OFLAG: u32 = oflag::OPOST | oflag::ONLCR;
 
 /// Linux x86_64 `struct termios` size. Userspace tcgetattr / tcsetattr
 /// pass exactly this many bytes through TCGETS / TCSETS.
@@ -66,10 +84,21 @@ pub mod cc {
 pub const DEFAULT_VINTR: u8 = 0x03;
 
 /// Build a default termios byte image. Matches Linux pty defaults:
-/// c_lflag = ICANON|ECHO|ISIG, c_cc[VINTR] = 0x03, others 0.
+/// c_lflag = ICANON|ECHO|ISIG, c_iflag = ICRNL, c_oflag = OPOST|ONLCR,
+/// c_cc[VINTR] = 0x03, others 0.
 /// # C: O(1)
 pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     let mut t = [0u8; TERMIOS_BYTES];
+    let il = DEFAULT_IFLAG.to_le_bytes();
+    t[TERMIOS_OFF_IFLAG    ] = il[0];
+    t[TERMIOS_OFF_IFLAG + 1] = il[1];
+    t[TERMIOS_OFF_IFLAG + 2] = il[2];
+    t[TERMIOS_OFF_IFLAG + 3] = il[3];
+    let ol = DEFAULT_OFLAG.to_le_bytes();
+    t[TERMIOS_OFF_OFLAG    ] = ol[0];
+    t[TERMIOS_OFF_OFLAG + 1] = ol[1];
+    t[TERMIOS_OFF_OFLAG + 2] = ol[2];
+    t[TERMIOS_OFF_OFLAG + 3] = ol[3];
     let lf = DEFAULT_LFLAG.to_le_bytes();
     t[TERMIOS_OFF_LFLAG    ] = lf[0];
     t[TERMIOS_OFF_LFLAG + 1] = lf[1];
@@ -79,13 +108,28 @@ pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     t
 }
 
+/// Read a u32 field out of a termios byte image at `off`.
+/// # C: O(1)
+pub fn read_termios_u32(t: &[u8; TERMIOS_BYTES], off: usize) -> u32 {
+    u32::from_le_bytes([t[off], t[off + 1], t[off + 2], t[off + 3]])
+}
+
 /// Read the c_lflag field out of a termios byte image.
 /// # C: O(1)
 pub fn read_lflag(t: &[u8; TERMIOS_BYTES]) -> u32 {
-    u32::from_le_bytes([
-        t[TERMIOS_OFF_LFLAG    ], t[TERMIOS_OFF_LFLAG + 1],
-        t[TERMIOS_OFF_LFLAG + 2], t[TERMIOS_OFF_LFLAG + 3],
-    ])
+    read_termios_u32(t, TERMIOS_OFF_LFLAG)
+}
+
+/// Read the c_iflag field.
+/// # C: O(1)
+pub fn read_iflag(t: &[u8; TERMIOS_BYTES]) -> u32 {
+    read_termios_u32(t, TERMIOS_OFF_IFLAG)
+}
+
+/// Read the c_oflag field.
+/// # C: O(1)
+pub fn read_oflag(t: &[u8; TERMIOS_BYTES]) -> u32 {
+    read_termios_u32(t, TERMIOS_OFF_OFLAG)
 }
 
 /// Read c_cc[VINTR] out of a termios byte image.
@@ -235,6 +279,14 @@ impl Pair {
     /// # C: O(1)
     pub fn lflag(&self) -> u32 { read_lflag(&self.termios) }
 
+    /// Convenience accessor for c_iflag.
+    /// # C: O(1)
+    pub fn iflag(&self) -> u32 { read_iflag(&self.termios) }
+
+    /// Convenience accessor for c_oflag.
+    /// # C: O(1)
+    pub fn oflag(&self) -> u32 { read_oflag(&self.termios) }
+
     /// Convenience accessor for c_cc[VINTR].
     /// # C: O(1)
     pub fn vintr(&self) -> u8 { read_vintr(&self.termios) }
@@ -265,25 +317,36 @@ impl Pair {
         }
     }
 
-    /// Master writes input (keystrokes). With ECHO, every accepted
-    /// byte is also enqueued to s_to_m (echoed back to master read).
-    /// With ISIG, a c_cc[VINTR] byte is dropped from the input stream
-    /// and `pending_sigint` is set instead — kernel-side dispatches.
-    /// Returns total bytes consumed from `src`.
+    /// Master writes input (keystrokes). c_iflag pre-processes the
+    /// stream (ICRNL/INLCR/IGNCR translate or drop \r/\n). c_lflag
+    /// & ISIG drops c_cc[VINTR] and sets pending_sigint. ECHO copies
+    /// each accepted byte back to s_to_m so the master can read its
+    /// own input. Returns total bytes consumed from `src`.
     /// # C: O(N)
     pub fn master_write(&mut self, src: &[u8]) -> usize {
         let lflag = self.lflag();
+        let iflag_v = self.iflag();
         let vintr = self.vintr();
         let isig  = (lflag & lflag::ISIG) != 0 && vintr != 0;
         let echo  = (lflag & lflag::ECHO) != 0;
+        let icrnl = (iflag_v & iflag::ICRNL) != 0;
+        let inlcr = (iflag_v & iflag::INLCR) != 0;
+        let igncr = (iflag_v & iflag::IGNCR) != 0;
         let mut consumed = 0;
-        for &b in src {
+        for &raw in src {
+            // iflag translation. IGNCR wins over ICRNL.
+            let b = if raw == b'\r' {
+                if igncr { consumed += 1; continue; }
+                if icrnl { b'\n' } else { raw }
+            } else if raw == b'\n' && inlcr {
+                b'\r'
+            } else {
+                raw
+            };
             if isig && b == vintr {
                 self.pending_sigint = true;
                 consumed += 1;
-                if echo {
-                    let _ = self.s_to_m.write(b"^C");
-                }
+                if echo { let _ = self.s_to_m.write(b"^C"); }
                 continue;
             }
             if self.m_to_s.space() == 0 { break; }
@@ -320,9 +383,34 @@ impl Pair {
         }
     }
 
-    /// Slave writes output (program text).
+    /// Slave writes output (program text). With c_oflag & OPOST,
+    /// applies output transformations: ONLCR translates \n → \r\n,
+    /// OCRNL translates \r → \n. Returns bytes consumed from `src`.
     /// # C: O(N)
-    pub fn slave_write(&mut self, src: &[u8]) -> usize { self.s_to_m.write(src) }
+    pub fn slave_write(&mut self, src: &[u8]) -> usize {
+        let oflag_v = self.oflag();
+        if (oflag_v & oflag::OPOST) == 0 {
+            return self.s_to_m.write(src);
+        }
+        let onlcr = (oflag_v & oflag::ONLCR) != 0;
+        let ocrnl = (oflag_v & oflag::OCRNL) != 0;
+        let mut consumed = 0;
+        for &raw in src {
+            // ONLCR expands \n into \r\n — needs 2 bytes of space.
+            if raw == b'\n' && onlcr {
+                if self.s_to_m.space() < 2 { break; }
+                self.s_to_m.write(b"\r\n");
+            } else if raw == b'\r' && ocrnl {
+                if self.s_to_m.space() == 0 { break; }
+                self.s_to_m.write(b"\n");
+            } else {
+                if self.s_to_m.space() == 0 { break; }
+                self.s_to_m.write(&[raw]);
+            }
+            consumed += 1;
+        }
+        consumed
+    }
 
     /// Master reads program output.
     /// # C: O(N)
