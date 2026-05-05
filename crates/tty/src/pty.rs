@@ -415,6 +415,31 @@ impl Pair {
                 consumed += 1;
                 continue;
             }
+            // VERASE / VKILL backspace handling. Under ICANON, the
+            // editor only operates on the *current* unfinished line —
+            // we approximate that by walking back through trailing
+            // non-\n bytes in m_to_s.
+            let verase = self.termios[TERMIOS_OFF_CC + cc::VERASE];
+            let vkill  = self.termios[TERMIOS_OFF_CC + cc::VKILL];
+            if icanon && verase != 0 && b == verase {
+                if let Some(&last) = self.m_to_s.buf.back() {
+                    if last != b'\n' {
+                        self.m_to_s.buf.pop_back();
+                        if echo { let _ = self.s_to_m.write(b"\x08 \x08"); }
+                    }
+                }
+                consumed += 1;
+                continue;
+            }
+            if icanon && vkill != 0 && b == vkill {
+                while let Some(&last) = self.m_to_s.buf.back() {
+                    if last == b'\n' { break; }
+                    self.m_to_s.buf.pop_back();
+                    if echo { let _ = self.s_to_m.write(b"\x08 \x08"); }
+                }
+                consumed += 1;
+                continue;
+            }
             if self.m_to_s.space() == 0 { break; }
             self.m_to_s.write(&[b]);
             if echo { let _ = self.s_to_m.write(&[b]); }
