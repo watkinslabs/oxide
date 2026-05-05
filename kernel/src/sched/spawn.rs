@@ -138,6 +138,10 @@ pub unsafe fn spawn_kernel_thread(
         inner.enqueue(Arc::clone(&arc));
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
     }
+    // Per `13§9` wake→resched: a freshly-runnable task may
+    // outrank the current; flag a reschedule so the next
+    // preempt-enable / syscall-return point picks it up.
+    sched::preempt::set_need_resched();
     Ok(arc)
 }
 
@@ -193,5 +197,7 @@ pub unsafe fn spawn_user_thread(
         inner.enqueue(Arc::clone(&arc));
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
     }
+    // Per `13§9` wake→resched: same rule for user-thread spawn.
+    sched::preempt::set_need_resched();
     Ok(arc)
 }
