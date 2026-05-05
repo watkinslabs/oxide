@@ -471,3 +471,27 @@ fn inode_default_truncate_returns_erofs() {
     let i = MemFile::new(1);
     assert_eq!(i.truncate(0), Err(VfsError::Erofs));
 }
+
+#[test]
+fn trim_hostname_strips_trailing_newline_and_nul() {
+    use crate::path::trim_hostname;
+    assert_eq!(trim_hostname(b"host\n",  64), b"host");
+    assert_eq!(trim_hostname(b"host\0",  64), b"host");
+    assert_eq!(trim_hostname(b"host\n\0", 64), b"host");
+    assert_eq!(trim_hostname(b"plain",   64), b"plain");
+}
+
+#[test]
+fn trim_hostname_clamps_to_max() {
+    use crate::path::trim_hostname;
+    let long = b"abcdefghij";
+    assert_eq!(trim_hostname(long, 4), b"abcd");
+}
+
+#[test]
+fn trim_hostname_empty_stays_empty() {
+    use crate::path::trim_hostname;
+    assert_eq!(trim_hostname(b"",       64), b"");
+    assert_eq!(trim_hostname(b"\n",     64), b"");
+    assert_eq!(trim_hostname(b"\n\n\0", 64), b"");
+}
