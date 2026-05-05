@@ -458,3 +458,50 @@ fn default_termios_populates_full_c_cc_set() {
     assert_eq!(t[TERMIOS_OFF_CC + cc::VMIN],   0);
     assert_eq!(t[TERMIOS_OFF_CC + cc::VEOL],   0);
 }
+
+#[test]
+fn cooked_veof_on_empty_line_terminates_with_zero_bytes() {
+    let mut p = cooked(0);
+    p.master_write(b"\x04"); // ^D on empty line
+    assert!(p.pending_eof);
+    let mut buf = [0u8; 16];
+    // slave_read returns 0 (EOF), clears the flag.
+    assert_eq!(p.slave_read(&mut buf), 0);
+    assert!(!p.pending_eof, "EOF flag cleared after delivery");
+}
+
+#[test]
+fn cooked_veof_after_partial_line_drains_buffer() {
+    let mut p = cooked(0);
+    p.master_write(b"hi");        // partial line, no \n yet
+    p.master_write(b"\x04");      // ^D — terminates without \n
+    assert!(p.pending_eof);
+    let mut buf = [0u8; 16];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 2);
+    assert_eq!(&buf[..2], b"hi");
+    // Next read sees the empty queue + cleared flag → 0 (EOF still).
+    assert!(!p.pending_eof);
+}
+
+#[test]
+fn cooked_veof_zero_disables_eof_path() {
+    let mut p = cooked(0);
+    p.termios[TERMIOS_OFF_CC + cc::VEOF] = 0;
+    p.master_write(b"\x04");
+    assert!(!p.pending_eof, "VEOF=0 disables");
+    // Byte passes through as data.
+    let mut buf = [0u8; 4];
+    p.master_write(b"\n");
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 2);
+    assert_eq!(&buf[..2], b"\x04\n");
+}
+
+#[test]
+fn cooked_veof_does_not_fire_in_raw_mode() {
+    let mut p = Pair::new(0); // raw
+    p.termios[TERMIOS_OFF_CC + cc::VEOF] = 0x04;
+    p.master_write(b"\x04");
+    assert!(!p.pending_eof, "raw mode skips ICANON-only EOF path");
+}
