@@ -557,3 +557,50 @@ fn cooked_verase_echoes_destructive_backspace() {
     assert_eq!(n, 3);
     assert_eq!(&echo[..3], b"\x08 \x08");
 }
+
+#[test]
+fn ixon_vstop_pauses_slave_writes() {
+    let mut p = cooked(0);
+    let iflag = read_iflag(&p.termios);
+    p.termios[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4]
+        .copy_from_slice(&(iflag | iflag::IXON).to_le_bytes());
+    // ^S on master pauses output.
+    p.master_write(b"\x13");
+    assert!(p.output_stopped);
+    // slave_write under output_stopped is silently consumed.
+    let n = p.slave_write(b"hello");
+    assert_eq!(n, 5);
+    let mut buf = [0u8; 16];
+    assert_eq!(p.master_read(&mut buf), 0, "no bytes reach master");
+}
+
+#[test]
+fn ixon_vstart_resumes_slave_writes() {
+    let mut p = cooked(0);
+    let iflag = read_iflag(&p.termios);
+    p.termios[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4]
+        .copy_from_slice(&(iflag | iflag::IXON).to_le_bytes());
+    p.master_write(b"\x13");                  // ^S
+    p.slave_write(b"dropped");                // dropped while paused
+    p.master_write(b"\x11");                  // ^Q
+    assert!(!p.output_stopped);
+    p.slave_write(b"ok\n");
+    let mut buf = [0u8; 16];
+    let n = p.master_read(&mut buf);
+    // ONLCR expands \n → \r\n
+    assert_eq!(n, 4);
+    assert_eq!(&buf[..4], b"ok\r\n");
+}
+
+#[test]
+fn ixon_off_passes_ctrl_chars_through() {
+    // IXON is OFF in cooked default — the master_write should let ^S/^Q
+    // through to the slave as data.
+    let mut p = cooked(0);
+    p.master_write(b"\x13\n");
+    let mut buf = [0u8; 8];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 2);
+    assert_eq!(&buf[..2], b"\x13\n");
+    assert!(!p.output_stopped, "no IXON → no flow control");
+}
