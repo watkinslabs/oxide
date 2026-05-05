@@ -17,3 +17,8 @@ extern crate std;
 
 pub mod superblock;
 pub use superblock::{Superblock, EXT4_SUPER_MAGIC, SuperblockError};
+
+pub mod inode;
+pub use inode::{Inode, InodeError, ExtentHeader, Extent,
+                S_IFMT, S_IFREG, S_IFDIR, S_IFLNK,
+                EXT4_EXT_MAGIC, parse_extent_header, parse_inline_extent};
