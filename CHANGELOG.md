@@ -621,3 +621,36 @@ End-of-session-24 verified-green (post test-discipline batch T01–T04):
 - `make test` → **550 passed**, 0 failed (524 → 532 → 540 → 545 → 550 across the four T-series PRs).
 - `make build` both arches green.
 - `make qemu-x86 --features debug-all` → boot trace through all elf-smoke iterations; halts clean.
+
+---
+
+## Session 25 (PRs #340 – #357) — 2026-05-04
+
+**Subject**: PTY ldisc completion + per-task state expansion + dynamic /proc.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #340 | `P3-96-stop-cont` | SIGSTOP/SIGCONT scheduler integration. SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU set state=Stopped + voluntary schedule(); SIGCONT delivery in sys_kill calls wake_if_stopped → state=Runnable + re-enqueue. |
+| #341 | `P3-97-pty-sigint-smoke` | Boot-time pty-sigint-chain smoke validates ^C → cooked-mode → pending_sigint → foreground_pgid → tasks_in_pgrp → SIGINT bit, all in-kernel. |
+| #342 | `P3-99-stop-cont-smoke` | Hosted try_wake_stopped(&Task) → bool helper; kernel wake_if_stopped delegates. +2 tests. |
+| #343 | `P3-100-pty-full-termios` | Pair stores full Linux struct termios (60 B); TCGETS/TCSETS round-trip whole image; c_cc[VINTR] honored. +6 tests. |
+| #344 | `P3-101-winsize` | TIOCSWINSZ + Winsize on Pair; SIGWINCH posted to foreground_pgid on change. +5 tests. |
+| #345 | `P3-102-ldisc-flags` | c_iflag (ICRNL/INLCR/IGNCR) + c_oflag (OPOST/ONLCR/OCRNL) line-discipline translation. Default ICRNL + OPOST/ONLCR. +6 tests. |
+| #346 | `P3-103-per-task-cwd` | Task gains cwd: UnsafeCell<String>; chdir/getcwd read+write the slot; fork inherits per POSIX. |
+| #347 | `P3-104-proc-cwd-real` | /proc/<tid>/cwd readlink reports real cwd. |
+| #348 | `P3-105-relative-paths` | New vfs::path::resolve_against_cwd helper. +3 tests. |
+| #349 | `P3-106-o-trunc` | O_TRUNC + sys_truncate / sys_ftruncate. Inode::truncate trait method. |
+| #350 | `P3-107-poll-pty-readiness` | Pair::master_readable / slave_readable; sys_poll reports real POLLIN for pty fds. +3 tests. |
+| #351 | `P3-108-proc-comm` | /proc/<tid>/comm + /proc/self/comm task-name files. |
+| #352 | `P3-109-task-environ` | Task gains environ slot at execve; /proc/<tid>/environ + /proc/self/environ exposed. |
+| #353 | `P3-110-proc-limits` | /proc/self/{limits,io,mountinfo} static-body inodes. |
+| #354 | `P3-111-proc-uptime-dyn` | /proc/uptime reads real monotonic_ns on both arches. |
+| #355 | `P3-112-proc-meminfo-dyn` | /proc/meminfo from live PMM stats (free/allocated). |
+| #356 | `P3-113-proc-loadavg` | /proc/loadavg with live registry tids (run/total + last_pid dynamic). |
+| #357 | `P3-114-wait4-wnohang` | wait4 honors WNOHANG — returns 0 immediately when no zombie ready. |
+
+End-of-session-25 verified-green:
+- `make lint` clean.
+- `make test` → 599 passed, 0 failed (550 → 599).
+- `make build` both arches green.
+- `make qemu-x86 --features debug-all` → all boot-time smokes (pty-smoke, pty-sigint-chain, etc) pass; init-loop iterations exit cleanly.
