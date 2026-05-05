@@ -708,3 +708,8 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
     crate::hostname::set(&buf[..len]);
     0
 }
+
+/// `sys_getuid` / `sys_geteuid` / `sys_getgid` / `sys_getegid`
+/// — slots 102/107/104/108. v1 single-user; always returns 0 (root).
+/// # C: O(1)
+pub fn kernel_sys_getuid_zero(_args: &SyscallArgs) -> i64 { 0 }
