@@ -84,3 +84,71 @@ pub fn enabled_count() -> u32 {
     }
     c
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reset() {
+        // Clear by writing u32::MAX to all slots and zeroing count.
+        // Hosted-test helper only — production never resets the table.
+        for i in 0..MAX_CPUS {
+            IDS[i].store(u32::MAX, Ordering::Release);
+            FLAGS[i].store(0, Ordering::Release);
+        }
+        COUNT.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn empty_table_has_no_cpus() {
+        reset();
+        assert_eq!(count(), 0);
+        assert!(!populated());
+        assert_eq!(enabled_count(), 0);
+        assert!(get(0).is_none());
+    }
+
+    #[test]
+    fn add_cpu_grows_count() {
+        reset();
+        // SAFETY: hosted test owns the table single-threadedly via reset()+sequential calls.
+        unsafe { assert!(add_cpu(0, FLAG_ENABLED)); }
+        // SAFETY: same — sequential second insert under the hosted-test single-thread invariant.
+        unsafe { assert!(add_cpu(1, FLAG_ENABLED)); }
+        assert_eq!(count(), 2);
+        assert_eq!(get(0), Some((0, FLAG_ENABLED)));
+        assert_eq!(get(1), Some((1, FLAG_ENABLED)));
+        assert_eq!(enabled_count(), 2);
+    }
+
+    #[test]
+    fn add_cpu_dedups() {
+        reset();
+        // SAFETY: hosted test owns the table single-threadedly via reset() + sequential calls.
+        unsafe { assert!(add_cpu(7, FLAG_ENABLED)); }
+        // SAFETY: same — second insert with the same id should be rejected.
+        unsafe { assert!(!add_cpu(7, FLAG_ENABLED)); }
+        assert_eq!(count(), 1);
+    }
+
+    #[test]
+    fn add_cpu_rejects_sentinel() {
+        reset();
+        // SAFETY: hosted test owns the table; u32::MAX is the empty-slot sentinel and must be rejected.
+        unsafe { assert!(!add_cpu(u32::MAX, FLAG_ENABLED)); }
+        assert_eq!(count(), 0);
+    }
+
+    #[test]
+    fn enabled_count_filters_disabled() {
+        reset();
+        // SAFETY: hosted test owns the table single-threadedly via reset() + sequential calls.
+        unsafe {
+            assert!(add_cpu(0, FLAG_ENABLED));
+            assert!(add_cpu(1, 0));                       // disabled
+            assert!(add_cpu(2, FLAG_ONLINE_CAPABLE));    // hot-plug-capable
+        }
+        assert_eq!(count(), 3);
+        assert_eq!(enabled_count(), 2);
+    }
+}
