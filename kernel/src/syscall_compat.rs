@@ -49,7 +49,6 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
         | NR_IOPL | NR_IOPERM
         | NR_ADJTIMEX | NR_CLOCK_ADJTIME
-        | NR_SETTIMEOFDAY
                                        => Some(eperm),
 
         // ---- substrate-not-implemented ----
