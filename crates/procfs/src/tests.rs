@@ -189,3 +189,77 @@ fn split_repeated_slashes_and_dots() {
     }).unwrap();
     assert_eq!(fs.read("//proc//./version").unwrap(), b"v0".to_vec());
 }
+
+// ---------------------------------------------------------------------------
+// /proc/... path parser per `19§4`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_proc_self_dir() {
+    use crate::paths::*;
+    assert_eq!(parse_proc_path("/proc/self"), ProcPath::SelfDir);
+    assert_eq!(parse_proc_path("/proc/self/"), ProcPath::SelfDir);
+}
+
+#[test]
+fn parse_proc_self_child() {
+    use crate::paths::*;
+    assert_eq!(parse_proc_path("/proc/self/status"), ProcPath::SelfChild("status"));
+    assert_eq!(parse_proc_path("/proc/self/fd/0"),   ProcPath::SelfChild("fd/0"));
+}
+
+#[test]
+fn parse_proc_pid_dir() {
+    use crate::paths::*;
+    assert_eq!(parse_proc_path("/proc/1"),    ProcPath::PidDir(1));
+    assert_eq!(parse_proc_path("/proc/1234"), ProcPath::PidDir(1234));
+    assert_eq!(parse_proc_path("/proc/4096/"), ProcPath::PidDir(4096));
+}
+
+#[test]
+fn parse_proc_pid_child() {
+    use crate::paths::*;
+    assert_eq!(parse_proc_path("/proc/42/status"),
+               ProcPath::PidChild(42, "status"));
+    assert_eq!(parse_proc_path("/proc/42/fd/3"),
+               ProcPath::PidChild(42, "fd/3"));
+}
+
+#[test]
+fn parse_proc_non_proc() {
+    use crate::paths::*;
+    assert_eq!(parse_proc_path("/dev/null"),  ProcPath::NotProc);
+    assert_eq!(parse_proc_path("/proc"),      ProcPath::NotProc);
+    assert_eq!(parse_proc_path("/proc/"),     ProcPath::NotProc);
+    // Non-numeric, non-self head is rejected (static /proc/version etc
+    // is handled by the flat devfs registry, not the dynamic resolver).
+    assert_eq!(parse_proc_path("/proc/bogus"), ProcPath::NotProc);
+    assert_eq!(parse_proc_path(""),            ProcPath::NotProc);
+}
+
+#[test]
+fn parse_proc_pid_overflow_rejected() {
+    use crate::paths::*;
+    // u32::MAX + 1
+    assert_eq!(parse_proc_path("/proc/4294967296/status"), ProcPath::NotProc);
+}
+
+#[test]
+fn child_under_root() {
+    use crate::paths::*;
+    assert_eq!(child_under("/", "/null"),     Some("null"));
+    assert_eq!(child_under("/", "/dev"),      Some("dev"));
+    assert_eq!(child_under("/", "/dev/null"), None);
+    assert_eq!(child_under("/", "/"),         None);
+}
+
+#[test]
+fn child_under_nested() {
+    use crate::paths::*;
+    assert_eq!(child_under("/dev", "/dev/null"),     Some("null"));
+    assert_eq!(child_under("/dev", "/dev/tty1"),     Some("tty1"));
+    assert_eq!(child_under("/dev", "/dev/null/x"),   None);
+    assert_eq!(child_under("/dev", "/dev"),          None);
+    assert_eq!(child_under("/dev", "/devnull"),      None);
+    assert_eq!(child_under("/dev", "/etc/passwd"),   None);
+}
