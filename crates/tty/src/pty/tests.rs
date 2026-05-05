@@ -412,3 +412,34 @@ fn cooked_opost_off_disables_onlcr() {
     assert_eq!(n, 2, "OPOST off → no expansion");
     assert_eq!(&buf[..2], b"x\n");
 }
+
+#[test]
+fn master_readable_tracks_s_to_m() {
+    let mut p = Pair::new(0);
+    assert!(!p.master_readable());
+    p.slave_write(b"x");
+    assert!(p.master_readable());
+    let mut buf = [0u8; 4];
+    p.master_read(&mut buf);
+    assert!(!p.master_readable());
+}
+
+#[test]
+fn slave_readable_raw_mode_any_byte() {
+    let mut p = Pair::new(0); // raw
+    assert!(!p.slave_readable());
+    p.master_write(b"x");
+    assert!(p.slave_readable());
+}
+
+#[test]
+fn slave_readable_cooked_requires_newline() {
+    let mut p = cooked(0);
+    p.master_write(b"hi");
+    assert!(!p.slave_readable(), "ICANON needs \\n");
+    p.master_write(b"\n");
+    assert!(p.slave_readable());
+    let mut buf = [0u8; 8];
+    p.slave_read(&mut buf);
+    assert!(!p.slave_readable());
+}

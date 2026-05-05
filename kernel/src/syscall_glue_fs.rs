@@ -769,7 +769,19 @@ pub fn kernel_sys_poll(args: &SyscallArgs) -> i64 {
         let mut revents: i16 = 0;
         if let Ok(file) = fdt.get(fd) {
             if file.inode().file_type() == vfs::FileType::CharDev {
-                revents = events & (POLLIN | POLLOUT);
+                let ino = file.inode().ino();
+                let pty_readable = if (ino & 0xFFFF_0000) == 0x6000_0000 {
+                    let is_master = (ino & 0x8000) == 0;
+                    crate::dev_pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
+                        pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
+                    })
+                } else { None };
+                let inb = match pty_readable {
+                    Some(true)  => POLLIN,
+                    Some(false) => 0,
+                    None        => POLLIN, // non-pty CharDev — keep prior always-ready
+                };
+                revents = events & (inb | POLLOUT);
             }
         }
         // SAFETY: revents at p+6 inside validated range; 2-byte aligned.
