@@ -420,3 +420,25 @@ fn registry_insert_idempotent_overwrites_stale_slot() {
     assert!(alloc::sync::Arc::ptr_eq(&b, &got));
     assert_eq!(crate::registry::live_tids().len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// pgid / sid — POSIX setpgid(2) + setsid(2) state per `28§4`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn task_pgid_and_sid_default_to_tid() {
+    use core::sync::atomic::Ordering;
+    let t = Task::new(42, "t", SchedClass::Normal { weight: 1024 });
+    assert_eq!(t.pgid.load(Ordering::Acquire), 42);
+    assert_eq!(t.sid .load(Ordering::Acquire), 42);
+}
+
+#[test]
+fn task_pgid_can_be_updated() {
+    use core::sync::atomic::Ordering;
+    let t = Task::new(7, "t", SchedClass::Normal { weight: 1024 });
+    t.pgid.store(99, Ordering::Release);
+    assert_eq!(t.pgid.load(Ordering::Acquire), 99);
+    // sid is independent of pgid.
+    assert_eq!(t.sid.load(Ordering::Acquire), 7);
+}
