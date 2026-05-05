@@ -14,6 +14,7 @@ hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }
 kalloc  = { path = "../crates/kalloc" }
 pmm     = { path = "../crates/pmm" }
+procfs  = { path = "../crates/procfs" }
 sched   = { path = "../crates/sched" }
 sync    = { path = "../crates/sync" }
 syscall = { path = "../crates/syscall" }

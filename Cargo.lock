@@ -277,6 +277,7 @@ dependencies = [
  "kalloc",
  "klog",
  "pmm",
+ "procfs",
  "sched",
  "sync",
  "syscall",
