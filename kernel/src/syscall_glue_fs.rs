@@ -119,13 +119,8 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_fcntl(fd, cmd, arg)` — slot 72. v1 honours:
-/// - F_DUPFD / F_DUPFD_CLOEXEC → fd_table dup starting at `arg`
-/// - F_GETFD / F_SETFD → CLOEXEC flag is accepted but not stored
-///   (no exec-time fd_table walk yet)
-/// - F_GETFL → returns O_RDWR (best-effort)
-/// - F_SETFL → accepts O_NONBLOCK / O_APPEND, no-op
-/// Other commands return -EINVAL.
+/// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_GETFD / F_SETFD /
+/// F_GETFL / F_SETFL / F_GETPIPE_SZ / F_SETPIPE_SZ / F_GETOWN / F_SETOWN.
 /// # C: O(N_fds) for F_DUPFD; O(1) otherwise.
 pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_DUPFD:         u64 = 0;
@@ -134,6 +129,10 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_GETFL:         u64 = 3;
     const F_SETFL:         u64 = 4;
     const F_DUPFD_CLOEXEC: u64 = 1030;
+    const F_GETPIPE_SZ:    u64 = 1032;
+    const F_SETPIPE_SZ:    u64 = 1031;
+    const F_GETOWN:        u64 = 9;
+    const F_SETOWN:        u64 = 8;
     let fd  = args.a0 as i32;
     let cmd = args.a1;
     let arg = args.a2;
@@ -158,10 +157,17 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
                 Err(e)  => -(e as i64),
             }
         }
-        F_GETFD => 0,
-        F_SETFD => 0,
+        F_GETFD => match fdt.cloexec(fd) { Ok(true) => 1, Ok(false) => 0, Err(_) => 0 },
+        F_SETFD => {
+            let _ = fdt.set_cloexec(fd, (arg & 1) != 0);
+            0
+        }
         F_GETFL => 2, // O_RDWR
         F_SETFL => 0,
+        F_GETPIPE_SZ => 4096, // matches PipeBuf::PIPE_CAP
+        F_SETPIPE_SZ => 4096, // accept but cap at the v1 fixed size
+        F_GETOWN     => 0,
+        F_SETOWN     => 0,
         _       => -(Errno::Einval.as_i32() as i64),
     }
 }
@@ -367,10 +373,7 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_pread64(fd, buf, cnt, off)` — slot 17. Routes through
-/// fd_table → File::read with the explicit offset honored by
-/// the underlying inode (procfs StaticFileInode uses it; pipes
-/// + chardevs ignore it).
+/// `sys_pread64(fd, buf, cnt, off)` — slot 17.
 /// # C: O(cnt)
 pub fn kernel_sys_pread64(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
