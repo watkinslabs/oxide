@@ -76,6 +76,20 @@ impl Inode for PtySlaveInode {
 
 static NEXT_PTS: AtomicU32 = AtomicU32::new(0);
 
+/// pts_num → LockedPair lookup so ioctl handlers (TIOCSPGRP /
+/// TIOCGPGRP) can reach the pair's foreground_pgid slot from a fd
+/// without an Any-downcast on the Inode trait. Indexed by pts_num
+/// (kept small + dense by NEXT_PTS).
+static PAIRS: sync::Spinlock<alloc::vec::Vec<Arc<LockedPair>>, sync::TaskList>
+    = sync::Spinlock::new(alloc::vec::Vec::new());
+
+/// Resolve a pts_num to its locked pair. Used by ioctl handlers.
+/// # C: O(1)
+pub fn pair_for(pts_num: u32) -> Option<Arc<LockedPair>> {
+    let g = PAIRS.lock();
+    g.get(pts_num as usize).cloned()
+}
+
 /// Allocate a fresh PTY pair. Registers a slave inode at
 /// `/dev/pts/<n>` and returns the master inode + pts number.
 /// Called from sys_open's special-case for `/dev/ptmx`.
@@ -85,11 +99,26 @@ static NEXT_PTS: AtomicU32 = AtomicU32::new(0);
 pub fn allocate_pair() -> (InodeRef, u32) {
     let n = NEXT_PTS.fetch_add(1, Ordering::Relaxed);
     let pair = LockedPair::new(n);
+    {
+        let mut g = PAIRS.lock();
+        if g.len() <= n as usize { g.resize_with(n as usize + 1, || Arc::clone(&pair)); }
+        else { g[n as usize] = Arc::clone(&pair); }
+    }
     let master: InodeRef = Arc::new(PtyMasterInode { pair: Arc::clone(&pair) });
     let slave:  InodeRef = Arc::new(PtySlaveInode  { pair });
     let path = format!("/dev/pts/{}", n);
     crate::devfs::register_owned(path, slave);
     (master, n)
+}
+
+impl LockedPair {
+    /// Run `f` against the locked pair. Used by ioctl handlers
+    /// reaching foreground_pgid without an Any-downcast.
+    /// # C: O(closure)
+    pub fn with_pair<R>(&self, f: impl FnOnce(&mut tty::Pair) -> R) -> R {
+        let mut g = self.inner.lock();
+        f(&mut *g)
+    }
 }
 
 /// Boot-time registration: register `/dev/ptmx` (sentinel inode —
