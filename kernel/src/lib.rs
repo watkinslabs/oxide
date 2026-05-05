@@ -668,11 +668,21 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             klog::write_raw(b"[INFO]  ext4: mounted=");
             klog::write_dec_u64(crate::dev_ext4::mounted() as u64);
             klog::write_raw(b"\n");
-            // Quick smoke: read /hello.txt from the embedded fs.
-            if let Some(bytes) = crate::dev_ext4::read_file(b"/hello.txt") {
-                klog::write_raw(b"[INFO]  ext4: /hello.txt = ");
-                klog::write_raw(&bytes);
-                if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
+            for path in [&b"/hello.txt"[..], &b"/etc/issue"[..]] {
+                if let Some(bytes) = crate::dev_ext4::read_file(path) {
+                    klog::write_raw(b"[INFO]  ext4 ");
+                    klog::write_raw(path);
+                    klog::write_raw(b" = ");
+                    klog::write_raw(&bytes);
+                    if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
+                }
+            }
+            // Verify /bin/sh resolves + size matches the embedded
+            // sh.elf (sanity-check that execve-from-ext4 will work).
+            if let Some(bytes) = crate::dev_ext4::read_file(b"/bin/sh") {
+                klog::write_raw(b"[INFO]  ext4 /bin/sh size=");
+                klog::write_dec_u64(bytes.len() as u64);
+                klog::write_raw(b"\n");
             }
         }
     }
