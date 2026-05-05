@@ -233,6 +233,26 @@ const LOADAVG_BODY: &[u8] = b"0.00 0.00 0.00 1/1 1\n";
 const STAT_BODY:    &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
 const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
 const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
+const MOUNTINFO_BODY: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n2 1 0:2 / /dev rw - devtmpfs devtmpfs rw\n3 1 0:3 / /proc rw - proc proc rw\n4 1 0:4 / /tmp rw - tmpfs tmpfs rw\n";
+const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
+const LIMITS_BODY:  &[u8] = b"\
+Limit                     Soft Limit           Hard Limit           Units\n\
+Max cpu time              unlimited            unlimited            seconds\n\
+Max file size             unlimited            unlimited            bytes\n\
+Max data size             unlimited            unlimited            bytes\n\
+Max stack size            8388608              unlimited            bytes\n\
+Max core file size        0                    unlimited            bytes\n\
+Max resident set          unlimited            unlimited            bytes\n\
+Max processes             unlimited            unlimited            processes\n\
+Max open files            1024                 4096                 files\n\
+Max locked memory         65536                65536                bytes\n\
+Max address space         unlimited            unlimited            bytes\n\
+Max file locks            unlimited            unlimited            locks\n\
+Max pending signals       unlimited            unlimited            signals\n\
+Max msgqueue size         819200               819200               bytes\n\
+Max nice priority         0                    0                    \n\
+Max realtime priority     0                    0                    \n\
+Max realtime timeout      unlimited            unlimited            us\n";
 
 /// `/proc/self/environ` per `19§4`. Reads the NUL-joined envp
 /// snapshot taken at execve. Empty for tasks with no execve.
@@ -612,6 +632,12 @@ pub fn init() {
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score_adj",
         StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/self/limits",
+        StaticFileInode::new(LIMITS_BODY) as InodeRef);
+    crate::devfs::register("/proc/self/io",
+        StaticFileInode::new(IO_BODY) as InodeRef);
+    crate::devfs::register("/proc/self/mountinfo",
+        StaticFileInode::new(MOUNTINFO_BODY) as InodeRef);
     crate::devfs::register("/proc/sys/kernel/random/boot_id",
         StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
     crate::devfs::register("/proc/sys/kernel/pid_max",
