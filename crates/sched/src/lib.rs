@@ -15,6 +15,7 @@ extern crate std;
 pub mod cfs;
 pub mod cmdline;
 pub mod registry;
+pub mod rlimit;
 pub mod rt;
 pub mod runqueue;
 pub mod task;
