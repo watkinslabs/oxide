@@ -443,3 +443,18 @@ fn slave_readable_cooked_requires_newline() {
     p.slave_read(&mut buf);
     assert!(!p.slave_readable());
 }
+
+#[test]
+fn default_termios_populates_full_c_cc_set() {
+    let t = default_termios();
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VINTR],  DEFAULT_VINTR);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VQUIT],  DEFAULT_VQUIT);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VERASE], DEFAULT_VERASE);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VKILL],  DEFAULT_VKILL);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VEOF],   DEFAULT_VEOF);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VSUSP],  DEFAULT_VSUSP);
+    // Remaining slots stay zero.
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VTIME],  0);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VMIN],   0);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VEOL],   0);
+}
