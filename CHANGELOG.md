@@ -655,9 +655,15 @@ End-of-session-24 verified-green (post test-discipline batch T01–T04):
 | #363 | `P3-119-sendfile` | Real sys_sendfile via 4 KiB staging buffer. New syscall_glue_xfer.rs. |
 | #364 | `P3-120-sysctls` | 16 more /proc/sys static files (kernel/fs/vm/net/inotify). |
 | #365 | `P3-121-pty-termios-smoke` | Boot-time termios + winsize round-trip smoke. |
+| #367 | `P3-122-real-hostname` | New kernel/src/hostname.rs Spinlock-guarded slot; sys_sethostname (slot 170) wired; /proc/sys/kernel/hostname becomes a writable inode; uname.nodename reads it. |
+| #368 | `P3-123-hostname-tests-extract` | vfs::path::trim_hostname pure helper + 3 hosted tests (newline/NUL strip, max clamp, empty). |
+| #369 | `P3-124-etc-files` | 11 more /etc files (shadow, shells, profile, issue, motd, hosts, services, protocols, ld.so.{cache,conf}, timezone). |
+| #370 | `P3-125-proc-cmdline-extras` | 18 more /proc kernel-info files (cmdline, devices, modules, vmstat, interrupts, etc). |
 
 End-of-session-25 verified-green:
 - `make lint` clean.
-- `make test` → 599 passed, 0 failed (550 → 599).
+- `make test` → **602 passed**, 0 failed (550 → 599 → 602).
 - `make build` both arches green.
 - `make qemu-x86 --features debug-all` → all boot-time smokes (pty-smoke, pty-sigint-chain, pty-termios-winsize) pass; init-loop iterations exit cleanly.
+
+Surface coverage state at end of session 25: ~280 syscall slots wired; full PTY (ptmx + pts + termios + winsize + ldisc + cooked-mode + ^C → SIGINT to fg pgrp); SIGSTOP/SIGCONT scheduler hooks; per-task pgid/sid + cwd + cmdline + environ slots; 60+ /proc and /etc paths with real or static bodies; wait4 WNOHANG; sys_sendfile; O_TRUNC + ftruncate; uname Linux-compat; real hostname.
