@@ -6,6 +6,13 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
+
+pub mod pty;
+pub use pty::{Pair, Ring, PTY_BUF_BYTES};
+
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
