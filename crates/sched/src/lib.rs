@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod cfs;
+pub mod clock;
 pub mod cmdline;
 pub mod registry;
 pub mod rlimit;
