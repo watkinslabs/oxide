@@ -229,6 +229,19 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
         unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
+        // SMP bring-up scaffolding: capture the boot CPU id (HAL
+        // returns 0 until SMP enumeration lands; that's still the
+        // correct value for the boot CPU on every platform we run).
+        // Subsequent AP-startup PRs read cpu_topology + boot_cpu_id
+        // to drive INIT-IPI / PSCI CPU_ON.
+        // SAFETY: kernel_main runs single-CPU pre-init per fn contract; this is the sole writer to BOOT_CPU_ID before any AP observes it.
+        unsafe {
+            use hal::CpuOps;
+            #[cfg(target_arch = "x86_64")]
+            crate::smp::set_boot_cpu_id(hal_x86_64::X86CpuOps::current_cpu());
+            #[cfg(target_arch = "aarch64")]
+            crate::smp::set_boot_cpu_id(hal_aarch64::ArmCpuOps::current_cpu());
+        }
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
