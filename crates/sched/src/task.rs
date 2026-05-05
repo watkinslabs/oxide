@@ -248,6 +248,17 @@ pub struct Task {
     /// fires, dispatch tail re-arms `alarm_ns = now + interval` if
     /// non-zero. setitimer(0) sets; getitimer(0) reads.
     pub alarm_interval_ns: AtomicU64,
+
+    /// Per-task umask per POSIX umask(2). Default 0o022. Fork
+    /// inherits. AND-NOT with creation mode in sys_open(O_CREAT)
+    /// once we honor mode bits; v1 stores for getter visibility.
+    pub umask: AtomicU32,
+
+    /// CLONE_CHILD_CLEARTID address per `set_tid_address(2)`. Linux
+    /// stores the user pointer; on thread exit, writes 0 to the
+    /// addr + FUTEX_WAKE_PRIVATE. v1 stores for visibility; no
+    /// per-thread cleanup in the single-thread model.
+    pub clear_child_tid: AtomicU64,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -368,6 +379,8 @@ impl Task {
             spawn_ns:   AtomicU64::new(0),
             alarm_ns:   AtomicU64::new(0),
             alarm_interval_ns: AtomicU64::new(0),
+            umask:      AtomicU32::new(0o022),
+            clear_child_tid: AtomicU64::new(0),
         }
     }
 
