@@ -363,6 +363,12 @@ pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
 /// segments, real auxv consumption).
 pub const HELLO_BLOB: &'static [u8] = include_bytes!("../blobs/hello.elf");
 
+/// Real-musl static-PIE PID 1 init (P5-01). Source at
+/// `userspace/init/init.c`; built via `musl-gcc -static-pie -fPIE
+/// -O2 -nostartfiles`. Replaces the hand-synthesized const-fn
+/// orchestrator as `/init` once `OXIDE_INIT_REAL_MUSL` is on.
+pub const INIT_REAL_BLOB: &'static [u8] = include_bytes!("../blobs/init.elf");
+
 /// P3-66 sa_handler dispatch smoke. Hand-rolled static-PIE ELF
 /// that registers a SIGUSR1 handler, raises SIGUSR1 to itself
 /// via sys_kill, and verifies the handler ran + rt_sigreturn
@@ -594,7 +600,104 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     debug_irq! {
         klog::kinfo!("elf-smoke: user task exited cleanly, boot resumed");
     }
+
+    // P5-01: real-musl PID 1 smoke. Runs after the hand-synthesized
+    // orchestrator init exits. Spawns a fresh user task on
+    // INIT_REAL_BLOB (musl-gcc -static-pie -fPIE). Validates the
+    // ELF loader path on a real toolchain output for /init proper
+    // — distinct from HELLO_BLOB which only proves /bin/hello.
+    // SAFETY: same boot-path discipline as the elf-smoke above;
+    // user_as still active, runqueue still installed; we just
+    // load + spawn one more user task.
+    unsafe {
+        spawn_real_init_smoke();
+    }
+
     halt_forever();
+}
+
+/// P5-01 boot-time smoke: load INIT_REAL_BLOB into a fresh AS
+/// clone + spawn it as a user task + schedule into it. Real-musl
+/// static-PIE binary as the kernel's first true "PID 1" candidate.
+///
+/// # SAFETY: caller is the elf-smoke tail; user_as installed;
+/// runqueue installed; allocator up; per-CPU page set.
+/// # C: O(phdrs) parse + O(log N) enqueue
+/// # Ctx: post-elf-smoke; preempt-off
+unsafe fn spawn_real_init_smoke() {
+    use vmm::{VmaBacking, VmaFlags, VmaProt};
+    use hal::UserVirtAddr;
+
+    let img = match crate::user_as::with(|as_| {
+        let img = load_static_blob(INIT_REAL_BLOB, as_)?;
+        let stack_hint = UserVirtAddr::new(USER_STACK_VA)
+            .ok_or(crate::elf_load::LoadError::Einval)?;
+        as_.mmap(
+            Some(stack_hint), 0x1000,
+            VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+            VmaBacking::Anonymous,
+            true,
+        ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
+        Ok::<_, crate::elf_load::LoadError>(img)
+    }) {
+        Some(Ok(i))  => i,
+        Some(Err(_)) => {
+            debug_irq! { klog::kerror!("real-init: load failed"); }
+            return;
+        }
+        None => {
+            debug_irq! { klog::kerror!("real-init: user_as not initialised"); }
+            return;
+        }
+    };
+
+    let random16 = {
+        use hal::TimerOps;
+        let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        let mut r = [0u8; 16];
+        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
+        r
+    };
+    // SAFETY: same as elf-smoke build_user_stack call above; user_as is the active CR3 per init; demand-fault resolves the new stack page.
+    let new_sp = unsafe {
+        crate::exec_stack::build_user_stack(
+            USER_STACK_TOP,
+            &[b"/init"], &[],
+            &img,
+            &random16,
+        )
+    }.unwrap_or(USER_STACK_TOP);
+
+    let mm = match crate::user_as::clone_global_arc() {
+        Some(a) => a,
+        None    => { debug_irq! { klog::kerror!("real-init: AS clone failed"); } return; }
+    };
+
+    // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range.
+    let task = match unsafe {
+        crate::sched::spawn_user_thread(
+            0xC0DE_0002, "real-init",
+            img.entry.as_u64(),
+            new_sp,
+            mm,
+        )
+    } {
+        Ok(t)  => t,
+        Err(_) => { debug_irq! { klog::kerror!("real-init: spawn failed"); } return; }
+    };
+
+    let fdt = crate::dev_console::init_console_fd_table();
+    // SAFETY: task isn't yet scheduled; we are sole writer.
+    unsafe { task.replace_fd_table(Some(fdt)); }
+    let _task = task;
+
+    debug_irq! { klog::kinfo!("real-init: spawned, scheduling..."); }
+
+    // SAFETY: process ctx; runqueue installed; preempt-off.
+    unsafe { crate::sched::schedule(); }
+
+    debug_irq! { klog::kinfo!("real-init: user task exited cleanly, boot resumed"); }
 }
 
 /// Parse + load + drop to ring 3 directly (no Task wrapper).
