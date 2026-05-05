@@ -220,7 +220,7 @@ fn push_u64(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     while i > 0 { i -= 1; v.push(buf[i]); }
 }
 
-const VERSION_BODY: &[u8] = b"oxide 0.1.0-pre #1 SMP PREEMPT\n";
+const VERSION_BODY: &[u8] = b"Linux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\n";
 
 #[cfg(target_arch = "x86_64")]
 const CPUINFO_BODY: &[u8] = b"processor\t: 0\nmodel name\t: oxide-x86_64\ncpu cores\t: 1\n";
@@ -768,7 +768,7 @@ pub fn smoke_test() {
     use vfs::Inode;
     use hal::kassert;
     let entries: &[(&str, &[u8])] = &[
-        ("/proc/version", b"oxide"),
+        ("/proc/version", b"Linux"),
         ("/proc/cpuinfo", b"processor"),
         ("/proc/meminfo", b"MemTotal:"),
         // /proc/uptime is dynamic now (P3-111) — skipped from smoke (its body is
