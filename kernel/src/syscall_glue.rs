@@ -29,7 +29,6 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     }
 }
 
-/// sys_mmap — anon-only, demand-paged.
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
     match crate::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
@@ -38,7 +37,6 @@ fn kernel_mmap(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// sys_munmap → AddressSpace::munmap.
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
@@ -908,8 +906,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_FORK          => kernel_sys_fork(&args),
-        crate::syscall_nrs::NR_VFORK         => kernel_sys_fork(&args), // v1: vfork == fork
-        crate::syscall_nrs::NR_CLONE         => kernel_sys_fork(&args), // v1: clone(SIGCHLD) only
+        #[cfg(target_arch = "x86_64")]
+        crate::syscall_nrs::NR_VFORK         => kernel_sys_fork(&args),
+        #[cfg(target_arch = "x86_64")]
+        crate::syscall_nrs::NR_CLONE         => kernel_sys_fork(&args),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_EXECVE        => kernel_sys_execve(&args),
         #[cfg(target_arch = "x86_64")]
