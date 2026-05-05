@@ -1,3 +1,48 @@
+# State 2026-05-05 (session 27 EOD — Phase 4 reset: preempt machinery + SMP scaffolding)
+
+## Phase audit + course correction
+
+User asked "are we building by phase?" and "lets fucking do everything in order." Audited against `00§3` master-plan phases. Findings:
+
+- **Phase 1 (PMM):** done.
+- **Phase 2 (VMM+MMU+per-CPU+TLB shootdown):** done.
+- **Phase 3 (slab+GlobalAlloc):** done.
+- **Phase 4 (sched+ctxsw+preempt+SMP):** **NOT done.** Real gaps:
+  - No `preempt_count` / `PreemptGuard` / `preempt_disable/enable` (`13§9`).
+  - No SMP — single CPU only; no AP bring-up; `Runqueue` not in `PerCpu<>`.
+  - No load balancer (`13§11`).
+- Recent `P3-NNN` work was syscall-substrate / userspace prep — phase-5/6 scope under a `P3-` prefix that had drifted into a generic counter.
+
+CLAUDE.md updated: branch `P<n>-` prefix MUST match `00§3` phase number; counter resets per phase; phases sequential per `00§14` rule 3.
+
+Pivoted to Phase 4. Branches restart at `P4-01`.
+
+## Session 27 highlights (PRs #405 – #412)
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 405 | `P4-01-preempt-count` | `crates/sched/src/preempt.rs`: `PreemptGuard` RAII, `preempt_disable/enable_no_check/enable`, `set_need_resched/take_need_resched`, `AtomicPtr`-stored schedule hook. 5 hosted tests. Kernel `install_default_runqueue` registers `schedule()` as the hook. |
+| 406 | `P4-02-preempt-points` | Unifies two `NEED_RESCHED` flags into one. Migrates 8 call sites. Adds the **syscall-return preempt point**: at the tail of `oxide_syscall_dispatch`, if `preempt_count==0 && need_resched`, voluntarily `schedule()` before signal delivery. First real preemption point any user program experiences. |
+| 407 | `P4-03-preempt-disable-sites` | `schedule()` body wrapped in `PreemptGuard` so `preempt_count > 0` across pick + AS-swap + ctxsw, satisfying `13§8` invariant by-construction. `try_wake_stopped` (SIGCONT) sets `need_resched`. |
+| 408 | `P4-04-cpu-topology` | `kernel/src/cpu_topology.rs`: MAX_CPUS=64 `[AtomicU32; N]` table populated by `decode_madt` (LAPIC/x2APIC/GICC). API: `count/populated/get/enabled_count/add_cpu`. |
+| 409 | `P4-05-acpi-ungate` | ACPI MADT walk runs unconditionally (was gated on `debug-acpi`). 116 klog calls swapped for `alog_*` helpers (no-op without feature). R06 log discipline preserved; cpu_topology populates at boot. |
+| 410 | `P4-06-cpu-topology-tests` | 5 hosted tests for cpu_topology: empty/grow/dedup/sentinel-reject/enabled-count filtering. |
+| 411 | `P4-07-smp-scaffold` | `kernel/src/smp.rs`: `BOOT_CPU_ID/ONLINE` atomics, `set_boot_cpu_id/ap_arrived/online_count/enumerate_aps/bring_up_aps`. 2 hosted tests. |
+| 412 | `P4-08-smp-boot-hook` | `smp::set_boot_cpu_id` wired into `kernel_main` post-ACPI via HAL `current_cpu`. enumerate_aps() correctly filters boot CPU at runtime. |
+
+## Phase 4 remaining
+
+- **AP startup x86_64**: trampoline alloc, INIT-IPI/SIPI, AP rust entry, per-CPU base on AP, online flip. (`docs/20`)
+- **AP startup aarch64**: PSCI CPU_ON, AP rust entry. (`docs/21`)
+- **Per-CPU runqueue**: `Runqueue` global → `PerCpu<Runqueue>`. (`13§6`)
+- **IPI for resched**: cross-CPU SELF-IPI / GICv3 sgi.
+- **Load balancer**: periodic + idle-pull + push-on-overload (`13§11`).
+- **1h migration soak** exit gate: 4 vCPU × 1000 tasks (`13§14`).
+
+Phase 5+ on hold per master-plan §3 sequential rule until Phase 4 exits.
+
+---
+
 # State 2026-05-04 (session 24 EOD — M2 follow-ups: cmdline / getdents64 / tid registry)
 
 ## Session 24 highlights (PRs #316 – #323)
