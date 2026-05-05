@@ -505,3 +505,55 @@ fn cooked_veof_does_not_fire_in_raw_mode() {
     p.master_write(b"\x04");
     assert!(!p.pending_eof, "raw mode skips ICANON-only EOF path");
 }
+
+#[test]
+fn cooked_verase_backspaces_unfinished_line() {
+    let mut p = cooked(0);
+    p.master_write(b"abc");
+    p.master_write(b"\x7f");  // DEL = default VERASE
+    p.master_write(b"\n");
+    let mut buf = [0u8; 16];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 3);
+    assert_eq!(&buf[..3], b"ab\n");
+}
+
+#[test]
+fn cooked_verase_does_not_eat_past_newline() {
+    let mut p = cooked(0);
+    p.master_write(b"first\n");
+    p.master_write(b"\x7f"); // backspace: should NOT touch "first\n"
+    p.master_write(b"x\n");
+    let mut buf = [0u8; 32];
+    let n1 = p.slave_read(&mut buf);
+    assert_eq!(n1, 6);
+    assert_eq!(&buf[..6], b"first\n");
+    let n2 = p.slave_read(&mut buf);
+    assert_eq!(n2, 2);
+    assert_eq!(&buf[..2], b"x\n");
+}
+
+#[test]
+fn cooked_vkill_clears_unfinished_line() {
+    let mut p = cooked(0);
+    p.master_write(b"oops");
+    p.master_write(b"\x15"); // ^U = default VKILL
+    p.master_write(b"ok\n");
+    let mut buf = [0u8; 16];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 3);
+    assert_eq!(&buf[..3], b"ok\n");
+}
+
+#[test]
+fn cooked_verase_echoes_destructive_backspace() {
+    let mut p = cooked(0);
+    p.master_write(b"x");
+    let mut echo = [0u8; 8];
+    let _ = p.master_read(&mut echo); // drain echo of 'x'
+    p.master_write(b"\x7f");
+    let n = p.master_read(&mut echo);
+    // Linux ldisc echoes "\b \b" — destructive backspace.
+    assert_eq!(n, 3);
+    assert_eq!(&echo[..3], b"\x08 \x08");
+}
