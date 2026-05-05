@@ -277,6 +277,34 @@ impl Inode for ProcSelfEnvironInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
+/// `/proc/loadavg` per `19§4`. "<1m> <5m> <15m> <run>/<total> <last_pid>\n".
+/// v1: load averages are 0.00 (no decay accounting yet); run/total
+/// pulls live tids from the registry; last_pid reports the same.
+pub struct ProcLoadavgInode;
+
+impl Inode for ProcLoadavgInode {
+    fn ino(&self) -> Ino { 0x3000_1B00 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut body = alloc::vec::Vec::with_capacity(64);
+        let tids = crate::sched::registry::live_tids();
+        let total = tids.len() as u64;
+        let last = tids.last().copied().unwrap_or(1) as u64;
+        push(&mut body, b"0.00 0.00 0.00 ");
+        push_u64(&mut body, total); body.push(b'/');
+        push_u64(&mut body, total); body.push(b' ');
+        push_u64(&mut body, last); body.push(b'\n');
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
 /// `/proc/meminfo` per `19§4`. Reports MemTotal / MemFree / MemAvailable
 /// from the live PMM allocator state in kB.
 pub struct ProcMeminfoInode;
@@ -663,7 +691,7 @@ pub fn init() {
     crate::devfs::register("/proc/cpuinfo",     StaticFileInode::new(CPUINFO_BODY)     as InodeRef);
     crate::devfs::register("/proc/meminfo",     Arc::new(ProcMeminfoInode)             as InodeRef);
     crate::devfs::register("/proc/uptime",      Arc::new(ProcUptimeInode)              as InodeRef);
-    crate::devfs::register("/proc/loadavg",     StaticFileInode::new(LOADAVG_BODY)     as InodeRef);
+    crate::devfs::register("/proc/loadavg",     Arc::new(ProcLoadavgInode)             as InodeRef);
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
