@@ -773,6 +773,25 @@ pub fn init() {
     crate::devfs::register("/proc/loadavg",     Arc::new(ProcLoadavgInode)             as InodeRef);
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
+    crate::devfs::register("/proc/cmdline",     StaticFileInode::new(b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyS0\n") as InodeRef);
+    crate::devfs::register("/proc/devices",     StaticFileInode::new(b"\
+Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices:\n") as InodeRef);
+    crate::devfs::register("/proc/modules",     StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/swaps",       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
+    crate::devfs::register("/proc/diskstats",   StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/partitions",  StaticFileInode::new(b"major minor  #blocks  name\n") as InodeRef);
+    crate::devfs::register("/proc/misc",        StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/buddyinfo",   StaticFileInode::new(b"Node 0, zone Normal      0 0 0 0 0 0 0 0 0 0 0\n") as InodeRef);
+    crate::devfs::register("/proc/zoneinfo",    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef);
+    crate::devfs::register("/proc/vmstat",      StaticFileInode::new(b"nr_free_pages 1024\nnr_zone_inactive_anon 0\nnr_zone_active_anon 0\n") as InodeRef);
+    crate::devfs::register("/proc/interrupts",  StaticFileInode::new(b"           CPU0       \nLOC: 1234   Local timer interrupts\n") as InodeRef);
+    crate::devfs::register("/proc/softirqs",    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
+    crate::devfs::register("/proc/kallsyms",    StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/key-users",   StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/keys",        StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/locks",       StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/crypto",      StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/execdomains", StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
     // /proc root inode for getdents64 enumeration of live tids.
     crate::devfs::register("/proc",              Arc::new(ProcRootInode)        as InodeRef);
