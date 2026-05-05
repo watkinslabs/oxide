@@ -947,6 +947,25 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // a minimal signal frame and route the user back to the handler
     // on resume (sa_restorer issues rt_sigreturn).
     if let Some(p) = crate::syscall_glue_proc::take_lowest_pending() {
+        // Job-control signals come first — their default action is
+        // stop / continue, not terminate, regardless of handler.
+        // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP
+        // 20, TTIN 21, TTOU 22) honour a user handler.
+        if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
+            #[cfg(target_arch = "x86_64")]
+            { crate::sched_stop::stop_until_cont(); }
+            return rv as u64;
+        }
+        if p.sig == 18 {
+            // SIGCONT — default no-op. User handler dispatches normally;
+            // SIG_DFL silently drops.
+            if p.handler != 0 && p.handler != 1 {
+                #[cfg(target_arch = "x86_64")]
+                // SAFETY: dispatch tail; same conditions as the SIG_DFL→handler arm below.
+                unsafe { crate::sig_dispatch::deliver_x86(p.handler, p.restorer, p.sig); }
+            }
+            return rv as u64;
+        }
         match p.handler {
             0 => {
                 // SIG_DFL — Linux per signal(7) defaults: SIGCHLD (17),
