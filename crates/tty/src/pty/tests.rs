@@ -128,7 +128,7 @@ fn pair_buffered_data_survives_hangup() {
 
 fn cooked(pts: u32) -> Pair {
     let mut p = Pair::new(pts);
-    p.lflag = DEFAULT_LFLAG;
+    p.termios = default_termios();
     p
 }
 
@@ -214,4 +214,72 @@ fn raw_mode_no_echo_on_master_write() {
     let mut buf = [0u8; 8];
     // No echo — master_read drains s_to_m which is empty.
     assert_eq!(p.master_read(&mut buf), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Termios byte image — Linux struct termios layout
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_termios_has_canonical_lflag_and_vintr() {
+    let t = default_termios();
+    assert_eq!(read_lflag(&t), DEFAULT_LFLAG);
+    assert_eq!(read_vintr(&t), DEFAULT_VINTR);
+    // No other fields default-set.
+    for off in 0..TERMIOS_OFF_LFLAG { assert_eq!(t[off], 0, "iflag/oflag/cflag must default zero"); }
+    assert_eq!(t[TERMIOS_OFF_LINE], 0);
+}
+
+#[test]
+fn pair_lflag_accessor_reads_termios_bytes() {
+    let mut p = Pair::new(0);
+    assert_eq!(p.lflag(), 0);
+    p.termios = default_termios();
+    assert_eq!(p.lflag(), DEFAULT_LFLAG);
+}
+
+#[test]
+fn pair_vintr_accessor_reads_c_cc() {
+    let mut p = Pair::new(0);
+    p.termios = default_termios();
+    assert_eq!(p.vintr(), DEFAULT_VINTR);
+    // Custom VINTR via c_cc[0] — Linux supports `stty intr ^X`.
+    p.termios[TERMIOS_OFF_CC] = 0x18; // ^X
+    assert_eq!(p.vintr(), 0x18);
+}
+
+#[test]
+fn cooked_vintr_honours_termios_c_cc() {
+    // Re-bind VINTR to ^X and feed it through master_write.
+    let mut p = cooked(0);
+    p.termios[TERMIOS_OFF_CC] = 0x18;
+    p.master_write(b"\x18");
+    assert!(p.pending_sigint, "remapped VINTR must trigger pending_sigint");
+}
+
+#[test]
+fn cooked_vintr_zero_disables_isig_path() {
+    // c_cc[VINTR]==0 disables the dispatch — the byte passes as data.
+    let mut p = cooked(0);
+    p.termios[TERMIOS_OFF_CC] = 0;
+    p.master_write(b"\x03ok\n");
+    assert!(!p.pending_sigint);
+    let mut buf = [0u8; 8];
+    let n = p.slave_read(&mut buf);
+    // ^C reaches the slave as an ordinary byte under VINTR=0.
+    assert_eq!(n, 4);
+    assert_eq!(&buf[..4], b"\x03ok\n");
+}
+
+#[test]
+fn termios_round_trip_through_byte_image() {
+    // TCSETS writes the whole image; TCGETS reads it back.
+    let mut p = Pair::new(0);
+    let mut img = default_termios();
+    img[TERMIOS_OFF_IFLAG] = 0xAA;
+    img[TERMIOS_OFF_OFLAG + 2] = 0x55;
+    img[TERMIOS_OFF_CC + 5] = 0xCC;
+    p.termios = img;
+    assert_eq!(p.termios, img);
+    assert_eq!(p.lflag(), DEFAULT_LFLAG);
 }
