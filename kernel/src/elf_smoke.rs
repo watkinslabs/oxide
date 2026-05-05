@@ -617,10 +617,11 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // host's stdin → UART, so typing at the terminal reaches
     // the shell.
     //
-    // After schedule() returns (shell parked, no other runnable
-    // task), `halt_forever` enters sti+hlt — timer IRQs keep
-    // firing, RX bytes arrive, shell wakes, prompt loop
-    // continues.
+    // Pre-inject a non-interactive smoke sequence so `xtask
+    // qemu` boot logs prove the builtins (ls /proc, cat
+    // /proc/version, then exit). For real interactive use the
+    // user runs the same command and types past the smoke.
+    crate::tty::inject_for_smoke(b"ls /proc\ncat /proc/version\nexit\n");
     // SAFETY: same boot-path discipline as the elf-smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
