@@ -659,11 +659,19 @@ End-of-session-24 verified-green (post test-discipline batch T01–T04):
 | #368 | `P3-123-hostname-tests-extract` | vfs::path::trim_hostname pure helper + 3 hosted tests (newline/NUL strip, max clamp, empty). |
 | #369 | `P3-124-etc-files` | 11 more /etc files (shadow, shells, profile, issue, motd, hosts, services, protocols, ld.so.{cache,conf}, timezone). |
 | #370 | `P3-125-proc-cmdline-extras` | 18 more /proc kernel-info files (cmdline, devices, modules, vmstat, interrupts, etc). |
+| #372 | `P3-126-proc-fd-readlink` | /proc/<tid>/fd/<n> readlink reports File::dentry().name(). |
+| #373 | `P3-127-proc-misc-extras` | 8 more per-pid stubs (wchan, oom_score, loginuid, sessionid, io, limits, personality, etc). |
+| #374 | `P3-128-procfs-static-split` | Per-pid sched/schedstat/autogroup. ProcPidSchedInode synthesizes Linux sched body. |
+| #375 | `P3-129-pty-slave-block-read` | PtySlaveInode::read yield-blocks until slave_readable() (cooked: \\n in queue; raw: any byte). |
+| #376 | `P3-130-pty-master-block-read` | PtyMasterInode::read mirrors slave-side blocking. |
+| #377 | `P3-131-cwd-relative-open` | sys_open resolves relative paths against current.cwd via vfs::path::resolve_against_cwd. |
+| #378 | `P3-132-pty-c-cc-extras` | All 17 c_cc indices defined; default_termios populates ^C/^\\\\/DEL/^U/^D/^Z. |
+| #379 | `P3-133-rich-stat-body` | Full Linux /proc/stat schema (per-cpu, intr, ctxt, btime, etc). |
 
 End-of-session-25 verified-green:
 - `make lint` clean.
-- `make test` → **602 passed**, 0 failed (550 → 599 → 602).
+- `make test` → **603 passed**, 0 failed (550 → 599 → 602 → 603).
 - `make build` both arches green.
-- `make qemu-x86 --features debug-all` → all boot-time smokes (pty-smoke, pty-sigint-chain, pty-termios-winsize) pass; init-loop iterations exit cleanly.
+- `make qemu-x86 --features debug-all` → all boot-time smokes pass; init-loop iterations exit cleanly.
 
-Surface coverage state at end of session 25: ~280 syscall slots wired; full PTY (ptmx + pts + termios + winsize + ldisc + cooked-mode + ^C → SIGINT to fg pgrp); SIGSTOP/SIGCONT scheduler hooks; per-task pgid/sid + cwd + cmdline + environ slots; 60+ /proc and /etc paths with real or static bodies; wait4 WNOHANG; sys_sendfile; O_TRUNC + ftruncate; uname Linux-compat; real hostname.
+Surface coverage state at end of session 25: ~280 syscall slots wired; full PTY (ptmx + pts + 60-byte termios image + winsize + ldisc + cooked-mode + ^C → SIGINT + blocking master/slave reads + 17 c_cc chars); SIGSTOP/SIGCONT scheduler hooks; per-task pgid/sid + cwd + cmdline + environ slots; 80+ /proc and /etc paths; wait4 WNOHANG; sys_sendfile; O_TRUNC + ftruncate; uname Linux-compat; real hostname; cwd-relative path resolution in sys_open. Remaining for v1 shell: musl libc unblock (NX violation in __libc_start_main_stage1), real disk I/O, networking — each requires deeper debugging or major new subsystems.
