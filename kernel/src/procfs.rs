@@ -234,6 +234,29 @@ const STAT_BODY:    &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
 const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
 const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
 
+/// `/proc/self/environ` per `19§4`. Reads the NUL-joined envp
+/// snapshot taken at execve. Empty for tasks with no execve.
+pub struct ProcSelfEnvironInode;
+
+impl Inode for ProcSelfEnvironInode {
+    fn ino(&self) -> Ino { 0x3000_1800 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let cur = crate::sched::current();
+        // SAFETY: environ slot single-mutator per `13§5`.
+        let snap = cur.and_then(|c| unsafe { (*c.environ.get()).clone() });
+        let body: &[u8] = match snap.as_ref() { Some(s) => s.as_bytes(), None => &[] };
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
 /// `/proc/self/comm` per `19§4`. Reads `current().name` plus a
 /// trailing newline. Real Linux also lets userspace `write()` it
 /// to rename the thread; v1 is read-only.
@@ -371,6 +394,7 @@ impl Inode for ProcPidDirInode {
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
+            "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -379,7 +403,7 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps", "comm"];
+        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps", "comm", "environ"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
@@ -397,6 +421,7 @@ pub struct ProcPidCmdlineInode { pub tid: u32 }
 pub struct ProcPidStatInode { pub tid: u32 }
 pub struct ProcPidMapsInode { pub tid: u32 }
 pub struct ProcPidCommInode { pub tid: u32 }
+pub struct ProcPidEnvironInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
@@ -480,6 +505,7 @@ pid_inode_impl!(ProcPidCmdlineInode, pid_cmdline_body, 0x3000_2100);
 pid_inode_impl!(ProcPidStatInode,    pid_stat_body,    0x3000_2200);
 pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
 pid_inode_impl!(ProcPidCommInode,    pid_comm_body,    0x3000_2400);
+pid_inode_impl!(ProcPidEnvironInode, pid_environ_body, 0x3000_2500);
 
 fn pid_comm_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(32);
@@ -487,6 +513,17 @@ fn pid_comm_body(tid: u32) -> alloc::vec::Vec<u8> {
     push(&mut out, task.name.as_bytes());
     out.push(b'\n');
     out
+}
+
+fn pid_environ_body(tid: u32) -> alloc::vec::Vec<u8> {
+    let task = match crate::sched::registry::lookup(tid) {
+        Some(t) => t, None => return alloc::vec::Vec::new(),
+    };
+    // SAFETY: environ slot single-mutator per `13§5`.
+    match unsafe { (*task.environ.get()).clone() } {
+        Some(s) => s.into_bytes(),
+        None    => alloc::vec::Vec::new(),
+    }
 }
 
 /// Resolve dynamic `/proc/<tid>[/<file>]` paths. Returns `None` for
@@ -534,6 +571,7 @@ pub fn init() {
     crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
     crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
     crate::devfs::register("/proc/self/comm",    Arc::new(ProcSelfCommInode)    as InodeRef);
+    crate::devfs::register("/proc/self/environ", Arc::new(ProcSelfEnvironInode) as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
     crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
     crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
