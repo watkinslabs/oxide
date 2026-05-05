@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+block = { path = "../block" }
 
 [features]
 default = []
