@@ -283,3 +283,49 @@ fn termios_round_trip_through_byte_image() {
     assert_eq!(p.termios, img);
     assert_eq!(p.lflag(), DEFAULT_LFLAG);
 }
+
+// ---------------------------------------------------------------------------
+// Winsize — TIOCGWINSZ / TIOCSWINSZ + SIGWINCH dispatch flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn winsize_default_pty_is_24x80() {
+    let ws = Winsize::default_pty();
+    assert_eq!(ws.rows, 24);
+    assert_eq!(ws.cols, 80);
+    assert_eq!(ws.xpixel, 0);
+    assert_eq!(ws.ypixel, 0);
+}
+
+#[test]
+fn winsize_le_bytes_round_trip() {
+    let ws = Winsize { rows: 50, cols: 132, xpixel: 1024, ypixel: 768 };
+    let b = ws.to_le_bytes();
+    // little-endian: rows.lo, rows.hi, cols.lo, cols.hi, ...
+    assert_eq!(b, [50, 0, 132, 0, 0x00, 0x04, 0x00, 0x03]);
+    let back = Winsize::from_le_bytes(&b);
+    assert_eq!(back, ws);
+}
+
+#[test]
+fn pair_winsize_default_pty() {
+    let p = Pair::new(0);
+    assert_eq!(p.winsize, Winsize::default_pty());
+    assert!(!p.pending_sigwinch);
+}
+
+#[test]
+fn pair_set_winsize_flags_pending_on_change() {
+    let mut p = Pair::new(0);
+    p.set_winsize(Winsize { rows: 30, cols: 100, xpixel: 0, ypixel: 0 });
+    assert!(p.pending_sigwinch);
+    assert_eq!(p.winsize.rows, 30);
+    assert_eq!(p.winsize.cols, 100);
+}
+
+#[test]
+fn pair_set_winsize_no_op_when_unchanged() {
+    let mut p = Pair::new(0);
+    p.set_winsize(Winsize::default_pty());
+    assert!(!p.pending_sigwinch, "no-op set must not fire SIGWINCH");
+}
