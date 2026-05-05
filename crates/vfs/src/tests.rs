@@ -440,3 +440,27 @@ fn _unused_silence() {
     let _: AtomicU64 = AtomicU64::new(0);
     let _ = Ordering::Relaxed;
 }
+
+#[test]
+fn resolve_against_cwd_passthrough_absolute() {
+    use crate::path::resolve_against_cwd;
+    assert_eq!(resolve_against_cwd("/tmp", "/etc/passwd").as_deref(), Some("/etc/passwd"));
+    assert_eq!(resolve_against_cwd("/foo", "/").as_deref(), Some("/"));
+}
+
+#[test]
+fn resolve_against_cwd_joins_relative() {
+    use crate::path::resolve_against_cwd;
+    assert_eq!(resolve_against_cwd("/tmp", "x").as_deref(),     Some("/tmp/x"));
+    assert_eq!(resolve_against_cwd("/tmp", "./x").as_deref(),   Some("/tmp/x"));
+    assert_eq!(resolve_against_cwd("/tmp/", "x").as_deref(),    Some("/tmp/x"));
+    assert_eq!(resolve_against_cwd("/", "etc/passwd").as_deref(), Some("/etc/passwd"));
+}
+
+#[test]
+fn resolve_against_cwd_handles_dotdot() {
+    use crate::path::resolve_against_cwd;
+    assert_eq!(resolve_against_cwd("/tmp/sub", "../x").as_deref(), Some("/tmp/x"));
+    assert_eq!(resolve_against_cwd("/tmp", "..").as_deref(),       Some("/"));
+    assert_eq!(resolve_against_cwd("/", ".."), None, "above-root must reject");
+}
