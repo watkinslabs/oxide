@@ -143,6 +143,42 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     LapicStatus::Enabled { apic_id, version }
 }
 
+/// Enable the LAPIC on this AP. Same software-enable + APIC-base
+/// MSR set as `enable` but without the AlreadyOn early-return:
+/// each CPU has its own LAPIC SVR + IA32_APIC_BASE MSR, and the
+/// MMIO at `LAPIC_BASE_VA` aliases to this CPU's LAPIC page.
+/// Returns this CPU's APIC ID + version.
+///
+/// # SAFETY: caller is the AP bring-up path; BSP ran `enable`
+/// previously so `LAPIC_BASE_VA` is non-zero. Single-writer for
+/// this CPU's per-CPU LAPIC state.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn enable_for_ap() -> (u32, u32) {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return (u32::MAX, 0); }
+    // SAFETY: rdmsr/wrmsr on IA32_APIC_BASE are privileged but legal at CPL=0; bit 11 is global enable on this CPU's LAPIC.
+    unsafe {
+        let cur = rdmsr(MSR_IA32_APIC_BASE);
+        if (cur & APIC_GLOBAL_ENABLE) == 0 {
+            wrmsr(MSR_IA32_APIC_BASE, cur | APIC_GLOBAL_ENABLE);
+        }
+    }
+    // SAFETY: `va` aliases this CPU's LAPIC page; SVR offset within.
+    unsafe {
+        let svr_addr = (va + REG_SVR as u64) as *mut u32;
+        let cur = core::ptr::read_volatile(svr_addr);
+        let new = (cur & !0xFF) | SPURIOUS_VECTOR | SVR_ENABLE;
+        core::ptr::write_volatile(svr_addr, new);
+    }
+    // SAFETY: same — read this AP's APIC id + version.
+    unsafe {
+        let id  = core::ptr::read_volatile((va + REG_ID as u64) as *const u32);
+        let ver = core::ptr::read_volatile((va + REG_VERSION as u64) as *const u32);
+        (id >> 24, ver)
+    }
+}
+
 /// Disarm the LAPIC timer (write 0 to the Initial Count reg).
 /// # SAFETY: `enable` ran; LAPIC mapped Device-attr.
 /// # C: O(1)
