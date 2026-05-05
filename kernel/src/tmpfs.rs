@@ -63,6 +63,16 @@ impl Inode for TmpfsFileInode {
         g[off..off + src.len()].copy_from_slice(src);
         Ok(src.len())
     }
+    fn truncate(&self, len: u64) -> KResult<()> {
+        let mut g = self.body.lock();
+        let len = len as usize;
+        if len < g.len() {
+            g.truncate(len);
+        } else if len > g.len() {
+            g.resize(len, 0);
+        }
+        Ok(())
+    }
 }
 
 /// Path → tmpfs inode registry. Same `&str → InodeRef` shape as
