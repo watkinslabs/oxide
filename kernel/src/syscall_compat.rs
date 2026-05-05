@@ -89,7 +89,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_FANOTIFY_INIT | NR_FANOTIFY_MARK
         | NR_RECVMMSG | NR_SENDMMSG
         | NR_PSELECT6 | NR_SELECT
-        | NR_VFORK | NR_CLONE | NR_WAITID
+        | NR_WAITID
         | NR_GET_ROBUST_LIST | NR_CACHESTAT
         | NR_SET_MEMPOLICY | NR_GET_MEMPOLICY
         | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
