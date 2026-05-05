@@ -56,7 +56,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // ---- substrate-not-implemented ----
         // ptrace + xattr + sendfile/splice family.
         NR_PTRACE
-        | NR_SENDFILE | NR_SPLICE | NR_TEE | NR_VMSPLICE
+        | NR_SPLICE | NR_TEE | NR_VMSPLICE
         | NR_COPY_FILE_RANGE
         | NR_MEMFD_CREATE | NR_MEMFD_SECRET
         | NR_PIDFD_OPEN | NR_PIDFD_GETFD | NR_PIDFD_SEND_SIGNAL
