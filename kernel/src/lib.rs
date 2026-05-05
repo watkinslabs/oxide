@@ -602,14 +602,31 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_dec_u64(crate::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
                 klog::write_raw(b"\n");
             }
-            // Load balancer smoke per `13§11`: with idle-only
-            // queues across all CPUs the delta is 0 so balance_once
-            // returns 0, but the call exercises the
-            // global_for/lock/scan path under multi-CPU.
-            // SAFETY: BSP holds boot context; cpu_topology populated; per-CPU runqueues installed.
-            let migrated = unsafe { crate::sched::balance::balance_once() };
+            // Migration smoke per `13§11`: spawn a few CFS kthreads
+            // on BSP so its runqueue has surplus, then balance_once
+            // should migrate at least one to an idle AP.
+            extern "C" fn smp_smoke_thread(_arg: usize) -> ! {
+                loop {
+                    // SAFETY: idle-equivalent loop in kthread context; pause is a hint, hlt parks until next IRQ.
+                    unsafe {
+                        core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
+                        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+                    }
+                }
+            }
+            // SAFETY: BSP at boot post-init; allocator up; runqueue idempotent install brings up BSP slot; spawn enqueues into BSP's slot; smp_smoke_thread loops in pause/hlt forever, no shared state; balance_once is reentrant under per-rq locks.
+            let migrated = unsafe {
+                crate::sched::install_default_runqueue();
+                let _ = crate::sched::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
+                let _ = crate::sched::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
+                let _ = crate::sched::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
+                let m1 = crate::sched::balance::balance_once();
+                let m2 = crate::sched::balance::balance_once();
+                let m3 = crate::sched::balance::balance_once();
+                m1 + m2 + m3
+            };
             debug_boot! {
-                klog::write_raw(b"[INFO]  smp: balance_once: migrated=");
+                klog::write_raw(b"[INFO]  smp: balance_once: migrated_total=");
                 klog::write_dec_u64(migrated as u64);
                 klog::write_raw(b"\n");
             }
