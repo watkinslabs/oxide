@@ -29,3 +29,6 @@ pub use dir::{DirEntry, DirError, next_entry, iter_active, lookup,
 
 pub mod gdt;
 pub use gdt::{GroupDesc, GdtError, desc_size_for, parse_descriptor, locate_inode};
+
+pub mod mount;
+pub use mount::{Mount, MountError};
