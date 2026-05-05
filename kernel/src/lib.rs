@@ -53,6 +53,8 @@ pub mod smp;
 pub mod psci;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 pub mod smp_arm;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod smp_x86;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
@@ -172,6 +174,19 @@ pub struct BootInfo {
     /// bootloader did not surface one (no UEFI / no ACPI on this
     /// platform).
     pub rsdp_pa: u64,
+    /// Limine SMP response (x86_64): pointer to the
+    /// `[*mut limine_proto::SmpInfoX86; smp_count]` array. `0`
+    /// when running outside Limine or when the bootloader didn't
+    /// populate the SMP response. Per `13§11` AP startup uses
+    /// this to park `goto_address` per AP.
+    pub smp_info_array: u64,
+    /// Number of entries in `smp_info_array`. Includes the boot
+    /// CPU; AP startup filters it via `bsp_lapic_id`.
+    pub smp_count: u64,
+    /// Boot CPU's APIC ID per Limine SMP response.
+    pub bsp_lapic_id: u32,
+    /// Padding so the C-layout end is 8-byte-aligned across both arches.
+    pub _pad: u32,
 }
 
 #[repr(C)]
@@ -536,10 +551,21 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
 
-    // SMP bring-up: iterate enumerate_aps() and start each. With
-    // -smp 1 (default) the topology has only the boot CPU so this
-    // is a no-op. With -smp N>=2 the per-arch path issues PSCI
-    // CPU_ON / INIT-IPI for each. Per `13§11`.
+    // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
+    // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
+    //   x86_64: Limine SMP request — store our entry into each
+    //           SmpInfoX86::goto_address so the parked AP jumps in.
+    //   aarch64: PSCI CPU_ON for each enumerate_aps() entry.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        // SAFETY: kernel_main post-init; Limine SMP response in info is bootloader-owned; boot CPU is sole writer for goto_address slots.
+        let started = unsafe { crate::smp_x86::bring_up_aps_x86(info) };
+        debug_boot! {
+            klog::write_raw(b"[INFO]  smp: aps_started=");
+            klog::write_dec_u64(started as u64);
+            klog::write_raw(b"\n");
+        }
+    }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
         // SAFETY: kernel_main post-init; PSCI conduit on QEMU virt is SMC #0; cpu_topology populated by ACPI; boot CPU is sole writer.
