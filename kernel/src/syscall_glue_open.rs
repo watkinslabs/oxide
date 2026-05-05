@@ -47,9 +47,29 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     };
     let resolved = resolve_path_for_open(path_raw);
     let path_str: &str = resolved.as_deref().unwrap_or(path_raw);
+    // Lookup chain. Real-fs paths (/bin /etc /usr /sbin /lib /opt
+    // /home /root) prefer ext4; pseudo paths (/dev /proc /sys /tmp)
+    // stay on the synthetic providers. Per the Linux mount-table
+    // shape: pseudo-fs mounts shadow real-fs paths.
+    let prefer_ext4 = path_str.starts_with("/bin/")
+                   || path_str.starts_with("/etc/")
+                   || path_str.starts_with("/usr/")
+                   || path_str.starts_with("/sbin/")
+                   || path_str.starts_with("/lib/")
+                   || path_str.starts_with("/opt/")
+                   || path_str.starts_with("/home/")
+                   || path_str.starts_with("/root/")
+                   || path_str == "/init"
+                   || path_str == "/hello.txt";
     let inode = if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev_pty::allocate_pair();
         master
+    } else if prefer_ext4 {
+        if let Some(i) = crate::dev_ext4::lookup_inode(path_str.as_bytes()) { i }
+        else if let Some(i) = crate::devfs::lookup(path_str) { i }
+        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
+        else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
+        else { return -(Errno::Enoent.as_i32() as i64); }
     } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
         else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
@@ -99,9 +119,29 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
     };
     let resolved = resolve_path_for_open(s);
     let path_str: &str = resolved.as_deref().unwrap_or(s);
+    // Lookup chain. Real-fs paths (/bin /etc /usr /sbin /lib /opt
+    // /home /root) prefer ext4; pseudo paths (/dev /proc /sys /tmp)
+    // stay on the synthetic providers. Per the Linux mount-table
+    // shape: pseudo-fs mounts shadow real-fs paths.
+    let prefer_ext4 = path_str.starts_with("/bin/")
+                   || path_str.starts_with("/etc/")
+                   || path_str.starts_with("/usr/")
+                   || path_str.starts_with("/sbin/")
+                   || path_str.starts_with("/lib/")
+                   || path_str.starts_with("/opt/")
+                   || path_str.starts_with("/home/")
+                   || path_str.starts_with("/root/")
+                   || path_str == "/init"
+                   || path_str == "/hello.txt";
     let inode = if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev_pty::allocate_pair();
         master
+    } else if prefer_ext4 {
+        if let Some(i) = crate::dev_ext4::lookup_inode(path_str.as_bytes()) { i }
+        else if let Some(i) = crate::devfs::lookup(path_str) { i }
+        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
+        else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
+        else { return -(Errno::Enoent.as_i32() as i64); }
     } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
         else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
