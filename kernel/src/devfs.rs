@@ -133,14 +133,7 @@ impl Inode for PrefixDirInode {
         let mut idx = off as usize;
         while idx < g.len() {
             let (path, inode) = &g[idx];
-            let leaf_opt = if self.prefix == "/" {
-                path.strip_prefix('/').filter(|s| !s.is_empty() && !s.contains('/'))
-            } else {
-                path.strip_prefix(self.prefix)
-                    .and_then(|r| r.strip_prefix('/'))
-                    .filter(|s| !s.is_empty() && !s.contains('/'))
-            };
-            if let Some(name) = leaf_opt {
+            if let Some(name) = procfs::paths::child_under(self.prefix, path) {
                 let next = idx as u64 + 1;
                 if !f(next, name, inode.file_type()) {
                     return Ok(next);

@@ -456,28 +456,29 @@ pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
 
 /// Resolve dynamic `/proc/<tid>[/<file>]` paths. Returns `None` for
 /// non-procfs paths; callers fall back to the static devfs registry.
+/// Path-shape parsing lives in `crates/procfs::paths` (hosted-tested).
 /// # C: O(N_tasks)
 pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
-    let rest = path.strip_prefix("/proc/")?;
-    if rest.is_empty() { return None; }
-    let mut parts = rest.splitn(2, '/');
-    let head = parts.next()?;
-    let tail = parts.next();
-    if head == "self" {
-        return match tail {
-            None => Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
-            Some(_) => None, // /proc/self/<file> already in devfs
-        };
-    }
-    let tid: u32 = head.parse().ok()?;
-    if crate::sched::registry::lookup(tid).is_none() { return None; }
-    match tail {
-        None             => Some(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef),
-        Some("status")   => Some(Arc::new(ProcPidStatusInode  { tid }) as InodeRef),
-        Some("cmdline")  => Some(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
-        Some("stat")     => Some(Arc::new(ProcPidStatInode    { tid }) as InodeRef),
-        Some("maps")     => Some(Arc::new(ProcPidMapsInode    { tid }) as InodeRef),
-        _ => None,
+    use procfs::paths::{parse_proc_path, ProcPath};
+    match parse_proc_path(path) {
+        ProcPath::SelfDir =>
+            Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
+        ProcPath::SelfChild(_) => None, // /proc/self/<file> served by devfs
+        ProcPath::PidDir(tid) => {
+            if crate::sched::registry::lookup(tid).is_none() { return None; }
+            Some(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef)
+        }
+        ProcPath::PidChild(tid, leaf) => {
+            if crate::sched::registry::lookup(tid).is_none() { return None; }
+            match leaf {
+                "status"  => Some(Arc::new(ProcPidStatusInode  { tid }) as InodeRef),
+                "cmdline" => Some(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
+                "stat"    => Some(Arc::new(ProcPidStatInode    { tid }) as InodeRef),
+                "maps"    => Some(Arc::new(ProcPidMapsInode    { tid }) as InodeRef),
+                _ => None,
+            }
+        }
+        ProcPath::NotProc => None,
     }
 }
 
