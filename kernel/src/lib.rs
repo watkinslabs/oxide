@@ -51,6 +51,8 @@ pub mod cpu_topology;
 pub mod smp;
 #[cfg(target_arch = "aarch64")]
 pub mod psci;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub mod smp_arm;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
