@@ -116,52 +116,90 @@ impl Drop for Runqueue {
     }
 }
 
-/// Single-CPU global runqueue cell. `None` until
-/// `install_default_runqueue` runs at boot. v1 single-CPU: one
-/// `Runqueue` for the whole system. SMP wraps this in
-/// `PerCpu<Runqueue>` later.
+/// Per-CPU runqueue array per `13§6`. v1 lookup uses
+/// `hal::current_cpu()` as the index; single-CPU boots stay at
+/// index 0. Same `MAX_CPUS` cap as `crate::cpu_topology` so the
+/// arrays stay 1:1 with the topology table.
 struct GlobalCell(UnsafeCell<Option<Runqueue>>);
-// SAFETY: writes happen exactly once from the boot path before
-// any kthread or IRQ context observes the cell; thereafter it's
-// effectively-immutable (the `Runqueue` itself uses interior
-// atomics + spinlock for state).
+// SAFETY: each cell has a single writer (the CPU that owns the
+// slot, during its own bring-up); thereafter the Runqueue's own
+// interior atomics + spinlock cover concurrent access from that
+// CPU's own contexts. Cross-CPU access happens only in load-balance
+// paths (P4-13+) which take the inner spinlock per `13§11`.
 unsafe impl Sync for GlobalCell {}
-static GLOBAL: GlobalCell = GlobalCell(UnsafeCell::new(None));
 
-/// Borrow the global runqueue, returning `None` if not yet
-/// installed. Callers in IRQ-off context should observe a stable
+const MAX_CPUS: usize = crate::cpu_topology::MAX_CPUS;
+const EMPTY_CELL: GlobalCell = GlobalCell(UnsafeCell::new(None));
+static GLOBALS: [GlobalCell; MAX_CPUS] = [EMPTY_CELL; MAX_CPUS];
+
+#[inline]
+fn this_cpu() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        use hal::CpuOps;
+        hal_x86_64::X86CpuOps::current_cpu() as usize
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        use hal::CpuOps;
+        hal_aarch64::ArmCpuOps::current_cpu() as usize
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// Borrow this CPU's runqueue, returning `None` if not yet
+/// installed. Callers in IRQ-off context observe a stable
 /// reference for the duration of their critical section.
 /// # C: O(1)
 pub fn global() -> Option<&'static Runqueue> {
-    // SAFETY: reads are cross-thread-safe under the
-    // single-writer-at-boot discipline; the returned reference
-    // aliases the static cell's storage.
-    unsafe { (*GLOBAL.0.get()).as_ref() }
+    let cpu = this_cpu();
+    if cpu >= MAX_CPUS { return None; }
+    // SAFETY: this CPU is the single writer for its own slot via
+    // `install_global`; cross-CPU readers go through `global_for`.
+    unsafe { (*GLOBALS[cpu].0.get()).as_ref() }
 }
 
-/// Install the global runqueue. Idempotent only at the
-/// uninitialised boundary; second-and-later calls panic per
-/// `13§2` invariant 7 (idle uniqueness — a re-install would
-/// orphan tasks).
-/// # SAFETY: caller is the boot path; runs single-CPU IRQ-off;
-/// no kthread or IRQ has yet observed `GLOBAL`.
+/// Borrow CPU `cpu`'s runqueue. Cross-CPU lookup for load-balance
+/// paths. Returns `None` if `cpu` is out of range or that CPU's
+/// runqueue isn't yet installed.
+/// # SAFETY: caller observes a `&'static Runqueue` to a slot the
+/// owning CPU may still be writing to during its bring-up;
+/// well-defined only after that CPU has called `install_global`.
+/// # C: O(1)
+pub unsafe fn global_for(cpu: u32) -> Option<&'static Runqueue> {
+    let cpu = cpu as usize;
+    if cpu >= MAX_CPUS { return None; }
+    // SAFETY: per fn contract — caller asserts the target CPU has
+    // completed its install_global before this read.
+    unsafe { (*GLOBALS[cpu].0.get()).as_ref() }
+}
+
+/// Install this CPU's runqueue. Idempotent only at the
+/// uninitialised boundary per `13§2` invariant 7.
+/// # SAFETY: caller is the CPU's bring-up path; single-writer for
+/// its own slot; IRQ-off; no other context on this CPU has yet
+/// observed `GLOBALS[this_cpu()]`.
 /// # C: O(1)
 pub unsafe fn install_global(rq: Runqueue) {
-    // SAFETY: see static-level comment; first writer wins.
+    let cpu = this_cpu();
+    assert!(cpu < MAX_CPUS, "sched::install_global cpu out of range");
+    // SAFETY: see static-level comment; this CPU is the sole writer for its slot.
     unsafe {
-        let slot = GLOBAL.0.get();
+        let slot = GLOBALS[cpu].0.get();
         assert!((*slot).is_none(), "sched::install_global double-init");
         *slot = Some(rq);
     }
 }
 
-/// Tear down the global runqueue. Used by smoke harnesses that
+/// Tear down this CPU's runqueue. Used by smoke harnesses that
 /// install a transient runqueue, run it, then return to boot.
-/// # SAFETY: caller is the boot path post-run; no kthread is
+/// # SAFETY: caller is the CPU's post-run path; no kthread is
 /// current; IRQs masked.
 /// # C: O(N_tasks)
 pub unsafe fn uninstall_global() -> Option<Runqueue> {
-    // SAFETY: same as install_global; called when no kthread is
-    // active.
-    unsafe { (*GLOBAL.0.get()).take() }
+    let cpu = this_cpu();
+    if cpu >= MAX_CPUS { return None; }
+    // SAFETY: this CPU is the sole writer for its own slot.
+    unsafe { (*GLOBALS[cpu].0.get()).take() }
 }
