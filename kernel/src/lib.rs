@@ -578,6 +578,8 @@ pub mod syscall_glue_ioctl;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_xfer;
 #[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_open;
+#[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
 #[cfg(target_os = "oxide-kernel")]
 pub mod hostname;

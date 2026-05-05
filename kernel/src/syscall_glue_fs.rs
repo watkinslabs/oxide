@@ -321,52 +321,6 @@ pub fn kernel_sys_statfs(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_openat(dirfd, path, flags, mode)` — slot 257. v1
-/// ignores `dirfd` (devfs is flat); routes `path` through the
-/// existing devfs-backed `sys_open` glue.
-/// # C: O(N_devfs_entries)
-pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use alloc::sync::Arc;
-    use vfs::{Dentry, File, OpenFlags};
-    let path_ptr = args.a1;
-    let flags    = args.a2 as u32;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
-    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
-    };
-    let s = match core::str::from_utf8(path) {
-        Ok(s)  => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
-    let inode = match crate::devfs::lookup(s) {
-        Some(i) => i,
-        None => match crate::procfs::lookup_dynamic(s) {
-            Some(i) => i,
-            None => match crate::tmpfs::lookup(s) {
-                Some(i) => i,
-                None => return -(Errno::Enoent.as_i32() as i64),
-            },
-        },
-    };
-    let cur = match crate::sched::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let dentry = Dentry::new(None, s.to_string(), Arc::clone(&inode));
-    let oflags = OpenFlags::from_bits_truncate(flags);
-    let file = File::new(inode, dentry, oflags);
-    match fdt.alloc(file) {
-        Ok(fd) => fd as i64,
-        Err(e) => -(e as i64),
-    }
-}
 
 /// `sys_pread64(fd, buf, cnt, off)` — slot 17.
 /// # C: O(cnt)
