@@ -635,7 +635,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // qemu` boot logs prove the builtins (ls /proc, cat
     // /proc/version, then exit). For real interactive use the
     // user runs the same command and types past the smoke.
-    crate::tty::inject_for_smoke(b"ls /proc\ncat /proc/version\nexit\n");
+    crate::tty::inject_for_smoke(b"cat /etc/issue\ncat /hello.txt\nls /proc\nexit\n");
     // SAFETY: same boot-path discipline as the elf-smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
