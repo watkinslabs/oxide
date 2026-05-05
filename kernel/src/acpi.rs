@@ -4,6 +4,25 @@
 // system descriptor table pointer (RSDT for rev 0, XSDT for rev ≥ 2).
 // Full RSDT/XSDT walking + table-by-table decode rides alongside the
 // LAPIC/HPET bring-up that needs them.
+//
+// Logging is gated on `debug-acpi` per `04§4.0` (R06) via the
+// `alog_*` helpers below — the *parsing* runs unconditionally so
+// `cpu_topology` gets populated for SMP enumeration.
+
+#[cfg(feature = "debug-acpi")]
+#[inline] fn alog_raw(b: &[u8]) { klog::write_raw(b); }
+#[cfg(not(feature = "debug-acpi"))]
+#[inline] fn alog_raw(_b: &[u8]) {}
+
+#[cfg(feature = "debug-acpi")]
+#[inline] fn alog_dec(v: u64) { klog::write_dec_u64(v); }
+#[cfg(not(feature = "debug-acpi"))]
+#[inline] fn alog_dec(_v: u64) {}
+
+#[cfg(feature = "debug-acpi")]
+#[inline] fn alog_hex(v: u64) { klog::write_hex_u64(v); }
+#[cfg(not(feature = "debug-acpi"))]
+#[inline] fn alog_hex(_v: u64) {}
 
 /// Outcome of `try_log_rsdp` for callers that want to check.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -69,7 +88,7 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
         sig[i] = unsafe { core::ptr::read_volatile(p.add(i)) };
     }
     if &sig != b"XSDT" {
-        klog::write_raw(b"[ERROR] xsdt: bad signature\n");
+        alog_raw(b"[ERROR] xsdt: bad signature\n");
         return;
     }
     // SAFETY: caller-asserted ≥36 bytes readable; offset 4..8 well within.
@@ -77,13 +96,13 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
     if length < 36 || length > 4096 {
         // Bound the walk so a corrupt length doesn't run us off the
         // ACPI region.
-        klog::write_raw(b"[ERROR] xsdt: implausible length\n");
+        alog_raw(b"[ERROR] xsdt: implausible length\n");
         return;
     }
     let entry_count = ((length as usize) - 36) / 8;
-    klog::write_raw(b"[INFO]  xsdt: ");
-    klog::write_dec_u64(entry_count as u64);
-    klog::write_raw(b" tables\n");
+    alog_raw(b"[INFO]  xsdt: ");
+    alog_dec(entry_count as u64);
+    alog_raw(b" tables\n");
     let mut i = 0usize;
     while i < entry_count {
         // SAFETY: pointer offset is within the XSDT (length-bounded).
@@ -98,13 +117,13 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
         }
         // SAFETY: same; offset 4..8 within the SDT header.
         let tlen = unsafe { read_u32_le(tp.add(4)) };
-        klog::write_raw(b"[INFO]    acpi ");
-        klog::write_raw(&tsig);
-        klog::write_raw(b" pa=");
-        klog::write_hex_u64(entry_pa);
-        klog::write_raw(b" len=");
-        klog::write_dec_u64(tlen as u64);
-        klog::write_raw(b"\n");
+        alog_raw(b"[INFO]    acpi ");
+        alog_raw(&tsig);
+        alog_raw(b" pa=");
+        alog_hex(entry_pa);
+        alog_raw(b" len=");
+        alog_dec(tlen as u64);
+        alog_raw(b"\n");
         // SAFETY: per fn contract — HHDM covers ACPI memory; the
         // table's declared length is read inside each decoder and
         // checked before any further access.
@@ -165,27 +184,27 @@ unsafe fn parse_and_log_rsdp(rsdp_va: u64) -> RsdpResult {
         sig[i] = unsafe { core::ptr::read_volatile(p.add(i)) };
     }
     if &sig != b"RSD PTR " {
-        klog::write_raw(b"[ERROR] rsdp: bad signature\n");
+        alog_raw(b"[ERROR] rsdp: bad signature\n");
         return RsdpResult::BadSignature;
     }
     // SAFETY: caller-asserted ≥36 bytes readable at `p`; offset 15 within ACPI 1.0 RSDP.
     let revision = unsafe { core::ptr::read_volatile(p.add(15)) };
-    klog::write_raw(b"[INFO]  rsdp: signature ok, revision=");
-    klog::write_dec_u64(revision as u64);
+    alog_raw(b"[INFO]  rsdp: signature ok, revision=");
+    alog_dec(revision as u64);
     let xsdt_pa = if revision >= 2 {
         // SAFETY: rev ≥ 2 RSDP is 36 bytes; offset 24..31 within.
         let v = unsafe { read_u64_le(p.add(24)) };
-        klog::write_raw(b" xsdt=");
-        klog::write_hex_u64(v);
+        alog_raw(b" xsdt=");
+        alog_hex(v);
         v
     } else {
         // SAFETY: rev 0 RSDP has 20 bytes; offset 16..19 within.
         let v = unsafe { read_u32_le(p.add(16)) } as u64;
-        klog::write_raw(b" rsdt=");
-        klog::write_hex_u64(v);
+        alog_raw(b" rsdt=");
+        alog_hex(v);
         0  // we don't follow rev-0 RSDT in try_log_xsdt yet
     };
-    klog::write_raw(b"\n");
+    alog_raw(b"\n");
     RsdpResult::Ok { revision, xsdt_pa }
 }
 
@@ -203,14 +222,14 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
     // SAFETY: caller-asserted SDT header readable; offset 4..8 valid.
     let length = unsafe { read_u32_le(p.add(4)) } as usize;
     if length < 44 {
-        klog::write_raw(b"[ERROR]    madt: too short\n");
+        alog_raw(b"[ERROR]    madt: too short\n");
         return;
     }
     // SAFETY: ≥44 bytes per length check; offset 36..40 valid.
     let lapic_pa = unsafe { read_u32_le(p.add(36)) } as u64;
-    klog::write_raw(b"[INFO]    madt lapic_pa=");
-    klog::write_hex_u64(lapic_pa);
-    klog::write_raw(b"\n");
+    alog_raw(b"[INFO]    madt lapic_pa=");
+    alog_hex(lapic_pa);
+    alog_raw(b"\n");
     let mut off = 44usize;
     while off + 2 <= length {
         // SAFETY: per fn contract; we keep the walk strictly within `length` (verified above), so reading the 2-byte type+len header and any subsequent fields up to `elen` stays within the table's declared bounds.
@@ -227,13 +246,13 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let acpi_id = core::ptr::read_volatile(p.add(off + 2));
                     let apic_id = core::ptr::read_volatile(p.add(off + 3));
                     let flags   = read_u32_le(p.add(off + 4));
-                    klog::write_raw(b"[INFO]      lapic acpi_id=");
-                    klog::write_dec_u64(acpi_id as u64);
-                    klog::write_raw(b" apic_id=");
-                    klog::write_dec_u64(apic_id as u64);
-                    klog::write_raw(b" flags=");
-                    klog::write_hex_u64(flags as u64);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      lapic acpi_id=");
+                    alog_dec(acpi_id as u64);
+                    alog_raw(b" apic_id=");
+                    alog_dec(apic_id as u64);
+                    alog_raw(b" flags=");
+                    alog_hex(flags as u64);
+                    alog_raw(b"\n");
                     // SAFETY: boot path; ACPI walk is single-threaded.
                     let _ = crate::cpu_topology::add_cpu(apic_id as u32, flags);
                 }
@@ -241,31 +260,31 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let ioapic_id = core::ptr::read_volatile(p.add(off + 2));
                     let addr      = read_u32_le(p.add(off + 4));
                     let gsi_base  = read_u32_le(p.add(off + 8));
-                    klog::write_raw(b"[INFO]      ioapic id=");
-                    klog::write_dec_u64(ioapic_id as u64);
-                    klog::write_raw(b" pa=");
-                    klog::write_hex_u64(addr as u64);
-                    klog::write_raw(b" gsi_base=");
-                    klog::write_dec_u64(gsi_base as u64);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      ioapic id=");
+                    alog_dec(ioapic_id as u64);
+                    alog_raw(b" pa=");
+                    alog_hex(addr as u64);
+                    alog_raw(b" gsi_base=");
+                    alog_dec(gsi_base as u64);
+                    alog_raw(b"\n");
                 }
                 5 if elen >= 12 => {
                     let addr = read_u64_le(p.add(off + 4));
-                    klog::write_raw(b"[INFO]      lapic-override pa=");
-                    klog::write_hex_u64(addr);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      lapic-override pa=");
+                    alog_hex(addr);
+                    alog_raw(b"\n");
                 }
                 9 if elen >= 16 => {
                     let x2apic_id = read_u32_le(p.add(off + 4));
                     let flags     = read_u32_le(p.add(off + 8));
                     let acpi_uid  = read_u32_le(p.add(off + 12));
-                    klog::write_raw(b"[INFO]      x2apic id=");
-                    klog::write_dec_u64(x2apic_id as u64);
-                    klog::write_raw(b" uid=");
-                    klog::write_dec_u64(acpi_uid as u64);
-                    klog::write_raw(b" flags=");
-                    klog::write_hex_u64(flags as u64);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      x2apic id=");
+                    alog_dec(x2apic_id as u64);
+                    alog_raw(b" uid=");
+                    alog_dec(acpi_uid as u64);
+                    alog_raw(b" flags=");
+                    alog_hex(flags as u64);
+                    alog_raw(b"\n");
                     // SAFETY: boot path; ACPI walk is single-threaded.
                     let _ = crate::cpu_topology::add_cpu(x2apic_id, flags);
                 }
@@ -274,13 +293,13 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let acpi_uid  = read_u32_le(p.add(off + 8));
                     let flags     = read_u32_le(p.add(off + 12));
                     let mpidr     = read_u64_le(p.add(off + 60));
-                    klog::write_raw(b"[INFO]      gicc iface=");
-                    klog::write_dec_u64(cpu_iface as u64);
-                    klog::write_raw(b" uid=");
-                    klog::write_dec_u64(acpi_uid as u64);
-                    klog::write_raw(b" mpidr=");
-                    klog::write_hex_u64(mpidr);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      gicc iface=");
+                    alog_dec(cpu_iface as u64);
+                    alog_raw(b" uid=");
+                    alog_dec(acpi_uid as u64);
+                    alog_raw(b" mpidr=");
+                    alog_hex(mpidr);
+                    alog_raw(b"\n");
                     // ARM mpidr fits 24 low bits in v1 systems we target.
                     // SAFETY: boot path; ACPI walk is single-threaded.
                     let _ = crate::cpu_topology::add_cpu(mpidr as u32, flags);
@@ -289,29 +308,29 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let gic_id   = read_u32_le(p.add(off + 4));
                     let phys     = read_u64_le(p.add(off + 8));
                     let version  = core::ptr::read_volatile(p.add(off + 20));
-                    klog::write_raw(b"[INFO]      gicd id=");
-                    klog::write_dec_u64(gic_id as u64);
-                    klog::write_raw(b" pa=");
-                    klog::write_hex_u64(phys);
-                    klog::write_raw(b" v=");
-                    klog::write_dec_u64(version as u64);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      gicd id=");
+                    alog_dec(gic_id as u64);
+                    alog_raw(b" pa=");
+                    alog_hex(phys);
+                    alog_raw(b" v=");
+                    alog_dec(version as u64);
+                    alog_raw(b"\n");
                 }
                 14 if elen >= 16 => {
                     let phys   = read_u64_le(p.add(off + 4));
                     let length = read_u32_le(p.add(off + 12));
-                    klog::write_raw(b"[INFO]      gicr pa=");
-                    klog::write_hex_u64(phys);
-                    klog::write_raw(b" len=");
-                    klog::write_hex_u64(length as u64);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      gicr pa=");
+                    alog_hex(phys);
+                    alog_raw(b" len=");
+                    alog_hex(length as u64);
+                    alog_raw(b"\n");
                 }
                 _ => {
-                    klog::write_raw(b"[INFO]      madt-entry type=");
-                    klog::write_dec_u64(etype as u64);
-                    klog::write_raw(b" len=");
-                    klog::write_dec_u64(elen as u64);
-                    klog::write_raw(b"\n");
+                    alog_raw(b"[INFO]      madt-entry type=");
+                    alog_dec(etype as u64);
+                    alog_raw(b" len=");
+                    alog_dec(elen as u64);
+                    alog_raw(b"\n");
                 }
             }
         }
@@ -330,7 +349,7 @@ pub unsafe fn decode_hpet(pa: u64, hhdm_offset: u64) {
     // SAFETY: caller-asserted SDT header readable; offset 4..8 within.
     let length = unsafe { read_u32_le(p.add(4)) } as usize;
     if length < 56 {
-        klog::write_raw(b"[ERROR]    hpet: too short\n");
+        alog_raw(b"[ERROR]    hpet: too short\n");
         return;
     }
     // SAFETY: length ≥ 56; offsets 36..52 are within the HPET-specific tail per ACPI 6.5 §5.2.21.
@@ -340,15 +359,15 @@ pub unsafe fn decode_hpet(pa: u64, hhdm_offset: u64) {
         let addr_space = core::ptr::read_volatile(p.add(40));
         let base       = read_u64_le(p.add(44));
         let hpet_num   = core::ptr::read_volatile(p.add(52));
-        klog::write_raw(b"[INFO]    hpet block_id=");
-        klog::write_hex_u64(block_id as u64);
-        klog::write_raw(b" pa=");
-        klog::write_hex_u64(base);
-        klog::write_raw(b" addr_space=");
-        klog::write_dec_u64(addr_space as u64);
-        klog::write_raw(b" hpet_num=");
-        klog::write_dec_u64(hpet_num as u64);
-        klog::write_raw(b"\n");
+        alog_raw(b"[INFO]    hpet block_id=");
+        alog_hex(block_id as u64);
+        alog_raw(b" pa=");
+        alog_hex(base);
+        alog_raw(b" addr_space=");
+        alog_dec(addr_space as u64);
+        alog_raw(b" hpet_num=");
+        alog_dec(hpet_num as u64);
+        alog_raw(b"\n");
     }
 }
 
@@ -365,7 +384,7 @@ pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
     // SAFETY: caller-asserted SDT header readable; offset 4..8 within.
     let length = unsafe { read_u32_le(p.add(4)) } as usize;
     if length < 80 {
-        klog::write_raw(b"[ERROR]    spcr: too short\n");
+        alog_raw(b"[ERROR]    spcr: too short\n");
         return;
     }
     // SAFETY: length ≥ 80; offsets 36..52 within SPCR layout per Microsoft SPCR 4.0.
@@ -377,19 +396,19 @@ pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
         let irq_type   = core::ptr::read_volatile(p.add(52));
         let gsi        = read_u32_le(p.add(54));
         let baud       = core::ptr::read_volatile(p.add(58));
-        klog::write_raw(b"[INFO]    spcr iface=");
-        klog::write_dec_u64(iface as u64);
-        klog::write_raw(b" pa=");
-        klog::write_hex_u64(base);
-        klog::write_raw(b" addr_space=");
-        klog::write_dec_u64(addr_space as u64);
-        klog::write_raw(b" irq_type=");
-        klog::write_dec_u64(irq_type as u64);
-        klog::write_raw(b" gsi=");
-        klog::write_dec_u64(gsi as u64);
-        klog::write_raw(b" baud=");
-        klog::write_dec_u64(baud as u64);
-        klog::write_raw(b"\n");
+        alog_raw(b"[INFO]    spcr iface=");
+        alog_dec(iface as u64);
+        alog_raw(b" pa=");
+        alog_hex(base);
+        alog_raw(b" addr_space=");
+        alog_dec(addr_space as u64);
+        alog_raw(b" irq_type=");
+        alog_dec(irq_type as u64);
+        alog_raw(b" gsi=");
+        alog_dec(gsi as u64);
+        alog_raw(b" baud=");
+        alog_dec(baud as u64);
+        alog_raw(b"\n");
     }
 }
 
@@ -418,15 +437,15 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             let segment    = read_u32_le(p.add(off + 8)) as u16;
             let start_bus  = core::ptr::read_volatile(p.add(off + 10));
             let end_bus    = core::ptr::read_volatile(p.add(off + 11));
-            klog::write_raw(b"[INFO]    mcfg ecam pa=");
-            klog::write_hex_u64(base);
-            klog::write_raw(b" segment=");
-            klog::write_dec_u64(segment as u64);
-            klog::write_raw(b" bus=");
-            klog::write_dec_u64(start_bus as u64);
-            klog::write_raw(b"..");
-            klog::write_dec_u64(end_bus as u64);
-            klog::write_raw(b"\n");
+            alog_raw(b"[INFO]    mcfg ecam pa=");
+            alog_hex(base);
+            alog_raw(b" segment=");
+            alog_dec(segment as u64);
+            alog_raw(b" bus=");
+            alog_dec(start_bus as u64);
+            alog_raw(b"..");
+            alog_dec(end_bus as u64);
+            alog_raw(b"\n");
         }
         i += 1;
     }
@@ -451,17 +470,17 @@ pub unsafe fn decode_gtdt(pa: u64, hhdm_offset: u64) {
         let nsec_el1_gsiv = read_u32_le(p.add(56));
         let virt_el1_gsiv = read_u32_le(p.add(64));
         let el2_gsiv      = read_u32_le(p.add(72));
-        klog::write_raw(b"[INFO]    gtdt cnt_ctrl_pa=");
-        klog::write_hex_u64(cnt_ctrl_base);
-        klog::write_raw(b" sec_el1=");
-        klog::write_dec_u64(sec_el1_gsiv as u64);
-        klog::write_raw(b" nsec_el1=");
-        klog::write_dec_u64(nsec_el1_gsiv as u64);
-        klog::write_raw(b" virt_el1=");
-        klog::write_dec_u64(virt_el1_gsiv as u64);
-        klog::write_raw(b" el2=");
-        klog::write_dec_u64(el2_gsiv as u64);
-        klog::write_raw(b"\n");
+        alog_raw(b"[INFO]    gtdt cnt_ctrl_pa=");
+        alog_hex(cnt_ctrl_base);
+        alog_raw(b" sec_el1=");
+        alog_dec(sec_el1_gsiv as u64);
+        alog_raw(b" nsec_el1=");
+        alog_dec(nsec_el1_gsiv as u64);
+        alog_raw(b" virt_el1=");
+        alog_dec(virt_el1_gsiv as u64);
+        alog_raw(b" el2=");
+        alog_dec(el2_gsiv as u64);
+        alog_raw(b"\n");
     }
 }
 
