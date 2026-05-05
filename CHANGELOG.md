@@ -586,7 +586,7 @@ End-of-session-23 verified-green:
 
 ---
 
-## Session 24 (PRs #316 – #323) — 2026-05-04
+## Session 24 (PRs #316 – #329) — 2026-05-04
 
 **Subject**: M2 follow-ups — real argv in /proc/self/cmdline; real getdents64 over a /tmp directory inode; tid registry plus dynamic per-pid /proc/<tid>/.
 
@@ -600,9 +600,15 @@ End-of-session-23 verified-green:
 | #321 | `P3-84-proc-self-fd` | `ProcSelfFdInode` (FileType::Directory) — readdir emits decimal fd names; lookup parses the name and returns the underlying File's inode. New `FdTable::live_fds()` helper. Bash + lsof + busybox `ls /proc/self/fd` rely on this. |
 | #322 | `P3-85-readlink-real-exe` | `sys_readlink` and `sys_readlinkat` now resolve `/proc/<tid>/{exe,cwd,root}` and `/proc/self/{exe,cwd,root}`. `exe` returns argv[0] from the target task's cmdline snapshot (P3-80); fallback `/init`. cwd/root still report `/`. |
 | #323 | `P3-86-close-range` | Linux 5.9+ slot 436. Walks `FdTable::live_fds()` and closes (or sets cloexec under `CLOSE_RANGE_CLOEXEC`) every fd in [first, last]. Removed from syscall_compat ENOSYS bucket. Modern shells use this to drop inherited fds before exec. |
+| #324 | `C55-state-eod-session-24-final` | Session-24 EOD docs catch-up. |
+| #325 | `P3-87-pipe2-flags` | `pipe2` honors `O_CLOEXEC` (mark both fds cloexec) + `O_NONBLOCK` (recorded in OpenFlags). |
+| #326 | `T01-tests-fdtable-dirent` | **Tests-discipline.** Extracts `linux_dirent64` packing into `crates/vfs::dirent`; `kernel_sys_getdents64` delegates. New tests cover ABI byte layout, padding, overflow-stop, plus `FdTable::live_fds` empty/ascending/skips-holes + close_range close-vs-cloexec semantics. |
+| #327 | `T02-tests-proc-paths` | **Tests-discipline.** Extracts `/proc/<tid>` parser (`parse_proc_path -> ProcPath`) and synthetic-directory `child_under` filter into `crates/procfs::paths`. kernel/src/procfs.rs::lookup_dynamic + kernel/src/devfs.rs::PrefixDirInode delegate. Tests cover SelfDir/SelfChild/PidDir/PidChild/NotProc, u32 overflow, prefix matching at root vs nested. |
+| #328 | `T03-tmpfs-uses-child-under` | **Tests-discipline.** Tmpfs uses `child_under`. New `crates/sched::cmdline::argv_to_cmdline` helper pinned by 5 tests; kernel_sys_execve delegates. |
+| #329 | `T04-registry-promote` | **Tests-discipline.** Promotes the tid → Weak<Task> registry into `crates/sched/src/registry.rs`. 5 hosted tests cover insert/lookup, unknown lookup, Weak decay after Arc drop, live_tids pruning, idempotent overwrite. |
 
-End-of-session-24 verified-green:
+End-of-session-24 verified-green (post test-discipline batch T01–T04):
 - `make lint` clean.
-- `make test` → 524 passed, 0 failed.
+- `make test` → **550 passed**, 0 failed (524 → 532 → 540 → 545 → 550 across the four T-series PRs).
 - `make build` both arches green.
 - `make qemu-x86 --features debug-all` → boot trace through all elf-smoke iterations; halts clean.
