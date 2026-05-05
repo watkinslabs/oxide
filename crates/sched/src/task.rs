@@ -195,6 +195,10 @@ pub struct Task {
     /// `sys_getcwd` reads. Default "/" for boot tasks; fork inherits
     /// from parent. Same single-mutator invariant per `13§5`.
     pub cwd: UnsafeCell<alloc::string::String>,
+
+    /// User-side envp string per `19§4` for `/proc/<pid>/environ`.
+    /// NUL-separated copy of `envp[0..envc]`, written at execve time.
+    pub environ: UnsafeCell<Option<alloc::string::String>>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -309,6 +313,7 @@ impl Task {
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
+            environ:    UnsafeCell::new(None),
         }
     }
 
