@@ -277,6 +277,51 @@ impl Inode for ProcSelfEnvironInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
+/// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
+/// Reports the kernel's monotonic clock in seconds; idle is the
+/// same value (v1 has no separate idle accounting yet).
+pub struct ProcUptimeInode;
+
+impl Inode for ProcUptimeInode {
+    fn ino(&self) -> Ino { 0x3000_1900 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut body = alloc::vec::Vec::with_capacity(48);
+        let ns = uptime_ns();
+        push_uptime(&mut body, ns); body.push(b' ');
+        push_uptime(&mut body, ns); body.push(b'\n');
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn uptime_ns() -> u64 {
+    use hal::TimerOps;
+    hal_x86_64::X86TimerOps::monotonic_ns().0
+}
+#[cfg(target_arch = "aarch64")]
+fn uptime_ns() -> u64 {
+    use hal::TimerOps;
+    hal_aarch64::ArmTimerOps::monotonic_ns().0
+}
+
+fn push_uptime(out: &mut alloc::vec::Vec<u8>, ns: u64) {
+    let total_cs = ns / 10_000_000;
+    let secs = total_cs / 100;
+    let cs   = total_cs % 100;
+    push_u64(out, secs);
+    out.push(b'.');
+    if cs < 10 { out.push(b'0'); }
+    push_u64(out, cs);
+}
+
 /// `/proc/self/comm` per `19§4`. Reads `current().name` plus a
 /// trailing newline. Real Linux also lets userspace `write()` it
 /// to rename the thread; v1 is read-only.
@@ -581,7 +626,7 @@ pub fn init() {
     crate::devfs::register("/proc/version",     StaticFileInode::new(VERSION_BODY)     as InodeRef);
     crate::devfs::register("/proc/cpuinfo",     StaticFileInode::new(CPUINFO_BODY)     as InodeRef);
     crate::devfs::register("/proc/meminfo",     StaticFileInode::new(MEMINFO_BODY)     as InodeRef);
-    crate::devfs::register("/proc/uptime",      StaticFileInode::new(UPTIME_BODY)      as InodeRef);
+    crate::devfs::register("/proc/uptime",      Arc::new(ProcUptimeInode)              as InodeRef);
     crate::devfs::register("/proc/loadavg",     StaticFileInode::new(LOADAVG_BODY)     as InodeRef);
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
@@ -662,7 +707,8 @@ pub fn smoke_test() {
         ("/proc/version", b"oxide"),
         ("/proc/cpuinfo", b"processor"),
         ("/proc/meminfo", b"MemTotal:"),
-        ("/proc/uptime",  b"0.00"),
+        // /proc/uptime is dynamic now (P3-111) — skipped from smoke (its body is
+        // a function of monotonic_ns, not a static prefix).
         ("/sys/kernel/random/uuid",  b"00000000"),
         ("/sys/kernel/random/boot_id", b"00000000"),
         ("/etc/os-release",          b"NAME=oxide"),
