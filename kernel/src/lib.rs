@@ -561,7 +561,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: kernel_main post-init; Limine SMP response in info is bootloader-owned; boot CPU is sole writer for goto_address slots.
         let started = unsafe { crate::smp_x86::bring_up_aps_x86(info) };
         debug_boot! {
-            klog::write_raw(b"[INFO]  smp: aps_started=");
+            klog::write_raw(b"[INFO]  smp: cpus=");
+            klog::write_dec_u64(info.smp_count);
+            klog::write_raw(b" aps_started=");
             klog::write_dec_u64(started as u64);
             klog::write_raw(b"\n");
         }

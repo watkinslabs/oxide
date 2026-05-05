@@ -53,12 +53,33 @@ pub const RSDP_ID: RequestId = RequestId([
     0xc5e7_7b6b_397e_7b43, 0x2763_7845_accd_cf3c,
 ]);
 
-/// `LIMINE_SMP_REQUEST` — SMP CPU enumeration + AP startup hook.
-/// Magic pinned against `limine-protocol/include/limine.h` v12.
+/// `LIMINE_MP_REQUEST` — Limine v9+ renamed SMP→MP. v12 also
+/// changed the second FEATURE magic word to
+/// `0xa0b61b723b6a73e0` (was `0x3a7e3a8a18ab9168` in older
+/// PROTOCOL.md drafts). Pinned against
+/// `limine-protocol/include/limine.h` HEAD.
 pub const SMP_ID: RequestId = RequestId([
     LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
-    0x95a6_7b81_9a1b_857e, 0x3a7e_3a8a_18ab_9168,
+    0x95a6_7b81_9a1b_857e, 0xa0b6_1b72_3b6a_73e0,
 ]);
+
+/// `LIMINE_REQUESTS_START_MARKER` — Limine v9+ uses these markers to
+/// bound the request-scanning region inside the kernel image.
+/// Without them v12+ may skip requests it would otherwise see via
+/// the legacy full-image scan. Place at start of `.limine_requests`
+/// per `36§3`.
+pub const REQUESTS_START_MARKER: [u64; 4] = [
+    0xf6b8_f4b3_9de7_d1ae,
+    0x14c3_68d3_cef7_a05a,
+    0xcacc_fa6e_0f6c_b902,
+    0x40b7_1fa9_aaad_7012,
+];
+
+/// `LIMINE_REQUESTS_END_MARKER` — counterpart to `REQUESTS_START_MARKER`.
+pub const REQUESTS_END_MARKER: [u64; 2] = [
+    0xadc0_e053_1bb1_0d03,
+    0x9572_709f_3176_4c62,
+];
 
 // ---------------------------------------------------------------------------
 // Request structs
@@ -307,7 +328,7 @@ mod tests {
         assert_eq!(SMP_ID.0[0], LIMINE_COMMON_MAGIC_0);
         assert_eq!(SMP_ID.0[1], LIMINE_COMMON_MAGIC_1);
         assert_eq!(SMP_ID.0[2], 0x95a6_7b81_9a1b_857e);
-        assert_eq!(SMP_ID.0[3], 0x3a7e_3a8a_18ab_9168);
+        assert_eq!(SMP_ID.0[3], 0xa0b6_1b72_3b6a_73e0);
     }
 
     #[test]

@@ -35,7 +35,8 @@ use sync::{Spinlock, Tty as UartClass};
 
 use limine::{
     HhdmResponse, MemmapResponse, RequestHeader, RsdpResponse,
-    SmpRequest, HHDM_ID, MEMMAP_ID, REVISION_0, RSDP_ID, SMP_ID,
+    SmpRequest, HHDM_ID, MEMMAP_ID, REQUESTS_END_MARKER,
+    REQUESTS_START_MARKER, REVISION_0, RSDP_ID, SMP_ID,
 };
 #[cfg(feature = "debug-boot")]
 use uart::{Uart16550, COM1};
@@ -116,6 +117,19 @@ static LIMINE_BASE_REVISION: [u64; 3] = [
     0x6a7b384944536bdc,
     6,
 ];
+
+/// Limine v9+ requires explicit markers around the request region;
+/// v12 falls back to a slower full-image scan without them but our
+/// SMP request was missed in that fallback path. The linker places
+/// `.limine_requests.start` first and `.limine_requests.end` last
+/// per the link script.
+#[used]
+#[link_section = ".limine_requests.start"]
+static LIMINE_REQUESTS_START: [u64; 4] = REQUESTS_START_MARKER;
+
+#[used]
+#[link_section = ".limine_requests.end"]
+static LIMINE_REQUESTS_END: [u64; 2] = REQUESTS_END_MARKER;
 
 #[used]
 #[link_section = ".limine_requests"]

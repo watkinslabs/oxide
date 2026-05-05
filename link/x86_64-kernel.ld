@@ -47,6 +47,7 @@ SECTIONS {
         __limine_requests_start = .;
         KEEP(*(.limine_requests.start))
         KEEP(*(.limine_requests))
+        KEEP(*(.limine_requests.end))
         KEEP(*(.limine_requests.*))
         __limine_requests_end = .;
     }
