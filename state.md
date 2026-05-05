@@ -11,6 +11,16 @@
 | 321 | `P3-84-proc-self-fd` | `/proc/self/fd` directory walks `current().fd_table.live_fds()`; lookup parses the fd back to the underlying File's inode. New `FdTable::live_fds()`. |
 | 322 | `P3-85-readlink-real-exe` | `/proc/<tid>/exe` symlink target now reports argv[0] from cmdline snapshot. cwd/root still `/`. |
 | 323 | `P3-86-close-range` | Real `sys_close_range` (slot 436). Modern shells use this for fd cleanup before exec. |
+| 325 | `P3-87-pipe2-flags` | pipe2 honors O_CLOEXEC + O_NONBLOCK. |
+| 326–329 | `T01–T04` | Test-discipline batch: extracted dirent64 packing, /proc path parser, child_under filter, argv→cmdline, tid registry — kernel-side delegates, hosted tests cover invariants (524 → 550 tests). |
+| 331 | `P3-88-pty-core` | `crates/tty/src/pty.rs`: Ring + Pair with hosted tests for queue + direction semantics. |
+| 332 | `P3-89-pty-devices` | `kernel/src/dev_pty.rs` — /dev/ptmx factory + /dev/pts/<n> auto-register. ioctl(TIOCGPTN/TIOCSPTLCK). devfs registry switched to String-keyed for runtime paths. |
+| 333 | `P3-90-pty-smoke` | Boot-time PTY round-trip smoke — `pty-smoke: ok`. |
+| 334 | `P3-91-pgrp-tracking` | Task gains pgid + sid (defaults to tid; fork inherits). Real setpgid/setsid/getpg* wired to registry. |
+| 335 | `P3-92-tiocspgrp` | foreground_pgid on Pair + ioctl(TIOCGPGRP/TIOCSPGRP). |
+| 336 | `P3-93-pty-cooked-mode` | Termios + ldisc: ICANON/ECHO/ISIG default; ^C echoes "^C" + sets pending_sigint; line-buffered slave reads. ioctl(TCGETS/TCSETS) wires c_lflag. |
+| 337 | `P3-94-sigint-pgrp` | tasks_in_pgrp registry helper; ^C now posts SIGINT to every task in foreground_pgid. |
+| 338 | `P3-95-kill-pgrp` | Real POSIX kill(pid, sig) semantics — pid<0 fans to pgrp, pid==0 fans to own pgrp, sig==0 probe. |
 
 524 tests; both arches build clean; spec-lint clean. M2 progress: shells/getty now have real argv visibility, real /tmp directory iteration, and per-pid /proc enumeration. Remaining for full M2: build static busybox; ld.so / dynamic linker; PTY (`/dev/ptmx` + `/dev/pts/*`); job control (tcsetpgrp).
 
