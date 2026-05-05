@@ -501,12 +501,8 @@ pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
     let mut written: usize = 0;
     let mut new_off = off;
     let r = inode.readdir(off, &mut |cookie, name, ft| {
-        let nlen = name.len();
-        // d_ino(8) + d_off(8) + d_reclen(2) + d_type(1) + name + NUL, padded to 8
-        let raw = 8 + 8 + 2 + 1 + nlen + 1;
-        let reclen = (raw + 7) & !7;
+        let reclen = vfs::dirent64_reclen(name.len());
         if written + reclen > count { return false; }
-        let base = dirp + written as u64;
         let dt: u8 = match ft {
             FileType::Regular   => 8,
             FileType::Directory => 4,
@@ -516,20 +512,16 @@ pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
             FileType::Fifo      => 1,
             FileType::Socket    => 12,
         };
-        // SAFETY: validate_user_buf above bounded [dirp, dirp+count) below USER_VA_END; CPL=0; AS active.
+        let mut tmp = [0u8; 320];
+        let n = vfs::dirent64_pack(&mut tmp[..reclen], 0, cookie, dt, name.as_bytes())
+            .expect("dirent64_pack: tmp buf sized to reclen");
+        // SAFETY: validate_user_buf above bounded [dirp, dirp+count) < USER_VA_END; CPL=0; caller's AS active.
         unsafe {
-            core::ptr::write_unaligned(base as *mut u64, 0);
-            core::ptr::write_unaligned((base + 8) as *mut u64, cookie);
-            core::ptr::write_unaligned((base + 16) as *mut u16, reclen as u16);
-            core::ptr::write_volatile((base + 18) as *mut u8, dt);
-            for (i, &b) in name.as_bytes().iter().enumerate() {
-                core::ptr::write_volatile((base + 19 + i as u64) as *mut u8, b);
-            }
-            for i in 0..(reclen - 19 - nlen) {
-                core::ptr::write_volatile((base + 19 + nlen as u64 + i as u64) as *mut u8, 0);
+            for i in 0..n {
+                core::ptr::write_volatile((dirp + (written + i) as u64) as *mut u8, tmp[i]);
             }
         }
-        written += reclen;
+        written += n;
         new_off = cookie;
         true
     });
