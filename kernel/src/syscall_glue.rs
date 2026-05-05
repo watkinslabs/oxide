@@ -41,7 +41,7 @@ fn kernel_munmap(args: &SyscallArgs) -> i64 {
     crate::user_as::glue_munmap(args.a0, args.a1)
 }
 
-/// sys_read via fd_table → File::read; ConsoleInode blocks.
+/// sys_read via fd_table.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
@@ -376,7 +376,6 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     child_tid as i64
 }
 
-/// sys_wait4: reap_one + yield-poll. WNOHANG → 0 if no zombie ready.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -778,6 +777,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_CLOCK_GETRES  => crate::syscall_glue_time::kernel_clock_getres(&args),
         crate::syscall_nrs::NR_CLOCK_SETTIME => crate::syscall_glue_time::kernel_clock_settime(&args),
         crate::syscall_nrs::NR_GETTIMEOFDAY  => crate::syscall_glue_time::kernel_gettimeofday(&args),
+        crate::syscall_nrs::NR_SETTIMEOFDAY  => crate::syscall_glue_time::kernel_settimeofday(&args),
         crate::syscall_nrs::NR_TIME          => crate::syscall_glue_time::kernel_time(&args),
         crate::syscall_nrs::NR_UNAME         => kernel_uname(&args),
         crate::syscall_nrs::NR_SETHOSTNAME   => crate::syscall_glue_proc::kernel_sys_sethostname(&args),
