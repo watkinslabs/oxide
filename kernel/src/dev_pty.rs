@@ -101,6 +101,53 @@ pub fn init() {
     crate::devfs::register("/dev/ptmx", Arc::new(PtmxSentinelInode) as InodeRef);
 }
 
+/// Boot-time smoke for the PTY pair surface. Allocates a fresh
+/// pair via `allocate_pair`, verifies the slave inode is reachable
+/// in devfs at `/dev/pts/<n>`, round-trips bytes both directions,
+/// and confirms the inode-number marker used by ioctl(TIOCGPTN).
+/// # SAFETY: caller is the boot path; PMM up; pre-userspace.
+/// # C: O(1)
+pub fn smoke_test() {
+    use hal::kassert;
+    let (master, n) = allocate_pair();
+    // Master inode must carry the 0x6000_0000 marker + low-15-bit pts_num
+    // — kernel_sys_ioctl(TIOCGPTN) decodes by exactly this scheme.
+    let ino = master.ino();
+    kassert!((ino & 0xFFFF_8000) == 0x6000_0000, "master ino marker");
+    kassert!((ino & 0x7FFF) as u32 == n, "master ino encodes pts_num");
+
+    // Slave registered at /dev/pts/<n>.
+    let mut path: alloc::string::String = alloc::string::String::with_capacity(16);
+    path.push_str("/dev/pts/");
+    push_dec(&mut path, n);
+    let slave = crate::devfs::lookup(&path).expect("pts slave registered");
+    kassert!(slave.file_type() == FileType::CharDev, "pts slave is chardev");
+
+    // Master write → slave read.
+    let n1 = master.write(0, b"keys").expect("master write");
+    kassert!(n1 == 4, "master write len");
+    let mut buf = [0u8; 8];
+    let r1 = slave.read(0, &mut buf).expect("slave read");
+    kassert!(r1 == 4, "slave read len");
+    kassert!(&buf[..4] == b"keys", "master→slave bytes");
+
+    // Slave write → master read.
+    let n2 = slave.write(0, b"output").expect("slave write");
+    kassert!(n2 == 6, "slave write len");
+    let r2 = master.read(0, &mut buf).expect("master read");
+    kassert!(r2 == 6, "master read len");
+    kassert!(&buf[..6] == b"output", "slave→master bytes");
+
+    debug_boot! { klog::write_raw(b"[INFO]  pty-smoke: ok\n"); }
+}
+
+fn push_dec(s: &mut alloc::string::String, mut n: u32) {
+    if n == 0 { s.push('0'); return; }
+    let mut buf = [0u8; 11]; let mut i = 0;
+    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
+    while i > 0 { i -= 1; s.push(buf[i] as char); }
+}
+
 /// Sentinel inode for `/dev/ptmx`. Its only role is to surface a
 /// CharDev type at lookup-time — the open path detects this exact
 /// path and routes to `allocate_pair`. read/write on the sentinel
