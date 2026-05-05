@@ -267,6 +267,7 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         *child.cwd.get() = (*cur.cwd.get()).clone();
         *child.rlimits.get() = *cur.rlimits.get();
     }
+    child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
     // Materialise an Arc<Task> for the parent by bumping its
     // strong count (the runqueue's `current` AtomicPtr already
     // holds one), then downgrade to Weak<Task>. Drops the bumped
