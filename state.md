@@ -1,3 +1,48 @@
+# State 2026-05-05 (session 27 — Phase 6 ext4 mounted in kernel)
+
+## Phase 6 ext4 RO mounted in-kernel (PRs #447, #448)
+
+The ext4 driver is now built into the kernel binary (Linux's
+`CONFIG_EXT4_FS=y` equivalent) and mounted at boot from an
+embedded mke2fs image. Real binaries live on the fs.
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 447 | `P6-07-ext4-mount-in-kernel` | `kernel/src/dev_ext4.rs`: `StaticDisk` (read-only `&'static [u8]`-backed `BlockDevice`) + `init()` that builds an `ext4::Mount` over the embedded `kernel/blobs/rootfs.img` and parks it in an `AtomicPtr`. `lookup_path` / `read_file` / `mounted` expose the mount. Kernel deps gain `block` + `ext4` crates. |
+| 448 | `P6-08-execve-from-ext4` | `rootfs.img` populated with real `/bin/sh`, `/bin/init`, `/etc/issue`, `/hello.txt` via debugfs. `elf_smoke::lookup_blob_by_path` tries ext4 first, falls back to const-blob table. `dev_ext4::read_file` treats sparse-extent holes as zero-fill (POSIX). |
+
+**Boot trace:**
+```
+[INFO]  ext4: mounted=1
+[INFO]  ext4 /hello.txt = hello-from-ext4-mini
+[INFO]  ext4 /etc/issue = oxide-os 0.1
+[INFO]  ext4 /bin/sh size=9984
+```
+
+The 9984-byte ELF at `/bin/sh` is the same real-musl static-PIE binary the kernel currently spawns from a const blob; the read path through ext4 returns identical bytes. Same architecture as Linux mounting an ext4 root and exec'ing /bin/sh.
+
+## Phase ladder (post-session-27 final)
+
+| # | Phase | Status |
+|---|---|---|
+| 0 | build infra | done |
+| 1 | PMM | done |
+| 2 | VMM + MMU + per-CPU + TLB | done |
+| 3 | slab + GlobalAlloc | done |
+| 4 | sched + ctxsw + preempt + SMP | done (multi-CPU verified) |
+| 5 | syscalls + ELF + init + busybox-sh | done (real-musl shell as PID 1, ls/cat builtins against /proc /dev /etc) |
+| 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | **done** — read driver complete, mounted in-kernel, real binaries on disk, execve resolves through it |
+| 7a | block + page cache | partial — `block::BlockDevice` trait + `MemDisk` + `pagecache.rs` exist; ext4 reads bypass the cache today |
+| 7b | ext4 RW + JBD2 | not started |
+| 8 | net | not started (`00§3` budgets 10–15wk) |
+| 9 | hardening, observability, modules | ongoing |
+
+## Module loader vs built-in
+
+oxide v1 uses `CONFIG_EXT4_FS=y`-style built-in driver: ext4 source lives in `crates/ext4/`, gets linked into the kernel binary by Cargo just like Linux's `fs/ext4/*.o` ends up in `vmlinuz`. `docs/18-modules.md` specs a real `.ko`-equivalent runtime loader for v2 — defer until the core kernel is solid (relocations + symbol resolver + late init ordering aren't worth the complexity now).
+
+---
+
 # State 2026-05-05 (session 27 — Phase 6 ext4 RO crate complete)
 
 ## Phase 6 ext4 RO read path verified end-to-end (PRs #437-#442)
