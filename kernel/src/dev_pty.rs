@@ -63,16 +63,16 @@ impl Inode for PtyMasterInode {
         }
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
-        let (n, sigint_target) = {
+        let (n, signals, fg) = {
             let mut g = self.pair.inner.lock();
             let n = g.master_write(buf);
-            let target = if g.pending_sigint && g.foreground_pgid != 0 {
-                g.pending_sigint = false;
-                Some(g.foreground_pgid)
-            } else { None };
-            (n, target)
+            let mut bits = 0u64;
+            if g.pending_sigint  { bits |= 1u64 << 1;  g.pending_sigint  = false; }
+            if g.pending_sigquit { bits |= 1u64 << 2;  g.pending_sigquit = false; }
+            if g.pending_sigtstp { bits |= 1u64 << 19; g.pending_sigtstp = false; }
+            (n, bits, g.foreground_pgid)
         };
-        if let Some(pgid) = sigint_target { post_sigint_pgrp(pgid); }
+        if signals != 0 && fg != 0 { post_signal_pgrp(fg, signals); }
         Ok(n)
     }
 }
@@ -102,16 +102,17 @@ impl Inode for PtySlaveInode {
     }
 }
 
-/// Post SIGINT (signal 2) to every task in `pgid`. Bit 1 in the
-/// 64-bit sigpending mask. Returns the count posted.
+/// Post the bitmap of signal bits to every task in `pgid`. Bits
+/// follow Linux convention (bit (sig-1) for signal `sig`). Used by
+/// the master-side cooked-mode dispatch for SIGINT (^C) / SIGQUIT
+/// (^\\) / SIGTSTP (^Z). Returns the count posted.
 /// # C: O(N_tasks)
-fn post_sigint_pgrp(pgid: u32) -> usize {
+fn post_signal_pgrp(pgid: u32, bits: u64) -> usize {
     use core::sync::atomic::Ordering;
     let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
     let n = tasks.len();
     for t in tasks {
-        // SIGINT = 2; bit (2-1) = 1.
-        t.sigpending.fetch_or(1u64 << 1, Ordering::Release);
+        t.sigpending.fetch_or(bits, Ordering::Release);
     }
     n
 }
@@ -246,21 +247,27 @@ fn sigint_chain_smoke() {
         p.foreground_pgid = fake_tid;
     });
 
-    // Master inode write of VINTR: cooked mode drops the byte,
-    // sets pending_sigint, echoes "^C", then PtyMasterInode::write
-    // posts SIGINT to every task in foreground_pgid.
-    let n1 = master.write(0, &[tty::pty::VINTR]).expect("master write VINTR");
-    kassert!(n1 == 1, "VINTR consumed");
+    // Feed VINTR + VQUIT + VSUSP through master_write in one shot.
+    // Each is consumed in cooked mode and posts the matching signal
+    // bit to every task in foreground_pgid.
+    let n1 = master.write(0, &[tty::pty::DEFAULT_VINTR,
+                               tty::pty::DEFAULT_VQUIT,
+                               tty::pty::DEFAULT_VSUSP]).expect("master write");
+    kassert!(n1 == 3, "all three control chars consumed");
 
     let pending = fake.sigpending.load(Ordering::Acquire);
-    // SIGINT = 2; bit 1.
-    kassert!(pending & (1u64 << 1) != 0, "SIGINT delivered to fg pgrp");
+    kassert!(pending & (1u64 << 1)  != 0, "SIGINT delivered");   // 2-1
+    kassert!(pending & (1u64 << 2)  != 0, "SIGQUIT delivered");  // 3-1
+    kassert!(pending & (1u64 << 19) != 0, "SIGTSTP delivered");  // 20-1
 
-    // pending_sigint flag must have been cleared by the kernel-side write.
-    pair.with_pair(|p| kassert!(!p.pending_sigint, "pending_sigint cleared"));
+    pair.with_pair(|p| {
+        kassert!(!p.pending_sigint,  "pending_sigint cleared");
+        kassert!(!p.pending_sigquit, "pending_sigquit cleared");
+        kassert!(!p.pending_sigtstp, "pending_sigtstp cleared");
+    });
 
     debug_boot! { klog::write_raw(b"[INFO]  pty-sigint-chain: ok\n"); }
-    drop(fake); // task drops; registry's Weak decays naturally
+    drop(fake);
 
     termios_winsize_smoke();
 }
