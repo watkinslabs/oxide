@@ -1,8 +1,4 @@
-// P3-03 batch: filesystem-shaped syscalls split out of `syscall_glue.rs`
-// to keep that file under the 1000-line cap per `08§7`. Routes for
-// `fstat`, `ioctl`, `getcwd`, `chdir`, `fchdir` per docs/15§5 +
-// docs/16. v1 lacks per-task cwd state and a real on-disk filesystem,
-// so most calls synthesise minimal-but-Linux-shaped records.
+// Filesystem-shaped syscalls per docs/15§5 + docs/16, split from syscall_glue.rs.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -12,10 +8,7 @@ use hal::USER_VA_END;
 
 use crate::syscall_glue::validate_user_buf;
 
-/// `sys_fstat(fd, statbuf)` — slot 5. Writes the 144-byte Linux
-/// x86_64 `struct stat` for the open file at `fd`. v1 synthesises
-/// a minimal record from the inode's `file_type()` + `ino()`;
-/// sufficient for libc's `isatty()` (S_IFCHR check).
+/// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)
 pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
@@ -67,10 +60,7 @@ pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_ioctl(fd, request, arg)` — slot 16 per docs/15§5 +
-/// docs/28§5. v1 honours `TIOCGWINSZ` (fake 80×24 winsize for any
-/// CharDev fd) and `TCGETS` (zero termios for libc's `isatty()`
-/// probe). Other requests return `-ENOTTY`.
+/// `sys_ioctl(fd, request, arg)` — slot 16 per `15§5` / `28§5`.
 /// # C: O(1)
 pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCGETS:     u64 = 0x5401;
@@ -78,6 +68,8 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCGWINSZ: u64 = 0x5413;
     const TIOCGPTN:   u64 = 0x80045430; // _IOR('T', 0x30, int)
     const TIOCSPTLCK: u64 = 0x40045431; // _IOW('T', 0x31, int) — accepted as no-op
+    const TIOCGPGRP:  u64 = 0x540F;
+    const TIOCSPGRP:  u64 = 0x5410;
     let fd  = args.a0 as i32;
     let req = args.a1;
     let arg = args.a2;
@@ -134,6 +126,25 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         TIOCSPTLCK => 0, // ptmx unlock — v1 ignores locking
+        TIOCGPGRP | TIOCSPGRP => {
+            // master ino = 0x6000_0000 | n; slave ino = 0x6000_8000 | n.
+            let ino = file.inode().ino();
+            if (ino & 0xFFFF_0000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
+            let pair = match crate::dev_pty::pair_for((ino & 0x7FFF) as u32) {
+                Some(p) => p, None => return -(Errno::Enotty.as_i32() as i64),
+            };
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            if req == TIOCGPGRP {
+                let pgid = pair.with_pair(|p| p.foreground_pgid);
+                // SAFETY: arg validated 4-byte aligned; CPL=0 writes through caller's AS.
+                unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
+            } else {
+                // SAFETY: arg validated 4-byte aligned; CPL=0 reads through caller's AS.
+                let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
+                pair.with_pair(|p| p.foreground_pgid = pgid);
+            }
+            0
+        }
         _      => -(Errno::Enotty.as_i32() as i64),
     }
 }
