@@ -45,6 +45,8 @@ mod debug_macros;
 // inside lib.rs are individually wrapped in `debug_<sub>!`.
 #[cfg(feature = "debug-acpi")]
 pub mod acpi;
+#[cfg(target_os = "oxide-kernel")]
+pub mod cpu_topology;
 #[cfg(target_arch = "aarch64")]
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
