@@ -198,7 +198,50 @@ pub fn smoke_test() {
     kassert!(r2 == 6, "master read len");
     kassert!(&buf[..6] == b"output", "slave→master bytes");
 
+    sigint_chain_smoke();
+
     debug_boot! { klog::write_raw(b"[INFO]  pty-smoke: ok\n"); }
+}
+
+/// Validates the cooked-mode → pending_sigint → foreground_pgid →
+/// SIGINT-on-task chain end-to-end without a userspace blob.
+/// Plants a fake task into the registry, points a fresh pair's
+/// foreground_pgid at it, feeds a VINTR through the master inode,
+/// then asserts SIGINT bit is set on the fake task's sigpending.
+fn sigint_chain_smoke() {
+    use core::sync::atomic::Ordering;
+    use hal::kassert;
+    use sched::{SchedClass, Task};
+
+    let fake_tid = 0xDEAD_C001;
+    let fake = alloc::sync::Arc::new(Task::new(
+        fake_tid, "pty-smoke-target", SchedClass::Normal { weight: 1024 },
+    ));
+    fake.pgid.store(fake_tid, Ordering::Release);
+    crate::sched::registry::insert(&fake);
+
+    let (master, n) = allocate_pair();
+    let pair = pair_for(n).expect("pair_for");
+    pair.with_pair(|p| {
+        kassert!(p.lflag != 0, "cooked default");
+        p.foreground_pgid = fake_tid;
+    });
+
+    // Master inode write of VINTR: cooked mode drops the byte,
+    // sets pending_sigint, echoes "^C", then PtyMasterInode::write
+    // posts SIGINT to every task in foreground_pgid.
+    let n1 = master.write(0, &[tty::pty::VINTR]).expect("master write VINTR");
+    kassert!(n1 == 1, "VINTR consumed");
+
+    let pending = fake.sigpending.load(Ordering::Acquire);
+    // SIGINT = 2; bit 1.
+    kassert!(pending & (1u64 << 1) != 0, "SIGINT delivered to fg pgrp");
+
+    // pending_sigint flag must have been cleared by the kernel-side write.
+    pair.with_pair(|p| kassert!(!p.pending_sigint, "pending_sigint cleared"));
+
+    debug_boot! { klog::write_raw(b"[INFO]  pty-sigint-chain: ok\n"); }
+    drop(fake); // task drops; registry's Weak decays naturally
 }
 
 fn push_dec(s: &mut alloc::string::String, mut n: u32) {
