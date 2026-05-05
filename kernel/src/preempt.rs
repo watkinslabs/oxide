@@ -57,7 +57,19 @@ pub static oxide_preempt_next_ctx: AtomicPtr<u8> = AtomicPtr::new(core::ptr::nul
 /// # C: O(log N) CFS pick + O(1) stage; O(1) when no runqueue.
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn tick_pick_next() {
-    // SAFETY: caller asserts IRQ context, IRQs masked, single-CPU.
+    // Per `13§9` IRQ-exit preemption: only fire schedule_from_irq
+    // when need_resched is set (a tick / wakeup actually requested
+    // a switch) AND preempt_count == 0 (no kernel critical section
+    // is on this CPU's stack). Otherwise we'd thrash on every tick
+    // even when the runnable set hasn't changed.
+    if !sched::preempt::take_need_resched() { return; }
+    if sched::preempt::preempt_count() != 0 {
+        // Re-arm — a preempt-enable will retry once the stack is
+        // safe to switch on.
+        sched::preempt::set_need_resched();
+        return;
+    }
+    // SAFETY: caller asserts IRQ context, IRQs masked, single-CPU; resched gate above ensured this is the right moment to switch.
     unsafe { crate::sched::schedule_from_irq(); }
 }
 
