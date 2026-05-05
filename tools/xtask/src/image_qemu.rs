@@ -43,15 +43,18 @@ pub(crate) fn cmd_qemu(rest: &[String]) -> Result<(), u8> {
         2u8
     })?;
     let format = parse_arg(rest, "--format").unwrap_or_else(|| "disk".into());
+    let smp: u32 = parse_arg(rest, "--smp")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
     cmd_kernel(rest)?;
     let repo = repo_root();
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
     check_vendor(&repo)?;
     match (arch.as_str(), format.as_str()) {
-        ("x86_64",  "disk") => qemu_run_x86_64_disk(&repo, &build_disk_image(&repo, &arch, &kernel_elf)?),
-        ("aarch64", "disk") => qemu_run_aarch64_disk(&repo, &build_disk_image(&repo, &arch, &kernel_elf)?),
-        ("x86_64",  "iso")  => qemu_run_x86_64(&repo,    &build_iso(&repo, &arch, &kernel_elf)?),
-        ("aarch64", "iso")  => qemu_run_aarch64(&repo,   &build_iso(&repo, &arch, &kernel_elf)?),
+        ("x86_64",  "disk") => qemu_run_x86_64_disk(&repo, &build_disk_image(&repo, &arch, &kernel_elf)?, smp),
+        ("aarch64", "disk") => qemu_run_aarch64_disk(&repo, &build_disk_image(&repo, &arch, &kernel_elf)?, smp),
+        ("x86_64",  "iso")  => qemu_run_x86_64(&repo,    &build_iso(&repo, &arch, &kernel_elf)?, smp),
+        ("aarch64", "iso")  => qemu_run_aarch64(&repo,   &build_iso(&repo, &arch, &kernel_elf)?, smp),
         (a, f) => { eprintln!("xtask qemu: unsupported (arch={a}, format={f})"); Err(2) }
     }
 }
@@ -159,7 +162,7 @@ fn build_disk_image(
     }
 
     let cfg = format!(
-        "timeout: 0\nserial: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
+        "timeout: 0\nserial: yes\nverbose: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
     );
     let cfg_path = repo.join(format!("target/oxide-{arch}.limine.conf"));
     fs::write(&cfg_path, &cfg).map_err(|_| 1u8)?;
@@ -254,7 +257,7 @@ fn build_iso(
     // around). We boot via SeaBIOS for x86 to dodge the UEFI
     // quirk; aarch64 stays UEFI but doesn't have a BIOS path.
     let cfg = format!(
-        "timeout: 0\nserial: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
+        "timeout: 0\nserial: yes\nverbose: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
     );
     fs::write(stage.join("EFI/BOOT/limine.conf"),    &cfg).map_err(|_| 1u8)?;
     fs::write(stage.join("boot/limine/limine.conf"), &cfg).map_err(|_| 1u8)?;
@@ -297,8 +300,9 @@ fn build_iso(
     Ok(iso_path)
 }
 
-fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path) -> Result<(), u8> {
+fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32) -> Result<(), u8> {
     let ovmf = repo.join("vendor/firmware/ovmf-x64.fd");
+    let smp_str = smp.to_string();
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
@@ -308,6 +312,7 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path) -> Result
         // feature gating in `targets/x86_64-unknown-oxide-kernel.json`
         // so the kernel runs on plain qemu64 too.
         "-cpu", "Haswell-v4",
+        "-smp", &smp_str,
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
         "-drive", &format!("format=raw,file={}", img.display()),
@@ -316,20 +321,22 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path) -> Result
         "-no-reboot",
         "-no-shutdown",
     ]);
-    eprintln!("xtask qemu: launching qemu-system-x86_64 with GPT disk image (UEFI)");
+    eprintln!("xtask qemu: launching qemu-system-x86_64 with GPT disk image (UEFI), smp={}", smp);
     run(c)
 }
 
-fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path) -> Result<(), u8> {
+fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32) -> Result<(), u8> {
     if which("qemu-system-aarch64").is_none() {
         eprintln!("xtask qemu: qemu-system-aarch64 not on PATH; install qemu-system-aarch64.");
         return Err(2);
     }
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
+    let smp_str = smp.to_string();
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
         "-machine", "virt",
         "-cpu", "cortex-a72",
+        "-smp", &smp_str,
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
         "-drive", &format!("format=raw,file={},if=virtio", img.display()),
@@ -340,11 +347,11 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path) -> Resul
         // chars via `hlt #0xf000` while we're still pre-MMIO.
         "-semihosting-config", "enable=on,target=native",
     ]);
-    eprintln!("xtask qemu: launching qemu-system-aarch64 with GPT disk image (UEFI)");
+    eprintln!("xtask qemu: launching qemu-system-aarch64 with GPT disk image (UEFI), smp={}", smp);
     run(c)
 }
 
-fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path) -> Result<(), u8> {
+fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> Result<(), u8> {
     // SeaBIOS path — Limine ≥ 9 has a UEFI El Torito volume-
     // detection bug ("Could not meaningfully match the boot device
     // handle...") that triggers even with xorriso's
@@ -353,6 +360,7 @@ fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path) -> Result<(),
     // first-class partition rather than a CD's nested boot image —
     // that lands when initramfs / userspace does. SeaBIOS works
     // perfectly for the smoke test.
+    let smp_str = smp.to_string();
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
@@ -362,6 +370,7 @@ fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path) -> Result<(),
         // feature gating in `targets/x86_64-unknown-oxide-kernel.json`
         // so the kernel runs on plain qemu64 too.
         "-cpu", "Haswell-v4",
+        "-smp", &smp_str,
         "-m", "256M",
         "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
@@ -369,20 +378,22 @@ fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path) -> Result<(),
         "-no-reboot",
         "-no-shutdown",
     ]);
-    eprintln!("xtask qemu: launching qemu-system-x86_64 (Ctrl-A x to quit, SeaBIOS)");
+    eprintln!("xtask qemu: launching qemu-system-x86_64 (Ctrl-A x to quit, SeaBIOS), smp={}", smp);
     run(c)
 }
 
-fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path) -> Result<(), u8> {
+fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> Result<(), u8> {
     if which("qemu-system-aarch64").is_none() {
         eprintln!("xtask qemu: qemu-system-aarch64 not on PATH; install your distro's qemu-system-aarch64 package.");
         return Err(2);
     }
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
+    let smp_str = smp.to_string();
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
         "-machine", "virt",
         "-cpu", "cortex-a72",
+        "-smp", &smp_str,
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
         "-cdrom", iso.to_str().unwrap(),
@@ -390,7 +401,7 @@ fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path) -> Result<(),
         "-display", "none",
         "-no-reboot",
     ]);
-    eprintln!("xtask qemu: launching qemu-system-aarch64 (Ctrl-A x to quit)");
+    eprintln!("xtask qemu: launching qemu-system-aarch64 (Ctrl-A x to quit), smp={}", smp);
     run(c)
 }
 
