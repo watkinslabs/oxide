@@ -44,6 +44,19 @@ pub fn live_tids() -> Vec<u32> {
     g.iter().map(|(t, _)| *t).collect()
 }
 
+/// Snapshot every live task whose pgid matches. Used by tty
+/// line discipline + `kill(-pgid)` to fan signals to a process
+/// group per `28§4`.
+/// # C: O(N_tasks)
+pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    g.iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .filter(|t| t.pgid.load(Ordering::Acquire) == pgid)
+        .collect()
+}
+
 /// Test-only: drop every registered entry. Hosted tests share the
 /// process-global slot, so this resets the table between cases.
 /// # C: O(N_tasks)
