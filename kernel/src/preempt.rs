@@ -14,12 +14,21 @@
 // NEXT_CTX = pick_next_task(); else leaves NEXT_CTX null. The asm
 // then either context-switches or drops straight into the epilogue.
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
-/// Set by reschedule events (timer tick, wakeup outranks current,
-/// preempt enable). Drained by the Rust dispatcher when it picks
-/// next, or by the cooperative `tick_yield()` voluntary path.
-pub static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
+// `NEED_RESCHED` lives in `sched::preempt` per `13§9` so the
+// preempt-enable check and IRQ-tail check share one flag. The
+// kernel-side `set_need_resched` / `take_need_resched` shims just
+// forward to that crate.
+
+/// Set need-resched. Called from timer tick + wakeup paths.
+/// # C: O(1)
+pub fn set_need_resched() { sched::preempt::set_need_resched() }
+
+/// Clear need-resched + report prior. Used by the cooperative
+/// `tick_yield()` and IRQ-tail dispatcher.
+/// # C: O(1)
+pub fn clear_need_resched() -> bool { sched::preempt::take_need_resched() }
 
 /// Currently-running task's `Context` record. The IRQ epilogue
 /// passes this as `prev` to `oxide_context_switch` when a switch
@@ -59,12 +68,7 @@ pub unsafe fn tick_pick_next() {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub unsafe fn tick_pick_next() {}
 
-/// Reads + clears the flag. Used by the cooperative `tick_yield()`
-/// voluntary-yield path (safe-point post-`hlt`/`wfi` wake on tasks
-/// that haven't been preempted at the IRQ tail). Real preemption
-/// rides through `oxide_preempt_next_ctx`; this remains as a
-/// fallback for paths that explicitly poll.
+/// Reads + clears the shared `NEED_RESCHED` flag. Forwards to
+/// `sched::preempt::take_need_resched`.
 /// # C: O(1)
-pub fn need_resched() -> bool {
-    NEED_RESCHED.swap(false, Ordering::AcqRel)
-}
+pub fn need_resched() -> bool { sched::preempt::take_need_resched() }

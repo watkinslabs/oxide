@@ -155,7 +155,7 @@ fn push_and_wake(b: u8) {
         inner.enqueue(task);
     }
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
+    crate::preempt::set_need_resched();
 }
 
 /// Pop one byte from the RX ringbuffer, returning it as
