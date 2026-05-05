@@ -168,68 +168,6 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-/// Resolve relative path against cwd (len <= 1 → None for selector legacy).
-/// # C: O(N)
-fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
-    if path_raw.starts_with('/') || path_raw.len() <= 1 { return None; }
-    let cur = crate::sched::current()?;
-    // SAFETY: cwd slot single-mutator per `13§5`.
-    let cwd = unsafe { (*cur.cwd.get()).clone() };
-    vfs::path::resolve_against_cwd(&cwd, path_raw)
-}
-
-fn kernel_sys_open(args: &SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use alloc::sync::Arc;
-    use vfs::{Dentry, File, OpenFlags};
-    let path_ptr = args.a0;
-    let flags    = args.a1 as u32;
-    let _mode    = args.a2;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: ptr in user range; user page mapped (caller already executed user code from this AS); path bounded at 256 B.
-    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
-    };
-    let path_raw = match core::str::from_utf8(path) {
-        Ok(s)  => s,
-        Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
-    let resolved = resolve_path_for_open(path_raw);
-    let path_str: &str = resolved.as_deref().unwrap_or(path_raw);
-    const O_CREAT: u32 = 0o100;
-    const O_TRUNC: u32 = 0o1000;
-    // /dev/ptmx is a factory: each open allocates a fresh master inode
-    // and registers a /dev/pts/<n> slave. See `28§5`.
-    let inode = if path_str == "/dev/ptmx" {
-        let (master, _n) = crate::dev_pty::allocate_pair();
-        master
-    } else if let Some(i) = crate::devfs::lookup(path_str) { i }
-        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
-        else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
-            crate::tmpfs::lookup_or_create(path_str)
-        } else { return -(Errno::Enoent.as_i32() as i64); };
-    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: we are running task on this CPU; preempt-off.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let dentry = Dentry::new(None, path_str.to_string(), Arc::clone(&inode));
-    let oflags = OpenFlags::from_bits_truncate(flags);
-    let file = File::new(inode, dentry, oflags);
-    match fdt.alloc(file) {
-        Ok(fd)  => fd as i64,
-        Err(e)  => -(e as i64),
-    }
-}
 
 fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
@@ -789,7 +727,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_READ          => kernel_sys_read(&args),
         crate::syscall_nrs::NR_WRITE         => kernel_sys_write(&args),
-        crate::syscall_nrs::NR_OPEN          => kernel_sys_open(&args),
+        crate::syscall_nrs::NR_OPEN          => crate::syscall_glue_open::kernel_sys_open(&args),
         crate::syscall_nrs::NR_BRK           => kernel_sys_brk(&args),
         crate::syscall_nrs::NR_PIPE2         => kernel_sys_pipe2(&args),
         crate::syscall_nrs::NR_FSTAT         => crate::syscall_glue_fs::kernel_sys_fstat(&args),
@@ -849,7 +787,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_TRUNCATE  => crate::syscall_glue_fs::kernel_sys_truncate(&args),
         crate::syscall_nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
         crate::syscall_nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
-        crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_fs::kernel_sys_openat(&args),
+        crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_open::kernel_sys_openat(&args),
         crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC | crate::syscall_nrs::NR_SYNC
                                  => 0,
         // Net family — no stack yet per docs/25; ENOSYS.
@@ -919,7 +857,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_proc::kernel_sys_rt_sigsuspend(&args),
         // Real-impl arms that overlap with compat-stub categories.
         crate::syscall_nrs::NR_PIPE          => kernel_sys_pipe2(&args),
-        crate::syscall_nrs::NR_CREAT         => kernel_sys_open(&args),
+        crate::syscall_nrs::NR_CREAT         => crate::syscall_glue_open::kernel_sys_open(&args),
         crate::syscall_nrs::NR_EXIT_GROUP    => kernel_sys_exit(&args),
         crate::syscall_nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
         crate::syscall_nrs::NR_STAT
