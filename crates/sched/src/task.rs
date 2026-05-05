@@ -9,7 +9,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use vfs::FdTable;
 use vmm::AddressSpace;
@@ -63,6 +63,28 @@ impl TaskState {
             2 => Some(Self::Stopped),
             3 => Some(Self::Zombie),
             _ => None,
+        }
+    }
+
+    /// Linux /proc/<pid>/stat state character per `19§4`.
+    /// # C: O(1)
+    pub const fn linux_char(self) -> u8 {
+        match self {
+            Self::Runnable => b'R',
+            Self::Sleeping => b'S',
+            Self::Stopped  => b'T',
+            Self::Zombie   => b'Z',
+        }
+    }
+
+    /// Long-form Linux state name for /proc/<pid>/status (e.g. "R (running)").
+    /// # C: O(1)
+    pub const fn linux_status_label(self) -> &'static str {
+        match self {
+            Self::Runnable => "R (running)",
+            Self::Sleeping => "S (sleeping)",
+            Self::Stopped  => "T (stopped)",
+            Self::Zombie   => "Z (zombie)",
         }
     }
 }
@@ -205,6 +227,12 @@ pub struct Task {
     /// `(RLIM_INFINITY, RLIM_INFINITY)` for every resource. Fork
     /// inherits per POSIX. Same single-mutator invariant as `mm`.
     pub rlimits: UnsafeCell<[(u64, u64); 16]>,
+
+    /// Per-task nice value per POSIX nice(2)/setpriority(2). Range
+    /// [-20, 19]; 0 default. Fork inherits. The scheduler currently
+    /// ignores it (CFS weight is fixed); v1 stores for visibility
+    /// via getpriority + /proc/<pid>/stat field 19.
+    pub nice: AtomicI8,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -321,6 +349,7 @@ impl Task {
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
             environ:    UnsafeCell::new(None),
             rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
+            nice:       AtomicI8::new(0),
         }
     }
 

@@ -168,8 +168,7 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-/// Resolve relative path against current.cwd; len <= 1 falls through
-/// (1-byte selector legacy). Returns None when no resolution applies.
+/// Resolve relative path against cwd (len <= 1 → None for selector legacy).
 /// # C: O(N)
 fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
     if path_raw.starts_with('/') || path_raw.len() <= 1 { return None; }
@@ -261,8 +260,7 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(0)
 }
 
-/// sys_fork: clone AS+pages, spawn child with rax=0 at post-syscall RIP.
-/// # C: O(N_vmas) + O(log N)
+/// sys_fork: clone AS+pages; child resumes at post-syscall RIP w/ rax=0.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -827,6 +825,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_MLOCK | crate::syscall_nrs::NR_MUNLOCK | crate::syscall_nrs::NR_MLOCKALL | crate::syscall_nrs::NR_MUNLOCKALL
                                  => crate::syscall_glue_proc::kernel_sys_mlock_family(&args),
         crate::syscall_nrs::NR_GETPGRP   => crate::syscall_glue_proc::kernel_sys_getpgrp(&args),
+        crate::syscall_nrs::NR_GETPRIORITY => crate::syscall_glue_proc::kernel_sys_getpriority(&args),
+        crate::syscall_nrs::NR_SETPRIORITY => crate::syscall_glue_proc::kernel_sys_setpriority(&args),
         crate::syscall_nrs::NR_GETPGID   => crate::syscall_glue_proc::kernel_sys_getpgid(&args),
         crate::syscall_nrs::NR_GETSID    => crate::syscall_glue_proc::kernel_sys_getsid(&args),
         crate::syscall_nrs::NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),

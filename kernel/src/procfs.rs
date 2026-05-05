@@ -156,7 +156,8 @@ impl Inode for ProcSelfStatInode {
         push_u64(&mut body, tid);
         push(&mut body, b" (");
         push(&mut body, name.as_bytes());
-        push(&mut body, b") R ");
+        let state_char = cur.map(|c| c.state().linux_char()).unwrap_or(b'R');
+        push(&mut body, b") "); body.push(state_char); body.push(b' ');
         push_u64(&mut body, ppid);
         // pad with zeros to fill enough fields for libc parsers.
         for _ in 0..48 { push(&mut body, b" 0"); }
@@ -184,7 +185,8 @@ impl ProcSelfStatusInode {
         let ppid   = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
         let name   = cur.map(|c| c.name).unwrap_or("oxide");
         push(&mut out, b"Name:\t");        push(&mut out, name.as_bytes()); push(&mut out, b"\n");
-        push(&mut out, b"State:\tR (running)\n");
+        let state_label = cur.map(|c| c.state().linux_status_label()).unwrap_or("R (running)");
+        push(&mut out, b"State:\t"); push(&mut out, state_label.as_bytes()); push(&mut out, b"\n");
         push(&mut out, b"Tgid:\t");        push_u64(&mut out, tid); push(&mut out, b"\n");
         push(&mut out, b"Pid:\t");         push_u64(&mut out, tid); push(&mut out, b"\n");
         push(&mut out, b"PPid:\t");        push_u64(&mut out, ppid); push(&mut out, b"\n");
@@ -669,7 +671,7 @@ fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
     let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
     let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
     push(&mut out, b"Name:\t"); push(&mut out, task.name.as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"State:\tR (running)\n");
+    push(&mut out, b"State:\t"); push(&mut out, task.state().linux_status_label().as_bytes()); push(&mut out, b"\n");
     push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid as u64); push(&mut out, b"\n");
     push(&mut out, b"Pid:\t");  push_u64(&mut out, tid as u64); push(&mut out, b"\n");
     push(&mut out, b"PPid:\t"); push_u64(&mut out, ppid); push(&mut out, b"\n");
@@ -693,7 +695,8 @@ fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
     let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
     let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
     push_u64(&mut out, tid as u64);
-    push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") R ");
+    push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") ");
+    out.push(task.state().linux_char()); out.push(b' ');
     push_u64(&mut out, ppid);
     for _ in 0..48 { push(&mut out, b" 0"); }
     out.push(b'\n');

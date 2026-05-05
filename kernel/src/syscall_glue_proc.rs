@@ -784,3 +784,48 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
 /// — slots 102/107/104/108. v1 single-user; always returns 0 (root).
 /// # C: O(1)
 pub fn kernel_sys_getuid_zero(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `sys_getpriority(which, who)` — slot 140. v1 honours
+/// PRIO_PROCESS (which=0): returns 20 - nice for matching tid
+/// (Linux convention; positive == lower priority).
+/// # C: O(N_tasks)
+pub fn kernel_sys_getpriority(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    const PRIO_PROCESS: u64 = 0;
+    let which = args.a0;
+    let who   = args.a1 as u32;
+    if which != PRIO_PROCESS { return 20; } // PRIO_PGRP/USER → return default 0 nice
+    let task = if who == 0 {
+        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+    } else {
+        crate::sched::registry::lookup(who)
+    };
+    match task {
+        Some(t) => 20 - t.nice.load(Ordering::Acquire) as i64,
+        None    => -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    }
+}
+
+/// `sys_setpriority(which, who, prio)` — slot 141. PRIO_PROCESS only;
+/// clamps to `[-20, 19]` per `sched::rlimit::clamp_nice`.
+/// # C: O(N_tasks)
+pub fn kernel_sys_setpriority(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    const PRIO_PROCESS: u64 = 0;
+    let which = args.a0;
+    let who   = args.a1 as u32;
+    let prio  = args.a2 as i32;
+    if which != PRIO_PROCESS { return 0; }
+    let task = if who == 0 {
+        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+    } else {
+        crate::sched::registry::lookup(who)
+    };
+    match task {
+        Some(t) => {
+            t.nice.store(sched::rlimit::clamp_nice(prio), Ordering::Release);
+            0
+        }
+        None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    }
+}
