@@ -714,12 +714,13 @@ fn kernel_uname(args: &SyscallArgs) -> i64 {
     // by the userspace-smoke setup. Each field write iterates byte-
     // by-byte so no alignment requirement.
     unsafe {
-        write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"oxide");
-        write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, b"oxide");                  // nodename
-        write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"0.1.0-pre");              // release
-        write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"oxide #1 SMP PREEMPT");  // version
-        write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);             // machine
-        write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, b"(none)");                 // domainname
+        // sysname == "Linux" so libc/configure scripts that gate on it pass.
+        write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"Linux");
+        write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, b"oxide");
+        write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"5.15.0-oxide");
+        write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"#1 SMP PREEMPT oxide v0.1.0");
+        write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);
+        write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, b"(none)");
     }
     0
 }
