@@ -277,6 +277,42 @@ impl Inode for ProcSelfEnvironInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
+/// `/proc/meminfo` per `19§4`. Reports MemTotal / MemFree / MemAvailable
+/// from the live PMM allocator state in kB.
+pub struct ProcMeminfoInode;
+
+impl Inode for ProcMeminfoInode {
+    fn ino(&self) -> Ino { 0x3000_1A00 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut body = alloc::vec::Vec::with_capacity(192);
+        let (free_kb, alloc_kb) = pmm_kb_stats();
+        let total_kb = free_kb + alloc_kb;
+        push(&mut body, b"MemTotal:        "); push_u64(&mut body, total_kb); push(&mut body, b" kB\n");
+        push(&mut body, b"MemFree:         "); push_u64(&mut body, free_kb);  push(&mut body, b" kB\n");
+        push(&mut body, b"MemAvailable:    "); push_u64(&mut body, free_kb);  push(&mut body, b" kB\n");
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+fn pmm_kb_stats() -> (u64, u64) {
+    match crate::pmm_setup::pmm_static() {
+        Some(p) => {
+            let free  = p.free_pages() * 4; // 4 KiB pages
+            let alloc = p.allocated_pages() * 4;
+            (free, alloc)
+        }
+        None => (0, 0),
+    }
+}
+
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
 /// Reports the kernel's monotonic clock in seconds; idle is the
 /// same value (v1 has no separate idle accounting yet).
@@ -625,7 +661,7 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
 pub fn init() {
     crate::devfs::register("/proc/version",     StaticFileInode::new(VERSION_BODY)     as InodeRef);
     crate::devfs::register("/proc/cpuinfo",     StaticFileInode::new(CPUINFO_BODY)     as InodeRef);
-    crate::devfs::register("/proc/meminfo",     StaticFileInode::new(MEMINFO_BODY)     as InodeRef);
+    crate::devfs::register("/proc/meminfo",     Arc::new(ProcMeminfoInode)             as InodeRef);
     crate::devfs::register("/proc/uptime",      Arc::new(ProcUptimeInode)              as InodeRef);
     crate::devfs::register("/proc/loadavg",     StaticFileInode::new(LOADAVG_BODY)     as InodeRef);
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
