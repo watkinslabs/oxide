@@ -352,3 +352,71 @@ fn cmdline_preserves_internal_spaces() {
     let argv: &[&[u8]] = &[b"hello world"];
     assert_eq!(crate::argv_to_cmdline(argv).as_bytes(), b"hello world\0");
 }
+
+// ---------------------------------------------------------------------------
+// Tid registry — `19§4` per-pid procfs needs Weak-decaying tid → Task lookup
+// ---------------------------------------------------------------------------
+
+// Registry is a process-global; serialise the registry tests so parallel
+// cargo-test execution doesn't observe each other's clear_for_tests().
+fn registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[test]
+fn registry_insert_and_lookup() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let t = alloc::sync::Arc::new(Task::new(123, "t", SchedClass::Normal { weight: 1024 }));
+    crate::registry::insert(&t);
+    let got = crate::registry::lookup(123).expect("tid 123 should be live");
+    assert!(alloc::sync::Arc::ptr_eq(&t, &got));
+}
+
+#[test]
+fn registry_lookup_unknown_returns_none() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    assert!(crate::registry::lookup(9999).is_none());
+}
+
+#[test]
+fn registry_decays_when_arc_dropped() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    {
+        let t = alloc::sync::Arc::new(Task::new(7, "t", SchedClass::Normal { weight: 1024 }));
+        crate::registry::insert(&t);
+        assert!(crate::registry::lookup(7).is_some());
+    }
+    assert!(crate::registry::lookup(7).is_none(),
+            "Weak<Task> upgrade must fail after the last Arc is dropped");
+}
+
+#[test]
+fn registry_live_tids_prunes_decayed() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let live = alloc::sync::Arc::new(Task::new(1, "live", SchedClass::Normal { weight: 1024 }));
+    crate::registry::insert(&live);
+    {
+        let dead = alloc::sync::Arc::new(Task::new(2, "dead", SchedClass::Normal { weight: 1024 }));
+        crate::registry::insert(&dead);
+    } // dead drops here
+    let tids = crate::registry::live_tids();
+    assert_eq!(tids, alloc::vec![1u32]);
+}
+
+#[test]
+fn registry_insert_idempotent_overwrites_stale_slot() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let a = alloc::sync::Arc::new(Task::new(42, "a", SchedClass::Normal { weight: 1024 }));
+    crate::registry::insert(&a);
+    let b = alloc::sync::Arc::new(Task::new(42, "b", SchedClass::Normal { weight: 1024 }));
+    crate::registry::insert(&b);
+    let got = crate::registry::lookup(42).unwrap();
+    assert!(alloc::sync::Arc::ptr_eq(&b, &got));
+    assert_eq!(crate::registry::live_tids().len(), 1);
+}
