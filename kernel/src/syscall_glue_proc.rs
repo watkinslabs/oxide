@@ -62,7 +62,28 @@ pub fn kernel_sys_clone3(_args: &SyscallArgs) -> i64 {
 /// no-op. Real per-page PTE prot bits + W^X enforcement rides
 /// the VMA permission rewrite per docs/11§6.
 /// # C: O(1)
-pub fn kernel_sys_mprotect(_args: &SyscallArgs) -> i64 { 0 }
+pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
+    use vmm::VmaProt;
+    use hal::UserVirtAddr;
+    use syscall::errno::Errno;
+    let addr = args.a0;
+    let len  = args.a1 as usize;
+    let prot = args.a2 as u32;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    // SAFETY: mm slot single-mutator per `13§5`.
+    let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
+    let mut vp = VmaProt::empty();
+    if (prot & 0x1) != 0 { vp |= VmaProt::READ;  }
+    if (prot & 0x2) != 0 { vp |= VmaProt::WRITE; }
+    if (prot & 0x4) != 0 { vp |= VmaProt::EXEC;  }
+    let ua = match UserVirtAddr::new(addr) {
+        Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    match mm.mprotect(ua, len, vp) {
+        Ok(()) => 0,
+        Err(_) => -(Errno::Einval.as_i32() as i64),
+    }
+}
 
 /// `sys_madvise(addr, len, advice)` — slot 28. v1: hint-only,
 /// no-op. MADV_DONTNEED zero-fill rides docs/11§9.
@@ -210,11 +231,7 @@ pub fn kernel_sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_sigaltstack(_args: &SyscallArgs) -> i64 { 0 }
 
-/// `sys_nanosleep(req, rem)` — slot 35. v1 busy-wait: spins on
-/// the per-arch monotonic clock until the requested ns has
-/// elapsed, yielding via `tick_yield` between checks so other
-/// runnable tasks can make progress. `rem` ignored (no signal
-/// interruption yet). `req` is `timespec { tv_sec: i64, tv_nsec: i64 }`.
+/// `sys_nanosleep(req, rem)` — slot 35. yield-loop on monotonic clock.
 /// # C: O(req_ns / yield_quantum)
 pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
@@ -504,9 +521,7 @@ pub fn kernel_sys_mremap(_args: &SyscallArgs) -> i64 {
     -(syscall::errno::Errno::Enomem.as_i32() as i64)
 }
 
-/// `sys_msync(addr, len, flags)` — slot 26. v1 has no
-/// file-backed VMAs to flush; succeed.
-/// # C: O(1)
+/// `sys_msync(addr, len, flags)` — slot 26. # C: O(1)
 pub fn kernel_sys_msync(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_mincore(addr, len, vec)` — slot 27. Reports residency
