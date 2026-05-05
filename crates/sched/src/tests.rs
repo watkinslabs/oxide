@@ -442,3 +442,28 @@ fn task_pgid_can_be_updated() {
     // sid is independent of pgid.
     assert_eq!(t.sid.load(Ordering::Acquire), 7);
 }
+
+#[test]
+fn registry_tasks_in_pgrp_filters_by_pgid() {
+    use core::sync::atomic::Ordering;
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let a = alloc::sync::Arc::new(Task::new(10, "a", SchedClass::Normal { weight: 1024 }));
+    let b = alloc::sync::Arc::new(Task::new(11, "b", SchedClass::Normal { weight: 1024 }));
+    let c = alloc::sync::Arc::new(Task::new(12, "c", SchedClass::Normal { weight: 1024 }));
+    a.pgid.store(99, Ordering::Release);
+    b.pgid.store(99, Ordering::Release);
+    c.pgid.store(50, Ordering::Release);
+    crate::registry::insert(&a);
+    crate::registry::insert(&b);
+    crate::registry::insert(&c);
+    let in_99 = crate::registry::tasks_in_pgrp(99);
+    assert_eq!(in_99.len(), 2);
+    let tids: alloc::vec::Vec<u32> = in_99.iter().map(|t| t.tid).collect();
+    assert!(tids.contains(&10) && tids.contains(&11) && !tids.contains(&12));
+    let in_50 = crate::registry::tasks_in_pgrp(50);
+    assert_eq!(in_50.len(), 1);
+    assert_eq!(in_50[0].tid, 12);
+    let in_none = crate::registry::tasks_in_pgrp(7777);
+    assert!(in_none.is_empty());
+}
