@@ -234,6 +234,30 @@ const STAT_BODY:    &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
 const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
 const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
 
+/// `/proc/self/comm` per `19§4`. Reads `current().name` plus a
+/// trailing newline. Real Linux also lets userspace `write()` it
+/// to rename the thread; v1 is read-only.
+pub struct ProcSelfCommInode;
+
+impl Inode for ProcSelfCommInode {
+    fn ino(&self) -> Ino { 0x3000_1700 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut body = alloc::vec::Vec::with_capacity(32);
+        let name = crate::sched::current().map(|c| c.name).unwrap_or("oxide");
+        push(&mut body, name.as_bytes());
+        body.push(b'\n');
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
 /// `/proc/self/fd` directory. Walks `current().fd_table` and emits
 /// each live fd as a decimal name. lookup(name) parses the fd back
 /// and returns a placeholder inode mirroring the underlying File.
@@ -346,6 +370,7 @@ impl Inode for ProcPidDirInode {
             "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
+            "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -354,7 +379,7 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps"];
+        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps", "comm"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
@@ -371,6 +396,7 @@ pub struct ProcPidStatusInode { pub tid: u32 }
 pub struct ProcPidCmdlineInode { pub tid: u32 }
 pub struct ProcPidStatInode { pub tid: u32 }
 pub struct ProcPidMapsInode { pub tid: u32 }
+pub struct ProcPidCommInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
@@ -453,6 +479,15 @@ pid_inode_impl!(ProcPidStatusInode,  pid_status_body,  0x3000_2000);
 pid_inode_impl!(ProcPidCmdlineInode, pid_cmdline_body, 0x3000_2100);
 pid_inode_impl!(ProcPidStatInode,    pid_stat_body,    0x3000_2200);
 pid_inode_impl!(ProcPidMapsInode,    pid_maps_body,    0x3000_2300);
+pid_inode_impl!(ProcPidCommInode,    pid_comm_body,    0x3000_2400);
+
+fn pid_comm_body(tid: u32) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(32);
+    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    push(&mut out, task.name.as_bytes());
+    out.push(b'\n');
+    out
+}
 
 /// Resolve dynamic `/proc/<tid>[/<file>]` paths. Returns `None` for
 /// non-procfs paths; callers fall back to the static devfs registry.
@@ -498,6 +533,7 @@ pub fn init() {
     crate::devfs::register("/proc",              Arc::new(ProcRootInode)        as InodeRef);
     crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
     crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
+    crate::devfs::register("/proc/self/comm",    Arc::new(ProcSelfCommInode)    as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
     crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
     crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
