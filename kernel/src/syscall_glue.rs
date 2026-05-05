@@ -367,9 +367,7 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     child_tid as i64
 }
 
-/// sys_wait4: reap_one + yield-poll until match. -ECHILD if none.
-/// WNOHANG (options bit 0) returns 0 immediately when no child has
-/// exited, matching POSIX `wait(2)` semantics for shells.
+/// sys_wait4: reap_one + yield-poll. WNOHANG → 0 if no zombie ready.
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -855,6 +853,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => -(Errno::Erofs.as_i32() as i64),
         crate::syscall_nrs::NR_TRUNCATE  => crate::syscall_glue_fs::kernel_sys_truncate(&args),
         crate::syscall_nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
+        crate::syscall_nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
         crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_fs::kernel_sys_openat(&args),
         crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC | crate::syscall_nrs::NR_SYNC
                                  => 0,
