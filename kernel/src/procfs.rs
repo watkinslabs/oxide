@@ -583,6 +583,14 @@ impl Inode for ProcPidDirInode {
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
             "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
+            "wchan"   => Ok(StaticFileInode::new(b"0") as InodeRef),
+            "oom_score" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "oom_score_adj" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "loginuid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "sessionid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "io"       => Ok(StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n") as InodeRef),
+            "limits"   => Ok(StaticFileInode::new(LIMITS_BODY) as InodeRef),
+            "personality" => Ok(StaticFileInode::new(b"00000000\n") as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -591,7 +599,11 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &["status", "cmdline", "stat", "maps", "comm", "environ", "statm"];
+        const ENTRIES: &[&str] = &[
+            "status", "cmdline", "stat", "maps", "comm", "environ", "statm",
+            "wchan", "oom_score", "oom_score_adj", "loginuid", "sessionid",
+            "io", "limits", "personality",
+        ];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
