@@ -79,7 +79,7 @@ unsafe extern "C" fn oxide_irq_dispatch(_frame: *const u8) {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
     // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
     unsafe { eoi(); }
-    crate::preempt::NEED_RESCHED.store(true, Ordering::Release);
+    crate::preempt::set_need_resched();
     // TTY input poll per docs/28: scrape any pending UART RX
     // byte into the ringbuffer + wake stdin waiters before the
     // pre-empt-on-IRQ-exit picker runs.
