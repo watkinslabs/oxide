@@ -17,8 +17,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use block::{BlockDevice, BlockOp, BlockRequest};
-use block::types::{BlockError, KResult};
+use block::{BlockDevice, BlockOp, BlockRequest, PageCache};
+use block::types::{BlockError, InodeId, KResult, PAGE_BYTES};
 use ext4::Mount;
 
 /// Embedded ext4 image. Same fixture the crate-level tests use.
@@ -77,6 +77,24 @@ impl BlockDevice for StaticDisk {
 /// can be filled in by `init()` without `static mut`.
 static MOUNT_PTR: AtomicPtr<Mount> = AtomicPtr::new(core::ptr::null_mut());
 
+/// Page cache for ext4 reads. Keyed by (inode_id, page_offset);
+/// pages are PAGE_BYTES-sized (= host page, typically 4 KiB).
+/// Per `17§4.2` — cache misses go through `Mount::read_file_block`
+/// for the logical-to-physical extent translation.
+static PAGE_CACHE: PageCache = PageCache::new();
+
+/// Hit / miss counters so the boot trace can prove the cache is
+/// actually being used.
+static CACHE_HITS:   core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static CACHE_MISSES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Snapshot (hits, misses).
+/// # C: O(1)
+pub fn cache_stats() -> (u64, u64) {
+    use core::sync::atomic::Ordering;
+    (CACHE_HITS.load(Ordering::Relaxed), CACHE_MISSES.load(Ordering::Relaxed))
+}
+
 /// Initialise the embedded ext4 mount. Idempotent — calling
 /// twice is a no-op.
 ///
@@ -116,24 +134,45 @@ pub fn read_file(path: &[u8]) -> Option<Vec<u8>> {
     let ino = mount.lookup_path(path).ok()?;
     let inode = mount.read_inode(ino).ok()?;
     if !inode.is_reg() { return None; }
-    let bs = mount.sb.block_size as u64;
+    // Cache by (ext4 inode num, page-aligned file offset). Each
+    // page covers PAGE_BYTES bytes (= host page, typically 4 KiB).
+    // The cache miss path translates the page back into ext4
+    // logical-block range and pulls from Mount::read_file_block,
+    // which walks the inline extents.
+    use core::sync::atomic::Ordering;
+    let inode_id = InodeId(ino as u64);
     let mut out = Vec::with_capacity(inode.size as usize);
-    let n_blocks = (inode.size + bs - 1) / bs;
-    let mut remaining = inode.size as usize;
-    for b in 0..n_blocks as u32 {
-        // Sparse-hole semantics: NotFound from the extent walk
-        // means "this logical block has no backing extent" —
-        // POSIX returns zeros on read past EOF, ext4 holes
-        // read as zeros mid-file.
-        let blk = match mount.read_file_block(&inode, b) {
-            Ok(b)  => b,
-            Err(ext4::MountError::NotFound) => alloc::vec![0u8; bs as usize],
-            Err(_) => return None,
-        };
-        let take = remaining.min(blk.len());
-        out.extend_from_slice(&blk[..take]);
-        remaining -= take;
-        if remaining == 0 { break; }
+    let total = inode.size as usize;
+    let pages = (total + PAGE_BYTES - 1) / PAGE_BYTES;
+    for p in 0..pages {
+        let page_off = (p as u64) * PAGE_BYTES as u64;
+        let was_hit = PAGE_CACHE.lookup(inode_id, page_off).is_some();
+        let cached = PAGE_CACHE.read_page_with(inode_id, page_off, || {
+            // Miss: build PAGE_BYTES bytes from N ext4 logical
+            // blocks. With ext4 block_size = 1024, that's 4 reads
+            // per page; with 4096 it's 1 read.
+            let bs = mount.sb.block_size as u64;
+            let blocks_per_page = (PAGE_BYTES as u64 / bs) as u32;
+            let first_blk = (page_off / bs) as u32;
+            let mut buf = Vec::with_capacity(PAGE_BYTES);
+            for i in 0..blocks_per_page {
+                let blk = match mount.read_file_block(&inode, first_blk + i) {
+                    Ok(b)  => b,
+                    Err(ext4::MountError::NotFound) => alloc::vec![0u8; bs as usize],
+                    Err(_) => return Err(BlockError::Eio),
+                };
+                buf.extend_from_slice(&blk);
+            }
+            Ok(buf)
+        }).ok()?;
+        if was_hit { CACHE_HITS.fetch_add(1, Ordering::Relaxed); }
+        else       { CACHE_MISSES.fetch_add(1, Ordering::Relaxed); }
+        let g = cached.data.lock();
+        let remaining = total - out.len();
+        let take = remaining.min(g.len());
+        out.extend_from_slice(&g[..take]);
+        drop(g);
+        if out.len() >= total { break; }
     }
     Some(out)
 }
