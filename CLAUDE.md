@@ -11,7 +11,7 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 1. **Spec-before-code** (`docs/02`): subsystem code may not be written while its spec is DRAFT. Charters (`02`,`08`,`09`,`01`,`06`,`07`) gate everything below.
 2. **Cool-off**: spec freezes after 48h of no edits + cold re-read. Edits reset the clock.
 3. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
-4. **Lean-mode calendar**: phase advance gated on PR-time CI (≤5min + canary 1h + paranoid-ci build). Background soak files tickets, never blocks. Single soak box. v1 = 9–14mo solo. No 24h-soak-gate-per-phase. No second-machine repro for v1.
+4. **Lean-mode calendar**: phase advance gated on PR-time CI (≤5min + paranoid-ci build) + QEMU smoke for the affected subsystem. v1 = 9–14mo solo.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
 
 ## Cross-references
@@ -80,7 +80,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 | init+userspace, userspace platform, io_uring | `29`,`29a`,`30` |
 | ELF loader, power, firmware, PCI, drivers | `31`–`35` |
 | Bootloader handoff, observability, error handling | `36`–`38` |
-| Build+image, CI+soak, debug catalog, tests, acceptance | `39`–`43` |
+| Build+image, CI, debug catalog, tests, acceptance | `39`–`43` |
 | Boot flow Mermaid | `boot-flow.md` |
 
 When user asks about a concept: check this table → read that spec → answer. Don't guess; read.
@@ -95,11 +95,10 @@ When user asks about a concept: check this table → read that spec → answer. 
 
 ## CI (`docs/40`)
 
-- PR-time gate: build both arches, hosted unit tests with 10M-op proptests, miri, loom, qemu smoke, canary 1h, bench-vs-history, coverage, clippy, deny, spec-lint.
-- Background soak: continuous on `main`, 4h cycles, files tickets on failure.
-- v1 release: requires 168h soak artifact each arch.
-- Docker images: `Dockerfile.{build,soak}`, digest-pinned base, ghcr.io.
-- Runners: GHA hosted (PR), 1 self-hosted box (soak).
+- PR-time gate: build both arches, hosted unit tests with 10M-op proptests, miri, loom, qemu smoke, bench-vs-history, coverage, clippy, deny, spec-lint.
+- Docker images: `Dockerfile.build`, digest-pinned base, ghcr.io.
+- Runners: GHA hosted (PR).
+- Local QEMU: use the qemu MCP (`mcp__qemu__qemu_start`, `qemu_serial`, `qemu_break`, `qemu_step`, `qemu_regs`, `qemu_mem`, `qemu_backtrace`) to boot + step + inspect during development. Don't claim "needs human-driven QEMU iteration" — drive it directly.
 
 ## Don't (common future-session mistakes)
 
@@ -109,8 +108,7 @@ When user asks about a concept: check this table → read that spec → answer. 
 - Don't restate spec content in CLAUDE.md or in code comments. Cite `<doc>§<sec>`.
 - Don't add MCP servers without asking. Project intentionally minimal.
 - Don't move docs to `docs/v1/`. Versioning is git tags, not directories.
-- Don't introduce a 24h soak gate. Background only; PR-time + canary 1h is the wall.
-- Don't second-machine-reproduce for v1 exit. Single signed soak artifact.
+- Don't claim work needs human-in-the-loop QEMU testing. Use the qemu MCP directly.
 
 ## Git workflow (mandatory)
 
@@ -163,7 +161,7 @@ Examples:
 - **Add `Co-Authored-By:` trailer of any kind to any commit, ever.** Author is the human committer; period. No `Co-Authored-By: Claude`, no `Co-Authored-By: <model>`, no AI attribution trailers. CI lint rejects commits with `Co-Authored-By:` lines.
 
 **Tags.**
-- `v1.0`, `v1.1`, `v2.0` — release tags. Require soak artifact per `40§4`.
+- `v1.0`, `v1.1`, `v2.0` — release tags.
 - `v0.<n>-phase-<m>` — internal milestone tags between releases.
 - Tags signed (`git tag -s`) once we have a key.
 
