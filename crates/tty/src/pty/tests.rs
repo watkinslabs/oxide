@@ -604,3 +604,49 @@ fn ixon_off_passes_ctrl_chars_through() {
     assert_eq!(&buf[..2], b"\x13\n");
     assert!(!p.output_stopped, "no IXON → no flow control");
 }
+
+#[test]
+fn cooked_vsusp_records_pending_sigtstp() {
+    let mut p = cooked(0);
+    p.master_write(b"a\x1ab\n"); // ^Z mid-line
+    assert!(p.pending_sigtstp);
+    let mut buf = [0u8; 16];
+    let n = p.slave_read(&mut buf);
+    assert_eq!(n, 3);
+    assert_eq!(&buf[..3], b"ab\n");
+}
+
+#[test]
+fn cooked_vquit_records_pending_sigquit() {
+    let mut p = cooked(0);
+    p.master_write(b"\x1c"); // ^\ alone
+    assert!(p.pending_sigquit);
+}
+
+#[test]
+fn cooked_vsusp_echoes_caret_z() {
+    let mut p = cooked(0);
+    p.master_write(b"\x1a");
+    let mut buf = [0u8; 16];
+    let n = p.master_read(&mut buf);
+    assert_eq!(n, 2);
+    assert_eq!(&buf[..2], b"^Z");
+}
+
+#[test]
+fn cooked_vquit_echoes_caret_backslash() {
+    let mut p = cooked(0);
+    p.master_write(b"\x1c");
+    let mut buf = [0u8; 16];
+    let n = p.master_read(&mut buf);
+    assert_eq!(n, 2);
+    assert_eq!(&buf[..2], b"^\\");
+}
+
+#[test]
+fn raw_mode_passes_vsusp_through() {
+    let mut p = Pair::new(0); // raw
+    p.termios[TERMIOS_OFF_CC + cc::VSUSP] = 0x1A;
+    p.master_write(b"\x1a");
+    assert!(!p.pending_sigtstp, "raw mode skips ISIG");
+}

@@ -319,6 +319,13 @@ pub struct Pair {
     /// While set, slave_write enqueues into a holding buffer instead
     /// of s_to_m; v1 simplification: slave_write is a no-op (drops).
     pub output_stopped: bool,
+    /// Set when c_cc[VSUSP] (^Z, default) hits master_write under
+    /// ISIG. Kernel-side adapter posts SIGTSTP (sig 20) to every
+    /// task in foreground_pgid and clears the flag.
+    pub pending_sigtstp: bool,
+    /// Set when c_cc[VQUIT] (^\\, default) hits master_write under
+    /// ISIG. Kernel-side adapter posts SIGQUIT (sig 3) to fg pgrp.
+    pub pending_sigquit: bool,
 }
 
 impl Pair {
@@ -353,6 +360,8 @@ impl Pair {
             pending_sigwinch: false,
             pending_eof: false,
             output_stopped: false,
+            pending_sigtstp: false,
+            pending_sigquit: false,
         }
     }
 
@@ -434,6 +443,22 @@ impl Pair {
                 consumed += 1;
                 if echo { let _ = self.s_to_m.write(b"^C"); }
                 continue;
+            }
+            if isig {
+                let vquit = self.termios[TERMIOS_OFF_CC + cc::VQUIT];
+                let vsusp = self.termios[TERMIOS_OFF_CC + cc::VSUSP];
+                if vquit != 0 && b == vquit {
+                    self.pending_sigquit = true;
+                    consumed += 1;
+                    if echo { let _ = self.s_to_m.write(b"^\\"); }
+                    continue;
+                }
+                if vsusp != 0 && b == vsusp {
+                    self.pending_sigtstp = true;
+                    consumed += 1;
+                    if echo { let _ = self.s_to_m.write(b"^Z"); }
+                    continue;
+                }
             }
             if icanon && veof != 0 && b == veof {
                 // EOF marker. Drop the byte from input; flag pending_eof
