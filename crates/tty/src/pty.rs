@@ -304,6 +304,10 @@ pub struct Pair {
     /// Set on TIOCSWINSZ when the new size differs. Cleared by the
     /// kernel-side ioctl handler after posting SIGWINCH.
     pub pending_sigwinch: bool,
+    /// Set when c_cc[VEOF] (^D) appears in master_write under ICANON.
+    /// slave_read returning an empty queue with this set yields 0
+    /// (EOF). Cleared on the next non-empty slave_read.
+    pub pending_eof: bool,
 }
 
 impl Pair {
@@ -336,6 +340,7 @@ impl Pair {
             winsize: Winsize::default_pty(),
             pending_sigint: false,
             pending_sigwinch: false,
+            pending_eof: false,
         }
     }
 
@@ -344,15 +349,16 @@ impl Pair {
     /// # C: O(1)
     pub fn master_readable(&self) -> bool { !self.s_to_m.is_empty() }
 
-    /// True iff `slave_read` would return at least one byte. Under
-    /// ICANON requires a `\n` in the master→slave ring; raw mode
-    /// just requires any buffered byte.
+    /// True iff `slave_read` would return at least one byte OR EOF
+    /// (pending_eof + empty queue). Under ICANON requires a `\n`
+    /// in m_to_s OR pending_eof; raw mode requires any buffered byte.
     /// # C: O(N)
     pub fn slave_readable(&self) -> bool {
         if (self.lflag() & lflag::ICANON) == 0 {
             return !self.m_to_s.is_empty();
         }
-        self.m_to_s.buf.iter().any(|&b| b == b'\n')
+        self.pending_eof
+            || self.m_to_s.buf.iter().any(|&b| b == b'\n')
     }
 
     /// Update `winsize`. Sets `pending_sigwinch` if the new size
@@ -369,20 +375,24 @@ impl Pair {
     /// stream (ICRNL/INLCR/IGNCR translate or drop \r/\n). c_lflag
     /// & ISIG drops c_cc[VINTR] and sets pending_sigint. ECHO copies
     /// each accepted byte back to s_to_m so the master can read its
-    /// own input. Returns total bytes consumed from `src`.
+    /// own input. ICANON + c_cc[VEOF] (typically ^D) marks the line
+    /// as EOF: byte is consumed (not enqueued); slave_read of an
+    /// empty queue with `pending_eof` set returns 0 (EOF).
+    /// Returns total bytes consumed from `src`.
     /// # C: O(N)
     pub fn master_write(&mut self, src: &[u8]) -> usize {
         let lflag = self.lflag();
         let iflag_v = self.iflag();
         let vintr = self.vintr();
-        let isig  = (lflag & lflag::ISIG) != 0 && vintr != 0;
-        let echo  = (lflag & lflag::ECHO) != 0;
-        let icrnl = (iflag_v & iflag::ICRNL) != 0;
-        let inlcr = (iflag_v & iflag::INLCR) != 0;
-        let igncr = (iflag_v & iflag::IGNCR) != 0;
+        let veof = self.termios[TERMIOS_OFF_CC + cc::VEOF];
+        let isig    = (lflag & lflag::ISIG)   != 0 && vintr != 0;
+        let echo    = (lflag & lflag::ECHO)   != 0;
+        let icanon  = (lflag & lflag::ICANON) != 0;
+        let icrnl   = (iflag_v & iflag::ICRNL) != 0;
+        let inlcr   = (iflag_v & iflag::INLCR) != 0;
+        let igncr   = (iflag_v & iflag::IGNCR) != 0;
         let mut consumed = 0;
         for &raw in src {
-            // iflag translation. IGNCR wins over ICRNL.
             let b = if raw == b'\r' {
                 if igncr { consumed += 1; continue; }
                 if icrnl { b'\n' } else { raw }
@@ -395,6 +405,14 @@ impl Pair {
                 self.pending_sigint = true;
                 consumed += 1;
                 if echo { let _ = self.s_to_m.write(b"^C"); }
+                continue;
+            }
+            if icanon && veof != 0 && b == veof {
+                // EOF marker. Drop the byte from input; flag pending_eof
+                // so slave_read returns 0 if the queue is empty (matches
+                // shell exit-on-^D semantics).
+                self.pending_eof = true;
+                consumed += 1;
                 continue;
             }
             if self.m_to_s.space() == 0 { break; }
@@ -411,12 +429,14 @@ impl Pair {
     /// # C: O(N)
     pub fn slave_read(&mut self, dst: &mut [u8]) -> usize {
         if (self.lflag() & lflag::ICANON) == 0 {
-            return self.m_to_s.read(dst);
+            let n = self.m_to_s.read(dst);
+            if n > 0 { self.pending_eof = false; }
+            return n;
         }
-        // ICANON: drain only if a complete line is buffered.
+        // ICANON: drain only if a complete line is buffered, OR
+        // pending_eof terminates the read with whatever is buffered.
         let line_end = self.m_to_s.buf.iter().position(|&b| b == b'\n');
         match line_end {
-            None    => 0,
             Some(i) => {
                 let limit = (i + 1).min(dst.len());
                 let mut tmp = [0u8; 1];
@@ -426,8 +446,17 @@ impl Pair {
                     dst[n] = tmp[0];
                     n += 1;
                 }
+                self.pending_eof = false;
                 n
             }
+            None if self.pending_eof => {
+                // EOF: drain whatever's buffered (could be empty),
+                // clear the flag, return n. Empty queue + flag → 0.
+                let n = self.m_to_s.read(dst);
+                self.pending_eof = false;
+                n
+            }
+            None => 0,
         }
     }
 
