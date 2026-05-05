@@ -88,9 +88,7 @@ pub fn kernel_sys_getcwd(args: &SyscallArgs) -> i64 {
     need as i64
 }
 
-/// `sys_chdir(path)` — slot 80. Validates the path resolves in
-/// devfs / procfs / tmpfs (or is `/`), then writes the new cwd
-/// into `current.cwd`. Returns 0 on success, -ENOENT on miss.
+/// `sys_chdir(path)` — slot 80.
 /// # C: O(N_devfs_entries)
 pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
@@ -173,9 +171,6 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
-/// v1: writes a minimal `struct statx` (256 B) for the file at
-/// `path` resolved through devfs, OR for `dirfd` if `path` is
-/// empty + AT_EMPTY_PATH set. Mask reports STATX_TYPE|MODE|INO.
 /// # C: O(1)
 pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
     use vfs::FileType;
@@ -579,10 +574,7 @@ pub fn kernel_sys_close_range(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_eventfd2(initval, flags)` — slot 290. Allocates a new
-/// EventfdInode initialised to `initval`, wraps in a File at the
-/// lowest-free fd. flags ignored (EFD_NONBLOCK is the default).
-/// `sys_eventfd` (slot 284) routes here with flags=0.
+/// `sys_eventfd2(initval, flags)` — slot 290 / 284.
 /// # C: O(1)
 pub fn kernel_sys_eventfd2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
@@ -717,8 +709,21 @@ fn resolve_proc_link(path: &str) -> Option<alloc::vec::Vec<u8>> {
         "exe"  => Some(task_exe_path(tid_opt)),
         "cwd"  => Some(task_cwd_path(tid_opt)),
         "root" => Some(b"/".to_vec()),
+        l if l.starts_with("fd/") => task_fd_path(tid_opt, &l[3..]),
         _      => None,
     }
+}
+
+fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<alloc::vec::Vec<u8>> {
+    let fd: i32 = fd_str.parse().ok()?;
+    let task = match tid_opt {
+        Some(tid) => crate::sched::registry::lookup(tid)?,
+        None      => crate::sched::registry::lookup(crate::sched::current()?.tid)?,
+    };
+    // SAFETY: fd_table slot single-mutator per `13§5`.
+    let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
+    let file = fdt.get(fd).ok()?;
+    Some(file.dentry().name().as_bytes().to_vec())
 }
 
 /// `sys_readlinkat(dirfd, path, buf, bufsize)` — slot 267.
@@ -803,11 +808,7 @@ pub fn kernel_sys_ppoll(args: &SyscallArgs) -> i64 {
     kernel_sys_poll(&pf)
 }
 
-/// `sys_lseek(fd, offset, whence)` — slot 8. v1: returns
-/// `-ESPIPE` for non-Regular file types (CharDev / Fifo / Socket)
-/// per POSIX; returns 0 (start of file) for Regular if such
-/// inodes appear later. Real seek state lives on `File` once
-/// VFS gains it.
+/// `sys_lseek(fd, offset, whence)` — slot 8.
 /// # C: O(1)
 pub fn kernel_sys_lseek(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
