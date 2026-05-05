@@ -310,6 +310,31 @@ impl Inode for ProcSelfEnvironInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
+/// `/proc/sys/kernel/hostname` per Linux sysctl convention.
+/// Reads the live `hostname` slot + trailing newline; writes
+/// (echo "newhost" > /proc/sys/kernel/hostname) update the slot.
+pub struct ProcHostnameInode;
+
+impl Inode for ProcHostnameInode {
+    fn ino(&self) -> Ino { 0x3000_1C00 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut body = crate::hostname::snapshot();
+        body.push(b'\n');
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
+        crate::hostname::set(src);
+        Ok(src.len())
+    }
+}
+
 /// `/proc/loadavg` per `19§4`. "<1m> <5m> <15m> <run>/<total> <last_pid>\n".
 /// v1: load averages are 0.00 (no decay accounting yet); run/total
 /// pulls live tids from the registry; last_pid reports the same.
@@ -818,7 +843,7 @@ pub fn init() {
     crate::devfs::register("/proc/sys/kernel/version",
         StaticFileInode::new(b"#1 SMP PREEMPT oxide v0.1.0\n") as InodeRef);
     crate::devfs::register("/proc/sys/kernel/hostname",
-        StaticFileInode::new(b"oxide\n") as InodeRef);
+        Arc::new(ProcHostnameInode) as InodeRef);
     crate::devfs::register("/proc/sys/kernel/domainname",
         StaticFileInode::new(b"(none)\n") as InodeRef);
     crate::devfs::register("/proc/sys/kernel/threads-max",

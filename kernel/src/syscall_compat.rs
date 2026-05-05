@@ -33,7 +33,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_SETFSUID | NR_SETFSGID
         | NR_CAPGET | NR_CAPSET
         | NR_PERSONALITY | NR_VHANGUP | NR_SYSLOG
-        | NR_SETHOSTNAME | NR_SETDOMAINNAME
+        | NR_SETDOMAINNAME
         | NR_FALLOCATE | NR_READAHEAD | NR_FADVISE64
         | NR_FLOCK | NR_SYNC_FILE_RANGE
         | NR_SYNCFS | NR_FUTEX_WAITV | NR_MLOCK2

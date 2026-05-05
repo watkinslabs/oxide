@@ -419,10 +419,7 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_execve(path, argv, envp)` per docs/15§5+31§4. Loads
-/// path-resolved blob; replaces current.mm; activates new AS;
-/// builds argv/envp/auxv stack; rewrites user_frame so sysretq
-/// lands at e_entry. -ENOMEM/-ENOEXEC on error.
+/// `sys_execve(path, argv, envp)` per `15§5` / `31§4`.
 /// # SAFETY: dispatch ctx, IRQs masked.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "x86_64")]
@@ -714,7 +711,8 @@ fn kernel_uname(args: &SyscallArgs) -> i64 {
     unsafe {
         // sysname == "Linux" so libc/configure scripts that gate on it pass.
         write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"Linux");
-        write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, b"oxide");
+        let host = crate::hostname::snapshot();
+        write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, &host);
         write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"5.15.0-oxide");
         write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"#1 SMP PREEMPT oxide v0.1.0");
         write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);
@@ -788,6 +786,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_GETTIMEOFDAY  => crate::syscall_glue_time::kernel_gettimeofday(&args),
         crate::syscall_nrs::NR_TIME          => crate::syscall_glue_time::kernel_time(&args),
         crate::syscall_nrs::NR_UNAME         => kernel_uname(&args),
+        crate::syscall_nrs::NR_SETHOSTNAME   => crate::syscall_glue_proc::kernel_sys_sethostname(&args),
         crate::syscall_nrs::NR_MMAP          => kernel_mmap(&args),
         crate::syscall_nrs::NR_MUNMAP        => kernel_munmap(&args),
         crate::syscall_nrs::NR_EXIT          => kernel_sys_exit(&args),
