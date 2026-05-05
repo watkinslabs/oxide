@@ -121,7 +121,15 @@ pub fn read_file(path: &[u8]) -> Option<Vec<u8>> {
     let n_blocks = (inode.size + bs - 1) / bs;
     let mut remaining = inode.size as usize;
     for b in 0..n_blocks as u32 {
-        let blk = mount.read_file_block(&inode, b).ok()?;
+        // Sparse-hole semantics: NotFound from the extent walk
+        // means "this logical block has no backing extent" —
+        // POSIX returns zeros on read past EOF, ext4 holes
+        // read as zeros mid-file.
+        let blk = match mount.read_file_block(&inode, b) {
+            Ok(b)  => b,
+            Err(ext4::MountError::NotFound) => alloc::vec![0u8; bs as usize],
+            Err(_) => return None,
+        };
         let take = remaining.min(blk.len());
         out.extend_from_slice(&blk[..take]);
         remaining -= take;
