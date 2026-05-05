@@ -263,7 +263,16 @@ CPU revision\t: 4\n\
 const MEMINFO_BODY: &[u8] = b"MemTotal:        65536 kB\nMemFree:         32768 kB\nMemAvailable:    32768 kB\n";
 const UPTIME_BODY:  &[u8] = b"0.00 0.00\n";
 const LOADAVG_BODY: &[u8] = b"0.00 0.00 0.00 1/1 1\n";
-const STAT_BODY:    &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
+const STAT_BODY:    &[u8] = b"\
+cpu  0 0 0 0 0 0 0 0 0 0\n\
+cpu0 0 0 0 0 0 0 0 0 0 0\n\
+intr 0\n\
+ctxt 0\n\
+btime 0\n\
+processes 1\n\
+procs_running 1\n\
+procs_blocked 0\n\
+softirq 0 0 0 0 0 0 0 0 0 0\n";
 const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
 const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
 const MOUNTINFO_BODY: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n2 1 0:2 / /dev rw - devtmpfs devtmpfs rw\n3 1 0:3 / /proc rw - proc proc rw\n4 1 0:4 / /tmp rw - tmpfs tmpfs rw\n";
