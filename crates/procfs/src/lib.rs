@@ -10,7 +10,9 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod paths;
 pub mod pseudo;
+pub use paths::{child_under, parse_proc_path, ProcPath};
 pub use pseudo::{
     DynamicOps, KResult as PseudoKResult, PseudoError, PseudoFs, PseudoLeaf, PseudoOps,
     StaticBytesOps,
