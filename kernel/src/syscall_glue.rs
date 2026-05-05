@@ -937,6 +937,17 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             }
         }
     }
+    // P4-02: syscall-return preempt point per `13§9`. If the tick or
+    // a wakeup set need_resched while we were in the kernel, and we
+    // hold no preempt_count locks, voluntarily schedule before
+    // returning to user. Signal delivery follows so the user sees
+    // pending signals after the resched has run.
+    if sched::preempt::preempt_count() == 0 && sched::preempt::take_need_resched() {
+        // SAFETY: we are at syscall-return tail, IRQs unmasked, no
+        // spinlocks held; matches schedule()'s `# Ctx: process|kthread`
+        // requirement per `13§8`.
+        unsafe { crate::sched::schedule(); }
+    }
     // P3-65: deliver pending signals at syscall return.
     if let Some(p) = crate::syscall_glue_proc::take_lowest_pending() {
         // Job-control signals come first — their default action is
