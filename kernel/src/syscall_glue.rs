@@ -115,7 +115,6 @@ fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// sys_pipe2: anon PipeInode + R/W fds. Honors O_CLOEXEC + O_NONBLOCK.
 fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
@@ -171,7 +170,6 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-/// sys_open via devfs; -ENOENT on miss.
 fn kernel_sys_open(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use alloc::sync::Arc;
@@ -192,6 +190,7 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     const O_CREAT: u32 = 0o100;
+    const O_TRUNC: u32 = 0o1000;
     // /dev/ptmx is a factory: each open allocates a fresh master inode
     // and registers a /dev/pts/<n> slave. See `28§5`.
     let inode = if path_str == "/dev/ptmx" {
@@ -203,6 +202,7 @@ fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
             crate::tmpfs::lookup_or_create(path_str)
         } else { return -(Errno::Enoent.as_i32() as i64); };
+    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match crate::sched::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
@@ -250,8 +250,7 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(0)
 }
 
-/// sys_fork: clone AS+pages (P2-15c), spawn child with rax=0
-/// at post-syscall RIP. Returns child tid to parent.
+/// sys_fork: clone AS+pages, spawn child with rax=0 at post-syscall RIP.
 /// # C: O(N_vmas) + O(log N)
 #[cfg(target_arch = "x86_64")]
 fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
@@ -853,8 +852,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_MKDIR | crate::syscall_nrs::NR_RMDIR | crate::syscall_nrs::NR_UNLINK
             | crate::syscall_nrs::NR_UNLINKAT | crate::syscall_nrs::NR_MKDIRAT
             | crate::syscall_nrs::NR_RENAME | crate::syscall_nrs::NR_RENAMEAT | crate::syscall_nrs::NR_RENAMEAT2
-            | crate::syscall_nrs::NR_TRUNCATE | crate::syscall_nrs::NR_FTRUNCATE
                                  => -(Errno::Erofs.as_i32() as i64),
+        crate::syscall_nrs::NR_TRUNCATE  => crate::syscall_glue_fs::kernel_sys_truncate(&args),
+        crate::syscall_nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
         crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_fs::kernel_sys_openat(&args),
         crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC | crate::syscall_nrs::NR_SYNC
                                  => 0,
