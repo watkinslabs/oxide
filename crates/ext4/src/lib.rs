@@ -26,3 +26,6 @@ pub use inode::{Inode, InodeError, ExtentHeader, Extent,
 pub mod dir;
 pub use dir::{DirEntry, DirError, next_entry, iter_active, lookup,
               DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK};
+
+pub mod gdt;
+pub use gdt::{GroupDesc, GdtError, desc_size_for, parse_descriptor, locate_inode};
