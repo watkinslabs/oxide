@@ -788,6 +788,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => crate::dev_timerfd::kernel_sys_timerfd_settime(&args),
         crate::syscall_nrs::NR_TIMERFD_GETTIME
                                  => crate::dev_timerfd::kernel_sys_timerfd_gettime(&args),
+        crate::syscall_nrs::NR_EPOLL_CREATE | crate::syscall_nrs::NR_EPOLL_CREATE1
+                                 => crate::dev_epoll::kernel_sys_epoll_create1(&args),
+        crate::syscall_nrs::NR_EPOLL_CTL
+                                 => crate::dev_epoll::kernel_sys_epoll_ctl(&args),
+        crate::syscall_nrs::NR_EPOLL_WAIT | crate::syscall_nrs::NR_EPOLL_PWAIT
+            | crate::syscall_nrs::NR_EPOLL_PWAIT2
+                                 => crate::dev_epoll::kernel_sys_epoll_wait(&args),
         crate::syscall_nrs::NR_GETPGID   => crate::syscall_glue_proc::kernel_sys_getpgid(&args),
         crate::syscall_nrs::NR_GETSID    => crate::syscall_glue_proc::kernel_sys_getsid(&args),
         crate::syscall_nrs::NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),

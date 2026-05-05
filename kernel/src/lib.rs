@@ -103,6 +103,8 @@ pub mod dev_signalfd;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_timerfd;
 #[cfg(target_os = "oxide-kernel")]
+pub mod dev_epoll;
+#[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs_static;
