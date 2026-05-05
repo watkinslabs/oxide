@@ -60,6 +60,17 @@ pub fn is_absolute(path: &str) -> bool {
     path.starts_with('/')
 }
 
+/// Trim trailing newlines + NULs from a hostname-shaped byte slice
+/// and clamp to `max`. Used by the global hostname slot per
+/// `28§4` / sethostname(2). `echo "host" > /proc/sys/kernel/hostname`
+/// passes a trailing newline that must be stripped.
+/// # C: O(N)
+pub fn trim_hostname<'a>(input: &'a [u8], max: usize) -> &'a [u8] {
+    let mut end = input.len().min(max);
+    while end > 0 && matches!(input[end - 1], b'\n' | 0) { end -= 1; }
+    &input[..end]
+}
+
 /// Resolve `path` against `cwd`. If `path` is absolute, returns
 /// the lexically-normalized form. Otherwise joins as `cwd/path`
 /// then normalizes. `cwd` must itself be absolute.
