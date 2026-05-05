@@ -9,7 +9,9 @@ name = "kernel"
 path = "src/lib.rs"
 
 [dependencies]
+block   = { path = "../crates/block" }
 elf     = { path = "../crates/elf" }
+ext4    = { path = "../crates/ext4" }
 hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }
 kalloc  = { path = "../crates/kalloc" }
