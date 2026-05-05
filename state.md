@@ -1,3 +1,45 @@
+# State 2026-05-05 (session 27 — Phase 6 ext4 RO crate complete)
+
+## Phase 6 ext4 RO read path verified end-to-end (PRs #437-#442)
+
+Real `mke2fs`-built 1 MiB image at `crates/ext4/tests/mini.img`; integration test parses it via `Mount::open` + walks `/hello.txt` + reads its first data block. **Total ext4 hosted tests: 45 (10 superblock + 10 inode + 12 dir + 8 GDT + 5 mount integration).**
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 437 | `P6-01-ext4-superblock` | `crates/ext4/src/superblock.rs`: `Superblock::parse(&[u8; 1024])`, EXT4_SUPER_MAGIC + INCOMPAT_* bits, `has_extents()` / `group_count()` helpers. |
+| 438 | `P6-02-ext4-inode` | `inode.rs`: `Inode::parse`, S_IFREG/S_IFDIR/S_IFLNK helpers, `parse_extent_header` (EXT4_EXT_MAGIC), `parse_inline_extent(idx)` for depth-0 inline trees. |
+| 439 | `P6-03-ext4-dir` | `dir.rs`: ext4_dir_entry_2 walker — `next_entry`, `iter_active` (skips deleted), `lookup`. Handles last-entry-fills-block padding. |
+| 440 | `P6-04-ext4-gdt` | `gdt.rs`: legacy/64bit group descriptors, `locate_inode(sb, ino)` math. |
+| 441 | `P6-05-ext4-mount` | `mount.rs`: `Mount::open(Arc<dyn BlockDevice>)` — reads + caches superblock + GDT, then `read_inode` / `read_file_block` / `lookup_in_dir` / `lookup_path`. |
+| 442 | `P6-06-ext4-image-test` | Integration test. mke2fs `-O ^has_journal` 1 MiB image w/ `hello.txt` injected via debugfs. 5 tests cover open / root inode / lookup_path / read first block / NotFound miss. |
+
+## Phase 6 standing
+
+- ✓ vfs / tmpfs / procfs / sysfs / devtmpfs (pre-existing)
+- ✓ **ext4 RO crate complete** — superblock + GDT + inode + extent + dir + Mount, verified against real toolchain output
+- ◯ kernel-side wiring: register ext4 in vfs, mount the boot disk, retarget `lookup_blob_by_path` → `vfs::open`
+- ◯ block-device source: Limine module / initramfs / virtio-blk for the actual boot disk
+
+The crate-level work is the bulk of the read driver. Kernel-side wiring is its own multi-PR integration arc that needs a real boot disk supplied by the bootloader (Limine modules or virtio-blk). Phase 6 declared **functionally closed at the read-driver layer**; full boot-from-ext4 ships once the boot disk source lands (P6-07+).
+
+## Phase ladder
+
+| # | Phase | Status |
+|---|---|---|
+| 0 | build infra | done |
+| 1 | PMM | done |
+| 2 | VMM + MMU + per-CPU + TLB | done |
+| 3 | slab + GlobalAlloc | done |
+| 4 | sched + ctxsw + preempt + SMP | done |
+| 5 | syscalls + ELF + init + busybox-sh | done (real-musl shell as PID 1) |
+| 6 | VFS + ext4 RO | **read-driver done**; boot-disk wiring is P6-07+ |
+| 7a | block + page cache | not started |
+| 7b | ext4 RW + JBD2 | not started |
+| 8 | net | not started |
+| 9 | hardening, observability, modules | ongoing |
+
+---
+
 # State 2026-05-05 (session 27 — Phase 5 closed: real-musl shell as PID 1)
 
 ## Phase 5 closed (PRs #434, #435)
