@@ -811,6 +811,38 @@ pub fn init() {
         StaticFileInode::new(b"65536\n") as InodeRef);
     crate::devfs::register("/proc/sys/kernel/cap_last_cap",
         StaticFileInode::new(b"40\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/osrelease",
+        StaticFileInode::new(b"5.15.0-oxide\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/ostype",
+        StaticFileInode::new(b"Linux\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/version",
+        StaticFileInode::new(b"#1 SMP PREEMPT oxide v0.1.0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/hostname",
+        StaticFileInode::new(b"oxide\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/domainname",
+        StaticFileInode::new(b"(none)\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/threads-max",
+        StaticFileInode::new(b"32768\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/file-max",
+        StaticFileInode::new(b"65536\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/file-nr",
+        StaticFileInode::new(b"0\t0\t65536\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/nr_open",
+        StaticFileInode::new(b"1048576\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/inotify/max_user_watches",
+        StaticFileInode::new(b"65536\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/inotify/max_user_instances",
+        StaticFileInode::new(b"128\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/inotify/max_queued_events",
+        StaticFileInode::new(b"16384\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/pipe-max-size",
+        StaticFileInode::new(b"4096\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/overcommit_memory",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/swappiness",
+        StaticFileInode::new(b"60\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/core/somaxconn",
+        StaticFileInode::new(b"4096\n") as InodeRef);
 }
 
 /// Boot-time smoke: open every registered /proc entry via the
