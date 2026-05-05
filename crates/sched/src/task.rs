@@ -238,6 +238,11 @@ pub struct Task {
     /// utime are computed as `monotonic_ns() - spawn_ns`. `0` for
     /// hosted-test tasks where `Task::new` is the constructor.
     pub spawn_ns: AtomicU64,
+
+    /// alarm(2) deadline in monotonic ns. `0` = no alarm pending.
+    /// Dispatch tail compares against monotonic_ns() and posts
+    /// SIGALRM (signal 14) when reached.
+    pub alarm_ns: AtomicU64,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -356,6 +361,7 @@ impl Task {
             rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
             nice:       AtomicI8::new(0),
             spawn_ns:   AtomicU64::new(0),
+            alarm_ns:   AtomicU64::new(0),
         }
     }
 
