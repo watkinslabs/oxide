@@ -48,6 +48,14 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Eisdir)
     }
 
+    /// Truncate the file to `len` bytes per `truncate(2)` /
+    /// `ftruncate(2)`. Default impl returns `Erofs`. tmpfs honours
+    /// it; static / pseudo inodes don't.
+    /// # C: depends on FS impl
+    fn truncate(&self, _len: u64) -> KResult<()> {
+        Err(VfsError::Erofs)
+    }
+
     /// Iterate child entries of a directory. `off` is the cookie from
     /// a previous call; `0` starts from the beginning. The callback
     /// returns `false` to stop early. Default impl returns

@@ -941,3 +941,43 @@ pub fn kernel_sys_fchdir(args: &SyscallArgs) -> i64 {
         Err(_) => -(Errno::Ebadf.as_i32() as i64),
     }
 }
+
+/// `sys_truncate(path, length)` — slot 76.
+/// # C: O(N_devfs_entries)
+pub fn kernel_sys_truncate(args: &SyscallArgs) -> i64 {
+    let path_ptr = args.a0;
+    let len      = args.a1;
+    if path_ptr == 0 || path_ptr >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: ptr in user range; user page mapped; bounded read.
+    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
+        Some(p) if !p.is_empty() => p,
+        _                        => return -(Errno::Einval.as_i32() as i64),
+    };
+    let s = match core::str::from_utf8(path) {
+        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    let inode = if let Some(i) = crate::devfs::lookup(s) { i }
+        else if let Some(i) = crate::tmpfs::lookup(s) { i }
+        else { return -(Errno::Enoent.as_i32() as i64); };
+    match inode.truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
+}
+
+/// `sys_ftruncate(fd, length)` — slot 77.
+/// # C: O(1)
+pub fn kernel_sys_ftruncate(args: &SyscallArgs) -> i64 {
+    let fd  = args.a0 as i32;
+    let len = args.a1;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match file.inode().truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
+}
