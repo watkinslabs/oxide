@@ -99,6 +99,9 @@ pub fn pair_for(pts_num: u32) -> Option<Arc<LockedPair>> {
 pub fn allocate_pair() -> (InodeRef, u32) {
     let n = NEXT_PTS.fetch_add(1, Ordering::Relaxed);
     let pair = LockedPair::new(n);
+    // Linux pty default: ICANON | ECHO | ISIG. tty::Pair::new starts
+    // raw; flip to cooked here so userspace sees the expected default.
+    pair.with_pair(|p| p.lflag = tty::pty::DEFAULT_LFLAG);
     {
         let mut g = PAIRS.lock();
         if g.len() <= n as usize { g.resize_with(n as usize + 1, || Arc::clone(&pair)); }
@@ -152,15 +155,20 @@ pub fn smoke_test() {
     let slave = crate::devfs::lookup(&path).expect("pts slave registered");
     kassert!(slave.file_type() == FileType::CharDev, "pts slave is chardev");
 
-    // Master write → slave read.
-    let n1 = master.write(0, b"keys").expect("master write");
-    kassert!(n1 == 4, "master write len");
+    // Master write → slave read (cooked: needs trailing \n; ECHO
+    // also enqueues to s_to_m so master_read drains it first).
+    let n1 = master.write(0, b"keys\n").expect("master write");
+    kassert!(n1 == 5, "master write len (cooked echo accepts all)");
     let mut buf = [0u8; 8];
+    // Drain ECHO bytes from master read first.
+    let echoed = master.read(0, &mut buf).expect("master read echo");
+    kassert!(echoed == 5, "echo len");
+    kassert!(&buf[..5] == b"keys\n", "echo bytes");
     let r1 = slave.read(0, &mut buf).expect("slave read");
-    kassert!(r1 == 4, "slave read len");
-    kassert!(&buf[..4] == b"keys", "master→slave bytes");
+    kassert!(r1 == 5, "slave read len");
+    kassert!(&buf[..5] == b"keys\n", "master→slave bytes");
 
-    // Slave write → master read.
+    // Slave write → master read (no ldisc on this direction).
     let n2 = slave.write(0, b"output").expect("slave write");
     kassert!(n2 == 6, "slave write len");
     let r2 = master.read(0, &mut buf).expect("master read");
