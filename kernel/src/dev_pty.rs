@@ -54,8 +54,17 @@ impl Inode for PtyMasterInode {
         Ok(g.master_read(buf))
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
-        let mut g = self.pair.inner.lock();
-        Ok(g.master_write(buf))
+        let (n, sigint_target) = {
+            let mut g = self.pair.inner.lock();
+            let n = g.master_write(buf);
+            let target = if g.pending_sigint && g.foreground_pgid != 0 {
+                g.pending_sigint = false;
+                Some(g.foreground_pgid)
+            } else { None };
+            (n, target)
+        };
+        if let Some(pgid) = sigint_target { post_sigint_pgrp(pgid); }
+        Ok(n)
     }
 }
 
@@ -72,6 +81,20 @@ impl Inode for PtySlaveInode {
         let mut g = self.pair.inner.lock();
         Ok(g.slave_write(buf))
     }
+}
+
+/// Post SIGINT (signal 2) to every task in `pgid`. Bit 1 in the
+/// 64-bit sigpending mask. Returns the count posted.
+/// # C: O(N_tasks)
+fn post_sigint_pgrp(pgid: u32) -> usize {
+    use core::sync::atomic::Ordering;
+    let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
+    let n = tasks.len();
+    for t in tasks {
+        // SIGINT = 2; bit (2-1) = 1.
+        t.sigpending.fetch_or(1u64 << 1, Ordering::Release);
+    }
+    n
 }
 
 static NEXT_PTS: AtomicU32 = AtomicU32::new(0);
