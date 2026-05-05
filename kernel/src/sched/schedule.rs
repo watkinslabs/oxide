@@ -147,6 +147,14 @@ static IRQ_SW:    core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 /// # C: O(log N) CFS pick + O(1) ctx switch
 /// # Ctx: process|kthread; preempt-off
 pub unsafe fn schedule() {
+    // Bump preempt_count for the duration of the pick + ctxsw per
+    // `13§9`: while we are choosing & switching, no recursive
+    // schedule may run (e.g. via `preempt_enable` firing inside a
+    // wakeup path called from the picker). The guard pairs at
+    // function exit; the spec's `kassert!(preempt_count > 0)` at
+    // `13§8` is satisfied by-construction once inside this scope.
+    let _pg = sched::preempt::PreemptGuard::new();
+
     let rq = match global() { Some(r) => r, None => return };
 
     // Pick next under the lock.
