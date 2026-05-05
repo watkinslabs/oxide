@@ -1,3 +1,36 @@
+# State 2026-05-05 (session 27 EOD post-loop — Phase 4 13 PRs in)
+
+## Session 27 post-loop additions (PRs #414 – #417)
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 414 | `P4-09-ipi-primitives` | IPI building blocks. x86: `build_icr_lo` / `icr_lo_init_assert` (0x4500) / `icr_lo_sipi(page)` (0x4600\|page) / `write_icr` / `wait_icr_idle`. arm: `kernel/src/psci.rs` with `PsciStatus` enum + `decode_status` + `smc(fn_id, a1, a2, a3)` (raw `.inst 0xd4000003` to dodge assembler's `el3` requirement) + `cpu_on(mpidr, entry_pa, context_id)`. 5 hosted tests. |
+| 415 | `P4-10-percpu-runqueue` | `Runqueue` global → `[GlobalCell; cpu_topology::MAX_CPUS]` indexed by HAL `current_cpu`. New `global_for(cpu)` for cross-CPU load-balance. Single-CPU boots unchanged. |
+| 416 | `P4-11-wake-need-resched` | `spawn_kernel_thread` / `spawn_user_thread` / `wake_if_stopped` set `need_resched` after enqueue per 13§9 wake→resched. |
+| 417 | `P4-12-tick-resched-gate` | IRQ-exit `tick_pick_next` only fires `schedule_from_irq` when `need_resched && preempt_count==0`; re-arms when count>0. |
+
+## Phase 4 standing (13 PRs in)
+
+Done:
+- Preempt machinery (count, RAII guard, need_resched, schedule hook).
+- Schedule-internal preempt-disable (count > 0 across pick + AS-swap + ctxsw).
+- Syscall-return preempt point + IRQ-exit preempt gate.
+- Wake→need_resched everywhere it should be (spawn, try_wake_stopped, wake_if_stopped).
+- ACPI MADT walk populates cpu_topology (LAPIC/x2APIC/GICC; ungated from `debug-acpi`).
+- `smp` module: BOOT_CPU_ID, ONLINE, set_boot_cpu_id (wired in kernel_main), enumerate_aps, ap_arrived.
+- IPI primitives: LAPIC ICR helpers (x86) + PSCI CPU_ON helper (arm).
+- Per-CPU runqueue: `[GlobalCell; MAX_CPUS]` indexed by HAL current_cpu.
+
+Open (Phase 4 exit gate):
+- **AP trampoline + bring-up** (x86: real-mode → long-mode trampoline + INIT/SIPI; arm: PSCI CPU_ON to a Rust-asm AP entry that sets up TPIDR_EL1 + vbar + sp + page tables + calls `smp::ap_arrived`).
+- **Cross-CPU IPI for resched**: vector-13 (or similar) on x86 with `oxide_irq_dispatch` setting need_resched on receiver; arm SGI on GICv3.
+- **Load balancer** (`13§11`): periodic + idle-pull + push-on-overload across the per-CPU runqueues.
+- **1h migration soak** (`13§14` exit gate): 4 vCPU × 1000 tasks random sleep/wake/CPU-bound.
+
+These four interlock — AP startup gates the rest. Real-hardware bring-up (especially x86 real-mode trampoline) wants its own focused session with QEMU/log inspection.
+
+---
+
 # State 2026-05-05 (session 27 EOD — Phase 4 reset: preempt machinery + SMP scaffolding)
 
 ## Phase audit + course correction
