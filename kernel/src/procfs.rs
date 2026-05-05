@@ -190,10 +190,35 @@ impl ProcSelfStatusInode {
         push(&mut out, b"PPid:\t");        push_u64(&mut out, ppid); push(&mut out, b"\n");
         push(&mut out, b"Uid:\t0\t0\t0\t0\n");
         push(&mut out, b"Gid:\t0\t0\t0\t0\n");
-        push(&mut out, b"Threads:\t1\n");
+        push(&mut out, b"FDSize:\t");
+        // SAFETY: fd_table slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
+        let fds = cur.and_then(|c| unsafe { (*c.fd_table.get()).as_ref().cloned() })
+            .map(|t| t.count() as u64).unwrap_or(0);
+        push_u64(&mut out, fds); push(&mut out, b"\n");
+        push(&mut out, b"Groups:\t\n");
+        // SAFETY: mm slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
+        let vm_kb = cur.and_then(|c| unsafe { (*c.mm.get()).as_ref().map(|m| {
+            m.snapshot_vmas().iter()
+                .map(|v| (v.end.as_u64() - v.start.as_u64()) / 1024).sum::<u64>()
+        })}).unwrap_or(0);
+        push(&mut out, b"VmPeak:\t"); push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
+        push(&mut out, b"VmSize:\t"); push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
+        push(&mut out, b"VmRSS:\t");  push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
+        push(&mut out, STATUS_TAIL);
         out
     }
 }
+
+const STATUS_TAIL: &[u8] = b"\
+VmData:\t0 kB\nVmStk:\t8 kB\nVmExe:\t4 kB\nVmLib:\t0 kB\n\
+Threads:\t1\n\
+SigQ:\t0/0\n\
+SigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n\
+SigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\n\
+CapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\n\
+CapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\n\
+Cpus_allowed:\t1\nCpus_allowed_list:\t0\n\
+Mems_allowed:\t1\nMems_allowed_list:\t0\n";
 
 impl Inode for ProcSelfStatusInode {
     fn ino(&self) -> Ino { 0x3000_1000 }
@@ -220,10 +245,10 @@ fn push_u64(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     while i > 0 { i -= 1; v.push(buf[i]); }
 }
 
-const VERSION_BODY: &[u8] = b"Linux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\n";
+pub(crate) const VERSION_BODY: &[u8] = b"Linux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\n";
 
 #[cfg(target_arch = "x86_64")]
-const CPUINFO_BODY: &[u8] = b"\
+pub(crate) const CPUINFO_BODY: &[u8] = b"\
 processor\t: 0\n\
 vendor_id\t: GenuineIntel\n\
 cpu family\t: 6\n\
@@ -249,7 +274,7 @@ address sizes\t: 39 bits physical, 48 bits virtual\n\
 power management:\n\
 \n";
 #[cfg(target_arch = "aarch64")]
-const CPUINFO_BODY: &[u8] = b"\
+pub(crate) const CPUINFO_BODY: &[u8] = b"\
 processor\t: 0\n\
 BogoMIPS\t: 100.00\n\
 Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop\n\
@@ -263,7 +288,7 @@ CPU revision\t: 4\n\
 const MEMINFO_BODY: &[u8] = b"MemTotal:        65536 kB\nMemFree:         32768 kB\nMemAvailable:    32768 kB\n";
 const UPTIME_BODY:  &[u8] = b"0.00 0.00\n";
 const LOADAVG_BODY: &[u8] = b"0.00 0.00 0.00 1/1 1\n";
-const STAT_BODY:    &[u8] = b"\
+pub(crate) const STAT_BODY:    &[u8] = b"\
 cpu  0 0 0 0 0 0 0 0 0 0\n\
 cpu0 0 0 0 0 0 0 0 0 0 0\n\
 intr 0\n\
@@ -273,11 +298,11 @@ processes 1\n\
 procs_running 1\n\
 procs_blocked 0\n\
 softirq 0 0 0 0 0 0 0 0 0 0\n";
-const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
-const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
-const MOUNTINFO_BODY: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n2 1 0:2 / /dev rw - devtmpfs devtmpfs rw\n3 1 0:3 / /proc rw - proc proc rw\n4 1 0:4 / /tmp rw - tmpfs tmpfs rw\n";
-const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
-const LIMITS_BODY:  &[u8] = b"\
+pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
+pub(crate) const MOUNTS_BODY:  &[u8] = b"devtmpfs /dev devtmpfs rw 0 0\nprocfs /proc procfs rw 0 0\n";
+pub(crate) const MOUNTINFO_BODY: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n2 1 0:2 / /dev rw - devtmpfs devtmpfs rw\n3 1 0:3 / /proc rw - proc proc rw\n4 1 0:4 / /tmp rw - tmpfs tmpfs rw\n";
+pub(crate) const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
+pub(crate) const LIMITS_BODY:  &[u8] = b"\
 Limit                     Soft Limit           Hard Limit           Units\n\
 Max cpu time              unlimited            unlimited            seconds\n\
 Max file size             unlimited            unlimited            bytes\n\
@@ -805,167 +830,14 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
     }
 }
 
-/// Register the v1 procfs entries into devfs.
+/// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
-pub fn init() {
-    crate::devfs::register("/proc/version",     StaticFileInode::new(VERSION_BODY)     as InodeRef);
-    crate::devfs::register("/proc/cpuinfo",     StaticFileInode::new(CPUINFO_BODY)     as InodeRef);
-    crate::devfs::register("/proc/meminfo",     Arc::new(ProcMeminfoInode)             as InodeRef);
-    crate::devfs::register("/proc/uptime",      Arc::new(ProcUptimeInode)              as InodeRef);
-    crate::devfs::register("/proc/loadavg",     Arc::new(ProcLoadavgInode)             as InodeRef);
-    crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
-    crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
-    crate::devfs::register("/proc/cmdline",     StaticFileInode::new(b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyS0\n") as InodeRef);
-    crate::devfs::register("/proc/devices",     StaticFileInode::new(b"\
-Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices:\n") as InodeRef);
-    crate::devfs::register("/proc/modules",     StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/swaps",       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n") as InodeRef);
-    crate::devfs::register("/proc/diskstats",   StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/partitions",  StaticFileInode::new(b"major minor  #blocks  name\n") as InodeRef);
-    crate::devfs::register("/proc/misc",        StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/buddyinfo",   StaticFileInode::new(b"Node 0, zone Normal      0 0 0 0 0 0 0 0 0 0 0\n") as InodeRef);
-    crate::devfs::register("/proc/zoneinfo",    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n") as InodeRef);
-    crate::devfs::register("/proc/vmstat",      StaticFileInode::new(b"nr_free_pages 1024\nnr_zone_inactive_anon 0\nnr_zone_active_anon 0\n") as InodeRef);
-    crate::devfs::register("/proc/interrupts",  StaticFileInode::new(b"           CPU0       \nLOC: 1234   Local timer interrupts\n") as InodeRef);
-    crate::devfs::register("/proc/softirqs",    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
-    crate::devfs::register("/proc/kallsyms",    StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/key-users",   StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/keys",        StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/locks",       StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/crypto",      StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/proc/execdomains", StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
-    crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
-    // /proc root inode for getdents64 enumeration of live tids.
-    crate::devfs::register("/proc",              Arc::new(ProcRootInode)        as InodeRef);
-    crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
-    crate::devfs::register("/proc/self/cmdline", Arc::new(ProcSelfCmdlineInode) as InodeRef);
-    crate::devfs::register("/proc/self/comm",    Arc::new(ProcSelfCommInode)    as InodeRef);
-    crate::devfs::register("/proc/self/environ", Arc::new(ProcSelfEnvironInode) as InodeRef);
-    crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
-    crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
-    crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
+pub fn init() { crate::procfs_static::register_static_files(); }
 
-    // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
-    // probes look these up before falling back.
-    crate::devfs::register("/sys/kernel/osrelease",
-        StaticFileInode::new(b"0.1.0-pre\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/ostype",
-        StaticFileInode::new(b"oxide\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/random/uuid",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000001\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/random/boot_id",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/random/entropy_avail",
-        StaticFileInode::new(b"4096\n") as InodeRef);
-    crate::devfs::register("/sys/devices/system/cpu/online",
-        StaticFileInode::new(b"0\n") as InodeRef);
-    crate::devfs::register("/sys/devices/system/cpu/possible",
-        StaticFileInode::new(b"0\n") as InodeRef);
-    crate::devfs::register("/etc/os-release",
-        StaticFileInode::new(b"NAME=oxide\nID=oxide\nVERSION=\"0.1.0-pre\"\n") as InodeRef);
-    crate::devfs::register("/etc/machine-id",
-        StaticFileInode::new(b"00000000000000000000000000000001\n") as InodeRef);
-    crate::devfs::register("/etc/hostname",
-        StaticFileInode::new(b"oxide\n") as InodeRef);
-    crate::devfs::register("/etc/passwd",
-        StaticFileInode::new(b"root:x:0:0:root:/:/bin/sh\n") as InodeRef);
-    crate::devfs::register("/etc/group",
-        StaticFileInode::new(b"root:x:0:\n") as InodeRef);
-    crate::devfs::register("/etc/nsswitch.conf",
-        StaticFileInode::new(b"passwd: files\ngroup: files\nhosts: files\n") as InodeRef);
-    crate::devfs::register("/etc/resolv.conf",
-        StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/etc/localtime",
-        StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/etc/shadow",
-        StaticFileInode::new(b"root::0:0:99999:7:::\n") as InodeRef);
-    crate::devfs::register("/etc/shells",
-        StaticFileInode::new(b"/bin/sh\n") as InodeRef);
-    crate::devfs::register("/etc/profile",
-        StaticFileInode::new(b"export PATH=/bin:/usr/bin\nexport PS1='$ '\n") as InodeRef);
-    crate::devfs::register("/etc/issue",
-        StaticFileInode::new(b"oxide \\r \\l\n\n") as InodeRef);
-    crate::devfs::register("/etc/motd",
-        StaticFileInode::new(b"Welcome to oxide.\n") as InodeRef);
-    crate::devfs::register("/etc/hosts",
-        StaticFileInode::new(b"127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost\n") as InodeRef);
-    crate::devfs::register("/etc/services",
-        StaticFileInode::new(b"\
-ssh\t\t22/tcp\nssh\t\t22/udp\n\
-http\t\t80/tcp\nhttp\t\t80/udp\n\
-https\t\t443/tcp\nhttps\t\t443/udp\n\
-domain\t\t53/tcp\ndomain\t\t53/udp\n\
-") as InodeRef);
-    crate::devfs::register("/etc/protocols",
-        StaticFileInode::new(b"\
-ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
-") as InodeRef);
-    crate::devfs::register("/etc/ld.so.cache",
-        StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/etc/ld.so.conf",
-        StaticFileInode::new(b"include /etc/ld.so.conf.d/*.conf\n") as InodeRef);
-    crate::devfs::register("/etc/timezone",
-        StaticFileInode::new(b"UTC\n") as InodeRef);
-    crate::devfs::register("/proc/self/oom_score",
-        StaticFileInode::new(b"0\n") as InodeRef);
-    crate::devfs::register("/proc/self/oom_score_adj",
-        StaticFileInode::new(b"0\n") as InodeRef);
-    crate::devfs::register("/proc/self/limits",
-        StaticFileInode::new(LIMITS_BODY) as InodeRef);
-    crate::devfs::register("/proc/self/io",
-        StaticFileInode::new(IO_BODY) as InodeRef);
-    crate::devfs::register("/proc/self/mountinfo",
-        StaticFileInode::new(MOUNTINFO_BODY) as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/random/boot_id",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/pid_max",
-        StaticFileInode::new(b"32768\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/random/uuid",
-        StaticFileInode::new(b"00000000-0000-0000-0000-000000000001\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/ngroups_max",
-        StaticFileInode::new(b"65536\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/cap_last_cap",
-        StaticFileInode::new(b"40\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/osrelease",
-        StaticFileInode::new(b"5.15.0-oxide\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/ostype",
-        StaticFileInode::new(b"Linux\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/version",
-        StaticFileInode::new(b"#1 SMP PREEMPT oxide v0.1.0\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/hostname",
-        Arc::new(ProcHostnameInode) as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/domainname",
-        StaticFileInode::new(b"(none)\n") as InodeRef);
-    crate::devfs::register("/proc/sys/kernel/threads-max",
-        StaticFileInode::new(b"32768\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/file-max",
-        StaticFileInode::new(b"65536\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/file-nr",
-        StaticFileInode::new(b"0\t0\t65536\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/nr_open",
-        StaticFileInode::new(b"1048576\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/inotify/max_user_watches",
-        StaticFileInode::new(b"65536\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/inotify/max_user_instances",
-        StaticFileInode::new(b"128\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/inotify/max_queued_events",
-        StaticFileInode::new(b"16384\n") as InodeRef);
-    crate::devfs::register("/proc/sys/fs/pipe-max-size",
-        StaticFileInode::new(b"4096\n") as InodeRef);
-    crate::devfs::register("/proc/sys/vm/overcommit_memory",
-        StaticFileInode::new(b"0\n") as InodeRef);
-    crate::devfs::register("/proc/sys/vm/swappiness",
-        StaticFileInode::new(b"60\n") as InodeRef);
-    crate::devfs::register("/proc/sys/net/core/somaxconn",
-        StaticFileInode::new(b"4096\n") as InodeRef);
-}
-
-/// Boot-time smoke: open every registered /proc entry via the
-/// devfs lookup, read its first 16 bytes through the Inode trait,
-/// kassert the body matches the registered prefix.
-/// # SAFETY: caller is the boot path; single-CPU pre-init.
-/// # C: O(N_files)
+/// Boot-time smoke for the registered files.
+/// # SAFETY: caller is the boot path; pre-init.
+/// # C: O(N)
 pub fn smoke_test() {
     use vfs::Inode;
     use hal::kassert;
