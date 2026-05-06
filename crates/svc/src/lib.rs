@@ -36,6 +36,9 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+pub mod supervisor;
+pub use supervisor::{Action, State, Supervisor, RESTART_BACKOFF_TICKS};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub enum ServiceType {
     #[default]
