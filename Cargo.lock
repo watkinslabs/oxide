@@ -759,6 +759,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio"
+version = "0.1.0"
+
+[[package]]
 name = "vmm"
 version = "0.1.0"
 dependencies = [
