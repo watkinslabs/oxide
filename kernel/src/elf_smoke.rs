@@ -623,28 +623,40 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::kinfo!("elf-smoke: user task exited cleanly, boot resumed");
     }
 
-    // P5-01: real-musl PID 1 init smoke (each spawn now gets a
-    // fresh per-task AS so the binaries don't overlap on shared
-    // VA ranges).
-    // SAFETY: same boot-path discipline as the elf-smoke above; user_as / runqueue installed; INIT_REAL_BLOB is real-musl static-PIE.
+    // PID 1: prefer the live /sbin/init from the mounted rootfs
+    // ext4. Falls back to the embedded blob if the rootfs entry
+    // is missing (test-only kernels with `kernel/blobs/rootfs.img`
+    // empty). Any edits to `userspace/init/init.c` flow through
+    // `xtask rootfs` → kernel/blobs/init.elf → here, so the kernel
+    // actually executes the latest source.
+    let init_blob = lookup_blob_by_path(b"/sbin/init")
+        .or_else(|| lookup_blob_by_path(b"/init"))
+        .unwrap_or(INIT_REAL_BLOB);
+    // SAFETY: same boot-path discipline as the elf-smoke above;
+    // user_as / runqueue installed; init blob is real-musl
+    // static-PIE.
     unsafe {
-        spawn_user_blob_smoke(INIT_REAL_BLOB, "real-init", 0xC0DE_0002, &[]);
+        spawn_user_blob_smoke(init_blob, "init", 0xC0DE_0002, &[]);
     }
 
-    // P5-02/03/04: tiny interactive shell smoke. Pre-inject a
-    // non-interactive sequence so `xtask qemu` boot logs prove
-    // builtins; user can type past the smoke for real
-    // interactive use.
-    // Inject the smoke-test command but NOT `exit\n` — leave the
-    // shell running so the user gets an interactive prompt instead
-    // of `halt_forever()` after the smoke runs.
+    // If init exited without leaving children behind (current
+    // init.c falls back to /bin/sh respawn when its execve to
+    // /sbin/svcd fails; if THAT exec also fails the loop will
+    // exhaust and init exits) drop a sh.elf so the user has
+    // something interactive to talk to.
     crate::tty::inject_for_smoke(b"echo pipe-test | cat\n");
-    // SAFETY: same boot-path discipline as the real-init smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
+    // SAFETY: same boot-path discipline as the init spawn above; sh blob is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
     }
 
-    halt_forever();
+    // No halt: schedule forever. When the runqueue is empty the
+    // idle loop wfi's for the next IRQ; tty rx pushes new bytes
+    // and wakes parked readers (sh's read loop).
+    loop {
+        // SAFETY: dispatch ctx; runqueue installed; preempt-off.
+        unsafe { crate::sched::schedule(); }
+    }
 }
 
 /// Spawn a static-PIE musl blob as a user task with /dev/console
@@ -685,6 +697,17 @@ unsafe fn spawn_user_blob_smoke(
         }
     };
 
+    // Activate the new AS BEFORE load_static_blob — that function
+    // applies DT_RELA self-relocations by writing through user
+    // VAs (e.g. 0x10003000 GOT slots). Those writes only land
+    // in the right page table if the task's AS is the active CR3;
+    // otherwise the kernel page-faults on a not-present user page
+    // in whatever AS happened to be active. Pre-fix this worked
+    // by luck when the previous task's AS had compatible pages
+    // mapped at the same VAs.
+    // SAFETY: per-AS PML4 was constructed with kernel-half shared from master so kernel mappings remain valid; CR3 swap legal at CPL=0 IRQ-off.
+    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(root_pa); }
+
     let img = match (|| -> Result<_, crate::elf_load::LoadError> {
         let img = load_static_blob(blob, &mm)?;
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
@@ -704,11 +727,6 @@ unsafe fn spawn_user_blob_smoke(
             return;
         }
     };
-
-    // Activate the new AS so build_user_stack's writes land in it.
-    // Future schedule() AS-swap will reactivate when this task runs.
-    // SAFETY: per-AS PML4 was constructed with kernel-half shared from master so kernel mappings remain valid; CR3 swap legal at CPL=0 IRQ-off.
-    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(root_pa); }
 
     let random16 = {
         use hal::TimerOps;

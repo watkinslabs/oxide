@@ -213,6 +213,12 @@ static int try_spawn(Unit* u) {
     __asm__ volatile ("syscall" : "=a"(pid) : "0"((long)SYS_fork), "D"(0) : "rcx","r11","memory");
     if (pid == 0) {
         char* envp[1] = {0};
+        wstr(1, "svcd-child: exec ");
+        if (u->argv[0]) wstr(1, u->argv[0]);
+        else            wstr(1, "<NULL>");
+        wstr(1, " (");
+        wstr(1, u->name);
+        wstr(1, ")\n");
         sc4(SYS_execve, (long)u->argv[0], (long)u->argv, (long)envp, 0);
         wstr(2, "svcd: exec failed: ");
         wstr(2, u->name);
@@ -305,6 +311,7 @@ static void load_units(void) {
     }
 }
 
+__attribute__((force_align_arg_pointer))
 void _start(void) {
     wstr(1, "svcd: starting\n");
     load_units();
