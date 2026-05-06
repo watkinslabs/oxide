@@ -1,18 +1,26 @@
-# State 2026-05-06 (session 32 — phases 14/15/16/17 userspace integration, 16 PRs)
+# State 2026-05-06 (session 32 — phases 14/15/16/17 userspace integration, 21 PRs)
 
-## Headline (session 32, PRs #572 – #587)
+## Headline (session 32, PRs #572 – #592)
 
-Phases 14/15/16/17 in-flight from "spec'd in 00§3" to working
-crates + userspace binaries. Workspace tests 852 → 893.
+Phases 14/15/16/17 from "spec'd in 00§3" to working crates +
+userspace binaries with end-to-end boot chain. Workspace tests
+852 → 894.
 
 | Phase | Crates added | Binaries added |
 |---|---|---|
-| 14 (libc/NSS/PAM) | `crypt` (sha512 + crypt-base64), `pam` | `/bin/login`, `/bin/su`, `/bin/id` |
-| 15 (system manager) | `svc` (unit parser + supervisor SM) | `/sbin/svcd`, `/init` chains to svcd |
+| 14 (libc/NSS/PAM) | `crypt` (sha512 + glibc-parity Drepper sha512crypt), `pam` | `/bin/login`, `/bin/su`, `/bin/id`, `/bin/passwd` |
+| 15 (system manager) | `svc` (unit parser + supervisor SM) | `/sbin/svcd`, `/init` chains to svcd, /etc/svc/{getty,sshd}.service seeded |
 | 16 (RPM toolchain)  | `rpm` (header), `cpio` (newc), `inflate` (DEFLATE+gzip), `pkg` (extractor) | `/bin/rpm` (-q/-qi/-qp) |
-| 17 (TTY+login) | — | `/sbin/agetty` + seeded /etc/{passwd,group,shadow,inittab,hostname} |
+| 17 (TTY+login) | — | `/sbin/agetty` + seeded /etc/{passwd,group,shadow,inittab,hostname,issue} |
 
-Boot chain after this session: kernel → /init → /sbin/svcd → /sbin/agetty → /bin/login → /bin/sh.
+Real glibc-parity sha512crypt (Rust + C, both bit-identical to
+Python crypt + Drepper §B.4 published vector). /bin/passwd does
+atomic /etc/shadow.new → rename rewrite with /dev/urandom-sourced
+salt and verify-old-then-prompt-twice flow.
+
+Boot chain end-to-end:
+  kernel → /init → /sbin/svcd → /sbin/agetty tty1 → /bin/login → /bin/sh
+With /etc/svc/getty.service driving Restart=always supervision.
 
 PR list:
 - 572 P14-03 crypt sha512 + sha512crypt v1
@@ -31,12 +39,18 @@ PR list:
 - 585 P17-02 rootfs /etc seed files
 - 586 P16-05 /bin/rpm CLI
 - 587 P15-04 init chains to svcd
+- 588 C71 state.md mid-session update
+- 589 P14-08 Drepper-2007 sha512crypt (Rust crypt crate, glibc parity)
+- 590 P14-09 C-side Drepper sha512crypt + shared header
+- 591 P14-10 /bin/passwd (atomic shadow rewrite)
+- 592 P15-05 /etc/svc/{getty,sshd}.service seed
 
 Open follow-ups (not yet branched):
-- P14-08 Drepper-2007 sha512crypt parity (current path is salt|pw|salt simplified)
 - P16-06 xz / zstd decompressors for newer RPM payloads
 - P16-07 rpmdb (sqlite-backed /var/lib/rpm)
 - P17-03 kernel-side multi-VT under /dev/tty1..N
+- P14-11 PAM `passwd` stack consultation in /bin/passwd
+- P15-06 svcd directory walk via getdents (replace hardcoded list)
 
 # State 2026-05-06 (session 30 — Phase 8 net stack + Phase 9 hardening, 27 PRs)
 
