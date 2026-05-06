@@ -63,6 +63,30 @@ pub fn kernel_sys_socket(args: &SyscallArgs) -> i64 {
 
 /// Read a `struct sockaddr_in` (16 bytes) at user pointer `ptr`:
 ///   u16 sin_family ; u16 sin_port ; u32 sin_addr ; u8 zero[8].
+/// Read sa_family at the user pointer (first 2 bytes).
+fn read_sa_family(ptr: u64) -> Option<u16> {
+    if ptr == 0 || ptr >= USER_VA_END { return None; }
+    // SAFETY: ptr in user range; user page mapped (caller's AS).
+    unsafe { Some(core::ptr::read_volatile(ptr as *const u16)) }
+}
+
+/// Read a sockaddr_un path at offset 2 (after sun_family). Reads
+/// up to 107 bytes + NUL terminator.
+fn read_sockaddr_un_path(ptr: u64) -> Option<alloc::string::String> {
+    if ptr == 0 || ptr >= USER_VA_END { return None; }
+    // SAFETY: ptr in user range; user page mapped (caller's AS); 108-byte bounded read.
+    unsafe {
+        let p = (ptr + 2) as *const u8;
+        let mut bytes = alloc::vec::Vec::new();
+        for i in 0..108 {
+            let b = core::ptr::read_volatile(p.add(i));
+            if b == 0 { break; }
+            bytes.push(b);
+        }
+        alloc::string::String::from_utf8(bytes).ok()
+    }
+}
+
 fn read_sockaddr_in(ptr: u64) -> Option<(u32, u16, u32)> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
     // SAFETY: ptr in user range; user page mapped (caller's AS); 8-byte aligned read.
@@ -139,15 +163,29 @@ fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 
 /// `bind(fd, addr, addrlen)` slot 49.
 pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
+    const AF_UNIX: u16 = 1;
     let fd     = args.a0;
     let addr_p = args.a1;
     let sock   = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    let (family, port, addr) = match read_sockaddr_in(addr_p) {
+    let family = match read_sa_family(addr_p) {
+        Some(f) => f, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    if family == AF_UNIX as u16 {
+        let path = match read_sockaddr_un_path(addr_p) {
+            Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        let listener = match crate::dev_net::UNIX_REGISTRY.bind(path) {
+            Ok(l) => l, Err(_) => return -(Errno::Eaddrinuse.as_i32() as i64),
+        };
+        *sock.kind.lock() = crate::dev_net::SockKind::UnixListener(listener);
+        return 0;
+    }
+    if family != AF_INET as u16 { return -(Errno::Eafnosupport.as_i32() as i64); }
+    let (_family, port, addr) = match read_sockaddr_in(addr_p) {
         Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
     };
-    if family != AF_INET { return -(Errno::Eafnosupport.as_i32() as i64); }
     let ip = net::Ipv4Addr::from_u32(addr);
     match crate::dev_net::stack().bind_udp(ip, port) {
         Ok(())   => {
@@ -254,6 +292,9 @@ pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
+    // AF_UNIX path-bound sockets are listeners after bind(2);
+    // listen(2) is a no-op (no kernel state-change required).
+    if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return 0; }
     let port = match *sock.local_port.lock() {
         Some(p) => p,
         None    => return -(Errno::Einval.as_i32() as i64),
@@ -277,6 +318,26 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
     drain_loopback();
+    // AF_UNIX listener: pop one queued UnixPair and wrap as A end.
+    if let SockKind::UnixListener(l) = &*sock.kind.lock() {
+        let l = l.clone();
+        let pair = match l.accept_q.lock().pop_front() {
+            Some(p) => p, None => return -(Errno::Eagain.as_i32() as i64),
+        };
+        let new_sock = InetSocket::new_tcp();
+        *new_sock.kind.lock() = SockKind::Unix(pair, net::UnixEnd::A);
+        let inode: vfs::InodeRef = Arc::new(new_sock) as _;
+        let cur = match crate::sched::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        // SAFETY: running task; sole reader of fd_table slot.
+        let fdt = match unsafe { cur.fd_table_ref() } {
+            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
+        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
+        return match fdt.alloc(f) { Ok(fd) => fd as i64, Err(e) => -(e as i64) };
+    }
     let listener_arc = match &*sock.kind.lock() {
         SockKind::TcpListener(l) => l.clone(),
         _ => return -(Errno::Einval.as_i32() as i64),
@@ -315,7 +376,23 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    let (family, port, addr) = match read_sockaddr_in(addr_p) {
+    const AF_UNIX: u32 = 1;
+    let family = match read_sa_family(addr_p) {
+        Some(f) => f as u32, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    if family == AF_UNIX {
+        let path = match read_sockaddr_un_path(addr_p) {
+            Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        let pair = match crate::dev_net::UNIX_REGISTRY.connect(&path) {
+            Some(p) => p, None => return -(Errno::Enoent.as_i32() as i64),
+        };
+        // Client gets the B end of the pair; the server's accept
+        // pulls the A end out via the listener's accept_q.
+        *sock.kind.lock() = crate::dev_net::SockKind::Unix(pair, net::UnixEnd::B);
+        return 0;
+    }
+    let (_family, port, addr) = match read_sockaddr_in(addr_p) {
         Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
     };
     if family != AF_INET { return -(Errno::Eafnosupport.as_i32() as i64); }

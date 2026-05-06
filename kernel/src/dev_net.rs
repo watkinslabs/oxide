@@ -80,7 +80,12 @@ pub enum SockKind {
     /// AF_UNIX SOCK_STREAM — both ends share an `UnixPair`; the
     /// `UnixEnd` tags this fd as the A or B side.
     Unix(Arc<net::UnixPair>, net::UnixEnd),
+    /// AF_UNIX path-bound listener. `accept` pops a queued pair.
+    UnixListener(Arc<net::UnixListener>),
 }
+
+/// Process-global AF_UNIX path registry.
+pub static UNIX_REGISTRY: net::UnixRegistry = net::UnixRegistry::new();
 
 /// Per-AF_INET-socket VFS state — one Inode per socket fd.
 pub struct InetSocket {
