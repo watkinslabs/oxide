@@ -206,6 +206,7 @@ dependencies = [
  "bitflags",
  "hal",
  "klog",
+ "pci",
  "sync",
  "syscall",
 ]
