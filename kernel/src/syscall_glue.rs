@@ -601,6 +601,14 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
 /// sys_exit: mark Zombie, stash exit_status, schedule away.
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
 /// # C: O(log N) + O(1)
+/// `delete_module(name, flags)` slot 176. v1 takes the module
+/// index encoded as the user pointer (since we don't yet parse
+/// .modinfo names): pass the index in the low 16 bits.
+fn kernel_sys_delete_module(args: &SyscallArgs) -> i64 {
+    let idx = args.a0 as usize & 0xFFFF;
+    if crate::dev_modules::unload(idx) { 0 } else { -(Errno::Einval.as_i32() as i64) }
+}
+
 /// `init_module(image, len, params)` slot 175.
 /// `image` is a user-mapped pointer to the .ko bytes; `len` is
 /// the size; `params` ignored for v1.
@@ -987,7 +995,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_EXIT_GROUP    => kernel_sys_exit(&args),
         crate::syscall_nrs::NR_INIT_MODULE   => kernel_sys_init_module(&args),
         crate::syscall_nrs::NR_FINIT_MODULE  => kernel_sys_finit_module(&args),
-        crate::syscall_nrs::NR_DELETE_MODULE => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_DELETE_MODULE => kernel_sys_delete_module(&args),
         crate::syscall_nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
         crate::syscall_nrs::NR_STAT
             | crate::syscall_nrs::NR_LSTAT   => crate::syscall_glue_fs::kernel_sys_stat(&args),
