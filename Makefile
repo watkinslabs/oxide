@@ -62,6 +62,12 @@ qemu-x86:
 qemu-arm:
 	$(XTASK) qemu --arch aarch64 --features debug-all
 
+# Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
+# editing any userspace/<name>/<name>.c so include_bytes! picks up
+# the new bytes on the next kernel build.
+rootfs:
+	$(XTASK) rootfs
+
 # Interactive QEMU + GDB debugging via MCP. Claude Code auto-loads
 # `tools/qemu-mcp/server.py` per `.mcp.json` at the repo root; this
 # target is just a sanity check that the server module imports + lists
