@@ -19,6 +19,11 @@ extern crate std;
 pub mod addr;
 pub mod pkt;
 pub mod tcp_state;
+pub mod netdev;
+pub mod loopback;
+
+pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry};
+pub use loopback::LoopbackDev;
 
 pub use addr::{
     eth_p, IpAddr, IpProto, Ipv4Addr, Ipv6Addr, MacAddr, NetIfaceId, Port,
