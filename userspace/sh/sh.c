@@ -96,13 +96,19 @@ read_line(char *buf, long cap) {
 }
 
 // `cat <path>`: read the file in 256-byte chunks, write each
-// chunk to fd 1. Blocks indefinitely if the file is a stream.
+// chunk to out_fd. `cat` (no path / NULL) reads from stdin
+// (fd 0) until EOF — the pipe-rhs use case.
 static void
 cmd_cat(const char *path) {
-    long fd = open_(path, O_RDONLY);
-    if (fd < 0) {
-        write_str("cat: open failed\n");
-        return;
+    long fd;
+    if (path == 0 || path[0] == 0) {
+        fd = 0;
+    } else {
+        fd = open_(path, O_RDONLY);
+        if (fd < 0) {
+            write_str("cat: open failed\n");
+            return;
+        }
     }
     char buf[256];
     for (;;) {
@@ -110,7 +116,7 @@ cmd_cat(const char *path) {
         if (n <= 0) break;
         write_n(buf, n);
     }
-    close_(fd);
+    if (fd > 0) close_(fd);
 }
 
 // linux_dirent64: ino(8) off(8) reclen(2) type(1) name(...)
@@ -235,10 +241,13 @@ run_one(char *seg, long seg_n) {
         while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
         const char *path = (i < n) ? buf + i : ".";
         cmd_ls(path);
+    } else if (n == 3 && streq_n(buf, "cat", 3)) {
+        // bare `cat`: read stdin until EOF, echo to out_fd.
+        cmd_cat(0);
     } else if (n >= 4 && prefix(buf, n, "cat ")) {
         long i = 4;
         while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
-        if (i >= n) { write_str("cat: missing path\n"); }
+        if (i >= n) { cmd_cat(0); }
         else { cmd_cat(buf + i); }
     } else if (n >= 5 && prefix(buf, n, "exec ")) {
         long i = 5;
@@ -272,9 +281,55 @@ run_one(char *seg, long seg_n) {
     return 0;
 }
 
+// Run a `;`-separated segment that may contain `|`. If a single
+// pipe is present, fork two children connected by a kernel pipe
+// and wait for both. Quoting/escaping not supported.
+static void
+run_segment(char *seg, long n) {
+    long pipe_at = -1;
+    for (long i = 0; i < n; i++) {
+        if (seg[i] == '|') { pipe_at = i; break; }
+    }
+    if (pipe_at < 0) {
+        run_one(seg, n);
+        return;
+    }
+
+    int fds[2];
+    long r = sc2(SYS_pipe2, (long)fds, 0);
+    if (r < 0) { write_str("pipe2: failed\n"); return; }
+
+    long pid_a = sc1(SYS_fork, 0);
+    if (pid_a == 0) {
+        // Child A: stdout → pipe write end.
+        sc2(SYS_dup2, fds[1], 1);
+        sc1(SYS_close, fds[0]);
+        sc1(SYS_close, fds[1]);
+        run_one(seg, pipe_at);
+        sc1(SYS_exit, 0);
+    }
+
+    long pid_b = sc1(SYS_fork, 0);
+    if (pid_b == 0) {
+        // Child B: stdin ← pipe read end.
+        sc2(SYS_dup2, fds[0], 0);
+        sc1(SYS_close, fds[0]);
+        sc1(SYS_close, fds[1]);
+        run_one(seg + pipe_at + 1, n - pipe_at - 1);
+        sc1(SYS_exit, 0);
+    }
+
+    // Parent: drop both pipe ends so writers/readers see EOF when
+    // the children finish, then wait for both.
+    sc1(SYS_close, fds[0]);
+    sc1(SYS_close, fds[1]);
+    sc4(SYS_wait4, pid_a, 0, 0, 0);
+    sc4(SYS_wait4, pid_b, 0, 0, 0);
+}
+
 void _start(void) {
     static const char banner[] =
-        "oxide-sh: builtins exit/echo/help/ls/cat/pwd/cd/uname/exec (sep: ; redir: >)\n";
+        "oxide-sh: builtins exit/echo/help/ls/cat/pwd/cd/uname/exec (sep: ; redir: > pipe: |)\n";
     write_str(banner);
 
     char buf[256];
@@ -302,7 +357,7 @@ void _start(void) {
         long start = 0;
         for (long i = 0; i <= n; i++) {
             if (i == n || buf[i] == ';') {
-                run_one(buf + start, i - start);
+                run_segment(buf + start, i - start);
                 start = i + 1;
             }
         }
