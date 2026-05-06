@@ -8,7 +8,8 @@
 // shell-pipeline-equivalent IPC use cases for system services.
 
 extern crate alloc;
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -80,6 +81,65 @@ impl UnixPair {
             UnixEnd::B => self.a_to_b.lock(),
         };
         g.closed_writer && g.buf.is_empty()
+    }
+}
+
+/// AF_UNIX path-bound listener. `bind(path)` inserts one into
+/// `UnixRegistry`; `connect(path)` looks it up + allocates a
+/// fresh `UnixPair`, queues the listener's-side handle into the
+/// listener's accept queue.
+pub struct UnixListener {
+    pub path: String,
+    pub accept_q: Spinlock<VecDeque<Arc<UnixPair>>, UnixLockClass>,
+}
+
+impl UnixListener {
+    pub fn new(path: String) -> Arc<Self> {
+        Arc::new(Self {
+            path,
+            accept_q: Spinlock::new(VecDeque::new()),
+        })
+    }
+}
+
+/// Process-global path → listener registry. New listeners go in
+/// here on `bind`; clients consult on `connect`.
+pub struct UnixRegistry {
+    pub(crate) inner: Spinlock<BTreeMap<String, Arc<UnixListener>>, UnixLockClass>,
+}
+
+impl UnixRegistry {
+    pub const fn new() -> Self {
+        Self { inner: Spinlock::new(BTreeMap::new()) }
+    }
+
+    /// Insert a listener for `path`. `Eaddrinuse` semantic if
+    /// already bound (caller maps to errno).
+    /// # C: O(log N)
+    pub fn bind(&self, path: String) -> Result<Arc<UnixListener>, ()> {
+        let mut g = self.inner.lock();
+        if g.contains_key(&path) { return Err(()); }
+        let l = UnixListener::new(path.clone());
+        g.insert(path, l.clone());
+        Ok(l)
+    }
+
+    /// Look up a listener; returns `None` if no listener is bound.
+    /// # C: O(log N)
+    pub fn lookup(&self, path: &str) -> Option<Arc<UnixListener>> {
+        self.inner.lock().get(path).cloned()
+    }
+
+    /// Connect to `path`: allocate a new UnixPair; queue the A
+    /// end into the listener's accept_q so the server's
+    /// `accept()` retrieves it; return the B end to the client.
+    /// `None` if no listener bound to `path`.
+    /// # C: O(log N)
+    pub fn connect(&self, path: &str) -> Option<Arc<UnixPair>> {
+        let listener = self.lookup(path)?;
+        let pair = UnixPair::new();
+        listener.accept_q.lock().push_back(pair.clone());
+        Some(pair)
     }
 }
 
