@@ -65,3 +65,38 @@ pub fn count() -> usize { REGISTRY.lock().len() }
 /// reads .modinfo "name=…".
 #[allow(dead_code)]
 pub fn module_name(_idx: usize) -> Option<String> { Some(String::from("module")) }
+
+/// Register the kernel's canonical exported symbols so modules
+/// can resolve common helpers without hand-rolled stubs. Called
+/// once at boot.
+/// # SAFETY: caller is the boot path; no other CPU has yet seen
+/// the symtab entries.
+/// # C: O(1)
+pub unsafe fn init_exports() {
+    use modules::symtab::export;
+    export("klog_write_raw",     klog_write_raw_thunk     as usize, false);
+    export("klog_write_dec_u64", klog_write_dec_u64_thunk as usize, false);
+    export("kassert_thunk",      kassert_thunk            as usize, false);
+}
+
+extern "C" fn klog_write_raw_thunk(p: *const u8, len: usize) {
+    if p.is_null() { return; }
+    // SAFETY: caller is a kernel module passing a valid kernel slice.
+    let s = unsafe { core::slice::from_raw_parts(p, len) };
+    klog::write_raw(s);
+}
+
+extern "C" fn klog_write_dec_u64_thunk(v: u64) {
+    klog::write_dec_u64(v);
+}
+
+extern "C" fn kassert_thunk(cond: u64, msg_p: *const u8, msg_len: usize) {
+    if cond != 0 { return; }
+    klog::write_raw(b"[ASSERT] ");
+    if !msg_p.is_null() {
+        // SAFETY: caller is a kernel module passing a valid kernel slice.
+        let s = unsafe { core::slice::from_raw_parts(msg_p, msg_len) };
+        klog::write_raw(s);
+    }
+    klog::write_raw(b"\n");
+}
