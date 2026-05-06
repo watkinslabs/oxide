@@ -27,6 +27,10 @@ impl Mount {
     /// just appended (== prior `(i_size + bs - 1) / bs`).
     /// # C: O(N_extents) + 1 alloc + 2 block I/Os (data + inode)
     pub fn append_block(&self, ino: u32, data: &[u8]) -> Result<u32, MountError> {
+        self.run_journaled(|m| m.append_block_inner(ino, data))
+    }
+
+    fn append_block_inner(&self, ino: u32, data: &[u8]) -> Result<u32, MountError> {
         let bs = self.sb.block_size as usize;
         if data.len() != bs {
             return Err(MountError::Inode(inode::InodeError::BadLen));
@@ -52,7 +56,9 @@ impl Mount {
         } else { 0 };
         let phys = self.alloc_block(hint_group)?;
 
-        // Write the data block.
+        // Write the data block. Regular file content is NOT
+        // journaled (ordered mode: data goes direct, metadata is
+        // journaled). Directory data writes use write_file_block_meta.
         let byte_off = phys * (self.sb.block_size as u64);
         write_byte_range(&*self.dev, byte_off, data)?;
 
@@ -97,7 +103,8 @@ impl Mount {
         let new_i_blocks = prev_i_blocks.saturating_add(added_sectors);
         ino_bytes[0x1C..0x20].copy_from_slice(&new_i_blocks.to_le_bytes());
 
-        write_byte_range(&*self.dev, ino_byte_off, &ino_bytes)?;
+        // Inode bytes are metadata.
+        self.metadata_write(ino_byte_off, &ino_bytes)?;
         Ok(new_logical)
     }
 
@@ -124,7 +131,8 @@ impl Mount {
         if bytes.len() != self.sb.inode_size as usize {
             return Err(MountError::Inode(inode::InodeError::BadLen));
         }
-        write_byte_range(&*self.dev, byte_off, bytes)
+        // Inode bytes are metadata — route through journaled path.
+        self.metadata_write(byte_off, bytes)
     }
 
     /// Group containing a given physical block. Inverse of
@@ -151,7 +159,7 @@ impl Mount {
         let (mut bytes, off) = self.read_inode_bytes(ino)?;
         bytes[0x04..0x08].copy_from_slice(&((size & 0xFFFF_FFFF) as u32).to_le_bytes());
         bytes[0x6C..0x70].copy_from_slice(&((size >> 32) as u32).to_le_bytes());
-        write_byte_range(&*self.dev, off, &bytes)
+        self.metadata_write(off, &bytes)
     }
 
     /// Random-access write: `data` lands at byte offset `off` in
@@ -162,6 +170,10 @@ impl Mount {
     /// Caller invalidates any page cache.
     /// # C: O(file growth + N_blocks_in_range) I/O
     pub fn write_at(&self, ino: u32, off: u64, data: &[u8]) -> Result<(), MountError> {
+        self.run_journaled(|m| m.write_at_inner(ino, off, data))
+    }
+
+    fn write_at_inner(&self, ino: u32, off: u64, data: &[u8]) -> Result<(), MountError> {
         let bs = self.sb.block_size as u64;
         let bs_us = bs as usize;
         if data.is_empty() { return Ok(()); }
@@ -209,6 +221,10 @@ impl Mount {
     /// handled by walking + freeing leaves from the tail.
     /// # C: O(N_extents) + N_blocks_freed I/O
     pub fn truncate_inode(&self, ino: u32, new_len: u64) -> Result<(), MountError> {
+        self.run_journaled(|m| m.truncate_inode_inner(ino, new_len))
+    }
+
+    fn truncate_inode_inner(&self, ino: u32, new_len: u64) -> Result<(), MountError> {
         let bs = self.sb.block_size as u64;
         let inode = self.read_inode(ino)?;
         let cur_size = inode.size;
@@ -262,7 +278,7 @@ impl Mount {
         // Set new size.
         bytes[0x04..0x08].copy_from_slice(&((new_len & 0xFFFF_FFFF) as u32).to_le_bytes());
         bytes[0x6C..0x70].copy_from_slice(&((new_len >> 32) as u32).to_le_bytes());
-        write_byte_range(&*self.dev, off_inode, &bytes)?;
+        self.metadata_write(off_inode, &bytes)?;
         Ok(())
     }
 
@@ -280,7 +296,7 @@ impl Mount {
             cur.saturating_sub((-delta) as u16)
         };
         bytes[0x1A..0x1C].copy_from_slice(&new.to_le_bytes());
-        write_byte_range(&*self.dev, off, &bytes)?;
+        self.metadata_write(off, &bytes)?;
         Ok(new)
     }
 }
