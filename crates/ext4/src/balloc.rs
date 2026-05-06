@@ -11,7 +11,7 @@
 // disk RMW and counter updates.
 
 use crate::gdt;
-use crate::mount::{Mount, MountError, read_byte_range_pub};
+use crate::mount::{Mount, MountError};
 use crate::superblock::{Superblock, SB_OFF_FREE_BLOCKS_LO, SB_OFF_FREE_BLOCKS_HI};
 
 extern crate alloc;
@@ -47,7 +47,7 @@ impl Mount {
                 gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
             };
             let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
-            let mut bitmap = read_byte_range_pub(&*m.dev, bbm_byte_off, m.sb.block_size as usize)?;
+            let mut bitmap = m.read_meta_byte_range(bbm_byte_off, m.sb.block_size as usize)?;
             let bidx = bit as usize;
             let mask = 1u8 << (bidx & 7);
             if (bitmap[bidx >> 3] & mask) == 0 {
@@ -80,7 +80,7 @@ impl Mount {
         };
         if gd_orig.free_blocks_count == 0 { return Ok(None); }
         let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
-        let mut bitmap = read_byte_range_pub(&*self.dev, bbm_byte_off, self.sb.block_size as usize)?;
+        let mut bitmap = self.read_meta_byte_range(bbm_byte_off, self.sb.block_size as usize)?;
         let blocks_in_group = self.blocks_in_group(group);
         let bit = match find_first_clear(&bitmap, blocks_in_group) {
             Some(b) => b,
@@ -153,8 +153,7 @@ impl Mount {
             let s = self.state.lock();
             ((s.sb_free_blocks & 0xFFFF_FFFF) as u32, (s.sb_free_blocks >> 32) as u32)
         };
-        let mut sb_buf = read_byte_range_pub(
-            &*self.dev,
+        let mut sb_buf = self.read_meta_byte_range(
             crate::superblock::SUPERBLOCK_OFFSET,
             crate::superblock::SUPERBLOCK_LEN,
         )?;

@@ -11,7 +11,7 @@
 // surface (every user file in our images fits in 4 extents).
 
 use crate::inode::{self, Extent, I_BLOCK_LEN};
-use crate::mount::{Mount, MountError, write_byte_range, read_byte_range_pub};
+use crate::mount::{Mount, MountError, write_byte_range};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -117,7 +117,7 @@ impl Mount {
         let gd = self.group_desc(group)?;
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
         let byte_off = gd.inode_table * (self.sb.block_size as u64) + off_in_table;
-        let bytes = read_byte_range_pub(&*self.dev, byte_off, self.sb.inode_size as usize)?;
+        let bytes = self.read_meta_byte_range(byte_off, self.sb.inode_size as usize)?;
         Ok((bytes, byte_off))
     }
 
