@@ -220,27 +220,92 @@ pub fn write_file(path: &[u8], data: &[u8]) -> Option<()> {
     Some(())
 }
 
-/// VFS Inode wrapping a snapshot of a regular file's bytes.
-/// `read(off, buf)` slices into the snapshot; `size` reports
-/// the total length. Constructed by `lookup_inode(path)` for
-/// regular files only — directories not yet wired through VFS.
+/// VFS Inode wrapping a regular ext4 file. Reads served from a
+/// per-inode byte cache (refreshed after every successful write
+/// or truncate). Writes round-trip through `Mount::write_at` and
+/// invalidate the kernel page cache for this inode.
 struct Ext4FileInode {
     ino:   u32,
-    bytes: Vec<u8>,
+    bytes: sync::Spinlock<Vec<u8>, sync::Inode>,
+}
+
+impl Ext4FileInode {
+    fn refresh(&self) {
+        if let Some(b) = read_full_file_by_ino(self.ino) {
+            *self.bytes.lock() = b;
+        }
+    }
 }
 
 impl vfs::Inode for Ext4FileInode {
     fn ino(&self) -> vfs::Ino { (0x6E54_0000u64 | (self.ino as u64)) as vfs::Ino }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.bytes.len() as u64 }
+    fn size(&self) -> u64 { self.bytes.lock().len() as u64 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let g = self.bytes.lock();
         let off = off as usize;
-        if off >= self.bytes.len() { return Ok(0); }
-        let n = (self.bytes.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&self.bytes[off..off+n]);
+        if off >= g.len() { return Ok(0); }
+        let n = (g.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&g[off..off+n]);
         Ok(n)
     }
+    fn write(&self, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published in init() and stable for kernel lifetime; sole writer is this fn under the file's natural exclusive flow.
+        let mount = unsafe { &*p };
+        mount.write_at(self.ino, off, buf).map_err(|_| vfs::VfsError::Eio)?;
+        PAGE_CACHE.invalidate(InodeId(self.ino as u64));
+        self.refresh();
+        Ok(buf.len())
+    }
+    fn truncate(&self, len: u64) -> vfs::KResult<()> {
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+        let mount = unsafe { &*p };
+        mount.truncate_inode(self.ino, len).map_err(|_| vfs::VfsError::Eio)?;
+        PAGE_CACHE.invalidate(InodeId(self.ino as u64));
+        self.refresh();
+        Ok(())
+    }
+}
+
+/// Read the full bytes of an ext4 regular file by its inode
+/// number — used internally to refresh `Ext4FileInode` after
+/// writes.
+/// # C: O(file size)
+fn read_full_file_by_ino(ino: u32) -> Option<Vec<u8>> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let inode = mount.read_inode(ino).ok()?;
+    if !inode.is_reg() { return None; }
+    let bs = mount.sb.block_size as usize;
+    let total = inode.size as usize;
+    let n_blocks = (total + bs - 1) / bs;
+    let mut out = Vec::with_capacity(total);
+    for k in 0..n_blocks {
+        let blk = match mount.read_file_block(&inode, k as u32) {
+            Ok(b)  => b,
+            Err(ext4::MountError::NotFound) => alloc::vec![0u8; bs],
+            Err(_) => return None,
+        };
+        let take = core::cmp::min(bs, total - out.len());
+        out.extend_from_slice(&blk[..take]);
+    }
+    Some(out)
+}
+
+/// Wrap `ino` (regular-file ext4 inode) in a writeable VFS Inode.
+fn wrap_file(ino: u32) -> Option<vfs::InodeRef> {
+    let bytes = read_full_file_by_ino(ino)?;
+    Some(alloc::sync::Arc::new(Ext4FileInode {
+        ino,
+        bytes: sync::Spinlock::new(bytes),
+    }) as vfs::InodeRef)
 }
 
 /// Look up `path` and return a VFS Inode wrapping the file
@@ -251,9 +316,112 @@ impl vfs::Inode for Ext4FileInode {
 pub fn lookup_inode(path: &[u8]) -> Option<vfs::InodeRef> {
     let p = MOUNT_PTR.load(Ordering::Acquire);
     if p.is_null() { return None; }
-    // SAFETY: MOUNT_PTR was published via init(); pointer is stable for the kernel lifetime.
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
     let mount = unsafe { &*p };
     let ino = mount.lookup_path(path).ok()?;
-    let bytes = read_file(path)?;
-    Some(alloc::sync::Arc::new(Ext4FileInode { ino, bytes }) as vfs::InodeRef)
+    let inode = mount.read_inode(ino).ok()?;
+    if !inode.is_reg() { return None; }
+    wrap_file(ino)
+}
+
+/// Split `path` into (parent_path, basename). Returns None for
+/// paths that lack a basename (e.g. `/`).
+fn split_parent_and_name(path: &[u8]) -> Option<(&[u8], &[u8])> {
+    if path.is_empty() || path[0] != b'/' { return None; }
+    let pos = path.iter().rposition(|&c| c == b'/')?;
+    let parent = if pos == 0 { &path[..1] } else { &path[..pos] };
+    let name   = &path[pos + 1..];
+    if name.is_empty() { return None; }
+    Some((parent, name))
+}
+
+fn parent_inode(path: &[u8]) -> Option<(u32, &[u8])> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let (parent, name) = split_parent_and_name(path)?;
+    let pino = mount.lookup_path(parent).ok()?;
+    Some((pino, name))
+}
+
+/// Create a regular file at `path`. Returns the new VFS InodeRef.
+/// `Enoent` if the parent directory doesn't exist (caller maps).
+/// # C: O(N parent entries)
+pub fn create_at(path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let (pino, name) = parent_inode(path)?;
+    let new_ino = mount.create_file(pino, name, mode_perm).ok()?;
+    PAGE_CACHE.invalidate(InodeId(new_ino as u64));
+    wrap_file(new_ino)
+}
+
+/// Unlink the file at `path`. `Enoent` if missing.
+/// # C: O(N parent entries) + (free blocks if last link)
+pub fn unlink_at(path: &[u8]) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let (pino, name) = parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
+    let target = mount.lookup_path(path).map_err(|_| vfs::VfsError::Enoent)?;
+    mount.unlink(pino, name).map_err(|_| vfs::VfsError::Eio)?;
+    PAGE_CACHE.invalidate(InodeId(target as u64));
+    Ok(())
+}
+
+/// Create an empty subdirectory at `path` with mode `mode_perm`.
+/// # C: O(N parent entries)
+pub fn mkdir_at(path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let (pino, name) = parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
+    mount.create_dir(pino, name, mode_perm).map_err(|_| vfs::VfsError::Eio)?;
+    Ok(())
+}
+
+/// Remove the (empty) directory at `path`.
+/// # C: O(N parent entries)
+pub fn rmdir_at(path: &[u8]) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let target = mount.lookup_path(path).map_err(|_| vfs::VfsError::Enoent)?;
+    let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+    if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
+    let (pino, name) = parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
+    // dir_unlink + free_inode (no block frees — empty dirs have no
+    // data blocks beyond the . / .. block we never allocated for
+    // create_dir).
+    mount.dir_unlink(pino, name).map_err(|_| vfs::VfsError::Eio)?;
+    let _ = mount.free_inode(target);
+    Ok(())
+}
+
+/// Rename `from` → `to` (same parent dir or different). Atomic
+/// only at the dir-block level — implements as link-then-unlink
+/// of the same inode. Cross-directory move supported when both
+/// parents resolve.
+/// # C: O(N parent entries) per directory
+pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let target = mount.lookup_path(from).map_err(|_| vfs::VfsError::Enoent)?;
+    let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+    let (from_p, from_name) = parent_inode(from).ok_or(vfs::VfsError::Enoent)?;
+    let (to_p, to_name)     = parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
+    // If destination already exists, unlink it first (POSIX mv-clobber).
+    if mount.lookup_path(to).is_ok() { let _ = mount.dir_unlink(to_p, to_name); }
+    let ftype = if inode.is_dir() { ext4::DT_DIR } else if inode.is_link() { ext4::DT_LNK } else { ext4::DT_REG };
+    mount.dir_link(to_p, to_name, target, ftype).map_err(|_| vfs::VfsError::Eio)?;
+    mount.dir_unlink(from_p, from_name).map_err(|_| vfs::VfsError::Eio)?;
+    Ok(())
 }
