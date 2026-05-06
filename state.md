@@ -1,4 +1,45 @@
-# State 2026-05-06 (session 33 — boot chain real, login prompt reached, B04 in flight)
+# State 2026-05-06 (session 34 — B04 merged, B05 finds two more bugs)
+
+## Headline (session 34, on branch B05-tty-rx-debug)
+
+PR #596 (B04 real boot) merged green. Picked up where session 33
+left off: drive the new qemu-mcp `qemu_send_serial` against the
+live `oxide login:` prompt. Found and fixed two more bugs that
+together gate interactive login:
+
+1. **LAPIC timer disarmed for real userspace.** `canary::smoke_canary_x86`
+   and `preempt_smoke::smoke_preempt_x86` both end with
+   `lapic::timer_disarm()`. After both smokes ran, the timer was
+   silent for the rest of the boot. spawning init/svcd/agetty/login
+   ran fine via syscalls (no preemption needed), but as soon as
+   login parked on `read(0)`, no timer IRQ ever fired → no
+   `tick_poll_uart` → login waits forever.
+   Confirmed by instrumenting `oxide_irq_dispatch` (TICK_COUNT
+   stuck at ~1500 after canary teardown). Fix: re-arm
+   `lapic::timer_periodic(1_000_000)` + sti right before init
+   spawn in `elf_smoke::run`. Verified TICK_COUNT then climbs past
+   the disarm boundary (cur reg wraps; LVT remains 0x20040).
+
+2. **qemu-mcp `-serial stdio` doesn't deliver host stdin → guest
+   UART RX.** With QEMU's stdin attached to a Python PIPE, writes
+   from `qemu_send_serial` never set LSR.DR on the guest 16550.
+   The session-33 send-serial path was never actually delivering.
+   Fix: switch the qemu-mcp serial transport from `-serial stdio`
+   to a unix socket (`-chardev socket,server=on,wait=off -serial
+   chardev:serial0`). server.py now creates a tempdir, has QEMU
+   listen, connects as a client post-launch, drains via
+   `recv()`-line-split, and writes via `sock.sendall()`. Reliable
+   bidirectional bytes both ways.
+
+**Both fixes still need an end-to-end interactive verification.**
+The kernel build is clean; the new MCP socket transport requires
+a Claude restart for tool re-discovery before we can reboot and
+type "root\n" → "\n" → expect /bin/sh.
+
+**Branch:** `B05-tty-rx-debug` (2 commits beyond main when this
+state.md update lands). Open PR after restart-and-verify.
+
+# State 2026-05-06 (session 33 — boot chain real, login prompt reached, B04 merged)
 
 ## Headline (session 33, on branch B04-real-boot, PR #596 OPEN)
 
