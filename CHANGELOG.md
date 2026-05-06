@@ -800,14 +800,22 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #495 | `P8-13-udp-echo-userspace` | /bin/udp_echo real-musl AF_INET smoke binary. |
 | #496 | `P9-04-userspace-kill` | /bin/kill SYS_kill wrapper. |
 | #497 | `P9-05-userspace-tools` | /bin/{sleep, true, false, hostname}. |
+| #499 | `P9-06-userspace-mkdir-rm` | /bin/{mkdir, rm}. |
+| #500 | `P9-07a-ext4-extent-idx-read` | ExtentIdx parser + read_file_block depth=1/2 walk. |
+| #501 | `P9-07b-ext4-extent-idx-write` | append_block inline-full → depth=1 promote + leaf-grow within depth=1. |
+| #502 | `P9-08-userspace-cat-echo` | /bin/{cat, echo}. |
+| #503 | `P9-09-misc-socket-syscalls` | NR_GETSOCKNAME / GETPEERNAME / SHUTDOWN / SETSOCKOPT / GETSOCKOPT. |
+| #504 | `P9-10-warning-cleanup` | Kernel warnings 18 → 12. |
+| #505 | `P8-14-tcp-echo-userspace` | /bin/tcp_echo userspace AF_INET stream smoke. |
 
 End-of-session-30 verified-green:
-- `cargo test --workspace` → 799 (up from 752).
-- `make x86` clean.
+- `cargo test --workspace` → 800 (up from 752).
+- `make x86` clean (warnings down to 12 in kernel).
+- 13 userspace binaries on the rootfs.
 
 Open follow-ups (session 31 picks up):
-- External extent index nodes (depth>0).
+- Depth=2 ext4 extent trees.
 - ext4 metadata_csum.
 - TCP retransmit timer + congestion control.
-- IPv6, ARP/NDP, virtio-net, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP.
-- Kernel warning cleanup.
+- IPv6, ARP/NDP, virtio-net, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP, NR_EPOLL_*.
+- Phase 9 modules — ELF ET_REL relocations + symbol resolver.
