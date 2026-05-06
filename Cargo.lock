@@ -125,6 +125,7 @@ name = "ext4"
 version = "0.1.0"
 dependencies = [
  "block",
+ "crc",
  "jbd2",
  "sync",
 ]
