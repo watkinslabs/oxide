@@ -105,6 +105,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         ("userspace/find/find",         "userspace/find/find.c"),
         ("userspace/df/df",             "userspace/df/df.c"),
         ("userspace/cmp/cmp",           "userspace/cmp/cmp.c"),
+        ("userspace/route/route",       "userspace/route/route.c"),
     ];
     for (out_rel, src_rel) in bins {
         let out = repo.join(out_rel);
@@ -177,6 +178,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&repo.join("userspace/find/find"),         "/bin/find")?;
     put(&repo.join("userspace/df/df"),             "/bin/df")?;
     put(&repo.join("userspace/cmp/cmp"),           "/bin/cmp")?;
+    put(&repo.join("userspace/route/route"),       "/bin/route")?;
 
     // /etc/issue + /etc/os-release as inline writes through tempfile.
     let tmp = repo.join("target/oxide-rootfs-staging");
