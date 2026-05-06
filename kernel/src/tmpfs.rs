@@ -159,7 +159,6 @@ pub fn init() {
 /// # SAFETY: caller is the boot path; PMM up; pre-userspace.
 /// # C: O(1)
 pub fn smoke_test() {
-    use vfs::Inode;
     use hal::kassert;
     let inode = lookup_or_create("/tmp/.smoke");
     let n = inode.write(0, b"shell-test").expect("tmpfs.write");
