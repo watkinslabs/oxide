@@ -28,10 +28,23 @@ pub enum GdtError {
 /// Decoded subset of one group descriptor.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GroupDesc {
-    pub inode_table: u64,   // LBA of this group's inode table (lo|hi merged)
-    pub block_bitmap: u64,
-    pub inode_bitmap: u64,
+    pub inode_table:        u64,   // LBA of this group's inode table (lo|hi merged)
+    pub block_bitmap:       u64,
+    pub inode_bitmap:       u64,
+    pub free_blocks_count:  u32,
+    pub free_inodes_count:  u32,
+    pub used_dirs_count:    u32,
 }
+
+/// Field byte-offsets within one group descriptor record.
+pub const GD_OFF_FREE_BLOCKS_LO: usize = 0x0C;
+pub const GD_OFF_FREE_INODES_LO: usize = 0x0E;
+pub const GD_OFF_USED_DIRS_LO:   usize = 0x10;
+pub const GD_OFF_CHECKSUM:       usize = 0x1E;
+/// 64-bit hi halves (only present when `desc_size_for == 64`).
+pub const GD_OFF_FREE_BLOCKS_HI: usize = 0x2C;
+pub const GD_OFF_FREE_INODES_HI: usize = 0x2E;
+pub const GD_OFF_USED_DIRS_HI:   usize = 0x30;
 
 /// Parse the `n`-th group descriptor out of `buf`. `buf` must
 /// hold at least `(n+1) * desc_size_for(sb)` bytes.
@@ -45,17 +58,57 @@ pub fn parse_descriptor(buf: &[u8], n: u32, sb: &Superblock) -> Result<GroupDesc
     let bbm_lo = u32::from_le_bytes([buf[off],     buf[off+1], buf[off+2], buf[off+3]]) as u64;
     let ibm_lo = u32::from_le_bytes([buf[off+4],   buf[off+5], buf[off+6], buf[off+7]]) as u64;
     let it_lo  = u32::from_le_bytes([buf[off+8],   buf[off+9], buf[off+10], buf[off+11]]) as u64;
-    let (bbm_hi, ibm_hi, it_hi) = if dsize == 64 {
+    let fb_lo  = u16::from_le_bytes([buf[off+GD_OFF_FREE_BLOCKS_LO],   buf[off+GD_OFF_FREE_BLOCKS_LO+1]]) as u32;
+    let fi_lo  = u16::from_le_bytes([buf[off+GD_OFF_FREE_INODES_LO],   buf[off+GD_OFF_FREE_INODES_LO+1]]) as u32;
+    let ud_lo  = u16::from_le_bytes([buf[off+GD_OFF_USED_DIRS_LO],     buf[off+GD_OFF_USED_DIRS_LO+1]]) as u32;
+    let (bbm_hi, ibm_hi, it_hi, fb_hi, fi_hi, ud_hi) = if dsize == 64 {
         let bh = u32::from_le_bytes([buf[off+0x20], buf[off+0x21], buf[off+0x22], buf[off+0x23]]) as u64;
         let ih = u32::from_le_bytes([buf[off+0x24], buf[off+0x25], buf[off+0x26], buf[off+0x27]]) as u64;
         let th = u32::from_le_bytes([buf[off+0x28], buf[off+0x29], buf[off+0x2A], buf[off+0x2B]]) as u64;
-        (bh, ih, th)
-    } else { (0, 0, 0) };
+        let fbh = u16::from_le_bytes([buf[off+GD_OFF_FREE_BLOCKS_HI], buf[off+GD_OFF_FREE_BLOCKS_HI+1]]) as u32;
+        let fih = u16::from_le_bytes([buf[off+GD_OFF_FREE_INODES_HI], buf[off+GD_OFF_FREE_INODES_HI+1]]) as u32;
+        let udh = u16::from_le_bytes([buf[off+GD_OFF_USED_DIRS_HI],   buf[off+GD_OFF_USED_DIRS_HI+1]]) as u32;
+        (bh, ih, th, fbh, fih, udh)
+    } else { (0, 0, 0, 0, 0, 0) };
     Ok(GroupDesc {
-        block_bitmap: (bbm_hi << 32) | bbm_lo,
-        inode_bitmap: (ibm_hi << 32) | ibm_lo,
-        inode_table:  (it_hi  << 32) | it_lo,
+        block_bitmap:      (bbm_hi << 32) | bbm_lo,
+        inode_bitmap:      (ibm_hi << 32) | ibm_lo,
+        inode_table:       (it_hi  << 32) | it_lo,
+        free_blocks_count: (fb_hi << 16) | fb_lo,
+        free_inodes_count: (fi_hi << 16) | fi_lo,
+        used_dirs_count:   (ud_hi << 16) | ud_lo,
     })
+}
+
+/// Write back the counter fields of `gd` to the `n`-th descriptor
+/// slot in `buf`. Only mutates the free-blocks / free-inodes /
+/// used-dirs counters and clears the legacy + 64-bit checksum
+/// fields (real driver computes a CRC; v1 uses a non-checksumming
+/// image — see `Mount::open` rejection of GDT_CSUM if enabled).
+/// # C: O(1)
+pub fn write_descriptor_counters(buf: &mut [u8], n: u32, sb: &Superblock, gd: &GroupDesc)
+    -> Result<(), GdtError>
+{
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + dsize > buf.len() { return Err(GdtError::BadLen); }
+    buf[off+GD_OFF_FREE_BLOCKS_LO  ..off+GD_OFF_FREE_BLOCKS_LO+2]
+        .copy_from_slice(&((gd.free_blocks_count & 0xFFFF) as u16).to_le_bytes());
+    buf[off+GD_OFF_FREE_INODES_LO  ..off+GD_OFF_FREE_INODES_LO+2]
+        .copy_from_slice(&((gd.free_inodes_count & 0xFFFF) as u16).to_le_bytes());
+    buf[off+GD_OFF_USED_DIRS_LO    ..off+GD_OFF_USED_DIRS_LO+2]
+        .copy_from_slice(&((gd.used_dirs_count   & 0xFFFF) as u16).to_le_bytes());
+    // Zero checksum slot — image MUST NOT have GDT_CSUM feature.
+    buf[off+GD_OFF_CHECKSUM..off+GD_OFF_CHECKSUM+2].copy_from_slice(&0u16.to_le_bytes());
+    if dsize == 64 {
+        buf[off+GD_OFF_FREE_BLOCKS_HI..off+GD_OFF_FREE_BLOCKS_HI+2]
+            .copy_from_slice(&((gd.free_blocks_count >> 16) as u16).to_le_bytes());
+        buf[off+GD_OFF_FREE_INODES_HI..off+GD_OFF_FREE_INODES_HI+2]
+            .copy_from_slice(&((gd.free_inodes_count >> 16) as u16).to_le_bytes());
+        buf[off+GD_OFF_USED_DIRS_HI  ..off+GD_OFF_USED_DIRS_HI+2]
+            .copy_from_slice(&((gd.used_dirs_count   >> 16) as u16).to_le_bytes());
+    }
+    Ok(())
 }
 
 /// Locate inode `ino` (1-indexed) on the FS. Returns
