@@ -1,16 +1,16 @@
-// `/dev/console` char-device per docs/16 + docs/28. v1 stub of
-// the real /dev plumbing called out in `state.md` "TTY
-// architecture note". Backed by:
-//   - read:  blocks on `tty.rs`'s ringbuffer (timer-tick poll)
-//   - write: emits via `klog::write_raw` (UART path)
+// `/dev/console` + `/dev/tty<N>` char-devices per docs/16 + docs/28.
+// Multi-VT layout (post-B07):
+//   - `/dev/tty1`..`/dev/tty6` each carry a distinct VT id and
+//     read from that VT's ring (`tty::try_read_vt`).
+//   - `/dev/console`, `/dev/tty`, `/dev/tty0` all carry vt=0,
+//     which `tty::vt_index` resolves to the live foreground at
+//     every read — they alias whatever VT the user is "looking
+//     at" without holding stale references.
+// Writes still go to the single UART path via `klog::write_raw`;
+// per-VT TX framebuffers are out of scope for v1.
 //
-// Once VFS + devfs land (P2-30), this becomes a registered
-// char-device under `/dev/console`, and `/dev/tty0..6` get
-// distinct instances. For now `init` (the boot user task)
-// installs three references to a single `ConsoleInode`-backed
-// `File` at fd 0, 1, 2 in its `FdTable` so the existing user
-// programs reach it via the standard fd indirection rather than
-// kernel-side hard-wiring.
+// init's fd 0/1/2 install a vt=0 (foreground-alias) ConsoleInode
+// — backwards-compatible with the pre-B07 single-VT behavior.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -25,12 +25,26 @@ use alloc::sync::Arc;
 use klog::write_raw as console_emit;
 use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
 
-/// `/dev/console` inode. Single global instance; reads block on
-/// `tty::try_read` + WaitQueue, writes go to UART via `klog`.
-pub struct ConsoleInode;
+/// `/dev/console` + `/dev/tty<N>` inode. `vt == 0` means
+/// "foreground alias" and resolves at read-time; vt 1..=N_VT
+/// pin to a specific slot.
+pub struct ConsoleInode {
+    vt: u8,
+}
+
+impl ConsoleInode {
+    /// Build an inode pinned to `vt`. Use 0 for foreground-alias
+    /// (`/dev/console`, `/dev/tty`, `/dev/tty0`); 1..=N_VT for
+    /// the per-VT slots.
+    pub const fn new(vt: u8) -> Self { Self { vt } }
+}
 
 impl Inode for ConsoleInode {
-    fn ino(&self) -> Ino { 1 }
+    /// Distinct inode numbers per VT so VFS-level introspection
+    /// (`stat` / `getdents` ino fields) reflects the underlying
+    /// device. vt=0 keeps ino=1 for backwards compatibility with
+    /// existing /dev/console callers.
+    fn ino(&self) -> Ino { (self.vt as Ino).max(1) }
     fn file_type(&self) -> FileType { FileType::CharDev }
     fn size(&self) -> u64 { 0 }
 
@@ -38,34 +52,19 @@ impl Inode for ConsoleInode {
         Err(VfsError::Enotdir)
     }
 
-    /// Block-and-retry read from the kernel TTY ringbuffer per
+    /// Block-and-retry read from this VT's ringbuffer per
     /// `28§3` console semantics. Returns `Ok(1)` on success
     /// (one byte at a time — line discipline lands later).
-    /// arm v1: ringbuffer + RX wiring not yet implemented (PL011
-    /// driver lands with P2-30c follow-up); returns Eagain so
-    /// userspace polls.
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        #[cfg(target_arch = "x86_64")]
         loop {
-            if let Some(b) = crate::tty::try_read() {
+            if let Some(b) = crate::tty::try_read_vt(self.vt) {
                 buf[0] = b;
                 return Ok(1);
             }
             // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
-            unsafe { crate::tty::park_current_for_tty(); }
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` will.
-            unsafe { crate::sched::schedule(); }
-        }
-        #[cfg(target_arch = "aarch64")]
-        loop {
-            if let Some(b) = crate::tty::try_read() {
-                buf[0] = b;
-                return Ok(1);
-            }
-            // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
-            unsafe { crate::tty::park_current_for_tty(); }
-            // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` will.
+            unsafe { crate::tty::park_current_for_tty_vt(self.vt); }
+            // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` (or future kbd→VT route) will.
             unsafe { crate::sched::schedule(); }
         }
     }
@@ -82,16 +81,12 @@ impl Inode for ConsoleInode {
 }
 
 /// Build the `init`-process fd table with fd 0/1/2 all pointing
-/// at `/dev/console`. Returns an `Arc<FdTable>` ready to install
-/// on the spawned user task.
-///
-/// v1 stub: a single `ConsoleInode` instance is shared across the
-/// three fds so reads go to one ringbuffer + writes converge on
-/// one UART. Full /dev/tty0..6 + foreground-VT alias rides P2-30.
+/// at `/dev/console` (vt=0, foreground-alias). Returns an
+/// `Arc<FdTable>` ready to install on the spawned user task.
 /// # C: O(1)
 pub fn init_console_fd_table() -> Arc<FdTable> {
     let table = Arc::new(FdTable::new());
-    let inode: InodeRef = Arc::new(ConsoleInode);
+    let inode: InodeRef = Arc::new(ConsoleInode::new(0));
     let dentry = Dentry::new(None, "console".to_string(), inode.clone());
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     // alloc returns the lowest-free fd; first three calls give

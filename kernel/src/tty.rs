@@ -3,15 +3,25 @@
 // need), kernel ringbuffer, blocking `sys_read(fd=0)` via a
 // task `WaitQueue`.
 //
+// Multi-VT layout (post-B07): one ringbuffer + waiters list per
+// VT slot 1..=6 plus a foreground-VT pointer. UART RX byes flow
+// into the foreground VT's ring; reads from /dev/tty<N> drain
+// VT-N's ring. /dev/console, /dev/tty, and /dev/tty0 carry vt=0
+// — a virtual alias that resolves to FOREGROUND_VT at every
+// access. v1 keeps foreground pinned to VT 1; runtime VT
+// switching (Ctrl-Alt-F<n> equivalent) rides a follow-up.
+//
 // Flow:
 //   timer IRQ → eoi → tick_pick_next → tty::tick_poll_uart
 //     ↓
-//     UART LSR.DR set?  → read RBR byte, push to RX_BUF
-//     buffer non-empty?  → wake all WAITERS (Sleeping → Runnable + enqueue)
+//     UART LSR.DR set?  → read RBR byte, push to VT[fg].rx
+//     buffer non-empty?  → wake all VT[fg].waiters
 //
-//   user calls sys_read(fd=0)
-//     → if RX_BUF empty: state=Sleeping, push self to WAITERS, schedule()
-//                        (on resume, retry)
+//   user calls sys_read(fd=0) on a /dev/ttyN inode (vt = N or
+//   resolved from 0 → foreground)
+//     → if VT[vt].rx empty: state=Sleeping, push self to
+//                           VT[vt].waiters, schedule()
+//                           (on resume, retry)
 //       else: pop one byte, write to user buf, return 1
 //
 // Single-CPU UP. Per-CPU partitioning + a real RX-IRQ rewrite
@@ -21,7 +31,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use sched::{Task, TaskState};
 use sync::{Spinlock, Tty as TtyClass};
@@ -59,12 +69,37 @@ impl RxBuf {
         self.len -= 1;
         Some(b)
     }
-
-    fn is_empty(&self) -> bool { self.len == 0 }
 }
 
-static RX_BUF:  Spinlock<RxBuf, TtyClass>      = Spinlock::new(RxBuf::new());
-static WAITERS: Spinlock<Vec<Arc<Task>>, TtyClass> = Spinlock::new(Vec::new());
+/// Number of distinct VT slots (1..=N_VT). VT 0 is reserved as
+/// the "foreground alias" — nothing is stored at index 0.
+pub const N_VT: usize = 6;
+
+/// Foreground VT (1..=N_VT). UART RX bytes route here. `0` is
+/// not a valid stored value — readers using vt=0 dereference
+/// this atomic at access time.
+static FOREGROUND_VT: AtomicU8 = AtomicU8::new(1);
+
+/// Per-VT RX ringbuffers. Index 0 of this array == VT 1, etc.
+static VT_RINGS: [Spinlock<RxBuf, TtyClass>; N_VT] =
+    [const { Spinlock::new(RxBuf::new()) }; N_VT];
+
+/// Per-VT wait queues. Mirrors `VT_RINGS` indexing.
+static VT_WAITERS: [Spinlock<Vec<Arc<Task>>, TtyClass>; N_VT] =
+    [const { Spinlock::new(Vec::new()) }; N_VT];
+
+/// Resolve a caller-supplied VT id to a 0-based index into
+/// `VT_RINGS` / `VT_WAITERS`. `vt == 0` resolves to the current
+/// foreground; anything outside 1..=N_VT clamps to foreground -1
+/// rather than panicking (devfs paths are validated at registration
+/// time, but inode reuse + future runtime mappings make a
+/// defensive clamp cheap).
+fn vt_index(vt: u8) -> usize {
+    let resolved = if vt == 0 { FOREGROUND_VT.load(Ordering::Relaxed) } else { vt };
+    let n = (resolved as usize).clamp(1, N_VT) - 1;
+    debug_assert!(n < N_VT);
+    n
+}
 
 /// Read one COM1 byte non-blocking via I/O ports. Used by
 /// `tick_poll_uart` (timer ISR ctx) and `kernel_sys_read`
@@ -106,12 +141,12 @@ pub unsafe fn tick_poll_uart() {
     }
     // SAFETY: per fn contract — privileged port I/O at CPL=0; LSR.DR was just observed set so RBR has a byte.
     let b = unsafe { uart_inb(0x3F8) };
-    push_and_wake(b);
+    push_and_wake_fg(b);
 }
 
 /// PL011 RX poll for arm timer-tick context. Reads `FR.RXFE` to
 /// check for pending bytes; on each available byte pulls from
-/// `DR` and feeds the same `RX_BUF` + WAITERS path as x86.
+/// `DR` and feeds the foreground VT's `RX_BUF` + waiters.
 ///
 /// # SAFETY: caller is the timer IRQ dispatcher running with
 /// IRQs masked; single-CPU UP. Reads through the published
@@ -132,17 +167,22 @@ pub unsafe fn tick_poll_uart() {
         if (fr & FR_RXFE) != 0 { break; }
         // SAFETY: same Device mapping; DR low byte is the received byte.
         let b = unsafe { core::ptr::read_volatile((va + PL011_DR) as *const u32) } as u8;
-        push_and_wake(b);
+        push_and_wake_fg(b);
         n += 1;
     }
 }
 
-/// Push `b` to the ringbuffer + wake all WAITERS. Shared between
-/// the per-arch tick poll thunks.
-fn push_and_wake(b: u8) {
-    let pushed = RX_BUF.lock().push(b);
+/// Push `b` to the foreground VT's ring + wake its waiters.
+/// Called from each arch's timer-tick poller.
+fn push_and_wake_fg(b: u8) {
+    let idx = vt_index(0);
+    let pushed = VT_RINGS[idx].lock().push(b);
     if !pushed { return; }
-    let mut waiters = WAITERS.lock();
+    wake_waiters(idx);
+}
+
+fn wake_waiters(idx: usize) {
+    let mut waiters = VT_WAITERS[idx].lock();
     if waiters.is_empty() { return; }
     let rq = match crate::sched::global() {
         Some(r) => r,
@@ -158,34 +198,40 @@ fn push_and_wake(b: u8) {
     crate::preempt::set_need_resched();
 }
 
-/// Pop one byte from the RX ringbuffer, returning it as
-/// `Some(b)` if available. `None` means "no data right now"
-/// (caller should park on `WAITERS` if blocking).
+/// Pop one byte from `vt`'s RX ringbuffer. `vt == 0` reads from
+/// the current foreground VT. `None` means "no data right now"
+/// — caller should park via `park_current_for_tty_vt` if blocking.
 /// # C: O(1)
-pub fn try_read() -> Option<u8> {
-    RX_BUF.lock().pop()
+pub fn try_read_vt(vt: u8) -> Option<u8> {
+    VT_RINGS[vt_index(vt)].lock().pop()
 }
 
-/// Inject `bytes` into the RX ringbuffer as if they had arrived
-/// from the UART. v1 boot smoke uses this to pre-load test
-/// input non-interactively so the ECHO program can demonstrate
-/// the full read+write path without requiring user typing.
-/// In production a UART RX IRQ replaces this at runtime.
+/// Backwards-compat shim: pop from foreground VT.
+pub fn try_read() -> Option<u8> { try_read_vt(0) }
+
+/// Inject `bytes` into `vt`'s RX ringbuffer as if they had
+/// arrived from the UART. v1 boot smoke uses this to pre-load
+/// test input non-interactively so the ECHO program can
+/// demonstrate the full read+write path without requiring user
+/// typing. In production a UART RX IRQ replaces this at runtime.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N)
-pub fn inject_for_smoke(bytes: &[u8]) {
-    let mut g = RX_BUF.lock();
+pub fn inject_for_smoke_vt(vt: u8, bytes: &[u8]) {
+    let mut g = VT_RINGS[vt_index(vt)].lock();
     for &b in bytes {
         let _ = g.push(b);
     }
 }
 
-/// Park the current task on the TTY input wait queue. Caller is
-/// responsible for marking state=Sleeping + invoking `schedule()`
-/// after; this just registers the wakeup target.
+/// Backwards-compat shim: inject into foreground VT.
+pub fn inject_for_smoke(bytes: &[u8]) { inject_for_smoke_vt(0, bytes); }
+
+/// Park the current task on `vt`'s TTY input wait queue.
+/// Caller is responsible for marking state=Sleeping + invoking
+/// `schedule()` after; this just registers the wakeup target.
 /// # SAFETY: caller is the running task on this CPU; preempt-off.
 /// # C: O(1)
-pub unsafe fn park_current_for_tty() {
+pub unsafe fn park_current_for_tty_vt(vt: u8) {
     let rq = match crate::sched::global() { Some(r) => r, None => return };
     let raw = rq.current.load(Ordering::Acquire);
     if raw.is_null() { return; }
@@ -194,5 +240,29 @@ pub unsafe fn park_current_for_tty() {
     // SAFETY: matching Arc::from_raw consumes the bumped ref.
     let arc = unsafe { Arc::from_raw(raw) };
     arc.set_state(TaskState::Sleeping);
-    WAITERS.lock().push(arc);
+    VT_WAITERS[vt_index(vt)].lock().push(arc);
+}
+
+/// Backwards-compat shim: park on foreground VT.
+pub unsafe fn park_current_for_tty() {
+    // SAFETY: delegated to vt-aware variant; same fn contract.
+    unsafe { park_current_for_tty_vt(0); }
+}
+
+/// Currently-foreground VT id (1..=N_VT). Exposed for procfs /
+/// /dev/tty0 introspection.
+/// # C: O(1)
+pub fn foreground() -> u8 {
+    FOREGROUND_VT.load(Ordering::Acquire)
+}
+
+/// Set the foreground VT. `vt` must be in 1..=N_VT; out-of-range
+/// values are silently clamped. Future Ctrl-Alt-F<n> handler
+/// (kbd driver) will call this; for v1 it stays at 1.
+/// # SAFETY: caller has authority to switch VTs (kernel-only).
+/// # C: O(1)
+#[allow(dead_code)]
+pub fn set_foreground(vt: u8) {
+    let clamped = (vt.max(1) as usize).min(N_VT) as u8;
+    FOREGROUND_VT.store(clamped, Ordering::Release);
 }
