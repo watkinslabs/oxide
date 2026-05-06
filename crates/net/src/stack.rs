@@ -80,6 +80,7 @@ pub struct NetStack {
 }
 
 impl NetStack {
+    /// # C: O(1)
     pub const fn new() -> Self {
         Self {
             ifaces: IfaceRegistry::new(),

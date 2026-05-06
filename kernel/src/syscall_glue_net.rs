@@ -162,6 +162,7 @@ fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.
+/// # C: O(1)
 pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
     let fd     = args.a0;
@@ -198,6 +199,7 @@ pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
 }
 
 /// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
+/// # C: O(1)
 pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let bufp   = args.a1;
@@ -238,6 +240,7 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
 
 /// `socketpair(domain, type, protocol, sv)` slot 53. v1 supports
 /// AF_UNIX SOCK_STREAM only (the common shell-IPC case).
+/// # C: O(1)
 pub fn kernel_sys_socketpair(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u32 = 1;
     let domain = args.a0 as u32;
@@ -287,6 +290,7 @@ pub fn kernel_sys_socketpair(args: &SyscallArgs) -> i64 {
 }
 
 /// `listen(fd, backlog)` slot 50.
+/// # C: O(1)
 pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
     let fd = args.a0;
     let sock = match socket_from_fd(fd) {
@@ -311,6 +315,7 @@ pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
 
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
 /// Non-blocking: returns Eagain when no connection is ready.
+/// # C: O(1)
 pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
@@ -370,6 +375,7 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
 }
 
 /// `connect(fd, sockaddr, addrlen)` slot 42.
+/// # C: O(1)
 pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
@@ -437,6 +443,7 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
 /// and calls into the same TCP/UDP/UNIX dispatch as sendto, using
 /// `msg_name` as destaddr (else NULL). SCM_RIGHTS / SCM_CREDS in
 /// msg_control are not yet honored (controllen treated as 0).
+/// # C: O(1)
 pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
@@ -455,8 +462,9 @@ pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
     for i in 0..iovlen {
         let iov_i = iov + i * 16;
         if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: iov_i lies in user range; 8-byte aligned per Linux ABI.
+        // SAFETY: iov_i lies in user range; 8-byte aligned per Linux ABI; sendmsg path.
         let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+        // SAFETY: iov_i + 8 still inside the iovec entry; len field is 8-byte aligned.
         let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
         if len == 0 { continue; }
         let mut sa = *args;
@@ -470,6 +478,7 @@ pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
 
 /// `recvmsg(fd, msghdr, flags)` slot 47. Walks iovec, calls
 /// recvfrom into each buffer until one returns Eagain or 0.
+/// # C: O(1)
 pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
@@ -488,7 +497,9 @@ pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
     for i in 0..iovlen {
         let iov_i = iov + i * 16;
         if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: iov_i lies in user range; 8-byte aligned per Linux ABI; recvmsg path.
         let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+        // SAFETY: iov_i + 8 still inside the iovec entry; len field is 8-byte aligned.
         let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
         if len == 0 { continue; }
         let mut sa = *args;
@@ -503,6 +514,7 @@ pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
 }
 
 /// `getsockname(fd, addr, addrlen)` slot 51 — write local addr.
+/// # C: O(1)
 pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
@@ -517,6 +529,7 @@ pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
 }
 
 /// `getpeername(fd, addr, addrlen)` slot 52.
+/// # C: O(1)
 pub fn kernel_sys_getpeername(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
@@ -534,6 +547,7 @@ pub fn kernel_sys_getpeername(args: &SyscallArgs) -> i64 {
 /// `shutdown(fd, how)` slot 48. v1 honors SHUT_WR (close-write
 /// for AF_UNIX) by calling close_writer. SHUT_RD / SHUT_RDWR are
 /// accepted silently (TCP shutdown ride alongside graceful close).
+/// # C: O(1)
 pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
     let fd  = args.a0;
     let how = args.a1 as u32;
@@ -557,10 +571,12 @@ pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
 /// are no-ops for our single-listener model; other options that
 /// don't change wire behavior (linger, sndbuf, rcvbuf) likewise
 /// accepted to keep userspace tooling unblocked.
+/// # C: O(1)
 pub fn kernel_sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 /// Returns 0 + zero-length opt for every query.
+/// # C: O(1)
 pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
     let optlen_p = args.a4;
     if optlen_p != 0 && optlen_p < USER_VA_END {
@@ -571,6 +587,7 @@ pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
 }
 
 /// `recvfrom(fd, buf, len, flags, src, src_len)` slot 45.
+/// # C: O(1)
 pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
     let fd       = args.a0;
     let bufp     = args.a1;

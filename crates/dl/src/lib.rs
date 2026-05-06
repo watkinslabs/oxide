@@ -95,6 +95,7 @@ fn find_pt_dynamic(file: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
+/// # C: O(1)
 pub fn load_so<R: SymResolver>(file: &[u8], resolver: &R) -> Result<LoadedDso, DlError> {
     let parsed: ParsedElf = parse(file, EM_X86_64)?;
     if parsed.elf_type != ElfType::Dyn { return Err(DlError::NotDyn); }

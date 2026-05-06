@@ -30,6 +30,7 @@ pub struct ArpPkt {
 }
 
 impl ArpPkt {
+    /// # C: O(N)
     pub fn parse(buf: &[u8]) -> Result<Self, ArpError> {
         if buf.len() < ARP_LEN { return Err(ArpError::Short); }
         let hw    = u16::from_be_bytes([buf[0], buf[1]]);
@@ -51,6 +52,7 @@ impl ArpPkt {
         })
     }
 
+    /// # C: O(1)
     pub fn write_to(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&ARP_HW_ETHER.to_be_bytes());
         buf[2..4].copy_from_slice(&ARP_PROTO_IPV4.to_be_bytes());
@@ -66,6 +68,7 @@ impl ArpPkt {
 
 /// Build a REQUEST asking who has `target_ip`. Caller wraps in
 /// an Ethernet frame with dst=BROADCAST + ETH_P_ARP.
+/// # C: O(1)
 pub fn build_request(sender_mac: MacAddr, sender_ip: Ipv4Addr, target_ip: Ipv4Addr)
     -> alloc::vec::Vec<u8>
 {
@@ -81,6 +84,7 @@ pub fn build_request(sender_mac: MacAddr, sender_ip: Ipv4Addr, target_ip: Ipv4Ad
 }
 
 /// Build a REPLY for a received REQUEST.
+/// # C: O(1)
 pub fn build_reply(req: &ArpPkt, our_mac: MacAddr) -> alloc::vec::Vec<u8> {
     let mut buf = alloc::vec![0u8; ARP_LEN];
     let p = ArpPkt {
@@ -98,18 +102,22 @@ pub struct ArpCache {
 }
 
 impl ArpCache {
+    /// # C: O(1)
     pub const fn new() -> Self {
         Self { inner: Spinlock::new(BTreeMap::new()) }
     }
 
+    /// # C: O(1)
     pub fn insert(&self, ip: Ipv4Addr, mac: MacAddr) {
         self.inner.lock().insert(ip, mac);
     }
 
+    /// # C: O(N)
     pub fn lookup(&self, ip: Ipv4Addr) -> Option<MacAddr> {
         self.inner.lock().get(&ip).copied()
     }
 
+    /// # C: O(1)
     pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
         self.inner.lock().iter().map(|(k, v)| (*k, *v)).collect()
     }
