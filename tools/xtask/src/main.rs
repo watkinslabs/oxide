@@ -84,6 +84,8 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         ("userspace/true/true",         "userspace/true/true.c"),
         ("userspace/false/false",       "userspace/false/false.c"),
         ("userspace/hostname/hostname", "userspace/hostname/hostname.c"),
+        ("userspace/mkdir/mkdir",       "userspace/mkdir/mkdir.c"),
+        ("userspace/rm/rm",             "userspace/rm/rm.c"),
     ];
     for (out_rel, src_rel) in bins {
         let out = repo.join(out_rel);
@@ -135,6 +137,8 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&repo.join("userspace/true/true"),         "/bin/true")?;
     put(&repo.join("userspace/false/false"),       "/bin/false")?;
     put(&repo.join("userspace/hostname/hostname"), "/bin/hostname")?;
+    put(&repo.join("userspace/mkdir/mkdir"),       "/bin/mkdir")?;
+    put(&repo.join("userspace/rm/rm"),             "/bin/rm")?;
 
     // /etc/issue + /etc/os-release as inline writes through tempfile.
     let tmp = repo.join("target/oxide-rootfs-staging");
