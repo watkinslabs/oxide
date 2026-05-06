@@ -173,6 +173,14 @@ pub enum IpProto {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct NetIfaceId(pub u32);
 
+impl NetIfaceId {
+    /// Build an id from a raw u32. Used by the iface registry.
+    /// # C: O(1)
+    pub const fn from_raw(v: u32) -> Self { Self(v) }
+    /// # C: O(1)
+    pub const fn raw(self) -> u32 { self.0 }
+}
+
 /// Common Ethernet / wire type constants per `ETH_P_*`.
 pub mod eth_p {
     pub const IPV4: u16 = 0x0800;
