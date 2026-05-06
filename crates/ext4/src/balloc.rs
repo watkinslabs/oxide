@@ -11,62 +11,75 @@
 // disk RMW and counter updates.
 
 use crate::gdt;
-use crate::mount::{Mount, MountError, write_byte_range, read_byte_range_pub};
+use crate::mount::{Mount, MountError, read_byte_range_pub};
 use crate::superblock::{Superblock, SB_OFF_FREE_BLOCKS_LO, SB_OFF_FREE_BLOCKS_HI};
 
 extern crate alloc;
 
 impl Mount {
-    /// Allocate one previously-free filesystem block. Searches
-    /// from group `hint` forward, wrapping. Returns the physical
-    /// block number; mutates bitmap + GDT counter + SB counter on
-    /// disk + in cache. Errors `NoSpace` when every group is full.
+    /// Allocate one previously-free filesystem block. Wraps in a
+    /// journal scope so bitmap + GDT + SB counter writes commit
+    /// atomically.
     /// # C: O(N_groups * block_size) worst-case
     pub fn alloc_block(&self, hint: u32) -> Result<u64, MountError> {
-        let groups = self.sb.group_count();
-        if groups == 0 { return Err(MountError::NoSpace); }
-        for off in 0..groups {
-            let g = (hint + off) % groups;
-            if let Some(blk) = self.try_alloc_in_group(g)? {
-                return Ok(blk);
+        self.run_journaled(|m| {
+            let groups = m.sb.group_count();
+            if groups == 0 { return Err(MountError::NoSpace); }
+            for off in 0..groups {
+                let g = (hint + off) % groups;
+                if let Some(blk) = m.try_alloc_in_group(g)? {
+                    return Ok(blk);
+                }
             }
-        }
-        Err(MountError::NoSpace)
+            Err(MountError::NoSpace)
+        })
     }
 
     /// Free a block previously returned by `alloc_block`. Clears
-    /// the bitmap bit + bumps both counters. No-op + Err if the
-    /// bit was already clear (caller bug; surface it).
+    /// the bitmap bit + bumps both counters. Wraps in a journal
+    /// scope. `DoubleFree` if the bit was already clear.
     /// # C: O(block_size) within one group
     pub fn free_block(&self, phys_blk: u64) -> Result<(), MountError> {
-        let (group, bit) = self.locate_block(phys_blk)?;
-        let mut state = self.state.lock();
-        let mut gd = gdt::parse_descriptor(&state.gdt_buf, group, &self.sb)?;
-        let bbm_byte_off = gd.block_bitmap * (self.sb.block_size as u64);
-        let mut bitmap = read_byte_range_pub(&*self.dev, bbm_byte_off, self.sb.block_size as usize)?;
-        let bidx = bit as usize;
-        let mask = 1u8 << (bidx & 7);
-        if (bitmap[bidx >> 3] & mask) == 0 {
-            return Err(MountError::DoubleFree);
-        }
-        bitmap[bidx >> 3] &= !mask;
-        write_byte_range(&*self.dev, bbm_byte_off, &bitmap)?;
-        gd.free_blocks_count = gd.free_blocks_count.saturating_add(1);
-        gdt::write_descriptor_counters(&mut state.gdt_buf, group, &self.sb, &gd)?;
-        self.persist_gdt_slot(&state, group)?;
-        state.sb_free_blocks = state.sb_free_blocks.saturating_add(1);
-        self.persist_sb_free_blocks(&state)?;
-        Ok(())
+        self.run_journaled(|m| {
+            let (group, bit) = m.locate_block(phys_blk)?;
+            let gd_orig = {
+                let s = m.state.lock();
+                gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
+            };
+            let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
+            let mut bitmap = read_byte_range_pub(&*m.dev, bbm_byte_off, m.sb.block_size as usize)?;
+            let bidx = bit as usize;
+            let mask = 1u8 << (bidx & 7);
+            if (bitmap[bidx >> 3] & mask) == 0 {
+                return Err(MountError::DoubleFree);
+            }
+            bitmap[bidx >> 3] &= !mask;
+            // Update cached state (gdt_buf + sb_free_blocks).
+            let mut gd = gd_orig;
+            gd.free_blocks_count = gd.free_blocks_count.saturating_add(1);
+            {
+                let mut s = m.state.lock();
+                gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
+                s.sb_free_blocks = s.sb_free_blocks.saturating_add(1);
+            }
+            m.metadata_write(bbm_byte_off, &bitmap)?;
+            m.persist_gdt_slot_meta(group)?;
+            m.persist_sb_free_blocks_meta()?;
+            m.flush_pending_tx()?;
+            Ok(())
+        })
     }
 
     /// Try to find a free bit in `group`. Returns Ok(Some(phys))
     /// on success, Ok(None) if the group is full per its descriptor.
     /// # C: O(block_size)
     fn try_alloc_in_group(&self, group: u32) -> Result<Option<u64>, MountError> {
-        let mut state = self.state.lock();
-        let mut gd = gdt::parse_descriptor(&state.gdt_buf, group, &self.sb)?;
-        if gd.free_blocks_count == 0 { return Ok(None); }
-        let bbm_byte_off = gd.block_bitmap * (self.sb.block_size as u64);
+        let gd_orig = {
+            let s = self.state.lock();
+            gdt::parse_descriptor(&s.gdt_buf, group, &self.sb)?
+        };
+        if gd_orig.free_blocks_count == 0 { return Ok(None); }
+        let bbm_byte_off = gd_orig.block_bitmap * (self.sb.block_size as u64);
         let mut bitmap = read_byte_range_pub(&*self.dev, bbm_byte_off, self.sb.block_size as usize)?;
         let blocks_in_group = self.blocks_in_group(group);
         let bit = match find_first_clear(&bitmap, blocks_in_group) {
@@ -74,12 +87,19 @@ impl Mount {
             None    => return Ok(None),
         };
         bitmap[bit >> 3] |= 1u8 << (bit & 7);
-        write_byte_range(&*self.dev, bbm_byte_off, &bitmap)?;
+        let mut gd = gd_orig;
         gd.free_blocks_count = gd.free_blocks_count.saturating_sub(1);
-        gdt::write_descriptor_counters(&mut state.gdt_buf, group, &self.sb, &gd)?;
-        self.persist_gdt_slot(&state, group)?;
-        state.sb_free_blocks = state.sb_free_blocks.saturating_sub(1);
-        self.persist_sb_free_blocks(&state)?;
+        {
+            let mut s = self.state.lock();
+            gdt::write_descriptor_counters(&mut s.gdt_buf, group, &self.sb, &gd)?;
+            s.sb_free_blocks = s.sb_free_blocks.saturating_sub(1);
+        }
+        self.metadata_write(bbm_byte_off, &bitmap)?;
+        self.persist_gdt_slot_meta(group)?;
+        self.persist_sb_free_blocks_meta()?;
+        // Force commit so the next alloc_block within the same
+        // outer scope reads the updated bitmap from disk.
+        self.flush_pending_tx()?;
         let phys = group_first_block(&self.sb, group) + bit as u64;
         Ok(Some(phys))
     }
@@ -105,34 +125,42 @@ impl Mount {
         end - first
     }
 
-    /// Persist one GDT slot to disk (writes a whole-block window
-    /// containing the slot — devices are block-granular).
-    pub(crate) fn persist_gdt_slot(&self, state: &MountStateGuard<'_>, group: u32)
-        -> Result<(), MountError>
-    {
+    /// Persist one GDT slot to disk through `metadata_write` (so
+    /// it's journaled when a scope is open). Briefly locks state
+    /// to copy the slot's containing fs-block bytes; releases the
+    /// lock before the write.
+    /// # C: O(block_size)
+    pub(crate) fn persist_gdt_slot_meta(&self, group: u32) -> Result<(), MountError> {
         let dsize = gdt::desc_size_for(&self.sb) as usize;
         let slot_byte = (group as usize) * dsize;
         let bs = self.sb.block_size as usize;
         let blk_idx = slot_byte / bs;
         let byte_off = self.gdt_byte_offset() + (blk_idx * bs) as u64;
-        let lo = blk_idx * bs;
-        let hi = core::cmp::min(lo + bs, state.gdt_buf.len());
-        write_byte_range(&*self.dev, byte_off, &state.gdt_buf[lo..hi])
+        let payload = {
+            let s = self.state.lock();
+            let lo = blk_idx * bs;
+            let hi = core::cmp::min(lo + bs, s.gdt_buf.len());
+            s.gdt_buf[lo..hi].to_vec()
+        };
+        self.metadata_write(byte_off, &payload)
     }
 
-    pub(crate) fn persist_sb_free_blocks(&self, state: &MountStateGuard<'_>)
-        -> Result<(), MountError>
-    {
-        let lo = (state.sb_free_blocks & 0xFFFF_FFFF) as u32;
-        let hi = (state.sb_free_blocks >> 32) as u32;
+    /// Persist `sb_free_blocks` to the on-disk superblock through
+    /// `metadata_write`.
+    /// # C: O(SB read + 1 block write)
+    pub(crate) fn persist_sb_free_blocks_meta(&self) -> Result<(), MountError> {
+        let (lo_v, hi_v) = {
+            let s = self.state.lock();
+            ((s.sb_free_blocks & 0xFFFF_FFFF) as u32, (s.sb_free_blocks >> 32) as u32)
+        };
         let mut sb_buf = read_byte_range_pub(
             &*self.dev,
             crate::superblock::SUPERBLOCK_OFFSET,
             crate::superblock::SUPERBLOCK_LEN,
         )?;
-        sb_buf[SB_OFF_FREE_BLOCKS_LO..SB_OFF_FREE_BLOCKS_LO+4].copy_from_slice(&lo.to_le_bytes());
-        sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].copy_from_slice(&hi.to_le_bytes());
-        write_byte_range(&*self.dev, crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
+        sb_buf[SB_OFF_FREE_BLOCKS_LO..SB_OFF_FREE_BLOCKS_LO+4].copy_from_slice(&lo_v.to_le_bytes());
+        sb_buf[SB_OFF_FREE_BLOCKS_HI..SB_OFF_FREE_BLOCKS_HI+4].copy_from_slice(&hi_v.to_le_bytes());
+        self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }
 }
 
