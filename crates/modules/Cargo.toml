@@ -11,6 +11,7 @@ path = "src/lib.rs"
 hal  = { path = "../hal" }
 klog = { path = "../klog" }
 sync = { path = "../sync" }
+elf  = { path = "../elf" }
 
 [features]
 default = []
