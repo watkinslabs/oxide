@@ -262,6 +262,80 @@ impl ContextX86_64 {
             fs_base: 0,
         }
     }
+
+    /// Fork-specific user-task scaffold (P5-10): builds the same
+    /// iretq frame as `new_user_with_irq_frame` but populates the 9
+    /// scratch slots (r11..rax) and the Context callee-saved fields
+    /// (rbx/rbp/r13/r14/r15) from the parent's saved-syscall block,
+    /// so the child resumes user mode with the exact same register
+    /// state — except `rax` is overwritten to 0 (the fork return
+    /// value the child sees).
+    ///
+    /// `regs` layout matches `current_user_full_frame()` — see
+    /// `crates/hal-x86_64::syscall::current_user_full_frame` for
+    /// offsets. user_ip/user_sp are passed separately because the
+    /// caller already pulls them from `current_user_frame()`.
+    ///
+    /// Note: user `r12` is unrecoverable (the syscall asm clobbers
+    /// it before any save) — the slot in `regs` here is the parent's
+    /// saved-stack slot which actually holds user RSP. `r12` in the
+    /// child is left zero, matching the post-syscall state in the
+    /// parent (broken in both, consistently).
+    /// # C: O(1)
+    pub fn new_user_for_fork(
+        stack_top: *mut u8,
+        user_ip: u64,
+        user_sp: u64,
+        user_rflags: u64,
+        regs: &ForkRegs,
+    ) -> Self {
+        // SAFETY: same as `new_user_with_irq_frame`.
+        let sp = unsafe {
+            let p = stack_top.cast::<u64>();
+            p.sub(1).write(crate::gdt::USER_DS as u64);
+            p.sub(2).write(user_sp);
+            p.sub(3).write(user_rflags);
+            p.sub(4).write(crate::gdt::USER_CS as u64);
+            p.sub(5).write(user_ip);
+            p.sub(6).write(0);                               // vec
+            p.sub(7).write(0);                               // err
+            // Scratch slots, popped low→high by oxide_irq_resume_user
+            // in this order: r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax.
+            // Stack-wise: sub(16) = r11 (lowest), sub(8) = rax (highest).
+            p.sub(16).write(regs.r11);
+            p.sub(15).write(regs.r10);
+            p.sub(14).write(regs.r9);
+            p.sub(13).write(regs.r8);
+            p.sub(12).write(regs.rdi);
+            p.sub(11).write(regs.rsi);
+            p.sub(10).write(regs.rdx);
+            p.sub(9).write(regs.rcx);
+            p.sub(8).write(0);                               // rax = 0 (child's fork return)
+            p.sub(17).write(crate::irq::irq_resume_user_addr());
+            p.sub(17)
+        };
+        Self {
+            rsp: sp as u64,
+            rbp: regs.rbp,
+            rbx: regs.rbx,
+            r12: 0,
+            r13: regs.r13,
+            r14: regs.r14,
+            r15: regs.r15,
+            fs_base: 0,
+        }
+    }
+}
+
+/// Parent-side syscall-frame snapshot used by `new_user_for_fork`.
+/// Populated by `kernel_sys_fork` from the saved-syscall block.
+#[derive(Copy, Clone, Default)]
+pub struct ForkRegs {
+    pub rdi: u64, pub rsi: u64, pub rdx: u64,
+    pub r10: u64, pub r8:  u64, pub r9:  u64,
+    pub rcx: u64, pub r11: u64,
+    pub rbx: u64, pub rbp: u64,
+    pub r13: u64, pub r14: u64, pub r15: u64,
 }
 
 #[cfg(test)]
