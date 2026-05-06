@@ -69,6 +69,14 @@ pub struct MountState {
     pub(crate) sb_free_blocks: u64,
     /// Live free-inodes counter; mirrors `s_free_inodes_count`.
     pub(crate) sb_free_inodes: u32,
+    /// In-memory shadow buffer used during a `run_journaled`
+    /// scope: keyed by target fs LBA, value = the new contents
+    /// of that fs-block. `metadata_write` populates this; reads
+    /// (`read_byte_range_pub`) consult it before going to disk
+    /// so that staged-but-uncommitted bytes are visible to
+    /// subsequent ops within the same scope. Drained at scope
+    /// close + committed as one JBD2 transaction.
+    pub(crate) shadow: Option<alloc::collections::BTreeMap<u64, Vec<u8>>>,
 }
 
 pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;
@@ -105,6 +113,7 @@ impl Mount {
             gdt_buf,
             sb_free_blocks: sb.free_blocks_count,
             sb_free_inodes: sb.free_inodes_count,
+            shadow: None,
         };
         let m = Self { dev, sb, state: Spinlock::new(state) };
         // Run JBD2 replay before allowing any writes. No-op for
@@ -132,16 +141,13 @@ impl Mount {
         Ok(gdt::parse_descriptor(&g.gdt_buf, n, &self.sb)?)
     }
 
-    /// Metadata write: RMWs the affected fs block(s), then
-    /// commits the resulting full-block payloads through the
-    /// journal as their own transaction (one per call). Per-call
-    /// commit (not per-op): subsequent reads of the same byte
-    /// range observe the new bytes immediately.
-    ///
-    /// Op-level atomicity (one tx per shell `creat()` call) would
-    /// require an in-memory shadow buffer that intercepts reads
-    /// of staged bytes — deferred to P7b-08.
-    /// # C: O(N affected fs blocks) RMW + 1 journal txn
+    /// Metadata write: RMWs the affected fs block(s). Inside a
+    /// `run_journaled` scope, stages the resulting full-block
+    /// payloads in the in-memory shadow buffer (later reads from
+    /// the same LBA see the new bytes); the scope close commits
+    /// all shadow blocks as one JBD2 transaction. Outside any
+    /// scope, commits immediately as its own transaction.
+    /// # C: O(N affected fs blocks) RMW + (in-scope: O(1) stage / out-of-scope: 1 journal txn)
     pub fn metadata_write(&self, byte_off: u64, data: &[u8]) -> Result<(), MountError> {
         let bs = self.sb.block_size as u64;
         let first_blk = byte_off / bs;
@@ -149,47 +155,116 @@ impl Mount {
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
-        let dev_bs = self.dev.block_size() as u64;
-        let mut full = BlockRequest::new_read(
-            first_blk * (bs / dev_bs),
-            (n_blocks as u64 * (bs / dev_bs)) as u32,
-            self.dev.block_size(),
-        );
-        self.dev.submit_sync(&mut full).map_err(|_| MountError::BlockIo)?;
-        full.buffer[inner_off .. inner_off + data.len()].copy_from_slice(data);
-        // Build StagedBlocks (one per fs-block) and commit immediately.
-        let mut staged = Vec::with_capacity(n_blocks as usize);
+        // Build the post-RMW full-block buffer. For each affected
+        // block, prefer the shadow's existing copy; otherwise read
+        // from disk.
+        let mut full_buf: Vec<u8> = Vec::with_capacity((n_blocks as usize) * bs as usize);
         for i in 0..n_blocks as u64 {
             let lba = first_blk + i;
-            let lo = (i * bs) as usize;
-            let hi = lo + bs as usize;
-            staged.push(StagedBlock {
-                target_lba: lba,
-                data:       full.buffer[lo..hi].to_vec(),
-            });
+            let block_bytes = self.read_metadata_block(lba)?;
+            full_buf.extend_from_slice(&block_bytes);
         }
-        let _ = self.commit_metadata(staged)?;
-        Ok(())
+        full_buf[inner_off .. inner_off + data.len()].copy_from_slice(data);
+        // Decide: stage in shadow, or commit immediately.
+        let in_scope = self.state.lock().shadow.is_some();
+        if in_scope {
+            let mut s = self.state.lock();
+            let shadow = s.shadow.as_mut().unwrap();
+            for i in 0..n_blocks as u64 {
+                let lba = first_blk + i;
+                let lo = (i * bs) as usize;
+                let hi = lo + bs as usize;
+                shadow.insert(lba, full_buf[lo..hi].to_vec());
+            }
+            Ok(())
+        } else {
+            let mut staged = Vec::with_capacity(n_blocks as usize);
+            for i in 0..n_blocks as u64 {
+                let lba = first_blk + i;
+                let lo = (i * bs) as usize;
+                let hi = lo + bs as usize;
+                staged.push(StagedBlock {
+                    target_lba: lba,
+                    data:       full_buf[lo..hi].to_vec(),
+                });
+            }
+            let _ = self.commit_metadata(staged)?;
+            Ok(())
+        }
     }
 
-    /// Run `f` with the same write semantics as direct call. v1
-    /// commits each `metadata_write` independently as its own
-    /// JBD2 transaction; the wrapper exists so callers can mark
-    /// their intent + so future op-level batching (P7b-08, with
-    /// an in-memory shadow buffer for staged bytes) is a drop-in.
-    /// # C: O(f)
+    /// Read one fs-block from either the shadow buffer (if a
+    /// scope holds a copy) or the underlying device.
+    /// # C: O(1) shadow lookup or O(1) device I/O
+    pub(crate) fn read_metadata_block(&self, lba: u64) -> Result<Vec<u8>, MountError> {
+        if let Some(buf) = {
+            let s = self.state.lock();
+            s.shadow.as_ref().and_then(|m| m.get(&lba).cloned())
+        } {
+            return Ok(buf);
+        }
+        let bs = self.sb.block_size as u64;
+        read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize)
+    }
+
+    /// Open a shadow scope: every `metadata_write` inside `f`
+    /// populates `state.shadow` with the new fs-block bytes;
+    /// shadow-aware reads (`read_metadata_block`, `read_meta_byte_range`)
+    /// see the staged bytes immediately, so multiple sub-ops
+    /// (e.g. two `alloc_block` calls) within one fs op observe
+    /// each other's writes. At scope close, the shadow drains
+    /// into `commit_metadata` as one JBD2 transaction. On
+    /// `Err`, the shadow is dropped (no commit, no target writes).
+    ///
+    /// Re-entrant: nested calls participate in the outermost
+    /// shadow without opening a new one.
+    /// # C: O(N shadow blocks) commit + 2 journal I/Os + N target I/Os
     pub fn run_journaled<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
-        f(self)
+        let already_open = self.state.lock().shadow.is_some();
+        if already_open { return f(self); }
+        self.state.lock().shadow = Some(alloc::collections::BTreeMap::new());
+        let r = f(self);
+        let shadow = self.state.lock().shadow.take().unwrap_or_default();
+        match r {
+            Ok(v) => {
+                if !shadow.is_empty() {
+                    let staged: Vec<StagedBlock> = shadow.into_iter()
+                        .map(|(target_lba, data)| StagedBlock { target_lba, data })
+                        .collect();
+                    let _ = self.commit_metadata(staged)?;
+                }
+                Ok(v)
+            }
+            Err(e) => Err(e),
+        }
     }
 
-    /// No-op alias kept so call sites that explicitly flushed
-    /// between writes still compile (e.g. `alloc_block` after
-    /// counter mutations). Per-call `metadata_write` already
-    /// commits, so there is nothing to flush.
+    /// No-op alias kept for legacy call sites. The shadow
+    /// scope mid-flushes implicitly through `metadata_write`
+    /// populating state.shadow which subsequent reads consult.
     /// # C: O(1)
     pub fn flush_pending_tx(&self) -> Result<(), MountError> { Ok(()) }
+
+    /// Read `len` bytes starting at `byte_off`, splicing in
+    /// shadow-buffered fs-block bytes where present. Use this
+    /// in metadata read paths inside a `run_journaled` scope so
+    /// staged-but-uncommitted writes are visible.
+    /// # C: O(N affected fs blocks)
+    pub fn read_meta_byte_range(&self, byte_off: u64, len: usize) -> Result<Vec<u8>, MountError> {
+        let bs = self.sb.block_size as u64;
+        let first_blk = byte_off / bs;
+        let last_byte = byte_off + len as u64;
+        let last_blk_excl = (last_byte + bs - 1) / bs;
+        let n_blocks = (last_blk_excl - first_blk) as u32;
+        let inner_off = (byte_off - first_blk * bs) as usize;
+        let mut full = Vec::with_capacity((n_blocks as usize) * bs as usize);
+        for i in 0..n_blocks as u64 {
+            full.extend_from_slice(&self.read_metadata_block(first_blk + i)?);
+        }
+        Ok(full[inner_off .. inner_off + len].to_vec())
+    }
 
     /// Live free-blocks counter (mirrors `s_free_blocks_count`).
     /// # C: O(1)
@@ -209,7 +284,7 @@ impl Mount {
         };
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
         let byte_off = gd.inode_table * (self.sb.block_size as u64) + off_in_table;
-        let buf = read_byte_range(&*self.dev, byte_off, self.sb.inode_size as usize)?;
+        let buf = self.read_meta_byte_range(byte_off, self.sb.inode_size as usize)?;
         Ok(Inode::parse(&buf, &self.sb)?)
     }
 
@@ -264,6 +339,26 @@ impl Mount {
         Err(MountError::NotFound)
     }
 
+    /// Shadow-aware companion to `read_file_block`: walks the
+    /// extent tree to find the physical LBA, then reads it via
+    /// the shadow buffer if a scope holds a copy.
+    /// # C: O(N_extents) walk + 1 block I/O (or shadow hit)
+    pub fn read_file_block_meta(&self, inode: &Inode, file_blk: u32)
+        -> Result<Vec<u8>, MountError>
+    {
+        let hdr = inode::parse_extent_header(&inode.i_block)?;
+        if hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
+        for i in 0..hdr.entries {
+            let e = inode::parse_inline_extent(&inode.i_block, &hdr, i)
+                .ok_or(MountError::NotFound)?;
+            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
+                let phys = e.start_lba() + (file_blk - e.block) as u64;
+                return self.read_metadata_block(phys);
+            }
+        }
+        Err(MountError::NotFound)
+    }
+
     /// Like `write_file_block` but routes through `metadata_write`
     /// — the block being written is part of a metadata-fs structure
     /// (e.g. a directory's data block) and must be journaled when
@@ -301,7 +396,7 @@ impl Mount {
     {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
-        let mut blk = self.read_file_block(&dir_node, 0)?;
+        let mut blk = self.read_file_block_meta(&dir_node, 0)?;
         match dir::insert(&mut blk, child_ino, file_type, name) {
             Err(dir::DirError::Full) => return Err(MountError::DirFull),
             Err(e) => return Err(MountError::Dir(e)),
@@ -317,7 +412,7 @@ impl Mount {
     pub fn dir_unlink(&self, dir_ino: u32, name: &[u8]) -> Result<u32, MountError> {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
-        let mut blk = self.read_file_block(&dir_node, 0)?;
+        let mut blk = self.read_file_block_meta(&dir_node, 0)?;
         let removed = match dir::remove(&mut blk, name) {
             Err(dir::DirError::NotFound) => return Err(MountError::NotFound),
             Err(e) => return Err(MountError::Dir(e)),
