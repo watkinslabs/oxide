@@ -34,6 +34,15 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 503 | `P9-09-misc-socket-syscalls` | NR_GETSOCKNAME, NR_GETPEERNAME, NR_SHUTDOWN, NR_SETSOCKOPT (silent-accept), NR_GETSOCKOPT (zero-len). |
 | 504 | `P9-10-warning-cleanup` | Kernel warnings 18 → 12 via unused-import / dead-code annotations. |
 | 505 | `P8-14-tcp-echo-userspace` | `/bin/tcp_echo` — userspace AF_INET SOCK_STREAM smoke (socket → bind → listen → accept → echo). |
+| 507 | `P9-11-userspace-ps` | `/bin/ps` walks /proc via getdents64 + reads /proc/<tid>/comm. |
+| 508 | `P9-12-userspace-ls` | `/bin/ls` openat(O_DIRECTORY) + getdents64 loop. |
+| 509 | `P9-13-sysfs-net-class` | `/sys/class/net/lo/{address, mtu, operstate, type, flags}` — Linux net-class shape. |
+| 510 | `P9-14-mount-userspace` | `/bin/mount` + 5-line `/proc/mounts` (devtmpfs/procfs/sysfs/tmpfs/ext4). |
+| 511 | `P9-15-userspace-cp` | `/bin/cp` single-pair copy (4 KiB read/write loop, short-write retry). |
+| 512 | `P9-16-more-userspace-utils` | `/bin/wc` (lines/words/bytes), `/bin/head` (-n N). |
+| 513 | `P8-15-af-unix-path` | `unix_sock::UnixListener` + `UnixRegistry`; AF_UNIX path-bound bind/connect/listen/accept with `sun_path`. |
+| 514 | `P9-17-preadv-pwritev` | NR_PREADV / NR_PWRITEV delegating to readv/writev (offset ignored for v1). |
+| 515 | `P9-18-sendmsg-recvmsg` | NR_SENDMSG / NR_RECVMSG via 56-byte msghdr parse + iov walk → sendto/recvfrom. SCM_RIGHTS / SCM_CREDS deferred. **Net dispatch now has zero Enosys**. |
 
 ## Phase ladder (post-session-30)
 
