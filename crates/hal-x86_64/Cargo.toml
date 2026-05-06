@@ -12,6 +12,7 @@ hal      = { path = "../hal" }
 klog     = { path = "../klog" }
 sync     = { path = "../sync" }
 syscall  = { path = "../syscall" }
+pci      = { path = "../pci" }
 bitflags = { version = "2", default-features = false }
 
 [features]
