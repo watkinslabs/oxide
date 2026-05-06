@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 block   = { path = "../crates/block" }
 elf     = { path = "../crates/elf" }
+net     = { path = "../crates/net" }
 ext4    = { path = "../crates/ext4" }
 hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }
