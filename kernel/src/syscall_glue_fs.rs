@@ -796,6 +796,7 @@ pub fn kernel_sys_pwritev(args: &SyscallArgs) -> i64 { kernel_sys_writev(args) }
 
 /// `sys_preadv(fd, iov, iovcnt, off)` — slot 295. Same offset
 /// caveat as pwritev.
+/// # C: O(1)
 pub fn kernel_sys_preadv(args: &SyscallArgs) -> i64 { kernel_sys_readv(args) }
 
 /// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed

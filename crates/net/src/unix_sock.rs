@@ -94,6 +94,7 @@ pub struct UnixListener {
 }
 
 impl UnixListener {
+    /// # C: O(1)
     pub fn new(path: String) -> Arc<Self> {
         Arc::new(Self {
             path,
@@ -109,6 +110,7 @@ pub struct UnixRegistry {
 }
 
 impl UnixRegistry {
+    /// # C: O(1)
     pub const fn new() -> Self {
         Self { inner: Spinlock::new(BTreeMap::new()) }
     }

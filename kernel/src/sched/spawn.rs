@@ -220,6 +220,7 @@ pub unsafe fn spawn_user_thread(
 /// (i.e., captured during dispatch on the parent's per-task
 /// kernel stack).
 #[cfg(target_arch = "x86_64")]
+/// # C: O(1)
 pub unsafe fn spawn_user_thread_for_fork(
     tid: u32,
     name: &'static str,

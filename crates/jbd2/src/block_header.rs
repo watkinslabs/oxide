@@ -14,6 +14,7 @@ pub enum BlockType {
 
 impl BlockType {
     #[inline]
+    /// # C: O(1)
     pub fn from_u32(v: u32) -> Option<Self> {
         match v {
             1 => Some(BlockType::Descriptor),

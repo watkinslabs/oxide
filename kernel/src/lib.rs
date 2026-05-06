@@ -122,6 +122,10 @@ pub mod dev_epoll;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
+pub mod procfs_net;
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_execve;
+#[cfg(target_os = "oxide-kernel")]
 pub mod procfs_static;
 
 #[cfg(target_os = "oxide-kernel")]

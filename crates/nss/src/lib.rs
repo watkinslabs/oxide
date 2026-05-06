@@ -76,6 +76,7 @@ pub fn parse_passwd_line(line: &str) -> Option<Passwd> {
 }
 
 /// Parse one group line.
+/// # C: O(N)
 pub fn parse_group_line(line: &str) -> Option<Group> {
     let f: Vec<&str> = line.split(':').collect();
     if f.len() < 4 { return None; }
@@ -94,6 +95,7 @@ pub fn parse_group_line(line: &str) -> Option<Group> {
 }
 
 /// Parse one shadow line.
+/// # C: O(N)
 pub fn parse_shadow_line(line: &str) -> Option<Shadow> {
     let f: Vec<&str> = line.split(':').collect();
     if f.len() < 2 { return None; }
@@ -114,6 +116,7 @@ pub fn parse_shadow_line(line: &str) -> Option<Shadow> {
 
 /// Walk a whole-file `/etc/passwd` byte-blob; return all entries.
 /// Skips blank lines + comment lines starting with `#`.
+/// # C: O(N)
 pub fn parse_passwd(buf: &[u8]) -> Vec<Passwd> {
     let mut out = Vec::new();
     if let Ok(s) = core::str::from_utf8(buf) {
@@ -125,6 +128,7 @@ pub fn parse_passwd(buf: &[u8]) -> Vec<Passwd> {
     out
 }
 
+/// # C: O(N)
 pub fn parse_group(buf: &[u8]) -> Vec<Group> {
     let mut out = Vec::new();
     if let Ok(s) = core::str::from_utf8(buf) {
@@ -136,6 +140,7 @@ pub fn parse_group(buf: &[u8]) -> Vec<Group> {
     out
 }
 
+/// # C: O(N)
 pub fn parse_shadow(buf: &[u8]) -> Vec<Shadow> {
     let mut out = Vec::new();
     if let Ok(s) = core::str::from_utf8(buf) {
@@ -148,22 +153,27 @@ pub fn parse_shadow(buf: &[u8]) -> Vec<Shadow> {
 }
 
 /// `getpwnam` shape — find the first entry matching `name`.
+/// # C: O(1)
 pub fn getpwnam<'a>(entries: &'a [Passwd], name: &str) -> Option<&'a Passwd> {
     entries.iter().find(|p| p.name == name)
 }
 
+/// # C: O(1)
 pub fn getpwuid<'a>(entries: &'a [Passwd], uid: u32) -> Option<&'a Passwd> {
     entries.iter().find(|p| p.uid == uid)
 }
 
+/// # C: O(1)
 pub fn getgrnam<'a>(entries: &'a [Group], name: &str) -> Option<&'a Group> {
     entries.iter().find(|g| g.name == name)
 }
 
+/// # C: O(1)
 pub fn getgrgid<'a>(entries: &'a [Group], gid: u32) -> Option<&'a Group> {
     entries.iter().find(|g| g.gid == gid)
 }
 
+/// # C: O(1)
 pub fn getspnam<'a>(entries: &'a [Shadow], name: &str) -> Option<&'a Shadow> {
     entries.iter().find(|s| s.name == name)
 }

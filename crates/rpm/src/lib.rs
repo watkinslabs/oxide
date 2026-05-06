@@ -139,6 +139,7 @@ pub fn parse(buf: &[u8]) -> Result<Package<'_>, Error> {
 }
 
 impl<'a> Package<'a> {
+    /// # C: O(N)
     pub fn find(&self, tag: u32) -> Option<&IndexEntry> {
         self.entries.iter().find(|e| e.tag == tag)
     }
@@ -146,6 +147,7 @@ impl<'a> Package<'a> {
     /// Read a NUL-terminated string out of the store. Returns None
     /// if the entry isn't found, isn't a String/I18nStr, or runs
     /// past the store.
+    /// # C: O(1)
     pub fn tag_str(&self, tag: u32) -> Option<&str> {
         let e = self.find(tag)?;
         if e.kind != TagType::String as u32 && e.kind != TagType::I18nStr as u32 {
@@ -157,6 +159,7 @@ impl<'a> Package<'a> {
         core::str::from_utf8(&self.store[start..end]).ok()
     }
 
+    /// # C: O(1)
     pub fn tag_u32(&self, tag: u32) -> Option<u32> {
         let e = self.find(tag)?;
         if e.kind != TagType::Int32 as u32 { return None; }
@@ -166,6 +169,7 @@ impl<'a> Package<'a> {
     }
 
     /// Returns each string in a StringArr entry. Allocates Vec.
+    /// # C: O(1)
     pub fn tag_string_array(&self, tag: u32) -> Option<Vec<&str>> {
         let e = self.find(tag)?;
         if e.kind != TagType::StringArr as u32 && e.kind != TagType::I18nStr as u32 {

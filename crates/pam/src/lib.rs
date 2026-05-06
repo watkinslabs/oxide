@@ -84,6 +84,7 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    /// # C: O(1)
     pub fn new(passwd: &'a [Passwd], shadow: &'a [Shadow]) -> Self {
         Self { passwd, shadow, today_days: -1 }
     }
@@ -94,6 +95,7 @@ impl<'a> Ctx<'a> {
 ///   /etc/pam.d/su      ->  required unix_account ; sufficient unix_auth ; required deny
 ///   /etc/pam.d/passwd  ->  required unix_account
 ///   /etc/pam.d/sshd    ->  required unix_account ; required unix_auth
+/// # C: O(1)
 pub fn default_stacks() -> Vec<ServiceStack> {
     use {Control::*, Module::*};
     let mk = |name: &str, steps: &[(Control, Module)]| ServiceStack {
@@ -109,6 +111,7 @@ pub fn default_stacks() -> Vec<ServiceStack> {
 }
 
 /// Lookup helper.
+/// # C: O(N)
 pub fn find_service<'a>(stacks: &'a [ServiceStack], name: &str) -> Option<&'a ServiceStack> {
     stacks.iter().find(|s| s.name == name)
 }

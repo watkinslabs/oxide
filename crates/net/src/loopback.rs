@@ -26,6 +26,7 @@ pub struct LoopbackDev {
 }
 
 impl LoopbackDev {
+    /// # C: O(1)
     pub fn new() -> Self {
         Self {
             rx: Spinlock::new(VecDeque::new()),
