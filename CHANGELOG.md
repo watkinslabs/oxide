@@ -829,6 +829,10 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #530 | `P10-07-delete-module` | NR_DELETE_MODULE module unload. |
 | #531 | `P9-23-tee-cmp` | /bin/tee. |
 | #532 | `P9-24-link-hardlink` | NR_LINK / NR_LINKAT ext4 hardlinks. |
+| #534 | `P9-25-userspace-ln-stat` | /bin/ln SYS_link wrapper. |
+| #535 | `P9-26-userspace-shared-syscalls` | /bin/find recursive walker. |
+| #536 | `P9-27-df-stat` | /bin/df SYS_statfs wrapper. |
+| #537 | `P9-28-netdev-counters` | NetDev::stats + LoopbackDev counters; /proc/net/dev real numbers. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
