@@ -623,25 +623,23 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::kinfo!("elf-smoke: user task exited cleanly, boot resumed");
     }
 
-    // Real-musl interactive shell as PID 1. Spawns SH_BLOB and
-    // schedule()s into it; the shell blocks on `read(fd=0)`
-    // which parks the task until the timer-ISR `tick_poll_uart`
-    // drains UART RX into RX_BUF and wakes the sleeper. With
-    // `-serial stdio` (xtask qemu default) QEMU forwards the
-    // host's stdin → UART, so typing at the terminal reaches
-    // the shell.
-    //
-    // Pre-inject a non-interactive smoke sequence so `xtask
-    // qemu` boot logs prove the builtins (ls /proc, cat
-    // /proc/version, then exit). For real interactive use the
-    // user runs the same command and types past the smoke.
+    // P5-01: real-musl PID 1 init smoke (each spawn now gets a
+    // fresh per-task AS so the binaries don't overlap on shared
+    // VA ranges).
+    // SAFETY: same boot-path discipline as the elf-smoke above; user_as / runqueue installed; INIT_REAL_BLOB is real-musl static-PIE.
+    unsafe {
+        spawn_user_blob_smoke(INIT_REAL_BLOB, "real-init", 0xC0DE_0002, &[]);
+    }
+
+    // P5-02/03/04: tiny interactive shell smoke. Pre-inject a
+    // non-interactive sequence so `xtask qemu` boot logs prove
+    // builtins; user can type past the smoke for real
+    // interactive use.
     crate::tty::inject_for_smoke(b"cat /etc/issue\ncat /hello.txt\nls /proc\nexit\n");
-    // SAFETY: same boot-path discipline as the elf-smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
+    // SAFETY: same boot-path discipline as the real-init smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
     }
-    // Keep INIT_REAL_BLOB linked for future per-task-AS spawn.
-    let _ = INIT_REAL_BLOB.len();
 
     halt_forever();
 }
@@ -661,32 +659,53 @@ unsafe fn spawn_user_blob_smoke(
     tid:     u32,
     argv:    &[&[u8]],
 ) {
-    use vmm::{VmaBacking, VmaFlags, VmaProt};
-    use hal::UserVirtAddr;
+    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use hal::{MmuOps, UserVirtAddr};
 
-    let img = match crate::user_as::with(|as_| {
-        let img = load_static_blob(blob, as_)?;
+    // Fresh per-task AS so back-to-back smokes don't overlap PIE
+    // pages. Kernel-half is shared (entries 256..512 copied from
+    // the master PML4); user-half starts empty.
+    // SAFETY: post-PMM init; new_user_pml4 returns a freshly
+    // allocated frame zeroed + populated with the kernel half.
+    let root_pa = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
+        Some(p) => p,
+        None    => {
+            debug_irq! { klog::kerror!("user-blob: new_user_pml4 failed"); }
+            return;
+        }
+    };
+    let mm = match AddressSpace::new(root_pa) {
+        Ok(a)  => a,
+        Err(_) => {
+            debug_irq! { klog::kerror!("user-blob: AddressSpace::new failed"); }
+            return;
+        }
+    };
+
+    let img = match (|| -> Result<_, crate::elf_load::LoadError> {
+        let img = load_static_blob(blob, &mm)?;
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
             .ok_or(crate::elf_load::LoadError::Einval)?;
-        as_.mmap(
+        mm.mmap(
             Some(stack_hint), 0x1000,
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
             VmaBacking::Anonymous,
             true,
         ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
-        Ok::<_, crate::elf_load::LoadError>(img)
-    }) {
-        Some(Ok(i))  => i,
-        Some(Err(_)) => {
+        Ok(img)
+    })() {
+        Ok(i)  => i,
+        Err(_) => {
             debug_irq! { klog::write_raw(b"[ERROR] user-blob load failed: "); klog::write_raw(name.as_bytes()); klog::write_raw(b"\n"); }
             return;
         }
-        None => {
-            debug_irq! { klog::kerror!("user-blob: user_as not initialised"); }
-            return;
-        }
     };
+
+    // Activate the new AS so build_user_stack's writes land in it.
+    // Future schedule() AS-swap will reactivate when this task runs.
+    // SAFETY: per-AS PML4 was constructed with kernel-half shared from master so kernel mappings remain valid; CR3 swap legal at CPL=0 IRQ-off.
+    unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(root_pa); }
 
     let random16 = {
         use hal::TimerOps;
@@ -698,7 +717,7 @@ unsafe fn spawn_user_blob_smoke(
     // Default argv = ['/init']; otherwise caller-provided.
     let default_argv: &[&[u8]] = &[b"/init"];
     let argv_ref: &[&[u8]] = if argv.is_empty() { default_argv } else { argv };
-    // SAFETY: same as elf-smoke build_user_stack; user_as is the active CR3 per init; demand-fault resolves new stack page.
+    // SAFETY: per-task AS just activated; build_user_stack writes through it; demand-fault resolves the new stack page.
     let new_sp = unsafe {
         crate::exec_stack::build_user_stack(
             USER_STACK_TOP,
@@ -707,11 +726,6 @@ unsafe fn spawn_user_blob_smoke(
             &random16,
         )
     }.unwrap_or(USER_STACK_TOP);
-
-    let mm = match crate::user_as::clone_global_arc() {
-        Some(a) => a,
-        None    => { debug_irq! { klog::kerror!("user-blob: AS clone failed"); } return; }
-    };
 
     // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range.
     let task = match unsafe {
