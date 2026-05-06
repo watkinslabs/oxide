@@ -183,12 +183,17 @@ pub fn kernel_sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     let mut out = 0i32;
     for e in snapshot.iter() {
         if out >= maxevents { break; }
-        if fdt.get(e.fd).is_err() { continue; }
+        let f = match fdt.get(e.fd) { Ok(f) => f, Err(_) => continue };
+        // Real readiness: ask the inode for its poll mask, then
+        // intersect with the caller's interest. Skip when no
+        // bit overlaps — level-triggered semantics.
+        let ready = f.inode().poll() & e.events;
+        if ready == 0 { continue; }
         let dst = evp + (out as u64) * (EPOLL_EVENT_SIZE as u64);
         // SAFETY: evp validated; per-record stride within user buffer
         // sized for maxevents records; CPL=0 writes through caller's AS.
         unsafe {
-            core::ptr::write_volatile(dst as *mut u32, e.events);
+            core::ptr::write_volatile(dst as *mut u32, ready);
             core::ptr::write_volatile((dst + EPOLL_DATA_OFF as u64) as *mut u64, e.data);
         }
         out += 1;
