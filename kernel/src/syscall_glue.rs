@@ -942,8 +942,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             | crate::syscall_nrs::NR_UTIMENSAT | crate::syscall_nrs::NR_UTIMES | crate::syscall_nrs::NR_UTIME
                                  => 0,
         // link/symlink/mknod family — devfs is read-only, refuse.
-        crate::syscall_nrs::NR_LINK | crate::syscall_nrs::NR_LINKAT
-            | crate::syscall_nrs::NR_SYMLINK | crate::syscall_nrs::NR_SYMLINKAT
+        crate::syscall_nrs::NR_LINK   => crate::syscall_glue_namei::kernel_sys_link(&args),
+        crate::syscall_nrs::NR_LINKAT => crate::syscall_glue_namei::kernel_sys_linkat(&args),
+        crate::syscall_nrs::NR_SYMLINK | crate::syscall_nrs::NR_SYMLINKAT
             | crate::syscall_nrs::NR_MKNOD | crate::syscall_nrs::NR_MKNODAT
                                  => -(Errno::Erofs.as_i32() as i64),
         crate::syscall_nrs::NR_FSTATFS | crate::syscall_nrs::NR_STATFS
