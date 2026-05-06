@@ -165,7 +165,22 @@ impl AddressSpace {
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
         }
         for vma in src.iter() {
-            if !matches!(vma.backing, VmaBacking::Anonymous) { continue; }
+            // Copy mapped pages for any writable VMA, regardless of
+            // backing. KernelBytes-backed PT_LOAD-with-write segments
+            // (BSS + .data) get their own per-task frame on first
+            // fault, then accumulate runtime writes; if we don't copy
+            // those frames at fork time, the child re-faults from the
+            // original read-only Box and silently loses every
+            // post-init write the parent made (e.g. svcd's units[]
+            // table). Read-only KernelBytes segments (.text, .rodata)
+            // can be skipped — both PTs map the same shared Box.
+            let writable = vma.prot.contains(VmaProt::WRITE);
+            let copy_backing = match vma.backing {
+                VmaBacking::Anonymous       => true,
+                VmaBacking::KernelBytes { .. } => writable,
+                _                           => false,
+            };
+            if !copy_backing { continue; }
             let mut va = vma.start.as_u64();
             let end = vma.end.as_u64();
             while va < end {

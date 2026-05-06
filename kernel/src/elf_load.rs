@@ -83,6 +83,14 @@ const PIE_LOAD_BIAS: u64 = 0x1000_0000;
 /// `blob` must outlive the address space (in practice always
 /// 'static — it's `include_bytes!`'d from the kernel image).
 ///
+struct LoadStaging {
+    vstart:   u64,
+    vend:     u64,
+    prot:     VmaProt,
+    padded:   alloc::vec::Vec<u8>,
+    head_pad: usize,
+}
+
 /// # C: O(phdrs) parse + O(phdrs) mmap
 pub fn load_static_blob(
     blob: &'static [u8],
@@ -96,65 +104,63 @@ pub fn load_static_blob(
         _             => return Err(LoadError::Enoexec),
     };
 
+    // First pass: build a Vec<(vstart, vend, prot, padded_buf)> so
+    // we can apply DT_RELA relocations to the in-kernel buffers
+    // BEFORE leaking + mmap'ing them. The previous code wrote
+    // through user VAs in the active CR3, which only worked when
+    // the active AS happened to alias the new AS's mappings.
     let mut max_end: u64 = 0;
+    let mut staging: alloc::vec::Vec<LoadStaging> = alloc::vec::Vec::with_capacity(parsed.loads.len());
     for seg in &parsed.loads {
         let vaddr = seg.vaddr.checked_add(bias).ok_or(LoadError::Einval)?;
-        // Round VMA range to page granule per `11§4` (mmap
-        // alignment requirement).
         let vstart = align_down(vaddr, PAGE);
         let vend   = align_up(vaddr.checked_add(seg.mem_sz)
             .ok_or(LoadError::Einval)?, PAGE);
         if vend <= vstart { return Err(LoadError::Einval); }
 
-        // Slice the file-backed extent for this segment.
         let file_off = seg.file_off as usize;
         let file_sz  = seg.file_sz  as usize;
         let raw_data = blob.get(file_off..file_off.checked_add(file_sz)
             .ok_or(LoadError::Einval)?).ok_or(LoadError::Einval)?;
-        // P5-10: KernelBytes-backed VMAs assume the slice begins at
-        // `vma.start` (the page-aligned vstart). When the segment's
-        // p_vaddr isn't page-aligned (e.g., musl's RW segment at
-        // 0x2f30 with vstart 0x2000), we need a head_pad of zeros
-        // so a fault at vstart finds zeros and a fault at vaddr
-        // finds the file bytes. Pre-P5-10 the loader passed the
-        // raw slice and the fault path read past data.len() at
-        // vaddr.., zero-filling our actual file content.
         let head_pad = (vaddr - vstart) as usize;
-        let data: &'static [u8] = if head_pad == 0 {
-            raw_data
-        } else {
-            let mut padded = alloc::vec![0u8; head_pad + raw_data.len()];
-            padded[head_pad..].copy_from_slice(raw_data);
-            alloc::boxed::Box::leak(padded.into_boxed_slice())
-        };
+        // Pad to full VMA length so relocations into BSS land in
+        // an addressable byte range; the trailing zeros become the
+        // user task's BSS at first fault.
+        let buf_len = (vend - vstart) as usize;
+        let copy_n  = buf_len.min(head_pad + raw_data.len());
+        let mut padded = alloc::vec![0u8; buf_len];
+        padded[head_pad..copy_n].copy_from_slice(&raw_data[..copy_n - head_pad]);
 
-        // Translate ELF p_flags to VmaProt (W^X already enforced
-        // by the parser).
         let mut prot = VmaProt::empty();
         if seg.flags.contains(PFlags::R) { prot |= VmaProt::READ;  }
         if seg.flags.contains(PFlags::W) { prot |= VmaProt::WRITE; }
         if seg.flags.contains(PFlags::X) { prot |= VmaProt::EXEC;  }
 
-        let hint = UserVirtAddr::new(vstart).ok_or(LoadError::Einval)?;
-        let _ = as_.mmap(
-            Some(hint),
-            (vend - vstart) as usize,
-            prot,
-            VmaFlags::PRIVATE,
-            VmaBacking::KernelBytes { data },
-            true,            // MAP_FIXED — place exactly at p_vaddr+bias
-        ).map_err(|_| LoadError::Enomem)?;
-
         if vend > max_end { max_end = vend; }
+        staging.push(LoadStaging { vstart, vend, prot, padded, head_pad });
     }
 
-    // Apply DT_RELA self-relocations for PIE static-pie images.
-    // Linux's binfmt_elf does this for kernel-loaded static-pie;
-    // musl's _start_c also applies them but only after walking
-    // PT_DYNAMIC, so we apply pre-emptively (idempotent re-write
-    // by musl is harmless).
+    // Apply DT_RELA self-relocations into the staging buffers.
+    // Each rela's r_off + bias is a user VA; find which staging
+    // entry owns it, translate to the buffer offset, and write
+    // there. Demand-faulting later just maps the patched bytes.
     if matches!(parsed.elf_type, ElfType::Dyn) && bias != 0 {
-        apply_relative_relocs(blob, &parsed, bias)?;
+        apply_relative_relocs_into(blob, &parsed, bias, &mut staging)?;
+    }
+
+    // Second pass: leak each staging buf and mmap as KernelBytes.
+    for s in staging {
+        let data: &'static [u8] = alloc::boxed::Box::leak(s.padded.into_boxed_slice());
+        let hint = UserVirtAddr::new(s.vstart).ok_or(LoadError::Einval)?;
+        let _ = as_.mmap(
+            Some(hint),
+            (s.vend - s.vstart) as usize,
+            s.prot,
+            VmaFlags::PRIVATE,
+            VmaBacking::KernelBytes { data },
+            true,
+        ).map_err(|_| LoadError::Enomem)?;
+        let _ = s.head_pad;
     }
 
     let entry = UserVirtAddr::new(parsed.entry.checked_add(bias)
@@ -216,6 +222,83 @@ fn align_up(v: u64, a: u64)   -> u64 { (v + (a - 1)) & !(a - 1) }
 /// through its PT; PT_LOAD covering the reloc offsets is R|W; CPL=0
 /// writes through user mapping.
 /// # C: O(N_relas)
+fn apply_relative_relocs_into(
+    blob: &'static [u8],
+    parsed: &elf::ParsedElf,
+    bias: u64,
+    staging: &mut [LoadStaging],
+) -> Result<(), LoadError> {
+    // Find PT_DYNAMIC + DT_RELA via the same walk as the
+    // legacy apply_relative_relocs.
+    let mut dyn_off: usize = 0;
+    let mut dyn_sz:  usize = 0;
+    for i in 0..(parsed.phnum as usize) {
+        let base = parsed.phoff as usize + i * (parsed.phentsize as usize);
+        let p_type = u32::from_le_bytes(blob[base..base+4].try_into().unwrap_or([0;4]));
+        if p_type == 2 {
+            dyn_off = u64::from_le_bytes(blob[base+8..base+16].try_into().unwrap_or([0;8])) as usize;
+            dyn_sz  = u64::from_le_bytes(blob[base+32..base+40].try_into().unwrap_or([0;8])) as usize;
+            break;
+        }
+    }
+    if dyn_sz == 0 { return Ok(()); }
+    if dyn_off + dyn_sz > blob.len() { return Err(LoadError::Einval); }
+    let mut rela_off: u64 = 0;
+    let mut rela_sz:  u64 = 0;
+    let mut rela_ent: u64 = 24;
+    let mut p = dyn_off;
+    while p + 16 <= dyn_off + dyn_sz {
+        let tag = i64::from_le_bytes(blob[p..p+8].try_into().unwrap_or([0;8]));
+        let val = u64::from_le_bytes(blob[p+8..p+16].try_into().unwrap_or([0;8]));
+        match tag {
+            0  => break,
+            7  => rela_off = val,
+            8  => rela_sz  = val,
+            9  => rela_ent = val,
+            _ => {}
+        }
+        p += 16;
+    }
+    if rela_sz == 0 { return Ok(()); }
+    let mut file_rela: u64 = 0;
+    for seg in &parsed.loads {
+        if rela_off >= seg.vaddr && rela_off < seg.vaddr + seg.file_sz {
+            file_rela = seg.file_off + (rela_off - seg.vaddr);
+            break;
+        }
+    }
+    if file_rela == 0 { return Ok(()); }
+    let n = (rela_sz / rela_ent) as usize;
+    for i in 0..n {
+        let r = (file_rela as usize) + i * (rela_ent as usize);
+        if r + 24 > blob.len() { return Err(LoadError::Einval); }
+        let r_off  = u64::from_le_bytes(blob[r   ..r+ 8].try_into().unwrap_or([0;8]));
+        let r_info = u64::from_le_bytes(blob[r+ 8..r+16].try_into().unwrap_or([0;8]));
+        let r_add  = i64::from_le_bytes(blob[r+16..r+24].try_into().unwrap_or([0;8]));
+        let r_type = (r_info & 0xffff_ffff) as u32;
+        if r_type != 8 && r_type != 0x403 { continue; }
+        let dst_va = bias.checked_add(r_off).ok_or(LoadError::Einval)?;
+        let val    = (bias as i64).wrapping_add(r_add) as u64;
+        if dst_va == 0 { return Err(LoadError::Einval); }
+        // Locate staging entry covering dst_va, write into its buf.
+        let mut placed = false;
+        for s in staging.iter_mut() {
+            if dst_va >= s.vstart && dst_va + 8 <= s.vend {
+                let off = (dst_va - s.vstart) as usize;
+                if off + 8 > s.padded.len() { return Err(LoadError::Einval); }
+                s.padded[off..off+8].copy_from_slice(&val.to_le_bytes());
+                placed = true;
+                break;
+            }
+        }
+        // Silently skip relocations that fall outside any PT_LOAD
+        // (corrupt input — apply_relative_relocs originally faulted).
+        let _ = placed;
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn apply_relative_relocs(
     blob: &'static [u8],
     parsed: &elf::ParsedElf,
