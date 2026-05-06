@@ -211,8 +211,8 @@ run_one(char *seg, long seg_n) {
         sc1(SYS_exit, 0);
     } else if (n == 4 && streq_n(buf, "help", 4)) {
         write_str("builtins: exit, echo, help, ls [path], cat <path>, "
-                  "pwd, cd <path>, uname; redirection: cmd > path; "
-                  "chaining: cmd1 ; cmd2\n");
+                  "pwd, cd <path>, uname, exec <path>; redirection: "
+                  "cmd > path; chaining: cmd1 ; cmd2\n");
     } else if (n == 3 && streq_n(buf, "pwd", 3)) {
         char p[256];
         long r = getcwd_(p, sizeof(p) - 1);
@@ -240,6 +240,17 @@ run_one(char *seg, long seg_n) {
         while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
         if (i >= n) { write_str("cat: missing path\n"); }
         else { cmd_cat(buf + i); }
+    } else if (n >= 5 && prefix(buf, n, "exec ")) {
+        long i = 5;
+        while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
+        if (i >= n) { write_str("exec: missing path\n"); }
+        else {
+            // execve(path, NULL, NULL): replaces this process image
+            // with the binary at `path`. Returns only on failure.
+            long r = sc3(SYS_execve, (long)(buf + i), 0, 0);
+            write_str("exec: failed\n");
+            (void)r;
+        }
     } else if (n >= 3 && prefix(buf, n, "cd ")) {
         long i = 2;
         while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
@@ -263,7 +274,7 @@ run_one(char *seg, long seg_n) {
 
 void _start(void) {
     static const char banner[] =
-        "oxide-sh: builtins exit/echo/help/ls/cat/pwd/cd/uname (sep: ; redir: >)\n";
+        "oxide-sh: builtins exit/echo/help/ls/cat/pwd/cd/uname/exec (sep: ; redir: >)\n";
     write_str(banner);
 
     char buf[256];
