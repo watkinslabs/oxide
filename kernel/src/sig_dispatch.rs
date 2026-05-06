@@ -77,16 +77,14 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
     frame[1] = saved_rflags;     // RFLAGS unchanged (IF kept off via FMASK)
     frame[2] = new_rsp;          // RSP = signal frame
 
-    // Pass `sig` to the handler in rdi. The syscall epilogue restores
-    // rdi from the saved-arg slot at offset -0x70 from top after the
-    // P5-10 reg-preservation fix added 5 callee-saved pushes ahead
-    // of the existing 10 (total 15 quadwords; rdi sits at slot index 1
-    // from rsp = [rsp+0x08] = top-0x78+0x08 = top-0x70).
+    // Pass `sig` to the handler in rdi. After B04 added a 16th r12
+    // save slot at the top of the 16-quadword frame, rdi (slot index
+    // 1 from rsp) lives at top-0x80+0x08 = top-0x78.
     let kstack_top = hal_x86_64::current_kstack_top();
     if kstack_top != 0 {
-        // SAFETY: the syscall asm restore-block reads the saved-rdi at offset -0x70 from top of the syscall stack post-P5-10; we are running on that exact stack pre-restore; writing here makes the asm's `mov rdi, [rsp+0x08]` after restore-loop pull our `sig` into the user rdi.
+        // SAFETY: the syscall asm restore-block reads saved-rdi at offset -0x78 from top after B04's r12 save; we are running on that exact stack pre-restore; writing here makes the asm's `mov rdi, [rsp+0x08]` after restore-loop pull our `sig` into user rdi.
         unsafe {
-            core::ptr::write_volatile((kstack_top - 0x70) as *mut u64, sig as u64);
+            core::ptr::write_volatile((kstack_top - 0x78) as *mut u64, sig as u64);
         }
     }
 }
