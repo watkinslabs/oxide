@@ -650,12 +650,21 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
     }
 
-    // No halt: schedule forever. When the runqueue is empty the
-    // idle loop wfi's for the next IRQ; tty rx pushes new bytes
-    // and wakes parked readers (sh's read loop).
+    // No halt: schedule forever, with IRQs on so the timer-tick
+    // UART poll keeps draining bytes into the tty rx ringbuffer
+    // (which is what wakes login/sh from sys_read). Pre-fix we
+    // looped on bare schedule() with IF=0 inherited from the
+    // dispatch path — login parked forever because no IRQ ever
+    // delivered the keystrokes the user typed.
+    // SAFETY: STI legal at CPL=0 with kernel GDT/IDT installed;
+    // idle path sleeps via hlt waiting for next timer IRQ.
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
         unsafe { crate::sched::schedule(); }
+        // SAFETY: hlt at CPL=0 between schedule() rounds; IF=1
+        // ensures the next timer IRQ wakes us.
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
     }
 }
 
