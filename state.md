@@ -82,6 +82,12 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 559 | `P12-01-virtio-types` | New `crates/virtio/`: split virtqueue (Desc/Avail/Used + alloc_chain/publish/pop_used + free-chain) + device IDs + status bits. (Phase 12 added to `00§3` in PR #562.) |
 | 560 | `P12-02-virtio-net` | virtio-net device shape: VirtioNet { rx, tx, mac } + VirtioNetHdr v1 (12 bytes) parse/write_to. |
 | 562 | `D04-master-plan-phases-10-11-12` | spec: `00§3` gains rows 10 (modules loader), 11 (PCI enumeration), 12 (virtio common). v1 estimate widens 9-14mo → 10-16mo. CLAUDE.md branch-prefix list updated. |
+| 563 | `C69-state-fix-and-userspace-phases` | spec: `00§3` gains rows 13–17 covering Linux userspace integration: dynamic linker (ld-musl, 6-8wk), libc + NSS + PAM (8-12wk), system manager (cgroup-isolated services, 8-10wk), RPM toolchain (rpmbuild + dnf, 10-14wk), tty + login flow (agetty + login(1), 4-6wk). v1.x estimate to "Fedora-class dnf install nginx" = 22-30mo total. |
+| 564 | `P13-01-elf-dynamic-section` | `elf::parse_dynamic` + `DynInfo` (strtab/symtab/hash/gnu_hash/rela/jmprel/init/fini/needed/runpath/rpath). DT_* constants. `read_strtab` helper. |
+| 565 | `P13-02-dynamic-reloc-types` | `modules::apply_dynamic` adds R_X86_64_GLOB_DAT (6) / JUMP_SLOT (7) / RELATIVE (8). Falls through to static `apply()` for module-loader types. |
+| 566 | `P13-03-elf-hash` | `elf::hash::elf_hash` + `gnu_hash` 32-bit symbol-name hashes. |
+| 567 | `P13-04-hash-lookup` | `elf::lookup_sysv` + `lookup_gnu` table walkers — Bloom filter early-exit on GNU side. |
+| 568 | `P13-05-dl-loader` | New `crates/dl/`: `load_so(file, resolver) → LoadedDso` (place PT_LOAD + parse PT_DYNAMIC + build symbol map + apply RELA/JMPREL). `ChainResolver` mirrors ld.so search order. P13-06 wires kernel-side dlopen + a real musl-built .so smoke. |
 
 ## Phase ladder (post-session-30)
 
@@ -101,7 +107,7 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 10 | modules loader | **functional** — ELF ET_REL parse + x86_64 relocator + section placement + symbol resolution; NR_INIT_MODULE / NR_FINIT_MODULE / NR_DELETE_MODULE; /proc/modules; kernel symbol exports (klog_write_raw / klog_write_dec_u64 / kassert_thunk). Per-module W^X memory + signature verification ride P10-08+. |
 | 11 | PCI enumeration | **functional** — pci::ConfigSpaceReader trait + Bdf + PciDevice + enumerate(); hal-x86_64::pci::LegacyPci CF8/CFC reader; boot trace prints device list. ECAM (PCIe extended config) + MSI-X table programming ride P11-05+. |
 | 12 | virtio common | **scaffolding** — split virtqueue (Desc/Avail/Used) with alloc_chain/publish/pop_used; VirtioNet shape + VirtioNetHdr. MMIO accessor + IRQ wiring + actual DMA buffer integration ride P12-03+. |
-| 13 | dynamic linker (ld-musl) | not started — `00§3` adds 6-8wk |
+| 13 | dynamic linker (ld-musl) | **scaffolding live** — elf::parse_dynamic + DynInfo + DT_* constants; sysv + GNU hash tables (elf_hash/gnu_hash + lookup_sysv/lookup_gnu); R_X86_64_GLOB_DAT/JUMP_SLOT/RELATIVE in modules::apply_dynamic; new `crates/dl/` with `load_so(file, resolver) → LoadedDso` (places PT_LOAD, walks PT_DYNAMIC, builds symbol map, applies RELA + JMPREL) + ChainResolver. End-to-end musl-.so smoke + kernel-side dlopen syscalls ride P13-06+. |
 | 14 | libc + NSS + PAM (passwd/group/shadow + login/su/sudo) | not started — `00§3` adds 8-12wk |
 | 15 | system manager (cgroup-isolated services + journal) | not started — `00§3` adds 8-10wk |
 | 16 | RPM toolchain (rpmbuild + dnf + repodata) | not started — `00§3` adds 10-14wk |
