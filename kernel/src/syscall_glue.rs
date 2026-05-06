@@ -853,10 +853,15 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_open::kernel_sys_openat(&args),
         crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC | crate::syscall_nrs::NR_SYNC
                                  => 0,
-        // Net family — no stack yet per docs/25; ENOSYS.
-        crate::syscall_nrs::NR_SOCKET | crate::syscall_nrs::NR_BIND | crate::syscall_nrs::NR_LISTEN
+        // AF_INET dgram (UDP) — `25§3` minimum. The remaining
+        // socket calls (LISTEN/ACCEPT/CONNECT/SENDMSG/etc.) wait
+        // on TCP + AF_UNIX which are their own arcs.
+        crate::syscall_nrs::NR_SOCKET   => crate::syscall_glue_net::kernel_sys_socket(&args),
+        crate::syscall_nrs::NR_BIND     => crate::syscall_glue_net::kernel_sys_bind(&args),
+        crate::syscall_nrs::NR_SENDTO   => crate::syscall_glue_net::kernel_sys_sendto(&args),
+        crate::syscall_nrs::NR_RECVFROM => crate::syscall_glue_net::kernel_sys_recvfrom(&args),
+        crate::syscall_nrs::NR_LISTEN
             | crate::syscall_nrs::NR_ACCEPT | crate::syscall_nrs::NR_ACCEPT4 | crate::syscall_nrs::NR_CONNECT
-            | crate::syscall_nrs::NR_SENDTO | crate::syscall_nrs::NR_RECVFROM
             | crate::syscall_nrs::NR_SENDMSG | crate::syscall_nrs::NR_RECVMSG
             | crate::syscall_nrs::NR_SHUTDOWN
             | crate::syscall_nrs::NR_GETSOCKNAME | crate::syscall_nrs::NR_GETPEERNAME
