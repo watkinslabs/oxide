@@ -787,6 +787,17 @@ pub fn kernel_sys_lseek(args: &SyscallArgs) -> i64 {
     }
 }
 
+/// `sys_pwritev(fd, iov, iovcnt, off)` — slot 296. v1 ignores
+/// the offset (acts like writev) for non-seekable backends; for
+/// regular files this yields posix-correct results when the file
+/// position equals `off` (the common stdio case post-fseek).
+/// # C: O(iovcnt × iov[i].len)
+pub fn kernel_sys_pwritev(args: &SyscallArgs) -> i64 { kernel_sys_writev(args) }
+
+/// `sys_preadv(fd, iov, iovcnt, off)` — slot 295. Same offset
+/// caveat as pwritev.
+pub fn kernel_sys_preadv(args: &SyscallArgs) -> i64 { kernel_sys_readv(args) }
+
 /// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed
 /// version: looks up the open `File`, walks the iovec array,
 /// calls `File::write` for each non-empty buffer. Returns total
