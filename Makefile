@@ -19,7 +19,7 @@ FEATURES ?=
 .PHONY: all build x86 arm \
         build-debug x86-debug arm-debug \
         test lint ci \
-        qemu-x86 qemu-arm qemu-mcp \
+        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         clean help
 
 all: build
@@ -57,9 +57,18 @@ ci: lint test build build-debug
 # ---- qemu -----------------------------------------------------------------
 
 qemu-x86:
-	$(XTASK) qemu --arch x86_64  --features debug-all
+	$(XTASK) qemu --arch x86_64  $(if $(FEATURES),--features $(FEATURES),)
 
 qemu-arm:
+	$(XTASK) qemu --arch aarch64 $(if $(FEATURES),--features $(FEATURES),)
+
+# Same but with `--features debug-all` (every syscall trace + LAPIC
+# tick + boot-pulse log). Useful for kernel debugging; not what you
+# want when just trying to log in and use it.
+qemu-x86-debug:
+	$(XTASK) qemu --arch x86_64  --features debug-all
+
+qemu-arm-debug:
 	$(XTASK) qemu --arch aarch64 --features debug-all
 
 # Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
