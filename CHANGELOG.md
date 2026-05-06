@@ -807,11 +807,21 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #503 | `P9-09-misc-socket-syscalls` | NR_GETSOCKNAME / GETPEERNAME / SHUTDOWN / SETSOCKOPT / GETSOCKOPT. |
 | #504 | `P9-10-warning-cleanup` | Kernel warnings 18 → 12. |
 | #505 | `P8-14-tcp-echo-userspace` | /bin/tcp_echo userspace AF_INET stream smoke. |
+| #507 | `P9-11-userspace-ps` | /bin/ps walks /proc via getdents64 + reads /proc/<tid>/comm. |
+| #508 | `P9-12-userspace-ls` | /bin/ls openat(O_DIRECTORY) + getdents64 loop. |
+| #509 | `P9-13-sysfs-net-class` | /sys/class/net/lo/{address, mtu, operstate, type, flags}. |
+| #510 | `P9-14-mount-userspace` | /bin/mount + 5-line /proc/mounts. |
+| #511 | `P9-15-userspace-cp` | /bin/cp single-pair copy. |
+| #512 | `P9-16-more-userspace-utils` | /bin/wc + /bin/head. |
+| #513 | `P8-15-af-unix-path` | AF_UNIX path-bound bind/connect/listen/accept via UNIX_REGISTRY. |
+| #514 | `P9-17-preadv-pwritev` | NR_PREADV / NR_PWRITEV (delegates to readv/writev). |
+| #515 | `P9-18-sendmsg-recvmsg` | NR_SENDMSG / NR_RECVMSG via iov-walk + sendto/recvfrom. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
 - `make x86` clean (warnings down to 12 in kernel).
-- 13 userspace binaries on the rootfs.
+- 19 userspace binaries on the rootfs.
+- Net + AF_UNIX socket dispatch surface has **zero Enosys** responses.
 
 Open follow-ups (session 31 picks up):
 - Depth=2 ext4 extent trees.
