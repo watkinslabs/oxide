@@ -860,9 +860,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_BIND     => crate::syscall_glue_net::kernel_sys_bind(&args),
         crate::syscall_nrs::NR_SENDTO   => crate::syscall_glue_net::kernel_sys_sendto(&args),
         crate::syscall_nrs::NR_RECVFROM => crate::syscall_glue_net::kernel_sys_recvfrom(&args),
-        crate::syscall_nrs::NR_LISTEN
-            | crate::syscall_nrs::NR_ACCEPT | crate::syscall_nrs::NR_ACCEPT4 | crate::syscall_nrs::NR_CONNECT
-            | crate::syscall_nrs::NR_SENDMSG | crate::syscall_nrs::NR_RECVMSG
+        crate::syscall_nrs::NR_LISTEN  => crate::syscall_glue_net::kernel_sys_listen(&args),
+        crate::syscall_nrs::NR_ACCEPT | crate::syscall_nrs::NR_ACCEPT4
+                                       => crate::syscall_glue_net::kernel_sys_accept(&args),
+        crate::syscall_nrs::NR_CONNECT => crate::syscall_glue_net::kernel_sys_connect(&args),
+        crate::syscall_nrs::NR_SENDMSG | crate::syscall_nrs::NR_RECVMSG
             | crate::syscall_nrs::NR_SHUTDOWN
             | crate::syscall_nrs::NR_GETSOCKNAME | crate::syscall_nrs::NR_GETPEERNAME
             | crate::syscall_nrs::NR_SOCKETPAIR
