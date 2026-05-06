@@ -50,8 +50,6 @@ debug-symbols/
 !/userspace/shared/**
 !/userspace/libc/
 !/userspace/libc/**
-!/userspace/dynlink/
-!/userspace/dynlink/**
 
 # QEMU runtime
 /qemu-*.log

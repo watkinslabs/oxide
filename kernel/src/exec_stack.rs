@@ -107,7 +107,7 @@ pub unsafe fn build_user_stack(
         (AT_PHENT,   img.phentsize as u64),
         (AT_PHNUM,   img.phnum as u64),
         (AT_PAGESZ,  4096),
-        (AT_BASE,    0),
+        (AT_BASE,    img.interp_base),
         (AT_FLAGS,   0),
         (AT_ENTRY,   img.entry.as_u64()),
         (AT_UID,     0),

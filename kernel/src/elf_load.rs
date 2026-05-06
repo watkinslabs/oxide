@@ -51,9 +51,14 @@ impl From<ElfError> for LoadError {
 }
 
 /// Result of a successful load — caller drops to user mode at
-/// `entry` per docs/31§3 `LoadedExe`.
+/// `interp_entry` if non-zero (PT_INTERP path), otherwise at
+/// `entry`. The auxv build (`exec_stack`) carries `interp_base`
+/// in AT_BASE so the dynamic linker can locate itself.
 #[derive(Copy, Clone, Debug)]
 pub struct LoadedImage {
+    /// The exec's own e_entry, biased by PIE_LOAD_BIAS for ET_DYN.
+    /// Becomes auxv AT_ENTRY; the dynamic linker hands control here
+    /// after loading DT_NEEDED. Static-PIE binaries jump here directly.
     pub entry:      UserVirtAddr,
     pub brk:        UserVirtAddr,
     /// User VA where the program-header table lives. Computed by
@@ -63,6 +68,23 @@ pub struct LoadedImage {
     pub phdr_va:    u64,
     pub phentsize:  u16,
     pub phnum:      u16,
+    /// Load base of the dynamic-linker (PT_INTERP) image, or `0`
+    /// if no interpreter was requested. Auxv AT_BASE per `31§4`.
+    pub interp_base: u64,
+    /// Entry-point of the dynamic linker, or `0` if no interpreter.
+    /// `spawn_user_blob_smoke` / `sys_execve` drop to ring 3 here
+    /// when non-zero so the linker runs first; the linker reads
+    /// AT_ENTRY to find the exec's actual entry.
+    pub interp_entry: u64,
+}
+
+impl LoadedImage {
+    /// User RIP to drop into ring 3: the dynamic linker if PT_INTERP
+    /// was set, else the exec's own entry (static-PIE / static path).
+    /// # C: O(1)
+    pub fn user_ip(&self) -> u64 {
+        if self.interp_entry != 0 { self.interp_entry } else { self.entry.as_u64() }
+    }
 }
 
 /// Default load bias for ET_DYN (PIE) images. Real Linux
@@ -71,6 +93,12 @@ pub struct LoadedImage {
 /// (0x501000). 0x10000000 keeps the user-half plenty of room.
 /// docs/31§6 ASLR is v1.x — fixed bias for now.
 const PIE_LOAD_BIAS: u64 = 0x1000_0000;
+
+/// Load bias for the dynamic-linker (PT_INTERP) image. Disjoint
+/// from `PIE_LOAD_BIAS` + the 64 MiB heap above the exec so the
+/// linker's PT_LOADs never collide with the exec's heap window.
+/// Real Linux randomises this; v1 fixed.
+const INTERP_LOAD_BIAS: u64 = 0x4000_0000;
 
 /// Load `blob` into `as_` per docs/31§4. Each PT_LOAD becomes a
 /// MAP_FIXED VMA with `VmaBacking::KernelBytes` (P2-17) so demand-
@@ -96,12 +124,55 @@ pub fn load_static_blob(
     blob: &'static [u8],
     as_: &AddressSpace,
 ) -> Result<LoadedImage, LoadError> {
+    // Load the exec at its declared bias.
+    let exec = place_image(blob, as_, None)?;
+
+    // If the ELF has a PT_INTERP, look up the interpreter file from
+    // the rootfs and load it at INTERP_LOAD_BIAS. The interpreter
+    // is itself an ET_DYN with self-relocs, so `place_image` does
+    // the same staging+rebase for it.
+    let parsed = parse(blob, ARCH_MACHINE)?;
+    let mut interp_base: u64 = 0;
+    let mut interp_entry: u64 = 0;
+    if let Some(interp_path) = parsed.interp {
+        let interp_blob = crate::elf_smoke::lookup_blob_by_path(interp_path)
+            .ok_or(LoadError::Enoexec)?;
+        let interp = place_image(interp_blob, as_, Some(INTERP_LOAD_BIAS))?;
+        interp_base  = INTERP_LOAD_BIAS;
+        interp_entry = interp.entry.as_u64();
+    }
+
+    Ok(LoadedImage {
+        entry:        exec.entry,
+        brk:          exec.brk,
+        phdr_va:      exec.phdr_va,
+        phentsize:    exec.phentsize,
+        phnum:        exec.phnum,
+        interp_base,
+        interp_entry,
+    })
+}
+
+/// Inner placement: parse `blob`, lay out PT_LOADs, apply ET_DYN
+/// self-relocs into staging buffers, then `mmap` each as
+/// `KernelBytes`. `bias_override` lets callers (PT_INTERP) place
+/// at a non-default base.
+///
+/// Returns a `LoadedImage` with `interp_*` zeroed — those fields
+/// are populated only by `load_static_blob` after the second pass.
+fn place_image(
+    blob: &'static [u8],
+    as_: &AddressSpace,
+    bias_override: Option<u64>,
+) -> Result<LoadedImage, LoadError> {
     let parsed = parse(blob, ARCH_MACHINE)?;
 
-    let bias: u64 = match parsed.elf_type {
-        ElfType::Dyn  => PIE_LOAD_BIAS,
-        ElfType::Exec => 0,
-        _             => return Err(LoadError::Enoexec),
+    let bias: u64 = match (bias_override, parsed.elf_type) {
+        (Some(b), ElfType::Dyn) => b,
+        (Some(_), _)            => return Err(LoadError::Enoexec),
+        (None, ElfType::Dyn)    => PIE_LOAD_BIAS,
+        (None, ElfType::Exec)   => 0,
+        _                       => return Err(LoadError::Enoexec),
     };
 
     // First pass: build a Vec<(vstart, vend, prot, padded_buf)> so
@@ -182,27 +253,32 @@ pub fn load_static_blob(
     // Register a heap region per docs/15§5 `brk(2)`: an Anonymous
     // VMA covering [max_end, max_end + HEAP_RESERVE) so `sys_brk`
     // can extend lazily via demand-paging. v1: 64 MiB heap.
-    const HEAP_RESERVE: u64 = 64 * 1024 * 1024;
-    let heap_start = max_end;
-    let heap_end   = heap_start.checked_add(HEAP_RESERVE)
-        .ok_or(LoadError::Einval)?;
-    let heap_hint  = UserVirtAddr::new(heap_start).ok_or(LoadError::Einval)?;
-    if heap_end <= heap_start {
-        return Err(LoadError::Einval);
+    // Only the exec image (bias_override == None) gets a heap;
+    // the dynamic linker shares the exec's brk window.
+    if bias_override.is_none() {
+        const HEAP_RESERVE: u64 = 64 * 1024 * 1024;
+        let heap_start = max_end;
+        let heap_end   = heap_start.checked_add(HEAP_RESERVE)
+            .ok_or(LoadError::Einval)?;
+        let heap_hint  = UserVirtAddr::new(heap_start).ok_or(LoadError::Einval)?;
+        if heap_end <= heap_start {
+            return Err(LoadError::Einval);
+        }
+        let _ = as_.mmap(
+            Some(heap_hint),
+            (heap_end - heap_start) as usize,
+            VmaProt::READ | VmaProt::WRITE,
+            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+            VmaBacking::Anonymous,
+            true,
+        ).map_err(|_| LoadError::Enomem)?;
+        as_.set_brk_window(heap_start, heap_end);
     }
-    let _ = as_.mmap(
-        Some(heap_hint),
-        (heap_end - heap_start) as usize,
-        VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-        VmaBacking::Anonymous,
-        true,
-    ).map_err(|_| LoadError::Enomem)?;
-    as_.set_brk_window(heap_start, heap_end);
 
     Ok(LoadedImage {
         entry, brk,
         phdr_va, phentsize: parsed.phentsize, phnum: parsed.phnum,
+        interp_base: 0, interp_entry: 0,
     })
 }
 
