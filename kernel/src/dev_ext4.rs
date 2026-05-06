@@ -409,6 +409,28 @@ pub fn rmdir_at(path: &[u8]) -> Result<(), vfs::VfsError> {
 /// of the same inode. Cross-directory move supported when both
 /// parents resolve.
 /// # C: O(N parent entries) per directory
+/// Hardlink `target_path` → `link_path`. Increments target's
+/// nlink and adds a new dir entry; both names refer to the same
+/// inode afterwards.
+/// # C: O(N parent entries)
+pub fn link_at(target_path: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let target = mount.lookup_path(target_path).map_err(|_| vfs::VfsError::Enoent)?;
+    let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+    if inode.is_dir() { return Err(vfs::VfsError::Eperm); }  // no dir hardlinks
+    let (parent_ino, name_owned) = parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
+    let name: alloc::vec::Vec<u8> = name_owned.to_vec();
+    let ftype = if inode.is_link() { ext4::DT_LNK } else { ext4::DT_REG };
+    mount.run_journaled(|m| {
+        m.dir_link(parent_ino, &name, target, ftype)?;
+        m.adjust_nlink(target, 1)?;
+        Ok(())
+    }).map_err(|_| vfs::VfsError::Eio)
+}
+
 pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
     let p = MOUNT_PTR.load(Ordering::Acquire);
     if p.is_null() { return Err(vfs::VfsError::Eio); }

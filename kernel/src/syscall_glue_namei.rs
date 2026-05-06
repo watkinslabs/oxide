@@ -46,6 +46,47 @@ fn errno_from_vfs(e: vfs::VfsError) -> i64 {
     } as i64)
 }
 
+/// `link(target, link)` slot 86. Hardlink only — both must
+/// resolve to ext4 paths.
+pub fn kernel_sys_link(args: &SyscallArgs) -> i64 {
+    let target = match read_path(args.a0) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let link = match read_path(args.a1) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let t = resolve(&target).unwrap_or(target);
+    let l = resolve(&link).unwrap_or(link);
+    if !is_ext4_path(&t) || !is_ext4_path(&l) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
+    match crate::dev_ext4::link_at(t.as_bytes(), l.as_bytes()) {
+        Ok(())  => 0,
+        Err(e)  => errno_from_vfs(e),
+    }
+}
+
+/// `linkat(odir, target, ndir, link, flags)` slot 265.
+pub fn kernel_sys_linkat(args: &SyscallArgs) -> i64 {
+    let target_p = args.a1;
+    let link_p   = args.a3;
+    let target = match read_path(target_p) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let link = match read_path(link_p) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let t = resolve(&target).unwrap_or(target);
+    let l = resolve(&link).unwrap_or(link);
+    if !is_ext4_path(&t) || !is_ext4_path(&l) {
+        return -(Errno::Erofs.as_i32() as i64);
+    }
+    match crate::dev_ext4::link_at(t.as_bytes(), l.as_bytes()) {
+        Ok(())  => 0,
+        Err(e)  => errno_from_vfs(e),
+    }
+}
+
 /// `unlink(path)` slot 87.
 /// # C: O(N parent entries)
 pub fn kernel_sys_unlink(args: &SyscallArgs) -> i64 {
