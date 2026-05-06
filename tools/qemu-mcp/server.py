@@ -369,6 +369,17 @@ def qemu_continue() -> str:
 
 
 @mcp.tool()
+def qemu_interrupt(timeout: float = 5.0) -> str:
+    """Interrupt a running guest. Sends `-exec-interrupt` to GDB so
+    the next memory/register read can succeed. Returns the stop
+    frame. No-op if already stopped."""
+    s = _require()
+    s.gdb.stdin.write("-exec-interrupt\n")
+    s.gdb.stdin.flush()
+    return _wait_stopped(s, timeout=timeout)
+
+
+@mcp.tool()
 def qemu_stepi(count: int = 1) -> str:
     """Single-step `count` instructions. Returns the new PC + the
     next instruction's disassembly."""
