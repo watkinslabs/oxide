@@ -1,3 +1,51 @@
+# State 2026-05-05 (session 29 — Phase 7b RW arc: balloc, extent grow, dir-rw, ialloc, VFS write, JBD2 replay)
+
+## Headline
+
+Six PRs landed end-to-end ext4 RW from userspace + JBD2 journal replay (PRs #462-#467). The shell can now `echo > /etc/foo`, `unlink /etc/foo`, `mkdir /etc/d`, `mv /etc/a /etc/b` against the real journaled ext4 fs; mounting a journaled image runs replay automatically. Workspace test count 702 → 743.
+
+## What landed (PRs #462 – #467)
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 462 | `P7b-01-ext4-balloc` | `crates/ext4/src/balloc.rs`: `Mount::alloc_block(hint)` walks group bitmaps for first-clear bit, sets it, persists bitmap + GDT counter + SB counter. `free_block` mirror. Mount gains `Spinlock<MountState>` for cached gdt_buf + counter mirrors. Superblock + GroupDesc parsers extended with counter fields, `first_data_block`, `journal_inum`. 4 hosted tests on `mini.img`. |
+| 463 | `P7b-02-ext4-extent-grow` | `crates/ext4/src/extent_rw.rs`: `Mount::append_block(ino, &[u8;bs])` allocates one block, writes the data, extends trailing extent if (phys, logical) contiguous + `len < 0x8000`, else adds a new inline leaf (4-leaf cap → `ExtentTreeFull`). Updates `i_size` + `i_blocks`; persists inode. 3 hosted tests. |
+| 464 | `P7b-03-ext4-dir-rw` | `crates/ext4/src/dir.rs::insert` (slack-split) + `remove` (coalesce-into-prev). `Mount::dir_link / dir_unlink` wrap with extent walk + block I/O. 6 unit + 4 integration tests on `mini.img` (link/lookup/unlink/persist-across-remount). |
+| 465 | `P7b-04-ext4-inode-alloc` | `crates/ext4/src/ialloc.rs`: `alloc_inode` (skips reserved 1..=10), `free_inode`, `init_inode`, `create_file`, `create_dir`, `unlink` (decs nlink, on 0 frees data blocks + inode). 4 hosted tests. |
+| 466 | `P7b-05-vfs-ext4-rw` | `Mount::write_at(ino, off, data)` (zero-extend + per-block RMW + i_size), `truncate_inode`, `set_inode_size`, `adjust_nlink`. `Ext4FileInode` now writeable (write/truncate via Mount, refresh cached bytes, invalidate page cache). `dev_ext4::create_at / unlink_at / mkdir_at / rmdir_at / rename_at`. New `kernel/src/syscall_glue_namei.rs` wires `NR_UNLINK / UNLINKAT (AT_REMOVEDIR) / MKDIR / MKDIRAT / RMDIR / RENAME / RENAMEAT / RENAMEAT2` → ext4 for real-fs paths. `open(O_CREAT)` under prefer_ext4 → create_at. |
+| 467 | `P7b-06-jbd2` | New `crates/jbd2/`: 12-byte block header + magic 0xC03B3998 (BE), JournalSuperblock parser (v1 + v2), descriptor walker (legacy 8-byte + 64bit 16-byte tags + UUID rules), 2-pass replay (revoke set + descriptor→data→commit). `crates/ext4/src/journal.rs::ExtentLogReader` walks journal inode's extents → fs LBA mapping; `Mount::recover_journal()` runs replay if `INCOMPAT_RECOVER + s_journal_inum != 0`; marks log clean (`s_start = 0`) after replay. `Mount::open` auto-runs replay before allowing writes. Test fixture `mini-j.img` (2 MiB ext4 with 1024-block journal, no metadata_csum). 12 jbd2 unit + 2 ext4 integration tests. |
+
+## Phase ladder (post-session-29)
+
+| # | Phase | Status |
+|---|---|---|
+| 0 | build infra | done |
+| 1 | PMM | done |
+| 2 | VMM + MMU + per-CPU + TLB | done |
+| 3 | slab + GlobalAlloc | done |
+| 4 | sched + ctxsw + preempt + SMP | done |
+| 5 | syscalls + ELF + init + busybox-sh | done |
+| 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | done |
+| 7a | block + page cache | done |
+| 7b | ext4 RW + JBD2 | **read+write+replay done**; write-side journaling (txn-batching of metadata writes through journal commit) deferred to P7b-07 |
+| 8 | net | not started |
+| 9 | hardening, observability, modules | ongoing |
+
+## End-of-session-29 verified-green
+- `cargo test --workspace` → 743 tests, 0 failed (was 702).
+- `make x86` → kernel builds clean.
+- `cargo test -p ext4` → 50 unit + 4 balloc + 3 extent_rw + 4 dir_rw + 4 ialloc + 5 mount + 2 journal = 72.
+- `cargo test -p jbd2` → 12 unit (header, superblock, descriptor, replay).
+
+## Open follow-ups
+- **P7b-07 write-side journaling**: every metadata write currently goes straight to disk. To match `17§7`'s crash-test contract (kill QEMU during `fs_mark`, fsck-clean on reboot), Mount needs a `Transaction` collector: stage metadata bytes during an op, flush to journal (descriptor + data + commit blocks) before any write to its original location. Write paths in `balloc.rs / ialloc.rs / dir.rs / extent_rw.rs / journal.rs` need to route through `metadata_write(off, bytes)` instead of `write_byte_range` directly. Single fs op = one transaction; multi-op batching is a perf follow-up.
+- **External extent index nodes**: depth>0 trees surface as `DepthUnsupported`. Will hit when files exceed 4 extents × `len 0x8000 × bs`.
+- Per-CPU `OXIDE_SYSCALL_USER_RSP_SAVE` once SMP gsbase per-CPU lands.
+- Multi-pipe (`a | b | c`) + background jobs (`&`) + signal-driven Ctrl-C in sh.
+- True `fork+exec` of external binaries from sh.
+
+---
+
 # State 2026-05-05 (session 28 — real shell with `|` pipes; 3 latent kernel ABI bugs fixed)
 
 ## Headline
