@@ -56,6 +56,25 @@ impl Inode for NullInode {
     fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 
+/// `/dev/kmsg` — Linux kernel ring-buffer file. Reads pull bytes
+/// from `klog::ring_read` (the in-memory dmesg log); writes are
+/// discarded for v1 (no userspace kmsg-priority injection).
+/// Each open's reader cursor is reset to 0 at open — repeated
+/// `cat /dev/kmsg` invocations from userspace each see the
+/// available tail of the ring.
+pub struct KmsgInode;
+impl Inode for KmsgInode {
+    fn ino(&self) -> Ino { 0x2000_000A }
+    fn file_type(&self) -> FileType { FileType::CharDev }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, b: &mut [u8]) -> KResult<usize> {
+        let (n, _next) = klog::ring_read(off as usize, b);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+}
+
 /// `/dev/zero` — read fills with NUL, write discards.
 pub struct ZeroInode;
 impl Inode for ZeroInode {
