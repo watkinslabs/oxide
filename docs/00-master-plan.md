@@ -81,10 +81,22 @@ Phase exit = PR-time gates green + canary 1h + bench within budget + coverage me
 | 10 | Modules loader (ELF ET_REL parse + relocator + section placement + symbol resolution + `init_module`/`finit_module`/`delete_module`/`/proc/modules`) | 2–3wk | `18`,`31` |
 | 11 | PCI / PCIe bus enumeration (config space + `Bdf` + class-coded device list + boot-trace dump) | 1wk | `34` |
 | 12 | virtio shared infrastructure (split virtqueue, status bits, common feature negotiation) — gates virtio-net (`8`), virtio-blk (`7a`/`7b`), virtio-console, virtio-rng | 2–3wk | `34`,`35` |
+| 13 | Dynamic linker (ld-linux-x86-64.so.2 / ld-musl): PT_INTERP handler, shared-object load + GOT/PLT relocation, `dlopen`/`dlsym`, ld.so.cache, `LD_LIBRARY_PATH` resolution | 6–8wk | `31`,`29a` |
+| 14 | Standard userspace libc + NSS + PAM: glibc-compatible (or musl-with-nss) shared libs in `/usr/lib64`, `getpwnam`/`getgrnam`/`getlogin` walking `/etc/{passwd,group,shadow}`, `pam_unix` for `login(1)` / `su` / `sudo` | 8–12wk | `29a`,`43` |
+| 15 | System manager + service supervision: oxide-init re-implemented as a real PID 1 (cgroup-isolated services, dependency-ordered start/stop, socket activation, `journalctl`-equivalent reading the klog ring + per-service log streams). Sysvinit-shaped `/etc/init.d` rc-scripts for v1; systemd-compat unit files in v1.x. | 8–10wk | `29a` |
+| 16 | Package manager: build a working `rpmbuild` against our libc + the `librpm` Berkeley-DB+sqlite stack; install pre-built RPMs from a local repo via `dnf` (or a thinner `microdnf`); `/var/lib/rpm` Berkeley-DB or sqlite-backed package db. | 10–14wk | `43`,`29a` |
+| 17 | TTY + login flow: real /dev/tty[0-N] from kernel-side line-discipline (`28`), `agetty` spawning login per tty, `motd`/`issue` rendering, terminfo/ncurses installed as `/usr/share/terminfo/*`. | 4–6wk | `28`,`29a` |
 
 Phases 10–12 were spun out from phase 9 + the driver work backing phase 8 because they each ended up large enough (and reusable enough across phases) to deserve their own gate. Phase 10 is the .ko runtime loader; phase 11 is the PCI bus enumeration that every PCIe device driver consumes; phase 12 is the virtio common layer that virtio-net (under phase 8) and virtio-blk (under phase 7a/7b) both drive off. Phase 9 stays "ongoing hardening + observability" — anything that doesn't fit the other named phases.
 
-Honest total v1 solo: **10–16mo** with 10/11/12 broken out (vs the 9–14mo estimate when modules + drivers were folded into phase 9).
+Phases 13–17 cover the journey from "static-musl single-shot binaries" (where v1 stops) to "build + install + run unmodified Fedora/RHEL RPMs":
+- **13** — dynamic linking. Without this, `dnf install nginx` ends with a binary that wants `ld-linux-x86-64.so.2` and no userspace lookup chain. ld-musl has a much smaller surface than glibc's ld.so; v1 picks one (probably musl, since we already build static-pie userspace with musl-gcc) and the other comes in v1.x.
+- **14** — libc/NSS/PAM. The glibc/musl userspace assumes /etc/passwd backs `getpwnam`. PAM is what `login(1)`, `su`, `sudo`, sshd all consult for "is this password valid". RHEL ships pam_unix.so by default; we need a port (or the upstream PAM source built against our libc).
+- **15** — service supervisor. The lazy-respawn loop in `userspace/init/init.c` doesn't scale past one shell. Real Linux distros need cgroup-isolated services with dependency ordering. systemd is the de-facto standard but is heavyweight; sysvinit-shape rc scripts are tractable and Fedora still supports them via systemd's compat layer.
+- **16** — RPM. `rpmbuild` itself is a glibc binary that depends on librpm + libdb (or rpm-sqlite) + libzstd + libpopt + libcap + libcrypt + lua + libmagic + python (for `%pre`/`%post` scriptlet runners). We can pre-build RPMs on a Fedora host and only need the `dnf install` side to work; that's still ~20 dynamic libs the dynamic linker resolves at runtime.
+- **17** — interactive ttys. We currently run sh on stdin/stdout pinned to UART. `agetty` opens `/dev/tty1` and runs `login`; once 13+14 land we can wire it up.
+
+Honest total v1 solo with phases 0-12 done: **10–16mo**. Adding 13–17 to reach "Fedora-class boot-to-`dnf install nginx` capability" pushes the realistic v1.x calendar to **22–30mo** — but each phase is a usable milestone. Phase 13 alone unlocks "run unmodified Fedora binaries" once the few critical .so files are in place.
 
 Phase exit criteria detailed in each subsystem spec's §Test contract. PR-time CI is the wall.
 
@@ -230,6 +242,7 @@ See `MANIFEST.md`.
 ## 17 Changelog
 
 - 2026-05-06: phase ladder gains explicit rows 10/11/12 for modules loader, PCI enumeration, virtio common infra. Spun out from "phase 9 + driver work backing phase 8" because each turned out to be a multi-PR slug deserving its own gate. Total v1 estimate widened from 9–14mo → 10–16mo to reflect the un-folded scope.
+- 2026-05-06: phases 13–17 added covering the Linux-userspace integration arc — dynamic linker, libc/NSS/PAM, system manager, RPM toolchain, agetty/login flow. v1.x calendar to "Fedora-class boot-to-`dnf install nginx`" estimated 22–30mo total. Each phase is a usable milestone (e.g. phase 13 alone unlocks running unmodified Fedora binaries with a small set of .so files staged).
 
 ## 18 OQ
 
