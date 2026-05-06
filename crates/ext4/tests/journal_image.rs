@@ -37,9 +37,6 @@ fn journaled_image_mounts_clean() {
 
 #[test]
 fn run_journaled_collects_metadata_writes_into_one_txn() {
-    // Open a journal scope, perform two metadata_write calls,
-    // commit auto-fires on scope close. Both writes' bytes land
-    // at their target LBAs; the journal SB returns to s_start=0.
     let disk = build_disk();
     let m = ext4::Mount::open(disk.clone()).unwrap();
     let bs = m.sb.block_size as usize;
@@ -51,7 +48,6 @@ fn run_journaled_collects_metadata_writes_into_one_txn() {
         Ok(())
     }).unwrap();
     drop(m);
-    // Verify both target LBAs received the bytes.
     for (lba, want) in [(120u64, &payload_a), (121u64, &payload_b)] {
         let mut req = block::BlockRequest::new_read(
             lba * (bs as u64) / 512, (bs / 512) as u32, 512,
@@ -59,6 +55,52 @@ fn run_journaled_collects_metadata_writes_into_one_txn() {
         disk.submit_sync(&mut req).unwrap();
         assert_eq!(&req.buffer[..bs], &want[..], "LBA {} matches", lba);
     }
+}
+
+#[test]
+fn shadow_buffer_lets_subsequent_reads_see_staged_bytes() {
+    // P7b-08: inside a run_journaled scope, a second metadata_write
+    // to a block whose first write is still staged must see the
+    // first write's bytes (so RMW within an op composes correctly).
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let bs = m.sb.block_size as usize;
+    let lba = 130u64;
+    m.run_journaled(|mm| {
+        // Stage block: first half = 0xCC.
+        let mut buf = std::vec![0u8; bs];
+        for b in &mut buf[..bs/2] { *b = 0xCC; }
+        mm.metadata_write(lba * (bs as u64), &buf)?;
+        // Read back inside the scope — must see the staged bytes.
+        let got = mm.read_meta_byte_range(lba * (bs as u64), bs)?;
+        assert_eq!(got[0], 0xCC);
+        assert_eq!(got[bs/2], 0);
+        // RMW: overlay second half = 0xDD.
+        let mut overlay = std::vec![0u8; bs/2];
+        for b in &mut overlay { *b = 0xDD; }
+        mm.metadata_write(lba * (bs as u64) + (bs as u64 / 2), &overlay)?;
+        let got2 = mm.read_meta_byte_range(lba * (bs as u64), bs)?;
+        assert_eq!(got2[0],     0xCC, "first half preserved across RMW");
+        assert_eq!(got2[bs/2],  0xDD, "second half overlaid");
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn create_file_inside_scope_atomically() {
+    // Wrap an entire create_file in run_journaled — the alloc_inode
+    // (modifies inode bitmap + GDT + SB), init_inode (writes new
+    // inode bytes), and dir_link (writes parent's dir block) all
+    // share the same shadow + commit as one transaction.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let n = m.run_journaled(|mm| mm.create_file(2, b"atomic", 0o644)).unwrap();
+    assert!(n > 0);
+    // Re-open: file is visible (transaction committed).
+    drop(m);
+    let m2 = ext4::Mount::open(disk).unwrap();
+    let got = m2.lookup_path(b"/atomic").unwrap();
+    assert_eq!(got, n);
 }
 
 #[test]
