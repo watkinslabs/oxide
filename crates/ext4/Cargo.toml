@@ -9,9 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 block = { path = "../block" }
-
-[dev-dependencies]
-sync = { path = "../sync" }
+sync  = { path = "../sync" }
 
 [features]
 default = []
