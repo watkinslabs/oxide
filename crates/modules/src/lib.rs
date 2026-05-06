@@ -23,6 +23,13 @@ pub use symtab::{
     KResult as SymKResult, KsymEntry, SymError,
 };
 
+pub mod relocator;
+pub use relocator::{
+    apply as apply_reloc, RelocError,
+    R_X86_64_NONE, R_X86_64_64, R_X86_64_PC32, R_X86_64_PLT32,
+    R_X86_64_32, R_X86_64_32S, R_X86_64_GOTPCREL, R_X86_64_REX_GOTPCRELX,
+};
+
 #[cfg(test)]
 mod tests;
 
