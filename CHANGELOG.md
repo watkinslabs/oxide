@@ -821,6 +821,9 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #520 | `P9-20-more-tools` | /bin/{pwd, whoami, uname}. |
 | #521 | `P9-21-poll-readiness` | vfs::Inode::poll() non-blocking readiness; epoll_wait now level-triggered with real intersect. |
 | #522 | `P9-22-userspace-nc` | /bin/nc minimal netcat (listen + connect modes). |
+| #524 | `P10-02-relocator` | x86_64 ELF relocator (R_X86_64_64/PC32/PLT32/32/32S). |
+| #525 | `P10-03-loader` | modules::loader::load_module (place + resolve + relocate). |
+| #526 | `P10-04-finit-module-syscall` | NR_INIT_MODULE / NR_FINIT_MODULE wired to load_blob. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
