@@ -20,6 +20,15 @@ pub use parser::{
     EI_MAG, ELFCLASS64, ELFDATA2LSB, EM_AARCH64, EM_X86_64, EV_CURRENT,
 };
 
+pub mod relocatable;
+pub use relocatable::{
+    parse_relocatable, ParsedRelocatable, Section, Symbol, Rela,
+    SHT_NULL, SHT_PROGBITS, SHT_SYMTAB, SHT_STRTAB, SHT_RELA, SHT_NOBITS, SHT_REL,
+    SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR,
+    STT_NOTYPE, STT_OBJECT, STT_FUNC, STT_SECTION,
+    STB_LOCAL, STB_GLOBAL, STB_WEAK,
+};
+
 #[cfg(test)]
 mod tests;
 
