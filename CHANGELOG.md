@@ -824,6 +824,11 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #524 | `P10-02-relocator` | x86_64 ELF relocator (R_X86_64_64/PC32/PLT32/32/32S). |
 | #525 | `P10-03-loader` | modules::loader::load_module (place + resolve + relocate). |
 | #526 | `P10-04-finit-module-syscall` | NR_INIT_MODULE / NR_FINIT_MODULE wired to load_blob. |
+| #528 | `P10-05-kernel-export-symbols` | dev_modules::init_exports — klog_write_raw / klog_write_dec_u64 / kassert_thunk. |
+| #529 | `P10-06-proc-modules` | /proc/modules listing. |
+| #530 | `P10-07-delete-module` | NR_DELETE_MODULE module unload. |
+| #531 | `P9-23-tee-cmp` | /bin/tee. |
+| #532 | `P9-24-link-hardlink` | NR_LINK / NR_LINKAT ext4 hardlinks. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).

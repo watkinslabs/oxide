@@ -50,7 +50,12 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 522 | `P9-22-userspace-nc` | `/bin/nc` minimal netcat: `-l <port>` listen mode + `<host> <port>` client mode. Tiny IPv4 parser, `__builtin_bswap` for htons/htonl. |
 | 524 | `P10-02-relocator` | `modules::relocator::apply` — x86_64 ELF relocator. R_X86_64_64 / PC32 / PLT32 / 32 / 32S / NONE. OOR check on signed 32-bit reloc encodings. |
 | 525 | `P10-03-loader` | `modules::loader::load_module(bytes, resolver) → LoadedModule` — section placement (heap-Vec per ALLOC section, SHT_NOBITS = zeros), symbol resolution (UNDEF → resolver, defined → section_vbase + value), Rela walk + `relocator::apply`. 2 synthetic-ELF tests. |
-| 526 | `P10-04-finit-module-syscall` | `kernel/src/dev_modules.rs` global REGISTRY + KernelSymResolver. NR_INIT_MODULE (copy from user) + NR_FINIT_MODULE (read via fd) → `load_blob`. Cap 16 MiB. Module unload (NR_DELETE_MODULE) is P10-05. |
+| 526 | `P10-04-finit-module-syscall` | `kernel/src/dev_modules.rs` global REGISTRY + KernelSymResolver. NR_INIT_MODULE (copy from user) + NR_FINIT_MODULE (read via fd) → `load_blob`. Cap 16 MiB. |
+| 528 | `P10-05-kernel-export-symbols` | dev_modules::init_exports registers thunks `klog_write_raw`, `klog_write_dec_u64`, `kassert_thunk` so loaded modules can resolve canonical helpers via the symtab. Boot calls init_exports after dev_net::init. |
+| 529 | `P10-06-proc-modules` | `/proc/modules` Linux text format — one row per loaded module via dev_modules::snapshot. |
+| 530 | `P10-07-delete-module` | NR_DELETE_MODULE (176) drops the registry entry by index (low 16 bits of name pointer; v1 hack since .modinfo name parsing rides P10-08+). |
+| 531 | `P9-23-tee-cmp` | `/bin/tee` POSIX tee(1) with -a (append). Rootfs now 25 binaries. |
+| 532 | `P9-24-link-hardlink` | NR_LINK / NR_LINKAT — ext4 hardlinks via dev_ext4::link_at = run_journaled(dir_link + adjust_nlink). Refuses dir hardlinks. |
 
 ## Phase ladder (post-session-30)
 
