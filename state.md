@@ -1,8 +1,8 @@
-# State 2026-05-06 (session 30 — Phase 8 net stack + Phase 9 hardening)
+# State 2026-05-06 (session 30 — Phase 8 net stack + Phase 9 hardening, 27 PRs)
 
 ## Headline
 
-Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a working in-kernel TCP/IP stack with userspace AF_INET socket syscalls. Phase 9 hardening landed atomic ext4 rename + procfs net entries + sh background jobs + four userspace utilities. Workspace tests 752 → 799.
+Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a working in-kernel TCP/IP stack with userspace AF_INET socket syscalls (UDP + TCP) and AF_UNIX socketpair. Phase 9 hardening: atomic ext4 rename, procfs net entries, depth>0 ext4 extent trees (read + write), 7 new userspace utilities, kernel warning cleanup. Workspace tests 752 → 800.
 
 ## What landed in session 30 (PRs #480 – #497)
 
@@ -27,6 +27,13 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 495 | `P8-13-udp-echo-userspace` | `userspace/udp_echo/udp_echo.c` static-pie real-musl UDP echo server. Bound to /bin/udp_echo. Proves AF_INET / SOCK_DGRAM / bind / sendto / recvfrom end-to-end from userspace. |
 | 496 | `P9-04-userspace-kill` | `userspace/kill/kill.c` static-pie SYS_kill wrapper. Default SIGTERM; `-<n>` picks signal. |
 | 497 | `P9-05-userspace-tools` | `/bin/{sleep, true, false, hostname}` — POSIX utilities. hostname round-trips through /proc/sys/kernel/hostname. |
+| 499 | `P9-06-userspace-mkdir-rm` | `/bin/{mkdir, rm}` — sys_mkdir + sys_unlinkat (-r → AT_REMOVEDIR). |
+| 500 | `P9-07a-ext4-extent-idx-read` | ExtentIdx parser + `read_file_block` walks depth=1 / depth=2 trees. |
+| 501 | `P9-07b-ext4-extent-idx-write` | `append_block` inline-full → depth=1 promote (alloc leaf block; copy 4 leaves + new leaf; rewrite i_block as 1 idx). Depth=1 leaf-grow + new-leaf within leaf block. |
+| 502 | `P9-08-userspace-cat-echo` | `/bin/{cat, echo}` — POSIX cat (4-KiB read/write loop) + echo (-n suppresses newline). |
+| 503 | `P9-09-misc-socket-syscalls` | NR_GETSOCKNAME, NR_GETPEERNAME, NR_SHUTDOWN, NR_SETSOCKOPT (silent-accept), NR_GETSOCKOPT (zero-len). |
+| 504 | `P9-10-warning-cleanup` | Kernel warnings 18 → 12 via unused-import / dead-code annotations. |
+| 505 | `P8-14-tcp-echo-userspace` | `/bin/tcp_echo` — userspace AF_INET SOCK_STREAM smoke (socket → bind → listen → accept → echo). |
 
 ## Phase ladder (post-session-30)
 
@@ -45,16 +52,17 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, basic userspace utils landed; metadata_csum, depth>0 extents, full TCP perf knobs, kernel warning cleanup still open |
 
 ## End-of-session-30 verified-green
-- `cargo test --workspace` → 799 (up from 752 at start of session 30, 702 at start of session 29).
-- `make x86` clean.
-- `make rootfs` builds /bin/{sh, init, udp_echo, kill, sleep, true, false, hostname}.
+- `cargo test --workspace` → 800 (up from 752 at start of session 30, 702 at start of session 29).
+- `make x86` clean (kernel warnings 18 → 12).
+- `make rootfs` builds /bin/{sh, init, udp_echo, kill, sleep, true, false, hostname, mkdir, rm, cat, echo, tcp_echo} = 13 userspace binaries.
 
 ## Open follow-ups (post-phase-8 landing)
-- **External extent index nodes** (depth>0): files > 4 inline extents × 0x8000 blocks surface `DepthUnsupported`. 12-byte ExtentIdx records + child-block walk in read_file_block + inline-full→idx promotion in append_block.
+- **Depth=2 ext4 extent trees**: depth=1 + 4 idx records still bounds files at 4 × leaf_max × 0x8000 blocks. depth=2 (one more level of interior nodes) is the bigger arc.
 - **metadata_csum CRC32c** on bitmap/GDT/inode/dir writes (current images mkfs'd with `^metadata_csum`).
 - **TCP retransmit timer + congestion control**: loopback works without retransmit; real-NIC arc needs RTO + Cubic/BBR.
-- **Phase 8 remainder**: IPv6, ARP/NDP, virtio-net driver, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP — all listed in `docs/25` but not started.
-- **Kernel warning cleanup** (~18 in kernel + 14 in hal-x86_64).
+- **Phase 8 remainder**: IPv6, ARP/NDP, virtio-net driver, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP, NR_SENDMSG / NR_RECVMSG, NR_EPOLL_*.
+- **Kernel warning cleanup** still has 12 in kernel + 14 in hal-x86_64 (mostly `.intel_syntax` style notes in inline asm + a few real unused functions).
+- **Phase 9 modules** per `docs/18` — ELF ET_REL relocations + symbol resolver + .ko-equivalent runtime loader. Not started.
 
 ---
 
