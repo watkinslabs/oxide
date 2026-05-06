@@ -40,3 +40,6 @@ pub mod extent_rw;
 pub use extent_rw::EXTENT_LEN_MAX;
 
 pub mod ialloc;
+
+pub mod journal;
+pub use journal::ExtentLogReader;

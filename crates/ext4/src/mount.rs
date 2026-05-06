@@ -105,7 +105,11 @@ impl Mount {
             sb_free_blocks: sb.free_blocks_count,
             sb_free_inodes: sb.free_inodes_count,
         };
-        Ok(Self { dev, sb, state: Spinlock::new(state) })
+        let m = Self { dev, sb, state: Spinlock::new(state) };
+        // Run JBD2 replay before allowing any writes. No-op for
+        // images without a journal or with a clean log.
+        let _ = m.recover_journal();
+        Ok(m)
     }
 
     /// Byte offset of the GDT on disk. Block 2 for 1 KiB-block
