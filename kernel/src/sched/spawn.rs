@@ -201,3 +201,61 @@ pub unsafe fn spawn_user_thread(
     sched::preempt::set_need_resched();
     Ok(arc)
 }
+
+/// Fork-specific user-task spawn (P5-10): identical to
+/// `spawn_user_thread` but builds the arch ctx via the
+/// fork-aware constructor that copies the parent's saved
+/// syscall-frame regs into the child's iretq scratch slots and
+/// the Context callee-saved fields. Child's `rax` is forced to 0
+/// so the post-syscall return value is `fork() == 0`.
+///
+/// `entry_va` / `user_sp` come from `current_user_frame()` (the
+/// parent's RIP just past the syscall + the parent's user RSP at
+/// syscall time). `regs` is captured from
+/// `current_user_full_frame()` BEFORE this call so the parent's
+/// state is still intact on the saved stack.
+///
+/// # SAFETY: same preconditions as `spawn_user_thread`; in
+/// addition `regs` must reflect the parent's saved-syscall state
+/// (i.e., captured during dispatch on the parent's per-task
+/// kernel stack).
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn spawn_user_thread_for_fork(
+    tid: u32,
+    name: &'static str,
+    entry_va: u64,
+    user_sp: u64,
+    user_rflags: u64,
+    regs: &hal_x86_64::ForkRegs,
+    mm: Arc<AddressSpace>,
+) -> Result<Arc<Task>, SpawnError> {
+    let rq = match super::runqueue::global() {
+        Some(r) => r,
+        None    => return Err(SpawnError::NoRunqueue),
+    };
+
+    let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
+    let mut task = Task::new_user(tid, name, class, mm);
+
+    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
+    // SAFETY: task is local; no concurrent reader.
+    unsafe { task.install_stack(stack); }
+    let stack_top = task.kernel_stack.load(Ordering::Acquire);
+
+    // SAFETY: stack_top freshly installed; entry_va/user_sp/regs from parent's saved frame; new_user_for_fork lays out the iretq frame for ring-3 resume with regs preloaded.
+    unsafe {
+        let p = task.arch_ctx_ptr::<ArchCtx>();
+        core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, user_rflags, regs));
+    }
+
+    let arc = Arc::new(task);
+    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    super::registry::insert(&arc);
+    {
+        let mut inner = rq.inner.lock();
+        inner.enqueue(Arc::clone(&arc));
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    }
+    sched::preempt::set_need_resched();
+    Ok(arc)
+}
