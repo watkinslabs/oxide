@@ -14,6 +14,8 @@ use jbd2::{
     JournalSuperblock,
     JournalLogReader, ReplayError, ReplayStats,
     replay,
+    StagedBlock, LogCursor, build_descriptor_block, build_commit_block,
+    escape_journal_payload,
 };
 
 use crate::inode::{self, Inode};
@@ -55,6 +57,76 @@ impl Mount {
         sb_bytes[0x18..0x1C].copy_from_slice(&jsb.sequence.wrapping_add(1).to_be_bytes());
         sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
         log.write_journal_block(0, &sb_bytes)
+    }
+
+    /// Commit a transaction: write descriptor + N data blocks +
+    /// commit to the journal, then write the same data to its
+    /// target LBAs. Returns the journal sequence used. Bumps the
+    /// journal SB's `s_sequence` + `s_start` on success.
+    ///
+    /// Caller staged the metadata writes by reading-modifying-
+    /// writing fs blocks and calling this before any direct
+    /// `write_byte_range` to those targets. Failure modes:
+    /// - `NoSpace` if the staged set exceeds journal capacity
+    /// - `BlockIo` propagated from device errors
+    /// # C: O(N staged) journal I/O + N target I/O
+    pub fn commit_metadata(&self, mut staged: Vec<StagedBlock>) -> Result<u32, MountError> {
+        if staged.is_empty() { return Ok(0); }
+        if (self.sb.feature_incompat & crate::superblock::INCOMPAT_RECOVER) == 0
+            && self.sb.journal_inum == 0
+        {
+            // No journal — fall back to direct writes.
+            return self.apply_staged_to_target(&staged).map(|_| 0);
+        }
+        let jinode = match self.read_inode(self.sb.journal_inum) {
+            Ok(i)  => i,
+            Err(_) => return self.apply_staged_to_target(&staged).map(|_| 0),
+        };
+        let log = ExtentLogReader::build(self, &jinode)?;
+        let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
+        let jsb = match JournalSuperblock::parse(&sb_bytes) {
+            Ok(s) => s,
+            Err(_) => return self.apply_staged_to_target(&staged).map(|_| 0),
+        };
+        let bs = jsb.block_size as usize;
+        let n = staged.len() as u32;
+        if n + 2 >= jsb.maxlen { return Err(MountError::NoSpace); }
+        let mut cursor = LogCursor::new(jsb.start, jsb.maxlen, jsb.sequence);
+        // Reserve descriptor + N data + commit.
+        let desc_at = cursor.reserve(1);
+        let data_at_first = cursor.reserve(n);
+        let commit_at = cursor.reserve(1);
+        let seq = cursor.seq;
+        // Write descriptor.
+        let dbuf = build_descriptor_block(seq, &staged, bs);
+        log.write_journal_block(desc_at, &dbuf)?;
+        // Write each data block (escape if first 4 bytes are JBD2_MAGIC).
+        for (i, s) in staged.iter_mut().enumerate() {
+            let mut b = s.data.clone();
+            if b.len() != bs { b.resize(bs, 0); }
+            escape_journal_payload(&mut b);
+            log.write_journal_block(data_at_first + i as u32, &b)?;
+        }
+        // Write commit.
+        let cbuf = build_commit_block(seq, bs);
+        log.write_journal_block(commit_at, &cbuf)?;
+        // Now apply each staged block to its target.
+        self.apply_staged_to_target(&staged)?;
+        // Mark journal clean (s_start = 0, bump sequence).
+        let mut sb_bytes = sb_bytes;
+        sb_bytes[0x18..0x1C].copy_from_slice(&seq.wrapping_add(1).to_be_bytes());
+        sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
+        log.write_journal_block(0, &sb_bytes)?;
+        Ok(seq)
+    }
+
+    /// Write each staged block to its target LBA verbatim.
+    fn apply_staged_to_target(&self, staged: &[StagedBlock]) -> Result<(), MountError> {
+        let bs = self.sb.block_size as u64;
+        for s in staged {
+            write_byte_range(&*self.dev, s.target_lba * bs, &s.data)?;
+        }
+        Ok(())
     }
 }
 

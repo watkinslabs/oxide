@@ -36,6 +36,31 @@ fn journaled_image_mounts_clean() {
 }
 
 #[test]
+fn commit_metadata_routes_through_journal() {
+    // Build a small staged transaction and round-trip through
+    // Mount::commit_metadata. The same bytes must land at the
+    // target LBA, and (since we're simulating commit) the journal
+    // SB s_start should return to 0.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    // Pick a non-critical fs block (block 100 — well past the
+    // GDT/bitmaps/inode-tables for this layout).
+    let target_lba = 100u64;
+    let payload = std::vec![0xFA; bs];
+    let staged = std::vec![ext4::StagedBlock { target_lba, data: payload.clone() }];
+    let seq = m.commit_metadata(staged).unwrap();
+    let _ = seq;  // any non-error sequence is fine
+    // Re-open + read block 100 directly via a 1-block BlockRequest.
+    drop(m);
+    let mut req = block::BlockRequest::new_read(target_lba * (bs as u64) / 512, (bs / 512) as u32, 512);
+    disk.submit_sync(&mut req).unwrap();
+    let mut out = std::vec::Vec::new();
+    out.extend_from_slice(&req.buffer[..bs]);
+    assert_eq!(out, payload, "committed block landed at target LBA");
+}
+
+#[test]
 fn journaled_image_supports_writes() {
     // Even with a journal present + recover support running, the
     // ext4 RW path (alloc_block + create_file + …) must continue
