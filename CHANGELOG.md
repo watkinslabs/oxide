@@ -767,8 +767,47 @@ End-of-session-29 verified-green:
 - `make x86` clean.
 - Phase 7b closed.
 
-Deferred to follow-ups:
-- Wrapping composite ops (e.g. dev_ext4::rename_at = link+unlink) in their own outer run_journaled scope so they commit as 1 tx instead of 2.
-- External extent index nodes (depth>0 trees).
-- Metadata-csum feature support (recompute CRC32c on bitmap/GDT/inode/dir writes).
-- Phase 8 (net): not started; `25` spec frozen, ~10-15 wk per `00§3`.
+Deferred to follow-ups (carried into session 30, several closed):
+- Wrapping composite ops (e.g. dev_ext4::rename_at) in run_journaled — closed P9-01 #492.
+- External extent index nodes (depth>0 trees) — open.
+- Metadata-csum feature support — open.
+- Phase 8 (net) — opened in session 30 (see below).
+
+---
+
+## Session 30 (PRs #479 – #497) — 2026-05-06
+
+**Subject**: Phase 8 net stack functional + Phase 9 hardening starts. CLAUDE.md rule that autonomous runs do not stop between phases.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #479 | `D03-claude-md-autonomous-discipline` | CLAUDE.md hard-rule that autonomous runs do not announce intermediate stopping points or do EOD-style summaries between phases. |
+| #480 | `P8-01-netdev-loopback` | NetDev trait + IfaceRegistry + LoopbackDev. NetIfaceId helpers. |
+| #481 | `P8-02-ipv4` | Ipv4Hdr + ip_checksum + push_ipv4_header + RouteTable longest-prefix-match. |
+| #482 | `P8-03-icmp-echo` | ICMP echo request/reply build/parse + checksum. |
+| #483 | `P8-04-udp` | UDP build/parse with IPv4-pseudo-header checksum. |
+| #484 | `P8-05-stack-tx-rx` | NetStack glue: register_loopback, bind/recv UDP, send_udp_to, deliver_rx (ICMP echo auto-reply, UDP demux), drain_loopback. |
+| #485 | `P8-06-af-inet-syscalls` | NR_SOCKET/BIND/SENDTO/RECVFROM. dev_net global stack + InetSocket. Errno gains networking variants. Boot calls dev_net::init. |
+| #486 | `P8-07-tcp-header` | TcpHdr build/parse with pseudo-header checksum + flag constants. |
+| #487 | `P8-08-tcp-conn` | TcpConn TCB drives tcp_state through 3WHS + data + FIN + RST. |
+| #488 | `P8-09-tcp-stack-wire` | NetStack TcpKey demux + listen/connect/accept/send/recv/close. |
+| #489 | `P8-10-tcp-syscalls` | SockKind enum + NR_LISTEN/ACCEPT/CONNECT, NR_SENDTO/RECVFROM polymorphic over UDP/TCP. |
+| #490 | `P8-11-af-unix` | UnixPair + AF_UNIX SOCK_STREAM socketpair(2). InetSocket Inode read/write polymorphic over UDP/TCP/UNIX. |
+| #491 | `P8-12-net-boot-smoke` | Boot trace prints UDP loopback round-trip line. |
+| #492 | `P9-01-rename-atomic` | dev_ext4::rename_at uses Mount::run_journaled — clobber+link+unlink as one transaction. |
+| #493 | `P9-02-procfs-net` | /proc/net/{dev,tcp,udp} Linux-format text. |
+| #494 | `P5-12-sh-bg-jobs` | sh `cmd &` background-job support. |
+| #495 | `P8-13-udp-echo-userspace` | /bin/udp_echo real-musl AF_INET smoke binary. |
+| #496 | `P9-04-userspace-kill` | /bin/kill SYS_kill wrapper. |
+| #497 | `P9-05-userspace-tools` | /bin/{sleep, true, false, hostname}. |
+
+End-of-session-30 verified-green:
+- `cargo test --workspace` → 799 (up from 752).
+- `make x86` clean.
+
+Open follow-ups (session 31 picks up):
+- External extent index nodes (depth>0).
+- ext4 metadata_csum.
+- TCP retransmit timer + congestion control.
+- IPv6, ARP/NDP, virtio-net, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP.
+- Kernel warning cleanup.

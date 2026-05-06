@@ -1,3 +1,63 @@
+# State 2026-05-06 (session 30 — Phase 8 net stack + Phase 9 hardening)
+
+## Headline
+
+Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a working in-kernel TCP/IP stack with userspace AF_INET socket syscalls. Phase 9 hardening landed atomic ext4 rename + procfs net entries + sh background jobs + four userspace utilities. Workspace tests 752 → 799.
+
+## What landed in session 30 (PRs #480 – #497)
+
+| # | Branch | Why it matters |
+|---|---|---|
+| 479 | `D03-claude-md-autonomous-discipline` | Codified hard rule: autonomous runs do not stop between phases for EOD-style summaries. |
+| 480 | `P8-01-netdev-loopback` | `crates/net/src/netdev.rs` (NetDev trait + IfaceRegistry) + `loopback.rs` (synthetic xmit→rx queue, 1024-pkt cap). NetIfaceId from_raw/raw helpers. |
+| 481 | `P8-02-ipv4` | `ipv4.rs` (Ipv4Hdr build/parse/checksum, push_ipv4_header, RFC 1071 1's-complement) + `route.rs` (RouteEntry, RouteTable with longest-prefix-match). |
+| 482 | `P8-03-icmp-echo` | `icmp.rs` echo request/reply build + parse + checksum. |
+| 483 | `P8-04-udp` | `udp.rs` UDP build/parse with IPv4-pseudo-header checksum, 0xFFFF wire encoding for computed-zero. |
+| 484 | `P8-05-stack-tx-rx` | `stack.rs::NetStack` glue: register_loopback, bind_udp/recv_udp, send_udp_to, deliver_rx (ICMP echo auto-reply + UDP demux), drain_loopback. 5 hosted round-trip tests. |
+| 485 | `P8-06-af-inet-syscalls` | `kernel/src/dev_net.rs` global stack + InetSocket VFS Inode (high-bit ino tag for downcast) + ephemeral port allocator. NR_SOCKET/BIND/SENDTO/RECVFROM dispatch. Errno gains Eaddrinuse/Eaddrnotavail/Enetunreach/Enobufs/Enotsock/Edestaddrreq/Emsgsize/Esocktnosupport/Enotconn. Boot path now calls `dev_net::init()`. |
+| 486 | `P8-07-tcp-header` | `tcp_hdr.rs` build/parse with pseudo-header checksum, FIN/SYN/RST/PSH/ACK/URG/ECE/CWR flag constants. |
+| 487 | `P8-08-tcp-conn` | `tcp_conn.rs::TcpConn` TCB drives the existing tcp_state through 3WHS, PSH+ACK data, FIN graceful close, RST→Closed. VecDeque send/recv buffers; output() drains ≤MSS chunks. input() takes (src_ip, dst_ip) from L3 demux. |
+| 488 | `P8-09-tcp-stack-wire` | NetStack gains TcpKey 4-tuple demux + TcpListenKey wildcard match. tcp_listen / tcp_connect / tcp_accept / tcp_send / tcp_recv / tcp_close. deliver_rx demuxes IpProto::Tcp. 2 hosted handshake + data round-trip tests. |
+| 489 | `P8-10-tcp-syscalls` | dev_net::SockKind { Udp, TcpListener(Arc<TcpListenEntry>), TcpConn(Arc<TcpEntry>), Unix(Arc<UnixPair>, UnixEnd) }. NR_LISTEN / NR_ACCEPT / NR_ACCEPT4 / NR_CONNECT. NR_SENDTO / NR_RECVFROM polymorphic over UDP / TCP. |
+| 490 | `P8-11-af-unix` | `unix_sock.rs` UnixPair (two VecDeque<u8> rings) + AF_UNIX SOCK_STREAM `socketpair(2)`. InetSocket VFS Inode read/write polymorphic over UDP / TCP / UNIX. |
+| 491 | `P8-12-net-boot-smoke` | Boot trace adds `[INFO] net udp lo round-trip: <payload>` line proving in-kernel UDP loopback round-trip works at boot. |
+| 492 | `P9-01-rename-atomic` | `dev_ext4::rename_at` now wraps clobber+link+unlink in `Mount::run_journaled` so the on-disk dirs see all-or-nothing. Closes a phase-7b follow-up. |
+| 493 | `P9-02-procfs-net` | `/proc/net/dev` (one row per registered netdev), `/proc/net/tcp`, `/proc/net/udp` — Linux-format text headers so `ss` / `netstat` parse without erroring. |
+| 494 | `P5-12-sh-bg-jobs` | sh `cmd &` background-job support (skip wait4 on the forked child). Closes the open follow-up from session 28. |
+| 495 | `P8-13-udp-echo-userspace` | `userspace/udp_echo/udp_echo.c` static-pie real-musl UDP echo server. Bound to /bin/udp_echo. Proves AF_INET / SOCK_DGRAM / bind / sendto / recvfrom end-to-end from userspace. |
+| 496 | `P9-04-userspace-kill` | `userspace/kill/kill.c` static-pie SYS_kill wrapper. Default SIGTERM; `-<n>` picks signal. |
+| 497 | `P9-05-userspace-tools` | `/bin/{sleep, true, false, hostname}` — POSIX utilities. hostname round-trips through /proc/sys/kernel/hostname. |
+
+## Phase ladder (post-session-30)
+
+| # | Phase | Status |
+|---|---|---|
+| 0 | build infra | done |
+| 1 | PMM | done |
+| 2 | VMM + MMU + per-CPU + TLB | done |
+| 3 | slab + GlobalAlloc | done |
+| 4 | sched + ctxsw + preempt + SMP | done |
+| 5 | syscalls + ELF + init + busybox-sh | done |
+| 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | done |
+| 7a | block + page cache | done |
+| 7b | ext4 RW + JBD2 | done |
+| 8 | net | **functional** — IPv4/UDP/TCP/ICMP/AF_UNIX (socketpair) + loopback netdev + AF_INET syscalls + procfs entries; IPv6 / ARP / NDP / netfilter / netlink / virtio-net / TCP retransmit timer + congestion control / external extent index nodes ride later |
+| 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, basic userspace utils landed; metadata_csum, depth>0 extents, full TCP perf knobs, kernel warning cleanup still open |
+
+## End-of-session-30 verified-green
+- `cargo test --workspace` → 799 (up from 752 at start of session 30, 702 at start of session 29).
+- `make x86` clean.
+- `make rootfs` builds /bin/{sh, init, udp_echo, kill, sleep, true, false, hostname}.
+
+## Open follow-ups (post-phase-8 landing)
+- **External extent index nodes** (depth>0): files > 4 inline extents × 0x8000 blocks surface `DepthUnsupported`. 12-byte ExtentIdx records + child-block walk in read_file_block + inline-full→idx promotion in append_block.
+- **metadata_csum CRC32c** on bitmap/GDT/inode/dir writes (current images mkfs'd with `^metadata_csum`).
+- **TCP retransmit timer + congestion control**: loopback works without retransmit; real-NIC arc needs RTO + Cubic/BBR.
+- **Phase 8 remainder**: IPv6, ARP/NDP, virtio-net driver, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP — all listed in `docs/25` but not started.
+- **Kernel warning cleanup** (~18 in kernel + 14 in hal-x86_64).
+
+---
+
 # State 2026-05-05 (session 29 — Phase 7b RW arc + JBD2 emit + sh fork-exec / multi-pipe)
 
 ## Headline
