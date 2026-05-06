@@ -313,6 +313,14 @@ run_one(char *seg, long seg_n) {
 #define MAX_PIPE_SEGS 8
 static void
 run_segment(char *seg, long n) {
+    // Trailing `&` → background: don't wait for any child.
+    int background = 0;
+    while (n > 0 && (seg[n-1] == ' ' || seg[n-1] == '\t')) n--;
+    if (n > 0 && seg[n-1] == '&') {
+        background = 1;
+        n--;
+        while (n > 0 && (seg[n-1] == ' ' || seg[n-1] == '\t')) n--;
+    }
     // Locate `|` boundaries: starts[i] / ends[i] frame each
     // segment as `seg[starts[i] .. ends[i])`.
     long starts[MAX_PIPE_SEGS + 1];
@@ -328,7 +336,17 @@ run_segment(char *seg, long n) {
             s = i + 1;
         }
     }
-    if (nseg <= 1) { run_one(seg, n); return; }
+    if (nseg <= 1) {
+        if (background) {
+            long pid = sc1(SYS_fork, 0);
+            if (pid == 0) { run_one(seg, n); sc1(SYS_exit, 0); }
+            // Parent: don't wait. Detach child to be reaped later
+            // by the implicit init/idle reaper.
+        } else {
+            run_one(seg, n);
+        }
+        return;
+    }
 
     // Build N-1 pipes up front so all children inherit them.
     int pipes[MAX_PIPE_SEGS][2];
@@ -365,8 +383,10 @@ run_segment(char *seg, long n) {
         sc1(SYS_close, pipes[j][0]);
         sc1(SYS_close, pipes[j][1]);
     }
-    for (int i = 0; i < nseg; i++) {
-        sc4(SYS_wait4, pids[i], 0, 0, 0);
+    if (!background) {
+        for (int i = 0; i < nseg; i++) {
+            sc4(SYS_wait4, pids[i], 0, 0, 0);
+        }
     }
 }
 
