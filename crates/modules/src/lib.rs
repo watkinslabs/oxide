@@ -25,9 +25,10 @@ pub use symtab::{
 
 pub mod relocator;
 pub use relocator::{
-    apply as apply_reloc, RelocError,
+    apply as apply_reloc, apply_dynamic, RelocError,
     R_X86_64_NONE, R_X86_64_64, R_X86_64_PC32, R_X86_64_PLT32,
     R_X86_64_32, R_X86_64_32S, R_X86_64_GOTPCREL, R_X86_64_REX_GOTPCRELX,
+    R_X86_64_COPY, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE,
 };
 
 pub mod loader;
