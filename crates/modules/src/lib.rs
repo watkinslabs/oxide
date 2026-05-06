@@ -30,6 +30,9 @@ pub use relocator::{
     R_X86_64_32, R_X86_64_32S, R_X86_64_GOTPCREL, R_X86_64_REX_GOTPCRELX,
 };
 
+pub mod loader;
+pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
+
 #[cfg(test)]
 mod tests;
 
