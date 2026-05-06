@@ -847,6 +847,13 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #550 | `P11-03-pci-x86-portio` | hal-x86_64 LegacyPci CF8/CFC reader. |
 | #551 | `P11-04-pci-boot-enum` | Boot-time PCI enumeration trace. |
 | #552 | `P9-33-cmp-stat` | /bin/cmp. |
+| #554 | `P9-34-route-userspace` | /bin/route. |
+| #555 | `P9-35-xxd` | /bin/xxd. |
+| #556 | `P9-36-seq` | /bin/seq. |
+| #557 | `P9-37-yes` | /bin/yes. |
+| #558 | `P9-38-nproc` | /bin/nproc. |
+| #559 | `P12-01-virtio-types` | virtio split virtqueue primitives. (Branch label is mine — `00§3` only defines phases 0-9; this is `35` driver infra.) |
+| #560 | `P12-02-virtio-net` | virtio-net VirtioNet + VirtioNetHdr v1. (Same caveat.) |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
