@@ -837,8 +837,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => crate::syscall_glue_fs::kernel_sys_getdents64(&args),
         crate::syscall_nrs::NR_PREAD64       => crate::syscall_glue_fs::kernel_sys_pread64(&args),
         crate::syscall_nrs::NR_PWRITE64      => crate::syscall_glue_fs::kernel_sys_pwrite64(&args),
-        crate::syscall_nrs::NR_PREADV | crate::syscall_nrs::NR_PWRITEV
-                                 => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_PREADV  => crate::syscall_glue_fs::kernel_sys_preadv(&args),
+        crate::syscall_nrs::NR_PWRITEV => crate::syscall_glue_fs::kernel_sys_pwritev(&args),
         crate::syscall_nrs::NR_MKDIR    => crate::syscall_glue_namei::kernel_sys_mkdir(&args),
         crate::syscall_nrs::NR_MKDIRAT  => crate::syscall_glue_namei::kernel_sys_mkdirat(&args),
         crate::syscall_nrs::NR_RMDIR    => crate::syscall_glue_namei::kernel_sys_rmdir(&args),
