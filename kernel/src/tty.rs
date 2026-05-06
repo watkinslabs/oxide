@@ -174,9 +174,18 @@ pub unsafe fn tick_poll_uart() {
 
 /// Push `b` to the foreground VT's ring + wake its waiters.
 /// Called from each arch's timer-tick poller.
+///
+/// v1 line-discipline: translate CR (0x0d) → NL (0x0a) — the
+/// equivalent of termios `ICRNL`. Real serial terminals + most
+/// host terminals running QEMU `-serial stdio` send CR on Enter;
+/// userspace `read_line` loops uniformly look for `\n`. Without
+/// this translation, Enter never terminates a line and the user
+/// has to keep typing until login's input buffer fills.
+/// Real termios + per-fd c_iflag rides a follow-up.
 fn push_and_wake_fg(b: u8) {
+    let translated = if b == b'\r' { b'\n' } else { b };
     let idx = vt_index(0);
-    let pushed = VT_RINGS[idx].lock().push(b);
+    let pushed = VT_RINGS[idx].lock().push(translated);
     if !pushed { return; }
     wake_waiters(idx);
 }
