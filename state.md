@@ -1,8 +1,8 @@
-# State 2026-05-05 (session 29 — Phase 7b RW arc + sh fork-exec / multi-pipe)
+# State 2026-05-05 (session 29 — Phase 7b RW arc + JBD2 emit + sh fork-exec / multi-pipe)
 
 ## Headline
 
-Eight PRs landed: full ext4 RW from userspace + JBD2 journal replay (PRs #462-#467), session-EOD doc commit (#468), sh multi-pipe + fork/exec external binaries (#469). The shell can now `echo > /etc/foo`, `unlink /etc/foo`, `mkdir /etc/d`, `mv /etc/a /etc/b` against the real journaled ext4 fs; multi-stage pipelines `a | b | c` work; absolute-path commands fork+execve+wait4. Mounting a journaled image runs replay automatically. Workspace test count 702 → 743.
+Ten PRs landed: full ext4 RW from userspace + JBD2 replay (PRs #462-#467), session-EOD doc commit (#468), sh multi-pipe + fork/exec (#469), session-EOD update (#470), JBD2 commit-emit primitives + `Mount::commit_metadata` (#471). The shell can `echo > /etc/foo`, `unlink /etc/foo`, `mkdir /etc/d`, `mv /etc/a /etc/b` against the real journaled ext4 fs; multi-stage pipelines `a | b | c` work; absolute-path commands fork+execve+wait4. Mounting a journaled image runs replay automatically. The write-side journaling primitive (descriptor + N data + commit blocks → target LBAs) is built and tested; routing the existing 28 metadata-write call sites through it is P7b-07b. Workspace test count 702 → 749.
 
 ## What landed (PRs #462 – #467)
 
@@ -15,6 +15,7 @@ Eight PRs landed: full ext4 RW from userspace + JBD2 journal replay (PRs #462-#4
 | 466 | `P7b-05-vfs-ext4-rw` | `Mount::write_at(ino, off, data)` (zero-extend + per-block RMW + i_size), `truncate_inode`, `set_inode_size`, `adjust_nlink`. `Ext4FileInode` now writeable (write/truncate via Mount, refresh cached bytes, invalidate page cache). `dev_ext4::create_at / unlink_at / mkdir_at / rmdir_at / rename_at`. New `kernel/src/syscall_glue_namei.rs` wires `NR_UNLINK / UNLINKAT (AT_REMOVEDIR) / MKDIR / MKDIRAT / RMDIR / RENAME / RENAMEAT / RENAMEAT2` → ext4 for real-fs paths. `open(O_CREAT)` under prefer_ext4 → create_at. |
 | 467 | `P7b-06-jbd2` | New `crates/jbd2/`: 12-byte block header + magic 0xC03B3998 (BE), JournalSuperblock parser (v1 + v2), descriptor walker (legacy 8-byte + 64bit 16-byte tags + UUID rules), 2-pass replay (revoke set + descriptor→data→commit). `crates/ext4/src/journal.rs::ExtentLogReader` walks journal inode's extents → fs LBA mapping; `Mount::recover_journal()` runs replay if `INCOMPAT_RECOVER + s_journal_inum != 0`; marks log clean (`s_start = 0`) after replay. `Mount::open` auto-runs replay before allowing writes. Test fixture `mini-j.img` (2 MiB ext4 with 1024-block journal, no metadata_csum). 12 jbd2 unit + 2 ext4 integration tests. |
 | 469 | `P5-11-sh-multipipe-execfork` | `userspace/sh/sh.c`: multi-pipe `a \| b \| c` (up to 8 segments) — N-1 pipes opened up front, N children forked with stdin/stdout dup2 wiring, parent closes all pipe ends + wait4s each. External-binary fork+exec: when a command line starts with `/`, sh tokenizes argv (max 8), forks, execve's, wait4s the child. Closes both follow-ups carried from session 28 EOD. |
+| 471 | `P7b-07a-jbd2-commit-emit` | `crates/jbd2/src/emit.rs`: `StagedBlock`, `build_descriptor_block`, `build_commit_block`, `escape_journal_payload`, `LogCursor` (next-free journal block tracker, wraps at maxlen, never returns 0). `ext4 Mount::commit_metadata(Vec<StagedBlock>) → seq` reserves descriptor + N data + commit slots in the journal, writes them, applies same data to target LBAs, bumps `s_sequence` + zeros `s_start` in the journal SB. Falls back to direct write when no journal present. 5 unit + 1 integration tests. |
 
 ## Phase ladder (post-session-29)
 
@@ -39,7 +40,7 @@ Eight PRs landed: full ext4 RW from userspace + JBD2 journal replay (PRs #462-#4
 - `cargo test -p jbd2` → 12 unit (header, superblock, descriptor, replay).
 
 ## Open follow-ups
-- **P7b-07 write-side journaling** (the remaining piece of phase 7b's spec contract): every metadata write currently goes straight to disk. To match `17§7`'s crash-test contract (kill QEMU during `fs_mark`, fsck-clean on reboot), Mount needs a `Transaction` collector: stage metadata bytes during an op, flush to journal (descriptor + data + commit blocks) before any write to its original location. Write paths in `balloc.rs / ialloc.rs / dir.rs / extent_rw.rs / journal.rs` (~28 call sites) need to route through `metadata_write(off, bytes)` instead of `write_byte_range` directly. Single fs op = one transaction; multi-op batching is a perf follow-up. The jbd2 crate has the parsers + replay; commit-emission helpers (build descriptor block, build commit block, allocate next free journal block) need to be added.
+- **P7b-07b write-side journaling routing**: PR #471 landed the primitive (`Mount::commit_metadata` + jbd2 emit). The remaining work converts the ~28 direct `write_byte_range` call sites in `balloc.rs / ialloc.rs / dir.rs / extent_rw.rs / journal.rs` into a `MetadataWriter` that buffers (target_lba, fs_block_bytes) for the duration of one Mount RW op, then commits in one transaction at op end. Each op-level wrapper does: read fs blocks under the byte range, splice the new bytes, push StagedBlock(s), commit_metadata(staged), apply-to-target. Closes the `17§7` crash-test contract.
 - **External extent index nodes**: depth>0 trees surface as `DepthUnsupported`. Will hit when files exceed 4 extents × `len 0x8000 × bs`.
 - Per-CPU `OXIDE_SYSCALL_USER_RSP_SAVE` once SMP gsbase per-CPU lands.
 - Background jobs (`&`) + signal-driven Ctrl-C in sh.
