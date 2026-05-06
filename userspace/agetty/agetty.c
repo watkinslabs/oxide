@@ -106,11 +106,12 @@ static long render_issue(const char* tty_short) {
     return o;
 }
 
-__attribute__((force_align_arg_pointer))
-void _start(void) {
-    long argc; char** argv;
-    __asm__ volatile ("mov (%%rsp), %0\n\t lea 8(%%rsp), %1\n\t"
-                      : "=r"(argc), "=r"(argv));
+// Real C entry — receives argc/argv as proper params from the asm
+// trampoline below.  The previous in-body \`mov (%%rsp), argc\`
+// idiom got scheduled past the prologue's callee-saved pushes by
+// GCC and read garbage; only binaries that never branch on argc
+// got away with it.
+void agetty_main(long argc, char** argv) {
     if (argc < 2) {
         wstr(2, "agetty: usage: agetty <tty> [<baud>]\n");
         sc1(SYS_exit, 1);
@@ -144,3 +145,18 @@ void _start(void) {
     sc1(SYS_exit, 1);
     __builtin_unreachable();
 }
+
+// _start trampoline: capture argc/argv from the kernel-supplied
+// stack BEFORE any C function prologue runs, then jump (not call —
+// keeps rsp aligned) into agetty_main with SysV ABI args.
+__asm__(
+    ".globl _start\n"
+    "_start:\n"
+    "    mov (%rsp), %rdi\n"     // argc
+    "    lea 8(%rsp), %rsi\n"    // argv
+    "    and $-16, %rsp\n"       // align to 0 mod 16
+    "    call agetty_main\n"     // call pushes 8 → callee sees rsp 8 mod 16 (SysV)
+    "    mov $60, %rax\n"        // SYS_exit fallback
+    "    xor %edi, %edi\n"
+    "    syscall\n"
+);

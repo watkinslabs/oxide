@@ -261,11 +261,14 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
             r9:  *full.add(6),
             rcx: *full.add(7),
             r11: *full.add(8),
+            // index 9 = user RSP, NOT user's r12. r12 sits in the
+            // B04-added save at index 15 (top of the 16-slot frame).
             rbx: *full.add(10),
             rbp: *full.add(11),
             r13: *full.add(12),
             r14: *full.add(13),
             r15: *full.add(14),
+            r12: *full.add(15),
         }
     };
 
