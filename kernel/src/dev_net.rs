@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use net::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
+use net::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
 
 /// Process-global stack. Initialised by `init()`; subsequent
@@ -68,19 +69,40 @@ pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
     Err(NetError::Eaddrinuse)
 }
 
+/// Per-AF_INET-socket variant.
+pub enum SockKind {
+    /// SOCK_DGRAM — bound port managed via NetStack's UDP map.
+    Udp,
+    /// SOCK_STREAM, after `listen()`. Holds the listener handle.
+    TcpListener(Arc<TcpListenEntry>),
+    /// SOCK_STREAM, after `connect()` or `accept()`.
+    TcpConn(Arc<TcpEntry>),
+}
+
 /// Per-AF_INET-socket VFS state — one Inode per socket fd.
 pub struct InetSocket {
     pub local_port: Spinlock<Option<u16>, SockLockClass>,
     pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
+    pub kind:       Spinlock<SockKind, SockLockClass>,
 }
 
 impl InetSocket {
-    pub fn new() -> Self {
+    pub fn new_udp() -> Self {
         Self {
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
             peer:       Spinlock::new(None),
+            kind:       Spinlock::new(SockKind::Udp),
+        }
+    }
+    pub fn new_tcp() -> Self {
+        Self {
+            local_port: Spinlock::new(None),
+            local_ip:   Spinlock::new(Ipv4Addr::ANY),
+            peer:       Spinlock::new(None),
+            // Placeholder — set by listen() / connect() / accept().
+            kind:       Spinlock::new(SockKind::Udp),
         }
     }
 
@@ -96,7 +118,7 @@ impl InetSocket {
     }
 }
 
-impl Default for InetSocket { fn default() -> Self { Self::new() } }
+impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
 
 impl vfs::Inode for InetSocket {
     fn ino(&self) -> vfs::Ino {
