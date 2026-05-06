@@ -741,3 +741,26 @@ Side-effects worth flagging from session 28:
 - `sig_dispatch`'s saved-rdi write moved from `top-0x48` to `top-0x70` (15-quadword layout shift). Any other code reading from saved-syscall offsets needs the same audit.
 - `sysretq` epilogue restores rbx/rbp/r13/r14/r15 from the new callee-saved slots before the final `pop rcx; pop r11; pop rsp`.
 - `OXIDE_SYSCALL_USER_RSP_SAVE` is UP-only; rides per-CPU `gs:0` once SMP gsbase per-CPU lands.
+
+---
+
+## Session 29 (PRs #462 – #467) — 2026-05-05
+
+**Subject**: Phase 7b RW arc — ext4 block + inode allocators, extent grow, dir-entry insert/remove, writeable VFS inode + create/unlink/mkdir/rmdir/rename syscalls, JBD2 minimum (parser + replay).
+
+| PR | Branch | Lands |
+|---|---|---|
+| #462 | `P7b-01-ext4-balloc` | `Mount::alloc_block / free_block` against group bitmaps with GDT + SB counter persistence. Mount gains `Spinlock<MountState>` for cached gdt_buf + counters. Superblock now parses `first_data_block`, `journal_inum`, free counters; GroupDesc parses + writes `free_blocks_count / free_inodes_count / used_dirs_count`. |
+| #463 | `P7b-02-ext4-extent-grow` | `Mount::append_block(ino, &[u8; bs])`: alloc, write, extend trailing extent's len when contiguous (cap 0x8000) else add a new inline leaf (4-leaf cap → `ExtentTreeFull`). |
+| #464 | `P7b-03-ext4-dir-rw` | `dir.rs::insert / remove` (slack-split, coalesce-into-prev). `Mount::dir_link / dir_unlink` wrap with extent walk. |
+| #465 | `P7b-04-ext4-inode-alloc` | `ialloc.rs`: `alloc_inode` (skips reserved 1..=10), `free_inode`, `init_inode`, `create_file`, `create_dir`, `unlink` (decs nlink, on 0 frees data blocks + inode). |
+| #466 | `P7b-05-vfs-ext4-rw` | `Mount::write_at / truncate_inode / set_inode_size / adjust_nlink`. `Ext4FileInode` writeable. New `dev_ext4::create_at / unlink_at / mkdir_at / rmdir_at / rename_at`. New `kernel/src/syscall_glue_namei.rs` wires NR_UNLINK / UNLINKAT / MKDIR / MKDIRAT / RMDIR / RENAME / RENAMEAT / RENAMEAT2 → ext4 for real-fs paths; `open(O_CREAT)` under prefer_ext4 → create_at. |
+| #467 | `P7b-06-jbd2` | New `crates/jbd2/`: BlockHeader (BE magic 0xC03B3998), JournalSuperblock (v1+v2), descriptor walker (legacy + 64bit + UUID), 2-pass replay (revoke set + descriptor→data→commit). `crates/ext4/src/journal.rs::ExtentLogReader` maps journal-block-index → fs LBA via journal-inode extents. `Mount::recover_journal()` runs replay if `INCOMPAT_RECOVER + s_journal_inum != 0`; marks log clean. `Mount::open` auto-runs replay. Test fixture `mini-j.img` (2 MiB ext4 with 1024-block journal). |
+
+End-of-session-29 verified-green:
+- `cargo test --workspace` → 743 (up from 702). All green.
+- `make x86` clean.
+
+Deferred to follow-ups:
+- **P7b-07 write-side journaling**: every metadata write currently goes straight to disk; for the `17§7` crash-test contract Mount needs a `Transaction` collector that stages metadata bytes and flushes through journal (descriptor + data + commit) before any write to original location.
+- External extent index nodes (depth>0 trees).
