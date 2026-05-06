@@ -268,6 +268,31 @@ run_one(char *seg, long seg_n) {
             long r = chdir_(buf + i);
             if (r < 0) write_str("cd: chdir failed\n");
         }
+    } else if (n > 0 && buf[0] == '/') {
+        // External binary: fork + execve + wait. Tokenize on
+        // whitespace into argv (max 8 args incl. argv[0]).
+        long pid = sc1(SYS_fork, 0);
+        if (pid == 0) {
+            char *argv[9];
+            int argc = 0;
+            long i = 0;
+            while (i < n && argc < 8) {
+                while (i < n && (buf[i] == ' ' || buf[i] == '\t')) {
+                    buf[i] = 0; i++;
+                }
+                if (i >= n) break;
+                argv[argc++] = buf + i;
+                while (i < n && buf[i] != ' ' && buf[i] != '\t') i++;
+            }
+            if (i < n) buf[i] = 0;
+            argv[argc] = 0;
+            sc3(SYS_execve, (long)argv[0], (long)argv, 0);
+            // execve returned → failed.
+            write_str_stderr("exec: failed\n");
+            sc1(SYS_exit, 127);
+        }
+        // Parent: wait for the child.
+        sc4(SYS_wait4, pid, 0, 0, 0);
     } else if (n > 0) {
         write_str("?: ");
         write_n(buf, n);
@@ -281,50 +306,68 @@ run_one(char *seg, long seg_n) {
     return 0;
 }
 
-// Run a `;`-separated segment that may contain `|`. If a single
-// pipe is present, fork two children connected by a kernel pipe
-// and wait for both. Quoting/escaping not supported.
+// Run a `;`-separated segment that may contain N-1 pipes
+// (`a | b | c | …`). Forks N children connected by N-1
+// pipes; parent waits for each. Quoting/escaping not supported;
+// max 8 pipe segments (9 children) per command line.
+#define MAX_PIPE_SEGS 8
 static void
 run_segment(char *seg, long n) {
-    long pipe_at = -1;
-    for (long i = 0; i < n; i++) {
-        if (seg[i] == '|') { pipe_at = i; break; }
+    // Locate `|` boundaries: starts[i] / ends[i] frame each
+    // segment as `seg[starts[i] .. ends[i])`.
+    long starts[MAX_PIPE_SEGS + 1];
+    long ends  [MAX_PIPE_SEGS + 1];
+    int  nseg = 0;
+    long s = 0;
+    for (long i = 0; i <= n; i++) {
+        if (i == n || seg[i] == '|') {
+            if (nseg >= MAX_PIPE_SEGS + 1) break;
+            starts[nseg] = s;
+            ends  [nseg] = i;
+            nseg++;
+            s = i + 1;
+        }
     }
-    if (pipe_at < 0) {
-        run_one(seg, n);
-        return;
-    }
+    if (nseg <= 1) { run_one(seg, n); return; }
 
-    int fds[2];
-    long r = sc2(SYS_pipe2, (long)fds, 0);
-    if (r < 0) { write_str("pipe2: failed\n"); return; }
-
-    long pid_a = sc1(SYS_fork, 0);
-    if (pid_a == 0) {
-        // Child A: stdout → pipe write end.
-        sc2(SYS_dup2, fds[1], 1);
-        sc1(SYS_close, fds[0]);
-        sc1(SYS_close, fds[1]);
-        run_one(seg, pipe_at);
-        sc1(SYS_exit, 0);
-    }
-
-    long pid_b = sc1(SYS_fork, 0);
-    if (pid_b == 0) {
-        // Child B: stdin ← pipe read end.
-        sc2(SYS_dup2, fds[0], 0);
-        sc1(SYS_close, fds[0]);
-        sc1(SYS_close, fds[1]);
-        run_one(seg + pipe_at + 1, n - pipe_at - 1);
-        sc1(SYS_exit, 0);
+    // Build N-1 pipes up front so all children inherit them.
+    int pipes[MAX_PIPE_SEGS][2];
+    for (int i = 0; i < nseg - 1; i++) {
+        long r = sc2(SYS_pipe2, (long)pipes[i], 0);
+        if (r < 0) { write_str("pipe2: failed\n"); return; }
     }
 
-    // Parent: drop both pipe ends so writers/readers see EOF when
-    // the children finish, then wait for both.
-    sc1(SYS_close, fds[0]);
-    sc1(SYS_close, fds[1]);
-    sc4(SYS_wait4, pid_a, 0, 0, 0);
-    sc4(SYS_wait4, pid_b, 0, 0, 0);
+    long pids[MAX_PIPE_SEGS + 1];
+    for (int i = 0; i < nseg; i++) {
+        long pid = sc1(SYS_fork, 0);
+        if (pid == 0) {
+            // Child i: stdin ← pipes[i-1][0] (if not first);
+            //          stdout → pipes[i][1]   (if not last).
+            if (i > 0) {
+                sc2(SYS_dup2, pipes[i-1][0], 0);
+            }
+            if (i < nseg - 1) {
+                sc2(SYS_dup2, pipes[i][1], 1);
+            }
+            // Drop every pipe fd we still hold.
+            for (int j = 0; j < nseg - 1; j++) {
+                sc1(SYS_close, pipes[j][0]);
+                sc1(SYS_close, pipes[j][1]);
+            }
+            run_one(seg + starts[i], ends[i] - starts[i]);
+            sc1(SYS_exit, 0);
+        }
+        pids[i] = pid;
+    }
+
+    // Parent: close all pipe ends so children see EOF; wait for each.
+    for (int j = 0; j < nseg - 1; j++) {
+        sc1(SYS_close, pipes[j][0]);
+        sc1(SYS_close, pipes[j][1]);
+    }
+    for (int i = 0; i < nseg; i++) {
+        sc4(SYS_wait4, pids[i], 0, 0, 0);
+    }
 }
 
 void _start(void) {
