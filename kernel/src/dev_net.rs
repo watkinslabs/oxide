@@ -1,0 +1,134 @@
+// Kernel-side wrapper around `net::NetStack`. One global stack
+// owns the iface registry + UDP port map; boot calls `init()` to
+// register the loopback netdev. AF_INET socket fds are VFS Inodes
+// that hold an ephemeral src port + a destination address (set by
+// connect / overridden per-sendto).
+
+#![cfg(target_os = "oxide-kernel")]
+
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use net::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
+use sync::{Spinlock, Socket as SockLockClass};
+
+/// Process-global stack. Initialised by `init()`; subsequent
+/// AF_INET socket ops take a `&'static` view through `stack()`.
+static STACK: NetStack = NetStack::new();
+
+/// Cached lo iface id + Arc<LoopbackDev> after `init()`. None before.
+static LO: Spinlock<Option<(NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>
+    = Spinlock::new(None);
+
+/// Register the loopback netdev, install the 127.0.0.0/8 route.
+/// Idempotent.
+/// # SAFETY: caller is the boot path post-allocator-up; no other
+/// CPU has yet executed AF_INET syscalls.
+/// # C: O(1)
+pub unsafe fn init() {
+    let mut g = LO.lock();
+    if g.is_some() { return; }
+    let (id, lo) = STACK.register_loopback();
+    *g = Some((id, lo));
+}
+
+/// `&'static` reference to the global stack. Safe to call after
+/// `init()`; before init lookups will all miss.
+pub fn stack() -> &'static NetStack { &STACK }
+
+/// Drain loopback's xmit queue back through deliver_rx. v1 calls
+/// this synchronously after every UDP send + after deliver_rx
+/// (for ICMP echo replies that `deliver_rx` itself xmit'd).
+/// Replaces a real soft-IRQ NET_RX scheduler.
+/// # C: O(N pending)
+pub fn drain_loopback() {
+    let g = LO.lock();
+    if let Some((id, lo)) = g.as_ref() {
+        STACK.drain_loopback(*id, lo);
+    }
+}
+
+/// Snapshot of the AF_INET ephemeral-port allocator. Counter
+/// rolls over within the dynamic-port range (49152..=65535).
+static EPHEM_NEXT: core::sync::atomic::AtomicU16
+    = core::sync::atomic::AtomicU16::new(49152);
+
+/// Allocate an unused ephemeral src port + bind it under
+/// `Ipv4Addr::ANY` so reply datagrams can be received.
+/// # C: O(N tries)
+pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
+    use core::sync::atomic::Ordering;
+    for _ in 0..(65535 - 49152) {
+        let p = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
+        let p = if p < 49152 { 49152 } else if p == 0 { 49152 } else { p };
+        if STACK.bind_udp(Ipv4Addr::ANY, p).is_ok() {
+            return Ok(p);
+        }
+    }
+    Err(NetError::Eaddrinuse)
+}
+
+/// Per-AF_INET-socket VFS state — one Inode per socket fd.
+pub struct InetSocket {
+    pub local_port: Spinlock<Option<u16>, SockLockClass>,
+    pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
+    pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
+}
+
+impl InetSocket {
+    pub fn new() -> Self {
+        Self {
+            local_port: Spinlock::new(None),
+            local_ip:   Spinlock::new(Ipv4Addr::ANY),
+            peer:       Spinlock::new(None),
+        }
+    }
+
+    /// Ensure a local port is bound (auto-bind to an ephemeral
+    /// port when sendto is called before bind).
+    /// # C: O(1) if already bound, else O(N) ephemeral scan
+    pub fn ensure_bound(&self) -> Result<u16, NetError> {
+        let mut g = self.local_port.lock();
+        if let Some(p) = *g { return Ok(p); }
+        let p = alloc_ephemeral_port()?;
+        *g = Some(p);
+        Ok(p)
+    }
+}
+
+impl Default for InetSocket { fn default() -> Self { Self::new() } }
+
+impl vfs::Inode for InetSocket {
+    fn ino(&self) -> vfs::Ino {
+        // High-bits tag so socket inode numbers don't collide
+        // with fs inode space.
+        0x534F_434B_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
+    }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+}
+
+/// AF_INET dgram-socket recv — pops one queued datagram for the
+/// bound port. Returns (src_ip, src_port, payload) or None.
+/// Also drains lo first so any in-flight loopback packets land
+/// in the rx queue before we look.
+pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
+    drain_loopback();
+    let port = (*sock.local_port.lock())?;
+    STACK.recv_udp(port)
+}
+
+/// AF_INET dgram-socket send — auto-binds an ephemeral local
+/// port if not already bound, builds + xmits the datagram,
+/// drains lo so an immediate recv on the same socket sees it.
+pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
+    -> Result<usize, NetError>
+{
+    let src_port = sock.ensure_bound()?;
+    let src_ip   = *sock.local_ip.lock();
+    let src_ip   = if src_ip == Ipv4Addr::ANY { Ipv4Addr::LOOPBACK } else { src_ip };
+    STACK.send_udp_to(src_ip, src_port, dst, dst_port, payload)?;
+    drain_loopback();
+    Ok(payload.len())
+}
