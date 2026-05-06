@@ -757,11 +757,12 @@ Side-effects worth flagging from session 28:
 | #466 | `P7b-05-vfs-ext4-rw` | `Mount::write_at / truncate_inode / set_inode_size / adjust_nlink`. `Ext4FileInode` writeable. New `dev_ext4::create_at / unlink_at / mkdir_at / rmdir_at / rename_at`. New `kernel/src/syscall_glue_namei.rs` wires NR_UNLINK / UNLINKAT / MKDIR / MKDIRAT / RMDIR / RENAME / RENAMEAT / RENAMEAT2 → ext4 for real-fs paths; `open(O_CREAT)` under prefer_ext4 → create_at. |
 | #467 | `P7b-06-jbd2` | New `crates/jbd2/`: BlockHeader (BE magic 0xC03B3998), JournalSuperblock (v1+v2), descriptor walker (legacy + 64bit + UUID), 2-pass replay (revoke set + descriptor→data→commit). `crates/ext4/src/journal.rs::ExtentLogReader` maps journal-block-index → fs LBA via journal-inode extents. `Mount::recover_journal()` runs replay if `INCOMPAT_RECOVER + s_journal_inum != 0`; marks log clean. `Mount::open` auto-runs replay. Test fixture `mini-j.img` (2 MiB ext4 with 1024-block journal). |
 | #469 | `P5-11-sh-multipipe-execfork` | `userspace/sh/sh.c`: multi-pipe (`a \| b \| c`, up to 8 segments) and absolute-path external-binary fork+execve+wait4. Closes both follow-ups from session 28 EOD. |
+| #471 | `P7b-07a-jbd2-commit-emit` | jbd2 emit module: StagedBlock, build_descriptor_block, build_commit_block, escape_journal_payload, LogCursor. ext4 Mount::commit_metadata(Vec<StagedBlock>) round-trips a transaction through the journal then to target LBAs; bumps s_sequence + zeros s_start. Falls back to direct write when no journal. P7b-07b will route the existing ~28 direct write_byte_range call sites through it. |
 
 End-of-session-29 verified-green:
-- `cargo test --workspace` → 743 (up from 702). All green.
+- `cargo test --workspace` → 749 (up from 702). All green.
 - `make x86` clean.
 
 Deferred to follow-ups:
-- **P7b-07 write-side journaling**: every metadata write currently goes straight to disk; for the `17§7` crash-test contract Mount needs a `Transaction` collector that stages metadata bytes and flushes through journal (descriptor + data + commit) before any write to original location.
+- **P7b-07b write-side journaling routing**: PR #471 landed the primitive (`Mount::commit_metadata` + jbd2 emit). The remaining work converts the ~28 direct `write_byte_range` call sites in `balloc.rs / ialloc.rs / dir.rs / extent_rw.rs / journal.rs` into a `MetadataWriter` per Mount op that commits one transaction at op end.
 - External extent index nodes (depth>0 trees).
