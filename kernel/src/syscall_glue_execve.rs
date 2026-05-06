@@ -197,7 +197,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // SAFETY: we are running on cur's per-task syscall stack; current_user_frame() points at the live saved tail; the syscall asm pops from these same slots after we return.
     let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
     frame[0] = img.entry.as_u64();
-    frame[1] = 0x002;
+    frame[1] = 0x202;                  // RFLAGS = IF=1 + reserved bit 1
     frame[2] = new_sp;
 
     debug_sched! {

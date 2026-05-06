@@ -383,6 +383,19 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
         // our state into current.arch_ctx + switches; we resume
         // here when a child eventually exits + reschedule picks
         // us back.
+        //
+        // Briefly enable IRQs so the LAPIC timer can fire while
+        // userspace tasks busy-loop in this wait4 path. Without
+        // this, init+svcd+... all yield to one another in kernel
+        // mode with IF=0 (FMASK clears IF on syscall entry), and
+        // login (parked on stdin) never wakes because tick_poll_uart
+        // never runs.
+        // SAFETY: kernel-mode at CPL=0; process ctx; the brief sti
+        // window is bounded by `pause` and the immediate cli; no
+        // code between sti and the cli observes a partially
+        // restored state.
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { crate::sched::tick_yield(); }
         // After resume, ZOMBIES likely contains a new entry.
