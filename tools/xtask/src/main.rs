@@ -117,6 +117,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         ("userspace/svcd/svcd",         "userspace/svcd/svcd.c"),
         ("userspace/agetty/agetty",     "userspace/agetty/agetty.c"),
         ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
+        ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
     ];
     for (out_rel, src_rel) in bins {
         let out = repo.join(out_rel);
@@ -201,6 +202,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&repo.join("userspace/svcd/svcd"),         "/sbin/svcd")?;
     put(&repo.join("userspace/agetty/agetty"),     "/sbin/agetty")?;
     put(&repo.join("userspace/rpm/rpm"),           "/bin/rpm")?;
+    put(&repo.join("userspace/passwd/passwd"),     "/bin/passwd")?;
 
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
