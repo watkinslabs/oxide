@@ -759,12 +759,16 @@ Side-effects worth flagging from session 28:
 | #469 | `P5-11-sh-multipipe-execfork` | `userspace/sh/sh.c`: multi-pipe (`a \| b \| c`, up to 8 segments) and absolute-path external-binary fork+execve+wait4. Closes both follow-ups from session 28 EOD. |
 | #471 | `P7b-07a-jbd2-commit-emit` | jbd2 emit module: StagedBlock, build_descriptor_block, build_commit_block, escape_journal_payload, LogCursor. ext4 Mount::commit_metadata(Vec<StagedBlock>) round-trips a transaction through the journal then to target LBAs; bumps s_sequence + zeros s_start. Falls back to direct write when no journal. |
 | #473 | `P7b-07b-route-metadata-through-journal` | Mount::metadata_write (RMW into staged tx or direct), Mount::run_journaled scope (auto-commits at close, re-entrant), Mount::write_file_block_meta. |
-| #475 | `P7b-07c-route-balloc-ialloc` | Every metadata-write site (bitmap/GDT/SB/inode/dir-block/i_size/nlink) routes through metadata_write → commit_metadata. Lock-ordering surgery in balloc/ialloc to drop MountState across writes. run_journaled becomes a pass-through marker (drop-in for P7b-08); pending_tx field removed. Per-call commit; op-level atomicity (one tx per fs op) needs an in-memory shadow buffer (P7b-08). |
+| #475 | `P7b-07c-route-balloc-ialloc` | Every metadata-write site routes through metadata_write → commit_metadata. Lock-ordering surgery in balloc/ialloc to drop MountState across writes. Per-call commit. |
+| #477 | `P7b-08-shadow-buffer-op-atomicity` | run_journaled opens shadow BTreeMap; metadata_write stages into it; shadow-aware reads (read_meta_byte_range / read_file_block_meta / read_metadata_block) consult shadow before disk; scope close drains shadow into one commit_metadata transaction. **Phase 7b done.** |
 
 End-of-session-29 verified-green:
-- `cargo test --workspace` → 750 (up from 702). All green.
+- `cargo test --workspace` → 752 (up from 702). All green.
 - `make x86` clean.
+- Phase 7b closed.
 
 Deferred to follow-ups:
-- **P7b-08 op-level atomicity (in-memory shadow buffer)**: every metadata write commits as its own JBD2 transaction; one shell-visible fs op lands as N transactions. Per-op batching needs a shadow buffer that intercepts reads of staged-but-uncommitted bytes inside an active scope. `run_journaled` is already a marker for that.
+- Wrapping composite ops (e.g. dev_ext4::rename_at = link+unlink) in their own outer run_journaled scope so they commit as 1 tx instead of 2.
 - External extent index nodes (depth>0 trees).
+- Metadata-csum feature support (recompute CRC32c on bitmap/GDT/inode/dir writes).
+- Phase 8 (net): not started; `25` spec frozen, ~10-15 wk per `00§3`.
