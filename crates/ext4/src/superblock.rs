@@ -11,12 +11,13 @@ pub const SUPERBLOCK_OFFSET: u64 = 1024;
 /// Superblock byte length.
 pub const SUPERBLOCK_LEN: usize = 1024;
 
-/// `s_feature_incompat` bits per `ext4.h`. Selected only — we
-/// flag the ones the read path care about.
+/// `s_feature_incompat` bits per `ext4.h`.
 pub const INCOMPAT_FILETYPE: u32 = 0x0002;
 pub const INCOMPAT_RECOVER:  u32 = 0x0004;
 pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
+/// `s_feature_compat` HAS_JOURNAL bit.
+pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

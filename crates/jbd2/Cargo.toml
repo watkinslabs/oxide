@@ -1,5 +1,5 @@
 [package]
-name = "ext4"
+name = "jbd2"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -9,8 +9,9 @@ path = "src/lib.rs"
 
 [dependencies]
 block = { path = "../block" }
-sync  = { path = "../sync" }
-jbd2  = { path = "../jbd2" }
+
+[dev-dependencies]
+sync = { path = "../sync" }
 
 [features]
 default = []
