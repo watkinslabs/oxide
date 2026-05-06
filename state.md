@@ -101,6 +101,11 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 10 | modules loader | **functional** — ELF ET_REL parse + x86_64 relocator + section placement + symbol resolution; NR_INIT_MODULE / NR_FINIT_MODULE / NR_DELETE_MODULE; /proc/modules; kernel symbol exports (klog_write_raw / klog_write_dec_u64 / kassert_thunk). Per-module W^X memory + signature verification ride P10-08+. |
 | 11 | PCI enumeration | **functional** — pci::ConfigSpaceReader trait + Bdf + PciDevice + enumerate(); hal-x86_64::pci::LegacyPci CF8/CFC reader; boot trace prints device list. ECAM (PCIe extended config) + MSI-X table programming ride P11-05+. |
 | 12 | virtio common | **scaffolding** — split virtqueue (Desc/Avail/Used) with alloc_chain/publish/pop_used; VirtioNet shape + VirtioNetHdr. MMIO accessor + IRQ wiring + actual DMA buffer integration ride P12-03+. |
+| 13 | dynamic linker (ld-musl) | not started — `00§3` adds 6-8wk |
+| 14 | libc + NSS + PAM (passwd/group/shadow + login/su/sudo) | not started — `00§3` adds 8-12wk |
+| 15 | system manager (cgroup-isolated services + journal) | not started — `00§3` adds 8-10wk |
+| 16 | RPM toolchain (rpmbuild + dnf + repodata) | not started — `00§3` adds 10-14wk |
+| 17 | tty + login flow (agetty + login(1) + terminfo) | not started — `00§3` adds 4-6wk |
 
 ## End-of-session-30 verified-green
 - `cargo test --workspace` → 804 (up from 752 at start of session 30, 702 at start of session 29).
