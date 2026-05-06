@@ -839,10 +839,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_PWRITE64      => crate::syscall_glue_fs::kernel_sys_pwrite64(&args),
         crate::syscall_nrs::NR_PREADV | crate::syscall_nrs::NR_PWRITEV
                                  => -(Errno::Enosys.as_i32() as i64),
-        crate::syscall_nrs::NR_MKDIR | crate::syscall_nrs::NR_RMDIR | crate::syscall_nrs::NR_UNLINK
-            | crate::syscall_nrs::NR_UNLINKAT | crate::syscall_nrs::NR_MKDIRAT
-            | crate::syscall_nrs::NR_RENAME | crate::syscall_nrs::NR_RENAMEAT | crate::syscall_nrs::NR_RENAMEAT2
-                                 => -(Errno::Erofs.as_i32() as i64),
+        crate::syscall_nrs::NR_MKDIR    => crate::syscall_glue_namei::kernel_sys_mkdir(&args),
+        crate::syscall_nrs::NR_MKDIRAT  => crate::syscall_glue_namei::kernel_sys_mkdirat(&args),
+        crate::syscall_nrs::NR_RMDIR    => crate::syscall_glue_namei::kernel_sys_rmdir(&args),
+        crate::syscall_nrs::NR_UNLINK   => crate::syscall_glue_namei::kernel_sys_unlink(&args),
+        crate::syscall_nrs::NR_UNLINKAT => crate::syscall_glue_namei::kernel_sys_unlinkat(&args),
+        crate::syscall_nrs::NR_RENAME   => crate::syscall_glue_namei::kernel_sys_rename(&args),
+        crate::syscall_nrs::NR_RENAMEAT => crate::syscall_glue_namei::kernel_sys_renameat(&args),
+        crate::syscall_nrs::NR_RENAMEAT2 => crate::syscall_glue_namei::kernel_sys_renameat2(&args),
         crate::syscall_nrs::NR_TRUNCATE  => crate::syscall_glue_fs::kernel_sys_truncate(&args),
         crate::syscall_nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
         crate::syscall_nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
