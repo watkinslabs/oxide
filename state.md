@@ -60,6 +60,20 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 535 | `P9-26-userspace-shared-syscalls` | `/bin/find` recursive walker; -type f|d, -name <literal>, depth-8. |
 | 536 | `P9-27-df-stat` | `/bin/df` SYS_statfs wrapper. |
 | 537 | `P9-28-netdev-counters` | `NetDev::stats() → NetStats { rx/tx packets/bytes/errors/dropped }`. LoopbackDev tracks counters via AtomicU64. `/proc/net/dev` surfaces real numbers in Linux 16-column format. |
+| 539 | `P8-16-tcp-rto` | TCP retransmit timer + RFC 6298 SRTT/RTTVAR/RTO. `UnackedSegment` retx queue; cumulative ACK pops; `retransmit_due(now_ns)` re-emits expired segments + doubles RTO (exponential backoff, clamped 200 ms..60 s). |
+| 540 | `P8-17-ipv6` | IPv6 fixed header + ICMPv6 echo (RFC 4443) with v6 pseudo-hdr checksum. |
+| 541 | `P9-29-crc32c` | New `crates/crc/`: CRC32 + CRC32C tables + `crc32c_update` for streaming. RFC 3720 / zlib reference vectors. |
+| 542 | `P8-18-arp` | ARP (RFC 826) parser + builder + `ArpCache`. |
+| 543 | `P8-19-ethernet` | Ethernet II header parser/writer with 802.1Q VLAN strip. |
+| 544 | `P8-20-ndp` | NDP IPv6 NS/NA per RFC 4861 with TLV options + `NdpCache`. |
+| 545 | `P9-30-panic-handler` | `panic_handler` now dumps `[PANIC] file:line: message` + halt sentinel via klog (lands in `/dev/kmsg` ring). |
+| 546 | `P5-13-init-respawn-sh` | PID 1 forks /bin/sh + wait4()s + respawns up to 8 times instead of immediate exit. |
+| 547 | `P9-31-procfs-net-extras` | `/proc/net/{route, arp}` Linux text format. |
+| 548 | `P9-32-ext4-csum-feature-detect` | Superblock parser pulls s_uuid + s_checksum_seed; `metadata_csum_seed()` derives the CRC32C seed. Per-block integration is P9-34+. |
+| 549 | `P11-02-pci-config-space` | New `pci::ConfigSpaceReader` trait + `Bdf` + `PciDevice` + `enumerate(reader)` walker. |
+| 550 | `P11-03-pci-x86-portio` | `hal_x86_64::pci::LegacyPci` — CF8/CFC port-I/O `ConfigSpaceReader`. |
+| 551 | `P11-04-pci-boot-enum` | Boot trace prints PCI device list (vendor/device/class for first 16 BDFs). |
+| 552 | `P9-33-cmp-stat` | `/bin/cmp` POSIX byte-by-byte file comparator. |
 
 ## Phase ladder (post-session-30)
 
@@ -81,7 +95,8 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 ## End-of-session-30 verified-green
 - `cargo test --workspace` → 804 (up from 752 at start of session 30, 702 at start of session 29).
 - `make x86` clean (kernel warnings 18 → 11).
-- `make rootfs` builds 28 userspace binaries: sh / init / udp_echo / tcp_echo / kill / sleep / true / false / hostname / mkdir / rm / cat / echo / ps / ls / mount / cp / wc / head / dmesg / pwd / whoami / uname / nc / tee / ln / find / df.
+- `make rootfs` builds 30 userspace binaries: sh / init / udp_echo / tcp_echo / kill / sleep / true / false / hostname / mkdir / rm / cat / echo / ps / ls / mount / cp / wc / head / dmesg / pwd / whoami / uname / nc / tee / ln / find / df / cmp.
+- TCP retransmit timer + ARP / NDP / Ethernet II / IPv6 / ICMPv6 modules; PCI bus enumeration; `/proc/net/{route, arp}`; CRC32C primitives; ext4 metadata_csum feature detection; panic handler emits via klog.
 - Net + AF_UNIX socket dispatch surface has zero Enosys responses.
 - vfs::Inode gains poll(); epoll_wait reports the actual ready set.
 - **Phase 10 modules loader live**: ELF ET_REL parse + relocate + place + register; NR_INIT_MODULE / NR_FINIT_MODULE delegate to it. Per-module W^X memory + signature verification + delete_module land P10-05+.

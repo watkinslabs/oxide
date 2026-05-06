@@ -833,6 +833,20 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #535 | `P9-26-userspace-shared-syscalls` | /bin/find recursive walker. |
 | #536 | `P9-27-df-stat` | /bin/df SYS_statfs wrapper. |
 | #537 | `P9-28-netdev-counters` | NetDev::stats + LoopbackDev counters; /proc/net/dev real numbers. |
+| #539 | `P8-16-tcp-rto` | TCP retransmit timer + RFC 6298 SRTT/RTTVAR/RTO. |
+| #540 | `P8-17-ipv6` | IPv6 fixed header + ICMPv6 echo. |
+| #541 | `P9-29-crc32c` | CRC32 + CRC32C primitives. |
+| #542 | `P8-18-arp` | ARP (RFC 826) + ArpCache. |
+| #543 | `P8-19-ethernet` | Ethernet II header parser/writer (incl. 802.1Q VLAN). |
+| #544 | `P8-20-ndp` | NDP IPv6 NS/NA + NdpCache. |
+| #545 | `P9-30-panic-handler` | Real panic_handler with klog dump. |
+| #546 | `P5-13-init-respawn-sh` | PID 1 respawns /bin/sh. |
+| #547 | `P9-31-procfs-net-extras` | /proc/net/{route, arp}. |
+| #548 | `P9-32-ext4-csum-feature-detect` | ext4 metadata_csum feature detection + CRC32C seed. |
+| #549 | `P11-02-pci-config-space` | PCI config-space accessor + enumerate(). |
+| #550 | `P11-03-pci-x86-portio` | hal-x86_64 LegacyPci CF8/CFC reader. |
+| #551 | `P11-04-pci-boot-enum` | Boot-time PCI enumeration trace. |
+| #552 | `P9-33-cmp-stat` | /bin/cmp. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
