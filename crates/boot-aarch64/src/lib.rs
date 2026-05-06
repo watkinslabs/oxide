@@ -182,11 +182,13 @@ fn boot_emit(bytes: &[u8]) {
 
 /// Alternative klog sink via PL011 MMIO. Inactive until VMM lands a
 /// real device-page mapping for `0x0900_0000` — see module-level
-/// comment.
+/// comment. Uses `lock_irqsave` per `06§3.1` for symmetry with the
+/// x86 path: any IRQ-context klog (timer, fault, panic) needs the
+/// IRQ-off window to avoid deadlock against a kernel-mode holder.
 #[cfg(feature = "debug-boot")]
 #[allow(dead_code)]
 fn boot_emit_pl011(bytes: &[u8]) {
-    let mut g = BOOT_UART.lock();
+    let mut g = BOOT_UART.lock_irqsave::<hal_aarch64::ArmIrqGate>();
     g.write_bytes(bytes);
 }
 
