@@ -175,15 +175,29 @@ pub unsafe fn tick_poll_uart() {
 /// Push `b` to the foreground VT's ring + wake its waiters.
 /// Called from each arch's timer-tick poller.
 ///
-/// v1 line-discipline: translate CR (0x0d) → NL (0x0a) — the
-/// equivalent of termios `ICRNL`. Real serial terminals + most
-/// host terminals running QEMU `-serial stdio` send CR on Enter;
-/// userspace `read_line` loops uniformly look for `\n`. Without
-/// this translation, Enter never terminates a line and the user
-/// has to keep typing until login's input buffer fills.
-/// Real termios + per-fd c_iflag rides a follow-up.
+/// v1 line-discipline:
+///  - CR (0x0d) → NL (0x0a) on input (termios ICRNL equivalent).
+///    Most host terminals running QEMU `-serial stdio` send CR on
+///    Enter, but userspace read_line loops in /bin/login + /bin/sh
+///    look for '\n' only.
+///  - **Echo to TX** so the user sees what they type. Linux normally
+///    ties this to termios `ECHO` per fd; v1 is unconditional. CR
+///    echoes as "\r\n" so the host terminal advances to col 0 +
+///    next line cleanly (termios ONLCR equivalent on the echo path).
+///    Backspace (0x7f / 0x08) echoes "\b \b" so terminals visually
+///    erase the previous glyph.
+/// Real per-fd termios + ECHO/ICRNL/ONLCR/ICANON state rides a
+/// follow-up.
 fn push_and_wake_fg(b: u8) {
     let translated = if b == b'\r' { b'\n' } else { b };
+    // Echo to UART before pushing to the input ring. Skipping echo
+    // for password prompts is left to userspace once termios lands.
+    match b {
+        b'\r' | b'\n'   => klog::write_raw(b"\r\n"),
+        0x7f | 0x08     => klog::write_raw(b"\x08 \x08"),
+        c if c >= 0x20 && c < 0x7f => klog::write_raw(&[c]),
+        _                => { /* drop control chars from echo */ }
+    }
     let idx = vt_index(0);
     let pushed = VT_RINGS[idx].lock().push(translated);
     if !pushed { return; }
