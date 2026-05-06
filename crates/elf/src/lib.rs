@@ -29,6 +29,13 @@ pub use relocatable::{
     STB_LOCAL, STB_GLOBAL, STB_WEAK,
 };
 
+pub mod dynamic;
+pub use dynamic::{
+    parse_dynamic, read_strtab, DynEntry, DynInfo,
+    DT_NULL, DT_NEEDED, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_JMPREL, DT_HASH, DT_GNU_HASH,
+    DT_INIT, DT_FINI, DT_INIT_ARRAY, DT_FINI_ARRAY, DT_SONAME, DT_FLAGS, DT_RUNPATH,
+};
+
 #[cfg(test)]
 mod tests;
 
