@@ -12,6 +12,7 @@ path = "src/lib.rs"
 block   = { path = "../crates/block" }
 elf     = { path = "../crates/elf" }
 net     = { path = "../crates/net" }
+modules = { path = "../crates/modules" }
 ext4    = { path = "../crates/ext4" }
 hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }

@@ -601,6 +601,60 @@ fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
 /// sys_exit: mark Zombie, stash exit_status, schedule away.
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
 /// # C: O(log N) + O(1)
+/// `init_module(image, len, params)` slot 175.
+/// `image` is a user-mapped pointer to the .ko bytes; `len` is
+/// the size; `params` ignored for v1.
+fn kernel_sys_init_module(args: &SyscallArgs) -> i64 {
+    let img = args.a0;
+    let len = args.a1 as usize;
+    if img == 0 || img >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    if len == 0 || len > 16 * 1024 * 1024 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // SAFETY: ptr range validated < USER_VA_END; user pages mapped under caller's AS; bounded read.
+    let bytes: alloc::vec::Vec<u8> = unsafe {
+        core::slice::from_raw_parts(img as *const u8, len).to_vec()
+    };
+    match crate::dev_modules::load_blob(&bytes) {
+        Some(_) => 0,
+        None    => -(Errno::Einval.as_i32() as i64),
+    }
+}
+
+/// `finit_module(fd, params, flags)` slot 313. Reads the file
+/// content via the fd then delegates to load_blob. v1 caps file
+/// size at 16 MiB.
+fn kernel_sys_finit_module(args: &SyscallArgs) -> i64 {
+    let fd = args.a0 as i32;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let mut buf = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut off = 0u64;
+    loop {
+        match file.inode().read(off, &mut chunk) {
+            Ok(0) => break,
+            Ok(n) => { buf.extend_from_slice(&chunk[..n]); off += n as u64; }
+            Err(_) => return -(Errno::Eio.as_i32() as i64),
+        }
+        if buf.len() > 16 * 1024 * 1024 { return -(Errno::E2big.as_i32() as i64); }
+    }
+    match crate::dev_modules::load_blob(&buf) {
+        Some(_) => 0,
+        None    => -(Errno::Einval.as_i32() as i64),
+    }
+}
+
 fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use alloc::sync::Arc;
@@ -931,6 +985,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_PIPE          => kernel_sys_pipe2(&args),
         crate::syscall_nrs::NR_CREAT         => crate::syscall_glue_open::kernel_sys_open(&args),
         crate::syscall_nrs::NR_EXIT_GROUP    => kernel_sys_exit(&args),
+        crate::syscall_nrs::NR_INIT_MODULE   => kernel_sys_init_module(&args),
+        crate::syscall_nrs::NR_FINIT_MODULE  => kernel_sys_finit_module(&args),
+        crate::syscall_nrs::NR_DELETE_MODULE => -(Errno::Enosys.as_i32() as i64),
         crate::syscall_nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
         crate::syscall_nrs::NR_STAT
             | crate::syscall_nrs::NR_LSTAT   => crate::syscall_glue_fs::kernel_sys_stat(&args),

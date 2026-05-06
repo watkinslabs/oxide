@@ -840,6 +840,8 @@ pub mod syscall_glue_net;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_net;
 #[cfg(target_os = "oxide-kernel")]
+pub mod dev_modules;
+#[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
 #[cfg(target_os = "oxide-kernel")]
 pub mod hostname;
