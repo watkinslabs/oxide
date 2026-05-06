@@ -43,6 +43,7 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 513 | `P8-15-af-unix-path` | `unix_sock::UnixListener` + `UnixRegistry`; AF_UNIX path-bound bind/connect/listen/accept with `sun_path`. |
 | 514 | `P9-17-preadv-pwritev` | NR_PREADV / NR_PWRITEV delegating to readv/writev (offset ignored for v1). |
 | 515 | `P9-18-sendmsg-recvmsg` | NR_SENDMSG / NR_RECVMSG via 56-byte msghdr parse + iov walk → sendto/recvfrom. SCM_RIGHTS / SCM_CREDS deferred. **Net dispatch now has zero Enosys**. |
+| 517 | `P9-19-klog-ring-dmesg` | `klog::DmesgRing` 64-KiB ring; every klog::invoke_sink call also writes to it. `klog::ring_read(cursor, out)` clamps to the most-recent ring tail when the cursor lags. New `dev_misc::KmsgInode` reads from `klog::ring_read` using the inode's offset as cursor. devfs swaps `/dev/kmsg` from NullInode → KmsgInode. New `/bin/dmesg` userspace reader. |
 
 ## Phase ladder (post-session-30)
 
