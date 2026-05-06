@@ -1,3 +1,43 @@
+# State 2026-05-06 (session 32 — phases 14/15/16/17 userspace integration, 16 PRs)
+
+## Headline (session 32, PRs #572 – #587)
+
+Phases 14/15/16/17 in-flight from "spec'd in 00§3" to working
+crates + userspace binaries. Workspace tests 852 → 893.
+
+| Phase | Crates added | Binaries added |
+|---|---|---|
+| 14 (libc/NSS/PAM) | `crypt` (sha512 + crypt-base64), `pam` | `/bin/login`, `/bin/su`, `/bin/id` |
+| 15 (system manager) | `svc` (unit parser + supervisor SM) | `/sbin/svcd`, `/init` chains to svcd |
+| 16 (RPM toolchain)  | `rpm` (header), `cpio` (newc), `inflate` (DEFLATE+gzip), `pkg` (extractor) | `/bin/rpm` (-q/-qi/-qp) |
+| 17 (TTY+login) | — | `/sbin/agetty` + seeded /etc/{passwd,group,shadow,inittab,hostname} |
+
+Boot chain after this session: kernel → /init → /sbin/svcd → /sbin/agetty → /bin/login → /bin/sh.
+
+PR list:
+- 572 P14-03 crypt sha512 + sha512crypt v1
+- 573 P14-04 pam pluggable auth stack
+- 574 P14-05 /bin/login
+- 575 P14-06 /bin/su
+- 576 P14-07 /bin/id
+- 577 P15-01 svc unit parser + topo-sort
+- 578 P15-02 svc supervisor state machine
+- 579 P15-03 /sbin/svcd
+- 580 P16-01 rpm header parser
+- 581 P16-02 cpio newc parser
+- 582 P16-03 inflate DEFLATE+gzip
+- 583 P16-04 pkg RPM extractor
+- 584 P17-01 /sbin/agetty
+- 585 P17-02 rootfs /etc seed files
+- 586 P16-05 /bin/rpm CLI
+- 587 P15-04 init chains to svcd
+
+Open follow-ups (not yet branched):
+- P14-08 Drepper-2007 sha512crypt parity (current path is salt|pw|salt simplified)
+- P16-06 xz / zstd decompressors for newer RPM payloads
+- P16-07 rpmdb (sqlite-backed /var/lib/rpm)
+- P17-03 kernel-side multi-VT under /dev/tty1..N
+
 # State 2026-05-06 (session 30 — Phase 8 net stack + Phase 9 hardening, 27 PRs)
 
 ## Headline
