@@ -131,6 +131,31 @@ pub fn lookup_path(path: &[u8]) -> Option<u32> {
     mount.lookup_path(path).ok()
 }
 
+/// Iterate the directory entries of `path`, calling `f(name,
+/// file_type)` for each. `file_type` is one of `ext4::dir::DT_*`.
+/// Skips "." and ".." silently — readdir-overlay callers want
+/// just the leaf names. Returns `Some(())` on success, `None` if
+/// the path is not a mounted ext4 directory. v1 reads only the
+/// first dir block; multi-block dirs land alongside ext4 dirs >
+/// 4 KiB (P6-06+).
+/// # C: O(N entries)
+pub fn read_dir<F: FnMut(&[u8], u8)>(path: &[u8], mut f: F) -> Option<()> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR was published via init() with the leaked Mount; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let ino = mount.lookup_path(path).ok()?;
+    let inode = mount.read_inode(ino).ok()?;
+    if !inode.is_dir() { return None; }
+    let blk = mount.read_file_block(&inode, 0).ok()?;
+    let _ = ext4::iter_active(&blk, |e| {
+        if e.name == b"." || e.name == b".." { return true; }
+        f(e.name, e.file_type);
+        true
+    });
+    Some(())
+}
+
 /// Read the entire content of a file by path. Returns `None`
 /// for not-found / not-regular / read failure.
 /// # C: O(file size)

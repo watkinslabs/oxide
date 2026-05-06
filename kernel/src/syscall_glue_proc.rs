@@ -39,12 +39,18 @@ pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_futex(uaddr, op, val, ts, uaddr2, val3)` — slot 202.
-/// v1 minimal: FUTEX_WAKE returns 0 (no blocked waiters since we
-/// don't park), FUTEX_WAIT returns 0 (spurious wake — caller
-/// rechecks). Anything else returns 0. Real wait queue per
-/// docs/24 rides P3 follow-up.
-/// # C: O(1)
-pub fn kernel_sys_futex(_args: &SyscallArgs) -> i64 { 0 }
+/// Delegates to `crate::futex` which keeps a per-(mm_root_pa, va)
+/// in-kernel wait queue. Supported ops:
+///   FUTEX_WAIT (0) — atomically check `*uaddr == val`; if so park
+///                    self until FUTEX_WAKE on the same key.
+///   FUTEX_WAKE (1) — wake at most `val` tasks parked on this key.
+/// Both ops accept `| FUTEX_PRIVATE_FLAG (128)` and `|
+/// FUTEX_CLOCK_REALTIME (256)` masks (treated as no-ops since v1
+/// process-private-only with monotonic clock).
+/// # C: O(W) waiters per WAKE, O(1) WAIT
+pub fn kernel_sys_futex(args: &SyscallArgs) -> i64 {
+    crate::futex::dispatch(args.a0, args.a1 as u32, args.a2 as u32)
+}
 
 /// `sys_clone3(cl_args, size)` — slot 435. v1 stub: return
 /// `-ENOSYS` so musl falls back to single-threaded code paths.
