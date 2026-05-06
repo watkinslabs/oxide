@@ -200,6 +200,43 @@ impl Mount {
         Err(MountError::NotFound)
     }
 
+    /// Add a `name → child_ino` entry to directory `dir_ino`.
+    /// Reads dir's first data block, splices a new dir_entry_2,
+    /// writes the block back. `DirFull` if no slack.
+    /// # C: O(N entries) walk + 2 block I/Os
+    pub fn dir_link(&self, dir_ino: u32, name: &[u8], child_ino: u32, file_type: u8)
+        -> Result<(), MountError>
+    {
+        let dir_node = self.read_inode(dir_ino)?;
+        if !dir_node.is_dir() { return Err(MountError::NotDir); }
+        let mut blk = self.read_file_block(&dir_node, 0)?;
+        match dir::insert(&mut blk, child_ino, file_type, name) {
+            Err(dir::DirError::Full) => return Err(MountError::DirFull),
+            Err(e) => return Err(MountError::Dir(e)),
+            Ok(()) => {}
+        }
+        // Write block 0 back through the existing in-place extent
+        // write path (which does the extent walk + bs-aligned write).
+        self.write_file_block(&dir_node, 0, &blk)
+    }
+
+    /// Remove `name` from directory `dir_ino`. Returns the inode
+    /// number of the unlinked target (caller decrements its
+    /// link count + frees blocks/inode when nlink reaches 0).
+    /// # C: O(N entries) walk + 2 block I/Os
+    pub fn dir_unlink(&self, dir_ino: u32, name: &[u8]) -> Result<u32, MountError> {
+        let dir_node = self.read_inode(dir_ino)?;
+        if !dir_node.is_dir() { return Err(MountError::NotDir); }
+        let mut blk = self.read_file_block(&dir_node, 0)?;
+        let removed = match dir::remove(&mut blk, name) {
+            Err(dir::DirError::NotFound) => return Err(MountError::NotFound),
+            Err(e) => return Err(MountError::Dir(e)),
+            Ok(n) => n,
+        };
+        self.write_file_block(&dir_node, 0, &blk)?;
+        Ok(removed)
+    }
+
     /// Look `name` up in the directory whose first data block
     /// holds the entries. Only the first block is consulted —
     /// large dirs split across multiple blocks land in P6-06+.
