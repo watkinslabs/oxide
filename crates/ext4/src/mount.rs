@@ -17,10 +17,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use block::{BlockDevice, BlockRequest};
+use sync::{Guard, Spinlock, Superblock as SuperblockLockClass};
 
 use crate::dir;
 use crate::gdt::{self, GdtError, GroupDesc};
-use crate::inode::{self, Extent, ExtentHeader, Inode, InodeError};
+use crate::inode::{self, Inode, InodeError};
 use crate::superblock::{Superblock, SuperblockError, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN};
 
 /// Errors at the Mount layer.
@@ -39,6 +40,18 @@ pub enum MountError {
     NotExtents,
     /// File extent tree depth > 0; v1 supports only inline extents.
     DepthUnsupported,
+    /// No free block/inode found in any group.
+    NoSpace,
+    /// Caller passed a physical block outside any group.
+    BadBlock,
+    /// Caller asked to free a block whose bit was already clear.
+    DoubleFree,
+    /// Inline extent table is full and growth into an external
+    /// node is not yet supported (v1 cap = 4 inline leaves).
+    ExtentTreeFull,
+    /// Directory block has no free slot for a new entry and
+    /// dir-block growth is not yet wired (P7b-03 minimum).
+    DirFull,
 }
 
 impl From<SuperblockError> for MountError { fn from(e: SuperblockError) -> Self { MountError::Superblock(e) } }
@@ -46,12 +59,24 @@ impl From<GdtError>        for MountError { fn from(e: GdtError)        -> Self 
 impl From<InodeError>      for MountError { fn from(e: InodeError)      -> Self { MountError::Inode(e) } }
 impl From<dir::DirError>   for MountError { fn from(e: dir::DirError)   -> Self { MountError::Dir(e) } }
 
+/// Mutable cached state — locked under `state` for any RW path.
+pub struct MountState {
+    /// Cached GDT bytes (mirrors disk; updated on every counter
+    /// edit + flushed back to the device).
+    pub(crate) gdt_buf: Vec<u8>,
+    /// Live free-blocks counter; mirrors `s_free_blocks_count`.
+    pub(crate) sb_free_blocks: u64,
+    /// Live free-inodes counter; mirrors `s_free_inodes_count`.
+    pub(crate) sb_free_inodes: u32,
+}
+
+pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;
+
 /// Mounted ext4 filesystem.
 pub struct Mount {
-    dev: Arc<dyn BlockDevice>,
+    pub(crate) dev: Arc<dyn BlockDevice>,
     pub sb: Superblock,
-    /// Cached GDT bytes (read once at mount).
-    gdt_buf: Vec<u8>,
+    pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
 }
 
 impl Mount {
@@ -75,20 +100,49 @@ impl Mount {
         };
         let gdt_len = groups * dsize;
         let gdt_buf = read_byte_range(&*dev, gdt_byte_offset, gdt_len)?;
-        Ok(Self { dev, sb, gdt_buf })
+        let state = MountState {
+            gdt_buf,
+            sb_free_blocks: sb.free_blocks_count,
+            sb_free_inodes: sb.free_inodes_count,
+        };
+        Ok(Self { dev, sb, state: Spinlock::new(state) })
+    }
+
+    /// Byte offset of the GDT on disk. Block 2 for 1 KiB-block
+    /// images (block 0 = boot, block 1 = sb), block 1 otherwise
+    /// (block 0 contains pad + sb at offset 1024).
+    /// # C: O(1)
+    pub fn gdt_byte_offset(&self) -> u64 {
+        if self.sb.block_size == 1024 {
+            (self.sb.block_size as u64) * 2
+        } else {
+            self.sb.block_size as u64
+        }
     }
 
     /// Look up the `n`-th group descriptor.
     /// # C: O(1)
     pub fn group_desc(&self, n: u32) -> Result<GroupDesc, MountError> {
-        Ok(gdt::parse_descriptor(&self.gdt_buf, n, &self.sb)?)
+        let g = self.state.lock();
+        Ok(gdt::parse_descriptor(&g.gdt_buf, n, &self.sb)?)
     }
+
+    /// Live free-blocks counter (mirrors `s_free_blocks_count`).
+    /// # C: O(1)
+    pub fn state_free_blocks(&self) -> u64 { self.state.lock().sb_free_blocks }
+
+    /// Live free-inodes counter.
+    /// # C: O(1)
+    pub fn state_free_inodes(&self) -> u32 { self.state.lock().sb_free_inodes }
 
     /// Read inode `ino` (1-indexed) from disk.
     /// # C: O(1) I/O + O(1) parse
     pub fn read_inode(&self, ino: u32) -> Result<Inode, MountError> {
         let (group, idx) = gdt::locate_inode(&self.sb, ino)?;
-        let gd = self.group_desc(group)?;
+        let gd = {
+            let g = self.state.lock();
+            gdt::parse_descriptor(&g.gdt_buf, group, &self.sb)?
+        };
         let off_in_table = (idx as u64) * (self.sb.inode_size as u64);
         let byte_off = gd.inode_table * (self.sb.block_size as u64) + off_in_table;
         let buf = read_byte_range(&*self.dev, byte_off, self.sb.inode_size as usize)?;
@@ -180,28 +234,33 @@ impl Mount {
     }
 }
 
-/// Write `data` (must equal one filesystem block) back to `dev`
-/// at byte offset `byte_off`. The block-device contract is
-/// sector-granular; we issue a whole-block Write request that
-/// covers `data.len()` bytes (which must already be aligned to
-/// the device sector size — caller is `write_file_block` which
-/// only emits filesystem-block-sized writes).
-/// # C: O(1) device I/O
-fn write_byte_range(dev: &dyn BlockDevice, byte_off: u64, data: &[u8]) -> Result<(), MountError> {
+/// Write `data` to `dev` at byte offset `byte_off`. Read-modify-
+/// writes the leading + trailing partial blocks so unaligned
+/// (sub-sector) writes are honored — `data` need not be a multiple
+/// of the device sector size.
+/// # C: O(data.len() / sector_size + 2 RMW reads)
+pub(crate) fn write_byte_range(dev: &dyn BlockDevice, byte_off: u64, data: &[u8])
+    -> Result<(), MountError>
+{
     let bs = dev.block_size() as u64;
-    if (byte_off % bs) != 0 || (data.len() as u64 % bs) != 0 {
-        return Err(MountError::BlockIo);
-    }
-    let start_block = byte_off / bs;
-    let n_blocks = (data.len() as u64 / bs) as u32;
-    let mut req = block::BlockRequest::new_write(start_block, n_blocks, data.to_vec());
-    dev.submit_sync(&mut req).map_err(|_| MountError::BlockIo)?;
+    let first_blk = byte_off / bs;
+    let last_byte = byte_off + data.len() as u64;
+    let last_blk_excl = (last_byte + bs - 1) / bs;
+    let n_blocks = (last_blk_excl - first_blk) as u32;
+    let mut full = BlockRequest::new_read(first_blk, n_blocks, dev.block_size());
+    dev.submit_sync(&mut full).map_err(|_| MountError::BlockIo)?;
+    let inner_off = (byte_off - first_blk * bs) as usize;
+    full.buffer[inner_off .. inner_off + data.len()].copy_from_slice(data);
+    let mut wreq = BlockRequest::new_write(first_blk, n_blocks, full.buffer);
+    dev.submit_sync(&mut wreq).map_err(|_| MountError::BlockIo)?;
     Ok(())
 }
 
 /// Read `len` bytes from `dev` starting at byte `byte_off`.
 /// Translates to whole-block reads under the hood.
-fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize) -> Result<Vec<u8>, MountError> {
+pub(crate) fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize)
+    -> Result<Vec<u8>, MountError>
+{
     let bs = dev.block_size() as u64;
     let first_blk = byte_off / bs;
     let last_byte = byte_off + len as u64;
@@ -214,3 +273,9 @@ fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize) -> Result<V
     out.extend_from_slice(&req.buffer[inner_off .. inner_off + len]);
     Ok(out)
 }
+
+/// Crate-public alias so submodules (`balloc`, `extent_rw`, …) can
+/// call the read helper without re-implementing block-window math.
+#[inline] pub(crate) fn read_byte_range_pub(dev: &dyn BlockDevice, byte_off: u64, len: usize)
+    -> Result<Vec<u8>, MountError>
+{ read_byte_range(dev, byte_off, len) }
