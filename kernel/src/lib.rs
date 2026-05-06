@@ -728,6 +728,34 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
+    // PCI bus enumeration (x86 only for v1; aarch64 ECAM rides
+    // alongside its real-driver work).
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        debug_boot! {
+            let r = hal_x86_64::pci::LegacyPci;
+            let devs = pci::enumerate(&r);
+            klog::write_raw(b"[INFO]  pci: devices=");
+            klog::write_dec_u64(devs.len() as u64);
+            klog::write_raw(b"\n");
+            for d in devs.iter().take(16) {
+                klog::write_raw(b"[INFO]  pci ");
+                klog::write_dec_u64(d.bdf.bus as u64);
+                klog::write_raw(b":");
+                klog::write_dec_u64(d.bdf.device as u64);
+                klog::write_raw(b".");
+                klog::write_dec_u64(d.bdf.function as u64);
+                klog::write_raw(b" vendor=");
+                klog::write_hex_u64(d.vendor_id as u64);
+                klog::write_raw(b" device=");
+                klog::write_hex_u64(d.device_id as u64);
+                klog::write_raw(b" class=");
+                klog::write_hex_u64(d.class_code as u64);
+                klog::write_raw(b"\n");
+            }
+        }
+    }
+
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
         // SAFETY: every prerequisite established above — kernel-owned
