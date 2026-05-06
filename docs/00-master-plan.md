@@ -78,8 +78,13 @@ Phase exit = PR-time gates green + canary 1h + bench within budget + coverage me
 | 7b | ext4 RW + JBD2 | 4–7wk | `17` |
 | 8 | Net (loopback + virtio-net + TCP must-run-binary subset) | 10–15wk | `25` |
 | 9 | Hardening, observability, modules | ongoing | `27`,`37`,`18` |
+| 10 | Modules loader (ELF ET_REL parse + relocator + section placement + symbol resolution + `init_module`/`finit_module`/`delete_module`/`/proc/modules`) | 2–3wk | `18`,`31` |
+| 11 | PCI / PCIe bus enumeration (config space + `Bdf` + class-coded device list + boot-trace dump) | 1wk | `34` |
+| 12 | virtio shared infrastructure (split virtqueue, status bits, common feature negotiation) — gates virtio-net (`8`), virtio-blk (`7a`/`7b`), virtio-console, virtio-rng | 2–3wk | `34`,`35` |
 
-Honest total v1 solo: **9–14mo** (vs 18–24mo with 24h-soak-gate per phase).
+Phases 10–12 were spun out from phase 9 + the driver work backing phase 8 because they each ended up large enough (and reusable enough across phases) to deserve their own gate. Phase 10 is the .ko runtime loader; phase 11 is the PCI bus enumeration that every PCIe device driver consumes; phase 12 is the virtio common layer that virtio-net (under phase 8) and virtio-blk (under phase 7a/7b) both drive off. Phase 9 stays "ongoing hardening + observability" — anything that doesn't fit the other named phases.
+
+Honest total v1 solo: **10–16mo** with 10/11/12 broken out (vs the 9–14mo estimate when modules + drivers were folded into phase 9).
 
 Phase exit criteria detailed in each subsystem spec's §Test contract. PR-time CI is the wall.
 
@@ -224,7 +229,7 @@ See `MANIFEST.md`.
 
 ## 17 Changelog
 
-(none)
+- 2026-05-06: phase ladder gains explicit rows 10/11/12 for modules loader, PCI enumeration, virtio common infra. Spun out from "phase 9 + driver work backing phase 8" because each turned out to be a multi-PR slug deserving its own gate. Total v1 estimate widened from 9–14mo → 10–16mo to reflect the un-folded scope.
 
 ## 18 OQ
 
