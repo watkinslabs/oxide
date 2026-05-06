@@ -870,8 +870,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_SHUTDOWN    => crate::syscall_glue_net::kernel_sys_shutdown(&args),
         crate::syscall_nrs::NR_SETSOCKOPT  => crate::syscall_glue_net::kernel_sys_setsockopt(&args),
         crate::syscall_nrs::NR_GETSOCKOPT  => crate::syscall_glue_net::kernel_sys_getsockopt(&args),
-        crate::syscall_nrs::NR_SENDMSG | crate::syscall_nrs::NR_RECVMSG
-                                 => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_SENDMSG => crate::syscall_glue_net::kernel_sys_sendmsg(&args),
+        crate::syscall_nrs::NR_RECVMSG => crate::syscall_glue_net::kernel_sys_recvmsg(&args),
         // chmod/chown family — devfs is read-only, but accept silently
         // for tooling that probes mode/owner without erroring.
         crate::syscall_nrs::NR_FCHMOD | crate::syscall_nrs::NR_FCHMODAT | crate::syscall_nrs::NR_CHMOD
