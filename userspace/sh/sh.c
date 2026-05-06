@@ -156,19 +156,121 @@ cmd_uname(void) {
     write_str("\n");
 }
 
+// Run a single command segment (no `;` inside). Handles `>` redirection
+// + builtin dispatch. `buf` is mutable; `n` is length (no NUL guarantee).
+// Returns 0 on success, nonzero on dispatch error (currently unused —
+// `;` does not short-circuit).
+static int
+run_one(char *seg, long seg_n) {
+    // Trim leading + trailing whitespace by adjusting bounds; do NOT
+    // shift in place (segment lives inside the caller's line buffer
+    // and earlier shifts corrupted neighbouring segments).
+    long s = 0;
+    while (s < seg_n && (seg[s] == ' ' || seg[s] == '\t')) s++;
+    long e = seg_n;
+    while (e > s && (seg[e-1] == ' ' || seg[e-1] == '\t')) e--;
+    if (e == s) return 0;
+    char *buf = seg + s;
+    long n = e - s;
+    // Builtins read `buf[i]` up to `n`; many also rely on the body
+    // being NUL-terminated for paths (cat/cd) — overwrite the byte
+    // at buf[n] (which is either whitespace we trimmed or the `;`
+    // separator the outer split already passed).
+    buf[n] = 0;
+
+    // Parse `> path` redirection (last `>` wins; we only support one).
+    long redir_fd = -1;
+    for (long k = 0; k + 1 < n; k++) {
+        if (buf[k] == '>') {
+            buf[k] = 0;
+            long m = k + 1;
+            while (m < n && (buf[m] == ' ' || buf[m] == '\t')) m++;
+            if (m < n) {
+                char *path = buf + m;
+                long pe = n;
+                while (pe > m && (buf[pe-1] == ' ' || buf[pe-1] == '\t')) pe--;
+                buf[pe] = 0;
+                redir_fd = sc4(SYS_openat, AT_FDCWD, (long)path,
+                               O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (redir_fd < 0) {
+                    write_str_stderr("redir: open failed\n");
+                    return 1;
+                }
+                out_fd = redir_fd;
+                n = k;
+                while (n > 0 && (buf[n-1] == ' ' || buf[n-1] == '\t')) n--;
+                buf[n] = 0;
+            }
+            break;
+        }
+    }
+
+    if (n == 4 && streq_n(buf, "exit", 4)) {
+        if (redir_fd >= 0) { close_(redir_fd); out_fd = STDOUT_FD; }
+        write_str_stderr("bye\n");
+        sc1(SYS_exit, 0);
+    } else if (n == 4 && streq_n(buf, "help", 4)) {
+        write_str("builtins: exit, echo, help, ls [path], cat <path>, "
+                  "pwd, cd <path>, uname; redirection: cmd > path; "
+                  "chaining: cmd1 ; cmd2\n");
+    } else if (n == 3 && streq_n(buf, "pwd", 3)) {
+        char p[256];
+        long r = getcwd_(p, sizeof(p) - 1);
+        if (r > 0) {
+            if (p[r - 1] == 0) r--;
+            write_n(p, r);
+            write_str("\n");
+        } else {
+            write_str("pwd: getcwd failed\n");
+        }
+    } else if (n == 5 && streq_n(buf, "uname", 5)) {
+        cmd_uname();
+    } else if (n >= 4 && prefix(buf, n, "echo")) {
+        long i = 4;
+        while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
+        write_n(buf + i, n - i);
+        write_str("\n");
+    } else if (n >= 2 && prefix(buf, n, "ls")) {
+        long i = 2;
+        while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
+        const char *path = (i < n) ? buf + i : ".";
+        cmd_ls(path);
+    } else if (n >= 4 && prefix(buf, n, "cat ")) {
+        long i = 4;
+        while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
+        if (i >= n) { write_str("cat: missing path\n"); }
+        else { cmd_cat(buf + i); }
+    } else if (n >= 3 && prefix(buf, n, "cd ")) {
+        long i = 2;
+        while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
+        if (i >= n) { write_str("cd: missing path\n"); }
+        else {
+            long r = chdir_(buf + i);
+            if (r < 0) write_str("cd: chdir failed\n");
+        }
+    } else if (n > 0) {
+        write_str("?: ");
+        write_n(buf, n);
+        write_str("\n");
+    }
+
+    if (redir_fd >= 0) {
+        close_(redir_fd);
+        out_fd = STDOUT_FD;
+    }
+    return 0;
+}
+
 void _start(void) {
     static const char banner[] =
-        "oxide-sh: builtins exit/echo/help/ls/cat/pwd/cd/uname\n";
+        "oxide-sh: builtins exit/echo/help/ls/cat/pwd/cd/uname (sep: ; redir: >)\n";
     write_str(banner);
 
     char buf[256];
     for (;;) {
-        // Show cwd in the prompt for visual feedback.
         char cwd[256];
         long cn = getcwd_(cwd, sizeof(cwd) - 1);
         if (cn > 0) {
-            // sys_getcwd returns string length INCLUDING the trailing
-            // NUL on some kernels; trim if present.
             if (cwd[cn - 1] == 0) cn--;
             write_n(cwd, cn);
         } else {
@@ -182,94 +284,16 @@ void _start(void) {
         }
         while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) n--;
         if (n == 0) continue;
-        buf[n] = 0;
 
-        // Parse `> path` redirection. If present, open the file
-        // with O_CREAT|O_WRONLY|O_TRUNC, redirect out_fd, run the
-        // command body (cmd-side of `>`), then close + restore.
-        long redir_fd = -1;
-        for (long k = 0; k + 1 < n; k++) {
-            if (buf[k] == '>') {
-                buf[k] = 0;             // terminate command body
-                long m = k + 1;
-                while (m < n && (buf[m] == ' ' || buf[m] == '\t')) m++;
-                if (m < n) {
-                    char *path = buf + m;
-                    // Trim trailing whitespace from path.
-                    long pe = n;
-                    while (pe > m && (buf[pe-1] == ' ' || buf[pe-1] == '\t')) pe--;
-                    buf[pe] = 0;
-                    redir_fd = sc4(SYS_openat, AT_FDCWD, (long)path,
-                                   O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                    if (redir_fd < 0) {
-                        write_str_stderr("redir: open failed\n");
-                        continue;
-                    }
-                    out_fd = redir_fd;
-                    n = k;  // shorten command body
-                    while (n > 0 && (buf[n-1] == ' ' || buf[n-1] == '\t')) n--;
-                    buf[n] = 0;
-                }
-                break;
+        // Split at `;` and run each segment in order. Quoting/escaping
+        // not supported; `;` inside `echo` text would be treated as a
+        // separator. v1 limitation, fine for builtins-only shell.
+        long start = 0;
+        for (long i = 0; i <= n; i++) {
+            if (i == n || buf[i] == ';') {
+                run_one(buf + start, i - start);
+                start = i + 1;
             }
-        }
-
-        // Dispatch the command body. cd / exit are special (cd
-        // mutates state; exit terminates), the rest go through
-        // out_fd which may be redirected.
-        if (n == 4 && streq_n(buf, "exit", 4)) {
-            // Restore stdout before bye message in case `exit > x`.
-            if (redir_fd >= 0) { close_(redir_fd); out_fd = STDOUT_FD; }
-            write_str_stderr("bye\n");
-            sc1(SYS_exit, 0);
-        } else if (n == 4 && streq_n(buf, "help", 4)) {
-            write_str("builtins: exit, echo, help, ls [path], cat <path>, "
-                      "pwd, cd <path>, uname; redirection: cmd > path\n");
-        } else if (n == 3 && streq_n(buf, "pwd", 3)) {
-            char p[256];
-            long r = getcwd_(p, sizeof(p) - 1);
-            if (r > 0) {
-                if (p[r - 1] == 0) r--;
-                write_n(p, r);
-                write_str("\n");
-            } else {
-                write_str("pwd: getcwd failed\n");
-            }
-        } else if (n == 5 && streq_n(buf, "uname", 5)) {
-            cmd_uname();
-        } else if (n >= 4 && prefix(buf, n, "echo")) {
-            long i = 4;
-            while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
-            write_n(buf + i, n - i);
-            write_str("\n");
-        } else if (n >= 2 && prefix(buf, n, "ls")) {
-            long i = 2;
-            while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
-            const char *path = (i < n) ? buf + i : ".";
-            cmd_ls(path);
-        } else if (n >= 4 && prefix(buf, n, "cat ")) {
-            long i = 4;
-            while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
-            if (i >= n) { write_str("cat: missing path\n"); }
-            else { cmd_cat(buf + i); }
-        } else if (n >= 3 && prefix(buf, n, "cd ")) {
-            long i = 2;
-            while (i < n && (buf[i] == ' ' || buf[i] == '\t')) i++;
-            if (i >= n) { write_str("cd: missing path\n"); }
-            else {
-                long r = chdir_(buf + i);
-                if (r < 0) write_str("cd: chdir failed\n");
-            }
-        } else if (n > 0) {
-            write_str("?: ");
-            write_n(buf, n);
-            write_str("\n");
-        }
-
-        // Restore stdout if we redirected.
-        if (redir_fd >= 0) {
-            close_(redir_fd);
-            out_fd = STDOUT_FD;
         }
     }
 }
