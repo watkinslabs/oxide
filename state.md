@@ -56,6 +56,10 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 530 | `P10-07-delete-module` | NR_DELETE_MODULE (176) drops the registry entry by index (low 16 bits of name pointer; v1 hack since .modinfo name parsing rides P10-08+). |
 | 531 | `P9-23-tee-cmp` | `/bin/tee` POSIX tee(1) with -a (append). Rootfs now 25 binaries. |
 | 532 | `P9-24-link-hardlink` | NR_LINK / NR_LINKAT — ext4 hardlinks via dev_ext4::link_at = run_journaled(dir_link + adjust_nlink). Refuses dir hardlinks. |
+| 534 | `P9-25-userspace-ln-stat` | `/bin/ln` userspace SYS_link wrapper. |
+| 535 | `P9-26-userspace-shared-syscalls` | `/bin/find` recursive walker; -type f|d, -name <literal>, depth-8. |
+| 536 | `P9-27-df-stat` | `/bin/df` SYS_statfs wrapper. |
+| 537 | `P9-28-netdev-counters` | `NetDev::stats() → NetStats { rx/tx packets/bytes/errors/dropped }`. LoopbackDev tracks counters via AtomicU64. `/proc/net/dev` surfaces real numbers in Linux 16-column format. |
 
 ## Phase ladder (post-session-30)
 
@@ -77,7 +81,7 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 ## End-of-session-30 verified-green
 - `cargo test --workspace` → 804 (up from 752 at start of session 30, 702 at start of session 29).
 - `make x86` clean (kernel warnings 18 → 11).
-- `make rootfs` builds 24 userspace binaries: sh / init / udp_echo / tcp_echo / kill / sleep / true / false / hostname / mkdir / rm / cat / echo / ps / ls / mount / cp / wc / head / dmesg / pwd / whoami / uname / nc.
+- `make rootfs` builds 28 userspace binaries: sh / init / udp_echo / tcp_echo / kill / sleep / true / false / hostname / mkdir / rm / cat / echo / ps / ls / mount / cp / wc / head / dmesg / pwd / whoami / uname / nc / tee / ln / find / df.
 - Net + AF_UNIX socket dispatch surface has zero Enosys responses.
 - vfs::Inode gains poll(); epoll_wait reports the actual ready set.
 - **Phase 10 modules loader live**: ELF ET_REL parse + relocate + place + register; NR_INIT_MODULE / NR_FINIT_MODULE delegate to it. Per-module W^X memory + signature verification + delete_module land P10-05+.
