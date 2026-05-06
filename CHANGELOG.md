@@ -816,6 +816,7 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #513 | `P8-15-af-unix-path` | AF_UNIX path-bound bind/connect/listen/accept via UNIX_REGISTRY. |
 | #514 | `P9-17-preadv-pwritev` | NR_PREADV / NR_PWRITEV (delegates to readv/writev). |
 | #515 | `P9-18-sendmsg-recvmsg` | NR_SENDMSG / NR_RECVMSG via iov-walk + sendto/recvfrom. |
+| #517 | `P9-19-klog-ring-dmesg` | klog 64-KiB DmesgRing + /dev/kmsg KmsgInode + /bin/dmesg. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
