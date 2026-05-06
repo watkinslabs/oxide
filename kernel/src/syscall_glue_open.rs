@@ -69,6 +69,12 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
         else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
+        else if (flags & O_CREAT) != 0 {
+            match crate::dev_ext4::create_at(path_str.as_bytes(), 0o644) {
+                Some(i) => i,
+                None    => return -(Errno::Enoent.as_i32() as i64),
+            }
+        }
         else { return -(Errno::Enoent.as_i32() as i64); }
     } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
@@ -141,6 +147,12 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
         else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
         else if let Some(i) = crate::tmpfs::lookup(path_str) { i }
+        else if (flags & O_CREAT) != 0 {
+            match crate::dev_ext4::create_at(path_str.as_bytes(), 0o644) {
+                Some(i) => i,
+                None    => return -(Errno::Enoent.as_i32() as i64),
+            }
+        }
         else { return -(Errno::Enoent.as_i32() as i64); }
     } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
