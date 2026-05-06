@@ -43,3 +43,4 @@ pub mod ialloc;
 
 pub mod journal;
 pub use journal::ExtentLogReader;
+pub use jbd2::StagedBlock;

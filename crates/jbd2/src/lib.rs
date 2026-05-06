@@ -34,3 +34,6 @@ pub use descriptor::{DescriptorEntry, DescriptorTag, DescriptorIter,
 
 pub mod replay;
 pub use replay::{replay, JournalLogReader, ReplayError, ReplayStats};
+
+pub mod emit;
+pub use emit::{StagedBlock, LogCursor, build_descriptor_block, build_commit_block, escape_journal_payload};
