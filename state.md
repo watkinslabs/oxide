@@ -1,3 +1,81 @@
+# State 2026-05-06 (session 36 — real wait4 sleep + B05 ready to merge)
+
+## Headline (session 36, on branch B05-tty-rx-debug, PR #597 OPEN)
+
+The session-35 band-aid (`sti; pause; cli` inside the wait4 retry
+loop) is gone. Replaced with a proper task-level sleep:
+
+* `kernel/src/sched/zombies.rs` gains `WAITERS: Vec<Arc<Task>>` —
+  parents parked in `wait4`. `park_for_wait4` marks current
+  Sleeping + pushes; `park_zombie` (already called from
+  `kernel_sys_exit`) wakes any waiter whose tid matches the
+  zombie's `parent_tid`. Wakeups are filter-agnostic — the woken
+  parent re-runs `reap_one`'s `pid` filter and re-parks if no
+  match. Net cost = O(N_waiters) per child exit.
+* `kernel_sys_wait4` calls `park_for_wait4` + `schedule()` instead
+  of busy-yielding.
+
+Two follow-on cleanups in the same commit:
+
+* **Drop the boot-path `/bin/sh` fallback + `inject_for_smoke`**
+  in `elf_smoke::run_as_task`. They were a debug crutch from
+  before the real init→svcd→agetty→login chain worked, and now
+  the fallback sh fights login for /dev/console keystrokes after
+  the proper sleep makes both runnable concurrently. Real chain
+  is the only chain.
+* **Idle loop is `sti; hlt`** (was bare `hlt`). ctxsw-back-to-boot
+  from a parked task can land with IF=0 (because syscall entry
+  FMASK clears IF and we resume on the kernel-syscall path's
+  saved frame); a bare hlt with IF=0 wedges the CPU forever.
+
+**Branch:** `B05-tty-rx-debug` — 7 commits beyond main:
+- babb488 LAPIC timer re-arm before init spawn
+- 158865d qemu-mcp unix-socket serial transport
+- dd87872 + 4e9d758 docs (sessions 33–34)
+- cfed3d4 user iretq IF=1 + sys_execve frame + wait4 band-aid
+- c11cc13 qemu-mcp `qemu_interrupt` tool
+- 2313dfd docs (session 35)
+- 3c23b84 real wait4 sleep + drop boot-fallback sh + idle sti;hlt
+
+**PR #597 ready to merge.**
+
+### How to reproduce live
+
+```
+qemu_start("x86_64")
+qemu_continue()              # times out at 120s; expected
+qemu_serial(clear=True)      # drain to "oxide login: "
+qemu_send_serial("root")     # newline auto-appended
+qemu_send_serial("")         # empty password
+qemu_serial()                # "Welcome to oxide." + "/$ "
+qemu_send_serial("echo hi")
+qemu_serial()                # "hi" + "/$ "
+```
+
+### What's next (in order, by leverage)
+
+1. **Merge PR #597** to close the B05 thread, then start a fresh
+   branch.
+2. **klog UART spinlock IRQ-safety** (`boot_emit` in
+   `crates/boot-x86_64/src/lib.rs` uses plain `Spinlock::lock` —
+   needs `lock_irqsave` per `06§3.1`). Latent deadlock now that
+   timer IRQs fire in user mode; the moment any IRQ-context klog
+   races a kernel-mode klog the CPU wedges. Small, surgical fix.
+3. **`.gitignore` for `userspace/*/[!Cc]*`** — one-liner, undoes
+   the committed binary blobs from B04.
+4. **Multi-VT /dev/tty{1..6}** — currently all alias to one
+   ConsoleInode. Useful but bigger; not blocking.
+5. **Phase-9 userspace tail** (PAM passwd, xz/zstd, rpmdb) or
+   **phase-8 net hardening**. Pick a single small ticket per
+   branch; master plan §3 has the priority order.
+
+### Open follow-ups (still not blocking)
+
+- Real signal delivery — `park_zombie` already posts SIGCHLD into
+  the parent's `sigpending`, but no signal handler dispatches it.
+  v1's wait4-sleep replaces that path for now.
+- Multi-VT, /bin/passwd PAM stack, xz/zstd, rpmdb (carried over).
+
 # State 2026-05-06 (session 35 — interactive login works end-to-end)
 
 ## Headline (session 35, on branch B05-tty-rx-debug, PR #597 OPEN)
