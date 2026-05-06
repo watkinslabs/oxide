@@ -6,7 +6,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
+use hal::{USER_VA_END, TimerOps};
 
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`.
 /// # SAFETY: dispatch ctx, IRQs masked.
