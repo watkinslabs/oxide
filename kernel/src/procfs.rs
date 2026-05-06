@@ -874,7 +874,99 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
                 _ => None,
             }
         }
-        ProcPath::NotProc => None,
+        ProcPath::NotProc => {
+            match path {
+                "/proc/net/dev"  => Some(Arc::new(ProcNetDevInode)  as InodeRef),
+                "/proc/net/tcp"  => Some(Arc::new(ProcNetTcpInode)  as InodeRef),
+                "/proc/net/udp"  => Some(Arc::new(ProcNetUdpInode)  as InodeRef),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// `/proc/net/dev` — Linux text format: header + per-iface line.
+struct ProcNetDevInode;
+impl vfs::Inode for ProcNetDevInode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_0001 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let body = self.body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+        Ok(n)
+    }
+}
+
+impl ProcNetDevInode {
+    fn body(&self) -> alloc::string::String {
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        let mut s = String::new();
+        let _ = writeln!(s, "Inter-|   Receive                                                |  Transmit");
+        let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
+        let snap = crate::dev_net::stack().ifaces.snapshot();
+        for (_id, name, mtu) in snap {
+            let _ = writeln!(s, "{:>6}: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0  # mtu={}", name, mtu);
+        }
+        s
+    }
+}
+
+/// `/proc/net/tcp` — Linux fixed-width per-connection table.
+struct ProcNetTcpInode;
+impl vfs::Inode for ProcNetTcpInode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_0002 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let body = self.body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+        Ok(n)
+    }
+}
+
+impl ProcNetTcpInode {
+    fn body(&self) -> alloc::string::String {
+        // v1 surfaces just the header; per-connection rows ride
+        // alongside a Stack::tcp_conns_snapshot() helper. The
+        // shape lets `ss -t` parse without erroring on empty.
+        alloc::string::String::from(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
+        )
+    }
+}
+
+/// `/proc/net/udp` — UDP equivalent.
+struct ProcNetUdpInode;
+impl vfs::Inode for ProcNetUdpInode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_0003 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let body = self.body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+        Ok(n)
+    }
+}
+
+impl ProcNetUdpInode {
+    fn body(&self) -> alloc::string::String {
+        alloc::string::String::from(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
+        )
     }
 }
 
