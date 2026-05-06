@@ -1,3 +1,70 @@
+# State 2026-05-06 (session 35 — interactive login works end-to-end)
+
+## Headline (session 35, on branch B05-tty-rx-debug, PR #597 OPEN)
+
+`oxide login:` → `root` → `Password:` → ⏎ → `Welcome to oxide.` → `/$`,
+and `echo it-works` round-trips through the shell. Driven entirely
+through qemu-mcp's `qemu_send_serial`. The B05 LAPIC re-arm + socket
+transport from session 34 were necessary but not sufficient; three
+more bugs surfaced once the timer was demonstrably ticking:
+
+1. **User iretq frame had IF=0.**
+   `ContextX86_64::new_user_with_irq_frame` baked RFLAGS=0x002 into
+   the synthetic iretq frame, so every user task entered ring 3 with
+   interrupts masked. Ring-3 cannot sti (IOPL=0), so init/svcd/agetty/
+   login ran forever IF=0 — no LAPIC timer in user mode, no preempt,
+   no `tick_poll_uart`. Fix: write 0x202 (IF=1, reserved bit 1) into
+   the iretq RFLAGS slot. Same bug existed in `kernel_sys_execve`'s
+   saved-frame patch (`frame[1] = 0x002` → `0x202`).
+
+2. **`kernel_sys_wait4` busy-yielded with kernel IF=0.**
+   `tick_yield()` is a bare `schedule()`. Once init's wait4 and svcd's
+   wait4 both park there, schedule() ping-pongs between them in
+   kernel mode. FMASK clears IF on every `syscall` entry, so the
+   kernel-mode wait4 loop runs IF=0 forever — login (parked on
+   stdin) never wakes because timer IRQs can't fire. Fix: insert
+   `sti; pause; cli` before each tick_yield iteration so a pending
+   timer IRQ has a window to deliver. Real fix is a proper sleep on
+   SIGCHLD; this band-aid lets v1 interactive login work today.
+
+3. **(no third — both fixes were enough.)** Filing here as a note:
+   the diagnostic path discovered both 1 and 2 at the same time. The
+   IF=1 fix alone wouldn't have been enough because of (2); the (2)
+   fix alone wouldn't have helped because of (1). Both ship together.
+
+**Branch:** `B05-tty-rx-debug` (5 commits beyond main: babb488 timer
+re-arm, 158865d qemu-mcp socket, dd87872 + 4e9d758 docs, cfed3d4
+IF=1 + wait4 sti, c11cc13 qemu-mcp interrupt tool).
+
+### How to reproduce live
+
+```
+qemu_start("x86_64")
+qemu_continue()              # times out at 120s; expected
+qemu_serial(clear=True)      # drain to "oxide login: "
+qemu_send_serial("root")     # newline auto-appended
+qemu_send_serial("")         # empty password
+qemu_serial()                # "Welcome to oxide." + "/$ "
+qemu_send_serial("echo hi")
+qemu_serial()                # "hi" + "/$ "
+```
+
+### Open follow-ups
+
+- **wait4 should sleep on SIGCHLD**, not sti/pause/cli inside the
+  busy yield loop. The current band-aid wastes ~500 µs of CPU per
+  yield round and only lets us land within v1 timing budgets because
+  the workload is single-CPU and IRQ-driven anyway. Real fix is a
+  WaitQueue per parent + wakeup on child sys_exit.
+- **klog UART spinlock still not IRQ-safe** (`boot_emit` in
+  `crates/boot-x86_64/src/lib.rs` uses plain `Spinlock::lock`, not
+  `lock_irqsave`). Carry-over from session 34.
+- **B04 commit included built userspace binaries** — still need
+  `.gitignore` for `userspace/*/[!Cc]*`.
+- **Multi-VT `/dev/tty1..N`** still aliased.
+- **/bin/passwd** PAM stack stub.
+- **xz / zstd** decompressors + **rpmdb**.
+
 # State 2026-05-06 (session 34 — B04 merged, B05 finds two more bugs)
 
 ## Headline (session 34, on branch B05-tty-rx-debug)
