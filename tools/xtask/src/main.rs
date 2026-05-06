@@ -130,6 +130,24 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
+    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-x86_64.so.1
+    // so the kernel exercises the dual-image load path through our
+    // stub interpreter. Keep this list short until the full ld-musl
+    // runtime lands; static-pie is the only flavor most utilities
+    // need today.
+    let dyn_bins: &[(&str, &str)] = &[
+        ("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c"),
+    ];
+    for (out_rel, src_rel) in dyn_bins {
+        let out = repo.join(out_rel);
+        let src = repo.join(src_rel);
+        eprintln!("xtask rootfs: musl-gcc -pie {} → {}", src.display(), out.display());
+        let mut c = Command::new("musl-gcc");
+        c.args(["-fPIE", "-pie", "-O2", "-nostartfiles", "-nostdlib",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
+
     // 1b. Refresh kernel/blobs/<init,sh>.elf from the freshly-built
     // userspace binaries so the embedded boot blobs (consumed via
     // `include_bytes!` from `kernel/src/elf_smoke.rs`) match what
@@ -232,6 +250,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     // in any -pie (non-static) binary and dual-loads this image
     // alongside the exec.
     put(&repo.join("userspace/dynlink/dynlink"),   "/lib/ld-musl-x86_64.so.1")?;
+    put(&repo.join("userspace/hello_dyn/hello_dyn"), "/bin/hello_dyn")?;
 
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
