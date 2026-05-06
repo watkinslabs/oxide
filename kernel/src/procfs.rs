@@ -891,6 +891,8 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
                 "/proc/net/tcp"  => Some(Arc::new(ProcNetTcpInode)  as InodeRef),
                 "/proc/net/udp"  => Some(Arc::new(ProcNetUdpInode)  as InodeRef),
                 "/proc/modules"  => Some(Arc::new(ProcModulesInode) as InodeRef),
+                "/proc/net/route" => Some(Arc::new(ProcNetRouteInode) as InodeRef),
+                "/proc/net/arp"   => Some(Arc::new(ProcNetArpInode)   as InodeRef),
                 _ => None,
             }
         }
@@ -1017,6 +1019,76 @@ impl ProcModulesInode {
                 idx, n_secs * 4096, 0, n_secs, n_syms);
         }
         s
+    }
+}
+
+/// `/proc/net/route` — IPv4 routing table. Linux text format:
+///   Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
+struct ProcNetRouteInode;
+impl vfs::Inode for ProcNetRouteInode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_0005 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let body = self.body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+        Ok(n)
+    }
+}
+
+impl ProcNetRouteInode {
+    fn body(&self) -> alloc::string::String {
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        let mut s = String::from(
+            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
+        );
+        let stack = crate::dev_net::stack();
+        for re in stack.routes.snapshot() {
+            let dev = stack.ifaces.lookup(re.iface);
+            let iface_name = dev.as_ref().map(|d| d.name()).unwrap_or("lo");
+            // Linux text encodes addrs in network-byte-order hex (LE
+            // from the on-the-wire perspective).
+            let dst_be = re.dst.as_u32().to_le();
+            let mask = if re.prefix_len == 0 { 0u32 }
+                       else { !0u32 << (32 - re.prefix_len) };
+            let _ = writeln!(s,
+                "{}\t{:08X}\t{:08X}\t0001\t0\t0\t0\t{:08X}\t0\t0\t0",
+                iface_name, dst_be, 0u32, mask.to_le(),
+            );
+        }
+        s
+    }
+}
+
+/// `/proc/net/arp` — ARP cache table.
+struct ProcNetArpInode;
+impl vfs::Inode for ProcNetArpInode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_0006 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let body = self.body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+        Ok(n)
+    }
+}
+
+impl ProcNetArpInode {
+    fn body(&self) -> alloc::string::String {
+        // v1: empty ARP cache (loopback only). Header still
+        // emitted so iproute2 + others parse without erroring.
+        alloc::string::String::from(
+            "IP address       HW type     Flags       HW address            Mask     Device\n",
+        )
     }
 }
 
