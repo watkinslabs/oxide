@@ -416,12 +416,20 @@ pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
     let mount = unsafe { &*p };
     let target = mount.lookup_path(from).map_err(|_| vfs::VfsError::Enoent)?;
     let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
-    let (from_p, from_name) = parent_inode(from).ok_or(vfs::VfsError::Enoent)?;
-    let (to_p, to_name)     = parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
-    // If destination already exists, unlink it first (POSIX mv-clobber).
-    if mount.lookup_path(to).is_ok() { let _ = mount.dir_unlink(to_p, to_name); }
+    let (from_p, from_name_owned) = parent_inode(from).ok_or(vfs::VfsError::Enoent)?;
+    let from_name: alloc::vec::Vec<u8> = from_name_owned.to_vec();
+    let (to_p, to_name_owned)     = parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
+    let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
     let ftype = if inode.is_dir() { ext4::DT_DIR } else if inode.is_link() { ext4::DT_LNK } else { ext4::DT_REG };
-    mount.dir_link(to_p, to_name, target, ftype).map_err(|_| vfs::VfsError::Eio)?;
-    mount.dir_unlink(from_p, from_name).map_err(|_| vfs::VfsError::Eio)?;
-    Ok(())
+    let dest_exists = mount.lookup_path(to).is_ok();
+    // Run the entire rename inside one journal transaction so
+    // dest-unlink (if any) + dir_link + source-unlink commit
+    // atomically. Crash mid-rename either leaves the old name
+    // bound or the new name bound — never both / neither.
+    mount.run_journaled(|m| {
+        if dest_exists { let _ = m.dir_unlink(to_p, &to_name); }
+        m.dir_link(to_p, &to_name, target, ftype)?;
+        m.dir_unlink(from_p, &from_name)?;
+        Ok(())
+    }).map_err(|_| vfs::VfsError::Eio)
 }
