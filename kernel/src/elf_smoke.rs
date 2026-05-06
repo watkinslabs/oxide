@@ -654,17 +654,10 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     unsafe {
         spawn_user_blob_smoke(init_blob, "init", 0xC0DE_0002, &[]);
     }
-
-    // If init exited without leaving children behind (current
-    // init.c falls back to /bin/sh respawn when its execve to
-    // /sbin/svcd fails; if THAT exec also fails the loop will
-    // exhaust and init exits) drop a sh.elf so the user has
-    // something interactive to talk to.
-    crate::tty::inject_for_smoke(b"echo pipe-test | cat\n");
-    // SAFETY: same boot-path discipline as the init spawn above; sh blob is real-musl static-PIE.
-    unsafe {
-        spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
-    }
+    // No second sh fallback: init→svcd→agetty→login→sh is the
+    // real chain and login has its own `/bin/sh` exec on success.
+    // A boot-path sh competing for /dev/console is harmful now —
+    // it eats keystrokes meant for login.
 
     // No halt: schedule forever, with IRQs on so the timer-tick
     // UART poll keeps draining bytes into the tty rx ringbuffer
@@ -675,13 +668,16 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // SAFETY: STI is idempotent; the periodic timer was armed
     // before init spawn so this just guarantees IF=1 here in case
     // any spawn path masked IRQs on its way out.
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
         unsafe { crate::sched::schedule(); }
-        // SAFETY: hlt at CPL=0 between schedule() rounds; IF=1
-        // ensures the next timer IRQ wakes us.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: ctxsw may return with IF in any state (kernel-mode
+        // syscall paths run IF=0 via FMASK; we may be resuming on the
+        // back of a syscall return). Re-arm IF before the hlt so the
+        // CPU can actually be woken by the next timer / device IRQ.
+        // Without this, ctxsw-back-to-boot from a parked task can land
+        // here with IF=0 and the hlt becomes a permanent stop.
+        unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack, preserves_flags)); }
     }
 }
 
