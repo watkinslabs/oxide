@@ -50,6 +50,7 @@ pub struct DescriptorIter<'a> {
 }
 
 impl<'a> DescriptorIter<'a> {
+    /// # C: O(1)
     pub fn new(buf: &'a [u8], bit64: bool) -> Self {
         Self { buf, off: 0, bit64, done: false, _first_uuid: [0u8; 16] }
     }

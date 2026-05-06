@@ -564,6 +564,7 @@ pub(crate) fn write_byte_range(dev: &dyn BlockDevice, byte_off: u64, data: &[u8]
 
 /// Read `len` bytes from `dev` starting at byte `byte_off`.
 /// Translates to whole-block reads under the hood.
+/// # C: O(1)
 pub(crate) fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize)
     -> Result<Vec<u8>, MountError>
 {

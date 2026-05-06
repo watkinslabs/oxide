@@ -24,6 +24,7 @@ pub struct Icmp6Echo {
 }
 
 impl Icmp6Echo {
+    /// # C: O(1)
     pub fn build_into(&mut self, src: Ipv6Addr, dst: Ipv6Addr,
                        payload: &[u8], out: &mut [u8])
     {
@@ -38,6 +39,7 @@ impl Icmp6Echo {
         out[2..4].copy_from_slice(&cs.to_be_bytes());
     }
 
+    /// # C: O(N)
     pub fn parse(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, Icmp6Error> {
         if buf.len() < ICMPV6_HDR_LEN { return Err(Icmp6Error::Short); }
         if compute_icmp6_checksum_with_field(buf, src, dst, true) != 0 {
@@ -54,6 +56,7 @@ impl Icmp6Echo {
 }
 
 /// Build an Echo Reply for a received Echo Request.
+/// # C: O(1)
 pub fn build_echo_reply(src: Ipv6Addr, dst: Ipv6Addr, request: &[u8])
     -> Result<alloc::vec::Vec<u8>, Icmp6Error>
 {

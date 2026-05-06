@@ -431,6 +431,7 @@ pub fn link_at(target_path: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError
     }).map_err(|_| vfs::VfsError::Eio)
 }
 
+/// # C: O(1)
 pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
     let p = MOUNT_PTR.load(Ordering::Acquire);
     if p.is_null() { return Err(vfs::VfsError::Eio); }

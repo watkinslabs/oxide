@@ -232,7 +232,7 @@ pub fn ring_read(cursor: usize, out: &mut [u8]) -> (usize, usize) {
     };
     let avail = total - start;
     let take = core::cmp::min(out.len(), avail);
-    // SAFETY: see DmesgRing's Sync impl.
+    // SAFETY: DmesgRing has a Sync impl proven by single-writer head/tail discipline; reader holds head Acquire.
     let buf = unsafe { &*RING.buf.get() };
     let head = RING.head.load(Ordering::Acquire);
     // Position of `start` in the ring: head - (total - start), mod RING_BYTES.

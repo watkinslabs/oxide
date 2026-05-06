@@ -85,6 +85,7 @@ impl TcpHdr {
         })
     }
 
+    /// # C: O(1)
     pub fn payload_offset(&self) -> usize { self.data_offset as usize * 4 }
 }
 
