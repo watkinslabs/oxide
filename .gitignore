@@ -34,6 +34,25 @@ debug-symbols/
 /userspace/libc/musl/build/
 /userspace/dynlink/build/
 
+# Built userspace binaries. Each userspace/<name>/<name> is the
+# compiled output of <name>.c; rebuilt by `xtask user`. Ignore
+# everything under userspace/*/, then re-allow source files +
+# the vendored libc/dynlink/shared trees.
+/userspace/*/*
+!/userspace/*/*.c
+!/userspace/*/*.h
+!/userspace/*/*.rs
+!/userspace/*/*.toml
+!/userspace/*/*.service
+!/userspace/*/Makefile
+!/userspace/*/README*
+!/userspace/shared/
+!/userspace/shared/**
+!/userspace/libc/
+!/userspace/libc/**
+!/userspace/dynlink/
+!/userspace/dynlink/**
+
 # QEMU runtime
 /qemu-*.log
 /qemu-*.pcap

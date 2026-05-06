@@ -45,7 +45,9 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -77,6 +79,8 @@ class Session:
     gdb_lock: threading.Lock
     serial_reader: threading.Thread
     gdb_reader: threading.Thread
+    serial_sock: socket.socket | None = None
+    serial_sock_path: str | None = None
 
 
 _SESSION: Session | None = None
@@ -102,6 +106,28 @@ def _drain_to(stream, buf: deque[str], lock: threading.Lock) -> None:
                 buf.append(line)
     except Exception:
         # Stream closed or process died; the reader thread just exits.
+        pass
+
+
+def _drain_socket_to(sock: socket.socket, buf: deque[str], lock: threading.Lock) -> None:
+    """Pump bytes from `sock` line-by-line into `buf`. Exits on close."""
+    pending = bytearray()
+    try:
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            pending.extend(chunk)
+            while b"\n" in pending:
+                idx = pending.index(b"\n")
+                line = bytes(pending[:idx]).decode("utf-8", errors="replace")
+                del pending[: idx + 1]
+                with lock:
+                    buf.append(line)
+        if pending:
+            with lock:
+                buf.append(bytes(pending).decode("utf-8", errors="replace"))
+    except Exception:
         pass
 
 
@@ -198,6 +224,14 @@ def qemu_start(arch: str) -> str:
         if not elf.is_file():
             raise RuntimeError(f"kernel ELF missing at {elf} — image build did not produce it")
 
+        # Serial bridge via unix socket: QEMU listens, we connect.
+        # `-serial stdio` doesn't reliably deliver host stdin to guest
+        # UART RX when stdin is a pipe — switching to a dedicated
+        # bidirectional socket per `28§*` makes byte delivery in both
+        # directions deterministic.
+        sock_dir = tempfile.mkdtemp(prefix="oxide-qemu-")
+        sock_path = os.path.join(sock_dir, "serial.sock")
+
         if arch == "x86_64":
             ovmf = REPO_ROOT / "vendor/firmware/ovmf-x64.fd"
             qemu_cmd = [
@@ -207,7 +241,8 @@ def qemu_start(arch: str) -> str:
                 "-m", "256M",
                 "-bios", str(ovmf),
                 "-drive", f"format=raw,file={img}",
-                "-serial", "stdio",
+                "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
+                "-serial", "chardev:serial0",
                 "-display", "none",
                 "-no-reboot",
                 "-no-shutdown",
@@ -222,19 +257,17 @@ def qemu_start(arch: str) -> str:
                 "-m", "256M",
                 "-bios", str(ovmf),
                 "-drive", f"format=raw,file={img},if=virtio",
-                "-serial", "stdio",
+                "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
+                "-serial", "chardev:serial0",
                 "-display", "none",
                 "-no-reboot",
                 "-semihosting-config", "enable=on,target=native",
                 "-s", "-S",
             ]
 
-        # stdin is a PIPE so qemu_send_serial can write bytes into
-        # the guest's serial port (QEMU `-serial stdio` ties guest
-        # UART RX ↔ host stdin and guest UART TX ↔ host stdout).
         qemu_proc = subprocess.Popen(
             qemu_cmd,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -242,11 +275,19 @@ def qemu_start(arch: str) -> str:
             preexec_fn=os.setsid,  # own process group; clean kill on stop
         )
 
-        # Briefly wait for QEMU to bind the gdb-stub port before we
-        # ask GDB to connect; otherwise GDB sees ECONNREFUSED.
-        time.sleep(0.5)
-        if qemu_proc.poll() is not None:
-            raise RuntimeError(f"QEMU exited immediately with code {qemu_proc.returncode}")
+        # Briefly wait for QEMU to bind the gdb-stub port + create the
+        # serial socket before we ask GDB to connect / open the socket;
+        # otherwise we hit ECONNREFUSED / ENOENT.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not os.path.exists(sock_path):
+            if qemu_proc.poll() is not None:
+                raise RuntimeError(f"QEMU exited immediately with code {qemu_proc.returncode}")
+            time.sleep(0.05)
+        if not os.path.exists(sock_path):
+            raise RuntimeError(f"QEMU did not create serial socket at {sock_path}")
+
+        serial_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        serial_sock.connect(sock_path)
 
         gdb_proc = subprocess.Popen(
             ["gdb", "--quiet", "--interpreter=mi3", str(elf)],
@@ -261,8 +302,14 @@ def qemu_start(arch: str) -> str:
         gdb_lines: deque[str] = deque(maxlen=4096)
         serial_lock = threading.Lock()
         gdb_lock = threading.Lock()
-        serial_reader = threading.Thread(
+        # QEMU stdout still carries TCG/firmware warnings; capture it so
+        # users see them in `qemu_serial`.
+        warnings_reader = threading.Thread(
             target=_drain_to, args=(qemu_proc.stdout, serial, serial_lock), daemon=True,
+        )
+        warnings_reader.start()
+        serial_reader = threading.Thread(
+            target=_drain_socket_to, args=(serial_sock, serial, serial_lock), daemon=True,
         )
         gdb_reader = threading.Thread(
             target=_drain_to, args=(gdb_proc.stdout, gdb_lines, gdb_lock), daemon=True,
@@ -280,6 +327,8 @@ def qemu_start(arch: str) -> str:
             gdb_lock=gdb_lock,
             serial_reader=serial_reader,
             gdb_reader=gdb_reader,
+            serial_sock=serial_sock,
+            serial_sock_path=sock_path,
         )
         _SESSION = s
 
@@ -317,6 +366,17 @@ def qemu_continue() -> str:
     _gdb_wait_prompt(s, timeout=2.0)  # consume ^running
     # Wait for *stopped or process exit.
     return _wait_stopped(s, timeout=120.0)
+
+
+@mcp.tool()
+def qemu_interrupt(timeout: float = 5.0) -> str:
+    """Interrupt a running guest. Sends `-exec-interrupt` to GDB so
+    the next memory/register read can succeed. Returns the stop
+    frame. No-op if already stopped."""
+    s = _require()
+    s.gdb.stdin.write("-exec-interrupt\n")
+    s.gdb.stdin.flush()
+    return _wait_stopped(s, timeout=timeout)
 
 
 @mcp.tool()
@@ -428,19 +488,20 @@ def qemu_send_serial(text: str, append_newline: bool = True) -> str:
     `append_newline=False` for control bytes ("\\x03" = Ctrl-C,
     "\\x04" = EOF, etc.) or partial-line probes.
 
-    QEMU's `-serial stdio` mode bridges host stdin → guest UART
-    RX, so the kernel's `tick_poll_uart` (or future RX IRQ) will
-    pick the bytes up on the next poll and wake any task parked
-    in `read(0)`.
+    The session bridges QEMU's serial port over a unix socket
+    (`-chardev socket`), so writes to that socket arrive at the
+    guest's UART RX FIFO directly. The kernel's `tick_poll_uart`
+    (or future RX IRQ) picks the bytes up on the next poll and
+    wakes any task parked in `read(0)`.
     """
     s = _require()
     if append_newline and not text.endswith("\n"):
         text = text + "\n"
-    if s.qemu.stdin is None:
-        raise RuntimeError("qemu stdin not piped — re-start the session")
-    s.qemu.stdin.write(text)
-    s.qemu.stdin.flush()
-    return f"sent {len(text)} byte(s)"
+    if s.serial_sock is None:
+        raise RuntimeError("serial socket missing — re-start the session")
+    data = text.encode("utf-8")
+    s.serial_sock.sendall(data)
+    return f"sent {len(data)} byte(s)"
 
 
 @mcp.tool()
@@ -464,12 +525,30 @@ def qemu_stop() -> str:
             os.killpg(os.getpgid(s.qemu.pid), signal.SIGTERM)
         except Exception:
             pass
+        if s.serial_sock is not None:
+            try:
+                s.serial_sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                s.serial_sock.close()
+            except Exception:
+                pass
         # Reap.
         for proc, name in ((s.gdb, "gdb"), (s.qemu, "qemu")):
             try:
                 proc.wait(timeout=2.0)
             except Exception:
                 proc.kill()
+        if s.serial_sock_path is not None:
+            try:
+                os.unlink(s.serial_sock_path)
+            except Exception:
+                pass
+            try:
+                os.rmdir(os.path.dirname(s.serial_sock_path))
+            except Exception:
+                pass
         _SESSION = None
         return "qemu-mcp: session stopped"
 

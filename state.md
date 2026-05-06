@@ -1,4 +1,248 @@
-# State 2026-05-06 (session 33 — boot chain real, login prompt reached, B04 in flight)
+# State 2026-05-06 (session 36 — real wait4 sleep + B05 ready to merge)
+
+## Headline (session 36, on branch B05-tty-rx-debug, PR #597 OPEN)
+
+The session-35 band-aid (`sti; pause; cli` inside the wait4 retry
+loop) is gone. Replaced with a proper task-level sleep:
+
+* `kernel/src/sched/zombies.rs` gains `WAITERS: Vec<Arc<Task>>` —
+  parents parked in `wait4`. `park_for_wait4` marks current
+  Sleeping + pushes; `park_zombie` (already called from
+  `kernel_sys_exit`) wakes any waiter whose tid matches the
+  zombie's `parent_tid`. Wakeups are filter-agnostic — the woken
+  parent re-runs `reap_one`'s `pid` filter and re-parks if no
+  match. Net cost = O(N_waiters) per child exit.
+* `kernel_sys_wait4` calls `park_for_wait4` + `schedule()` instead
+  of busy-yielding.
+
+Two follow-on cleanups in the same commit:
+
+* **Drop the boot-path `/bin/sh` fallback + `inject_for_smoke`**
+  in `elf_smoke::run_as_task`. They were a debug crutch from
+  before the real init→svcd→agetty→login chain worked, and now
+  the fallback sh fights login for /dev/console keystrokes after
+  the proper sleep makes both runnable concurrently. Real chain
+  is the only chain.
+* **Idle loop is `sti; hlt`** (was bare `hlt`). ctxsw-back-to-boot
+  from a parked task can land with IF=0 (because syscall entry
+  FMASK clears IF and we resume on the kernel-syscall path's
+  saved frame); a bare hlt with IF=0 wedges the CPU forever.
+
+**Branch:** `B05-tty-rx-debug` — 7 commits beyond main:
+- babb488 LAPIC timer re-arm before init spawn
+- 158865d qemu-mcp unix-socket serial transport
+- dd87872 + 4e9d758 docs (sessions 33–34)
+- cfed3d4 user iretq IF=1 + sys_execve frame + wait4 band-aid
+- c11cc13 qemu-mcp `qemu_interrupt` tool
+- 2313dfd docs (session 35)
+- 3c23b84 real wait4 sleep + drop boot-fallback sh + idle sti;hlt
+
+**PR #597 ready to merge.**
+
+### How to reproduce live
+
+```
+qemu_start("x86_64")
+qemu_continue()              # times out at 120s; expected
+qemu_serial(clear=True)      # drain to "oxide login: "
+qemu_send_serial("root")     # newline auto-appended
+qemu_send_serial("")         # empty password
+qemu_serial()                # "Welcome to oxide." + "/$ "
+qemu_send_serial("echo hi")
+qemu_serial()                # "hi" + "/$ "
+```
+
+### What's next (in order, by leverage)
+
+1. **Merge PR #597** to close the B05 thread, then start a fresh
+   branch.
+2. **klog UART spinlock IRQ-safety** (`boot_emit` in
+   `crates/boot-x86_64/src/lib.rs` uses plain `Spinlock::lock` —
+   needs `lock_irqsave` per `06§3.1`). Latent deadlock now that
+   timer IRQs fire in user mode; the moment any IRQ-context klog
+   races a kernel-mode klog the CPU wedges. Small, surgical fix.
+3. **`.gitignore` for `userspace/*/[!Cc]*`** — one-liner, undoes
+   the committed binary blobs from B04.
+4. **Multi-VT /dev/tty{1..6}** — currently all alias to one
+   ConsoleInode. Useful but bigger; not blocking.
+5. **Phase-9 userspace tail** (PAM passwd, xz/zstd, rpmdb) or
+   **phase-8 net hardening**. Pick a single small ticket per
+   branch; master plan §3 has the priority order.
+
+### Open follow-ups (still not blocking)
+
+- Real signal delivery — `park_zombie` already posts SIGCHLD into
+  the parent's `sigpending`, but no signal handler dispatches it.
+  v1's wait4-sleep replaces that path for now.
+- Multi-VT, /bin/passwd PAM stack, xz/zstd, rpmdb (carried over).
+
+# State 2026-05-06 (session 35 — interactive login works end-to-end)
+
+## Headline (session 35, on branch B05-tty-rx-debug, PR #597 OPEN)
+
+`oxide login:` → `root` → `Password:` → ⏎ → `Welcome to oxide.` → `/$`,
+and `echo it-works` round-trips through the shell. Driven entirely
+through qemu-mcp's `qemu_send_serial`. The B05 LAPIC re-arm + socket
+transport from session 34 were necessary but not sufficient; three
+more bugs surfaced once the timer was demonstrably ticking:
+
+1. **User iretq frame had IF=0.**
+   `ContextX86_64::new_user_with_irq_frame` baked RFLAGS=0x002 into
+   the synthetic iretq frame, so every user task entered ring 3 with
+   interrupts masked. Ring-3 cannot sti (IOPL=0), so init/svcd/agetty/
+   login ran forever IF=0 — no LAPIC timer in user mode, no preempt,
+   no `tick_poll_uart`. Fix: write 0x202 (IF=1, reserved bit 1) into
+   the iretq RFLAGS slot. Same bug existed in `kernel_sys_execve`'s
+   saved-frame patch (`frame[1] = 0x002` → `0x202`).
+
+2. **`kernel_sys_wait4` busy-yielded with kernel IF=0.**
+   `tick_yield()` is a bare `schedule()`. Once init's wait4 and svcd's
+   wait4 both park there, schedule() ping-pongs between them in
+   kernel mode. FMASK clears IF on every `syscall` entry, so the
+   kernel-mode wait4 loop runs IF=0 forever — login (parked on
+   stdin) never wakes because timer IRQs can't fire. Fix: insert
+   `sti; pause; cli` before each tick_yield iteration so a pending
+   timer IRQ has a window to deliver. Real fix is a proper sleep on
+   SIGCHLD; this band-aid lets v1 interactive login work today.
+
+3. **(no third — both fixes were enough.)** Filing here as a note:
+   the diagnostic path discovered both 1 and 2 at the same time. The
+   IF=1 fix alone wouldn't have been enough because of (2); the (2)
+   fix alone wouldn't have helped because of (1). Both ship together.
+
+**Branch:** `B05-tty-rx-debug` (5 commits beyond main: babb488 timer
+re-arm, 158865d qemu-mcp socket, dd87872 + 4e9d758 docs, cfed3d4
+IF=1 + wait4 sti, c11cc13 qemu-mcp interrupt tool).
+
+### How to reproduce live
+
+```
+qemu_start("x86_64")
+qemu_continue()              # times out at 120s; expected
+qemu_serial(clear=True)      # drain to "oxide login: "
+qemu_send_serial("root")     # newline auto-appended
+qemu_send_serial("")         # empty password
+qemu_serial()                # "Welcome to oxide." + "/$ "
+qemu_send_serial("echo hi")
+qemu_serial()                # "hi" + "/$ "
+```
+
+### Open follow-ups
+
+- **wait4 should sleep on SIGCHLD**, not sti/pause/cli inside the
+  busy yield loop. The current band-aid wastes ~500 µs of CPU per
+  yield round and only lets us land within v1 timing budgets because
+  the workload is single-CPU and IRQ-driven anyway. Real fix is a
+  WaitQueue per parent + wakeup on child sys_exit.
+- **klog UART spinlock still not IRQ-safe** (`boot_emit` in
+  `crates/boot-x86_64/src/lib.rs` uses plain `Spinlock::lock`, not
+  `lock_irqsave`). Carry-over from session 34.
+- **B04 commit included built userspace binaries** — still need
+  `.gitignore` for `userspace/*/[!Cc]*`.
+- **Multi-VT `/dev/tty1..N`** still aliased.
+- **/bin/passwd** PAM stack stub.
+- **xz / zstd** decompressors + **rpmdb**.
+
+# State 2026-05-06 (session 34 — B04 merged, B05 finds two more bugs)
+
+## Headline (session 34, on branch B05-tty-rx-debug)
+
+PR #596 (B04 real boot) merged green. Picked up where session 33
+left off: drive the new qemu-mcp `qemu_send_serial` against the
+live `oxide login:` prompt. Found and fixed two more bugs that
+together gate interactive login:
+
+1. **LAPIC timer disarmed for real userspace.** `canary::smoke_canary_x86`
+   and `preempt_smoke::smoke_preempt_x86` both end with
+   `lapic::timer_disarm()`. After both smokes ran, the timer was
+   silent for the rest of the boot. spawning init/svcd/agetty/login
+   ran fine via syscalls (no preemption needed), but as soon as
+   login parked on `read(0)`, no timer IRQ ever fired → no
+   `tick_poll_uart` → login waits forever.
+   Confirmed by instrumenting `oxide_irq_dispatch` (TICK_COUNT
+   stuck at ~1500 after canary teardown). Fix: re-arm
+   `lapic::timer_periodic(1_000_000)` + sti right before init
+   spawn in `elf_smoke::run`. Verified TICK_COUNT then climbs past
+   the disarm boundary (cur reg wraps; LVT remains 0x20040).
+
+2. **qemu-mcp `-serial stdio` doesn't deliver host stdin → guest
+   UART RX.** With QEMU's stdin attached to a Python PIPE, writes
+   from `qemu_send_serial` never set LSR.DR on the guest 16550.
+   The session-33 send-serial path was never actually delivering.
+   Fix: switch the qemu-mcp serial transport from `-serial stdio`
+   to a unix socket (`-chardev socket,server=on,wait=off -serial
+   chardev:serial0`). server.py now creates a tempdir, has QEMU
+   listen, connects as a client post-launch, drains via
+   `recv()`-line-split, and writes via `sock.sendall()`. Reliable
+   bidirectional bytes both ways.
+
+**Both fixes still need an end-to-end interactive verification.**
+The kernel build is clean. The new MCP socket transport requires
+a Claude restart for tool re-discovery before we can reboot and
+type "root\n" → "\n" → expect /bin/sh.
+
+**Branch:** `B05-tty-rx-debug`. Three commits beyond main:
+- `babb488` fix(boot): re-arm LAPIC timer before init spawn
+- `158895d` fix(qemu-mcp): use unix socket for serial transport
+- `dd87872` docs: state.md — session 34
+
+**PR #597 OPEN:** https://github.com/watkinslabs/oxide/pull/597
+
+### Where to pick up next session
+
+1. **Restart Claude** if not already restarted. The qemu-mcp
+   server.py changes (`tools/qemu-mcp/server.py`) need re-discovery
+   to expose the new socket-backed `qemu_send_serial`.
+2. Pull `B05-tty-rx-debug`.
+3. Boot:
+   ```
+   qemu_start("x86_64")
+   qemu_continue()              # times out at 120s; expected
+   qemu_serial(clear=True)      # drain to "oxide login: "
+   qemu_send_serial("root")     # newline auto-appended
+   qemu_send_serial("")         # empty password (root has no pw)
+   qemu_serial()                # expect /bin/sh prompt
+   ```
+4. **Expected on success:** the kernel logs the read syscall
+   returning, login completes auth via the seeded shadow hash,
+   and `/bin/sh` prints its prompt over UART.
+5. **If login auth fails:** the seeded shadow hash for root is
+   empty (`root::`). /bin/login's crypt::verify against an empty
+   password should accept. If it rejects, debug
+   `userspace/login/login.c` + the seeded `/etc/shadow` from
+   `tools/xtask/src/main.rs` rootfs build.
+6. **If keystrokes still don't echo even with timer + socket
+   fixes:** something else along the tty path. Quick checks:
+     - `qemu_serial()` after each send to confirm bytes show up
+       in QEMU's TX (echo from line-discipline / login).
+     - In a debug-all build, `tick_poll_uart` should now run
+       continuously post-init; if not, double-check
+       `lapic::timer_periodic` returned true (the diagnostic was
+       stripped before commit, restore from git for the kernel
+       file at `babb488^`).
+
+### Open follow-ups (not blocking interactive login)
+
+- **klog UART spinlock is not IRQ-safe.** `boot_emit` in
+  `crates/boot-x86_64/src/lib.rs` uses plain `Spinlock::lock()`
+  (not `lock_irqsave`). If a timer IRQ fires while a kernel-mode
+  klog write holds the lock, the IRQ-side klog (e.g. anything
+  from `oxide_irq_dispatch`'s VEC_TIMER arm if we ever add tracing
+  there) deadlocks the CPU. Encountered this implicitly while
+  instrumenting (some IRQ counter increments were missed in the
+  trace — symptom of klog calls from IRQ context occasionally
+  spinning until the holder happened to release on its own thread).
+  Real fix: switch `boot_emit` to `lock_irqsave` per `06§3.1`.
+  Filed mentally; not a blocker because production IRQ paths
+  don't klog.
+- **B04 commit included built userspace binaries** (carry-over
+  from session 33). Still need a `.gitignore` entry for
+  `userspace/*/[!Cc]*`.
+- **Kernel-side multi-VT under /dev/tty1..N** still aliased.
+- **/bin/passwd** PAM stack stub (P14-11).
+- **xz / zstd decompressors** (P16-06) + **rpmdb** (P16-07).
+
+# State 2026-05-06 (session 33 — boot chain real, login prompt reached, B04 merged)
 
 ## Headline (session 33, on branch B04-real-boot, PR #596 OPEN)
 

@@ -379,12 +379,18 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
             return tid as i64;
         }
         if (options & WNOHANG) != 0 { return 0; }
-        // No zombie ready — yield and retry. schedule() saves
-        // our state into current.arch_ctx + switches; we resume
-        // here when a child eventually exits + reschedule picks
-        // us back.
+        // No zombie ready — sleep until a child exits. `park_for_wait4`
+        // marks us Sleeping + pushes us to the WAITERS list; the next
+        // `park_zombie` call (from a child's sys_exit handler) sets us
+        // back to Runnable and enqueues us on the runqueue. Until then
+        // schedule() picks idle (or another runnable task), letting
+        // the LAPIC timer + tty input path keep ticking.
+        // SAFETY: process ctx; runqueue installed; preempt-off; we
+        // yield via schedule() immediately after parking so the
+        // Sleeping state is observed by the picker.
+        unsafe { crate::sched::park_for_wait4(); }
         // SAFETY: process ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::tick_yield(); }
+        unsafe { crate::sched::schedule(); }
         // After resume, ZOMBIES likely contains a new entry.
         // Loop body re-tries.
         let _ = Ordering::Acquire; // touch to keep ordering import live
