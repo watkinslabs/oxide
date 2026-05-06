@@ -73,6 +73,19 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/sys/devices/system/cpu/possible",
         StaticFileInode::new(b"0\n") as InodeRef);
+    // /sys/class/net/lo/* — Linux net-class shape that ip / iproute2
+    // probes. The values mirror the in-kernel LoopbackDev's contract
+    // (`mtu()=65535`, MAC=00:..:00).
+    crate::devfs::register("/sys/class/net/lo/address",
+        StaticFileInode::new(b"00:00:00:00:00:00\n") as InodeRef);
+    crate::devfs::register("/sys/class/net/lo/mtu",
+        StaticFileInode::new(b"65536\n") as InodeRef);
+    crate::devfs::register("/sys/class/net/lo/operstate",
+        StaticFileInode::new(b"unknown\n") as InodeRef);
+    crate::devfs::register("/sys/class/net/lo/type",
+        StaticFileInode::new(b"772\n") as InodeRef);   // ARPHRD_LOOPBACK
+    crate::devfs::register("/sys/class/net/lo/flags",
+        StaticFileInode::new(b"0x9\n") as InodeRef);   // IFF_UP|IFF_LOOPBACK
     crate::devfs::register("/etc/os-release",
         StaticFileInode::new(b"NAME=oxide\nID=oxide\nVERSION=\"0.1.0-pre\"\n") as InodeRef);
     crate::devfs::register("/etc/machine-id",
