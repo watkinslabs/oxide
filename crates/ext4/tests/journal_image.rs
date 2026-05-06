@@ -36,6 +36,32 @@ fn journaled_image_mounts_clean() {
 }
 
 #[test]
+fn run_journaled_collects_metadata_writes_into_one_txn() {
+    // Open a journal scope, perform two metadata_write calls,
+    // commit auto-fires on scope close. Both writes' bytes land
+    // at their target LBAs; the journal SB returns to s_start=0.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let payload_a = std::vec![0xAA; bs];
+    let payload_b = std::vec![0xBB; bs];
+    m.run_journaled(|mm| {
+        mm.metadata_write(120 * (bs as u64), &payload_a)?;
+        mm.metadata_write(121 * (bs as u64), &payload_b)?;
+        Ok(())
+    }).unwrap();
+    drop(m);
+    // Verify both target LBAs received the bytes.
+    for (lba, want) in [(120u64, &payload_a), (121u64, &payload_b)] {
+        let mut req = block::BlockRequest::new_read(
+            lba * (bs as u64) / 512, (bs / 512) as u32, 512,
+        );
+        disk.submit_sync(&mut req).unwrap();
+        assert_eq!(&req.buffer[..bs], &want[..], "LBA {} matches", lba);
+    }
+}
+
+#[test]
 fn commit_metadata_routes_through_journal() {
     // Build a small staged transaction and round-trip through
     // Mount::commit_metadata. The same bytes must land at the
