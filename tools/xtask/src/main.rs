@@ -76,8 +76,9 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
 
     // 1. Build userspace binaries via musl-gcc.
     let bins: &[(&str, &str)] = &[
-        ("userspace/init/init",   "userspace/init/init.c"),
-        ("userspace/sh/sh",       "userspace/sh/sh.c"),
+        ("userspace/init/init",         "userspace/init/init.c"),
+        ("userspace/sh/sh",             "userspace/sh/sh.c"),
+        ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
     ];
     for (out_rel, src_rel) in bins {
         let out = repo.join(out_rel);
@@ -121,8 +122,9 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)
     };
-    put(&repo.join("userspace/sh/sh"),     "/bin/sh")?;
-    put(&repo.join("userspace/init/init"), "/bin/init")?;
+    put(&repo.join("userspace/sh/sh"),             "/bin/sh")?;
+    put(&repo.join("userspace/init/init"),         "/bin/init")?;
+    put(&repo.join("userspace/udp_echo/udp_echo"), "/bin/udp_echo")?;
 
     // /etc/issue + /etc/os-release as inline writes through tempfile.
     let tmp = repo.join("target/oxide-rootfs-staging");
