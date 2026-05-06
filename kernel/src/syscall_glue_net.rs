@@ -433,6 +433,75 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sendmsg(fd, msghdr, flags)` slot 46. v1 walks the iovec array
+/// and calls into the same TCP/UDP/UNIX dispatch as sendto, using
+/// `msg_name` as destaddr (else NULL). SCM_RIGHTS / SCM_CREDS in
+/// msg_control are not yet honored (controllen treated as 0).
+pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
+    let fd     = args.a0;
+    let msgp   = args.a1;
+    let _flags = args.a2;
+    if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: msgp range validated; user page mapped under caller's AS.
+    let (name, _namelen, iov, iovlen) = unsafe {
+        let name      = core::ptr::read_volatile(msgp as *const u64);
+        let namelen   = core::ptr::read_volatile((msgp + 8) as *const u32);
+        let iov       = core::ptr::read_volatile((msgp + 16) as *const u64);
+        let iovlen    = core::ptr::read_volatile((msgp + 24) as *const u64);
+        (name, namelen, iov, iovlen)
+    };
+    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
+    let mut total: i64 = 0;
+    for i in 0..iovlen {
+        let iov_i = iov + i * 16;
+        if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: iov_i lies in user range; 8-byte aligned per Linux ABI.
+        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+        let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+        if len == 0 { continue; }
+        let mut sa = *args;
+        sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
+        let r = kernel_sys_sendto(&sa);
+        if r < 0 { return if total > 0 { total } else { r }; }
+        total += r;
+    }
+    total
+}
+
+/// `recvmsg(fd, msghdr, flags)` slot 47. Walks iovec, calls
+/// recvfrom into each buffer until one returns Eagain or 0.
+pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
+    let fd     = args.a0;
+    let msgp   = args.a1;
+    let _flags = args.a2;
+    if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: msgp range validated; user page mapped under caller's AS.
+    let (name, _namelen, iov, iovlen) = unsafe {
+        let name      = core::ptr::read_volatile(msgp as *const u64);
+        let namelen   = core::ptr::read_volatile((msgp + 8) as *const u32);
+        let iov       = core::ptr::read_volatile((msgp + 16) as *const u64);
+        let iovlen    = core::ptr::read_volatile((msgp + 24) as *const u64);
+        (name, namelen, iov, iovlen)
+    };
+    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
+    let mut total: i64 = 0;
+    for i in 0..iovlen {
+        let iov_i = iov + i * 16;
+        if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
+        let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+        if len == 0 { continue; }
+        let mut sa = *args;
+        sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
+        let r = kernel_sys_recvfrom(&sa);
+        if r < 0 { return if total > 0 { total } else { r }; }
+        if r == 0 { break; }
+        total += r;
+        if (r as u64) < len { break; }  // short read -> stop
+    }
+    total
+}
+
 /// `getsockname(fd, addr, addrlen)` slot 51 — write local addr.
 pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
