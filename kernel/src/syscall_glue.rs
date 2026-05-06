@@ -864,10 +864,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_ACCEPT | crate::syscall_nrs::NR_ACCEPT4
                                        => crate::syscall_glue_net::kernel_sys_accept(&args),
         crate::syscall_nrs::NR_CONNECT => crate::syscall_glue_net::kernel_sys_connect(&args),
+        crate::syscall_nrs::NR_SOCKETPAIR => crate::syscall_glue_net::kernel_sys_socketpair(&args),
         crate::syscall_nrs::NR_SENDMSG | crate::syscall_nrs::NR_RECVMSG
             | crate::syscall_nrs::NR_SHUTDOWN
             | crate::syscall_nrs::NR_GETSOCKNAME | crate::syscall_nrs::NR_GETPEERNAME
-            | crate::syscall_nrs::NR_SOCKETPAIR
             | crate::syscall_nrs::NR_SETSOCKOPT | crate::syscall_nrs::NR_GETSOCKOPT
                                  => -(Errno::Enosys.as_i32() as i64),
         // chmod/chown family — devfs is read-only, but accept silently
