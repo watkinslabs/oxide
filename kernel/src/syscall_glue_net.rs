@@ -356,6 +356,74 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `getsockname(fd, addr, addrlen)` slot 51 — write local addr.
+pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
+    let fd     = args.a0;
+    let addr_p = args.a1;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    let port = (*sock.local_port.lock()).unwrap_or(0);
+    let ip   = *sock.local_ip.lock();
+    write_sockaddr_in(addr_p, ip.as_u32().to_be(), port.to_be());
+    0
+}
+
+/// `getpeername(fd, addr, addrlen)` slot 52.
+pub fn kernel_sys_getpeername(args: &SyscallArgs) -> i64 {
+    let fd     = args.a0;
+    let addr_p = args.a1;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    let (ip, port) = match *sock.peer.lock() {
+        Some(t) => t, None => return -(Errno::Enotconn.as_i32() as i64),
+    };
+    write_sockaddr_in(addr_p, ip.as_u32().to_be(), port.to_be());
+    0
+}
+
+/// `shutdown(fd, how)` slot 48. v1 honors SHUT_WR (close-write
+/// for AF_UNIX) by calling close_writer. SHUT_RD / SHUT_RDWR are
+/// accepted silently (TCP shutdown ride alongside graceful close).
+pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
+    let fd  = args.a0;
+    let how = args.a1 as u32;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    const SHUT_WR: u32 = 1;
+    const SHUT_RDWR: u32 = 2;
+    if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
+        if how == SHUT_WR || how == SHUT_RDWR { pair.close_writer(*end); }
+    }
+    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        let _ = crate::dev_net::stack().tcp_close(entry);
+        drain_loopback();
+    }
+    0
+}
+
+/// `setsockopt(fd, level, optname, optval, optlen)` slot 54.
+/// v1 accepts every option silently — SO_REUSEADDR / SO_REUSEPORT
+/// are no-ops for our single-listener model; other options that
+/// don't change wire behavior (linger, sndbuf, rcvbuf) likewise
+/// accepted to keep userspace tooling unblocked.
+pub fn kernel_sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
+
+/// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
+/// Returns 0 + zero-length opt for every query.
+pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
+    let optlen_p = args.a4;
+    if optlen_p != 0 && optlen_p < USER_VA_END {
+        // SAFETY: ptr in user range; user page mapped under caller's AS.
+        unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
+    }
+    0
+}
+
 /// `recvfrom(fd, buf, len, flags, src, src_len)` slot 45.
 pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
     let fd       = args.a0;
