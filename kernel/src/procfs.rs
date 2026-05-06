@@ -287,8 +287,14 @@ CPU part\t: 0xd03\n\
 CPU revision\t: 4\n\
 \n";
 
+// Static bodies — kept around as documentation of the canonical
+// pseudo-format even though the live implementations now compute
+// these dynamically.
+#[allow(dead_code)]
 const MEMINFO_BODY: &[u8] = b"MemTotal:        65536 kB\nMemFree:         32768 kB\nMemAvailable:    32768 kB\n";
+#[allow(dead_code)]
 const UPTIME_BODY:  &[u8] = b"0.00 0.00\n";
+#[allow(dead_code)]
 const LOADAVG_BODY: &[u8] = b"0.00 0.00 0.00 1/1 1\n";
 pub(crate) const STAT_BODY:    &[u8] = b"\
 cpu  0 0 0 0 0 0 0 0 0 0\n\

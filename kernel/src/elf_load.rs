@@ -17,7 +17,9 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use elf::{parse, ElfError, ElfType, EM_AARCH64, EM_X86_64, PFlags};
+use elf::{parse, ElfError, ElfType, EM_X86_64, PFlags};
+#[cfg(target_arch = "aarch64")]
+use elf::EM_AARCH64;
 use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
 
