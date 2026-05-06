@@ -44,6 +44,10 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 514 | `P9-17-preadv-pwritev` | NR_PREADV / NR_PWRITEV delegating to readv/writev (offset ignored for v1). |
 | 515 | `P9-18-sendmsg-recvmsg` | NR_SENDMSG / NR_RECVMSG via 56-byte msghdr parse + iov walk → sendto/recvfrom. SCM_RIGHTS / SCM_CREDS deferred. **Net dispatch now has zero Enosys**. |
 | 517 | `P9-19-klog-ring-dmesg` | `klog::DmesgRing` 64-KiB ring; every klog::invoke_sink call also writes to it. `klog::ring_read(cursor, out)` clamps to the most-recent ring tail when the cursor lags. New `dev_misc::KmsgInode` reads from `klog::ring_read` using the inode's offset as cursor. devfs swaps `/dev/kmsg` from NullInode → KmsgInode. New `/bin/dmesg` userspace reader. |
+| 519 | `P10-01-elf-et-rel-parser` | `elf::parse_relocatable` — ELF ET_REL parser. Returns sections / symbols / relas decoded with shstrtab + strtab name resolution. SHT_/SHF_/STT_/STB_ constants. Foundation for kernel-modules loader (`docs/18`). |
+| 520 | `P9-20-more-tools` | `/bin/{pwd, whoami, uname}`. |
+| 521 | `P9-21-poll-readiness` | `vfs::Inode::poll()` non-blocking readiness. POLL_IN/OUT/HUP/ERR/PRI/RDHUP constants. `InetSocket::poll` per SockKind (UDP/TCP-listener/TCP-conn/Unix/Unix-listener). `epoll_wait` now intersects each entry's events with the inode's actual poll mask, skipping zero-overlap entries (real level-triggered ready set). |
+| 522 | `P9-22-userspace-nc` | `/bin/nc` minimal netcat: `-l <port>` listen mode + `<host> <port>` client mode. Tiny IPv4 parser, `__builtin_bswap` for htons/htonl. |
 
 ## Phase ladder (post-session-30)
 
@@ -62,9 +66,12 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, basic userspace utils landed; metadata_csum, depth>0 extents, full TCP perf knobs, kernel warning cleanup still open |
 
 ## End-of-session-30 verified-green
-- `cargo test --workspace` → 800 (up from 752 at start of session 30, 702 at start of session 29).
-- `make x86` clean (kernel warnings 18 → 12).
-- `make rootfs` builds /bin/{sh, init, udp_echo, kill, sleep, true, false, hostname, mkdir, rm, cat, echo, tcp_echo} = 13 userspace binaries.
+- `cargo test --workspace` → 798 (up from 752 at start of session 30, 702 at start of session 29).
+- `make x86` clean (kernel warnings 18 → 11).
+- `make rootfs` builds 24 userspace binaries: sh / init / udp_echo / tcp_echo / kill / sleep / true / false / hostname / mkdir / rm / cat / echo / ps / ls / mount / cp / wc / head / dmesg / pwd / whoami / uname / nc.
+- Net + AF_UNIX socket dispatch surface has zero Enosys responses.
+- vfs::Inode gains poll(); epoll_wait reports the actual ready set.
+- ELF ET_REL parser foundation lays groundwork for the kernel modules loader (P10-02+).
 
 ## Open follow-ups (post-phase-8 landing)
 - **Depth=2 ext4 extent trees**: depth=1 + 4 idx records still bounds files at 4 × leaf_max × 0x8000 blocks. depth=2 (one more level of interior nodes) is the bigger arc.
