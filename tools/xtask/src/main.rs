@@ -118,6 +118,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         ("userspace/agetty/agetty",     "userspace/agetty/agetty.c"),
         ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
         ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
+        ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
     for (out_rel, src_rel) in bins {
         let out = repo.join(out_rel);
@@ -176,6 +177,8 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     dbg("mkdir /etc")?;
     dbg("mkdir /etc/svc")?;
     dbg("mkdir /sbin")?;
+    dbg("mkdir /lib")?;
+    dbg("mkdir /lib64")?;
     let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)
@@ -224,6 +227,11 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&repo.join("userspace/agetty/agetty"),     "/sbin/agetty")?;
     put(&repo.join("userspace/rpm/rpm"),           "/bin/rpm")?;
     put(&repo.join("userspace/passwd/passwd"),     "/bin/passwd")?;
+    // /lib/ld-musl-x86_64.so.1 — minimal dynamic-linker stub (P13-06).
+    // Kernel ELF loader sees PT_INTERP="/lib/ld-musl-x86_64.so.1"
+    // in any -pie (non-static) binary and dual-loads this image
+    // alongside the exec.
+    put(&repo.join("userspace/dynlink/dynlink"),   "/lib/ld-musl-x86_64.so.1")?;
 
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().

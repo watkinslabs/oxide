@@ -772,7 +772,7 @@ unsafe fn spawn_user_blob_smoke(
 
     // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(tid, name, img.entry.as_u64(), new_sp, mm)
+        crate::sched::spawn_user_thread(tid, name, img.user_ip(), new_sp, mm)
     } {
         Ok(t)  => t,
         Err(_) => { debug_irq! { klog::kerror!("user-blob: spawn failed"); } return; }
@@ -865,7 +865,7 @@ pub unsafe fn run(hhdm_offset: u64) -> ! {
     // SAFETY: GDT/TSS/IDT/syscall MSRs initialised by kernel_main; entry & stack VMAs registered above; CPL=0; IRQs masked.
     unsafe {
         crate::userspace_smoke::drop_to_ring3(
-            img.entry.as_u64(),
+            img.user_ip(),
             USER_STACK_TOP,
             hhdm_offset,
             elf_smoke_fault_handler,
