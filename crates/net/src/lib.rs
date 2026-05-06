@@ -27,6 +27,9 @@ pub mod udp;
 pub mod tcp_hdr;
 pub mod tcp_conn;
 pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
+
+pub mod unix_sock;
+pub use unix_sock::{UnixPair, UnixEnd};
 pub mod route;
 pub mod stack;
 pub use stack::{NetStack, UdpRxQueue};
