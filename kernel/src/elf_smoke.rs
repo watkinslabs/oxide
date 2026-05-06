@@ -635,7 +635,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // non-interactive sequence so `xtask qemu` boot logs prove
     // builtins; user can type past the smoke for real
     // interactive use.
-    crate::tty::inject_for_smoke(b"uname\npwd\ncd /etc\npwd\nls\ncat issue\nexit\n");
+    crate::tty::inject_for_smoke(b"echo redir-test > /tmp/x\ncat /tmp/x\nuname\npwd\nls /etc\nexit\n");
     // SAFETY: same boot-path discipline as the real-init smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
