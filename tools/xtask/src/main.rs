@@ -69,7 +69,7 @@ fn usage() -> ExitCode {
 /// rerun whenever the userspace sources change. The kernel image
 /// then picks the new bytes up via `include_bytes!` on the next
 /// `xtask kernel` build.
-fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
+pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     let repo = image_qemu::repo_root();
     let blobs = repo.join("kernel/blobs");
     std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;

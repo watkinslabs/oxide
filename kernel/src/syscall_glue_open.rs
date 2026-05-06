@@ -17,10 +17,15 @@ const O_CREAT:     u32 = 0o100;
 const O_TRUNC:     u32 = 0o1000;
 const O_DIRECTORY: u32 = 0o200000;
 
-/// Resolve relative path against cwd (len <= 1 → None for selector legacy).
+/// Resolve a relative path against the calling task's cwd. Returns
+/// `None` for absolute paths (caller uses path_raw verbatim).
+/// Critically, the bare `.` and `..` cases must NOT be short-
+/// circuited — `ls` (no arg) sends `.` and the openat lookup
+/// otherwise tries to find a literal `.` entry in the registry,
+/// which doesn't exist.
 /// # C: O(N)
 fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
-    if path_raw.starts_with('/') || path_raw.len() <= 1 { return None; }
+    if path_raw.starts_with('/') { return None; }
     let cur = crate::sched::current()?;
     // SAFETY: cwd slot single-mutator per `13§5`.
     let cwd = unsafe { (*cur.cwd.get()).clone() };
