@@ -46,6 +46,14 @@ pub(crate) fn cmd_qemu(rest: &[String]) -> Result<(), u8> {
     let smp: u32 = parse_arg(rest, "--smp")
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+    // Rebuild userspace rootfs first so kernel/blobs/rootfs.img
+    // (which the kernel `include_bytes!`s) reflects every userspace/
+    // *.c edit. Without this, source changes ship to disk only on the
+    // next explicit `xtask rootfs`, leading to "I changed the code
+    // but nothing changed" surprises.
+    if arch == "x86_64" {
+        crate::cmd_rootfs(rest)?;
+    }
     cmd_kernel(rest)?;
     let repo = repo_root();
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
