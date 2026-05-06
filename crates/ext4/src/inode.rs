@@ -109,12 +109,84 @@ pub struct Extent {
     pub start_lo: u32,  // low 32 bits of start LBA
 }
 
+/// 12-byte interior `ext4_extent_idx` (depth>0). Each idx points
+/// to a child block that itself begins with an `ExtentHeader`
+/// followed by either more idx records or leaf extents.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ExtentIdx {
+    pub block:    u32,  // first logical block covered by the subtree
+    pub leaf_lo:  u32,  // low 32 bits of the LBA of the child block
+    pub leaf_hi:  u16,  // high 16 bits
+    pub _unused:  u16,
+}
+
+impl ExtentIdx {
+    /// Combined 48-bit LBA of the child block.
+    /// # C: O(1)
+    pub fn leaf_lba(&self) -> u64 {
+        ((self.leaf_hi as u64) << 32) | (self.leaf_lo as u64)
+    }
+}
+
+/// Parse the `idx`-th interior extent_idx from a 12-byte-record
+/// stream that starts at offset 12 within `buf`. Caller has
+/// already verified the leading ExtentHeader has depth>0.
+/// # C: O(1)
+pub fn parse_extent_idx(buf: &[u8], hdr: &ExtentHeader, idx: u16) -> Option<ExtentIdx> {
+    if hdr.depth == 0 || idx >= hdr.entries { return None; }
+    let off = 12 + (idx as usize) * 12;
+    if off + 12 > buf.len() { return None; }
+    let block    = u32::from_le_bytes([buf[off],   buf[off+1], buf[off+2], buf[off+3]]);
+    let leaf_lo  = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
+    let leaf_hi  = u16::from_le_bytes([buf[off+8], buf[off+9]]);
+    let unused   = u16::from_le_bytes([buf[off+10], buf[off+11]]);
+    Some(ExtentIdx { block, leaf_lo, leaf_hi, _unused: unused })
+}
+
 impl Extent {
     /// Combined 48-bit start LBA.
     /// # C: O(1)
     pub fn start_lba(&self) -> u64 {
         ((self.start_hi as u64) << 32) | (self.start_lo as u64)
     }
+}
+
+/// Parse the extent header out of any buffer ≥ 12 bytes (used
+/// for both inline `i_block` and external child blocks).
+/// # C: O(1)
+pub fn parse_extent_header_slice(buf: &[u8]) -> Result<ExtentHeader, InodeError> {
+    if buf.len() < 12 { return Err(InodeError::BadLen); }
+    let magic = u16::from_le_bytes([buf[0], buf[1]]);
+    if magic != EXT4_EXT_MAGIC { return Err(InodeError::BadExtentMagic); }
+    let entries = u16::from_le_bytes([buf[2], buf[3]]);
+    let max     = u16::from_le_bytes([buf[4], buf[5]]);
+    let depth   = u16::from_le_bytes([buf[6], buf[7]]);
+    let gen     = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    Ok(ExtentHeader { magic, entries, max, depth, generation: gen })
+}
+
+/// Slice variants of leaf + idx parsing for external child
+/// blocks (fs-block-sized buffers, not the 60-byte `i_block`).
+pub fn parse_inline_extent_slice(buf: &[u8], hdr: &ExtentHeader, idx: u16) -> Option<Extent> {
+    if hdr.depth != 0 || idx >= hdr.entries { return None; }
+    let off = 12 + (idx as usize) * 12;
+    if off + 12 > buf.len() { return None; }
+    let block    = u32::from_le_bytes([buf[off],   buf[off+1], buf[off+2], buf[off+3]]);
+    let len      = u16::from_le_bytes([buf[off+4], buf[off+5]]);
+    let start_hi = u16::from_le_bytes([buf[off+6], buf[off+7]]);
+    let start_lo = u32::from_le_bytes([buf[off+8], buf[off+9], buf[off+10], buf[off+11]]);
+    Some(Extent { block, len, start_hi, start_lo })
+}
+
+pub fn parse_extent_idx_slice(buf: &[u8], hdr: &ExtentHeader, idx: u16) -> Option<ExtentIdx> {
+    if hdr.depth == 0 || idx >= hdr.entries { return None; }
+    let off = 12 + (idx as usize) * 12;
+    if off + 12 > buf.len() { return None; }
+    let block    = u32::from_le_bytes([buf[off],   buf[off+1], buf[off+2], buf[off+3]]);
+    let leaf_lo  = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
+    let leaf_hi  = u16::from_le_bytes([buf[off+8], buf[off+9]]);
+    let unused   = u16::from_le_bytes([buf[off+10], buf[off+11]]);
+    Some(ExtentIdx { block, leaf_lo, leaf_hi, _unused: unused })
 }
 
 /// Parse the extent header out of an inode's `i_block` array.
