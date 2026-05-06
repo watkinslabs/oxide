@@ -69,12 +69,6 @@ pub struct MountState {
     pub(crate) sb_free_blocks: u64,
     /// Live free-inodes counter; mirrors `s_free_inodes_count`.
     pub(crate) sb_free_inodes: u32,
-    /// When `Some`, every `write_byte_range` call routes the
-    /// resulting full-fs-block payload(s) into this staging list
-    /// instead of writing directly. Mount op wrappers open a
-    /// scope, perform their work, and `commit_metadata` the
-    /// staged set at op end.
-    pub(crate) pending_tx: Option<Vec<jbd2::StagedBlock>>,
 }
 
 pub type MountStateGuard<'a> = Guard<'a, MountState, SuperblockLockClass>;
@@ -111,7 +105,6 @@ impl Mount {
             gdt_buf,
             sb_free_blocks: sb.free_blocks_count,
             sb_free_inodes: sb.free_inodes_count,
-            pending_tx: None,
         };
         let m = Self { dev, sb, state: Spinlock::new(state) };
         // Run JBD2 replay before allowing any writes. No-op for
@@ -139,11 +132,16 @@ impl Mount {
         Ok(gdt::parse_descriptor(&g.gdt_buf, n, &self.sb)?)
     }
 
-    /// Metadata write: routes through the active journal scope
-    /// when `with_journal_scope` is open, else falls through to
-    /// a direct `write_byte_range`. RMWs the affected fs block(s)
-    /// either way so partial writes are honoured.
-    /// # C: O(N affected fs blocks)
+    /// Metadata write: RMWs the affected fs block(s), then
+    /// commits the resulting full-block payloads through the
+    /// journal as their own transaction (one per call). Per-call
+    /// commit (not per-op): subsequent reads of the same byte
+    /// range observe the new bytes immediately.
+    ///
+    /// Op-level atomicity (one tx per shell `creat()` call) would
+    /// require an in-memory shadow buffer that intercepts reads
+    /// of staged bytes — deferred to P7b-08.
+    /// # C: O(N affected fs blocks) RMW + 1 journal txn
     pub fn metadata_write(&self, byte_off: u64, data: &[u8]) -> Result<(), MountError> {
         let bs = self.sb.block_size as u64;
         let first_blk = byte_off / bs;
@@ -151,7 +149,6 @@ impl Mount {
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
-        // RMW: read all affected blocks, splice in `data`.
         let dev_bs = self.dev.block_size() as u64;
         let mut full = BlockRequest::new_read(
             first_blk * (bs / dev_bs),
@@ -160,59 +157,39 @@ impl Mount {
         );
         self.dev.submit_sync(&mut full).map_err(|_| MountError::BlockIo)?;
         full.buffer[inner_off .. inner_off + data.len()].copy_from_slice(data);
-        // Either stage into the active journal scope or write through.
-        let mut state = self.state.lock();
-        match state.pending_tx.as_mut() {
-            Some(tx) => {
-                // Push one StagedBlock per fs-block.
-                for i in 0..n_blocks as u64 {
-                    let lba = first_blk + i;
-                    let lo = (i * bs) as usize;
-                    let hi = lo + bs as usize;
-                    tx.push(StagedBlock {
-                        target_lba: lba,
-                        data:       full.buffer[lo..hi].to_vec(),
-                    });
-                }
-                Ok(())
-            }
-            None => {
-                // No scope → direct device write of the whole buffer.
-                let dev_blocks = (n_blocks as u64) * (bs / dev_bs);
-                let mut wreq = BlockRequest::new_write(
-                    first_blk * (bs / dev_bs),
-                    dev_blocks as u32,
-                    full.buffer,
-                );
-                self.dev.submit_sync(&mut wreq).map_err(|_| MountError::BlockIo)
-            }
+        // Build StagedBlocks (one per fs-block) and commit immediately.
+        let mut staged = Vec::with_capacity(n_blocks as usize);
+        for i in 0..n_blocks as u64 {
+            let lba = first_blk + i;
+            let lo = (i * bs) as usize;
+            let hi = lo + bs as usize;
+            staged.push(StagedBlock {
+                target_lba: lba,
+                data:       full.buffer[lo..hi].to_vec(),
+            });
         }
+        let _ = self.commit_metadata(staged)?;
+        Ok(())
     }
 
-    /// Open a journal scope, run `f`, then commit any staged
-    /// metadata writes as one transaction. If `f` returns `Err`,
-    /// the staged set is dropped (no commit, no target writes —
-    /// either the journal saw nothing, or we crash and replay
-    /// finds an unsequenced descriptor and ignores it).
-    /// # C: O(N staged) + 2 journal I/Os + N target I/Os
+    /// Run `f` with the same write semantics as direct call. v1
+    /// commits each `metadata_write` independently as its own
+    /// JBD2 transaction; the wrapper exists so callers can mark
+    /// their intent + so future op-level batching (P7b-08, with
+    /// an in-memory shadow buffer for staged bytes) is a drop-in.
+    /// # C: O(f)
     pub fn run_journaled<R, F>(&self, f: F) -> Result<R, MountError>
     where F: FnOnce(&Self) -> Result<R, MountError>
     {
-        // Re-entrancy: if a scope is already open (caller is itself
-        // inside a wrapper), participate without reopening.
-        let already_open = self.state.lock().pending_tx.is_some();
-        if already_open { return f(self); }
-        self.state.lock().pending_tx = Some(Vec::new());
-        let r = f(self);
-        let staged = self.state.lock().pending_tx.take().unwrap_or_default();
-        match r {
-            Ok(v) => {
-                if !staged.is_empty() { let _ = self.commit_metadata(staged)?; }
-                Ok(v)
-            }
-            Err(e) => Err(e),
-        }
+        f(self)
     }
+
+    /// No-op alias kept so call sites that explicitly flushed
+    /// between writes still compile (e.g. `alloc_block` after
+    /// counter mutations). Per-call `metadata_write` already
+    /// commits, so there is nothing to flush.
+    /// # C: O(1)
+    pub fn flush_pending_tx(&self) -> Result<(), MountError> { Ok(()) }
 
     /// Live free-blocks counter (mirrors `s_free_blocks_count`).
     /// # C: O(1)
@@ -330,11 +307,7 @@ impl Mount {
             Err(e) => return Err(MountError::Dir(e)),
             Ok(()) => {}
         }
-        // Writes block 0 (dir-block content) — metadata. Goes via
-        // `write_file_block` (direct device write) for now; once
-        // P7b-07c wires every metadata-write site through
-        // `metadata_write`, callers will wrap in `run_journaled`.
-        self.write_file_block(&dir_node, 0, &blk)
+        self.run_journaled(|m| m.write_file_block_meta(&dir_node, 0, &blk))
     }
 
     /// Remove `name` from directory `dir_ino`. Returns the inode
@@ -350,7 +323,7 @@ impl Mount {
             Err(e) => return Err(MountError::Dir(e)),
             Ok(n) => n,
         };
-        self.write_file_block(&dir_node, 0, &blk)?;
+        self.run_journaled(|m| m.write_file_block_meta(&dir_node, 0, &blk))?;
         Ok(removed)
     }
 
