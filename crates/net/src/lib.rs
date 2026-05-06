@@ -22,6 +22,7 @@ pub mod tcp_state;
 pub mod netdev;
 pub mod loopback;
 pub mod ipv4;
+pub mod icmp;
 pub mod route;
 pub use route::{RouteEntry, RouteTable};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
