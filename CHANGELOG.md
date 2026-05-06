@@ -817,6 +817,10 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #514 | `P9-17-preadv-pwritev` | NR_PREADV / NR_PWRITEV (delegates to readv/writev). |
 | #515 | `P9-18-sendmsg-recvmsg` | NR_SENDMSG / NR_RECVMSG via iov-walk + sendto/recvfrom. |
 | #517 | `P9-19-klog-ring-dmesg` | klog 64-KiB DmesgRing + /dev/kmsg KmsgInode + /bin/dmesg. |
+| #519 | `P10-01-elf-et-rel-parser` | elf::parse_relocatable — ELF ET_REL parser foundation for the kernel modules loader. |
+| #520 | `P9-20-more-tools` | /bin/{pwd, whoami, uname}. |
+| #521 | `P9-21-poll-readiness` | vfs::Inode::poll() non-blocking readiness; epoll_wait now level-triggered with real intersect. |
+| #522 | `P9-22-userspace-nc` | /bin/nc minimal netcat (listen + connect modes). |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
