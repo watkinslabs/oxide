@@ -662,6 +662,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     unsafe {
         crate::dev_ext4::init();
         crate::dev_net::init();
+        crate::dev_modules::init_exports();
     }
     #[cfg(target_os = "oxide-kernel")]
     {
