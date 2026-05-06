@@ -235,7 +235,7 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     //  ship Drepper-2007 parity in P14-08).
     put(&stage("shadow",
         b"root::19000:0:99999:7:::\n\
-          alice:$6$alsalt$E9LlJPAHAPgSG8W8o3.Gf2CSH64Y53bJwAbIiEwgfvGY.SRWVCYFYR0c9wKq7ytWAyQR8XzpzwLOxi5h8t4lR.:19000:0:99999:7:::\n\
+          alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
     put(&stage("inittab",
