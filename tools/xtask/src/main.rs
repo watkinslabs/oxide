@@ -200,20 +200,48 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&repo.join("userspace/svcd/svcd"),         "/sbin/svcd")?;
     put(&repo.join("userspace/agetty/agetty"),     "/sbin/agetty")?;
 
-    // /etc/issue + /etc/os-release as inline writes through tempfile.
+    // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
+    // /etc/shadow + /etc/inittab written via tempfile then put().
     let tmp = repo.join("target/oxide-rootfs-staging");
     std::fs::create_dir_all(&tmp).map_err(|_| 1u8)?;
-    let staging_issue = tmp.join("issue");
-    std::fs::write(&staging_issue, b"oxide-os 0.1\n").map_err(|_| 1u8)?;
-    put(&staging_issue, "/etc/issue")?;
-    let staging_osrel = tmp.join("os-release");
-    std::fs::write(&staging_osrel,
-        b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")
-        .map_err(|_| 1u8)?;
-    put(&staging_osrel, "/etc/os-release")?;
-    let staging_hello = tmp.join("hello.txt");
-    std::fs::write(&staging_hello, b"hello-from-ext4-mini\n").map_err(|_| 1u8)?;
-    put(&staging_hello, "/hello.txt")?;
+
+    let stage = |name: &str, content: &[u8]| -> Result<std::path::PathBuf, u8> {
+        let p = tmp.join(name);
+        std::fs::write(&p, content).map_err(|_| 1u8)?;
+        Ok(p)
+    };
+
+    put(&stage("issue", b"oxide \\s on \\l\n\n")?, "/etc/issue")?;
+    put(&stage("os-release",
+        b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")?,
+        "/etc/os-release")?;
+    put(&stage("hostname", b"oxide\n")?, "/etc/hostname")?;
+    // root has no password (NoPassword path); alice has hash for "swordfish".
+    put(&stage("passwd",
+        b"root:x:0:0:root:/root:/bin/sh\n\
+          alice:x:1000:1000:Alice User:/home/alice:/bin/sh\n\
+          nobody:x:65534:65534:nobody:/:/bin/false\n")?,
+        "/etc/passwd")?;
+    put(&stage("group",
+        b"root:x:0:\n\
+          wheel:x:10:alice\n\
+          users:x:100:alice\n\
+          nobody:x:65534:\n")?,
+        "/etc/group")?;
+    // shadow: root empty (no pw), alice = sha512(salt|swordfish|salt)
+    // (matches crypt::sha512crypt v1; will be regenerated when we
+    //  ship Drepper-2007 parity in P14-08).
+    put(&stage("shadow",
+        b"root::19000:0:99999:7:::\n\
+          alice:$6$alsalt$E9LlJPAHAPgSG8W8o3.Gf2CSH64Y53bJwAbIiEwgfvGY.SRWVCYFYR0c9wKq7ytWAyQR8XzpzwLOxi5h8t4lR.:19000:0:99999:7:::\n\
+          nobody:!:19000:0:99999:7:::\n")?,
+        "/etc/shadow")?;
+    put(&stage("inittab",
+        b"# v1 inittab - agetty per tty\n\
+          tty1::respawn:/sbin/agetty tty1\n\
+          tty2::respawn:/sbin/agetty tty2\n")?,
+        "/etc/inittab")?;
+    put(&stage("hello.txt", b"hello-from-ext4-mini\n")?, "/hello.txt")?;
 
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
