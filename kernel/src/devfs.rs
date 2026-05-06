@@ -145,7 +145,10 @@ impl Inode for PrefixDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
+        // Phase 1: walk the devfs registry for synthetic / overlay
+        // children of `self.prefix`. Inode-numbered offsets 1..=R.
         let g = REGISTRY.lock();
+        let r_len = g.len() as u64;
         let mut idx = off as usize;
         while idx < g.len() {
             let (path, inode) = &g[idx];
@@ -157,7 +160,37 @@ impl Inode for PrefixDirInode {
             }
             idx += 1;
         }
-        Ok(idx as u64)
+        drop(g);
+        // Phase 2: overlay ext4 entries for the same prefix. Offsets
+        // are R + 1..=R + N_ext4 so getdents64 resumption stays
+        // monotonic across the boundary. Names that already showed
+        // up via the devfs registry are skipped (devfs wins).
+        let mut ext4_seen: u64 = 0;
+        let mut stopped = false;
+        let mut stop_off: u64 = (idx as u64).max(r_len);
+        let _ = crate::dev_ext4::read_dir(self.prefix.as_bytes(), |name_bytes, dt| {
+            if stopped { return; }
+            ext4_seen += 1;
+            // Resume past entries that earlier getdents64 returned.
+            if r_len + ext4_seen <= off { return; }
+            // Skip if devfs has the same name.
+            let name = match core::str::from_utf8(name_bytes) {
+                Ok(s) => s, Err(_) => return,
+            };
+            let child_path = self.build_child_path(name);
+            if lookup(&child_path).is_some() { return; }
+            let ftype = match dt {
+                ext4::dir::DT_DIR => FileType::Directory,
+                ext4::dir::DT_LNK => FileType::Symlink,
+                ext4::dir::DT_CHR => FileType::CharDev,
+                ext4::dir::DT_BLK => FileType::BlockDev,
+                _                 => FileType::Regular,
+            };
+            let next = r_len + ext4_seen;
+            if !f(next, name, ftype) { stopped = true; stop_off = next; }
+        });
+        if stopped { return Ok(stop_off); }
+        Ok(r_len + ext4_seen)
     }
 }
 
