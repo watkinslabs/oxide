@@ -84,7 +84,7 @@ fn kernel_elf_path(repo: &std::path::Path, arch: &str, rest: &[String]) -> Resul
     Ok(p)
 }
 
-fn repo_root() -> std::path::PathBuf {
+pub(crate) fn repo_root() -> std::path::PathBuf {
     let here = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
     std::path::PathBuf::from(here)
         .ancestors().nth(2).map(|p| p.to_path_buf())
