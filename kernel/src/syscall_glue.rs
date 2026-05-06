@@ -235,16 +235,45 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
     let frame = unsafe { &*hal_x86_64::current_user_frame() };
     let user_rip = frame[0];
+    let user_rflags = frame[1];
     let user_rsp = frame[2];
     // user_rip points at the instruction RIGHT AFTER the syscall
     // (rcx is post-syscall in x86_64) — the child resumes there
     // with rax=0.
 
+    // P5-10: capture parent's full saved-syscall reg block so the
+    // child's iretq frame + Context get parent values for every
+    // reg the user code may rely on across the fork syscall (Linux
+    // ABI: rdi/rsi/rdx/r10/r8/r9 preserved + all callee-saved
+    // regs unchanged). Pre-P5-10 the kernel zeroed these and the
+    // child resumed with junk regs — fatal once a real shell
+    // started using `|` (child A's run_one(seg=rdx, n=rbp) saw 0/0).
+    // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
+    let full = unsafe { hal_x86_64::current_user_full_frame() };
+    let pregs = unsafe {
+        hal_x86_64::ForkRegs {
+            rdi: *full.add(1),
+            rsi: *full.add(2),
+            rdx: *full.add(3),
+            r10: *full.add(4),
+            r8:  *full.add(5),
+            r9:  *full.add(6),
+            rcx: *full.add(7),
+            r11: *full.add(8),
+            rbx: *full.add(10),
+            rbp: *full.add(11),
+            r13: *full.add(12),
+            r14: *full.add(13),
+            r15: *full.add(14),
+        }
+    };
+
     let child_tid = crate::sched::next_tid();
-    // SAFETY: runqueue installed by elf_smoke; child_mm is freshly forked from the parent's AS with kernel-half cloned from master per P2-19; user_rip/user_rsp captured from the parent's syscall frame.
+    // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
     let spawn = unsafe {
-        crate::sched::spawn_user_thread(
-            child_tid, "fork-child", user_rip, user_rsp, child_mm,
+        crate::sched::spawn_user_thread_for_fork(
+            child_tid, "fork-child", user_rip, user_rsp, user_rflags,
+            &pregs, child_mm,
         )
     };
     let child = match spawn {

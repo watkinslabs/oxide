@@ -107,8 +107,24 @@ pub fn load_static_blob(
         // Slice the file-backed extent for this segment.
         let file_off = seg.file_off as usize;
         let file_sz  = seg.file_sz  as usize;
-        let data = blob.get(file_off..file_off.checked_add(file_sz)
+        let raw_data = blob.get(file_off..file_off.checked_add(file_sz)
             .ok_or(LoadError::Einval)?).ok_or(LoadError::Einval)?;
+        // P5-10: KernelBytes-backed VMAs assume the slice begins at
+        // `vma.start` (the page-aligned vstart). When the segment's
+        // p_vaddr isn't page-aligned (e.g., musl's RW segment at
+        // 0x2f30 with vstart 0x2000), we need a head_pad of zeros
+        // so a fault at vstart finds zeros and a fault at vaddr
+        // finds the file bytes. Pre-P5-10 the loader passed the
+        // raw slice and the fault path read past data.len() at
+        // vaddr.., zero-filling our actual file content.
+        let head_pad = (vaddr - vstart) as usize;
+        let data: &'static [u8] = if head_pad == 0 {
+            raw_data
+        } else {
+            let mut padded = alloc::vec![0u8; head_pad + raw_data.len()];
+            padded[head_pad..].copy_from_slice(raw_data);
+            alloc::boxed::Box::leak(padded.into_boxed_slice())
+        };
 
         // Translate ELF p_flags to VmaProt (W^X already enforced
         // by the parser).
