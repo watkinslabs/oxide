@@ -24,6 +24,7 @@ pub mod loopback;
 pub mod ipv4;
 pub mod icmp;
 pub mod udp;
+pub mod tcp_hdr;
 pub mod route;
 pub mod stack;
 pub use stack::{NetStack, UdpRxQueue};
