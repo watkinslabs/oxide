@@ -116,6 +116,36 @@ impl Mount {
         Err(MountError::NotFound)
     }
 
+    /// Write `data` (one filesystem block) back to `file_blk`'s
+    /// physical extent. **In-place only** — does not allocate
+    /// new extents, does not grow the file, does not journal.
+    /// `data.len()` must equal `sb.block_size`. Phase 7b minimum;
+    /// allocation + journaling (JBD2) ride alongside the full
+    /// `docs/17` RW path.
+    /// # C: O(N_extents) extent walk + O(1) block I/O
+    pub fn write_file_block(
+        &self,
+        inode:    &Inode,
+        file_blk: u32,
+        data:     &[u8],
+    ) -> Result<(), MountError> {
+        if data.len() != self.sb.block_size as usize {
+            return Err(MountError::Inode(InodeError::BadLen));
+        }
+        let hdr = inode::parse_extent_header(&inode.i_block)?;
+        if hdr.depth != 0 { return Err(MountError::DepthUnsupported); }
+        for i in 0..hdr.entries {
+            let e = inode::parse_inline_extent(&inode.i_block, &hdr, i)
+                .ok_or(MountError::NotFound)?;
+            if file_blk >= e.block && file_blk < e.block + e.len as u32 {
+                let phys = e.start_lba() + (file_blk - e.block) as u64;
+                let byte_off = phys * (self.sb.block_size as u64);
+                return write_byte_range(&*self.dev, byte_off, data);
+            }
+        }
+        Err(MountError::NotFound)
+    }
+
     /// Look `name` up in the directory whose first data block
     /// holds the entries. Only the first block is consulted —
     /// large dirs split across multiple blocks land in P6-06+.
@@ -150,9 +180,27 @@ impl Mount {
     }
 }
 
+/// Write `data` (must equal one filesystem block) back to `dev`
+/// at byte offset `byte_off`. The block-device contract is
+/// sector-granular; we issue a whole-block Write request that
+/// covers `data.len()` bytes (which must already be aligned to
+/// the device sector size — caller is `write_file_block` which
+/// only emits filesystem-block-sized writes).
+/// # C: O(1) device I/O
+fn write_byte_range(dev: &dyn BlockDevice, byte_off: u64, data: &[u8]) -> Result<(), MountError> {
+    let bs = dev.block_size() as u64;
+    if (byte_off % bs) != 0 || (data.len() as u64 % bs) != 0 {
+        return Err(MountError::BlockIo);
+    }
+    let start_block = byte_off / bs;
+    let n_blocks = (data.len() as u64 / bs) as u32;
+    let mut req = block::BlockRequest::new_write(start_block, n_blocks, data.to_vec());
+    dev.submit_sync(&mut req).map_err(|_| MountError::BlockIo)?;
+    Ok(())
+}
+
 /// Read `len` bytes from `dev` starting at byte `byte_off`.
-/// Translates to whole-block reads under the hood. v1 is read-
-/// path only; write follows `17§*` once Phase 7b lands.
+/// Translates to whole-block reads under the hood.
 fn read_byte_range(dev: &dyn BlockDevice, byte_off: u64, len: usize) -> Result<Vec<u8>, MountError> {
     let bs = dev.block_size() as u64;
     let first_blk = byte_off / bs;

@@ -677,6 +677,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                     if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
                 }
             }
+            // P7b-01 RW smoke: overwrite the start of /hello.txt,
+            // read it back, verify the write hit the disk through
+            // ext4's extent walker + the writable ImageDisk backing.
+            if crate::dev_ext4::write_file(b"/hello.txt", b"WRITTEN-BY-OXIDE\n").is_some() {
+                if let Some(bytes) = crate::dev_ext4::read_file(b"/hello.txt") {
+                    klog::write_raw(b"[INFO]  ext4 RW smoke /hello.txt = ");
+                    klog::write_raw(&bytes);
+                    if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
+                }
+            }
             // Read /bin/sh twice to prove the page cache: first
             // call is all misses; second is all hits.
             if let Some(bytes) = crate::dev_ext4::read_file(b"/bin/sh") {
