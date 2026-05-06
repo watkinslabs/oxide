@@ -44,5 +44,6 @@ debug-irq  = []  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = []  # RSDP/XSDT walk + per-table decoder traces
 debug-sched = []  # first-kthread coroutine smoke + Context::switch trace
 debug-boot = []  # operational-pulse trace (init started, pmm: ready, …)
-debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot"]
+debug-modules = []  # kmod thunk write_raw / kassert traces
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules"]
 

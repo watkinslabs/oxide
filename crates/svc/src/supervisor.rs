@@ -49,9 +49,11 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    /// # C: O(1)
     pub fn new() -> Self { Self { slots: BTreeMap::new(), now: 0 } }
 
     /// Add a unit. Initial state = Idle.
+    /// # C: O(1)
     pub fn add(&mut self, u: Unit) {
         let name = u.name.clone();
         self.slots.insert(name.clone(), Slot {
@@ -60,18 +62,23 @@ impl Supervisor {
         });
     }
 
+    /// # C: O(1)
     pub fn tick(&mut self, t: u64) { self.now = t; }
+    /// # C: O(1)
     pub fn now(&self) -> u64 { self.now }
 
+    /// # C: O(1)
     pub fn state(&self, name: &str) -> Option<State> {
         self.slots.get(name).map(|s| s.state)
     }
+    /// # C: O(1)
     pub fn pid_of(&self, name: &str) -> Option<u32> {
         self.slots.get(name).and_then(|s| s.pid)
     }
 
     /// Caller fires this once they've spawned the unit. Moves
     /// state Idle/Failed → Starting → Running.
+    /// # C: O(1)
     pub fn on_started(&mut self, name: &str, pid: u32) {
         if let Some(s) = self.slots.get_mut(name) {
             s.pid = Some(pid);
@@ -84,6 +91,7 @@ impl Supervisor {
 
     /// Caller fires this when waitpid reports an exit. `status` is
     /// the exit code (0 = clean). Updates state per Restart policy.
+    /// # C: O(1)
     pub fn on_exited(&mut self, pid: u32, status: i32) -> Option<String> {
         let name = self.slots.iter().find_map(|(n, s)| {
             if s.pid == Some(pid) { Some(n.clone()) } else { None }
@@ -109,6 +117,7 @@ impl Supervisor {
     /// Compute what to spawn now. Honors `After=` deps + restart
     /// backoff. Idempotent — caller must follow up with on_started
     /// for each Spawn it emits.
+    /// # C: O(1)
     pub fn poll_actions(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         // snapshot to avoid borrow issues during iteration.

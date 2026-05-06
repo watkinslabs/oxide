@@ -250,6 +250,7 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
     // started using `|` (child A's run_one(seg=rdx, n=rbp) saw 0/0).
     // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
     let full = unsafe { hal_x86_64::current_user_full_frame() };
+    // SAFETY: full points to the 15-quadword saved area at top-0x78..top of the kernel stack for the current user task; layout is fixed by syscall entry asm.
     let pregs = unsafe {
         hal_x86_64::ForkRegs {
             rdi: *full.add(1),

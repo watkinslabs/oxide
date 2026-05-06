@@ -78,6 +78,7 @@ pub fn unload(idx: usize) -> bool {
 /// Module name for the boot trace. Currently fixed; real impl
 /// reads .modinfo "name=…".
 #[allow(dead_code)]
+/// # C: O(1)
 pub fn module_name(_idx: usize) -> Option<String> { Some(String::from("module")) }
 
 /// Register the kernel's canonical exported symbols so modules
@@ -95,22 +96,30 @@ pub unsafe fn init_exports() {
 
 extern "C" fn klog_write_raw_thunk(p: *const u8, len: usize) {
     if p.is_null() { return; }
-    // SAFETY: caller is a kernel module passing a valid kernel slice.
-    let s = unsafe { core::slice::from_raw_parts(p, len) };
-    klog::write_raw(s);
+    #[cfg(feature = "debug-modules")] {
+        // SAFETY: caller is a kernel module passing a valid kernel-static slice; len bounded by caller.
+        let s = unsafe { core::slice::from_raw_parts(p, len) };
+        klog::write_raw(s);
+    }
+    #[cfg(not(feature = "debug-modules"))] { let _ = (p, len); }
 }
 
-extern "C" fn klog_write_dec_u64_thunk(v: u64) {
-    klog::write_dec_u64(v);
+extern "C" fn klog_write_dec_u64_thunk(_v: u64) {
+    #[cfg(feature = "debug-modules")] {
+        klog::write_dec_u64(_v);
+    }
 }
 
 extern "C" fn kassert_thunk(cond: u64, msg_p: *const u8, msg_len: usize) {
     if cond != 0 { return; }
-    klog::write_raw(b"[ASSERT] ");
-    if !msg_p.is_null() {
-        // SAFETY: caller is a kernel module passing a valid kernel slice.
-        let s = unsafe { core::slice::from_raw_parts(msg_p, msg_len) };
-        klog::write_raw(s);
+    #[cfg(feature = "debug-modules")] {
+        klog::write_raw(b"[ASSERT] ");
+        if !msg_p.is_null() {
+            // SAFETY: caller is a kernel module passing a valid kernel-static slice; len bounded by caller.
+            let s = unsafe { core::slice::from_raw_parts(msg_p, msg_len) };
+            klog::write_raw(s);
+        }
+        klog::write_raw(b"\n");
     }
-    klog::write_raw(b"\n");
+    #[cfg(not(feature = "debug-modules"))] { let _ = (msg_p, msg_len); }
 }

@@ -23,6 +23,7 @@ pub struct EthHdr {
 }
 
 impl EthHdr {
+    /// # C: O(N)
     pub fn parse(buf: &[u8]) -> Result<Self, EthError> {
         if buf.len() < ETH_HDR_LEN { return Err(EthError::Short); }
         let mut dst = [0u8; 6]; dst.copy_from_slice(&buf[0..6]);
@@ -47,6 +48,7 @@ impl EthHdr {
 
     /// Write a 14-byte untagged header into the start of `buf`.
     /// Caller writes the L3 payload after byte 14.
+    /// # C: O(1)
     pub fn write_to(dst: MacAddr, src: MacAddr, ethertype: u16, buf: &mut [u8]) {
         buf[0..6].copy_from_slice(&dst.0);
         buf[6..12].copy_from_slice(&src.0);

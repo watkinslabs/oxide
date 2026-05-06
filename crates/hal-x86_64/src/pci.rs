@@ -29,6 +29,7 @@ impl LegacyPci {
     pub fn read32(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
         let addr = Self::cf8_address(bus, dev, func, reg);
         let val: u32;
+        // SAFETY: PCI config-space port-I/O via 0xCF8/0xCFC; well-defined on x86 since 1992; no memory operands.
         unsafe {
             asm!(
                 "out dx, eax",
@@ -52,6 +53,7 @@ impl LegacyPci {
     /// # C: O(1)
     pub fn write32(bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
         let addr = Self::cf8_address(bus, dev, func, reg);
+        // SAFETY: PCI config-space port-I/O via 0xCF8/0xCFC; mirror of read32 with `out` instead of `in`.
         unsafe {
             asm!(
                 "out dx, eax",

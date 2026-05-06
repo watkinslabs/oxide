@@ -81,6 +81,7 @@ pub(crate) struct RegistryInner {
 }
 
 impl IfaceRegistry {
+    /// # C: O(1)
     pub const fn new() -> Self {
         Self { inner: Spinlock::new(RegistryInner { next: 1, entries: Vec::new() }) }
     }
