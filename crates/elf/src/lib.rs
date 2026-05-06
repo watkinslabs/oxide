@@ -31,7 +31,7 @@ pub use relocatable::{
 
 pub mod dynamic;
 pub mod hash;
-pub use hash::{elf_hash, gnu_hash};
+pub use hash::{elf_hash, gnu_hash, lookup_sysv, lookup_gnu};
 pub use dynamic::{
     parse_dynamic, read_strtab, DynEntry, DynInfo,
     DT_NULL, DT_NEEDED, DT_STRTAB, DT_SYMTAB, DT_RELA, DT_JMPREL, DT_HASH, DT_GNU_HASH,
