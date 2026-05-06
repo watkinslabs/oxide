@@ -27,47 +27,55 @@ const ROOTFS: &'static [u8] = include_bytes!("../blobs/rootfs.img");
 /// Backing block size for the in-kernel virtual disk.
 const BLOCK_SIZE: u32 = 512;
 
-/// Read-only static-image BlockDevice. Reads slice into the
-/// caller's buffer; writes return `Eio` (we never mutate the
-/// embedded image). No locking — the slice is `'static`.
-pub struct StaticDisk {
-    bytes:    &'static [u8],
+/// Read-write Vec-backed BlockDevice initialised from a static
+/// image. The kernel keeps a writable copy in heap memory; the
+/// embedded `&'static [u8]` is the cold-boot snapshot. Writes
+/// mutate the heap copy only — Phase 7b minimum (no persistent
+/// disk yet, swapping the heap copy back to a real disk is
+/// virtio-blk's job).
+pub struct ImageDisk {
+    bytes:    sync::Spinlock<Vec<u8>, sync::Inode>,
     blk_size: u32,
 }
 
-// SAFETY: `&'static [u8]` is Sync + Send; no interior mutability.
-unsafe impl Sync for StaticDisk {}
-unsafe impl Send for StaticDisk {}
-
-impl StaticDisk {
-    /// # C: O(1)
-    pub fn new(bytes: &'static [u8], blk_size: u32) -> Arc<Self> {
-        Arc::new(Self { bytes, blk_size })
+impl ImageDisk {
+    /// Initialise from a `'static` snapshot — copy bytes into
+    /// the heap so writes can mutate them without violating
+    /// `'static`'s read-only contract.
+    /// # C: O(N) once at boot
+    pub fn from_static(bytes: &'static [u8], blk_size: u32) -> Arc<Self> {
+        Arc::new(Self {
+            bytes:    sync::Spinlock::new(bytes.to_vec()),
+            blk_size,
+        })
     }
 }
 
-impl BlockDevice for StaticDisk {
+impl BlockDevice for ImageDisk {
     fn block_size(&self) -> u32 { self.blk_size }
     fn capacity_blocks(&self) -> u64 {
-        (self.bytes.len() as u64) / (self.blk_size as u64)
+        (self.bytes.lock().len() as u64) / (self.blk_size as u64)
     }
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
+        let start = (req.start_block * self.blk_size as u64) as usize;
+        let len   = (req.len_blocks as usize) * (self.blk_size as usize);
         match req.op {
             BlockOp::Read => {
-                let start = (req.start_block * self.blk_size as u64) as usize;
-                let len   = (req.len_blocks as usize) * (self.blk_size as usize);
-                if start + len > self.bytes.len() {
-                    return Err(BlockError::Eio);
-                }
-                if req.buffer.len() < len {
-                    req.buffer.resize(len, 0);
-                }
-                req.buffer[..len].copy_from_slice(&self.bytes[start..start+len]);
+                let g = self.bytes.lock();
+                if start + len > g.len() { return Err(BlockError::Eio); }
+                if req.buffer.len() < len { req.buffer.resize(len, 0); }
+                req.buffer[..len].copy_from_slice(&g[start..start+len]);
                 Ok(())
             }
-            BlockOp::Write   => Err(BlockError::Eio),  // read-only
+            BlockOp::Write => {
+                let mut g = self.bytes.lock();
+                if start + len > g.len() { return Err(BlockError::Eio); }
+                if req.buffer.len() < len { return Err(BlockError::Einval); }
+                g[start..start+len].copy_from_slice(&req.buffer[..len]);
+                Ok(())
+            }
             BlockOp::Flush   => Ok(()),
-            BlockOp::Discard => Ok(()),                 // no-op
+            BlockOp::Discard => Ok(()),
         }
     }
     fn flush(&self) -> KResult<()> { Ok(()) }
@@ -103,7 +111,7 @@ pub fn cache_stats() -> (u64, u64) {
 /// # C: O(N_groups + 1024) one-shot
 pub unsafe fn init() {
     if !MOUNT_PTR.load(Ordering::Acquire).is_null() { return; }
-    let disk = StaticDisk::new(ROOTFS, BLOCK_SIZE) as Arc<dyn BlockDevice>;
+    let disk = ImageDisk::from_static(ROOTFS, BLOCK_SIZE) as Arc<dyn BlockDevice>;
     let mount = match Mount::open(disk) {
         Ok(m)  => m,
         Err(_) => return,
@@ -181,6 +189,35 @@ pub fn read_file(path: &[u8]) -> Option<Vec<u8>> {
 /// # C: O(1)
 pub fn mounted() -> bool {
     !MOUNT_PTR.load(Ordering::Acquire).is_null()
+}
+
+/// Phase 7b minimum: in-place write to an existing file. Bytes
+/// `data` overwrite the start of the file's first block; data
+/// length must be ≤ `sb.block_size`. No extent allocation, no
+/// size growth, no journaling — just modifying bytes in an
+/// existing extent. Invalidates the page cache for this inode
+/// so subsequent reads see the new bytes.
+/// # C: O(N_extents) + O(1) block I/O
+pub fn write_file(path: &[u8], data: &[u8]) -> Option<()> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR was published via init(); pointer is stable for the kernel lifetime.
+    let mount = unsafe { &*p };
+    let ino = mount.lookup_path(path).ok()?;
+    let inode = mount.read_inode(ino).ok()?;
+    if !inode.is_reg() { return None; }
+    let bs = mount.sb.block_size as usize;
+    if data.len() > bs { return None; }
+    // Read existing first block, splice in `data`, write whole
+    // block back. Preserves trailing bytes within the same block.
+    let mut blk = mount.read_file_block(&inode, 0).ok()?;
+    if blk.len() < bs { blk.resize(bs, 0); }
+    blk[..data.len()].copy_from_slice(data);
+    mount.write_file_block(&inode, 0, &blk).ok()?;
+    // Invalidate cached page so the next read sees fresh bytes.
+    let inode_id = InodeId(ino as u64);
+    PAGE_CACHE.invalidate(inode_id);
+    Some(())
 }
 
 /// VFS Inode wrapping a snapshot of a regular file's bytes.
