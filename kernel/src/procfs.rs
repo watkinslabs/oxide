@@ -890,6 +890,7 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
                 "/proc/net/dev"  => Some(Arc::new(ProcNetDevInode)  as InodeRef),
                 "/proc/net/tcp"  => Some(Arc::new(ProcNetTcpInode)  as InodeRef),
                 "/proc/net/udp"  => Some(Arc::new(ProcNetUdpInode)  as InodeRef),
+                "/proc/modules"  => Some(Arc::new(ProcModulesInode) as InodeRef),
                 _ => None,
             }
         }
@@ -978,6 +979,38 @@ impl ProcNetUdpInode {
         alloc::string::String::from(
             "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
         )
+    }
+}
+
+/// `/proc/modules` — Linux text format: "<name> <size> <refcnt> <holders> <state> <addr>\n".
+/// v1 uses synthetic name "module_<idx>" since .modinfo parsing
+/// hasn't landed.
+struct ProcModulesInode;
+impl vfs::Inode for ProcModulesInode {
+    fn ino(&self) -> vfs::Ino { 0xFEED_0004 }
+    fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
+    fn size(&self) -> u64 { self.body().len() as u64 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let body = self.body();
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body.as_bytes()[off..off+n]);
+        Ok(n)
+    }
+}
+
+impl ProcModulesInode {
+    fn body(&self) -> alloc::string::String {
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        let mut s = String::new();
+        for (idx, n_secs, n_syms) in crate::dev_modules::snapshot() {
+            let _ = writeln!(s, "module_{} {} {} - Live 0x0 sec={} sym={}",
+                idx, n_secs * 4096, 0, n_secs, n_syms);
+        }
+        s
     }
 }
 
