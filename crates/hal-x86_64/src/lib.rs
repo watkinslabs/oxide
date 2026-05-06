@@ -30,6 +30,7 @@ mod tss;
 mod irq;
 mod mmu;
 pub mod mmu_ops;
+pub mod pci;
 mod pt_regs;
 mod regs;
 pub mod vmm;
