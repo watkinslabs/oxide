@@ -32,12 +32,70 @@ together gate interactive login:
    bidirectional bytes both ways.
 
 **Both fixes still need an end-to-end interactive verification.**
-The kernel build is clean; the new MCP socket transport requires
+The kernel build is clean. The new MCP socket transport requires
 a Claude restart for tool re-discovery before we can reboot and
 type "root\n" → "\n" → expect /bin/sh.
 
-**Branch:** `B05-tty-rx-debug` (2 commits beyond main when this
-state.md update lands). Open PR after restart-and-verify.
+**Branch:** `B05-tty-rx-debug`. Three commits beyond main:
+- `babb488` fix(boot): re-arm LAPIC timer before init spawn
+- `158895d` fix(qemu-mcp): use unix socket for serial transport
+- `dd87872` docs: state.md — session 34
+
+**PR #597 OPEN:** https://github.com/watkinslabs/oxide/pull/597
+
+### Where to pick up next session
+
+1. **Restart Claude** if not already restarted. The qemu-mcp
+   server.py changes (`tools/qemu-mcp/server.py`) need re-discovery
+   to expose the new socket-backed `qemu_send_serial`.
+2. Pull `B05-tty-rx-debug`.
+3. Boot:
+   ```
+   qemu_start("x86_64")
+   qemu_continue()              # times out at 120s; expected
+   qemu_serial(clear=True)      # drain to "oxide login: "
+   qemu_send_serial("root")     # newline auto-appended
+   qemu_send_serial("")         # empty password (root has no pw)
+   qemu_serial()                # expect /bin/sh prompt
+   ```
+4. **Expected on success:** the kernel logs the read syscall
+   returning, login completes auth via the seeded shadow hash,
+   and `/bin/sh` prints its prompt over UART.
+5. **If login auth fails:** the seeded shadow hash for root is
+   empty (`root::`). /bin/login's crypt::verify against an empty
+   password should accept. If it rejects, debug
+   `userspace/login/login.c` + the seeded `/etc/shadow` from
+   `tools/xtask/src/main.rs` rootfs build.
+6. **If keystrokes still don't echo even with timer + socket
+   fixes:** something else along the tty path. Quick checks:
+     - `qemu_serial()` after each send to confirm bytes show up
+       in QEMU's TX (echo from line-discipline / login).
+     - In a debug-all build, `tick_poll_uart` should now run
+       continuously post-init; if not, double-check
+       `lapic::timer_periodic` returned true (the diagnostic was
+       stripped before commit, restore from git for the kernel
+       file at `babb488^`).
+
+### Open follow-ups (not blocking interactive login)
+
+- **klog UART spinlock is not IRQ-safe.** `boot_emit` in
+  `crates/boot-x86_64/src/lib.rs` uses plain `Spinlock::lock()`
+  (not `lock_irqsave`). If a timer IRQ fires while a kernel-mode
+  klog write holds the lock, the IRQ-side klog (e.g. anything
+  from `oxide_irq_dispatch`'s VEC_TIMER arm if we ever add tracing
+  there) deadlocks the CPU. Encountered this implicitly while
+  instrumenting (some IRQ counter increments were missed in the
+  trace — symptom of klog calls from IRQ context occasionally
+  spinning until the holder happened to release on its own thread).
+  Real fix: switch `boot_emit` to `lock_irqsave` per `06§3.1`.
+  Filed mentally; not a blocker because production IRQ paths
+  don't klog.
+- **B04 commit included built userspace binaries** (carry-over
+  from session 33). Still need a `.gitignore` entry for
+  `userspace/*/[!Cc]*`.
+- **Kernel-side multi-VT under /dev/tty1..N** still aliased.
+- **/bin/passwd** PAM stack stub (P14-11).
+- **xz / zstd decompressors** (P16-06) + **rpmdb** (P16-07).
 
 # State 2026-05-06 (session 33 — boot chain real, login prompt reached, B04 merged)
 
