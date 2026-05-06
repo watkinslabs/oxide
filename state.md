@@ -2,7 +2,7 @@
 
 ## Headline
 
-Twelve PRs landed: full ext4 RW from userspace + JBD2 replay (PRs #462-#467), session-EOD doc commit (#468), sh multi-pipe + fork/exec (#469), session-EOD update (#470), JBD2 commit-emit primitives + `Mount::commit_metadata` (#471), session-EOD update (#472), metadata_write + run_journaled scope (#473). The shell can `echo > /etc/foo`, `unlink /etc/foo`, `mkdir /etc/d`, `mv /etc/a /etc/b` against the real journaled ext4 fs; multi-stage pipelines `a | b | c` work; absolute-path commands fork+execve+wait4. Mounting a journaled image runs replay automatically. The write-side journaling primitive + scope (`run_journaled` collects metadata writes through `metadata_write` into one transaction; commits at scope close) is built and tested. Routing the existing balloc / ialloc / persist_* call sites through `metadata_write` is P7b-07c — they currently hold the `MountState` lock during writes, so lock-ordering surgery is required first. Workspace test count 702 → 750.
+Fourteen PRs landed: full ext4 RW from userspace + JBD2 replay (PRs #462-#467), session-EOD doc commit (#468), sh multi-pipe + fork/exec (#469), session-EOD update (#470), JBD2 commit-emit primitives + `Mount::commit_metadata` (#471), session-EOD update (#472), `metadata_write` + `run_journaled` scope infrastructure (#473), session-EOD update (#474), routing every metadata-write site in balloc/ialloc/extent_rw/dir through `metadata_write` (#475). The shell can `echo > /etc/foo`, `unlink /etc/foo`, `mkdir /etc/d`, `mv /etc/a /etc/b` against the real journaled ext4 fs; multi-stage pipelines `a | b | c` work; absolute-path commands fork+execve+wait4. Mounting a journaled image runs replay automatically. **Every metadata mutation in ext4 RW now commits through JBD2** (per-write transaction; op-level atomicity needs an in-memory shadow buffer — P7b-08). Workspace test count 702 → 750.
 
 ## What landed (PRs #462 – #467)
 
@@ -17,6 +17,7 @@ Twelve PRs landed: full ext4 RW from userspace + JBD2 replay (PRs #462-#467), se
 | 469 | `P5-11-sh-multipipe-execfork` | `userspace/sh/sh.c`: multi-pipe `a \| b \| c` (up to 8 segments) — N-1 pipes opened up front, N children forked with stdin/stdout dup2 wiring, parent closes all pipe ends + wait4s each. External-binary fork+exec: when a command line starts with `/`, sh tokenizes argv (max 8), forks, execve's, wait4s the child. Closes both follow-ups carried from session 28 EOD. |
 | 471 | `P7b-07a-jbd2-commit-emit` | `crates/jbd2/src/emit.rs`: `StagedBlock`, `build_descriptor_block`, `build_commit_block`, `escape_journal_payload`, `LogCursor` (next-free journal block tracker, wraps at maxlen, never returns 0). `ext4 Mount::commit_metadata(Vec<StagedBlock>) → seq` reserves descriptor + N data + commit slots in the journal, writes them, applies same data to target LBAs, bumps `s_sequence` + zeros `s_start` in the journal SB. Falls back to direct write when no journal present. 5 unit + 1 integration tests. |
 | 473 | `P7b-07b-route-metadata-through-journal` | `Mount::metadata_write(byte_off, data)` RMWs the affected fs blocks; if a `pending_tx` scope is open, pushes one StagedBlock per fs-block into staging; else writes through to the device. `Mount::run_journaled(f)` opens a scope, runs `f`, commits the staged set as one transaction at scope close (re-entrant). `Mount::write_file_block_meta` for dir-block writes. `MountState.pending_tx: Option<Vec<StagedBlock>>`. 1 hosted test (two writes inside one scope land at their LBAs after auto-commit). |
+| 475 | `P7b-07c-route-balloc-ialloc` | Every metadata-write site (bitmap, GDT slot, SB counter, inode bytes, dir-block content, i_size, nlink) in balloc/ialloc/extent_rw/dir routes through `metadata_write` → `commit_metadata`. Lock-ordering surgery in balloc/ialloc to drop `MountState` across writes (state acquired briefly to read GD into a local; dropped during disk read; re-acquired briefly to update cached gdt_buf + counters). `run_journaled` is now a pass-through marker (kept as a drop-in for P7b-08); `pending_tx` field removed. Per-call commit (one JBD2 transaction per metadata write); op-level atomicity needs a shadow-buffer interceptor. |
 
 ## Phase ladder (post-session-29)
 
@@ -30,7 +31,7 @@ Twelve PRs landed: full ext4 RW from userspace + JBD2 replay (PRs #462-#467), se
 | 5 | syscalls + ELF + init + busybox-sh | done |
 | 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | done |
 | 7a | block + page cache | done |
-| 7b | ext4 RW + JBD2 | **read+write+replay done**; write-side journaling (txn-batching of metadata writes through journal commit) deferred to P7b-07 |
+| 7b | ext4 RW + JBD2 | **read+write+replay+per-write metadata journaling done**; op-level atomicity (one tx per fs op, requires in-memory shadow buffer) deferred to P7b-08 |
 | 8 | net | not started |
 | 9 | hardening, observability, modules | ongoing |
 
@@ -41,7 +42,7 @@ Twelve PRs landed: full ext4 RW from userspace + JBD2 replay (PRs #462-#467), se
 - `cargo test -p jbd2` → 12 unit (header, superblock, descriptor, replay).
 
 ## Open follow-ups
-- **P7b-07c routing the remaining metadata-write call sites through `metadata_write`**: PR #473 landed the scope + helper. The remaining ~24 direct `write_byte_range` call sites in `balloc.rs` (alloc/free bitmap + GDT slot + SB free counter), `ialloc.rs` (inode bitmap + GDT slot + SB free inodes counter + inode-bytes init/zeroing), `extent_rw.rs` (`write_inode_bytes`, inline inode-bytes writes in `append_block` / `truncate_inode`), and `journal.rs::ExtentLogReader::write_journal_block` (the journal device itself, which deliberately stays direct) need to either (a) use `metadata_write` instead of `write_byte_range`, and (b) drop the `MountState` lock before the write so `metadata_write`'s own `state.lock()` doesn't deadlock. Each public Mount RW op then wraps in `run_journaled`. Closes the `17§7` crash-test contract.
+- **P7b-08 op-level atomicity (in-memory shadow buffer)**: every `metadata_write` currently commits as its own JBD2 transaction. The remaining gap to the `17§7` crash-test contract is that one shell-visible fs op (e.g. `creat()`: bitmap + GDT + SB + inode + dir-block) lands as **one** transaction, not N. Per-op batching needs an in-memory shadow buffer: stage `(target_lba → bytes)` in a map on the active `run_journaled` scope, intercept reads in `metadata_write` / `read_byte_range_pub` so subsequent reads of staged-but-uncommitted bytes return the staged version, commit at scope close. The `run_journaled` marker is already in place for the wrap.
 - **External extent index nodes**: depth>0 trees surface as `DepthUnsupported`. Will hit when files exceed 4 extents × `len 0x8000 × bs`.
 - Per-CPU `OXIDE_SYSCALL_USER_RSP_SAVE` once SMP gsbase per-CPU lands.
 - Background jobs (`&`) + signal-driven Ctrl-C in sh.
