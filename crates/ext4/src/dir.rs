@@ -16,7 +16,7 @@ pub const DT_FIFO:    u8 = 5;
 pub const DT_SOCK:    u8 = 6;
 pub const DT_LNK:     u8 = 7;
 
-/// Errors decoded from `next_entry`.
+/// Errors decoded from `next_entry` / `insert` / `remove`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DirError {
     /// Buffer ran out before a full 8-byte header was available.
@@ -27,6 +27,12 @@ pub enum DirError {
     Overrun,
     /// `name_len` exceeds `rec_len - 8`.
     BadNameLen,
+    /// `insert`: no entry had enough trailing slack to fit a new
+    /// entry of the requested size; caller must allocate a new
+    /// directory data block.
+    Full,
+    /// `remove`: target name was not in the block.
+    NotFound,
 }
 
 /// One directory entry decoded from a 4 KiB-or-larger block buffer.
@@ -92,6 +98,109 @@ where F: FnMut(&DirEntry<'a>) -> bool
         off = next;
     }
     Ok(())
+}
+
+/// Bytes consumed by an entry whose name has `name_len` bytes,
+/// rounded up to 4-byte alignment per ext4 spec.
+/// # C: O(1)
+#[inline] pub fn entry_actual_len(name_len: u8) -> usize {
+    (8 + name_len as usize + 3) & !3
+}
+
+/// In-place insert a directory entry into a dir-block buffer.
+/// Walks entries, finds the first whose trailing slack
+/// (`rec_len - actual_len`) fits a new entry of size `need`, and
+/// splits it: existing entry's rec_len shrinks to actual_len,
+/// new entry takes the rest. Returns `DirError::Full` if no slot
+/// has enough slack.
+///
+/// `name.len()` must be ≤ 255. Caller is responsible for
+/// matching `file_type` to the child inode's mode.
+/// # C: O(N entries)
+pub fn insert(buf: &mut [u8], inode: u32, file_type: u8, name: &[u8])
+    -> Result<(), DirError>
+{
+    if name.is_empty() || name.len() > 255 { return Err(DirError::BadNameLen); }
+    let need = entry_actual_len(name.len() as u8);
+    let mut off = 0usize;
+    while off < buf.len() {
+        let inode_e = u32::from_le_bytes([buf[off],   buf[off+1], buf[off+2], buf[off+3]]);
+        let rec_len = u16::from_le_bytes([buf[off+4], buf[off+5]]) as usize;
+        let name_len = buf[off+6];
+        if rec_len < 8 || (rec_len & 3) != 0 || off + rec_len > buf.len() {
+            return Err(DirError::BadRecLen);
+        }
+        // Slack = portion of this entry's rec_len beyond what its
+        // name actually needs (or the whole rec_len if deleted).
+        let used = if inode_e == 0 { 0 } else { entry_actual_len(name_len) };
+        let slack = rec_len - used;
+        if slack >= need {
+            // Shrink predecessor; place new entry in the tail.
+            let new_rec = slack;
+            let pred_rec = used;
+            // For deleted entry (inode==0), used==0 → predecessor
+            // rec_len shrinks to 0 which is invalid; in that case
+            // overwrite the slot entirely.
+            if used == 0 {
+                write_entry(&mut buf[off..off+rec_len], inode, rec_len as u16, file_type, name);
+            } else {
+                buf[off+4..off+6].copy_from_slice(&(pred_rec as u16).to_le_bytes());
+                let new_off = off + pred_rec;
+                write_entry(&mut buf[new_off..new_off + new_rec], inode, new_rec as u16, file_type, name);
+            }
+            return Ok(());
+        }
+        off += rec_len;
+    }
+    Err(DirError::Full)
+}
+
+/// Remove the entry named `name` from the dir-block buffer by
+/// coalescing it into its predecessor's `rec_len`. Returns the
+/// inode number of the removed entry; `NotFound` if absent.
+/// The first entry in a block has no predecessor — we mark it
+/// deleted (inode=0) but keep its slot so the block stays
+/// well-formed.
+/// # C: O(N entries)
+pub fn remove(buf: &mut [u8], name: &[u8]) -> Result<u32, DirError> {
+    let mut off = 0usize;
+    let mut prev_off: Option<usize> = None;
+    while off < buf.len() {
+        let inode_e  = u32::from_le_bytes([buf[off],   buf[off+1], buf[off+2], buf[off+3]]);
+        let rec_len  = u16::from_le_bytes([buf[off+4], buf[off+5]]) as usize;
+        let name_len = buf[off+6];
+        if rec_len < 8 || (rec_len & 3) != 0 || off + rec_len > buf.len() {
+            return Err(DirError::BadRecLen);
+        }
+        let entry_name = &buf[off+8 .. off+8+name_len as usize];
+        if inode_e != 0 && entry_name == name {
+            match prev_off {
+                Some(po) => {
+                    let prev_rec = u16::from_le_bytes([buf[po+4], buf[po+5]]) as usize;
+                    let new_prev = prev_rec + rec_len;
+                    buf[po+4..po+6].copy_from_slice(&(new_prev as u16).to_le_bytes());
+                }
+                None => {
+                    // First entry in the block: keep slot, mark deleted.
+                    buf[off..off+4].copy_from_slice(&0u32.to_le_bytes());
+                }
+            }
+            return Ok(inode_e);
+        }
+        prev_off = Some(off);
+        off += rec_len;
+    }
+    Err(DirError::NotFound)
+}
+
+#[inline]
+fn write_entry(slot: &mut [u8], inode: u32, rec_len: u16, file_type: u8, name: &[u8]) {
+    slot[0..4].copy_from_slice(&inode.to_le_bytes());
+    slot[4..6].copy_from_slice(&rec_len.to_le_bytes());
+    slot[6] = name.len() as u8;
+    slot[7] = file_type;
+    slot[8 .. 8 + name.len()].copy_from_slice(name);
+    for b in &mut slot[8 + name.len() .. rec_len as usize] { *b = 0; }
 }
 
 /// Look up `name` in the directory block. Returns the matching
@@ -234,6 +343,78 @@ mod tests {
         let mut names = std::vec::Vec::<&[u8]>::new();
         iter_active(&b, |e| { names.push(e.name); true }).unwrap();
         assert_eq!(names, std::vec![&b"a"[..], &b"b"[..]]);
+    }
+
+    #[test]
+    fn insert_uses_trailing_slack_of_last_entry() {
+        // 256-byte block. Last entry pads to fill remainder.
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 11, DT_DIR, b".",  0);                 // 12
+        put(&mut b, 1,  DT_DIR, b"..", 0);                 // 12
+        put(&mut b, 12, DT_REG, b"keep", 256 - 12 - 12);   // soak
+        assert_eq!(b.len(), 256);
+        insert(&mut b, 99, DT_REG, b"new").unwrap();
+        let names: std::vec::Vec<&[u8]> = {
+            let mut v = std::vec::Vec::new();
+            iter_active(&b, |e| { v.push(e.name); true }).unwrap();
+            v
+        };
+        assert!(names.contains(&&b"keep"[..]));
+        assert!(names.contains(&&b"new"[..]));
+        let e = lookup(&b, b"new").unwrap().unwrap();
+        assert_eq!(e.inode, 99);
+    }
+
+    #[test]
+    fn insert_full_when_no_slack() {
+        // Single entry that exactly fits its actual_len → no slack.
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 12, DT_REG, b"foo", 0);  // 12 bytes, no padding
+        assert_eq!(insert(&mut b, 99, DT_REG, b"bar"), Err(DirError::Full));
+    }
+
+    #[test]
+    fn insert_into_deleted_slot() {
+        // Delete-marker entry (inode=0) with a wide rec_len that
+        // suffices for the new entry verbatim.
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 0,  DT_REG, b"x", 32);
+        put(&mut b, 12, DT_REG, b"keep", 32);
+        insert(&mut b, 77, DT_REG, b"new").unwrap();
+        let e = lookup(&b, b"new").unwrap().unwrap();
+        assert_eq!(e.inode, 77);
+    }
+
+    #[test]
+    fn remove_coalesces_into_predecessor() {
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 11, DT_DIR, b".",  0);
+        put(&mut b, 1,  DT_DIR, b"..", 0);
+        put(&mut b, 12, DT_REG, b"foo", 0);
+        put(&mut b, 13, DT_REG, b"bar", 32);  // padded
+        let pre_len = b.len();
+        let n = remove(&mut b, b"foo").unwrap();
+        assert_eq!(n, 12);
+        assert_eq!(b.len(), pre_len, "coalesce in-place; buffer length unchanged");
+        assert!(lookup(&b, b"foo").unwrap().is_none());
+        assert!(lookup(&b, b"bar").unwrap().is_some());
+    }
+
+    #[test]
+    fn remove_first_entry_marks_deleted() {
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 12, DT_REG, b"foo", 0);
+        put(&mut b, 13, DT_REG, b"bar", 0);
+        let n = remove(&mut b, b"foo").unwrap();
+        assert_eq!(n, 12);
+        assert!(lookup(&b, b"foo").unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_not_found() {
+        let mut b = std::vec::Vec::new();
+        put(&mut b, 12, DT_REG, b"foo", 0);
+        assert_eq!(remove(&mut b, b"nope"), Err(DirError::NotFound));
     }
 
     #[test]
