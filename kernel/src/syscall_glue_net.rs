@@ -198,6 +198,56 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
     }
 }
 
+/// `socketpair(domain, type, protocol, sv)` slot 53. v1 supports
+/// AF_UNIX SOCK_STREAM only (the common shell-IPC case).
+pub fn kernel_sys_socketpair(args: &SyscallArgs) -> i64 {
+    const AF_UNIX: u32 = 1;
+    let domain = args.a0 as u32;
+    let typ    = args.a1 as u32 & 0xFF;
+    let svp    = args.a3;
+    if domain != AF_UNIX {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    if typ != SOCK_STREAM {
+        return -(Errno::Esocktnosupport.as_i32() as i64);
+    }
+    if svp == 0 || svp >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let pair = net::UnixPair::new();
+    let mk = |end: net::UnixEnd| -> vfs::InodeRef {
+        let s = InetSocket::new_tcp();
+        *s.kind.lock() = SockKind::Unix(pair.clone(), end);
+        Arc::new(s) as _
+    };
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let a = {
+        let inode = mk(net::UnixEnd::A);
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
+        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
+        match fdt.alloc(f) { Ok(fd) => fd, Err(e) => return -(e as i64) }
+    };
+    let b = {
+        let inode = mk(net::UnixEnd::B);
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
+        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
+        match fdt.alloc(f) { Ok(fd) => fd, Err(e) => return -(e as i64) }
+    };
+    // Write both fds back to user[]int sv[2].
+    // SAFETY: svp range validated < USER_VA_END; user page mapped.
+    unsafe {
+        core::ptr::write_volatile( svp           as *mut i32, a as i32);
+        core::ptr::write_volatile((svp + 4)      as *mut i32, b as i32);
+    }
+    0
+}
+
 /// `listen(fd, backlog)` slot 50.
 pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
     let fd = args.a0;
