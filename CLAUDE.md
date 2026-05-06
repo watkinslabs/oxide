@@ -181,3 +181,14 @@ Examples:
 - User wants honest opinion before action when stakes are non-trivial. "Advise then act" not "ask then act."
 - When proposing changes that affect multiple specs, list the touched specs first, action second.
 - When something is uncertain, say so. Don't smooth-talk.
+
+## Autonomous-run discipline (HARD RULE)
+
+When the user kicks off an autonomous run (variants of "continue / keep going / work through everything / don't stop"), the contract is:
+
+1. **Do not stop until the project is done.** "Phase X closed" is not a stopping point. The next phase is. The phase after that is. Until the master plan in `00§3` is exhausted *or* a hard blocker (compile fail you can't resolve, missing external resource, destructive op needing confirmation) appears, keep shipping PRs.
+2. **Do not announce intermediate stopping points.** No "natural seam reached", no "this is a clean place to pause", no "future-you has the handoff". These announcements cost the user hours of wall-clock when they assume work is continuing in the background. Just start the next phase.
+3. **No EOD-style summaries between phases.** State.md + CHANGELOG updates are checkpoint commits, not user-facing speeches. Update the docs, push the PR, start the next branch — silently.
+4. **Phase 8 (net) being long is not an excuse.** 10–15 weeks of spec budget translates to many small PRs in autonomous mode. Land them one at a time. Same for phase 9 hardening.
+5. **If you find yourself writing "I've delivered enormously this session" or "this is a natural stopping point" — STOP that sentence and start the next branch instead.**
+6. The only things that justify stopping mid-run: (a) explicit user instruction, (b) genuine blocker, (c) tests/build red and root cause not identified within ~3 attempts. Otherwise, keep going.
