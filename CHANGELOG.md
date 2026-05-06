@@ -758,12 +758,13 @@ Side-effects worth flagging from session 28:
 | #467 | `P7b-06-jbd2` | New `crates/jbd2/`: BlockHeader (BE magic 0xC03B3998), JournalSuperblock (v1+v2), descriptor walker (legacy + 64bit + UUID), 2-pass replay (revoke set + descriptor→data→commit). `crates/ext4/src/journal.rs::ExtentLogReader` maps journal-block-index → fs LBA via journal-inode extents. `Mount::recover_journal()` runs replay if `INCOMPAT_RECOVER + s_journal_inum != 0`; marks log clean. `Mount::open` auto-runs replay. Test fixture `mini-j.img` (2 MiB ext4 with 1024-block journal). |
 | #469 | `P5-11-sh-multipipe-execfork` | `userspace/sh/sh.c`: multi-pipe (`a \| b \| c`, up to 8 segments) and absolute-path external-binary fork+execve+wait4. Closes both follow-ups from session 28 EOD. |
 | #471 | `P7b-07a-jbd2-commit-emit` | jbd2 emit module: StagedBlock, build_descriptor_block, build_commit_block, escape_journal_payload, LogCursor. ext4 Mount::commit_metadata(Vec<StagedBlock>) round-trips a transaction through the journal then to target LBAs; bumps s_sequence + zeros s_start. Falls back to direct write when no journal. |
-| #473 | `P7b-07b-route-metadata-through-journal` | Mount::metadata_write (RMW into staged tx or direct), Mount::run_journaled scope (auto-commits at close, re-entrant), Mount::write_file_block_meta. Routing existing balloc/ialloc/persist_* sites through metadata_write is P7b-07c (needs lock-ordering surgery). |
+| #473 | `P7b-07b-route-metadata-through-journal` | Mount::metadata_write (RMW into staged tx or direct), Mount::run_journaled scope (auto-commits at close, re-entrant), Mount::write_file_block_meta. |
+| #475 | `P7b-07c-route-balloc-ialloc` | Every metadata-write site (bitmap/GDT/SB/inode/dir-block/i_size/nlink) routes through metadata_write → commit_metadata. Lock-ordering surgery in balloc/ialloc to drop MountState across writes. run_journaled becomes a pass-through marker (drop-in for P7b-08); pending_tx field removed. Per-call commit; op-level atomicity (one tx per fs op) needs an in-memory shadow buffer (P7b-08). |
 
 End-of-session-29 verified-green:
 - `cargo test --workspace` → 750 (up from 702). All green.
 - `make x86` clean.
 
 Deferred to follow-ups:
-- **P7b-07c routing the remaining metadata-write sites through `metadata_write`**: PRs #471 + #473 landed the primitive (`Mount::commit_metadata`) and the scope (`run_journaled` + `metadata_write` + `write_file_block_meta`). Routing the ~24 direct `write_byte_range` call sites in `balloc.rs / ialloc.rs / extent_rw.rs` through `metadata_write` requires dropping the `MountState` lock before the write so the inner `state.lock()` in `metadata_write` doesn't deadlock; each public Mount RW op then wraps in `run_journaled`. Closes the `17§7` crash-test contract.
+- **P7b-08 op-level atomicity (in-memory shadow buffer)**: every metadata write commits as its own JBD2 transaction; one shell-visible fs op lands as N transactions. Per-op batching needs a shadow buffer that intercepts reads of staged-but-uncommitted bytes inside an active scope. `run_journaled` is already a marker for that.
 - External extent index nodes (depth>0 trees).
