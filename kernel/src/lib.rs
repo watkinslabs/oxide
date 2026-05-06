@@ -661,6 +661,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
         crate::dev_ext4::init();
+        crate::dev_net::init();
     }
     #[cfg(target_os = "oxide-kernel")]
     {
@@ -817,6 +818,10 @@ pub mod syscall_glue_xfer;
 pub mod syscall_glue_open;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_namei;
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_net;
+#[cfg(target_os = "oxide-kernel")]
+pub mod dev_net;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
 #[cfg(target_os = "oxide-kernel")]

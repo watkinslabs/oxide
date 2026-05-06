@@ -38,9 +38,18 @@ pub enum Errno {
     Erange  = 34,
     Enametoolong = 36,
     Enosys  = 38,
-    Eopnotsupp   = 95,
-    Eafnosupport = 97,
-    Etimedout    = 110,
+    Eopnotsupp        = 95,
+    Eafnosupport      = 97,
+    Eaddrinuse        = 98,
+    Eaddrnotavail     = 99,
+    Enetunreach       = 101,
+    Enobufs           = 105,
+    Enotsock          = 88,
+    Edestaddrreq      = 89,
+    Emsgsize          = 90,
+    Esocktnosupport   = 94,
+    Enotconn          = 107,
+    Etimedout         = 110,
 }
 
 impl Errno {
