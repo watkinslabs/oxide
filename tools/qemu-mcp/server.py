@@ -229,9 +229,12 @@ def qemu_start(arch: str) -> str:
                 "-s", "-S",
             ]
 
+        # stdin is a PIPE so qemu_send_serial can write bytes into
+        # the guest's serial port (QEMU `-serial stdio` ties guest
+        # UART RX ↔ host stdin and guest UART TX ↔ host stdout).
         qemu_proc = subprocess.Popen(
             qemu_cmd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -412,6 +415,32 @@ def qemu_serial(clear: bool = False) -> str:
         if clear:
             s.serial.clear()
     return out
+
+
+@mcp.tool()
+def qemu_send_serial(text: str, append_newline: bool = True) -> str:
+    """Write `text` into the guest's serial port (UART RX) — i.e.
+    type into the booted system as if at a terminal. Returns the
+    number of bytes sent.
+
+    `append_newline=True` (default) appends '\\n' so e.g. typing
+    "root" into a `login:` prompt commits the line. Pass
+    `append_newline=False` for control bytes ("\\x03" = Ctrl-C,
+    "\\x04" = EOF, etc.) or partial-line probes.
+
+    QEMU's `-serial stdio` mode bridges host stdin → guest UART
+    RX, so the kernel's `tick_poll_uart` (or future RX IRQ) will
+    pick the bytes up on the next poll and wake any task parked
+    in `read(0)`.
+    """
+    s = _require()
+    if append_newline and not text.endswith("\n"):
+        text = text + "\n"
+    if s.qemu.stdin is None:
+        raise RuntimeError("qemu stdin not piped — re-start the session")
+    s.qemu.stdin.write(text)
+    s.qemu.stdin.flush()
+    return f"sent {len(text)} byte(s)"
 
 
 @mcp.tool()
