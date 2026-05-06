@@ -295,6 +295,7 @@ dependencies = [
  "hal-x86_64",
  "kalloc",
  "klog",
+ "net",
  "pmm",
  "procfs",
  "sched",
