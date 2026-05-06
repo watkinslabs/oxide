@@ -74,6 +74,15 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 550 | `P11-03-pci-x86-portio` | `hal_x86_64::pci::LegacyPci` — CF8/CFC port-I/O `ConfigSpaceReader`. |
 | 551 | `P11-04-pci-boot-enum` | Boot trace prints PCI device list (vendor/device/class for first 16 BDFs). |
 | 552 | `P9-33-cmp-stat` | `/bin/cmp` POSIX byte-by-byte file comparator. |
+| 554 | `P9-34-route-userspace` | `/bin/route` reads /proc/net/route. |
+| 555 | `P9-35-xxd` | `/bin/xxd` hex dumper. |
+| 556 | `P9-36-seq` | `/bin/seq`. |
+| 557 | `P9-37-yes` | `/bin/yes`. |
+| 558 | `P9-38-nproc` | `/bin/nproc` parses /sys cpu/online range list. |
+| 559 | `P12-01-virtio-types` | (Branch label is mine — not a master-plan phase. Per `35` driver model.) New `crates/virtio/`: split virtqueue (Desc/Avail/Used + alloc_chain/publish/pop_used + free-chain) + device IDs + status bits. |
+| 560 | `P12-02-virtio-net` | (Same — `35§…` driver work, not a phase.) virtio-net device shape: VirtioNet { rx, tx, mac } + VirtioNetHdr v1 (12 bytes) parse/write_to. |
+
+> **Branch-label note**: the master plan in `00§3` defines phases 0–9 only ("0=build infra … 9=hardening, observability, modules"). PRs labeled `P10-*`, `P11-*`, `P12-*` in this session are mine — they cover modules (which is *inside* phase 9 per `00§3`), PCI bus enumeration (`docs/34`), and virtio driver shape (`docs/35`). Driver work doesn't get its own phase number; it rides alongside whichever phase needs it. Future-me should fold these into `P9-*` (modules) or use `F<NN>-` / `D<NN>-` prefixes per the CLAUDE.md branch-naming rule.
 
 ## Phase ladder (post-session-30)
 
@@ -89,8 +98,9 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 7a | block + page cache | done |
 | 7b | ext4 RW + JBD2 | done |
 | 8 | net | **functional** — IPv4/UDP/TCP/ICMP/AF_UNIX (socketpair) + loopback netdev + AF_INET syscalls + procfs entries; IPv6 / ARP / NDP / netfilter / netlink / virtio-net / TCP retransmit timer + congestion control / external extent index nodes ride later |
-| 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, 24 userspace utils, /proc/net/*, /sys/class/net/lo/*, klog ring + dmesg, vfs::Inode::poll readiness, AF_UNIX path-bound, sendmsg/recvmsg, metadata_csum still open |
-| 10 | modules loader | **functional core** — ELF ET_REL parse + x86_64 relocator + section placement + symbol resolution; NR_INIT_MODULE / NR_FINIT_MODULE wired. Per-module W^X memory + signature verification + delete_module ride P10-05+ |
+| 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, 35 userspace utils, /proc/net/*, /sys/class/net/lo/*, klog ring + dmesg, vfs::Inode::poll readiness, AF_UNIX path-bound, sendmsg/recvmsg, **modules loader functional** (ELF ET_REL parse + x86_64 relocator + section placement + NR_INIT_MODULE / NR_FINIT_MODULE / NR_DELETE_MODULE), kernel symbol exports (klog/kassert), /proc/modules. metadata_csum + per-module W^X + signature verification still open. |
+
+(There is no phase 10 / 11 / 12 in `00§3`. Modules are inside phase 9. Driver work — PCI bus enumeration (`docs/34`), virtio (`docs/35`) — is infra that supports phases as needed and doesn't get its own phase number.)
 
 ## End-of-session-30 verified-green
 - `cargo test --workspace` → 804 (up from 752 at start of session 30, 702 at start of session 29).
