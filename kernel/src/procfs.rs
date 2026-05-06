@@ -921,9 +921,15 @@ impl ProcNetDevInode {
         let mut s = String::new();
         let _ = writeln!(s, "Inter-|   Receive                                                |  Transmit");
         let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
-        let snap = crate::dev_net::stack().ifaces.snapshot();
-        for (_id, name, mtu) in snap {
-            let _ = writeln!(s, "{:>6}: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0  # mtu={}", name, mtu);
+        let stack = crate::dev_net::stack();
+        let snap = stack.ifaces.snapshot();
+        for (id, name, mtu) in snap {
+            let stats = stack.ifaces.lookup(id).map(|d| d.stats()).unwrap_or_default();
+            let _ = writeln!(s, "{:>6}: {} {} {} {} 0 0 0 0 {} {} {} {} 0 0 0 0  # mtu={}",
+                name,
+                stats.rx_bytes, stats.rx_packets, stats.rx_errors, stats.rx_dropped,
+                stats.tx_bytes, stats.tx_packets, stats.tx_errors, stats.tx_dropped,
+                mtu);
         }
         s
     }

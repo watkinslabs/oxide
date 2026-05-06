@@ -31,6 +31,19 @@ pub enum NetError {
 
 pub type NetResult<T> = core::result::Result<T, NetError>;
 
+/// Per-iface running counters for `/proc/net/dev` and ethtool.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct NetStats {
+    pub rx_packets: u64,
+    pub rx_bytes:   u64,
+    pub rx_errors:  u64,
+    pub rx_dropped: u64,
+    pub tx_packets: u64,
+    pub tx_bytes:   u64,
+    pub tx_errors:  u64,
+    pub tx_dropped: u64,
+}
+
 /// `25§3` driver trait.
 pub trait NetDev: Send + Sync {
     /// Stable interface name (`lo`, `eth0`, …).
@@ -44,6 +57,10 @@ pub trait NetDev: Send + Sync {
     /// driver-IRQ tx-completion callback (real NICs); v1 hosted
     /// surface is sync.
     fn xmit(&self, pkt: Pkt) -> NetResult<()>;
+    /// Snapshot the per-iface running counters. Default returns
+    /// zeros for devices that don't track them yet.
+    /// # C: O(1)
+    fn stats(&self) -> NetStats { NetStats::default() }
 }
 
 /// Registered iface — the registry assigns the `NetIfaceId`.
