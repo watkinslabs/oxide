@@ -1,0 +1,12 @@
+[package]
+name = "crc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+hosted = []
