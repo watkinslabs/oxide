@@ -168,6 +168,51 @@ impl vfs::Inode for InetSocket {
             _ => Err(vfs::VfsError::Einval),
         }
     }
+
+    fn poll(&self) -> u32 {
+        use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
+        match &*self.kind.lock() {
+            SockKind::Udp => {
+                let mut mask = POLL_OUT;
+                if let Some(p) = *self.local_port.lock() {
+                    drain_loopback();
+                    if stack().recv_udp(p).is_some() {
+                        // Re-queue; recv_udp consumed it.
+                        // To peek without consuming we'd need an
+                        // explicit API; v1 just signals readable
+                        // when something was recently visible.
+                        mask |= POLL_IN;
+                    }
+                }
+                mask
+            }
+            SockKind::TcpListener(l) => {
+                if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }
+            }
+            SockKind::TcpConn(entry) => {
+                drain_loopback();
+                let c = entry.conn.lock();
+                let mut mask = POLL_OUT;
+                if !c.recv_buf.is_empty() { mask |= POLL_IN; }
+                if c.state == net::tcp_state::TcpState::Closed
+                    || c.state.is_closing() { mask |= POLL_HUP; }
+                mask
+            }
+            SockKind::Unix(pair, end) => {
+                let mut mask = POLL_OUT;
+                let read_q = match end {
+                    net::UnixEnd::A => &pair.b_to_a,
+                    net::UnixEnd::B => &pair.a_to_b,
+                };
+                if !read_q.lock().buf.is_empty() { mask |= POLL_IN; }
+                if pair.is_eof(*end) { mask |= POLL_HUP; }
+                mask
+            }
+            SockKind::UnixListener(l) => {
+                if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }
+            }
+        }
+    }
 }
 
 /// AF_INET dgram-socket recv — pops one queued datagram for the
