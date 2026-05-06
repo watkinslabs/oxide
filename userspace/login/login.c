@@ -112,6 +112,7 @@ static int read_line(int fd, char* dst, long cap) {
     return (int)n;
 }
 
+__attribute__((force_align_arg_pointer))
 void _start(void) {
     // 1. Greet + read username from stdin.
     wstr(1, "oxide login: ");

@@ -129,6 +129,23 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
+    // 1b. Refresh kernel/blobs/<init,sh>.elf from the freshly-built
+    // userspace binaries so the embedded boot blobs (consumed via
+    // `include_bytes!` from `kernel/src/elf_smoke.rs`) match what
+    // we just compiled — without this, edits to userspace/init/init.c
+    // ship in rootfs.img but the kernel keeps running the stale
+    // blob it baked in at last `cargo build`.
+    let blob_dir = repo.join("kernel/blobs");
+    for (src_rel, blob_name) in &[
+        ("userspace/init/init", "init.elf"),
+        ("userspace/sh/sh",     "sh.elf"),
+    ] {
+        let src = repo.join(src_rel);
+        let dst = blob_dir.join(blob_name);
+        eprintln!("xtask rootfs: refresh {} ← {}", dst.display(), src.display());
+        std::fs::copy(&src, &dst).map_err(|_| 1u8)?;
+    }
+
     // 2. Build a fresh 1 MiB ext4 image.
     let img = repo.join("kernel/blobs/rootfs.img");
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
@@ -157,12 +174,16 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     };
     dbg("mkdir /bin")?;
     dbg("mkdir /etc")?;
+    dbg("mkdir /etc/svc")?;
+    dbg("mkdir /sbin")?;
     let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)
     };
     put(&repo.join("userspace/sh/sh"),             "/bin/sh")?;
     put(&repo.join("userspace/init/init"),         "/bin/init")?;
+    put(&repo.join("userspace/init/init"),         "/sbin/init")?;
+    put(&repo.join("userspace/init/init"),         "/init")?;
     put(&repo.join("userspace/udp_echo/udp_echo"), "/bin/udp_echo")?;
     put(&repo.join("userspace/kill/kill"),         "/bin/kill")?;
     put(&repo.join("userspace/sleep/sleep"),       "/bin/sleep")?;

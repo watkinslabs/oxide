@@ -1,3 +1,146 @@
+# State 2026-05-06 (session 33 — boot chain real, login prompt reached, B04 in flight)
+
+## Headline (session 33, on branch B04-real-boot, PR #596 OPEN)
+
+The full chain init→svcd→agetty→login now actually runs from
+rootfs.img and reaches `oxide login:` waiting on sys_read.
+Verified live in qemu-mcp. Pre-session-33 it was an illusion —
+kernel ran a baked smoke sequence then halt_forever; my session-32
+chain was never executed.
+
+**Branch:** `B04-real-boot` (3 commits beyond main: `77e8b87` kernel
+fixes, `e11d0f1` sti+hlt for tty rx wake, `2483197` qemu-mcp send-serial).
+
+**Status of #596:** PR open, CI in progress at last check. Once
+green + merged, branch up for B05 (interactive verification).
+
+### Eight stacked kernel/userspace bugs fixed in B04
+
+In dependency order — each gated the next, so debugging required
+peeling them sequentially via qemu-mcp serial:
+
+1. **xtask rootfs didn't refresh kernel/blobs/{init,sh}.elf.** The
+   kernel `include_bytes!`'s those at compile time. Edits to
+   `userspace/init/init.c` got into rootfs.img but not into the
+   embedded boot blob. Now copied alongside the rootfs image build.
+
+2. **xtask rootfs didn't `mkdir /etc/svc` or `/sbin`.** debugfs
+   `write` to a nonexistent directory silently drops the file.
+   /sbin/init, /sbin/agetty, /sbin/svcd, /etc/svc/*.service were
+   all going into the void.
+
+3. **`elf_smoke::run_as_task` hardcoded INIT_REAL_BLOB → SH_BLOB →
+   halt_forever.** The session-32 chain (init→svcd→agetty→login)
+   was wired but never reached. Now: prefer `lookup_blob_by_path("/sbin/init")`
+   (loads from ext4); after spawn, loop sti/hlt/schedule instead of halt.
+
+4. **/init / /sbin/init / /bin/init all populated** in rootfs so
+   the boot path's lookup-fallback chain finds init regardless of
+   which name it asks for.
+
+5. **`spawn_user_blob_smoke` activated AS too late.** load_static_blob
+   ran with the previous task's CR3 active. Worked by luck for the
+   embedded smoke (compatible page layout); broke for real musl
+   binaries with R_X86_64_RELATIVE relocations into 0x10003000.
+   Fix: activate root_pa BEFORE load_static_blob.
+
+6. **`apply_relative_relocs` wrote DT_RELA fixups via user VAs.**
+   Even with the right AS active, kernel-mode writes through
+   not-yet-faulted user pages don't always resolve. Refactored
+   load_static_blob to accumulate per-PT_LOAD staging buffers
+   (in-kernel Vecs), apply relocations in-buffer, THEN leak each
+   buffer + mmap as KernelBytes. No user-VA writes from the loader.
+
+7. **Fork lost user r12.** Syscall entry asm had previously clobbered
+   user r12 with user RSP (P5-10's "stash via memory" partially
+   fixed entry but never added a separate r12 save slot). ForkRegs
+   had no r12 field; new_user_for_fork wrote 0 to child's r12 with
+   a comment "broken in both, consistently." Fixed: 16th save slot
+   at [rsp+0x78] in the syscall frame; ForkRegs.r12 plumbed; frame
+   accessor offsets updated (current_user_frame top-0x40→top-0x48,
+   current_user_full_frame top-0x78→top-0x80, sig_dispatch saved-rdi
+   slot top-0x70→top-0x78); `sub rsp,8` before dispatch removed.
+
+8. **`fork_copy_pages` skipped KernelBytes-backed VMAs.** Per-task
+   demand-paging of writable PT_LOADs allocates a private frame
+   and copies the leaked Box content; parent's runtime writes
+   (svcd's units[] table) live in that private frame and never
+   reach the Box. Fork dropped them. Fix: copy mapped pages for any
+   writable VMA regardless of backing.
+
+### Userspace bugs fixed alongside
+
+- **`__attribute__((force_align_arg_pointer))`** added to init.c,
+  svcd.c, login.c (was missing — GCC emitted aligned SSE stores
+  assuming a frame layout the kernel-handed entry rsp didn't give).
+
+- **agetty's `argc` inline-asm idiom was unsound.** `__asm__ volatile
+  ("mov (%%rsp), %0\n\t lea 8(%%rsp), %1" : "=r"(argc), "=r"(argv));`
+  GCC schedules that AFTER the function prologue's callee-saved
+  pushes, so it reads pushed regs instead of argc. svcd/login don't
+  read argc so they got away with it; agetty's `if (argc < 2)` did.
+  Replaced with naked-asm `_start` trampoline that captures argc/argv
+  before any C frame, calls `agetty_main(long argc, char**argv)`.
+  Trampoline alignment was also wrong on first attempt (sub'd 8
+  before call → callee saw rsp 0 mod 16 → GCC's `sub $0x48` made
+  rsp 8 mod 16 → movaps faulted). Fixed: align to 0 mod 16 before
+  call so callee sees 8 mod 16 (SysV).
+
+### sti+hlt fix (e11d0f1, "B04 followup")
+
+Replacing halt_forever with bare `loop { schedule(); }` ran with
+IF=0 inherited from dispatch. tick_poll_uart never fired, login
+parked on tty rx forever. Fix: `sti` once + `schedule(); hlt;` in
+the loop so timer IRQs deliver UART RX bytes to the ringbuffer.
+
+### qemu-mcp send-serial (2483197)
+
+Original qemu-mcp was read-only — qemu_serial drained kernel stdout,
+no way to type into the guest. Added `qemu_send_serial(text,
+append_newline=True)` that writes through QEMU's stdin (which
+`-serial stdio` bridges to guest UART RX). Routed Popen stdin via
+PIPE so the writes have somewhere to go.
+
+**Requires Claude Code restart to pick up the new tool** —
+session-33 ended at this point because tool discovery happens at
+MCP-client connect time and editing server.py mid-session doesn't
+refresh.
+
+### Where to pick up next session
+
+1. Pull `B04-real-boot`. Verify CI on PR #596 still green; if so
+   merge via `gh pr merge 596 --merge --delete-branch=false`.
+2. **First test of the new qemu_send_serial:** `qemu_start("x86_64")`,
+   `qemu_continue()` (or just qemu_serial after a beat), wait for
+   the serial buffer to contain `oxide login:`, then
+   `qemu_send_serial(text="root")` (newline auto-appended), then
+   `qemu_send_serial(text="")` (empty password, since /etc/shadow
+   has root with no password). Expect `/bin/sh` to fire next.
+3. **If keystrokes don't echo at the prompt**, the next bug is in
+   the timer-tick → tick_poll_uart → tty rx ringbuffer chain.
+   Quick check: add a one-line klog inside tick_poll_uart, see if
+   it fires once per timer interval. If not, IDT timer vector
+   isn't installed for the user-task-running case OR LAPIC EOI is
+   missing. State.md (old) had a P2-23b-tty-rx-irq follow-up that
+   suggested upgrading from timer-tick polling to a real UART RX
+   IRQ — that may end up being the right fix.
+4. **If alice/swordfish auth fails**, the next bug is /bin/login's
+   `crypt::verify` call against the seeded shadow hash. The seed
+   was generated by the Rust crypt crate (Drepper-2007), and
+   /bin/login uses the same Drepper impl in C
+   (userspace/shared/sha512crypt.h). Should match bit-for-bit.
+
+### Open follow-ups (not in B04)
+
+- **B04 commit included built userspace binaries** (userspace/login/login
+  etc) as committed artifacts. Need a .gitignore entry for
+  `userspace/*/[!Cc]*` (everything except .c + Cargo.toml).
+- **Kernel-side multi-VT under /dev/tty1..N** — currently all alias
+  to ConsoleInode; need distinct buffers for true VT switching.
+- **/bin/passwd** doesn't yet consult PAM `passwd` stack (P14-11 stub).
+- **xz / zstd decompressors** for newer RPM payloads (P16-06).
+- **rpmdb** (sqlite-backed /var/lib/rpm) (P16-07).
+
 # State 2026-05-06 (session 32 — phases 14/15/16/17 userspace integration, 21 PRs)
 
 ## Headline (session 32, PRs #572 – #592)

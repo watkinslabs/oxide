@@ -20,6 +20,7 @@ static long sc3(long n, long a, long b, long c) {
     long r; __asm__ volatile ("syscall" : "=a"(r) : "0"(n), "D"(a), "S"(b), "d"(c) : "rcx","r11","memory"); return r;
 }
 
+__attribute__((force_align_arg_pointer))
 void _start(void) {
     static const char hello[] = "oxide init: hello from real-musl PID 1\n";
     sc3(SYS_write, 1, (long)hello, sizeof(hello) - 1);

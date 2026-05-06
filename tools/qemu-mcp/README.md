@@ -24,6 +24,7 @@ qemu_disasm(addr, n=8)     disassemble n insns
 qemu_backtrace()           call stack
 qemu_info(what)            `info <what>` (registers, breakpoints, ...)
 qemu_serial(clear=False)   accumulated kernel stdout
+qemu_send_serial(text, …)  type into guest UART RX (login, sh, etc.)
 qemu_stop()                tear down session
 ```
 

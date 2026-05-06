@@ -278,9 +278,9 @@ impl ContextX86_64 {
     ///
     /// Note: user `r12` is unrecoverable (the syscall asm clobbers
     /// it before any save) — the slot in `regs` here is the parent's
-    /// saved-stack slot which actually holds user RSP. `r12` in the
-    /// child is left zero, matching the post-syscall state in the
-    /// parent (broken in both, consistently).
+    /// saved-stack slot which actually holds user RSP. `r12` is now
+    /// preserved (was zeroed pre-B04; broke compiled C `_start` that
+    /// loaded loop-invariant pointers into r12).
     /// # C: O(1)
     pub fn new_user_for_fork(
         stack_top: *mut u8,
@@ -318,7 +318,7 @@ impl ContextX86_64 {
             rsp: sp as u64,
             rbp: regs.rbp,
             rbx: regs.rbx,
-            r12: 0,
+            r12: regs.r12,
             r13: regs.r13,
             r14: regs.r14,
             r15: regs.r15,
@@ -334,6 +334,7 @@ pub struct ForkRegs {
     pub rdi: u64, pub rsi: u64, pub rdx: u64,
     pub r10: u64, pub r8:  u64, pub r9:  u64,
     pub rcx: u64, pub r11: u64,
+    pub r12: u64,
     pub rbx: u64, pub rbp: u64,
     pub r13: u64, pub r14: u64, pub r15: u64,
 }

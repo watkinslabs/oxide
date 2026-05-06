@@ -114,8 +114,9 @@ core::arch::global_asm!(
     // kernel_sys_fork can read them out of the saved frame to
     // build the child's iretq state. Pushed BEFORE the existing
     // 10 saves so the existing [rsp+0x00..0x48] offsets stay
-    // valid; the new 5 sit at [rsp+0x50..0x70] after all 15
-    // pushes. Per P5-10 fork-reg-preservation fix.
+    // valid; the new 6 sit at [rsp+0x50..0x78] after all 16
+    // pushes. Per P5-10 fork-reg-preservation fix + B04 r12 save.
+    "    push r12",                                    // [rsp+0x78]
     "    push r15",                                    // [rsp+0x70]
     "    push r14",                                    // [rsp+0x68]
     "    push r13",                                    // [rsp+0x60]
@@ -153,12 +154,10 @@ core::arch::global_asm!(
     "    mov  rcx, [rsp + 0x18]",                      // a2
     "    mov  r8,  [rsp + 0x20]",                      // a3
     "    mov  r9,  [rsp + 0x28]",                      // a4
-    // SysV requires rsp 16-aligned at `call`. 15 pushes = 0x78
-    // (8 mod 16) so we sub 8 to re-align before the call; add it
-    // back after dispatch returns.
-    "    sub  rsp, 8",
+    // SysV requires rsp 16-aligned at `call`. 16 pushes = 0x80
+    // (0 mod 16) — no extra sub needed. (Was sub 8 / add 8 before
+    // we added the r12 save in B04.)
     "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
-    "    add  rsp, 8",
     // Restore user-side rdi/rsi/rdx/r10/r8/r9 (Linux ABI preserve
     // rule) and the 5 callee-saved regs we additionally stashed.
     // rax holds the syscall return value from dispatch -- leave it.
@@ -173,6 +172,7 @@ core::arch::global_asm!(
     "    mov  r13, [rsp + 0x60]",
     "    mov  r14, [rsp + 0x68]",
     "    mov  r15, [rsp + 0x70]",
+    "    mov  r12, [rsp + 0x78]",
     // Discard the 7 saved-arg slots (nr + a0..a5).
     "    add  rsp, 0x38",
     // Restore user state from the per-task syscall-stack tail.
@@ -216,11 +216,10 @@ extern "C" {
 /// # C: O(1)
 pub fn current_user_frame() -> *mut [u64; 3] {
     let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
-    // After the P5-10 fork-reg fix, the asm pushes 5 extra
-    // callee-saved regs FIRST (r15/r14/r13/rbp/rbx at top-8..top-40),
-    // then the original 10. The 3-quadword tail (RIP, RFLAGS, RSP)
-    // is now at top-0x40..top-0x28 instead of top-0x18..top-0x08.
-    (top - 0x40) as *mut [u64; 3]
+    // B04: 16 pushes total (P5-10's 5 + the original 10 + a new r12
+    // slot at top-0x08). RIP/RFLAGS/USER_RSP triple is at base+0x38
+    // where base = top-0x80, so [top-0x48..top-0x30].
+    (top - 0x48) as *mut [u64; 3]
 }
 
 /// Pointer to the full saved-syscall block on the current task's
@@ -239,7 +238,8 @@ pub fn current_user_frame() -> *mut [u64; 3] {
 /// # C: O(1)
 pub fn current_user_full_frame() -> *mut u64 {
     let top = OXIDE_SYSCALL_KSTACK.load(core::sync::atomic::Ordering::Acquire);
-    (top - 0x78) as *mut u64
+    // 16 saves total (B04 r12 slot at +0x78). Base = top - 0x80.
+    (top - 0x80) as *mut u64
 }
 
 /// Top of the active task's per-task syscall kernel stack -- same
