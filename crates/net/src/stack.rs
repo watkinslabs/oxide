@@ -29,6 +29,8 @@ use crate::netdev::{IfaceRegistry, NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
 use crate::route::RouteTable;
 use crate::udp::UdpHdr;
+use crate::tcp_hdr::{TcpHdr, flags as tcp_flags, TCP_HDR_MIN_LEN};
+use crate::tcp_conn::{TcpConn, Endpoint};
 
 /// Per-port UDP rx queue. The bind-syscall reads from here.
 pub struct UdpRxQueue {
@@ -39,12 +41,42 @@ pub struct UdpRxQueue {
     pub q: VecDeque<(Ipv4Addr, u16, Vec<u8>)>,
 }
 
+/// Connection 4-tuple key for TCP demultiplexing.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TcpKey {
+    pub local_ip:    Ipv4Addr,
+    pub local_port:  u16,
+    pub remote_ip:   Ipv4Addr,
+    pub remote_port: u16,
+}
+
+/// Listening socket key (only local side).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TcpListenKey { pub local_ip: Ipv4Addr, pub local_port: u16 }
+
+/// Stack-owned per-connection record. Wraps the TcpConn TCB in
+/// its own Spinlock so demux + app calls don't contend with the
+/// listener table lock. Cheap to clone the Arc.
+pub struct TcpEntry {
+    pub conn: Spinlock<TcpConn, StackLockClass>,
+}
+
+pub struct TcpListenEntry {
+    /// Backlog of accepted-but-not-yet-claimed Arc<TcpEntry>.
+    pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
+    pub local: Endpoint,
+}
+
 pub struct NetStack {
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
     udp:        Spinlock<BTreeMap<u16, UdpRxQueue>, StackLockClass>,
+    tcp_conns:    Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
+    tcp_listens:  Spinlock<BTreeMap<TcpListenKey, Arc<TcpListenEntry>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     next_ip_id: Spinlock<u16, StackLockClass>,
+    /// Monotonic ISN base for TCP active opens.
+    next_isn: Spinlock<u32, StackLockClass>,
 }
 
 impl NetStack {
@@ -53,7 +85,10 @@ impl NetStack {
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
             udp:    Spinlock::new(BTreeMap::new()),
+            tcp_conns:   Spinlock::new(BTreeMap::new()),
+            tcp_listens: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
+            next_isn:   Spinlock::new(0x1000_0000),
         }
     }
 
@@ -121,8 +156,117 @@ impl NetStack {
         iface.xmit(p)
     }
 
+    /// Open a passive listener at (`local_ip`, `local_port`).
+    /// Returns the listen-entry Arc so callers can poll `accept`.
+    /// `Eaddrinuse` if the (ip, port) tuple is already a listener.
+    /// # C: O(log N)
+    pub fn tcp_listen(&self, local_ip: Ipv4Addr, local_port: u16)
+        -> NetResult<Arc<TcpListenEntry>>
+    {
+        let key = TcpListenKey { local_ip, local_port };
+        let mut g = self.tcp_listens.lock();
+        if g.contains_key(&key) { return Err(NetError::Eaddrinuse); }
+        let entry = Arc::new(TcpListenEntry {
+            accept_q: Spinlock::new(VecDeque::new()),
+            local: Endpoint { ip: local_ip, port: local_port },
+        });
+        g.insert(key, entry.clone());
+        Ok(entry)
+    }
+
+    /// Open an active TCP connection from `local` to `remote`.
+    /// Emits the SYN, parks the half-open conn in the demux table.
+    /// Caller polls the returned `TcpEntry`'s state until it
+    /// reaches `Established` (or until a Reset happens).
+    /// # C: O(log N) demux insert + 1 segment xmit
+    pub fn tcp_connect(&self, local_ip: Ipv4Addr, local_port: u16,
+                        remote_ip: Ipv4Addr, remote_port: u16)
+        -> NetResult<Arc<TcpEntry>>
+    {
+        let isn = {
+            let mut s = self.next_isn.lock();
+            *s = s.wrapping_add(0x1000);
+            *s
+        };
+        let mut conn = TcpConn::new_client(
+            Endpoint { ip: local_ip, port: local_port },
+            Endpoint { ip: remote_ip, port: remote_port },
+            isn,
+        );
+        let syn = conn.active_open().map_err(|_| NetError::Eio)?;
+        let entry = Arc::new(TcpEntry { conn: Spinlock::new(conn) });
+        let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
+        self.tcp_conns.lock().insert(key, entry.clone());
+        self.send_l4_over_ipv4(local_ip, remote_ip, IpProto::Tcp, &syn)?;
+        Ok(entry)
+    }
+
+    /// Pop one accepted connection from a listener's backlog.
+    /// Returns `None` if no connection is ready.
+    /// # C: O(1)
+    pub fn tcp_accept(&self, listener: &TcpListenEntry) -> Option<Arc<TcpEntry>> {
+        listener.accept_q.lock().pop_front()
+    }
+
+    /// Application sends `data` on an established connection.
+    /// Returns the number of bytes drained into segments and
+    /// transmitted; bytes still queued (waiting for ACK clocking)
+    /// stay in the conn's send_buf for output() to drain later.
+    /// # C: O(data + N segments)
+    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8]) -> NetResult<usize> {
+        let segs;
+        let (src, dst) = {
+            let mut c = entry.conn.lock();
+            c.send(data);
+            segs = c.output(1500);
+            (c.local.ip, c.remote.ip)
+        };
+        for s in &segs {
+            self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s)?;
+        }
+        Ok(data.len())
+    }
+
+    /// Application drains up to `max` bytes from the recv buffer.
+    /// # C: O(min(max, recv_buf.len()))
+    pub fn tcp_recv(&self, entry: &TcpEntry, max: usize) -> Vec<u8> {
+        entry.conn.lock().recv(max)
+    }
+
+    /// Application initiates graceful close: emits FIN, transitions
+    /// the conn out of ESTABLISHED. The demux remains responsible
+    /// for the rest of the close handshake (CloseWait, etc.).
+    /// # C: O(1)
+    pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
+        let (seg, src, dst) = {
+            let mut c = entry.conn.lock();
+            let s = c.local_close().map_err(|_| NetError::Eio)?;
+            (s, c.local.ip, c.remote.ip)
+        };
+        self.send_l4_over_ipv4(src, dst, IpProto::Tcp, &seg)
+    }
+
+    /// Wrap an L4 segment in IPv4 + xmit it via the routing table.
+    /// # C: O(payload)
+    fn send_l4_over_ipv4(&self, src: Ipv4Addr, dst: Ipv4Addr,
+                          proto: IpProto, l4: &[u8]) -> NetResult<()>
+    {
+        let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
+        let iface = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?;
+        let total = IPV4_HDR_LEN + l4.len();
+        let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
+        p.put(l4.len()).map_err(|_| NetError::Enobufs)?
+            .copy_from_slice(l4);
+        let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
+        push_ipv4_header(&mut p, src, dst, proto, id)
+            .map_err(|_| NetError::Enobufs)?;
+        p.proto = crate::addr::eth_p::IPV4;
+        p.iface = Some(route.iface);
+        iface.xmit(p)
+    }
+
     /// Deliver an L3 frame (starting at the IPv4 header) up the
-    /// stack: parse IP, demux to ICMP / UDP, dispatch.
+    /// stack: parse IP, demux to ICMP / UDP / TCP, dispatch.
     /// # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
@@ -161,7 +305,59 @@ impl NetStack {
                     q.q.push_back((hdr.src, udp.src_port, body.to_vec()));
                 }
             }
+            p if p == IpProto::Tcp as u8 => self.deliver_tcp(iface, hdr.src, hdr.dst, payload)?,
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// TCP demux. Look up an established connection by 4-tuple
+    /// first; on miss, look for a matching listener and (on SYN)
+    /// instantiate a new connection from it. Drives the matched
+    /// TcpConn's `input`; xmit any returned response segment.
+    /// # C: O(log N) lookup + O(payload) handler
+    fn deliver_tcp(&self, _iface: NetIfaceId,
+                    src_ip: Ipv4Addr, dst_ip: Ipv4Addr, seg: &[u8])
+        -> NetResult<()>
+    {
+        if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
+        let hdr = match TcpHdr::parse(seg, src_ip, dst_ip) {
+            Ok(h) => h, Err(_) => return Ok(()),
+        };
+        let key = TcpKey {
+            local_ip: dst_ip, local_port: hdr.dst_port,
+            remote_ip: src_ip, remote_port: hdr.src_port,
+        };
+        // Established-conn lookup first.
+        let entry = {
+            let g = self.tcp_conns.lock();
+            g.get(&key).cloned()
+        };
+        if let Some(entry) = entry {
+            let resp = entry.conn.lock().input(src_ip, dst_ip, seg)
+                .map_err(|_| NetError::Einval)?;
+            if let Some(r) = resp {
+                self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
+            }
+            return Ok(());
+        }
+        // Listener path: only SYNs spawn new conns.
+        if (hdr.flags & tcp_flags::SYN) == 0 { return Ok(()); }
+        let lkey = TcpListenKey { local_ip: dst_ip, local_port: hdr.dst_port };
+        let listener = {
+            let g = self.tcp_listens.lock();
+            g.get(&lkey).cloned()
+                .or_else(|| g.get(&TcpListenKey { local_ip: Ipv4Addr::ANY, local_port: hdr.dst_port }).cloned())
+        };
+        let listener = match listener { Some(l) => l, None => return Ok(()) };
+        let mut new_conn = TcpConn::new_listener(listener.local);
+        let resp = new_conn.input(src_ip, dst_ip, seg)
+            .map_err(|_| NetError::Einval)?;
+        let new_entry = Arc::new(TcpEntry { conn: Spinlock::new(new_conn) });
+        self.tcp_conns.lock().insert(key, new_entry.clone());
+        listener.accept_q.lock().push_back(new_entry);
+        if let Some(r) = resp {
+            self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
         }
         Ok(())
     }
@@ -252,6 +448,39 @@ mod tests {
         stack.bind_udp(Ipv4Addr::LOOPBACK, 100).unwrap();
         assert_eq!(stack.bind_udp(Ipv4Addr::LOOPBACK, 100).err().unwrap(),
                    NetError::Eaddrinuse);
+    }
+
+    #[test]
+    fn tcp_handshake_via_loopback() {
+        let stack = NetStack::new();
+        let (id, lo) = stack.register_loopback();
+        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234).unwrap();
+        let client = stack.tcp_connect(
+            Ipv4Addr::LOOPBACK, 50000,
+            Ipv4Addr::LOOPBACK, 1234,
+        ).unwrap();
+        // Drain lo a couple of times: SYN → SYN+ACK → ACK.
+        for _ in 0..3 { stack.drain_loopback(id, &lo); }
+        let server = stack.tcp_accept(&listener).expect("accepted");
+        assert_eq!(client.conn.lock().state, crate::tcp_state::TcpState::Established);
+        assert_eq!(server.conn.lock().state, crate::tcp_state::TcpState::Established);
+    }
+
+    #[test]
+    fn tcp_data_round_trip_via_loopback() {
+        let stack = NetStack::new();
+        let (id, lo) = stack.register_loopback();
+        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234).unwrap();
+        let client = stack.tcp_connect(
+            Ipv4Addr::LOOPBACK, 50000,
+            Ipv4Addr::LOOPBACK, 1234,
+        ).unwrap();
+        for _ in 0..3 { stack.drain_loopback(id, &lo); }
+        let server = stack.tcp_accept(&listener).unwrap();
+        stack.tcp_send(&client, b"oxide-tcp-payload").unwrap();
+        for _ in 0..3 { stack.drain_loopback(id, &lo); }
+        let got = stack.tcp_recv(&server, 1024);
+        assert_eq!(&got[..], b"oxide-tcp-payload");
     }
 
     #[test]
