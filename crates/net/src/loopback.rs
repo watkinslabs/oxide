@@ -12,22 +12,37 @@ use alloc::collections::VecDeque;
 use sync::{Spinlock, Socket as RxLockClass};
 
 use crate::addr::MacAddr;
-use crate::netdev::{NetDev, NetError, NetResult};
+use crate::netdev::{NetDev, NetError, NetResult, NetStats};
+use core::sync::atomic::{AtomicU64, Ordering};
 use crate::pkt::Pkt;
 
 pub struct LoopbackDev {
     rx: Spinlock<VecDeque<Pkt>, RxLockClass>,
+    rx_pkts:    AtomicU64,
+    rx_bytes:   AtomicU64,
+    tx_pkts:    AtomicU64,
+    tx_bytes:   AtomicU64,
+    tx_dropped: AtomicU64,
 }
 
 impl LoopbackDev {
     pub fn new() -> Self {
-        Self { rx: Spinlock::new(VecDeque::new()) }
+        Self {
+            rx: Spinlock::new(VecDeque::new()),
+            rx_pkts: AtomicU64::new(0), rx_bytes: AtomicU64::new(0),
+            tx_pkts: AtomicU64::new(0), tx_bytes: AtomicU64::new(0),
+            tx_dropped: AtomicU64::new(0),
+        }
     }
 
-    /// Drain one packet from the rx queue. Caller is the kernel's
-    /// soft-IRQ `rx_poll` (not yet wired); v1 callers pull manually.
+    /// Drain one packet from the rx queue. Bumps rx counters.
     /// # C: O(1)
-    pub fn rx_pop(&self) -> Option<Pkt> { self.rx.lock().pop_front() }
+    pub fn rx_pop(&self) -> Option<Pkt> {
+        let p = self.rx.lock().pop_front()?;
+        self.rx_pkts.fetch_add(1, Ordering::Relaxed);
+        self.rx_bytes.fetch_add(p.len() as u64, Ordering::Relaxed);
+        Some(p)
+    }
 
     /// Number of packets currently parked in rx.
     /// # C: O(1)
@@ -45,9 +60,26 @@ impl NetDev for LoopbackDev {
         // populated `pkt.proto` (ETH_P_*) so the IP demux can
         // fire when soft-IRQ drains rx.
         let mut g = self.rx.lock();
-        if g.len() >= 1024 { return Err(NetError::Enobufs); }
+        if g.len() >= 1024 {
+            self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(NetError::Enobufs);
+        }
+        let n = pkt.len() as u64;
         g.push_back(pkt);
+        self.tx_pkts.fetch_add(1, Ordering::Relaxed);
+        self.tx_bytes.fetch_add(n, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn stats(&self) -> NetStats {
+        NetStats {
+            rx_packets: self.rx_pkts.load(Ordering::Relaxed),
+            rx_bytes:   self.rx_bytes.load(Ordering::Relaxed),
+            tx_packets: self.tx_pkts.load(Ordering::Relaxed),
+            tx_bytes:   self.tx_bytes.load(Ordering::Relaxed),
+            tx_dropped: self.tx_dropped.load(Ordering::Relaxed),
+            ..NetStats::default()
+        }
     }
 }
 
