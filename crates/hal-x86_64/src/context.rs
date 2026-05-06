@@ -217,9 +217,10 @@ impl ContextX86_64 {
     /// User-mode flavor of `new_kernel_with_irq_frame`. The synthetic
     /// IRQ frame uses USER selectors (DPL=3) and `iretq` therefore
     /// transitions to ring 3 with CS=`USER_CS`, SS=`USER_DS`, RIP=
-    /// `user_ip`, RSP=`user_sp`. RFLAGS=0x002 keeps IF=0 across the
-    /// transition so the user side runs IRQs-off until its first
-    /// safe-point.
+    /// `user_ip`, RSP=`user_sp`. RFLAGS=0x202 (IF=1, reserved bit 1)
+    /// so user tasks are preemptible by the LAPIC timer. Ring-3 can
+    /// neither sti nor cli (IOPL=0), so the IF state baked into the
+    /// iretq frame is what user runs with for its lifetime.
     ///
     /// Layout matches the kernel-mode flavor — same scratch + vec/err
     /// + iretq frame shape — so the shared `oxide_irq_resume_user`
@@ -238,7 +239,7 @@ impl ContextX86_64 {
             // = 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
             p.sub(1).write(crate::gdt::USER_DS as u64);     // SS  (user data)
             p.sub(2).write(user_sp);                         // RSP (user stack)
-            p.sub(3).write(0x002);                           // RFLAGS, IF=0
+            p.sub(3).write(0x202);                           // RFLAGS, IF=1
             p.sub(4).write(crate::gdt::USER_CS as u64);     // CS  (user code)
             p.sub(5).write(user_ip);                         // RIP (user entry)
             // synthetic vec/err pad (matches IRQ stub layout).
