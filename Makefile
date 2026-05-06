@@ -56,11 +56,22 @@ ci: lint test build build-debug
 
 # ---- qemu -----------------------------------------------------------------
 
+# `debug-boot` is required for the boot UART sink to install (without
+# it, klog drops everything — including /dev/console writes from
+# userspace, so login never appears). It also enables operational-
+# pulse log lines like `[INFO] boot: kernel ready, halting` so you
+# can tell the kernel is alive while waiting for the login prompt.
+# `debug-sched` is intentionally excluded — that's the per-syscall
+# trace flood. FEATURES=... appends extras (e.g. FEATURES=debug-irq).
+QEMU_FEATURES_X86 := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
+QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
+comma := ,
+
 qemu-x86:
-	$(XTASK) qemu --arch x86_64  $(if $(FEATURES),--features $(FEATURES),)
+	$(XTASK) qemu --arch x86_64  --features "$(QEMU_FEATURES_X86)"
 
 qemu-arm:
-	$(XTASK) qemu --arch aarch64 $(if $(FEATURES),--features $(FEATURES),)
+	$(XTASK) qemu --arch aarch64 --features "$(QEMU_FEATURES_ARM)"
 
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
