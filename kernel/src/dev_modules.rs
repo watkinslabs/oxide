@@ -61,6 +61,20 @@ pub fn snapshot() -> Vec<(usize, usize, usize)> {
 /// # C: O(1)
 pub fn count() -> usize { REGISTRY.lock().len() }
 
+/// Unload module at registry slot `idx`. Replaces the entry
+/// with `None`-equivalent (we use a tombstone Arc clone of an
+/// empty marker since the registry is Vec<Arc<…>>; v1 takes a
+/// simpler path: drain, drop, rebuild). Returns `false` if the
+/// idx is out of range. Real Linux delete_module checks ref
+/// count before unloading; v1 always unloads.
+/// # C: O(N)
+pub fn unload(idx: usize) -> bool {
+    let mut g = REGISTRY.lock();
+    if idx >= g.len() { return false; }
+    g.remove(idx);
+    true
+}
+
 /// Module name for the boot trace. Currently fixed; real impl
 /// reads .modinfo "name=…".
 #[allow(dead_code)]
