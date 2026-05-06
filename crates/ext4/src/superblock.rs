@@ -31,9 +31,7 @@ pub enum SuperblockError {
     BadInodeSize,
 }
 
-/// Parsed ext4 superblock fields used by the read path. We
-/// intentionally pull only what we need — the upstream struct
-/// has many more fields for write/journal/checksum.
+/// Parsed ext4 superblock fields used by both read + write paths.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Superblock {
     pub inodes_count:    u32,
@@ -48,7 +46,20 @@ pub struct Superblock {
     pub feature_incompat: u32,
     pub feature_ro_compat: u32,
     pub inode_size:      u16,
+    /// `s_first_data_block`. 1 for 1 KiB-block FS (block 0 = boot
+    /// sector pad), 0 otherwise. Drives group→physical-block math.
+    pub first_data_block: u32,
+    pub free_blocks_count: u64,
+    pub free_inodes_count: u32,
+    /// Inode of journal file (`s_journal_inum`). 0 ⇒ no journal.
+    pub journal_inum: u32,
 }
+
+/// Field offsets we mutate when persisting counter updates back to
+/// the on-disk superblock. Exposed for `mount`'s writeback path.
+pub const SB_OFF_FREE_BLOCKS_LO: usize = 0x0C;
+pub const SB_OFF_FREE_INODES:    usize = 0x10;
+pub const SB_OFF_FREE_BLOCKS_HI: usize = 0x150;
 
 /// Read a little-endian u16 / u32 / u64 at offset `o`. Caller
 /// must ensure `buf.len() >= o + N`.
@@ -83,6 +94,8 @@ impl Superblock {
         if inode_size < 128 || inode_size as u32 > block_size {
             return Err(SuperblockError::BadInodeSize);
         }
+        let free_blocks_lo = rd_u32(buf, SB_OFF_FREE_BLOCKS_LO) as u64;
+        let free_blocks_hi = rd_u32(buf, SB_OFF_FREE_BLOCKS_HI) as u64;
         Ok(Superblock {
             inodes_count:      rd_u32(buf, 0x00),
             blocks_count_lo:   rd_u32(buf, 0x04),
@@ -94,6 +107,10 @@ impl Superblock {
             feature_incompat:  rd_u32(buf, 0x60),
             feature_ro_compat: rd_u32(buf, 0x64),
             inode_size,
+            first_data_block:  rd_u32(buf, 0x14),
+            free_blocks_count: free_blocks_lo | (free_blocks_hi << 32),
+            free_inodes_count: rd_u32(buf, SB_OFF_FREE_INODES),
+            journal_inum:      rd_u32(buf, 0xE0),
         })
     }
 

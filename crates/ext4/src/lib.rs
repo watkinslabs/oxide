@@ -31,4 +31,7 @@ pub mod gdt;
 pub use gdt::{GroupDesc, GdtError, desc_size_for, parse_descriptor, locate_inode};
 
 pub mod mount;
-pub use mount::{Mount, MountError};
+pub use mount::{Mount, MountError, MountState, MountStateGuard};
+
+pub mod balloc;
+pub use balloc::{find_first_clear, group_first_block};
