@@ -48,6 +48,9 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 520 | `P9-20-more-tools` | `/bin/{pwd, whoami, uname}`. |
 | 521 | `P9-21-poll-readiness` | `vfs::Inode::poll()` non-blocking readiness. POLL_IN/OUT/HUP/ERR/PRI/RDHUP constants. `InetSocket::poll` per SockKind (UDP/TCP-listener/TCP-conn/Unix/Unix-listener). `epoll_wait` now intersects each entry's events with the inode's actual poll mask, skipping zero-overlap entries (real level-triggered ready set). |
 | 522 | `P9-22-userspace-nc` | `/bin/nc` minimal netcat: `-l <port>` listen mode + `<host> <port>` client mode. Tiny IPv4 parser, `__builtin_bswap` for htons/htonl. |
+| 524 | `P10-02-relocator` | `modules::relocator::apply` — x86_64 ELF relocator. R_X86_64_64 / PC32 / PLT32 / 32 / 32S / NONE. OOR check on signed 32-bit reloc encodings. |
+| 525 | `P10-03-loader` | `modules::loader::load_module(bytes, resolver) → LoadedModule` — section placement (heap-Vec per ALLOC section, SHT_NOBITS = zeros), symbol resolution (UNDEF → resolver, defined → section_vbase + value), Rela walk + `relocator::apply`. 2 synthetic-ELF tests. |
+| 526 | `P10-04-finit-module-syscall` | `kernel/src/dev_modules.rs` global REGISTRY + KernelSymResolver. NR_INIT_MODULE (copy from user) + NR_FINIT_MODULE (read via fd) → `load_blob`. Cap 16 MiB. Module unload (NR_DELETE_MODULE) is P10-05. |
 
 ## Phase ladder (post-session-30)
 
@@ -63,15 +66,16 @@ Phase 8 (net) crossed from "spec frozen, addr/pkt/tcp_state stubs only" to a wor
 | 7a | block + page cache | done |
 | 7b | ext4 RW + JBD2 | done |
 | 8 | net | **functional** — IPv4/UDP/TCP/ICMP/AF_UNIX (socketpair) + loopback netdev + AF_INET syscalls + procfs entries; IPv6 / ARP / NDP / netfilter / netlink / virtio-net / TCP retransmit timer + congestion control / external extent index nodes ride later |
-| 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, basic userspace utils landed; metadata_csum, depth>0 extents, full TCP perf knobs, kernel warning cleanup still open |
+| 9 | hardening, observability, modules | ongoing — atomic rename, procfs net, sh background jobs, 24 userspace utils, /proc/net/*, /sys/class/net/lo/*, klog ring + dmesg, vfs::Inode::poll readiness, AF_UNIX path-bound, sendmsg/recvmsg, metadata_csum still open |
+| 10 | modules loader | **functional core** — ELF ET_REL parse + x86_64 relocator + section placement + symbol resolution; NR_INIT_MODULE / NR_FINIT_MODULE wired. Per-module W^X memory + signature verification + delete_module ride P10-05+ |
 
 ## End-of-session-30 verified-green
-- `cargo test --workspace` → 798 (up from 752 at start of session 30, 702 at start of session 29).
+- `cargo test --workspace` → 804 (up from 752 at start of session 30, 702 at start of session 29).
 - `make x86` clean (kernel warnings 18 → 11).
 - `make rootfs` builds 24 userspace binaries: sh / init / udp_echo / tcp_echo / kill / sleep / true / false / hostname / mkdir / rm / cat / echo / ps / ls / mount / cp / wc / head / dmesg / pwd / whoami / uname / nc.
 - Net + AF_UNIX socket dispatch surface has zero Enosys responses.
 - vfs::Inode gains poll(); epoll_wait reports the actual ready set.
-- ELF ET_REL parser foundation lays groundwork for the kernel modules loader (P10-02+).
+- **Phase 10 modules loader live**: ELF ET_REL parse + relocate + place + register; NR_INIT_MODULE / NR_FINIT_MODULE delegate to it. Per-module W^X memory + signature verification + delete_module land P10-05+.
 
 ## Open follow-ups (post-phase-8 landing)
 - **Depth=2 ext4 extent trees**: depth=1 + 4 idx records still bounds files at 4 × leaf_max × 0x8000 blocks. depth=2 (one more level of interior nodes) is the bigger arc.
