@@ -756,6 +756,7 @@ Side-effects worth flagging from session 28:
 | #465 | `P7b-04-ext4-inode-alloc` | `ialloc.rs`: `alloc_inode` (skips reserved 1..=10), `free_inode`, `init_inode`, `create_file`, `create_dir`, `unlink` (decs nlink, on 0 frees data blocks + inode). |
 | #466 | `P7b-05-vfs-ext4-rw` | `Mount::write_at / truncate_inode / set_inode_size / adjust_nlink`. `Ext4FileInode` writeable. New `dev_ext4::create_at / unlink_at / mkdir_at / rmdir_at / rename_at`. New `kernel/src/syscall_glue_namei.rs` wires NR_UNLINK / UNLINKAT / MKDIR / MKDIRAT / RMDIR / RENAME / RENAMEAT / RENAMEAT2 → ext4 for real-fs paths; `open(O_CREAT)` under prefer_ext4 → create_at. |
 | #467 | `P7b-06-jbd2` | New `crates/jbd2/`: BlockHeader (BE magic 0xC03B3998), JournalSuperblock (v1+v2), descriptor walker (legacy + 64bit + UUID), 2-pass replay (revoke set + descriptor→data→commit). `crates/ext4/src/journal.rs::ExtentLogReader` maps journal-block-index → fs LBA via journal-inode extents. `Mount::recover_journal()` runs replay if `INCOMPAT_RECOVER + s_journal_inum != 0`; marks log clean. `Mount::open` auto-runs replay. Test fixture `mini-j.img` (2 MiB ext4 with 1024-block journal). |
+| #469 | `P5-11-sh-multipipe-execfork` | `userspace/sh/sh.c`: multi-pipe (`a \| b \| c`, up to 8 segments) and absolute-path external-binary fork+execve+wait4. Closes both follow-ups from session 28 EOD. |
 
 End-of-session-29 verified-green:
 - `cargo test --workspace` → 743 (up from 702). All green.
