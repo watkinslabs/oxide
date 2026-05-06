@@ -707,6 +707,23 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_dec_u64(m2);
                 klog::write_raw(b"\n");
             }
+            // P8 boot smoke: loopback UDP send-then-recv +
+            // ICMP echo round-trip via the in-kernel net stack.
+            {
+                let s = crate::dev_net::stack();
+                let _ = s.bind_udp(net::Ipv4Addr::LOOPBACK, 7777);
+                let _ = s.send_udp_to(
+                    net::Ipv4Addr::LOOPBACK, 5555,
+                    net::Ipv4Addr::LOOPBACK, 7777,
+                    b"oxide-boot-smoke",
+                );
+                crate::dev_net::drain_loopback();
+                if let Some((_, _, payload)) = s.recv_udp(7777) {
+                    klog::write_raw(b"[INFO]  net udp lo round-trip: ");
+                    klog::write_raw(&payload);
+                    klog::write_raw(b"\n");
+                }
+            }
         }
     }
 
