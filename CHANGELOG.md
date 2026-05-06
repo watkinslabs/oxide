@@ -703,3 +703,41 @@ End-of-session-26 verified-green:
 - `make test` → 637 passed, 0 failed (603 → 637).
 - `make x86`, `make arm` clean — verified BEFORE every merge after the B13 hotfix incident.
 - `make qemu-x86 --features debug-all` → all boot-time smokes pass; init-loop iterations exit cleanly.
+
+---
+
+## Session 27 (PRs #437 – #449) — 2026-05-05
+
+**Subject**: Phase 6 ext4 RO landed (driver + mount + execve resolve through it).
+
+See `state.md` history (commit 44baaab `docs: state.md — Phase 6 ext4 mounted in-kernel`) for the full table; in short: ext4 superblock / inode / dir / GDT / mount crate (#437-#442), real `mke2fs` integration test (#442), kernel-side `dev_ext4` mount-at-boot (#447), execve resolves binaries from ext4 with sparse-hole zero-fill semantics (#448).
+
+---
+
+## Session 28 (PRs #450 – #460) — 2026-05-05
+
+**Subject**: Phase 7a page cache + Phase 7b in-place writes; oxide-sh becomes a real shell (`;` `>` `|`); 3 latent x86-64 kernel ABI bugs fixed.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #450 | `P7a-01-pagecache-wire` | `block::PageCache` (closure-based fetch) wired through `dev_ext4::read_file`. First reads go through cache; cold miss evicts. Decouples cache from FS internals. |
+| #451 | `P7a-02-ext4-vfs-open` | `Ext4FileInode` wraps cached file bytes; `lookup_inode` returns it so `sys_openat` + `read` round-trip via VFS without re-reading disk. |
+| #452 | `P7a-03-ext4-priority` | `prefer_ext4` path-prefix logic: `/bin /etc /usr /sbin /lib /opt /home /root` + `/init` + `/hello.txt` try ext4 first; pseudo paths still hit devfs/procfs first. Linux mount-table shape. |
+| #453 | `P7a-04-fresh-as-per-task` | `spawn_user_blob_smoke` allocates a fresh `Arc<AddressSpace>` + per-task PML4 via `new_user_pml4`. Two binaries no longer overlap PIE pages. Unblocks running init + shell concurrently. |
+| #454 | `P7b-01-ext4-rw-inplace` | `ImageDisk` (Vec-backed writable) replaces `StaticDisk`. `Mount::write_file_block` walks inline extents → BlockDevice writes. `dev_ext4::write_file` does in-place writes with `PAGE_CACHE.invalidate`. RW smoke writes `/hello.txt`. |
+| #455 | `C50-xtask-rootfs` | `xtask rootfs` reproducible builder: musl-gcc on every `userspace/<bin>/<bin>.c`, dd+mkfs.ext4, debugfs to populate `/bin/* /etc/{issue,os-release} /hello.txt`. Idempotent; `make rootfs` rebuilds on userspace edit. |
+| #456 | `P5-06-cwd-chdir` | sh's `cd` / `pwd` / `uname` builtins via real `sys_chdir` / `sys_getcwd` / `sys_uname`. Prompt shows live cwd. |
+| #457 | `P5-07-sh-pipes` | sh `>` redirection: opens path with `O_WRONLY\|O_CREAT\|O_TRUNC`, swaps process-global `out_fd`, runs builtin, restores. `echo foo > /tmp/x ; cat /tmp/x` round-trips through tmpfs. |
+| #458 | `P5-08-sh-semicolon` | sh `;` command separator: outer split → `run_one` per segment. Multiple builtins per line. |
+| #459 | `P5-09-sh-exec` | `exec <path>` builtin via `sys_execve`. Single-shot replace; `exec /bin/hello` proves user → kernel execve roundtrip from real-musl caller. |
+| #460 | `P5-10-sh-pipe` | **Big one.** sh `\|` pipe: `run_segment` splits on a single `\|`, opens pipe2, forks twice, dup2's the appropriate end into stdin/stdout, builtin runs, exit(0). Parent close+close+wait4 both. Bare `cat` reads stdin (pipe-rhs). **Three latent kernel bugs fixed:** (a) `kernel_sys_fork` now propagates the parent's full register state (15-quadword saved block via new `current_user_full_frame()` + `ForkRegs` + `new_user_for_fork`); pre-fix the child resumed with all caller-saved regs zeroed and the C compiler's reg-preservation assumption blew up at the first non-trivial child code path. (b) `r12` preservation across syscalls — entry asm stashes user RSP via memory slot `OXIDE_SYSCALL_USER_RSP_SAVE` instead of clobbering r12. (c) ELF loader head-pads the KernelBytes slice when `p_vaddr` isn't page-aligned (shell's `out_fd` initializer was being lost; writes went to fd 0). |
+
+End-of-session-28 verified-green:
+- `cargo test --workspace` → 71 test groups, 0 failed (~702 individual; up from 637).
+- `make x86` clean.
+- `make qemu-x86 --features debug-all` → boot trace shows `pipe-test` echoed via real pipe; both children exit code=0; existing init/shell/sigtest binaries still work.
+
+Side-effects worth flagging from session 28:
+- `sig_dispatch`'s saved-rdi write moved from `top-0x48` to `top-0x70` (15-quadword layout shift). Any other code reading from saved-syscall offsets needs the same audit.
+- `sysretq` epilogue restores rbx/rbp/r13/r14/r15 from the new callee-saved slots before the final `pop rcx; pop r11; pop rsp`.
+- `OXIDE_SYSCALL_USER_RSP_SAVE` is UP-only; rides per-CPU `gs:0` once SMP gsbase per-CPU lands.
