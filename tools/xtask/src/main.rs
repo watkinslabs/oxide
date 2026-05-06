@@ -36,6 +36,7 @@ fn main() -> ExitCode {
         "kernel"    => cmd_kernel(rest),
         "test"      => cmd_test(rest),
         "user"      => stub("user", "29a"),
+        "rootfs"    => cmd_rootfs(rest),
         "image"     => image_qemu::cmd_image(rest),
         "qemu"      => image_qemu::cmd_qemu(rest),
         "soak"      => stub("soak", "40"),
@@ -51,8 +52,97 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|image|test|qemu|soak|bench|spec-lint|doc-check> [args]");
+    eprintln!("usage: xtask <kernel|user|image|test|qemu|rootfs|soak|bench|spec-lint|doc-check> [args]");
     ExitCode::from(2)
+}
+
+// ---------------------------------------------------------------------------
+// rootfs: build kernel/blobs/rootfs.img from source userspace binaries
+// ---------------------------------------------------------------------------
+
+/// Reproducible userspace rootfs image builder. Runs:
+///   1. musl-gcc on every userspace/<bin>/<bin>.c we know about
+///   2. dd + mkfs.ext4 to create a 1 MiB ext4 image
+///   3. debugfs to populate /bin/* and /etc/{issue,os-release,passwd,…}
+///
+/// Output: kernel/blobs/rootfs.img (overwrites in place). Idempotent;
+/// rerun whenever the userspace sources change. The kernel image
+/// then picks the new bytes up via `include_bytes!` on the next
+/// `xtask kernel` build.
+fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
+    let repo = image_qemu::repo_root();
+    let blobs = repo.join("kernel/blobs");
+    std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;
+
+    // 1. Build userspace binaries via musl-gcc.
+    let bins: &[(&str, &str)] = &[
+        ("userspace/init/init",   "userspace/init/init.c"),
+        ("userspace/sh/sh",       "userspace/sh/sh.c"),
+    ];
+    for (out_rel, src_rel) in bins {
+        let out = repo.join(out_rel);
+        let src = repo.join(src_rel);
+        eprintln!("xtask rootfs: musl-gcc {} → {}", src.display(), out.display());
+        let mut c = Command::new("musl-gcc");
+        c.args(["-static-pie", "-fPIE", "-O2", "-nostartfiles",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
+
+    // 2. Build a fresh 1 MiB ext4 image.
+    let img = repo.join("kernel/blobs/rootfs.img");
+    eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
+    {
+        let mut c = Command::new("dd");
+        c.args(["if=/dev/zero",
+                &format!("of={}", img.display()),
+                "bs=1M", "count=1"]);
+        run(c)?;
+    }
+    {
+        let mut c = Command::new("mkfs.ext4");
+        c.args(["-F", "-O", "^has_journal", "-L", "oxide", img.to_str().unwrap()]);
+        run(c)?;
+    }
+
+    // 3. Populate via debugfs (each command is its own invocation —
+    //    debugfs's -R takes one command at a time).
+    let dbg = |cmd: &str| -> Result<(), u8> {
+        let mut c = Command::new("debugfs");
+        c.args(["-w", "-R", cmd, img.to_str().unwrap()]);
+        // debugfs writes to stderr by default; mute non-error noise.
+        c.stdout(std::process::Stdio::null());
+        c.stderr(std::process::Stdio::null());
+        run(c)
+    };
+    dbg("mkdir /bin")?;
+    dbg("mkdir /etc")?;
+    let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
+        let cmd = format!("write {} {}", host.display(), target);
+        dbg(&cmd)
+    };
+    put(&repo.join("userspace/sh/sh"),     "/bin/sh")?;
+    put(&repo.join("userspace/init/init"), "/bin/init")?;
+
+    // /etc/issue + /etc/os-release as inline writes through tempfile.
+    let tmp = repo.join("target/oxide-rootfs-staging");
+    std::fs::create_dir_all(&tmp).map_err(|_| 1u8)?;
+    let staging_issue = tmp.join("issue");
+    std::fs::write(&staging_issue, b"oxide-os 0.1\n").map_err(|_| 1u8)?;
+    put(&staging_issue, "/etc/issue")?;
+    let staging_osrel = tmp.join("os-release");
+    std::fs::write(&staging_osrel,
+        b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")
+        .map_err(|_| 1u8)?;
+    put(&staging_osrel, "/etc/os-release")?;
+    let staging_hello = tmp.join("hello.txt");
+    std::fs::write(&staging_hello, b"hello-from-ext4-mini\n").map_err(|_| 1u8)?;
+    put(&staging_hello, "/hello.txt")?;
+
+    eprintln!("xtask rootfs: built {} ({} bytes)",
+        img.display(),
+        std::fs::metadata(&img).map(|m| m.len()).unwrap_or(0));
+    Ok(())
 }
 
 fn stub(name: &str, awaiting_spec: &str) -> Result<(), u8> {
