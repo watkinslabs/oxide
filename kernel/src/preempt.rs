@@ -14,7 +14,7 @@
 // NEXT_CTX = pick_next_task(); else leaves NEXT_CTX null. The asm
 // then either context-switches or drops straight into the epilogue.
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::AtomicPtr;
 
 // `NEED_RESCHED` lives in `sched::preempt` per `13§9` so the
 // preempt-enable check and IRQ-tail check share one flag. The

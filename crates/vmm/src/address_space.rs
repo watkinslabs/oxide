@@ -20,7 +20,7 @@ use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES, USER_VA_END};
 use sync::{AddressSpace as AddressSpaceClass, RwLock, RwReadGuard};
 
 use crate::tree::VmaTree;
-use crate::vma::{FaultAccess, FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
 /// Lowest user VA this allocator hands out. Page 0 is reserved as the
