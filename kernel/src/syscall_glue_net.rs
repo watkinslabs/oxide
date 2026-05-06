@@ -15,10 +15,11 @@ use hal::USER_VA_END;
 
 use vfs::{Dentry, File, OpenFlags};
 
-use crate::dev_net::{InetSocket, socket_sendto, socket_recv};
+use crate::dev_net::{InetSocket, SockKind, socket_sendto, socket_recv, drain_loopback};
 
-const AF_INET:    u32 = 2;
-const SOCK_DGRAM: u32 = 2;
+const AF_INET:     u32 = 2;
+const SOCK_STREAM: u32 = 1;
+const SOCK_DGRAM:  u32 = 2;
 
 fn errno_from_neterr(e: net::NetError) -> i64 {
     -(match e {
@@ -42,8 +43,12 @@ pub fn kernel_sys_socket(args: &SyscallArgs) -> i64 {
     let domain = args.a0 as u32;
     let typ    = args.a1 as u32 & 0xFF;  // strip SOCK_NONBLOCK / SOCK_CLOEXEC
     if domain != AF_INET { return -(Errno::Eafnosupport.as_i32() as i64); }
-    if typ    != SOCK_DGRAM { return -(Errno::Esocktnosupport.as_i32() as i64); }
-    let inode: vfs::InodeRef = Arc::new(InetSocket::new()) as _;
+    let inet = match typ {
+        SOCK_DGRAM  => InetSocket::new_udp(),
+        SOCK_STREAM => InetSocket::new_tcp(),
+        _ => return -(Errno::Esocktnosupport.as_i32() as i64),
+    };
+    let inode: vfs::InodeRef = Arc::new(inet) as _;
     let cur = match crate::sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -169,6 +174,14 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
     let payload: alloc::vec::Vec<u8> = unsafe {
         core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
     };
+    // TCP path: send into the existing TcpConn (no destaddr needed).
+    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        let entry = entry.clone();
+        return match crate::dev_net::stack().tcp_send(&entry, &payload) {
+            Ok(n)  => { drain_loopback(); n as i64 }
+            Err(e) => errno_from_neterr(e),
+        };
+    }
     let (dst_ip, dst_port) = if dest_p != 0 {
         match read_sockaddr_in(dest_p) {
             Some((fam, p, a)) if fam == AF_INET => (net::Ipv4Addr::from_u32(a), p),
@@ -185,6 +198,114 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
     }
 }
 
+/// `listen(fd, backlog)` slot 50.
+pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
+    let fd = args.a0;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    let port = match *sock.local_port.lock() {
+        Some(p) => p,
+        None    => return -(Errno::Einval.as_i32() as i64),
+    };
+    let ip = *sock.local_ip.lock();
+    match crate::dev_net::stack().tcp_listen(ip, port) {
+        Ok(le) => {
+            *sock.kind.lock() = SockKind::TcpListener(le);
+            0
+        }
+        Err(e) => errno_from_neterr(e),
+    }
+}
+
+/// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
+/// Non-blocking: returns Eagain when no connection is ready.
+pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
+    let fd     = args.a0;
+    let addr_p = args.a1;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    drain_loopback();
+    let listener_arc = match &*sock.kind.lock() {
+        SockKind::TcpListener(l) => l.clone(),
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+    let entry = match crate::dev_net::stack().tcp_accept(&listener_arc) {
+        Some(e) => e,
+        None    => return -(Errno::Eagain.as_i32() as i64),
+    };
+    let (peer_ip, peer_port) = {
+        let c = entry.conn.lock();
+        (c.remote.ip, c.remote.port)
+    };
+    let new_sock = InetSocket::new_tcp();
+    *new_sock.kind.lock() = SockKind::TcpConn(entry);
+    *new_sock.peer.lock() = Some((peer_ip, peer_port));
+    let inode: vfs::InodeRef = Arc::new(new_sock) as _;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("[socket]"), Arc::clone(&inode));
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
+    if addr_p != 0 {
+        write_sockaddr_in(addr_p, peer_ip.as_u32().to_be(), peer_port.to_be());
+    }
+    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+}
+
+/// `connect(fd, sockaddr, addrlen)` slot 42.
+pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
+    let fd     = args.a0;
+    let addr_p = args.a1;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    let (family, port, addr) = match read_sockaddr_in(addr_p) {
+        Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    if family != AF_INET { return -(Errno::Eafnosupport.as_i32() as i64); }
+    let dst_ip = net::Ipv4Addr::from_u32(addr);
+    // For TCP: tcp_connect emits SYN. For UDP: just store the peer.
+    let kind_is_tcp = matches!(*sock.kind.lock(), SockKind::Udp) == false
+        || matches!(*sock.kind.lock(), SockKind::TcpListener(_));
+    let _ = kind_is_tcp;  // noop; fall-through below
+    let is_dgram = matches!(*sock.kind.lock(), SockKind::Udp);
+    if is_dgram {
+        *sock.peer.lock() = Some((dst_ip, port));
+        return 0;
+    }
+    // TCP active open.
+    let local_port = match *sock.local_port.lock() {
+        Some(p) => p,
+        None    => match crate::dev_net::alloc_ephemeral_port() {
+            Ok(p) => { *sock.local_port.lock() = Some(p); p }
+            Err(e) => return errno_from_neterr(e),
+        },
+    };
+    let local_ip = match *sock.local_ip.lock() {
+        ip if ip == net::Ipv4Addr::ANY => net::Ipv4Addr::LOOPBACK,
+        ip => ip,
+    };
+    let entry = match crate::dev_net::stack().tcp_connect(local_ip, local_port, dst_ip, port) {
+        Ok(e)  => e,
+        Err(e) => return errno_from_neterr(e),
+    };
+    *sock.kind.lock() = SockKind::TcpConn(entry.clone());
+    *sock.peer.lock() = Some((dst_ip, port));
+    // Drive 3WHS via loopback drain. v1 connect is "blocking-ish":
+    // we drain a few times and check state.
+    for _ in 0..4 { drain_loopback(); }
+    if !entry.conn.lock().state.is_established() {
+        return -(Errno::Etimedout.as_i32() as i64);
+    }
+    0
+}
+
 /// `recvfrom(fd, buf, len, flags, src, src_len)` slot 45.
 pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
     let fd       = args.a0;
@@ -195,6 +316,21 @@ pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // TCP path: drain bytes from the conn's recv_buf.
+    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        let entry = entry.clone();
+        drain_loopback();
+        let payload = crate::dev_net::stack().tcp_recv(&entry, len);
+        if payload.is_empty() { return -(Errno::Eagain.as_i32() as i64); }
+        let take = payload.len();
+        // SAFETY: ptr+take validated < USER_VA_END; user page mapped.
+        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), bufp as *mut u8, take); }
+        if src_p != 0 {
+            let (peer_ip, peer_port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
+            write_sockaddr_in(src_p, peer_ip.as_u32().to_be(), peer_port.to_be());
+        }
+        return take as i64;
+    }
     let (src_ip, src_port, payload) = match socket_recv(&sock) {
         Some(t) => t, None => return -(Errno::Eagain.as_i32() as i64),
     };
