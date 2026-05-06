@@ -623,6 +623,22 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         klog::kinfo!("elf-smoke: user task exited cleanly, boot resumed");
     }
 
+    // Re-arm the LAPIC periodic timer for the real userspace boot
+    // path. The canary + preempt smokes both disarm the timer at
+    // teardown (`timer_disarm()`), so by the time we reach init the
+    // timer is silent. Without it, no timer IRQ ever fires while
+    // user tasks run → no preemption + no `tick_poll_uart` → login
+    // parks on read(0) forever.
+    // SAFETY: LAPIC was previously enabled by smoke_device_map_x86;
+    // re-arming the periodic timer at the same period the smokes used.
+    #[cfg(target_arch = "x86_64")]
+    unsafe { let _ = crate::lapic::timer_periodic(1_000_000); }
+    // SAFETY: STI legal at CPL=0; spawn_user_blob_smoke's first
+    // schedule() drops to ring 3 with IF=1 in the iretq frame, so
+    // both kernel idle (between user task slices) and user mode
+    // see timer IRQs.
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+
     // PID 1: prefer the live /sbin/init from the mounted rootfs
     // ext4. Falls back to the embedded blob if the rootfs entry
     // is missing (test-only kernels with `kernel/blobs/rootfs.img`
@@ -656,8 +672,9 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // looped on bare schedule() with IF=0 inherited from the
     // dispatch path — login parked forever because no IRQ ever
     // delivered the keystrokes the user typed.
-    // SAFETY: STI legal at CPL=0 with kernel GDT/IDT installed;
-    // idle path sleeps via hlt waiting for next timer IRQ.
+    // SAFETY: STI is idempotent; the periodic timer was armed
+    // before init spawn so this just guarantees IF=1 here in case
+    // any spawn path masked IRQs on its way out.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
