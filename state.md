@@ -1,3 +1,95 @@
+# State 2026-05-06 (session 37 — multi-VT, klog IRQ-safety, dynamic linker plumbing)
+
+## Headline (session 37, on main)
+
+Five PRs landed against `main`:
+
+| PR | Branch | What |
+|----|---|---|
+| #597 | B05-tty-rx-debug | interactive login (IF=1 user iretq + wait4 sleep) |
+| #598 | B06-klog-irqsafe | `boot_emit` now `lock_irqsave` per `06§3.1` |
+| #599 | B07-multi-vt-tty | per-VT tty1..6 ringbuffers + foreground alias |
+| #600 | P13-06-dl-runtime | kernel PT_INTERP dual-image + stub `/lib/ld-musl-x86_64.so.1` |
+| #601 | P13-06b-hello-dyn-test | `/bin/hello_dyn` end-to-end PT_INTERP smoke |
+
+Live verified on x86_64:
+```
+$ exec /bin/hello_dyn
+dl: hello base=0x0000000040000000 entry=0x0000000010000310
+hello-from-dyn
+```
+
+The kernel ELF loader now honors `PT_INTERP` end-to-end:
+* `place_image` factored from `load_static_blob` so a single
+  staging+RELA+mmap pass can place at any bias.
+* `load_static_blob` places the exec at `PIE_LOAD_BIAS` then —
+  if `parsed.interp` is set — looks up the interpreter via
+  `lookup_blob_by_path` and places it at `INTERP_LOAD_BIAS`
+  (`0x4000_0000`). Exec gets the 64 MiB brk window; interp shares.
+* `LoadedImage` carries `interp_base` + `interp_entry` and
+  `user_ip()` returns interp_entry-or-entry. `exec_stack` puts
+  `interp_base` in auxv `AT_BASE`; spawn paths drop to `user_ip()`.
+* Stub `/lib/ld-musl-x86_64.so.1`: walks auxv for `AT_ENTRY`,
+  prints a banner, jumps to the exec. Does NOT yet load
+  `DT_NEEDED`, resolve symbols, apply `RELA`/`JMPREL`, or run
+  TLS/`DT_INIT`. Only handles binaries with no `DT_NEEDED`.
+
+## Fork in the road for real distro support
+
+We need an actual dynamic linker — the stub gets us to "exec
+runs" but not "exec linked against libc.so runs". Two paths:
+
+**A. Vendor real musl** (recommended). Fetch upstream musl,
+build via xtask, install the real `ld-musl-x86_64.so.1` +
+`libc.so` + headers. Real musl handles dynlinking, TLS, init
+constructors, malloc, threading, NSS resolver, etc. ~1500 LOC of
+build-glue on our side. Real distro programs link against it
+once we cross-compile them. **This is the Alpine path.**
+
+**B. Hand-roll a userspace mini-dl in C.** Walk PT_DYNAMIC,
+parse DT_NEEDED, open .so, apply RELA/JMPREL, jump. ~800 LOC of
+careful C. We still need a real libc on top later, so this is
+"extra layer" not "skip layer".
+
+A is the right call. B reinvents what musl already does well, and
+GTK/GNOME assume real glibc/musl semantics for which a hand-rolled
+subset is fragile.
+
+## Goal: GNOME/Wayland distribution — honest scope
+
+Per user request 2026-05-06: "Linux system with GNOME/Wayland +
+systemd + bash + network". That's a years-scale project. The
+critical path is roughly:
+
+1. Real libc (musl vendor) ← next
+2. Real dynamic linker behavior (DT_NEEDED, TLS, init arrays) ← falls out of #1
+3. Threading: `futex`, `clone`, NPTL semantics
+4. Signal delivery (SIGCHLD already posted; not dispatched)
+5. Cross-build toolchain on host (musl-cross-make-style)
+6. xz + zstd decoders (RPM payload)
+7. rpmdb + minimal dnf-equivalent
+8. Network stack: virtio-net live driver, DHCP, DNS, TLS
+9. shm + SCM_RIGHTS fd-passing (Wayland prerequisites)
+10. dbus, eventfd/signalfd/timerfd full coverage
+11. cgroup v2 + namespaces (systemd prerequisites)
+12. DRM/KMS framebuffer driver, libdrm, Mesa
+13. libinput / evdev input subsystem
+14. Wayland compositor (weston is the smallest viable target)
+15. GNOME shell stack: GLib, GTK4, gnome-shell, mutter, gjs
+
+Each of those is a multi-PR series. v1 lean-mode budget is
+9-14mo solo; CLAUDE.md autonomous-run discipline applies. The
+interim achievable milestone is "bash + coreutils + nginx +
+sshd cross-built to musl-oxide on an oxide CLI system" —
+that's where steps 1-8 deliver real user value. Wayland +
+GNOME is steps 9-15 (pile of new infra each step).
+
+## What's next
+
+Path A: vendor musl. xtask gains a `musl` step (download +
+verify + build + install into rootfs `/lib`, `/usr/include/musl`).
+Replace our stub interpreter with the real one.
+
 # State 2026-05-06 (session 36 — real wait4 sleep + B05 ready to merge)
 
 ## Headline (session 36, on branch B05-tty-rx-debug, PR #597 OPEN)
