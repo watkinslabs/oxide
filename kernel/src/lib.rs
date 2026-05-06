@@ -897,6 +897,9 @@ pub mod syscall_compat;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_time;
 
+// P3a futex — process-private FUTEX_WAIT/WAKE per docs/24.
+pub mod futex;
+
 // P3-65 signal dispatch (build user-stack frame + jump to sa_handler).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod sig_dispatch;
