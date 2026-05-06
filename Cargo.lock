@@ -80,6 +80,14 @@ name = "crc"
 version = "0.1.0"
 
 [[package]]
+name = "dl"
+version = "0.1.0"
+dependencies = [
+ "elf",
+ "modules",
+]
+
+[[package]]
 name = "drv"
 version = "0.1.0"
 dependencies = [
