@@ -247,6 +247,26 @@ fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         "/etc/inittab")?;
     put(&stage("hello.txt", b"hello-from-ext4-mini\n")?, "/hello.txt")?;
 
+    // /etc/svc/*.service unit files for /sbin/svcd to consume.
+    put(&stage("getty.service",
+        b"[Unit]\n\
+          Description=Console getty on tty1\n\
+          \n\
+          [Service]\n\
+          ExecStart=/sbin/agetty tty1\n\
+          Type=simple\n\
+          Restart=always\n")?,
+        "/etc/svc/getty.service")?;
+    put(&stage("sshd.service",
+        b"[Unit]\n\
+          Description=OpenSSH placeholder (not yet built)\n\
+          \n\
+          [Service]\n\
+          ExecStart=/bin/false\n\
+          Type=oneshot\n\
+          Restart=no\n")?,
+        "/etc/svc/sshd.service")?;
+
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
         std::fs::metadata(&img).map(|m| m.len()).unwrap_or(0));
