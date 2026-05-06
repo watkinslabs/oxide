@@ -463,6 +463,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkg"
+version = "0.1.0"
+dependencies = [
+ "cpio",
+ "inflate",
+ "rpm",
+]
+
+[[package]]
 name = "pmm"
 version = "0.1.0"
 dependencies = [
