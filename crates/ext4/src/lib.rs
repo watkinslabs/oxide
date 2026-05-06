@@ -35,3 +35,6 @@ pub use mount::{Mount, MountError, MountState, MountStateGuard};
 
 pub mod balloc;
 pub use balloc::{find_first_clear, group_first_block};
+
+pub mod extent_rw;
+pub use extent_rw::EXTENT_LEN_MAX;
