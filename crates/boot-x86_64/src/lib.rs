@@ -62,10 +62,15 @@ static BOOT_UART: Spinlock<Uart16550, UartClass>
 /// klog `LogSink` adapter — drives `BOOT_UART` for every byte slice
 /// klog emits. Registered via `klog::set_byte_sink` from
 /// `_start_rust` after `BOOT_UART::init()`.
+///
+/// Uses `lock_irqsave` per `06§3.1` because klog can be called from
+/// IRQ context (timer ISR's `tick_poll_uart`, fault handlers, panic
+/// path). A plain `lock()` would deadlock if a kernel-mode klog
+/// holder were preempted by an IRQ that itself klogs.
 /// # C: O(len)
 #[cfg(feature = "debug-boot")]
 fn boot_emit(bytes: &[u8]) {
-    let mut g = BOOT_UART.lock();
+    let mut g = BOOT_UART.lock_irqsave::<hal_x86_64::X86IrqGate>();
     g.write_bytes(bytes);
 }
 
