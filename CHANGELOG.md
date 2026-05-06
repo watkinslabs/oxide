@@ -854,6 +854,13 @@ Deferred to follow-ups (carried into session 30, several closed):
 | #558 | `P9-38-nproc` | /bin/nproc. |
 | #559 | `P12-01-virtio-types` | virtio split virtqueue primitives. (Branch label is mine — `00§3` only defines phases 0-9; this is `35` driver infra.) |
 | #560 | `P12-02-virtio-net` | virtio-net VirtioNet + VirtioNetHdr v1. (Same caveat.) |
+| #562 | `D04-master-plan-phases-10-11-12` | spec: 00§3 phases 10/11/12 added (modules / PCI / virtio common). |
+| #563 | `C69-state-fix-and-userspace-phases` | spec: 00§3 phases 13-17 added (dyn-linker / libc-NSS-PAM / sysmgr / RPM / tty-login). v1.x calendar 22-30mo. |
+| #564 | `P13-01-elf-dynamic-section` | elf::parse_dynamic + DynInfo. |
+| #565 | `P13-02-dynamic-reloc-types` | modules::apply_dynamic + GLOB_DAT/JUMP_SLOT/RELATIVE. |
+| #566 | `P13-03-elf-hash` | elf::elf_hash + gnu_hash. |
+| #567 | `P13-04-hash-lookup` | elf::lookup_sysv + lookup_gnu walkers. |
+| #568 | `P13-05-dl-loader` | crates/dl: load_so + ChainResolver. |
 
 End-of-session-30 verified-green:
 - `cargo test --workspace` → 800 (up from 752).
