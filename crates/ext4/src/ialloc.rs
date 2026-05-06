@@ -112,6 +112,7 @@ impl Mount {
         })
     }
 
+    /// # C: O(1)
     pub(crate) fn persist_sb_free_inodes_meta(&self) -> Result<(), MountError> {
         let count = self.state.lock().sb_free_inodes;
         let mut sb_buf = self.read_meta_byte_range(

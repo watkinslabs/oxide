@@ -12,3 +12,7 @@ path = "src/main.rs"
 [dependencies]
 boot-x86_64 = { path = "../boot-x86_64" }
 klog        = { path = "../klog" }
+
+[features]
+default     = ["debug-panic"]
+debug-panic = []

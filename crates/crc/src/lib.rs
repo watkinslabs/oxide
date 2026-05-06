@@ -63,6 +63,7 @@ pub fn crc32_update(seed: u32, bytes: &[u8]) -> u32 {
     c
 }
 
+/// # C: O(1)
 pub fn crc32(bytes: &[u8]) -> u32 {
     crc32_update(0xFFFF_FFFF, bytes) ^ 0xFFFF_FFFF
 }

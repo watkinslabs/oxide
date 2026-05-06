@@ -32,6 +32,7 @@ pub struct RouteTable {
 }
 
 impl RouteTable {
+    /// # C: O(1)
     pub const fn new() -> Self {
         Self { inner: Spinlock::new(Vec::new()) }
     }

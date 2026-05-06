@@ -49,6 +49,7 @@ pub struct File {
     pub contents: Vec<u8>,
 }
 
+/// # C: O(1)
 pub fn read(blob: &[u8]) -> Result<Package<'_>, Error> {
     let pkg = rpm::parse(blob)?;
     let payload = &blob[pkg.payload_off..];
@@ -56,13 +57,19 @@ pub fn read(blob: &[u8]) -> Result<Package<'_>, Error> {
 }
 
 impl<'a> Package<'a> {
+    /// # C: O(1)
     pub fn name(&self)    -> Option<&str> { self.pkg.tag_str(rpm::RPMTAG_NAME) }
+    /// # C: O(1)
     pub fn version(&self) -> Option<&str> { self.pkg.tag_str(rpm::RPMTAG_VERSION) }
+    /// # C: O(1)
     pub fn release(&self) -> Option<&str> { self.pkg.tag_str(rpm::RPMTAG_RELEASE) }
+    /// # C: O(1)
     pub fn arch(&self)    -> Option<&str> { self.pkg.tag_str(rpm::RPMTAG_ARCH) }
+    /// # C: O(1)
     pub fn summary(&self) -> Option<&str> { self.pkg.tag_str(rpm::RPMTAG_SUMMARY) }
 
     /// Returns "name-version-release.arch".
+    /// # C: O(1)
     pub fn nvra(&self) -> String {
         let n = self.name().unwrap_or("?");
         let v = self.version().unwrap_or("?");
@@ -79,6 +86,7 @@ impl<'a> Package<'a> {
     /// Extract every regular-file payload entry. Combines DIRNAMES,
     /// DIRINDEXES, BASENAMES into absolute paths. v1 ignores
     /// directory + symlink entries (mode-bit filtered).
+    /// # C: O(N)
     pub fn extract(&self) -> Result<Vec<File>, Error> {
         let compressor = self.pkg.tag_str(rpm::RPMTAG_PAYLOADCOMPRESSOR).unwrap_or("gzip");
         if compressor != "gzip" { return Err(Error::UnsupportedCompressor); }
