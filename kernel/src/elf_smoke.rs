@@ -636,7 +636,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // builtins; user can type past the smoke for real
     // interactive use.
     crate::tty::inject_for_smoke(b"cat /etc/issue\ncat /hello.txt\nls /proc\nexit\n");
-    // SAFETY: same.
+    // SAFETY: same boot-path discipline as the real-init smoke above; user_as / runqueue installed; SH_BLOB is real-musl static-PIE.
     unsafe {
         spawn_user_blob_smoke(SH_BLOB, "sh", 0xC0DE_0003, &[]);
     }
