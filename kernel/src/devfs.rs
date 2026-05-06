@@ -61,23 +61,29 @@ pub fn lookup(path: &str) -> Option<InodeRef> {
 /// console + tty char devices. Re-runnable: subsequent calls are
 /// no-ops because re-registration is idempotent.
 ///
-/// All v1 entries share one `ConsoleInode` instance — the
-/// foreground-VT alias semantics + per-VT buffer separation land
-/// once a real char-device dispatch table exists.
+/// `/dev/console`, `/dev/tty`, `/dev/tty0`, and `/dev/ttyS0` all
+/// carry vt=0 (foreground alias — resolves to the live VT at
+/// every read). `/dev/tty1`..`/dev/tty6` each carry their distinct
+/// vt id so processes opening a specific VT see private input
+/// streams. v1 routes UART RX exclusively to VT 1; runtime VT
+/// switching (Ctrl-Alt-F<n>) rides a follow-up.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    let console: InodeRef = Arc::new(crate::dev_console::ConsoleInode);
-    register("/dev/console", Arc::clone(&console));
-    register("/dev/tty",     Arc::clone(&console));
-    register("/dev/tty0",    Arc::clone(&console));
-    register("/dev/tty1",    Arc::clone(&console));
-    register("/dev/tty2",    Arc::clone(&console));
-    register("/dev/tty3",    Arc::clone(&console));
-    register("/dev/tty4",    Arc::clone(&console));
-    register("/dev/tty5",    Arc::clone(&console));
-    register("/dev/tty6",    Arc::clone(&console));
-    register("/dev/ttyS0",   console);
+    let fg: InodeRef = Arc::new(crate::dev_console::ConsoleInode::new(0));
+    register("/dev/console", Arc::clone(&fg));
+    register("/dev/tty",     Arc::clone(&fg));
+    register("/dev/tty0",    Arc::clone(&fg));
+    register("/dev/ttyS0",   fg);
+    for vt in 1..=crate::tty::N_VT as u8 {
+        let path: &'static str = match vt {
+            1 => "/dev/tty1", 2 => "/dev/tty2", 3 => "/dev/tty3",
+            4 => "/dev/tty4", 5 => "/dev/tty5", 6 => "/dev/tty6",
+            _ => continue,
+        };
+        let inode: InodeRef = Arc::new(crate::dev_console::ConsoleInode::new(vt));
+        register(path, inode);
+    }
 
     // P3-04 misc char devices.
     register("/dev/null",    Arc::new(crate::dev_misc::NullInode)   as InodeRef);
