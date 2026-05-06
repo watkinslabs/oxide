@@ -77,6 +77,9 @@ pub enum SockKind {
     TcpListener(Arc<TcpListenEntry>),
     /// SOCK_STREAM, after `connect()` or `accept()`.
     TcpConn(Arc<TcpEntry>),
+    /// AF_UNIX SOCK_STREAM — both ends share an `UnixPair`; the
+    /// `UnixEnd` tags this fd as the A or B side.
+    Unix(Arc<net::UnixPair>, net::UnixEnd),
 }
 
 /// Per-AF_INET-socket VFS state — one Inode per socket fd.
@@ -129,6 +132,37 @@ impl vfs::Inode for InetSocket {
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+
+    fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        match &*self.kind.lock() {
+            SockKind::Unix(pair, end) => {
+                let got = pair.read(*end, buf.len());
+                let n = got.len();
+                buf[..n].copy_from_slice(&got);
+                Ok(n)
+            }
+            SockKind::TcpConn(entry) => {
+                drain_loopback();
+                let got = stack().tcp_recv(entry, buf.len());
+                let n = got.len();
+                buf[..n].copy_from_slice(&got);
+                Ok(n)
+            }
+            _ => Err(vfs::VfsError::Einval),
+        }
+    }
+
+    fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        match &*self.kind.lock() {
+            SockKind::Unix(pair, end) => Ok(pair.write(*end, buf)),
+            SockKind::TcpConn(entry) => {
+                let n = stack().tcp_send(entry, buf).map_err(|_| vfs::VfsError::Eio)?;
+                drain_loopback();
+                Ok(n)
+            }
+            _ => Err(vfs::VfsError::Einval),
+        }
+    }
 }
 
 /// AF_INET dgram-socket recv — pops one queued datagram for the
