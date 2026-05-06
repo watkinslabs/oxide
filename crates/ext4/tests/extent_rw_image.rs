@@ -105,6 +105,32 @@ fn truncate_shrinks_and_frees_blocks() {
 }
 
 #[test]
+fn append_promotes_inline_to_depth1_when_full() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"deep.bin", 0o644).unwrap();
+    let bs = m.sb.block_size as usize;
+    // Force 5 non-contiguous extents by allocating + freeing
+    // surrounding blocks between appends. Easiest path: alloc
+    // a "spacer" block before each append so the next append's
+    // alloc returns a non-contiguous LBA. After 5 successful
+    // appends the inline tree must be depth=1.
+    let payloads: std::vec::Vec<std::vec::Vec<u8>> = (0..5).map(|i| std::vec![i as u8; bs]).collect();
+    for i in 0..5 {
+        let _spacer = m.alloc_block(0).unwrap();
+        m.append_block(n, &payloads[i]).unwrap();
+    }
+    let inode = m.read_inode(n).unwrap();
+    let hdr = ext4::parse_extent_header(&inode.i_block).unwrap();
+    assert!(hdr.depth >= 1, "5 non-contig extents promoted to depth=1");
+    // Read each logical block back; they must match.
+    for (i, want) in payloads.iter().enumerate() {
+        let got = m.read_file_block(&inode, i as u32).unwrap();
+        assert_eq!(&got[..], &want[..], "logical block {} round-trips", i);
+    }
+}
+
+#[test]
 fn append_survives_remount() {
     let disk = build_disk();
     {

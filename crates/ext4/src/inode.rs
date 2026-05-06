@@ -208,6 +208,37 @@ pub fn parse_extent_header(i_block: &[u8; I_BLOCK_LEN]) -> Result<ExtentHeader, 
     Ok(ExtentHeader { magic, entries, max, depth, generation: gen })
 }
 
+/// Write an extent header into the leading 12 bytes of any
+/// buffer ≥ 12 bytes (used by inline + child block writers).
+/// # C: O(1)
+pub fn write_extent_header_slice(buf: &mut [u8], hdr: &ExtentHeader) {
+    buf[0..2].copy_from_slice(&hdr.magic.to_le_bytes());
+    buf[2..4].copy_from_slice(&hdr.entries.to_le_bytes());
+    buf[4..6].copy_from_slice(&hdr.max.to_le_bytes());
+    buf[6..8].copy_from_slice(&hdr.depth.to_le_bytes());
+    buf[8..12].copy_from_slice(&hdr.generation.to_le_bytes());
+}
+
+/// Write a leaf extent into a slice buffer at index `idx`.
+/// # C: O(1)
+pub fn write_inline_extent_slice(buf: &mut [u8], idx: u16, e: &Extent) {
+    let off = 12 + (idx as usize) * 12;
+    buf[off    ..off+ 4].copy_from_slice(&e.block.to_le_bytes());
+    buf[off+ 4..off+ 6].copy_from_slice(&e.len.to_le_bytes());
+    buf[off+ 6..off+ 8].copy_from_slice(&e.start_hi.to_le_bytes());
+    buf[off+ 8..off+12].copy_from_slice(&e.start_lo.to_le_bytes());
+}
+
+/// Write an extent_idx into the inline `i_block` at index `idx`.
+/// # C: O(1)
+pub fn write_extent_idx(i_block: &mut [u8; I_BLOCK_LEN], idx: u16, e: &ExtentIdx) {
+    let off = 12 + (idx as usize) * 12;
+    i_block[off    ..off+ 4].copy_from_slice(&e.block.to_le_bytes());
+    i_block[off+ 4..off+ 8].copy_from_slice(&e.leaf_lo.to_le_bytes());
+    i_block[off+ 8..off+10].copy_from_slice(&e.leaf_hi.to_le_bytes());
+    i_block[off+10..off+12].copy_from_slice(&0u16.to_le_bytes());
+}
+
 /// Write an extent header into the leading 12 bytes of `i_block`.
 /// Caller is responsible for bringing leaves in sync with
 /// `hdr.entries`; this helper only touches the header words.
