@@ -20,6 +20,11 @@ pub use queue::{
     VRING_DESC_F_NEXT, VRING_DESC_F_WRITE, VRING_DESC_F_INDIRECT,
 };
 
+pub mod net;
+pub use net::{VirtioNet, VirtioNetHdr, VIRTIO_NET_HDR_LEN_V1,
+              VIRTIO_NET_F_CSUM, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MRG_RXBUF,
+              VIRTIO_NET_F_STATUS};
+
 /// Virtio device IDs per spec §5.1.
 pub const VIRTIO_DEV_NET:     u16 = 1;
 pub const VIRTIO_DEV_BLOCK:   u16 = 2;
