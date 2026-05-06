@@ -68,4 +68,19 @@ pub trait Inode: Send + Sync {
     ) -> KResult<u64> {
         Err(VfsError::Enotdir)
     }
+
+    /// Non-blocking readiness query. Returns a bitmask of
+    /// `POLL_*` flags telling whether read/write would succeed
+    /// without blocking. Default = always readable + writable
+    /// (synthetic / static inodes never block).
+    /// # C: O(1)
+    fn poll(&self) -> u32 { POLL_IN | POLL_OUT }
 }
+
+/// `poll(2)` event bitmasks. Numeric reps match Linux exactly.
+pub const POLL_IN:    u32 = 0x0001;  // POLLIN  — readable
+pub const POLL_OUT:   u32 = 0x0004;  // POLLOUT — writable
+pub const POLL_HUP:   u32 = 0x0010;  // POLLHUP — peer closed
+pub const POLL_ERR:   u32 = 0x0008;  // POLLERR — io error
+pub const POLL_PRI:   u32 = 0x0002;  // POLLPRI — urgent (TCP OOB)
+pub const POLL_RDHUP: u32 = 0x2000;  // POLLRDHUP — peer-closed-write
