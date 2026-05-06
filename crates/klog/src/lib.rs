@@ -158,11 +158,90 @@ fn emit_timestamp(ns: u64) {
 
 #[inline]
 fn invoke_sink(bytes: &[u8]) {
+    ring_push(bytes);
     let raw = BYTE_SINK.load(core::sync::atomic::Ordering::Acquire);
     if raw.is_null() { return; }
     // SAFETY: BYTE_SINK is only ever populated via set_byte_sink, which casts a non-null LogSink fn-pointer into the *mut () slot; reverse-cast restores the original; LogSink has no unsafe contract beyond &[u8] validity, which we hold.
     let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw) };
     f(bytes);
+}
+
+// ---------------------------------------------------------------
+// Klog ring buffer — the in-memory dmesg log. 64 KiB ring; older
+// bytes get overwritten by newer ones (no allocation, no waiters).
+// ---------------------------------------------------------------
+
+const RING_BYTES: usize = 64 * 1024;
+
+struct DmesgRing {
+    buf:  core::cell::UnsafeCell<[u8; RING_BYTES]>,
+    head: core::sync::atomic::AtomicUsize,
+    /// Total bytes ever written; `head = total % RING_BYTES`.
+    /// Exposing total lets readers detect "older bytes overwritten"
+    /// without growing the buffer.
+    total: core::sync::atomic::AtomicUsize,
+}
+
+// SAFETY: DmesgRing's UnsafeCell access is mediated via Acquire/Release
+// on `head` / `total` and a single-writer / multi-reader contract:
+// invoke_sink calls ring_push from any CPU but each call is a
+// short bounded copy that races with concurrent ring_read but
+// readers tolerate seeing partially-written bytes (klog isn't a
+// reliable transport — UART is the durable copy).
+unsafe impl Sync for DmesgRing {}
+
+static RING: DmesgRing = DmesgRing {
+    buf:  core::cell::UnsafeCell::new([0u8; RING_BYTES]),
+    head: core::sync::atomic::AtomicUsize::new(0),
+    total: core::sync::atomic::AtomicUsize::new(0),
+};
+
+#[inline]
+fn ring_push(bytes: &[u8]) {
+    if bytes.is_empty() { return; }
+    use core::sync::atomic::Ordering;
+    // SAFETY: see DmesgRing's Sync impl — racy writes are tolerated;
+    // total + head bound the readable window.
+    let buf = unsafe { &mut *RING.buf.get() };
+    let mut h = RING.head.load(Ordering::Relaxed);
+    for &b in bytes {
+        buf[h] = b;
+        h += 1;
+        if h >= RING_BYTES { h = 0; }
+    }
+    RING.head.store(h, Ordering::Release);
+    RING.total.fetch_add(bytes.len(), Ordering::AcqRel);
+}
+
+/// Read up to `out.len()` bytes from the ring. `cursor` is the
+/// caller's position in the total stream (start at 0; persist
+/// across calls to read incremental output). Returns
+/// `(bytes_read, new_cursor)`. Bytes overwritten since last call
+/// are silently dropped — caller sees a contiguous tail of the
+/// log even if the cursor lagged.
+/// # C: O(out.len())
+pub fn ring_read(cursor: usize, out: &mut [u8]) -> (usize, usize) {
+    use core::sync::atomic::Ordering;
+    let total = RING.total.load(Ordering::Acquire);
+    if cursor >= total { return (0, total); }
+    // Effective start = max(cursor, total - RING_BYTES).
+    let start = if total > RING_BYTES && cursor < total - RING_BYTES {
+        total - RING_BYTES
+    } else {
+        cursor
+    };
+    let avail = total - start;
+    let take = core::cmp::min(out.len(), avail);
+    // SAFETY: see DmesgRing's Sync impl.
+    let buf = unsafe { &*RING.buf.get() };
+    let head = RING.head.load(Ordering::Acquire);
+    // Position of `start` in the ring: head - (total - start), mod RING_BYTES.
+    let back = total - start;
+    let begin = if back <= head { head - back } else { RING_BYTES - (back - head) };
+    for i in 0..take {
+        out[i] = buf[(begin + i) % RING_BYTES];
+    }
+    (take, start + take)
 }
 
 /// Emit raw bytes through the configured sink with no prefix or
