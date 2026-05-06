@@ -90,6 +90,7 @@ pub struct LogCursor {
 }
 
 impl LogCursor {
+    /// # C: O(1)
     pub fn new(start: u32, maxlen: u32, seq: u32) -> Self {
         let head = if start == 0 { 1 } else { start };
         Self { head, maxlen, seq }
@@ -113,6 +114,7 @@ impl LogCursor {
     }
 
     /// Bump the transaction sequence number after a commit lands.
+    /// # C: O(1)
     pub fn bump_seq(&mut self) { self.seq = self.seq.wrapping_add(1); }
 }
 

@@ -55,6 +55,7 @@ pub struct PciDevice {
 }
 
 impl PciDevice {
+    /// # C: O(1)
     pub fn from_config<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<Self> {
         let id = r.read32(bdf, 0x00);
         if id == 0xFFFF_FFFF || (id & 0xFFFF) == 0xFFFF { return None; }

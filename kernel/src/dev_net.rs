@@ -35,6 +35,7 @@ pub unsafe fn init() {
 
 /// `&'static` reference to the global stack. Safe to call after
 /// `init()`; before init lookups will all miss.
+/// # C: O(1)
 pub fn stack() -> &'static NetStack { &STACK }
 
 /// Drain loopback's xmit queue back through deliver_rx. v1 calls
@@ -96,6 +97,7 @@ pub struct InetSocket {
 }
 
 impl InetSocket {
+    /// # C: O(1)
     pub fn new_udp() -> Self {
         Self {
             local_port: Spinlock::new(None),
@@ -104,6 +106,7 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::Udp),
         }
     }
+    /// # C: O(1)
     pub fn new_tcp() -> Self {
         Self {
             local_port: Spinlock::new(None),
@@ -219,6 +222,7 @@ impl vfs::Inode for InetSocket {
 /// bound port. Returns (src_ip, src_port, payload) or None.
 /// Also drains lo first so any in-flight loopback packets land
 /// in the rx queue before we look.
+/// # C: O(1)
 pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     drain_loopback();
     let port = (*sock.local_port.lock())?;
@@ -228,6 +232,7 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
 /// AF_INET dgram-socket send — auto-binds an ephemeral local
 /// port if not already bound, builds + xmits the datagram,
 /// drains lo so an immediate recv on the same socket sees it.
+/// # C: O(1)
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
     -> Result<usize, NetError>
 {

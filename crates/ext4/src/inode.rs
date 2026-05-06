@@ -167,6 +167,7 @@ pub fn parse_extent_header_slice(buf: &[u8]) -> Result<ExtentHeader, InodeError>
 
 /// Slice variants of leaf + idx parsing for external child
 /// blocks (fs-block-sized buffers, not the 60-byte `i_block`).
+/// # C: O(N)
 pub fn parse_inline_extent_slice(buf: &[u8], hdr: &ExtentHeader, idx: u16) -> Option<Extent> {
     if hdr.depth != 0 || idx >= hdr.entries { return None; }
     let off = 12 + (idx as usize) * 12;
@@ -178,6 +179,7 @@ pub fn parse_inline_extent_slice(buf: &[u8], hdr: &ExtentHeader, idx: u16) -> Op
     Some(Extent { block, len, start_hi, start_lo })
 }
 
+/// # C: O(N)
 pub fn parse_extent_idx_slice(buf: &[u8], hdr: &ExtentHeader, idx: u16) -> Option<ExtentIdx> {
     if hdr.depth == 0 || idx >= hdr.entries { return None; }
     let off = 12 + (idx as usize) * 12;

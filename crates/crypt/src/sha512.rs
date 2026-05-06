@@ -52,10 +52,12 @@ pub struct Sha512 {
 }
 
 impl Sha512 {
+    /// # C: O(1)
     pub fn new() -> Self {
         Self { h: H0, buf: [0u8; 128], buf_len: 0, total: 0 }
     }
 
+    /// # C: O(1)
     pub fn update(&mut self, data: &[u8]) {
         self.total += data.len() as u128;
         let mut i = 0;
@@ -72,6 +74,7 @@ impl Sha512 {
         }
     }
 
+    /// # C: O(1)
     pub fn finish(mut self) -> [u8; 64] {
         // Pad: 1 byte 0x80, zeros, 16-byte big-endian total length in bits.
         let bit_len = (self.total as u128).wrapping_mul(8);

@@ -43,6 +43,7 @@ pub struct NdpMsg {
 impl NdpMsg {
     /// Build an NS for `target_ip`. `our_mac` populates the
     /// source-lladdr option (T=1).
+    /// # C: O(1)
     pub fn build_ns(src: Ipv6Addr, dst: Ipv6Addr,
                      our_mac: MacAddr, target_ip: Ipv6Addr)
         -> alloc::vec::Vec<u8>
@@ -66,6 +67,7 @@ impl NdpMsg {
     /// Build an NA in response to an NS. Sets the S (solicited)
     /// bit and includes the target-lladdr option. `flags_so` lets
     /// the caller toggle Override (O=0x20000000).
+    /// # C: O(1)
     pub fn build_na(src: Ipv6Addr, dst: Ipv6Addr,
                      our_mac: MacAddr, target_ip: Ipv6Addr, flags_so: u32)
         -> alloc::vec::Vec<u8>
@@ -90,6 +92,7 @@ impl NdpMsg {
 
     /// Parse an NS/NA. Validates checksum + decodes the optional
     /// lladdr (T=1 SOURCE on NS, T=2 TARGET on NA).
+    /// # C: O(N)
     pub fn parse(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, NdpError> {
         if buf.len() < NDP_HDR_FIXED { return Err(NdpError::Short); }
         if buf[0] != NDP_NS && buf[0] != NDP_NA { return Err(NdpError::BadType); }
@@ -149,8 +152,11 @@ pub struct NdpCache {
 }
 
 impl NdpCache {
+    /// # C: O(1)
     pub const fn new() -> Self { Self { inner: Spinlock::new(BTreeMap::new()) } }
+    /// # C: O(1)
     pub fn insert(&self, ip: Ipv6Addr, mac: MacAddr) { self.inner.lock().insert(ip, mac); }
+    /// # C: O(N)
     pub fn lookup(&self, ip: Ipv6Addr) -> Option<MacAddr> {
         self.inner.lock().get(&ip).copied()
     }

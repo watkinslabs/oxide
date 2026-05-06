@@ -42,6 +42,7 @@ impl VirtioNetHdr {
         buf[10..12].copy_from_slice(&self.num_buffers.to_le_bytes());
     }
 
+    /// # C: O(N)
     pub fn parse(buf: &[u8]) -> Option<Self> {
         if buf.len() < VIRTIO_NET_HDR_LEN_V1 { return None; }
         Some(Self {
@@ -67,6 +68,7 @@ pub struct VirtioNet {
 }
 
 impl VirtioNet {
+    /// # C: O(1)
     pub fn new(qsize: u16, mac: [u8; 6]) -> Self {
         Self { rx: VirtQueue::new(qsize), tx: VirtQueue::new(qsize), mac }
     }
