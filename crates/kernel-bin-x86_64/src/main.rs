@@ -26,7 +26,17 @@ extern crate boot_x86_64 as _boot;
 /// # C: O(infinity) — by definition
 #[cfg(target_os = "oxide-kernel")]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    klog::write_raw(b"\n[PANIC] ");
+    if let Some(loc) = info.location() {
+        klog::write_raw(loc.file().as_bytes());
+        klog::write_raw(b":");
+        klog::write_dec_u64(loc.line() as u64);
+        klog::write_raw(b": ");
+    }
+    let msg = info.message().as_str().unwrap_or("(no message)");
+    klog::write_raw(msg.as_bytes());
+    klog::write_raw(b"\n[PANIC] halted\n");
     loop { core::hint::spin_loop(); }
 }
 
