@@ -18,6 +18,9 @@ pub const INCOMPAT_EXTENTS:  u32 = 0x0040;
 pub const INCOMPAT_64BIT:    u32 = 0x0080;
 /// `s_feature_compat` HAS_JOURNAL bit.
 pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
+/// `s_feature_ro_compat` METADATA_CSUM bit.
+pub const RO_COMPAT_METADATA_CSUM: u32 = 0x0400;
+pub const RO_COMPAT_GDT_CSUM:      u32 = 0x0010;
 
 /// Errors decoded from `parse`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -31,6 +34,13 @@ pub enum SuperblockError {
     /// `s_inode_size` was outside [128, block_size].
     BadInodeSize,
 }
+
+/// `s_uuid` byte offset in the superblock.
+pub const SB_OFF_UUID:           usize = 0x68;
+/// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
+pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
+/// `s_feature_ro_compat` METADATA_CSUM_SEED bit.
+pub const RO_COMPAT_METADATA_CSUM_SEED: u32 = 0x0020_0000;
 
 /// Parsed ext4 superblock fields used by both read + write paths.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -54,6 +64,12 @@ pub struct Superblock {
     pub free_inodes_count: u32,
     /// Inode of journal file (`s_journal_inum`). 0 ⇒ no journal.
     pub journal_inum: u32,
+    /// 16-byte filesystem UUID (`s_uuid`). Used as the seed for
+    /// metadata_csum computation when METADATA_CSUM_SEED is off.
+    pub uuid: [u8; 16],
+    /// Stored-seed override (when RO_COMPAT_METADATA_CSUM_SEED on).
+    /// Otherwise zero; caller derives from `uuid` instead.
+    pub stored_csum_seed: u32,
 }
 
 /// Field offsets we mutate when persisting counter updates back to
@@ -112,6 +128,12 @@ impl Superblock {
             free_blocks_count: free_blocks_lo | (free_blocks_hi << 32),
             free_inodes_count: rd_u32(buf, SB_OFF_FREE_INODES),
             journal_inum:      rd_u32(buf, 0xE0),
+            uuid:              {
+                let mut u = [0u8; 16];
+                u.copy_from_slice(&buf[SB_OFF_UUID..SB_OFF_UUID + 16]);
+                u
+            },
+            stored_csum_seed:  rd_u32(buf, SB_OFF_CHECKSUM_SEED),
         })
     }
 
@@ -126,6 +148,30 @@ impl Superblock {
     pub fn group_count(&self) -> u32 {
         if self.blocks_per_group == 0 { return 0; }
         (self.blocks_count_lo + self.blocks_per_group - 1) / self.blocks_per_group
+    }
+
+    /// True iff the FS was built with metadata_csum.
+    /// # C: O(1)
+    pub fn has_metadata_csum(&self) -> bool {
+        (self.feature_ro_compat & RO_COMPAT_METADATA_CSUM) != 0
+    }
+
+    /// True iff GDT_CSUM (legacy CRC16) is on instead of CRC32C.
+    /// # C: O(1)
+    pub fn has_gdt_csum(&self) -> bool {
+        (self.feature_ro_compat & RO_COMPAT_GDT_CSUM) != 0
+    }
+
+    /// Compute the CRC32C seed used for metadata_csum. When the
+    /// METADATA_CSUM_SEED feature is on, we trust the stored
+    /// `s_checksum_seed`. Otherwise: seed = crc32c(0xFFFFFFFF, uuid).
+    /// # C: O(16)
+    pub fn metadata_csum_seed(&self) -> u32 {
+        if (self.feature_ro_compat & RO_COMPAT_METADATA_CSUM_SEED) != 0 {
+            self.stored_csum_seed
+        } else {
+            crc::crc32c_update(0xFFFF_FFFF, &self.uuid)
+        }
     }
 }
 

@@ -11,6 +11,7 @@ path = "src/lib.rs"
 block = { path = "../block" }
 sync  = { path = "../sync" }
 jbd2  = { path = "../jbd2" }
+crc   = { path = "../crc" }
 
 [features]
 default = []
