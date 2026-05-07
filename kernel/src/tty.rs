@@ -31,7 +31,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use sched::{Task, TaskState};
 use sync::{Spinlock, Tty as TtyClass};
@@ -110,6 +110,22 @@ impl LineBuf {
 }
 static VT_LINES: [Spinlock<LineBuf, TtyClass>; N_VT] =
     [const { Spinlock::new(LineBuf::new()) }; N_VT];
+
+/// Per-VT foreground process group id. POSIX `tcsetpgrp(2)` /
+/// TIOCSPGRP writes this; ISIG-driven signal delivery targets this
+/// pgid via `sched::registry::tasks_in_pgrp`. `0` = unset (no
+/// foreground assigned yet — signals fall back to readers parked
+/// on the VT, which is the v1 stand-in until something runs
+/// `tcsetpgrp` on this tty).
+static VT_FG_PGID: [AtomicU32; N_VT] =
+    [const { AtomicU32::new(0) }; N_VT];
+
+/// Per-VT controlling-session id. TIOCSCTTY writes this; future
+/// session-leader checks (POSIX requires the caller's sid to match
+/// the tty's sid before TIOCSPGRP succeeds) will read it. v1
+/// records it but doesn't enforce yet.
+static VT_SID: [AtomicU32; N_VT] =
+    [const { AtomicU32::new(0) }; N_VT];
 
 /// Resolve a caller-supplied VT id to a 0-based index into
 /// `VT_RINGS` / `VT_WAITERS`. `vt == 0` resolves to the current
@@ -364,19 +380,47 @@ fn flush_line(idx: usize, line: &mut LineBuf) {
     line.len = 0;
 }
 
-/// Translate `sig_no` into a sigpending bit-set on every task
-/// parked reading from this VT. v1 stand-in for "deliver to
-/// foreground process group": the WAITERS list IS the foreground
-/// reader set since they're blocked on this VT's input.
+/// Translate `sig_no` into a sigpending bit-set on every task in
+/// this VT's foreground process group. If no foreground pgrp has
+/// been set yet (TIOCSPGRP / `tcsetpgrp` never called), fall back
+/// to delivering to whoever is parked reading the VT — that's the
+/// v1 best-effort target. `^C / ^\\ / ^Z` flow through here.
 fn deliver_signal_to_waiters(idx: usize, sig: u32) {
     if sig == 0 || sig > 64 { return; }
     let bit = 1u64 << (sig - 1);
-    let waiters = VT_WAITERS[idx].lock();
-    for t in waiters.iter() {
-        t.sigpending.fetch_or(bit, Ordering::Release);
+    let fg = VT_FG_PGID[idx].load(Ordering::Acquire);
+    if fg != 0 {
+        for t in crate::sched::registry::tasks_in_pgrp(fg) {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+        }
+    } else {
+        let waiters = VT_WAITERS[idx].lock();
+        for t in waiters.iter() {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+        }
     }
-    drop(waiters);
     wake_waiters(idx);
+}
+
+/// Read this VT's foreground pgid (0 if unset). Used by
+/// TIOCGPGRP on /dev/console.
+/// # C: O(1)
+pub fn foreground_pgid(vt: u8) -> u32 {
+    VT_FG_PGID[vt_index(vt)].load(Ordering::Acquire)
+}
+
+/// Set this VT's foreground pgid. Used by TIOCSPGRP / tcsetpgrp.
+/// # C: O(1)
+pub fn set_foreground_pgid(vt: u8, pgid: u32) {
+    VT_FG_PGID[vt_index(vt)].store(pgid, Ordering::Release);
+}
+
+/// Make `sid` the controlling session for this VT. Used by
+/// TIOCSCTTY. v1 records but doesn't enforce session-match
+/// checks on subsequent TIOCSPGRP.
+/// # C: O(1)
+pub fn set_session(vt: u8, sid: u32) {
+    VT_SID[vt_index(vt)].store(sid, Ordering::Release);
 }
 
 /// Read a snapshot of `vt`'s termios image. Used by TCGETS.
