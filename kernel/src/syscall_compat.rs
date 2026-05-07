@@ -82,7 +82,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
                                        => Some(eperm),
 
         // ---- substrate-not-implemented ----
-        // PTRACE moved to real (narrow) impl in P22a — TRACEME admit.
+        // PTRACE moved to real (narrow) impl in P22a/P22b — TRACEME +
+        // ATTACH/DETACH/PEEK/POKE/CONT/GETREGS admission. Real foreign-mm
+        // peek/poke + signal-stop machinery rides P22c.
         // SPLICE/TEE/VMSPLICE moved to real impls in PR-N.
         // COPY_FILE_RANGE moved to real impl in PR-J.
         // MEMFD_CREATE / MEMFD_SECRET — PR-H / PR-U.
@@ -93,9 +95,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // whereas ENOSYS aborts the operation entirely.
         | NR_SWAPON | NR_SWAPOFF
         // SysV IPC + POSIX MQ + keyring.
-        // SysV shm moved to real impl (P25a). SEM/MSG still ENOSYS.
-        | NR_SEMGET | NR_SEMOP | NR_SEMCTL | NR_SEMTIMEDOP
-        | NR_MSGGET | NR_MSGSND | NR_MSGRCV | NR_MSGCTL
+        // SysV shm moved to real impl (P25a).
+        // SysV sem moved to real impl (P25b — non-blocking semop;
+        //   would-block returns EAGAIN).
+        // SysV msg moved to real impl (P25c — non-blocking msgrcv).
+        // POSIX MQ + keyring still ENOSYS (P25 follow-up).
         | NR_MQ_OPEN | NR_MQ_UNLINK | NR_MQ_TIMEDSEND
         | NR_MQ_TIMEDRECEIVE | NR_MQ_NOTIFY | NR_MQ_GETSETATTR
         | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL
