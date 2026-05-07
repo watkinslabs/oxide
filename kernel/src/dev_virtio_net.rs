@@ -16,8 +16,12 @@
 //   7. Driver-OK:      STATUS |= DRIVER_OK
 //   8. Fill RX ring with descriptors pointing at receive buffers
 //
-// This module does steps 1-7. Frame TX/RX (step 8 + the post-init
-// data path) lands in a follow-up phase 19 PR.
+// This module does steps 1-7 plus the TX data path (step 8 partial:
+// driver→device frame transmit). RX descriptor pool + IRQ-driven
+// completion drain stays in P19c/d. v1 TX is one-frame-at-a-time:
+// we own one 4 KiB scratch page used as the per-call buffer,
+// reclaim used-ring completions on each tx_frame call, and serialize
+// behind DEVICE.lock().
 
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 #![allow(dead_code)]
@@ -64,10 +68,15 @@ const HHDM_FALLBACK: u64 = 0xFFFF_8000_0000_0000; // matches user_as::hhdm_offse
 
 /// One installed virtio-net device's runtime state.
 pub struct VirtioNetDevice {
-    pub iobase: u16,
-    pub mac:    [u8; 6],
-    pub rx:     VirtQueueRuntime,
-    pub tx:     VirtQueueRuntime,
+    pub iobase:    u16,
+    pub mac:       [u8; 6],
+    pub rx:        VirtQueueRuntime,
+    pub tx:        VirtQueueRuntime,
+    /// Single 4 KiB DMA-coherent scratch page reused across tx_frame
+    /// calls. v1 holds one frame in flight; reclaimed via used-ring
+    /// poll at the head of each tx_frame.
+    pub tx_buf_pa: u64,
+    pub tx_buf_va: u64,
 }
 
 /// Per-queue runtime (descriptor / avail / used ring physical layout).
@@ -300,7 +309,21 @@ pub fn init_legacy() {
              STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
     }
 
-    *DEVICE.lock() = Some(VirtioNetDevice { iobase, mac, rx, tx });
+    let tx_buf_pa = match crate::pmm_setup::alloc_one_frame() {
+        Some(p) => p,
+        None => {
+            // SAFETY: signal device-failed status when we can't get a tx scratch page.
+            unsafe { outb(iobase + VIO_DEVICE_STATUS, STATUS_FAILED); }
+            return;
+        }
+    };
+    let tx_buf_va = tx_buf_pa + crate::user_as::hhdm_offset();
+    // SAFETY: HHDM-mapped scratch page; zero a single 4KiB region we just allocated.
+    unsafe { core::ptr::write_bytes(tx_buf_va as *mut u8, 0, PAGE_SIZE as usize); }
+
+    *DEVICE.lock() = Some(VirtioNetDevice {
+        iobase, mac, rx, tx, tx_buf_pa, tx_buf_va,
+    });
     INITIALIZED.store(true, Ordering::Release);
 
     debug_boot! {
@@ -335,4 +358,137 @@ pub fn isr_read_clear() -> Option<u8> {
 /// # C: O(1)
 pub fn mac() -> Option<[u8; 6]> {
     DEVICE.lock().as_ref().map(|d| d.mac)
+}
+
+// -------- TX data path (P19b) --------
+
+const VIRTIO_NET_HDR_LEN: usize = 12;
+/// Maximum frame the v1 TX scratch page can hold (PAGE_SIZE − header).
+pub const TX_MAX_FRAME_LEN: usize = PAGE_SIZE as usize - VIRTIO_NET_HDR_LEN;
+
+/// Errors from `tx_frame`. Distinct from `Errno` to keep the
+/// virtio driver self-contained; callers (NetDev integration in
+/// P19f) translate to errno.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TxErr {
+    /// No virtio-net device installed.
+    NoDev,
+    /// Frame plus 12-byte header would exceed the scratch page.
+    TooBig,
+    /// Avail ring or descriptor pool exhausted (would only happen
+    /// if a previous tx didn't complete and the device hasn't
+    /// posted a used-ring entry — v1 holds one frame in flight).
+    Busy,
+}
+
+/// `desc[idx]` byte offset within the queue region.
+#[inline]
+fn desc_off(idx: u16) -> usize { (idx as usize) * 16 }
+
+/// `avail` byte offset (after desc table).
+#[inline]
+fn avail_off(qsize: u16) -> usize { (qsize as usize) * 16 }
+
+/// `used` byte offset: avail tail rounded up to 4.
+#[inline]
+fn used_off(qsize: u16) -> usize {
+    let avail_bytes = 6usize + 2 * (qsize as usize);
+    (avail_off(qsize) + avail_bytes + 3) & !3
+}
+
+/// Reclaim any completed used-ring entries by advancing `last_used`.
+/// v1 keeps a single descriptor in flight; this just keeps the
+/// indices in lockstep so the next `tx_frame` doesn't see a stale
+/// "Busy" condition.
+/// # SAFETY: `region_va` is HHDM-mapped queue region for an
+/// initialized virtio device under DEVICE.lock(); reads only.
+unsafe fn reclaim_used(q: &mut VirtQueueRuntime) {
+    let used_base = q.region_va + used_off(q.size) as u64;
+    // SAFETY: queue region pinned + zero-initialized at setup; volatile
+    // read for device-written used.idx field at offset 2.
+    let dev_used_idx = unsafe {
+        core::ptr::read_volatile((used_base + 2) as *const u16)
+    };
+    q.last_used = dev_used_idx;
+}
+
+/// Transmit one Ethernet frame through the legacy virtio-net TX
+/// queue. Synchronous: returns once the descriptor + avail-ring
+/// update has been published and QUEUE_NOTIFY kicked. Does NOT
+/// wait for the device to ack (that needs P19d IRQs).
+///
+/// `frame` must be the L2 frame (Ethernet header + payload), NOT
+/// the virtio_net_hdr — we prepend the 12-byte zero header inline.
+///
+/// # C: O(frame.len())
+/// # Lk: takes `DEVICE` spinlock — IRQ-safe via `lock_irqsave`-class
+///        Spinlock with `TaskList` class.
+pub fn tx_frame(frame: &[u8]) -> Result<usize, TxErr> {
+    if frame.len() > TX_MAX_FRAME_LEN { return Err(TxErr::TooBig); }
+    let mut g = DEVICE.lock();
+    let d = g.as_mut().ok_or(TxErr::NoDev)?;
+
+    // Reclaim completions before publishing.
+    // SAFETY: queue region is the page we set up in init_legacy(),
+    // still HHDM-mapped, exclusive under DEVICE.lock().
+    unsafe { reclaim_used(&mut d.tx); }
+
+    // v1 single-in-flight check: we don't allow next_avail to
+    // outrun last_used by more than `size` (would wrap into
+    // unfreed slots). With size capped at 64 and 1 in flight,
+    // this only triggers if the device stalled.
+    let inflight = d.tx.next_avail.wrapping_sub(d.tx.last_used);
+    if inflight >= d.tx.size {
+        return Err(TxErr::Busy);
+    }
+
+    // Build [virtio_net_hdr (12 zero) | frame] in scratch buffer.
+    // SAFETY: tx_buf_va is HHDM mapping of tx_buf_pa, which we
+    // own exclusively under DEVICE.lock(); 12 + frame.len() ≤ PAGE_SIZE.
+    unsafe {
+        let dst = d.tx_buf_va as *mut u8;
+        core::ptr::write_bytes(dst, 0, VIRTIO_NET_HDR_LEN);
+        if !frame.is_empty() {
+            core::ptr::copy_nonoverlapping(
+                frame.as_ptr(),
+                dst.add(VIRTIO_NET_HDR_LEN),
+                frame.len(),
+            );
+        }
+    }
+
+    let total_len = (VIRTIO_NET_HDR_LEN + frame.len()) as u32;
+    let slot      = d.tx.next_avail % d.tx.size;
+    let desc_addr = d.tx.region_va + desc_off(slot) as u64;
+    let avail_base = d.tx.region_va + avail_off(d.tx.size) as u64;
+
+    // SAFETY: queue region is HHDM-mapped + exclusive under DEVICE.lock();
+    // descriptor + avail-ring writes are aligned device-readable per
+    // Virtio 1.2 §2.6 layout we set up at init.
+    unsafe {
+        // desc[slot] = { addr=tx_buf_pa, len=hdr+frame, flags=0, next=0 }
+        core::ptr::write_volatile(desc_addr as *mut u64, d.tx_buf_pa);
+        core::ptr::write_volatile((desc_addr + 8) as *mut u32, total_len);
+        core::ptr::write_volatile((desc_addr + 12) as *mut u16, 0);
+        core::ptr::write_volatile((desc_addr + 14) as *mut u16, 0);
+
+        // avail.ring[slot] = slot   (avail.ring base at avail+4)
+        core::ptr::write_volatile(
+            (avail_base + 4 + (slot as u64) * 2) as *mut u16,
+            slot,
+        );
+        // sfence — descriptor + ring slot must be visible before idx bump.
+        core::sync::atomic::fence(Ordering::Release);
+        // avail.idx (offset +2) ← next_avail+1
+        let new_idx = d.tx.next_avail.wrapping_add(1);
+        core::ptr::write_volatile((avail_base + 2) as *mut u16, new_idx);
+        // sfence — idx must be visible before NOTIFY.
+        core::sync::atomic::fence(Ordering::Release);
+
+        // Kick: outw QUEUE_NOTIFY = QUEUE_TX
+        outw(d.iobase + VIO_QUEUE_NOTIFY, QUEUE_TX);
+    }
+
+    d.tx.next_avail = d.tx.next_avail.wrapping_add(1);
+    Ok(frame.len())
 }
