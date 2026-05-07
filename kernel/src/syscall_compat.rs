@@ -112,7 +112,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_SOCKETPAIR
         | NR_SETSOCKOPT | NR_GETSOCKOPT
         // Signal extras.
-        | NR_RT_SIGTIMEDWAIT | NR_RT_SIGQUEUEINFO | NR_RT_TGSIGQUEUEINFO
+        // RT_SIGTIMEDWAIT / RT_SIGQUEUEINFO / RT_TGSIGQUEUEINFO
+        // moved to real impls in PR-D-signals.
         // preadv/pwritev (the v1 alternates, real ones are PREADV/PWRITEV).
         | NR_PREADV | NR_PWRITEV
                                        => Some(enosys),
