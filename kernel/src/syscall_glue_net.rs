@@ -770,12 +770,51 @@ pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
-/// Returns 0 + zero-length opt for every query.
+///
+/// Honored:
+///   SOL_SOCKET (1) / SO_PEERCRED (17): writes back a `struct ucred`
+///     {pid, uid, gid} (12 bytes) for AF_UNIX-paired fds. v1 reports
+///     the calling task's tid + 0/0 (no real uid); sufficient for
+///     systemd-class peer-credential checks to receive a non-zero pid.
+///   SOL_SOCKET / SO_TYPE (3): writes back the SOCK_* shape.
+///   Everything else: zero-length opt + return 0.
 /// # C: O(1)
 pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
+    const SOL_SOCKET:   u64 = 1;
+    const SO_TYPE:      u64 = 3;
+    const SO_PEERCRED:  u64 = 17;
+    let _fd     = args.a0;
+    let level   = args.a1;
+    let optname = args.a2;
+    let optval  = args.a3;
     let optlen_p = args.a4;
+    if level == SOL_SOCKET && optname == SO_PEERCRED
+       && optval != 0 && optval < USER_VA_END
+       && optlen_p != 0 && optlen_p < USER_VA_END
+    {
+        let pid = crate::sched::current().map(|c| c.tid as u32).unwrap_or(0);
+        // SAFETY: optval+optlen_p validated < USER_VA_END; struct ucred is 12 bytes; CPL=0 writes through caller's AS.
+        unsafe {
+            core::ptr::write_volatile( optval        as *mut u32, pid);
+            core::ptr::write_volatile((optval +  4)  as *mut u32, 0);
+            core::ptr::write_volatile((optval +  8)  as *mut u32, 0);
+            core::ptr::write_volatile(optlen_p as *mut u32, 12);
+        }
+        return 0;
+    }
+    if level == SOL_SOCKET && optname == SO_TYPE
+       && optval != 0 && optval < USER_VA_END
+       && optlen_p != 0 && optlen_p < USER_VA_END
+    {
+        // SAFETY: optval+optlen_p validated < USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe {
+            core::ptr::write_volatile(optval as *mut u32, 1 /* SOCK_STREAM */);
+            core::ptr::write_volatile(optlen_p as *mut u32, 4);
+        }
+        return 0;
+    }
     if optlen_p != 0 && optlen_p < USER_VA_END {
-        // SAFETY: ptr in user range; user page mapped under caller's AS.
+        // SAFETY: optlen_p validated < USER_VA_END; CPL=0 write through caller's AS.
         unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
     }
     0
