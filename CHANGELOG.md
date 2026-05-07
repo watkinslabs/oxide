@@ -907,3 +907,27 @@ Discipline tightened:
 Pre-existing latent issues uncovered (not introduced this session, deferred to follow-up branches):
 - x86 init.c with libc errno path faults on execve ENOENT (FS_BASE=0; needs arch_prctl(SET_FS) which musl _start under -nostartfiles skips). Workaround in init.c is the fork+echo smoke.
 - /sbin/svcd has a NULL-deref under busybox-style argv; staging temporarily disabled.
+
+## Session 42 (PRs #669 – #677) — 2026-05-07
+
+**Subject**: v2 follow-up admission sweep. Eight bounded PRs that
+collapse the v2 deferred list across net/IPC/ptrace/auth tracks.
+ARM/x86 lockstep preserved (kernel-only changes; no user-visible
+boot-flow change). 894 hosted tests stay green; spec-lint clean.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #669 | `P19b-virtio-net-tx`     | virtio-net TX frame path (DMA scratch + desc/avail fill + sfence + QUEUE_NOTIFY). |
+| #670 | `P19c-virtio-net-rx-poll`| virtio-net RX poll-mode: 32 × 4 KiB DMA pages preloaded with VRING_DESC_F_WRITE; rx_poll(cb) drains used-ring + re-publishes. |
+| #671 | `P25b-sysv-sem`          | semget/semop/semctl/semtimedop. Trial+commit batch atomicity; would-block→EAGAIN. |
+| #672 | `P25c-sysv-msg`          | msgget/msgsnd/msgrcv/msgctl. VecDeque per queue; Linux msgtyp matcher. |
+| #673 | `P22b-ptrace-ops`        | ATTACH/DETACH/PEEK/POKE/CONT/GETREGS admission (PEEK returns 0 word — honest stub). |
+| #674 | `D04-stale-compat-comments` | refresh syscall_compat ENOSYS-list comments after P22b/P25b/P25c. |
+| #675 | `P38b-keyring-admit`     | add_key/request_key/keyctl → silent-0 (PAM/sudo/dbus). |
+| #676 | `P25e-posix-mq`          | mq_open tmpfs-fd; mq_timedsend/timedreceive alias write/read. kernel_sys_read/write promoted to portable + pub. |
+| #677 | `P18b-procfs-net-extras` | /proc/net/{unix,if_inet6,snmp} stubs (header-only). |
+
+End-of-session-42 verified-green:
+- both arches build with default + debug-all
+- 894 hosted tests pass
+- spec-lint clean
