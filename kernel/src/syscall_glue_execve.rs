@@ -141,6 +141,25 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         return -(Errno::Enomem.as_i32() as i64);
     }
 
+    // TLS scratch — every userspace binary built with musl libc
+    // wrappers does FS-relative loads (canary at FS:0x28, errno
+    // at higher offsets, pthread_self at FS:0). Without a real
+    // TLS pointer the first call into a libc wrapper faults.
+    // Mirrors the init-spawn TLS setup in elf_smoke.rs.
+    const USER_TLS_BASE: u64 = 0x600_000;
+    const USER_TLS_LEN:  usize = 0x2000;
+    let tls_hint = UserVirtAddr::new(USER_TLS_BASE)
+        .expect("USER_TLS_BASE in user range");
+    if new_as.mmap(
+        Some(tls_hint), USER_TLS_LEN,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    ).is_err() {
+        return -(Errno::Enomem.as_i32() as i64);
+    }
+
     // 3. Replace `current.mm` with the new AS and activate it.
     //    Order: activate BEFORE replace_mm so CR3 doesn't dangle
     //    if drop runs concurrently — but on UP single-CPU the
@@ -150,6 +169,19 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(new_root); }
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
+
+    // Write TLS self-pointer + reset FS_BASE for the new program.
+    // SAFETY: new mm is active; demand-fault resolves the page; sole writer.
+    unsafe {
+        const USER_FS_BASE: u64 = 0x600_000 + 0x1000;
+        core::ptr::write_volatile(USER_FS_BASE as *mut u64, USER_FS_BASE);
+        hal_x86_64::set_user_fs_base(USER_FS_BASE);
+        // Persist into Task ctx so context switch save/restore
+        // picks up the new value when this task is next swapped
+        // back in. SAFETY: running task on this CPU; sole writer.
+        let ctx_ptr: *mut hal_x86_64::ContextX86_64 = cur.arch_ctx_ptr();
+        (*ctx_ptr).fs_base = USER_FS_BASE;
+    }
 
     // P3-61: drop FD_CLOEXEC fds before the new program runs.
     // SAFETY: same single-mutator invariant on fd_table as mm.
