@@ -151,9 +151,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
         ("userspace/svcd/svcd",         "userspace/svcd/svcd.c"),
         ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
+        ("userspace/sh/sh",             "userspace/sh/sh.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
-        ("userspace/sh/sh",             "userspace/sh/sh.c"),
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
     let mut bins: Vec<(&str, &str)> = portable_bins.to_vec();
@@ -353,15 +353,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("passwd"),     "/bin/oxide-passwd")?;
     put(&user("svcd"),         "/sbin/oxide-svcd")?;
     put(&user("rpm"),           "/bin/oxide-rpm")?;
-    // The remaining toy applets below still embed x86 inline-asm
-    // syscalls; only stage them on x86_64 until they're ported. The
-    // portable forms above ship at /bin/oxide-<name> so they don't
-    // shadow busybox's own applets at /bin/<name>.
+    put(&user("sh"),             "/bin/oxide-sh")?;
+    // The remaining x86-only bins are the dynlink+hello_dyn pair (the
+    // dynamic-linker smoke harness, x86 ABI inherent for now). Skip
+    // staging them on aarch64 until we have aarch64 ld-musl.
     if arch != "x86_64" {
-        eprintln!("xtask rootfs: arch={arch} skipping x86-asm-only toy applets — portable forms staged at /bin/oxide-<name>");
+        eprintln!("xtask rootfs: arch={arch} skipping x86-only dynlink + hello_dyn (need aarch64 ld-musl)");
     }
     if arch == "x86_64" {
-    put(&user("sh"),             "/bin/oxide-sh")?;
     // /lib/ld-musl-x86_64.so.1 — minimal dynamic-linker stub (P13-06).
     // Kernel ELF loader sees PT_INTERP="/lib/ld-musl-x86_64.so.1"
     // in any -pie (non-static) binary and dual-loads this image
