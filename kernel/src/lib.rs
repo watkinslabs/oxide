@@ -124,6 +124,7 @@ pub mod io_uring;
 pub mod seccomp;
 pub mod userfaultfd;
 pub mod perf;
+pub mod coredump;
 pub mod syscall_glue_signal;
 pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
