@@ -610,6 +610,29 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
         }
         crate::syscall_nrs::NR_USERFAULTFD => crate::userfaultfd::kernel_sys_userfaultfd(&args),
+        // Modern mount API (P29a). fsopen/fsmount/fspick/open_tree return
+        // memfd-backed fds tagged with the call's identity for future
+        // mount-table integration; fsconfig/move_mount/mount_setattr admit
+        // (real per-NS mount-table machinery rides a follow-up).
+        crate::syscall_nrs::NR_FSOPEN     => {
+            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+        }
+        crate::syscall_nrs::NR_FSMOUNT    => {
+            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+        }
+        crate::syscall_nrs::NR_FSPICK     => {
+            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+        }
+        crate::syscall_nrs::NR_OPEN_TREE  => {
+            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+        }
+        crate::syscall_nrs::NR_FSCONFIG       => 0,
+        crate::syscall_nrs::NR_MOVE_MOUNT     => 0,
+        crate::syscall_nrs::NR_MOUNT_SETATTR  => 0,
         crate::syscall_nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
         crate::syscall_nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
         crate::syscall_nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
