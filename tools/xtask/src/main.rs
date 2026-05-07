@@ -152,6 +152,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/svcd/svcd",         "userspace/svcd/svcd.c"),
         ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
+        ("userspace/sem_smoke/sem_smoke",       "userspace/sem_smoke/sem_smoke.c"),
+        ("userspace/msg_smoke/msg_smoke",       "userspace/msg_smoke/msg_smoke.c"),
+        ("userspace/mq_smoke/mq_smoke",         "userspace/mq_smoke/mq_smoke.c"),
+        ("userspace/ptrace_smoke/ptrace_smoke", "userspace/ptrace_smoke/ptrace_smoke.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
@@ -169,8 +173,16 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let src = repo.join(src_rel);
         eprintln!("xtask rootfs: {} {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
         let mut c = Command::new(&cc);
-        c.args(["-static-pie", "-fPIE", "-O2", "-nostartfiles",
-                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        c.args([
+            "-static-pie", "-fPIE", "-O2", "-nostartfiles",
+            // -fno-stack-protector: gcc -O2 with stack protector
+            // emits canary loads from FS:0x28 (musl pthread struct
+            // slot). Our oxide_start.h skips musl TLS init →
+            // FS_BASE=0 → canary read NULL-derefs. Disable the
+            // canary until a TLS-stub is installed in _start.
+            "-fno-stack-protector",
+            "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+        ]);
         run(c)?;
     }
 
@@ -191,6 +203,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         eprintln!("xtask rootfs: {} -pie {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
         let mut c = Command::new(&cc);
         c.args(["-fPIE", "-pie", "-O2", "-nostartfiles", "-nostdlib",
+                "-fno-stack-protector",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
@@ -358,6 +371,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // path until svcd is robust enough to run as PID 2 end-to-end.
     put(&user("rpm"),           "/bin/oxide-rpm")?;
     put(&user("sh"),             "/bin/oxide-sh")?;
+    put(&user("sem_smoke"),    "/bin/sem_smoke")?;
+    put(&user("msg_smoke"),    "/bin/msg_smoke")?;
+    put(&user("mq_smoke"),     "/bin/mq_smoke")?;
+    put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
     // The remaining x86-only bins are the dynlink+hello_dyn pair (the
     // dynamic-linker smoke harness, x86 ABI inherent for now). Skip
     // staging them on aarch64 until we have aarch64 ld-musl.
