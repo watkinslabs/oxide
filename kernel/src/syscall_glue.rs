@@ -609,6 +609,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
             crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
         }
+        crate::syscall_nrs::NR_USERFAULTFD => crate::userfaultfd::kernel_sys_userfaultfd(&args),
         crate::syscall_nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
         crate::syscall_nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
         crate::syscall_nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
