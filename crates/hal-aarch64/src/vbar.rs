@@ -178,7 +178,7 @@ core::arch::global_asm!(
     "    and x9, x9, #0x3f",
     "    cmp x9, #0x15",
     "    b.ne oxide_default_vector_handler",
-    "    sub  sp, sp, #208",
+    "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0x00]",
     "    stp  x2,  x3,  [sp, #0x10]",
     "    stp  x4,  x5,  [sp, #0x20]",
@@ -195,6 +195,17 @@ core::arch::global_asm!(
     "    stp  x9,  x10, [sp, #0xb0]",
     "    mrs  x9,  sp_el0",
     "    str  x9,       [sp, #0xc0]",
+    // Save callee-saved x19..x28 too so a forked child can inherit
+    // them. AAPCS64 callee-saved means the kernel C dispatch path
+    // would otherwise spill them to its own stack and restore on
+    // return — fine for the syscall semantics but invisible to
+    // sys_clone, which needs the parent's user x19..x28 to populate
+    // the child's resume Context.
+    "    stp  x19, x20, [sp, #0xd0]",
+    "    stp  x21, x22, [sp, #0xe0]",
+    "    stp  x23, x24, [sp, #0xf0]",
+    "    stp  x25, x26, [sp, #0x100]",
+    "    stp  x27, x28, [sp, #0x110]",
     // Stash sp (= base of saved SVC frame) into the global so the
     // dispatcher can locate the saved ELR_EL1 / SP_EL0 / x0 slots
     // for syscalls that need to redirect the post-eret state
@@ -232,8 +243,14 @@ core::arch::global_asm!(
     "    ldp  x4,  x5,  [sp, #0x20]",
     "    ldp  x2,  x3,  [sp, #0x10]",
     "    ldp  x0,  x1,  [sp, #0x00]",
+    // Restore callee-saved x19..x28 from the SVC frame.
+    "    ldp  x19, x20, [sp, #0xd0]",
+    "    ldp  x21, x22, [sp, #0xe0]",
+    "    ldp  x23, x24, [sp, #0xf0]",
+    "    ldp  x25, x26, [sp, #0x100]",
+    "    ldp  x27, x28, [sp, #0x110]",
     "    ldr  x0,       [sp, #0xc8]",
-    "    add  sp, sp, #208",
+    "    add  sp, sp, #288",
     "    eret",
     ".size oxide_lower_el_sync_handler, . - oxide_lower_el_sync_handler",
 
@@ -371,18 +388,19 @@ pub static oxide_svc_frame_base: core::sync::atomic::AtomicU64 =
 /// the slots syscall handlers need to overwrite are exposed here.
 #[repr(C)]
 pub struct SvcFrame {
-    pub gp:        [u64; 18],   // x0..x17
-    pub x18_x29:   [u64; 2],    // [x18, x29] — packed by asm stp
-    pub x30:       u64,
-    pub _pad_x30:  u64,
-    pub elr_el1:   u64,
-    pub spsr_el1:  u64,
-    pub sp_el0:    u64,
-    pub retval:    u64,
+    pub gp:        [u64; 18],   // x0..x17                     (offsets 0x00..0x90)
+    pub x18_x29:   [u64; 2],    // [x18, x29] — packed by stp  (offset 0x90..0xa0)
+    pub x30:       u64,         //                              (offset 0xa0)
+    pub _pad_x30:  u64,         //                              (offset 0xa8)
+    pub elr_el1:   u64,         //                              (offset 0xb0)
+    pub spsr_el1:  u64,         //                              (offset 0xb8)
+    pub sp_el0:    u64,         //                              (offset 0xc0)
+    pub retval:    u64,         //                              (offset 0xc8)
+    pub x19_x28:   [u64; 10],   // x19..x28                     (offset 0xd0..0x120)
 }
 
-const _: () = assert!(core::mem::size_of::<SvcFrame>() == 208,
-    "SvcFrame must match the 208 B asm frame in oxide_lower_el_sync_handler");
+const _: () = assert!(core::mem::size_of::<SvcFrame>() == 288,
+    "SvcFrame must match the 288 B asm frame in oxide_lower_el_sync_handler");
 
 /// Pointer to the active task's saved SVC frame, or null pre-first-syscall.
 /// # SAFETY: caller is `oxide_syscall_dispatch` running on the active
