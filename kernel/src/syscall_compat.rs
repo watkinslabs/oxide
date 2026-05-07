@@ -55,7 +55,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         NR_PTRACE
         | NR_SPLICE | NR_TEE | NR_VMSPLICE
         | NR_COPY_FILE_RANGE
-        | NR_MEMFD_CREATE | NR_MEMFD_SECRET
+        | NR_MEMFD_SECRET // MEMFD_CREATE moved to real impl in PR-H.
         | NR_PIDFD_GETFD
         | NR_GETXATTR | NR_LGETXATTR | NR_FGETXATTR
         | NR_LISTXATTR | NR_LLISTXATTR | NR_FLISTXATTR
@@ -92,7 +92,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
         | NR_SET_MEMPOLICY_HOME_NODE
         | NR_VSERVER | NR__SYSCTL
-        | NR_EXECVEAT | NR_PREADV2 | NR_PWRITEV2
+        | NR_EXECVEAT
+        // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
         // userfaultfd; epoll moved to real impl.
         | NR_USERFAULTFD
         // io_uring + libaio + perf + bpf + seccomp + landlock + ns.
