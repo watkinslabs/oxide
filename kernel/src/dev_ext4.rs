@@ -21,7 +21,15 @@ use block::{BlockDevice, BlockOp, BlockRequest, PageCache};
 use block::types::{BlockError, InodeId, KResult, PAGE_BYTES};
 use ext4::Mount;
 
-/// Embedded ext4 image. Same fixture the crate-level tests use.
+/// Embedded ext4 image. Per-arch rootfs blob: aarch64 init/sh/etc.
+/// are aarch64 ELFs; x86_64 are x86_64 ELFs. The two can't share
+/// because load_static_blob rejects on ELF e_machine mismatch.
+/// xtask rootfs writes per-arch images at kernel/blobs/rootfs-<arch>.img.
+#[cfg(target_arch = "x86_64")]
+const ROOTFS: &'static [u8] = include_bytes!("../blobs/rootfs-x86_64.img");
+#[cfg(target_arch = "aarch64")]
+const ROOTFS: &'static [u8] = include_bytes!("../blobs/rootfs-aarch64.img");
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const ROOTFS: &'static [u8] = include_bytes!("../blobs/rootfs.img");
 
 /// Backing block size for the in-kernel virtual disk.
