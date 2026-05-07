@@ -128,24 +128,24 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/wc/wc",             "userspace/wc/wc.c"),
         ("userspace/kill/kill",         "userspace/kill/kill.c"),
         ("userspace/rm/rm",             "userspace/rm/rm.c"),
+        ("userspace/dmesg/dmesg",       "userspace/dmesg/dmesg.c"),
+        ("userspace/ln/ln",             "userspace/ln/ln.c"),
+        ("userspace/cmp/cmp",           "userspace/cmp/cmp.c"),
+        ("userspace/cp/cp",             "userspace/cp/cp.c"),
+        ("userspace/tee/tee",           "userspace/tee/tee.c"),
+        ("userspace/df/df",             "userspace/df/df.c"),
+        ("userspace/xxd/xxd",           "userspace/xxd/xxd.c"),
+        ("userspace/route/route",       "userspace/route/route.c"),
+        ("userspace/mount/mount",       "userspace/mount/mount.c"),
+        ("userspace/ls/ls",             "userspace/ls/ls.c"),
+        ("userspace/find/find",         "userspace/find/find.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
         ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
         ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
         ("userspace/ps/ps",             "userspace/ps/ps.c"),
-        ("userspace/ls/ls",             "userspace/ls/ls.c"),
-        ("userspace/mount/mount",       "userspace/mount/mount.c"),
-        ("userspace/cp/cp",             "userspace/cp/cp.c"),
-        ("userspace/dmesg/dmesg",       "userspace/dmesg/dmesg.c"),
         ("userspace/nc/nc",             "userspace/nc/nc.c"),
-        ("userspace/tee/tee",           "userspace/tee/tee.c"),
-        ("userspace/ln/ln",             "userspace/ln/ln.c"),
-        ("userspace/find/find",         "userspace/find/find.c"),
-        ("userspace/df/df",             "userspace/df/df.c"),
-        ("userspace/cmp/cmp",           "userspace/cmp/cmp.c"),
-        ("userspace/route/route",       "userspace/route/route.c"),
-        ("userspace/xxd/xxd",           "userspace/xxd/xxd.c"),
         ("userspace/getent/getent",     "userspace/getent/getent.c"),
         ("userspace/login/login",       "userspace/login/login.c"),
         ("userspace/su/su",             "userspace/su/su.c"),
@@ -330,6 +330,17 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("wc"),             "/bin/oxide-wc")?;
     put(&user("kill"),         "/bin/oxide-kill")?;
     put(&user("rm"),             "/bin/oxide-rm")?;
+    put(&user("dmesg"),       "/bin/oxide-dmesg")?;
+    put(&user("ln"),             "/bin/oxide-ln")?;
+    put(&user("cmp"),           "/bin/oxide-cmp")?;
+    put(&user("cp"),             "/bin/oxide-cp")?;
+    put(&user("tee"),           "/bin/oxide-tee")?;
+    put(&user("df"),             "/bin/oxide-df")?;
+    put(&user("xxd"),           "/bin/oxide-xxd")?;
+    put(&user("route"),       "/bin/oxide-route")?;
+    put(&user("mount"),       "/bin/oxide-mount")?;
+    put(&user("ls"),             "/bin/oxide-ls")?;
+    put(&user("find"),         "/bin/oxide-find")?;
     // The remaining toy applets below still embed x86 inline-asm
     // syscalls; only stage them on x86_64 until they're ported. The
     // portable forms above ship at /bin/oxide-<name> so they don't
@@ -342,18 +353,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("udp_echo"), "/bin/udp_echo")?;
     put(&user("tcp_echo"), "/bin/tcp_echo")?;
     put(&user("ps"),             "/bin/ps")?;
-    put(&user("ls"),             "/bin/ls")?;
-    put(&user("mount"),       "/bin/mount")?;
-    put(&user("cp"),             "/bin/cp")?;
-    put(&user("dmesg"),       "/bin/dmesg")?;
     put(&user("nc"),             "/bin/nc")?;
-    put(&user("tee"),           "/bin/tee")?;
-    put(&user("ln"),             "/bin/ln")?;
-    put(&user("find"),         "/bin/find")?;
-    put(&user("df"),             "/bin/df")?;
-    put(&user("cmp"),           "/bin/cmp")?;
-    put(&user("route"),       "/bin/route")?;
-    put(&user("xxd"),           "/bin/xxd")?;
     put(&user("getent"),     "/bin/getent")?;
     put(&user("login"),       "/bin/login")?;
     put(&user("su"),             "/bin/su")?;
