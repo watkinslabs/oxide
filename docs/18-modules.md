@@ -95,7 +95,7 @@ Per-module exports: appended on load; removed on unload. Lookup walks built-in t
 - `delete_module("hello")` ⇒ Ok; references gone.
 - Negative tests: unsigned (sig_enforce=1) ⇒ ENOEXEC. Wrong vermagic ⇒ ENOEXEC. GPL-only sym from non-GPL module ⇒ EACCES + taint. Refcount>0 unload ⇒ EBUSY.
 - Stress: load/unload 1000 cycles random modules; no leak (verified by slab object counters and unmapped page count == start).
-- Soak (bg, not gate per `40§3`): 4h cycles, load/unload concurrent with module-using workload; zero panics.
+- PR-time gate: load/unload concurrent with module-using workload runs in proptest harness; zero panics.
 - Coverage ≥90%.
 
 ## 11 Failure modes

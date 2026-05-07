@@ -274,9 +274,9 @@ Bench: `bench/ctxsw_bench.rs`. Cross-AS includes PT swap (sched's job, not ctxsw
 - Two `.S` files exist, ≤50 lines each.
 - Line-by-line ABI review: each `.S` has top-of-file comment citing SysV AMD64 ABI v1.0 §3.2.3 / AAPCS64 IHI 0055D §5.1.1 + page numbers. Reviewed by author-as-fresh-eyes after 48h cool-off (`02§1`).
 - 2-thread ping-pong: 1M switches; final canary == initial.
-- 64-task canary 1h @ 1ms preempt: every canary intact end.
+- 64-task canary, randomized 1ms-preempt proptest: every canary intact end.
 - Hosted unit `Context::new_kernel`: build ctx, "switch" on fake stack, verify entry reached with correct arg.
-- SMP migration stress: 1000 tasks × 8 vCPU; 1h; no canary fail.
+- SMP migration proptest: 1000 tasks × 8 vCPU randomized; no canary fail.
 - FPU lazy-save test: userspace spins FP between kernel preempts; after 1M iter, FP regs match expectation.
 - Bench: within budget; no regress >5% vs baseline.
 
@@ -288,7 +288,7 @@ Bench: `bench/ctxsw_bench.rs`. Cross-AS includes PT swap (sched's job, not ctxsw
 
 ## 12 Debug
 
-`debug-sched-canary`: enables canary harness even outside test mode (catches in soak).
+`debug-sched-canary`: enables canary harness even outside test mode (catches in PR-time `paranoid-ci` runs).
 
 ## 13 Cross-spec
 

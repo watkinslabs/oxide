@@ -111,7 +111,7 @@ Disk-bound workloads = HW-limited, not these budgets.
 - Loom: read+write race same page; `PG_LOCKED` serializes; depth 6.
 - Block fault injection: 10% submit failure rate; cb invoked with right error every time.
 - Crash test: kill QEMU during `fs_mark` at 1000 random points; on reboot, journaling FS (ext4) `fsck` clean.
-- Soak (bg, not gate per `40§3`): 4h cycles 4-CPU SMP, kernel-build-self + iperf + fs_mark + random R/W; zero corruption (SHA-256 corpus reconciles). PR-time gate uses `paranoid-ci` (`debug-pagecache`).
+- PR-time gate uses `paranoid-ci` (`debug-pagecache`) per `41§3`. SMP randomized R/W proptest with SHA-256 corpus reconciliation; not duration-based.
 - Coverage ≥95%.
 
 ## 8 Failure modes

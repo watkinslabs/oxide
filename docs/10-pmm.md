@@ -138,7 +138,7 @@ Bench: `bench/pmm_bench.rs` vs hosted oracle; `bench-history/`.
 - Property/oracle: `tools/oracle-buddy/` (sorted free list, no bitmap, recompute every op). proptest 1M ops `{alloc(rand_order),free(rand_outstanding)}`; per-op assert agreement on outstanding-PFN-set, per-order free count, total free.
 - Loom: 4 threads × 100 ops `{alloc(0),free(rand)}`; depth 6; no deadlock/double-count/UAF/leak. BTreeMap-based pre-alloc tracker stands in for bitmap (loom can't model multi-MiB atomics; logic-only).
 - Miri: hosted unit tests; no UB, no leak.
-- Soak (continuous bg, NOT phase gate per `40§3`): 4h cycles on `main`. 8 workers, random `alloc(rand_order_skew)`,`free(rand)`, ~1µs delay, working set 80% RAM. Inject 1 poison-corruption/hr (next alloc must catch + panic on poison). Inject double-free occasionally; kassert fires. Failures = ticket. Phase advance gated on PR-time `paranoid-ci` build (`debug-pmm`+`debug-alloc` audit per op) — substitute for old 24h gate.
+- PR-time gate uses `paranoid-ci` build (`debug-pmm` + `debug-alloc` audit per op) per `41§3`. Randomized 8-worker concurrent alloc/free with poison-corruption + double-free injection runs in proptest harness; kassert fires on detection.
 - Coverage: ≥97% lines `crates/pmm/src/`. Every `unsafe` SAFETY ≥30ch.
 - Bench regress: PR vs `bench-history/main`; >5% any op = fail.
 

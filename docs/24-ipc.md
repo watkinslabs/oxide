@@ -96,7 +96,7 @@ Backing: per-socket pair of intrusive ring buffers; SCM messages out-of-band rin
 - eventfd: semaphore mode + default mode; EAGAIN on overflow.
 - timerfd: 100K random timers; expiry within 50µs p99.
 - AF_UNIX: pass fd via SCM_RIGHTS, verify recipient gets working fd; pass creds, verify match.
-- Soak (bg, not gate per `40§3`): 4h cycles signal-storm + futex-bounce alongside fs/net; zero deadlocks. PR-time gate uses `paranoid-ci` (`debug-ipc`).
+- PR-time gate uses `paranoid-ci` (`debug-ipc`) per `41§3`. Signal-storm + futex-bounce concurrent stressors run in proptest harness, not duration-based.
 
 ## 13 Failure modes
 
