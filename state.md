@@ -19,6 +19,7 @@ build; spec-lint clean throughout.
 | #675 | P38b-keyring-admit     | 38b | add_key/request_key/keyctl → silent-0 (PAM/sudo/dbus auth probes pass). |
 | #676 | P25e-posix-mq          | 25e | mq_open returns tmpfs-fd; mq_timedsend/timedreceive alias write/read. Side-effect: kernel_sys_read/write now arch-portable + pub. |
 | #677 | P18b-procfs-net-extras | 18b | /proc/net/{unix,if_inet6,snmp} stubs (header-only or zero-counters). |
+| #679 | P21c-procfs-cgroup     | 21c | /proc/cgroups + /proc/self/cgroup cgroup-v2 stubs ("0::/"). |
 
 ## v2 status snapshot — net + IPC + ptrace tracks moved
 
