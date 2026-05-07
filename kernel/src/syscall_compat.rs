@@ -68,7 +68,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // returns silent-0 (a synthetic "key serial" for callers
         // that only check non-negative). Real keyring storage +
         // permission checks ride a follow-up.
-        | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL => Some(0),
+        | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL
+        // POSIX MQ admin ops (P25e). MQ_UNLINK/NOTIFY/GETSETATTR
+        // succeed silently. MQ_OPEN/TIMEDSEND/TIMEDRECEIVE are real
+        // (tmpfs-backed fd; FIFO byte semantics, no priority).
+        | NR_MQ_UNLINK | NR_MQ_NOTIFY | NR_MQ_GETSETATTR => Some(0),
 
         // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
         // xattr family: tar/cp -a/rsync probe these and skip cleanly
@@ -105,10 +109,10 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // SysV sem moved to real impl (P25b — non-blocking semop;
         //   would-block returns EAGAIN).
         // SysV msg moved to real impl (P25c — non-blocking msgrcv).
-        // POSIX MQ still ENOSYS (P25d follow-up).
+        // POSIX MQ_OPEN/TIMEDSEND/TIMEDRECEIVE moved to real impl
+        // (P25e — tmpfs-fd + write/read aliases).
+        // MQ_UNLINK/NOTIFY/GETSETATTR are silent-0 (above).
         // Keyring moved to silent-0 admit (P38b) above.
-        | NR_MQ_OPEN | NR_MQ_UNLINK | NR_MQ_TIMEDSEND
-        | NR_MQ_TIMEDRECEIVE | NR_MQ_NOTIFY | NR_MQ_GETSETATTR
         // Misc ENOSYS.
         | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
         | NR_USELIB | NR_USTAT | NR_SYSFS | NR_MODIFY_LDT
