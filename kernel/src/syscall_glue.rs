@@ -970,6 +970,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_CLONE         => kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_EXECVE        => crate::syscall_glue_execve::kernel_sys_execve(&args),
+        // execveat(dirfd, path, argv, envp, flags). v1 ignores dirfd
+        // + flags and routes through execve with the absolute path
+        // resolution it already does.
+        #[cfg(target_arch = "x86_64")]
+        crate::syscall_nrs::NR_EXECVEAT      => {
+            let mut sa = args; sa.a0 = args.a1; sa.a1 = args.a2; sa.a2 = args.a3; sa.a3 = 0;
+            crate::syscall_glue_execve::kernel_sys_execve(&sa)
+        }
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_WAIT4         => kernel_sys_wait4(&args),
         #[cfg(target_arch = "x86_64")]
