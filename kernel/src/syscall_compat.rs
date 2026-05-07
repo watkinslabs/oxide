@@ -62,7 +62,13 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // kcmp — compares two task resources. v1 returns 0 (equal)
         // for every comparison; bash + glibc only use it as an
         // optimization probe.
-        | NR_KCMP => Some(0),
+        | NR_KCMP
+        // Keyring (P38b admit). PAM/login/sudo/dbus probe these at
+        // start-up; -ENOSYS makes them refuse to authenticate. v1
+        // returns silent-0 (a synthetic "key serial" for callers
+        // that only check non-negative). Real keyring storage +
+        // permission checks ride a follow-up.
+        | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL => Some(0),
 
         // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
         // xattr family: tar/cp -a/rsync probe these and skip cleanly
@@ -99,10 +105,10 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // SysV sem moved to real impl (P25b — non-blocking semop;
         //   would-block returns EAGAIN).
         // SysV msg moved to real impl (P25c — non-blocking msgrcv).
-        // POSIX MQ + keyring still ENOSYS (P25 follow-up).
+        // POSIX MQ still ENOSYS (P25d follow-up).
+        // Keyring moved to silent-0 admit (P38b) above.
         | NR_MQ_OPEN | NR_MQ_UNLINK | NR_MQ_TIMEDSEND
         | NR_MQ_TIMEDRECEIVE | NR_MQ_NOTIFY | NR_MQ_GETSETATTR
-        | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL
         // Misc ENOSYS.
         | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
         | NR_USELIB | NR_USTAT | NR_SYSFS | NR_MODIFY_LDT
