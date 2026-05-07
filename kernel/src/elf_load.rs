@@ -134,12 +134,22 @@ pub fn load_static_blob(
     let parsed = parse(blob, ARCH_MACHINE)?;
     let mut interp_base: u64 = 0;
     let mut interp_entry: u64 = 0;
+    // PT_INTERP dual-image load is wired through `elf_smoke` which
+    // owns the boot-baked blob registry; only x86_64 has that module
+    // (the arm path uses `elf_smoke_arm` and doesn't yet host the
+    // dual-image flow). aarch64 callers pass static-PIE binaries with
+    // no PT_INTERP so this path stays unreached on that arch.
+    #[cfg(target_arch = "x86_64")]
     if let Some(interp_path) = parsed.interp {
         let interp_blob = crate::elf_smoke::lookup_blob_by_path(interp_path)
             .ok_or(LoadError::Enoexec)?;
         let interp = place_image(interp_blob, as_, Some(INTERP_LOAD_BIAS))?;
         interp_base  = INTERP_LOAD_BIAS;
         interp_entry = interp.entry.as_u64();
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    if parsed.interp.is_some() {
+        return Err(LoadError::Enoexec);
     }
 
     Ok(LoadedImage {
