@@ -306,6 +306,8 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
         klog::write_raw(b" cr2=");      klog::write_hex_u64(cr2);
         klog::write_raw(b"\n");
     }
+    // Coredump before parking the zombie. Best-effort.
+    crate::coredump::write_for_current(11);
     if let Some(rq) = crate::sched::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
