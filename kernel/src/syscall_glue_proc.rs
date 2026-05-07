@@ -362,12 +362,15 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_rseq(rseq, len, flags, sig)` — slot 334. Linux's
-/// restartable-sequences ABI for fast cancellation. v1: musl
-/// happily falls back when this returns -ENOSYS.
+/// restartable-sequences ABI for fast cancellation + per-CPU
+/// counter visibility. v1 returns 0 (registered) but doesn't
+/// implement the cs-abort or migration-clear protocol since
+/// we're single-CPU UP — the user-visible rseq.cpu_id == 0 is
+/// stable across the process lifetime, which is exactly what
+/// glibc's fast getpid path expects. Real per-CPU rseq rides
+/// SMP enablement.
 /// # C: O(1)
-pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 {
-    -(syscall::errno::Errno::Enosys.as_i32() as i64)
-}
+pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_getresuid(ruid, euid, suid)` / `sys_getresgid` — slots
 /// 118/120. Writes (0,0,0) into all three user pointers — root
