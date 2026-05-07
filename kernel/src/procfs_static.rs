@@ -131,6 +131,24 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
         StaticFileInode::new(b"include /etc/ld.so.conf.d/*.conf\n") as InodeRef);
     crate::devfs::register("/etc/timezone",
         StaticFileInode::new(b"UTC\n") as InodeRef);
+    // /proc/self/auxv: Linux passes 16-byte AT_NULL-terminated entry pairs.
+    // glibc/musl getauxval falls back to this file when the at-start auxv
+    // vector wasn't preserved. We hand back a minimal AT_NULL-only blob
+    // (8 bytes a_type=0, 8 bytes a_val=0) which signals "no entries",
+    // matching the kernel's behavior for tasks that haven't execve'd.
+    crate::devfs::register("/proc/self/auxv",
+        StaticFileInode::new(&[0u8; 16]) as InodeRef);
+    // /proc/self/wchan: kernel-stack symbol the task is parked on.
+    // "0" means runnable / not in kernel — adequate for a non-debugger
+    // observer.
+    crate::devfs::register("/proc/self/wchan",
+        StaticFileInode::new(b"0") as InodeRef);
+    crate::devfs::register("/proc/self/sessionid",
+        StaticFileInode::new(b"4294967295\n") as InodeRef);
+    crate::devfs::register("/proc/self/oom_adj",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/self/loginuid",
+        StaticFileInode::new(b"4294967295\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score",
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score_adj",
