@@ -40,7 +40,7 @@ use sync::{Spinlock, Tty as TtyClass};
 /// interactive shell pacing (UART data trickles in at 115200 ≈
 /// 11 KB/s; even at full rate the ringbuffer drains every few
 /// thousand timer ticks).
-const RX_CAP: usize = 64;
+const RX_CAP: usize = 1024;
 
 struct RxBuf {
     data: [u8; RX_CAP],
@@ -87,6 +87,29 @@ static VT_RINGS: [Spinlock<RxBuf, TtyClass>; N_VT] =
 /// Per-VT wait queues. Mirrors `VT_RINGS` indexing.
 static VT_WAITERS: [Spinlock<Vec<Arc<Task>>, TtyClass>; N_VT] =
     [const { Spinlock::new(Vec::new()) }; N_VT];
+
+/// Per-VT termios image — the same 60-byte layout TCGETS / TCSETS
+/// see. Default at boot is "cooked sane" (`pty::default_termios`):
+/// ICANON | ECHO | ISIG, ICRNL, OPOST | ONLCR, c_cc[VINTR]=^C etc.
+/// Programs that want raw mode (bash, vi, …) tcsetattr their own.
+static VT_TERMIOS: [Spinlock<[u8; tty::pty::TERMIOS_BYTES], TtyClass>; N_VT] =
+    [const { Spinlock::new(tty::pty::default_termios()) }; N_VT];
+
+/// Per-VT cooked-mode line buffer. ICANON path accumulates here
+/// until a NL / VEOF / VEOL terminates the line; on terminate the
+/// buffer contents move to `VT_RINGS[vt]` for sys_read to drain.
+/// Capacity matches the smallest reasonable interactive line; bash's
+/// readline / vi etc. set ICANON off and bypass.
+const LINE_CAP: usize = 256;
+struct LineBuf {
+    data: [u8; LINE_CAP],
+    len:  usize,
+}
+impl LineBuf {
+    const fn new() -> Self { Self { data: [0; LINE_CAP], len: 0 } }
+}
+static VT_LINES: [Spinlock<LineBuf, TtyClass>; N_VT] =
+    [const { Spinlock::new(LineBuf::new()) }; N_VT];
 
 /// Resolve a caller-supplied VT id to a 0-based index into
 /// `VT_RINGS` / `VT_WAITERS`. `vt == 0` resolves to the current
@@ -172,36 +195,209 @@ pub unsafe fn tick_poll_uart() {
     }
 }
 
-/// Push `b` to the foreground VT's ring + wake its waiters.
-/// Called from each arch's timer-tick poller.
+/// Push `b` through the foreground VT's line discipline. Called
+/// from each arch's timer-tick poller. The discipline consults the
+/// VT's per-fd termios image to decide:
 ///
-/// v1 line-discipline:
-///  - CR (0x0d) → NL (0x0a) on input (termios ICRNL equivalent).
-///    Most host terminals running QEMU `-serial stdio` send CR on
-///    Enter, but userspace read_line loops in /bin/login + /bin/sh
-///    look for '\n' only.
-///  - **Echo to TX** so the user sees what they type. Linux normally
-///    ties this to termios `ECHO` per fd; v1 is unconditional. CR
-///    echoes as "\r\n" so the host terminal advances to col 0 +
-///    next line cleanly (termios ONLCR equivalent on the echo path).
-///    Backspace (0x7f / 0x08) echoes "\b \b" so terminals visually
-///    erase the previous glyph.
-/// Real per-fd termios + ECHO/ICRNL/ONLCR/ICANON state rides a
-/// follow-up.
+///   c_lflag bits:
+///     ISIG   — VINTR/VQUIT/VSUSP raise SIGINT/SIGQUIT/SIGTSTP on
+///              all readers parked on this VT, then drop the byte.
+///     ICANON — line-buffer until VEOL/VEOF/`\n` terminates a line;
+///              VERASE pops one char, VKILL clears the line. The
+///              terminated line moves to RX_BUF.
+///     ECHO   — write the input byte (with VERASE/VKILL niceties
+///              when ECHOE/ECHOK ride along) back to the UART so
+///              the user sees their typing. Off ⇒ silent (login
+///              password mode).
+///   c_iflag bits:
+///     IGNCR  — drop CR.
+///     ICRNL  — translate CR → NL (only if not IGNCR).
+///     INLCR  — translate NL → CR.
+///
+/// In raw mode (ICANON off) every byte goes straight to RX_BUF so
+/// programs like bash + vim see the keystrokes one at a time.
 fn push_and_wake_fg(b: u8) {
-    let translated = if b == b'\r' { b'\n' } else { b };
-    // Echo to UART before pushing to the input ring. Skipping echo
-    // for password prompts is left to userspace once termios lands.
+    let idx = vt_index(0);
+    let term = *VT_TERMIOS[idx].lock();
+    let iflag = tty::pty::read_iflag(&term);
+    let lflag = tty::pty::read_lflag(&term);
+
+    // c_iflag preprocessing.
+    let mut b = b;
+    if b == b'\r' {
+        if (iflag & tty::pty::iflag::IGNCR) != 0 { return; }
+        if (iflag & tty::pty::iflag::ICRNL) != 0 { b = b'\n'; }
+    } else if b == b'\n' && (iflag & tty::pty::iflag::INLCR) != 0 {
+        b = b'\r';
+    }
+
+    // ISIG: turn the configured control characters into signals
+    // and swallow them — they don't reach userspace input.
+    if (lflag & tty::pty::lflag::ISIG) != 0 {
+        let vintr = term[tty::pty::TERMIOS_OFF_CC + tty::pty::cc::VINTR];
+        let vquit = term[tty::pty::TERMIOS_OFF_CC + tty::pty::cc::VQUIT];
+        let vsusp = term[tty::pty::TERMIOS_OFF_CC + tty::pty::cc::VSUSP];
+        let sig = if b != 0 && b == vintr { Some(2u32) }
+             else if b != 0 && b == vquit { Some(3u32) }
+             else if b != 0 && b == vsusp { Some(20u32) }
+             else { None };
+        if let Some(s) = sig {
+            // Echo a visible "^C\n"-style marker if ECHO is on so
+            // the user sees the interrupt land where they typed.
+            if (lflag & tty::pty::lflag::ECHO) != 0 && b < 0x20 {
+                klog::write_raw(&[b'^', b + 0x40]);
+                klog::write_raw(b"\r\n");
+            }
+            // Reset any in-progress cooked line — Linux drops it on
+            // INTR/QUIT/SUSP.
+            if (lflag & tty::pty::lflag::ICANON) != 0 {
+                VT_LINES[idx].lock().len = 0;
+            }
+            deliver_signal_to_waiters(idx, s);
+            return;
+        }
+    }
+
+    // Echo before pushing — if the byte ends up dropped (ICANON
+    // VERASE / VKILL) we still want the visual effect to land.
+    if (lflag & tty::pty::lflag::ECHO) != 0 {
+        echo_byte(b, lflag, &term);
+    }
+
+    if (lflag & tty::pty::lflag::ICANON) != 0 {
+        canonical_input(idx, b, &term);
+    } else {
+        // Raw mode: byte goes straight to readers.
+        let pushed = VT_RINGS[idx].lock().push(b);
+        if pushed { wake_waiters(idx); }
+    }
+}
+
+/// Echo `b` to the foreground UART. CR/NL render as "\r\n" so the
+/// host terminal advances cleanly (matches what the OPOST + ONLCR
+/// path on output produces). Backspace + DEL render as "\b \b" so
+/// terminals visually erase the previous glyph. ECHOE/ECHOK
+/// niceties for VERASE / VKILL flow through `canonical_input`.
+fn echo_byte(b: u8, _lflag: u32, _term: &[u8; tty::pty::TERMIOS_BYTES]) {
     match b {
         b'\r' | b'\n'   => klog::write_raw(b"\r\n"),
         0x7f | 0x08     => klog::write_raw(b"\x08 \x08"),
         c if c >= 0x20 && c < 0x7f => klog::write_raw(&[c]),
-        _                => { /* drop control chars from echo */ }
+        c if c < 0x20 && c != 0    => {
+            // Show as "^X" so users at least see *something*.
+            klog::write_raw(&[b'^', c + 0x40]);
+        }
+        _ => {}
     }
-    let idx = vt_index(0);
-    let pushed = VT_RINGS[idx].lock().push(translated);
-    if !pushed { return; }
+}
+
+/// ICANON path — accumulate `b` into the line buffer; on a line
+/// terminator move the line into RX_BUF and wake readers; honour
+/// VERASE / VKILL editing. VEOF on an empty line raises
+/// end-of-file (push 0-byte sentinel — `try_read` returns it; the
+/// caller treats `Some(0)` as EOF for the v1 path).
+fn canonical_input(idx: usize, b: u8, term: &[u8; tty::pty::TERMIOS_BYTES]) {
+    let verase = term[tty::pty::TERMIOS_OFF_CC + tty::pty::cc::VERASE];
+    let vkill  = term[tty::pty::TERMIOS_OFF_CC + tty::pty::cc::VKILL];
+    let veof   = term[tty::pty::TERMIOS_OFF_CC + tty::pty::cc::VEOF];
+
+    let mut line = VT_LINES[idx].lock();
+
+    // VERASE: pop one byte from line buffer (already echoed
+    // "\b \b" above so the user sees it disappear).
+    if verase != 0 && b == verase {
+        if line.len > 0 { line.len -= 1; }
+        return;
+    }
+
+    // VKILL: drop the entire line.
+    if vkill != 0 && b == vkill {
+        line.len = 0;
+        klog::write_raw(b"\r\n");
+        return;
+    }
+
+    // VEOF on empty line: push a 0-len sentinel so the reader
+    // returns 0 ⇒ EOF. On a non-empty line, VEOF acts as a
+    // newline-less line terminator (the line so far gets returned
+    // without a trailing \n). v1: simplify to "drop and return
+    // empty line" — bash treats either as EOF for stdin reads.
+    if veof != 0 && b == veof {
+        if line.len == 0 {
+            // Push a zero-length record by waking waiters with the
+            // ring empty — readers retry, find no bytes, can detect
+            // EOF via /dev/console::read returning Ok(0). We have
+            // no flag for that yet, so push '\0' as v1 sentinel.
+            let _ = VT_RINGS[idx].lock().push(0);
+        } else {
+            flush_line(idx, &mut line);
+        }
+        wake_waiters(idx);
+        return;
+    }
+
+    // Line terminator: \n (or VEOL).
+    if b == b'\n' {
+        if line.len < LINE_CAP {
+            let i = line.len;
+            line.data[i] = b'\n';
+            line.len = i + 1;
+        }
+        flush_line(idx, &mut line);
+        wake_waiters(idx);
+        return;
+    }
+
+    // Ordinary character: append.
+    if line.len < LINE_CAP {
+        let i = line.len;
+        line.data[i] = b;
+        line.len = i + 1;
+    }
+}
+
+fn flush_line(idx: usize, line: &mut LineBuf) {
+    let mut ring = VT_RINGS[idx].lock();
+    for i in 0..line.len {
+        if !ring.push(line.data[i]) { break; }
+    }
+    line.len = 0;
+}
+
+/// Translate `sig_no` into a sigpending bit-set on every task
+/// parked reading from this VT. v1 stand-in for "deliver to
+/// foreground process group": the WAITERS list IS the foreground
+/// reader set since they're blocked on this VT's input.
+fn deliver_signal_to_waiters(idx: usize, sig: u32) {
+    if sig == 0 || sig > 64 { return; }
+    let bit = 1u64 << (sig - 1);
+    let waiters = VT_WAITERS[idx].lock();
+    for t in waiters.iter() {
+        t.sigpending.fetch_or(bit, Ordering::Release);
+    }
+    drop(waiters);
     wake_waiters(idx);
+}
+
+/// Read a snapshot of `vt`'s termios image. Used by TCGETS.
+/// `vt == 0` resolves to foreground.
+/// # C: O(1)
+pub fn termios_get(vt: u8) -> [u8; tty::pty::TERMIOS_BYTES] {
+    *VT_TERMIOS[vt_index(vt)].lock()
+}
+
+/// Replace `vt`'s termios image. Used by TCSETS{,W,F}.
+/// `vt == 0` resolves to foreground.
+/// # C: O(1)
+pub fn termios_set(vt: u8, new: &[u8; tty::pty::TERMIOS_BYTES]) {
+    *VT_TERMIOS[vt_index(vt)].lock() = *new;
+}
+
+/// Read c_oflag for `vt`. Used by ConsoleInode::write to decide
+/// whether to apply ONLCR / OPOST translation on output.
+/// # C: O(1)
+pub fn output_oflag(vt: u8) -> u32 {
+    tty::pty::read_oflag(&*VT_TERMIOS[vt_index(vt)].lock())
 }
 
 fn wake_waiters(idx: usize) {
