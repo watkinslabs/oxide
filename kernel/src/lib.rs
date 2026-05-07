@@ -877,6 +877,11 @@ pub mod pf_recover_smoke;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue;
 
+// aarch64 → x86 syscall-nr translation per docs/15§3. Active only
+// on arm; x86 builds compile this away via a cfg gate at the call
+// site in `syscall_glue::oxide_syscall_dispatch`.
+pub mod syscall_arm_abi;
+
 // P3-03 fs-shaped syscalls split out of `syscall_glue` to keep that
 // file under the 1000-line cap per `08§7`.
 #[cfg(target_os = "oxide-kernel")]

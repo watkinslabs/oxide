@@ -220,10 +220,14 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
         return None;
     }
     let ec = (esr >> 26) & 0x3F;
-    // EC = 0x24 data abort lower EL; 0x20 instruction abort lower EL.
+    // EC = 0x24 data-abort-lower-el; 0x20 insn-abort-lower-el.
+    // EC = 0x25 data-abort-same-el; 0x21 insn-abort-same-el.
+    // Same-EL aborts arrive when the kernel reads/writes a user VA
+    // (e.g. write(2) copies user buffer); demand-paging applies the
+    // same way as lower-EL aborts.
     let access = match ec {
-        0x20 => FaultAccess::Exec,
-        0x24 => {
+        0x20 | 0x21 => FaultAccess::Exec,
+        0x24 | 0x25 => {
             // ISS bit 6 = WnR: 0=read, 1=write.
             if esr & (1 << 6) != 0 { FaultAccess::Write } else { FaultAccess::Read }
         }

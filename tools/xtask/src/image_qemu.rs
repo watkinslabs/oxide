@@ -51,9 +51,10 @@ pub(crate) fn cmd_qemu(rest: &[String]) -> Result<(), u8> {
     // *.c edit. Without this, source changes ship to disk only on the
     // next explicit `xtask rootfs`, leading to "I changed the code
     // but nothing changed" surprises.
-    if arch == "x86_64" {
-        crate::cmd_rootfs(rest)?;
-    }
+    // Per-arch rootfs first so the kernel `include_bytes!`s the
+    // matching arm/x86 image. cmd_rootfs takes --arch; cmd_qemu's
+    // `rest` already carries it.
+    crate::cmd_rootfs(rest)?;
     cmd_kernel(rest)?;
     let repo = repo_root();
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
