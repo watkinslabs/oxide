@@ -148,10 +148,13 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
     }
     match cmd {
         F_DUPFD | F_DUPFD_CLOEXEC => {
-            // Walk for the lowest free fd >= arg, then dup.
-            let _ = arg; // v1: dup uses lowest free; honouring `arg` lower-bound rides FdTable extension
-            match fdt.dup(fd) {
-                Ok(new) => new as i64,
+            match fdt.dup_min(fd, arg as i32) {
+                Ok(new) => {
+                    if cmd == F_DUPFD_CLOEXEC {
+                        let _ = fdt.set_cloexec(new, true);
+                    }
+                    new as i64
+                }
                 Err(e)  => -(e as i64),
             }
         }
