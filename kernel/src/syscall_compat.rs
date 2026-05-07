@@ -128,7 +128,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // userfaultfd; epoll moved to real impl.
         | NR_USERFAULTFD
         // io_uring + libaio + perf + bpf + seccomp + landlock + ns.
-        | NR_IO_URING_SETUP | NR_IO_URING_ENTER | NR_IO_URING_REGISTER
+        // IO_URING moved to real (synchronous) impl in P23a — opcode
+        // dispatch over SQ→CQ ring. SQPOLL/IOPOLL/fixed-buffer ride
+        // follow-ups.
         | NR_IO_SETUP | NR_IO_DESTROY | NR_IO_GETEVENTS
         | NR_IO_SUBMIT | NR_IO_CANCEL | NR_IO_PGETEVENTS
         | NR_PERF_EVENT_OPEN | NR_BPF | NR_SECCOMP
