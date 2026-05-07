@@ -169,14 +169,53 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             }
             0
         }
-        PTRACE_PEEKTEXT | PTRACE_PEEKDATA | PTRACE_PEEKUSER => {
-            // Stub: return 0 word. Honest in spec — does NOT
-            // read the target's memory. A real implementation
-            // needs a foreign-mm read helper (P22c follow-up).
+        PTRACE_PEEKTEXT | PTRACE_PEEKDATA => {
+            // Real foreign-mm read. Look up target, get its
+            // AddressSpace.root_pa(), walk for `addr`, copy 8
+            // bytes. Returns -EFAULT if the page isn't mapped.
+            let addr = args.a2;
+            let target = match crate::sched::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            // SAFETY: target task; we hold an Arc<Task> from the registry; mm slot is single-mutator per `13§5` and target is either running or parked — fork/exec don't mutate the slot under us.
+            let mm = match unsafe { target.mm_ref() } {
+                Some(m) => m.clone(), None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let root_pa = mm.root_pa();
+            let mut buf = [0u8; 8];
+            // SAFETY: mm Arc keeps root_pa alive; HHDM init done before any user task runs; target page tables are stable while mm Arc is held.
+            let n = unsafe { crate::user_as::read_foreign_user(root_pa, addr, &mut buf[..]) };
+            if n != 8 { return -(Errno::Efault.as_i32() as i64); }
+            i64::from_le_bytes(buf)
+        }
+        PTRACE_PEEKUSER => {
+            // Reads from the target's struct user (registers +
+            // tls offsets). Needs a per-arch user-area materializer
+            // we don't have. Honest -EOPNOTSUPP rather than a 0 lie.
+            -(Errno::Eopnotsupp.as_i32() as i64)
+        }
+        PTRACE_POKETEXT | PTRACE_POKEDATA => {
+            // Real foreign-mm write of 8 bytes. Refuses if leaf
+            // is not user-writable (no silent W^X bypass; CoW
+            // path follows when the kernel grows one).
+            let addr = args.a2;
+            let data = args.a3;
+            let target = match crate::sched::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            // SAFETY: same as PEEKTEXT — we hold Arc<Task>; mm slot stable per `13§5`.
+            let mm = match unsafe { target.mm_ref() } {
+                Some(m) => m.clone(), None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let root_pa = mm.root_pa();
+            let buf = data.to_le_bytes();
+            // SAFETY: mm Arc keeps root_pa alive; write_foreign_user verifies leaf writability per chunk before writing.
+            let n = unsafe { crate::user_as::write_foreign_user(root_pa, addr, &buf[..]) };
+            if n != 8 { return -(Errno::Efault.as_i32() as i64); }
             0
         }
-        PTRACE_POKETEXT | PTRACE_POKEDATA | PTRACE_POKEUSER
-            | PTRACE_CONT | PTRACE_SYSCALL | PTRACE_SINGLESTEP
+        PTRACE_POKEUSER => -(Errno::Eopnotsupp.as_i32() as i64),
+        PTRACE_CONT | PTRACE_SYSCALL | PTRACE_SINGLESTEP
             | PTRACE_GETREGS | PTRACE_SETREGS
             | PTRACE_GETFPREGS | PTRACE_SETFPREGS
             | PTRACE_GETREGSET | PTRACE_SETREGSET

@@ -173,6 +173,122 @@ pub fn hhdm_offset() -> u64 {
     HHDM_OFFSET.load(Ordering::Acquire)
 }
 
+/// Read up to `dst.len()` bytes from a foreign address space at
+/// user-virtual address `va`. Walks `root_pa`'s page tables (the
+/// foreign AS's `root_pa()`) for each 4 KiB page intersecting the
+/// range, copies via the HHDM mapping of each leaf PA, and stops
+/// early on the first page that's not mapped.
+///
+/// Returns the number of bytes successfully copied (0 if the
+/// first page is unmapped). Used by ptrace PEEK and (later)
+/// process_vm_readv. Caller must hold an Arc to the target's
+/// AddressSpace so `root_pa` stays alive across the walk.
+///
+/// # SAFETY: `root_pa` is a valid 4 KiB-aligned page-table root
+/// owned by a live AddressSpace; HHDM is initialized; the active
+/// CPU has IRQs off or the foreign AS is not concurrently torn
+/// down (caller's Arc enforces the latter for v1's cooperative
+/// scheduler).
+/// # C: O(dst.len())
+pub unsafe fn read_foreign_user(root_pa: u64, va: u64, dst: &mut [u8]) -> usize {
+    let hhdm = hhdm_offset();
+    let total = dst.len();
+    let mut copied = 0usize;
+    while copied < total {
+        let cur_va = va + copied as u64;
+        let page_off = (cur_va & 0xFFF) as usize;
+        let in_page = (4096 - page_off).min(total - copied);
+        // SAFETY: root_pa came from a live foreign AS we hold an Arc to; HHDM covers PT memory; reads only.
+        let leaf_pa = unsafe {
+            read_foreign_leaf_pa(root_pa, cur_va & !0xFFF, hhdm)
+        };
+        let pa = match leaf_pa { Some(p) => p, None => break };
+        // SAFETY: pa is a valid frame from the foreign AS's PT walk;
+        // HHDM maps it readable; copy `in_page` bytes from it into
+        // dst at offset `copied`.
+        unsafe {
+            let src = (hhdm + pa + page_off as u64) as *const u8;
+            core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr().add(copied), in_page);
+        }
+        copied += in_page;
+    }
+    copied
+}
+
+/// Symmetric write helper. Returns bytes written; stops on
+/// unmapped or read-only-leaf encountered. Read-only stop is
+/// honest (does NOT silently bypass W^X); ptrace POKE relies on
+/// this to refuse writing to executable code pages until a real
+/// CoW path is wired up.
+/// # SAFETY: same as `read_foreign_user`. Writes through HHDM
+/// mapping of the leaf PA; caller asserts the leaf is writable
+/// (we check `is_leaf_writable` before each chunk).
+/// # C: O(src.len())
+pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
+    let hhdm = hhdm_offset();
+    let total = src.len();
+    let mut written = 0usize;
+    while written < total {
+        let cur_va = va + written as u64;
+        let page_off = (cur_va & 0xFFF) as usize;
+        let in_page = (4096 - page_off).min(total - written);
+        // SAFETY: root_pa came from a live foreign AS we hold an Arc to; HHDM covers PT memory; reads only.
+        let leaf = unsafe {
+            read_foreign_leaf(root_pa, cur_va & !0xFFF, hhdm)
+        };
+        let (pa, leaf_raw) = match leaf { Some(t) => t, None => break };
+        if !leaf_writable(leaf_raw) { break; }
+        // SAFETY: pa from a live foreign AS leaf, writable per check; HHDM gives us a kernel-side writable view.
+        unsafe {
+            let dst = (hhdm + pa + page_off as u64) as *mut u8;
+            core::ptr::copy_nonoverlapping(src.as_ptr().add(written), dst, in_page);
+        }
+        written += in_page;
+    }
+    written
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
+    use hal_x86_64::vmm::PtWalkerX86;
+    // SAFETY: root_pa is a valid PML4 frame; HHDM covers PT memory; reads only.
+    unsafe { hal::pt_walker::translate_4k_at_root::<PtWalkerX86>(root_pa, va_aligned, hhdm).map(|(pa, _)| pa) }
+}
+#[cfg(target_arch = "aarch64")]
+unsafe fn read_foreign_leaf_pa(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<u64> {
+    use hal_aarch64::vmm::PtWalkerArm;
+    // SAFETY: root_pa is a valid L0 frame; HHDM covers PT memory; reads only.
+    unsafe { hal::pt_walker::translate_4k_at_root::<PtWalkerArm>(root_pa, va_aligned, hhdm).map(|(pa, _)| pa) }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn read_foreign_leaf(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<(u64, u64)> {
+    use hal_x86_64::vmm::PtWalkerX86;
+    // SAFETY: same as read_foreign_leaf_pa; returns leaf raw entry too.
+    unsafe { hal::pt_walker::translate_4k_at_root::<PtWalkerX86>(root_pa, va_aligned, hhdm) }
+}
+#[cfg(target_arch = "aarch64")]
+unsafe fn read_foreign_leaf(root_pa: u64, va_aligned: u64, hhdm: u64) -> Option<(u64, u64)> {
+    use hal_aarch64::vmm::PtWalkerArm;
+    // SAFETY: same as read_foreign_leaf_pa; returns leaf raw entry too.
+    unsafe { hal::pt_walker::translate_4k_at_root::<PtWalkerArm>(root_pa, va_aligned, hhdm) }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn leaf_writable(leaf: u64) -> bool {
+    // x86_64: PRESENT (bit 0) AND RW (bit 1) AND USER (bit 2).
+    (leaf & 0b111) == 0b111
+}
+#[cfg(target_arch = "aarch64")]
+fn leaf_writable(leaf: u64) -> bool {
+    // aarch64 stage-1 EL1/EL0: AP[2:1] @ bits [7:6]; AP=01 means
+    // EL0/EL1 read-write. Valid (bit 0) + page (bit 1=1 for L3
+    // page descriptor) also required.
+    let valid = (leaf & 0b11) == 0b11;
+    let ap    = (leaf >> 6) & 0b11;
+    valid && ap == 0b01
+}
+
 /// Translate Linux `PROT_*` bits (per `15§6.2`) to `VmaProt`.
 /// # C: O(1)
 pub fn prot_from_linux(prot: u64) -> VmaProt {
