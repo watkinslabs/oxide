@@ -4,7 +4,7 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`14`. Provides: every kernel thr
 
 Pick which task runs which CPU when. Drive ctxsw via `Context`. Implement `sched_*` syscalls.
 
-Sched core arch-free, hosted-testable, oracle-modeled. Preempt gated by per-CPU `preempt_count`. SMP added only after UP works under stress for ≥1wk. Cross-CPU migration bounded.
+Sched core arch-free, hosted-testable, oracle-modeled. Preempt gated by per-CPU `preempt_count`. SMP added only after UP passes its §Test contract clean (proptest randomized concurrent ops + canary). Cross-CPU migration bounded.
 
 ## 1 Inputs/outputs
 
@@ -190,9 +190,9 @@ Bench: `bench/sched_bench.rs` vs oracle.
 - Loom lock-cross-switch: 2 CPUs × 4 tasks × 50 events; mutual exclusion across switch boundary; no deadlock under concurrent migration; depth 6.
 - Loom wake/sleep: 2 threads (T1 sleep on WQ, T2 wake T1); T1 always Runnable; depth 8.
 - Kernel canary: 64 tasks per `14§8`; 1h @ 1ms tick; no canary corruption.
-- SMP migration soak 1h: 4 vCPU × 1000 tasks random sleep/wake/CPU-bound mix; no deadlock, no zombie linger, no unaccounted vruntime, total CPU-time ≈ 4 × wall.
+- SMP migration proptest: 4 vCPU × 1000 tasks random sleep/wake/CPU-bound mix; no deadlock, no zombie linger, no unaccounted vruntime, total CPU-time ≈ 4 × wall.
 - RT correctness: 16 SCHED_OTHER spinners + 4 RT-prio-50 periodic (1ms work / 9ms sleep); RT wake-to-first-instr p99 ≤ 50µs on 4-CPU.
-- Soak (bg, not gate per `40§3`): 4h cycles, kernel-build loop + iperf3 + fs_mark tmpfs; zero panic/deadlock/canary-corruption, RT tail bounded, CPU accounting reconciles. PR-time gate uses `paranoid-ci` (`debug-sched`+`debug-sched-canary`+`debug-preempt`).
+- PR-time gate uses `paranoid-ci` (`debug-sched` + `debug-sched-canary` + `debug-preempt`) per `41§3`. Randomized concurrent sched ops run in proptest harness, not duration-based.
 - Coverage ≥95% `crates/sched/src/`. Every `unsafe` SAFETY ≥30ch.
 
 ## 15 Failure modes

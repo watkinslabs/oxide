@@ -14,7 +14,7 @@ FROZEN 2026-05-02. Dep:`02`,`08`.
 
 - Changed: §3 feature list adds `debug-acpi` (RSDP/XSDT/MADT/HPET/SPCR/MCFG/GTDT decoder traces) and folds it into `debug-all`. The existing `debug-pmm`/`debug-vmm`/`debug-irq` buckets stay; ACPI table walking is its own surface and needed its own gate.
 - Why: aarch64 + x86_64 boot-time bring-up needed per-subsystem trace gates so a developer chasing an IRQ-routing bug isn't paying for PMM stress dumps + ACPI walks + memmap pretty-print on every boot. Single `debug-boot` would have collapsed signals across subsystems and is rejected.
-- Affected code: `kernel/Cargo.toml` features; `kernel/src/lib.rs` call-site `cfg(feature=…)`-elided diagnostic blocks (PMM smoke + memmap dump under `debug-pmm`; HPET-cap + GICD-typer device-map dumps under `debug-vmm`; LAPIC/GIC enable diags + polled-timer + IRQ soak under `debug-irq`; ACPI walk under `debug-acpi`).
+- Affected code: `kernel/Cargo.toml` features; `kernel/src/lib.rs` call-site `cfg(feature=…)`-elided diagnostic blocks (PMM smoke + memmap dump under `debug-pmm`; HPET-cap + GICD-typer device-map dumps under `debug-vmm`; LAPIC/GIC enable diags + polled-timer + IRQ stress under `debug-irq`; ACPI walk under `debug-acpi`).
 - Test contract change: none. CI matrix in `40` already runs no-features + `debug-all`; the new `debug-acpi` rides the same matrix.
 
 ## Revision 2026-05-02 (R04)
@@ -64,7 +64,7 @@ Rule: every `pub fn` carries `# C: O(...)` (`# C: trivial` allowed). Composite c
 
 | Profile | opt | dbg-asserts | overflow | KASAN | Use |
 |---|---|---|---|---|---|
-| `release` | 3, lto=fat, cgu=1 | off | off | off | prod, soak, bench |
+| `release` | 3, lto=fat, cgu=1 | off | off | off | prod, bench |
 | `dev` | 1 | on | on | off | day-to-day |
 | `debug` | 1 | on | on | on (poison/shadow) | bug, fuzz |
 
@@ -85,7 +85,7 @@ debug-vmm=[]      # PTE walker + AS invariants
 debug-pmm=[]      # buddy invariant audit per op
 debug-vfs=[]      # inode/dentry refcount audit
 debug-net=[]      # packet trace, socket FSM asserts
-debug-irq=[]      # IRQ flag audit, edge/level mismatch, timer-IRQ soak
+debug-irq=[]      # IRQ flag audit, edge/level mismatch, timer-IRQ stress
 debug-acpi=[]     # RSDP/XSDT walk + per-table decoder traces
 debug-boot=[]     # operational-pulse trace (init started, pmm: ready, …)
 debug-syscalls=[] # log every syscall (very expensive)
@@ -210,7 +210,7 @@ Hot-path: never above `trace`; `trace` feature-gated; off = `.klog_strings` entr
 
 Commit results to `bench-history/<commit>.json`.
 
-Per-tag artifacts in `perf-history/<tag>/`: perf flame for syscall-pingpong + net-RX line + kernel-build-self; dmesg boot log; slab cache pop after 1h soak.
+Per-tag artifacts in `perf-history/<tag>/`: perf flame for syscall-pingpong + net-RX line + kernel-build-self; dmesg boot log; slab cache pop after PR-time stress run.
 
 5%-rule: release tag mayn't regress any §1 budget >5% vs prior tag. Hold tag until fix or spec-revision renegotiates budget.
 

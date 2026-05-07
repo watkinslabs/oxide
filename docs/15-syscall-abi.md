@@ -379,7 +379,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 333 | io_pgetevents | NEVER | POSIX AIO. |
 | 334 | rseq | V1 | Restartable sequences; required by glibc/musl. |
 | 424 | pidfd_send_signal | V1 | |
-| 425 | io_uring_setup | V1.X | io_uring is its own multi-month subsystem; v1.0 stubs. |
+| 425 | io_uring_setup | V2 | v2 phase 23; v1.0 stubs. |
 | 426 | io_uring_enter | V1.X | |
 | 427 | io_uring_register | V1.X | |
 | 428 | open_tree | V1 | New mount API. |
