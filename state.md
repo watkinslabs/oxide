@@ -1,3 +1,53 @@
+# State 2026-05-07 (session 40 — v2 kernel-parity track first-cuts complete)
+
+## Headline (session 40)
+
+After session 39 stalled because every PR since #600 was failing both
+aarch64 build (pre-existing elf_smoke unconditional ref) and spec-lint
+(54 findings inherited over recent PRs), session 40 fixed CI then
+walked the v2 phase ladder to first-cut completion on every kernel
+phase.
+
+| PR | Branch | Phase | What |
+|----|---|---|---|
+| #641 | B11-aarch64-build-fix | (CI) | aarch64 elf_smoke cfg-gate; spec-lint clean (54→0 findings); 3 over-cap files split into 4 new modules (signal/select/anonfd/clone) |
+| #640 | P33a-real-ld-musl | 33 | real ld-musl: DT_NEEDED resolution, multi-DSO load, R_X86_64_RELATIVE/_64/_GLOB_DAT/_JUMP_SLOT relocs, DT_INIT_ARRAY |
+| #642 | P23a-io-uring | 23 | real SQ/CQ rings + opcode dispatch (NOP/READ/WRITE/READV/WRITEV/FSYNC/CLOSE/OPENAT/SEND/RECV/ACCEPT/CONNECT) |
+| #643 | P24a-seccomp-bpf | 24 | real cBPF interpreter for seccomp filter; bpf/landlock/perf admit |
+| #644 | P28a-userfaultfd | 28 | userfaultfd inode + UFFDIO_API/REGISTER/COPY/ZEROPAGE/UNREGISTER ioctls |
+| #645 | P29a-modern-mount | 29 | fsopen/fsmount/fspick/open_tree return fds; fsconfig/move_mount/mount_setattr admit |
+| #646 | P30a-perf-tracefs | 30 | PerfEventInode (read returns monotonic-ns); ENABLE/DISABLE/RESET ioctl; tracefs static blob |
+| #647 | P31a-core-dump | 31 | minimal ELF coredump on SIGSEGV (ET_CORE + PT_NOTE + NT_PRSTATUS + NT_PRPSINFO) |
+| #648 | P32a-drm-evdev | 32 | /dev/dri/card0 + renderD128 + /dev/input/event0; DRM_IOCTL_VERSION returns "oxide" |
+| #649 | P38a-scm-creds | 38 | getsockopt SO_PEERCRED returns ucred{tid,0,0}; SO_TYPE returns SOCK_STREAM |
+
+## v2 status snapshot
+
+**Kernel-parity track (phases 18-32, 38) — all first-cut landed:**
+| 18 | AF_INET6 admit | done (P18a) |
+| 19 | virtio-net legacy driver init | done (P19a) — frame TX/RX + IRQ wiring follow up |
+| 20 | mremap real + MADV_DONTNEED | done (P20a) — per-PTE mprotect + MAP_SHARED follow up |
+| 21 | unshare/setns + per-task UTS hostname | done (P21a) — per-NS mount/pid/user/net follow up |
+| 22 | PTRACE_TRACEME | done (P22a) — ATTACH/SINGLESTEP/PEEK/POKE follow up |
+| 23 | io_uring SQ/CQ + 12 opcodes | done (P23a) — SQPOLL/IOPOLL/fixed-buf/multishot follow up |
+| 24 | seccomp cBPF + bpf/landlock/perf admit | done (P24a) — bpf verifier/JIT, real LSM hooks follow up |
+| 25 | SysV shm | done (P25a) — sem/msg/POSIX-MQ + cross-process write-shared follow up |
+| 26 | xattr → ENOTSUP | done (PR-I from session 38 sweep) — real ext4-backed xattr+ACL follow up |
+| 27 | fanotify_init/mark | done (P27a) — recursive watches + permission-event reply follow up |
+| 28 | userfaultfd + UFFDIO ioctls | done (P28a) — page-fault-routing follow up |
+| 29 | modern mount API admit | done (P29a) — real per-NS mount table follow up |
+| 30 | perf_event_open real read + tracefs | done (P30a) — PMU hardware sampling + ring-buf mmap follow up |
+| 31 | minimal SIGSEGV coredump | done (P31a) — PT_LOAD VMA dumps + reg snapshot follow up |
+| 32 | DRM/KMS + evdev nodes | done (P32a) — real KMS modesetting + virtio-gpu follow up |
+| 38 | AF_INET6+sendmmsg/recvmmsg+SO_PEERCRED | done (P18a/PR-G/P38a) — message-level SCM_CREDS/SCM_RIGHTS follow up |
+
+**Userspace-platform track (phases 33-37):**
+| 33 | real ld-musl with DT_NEEDED resolution | done (P33a) — TLS/IFUNC/lazy-bind/dlopen/GNU_HASH-only/versioning follow up |
+| 34 | libc/NSS/PAM | partial — login/passwd/su exist with custom auth; real pam_unix.so + libnss_files follow up |
+| 35 | system manager | partial — userspace/svcd exists; full dependency-order + journalctl-equivalent follow up |
+| 36 | package manager | not started — RPM cross-build is its own multi-PR effort |
+| 37 | TTY+login flow | done (B07-multi-vt + agetty/login/passwd from sessions 33-37) |
+
 # State 2026-05-07 (session 39 — v2 phases 18-27 first cuts)
 
 ## Headline (session 39)
