@@ -1,9 +1,13 @@
-# Kernel stub audit (2026-05-06)
+# Kernel stub audit
+
+DRAFT (living). Dep:`00`,`15`.
 
 Purpose: complete inventory of stubbed / half-implemented / missing
 syscalls and kernel features so we can do a directed completeness
 sweep instead of patching one ENOSYS at a time when a real-libc
-program (bash, busybox, util-linux) chokes on it.
+program (bash, busybox, util-linux) chokes on it. Filename has no
+numeric prefix because it's a working-doc index, not a versioned
+spec.
 
 Source: `kernel/src/syscall_glue*.rs`, `kernel/src/dev_*.rs`,
 `kernel/src/syscall_compat.rs`. 136 syscall handlers across ~6700

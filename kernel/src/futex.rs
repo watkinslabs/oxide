@@ -59,6 +59,7 @@ unsafe fn load_user_u32(uaddr: u64) -> u32 {
     unsafe { core::ptr::read_volatile(uaddr as *const u32) }
 }
 
+/// # C: O(W) waiters per WAKE; O(1) WAIT
 pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
     if uaddr == 0 || uaddr >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);

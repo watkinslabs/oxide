@@ -677,6 +677,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         // CPU can actually be woken by the next timer / device IRQ.
         // Without this, ctxsw-back-to-boot from a parked task can land
         // here with IF=0 and the hlt becomes a permanent stop.
+        // SAFETY: enable IRQs + halt waits for the next timer / device IRQ; well-defined at CPL=0; preempt-off across the asm.
         unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack, preserves_flags)); }
     }
 }

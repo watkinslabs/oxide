@@ -213,7 +213,7 @@ Full table + bit-flag tables: `15`.
 
 ## 9 Explicit non-goals v1
 
-Things v1 doesn't ship — explicitly to keep `v1.0` reachable. Most of these are now v2 phases (see §3.2) rather than absolute exclusions.
+Things v1 doesn't ship — explicitly to keep `v1.0` reachable. Most of these are now v2 phases (see §3.2), not absolute exclusions.
 
 | Item | Disposition |
 |---|---|

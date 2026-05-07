@@ -20,13 +20,27 @@ pub fn run(root: &Path, f: &mut Findings) {
 }
 
 fn doc_id_of(stem: &str) -> Option<String> {
-    // `07-toolchain-and-targets` -> `07`; `29a-userspace-platform` -> `29a`
+    // `07-toolchain-and-targets` -> `07`; `29a-userspace-platform` -> `29a`;
+    // `00-v2` -> `00-v2` (v2 master plan companion to `00-master-plan`).
     let bytes = stem.as_bytes();
     if bytes.len() < 2 || !bytes[0].is_ascii_digit() || !bytes[1].is_ascii_digit() { return None; }
-    let mut id = String::with_capacity(3);
+    let mut id = String::with_capacity(8);
     id.push(bytes[0] as char);
     id.push(bytes[1] as char);
     if bytes.len() >= 3 && bytes[2].is_ascii_lowercase() { id.push(bytes[2] as char); }
+    // `<doc>-v<n>` companion form: `00-v2`, etc. Suffix extends the id
+    // so the section_map for `00` isn't overwritten by `00-v2`.
+    let leading_alpha = id.len();
+    if leading_alpha == 2 && stem.len() >= 5 && &stem[2..4] == "-v"
+       && bytes.get(4).map_or(false, |c| c.is_ascii_digit()) {
+        id.push('-');
+        id.push('v');
+        let mut i = 4;
+        while i < stem.len() && bytes[i].is_ascii_digit() {
+            id.push(bytes[i] as char);
+            i += 1;
+        }
+    }
     Some(id)
 }
 
@@ -130,7 +144,10 @@ fn strip_double_quotes(s: &str) -> String {
 }
 
 fn scan_refs(line: &str) -> Vec<(String, String)> {
-    // Match: 2-digit or 2-digit+lowercase letter, then `§`, then [0-9A-Za-z.]+
+    // Match: 2-digit, optional lowercase letter, optional `-v<digits>`
+    // companion suffix, then `§`, then [0-9A-Za-z.]+. Suffixed ids
+    // (`00-v2`) reference v2-companion plans without colliding with
+    // the base doc.
     let bytes = line.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -138,6 +155,13 @@ fn scan_refs(line: &str) -> Vec<(String, String)> {
         if bytes[i].is_ascii_digit() && bytes[i + 1].is_ascii_digit() {
             let mut j = i + 2;
             if j < bytes.len() && (bytes[j] as char).is_ascii_lowercase() { j += 1; }
+            // Optional `-v<digits>` suffix.
+            if j + 2 < bytes.len() && bytes[j] == b'-' && bytes[j + 1] == b'v'
+               && bytes[j + 2].is_ascii_digit() {
+                let mut k = j + 2;
+                while k < bytes.len() && bytes[k].is_ascii_digit() { k += 1; }
+                j = k;
+            }
             // expect `§` (UTF-8: 0xC2 0xA7)
             if j + 1 < bytes.len() && bytes[j] == 0xC2 && bytes[j + 1] == 0xA7 {
                 let doc = std::str::from_utf8(&bytes[i..j]).unwrap().to_string();
