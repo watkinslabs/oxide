@@ -195,6 +195,15 @@ core::arch::global_asm!(
     "    stp  x9,  x10, [sp, #0xb0]",
     "    mrs  x9,  sp_el0",
     "    str  x9,       [sp, #0xc0]",
+    // Stash sp (= base of saved SVC frame) into the global so the
+    // dispatcher can locate the saved ELR_EL1 / SP_EL0 / x0 slots
+    // for syscalls that need to redirect the post-eret state
+    // (sys_execve overwrites ELR_EL1 + SP_EL0 to land at the new
+    //  program; sys_fork copies parent regs into the child frame).
+    "    adrp x9, oxide_svc_frame_base",
+    "    add  x9, x9, :lo12:oxide_svc_frame_base",
+    "    mov  x10, sp",
+    "    str  x10, [x9]",
     // Shuffle Linux SVC args (x8=nr, x0..x4=a0..a4) into Rust SysV
     // (x0=nr, x1..x5=a0..a4). Bottom-up so we don't clobber sources.
     "    mov  x5, x4",
@@ -327,6 +336,61 @@ pub fn irq_resume_user_addr() -> u64 {
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 extern "C" {
     static oxide_vector_table: u8;
+}
+
+/// Saved-SVC-frame base, written by the lower-EL sync handler asm
+/// before `bl oxide_syscall_dispatch`. `current_svc_frame()` reads
+/// it to expose the saved x0..x29, ELR_EL1, SPSR_EL1, SP_EL0, x0
+/// retval slots to syscall handlers that need to redirect post-eret
+/// state (sys_execve overwrites ELR_EL1 + SP_EL0 to land at the new
+/// program entry; sys_fork copies the parent's saved regs into the
+/// child's iretq-equivalent frame).
+///
+/// Single global is fine for v1 single-CPU UP; per-CPU once SMP
+/// arrives in `04§4`. Stored as a raw u64 (sp value at SVC entry).
+/// Atomic so the `static mut`-via-asm-store/Rust-load pattern is
+/// expressed without `static mut` (forbidden by docs/07§5).
+#[no_mangle]
+pub static oxide_svc_frame_base: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Layout of the saved SVC frame at `oxide_svc_frame_base` per the
+/// asm in `oxide_lower_el_sync_handler`. Offsets in u64 words from
+/// the base:
+///   [0..30]   x0..x29 (with x18..x29 sharing slot 18..29 — the
+///             stp pair stored x18,x29 at offset 0x90 = idx 18; we
+///             treat x29 as idx 19 for accessor convenience by
+///             splitting that pair when needed)
+///   [20]      x30 (lr) at offset 0xa0
+///   [22]      ELR_EL1 at offset 0xb0
+///   [23]      SPSR_EL1 at offset 0xb8
+///   [24]      SP_EL0 at offset 0xc0
+///   [25]      retval (x0 after dispatch) at offset 0xc8
+///
+/// Note: the actual frame is 26 × 8 = 208 bytes per the asm. Only
+/// the slots syscall handlers need to overwrite are exposed here.
+#[repr(C)]
+pub struct SvcFrame {
+    pub gp:        [u64; 18],   // x0..x17
+    pub x18_x29:   [u64; 2],    // [x18, x29] — packed by asm stp
+    pub x30:       u64,
+    pub _pad_x30:  u64,
+    pub elr_el1:   u64,
+    pub spsr_el1:  u64,
+    pub sp_el0:    u64,
+    pub retval:    u64,
+}
+
+const _: () = assert!(core::mem::size_of::<SvcFrame>() == 208,
+    "SvcFrame must match the 208 B asm frame in oxide_lower_el_sync_handler");
+
+/// Pointer to the active task's saved SVC frame, or null pre-first-syscall.
+/// # SAFETY: caller is `oxide_syscall_dispatch` running on the active
+/// task's per-task kernel stack; the asm prologue stored sp into
+/// `oxide_svc_frame_base` before the dispatcher's `bl`. Single-CPU UP.
+/// # C: O(1)
+pub fn current_svc_frame() -> *mut SvcFrame {
+    oxide_svc_frame_base.load(core::sync::atomic::Ordering::Acquire) as *mut SvcFrame
 }
 
 /// Address of the vector table, or 0 on host where the asm symbol
