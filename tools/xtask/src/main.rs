@@ -60,23 +60,59 @@ fn usage() -> ExitCode {
 // rootfs: build kernel/blobs/rootfs.img from source userspace binaries
 // ---------------------------------------------------------------------------
 
-/// Reproducible userspace rootfs image builder. Runs:
-///   1. musl-gcc on every userspace/<bin>/<bin>.c we know about
-///   2. dd + mkfs.ext4 to create a 1 MiB ext4 image
-///   3. debugfs to populate /bin/* and /etc/{issue,os-release,passwd,…}
+/// Reproducible per-arch userspace rootfs image builder.
 ///
-/// Output: kernel/blobs/rootfs.img (overwrites in place). Idempotent;
-/// rerun whenever the userspace sources change. The kernel image
-/// then picks the new bytes up via `include_bytes!` on the next
-/// `xtask kernel` build.
-pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
+/// Driven by `--arch <x86_64|aarch64>`. Runs:
+///   1. arch-specific musl-gcc on every userspace/<bin>/<bin>.c.
+///      x86_64 uses host /usr/bin/musl-gcc; aarch64 uses
+///      vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+///      (fetched via `tools/fetch-cross.sh` if missing).
+///   2. dd + mkfs.ext4 → kernel/blobs/rootfs-<arch>.img.
+///   3. debugfs to populate /bin/* and /etc/* in the per-arch image.
+///
+/// Idempotent; rerun whenever userspace sources change. The kernel
+/// `include_bytes!`s the matching per-arch blob in dev_ext4.rs.
+pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
+    let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
+    if arch != "x86_64" && arch != "aarch64" {
+        eprintln!("xtask rootfs: --arch must be x86_64 or aarch64 (got `{arch}`)");
+        return Err(2);
+    }
     let repo = image_qemu::repo_root();
     let blobs = repo.join("kernel/blobs");
     std::fs::create_dir_all(&blobs).map_err(|e| { eprintln!("mkdir blobs: {e}"); 1u8 })?;
 
+    // Pick the compiler driver per arch.
+    let cc: std::path::PathBuf = if arch == "aarch64" {
+        let cross = repo.join("vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc");
+        if !cross.is_file() {
+            eprintln!("xtask rootfs: aarch64 toolchain missing — running tools/fetch-cross.sh");
+            let mut c = Command::new(repo.join("tools/fetch-cross.sh").to_str().unwrap());
+            run(c)?;
+        }
+        cross
+    } else {
+        std::path::PathBuf::from("/usr/bin/musl-gcc")
+    };
+    // Per-arch userspace build dir so x86 + arm artifacts don't
+    // overwrite each other when both rootfs builds run.
+    let user_out = repo.join(format!("target/userspace-{arch}"));
+    std::fs::create_dir_all(&user_out).map_err(|_| 1u8)?;
+    eprintln!("xtask rootfs: arch={arch} CC={}", cc.display());
+
     // 1. Build userspace binaries via musl-gcc.
-    let bins: &[(&str, &str)] = &[
+    //
+    // `portable_bins` use musl libc wrappers (write/fork/execve/...)
+    // and build on every arch. `x86_bins` still embed x86 `syscall`
+    // inline asm and are skipped on aarch64 until they're ported
+    // to libc-wrapper or arch-conditional syscall macros. The
+    // aarch64 boot path only needs init to reach userspace today;
+    // shell + applets come via vendored busybox once the aarch64
+    // cross-build of busybox lands.
+    let portable_bins: &[(&str, &str)] = &[
         ("userspace/init/init",         "userspace/init/init.c"),
+    ];
+    let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
         ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
         ("userspace/kill/kill",         "userspace/kill/kill.c"),
@@ -120,11 +156,19 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
-    for (out_rel, src_rel) in bins {
-        let out = repo.join(out_rel);
+    let mut bins: Vec<(&str, &str)> = portable_bins.to_vec();
+    if arch == "x86_64" {
+        bins.extend_from_slice(x86_bins);
+    } else {
+        eprintln!("xtask rootfs: arch={arch} skipping {} x86-asm-only userspace bins; init only", x86_bins.len());
+    }
+    for (out_rel, src_rel) in &bins {
+        // Out path is per-arch: target/userspace-<arch>/<basename>.
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
         let src = repo.join(src_rel);
-        eprintln!("xtask rootfs: musl-gcc {} → {}", src.display(), out.display());
-        let mut c = Command::new("musl-gcc");
+        eprintln!("xtask rootfs: {} {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+        let mut c = Command::new(&cc);
         c.args(["-static-pie", "-fPIE", "-O2", "-nostartfiles",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
@@ -135,14 +179,17 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     // stub interpreter. Keep this list short until the full ld-musl
     // runtime lands; static-pie is the only flavor most utilities
     // need today.
-    let dyn_bins: &[(&str, &str)] = &[
-        ("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c"),
-    ];
+    let dyn_bins: &[(&str, &str)] = if arch == "x86_64" {
+        &[("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c")]
+    } else {
+        &[]
+    };
     for (out_rel, src_rel) in dyn_bins {
-        let out = repo.join(out_rel);
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
         let src = repo.join(src_rel);
-        eprintln!("xtask rootfs: musl-gcc -pie {} → {}", src.display(), out.display());
-        let mut c = Command::new("musl-gcc");
+        eprintln!("xtask rootfs: {} -pie {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+        let mut c = Command::new(&cc);
         c.args(["-fPIE", "-pie", "-O2", "-nostartfiles", "-nostdlib",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
@@ -154,19 +201,30 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     // we just compiled — without this, edits to userspace/init/init.c
     // ship in rootfs.img but the kernel keeps running the stale
     // blob it baked in at last `cargo build`.
+    // 1b. Refresh kernel/blobs/<arch>/<init,sh>.elf per-arch so the
+    // embedded boot blobs match what we just compiled.
     let blob_dir = repo.join("kernel/blobs");
-    for (src_rel, blob_name) in &[
-        ("userspace/init/init", "init.elf"),
-        ("userspace/sh/sh",     "sh.elf"),
-    ] {
-        let src = repo.join(src_rel);
-        let dst = blob_dir.join(blob_name);
+    let elf_refresh: &[(&str, &str)] = if arch == "x86_64" {
+        &[("init", "init.elf"), ("sh", "sh.elf")]
+    } else {
+        &[("init", "init.elf")]
+    };
+    for (basename, blob_name) in elf_refresh {
+        let src = user_out.join(basename);
+        // Per-arch blob filename; x86_64 keeps the existing
+        // (un-suffixed) name for back-compat with elf_smoke's
+        // include_bytes!, aarch64 gets a .arm-suffixed copy.
+        let dst = if arch == "x86_64" {
+            blob_dir.join(blob_name)
+        } else {
+            blob_dir.join(format!("{}-aarch64.elf", blob_name.trim_end_matches(".elf")))
+        };
         eprintln!("xtask rootfs: refresh {} ← {}", dst.display(), src.display());
         std::fs::copy(&src, &dst).map_err(|_| 1u8)?;
     }
 
-    // 2. Build a fresh 1 MiB ext4 image.
-    let img = repo.join("kernel/blobs/rootfs.img");
+    // 2. Build a fresh 8 MiB ext4 image at kernel/blobs/rootfs-<arch>.img.
+    let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
@@ -201,6 +259,10 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)
     };
+    // Helper to resolve a userspace binary by name from the per-arch
+    // build output dir. Replaces the older `repo.join("userspace/<x>/<x>")`
+    // pattern that hard-coded host-arch artifacts.
+    let user = |name: &str| user_out.join(name);
     // Vendored busybox 1.37.0 — pre-built static-musl per
     // vendor/busybox/build.sh. busybox keys on argv[0]: the same
     // binary at /bin/sh runs as ash, at /bin/ls runs as ls, etc.
@@ -224,58 +286,64 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
             put(&bb, &format!("/bin/{applet}"))?;
         }
     }
-    // Toy oxide-sh kept at a distinct path so it doesn't shadow
-    // busybox's sh applet but stays available for the boot smoke.
-    put(&repo.join("userspace/sh/sh"),             "/bin/oxide-sh")?;
-    put(&repo.join("userspace/init/init"),         "/bin/init")?;
-    put(&repo.join("userspace/init/init"),         "/sbin/init")?;
-    put(&repo.join("userspace/init/init"),         "/init")?;
-    put(&repo.join("userspace/udp_echo/udp_echo"), "/bin/udp_echo")?;
-    put(&repo.join("userspace/kill/kill"),         "/bin/kill")?;
-    put(&repo.join("userspace/sleep/sleep"),       "/bin/sleep")?;
-    put(&repo.join("userspace/true/true"),         "/bin/true")?;
-    put(&repo.join("userspace/false/false"),       "/bin/false")?;
-    put(&repo.join("userspace/hostname/hostname"), "/bin/hostname")?;
-    put(&repo.join("userspace/mkdir/mkdir"),       "/bin/mkdir")?;
-    put(&repo.join("userspace/rm/rm"),             "/bin/rm")?;
-    put(&repo.join("userspace/cat/cat"),           "/bin/cat")?;
-    put(&repo.join("userspace/echo/echo"),         "/bin/echo")?;
-    put(&repo.join("userspace/tcp_echo/tcp_echo"), "/bin/tcp_echo")?;
-    put(&repo.join("userspace/ps/ps"),             "/bin/ps")?;
-    put(&repo.join("userspace/ls/ls"),             "/bin/ls")?;
-    put(&repo.join("userspace/mount/mount"),       "/bin/mount")?;
-    put(&repo.join("userspace/cp/cp"),             "/bin/cp")?;
-    put(&repo.join("userspace/wc/wc"),             "/bin/wc")?;
-    put(&repo.join("userspace/head/head"),         "/bin/head")?;
-    put(&repo.join("userspace/dmesg/dmesg"),       "/bin/dmesg")?;
-    put(&repo.join("userspace/pwd/pwd"),           "/bin/pwd")?;
-    put(&repo.join("userspace/whoami/whoami"),     "/bin/whoami")?;
-    put(&repo.join("userspace/uname/uname"),       "/bin/uname")?;
-    put(&repo.join("userspace/nc/nc"),             "/bin/nc")?;
-    put(&repo.join("userspace/tee/tee"),           "/bin/tee")?;
-    put(&repo.join("userspace/ln/ln"),             "/bin/ln")?;
-    put(&repo.join("userspace/find/find"),         "/bin/find")?;
-    put(&repo.join("userspace/df/df"),             "/bin/df")?;
-    put(&repo.join("userspace/cmp/cmp"),           "/bin/cmp")?;
-    put(&repo.join("userspace/route/route"),       "/bin/route")?;
-    put(&repo.join("userspace/xxd/xxd"),           "/bin/xxd")?;
-    put(&repo.join("userspace/seq/seq"),           "/bin/seq")?;
-    put(&repo.join("userspace/yes/yes"),           "/bin/yes")?;
-    put(&repo.join("userspace/nproc/nproc"),       "/bin/nproc")?;
-    put(&repo.join("userspace/getent/getent"),     "/bin/getent")?;
-    put(&repo.join("userspace/login/login"),       "/bin/login")?;
-    put(&repo.join("userspace/su/su"),             "/bin/su")?;
-    put(&repo.join("userspace/id/id"),             "/bin/id")?;
-    put(&repo.join("userspace/svcd/svcd"),         "/sbin/svcd")?;
-    put(&repo.join("userspace/agetty/agetty"),     "/sbin/agetty")?;
-    put(&repo.join("userspace/rpm/rpm"),           "/bin/rpm")?;
-    put(&repo.join("userspace/passwd/passwd"),     "/bin/passwd")?;
+    // init is portable and present on every arch.
+    put(&user("init"),         "/bin/init")?;
+    put(&user("init"),         "/sbin/init")?;
+    put(&user("init"),         "/init")?;
+    // The toy oxide-sh + applets below still embed x86 inline-asm
+    // syscalls; only stage them on x86_64 until they're ported.
+    if arch != "x86_64" {
+        eprintln!("xtask rootfs: arch={arch} skipping toy applets (x86-asm only) — busybox will fill these once aarch64 cross-build lands");
+    }
+    if arch == "x86_64" {
+    put(&user("sh"),             "/bin/oxide-sh")?;
+    put(&user("udp_echo"), "/bin/udp_echo")?;
+    put(&user("kill"),         "/bin/kill")?;
+    put(&user("sleep"),       "/bin/sleep")?;
+    put(&user("true"),         "/bin/true")?;
+    put(&user("false"),       "/bin/false")?;
+    put(&user("hostname"), "/bin/hostname")?;
+    put(&user("mkdir"),       "/bin/mkdir")?;
+    put(&user("rm"),             "/bin/rm")?;
+    put(&user("cat"),           "/bin/cat")?;
+    put(&user("echo"),         "/bin/echo")?;
+    put(&user("tcp_echo"), "/bin/tcp_echo")?;
+    put(&user("ps"),             "/bin/ps")?;
+    put(&user("ls"),             "/bin/ls")?;
+    put(&user("mount"),       "/bin/mount")?;
+    put(&user("cp"),             "/bin/cp")?;
+    put(&user("wc"),             "/bin/wc")?;
+    put(&user("head"),         "/bin/head")?;
+    put(&user("dmesg"),       "/bin/dmesg")?;
+    put(&user("pwd"),           "/bin/pwd")?;
+    put(&user("whoami"),     "/bin/whoami")?;
+    put(&user("uname"),       "/bin/uname")?;
+    put(&user("nc"),             "/bin/nc")?;
+    put(&user("tee"),           "/bin/tee")?;
+    put(&user("ln"),             "/bin/ln")?;
+    put(&user("find"),         "/bin/find")?;
+    put(&user("df"),             "/bin/df")?;
+    put(&user("cmp"),           "/bin/cmp")?;
+    put(&user("route"),       "/bin/route")?;
+    put(&user("xxd"),           "/bin/xxd")?;
+    put(&user("seq"),           "/bin/seq")?;
+    put(&user("yes"),           "/bin/yes")?;
+    put(&user("nproc"),       "/bin/nproc")?;
+    put(&user("getent"),     "/bin/getent")?;
+    put(&user("login"),       "/bin/login")?;
+    put(&user("su"),             "/bin/su")?;
+    put(&user("id"),             "/bin/id")?;
+    put(&user("svcd"),         "/sbin/svcd")?;
+    put(&user("agetty"),     "/sbin/agetty")?;
+    put(&user("rpm"),           "/bin/rpm")?;
+    put(&user("passwd"),     "/bin/passwd")?;
     // /lib/ld-musl-x86_64.so.1 — minimal dynamic-linker stub (P13-06).
     // Kernel ELF loader sees PT_INTERP="/lib/ld-musl-x86_64.so.1"
     // in any -pie (non-static) binary and dual-loads this image
     // alongside the exec.
-    put(&repo.join("userspace/dynlink/dynlink"),   "/lib/ld-musl-x86_64.so.1")?;
-    put(&repo.join("userspace/hello_dyn/hello_dyn"), "/bin/hello_dyn")?;
+    put(&user("dynlink"),   "/lib/ld-musl-x86_64.so.1")?;
+    put(&user("hello_dyn"), "/bin/hello_dyn")?;
+    } // end if arch == "x86_64"
 
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
