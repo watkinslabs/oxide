@@ -74,8 +74,27 @@ impl Inode for ConsoleInode {
     /// raw byte writes are exactly what the UART path needs;
     /// we bypass the format-checked klog macros and call the
     /// raw byte sink directly per the R06 console-output carve-out.
+    ///
+    /// Output processing per the VT's c_oflag: OPOST gates whether
+    /// any translation runs at all; ONLCR maps each NL on output
+    /// to CRLF so a host serial terminal advances cleanly. The
+    /// rest of the OPOST flags (OCRNL/ONOCR/ONLRET) are stored in
+    /// the termios image but not honoured yet — they need column
+    /// tracking which v1 doesn't keep.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
-        console_emit(buf);
+        let oflag = crate::tty::output_oflag(self.vt);
+        let post = (oflag & tty::pty::oflag::OPOST) != 0;
+        let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
+        if !onlcr {
+            console_emit(buf);
+            return Ok(buf.len());
+        }
+        // Emit byte-by-byte applying NL → CRLF. Buffered batching
+        // would be faster but interactive output is at human pace.
+        for &b in buf {
+            if b == b'\n' { console_emit(b"\r\n"); }
+            else          { console_emit(core::slice::from_ref(&b)); }
+        }
         Ok(buf.len())
     }
 }
