@@ -126,7 +126,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // EXECVEAT aliased to execve in PR-P (path resolved relative to dirfd).
         // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
         // userfaultfd; epoll moved to real impl.
-        | NR_USERFAULTFD
+        // USERFAULTFD moved to real impl in P28a (fd + UFFDIO ioctls).
         // io_uring + libaio + perf + bpf + seccomp + landlock + ns.
         // IO_URING moved to real (synchronous) impl in P23a — opcode
         // dispatch over SQ→CQ ring. SQPOLL/IOPOLL/fixed-buffer ride
