@@ -31,6 +31,7 @@ pub mod registry;
 pub mod runqueue;
 pub mod schedule;
 pub mod spawn;
+pub mod wait_list;
 pub mod zombies;
 
 pub use runqueue::{global, Runqueue};
@@ -39,4 +40,5 @@ pub use schedule::{
     install_default_runqueue, runqueue_active, RunStats,
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork};
+pub use wait_list::WaitList;
 pub use zombies::{park_for_wait4, park_zombie, reap_one};
