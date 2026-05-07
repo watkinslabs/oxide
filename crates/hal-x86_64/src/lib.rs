@@ -135,6 +135,29 @@ pub unsafe fn set_user_fs_base(va: u64) {
     { let _ = va; }
 }
 
+/// Read IA32_FS_BASE MSR (0xC000_0100). Inverse of `set_user_fs_base`;
+/// `arch_prctl(ARCH_GET_FS, &out)` plumbs through this.
+/// # SAFETY: `rdmsr` is privileged at CPL=0; reads only.
+/// # C: O(1)
+pub unsafe fn get_user_fs_base() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let lo: u32; let hi: u32;
+        // SAFETY: rdmsr is privileged; ECX selects IA32_FS_BASE; no memory effect.
+        unsafe {
+            core::arch::asm!(
+                "rdmsr",
+                in("ecx") 0xC000_0100u32,
+                out("eax") lo, out("edx") hi,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        ((hi as u64) << 32) | (lo as u64)
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
 /// Halt this CPU until the next IRQ. `hlt` per `20§4`. On host fallback,
 /// returns immediately so hosted unit tests can exercise call sites.
 /// # C: O(1)
