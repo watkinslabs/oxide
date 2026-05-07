@@ -170,10 +170,19 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             0
         }
         PTRACE_PEEKTEXT | PTRACE_PEEKDATA => {
-            // Real foreign-mm read. Look up target, get its
-            // AddressSpace.root_pa(), walk for `addr`, copy 8
-            // bytes. Returns -EFAULT if the page isn't mapped.
+            // Real foreign-mm read of 8 bytes from `addr` in
+            // the target's user AS.
+            //
+            // ABI quirk: glibc/musl's ptrace() PEEK wrapper
+            // passes `&result` as `data` and expects the kernel
+            // to write the word INTO `*data`, returning 0 on
+            // success (matches what real Linux does despite the
+            // man page implying the word comes back as the rv).
+            // We do both: write to `*data` if non-NULL, and
+            // return the word as the syscall rv for raw callers.
+            // -EFAULT on unmapped target page.
             let addr = args.a2;
+            let data = args.a3;
             let target = match crate::sched::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
@@ -186,7 +195,12 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // SAFETY: mm Arc keeps root_pa alive; HHDM init done before any user task runs; target page tables are stable while mm Arc is held.
             let n = unsafe { crate::user_as::read_foreign_user(root_pa, addr, &mut buf[..]) };
             if n != 8 { return -(Errno::Efault.as_i32() as i64); }
-            i64::from_le_bytes(buf)
+            let word = i64::from_le_bytes(buf);
+            if data != 0 && data < ::hal::USER_VA_END {
+                // SAFETY: data validated < USER_VA_END; user page mapped (caller's AS active during syscall); CPL=0 writes through caller's mapping.
+                unsafe { core::ptr::write_volatile(data as *mut i64, word); }
+            }
+            word
         }
         PTRACE_PEEKUSER => {
             // Reads from the target's struct user (registers +

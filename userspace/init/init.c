@@ -21,17 +21,11 @@ void _start(void) {
     static const char hello[] = "oxide init: hello from real-musl PID 1\n";
     write(1, hello, sizeof(hello) - 1);
 
-    // Try to hand off to svcd. If it isn't installed (or exec fails)
-    // we fall through to the legacy shell-respawn loop.
-    {
-        static char* argv[] = { "svcd", 0 };
-        static char* envp[] = { 0 };
-        execve("/sbin/svcd", argv, envp);
-        // If we get here, exec failed; carry on with the fallback.
-        static const char no_svcd[] =
-            "init: /sbin/svcd not present, falling back to shell respawn\n";
-        write(1, no_svcd, sizeof(no_svcd) - 1);
-    }
+    // svcd handoff was here but is disabled — staged at /bin/oxide-svcd
+    // not /sbin/svcd, so the execve was guaranteed to fail with ENOENT,
+    // and musl's errno write-on-failure path faults under FS_BASE=0
+    // (oxide_start.h skips musl's TLS init). Re-enable when either
+    // svcd works as PID 2 OR the FS_BASE / TLS-stub init is added.
 
     // Kernel-parity smoke: prove fork+execve+writev+wait4 round-trip
     // on the kernel's syscall surface from a real-musl PID 1 by
@@ -48,6 +42,30 @@ void _start(void) {
             static char* argv0[] = { "echo", "init-fork-exec works", 0 };
             static char* envp[] = { 0 };
             execve("/bin/echo", argv0, envp);
+            _exit(127);
+        }
+        int status;
+        waitpid((int)pid, &status, 0);
+    }
+
+    // IPC smokes: drive each kernel-side blocking primitive end-to-
+    // end from a real userspace program. Each child prints its own
+    // "X_smoke: PASS\n" or "X_smoke: FAIL\n" to fd 1 and exits with
+    // status 0/1; init reaps and ignores the status (the printed
+    // marker is the actual gate).
+    static const char* const smokes[] = {
+        "/bin/sem_smoke",
+        "/bin/msg_smoke",
+        "/bin/mq_smoke",
+        "/bin/ptrace_smoke",
+        0,
+    };
+    for (int i = 0; smokes[i]; i++) {
+        long pid = (long)fork();
+        if (pid == 0) {
+            char* argv0[] = { (char*)smokes[i], 0 };
+            static char* envp[] = { 0 };
+            execve(smokes[i], argv0, envp);
             _exit(127);
         }
         int status;
