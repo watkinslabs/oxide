@@ -56,7 +56,7 @@ Not in kernel scope; userspace implementation. Only relevance to kernel: `PT_INT
 
 ## 6 Hardening
 
-- ASLR: randomize stack base, mmap base, brk base, ld.so load base. PIE-required for full randomization. v1.x; v1 ships without ASLR.
+- ASLR: randomize stack base, mmap base, brk base, ld.so load base. PIE-required for full randomization. v2; v1 ships without ASLR.
 - VDSO mapped at randomized va per process.
 - `noexec` stack enforced.
 

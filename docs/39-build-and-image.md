@@ -90,7 +90,7 @@ Initramfs structure:
 /etc/{passwd,shadow,group,hosts,resolv.conf,init.conf,fstab,os-release}
 /dev (empty; populated by kernel devtmpfs)
 /proc, /sys, /tmp (empty mountpoints)
-/sbin/getty, /sbin/login (when v1.x)
+/sbin/getty, /sbin/login (when v2)
 ```
 
 Built by `tools/img-builder/`:

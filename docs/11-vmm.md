@@ -128,7 +128,7 @@ Flags: DIRTY, REFERENCED, LOCKED, RESERVED, …. mapping: shared/file pages → 
 - Per-AS PT `Spinlock<PageTable>` class `PageTable` (< `AddressSpace`).
 - TLB shootdown acks via per-CPU atomic counter.
 - PF takes VMA read; mmap/munmap/mprotect take write.
-- v1.x: RCU + per-VMA locks for hot PF path.
+- v2: RCU + per-VMA locks for hot PF path.
 
 ## 10 Perf budget
 

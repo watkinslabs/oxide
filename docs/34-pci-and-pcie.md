@@ -10,7 +10,7 @@ Enumerate PCIe devices via ECAM. Allocate BARs (or read pre-assigned). Configure
 1. Only ECAM access (PCIe). Per `03§7`.
 2. MSI-X mandatory for any v1-shipped driver; INTx as fallback only when device doesn't support MSI-X.
 3. BARs respected at boot if firmware (UEFI) assigned them; we never reassign in v1.
-4. IOMMU: pass-through in v1 (no protection). v1.x: enable Intel VT-d / arm SMMU isolation.
+4. IOMMU: pass-through in v1 (no protection). v2: enable Intel VT-d / arm SMMU isolation.
 
 ## 3 Public ifc
 
@@ -54,14 +54,14 @@ Allocate vectors via IrqOps (`alloc_msi`); program table entries with addr/data 
 | MSI-X | int routing |
 | PM | power state (D0 only in v1) |
 | PCIe (cap 0x10) | link speed, max payload |
-| AER | error reporting (v1.x) |
-| ATS / PRI | IOMMU advanced (v1.x) |
+| AER | error reporting (v2) |
+| ATS / PRI | IOMMU advanced (v2) |
 | SR-IOV | virtualization (v2) |
 
 ## 8 IOMMU
 
 v1: identity-map all DMA (passthrough). DMA targets must be physical addresses our PMM allocated.
-v1.x: enable Intel VT-d / SMMU. Per-device DMA domains. `dma_map_*` API.
+v2: enable Intel VT-d / SMMU. Per-device DMA domains. `dma_map_*` API.
 
 ## 9 Concurrency
 

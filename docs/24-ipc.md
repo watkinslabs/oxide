@@ -49,7 +49,7 @@ Per-system hash table `BTreeMap<(mm_id, uaddr), WaitQueue>` (or sharded; 256 buc
 
 Robust futex: `set_robust_list` registers a per-task list; on task exit, walk it and signal listed futexes.
 
-PI (priority inheritance) futex: defer to v1.x.
+PI (priority inheritance) futex: defer to v2.
 
 ## 6 eventfd
 
