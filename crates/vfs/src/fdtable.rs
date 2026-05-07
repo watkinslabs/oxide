@@ -34,22 +34,28 @@ impl FdTableInner {
     }
 
     fn alloc_fd(&mut self, file: Arc<File>) -> KResult<i32> {
-        // First-fit reuse of any released slot keeps small numbers
-        // small per Linux convention.
-        for (i, slot) in self.files.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(file);
-                self.cloexec[i] = false;
-                return Ok(i as i32);
+        self.alloc_fd_min(file, 0)
+    }
+
+    /// First-fit allocate at fd >= `min`. Backs `fcntl F_DUPFD(arg)`.
+    fn alloc_fd_min(&mut self, file: Arc<File>, min: usize) -> KResult<i32> {
+        if self.files.len() > min {
+            for (i, slot) in self.files.iter_mut().enumerate().skip(min) {
+                if slot.is_none() {
+                    *slot = Some(file);
+                    self.cloexec[i] = false;
+                    return Ok(i as i32);
+                }
             }
         }
-        let idx = self.files.len();
-        if idx >= FD_TABLE_MAX {
+        let start = core::cmp::max(self.files.len(), min);
+        if start >= FD_TABLE_MAX {
             return Err(VfsError::Emfile);
         }
-        self.files.push(Some(file));
-        self.cloexec.push(false);
-        Ok(idx as i32)
+        self.ensure_capacity(start);
+        self.files[start] = Some(file);
+        self.cloexec[start] = false;
+        Ok(start as i32)
     }
 }
 
@@ -124,6 +130,15 @@ impl FdTable {
     pub fn dup(&self, fd: i32) -> KResult<i32> {
         let f = self.get(fd)?;
         self.alloc(f)
+    }
+
+    /// `fcntl F_DUPFD(fd, arg)` — install the same `Arc<File>` at the
+    /// lowest free fd >= `min`. F_DUPFD_CLOEXEC sets cloexec on top.
+    /// # C: O(N)
+    pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
+        if min < 0 { return Err(VfsError::Einval); }
+        let f = self.get(fd)?;
+        self.inner.lock().alloc_fd_min(f, min as usize)
     }
 
     /// `dup2(2)` — install at exactly `new_fd`, closing whatever was
