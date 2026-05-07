@@ -1,3 +1,49 @@
+# State 2026-05-06 (session 38 — kernel-completeness sweep PR-A..P)
+
+## Headline (session 38, on main)
+
+Audit-driven sweep of stubbed/half-implemented syscalls per
+`docs/kernel-audit.md`. 16 PRs landed against `main`:
+
+| PR | Branch | What |
+|----|---|---|
+| #609 | PR-A-audit | `docs/kernel-audit.md` inventory of 136 syscall handlers |
+| #610 | PR-B-termios | per-VT termios + line discipline on /dev/console (ICANON, ECHO, ISIG, ICRNL, OPOST/ONLCR, c_cc) |
+| #611 | PR-C-pgroups | foreground-pgid + session on console; tcsetpgrp/tcgetpgrp/tcsctty wired |
+| #612 | PR-D-signals | rt_sigsuspend (yield-loop), rt_sigtimedwait, sigaltstack real, rt_sigqueueinfo aliases |
+| #613 | PR-E-threading | unified clone/clone3, CLONE_VM/FILES/THREAD honored, Task.tgid added, getpid → tgid, tgkill validates |
+| #614 | PR-F-proc | /proc/self/{auxv,wchan,sessionid,oom_adj,loginuid} added |
+| #615 | PR-G-misc-syscalls | arch_prctl ARCH_GET_FS real (rdmsr); sendmmsg/recvmmsg as per-entry loops |
+| #616 | PR-H-misc2 | memfd_create (TmpfsFileInode-backed); preadv2/pwritev2 alias preadv/pwritev |
+| #617 | PR-I-xattr-rseq-rl | xattr family → ENOTSUP; get_robust_list/cachestat → silent 0 |
+| #618 | PR-J-copy-file-range | real copy_file_range (sendfile + offsets) |
+| #619 | PR-K-waitid | real waitid (wait4 alias + siginfo_t writeback) |
+| #620 | PR-L-timer-stubs | POSIX timer family (timer_create/settime/gettime/...) → silent 0 |
+| #621 | PR-M-compat-cleanup | openat2 + faccessat2 routed through openat/faccessat; stale ENOSYS arms removed |
+| #622 | PR-N-splice | real splice/tee/vmsplice (kernel staging-buffer copy loop) |
+| #623 | PR-O-misc-stubs | pkey_*/process_madvise/process_mrelease/kcmp → silent 0 |
+| #624 | PR-P-execveat | execveat aliased to execve |
+
+## What still ENOSYS (intentional v1 scope)
+
+ptrace, SysV IPC (shm/sem/msg), POSIX MQ, keyring, swapon/swapoff,
+io_uring family + libaio, perf_event_open/bpf/seccomp/landlock,
+unshare/setns/pivot_root (namespaces), name_to_handle_at/open_by_handle_at,
+mount_setattr/open_tree/move_mount/fsopen/fsconfig/fsmount/fspick (modern
+mount API — mount/chroot still EPERM), fanotify_init/mark, pselect6/select,
+mempolicy/numa, userfaultfd, pidfd_getfd, process_vm_readv/writev,
+modify_ldt/uselib/ustat/sysfs/quotactl/acct/lookup_dcookie/remap_file_pages,
+vserver/_sysctl, AF_INET6 socket layer (types only — see audit §8).
+
+## Honest assessment of what blocks more userspace
+
+1. **Real ld.so** (DT_NEEDED + RELA + symbol resolution) — stub gets
+   "exec runs" but not "exec linked against libc.so runs".
+2. **AF_INET6 socket layer** — getaddrinfo probes routinely.
+3. **Real virtio-net + DHCP + DNS**.
+4. **mremap (proper) + per-PTE mprotect** — modern allocators
+   (jemalloc/mimalloc) hit these.
+
 # State 2026-05-06 (session 37 — multi-VT, klog IRQ-safety, dynamic linker plumbing)
 
 ## Headline (session 37, on main)
