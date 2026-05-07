@@ -95,7 +95,7 @@ No oxide-specific SDK. The dev environment is "Linux cross-compile target." This
 
 ## 6 Language runtime matrix
 
-| Runtime | v1 | v1.x | v2 |
+| Runtime | v1 | v2 | v2 |
 |---|---|---|---|
 | C (musl-static / -dynamic) | ✓ | — | — |
 | Rust (musl-static / -dynamic) | ✓ | — | — |
@@ -105,13 +105,13 @@ No oxide-specific SDK. The dev environment is "Linux cross-compile target." This
 | Node.js | ✗ | ✗ | ✓ |
 | Java (OpenJDK) | ✗ | ✗ | ✓ |
 
-C++ ships v1.x because no v1 acceptance binary needs it (busybox, redis, nginx, openssh, sqlite are all C). Python via stock CPython musl-static build; needs v1.x because Python ships in modern distros.
+C++ ships v2 because no v1 acceptance binary needs it (busybox, redis, nginx, openssh, sqlite are all C). Python via stock CPython musl-static build; needs v2 because Python ships in modern distros.
 
 ## 7 Package distribution
 
 v1: **none**. Apps shipped as static binaries built into the kernel image (per `39§5` initramfs layout).
 
-v1.x options (TBD; not blocking):
+v2 options (TBD; not blocking):
 - **tarball + extract**: simplest; per-app `<name>.tar.zst` extracted to `/usr/`.
 - **APK** (Alpine): musl-native, simple format, mature tooling. Lean if we add one.
 
@@ -144,13 +144,13 @@ Merged-`/usr` (`/bin`→`/usr/bin`, `/lib`→`/usr/lib`): yes, modern Linux conv
 - NSS: musl's built-in `files dns` only. No nsswitch.conf modules in v1.
 - Locale: `C.UTF-8` and `en_US.UTF-8` only. musl handles UTF-8 natively; no glibc-locale-archive needed.
 
-v1.x: PAM stub allowing third-party modules; full nsswitch; more locales as `.charmaps/`.
+v2: PAM stub allowing third-party modules; full nsswitch; more locales as `.charmaps/`.
 
 ## 10 Service management (v1 minimal)
 
 `init` per `29§3`. Spawns services from `/etc/init.conf`. Restart policy `on-failure|always|never`. Reaps zombies.
 
-No socket activation, no per-service cgroup, no dependency graph. v1.x: maybe minimal s6/runit-class supervisor. v2: systemd if anyone needs it.
+No socket activation, no per-service cgroup, no dependency graph. v2: maybe minimal s6/runit-class supervisor. v2: systemd if anyone needs it.
 
 ## 11 Compatibility surface (what apps can rely on)
 
@@ -164,8 +164,8 @@ App can depend on:
 - TCP/UDP/IPv6/AF_UNIX with Linux socket-option semantics (per `25`).
 
 App cannot rely on (v1):
-- io_uring (v1.x).
-- BPF (v1.x).
+- io_uring (v2).
+- BPF (v2).
 - systemd interfaces (v2).
 - Real TTY ECHO line discipline beyond modern bash interactive (covered) — no SLIP/PPP.
 - `/proc/sys/net/...` runtime-tuned via sysctl; many entries return ENOENT in v1.

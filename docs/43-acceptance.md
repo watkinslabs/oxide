@@ -3,7 +3,7 @@
 FROZEN 2026-05-02. Dep:every spec above.
 ## 1 Purpose
 
-Enumerate the binary-level acceptance tests for v1, v1.x, v2 milestones. Each binary listed is the *contract*: if a stock build of it from upstream against our libc/syscall ABI fails to run, the milestone is not done.
+Enumerate the binary-level acceptance tests for v1, v2, v2.x milestones. Each binary listed is the *contract*: if a stock build of it from upstream against our libc/syscall ABI fails to run, the milestone is not done.
 
 ## 2 v1 must-run (frozen)
 
@@ -21,7 +21,7 @@ Enumerate the binary-level acceptance tests for v1, v1.x, v2 milestones. Each bi
 | `openssh-server 9.x` | from source | PTY, modern crypto, rlimits | tty, pty, security, net |
 | `chrony` or `ntpd` | from source | clock_adjtime, rt_sigtimedwait | time, signals |
 
-## 3 v1.x must-run
+## 3 v2 must-run
 
 | Binary | Why | Adds |
 |---|---|---|
@@ -31,7 +31,7 @@ Enumerate the binary-level acceptance tests for v1, v1.x, v2 milestones. Each bi
 | `perf record/report` | PMU sampling | `37` PMU full |
 | `cri-o` or `containerd` minimal | container daemon | runc + extras |
 
-## 4 v2 must-run
+## 4 v2.x must-run
 
 | Binary | Why | Adds |
 |---|---|---|
@@ -66,7 +66,7 @@ Per `00§15`. Restated:
 
 If acceptance fails for a binary in v1:
 - Open question logged in the binary's `tests/acceptance/<bin>/known-issues.md`.
-- Either (a) fix kernel, (b) document binary as "v1.x acceptance" with rationale.
+- Either (a) fix kernel, (b) document binary as "v2.x acceptance" with rationale.
 - Never: silently move pass criterion.
 
 ## 8 Cross-spec

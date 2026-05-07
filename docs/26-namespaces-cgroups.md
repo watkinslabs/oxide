@@ -26,7 +26,7 @@ Per-ns pid allocator. PID 1 within a pidns is special: signal-default-ignore for
 
 ### 3.3 net
 
-Per-ns: routing tables, neigh caches, sockets-bound list, ifaces (added via `ip link set netns <ns>`), conntrack (when v1.x adds).
+Per-ns: routing tables, neigh caches, sockets-bound list, ifaces (added via `ip link set netns <ns>`), conntrack (when v2 adds).
 
 ### 3.4 uts
 
@@ -67,9 +67,9 @@ Single tree. Each node is a directory in `/sys/fs/cgroup/`. Files per node:
 | `io.{stat,max,weight,latency}` | io controller |
 | `pids.{current,max,events}` | pids controller |
 | `cpuset.{cpus,mems}` | cpu/numa pinning |
-| `hugetlb.<size>.{current,max}` | hugetlb (v1.x) |
+| `hugetlb.<size>.{current,max}` | hugetlb (v2) |
 
-Controllers in v1: cpu, memory, io, pids, cpuset. (hugetlb v1.x; rdma/misc v2.)
+Controllers in v1: cpu, memory, io, pids, cpuset. (hugetlb v2; rdma/misc v2.)
 
 ## 5 Public ifc
 
@@ -108,7 +108,7 @@ pub fn cg_get(path:&str, file:&str) -> KR<String>;
 - user-ns mapping: rootless task in user-ns sees uid 0 internally, mapped to nonzero outside.
 - Cgroup: create cgroup, set `memory.max=1MB`, run a task, verify OOM-kill at limit.
 - Cgroup `cpu.weight` proportional sharing: 2 cgroups @100, @200; verify ~1:2 CPU split under contention.
-- runc-equivalent shape: spawn a container with all namespaces + cgroup limits + seccomp filter (when BPF v1.x); verify process runs and exits cleanly.
+- runc-equivalent shape: spawn a container with all namespaces + cgroup limits + seccomp filter (when BPF v2); verify process runs and exits cleanly.
 - Coverage ≥85%.
 
 ## 9 Failure modes

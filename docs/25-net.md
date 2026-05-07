@@ -1,6 +1,6 @@
 # 25 Networking
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34`. Provides:`15` socket syscalls, drivers, eBPF (v1.x).
+FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34`. Provides:`15` socket syscalls, drivers, eBPF (v2).
 ## 1 Purpose
 
 IPv4 + IPv6 + AF_UNIX + AF_PACKET + AF_NETLINK + AF_VSOCK + AF_XDP. TCP + UDP + ICMP/ICMPv6. Routing, neighbor (ARP/NDP), netfilter-equivalent (basic). Driver model: `NetDev` trait with skb-equivalent buffers.
@@ -86,7 +86,7 @@ Features (frozen):
 - TSO/GSO/GRO when driver supports.
 - SO_REUSEPORT with per-CPU socket-table sharding.
 
-Out of v1: MPTCP (v1.x), TCP-AO (v1.x), zerocopy (v1.x).
+Out of v1: MPTCP (v2), TCP-AO (v2), zerocopy (v2).
 
 ## 8 UDP
 
@@ -108,9 +108,9 @@ Per-iface neighbor cache: `BTreeMap<IpAddr, NeighEntry>`. States: NONE, INCOMPLE
 
 ## 12 Filtering
 
-We do **not** ship a netfilter clone. Instead: BPF-based hooks at NET_RX/NET_TX (v1.x with BPF). v1 ships without filtering — incoming non-conntrack packets accepted; outgoing accepted.
+We do **not** ship a netfilter clone. Instead: BPF-based hooks at NET_RX/NET_TX (v2 with BPF). v1 ships without filtering — incoming non-conntrack packets accepted; outgoing accepted.
 
-`iptables`/`nftables` userspace from Fedora won't work in v1 (they need netlink+netfilter). Acceptable: networking apps that need firewalling install BPF when v1.x ships. v1 acceptance binaries (redis, nginx, openssh) don't need filtering.
+`iptables`/`nftables` userspace from Fedora won't work in v1 (they need netlink+netfilter). Acceptable: networking apps that need firewalling install BPF when v2 ships. v1 acceptance binaries (redis, nginx, openssh) don't need filtering.
 
 ## 13 AF_UNIX
 
@@ -130,7 +130,7 @@ Linux vsock with virtio-vsock driver. For VM↔host.
 
 ## 17 AF_XDP
 
-UMEM + RX/TX ring. Bypasses sk_buff path. Used by perf-critical net apps. v1.x.
+UMEM + RX/TX ring. Bypasses sk_buff path. Used by perf-critical net apps. v2.
 
 ## 18 Concurrency
 
