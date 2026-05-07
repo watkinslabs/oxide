@@ -31,7 +31,7 @@ Minimal init for v1: a 200-line Rust program at `userspace/init/`. Responsibilit
 5. Handle SIGTERM/SIGINT/SIGUSR1: shutdown.
 6. Handle child exit per restart policy.
 
-Not systemd. Not OpenRC. v1.x can ship something fancier (sd_notify, socket-activation). v1: just enough to launch a shell.
+Not systemd. Not OpenRC. v2 can ship something fancier (sd_notify, socket-activation). v1: just enough to launch a shell.
 
 ## 4 libc
 

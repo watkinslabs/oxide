@@ -219,7 +219,7 @@ Cost saved: XSAVE x86 ~150cy / FPSIMD arm similar, on every switch where target 
 
 Task T on CPU A → migrate to CPU B. CPU A's FPU-owner ptr still T. T faults on FP on B → IPI A to save T's state into `T.fpu_state`, then load on B.
 
-v1 simplification: **don't migrate FPU-owner**. Sched skips FPU-owner during load-balance. Cost: load-balance inefficiency. Gain: no FP-fault IPI. v1.x revisit.
+v1 simplification: **don't migrate FPU-owner**. Sched skips FPU-owner during load-balance. Cost: load-balance inefficiency. Gain: no FP-fault IPI. v2 revisit.
 
 ### 7.2 FPU state size
 

@@ -35,7 +35,7 @@ pub fn dtb() -> Option<&'static Fdt>;
 | MCFG | PCIe ECAM regions |
 | SRAT | NUMA: cpu→node, mem→node |
 | SLIT | NUMA distance matrix |
-| HMAT | NUMA bandwidth/latency (v1.x) |
+| HMAT | NUMA bandwidth/latency (v2) |
 | PPTT | CPU topology (cache hierarchy) |
 | HPET | sanity check; not used |
 

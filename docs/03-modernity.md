@@ -53,12 +53,12 @@ Linux numbers reserved for dropped → `ENOSYS` (not `EINVAL`, not silent succes
 
 ## 4 Memory
 
-- 48-bit canonical VA both arches; 5-level (57-bit) v1.x flag.
+- 48-bit canonical VA both arches; 5-level (57-bit) v2 flag.
 - `MAP_FIXED_NOREPLACE` default placement; `MAP_FIXED` opt-in overwrite.
 - THP: madvise-only, never "always".
 - userfaultfd: yes (Go, CRIU need).
 - memfd_secret: yes (no kernel direct map).
-- No swap to disk in v1. zram-style v1.x.
+- No swap to disk in v1. zram-style v2.
 
 ## 5 Filesystems
 
@@ -92,7 +92,7 @@ Dropped: ext2/ext3 (use ext4), ISO9660/UDF (no optical), NFSv2/v3 (NFSv4.2 maybe
 | `/dev/fd` → `/proc/self/fd` | symlink | — |
 | `/dev/std{in,out,err}` → `/proc/self/fd/{0,1,2}` | symlink | — |
 | `/dev/disk/by-{uuid,label,partuuid,id}/*` | symlinks to `sd?`/`nvme?` | — |
-| `/dev/mapper/*` | dm (v1.x) | — |
+| `/dev/mapper/*` | dm (v2) | — |
 | `/dev/loop-control`,`/dev/loop*` | loop | — |
 | `/dev/input/event*` | evdev | — |
 | `/dev/fb0` | EFI framebuffer | — |
@@ -100,7 +100,7 @@ Dropped: ext2/ext3 (use ext4), ISO9660/UDF (no optical), NFSv2/v3 (NFSv4.2 maybe
 
 Denied (`EPERM`): `/dev/mem`,`/dev/kmem`,`/dev/port`. Ever.
 
-Not v1: `/dev/snd/*`,`/dev/dri/*`,`/dev/video*` (v2); `/dev/tpm*` (v1.x).
+Not v1: `/dev/snd/*`,`/dev/dri/*`,`/dev/video*` (v2); `/dev/tpm*` (v2).
 
 ### 5.2 `/proc`
 
@@ -124,7 +124,7 @@ Linux fmt compat verified by busybox `ps`,`top`,`free`,`uptime`.
 - AF_NETLINK: ROUTE+GENERIC.
 - AF_VSOCK: yes.
 - AF_XDP: yes (modern).
-- eBPF/XDP: socket filters v1, XDP v1.x.
+- eBPF/XDP: socket filters v1, XDP v2.
 
 Dropped AF: IPX, X25, DECnet, APPLETALK, NETROM, BRIDGE, AX25, ROSE, ECONET, RDS, LLC, TIPC, PHONET, IEEE802154, CAIF, ALG (use direct API), NFC, KCM, QIPCRTR, SMC.
 
@@ -189,7 +189,7 @@ Crypto deny: MD2/4/5, SHA-1, RIPEMD, RC2/4/5, DES, 3DES, Blowfish, CAST, Skipjac
 ## 11 Acceptance binaries (split per `43`)
 
 v1: busybox, bash 5, coreutils 9, redis 7, sqlite 3.45, openssh 9, statically-linked Go≥1.22 + Rust≥1.75 binaries, nginx 1.25 (without io_uring).
-v1.x: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
+v2: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
 v2: systemd≥254 PID1; rootless runc; Wayland GUI app.
 
 Failure to run a v1 binary = charter break = bug.
