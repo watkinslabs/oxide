@@ -69,7 +69,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // ptrace + xattr + sendfile/splice family.
         NR_PTRACE
         | NR_SPLICE | NR_TEE | NR_VMSPLICE
-        | NR_COPY_FILE_RANGE
+        // COPY_FILE_RANGE moved to real impl in PR-J.
         | NR_MEMFD_SECRET // MEMFD_CREATE moved to real impl in PR-H.
         | NR_PIDFD_GETFD
         // xattr family: handled in the ENOTSUP arm below — Linux's
