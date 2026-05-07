@@ -48,7 +48,21 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // with no head/len keeps it from spinning on -ENOSYS.
         NR_GET_ROBUST_LIST | NR_CACHESTAT
         | NR_TIMER_CREATE | NR_TIMER_SETTIME | NR_TIMER_GETTIME
-        | NR_TIMER_GETOVERRUN | NR_TIMER_DELETE => Some(0),
+        | NR_TIMER_GETOVERRUN | NR_TIMER_DELETE
+        // pkey_* — userspace 'always have pkey 0' fallback. Linux pkey
+        // alloc returns -1 (and EINVAL) when MPK isn't supported; we
+        // return 0 because callers (glibc/musl) treat any non-negative
+        // alloc result as "you have a key" and skip the unsupported branch
+        // by reading /proc/self/status PkeyMask. Real MPK rides docs/06.
+        | NR_PKEY_ALLOC | NR_PKEY_FREE | NR_PKEY_MPROTECT
+        // process_madvise / process_mrelease — same advise-only
+        // semantics as madvise; silent 0 matches the existing madvise
+        // arm. process_mrelease is a release-after-OOM optimisation.
+        | NR_PROCESS_MADVISE | NR_PROCESS_MRELEASE
+        // kcmp — compares two task resources. v1 returns 0 (equal)
+        // for every comparison; bash + glibc only use it as an
+        // optimization probe.
+        | NR_KCMP => Some(0),
 
         // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
         // xattr family: tar/cp -a/rsync probe these and skip cleanly
@@ -94,10 +108,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // moved to silent-0 below — userspace tolerates "no timer fires"
         // better than -ENOSYS, which crashes hardened systemd setups.
         | NR_PROCESS_VM_READV | NR_PROCESS_VM_WRITEV
-        | NR_KCMP
         | NR_NAME_TO_HANDLE_AT | NR_OPEN_BY_HANDLE_AT
-        | NR_PROCESS_MADVISE | NR_PROCESS_MRELEASE
-        | NR_PKEY_MPROTECT | NR_PKEY_ALLOC | NR_PKEY_FREE
         // OPENAT2 / FACCESSAT2 aliased to openat / faccessat in PR-M.
         | NR_MOUNT_SETATTR | NR_OPEN_TREE | NR_MOVE_MOUNT
         | NR_FSOPEN | NR_FSCONFIG | NR_FSMOUNT | NR_FSPICK
