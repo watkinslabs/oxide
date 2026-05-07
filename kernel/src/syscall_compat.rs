@@ -46,7 +46,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // ---- silent-0 (accept; nothing to track v1) ----
         // get_robust_list: glibc thread-cleanup probe. Returning 0
         // with no head/len keeps it from spinning on -ENOSYS.
-        NR_GET_ROBUST_LIST | NR_CACHESTAT => Some(0),
+        NR_GET_ROBUST_LIST | NR_CACHESTAT
+        | NR_TIMER_CREATE | NR_TIMER_SETTIME | NR_TIMER_GETTIME
+        | NR_TIMER_GETOVERRUN | NR_TIMER_DELETE => Some(0),
 
         // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
         // xattr family: tar/cp -a/rsync probe these and skip cleanly
@@ -88,8 +90,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
         | NR_USELIB | NR_USTAT | NR_SYSFS | NR_MODIFY_LDT
         | NR_QUOTACTL | NR_QUOTACTL_FD | NR_ACCT
-        | NR_TIMER_CREATE | NR_TIMER_SETTIME | NR_TIMER_GETTIME
-        | NR_TIMER_GETOVERRUN | NR_TIMER_DELETE
+        // POSIX timer family (timer_create/settime/gettime/getoverrun/delete)
+        // moved to silent-0 below — userspace tolerates "no timer fires"
+        // better than -ENOSYS, which crashes hardened systemd setups.
         | NR_PROCESS_VM_READV | NR_PROCESS_VM_WRITEV
         | NR_KCMP
         | NR_NAME_TO_HANDLE_AT | NR_OPEN_BY_HANDLE_AT
