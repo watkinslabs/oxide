@@ -121,7 +121,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
         | NR_SET_MEMPOLICY_HOME_NODE
         | NR_VSERVER | NR__SYSCTL
-        | NR_EXECVEAT
+        // EXECVEAT aliased to execve in PR-P (path resolved relative to dirfd).
         // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
         // userfaultfd; epoll moved to real impl.
         | NR_USERFAULTFD
