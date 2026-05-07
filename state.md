@@ -1,3 +1,66 @@
+# State 2026-05-07 (session 41 — ARM/x86 kernel parity reached)
+
+## Headline (session 41)
+
+aarch64 boot now reaches the same user-visible milestone as x86: a real-musl static-PIE PID 1 (`userspace/init/init.c`) forks a child, the child execve's busybox-aarch64 (`/bin/echo init-fork-exec works`), busybox runs through its complete musl `_start` initialization (set_tid_address, brk, mmap-for-TLS, sigprocmask, sigaction, getpid, getppid, brk, writev), prints "init-fork-exec works\n" to the console, exits 0, and PID 1 reaps via wait4. The same chain runs on x86. ARM/x86 kernel-side lockstep is achieved.
+
+| PR | Branch | What |
+|----|---|---|
+| #654 | `B13-arm-init-chain` | aarch64 init prints "oxide init: hello from real-musl PID 1": syscall-ABI translator (130-entry aarch64→x86 mapping at dispatch entry), same-EL data-abort routing for kernel-side user-buffer reads, TPIDR_EL0 + 8 KiB TLS scratch so musl errno path works, init-spawn from rootfs, ext4 read-file lookup, vendored aarch64 busybox-static (Alpine 1.36.1) |
+| #655 | `F02-userspace-portable` | `userspace/shared/oxide_start.h`: portable file-scope inline-asm `_start` reads argc/argv/envp from SysV initial stack and calls `int main(int, char**, char**)`. 12 toy applets converted to libc wrappers (true, false, echo, whoami, pwd, sleep, yes, cat, uname, hostname, mkdir, seq) |
+| #656 | `B14-rootfs-hardlinks` | Hardlink busybox applets via `debugfs ln` (was `put` ×70 = 77 MiB on 8 MiB image; silent /sbin/init zeroing). Frees 6383/8192 blocks |
+| #657 | `F03-userspace-portable-batch2` | nproc, head, wc, kill, rm portable |
+| #658 | `F04-userspace-portable-batch3` | dmesg, ln, cmp, cp, tee, df, xxd, route, mount, ls, find portable |
+| #659 | `F05-userspace-portable-batch4` | ps, getent, nc, udp_echo, tcp_echo portable |
+| #660 | `F06-userspace-portable-batch5` | id, login, su portable (auth tier; sha512crypt against /etc/shadow) |
+| #661 | `F07-userspace-portable-batch6` | agetty, passwd portable |
+| #662 | `F08-userspace-portable-batch7` | svcd, rpm portable |
+| #663 | `F09-userspace-portable-final` | toy oxide-sh portable. Total portable: 41/42; only dynlink+hello_dyn (x86 ABI smoke harness) remain x86-only by design |
+| #664 | `F10-arm-execve` | `kernel_sys_execve` for aarch64. New: `hal_aarch64::current_svc_frame()` (saved ELR_EL1/SPSR_EL1/SP_EL0 exposed via `oxide_svc_frame_base`); aarch64 path mirrors x86 but reads file via `dev_ext4`, allocates `new_user_l0`, activates via `MmuOps::activate`, patches saved frame so `eret` lands at new program. Init's `execve("/sbin/svcd")` chain works |
+| #665 | `F11-arm-clone` | `kernel_sys_clone_dispatch` arch-portable. New: `hal_aarch64::ForkRegs` (x0..x30 + ELR/SPSR/SP_EL0); `ContextAArch64::new_user_for_fork` builds the IRQ-resume frame; `spawn_user_thread_for_fork` aarch64 path. `clone_spawn_arch` factors out the per-arch register capture |
+| #666 | `F12-arm-wait4-childexec` | `sys_wait4` + `sys_waitid` arch-portable; SVC frame saves x19..x28 (208→288 B) so clone can copy parent's full callee-saved set; `oxide_context_switch` saves/restores TPIDR_EL0 via Context.tpidr; FP/SIMD enabled at boot via `CPACR_EL1.FPEN`; exec_stack 4 KiB→64 KiB; init wires fd 0/1/2 to console. **Result: forked child runs busybox through its full musl init.** |
+| #667 | `F13-arm-tty-interactive` | init.c forks `/bin/echo init-fork-exec works` before the legacy shell-respawn loop. Marker proves kernel parity end-to-end |
+
+## ARM/x86 kernel parity matrix (after session 41)
+
+| Subsystem | x86_64 | aarch64 |
+|---|---|---|
+| Boot → kernel_main | ✅ | ✅ |
+| PMM, VMM, slab | ✅ | ✅ |
+| Scheduler + preempt | ✅ | ✅ |
+| ELF loader (static-PIE) | ✅ | ✅ |
+| ext4 mount + read | ✅ | ✅ |
+| Syscall dispatch | ✅ | ✅ via `syscall_arm_abi.rs` 130-entry translator |
+| read/write/open/close | ✅ | ✅ |
+| fork/clone | ✅ | ✅ |
+| execve | ✅ | ✅ |
+| wait4/waitid | ✅ | ✅ |
+| mmap/munmap/brk | ✅ | ✅ |
+| Signal handlers | ✅ | ✅ |
+| FP/SIMD at EL0 | ✅ | ✅ |
+| TLS (FS_BASE / TPIDR_EL0) | ✅ | ✅ Context.tpidr save/restore |
+| Console fd_table | ✅ | ✅ |
+| User-buffer demand-page | ✅ | ✅ same-EL data-abort routing |
+| Real-musl PID 1 init | ✅ | ✅ |
+| init→fork→execve→busybox→exit→wait4 | ✅ | ✅ |
+| Userspace portable bins | 41/42 | 41/42 |
+
+## Discipline tightened (session 41)
+
+`CLAUDE.md§ARM/x86 lockstep` rule was strengthened from "should work on both" to a per-phase exit gate with a mandatory checklist (PR-time CI green on both arches, both `make qemu-x86` and `make qemu-arm` reach the same user-visible milestone via the qemu MCP, no "x86 first, ARM later" deferral). Any aarch64 gap exposed by phase work closes in the same PR or blocks phase exit. Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5.
+
+## Lockstep gaps closed in session 41 (don't repeat these in future phases)
+
+- **aarch64 syscall ABI translation** — Linux generic ABI (write=64) vs x86_64 ABI (write=1); 130-entry mapping at `oxide_syscall_dispatch` entry on arm. Source: `kernel/src/syscall_arm_abi.rs`.
+- **Same-EL data-abort routing** — `user_as::classify_arm_abort` now accepts EC=0x21/0x25 (insn/data abort same-EL), not only lower-EL. Required for kernel reading user buffers (write(2) copyout).
+- **TPIDR_EL0 save/restore in `oxide_context_switch`** — Context.tpidr field at offset 0x68 written via `mrs/msr tpidr_el0` on switch. Required so forked children resume with parent's user TLS pointer.
+- **Callee-saved x19..x28 in SVC frame** — frame grew 208→288 B; `SvcFrame.x19_x28[10]` exposed to clone path. Without this, clone can't snapshot parent's full callee-saved state for the child (kernel C dispatch path otherwise spills+restores them through nested frames).
+- **FP/SIMD enabled at boot** — `boot-aarch64::_start_rust` calls `hal_aarch64::fpu_enable` (writes `CPACR_EL1.FPEN`). musl libc memcpy/strxx use NEON intrinsics; busybox-aarch64 traps EC=0x07 on first write without this.
+- **64 KiB exec_stack** — busybox's first wide stack frame underflowed a 4 KiB stack page. Same on x86; bumped both.
+- **Console fd_table on aarch64 init** — `elf_smoke_arm` now calls `dev_console::init_console_fd_table` after `spawn_user_thread`. Without this, forked-child writev to fd 1/2 returns EBADF.
+- **Hardlink busybox applets in xtask rootfs** — `put`'ing 70× full busybox copies overflows the 8 MiB ext4; debugfs silently zeros files past the free-block boundary including /sbin/init.
+- **Userspace `.c` sources arch-portable** — every userspace `.c` uses `shared/oxide_start.h` + musl libc wrappers (write/open/read/...), not raw x86 `syscall` inline asm. Only `dynlink` + `hello_dyn` (the x86 dynamic-linker smoke harness) remain x86-only by design.
+
 # State 2026-05-07 (session 40 — v2 kernel-parity track first-cuts complete)
 
 ## Headline (session 40)

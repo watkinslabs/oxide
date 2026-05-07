@@ -13,7 +13,15 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 3. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
 4. **Lean-mode calendar**: phase advance gated on PR-time CI (≤5min + paranoid-ci build) + QEMU smoke for the affected subsystem. v1 = 9–14mo solo.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
-6. **ARM/x86 lockstep** (HARD RULE): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` reaches the same milestone as `make qemu-x86`. If a feature exposes an aarch64 gap (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain), close the gap in the same PR — don't defer. Don't claim "works on both arches" without booting both via the qemu MCP and verifying the user-visible milestone. The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`; userspace `.c` sources must compile on both arches via musl libc wrappers, not raw `syscall` inline asm.
+6. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
+   - PR-time CI green on both `build kernel x86_64` AND `build kernel aarch64`
+   - `make qemu-x86` boots through the phase's smoke target (init prints, fork+exec works, etc.)
+   - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
+   - Any aarch64 gap exposed by the work (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain, missing register save/restore, etc.) closes in the SAME PR — never deferred to a later session
+   - Userspace `.c` sources must compile on both arches via musl libc wrappers, not raw `syscall` inline asm. Use `userspace/shared/oxide_start.h` for the portable `_start` shim
+   - The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`; vendored aarch64 busybox lives at `vendor/busybox/busybox-aarch64`
+
+   **No "x86 first, ARM later" anywhere in the phase ladder.** Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5; lockstep gaps go in the same PR or block phase exit.
 
 ## Cross-references
 

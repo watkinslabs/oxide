@@ -874,3 +874,36 @@ Open follow-ups (session 31 picks up):
 - TCP retransmit timer + congestion control.
 - IPv6, ARP/NDP, virtio-net, AF_PACKET, AF_NETLINK, AF_VSOCK, AF_XDP, NR_EPOLL_*.
 - Phase 9 modules — ELF ET_REL relocations + symbol resolver.
+
+## Session 41 (PRs #654 – #667) — 2026-05-07
+
+**Subject**: ARM/x86 kernel parity — full lockstep achieved. aarch64 reaches the same user-visible milestone as x86: real-musl PID 1 forks, child execve's busybox-aarch64, busybox runs through full musl init (set_tid_address/brk/mmap/sigprocmask/sigaction/getpid/getppid/writev), prints "init-fork-exec works", exits, init reaps via wait4. CLAUDE.md ARM/x86 lockstep rule strengthened to a per-phase exit gate with a mandatory checklist.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #654 | `B13-arm-init-chain` | aarch64 syscall ABI translator (130-entry mapping at oxide_syscall_dispatch entry); same-EL data-abort routing (EC=0x21/0x25) for kernel-side user-buffer reads; TPIDR_EL0 + 8 KiB TLS scratch; ext4 read-file lookup at init spawn; vendored aarch64 busybox-static (Alpine 1.36.1). aarch64 prints "oxide init: hello from real-musl PID 1". |
+| #655 | `F02-userspace-portable` | userspace/shared/oxide_start.h portable file-scope inline-asm `_start`. 12 toy applets converted to libc wrappers. |
+| #656 | `B14-rootfs-hardlinks` | xtask hardlinks busybox applets via `debugfs ln` (was put×70 = 77 MiB on 8 MiB image, silently zeroed /sbin/init). |
+| #657 | `F03-userspace-portable-batch2` | nproc, head, wc, kill, rm portable. |
+| #658 | `F04-userspace-portable-batch3` | dmesg, ln, cmp, cp, tee, df, xxd, route, mount, ls, find portable. |
+| #659 | `F05-userspace-portable-batch4` | ps, getent, nc, udp_echo, tcp_echo portable. |
+| #660 | `F06-userspace-portable-batch5` | id, login, su portable (auth tier; sha512crypt against /etc/shadow). |
+| #661 | `F07-userspace-portable-batch6` | agetty, passwd portable. |
+| #662 | `F08-userspace-portable-batch7` | svcd, rpm portable. |
+| #663 | `F09-userspace-portable-final` | toy oxide-sh portable. Total portable: 41/42 (only dynlink + hello_dyn x86 ABI smoke harness remain x86-only by design). |
+| #664 | `F10-arm-execve` | kernel_sys_execve for aarch64 (mirrors x86; reads ELF via dev_ext4, allocates new_user_l0, activates via MmuOps, patches saved SVC frame so `eret` lands at new entry). hal_aarch64::current_svc_frame() exposes saved ELR_EL1/SPSR_EL1/SP_EL0. |
+| #665 | `F11-arm-clone` | kernel_sys_clone_dispatch arch-portable. ContextAArch64::new_user_for_fork builds the IRQ-resume frame; ForkRegs (x0..x30 + ELR/SPSR/SP_EL0). clone_spawn_arch helper factors per-arch register capture. |
+| #666 | `F12-arm-wait4-childexec` | sys_wait4 + sys_waitid arch-portable. SVC frame extended 208→288 B saving x19..x28 (so clone copies parent's full callee-saved). oxide_context_switch saves/restores TPIDR_EL0 via Context.tpidr (offset 0x68). FP/SIMD enabled at boot via CPACR_EL1.FPEN. exec_stack 4 KiB→64 KiB. init_console_fd_table on aarch64 init. **Forked child runs busybox through full musl init.** |
+| #667 | `F13-arm-tty-interactive` | init.c forks `/bin/echo init-fork-exec works` before legacy shell-respawn loop — kernel parity end-to-end marker. |
+
+End-of-session-41 verified-green:
+- `make qemu-x86` reaches "init-fork-exec works" via real-musl PID 1 fork+execve+busybox+wait4.
+- `make qemu-arm` reaches "init-fork-exec works" via the same chain on aarch64.
+- ARM/x86 kernel parity matrix complete: dispatch / read,write / open,close / fork,clone / execve / wait4,waitid / mmap,munmap,brk / signal handlers / FP-SIMD at EL0 / TLS (FS_BASE | TPIDR_EL0) / console fd_table / user-buffer demand-page / real-musl PID 1.
+
+Discipline tightened:
+- `CLAUDE.md§ARM/x86 lockstep` is now a per-phase exit gate with mandatory checklist (PR-time CI green on both arches, both `make qemu-x86` and `make qemu-arm` reach the same user-visible milestone via qemu MCP, no "x86 first, ARM later" deferral). Out-of-phase work belongs in `docs/v2/`.
+
+Pre-existing latent issues uncovered (not introduced this session, deferred to follow-up branches):
+- x86 init.c with libc errno path faults on execve ENOENT (FS_BASE=0; needs arch_prctl(SET_FS) which musl _start under -nostartfiles skips). Workaround in init.c is the fork+echo smoke.
+- /sbin/svcd has a NULL-deref under busybox-style argv; staging temporarily disabled.
