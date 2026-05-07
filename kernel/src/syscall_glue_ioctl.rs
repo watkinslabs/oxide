@@ -43,6 +43,10 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5045_5246_0000_0000 {
         return crate::perf::handle_perf_ioctl(file.inode(), req, arg);
     }
+    // DRM/render fd ioctls.
+    if let Some(rv) = crate::dev_drm::handle_drm_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
     if file.inode().file_type() != vfs::FileType::CharDev {
         return -(Errno::Enotty.as_i32() as i64);
     }
