@@ -269,11 +269,16 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // Stage it at every applet path (incl. /bin/sh) so login →
     // /bin/sh hands straight into busybox-ash. The toy oxide-sh
     // moves to /bin/oxide-sh for dev probing / boot smoke.
-    // Vendored busybox is x86_64-only today; skip staging on aarch64
-    // until an aarch64 cross-build lands (musl.cc toolchain present
-    // but busybox build system needs ARCH=arm64 + clean defconfig).
-    let bb = repo.join("vendor/busybox/busybox");
-    if bb.is_file() && arch == "x86_64" {
+    // Per-arch vendored busybox. x86_64 binary in vendor/busybox/busybox
+    // (built via vendor/busybox/build.sh against musl-gcc); aarch64
+    // binary in vendor/busybox/busybox-aarch64 (extracted from Alpine
+    // Linux's busybox-static apk, statically linked against musl).
+    let bb = if arch == "aarch64" {
+        repo.join("vendor/busybox/busybox-aarch64")
+    } else {
+        repo.join("vendor/busybox/busybox")
+    };
+    if bb.is_file() {
         put(&bb, "/bin/busybox")?;
         for applet in &[
             "sh", "ash",
