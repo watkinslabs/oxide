@@ -144,12 +144,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/nc/nc",             "userspace/nc/nc.c"),
         ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
         ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
+        ("userspace/id/id",             "userspace/id/id.c"),
+        ("userspace/login/login",       "userspace/login/login.c"),
+        ("userspace/su/su",             "userspace/su/su.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
-        ("userspace/login/login",       "userspace/login/login.c"),
-        ("userspace/su/su",             "userspace/su/su.c"),
-        ("userspace/id/id",             "userspace/id/id.c"),
         ("userspace/svcd/svcd",         "userspace/svcd/svcd.c"),
         ("userspace/agetty/agetty",     "userspace/agetty/agetty.c"),
         ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
@@ -346,6 +346,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("nc"),             "/bin/oxide-nc")?;
     put(&user("udp_echo"), "/bin/oxide-udp_echo")?;
     put(&user("tcp_echo"), "/bin/oxide-tcp_echo")?;
+    put(&user("id"),             "/bin/oxide-id")?;
+    put(&user("login"),       "/bin/oxide-login")?;
+    put(&user("su"),             "/bin/oxide-su")?;
     // The remaining toy applets below still embed x86 inline-asm
     // syscalls; only stage them on x86_64 until they're ported. The
     // portable forms above ship at /bin/oxide-<name> so they don't
@@ -355,9 +358,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     if arch == "x86_64" {
     put(&user("sh"),             "/bin/oxide-sh")?;
-    put(&user("login"),       "/bin/login")?;
-    put(&user("su"),             "/bin/su")?;
-    put(&user("id"),             "/bin/id")?;
     put(&user("svcd"),         "/sbin/svcd")?;
     put(&user("agetty"),     "/sbin/agetty")?;
     put(&user("rpm"),           "/bin/rpm")?;
