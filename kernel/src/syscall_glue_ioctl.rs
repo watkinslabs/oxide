@@ -13,6 +13,8 @@ use crate::syscall_glue::validate_user_buf;
 pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCGETS:     u64 = 0x5401;
     const TCSETS:     u64 = 0x5402;
+    const TCSETSW:    u64 = 0x5403; // TCSETS after pending output drains; v1 == TCSETS
+    const TCSETSF:    u64 = 0x5404; // TCSETS + flush input; v1 == TCSETS
     const TIOCGWINSZ: u64 = 0x5413;
     const TIOCSWINSZ: u64 = 0x5414;
     const TIOCGPTN:   u64 = 0x80045430;
@@ -89,11 +91,17 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
         }
         TCGETS => {
             if let Err(rv) = validate_user_buf(arg, tty::pty::TERMIOS_BYTES as u64, 4) { return rv; }
-            // For pty fds copy the pair's termios image; for non-pty
-            // CharDevs zero-fill (matches the prior isatty-probe behaviour).
+            // For pty fds copy the pair's termios image; for the
+            // boot UART /dev/console + /dev/tty<N> read the per-VT
+            // termios state. The vt id is the inode number — devfs
+            // assigns ino=1 for the foreground alias and ino=N for
+            // /dev/ttyN, matching `ConsoleInode::new(vt)` in dev_console.rs.
             let snap = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.termios),
-                None       => [0u8; tty::pty::TERMIOS_BYTES],
+                None       => {
+                    let vt = (ino & 0xff) as u8;
+                    crate::tty::termios_get(vt)
+                }
             };
             // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
             unsafe {
@@ -103,17 +111,20 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             }
             0
         }
-        TCSETS => {
+        TCSETS | TCSETSW | TCSETSF => {
             if let Err(rv) = validate_user_buf(arg, tty::pty::TERMIOS_BYTES as u64, 4) { return rv; }
-            if let Some(pair) = &pty_pair {
-                let mut buf = [0u8; tty::pty::TERMIOS_BYTES];
-                // SAFETY: arg validated 60-byte buffer; CPL=0 reads through caller's AS.
-                unsafe {
-                    for i in 0..tty::pty::TERMIOS_BYTES {
-                        buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
-                    }
+            let mut buf = [0u8; tty::pty::TERMIOS_BYTES];
+            // SAFETY: arg validated 60-byte buffer; CPL=0 reads through caller's AS.
+            unsafe {
+                for i in 0..tty::pty::TERMIOS_BYTES {
+                    buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
                 }
+            }
+            if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.termios = buf);
+            } else {
+                let vt = (ino & 0xff) as u8;
+                crate::tty::termios_set(vt, &buf);
             }
             0
         }
