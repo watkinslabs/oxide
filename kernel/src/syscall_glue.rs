@@ -683,7 +683,14 @@ fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
             0
         }
         crate::syscall_nrs::ARCH_GET_FS => {
-            // v1: report 0; once we read FS_BASE back, return that.
+            // val is a user pointer to a u64 receiving FS_BASE.
+            if val == 0 || val >= USER_VA_END {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            // SAFETY: rdmsr IA32_FS_BASE is privileged; no memory effect.
+            let base = unsafe { hal_x86_64::get_user_fs_base() };
+            // SAFETY: val validated < USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe { core::ptr::write_volatile(val as *mut u64, base); }
             0
         }
         _ => -(Errno::Einval.as_i32() as i64),
@@ -834,6 +841,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_GETSOCKOPT  => crate::syscall_glue_net::kernel_sys_getsockopt(&args),
         crate::syscall_nrs::NR_SENDMSG => crate::syscall_glue_net::kernel_sys_sendmsg(&args),
         crate::syscall_nrs::NR_RECVMSG => crate::syscall_glue_net::kernel_sys_recvmsg(&args),
+        crate::syscall_nrs::NR_SENDMMSG => crate::syscall_glue_net::kernel_sys_sendmmsg(&args),
+        crate::syscall_nrs::NR_RECVMMSG => crate::syscall_glue_net::kernel_sys_recvmmsg(&args),
         // chmod/chown family — devfs is read-only, but accept silently
         // for tooling that probes mode/owner without erroring.
         crate::syscall_nrs::NR_FCHMOD | crate::syscall_nrs::NR_FCHMODAT | crate::syscall_nrs::NR_CHMOD
