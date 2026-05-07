@@ -147,7 +147,7 @@ Flags: DIRTY, REFERENCED, LOCKED, RESERVED, …. mapping: shared/file pages → 
 - Hosted unit on fake `MmuOps` recording ops; mmap/munmap/mprotect produce expected sequences.
 - Property: random {mmap,munmap,mprotect,fault} sequences; verify invariants 1,2,3 vs interval-list oracle.
 - QEMU integration: userspace maps anon, files, fork+exec, mprotect, munmap; 1h; no panic, no leaked frames.
-- Soak (bg, not gate per `40§3`): 4h cycles `stress-ng --vm` 4-CPU SMP; final unmount + munmap-all + zero leaked frames. PR-time gate uses `paranoid-ci` (`debug-vmm` audit per op).
+- PR-time gate uses `paranoid-ci` (`debug-vmm` audit per op) per `41§3`. SMP randomized mmap/munmap/mprotect runs in proptest harness, not duration-based.
 - Power-cut symmetry test: kill QEMU during heavy mmap/munmap; reboot clean (no on-disk VMM state).
 
 ## 12 Failure modes

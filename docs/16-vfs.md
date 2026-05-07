@@ -101,7 +101,7 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 - Property: random tree + random ops; verify dentry/inode invariants 2,3,4.
 - Loom dentry-cache lookup-vs-insert: RCU correctness; depth 6.
 - QEMU: mount tmpfs + ext4 image, busybox `find /` + `cp -a` between them; no errors.
-- Soak (bg, not gate per `40§3`): 4h cycles, `fs_mark`+`find`+random touch/unlink; zero corruption, zero leaked Arc (static counters reconcile). PR-time gate uses `paranoid-ci` (`debug-vfs`).
+- PR-time gate uses `paranoid-ci` (`debug-vfs`) per `41§3`. Randomized fs_mark + find + concurrent touch/unlink workloads run in proptest harness; static counter reconciliation enforced at end.
 - Coverage ≥95%.
 
 ## 10 Failure modes
