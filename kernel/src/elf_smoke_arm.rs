@@ -275,9 +275,18 @@ fn spawn_init_from_rootfs_arm() {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
+    // v1 aarch64 init candidate order:
+    //   1. /sbin/init  (real-musl init.c — minimal, but its fork+exec
+    //      paths require SYS_clone+SYS_execve on arm which aren't
+    //      wired yet, so it exits without launching a shell)
+    //   2. /init       (alias)
+    //   3. /bin/sh     (fall back to busybox-as-shell so the boot
+    //      reaches an interactive prompt even before clone/execve
+    //      land on arm)
     let init_blob: &'static [u8] = {
         let bytes_opt = crate::dev_ext4::read_file(b"/sbin/init")
-            .or_else(|| crate::dev_ext4::read_file(b"/init"));
+            .or_else(|| crate::dev_ext4::read_file(b"/init"))
+            .or_else(|| crate::dev_ext4::read_file(b"/bin/sh"));
         match bytes_opt {
             Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
             None => {
