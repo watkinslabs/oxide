@@ -1,26 +1,22 @@
-// SysV message queues per `24` follow-up — bare-minimum
-// msgget/msgsnd/msgrcv/msgctl. Older daemons (lpd, atd, sysvinit)
-// and certain monitoring agents probe these; v1 returned -ENOSYS,
-// callers abort. v2 P25c admits + delivers a working queue
-// registry with non-blocking msgsnd/msgrcv semantics.
+// SysV message queues per `24` follow-up — msgget/msgsnd/msgrcv/
+// msgctl with real POSIX-blocking semantics on full/empty.
 //
-// Scope (first cut):
+// Scope:
 //   * msgget(key, flg) → queue id; queues default empty.
 //   * msgsnd(msqid, msgp, msgsz, flg) appends a copy of
-//     {mtype, mtext[0..msgsz]} to the queue FIFO; if the queue
-//     is full (16 messages cap) returns -EAGAIN.
+//     {mtype, mtext[0..msgsz]} to the queue FIFO. If the queue
+//     is full (16 messages cap) the caller blocks on the per-
+//     queue `wait_send` list until a msgrcv pops a message;
+//     IPC_NOWAIT short-circuits to -EAGAIN.
 //   * msgrcv(msqid, msgp, msgsz, msgtyp, flg):
 //       msgtyp == 0  → first message, any type
 //       msgtyp >  0  → first message with mtype == msgtyp
 //       msgtyp <  0  → first message with mtype <= |msgtyp|,
 //                       least mtype first
-//     Empty queue → -EAGAIN (no blocking — see header).
-//   * msgctl: IPC_RMID, IPC_STAT, IPC_INFO.
-//
-// Real POSIX-blocking msgrcv (sleep until matching message
-// arrives) requires sched-integrated wait queues; programs that
-// need it today see EAGAIN and either retry-with-yield or fall
-// back to pipes/eventfd. The probe-and-survive path is unblocked.
+//     Empty / no-match → block on `wait_recv` until a msgsnd
+//     publishes; IPC_NOWAIT short-circuits to -ENOMSG.
+//   * msgctl: IPC_RMID (wakes both wait lists; sleepers return
+//     -EIDRM on retry), IPC_STAT, IPC_INFO.
 
 #![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
@@ -40,6 +36,9 @@ const IPC_SET:  u64 = 1;
 const IPC_STAT: u64 = 2;
 const IPC_INFO: u64 = 3;
 
+/// `msgsnd` / `msgrcv` flag bit (only one we honor).
+const IPC_NOWAIT_FLAG: i32 = 0o4000;
+
 /// Per-message cap (mtext bytes). Linux default is 8 KiB; we use
 /// 4 KiB so each message fits in a single allocation.
 const MSG_MAX_SIZE:    usize = 4096;
@@ -52,12 +51,16 @@ struct Msg {
     pub data:  Vec<u8>,
 }
 
-/// One SysV message queue. Messages protected by per-queue lock
-/// so msgsnd / msgrcv batches are serialized.
+/// One SysV message queue. Messages protected by per-queue lock;
+/// `wait_send` parks msgsnd callers when full, `wait_recv` parks
+/// msgrcv callers when empty/no-match. Both are woken under the
+/// per-queue lock to close the lost-wakeup race.
 pub struct MsgQueue {
-    pub id:    i32,
-    pub key:   i32,
-    pub q:     Spinlock<VecDeque<Msg>, MsgLockClass>,
+    pub id:        i32,
+    pub key:       i32,
+    pub q:         Spinlock<VecDeque<Msg>, MsgLockClass>,
+    pub wait_send: crate::sched::WaitList,
+    pub wait_recv: crate::sched::WaitList,
 }
 
 struct MsgRegistry {
@@ -93,6 +96,8 @@ pub fn kernel_sys_msgget(args: &syscall::SyscallArgs) -> i64 {
     let q = Arc::new(MsgQueue {
         id, key,
         q: Spinlock::new(VecDeque::new()),
+        wait_send: crate::sched::WaitList::new(),
+        wait_recv: crate::sched::WaitList::new(),
     });
     REG.queues.lock().push(q);
     id as i64
@@ -100,14 +105,23 @@ pub fn kernel_sys_msgget(args: &syscall::SyscallArgs) -> i64 {
 
 /// `msgsnd(msqid, msgp, msgsz, msgflg)` — slot NR_MSGSND.
 /// `msgp` is `struct { long mtype; char mtext[]; }` (8 + msgsz bytes).
-/// # C: O(msgsz)
+///
+/// Copies the message bytes from user space FIRST (outside the
+/// queue lock so a user-page fault doesn't deadlock against
+/// concurrent waiters). Then takes the queue lock; if full, blocks
+/// on `wait_send` (unless IPC_NOWAIT). On commit, wakes one
+/// receiver under the lock to close the lost-wakeup race.
+/// # C: O(msgsz) on copy + O(N_retries) on contention
+/// # Lk: MsgQueue.q → WaitList.waiters → runqueue.inner
 pub fn kernel_sys_msgsnd(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let msqid = args.a0 as i32;
     let uptr  = args.a1;
     let sz    = args.a2 as usize;
-    let _flg  = args.a3;
+    let flg   = args.a3 as i32;
     if sz > MSG_MAX_SIZE { return -(Errno::Einval.as_i32() as i64); }
+    let nowait = (flg & IPC_NOWAIT_FLAG) != 0;
+
     let mq = match lookup_by_id(msqid) {
         Some(q) => q, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -128,12 +142,37 @@ pub fn kernel_sys_msgsnd(args: &syscall::SyscallArgs) -> i64 {
         }
         mt
     };
-    let mut g = mq.q.lock();
-    if g.len() >= MSG_MAX_PER_Q {
-        return -(Errno::Eagain.as_i32() as i64);
+
+    let msg = Msg { mtype, data };
+    let mut msg_slot = Some(msg);
+    loop {
+        let mut g = mq.q.lock();
+        if g.len() < MSG_MAX_PER_Q {
+            // Take ownership of the queued message via Option::take
+            // so we don't move out across the loop iteration.
+            let m = msg_slot.take().expect("msg owned by sender");
+            g.push_back(m);
+            // Wake one receiver under the lock — the receiver
+            // pushed onto wait_recv while holding `q`, so wake
+            // sequencing under `q` rules out lost-wakeup.
+            mq.wait_recv.wake_one();
+            drop(g);
+            return 0;
+        }
+        if nowait {
+            drop(g);
+            return -(Errno::Eagain.as_i32() as i64);
+        }
+        // Block. Push self under `q`, drop `q`, schedule.
+        // SAFETY: process ctx; runqueue installed; preempt-off; we yield via schedule() immediately after parking; wait list lock briefly nests under q which the publisher always wakes under.
+        unsafe { mq.wait_send.park(); }
+        drop(g);
+        // SAFETY: process ctx; runqueue installed; preempt-off.
+        unsafe { crate::sched::schedule(); }
+        if lookup_by_id(msqid).is_none() {
+            return -(Errno::Eidrm.as_i32() as i64);
+        }
     }
-    g.push_back(Msg { mtype, data });
-    0
 }
 
 /// Find queue index satisfying msgtyp matcher; returns the
@@ -162,26 +201,58 @@ fn pick_index(q: &VecDeque<Msg>, msgtyp: i64) -> Option<usize> {
 }
 
 /// `msgrcv(msqid, msgp, msgsz, msgtyp, msgflg)` — slot NR_MSGRCV.
+///
+/// Pops the first matching message; if none, blocks on
+/// `wait_recv` until a msgsnd publishes (unless IPC_NOWAIT, which
+/// short-circuits to -ENOMSG). The user-buffer copy happens AFTER
+/// dropping the queue lock so a user-page fault doesn't deadlock
+/// against concurrent senders.
+///
 /// Returns the bytes copied into `msgp.mtext` (excludes the mtype
-/// header). On empty queue / no match, returns -EAGAIN (v1 never
-/// blocks — see header).
+/// header).
 /// # C: O(N_msgs_in_queue + msgsz)
+/// # Lk: MsgQueue.q → WaitList.waiters → runqueue.inner
 pub fn kernel_sys_msgrcv(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let msqid  = args.a0 as i32;
     let uptr   = args.a1;
     let sz     = args.a2 as usize;
     let msgtyp = args.a3 as i64;
-    let _flg   = args.a4;
+    let flg    = args.a4 as i32;
     if sz > MSG_MAX_SIZE { return -(Errno::Einval.as_i32() as i64); }
+    let nowait = (flg & IPC_NOWAIT_FLAG) != 0;
     let mq = match lookup_by_id(msqid) {
         Some(q) => q, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let mut g = mq.q.lock();
-    let idx = match pick_index(&g, msgtyp) {
-        Some(i) => i, None => return -(Errno::Eagain.as_i32() as i64),
+
+    let m = loop {
+        let mut g = mq.q.lock();
+        match pick_index(&g, msgtyp) {
+            Some(i) => {
+                let m = g.remove(i).expect("pick_index returned in-bounds");
+                // Wake one sender under the lock — symmetric with
+                // msgsnd's wake-receiver-under-lock.
+                mq.wait_send.wake_one();
+                drop(g);
+                break m;
+            }
+            None => {
+                if nowait {
+                    drop(g);
+                    return -(Errno::Enomsg.as_i32() as i64);
+                }
+                // SAFETY: process ctx; runqueue installed; preempt-off; we yield via schedule() immediately after parking; wait list lock briefly nests under q.
+                unsafe { mq.wait_recv.park(); }
+                drop(g);
+                // SAFETY: process ctx; runqueue installed; preempt-off.
+                unsafe { crate::sched::schedule(); }
+                if lookup_by_id(msqid).is_none() {
+                    return -(Errno::Eidrm.as_i32() as i64);
+                }
+            }
+        }
     };
-    let m = match g.remove(idx) { Some(m) => m, None => return -(Errno::Eagain.as_i32() as i64) };
+
     let to_copy = core::cmp::min(sz, m.data.len());
     // SAFETY: msgrcv writes {long mtype, char mtext[]} (8+to_copy bytes) into the user pointer; CPL=0 raw deref through caller's AS during syscall handling — NULL/garbage produces a fault.
     unsafe {
@@ -206,12 +277,20 @@ pub fn kernel_sys_msgctl(args: &syscall::SyscallArgs) -> i64 {
     let _buf  = args.a2;
     match cmd {
         IPC_RMID => {
-            let mut g = REG.queues.lock();
-            if g.iter().any(|q| q.id == msqid) {
-                g.retain(|q| q.id != msqid);
-                0
-            } else {
-                -(Errno::Einval.as_i32() as i64)
+            let removed: Option<Arc<MsgQueue>> = {
+                let mut g = REG.queues.lock();
+                let pos = g.iter().position(|q| q.id == msqid);
+                pos.map(|i| g.swap_remove(i))
+            };
+            match removed {
+                Some(q) => {
+                    // Wake every parker; sleepers re-check
+                    // lookup_by_id and return -EIDRM.
+                    q.wait_send.wake_all();
+                    q.wait_recv.wake_all();
+                    0
+                }
+                None => -(Errno::Einval.as_i32() as i64),
             }
         }
         IPC_STAT | IPC_INFO | IPC_SET => {
