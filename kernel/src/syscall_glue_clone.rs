@@ -2,7 +2,7 @@
 // syscall_glue.rs to keep that file under the 1000-line cap. Drives
 // fork/vfork/clone/clone3 — see body for honored CLONE_* flag bits.
 
-#![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
@@ -56,76 +56,41 @@ pub fn kernel_sys_clone_dispatch(
 
     let share_vm = (flags & CLONE_VM) != 0;
     let child_mm: alloc::sync::Arc<vmm::AddressSpace> = if share_vm {
-        // CLONE_VM: child shares parent's address space; no PML4
+        // CLONE_VM: child shares parent's address space; no PT root
         // alloc, no per-page copy. Threads land here.
         alloc::sync::Arc::clone(parent_mm)
     } else {
-        // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
-        let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
-            Some(r) => r,
-            None    => return -(Errno::Enomem.as_i32() as i64),
+        #[cfg(target_arch = "x86_64")]
+        let new_root = {
+            // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
+            match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
+                Some(r) => r,
+                None    => return -(Errno::Enomem.as_i32() as i64),
+            }
+        };
+        #[cfg(target_arch = "aarch64")]
+        let new_root = {
+            // SAFETY: master L0 captured at user_as::init; PMM up; new_user_l0 zeroes + populates kernel half.
+            match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
+                Some(r) => r,
+                None    => return -(Errno::Enomem.as_i32() as i64),
+            }
         };
         let hhdm = crate::user_as::hhdm_offset();
-        match parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            new_root, hhdm, || crate::pmm_setup::alloc_one_frame(),
-        ) {
+        #[cfg(target_arch = "x86_64")]
+        let res = parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
+            new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
+        #[cfg(target_arch = "aarch64")]
+        let res = parent_mm.fork_copy_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
+            new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
+        match res {
             Ok(m) => m,
             Err(_) => return -(Errno::Enomem.as_i32() as i64),
         }
     };
 
-    // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
-    let frame = unsafe { &*hal_x86_64::current_user_frame() };
-    let user_rip = frame[0];
-    let user_rflags = frame[1];
-    // Thread spawns pass a libc-allocated stack via clone()/clone3();
-    // honor it so each thread has its own user stack rather than
-    // racing on the parent's. fork(2) leaves child_stack=0 and the
-    // child resumes on the parent's RSP after the COW copy.
-    let user_rsp = if child_stack != 0 { child_stack } else { frame[2] };
-    // user_rip points at the instruction RIGHT AFTER the syscall
-    // (rcx is post-syscall in x86_64) — the child resumes there
-    // with rax=0.
-
-    // P5-10: capture parent's full saved-syscall reg block so the
-    // child's iretq frame + Context get parent values for every
-    // reg the user code may rely on across the fork syscall (Linux
-    // ABI: rdi/rsi/rdx/r10/r8/r9 preserved + all callee-saved
-    // regs unchanged). Pre-P5-10 the kernel zeroed these and the
-    // child resumed with junk regs — fatal once a real shell
-    // started using `|` (child A's run_one(seg=rdx, n=rbp) saw 0/0).
-    // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
-    let full = unsafe { hal_x86_64::current_user_full_frame() };
-    // SAFETY: full points to the 15-quadword saved area at top-0x78..top of the kernel stack for the current user task; layout is fixed by syscall entry asm.
-    let pregs = unsafe {
-        hal_x86_64::ForkRegs {
-            rdi: *full.add(1),
-            rsi: *full.add(2),
-            rdx: *full.add(3),
-            r10: *full.add(4),
-            r8:  *full.add(5),
-            r9:  *full.add(6),
-            rcx: *full.add(7),
-            r11: *full.add(8),
-            // index 9 = user RSP, NOT user's r12. r12 sits in the
-            // B04-added save at index 15 (top of the 16-slot frame).
-            rbx: *full.add(10),
-            rbp: *full.add(11),
-            r13: *full.add(12),
-            r14: *full.add(13),
-            r15: *full.add(14),
-            r12: *full.add(15),
-        }
-    };
-
     let child_tid = crate::sched::next_tid();
-    // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
-    let spawn = unsafe {
-        crate::sched::spawn_user_thread_for_fork(
-            child_tid, "fork-child", user_rip, user_rsp, user_rflags,
-            &pregs, child_mm,
-        )
-    };
+    let spawn = clone_spawn_arch(child_tid, child_stack, child_mm);
     let child = match spawn {
         Ok(t)  => t,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
@@ -247,4 +212,92 @@ pub fn kernel_sys_clone_dispatch(
     drop(child);
 
     child_tid as i64
+}
+
+/// x86_64 fork-spawn: capture parent's saved-syscall regs from the
+/// per-task syscall stack, build the child's iretq-resume frame.
+#[cfg(target_arch = "x86_64")]
+fn clone_spawn_arch(
+    child_tid: u32,
+    child_stack: u64,
+    child_mm: alloc::sync::Arc<vmm::AddressSpace>,
+) -> Result<alloc::sync::Arc<sched::Task>, crate::sched::spawn::SpawnError> {
+    // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
+    let frame = unsafe { &*hal_x86_64::current_user_frame() };
+    let user_rip = frame[0];
+    let user_rflags = frame[1];
+    // Thread spawns pass a libc-allocated stack via clone()/clone3();
+    // honor it so each thread has its own user stack rather than
+    // racing on the parent's. fork(2) leaves child_stack=0 and the
+    // child resumes on the parent's RSP after the COW copy.
+    let user_rsp = if child_stack != 0 { child_stack } else { frame[2] };
+    // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
+    let full = unsafe { hal_x86_64::current_user_full_frame() };
+    // SAFETY: full points to the 15-quadword saved area at top-0x78..top of the kernel stack for the current user task; layout is fixed by syscall entry asm.
+    let pregs = unsafe {
+        hal_x86_64::ForkRegs {
+            rdi: *full.add(1),
+            rsi: *full.add(2),
+            rdx: *full.add(3),
+            r10: *full.add(4),
+            r8:  *full.add(5),
+            r9:  *full.add(6),
+            rcx: *full.add(7),
+            r11: *full.add(8),
+            // index 9 = user RSP, NOT user's r12. r12 sits in the
+            // B04-added save at index 15 (top of the 16-slot frame).
+            rbx: *full.add(10),
+            rbp: *full.add(11),
+            r13: *full.add(12),
+            r14: *full.add(13),
+            r15: *full.add(14),
+            r12: *full.add(15),
+        }
+    };
+    // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
+    unsafe {
+        crate::sched::spawn_user_thread_for_fork(
+            child_tid, "fork-child", user_rip, user_rsp, user_rflags,
+            &pregs, child_mm,
+        )
+    }
+}
+
+/// aarch64 fork-spawn: read parent's saved SVC frame, snapshot
+/// x0..x30 + ELR/SPSR/SP_EL0 into a `hal_aarch64::ForkRegs`, then
+/// build the child's IRQ-resume frame via `new_user_for_fork`.
+#[cfg(target_arch = "aarch64")]
+fn clone_spawn_arch(
+    child_tid: u32,
+    child_stack: u64,
+    child_mm: alloc::sync::Arc<vmm::AddressSpace>,
+) -> Result<alloc::sync::Arc<sched::Task>, crate::sched::spawn::SpawnError> {
+    // SAFETY: caller is `oxide_syscall_dispatch` running on the parent's per-task kernel stack; current_svc_frame() points at the saved 208-byte frame whose layout matches `hal_aarch64::SvcFrame`; we read but do not write here.
+    let svc = unsafe { &*hal_aarch64::current_svc_frame() };
+    let mut pregs = hal_aarch64::ForkRegs::default();
+    // SvcFrame.gp = [u64; 18]   (x0..x17)
+    // SvcFrame.x18_x29 = [u64; 2]  ([x18, x29] packed via stp)
+    // SvcFrame.x30 = u64
+    for i in 0..18 { pregs.x[i] = svc.gp[i]; }
+    pregs.x[18] = svc.x18_x29[0];
+    pregs.x[29] = svc.x18_x29[1];
+    pregs.x[30] = svc.x30;
+    pregs.elr_el1  = svc.elr_el1;
+    pregs.spsr_el1 = svc.spsr_el1;
+    pregs.sp_el0   = svc.sp_el0;
+
+    // fork(2): child_stack=0 → child resumes on parent's SP_EL0.
+    // clone(2) with child_stack: child resumes on the supplied stack.
+    let user_sp = if child_stack != 0 { child_stack } else { pregs.sp_el0 };
+    // ELR_EL1 in the saved frame is already the post-SVC PC (the
+    // instruction following `svc #0`), so the child resumes there
+    // with x0 = 0 (Linux clone return for child).
+    let user_ip = pregs.elr_el1;
+
+    // SAFETY: runqueue installed; child_mm freshly forked from parent AS via fork_copy_pages w/ kernel-half cloned at new_user_l0; pregs captured from parent's SVC frame.
+    unsafe {
+        crate::sched::spawn_user_thread_for_fork(
+            child_tid, "fork-child", user_ip, user_sp, &pregs, child_mm,
+        )
+    }
 }
