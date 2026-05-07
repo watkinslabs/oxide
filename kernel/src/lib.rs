@@ -125,6 +125,7 @@ pub mod seccomp;
 pub mod userfaultfd;
 pub mod perf;
 pub mod coredump;
+pub mod dev_drm;
 pub mod syscall_glue_signal;
 pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
@@ -556,6 +557,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         devfs::init();
         // P3-17 procfs static-file entries.
         procfs::init();
+        crate::dev_drm::register();
         tmpfs::init();
         dev_pty::init();
         // P3-16/P3-18/P3-29/P3-77 boot-time smokes.
