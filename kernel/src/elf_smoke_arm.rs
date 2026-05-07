@@ -320,14 +320,43 @@ fn spawn_init_from_rootfs_arm() {
         return;
     }
 
-    // Zero TPIDR_EL0 so musl's pthread_self() reads sensible state
-    // before the first __set_thread_area-like syscall sets it. Without
-    // this, the EL0 task inherits whatever TPIDR_EL0 was at boot
-    // (often a stale kernel value), and musl's errno write-back path
-    // (which dereferences TPIDR_EL0+offset) faults.
-    // SAFETY: writing zero to TPIDR_EL0 at EL1 is always legal; the
-    // eret in the resume path will deliver it to user state.
-    unsafe { core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags)); }
+    // Allocate an 8 KiB TLS+TCB region in the user AS and point
+    // TPIDR_EL0 at the END of the first page (= start of the second).
+    // musl on aarch64 uses variant-I TLS with `TP_ADJ(p) = p +
+    // sizeof(struct pthread)`, so `pthread_self() = TPIDR_EL0 -
+    // sizeof(struct pthread)`. errno_val and other fields live at
+    // small *negative* offsets from TPIDR_EL0; positive offsets hold
+    // static TLS variables. Mapping 2 pages and putting TPIDR at the
+    // boundary covers both directions with one allocation.
+    const USER_TLS_BASE: u64 = 0x600_000;
+    const USER_TLS_LEN:  usize = 0x2000; // 8 KiB
+    const USER_TPIDR_VA: u64 = USER_TLS_BASE + 0x1000; // mid-point
+    let tls_hint = match UserVirtAddr::new(USER_TLS_BASE) {
+        Some(u) => u,
+        None    => { debug_irq! { klog::kerror!("init-arm: bad TLS VA"); } return; }
+    };
+    if mm.mmap(
+        Some(tls_hint), USER_TLS_LEN,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    ).is_err() {
+        debug_irq! { klog::kerror!("init-arm: TLS mmap failed"); }
+        return;
+    }
+    // SAFETY: writing TPIDR_EL0 at EL1 is always legal; eret carries
+    // the value into EL0; the value points to the boundary of two
+    // freshly-mmapped anonymous pages of `mm` (active TTBR0). musl's
+    // pthread_self()-based offsets in either direction land inside
+    // the 8 KiB region.
+    unsafe {
+        core::arch::asm!(
+            "msr tpidr_el0, {v}",
+            v = in(reg) USER_TPIDR_VA,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
 
     // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
     if unsafe {
