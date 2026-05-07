@@ -98,7 +98,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_NAME_TO_HANDLE_AT | NR_OPEN_BY_HANDLE_AT
         | NR_PROCESS_MADVISE | NR_PROCESS_MRELEASE
         | NR_PKEY_MPROTECT | NR_PKEY_ALLOC | NR_PKEY_FREE
-        | NR_OPENAT2 | NR_FACCESSAT2
+        // OPENAT2 / FACCESSAT2 aliased to openat / faccessat in PR-M.
         | NR_MOUNT_SETATTR | NR_OPEN_TREE | NR_MOVE_MOUNT
         | NR_FSOPEN | NR_FSCONFIG | NR_FSMOUNT | NR_FSPICK
         | NR_FANOTIFY_INIT | NR_FANOTIFY_MARK
@@ -122,19 +122,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_LANDLOCK_CREATE_RULESET | NR_LANDLOCK_ADD_RULE
         | NR_LANDLOCK_RESTRICT_SELF
         | NR_UNSHARE | NR_SETNS | NR_PIVOT_ROOT
-        // socket family — no net stack.
-        | NR_SOCKET | NR_BIND | NR_LISTEN
-        | NR_ACCEPT | NR_ACCEPT4 | NR_CONNECT
-        | NR_SENDTO | NR_RECVFROM
-        | NR_SENDMSG | NR_RECVMSG | NR_SHUTDOWN
-        | NR_GETSOCKNAME | NR_GETPEERNAME
-        | NR_SOCKETPAIR
-        | NR_SETSOCKOPT | NR_GETSOCKOPT
-        // Signal extras.
-        // RT_SIGTIMEDWAIT / RT_SIGQUEUEINFO / RT_TGSIGQUEUEINFO
-        // moved to real impls in PR-D-signals.
-        // preadv/pwritev (the v1 alternates, real ones are PREADV/PWRITEV).
-        | NR_PREADV | NR_PWRITEV
+        // socket family + signal-extras + preadv/pwritev (v1 alternates)
+        // are all dispatched as real impls in syscall_glue.rs above
+        // try_compat — these arms are dead. The real-impl path is the
+        // source of truth; remove the stale ENOSYS list to avoid
+        // misleading future readers.
                                        => Some(enosys),
 
         _ => None,
