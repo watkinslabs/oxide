@@ -124,10 +124,8 @@ pub fn kernel_sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     // bounded — segments outlive the kernel by design (no shm
     // unmount path), and IPC_RMID just removes the registry entry
     // (the kernel keeps the leaked memory; v1 acceptable).
+    // SAFETY: seg.bytes Vec is never mutated after registration; extending its borrow to 'static is sound because the Arc<ShmSegment> in REG keeps the backing alive for the kernel's lifetime (IPC_RMID drops the registry entry but not the buffer).
     let static_bytes: &'static [u8] = unsafe {
-        // SAFETY: seg.bytes Vec doesn't reallocate during this call;
-        // we extend its borrow lifetime to 'static. Bytes won't move
-        // because we never mutate the Vec after registration.
         let s: *const [u8] = seg.bytes.as_slice();
         &*s
     };
