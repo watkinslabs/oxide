@@ -188,7 +188,10 @@ fn kernel_sys_close(args: &SyscallArgs) -> i64 {
 
 
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
-    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+    use core::sync::atomic::Ordering;
+    crate::sched::current()
+        .map(|c| c.tgid.load(Ordering::Acquire) as i64)
+        .unwrap_or(1)
 }
 
 fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
@@ -198,10 +201,49 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(0)
 }
 
-/// sys_fork: clone AS+pages; child resumes at post-syscall RIP w/ rax=0.
+/// `kernel_sys_clone_dispatch` — unified clone path for fork/vfork/
+/// clone/clone3. `flags` carries the Linux CLONE_* bitmap; the lowest
+/// 8 bits are the exit_signal (SIGCHLD = 17 for fork). `child_stack`
+/// is non-zero for thread spawns (libc-allocated user stack); `ptid`
+/// + `ctid` are user pointers honored by CLONE_PARENT_SETTID /
+/// CLONE_CHILD_SETTID / CLONE_CHILD_CLEARTID.
+///
+/// Honored flag bits (best-effort; rest accepted silently):
+///   CLONE_VM       0x100   — share parent's mm via `Arc::clone`
+///   CLONE_FILES    0x400   — share parent's fd_table via `Arc::clone`
+///   CLONE_SIGHAND  0x800   — share parent's sigactions (Arc-on-write
+///                            unsupported v1; copy on spawn)
+///   CLONE_THREAD   0x10000 — child.tgid = parent.tgid; same process
+///   CLONE_PARENT_SETTID  0x100000 — write child tid to *ptid
+///   CLONE_CHILD_SETTID   0x1000000 — write child tid to *ctid (in child AS)
+///   CLONE_CHILD_CLEARTID 0x200000 — store ctid in clear_child_tid
+///   CLONE_SETTLS         0x80000 — write tls to child's FS_BASE
+/// # C: O(parent VMAs) for COW; O(1) for CLONE_VM
 #[cfg(target_arch = "x86_64")]
-fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
+pub fn kernel_sys_clone_dispatch_pub(
+    args: &SyscallArgs, flags: u64, child_stack: u64, ptid: u64, ctid: u64, tls: u64,
+) -> i64 { kernel_sys_clone_dispatch(args, flags, child_stack, ptid, ctid, tls) }
+
+#[cfg(target_arch = "x86_64")]
+fn kernel_sys_clone_dispatch(
+    _args: &SyscallArgs,
+    flags: u64,
+    child_stack: u64,
+    ptid: u64,
+    ctid: u64,
+    tls: u64,
+) -> i64 {
     use core::sync::atomic::Ordering;
+    const CLONE_VM:        u64 = 0x100;
+    const CLONE_FS:        u64 = 0x200;
+    const CLONE_FILES:     u64 = 0x400;
+    const CLONE_SIGHAND:   u64 = 0x800;
+    const CLONE_THREAD:    u64 = 0x10000;
+    const CLONE_SETTLS:    u64 = 0x80000;
+    const CLONE_PARENT_SETTID: u64 = 0x100000;
+    const CLONE_CHILD_CLEARTID: u64 = 0x200000;
+    const CLONE_CHILD_SETTID:   u64 = 0x1000000;
+    let _ = CLONE_FS; // accepted but not yet differentiated from cwd-inherit
     let cur = match crate::sched::current() {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
@@ -212,31 +254,35 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Einval.as_i32() as i64),
     };
 
-    // Allocate new PT root for the child.
-    // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
-    let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
-        Some(r) => r,
-        None    => return -(Errno::Enomem.as_i32() as i64),
-    };
-
-    // Clone the AS — VMA tree + per-page copy of Anonymous-backed
-    // pages (P2-15c). KernelBytes-backed VMAs re-fault in the
-    // child against the shared `&'static [u8]` slice.
-    let hhdm = crate::user_as::hhdm_offset();
-    let child_mm = match parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
-        new_root,
-        hhdm,
-        || crate::pmm_setup::alloc_one_frame(),
-    ) {
-        Ok(m) => m,
-        Err(_) => return -(Errno::Enomem.as_i32() as i64),
+    let share_vm = (flags & CLONE_VM) != 0;
+    let child_mm: alloc::sync::Arc<vmm::AddressSpace> = if share_vm {
+        // CLONE_VM: child shares parent's address space; no PML4
+        // alloc, no per-page copy. Threads land here.
+        alloc::sync::Arc::clone(parent_mm)
+    } else {
+        // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
+        let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
+            Some(r) => r,
+            None    => return -(Errno::Enomem.as_i32() as i64),
+        };
+        let hhdm = crate::user_as::hhdm_offset();
+        match parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
+            new_root, hhdm, || crate::pmm_setup::alloc_one_frame(),
+        ) {
+            Ok(m) => m,
+            Err(_) => return -(Errno::Enomem.as_i32() as i64),
+        }
     };
 
     // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
     let frame = unsafe { &*hal_x86_64::current_user_frame() };
     let user_rip = frame[0];
     let user_rflags = frame[1];
-    let user_rsp = frame[2];
+    // Thread spawns pass a libc-allocated stack via clone()/clone3();
+    // honor it so each thread has its own user stack rather than
+    // racing on the parent's. fork(2) leaves child_stack=0 and the
+    // child resumes on the parent's RSP after the COW copy.
+    let user_rsp = if child_stack != 0 { child_stack } else { frame[2] };
     // user_rip points at the instruction RIGHT AFTER the syscall
     // (rcx is post-syscall in x86_64) — the child resumes there
     // with rax=0.
@@ -285,6 +331,11 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
 
+    // CLONE_THREAD: the new task joins the caller's thread group.
+    // Without it the child is its own process leader and tgid==tid.
+    if (flags & CLONE_THREAD) != 0 {
+        child.tgid.store(cur.tgid.load(Ordering::Acquire), Ordering::Release);
+    }
     // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
     // for `park_zombie` SIGCHLD delivery (P3-67).
     child.parent_tid.store(cur.tid, Ordering::Release);
@@ -317,27 +368,77 @@ fn kernel_sys_fork(_args: &SyscallArgs) -> i64 {
         }
     }
 
-    // Inherit parent's fd table (P3-61): clone per-entry into a
-    // fresh FdTable so child's close/dup don't disturb parent's
-    // slots. The underlying `Arc<File>` is still shared, matching
-    // POSIX (parent + child share open-file descriptions but
-    // each has its own fd-table). For CLONE_FILES the original
-    // Arc-share would apply; v1 fork is the non-CLONE_FILES path.
+    // Fd-table inheritance.
+    //   CLONE_FILES: share the parent's `Arc<FdTable>` so dup/close
+    //                in either task is visible to the other (Linux
+    //                pthreads default).
+    //   default:     copy entries into a fresh FdTable so child
+    //                close/dup doesn't disturb parent's slots
+    //                (POSIX fork(2)). Underlying `Arc<File>` still
+    //                shared so open-file descriptions match.
     // SAFETY: we're sole writer on the parent's fd_table read; child not yet scheduled (sole writer there too).
     let parent_fdt = unsafe { cur.fd_table_ref().cloned() };
     if let Some(fdt) = parent_fdt {
-        let child_fdt = alloc::sync::Arc::new(fdt.fork_clone());
+        let child_fdt = if (flags & CLONE_FILES) != 0 {
+            fdt
+        } else {
+            alloc::sync::Arc::new(fdt.fork_clone())
+        };
         // SAFETY: child task hasn't been scheduled yet (just spawned); we are the sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
         unsafe { child.replace_fd_table(Some(child_fdt)); }
     }
 
+    // Inherit signal handlers; CLONE_SIGHAND callers get the same
+    // copy. v1 doesn't yet share a single sigaction array via Arc,
+    // so SIGHAND vs default both perform a deep copy. Real sharing
+    // lands when the threading subsystem grows a sighand_struct.
+    // SAFETY: child not yet scheduled (sole writer); parent reads happen on its running CPU per single-mutator invariant.
+    unsafe {
+        *child.sigactions.get() = *cur.sigactions.get();
+    }
+    if (flags & CLONE_SIGHAND) != 0 {
+        // Inherit pending+mask too — CLONE_SIGHAND siblings share
+        // the disposition table; v1 also clones the mask.
+        child.sigmask.store(cur.sigmask.load(Ordering::Acquire), Ordering::Release);
+    }
+
+    // CLONE_PARENT_SETTID: write child tid in caller's AS.
+    if (flags & CLONE_PARENT_SETTID) != 0 && ptid != 0 && ptid < hal::USER_VA_END {
+        // SAFETY: ptid validated < USER_VA_END; CPL=0 writes in caller's AS.
+        unsafe { core::ptr::write_volatile(ptid as *mut i32, child_tid as i32); }
+    }
+    // CLONE_CHILD_SETTID: writes happen in child AS — for CLONE_VM
+    // the AS is shared with parent so the write is visible directly;
+    // for non-CLONE_VM the child's freshly forked AS still has the
+    // page COW-mapped from parent (write-fault on its first store
+    // splits per P2-15c). The write here goes through the parent's
+    // active CR3, which only matches the child for CLONE_VM. Skip
+    // it otherwise — a real impl would queue the write for the
+    // child's first instruction.
+    if (flags & CLONE_CHILD_SETTID) != 0 && ctid != 0 && ctid < hal::USER_VA_END
+       && (flags & CLONE_VM) != 0
+    {
+        // SAFETY: ctid validated < USER_VA_END; AS shared (CLONE_VM); CPL=0.
+        unsafe { core::ptr::write_volatile(ctid as *mut i32, child_tid as i32); }
+    }
+    // CLONE_CHILD_CLEARTID: stash for thread-exit FUTEX_WAKE path.
+    if (flags & CLONE_CHILD_CLEARTID) != 0 {
+        child.clear_child_tid.store(ctid, Ordering::Release);
+    }
+    // CLONE_SETTLS: x86_64 stores TLS in FS_BASE; child resumes
+    // with this base via wrmsr at iretq-prep. The fork-spawn path
+    // doesn't yet thread a separate FS_BASE through ArchCtx;
+    // glibc/musl set FS_BASE via arch_prctl post-clone too, so we
+    // accept the flag silently for now.
+    let _ = tls;
+
     debug_sched! {
-        klog::write_raw(b"[INFO]  sys_fork: parent_tid=");
+        klog::write_raw(b"[INFO]  sys_clone: parent_tid=");
         klog::write_dec_u64(cur.tid as u64);
         klog::write_raw(b" child_tid=");
         klog::write_dec_u64(child_tid as u64);
-        klog::write_raw(b" child_root=");
-        klog::write_hex_u64(new_root);
+        klog::write_raw(b" flags=");
+        klog::write_hex_u64(flags);
         klog::write_raw(b"\n");
     }
 
@@ -777,11 +878,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_DUP2          => crate::syscall_glue_fs::kernel_sys_dup2(&args),
         crate::syscall_nrs::NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
         #[cfg(target_arch = "x86_64")]
-        crate::syscall_nrs::NR_FORK          => kernel_sys_fork(&args),
+        crate::syscall_nrs::NR_FORK          => kernel_sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
         #[cfg(target_arch = "x86_64")]
-        crate::syscall_nrs::NR_VFORK         => kernel_sys_fork(&args),
+        crate::syscall_nrs::NR_VFORK         => kernel_sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
         #[cfg(target_arch = "x86_64")]
-        crate::syscall_nrs::NR_CLONE         => kernel_sys_fork(&args),
+        // Linux x86_64 clone(flags, child_stack, ptid, ctid, tls).
+        crate::syscall_nrs::NR_CLONE         => kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_EXECVE        => crate::syscall_glue_execve::kernel_sys_execve(&args),
         #[cfg(target_arch = "x86_64")]

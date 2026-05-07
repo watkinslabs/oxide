@@ -52,11 +52,68 @@ pub fn kernel_sys_futex(args: &SyscallArgs) -> i64 {
     crate::futex::dispatch(args.a0, args.a1 as u32, args.a2 as u32)
 }
 
-/// `sys_clone3(cl_args, size)` — slot 435. v1 stub: return
-/// `-ENOSYS` so musl falls back to single-threaded code paths.
-/// Real CLONE_VM/CLONE_FS/CLONE_FILES/CLONE_SIGHAND lands with
-/// the threading subsystem.
-/// # C: O(1)
+/// `sys_clone3(cl_args, size)` — slot 435. Reads the user
+/// `struct clone_args` (Linux ABI; size is the user's view of the
+/// struct so future fields can be detected via short-write probe)
+/// and routes through the unified clone path. Returns the child
+/// tid in the parent, 0 in the child (the spawn machinery wires
+/// the child's rax via `ArchCtx::new_user_for_fork`).
+///
+/// `struct clone_args` layout (Linux v5.5+):
+///   u64 flags          — CLONE_* bits, low byte = exit_signal.
+///                        clone3 places exit_signal in `exit_signal`
+///                        instead of the bottom byte (kernel ANDs it
+///                        in at entry); we OR them back together.
+///   u64 pidfd          — pidfd writeback (we currently no-op).
+///   u64 child_tid      — *ctid (CLONE_CHILD_SETTID/CLEARTID).
+///   u64 parent_tid     — *ptid (CLONE_PARENT_SETTID).
+///   u64 exit_signal
+///   u64 stack          — child stack base.
+///   u64 stack_size     — for stacks-grow-down archs we use top = stack+size.
+///   u64 tls            — CLONE_SETTLS payload.
+///   u64 set_tid        — pid namespace tid array (ignored v1).
+///   u64 set_tid_size
+///   u64 cgroup         — cgroup fd (ignored v1).
+///
+/// # C: O(parent VMAs) | O(1) for CLONE_VM
+#[cfg(target_arch = "x86_64")]
+pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let cl_args = args.a0;
+    let size    = args.a1 as usize;
+    if size < 64 || size > 256 { return -(Errno::Einval.as_i32() as i64); }
+    if cl_args == 0 || cl_args >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    if cl_args.checked_add(size as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: cl_args range validated < USER_VA_END; CPL=0 reads
+    // through caller's AS; struct fields are u64-aligned per ABI.
+    unsafe {
+        let p = cl_args as *const u64;
+        let flags        = core::ptr::read_volatile(p.add(0));
+        let _pidfd       = core::ptr::read_volatile(p.add(1));
+        let child_tid    = core::ptr::read_volatile(p.add(2));
+        let parent_tid   = core::ptr::read_volatile(p.add(3));
+        let exit_signal  = core::ptr::read_volatile(p.add(4));
+        let stack        = core::ptr::read_volatile(p.add(5));
+        let stack_size   = core::ptr::read_volatile(p.add(6));
+        let tls          = core::ptr::read_volatile(p.add(7));
+        // Stacks grow down on x86_64: child sees its initial RSP
+        // at `stack + stack_size`. clone(2) takes the top directly;
+        // clone3(2) takes (base, size).
+        let user_sp = stack.saturating_add(stack_size);
+        let merged_flags = flags | (exit_signal & 0xff);
+        // Direct call into the dispatch helper — same path as
+        // clone/fork/vfork.
+        crate::syscall_glue::kernel_sys_clone_dispatch_pub(
+            args, merged_flags, user_sp, parent_tid, child_tid, tls,
+        )
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 pub fn kernel_sys_clone3(_args: &SyscallArgs) -> i64 {
     -(syscall::errno::Errno::Enosys.as_i32() as i64)
 }
@@ -956,12 +1013,32 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
     n
 }
 
-/// `sys_tgkill(tgid, tid, sig)` — slot 234. v1: routes via
-/// `kernel_sys_kill` keyed on tid.
-/// # C: same as kill
+/// `sys_tgkill(tgid, tid, sig)` — slot 234. Validates that the
+/// target tid actually belongs to the named tgid before delivering
+/// (prevents POSIX-thread races where the target thread exited and
+/// the tid was reused for an unrelated process).
+/// # C: O(N_tasks) lookup
 pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
-    let kill_args = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
-    kernel_sys_kill(&kill_args)
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let tgid = args.a0 as i32;
+    let tid  = args.a1 as i32;
+    let sig  = args.a2 as i32;
+    if tgid <= 0 || tid <= 0 { return -(Errno::Esrch.as_i32() as i64); }
+    if !(0..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
+    match crate::sched::registry::lookup(tid as u32) {
+        Some(t) => {
+            if t.tgid.load(Ordering::Acquire) != tgid as u32 {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
+            if sig != 0 {
+                t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+                if sig == 18 { crate::sched::registry::wake_if_stopped(&t); }
+            }
+            0
+        }
+        None => -(Errno::Esrch.as_i32() as i64),
+    }
 }
 
 /// `sys_sethostname(name, len)` — slot 170. Writes the global
