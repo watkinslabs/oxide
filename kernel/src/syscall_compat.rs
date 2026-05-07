@@ -18,9 +18,10 @@ use crate::syscall_nrs::*;
 /// upstream has claimed the slot.
 /// # C: O(1)
 pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
-    let enosys = -(Errno::Enosys.as_i32() as i64);
-    let eperm  = -(Errno::Eperm.as_i32()  as i64);
-    let eintr  = -(Errno::Eintr.as_i32()  as i64);
+    let enosys  = -(Errno::Enosys.as_i32() as i64);
+    let eperm   = -(Errno::Eperm.as_i32()  as i64);
+    let eintr   = -(Errno::Eintr.as_i32()  as i64);
+    let enotsup = -(Errno::Eopnotsupp.as_i32() as i64);
 
     match nr {
         // ---- accept silently ----
@@ -42,6 +43,20 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // ---- POSIX shape: pause/sigsuspend behaviour ----
         NR_RESTART_SYSCALL  => Some(eintr),
 
+        // ---- silent-0 (accept; nothing to track v1) ----
+        // get_robust_list: glibc thread-cleanup probe. Returning 0
+        // with no head/len keeps it from spinning on -ENOSYS.
+        NR_GET_ROBUST_LIST | NR_CACHESTAT => Some(0),
+
+        // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
+        // xattr family: tar/cp -a/rsync probe these and skip cleanly
+        // on ENOTSUP, whereas ENOSYS makes them abort the file.
+        NR_GETXATTR | NR_LGETXATTR | NR_FGETXATTR
+        | NR_LISTXATTR | NR_LLISTXATTR | NR_FLISTXATTR
+        | NR_SETXATTR | NR_LSETXATTR | NR_FSETXATTR
+        | NR_REMOVEXATTR | NR_LREMOVEXATTR | NR_FREMOVEXATTR
+                                       => Some(enotsup),
+
         // ---- privileged-op refuse ----
         NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_CHROOT
         | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
@@ -57,10 +72,10 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_COPY_FILE_RANGE
         | NR_MEMFD_SECRET // MEMFD_CREATE moved to real impl in PR-H.
         | NR_PIDFD_GETFD
-        | NR_GETXATTR | NR_LGETXATTR | NR_FGETXATTR
-        | NR_LISTXATTR | NR_LLISTXATTR | NR_FLISTXATTR
-        | NR_SETXATTR | NR_LSETXATTR | NR_FSETXATTR
-        | NR_REMOVEXATTR | NR_LREMOVEXATTR | NR_FREMOVEXATTR
+        // xattr family: handled in the ENOTSUP arm below — Linux's
+        // 'no xattr on this filesystem' response. Programs that
+        // probe (e.g., tar, cp -a) treat ENOTSUP as gracefully-skip,
+        // whereas ENOSYS aborts the operation entirely.
         | NR_SWAPON | NR_SWAPOFF
         // SysV IPC + POSIX MQ + keyring.
         | NR_SHMGET | NR_SHMAT | NR_SHMCTL | NR_SHMDT
@@ -87,7 +102,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // RECVMMSG/SENDMMSG moved to real impl in PR-G.
         | NR_PSELECT6 | NR_SELECT
         | NR_WAITID
-        | NR_GET_ROBUST_LIST | NR_CACHESTAT
+        // GET_ROBUST_LIST + CACHESTAT handled below as silent-0.
         | NR_SET_MEMPOLICY | NR_GET_MEMPOLICY
         | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
         | NR_SET_MEMPOLICY_HOME_NODE
