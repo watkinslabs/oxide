@@ -1,0 +1,329 @@
+# Kernel stub audit (2026-05-06)
+
+Purpose: complete inventory of stubbed / half-implemented / missing
+syscalls and kernel features so we can do a directed completeness
+sweep instead of patching one ENOSYS at a time when a real-libc
+program (bash, busybox, util-linux) chokes on it.
+
+Source: `kernel/src/syscall_glue*.rs`, `kernel/src/dev_*.rs`,
+`kernel/src/syscall_compat.rs`. 136 syscall handlers across ~6700
+LOC scanned for `Errno::Enosys`, `// v1`, `// stub`, `// minimal`,
+`// rides a follow-up`, `accept-and-no-op`, "future PR".
+
+## Status legend
+
+| code | meaning |
+|---|---|
+| ✅  | real impl, complete enough for distro programs |
+| 🟡  | partial — works for v1 path but missing edge cases |
+| 🟥  | stub (returns 0 / ENOSYS / no-op) |
+| ❌  | missing — no impl at all |
+
+## TL;DR — what blocks bash + login + util-linux right now
+
+The single highest-leverage gap is **per-fd termios + line
+discipline on `/dev/console`** (PR-B). Bash's interactive mode,
+Ctrl-C, line editing, login's password-no-echo all funnel through
+this. Pty pairs already have full termios (`crates/tty/src/pty.rs`)
+— the work is connecting that infrastructure to the boot UART tty.
+
+After PR-B: real **job control** (PR-C, process groups +
+foreground tty) lets bash do `cmd &`, `fg`, signal handling.
+
+After PR-C: **threading** (PR-E) unblocks anything pthread-using
+(curl, openssh, every modern daemon). This is the biggest single
+piece of work left in v1.
+
+## Subsystem table
+
+### 1. TTY + line discipline + termios
+
+| feature | state | notes |
+|---|---|---|
+| pty pair termios | ✅ | `crates/tty/src/pty.rs` — c_iflag/c_oflag/c_lflag with ICANON/ECHO/ISIG/ICRNL/ONLCR. Used by `/dev/ptmx`. |
+| /dev/console termios | 🟥 | `kernel/src/syscall_glue_ioctl.rs:90` TCGETS returns zero-filled buf for non-pty char devs. No real termios state. |
+| ICANON (line buffering) | 🟥 | `/dev/console` reads byte-by-byte, no line accumulation. Bash needs raw, login + sh need cooked. |
+| ECHO toggle | 🟥 | `kernel/src/tty.rs:178` echoes unconditionally. login's password-prompt phase echoes too. |
+| ICRNL on input | 🟡 | `tty.rs:194` hardcoded CR→NL. Should be opt-in via per-fd c_iflag. |
+| ONLCR on output | 🟥 | `tty.rs:188` echoes "\r\n" for CR/NL on input echo only. Userspace `write(1, "\n")` does NOT get ONLCR translation. |
+| ISIG (Ctrl-C → SIGINT) | 🟥 | No translation of 0x03/0x1c/0x1a → signal. **This is why "Ctrl-C does nothing on a hung app".** |
+| VEOF/VERASE/VKILL/VINTR | 🟥 | No c_cc array applied to /dev/console input. |
+| TIOCGWINSZ | 🟡 | `syscall_glue_ioctl.rs:44` returns 80×24 hardcoded. |
+| TIOCSWINSZ | 🟥 | Probably accept-and-no-op. |
+| TIOCSCTTY (control terminal) | 🟥 | No "controlling tty" concept. |
+
+### 2. Job control + process groups
+
+| feature | state | notes |
+|---|---|---|
+| getpgid/setpgid/getpgrp | 🟥 | Likely stub — `Task` has no pgid field. |
+| setsid (session leader) | 🟥 | No session concept. |
+| getsid | 🟥 | |
+| Foreground process group on tty | 🟥 | TIOCGPGRP/TIOCSPGRP work for pty (per docs/28 P3-pty), missing for /dev/console. |
+| tcsetpgrp / tcgetpgrp | 🟡 | Works for pty fds via TIOCGPGRP/TIOCSPGRP arms (`syscall_glue_ioctl.rs:128`). Missing for console. |
+| `cmd &` background jobs | 🟡 | Works in toy sh (P5-12) but no real pgid → bash's `fg`/`bg` won't work. |
+
+### 3. Signals
+
+| feature | state | notes |
+|---|---|---|
+| rt_sigaction | ✅ | `syscall_glue_proc.rs:142` — per-task sigactions table; sa_handler/sa_flags/sa_restorer/sa_mask. |
+| rt_sigprocmask | ✅ | `syscall_glue_proc.rs:191` |
+| rt_sigreturn | ✅ | `sig_dispatch.rs` — restores frame after handler. |
+| rt_sigsuspend | 🟥 | Likely missing — bash uses for SIGCHLD wait. |
+| rt_sigtimedwait | 🟥 | `syscall_compat.rs` ENOSYS. |
+| rt_sigqueueinfo / rt_tgsigqueueinfo | 🟥 | ENOSYS. |
+| sigaltstack | 🟥 | Probably stub. |
+| signal frame for fault (SIGSEGV/SIGBUS) | 🟡 | Some delivery; full siginfo_t fill incomplete. |
+| Real-time signals (32+) | 🟡 | sigpending uses single u64 → only 64 sigs total. |
+| restart_syscall (-EINTR loop) | 🟡 | `syscall_compat.rs:43` returns EINTR; not real restart. |
+| Default actions (Term/Core/Ign/Stop/Cont) | 🟡 | Term + Ign + Stop/Cont present (sched_stop.rs); no core dump. |
+
+### 4. Threading + clone
+
+| feature | state | notes |
+|---|---|---|
+| fork (clone with no flags) | ✅ | `syscall_glue.rs:228` — copies AS w/ COW-ish via demand fault. |
+| clone with CLONE_VM/CLONE_THREAD | 🟥 | Falls through to fork — **not a real thread**. Multi-thread same-AS missing. |
+| clone3 | 🟥 | `syscall_glue_proc.rs:60` ENOSYS. |
+| pthread_create | 🟥 | musl pthreads issue clone(CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS) — not handled. |
+| set_thread_area | 🟥 | x86_64 uses arch_prctl(ARCH_SET_FS) which works, but `set_thread_area` (i386 path) absent. |
+| gettid | 🟡 | Returns tid — works for single-thread (tid == tgid). Wrong once threading lands. |
+| set_tid_address | ✅ | `syscall_glue_proc.rs:34` stores in `clear_child_tid`. CLONE_CHILD_CLEARTID wakeup-on-exit not done. |
+| futex FUTEX_WAIT/WAKE | ✅ | `kernel/src/futex.rs` (P3a). |
+| futex_waitv | 🟥 | accept-as-no-op. |
+| robust_list | 🟥 | `set_robust_list` returns 0 silently. `get_robust_list` ENOSYS. |
+| rseq (restartable sequences) | 🟥 | ENOSYS — modern glibc/musl uses for fast pthread getpid. |
+
+### 5. Memory management
+
+| feature | state | notes |
+|---|---|---|
+| mmap MAP_PRIVATE \| MAP_ANONYMOUS | ✅ | Demand-paged. |
+| mmap MAP_SHARED | 🟥 | Likely treated as PRIVATE. Wayland + dbus + tmpfiles mmap need this. |
+| mmap MAP_FIXED | ✅ | |
+| mmap file-backed (MAP_PRIVATE) | 🟡 | KernelBytes path works for ELF; arbitrary file mmap unclear. |
+| mprotect per-PTE | 🟥 | `syscall_glue_proc.rs:62` updates VMA prot, doesn't walk PTEs. |
+| mremap | 🟥 | `syscall_glue_proc.rs:520` returns ENOMEM unconditionally. |
+| madvise | 🟥 | accept-and-no-op. MADV_DONTNEED zero-fill missing. |
+| mlock / mlockall | 🟥 | accept-and-no-op. |
+| mincore | 🟥 | ENOSYS. |
+| memfd_create / memfd_secret | 🟥 | ENOSYS. systemd + Wayland use heavily. |
+| brk | ✅ | |
+| pkey_alloc/pkey_free/pkey_mprotect | 🟥 | ENOSYS. |
+
+### 6. Filesystem + VFS
+
+| feature | state | notes |
+|---|---|---|
+| openat / open | ✅ | Recently fixed `.`/`..` resolution (B08). |
+| close | ✅ | |
+| read / write | ✅ | |
+| pread64 / pwrite64 | ✅ | |
+| readv / writev | ✅ | |
+| preadv / pwritev | ✅ | (P9-17) |
+| preadv2 / pwritev2 | 🟥 | ENOSYS. |
+| sendfile | 🟥 | ENOSYS — nginx + cp use heavily. |
+| splice / tee / vmsplice | 🟥 | ENOSYS. |
+| copy_file_range | 🟥 | ENOSYS. |
+| dup / dup2 / dup3 | 🟡 | dup/dup2 work; dup3 unclear (`syscall_glue_fs.rs:152`). |
+| pipe / pipe2 | 🟡 | `dev_pipe.rs` minimal — non-blocking on empty/full (Eagain). Real blocking with WaitQueue rides P3-01b. |
+| fcntl F_GETFD/F_SETFD | 🟡 | FD_CLOEXEC tracked. |
+| fcntl F_GETFL/F_SETFL | 🟥 | O_NONBLOCK toggle probably no-op. |
+| fcntl F_DUPFD | 🟡 | |
+| fcntl F_SETLK / F_GETLK | 🟥 | No advisory locking. |
+| getdents64 | ✅ | (overlay fix recent) |
+| stat / fstat / lstat / fstatat | ✅ | |
+| statx | 🟡 | check — modern programs prefer this. |
+| access / faccessat | 🟡 | |
+| faccessat2 | 🟥 | ENOSYS. |
+| openat2 | 🟥 | ENOSYS. systemd uses for RESOLVE_BENEATH. |
+| chmod/fchmod/fchmodat | 🟡 | |
+| chown/fchown/fchownat | 🟡 | |
+| utimes / utimensat | 🟡 | `futimesat` accept-and-no-op. |
+| chdir / fchdir | ✅ | per-task cwd |
+| getcwd | ✅ | |
+| chroot | 🟥 | EPERM (privileged refuse). |
+| mount / umount | 🟥 | EPERM. |
+| pivot_root | 🟥 | ENOSYS. |
+| ext4 RO read | ✅ | |
+| ext4 RW + JBD2 | 🟡 | (P7b) — works for small files. |
+| ext4 dir > 4 KiB | 🟥 | `kernel/src/dev_ext4.rs:140` only first dir block read. |
+| ext4 extent depth >2 | 🟥 | Depth 1-2 read+write (P9-07). Depth 3+ missing. |
+| ext4 hard links | 🟡 | (P9-24) |
+| ext4 symlinks | 🟥 | Maybe missing. |
+| xattr (get/set/list/remove) | 🟥 | ENOSYS family. systemd uses. |
+| inotify / fanotify | 🟡 | dev_inotify.rs exists; fanotify ENOSYS. |
+| O_TMPFILE | 🟥 | Unclear. |
+| /tmp tmpfs | ✅ | (P3-pipe) |
+| /proc | 🟡 | Partial (see /proc table below). |
+| /sys | 🟡 | (P9-13/P9-31) — net subset. |
+| /dev | ✅ | (B07 multi-VT) |
+
+### 7. Modern fd-creating syscalls
+
+| feature | state | notes |
+|---|---|---|
+| eventfd / eventfd2 | 🟡 | Probably wired — verify. |
+| signalfd / signalfd4 | 🟡 | `dev_signalfd.rs` exists. |
+| timerfd_create / settime / gettime | 🟡 | `dev_timerfd.rs` exists. |
+| epoll_create / epoll_ctl / epoll_wait | ✅ | `dev_epoll.rs` (P9-21 poll readiness) |
+| epoll_pwait | 🟡 | |
+| epoll_pwait2 | 🟥 | ENOSYS. |
+| inotify_init / inotify_add_watch | 🟡 | dev_inotify exists. |
+| pidfd_open | 🟥 | Unclear. |
+| pidfd_send_signal | 🟡 | dev_pidfd.rs exists. |
+| pidfd_getfd | 🟥 | ENOSYS. |
+| close_range | 🟥 | Unclear — probably stub. |
+| userfaultfd | 🟥 | ENOSYS. |
+| io_uring (setup/enter/register) | 🟥 | ENOSYS. |
+| memfd_create | 🟥 | ENOSYS. |
+
+### 8. Network
+
+| feature | state | notes |
+|---|---|---|
+| AF_INET UDP | ✅ | |
+| AF_INET TCP (listen/accept/connect) | ✅ | (P8-08..P8-10) |
+| AF_UNIX SOCK_STREAM (socketpair) | ✅ | (P8-11) |
+| AF_UNIX path-bound (bind/listen) | ✅ | (P8-15) |
+| AF_INET6 | 🟡 | Types in (P8-17) but not socket-layer wired. |
+| ICMP echo (loopback) | ✅ | |
+| ARP | 🟡 | (P8-18) types only — no real driver to drive. |
+| NDP | 🟡 | (P8-20) types only. |
+| Real NIC driver (virtio-net) | 🟥 | Types in (P12-02), not live. |
+| DHCP client | 🟥 | Missing entirely. |
+| DNS resolver | 🟥 | musl has client; no /etc/resolv.conf consumed. |
+| TLS | 🟥 | No openssl/rustls integration. |
+| sendmmsg / recvmmsg | 🟥 | ENOSYS. |
+| netlink (route/genl) | 🟥 | Missing. |
+| iptables / nftables | 🟥 | No netfilter. |
+| getsockopt / setsockopt | 🟡 | Silent-accept; SO_REUSEADDR honored. |
+
+### 9. /proc completion
+
+| path | state | notes |
+|---|---|---|
+| /proc/self/maps | 🟡 | Verify — bash + glibc read. |
+| /proc/self/status | 🟡 | |
+| /proc/self/cmdline | 🟡 | |
+| /proc/self/exe (symlink) | 🟥 | |
+| /proc/self/environ | 🟥 | |
+| /proc/self/fd/* | 🟥 | |
+| /proc/self/mountinfo | 🟥 | |
+| /proc/self/stat | 🟡 | |
+| /proc/cpuinfo | 🟡 | |
+| /proc/meminfo | 🟡 | |
+| /proc/uptime | 🟡 | |
+| /proc/loadavg | 🟡 | |
+| /proc/version | 🟡 | "Linux version 5.15.0-oxide" present (verified) |
+| /proc/<pid>/* for live tasks | 🟡 | |
+| /proc/sys/kernel/* | 🟡 | hostname, ostype, osrelease |
+| /proc/net/{dev,tcp,udp,route,arp} | 🟡 | (P9-02/P9-31) |
+| /proc/modules | ✅ | (P10-06) |
+| /proc/mounts | 🟡 | (P9-14) — hardcoded 5-line string |
+| /proc/filesystems | 🟥 | |
+| /proc/devices | 🟥 | |
+| /proc/partitions | 🟥 | |
+| /proc/cgroups | 🟥 | |
+
+### 10. IPC
+
+| feature | state | notes |
+|---|---|---|
+| SysV shm/sem/msg | 🟥 | ENOSYS family. |
+| POSIX MQ | 🟥 | ENOSYS family. |
+| keyring | 🟥 | ENOSYS family. |
+| futex | ✅ | (PR-B before sweep) |
+| eventfd | 🟡 | |
+| Unix-socket SCM_RIGHTS fd-passing | 🟡 | Verify — Wayland + dbus require. |
+| Unix-socket SCM_CREDS | 🟥 | Deferred (P9-18 comment). |
+
+### 11. Process management
+
+| feature | state | notes |
+|---|---|---|
+| getpid / getppid | ✅ | |
+| getuid / geteuid / getgid / getegid | ✅ | |
+| setuid family | 🟥 | accept-and-no-op (`syscall_compat.rs:27`). |
+| getgroups / setgroups | 🟥 | accept-and-no-op. |
+| capget / capset | 🟥 | accept-and-no-op. |
+| prctl | 🟡 | Some entries; PR_SET_NAME / PR_SET_PDEATHSIG unclear. |
+| arch_prctl ARCH_SET_FS | ✅ | (essential for musl pthreads TLS) |
+| arch_prctl ARCH_GET_FS | 🟥 | `syscall_glue.rs:585` returns 0. |
+| getrlimit / setrlimit | 🟡 | per-task slot honored; not enforced anywhere. |
+| prlimit64 | 🟡 | Stub (returns 0). |
+| sysinfo | 🟡 | Minimal — uptime + zeros (`syscall_glue_proc.rs:493`). |
+| sched_getaffinity | 🟡 | "single-bit mask covering CPU 0" |
+| sched_setaffinity | 🟥 | Probably no-op. |
+| clock_nanosleep | 🟡 | "ignores clk_id + flags" (`syscall_glue_proc.rs:743`). |
+| nanosleep | 🟡 | |
+| getitimer / setitimer | 🟡 | ITIMER_REAL only. |
+
+### 12. Privileged ops (intentional refuse)
+
+| feature | state | notes |
+|---|---|---|
+| reboot | 🟥 | EPERM (correct for v1) |
+| mount/umount/chroot | 🟥 | EPERM |
+| init_module/finit_module/delete_module | 🟥 | EPERM (kernel modules disabled in v1 userspace) |
+| kexec_load | 🟥 | EPERM |
+| iopl/ioperm | 🟥 | EPERM |
+| adjtimex / clock_adjtime | 🟥 | EPERM |
+| swapon/swapoff | 🟥 | ENOSYS |
+
+### 13. Modern Linux extras (mostly ENOSYS)
+
+| feature | state | notes |
+|---|---|---|
+| seccomp | 🟥 | ENOSYS |
+| bpf | 🟥 | ENOSYS |
+| perf_event_open | 🟥 | ENOSYS |
+| landlock | 🟥 | ENOSYS family |
+| unshare / setns | 🟥 | ENOSYS — namespaces missing entirely |
+| pivot_root | 🟥 | ENOSYS |
+| name_to_handle_at / open_by_handle_at | 🟥 | ENOSYS |
+| io_uring | 🟥 | ENOSYS |
+| process_vm_readv / writev | 🟥 | ENOSYS |
+| kcmp | 🟥 | ENOSYS |
+
+## Recommended sweep order
+
+Each PR is bounded, testable in isolation, gated by the previous.
+
+| PR | Subsystem | Unblocks |
+|----|-----------|----------|
+| **B** | termios + line discipline (ICANON/ECHO/ISIG/ICRNL/ONLCR/c_cc) on /dev/console | bash interactive, login pw-no-echo, Ctrl-C → SIGINT |
+| **C** | Job control: setpgid/getpgid/setsid + tcsetpgrp on console | bash `cmd &`, `fg`/`bg` |
+| **D** | Signal completeness: rt_sigsuspend, sigaltstack, real signal frame for fault | glibc + bash signal corner cases |
+| **E** | Real threading: clone(CLONE_VM\|CLONE_THREAD\|…), clone3, gettid distinct from tgid | curl, openssh, anything with pthread_create |
+| **F** | /proc completion: /proc/self/{maps,status,cmdline,exe,fd,environ,mountinfo}; /proc/{cpuinfo,meminfo,uptime,loadavg} full; /proc/<pid>/* | systemd, ps, top, lsof, htop |
+| **G** | mmap completeness: MAP_SHARED, real per-PTE mprotect, mremap, MADV_DONTNEED, mlockall no-op | wayland clients, modern allocators |
+| **H** | Modern fd-creating syscalls: pidfd_open, eventfd2 verify, signalfd/timerfd verify, dup3, close_range, pipe2 | systemd, dbus |
+| **I** | Real virtio-net live driver + DHCP + DNS resolver | curl, ssh-out, pkg fetch from inside oxide |
+| **J** | Network finalization: AF_INET6 socket layer, sendmmsg/recvmmsg, real getsockopt/setsockopt | servers binding v6 |
+| **K** | xattr family + chroot + mount (real, not EPERM) + namespaces | container-class workloads, security tooling |
+
+PRs **A** (this audit) and the existing P3a (futex) precede.
+
+## Notes on the bigger gaps that DON'T sit under "syscall stubs"
+
+- **Real ld.so**: stub at /lib/ld-musl-x86_64.so.1 doesn't load
+  DT_NEEDED. PR-13-06+ on the userspace side. Doesn't block static-
+  linked distro programs.
+- **vDSO**: kernel doesn't expose. glibc benefits but not required
+  for musl.
+- **DRM/KMS framebuffer**: zero. Wayland off-table.
+- **input subsystem (evdev)**: zero.
+- **GPU drivers**: zero.
+
+## Do-not-touch v1 (deferred)
+
+- core dump generation (sigaction SIGSEGV → coredump)
+- POSIX MQ
+- SysV IPC
+- io_uring
+- bpf / seccomp / landlock
+- glibc compatibility (FSGSBASE, set_thread_area i386, IFUNC)
+- ptrace
+- vDSO
