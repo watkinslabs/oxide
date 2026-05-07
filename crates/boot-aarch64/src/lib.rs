@@ -344,6 +344,13 @@ unsafe extern "C" fn _start_rust() -> ! {
     // writes VBAR_EL1 to a kernel-owned 0x800-aligned vector table.
     unsafe { hal_aarch64::install_default_vbar(); }
 
+    // Enable FP/SIMD at EL0/EL1 globally. v1 doesn't do lazy
+    // FP context switch (the per-task FpuStateAArch64 + trap-on-
+    // first-use machinery in hal_aarch64::fpu exists but is unused);
+    // enable unconditionally so user binaries built with NEON
+    // intrinsics (busybox memcpy, glibc strxx, etc.) don't trap.
+    hal_aarch64::fpu_enable();
+
     // Capture the HHDM offset Limine wrote so the PL011 driver has
     // it ready for when a future VMM PR installs the device mapping.
     // With correct request magic Limine fills this; with a typo it

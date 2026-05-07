@@ -43,6 +43,11 @@ core::arch::global_asm!(
     "    stp  x25, x26,   [x0, #0x38]",
     "    stp  x27, x28,   [x0, #0x48]",
     "    stp  x29, x30,   [x0, #0x58]",
+    // Save outgoing TPIDR_EL0 into prev->tpidr (offset 0x68) so a
+    // forked child resumes with the parent's user TLS pointer rather
+    // than whatever stale global value last winning task left.
+    "    mrs  x9, tpidr_el0",
+    "    str  x9,         [x0, #0x68]",
     "    ldr  x9,         [x1, #0x00]",
     "    mov  sp, x9",
     "    ldp  x19, x20,   [x1, #0x08]",
@@ -51,6 +56,9 @@ core::arch::global_asm!(
     "    ldp  x25, x26,   [x1, #0x38]",
     "    ldp  x27, x28,   [x1, #0x48]",
     "    ldp  x29, x30,   [x1, #0x58]",
+    // Restore incoming TPIDR_EL0 from next->tpidr.
+    "    ldr  x9,         [x1, #0x68]",
+    "    msr  tpidr_el0, x9",
     "    ret",
     ".size oxide_context_switch, . - oxide_context_switch",
 );
@@ -211,13 +219,29 @@ impl ContextAArch64 {
             base.add(25).write(0);                // pad
             base
         };
+        // Snapshot the live TPIDR_EL0 so init's caller (which sets
+        // it just before spawning) gets a Context with the user TLS
+        // pointer baked in. context_switch's first switch-to will
+        // restore it from this slot, overwriting any stale value
+        // another task may have left in the register.
+        let live_tpidr: u64;
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        // SAFETY: mrs tpidr_el0 at EL1 reads the live register; we
+        // capture the value the spawning kernel context just wrote
+        // (or 0 if the spawner didn't touch it).
+        unsafe {
+            core::arch::asm!("mrs {v}, tpidr_el0", v = out(reg) live_tpidr,
+                options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        { live_tpidr = 0; }
         Self {
             sp:    sp as u64,
             x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
             x25: 0, x26: 0, x27: 0, x28: 0,
             x29: 0,
             lr:    crate::vbar::irq_resume_user_addr(),
-            tpidr: 0,
+            tpidr: live_tpidr,
         }
     }
 
@@ -280,6 +304,18 @@ impl ContextAArch64 {
             base.add(25).write(0);                 // pad
             base
         };
+        // Capture the parent's live TPIDR_EL0 so the child resumes
+        // with the same user TLS pointer (a copy of the parent's TLS
+        // page lives in the child's COW'd AS at the same VA).
+        let parent_tpidr: u64;
+        // SAFETY: mrs tpidr_el0 at EL1 reads the live register; called from kernel-side fork dispatcher running on the parent's syscall stack so the value is the parent's user TLS.
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        unsafe {
+            core::arch::asm!("mrs {v}, tpidr_el0", v = out(reg) parent_tpidr,
+                options(nomem, nostack, preserves_flags));
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        { parent_tpidr = 0; }
         Self {
             sp:    sp as u64,
             // x19..x28 inherit parent's user state via the kernel
@@ -297,7 +333,7 @@ impl ContextAArch64 {
             x28: regs.x[28],
             x29: regs.x[29],
             lr:    crate::vbar::irq_resume_user_addr(),
-            tpidr: 0,
+            tpidr: parent_tpidr,
         }
     }
 }
