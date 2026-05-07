@@ -18,6 +18,7 @@ use vfs::{Dentry, File, OpenFlags};
 use crate::dev_net::{InetSocket, SockKind, socket_sendto, socket_recv, drain_loopback};
 
 const AF_INET:     u32 = 2;
+const AF_INET6:    u32 = 10;
 const SOCK_STREAM: u32 = 1;
 const SOCK_DGRAM:  u32 = 2;
 
@@ -42,11 +43,13 @@ fn errno_from_neterr(e: net::NetError) -> i64 {
 pub fn kernel_sys_socket(args: &SyscallArgs) -> i64 {
     let domain = args.a0 as u32;
     let typ    = args.a1 as u32 & 0xFF;  // strip SOCK_NONBLOCK / SOCK_CLOEXEC
-    if domain != AF_INET { return -(Errno::Eafnosupport.as_i32() as i64); }
-    let inet = match typ {
-        SOCK_DGRAM  => InetSocket::new_udp(),
-        SOCK_STREAM => InetSocket::new_tcp(),
-        _ => return -(Errno::Esocktnosupport.as_i32() as i64),
+    let inet = match (domain, typ) {
+        (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
+        (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp(),
+        (AF_INET6, SOCK_DGRAM)  => InetSocket::new_udp6(),
+        (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
+        (AF_INET, _) | (AF_INET6, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
+        _ => return -(Errno::Eafnosupport.as_i32() as i64),
     };
     let inode: vfs::InodeRef = Arc::new(inet) as _;
     let cur = match crate::sched::current() {
@@ -106,6 +109,118 @@ fn write_sockaddr_in(ptr: u64, addr_be: u32, port_be: u16) {
         core::ptr::write_volatile((ptr + 2) as *mut u16, port_be);
         core::ptr::write_volatile((ptr + 4) as *mut u32, addr_be);
         core::ptr::write_volatile((ptr + 8) as *mut u64, 0);
+    }
+}
+
+/// Read a `struct sockaddr_in6` (28 bytes):
+///   u16 sin6_family ; u16 sin6_port ; u32 sin6_flowinfo ;
+///   u8[16] sin6_addr ; u32 sin6_scope_id.
+/// Returns (family, port_host, addr_bytes, scope_id).
+fn read_sockaddr_in6(ptr: u64) -> Option<(u32, u16, [u8; 16], u32)> {
+    if ptr == 0 || ptr >= USER_VA_END { return None; }
+    if ptr.checked_add(28).map_or(true, |e| e >= USER_VA_END) { return None; }
+    // SAFETY: 28 bytes inside validated range; caller's AS active.
+    unsafe {
+        let family   = core::ptr::read_volatile(ptr as *const u16) as u32;
+        let port_be  = core::ptr::read_volatile((ptr + 2) as *const u16);
+        let _flow    = core::ptr::read_volatile((ptr + 4) as *const u32);
+        let mut a = [0u8; 16];
+        for i in 0..16 {
+            a[i] = core::ptr::read_volatile((ptr + 8 + i as u64) as *const u8);
+        }
+        let scope    = core::ptr::read_volatile((ptr + 24) as *const u32);
+        Some((family, u16::from_be(port_be), a, scope))
+    }
+}
+
+fn write_sockaddr_in6(ptr: u64, addr_bytes: [u8; 16], port_be: u16, scope_id: u32) {
+    if ptr == 0 || ptr >= USER_VA_END { return; }
+    if ptr.checked_add(28).map_or(true, |e| e >= USER_VA_END) { return; }
+    // SAFETY: 28 bytes inside validated range; caller's AS active.
+    unsafe {
+        core::ptr::write_volatile(ptr as *mut u16, AF_INET6 as u16);
+        core::ptr::write_volatile((ptr + 2) as *mut u16, port_be);
+        core::ptr::write_volatile((ptr + 4) as *mut u32, 0); // flowinfo
+        for i in 0..16 {
+            core::ptr::write_volatile((ptr + 8 + i as u64) as *mut u8, addr_bytes[i]);
+        }
+        core::ptr::write_volatile((ptr + 24) as *mut u32, scope_id);
+    }
+}
+
+/// IPv4-mapped check: `::ffff:a.b.c.d` is the IPv6 form of an IPv4
+/// address. Returns Some(Ipv4Addr) when the bytes match the prefix.
+/// Used to thread V6 sockets through the V4 transport for v1.
+fn ipv4_from_v6_mapped(b: &[u8; 16]) -> Option<net::Ipv4Addr> {
+    let prefix_zeros = b[0..10].iter().all(|&x| x == 0);
+    let prefix_ff    = b[10] == 0xff && b[11] == 0xff;
+    if prefix_zeros && prefix_ff {
+        Some(net::Ipv4Addr::new(b[12], b[13], b[14], b[15]))
+    } else { None }
+}
+
+fn ipv6_loopback(b: &[u8; 16]) -> bool {
+    b[..15].iter().all(|&x| x == 0) && b[15] == 1
+}
+
+fn ipv6_unspecified(b: &[u8; 16]) -> bool {
+    b.iter().all(|&x| x == 0)
+}
+
+/// Read a sockaddr that may be `sockaddr_in` (16 bytes, AF_INET) or
+/// `sockaddr_in6` (28 bytes, AF_INET6). Returns the V4-equivalent
+/// (IpAddr::V6 maps `::1` → 127.0.0.1, `::` → ANY, V4-mapped → its
+/// embedded V4) for the v1 V4-only transport. Returns the requested
+/// family so callers can validate it against the socket's family.
+fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
+    let fam = read_sa_family(ptr)? as u32;
+    if fam == AF_INET {
+        let (_, port, addr_host) = read_sockaddr_in(ptr)?;
+        Some((fam, net::Ipv4Addr::from_u32(addr_host), port))
+    } else if fam == AF_INET6 {
+        let (_, port, b, _scope) = read_sockaddr_in6(ptr)?;
+        // IPv4-mapped: forward to V4 transport directly.
+        if let Some(v4) = ipv4_from_v6_mapped(&b) {
+            return Some((fam, v4, port));
+        }
+        // ::1 loopback: treat as 127.0.0.1.
+        if ipv6_loopback(&b) {
+            return Some((fam, net::Ipv4Addr::LOOPBACK, port));
+        }
+        // :: (unspecified): treat as INADDR_ANY.
+        if ipv6_unspecified(&b) {
+            return Some((fam, net::Ipv4Addr::ANY, port));
+        }
+        // Any other v6 address: not reachable on the v1 V4-only
+        // transport. Caller maps to -EAFNOSUPPORT.
+        None
+    } else { None }
+}
+
+/// Write the sockaddr at `ptr` matching the socket's family. For
+/// AF_INET6 sockets we synthesize the V6-equivalent of the V4
+/// state held in InetSocket (V4 → V4-mapped ::ffff:x.x.x.x, V4
+/// loopback → ::1, V4 ANY → ::).
+fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
+    let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    if fam == crate::dev_net::AF_INET6 {
+        let mut b = [0u8; 16];
+        if ip == net::Ipv4Addr::LOOPBACK {
+            b[15] = 1; // ::1
+        } else if ip == net::Ipv4Addr::ANY {
+            // :: stays all-zero.
+        } else {
+            // V4-mapped form: ::ffff:a.b.c.d
+            b[10] = 0xff; b[11] = 0xff;
+            let v = ip.as_u32();
+            b[12] = (v >> 24) as u8;
+            b[13] = (v >> 16) as u8;
+            b[14] = (v >>  8) as u8;
+            b[15] =  v        as u8;
+        }
+        write_sockaddr_in6(ptr, b, port.to_be(), 0);
+    } else {
+        write_sockaddr_in(ptr, ip.as_u32().to_be(), port.to_be());
     }
 }
 
@@ -183,11 +298,17 @@ pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
         *sock.kind.lock() = crate::dev_net::SockKind::UnixListener(listener);
         return 0;
     }
-    if family != AF_INET as u16 { return -(Errno::Eafnosupport.as_i32() as i64); }
-    let (_family, port, addr) = match read_sockaddr_in(addr_p) {
-        Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+    if family != AF_INET as u16 && family != AF_INET6 as u16 {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    // Reject family-mismatch: AF_INET6 socket should not bind a
+    // sockaddr_in (and vice-versa). musl/glibc don't issue such
+    // mismatches; explicit reject catches buggy callers cleanly.
+    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+    let (_family, ip, port) = match read_sockaddr_any(addr_p) {
+        Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
     };
-    let ip = net::Ipv4Addr::from_u32(addr);
     match crate::dev_net::stack().bind_udp(ip, port) {
         Ok(())   => {
             *sock.local_port.lock() = Some(port);
@@ -223,9 +344,9 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
         };
     }
     let (dst_ip, dst_port) = if dest_p != 0 {
-        match read_sockaddr_in(dest_p) {
-            Some((fam, p, a)) if fam == AF_INET => (net::Ipv4Addr::from_u32(a), p),
-            _ => return -(Errno::Einval.as_i32() as i64),
+        match read_sockaddr_any(dest_p) {
+            Some((_fam, ip, p)) => (ip, p),
+            None => return -(Errno::Eafnosupport.as_i32() as i64),
         }
     } else {
         match *sock.peer.lock() {
@@ -355,9 +476,19 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
         let c = entry.conn.lock();
         (c.remote.ip, c.remote.port)
     };
-    let new_sock = InetSocket::new_tcp();
+    let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    let new_sock = if listener_fam == crate::dev_net::AF_INET6 {
+        InetSocket::new_tcp6()
+    } else {
+        InetSocket::new_tcp()
+    };
     *new_sock.kind.lock() = SockKind::TcpConn(entry);
     *new_sock.peer.lock() = Some((peer_ip, peer_port));
+    if addr_p != 0 {
+        // Inherit family from the listening socket so accept() returns
+        // the right sockaddr shape on AF_INET6 listeners.
+        write_sockaddr_for_socket(addr_p, &new_sock, peer_ip, peer_port);
+    }
     let inode: vfs::InodeRef = Arc::new(new_sock) as _;
     let cur = match crate::sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -368,9 +499,6 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
     };
     let dentry = vfs::Dentry::new(None, alloc::string::String::from("[socket]"), Arc::clone(&inode));
     let file = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
-    if addr_p != 0 {
-        write_sockaddr_in(addr_p, peer_ip.as_u32().to_be(), peer_port.to_be());
-    }
     match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }
 
@@ -398,11 +526,14 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
         *sock.kind.lock() = crate::dev_net::SockKind::Unix(pair, net::UnixEnd::B);
         return 0;
     }
-    let (_family, port, addr) = match read_sockaddr_in(addr_p) {
-        Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+    if family != AF_INET && family != AF_INET6 {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
+    if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+    let (_family, dst_ip, port) = match read_sockaddr_any(addr_p) {
+        Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
     };
-    if family != AF_INET { return -(Errno::Eafnosupport.as_i32() as i64); }
-    let dst_ip = net::Ipv4Addr::from_u32(addr);
     // For TCP: tcp_connect emits SYN. For UDP: just store the peer.
     let kind_is_tcp = matches!(*sock.kind.lock(), SockKind::Udp) == false
         || matches!(*sock.kind.lock(), SockKind::TcpListener(_));
@@ -588,7 +719,7 @@ pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
     if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let port = (*sock.local_port.lock()).unwrap_or(0);
     let ip   = *sock.local_ip.lock();
-    write_sockaddr_in(addr_p, ip.as_u32().to_be(), port.to_be());
+    write_sockaddr_for_socket(addr_p, &sock, ip, port);
     0
 }
 
@@ -604,7 +735,7 @@ pub fn kernel_sys_getpeername(args: &SyscallArgs) -> i64 {
     let (ip, port) = match *sock.peer.lock() {
         Some(t) => t, None => return -(Errno::Enotconn.as_i32() as i64),
     };
-    write_sockaddr_in(addr_p, ip.as_u32().to_be(), port.to_be());
+    write_sockaddr_for_socket(addr_p, &sock, ip, port);
     0
 }
 
@@ -672,7 +803,7 @@ pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
         unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), bufp as *mut u8, take); }
         if src_p != 0 {
             let (peer_ip, peer_port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-            write_sockaddr_in(src_p, peer_ip.as_u32().to_be(), peer_port.to_be());
+            write_sockaddr_for_socket(src_p, &sock, peer_ip, peer_port);
         }
         return take as i64;
     }
@@ -685,7 +816,7 @@ pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
         core::ptr::copy_nonoverlapping(payload.as_ptr(), bufp as *mut u8, take);
     }
     if src_p != 0 {
-        write_sockaddr_in(src_p, src_ip.as_u32().to_be(), src_port.to_be());
+        write_sockaddr_for_socket(src_p, &sock, src_ip, src_port);
     }
     take as i64
 }
