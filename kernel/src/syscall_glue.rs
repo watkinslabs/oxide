@@ -803,6 +803,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_FCNTL         => crate::syscall_glue_fs::kernel_sys_fcntl(&args),
         crate::syscall_nrs::NR_RSEQ          => crate::syscall_glue_proc::kernel_sys_rseq(&args),
         crate::syscall_nrs::NR_MEMBARRIER    => crate::syscall_glue_proc::kernel_sys_membarrier(&args),
+        crate::syscall_nrs::NR_UNSHARE       => crate::syscall_glue_proc::kernel_sys_unshare(&args),
+        crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_proc::kernel_sys_setns(&args),
         crate::syscall_nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
         crate::syscall_nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
         crate::syscall_nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),

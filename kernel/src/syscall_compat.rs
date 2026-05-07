@@ -74,7 +74,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
                                        => Some(enotsup),
 
         // ---- privileged-op refuse ----
-        NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_CHROOT
+        NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_CHROOT | NR_PIVOT_ROOT
         | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
         | NR_IOPL | NR_IOPERM
@@ -133,7 +133,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_PERF_EVENT_OPEN | NR_BPF | NR_SECCOMP
         | NR_LANDLOCK_CREATE_RULESET | NR_LANDLOCK_ADD_RULE
         | NR_LANDLOCK_RESTRICT_SELF
-        | NR_UNSHARE | NR_SETNS | NR_PIVOT_ROOT
+        // UNSHARE / SETNS / PIVOT_ROOT: see real impl below (UNSHARE/SETNS)
+        // and the privileged-refuse arm (PIVOT_ROOT).
         // socket family + signal-extras + preadv/pwritev (v1 alternates)
         // are all dispatched as real impls in syscall_glue.rs above
         // try_compat — these arms are dead. The real-impl path is the
