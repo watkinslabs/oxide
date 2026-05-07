@@ -111,19 +111,24 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // cross-build of busybox lands.
     let portable_bins: &[(&str, &str)] = &[
         ("userspace/init/init",         "userspace/init/init.c"),
+        ("userspace/true/true",         "userspace/true/true.c"),
+        ("userspace/false/false",       "userspace/false/false.c"),
+        ("userspace/echo/echo",         "userspace/echo/echo.c"),
+        ("userspace/whoami/whoami",     "userspace/whoami/whoami.c"),
+        ("userspace/pwd/pwd",           "userspace/pwd/pwd.c"),
+        ("userspace/sleep/sleep",       "userspace/sleep/sleep.c"),
+        ("userspace/yes/yes",           "userspace/yes/yes.c"),
+        ("userspace/cat/cat",           "userspace/cat/cat.c"),
+        ("userspace/uname/uname",       "userspace/uname/uname.c"),
+        ("userspace/hostname/hostname", "userspace/hostname/hostname.c"),
+        ("userspace/mkdir/mkdir",       "userspace/mkdir/mkdir.c"),
+        ("userspace/seq/seq",           "userspace/seq/seq.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
         ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
         ("userspace/kill/kill",         "userspace/kill/kill.c"),
-        ("userspace/sleep/sleep",       "userspace/sleep/sleep.c"),
-        ("userspace/true/true",         "userspace/true/true.c"),
-        ("userspace/false/false",       "userspace/false/false.c"),
-        ("userspace/hostname/hostname", "userspace/hostname/hostname.c"),
-        ("userspace/mkdir/mkdir",       "userspace/mkdir/mkdir.c"),
         ("userspace/rm/rm",             "userspace/rm/rm.c"),
-        ("userspace/cat/cat",           "userspace/cat/cat.c"),
-        ("userspace/echo/echo",         "userspace/echo/echo.c"),
         ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
         ("userspace/ps/ps",             "userspace/ps/ps.c"),
         ("userspace/ls/ls",             "userspace/ls/ls.c"),
@@ -132,9 +137,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/wc/wc",             "userspace/wc/wc.c"),
         ("userspace/head/head",         "userspace/head/head.c"),
         ("userspace/dmesg/dmesg",       "userspace/dmesg/dmesg.c"),
-        ("userspace/pwd/pwd",           "userspace/pwd/pwd.c"),
-        ("userspace/whoami/whoami",     "userspace/whoami/whoami.c"),
-        ("userspace/uname/uname",       "userspace/uname/uname.c"),
         ("userspace/nc/nc",             "userspace/nc/nc.c"),
         ("userspace/tee/tee",           "userspace/tee/tee.c"),
         ("userspace/ln/ln",             "userspace/ln/ln.c"),
@@ -143,8 +145,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/cmp/cmp",           "userspace/cmp/cmp.c"),
         ("userspace/route/route",       "userspace/route/route.c"),
         ("userspace/xxd/xxd",           "userspace/xxd/xxd.c"),
-        ("userspace/seq/seq",           "userspace/seq/seq.c"),
-        ("userspace/yes/yes",           "userspace/yes/yes.c"),
         ("userspace/nproc/nproc",       "userspace/nproc/nproc.c"),
         ("userspace/getent/getent",     "userspace/getent/getent.c"),
         ("userspace/login/login",       "userspace/login/login.c"),
@@ -294,27 +294,35 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             put(&bb, &format!("/bin/{applet}"))?;
         }
     }
-    // init is portable and present on every arch.
+    // Portable bins (use shared/oxide_start.h + musl libc wrappers,
+    // build for both arches). Stage on every arch.
     put(&user("init"),         "/bin/init")?;
     put(&user("init"),         "/sbin/init")?;
     put(&user("init"),         "/init")?;
-    // The toy oxide-sh + applets below still embed x86 inline-asm
-    // syscalls; only stage them on x86_64 until they're ported.
+    put(&user("true"),         "/bin/oxide-true")?;
+    put(&user("false"),       "/bin/oxide-false")?;
+    put(&user("echo"),         "/bin/oxide-echo")?;
+    put(&user("whoami"),     "/bin/oxide-whoami")?;
+    put(&user("pwd"),           "/bin/oxide-pwd")?;
+    put(&user("sleep"),       "/bin/oxide-sleep")?;
+    put(&user("yes"),           "/bin/oxide-yes")?;
+    put(&user("cat"),           "/bin/oxide-cat")?;
+    put(&user("uname"),       "/bin/oxide-uname")?;
+    put(&user("hostname"), "/bin/oxide-hostname")?;
+    put(&user("mkdir"),       "/bin/oxide-mkdir")?;
+    put(&user("seq"),           "/bin/oxide-seq")?;
+    // The remaining toy applets below still embed x86 inline-asm
+    // syscalls; only stage them on x86_64 until they're ported. The
+    // portable forms above ship at /bin/oxide-<name> so they don't
+    // shadow busybox's own applets at /bin/<name>.
     if arch != "x86_64" {
-        eprintln!("xtask rootfs: arch={arch} skipping toy applets (x86-asm only) — busybox will fill these once aarch64 cross-build lands");
+        eprintln!("xtask rootfs: arch={arch} skipping x86-asm-only toy applets — portable forms staged at /bin/oxide-<name>");
     }
     if arch == "x86_64" {
     put(&user("sh"),             "/bin/oxide-sh")?;
     put(&user("udp_echo"), "/bin/udp_echo")?;
     put(&user("kill"),         "/bin/kill")?;
-    put(&user("sleep"),       "/bin/sleep")?;
-    put(&user("true"),         "/bin/true")?;
-    put(&user("false"),       "/bin/false")?;
-    put(&user("hostname"), "/bin/hostname")?;
-    put(&user("mkdir"),       "/bin/mkdir")?;
     put(&user("rm"),             "/bin/rm")?;
-    put(&user("cat"),           "/bin/cat")?;
-    put(&user("echo"),         "/bin/echo")?;
     put(&user("tcp_echo"), "/bin/tcp_echo")?;
     put(&user("ps"),             "/bin/ps")?;
     put(&user("ls"),             "/bin/ls")?;
@@ -323,9 +331,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("wc"),             "/bin/wc")?;
     put(&user("head"),         "/bin/head")?;
     put(&user("dmesg"),       "/bin/dmesg")?;
-    put(&user("pwd"),           "/bin/pwd")?;
-    put(&user("whoami"),     "/bin/whoami")?;
-    put(&user("uname"),       "/bin/uname")?;
     put(&user("nc"),             "/bin/nc")?;
     put(&user("tee"),           "/bin/tee")?;
     put(&user("ln"),             "/bin/ln")?;
@@ -334,8 +339,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("cmp"),           "/bin/cmp")?;
     put(&user("route"),       "/bin/route")?;
     put(&user("xxd"),           "/bin/xxd")?;
-    put(&user("seq"),           "/bin/seq")?;
-    put(&user("yes"),           "/bin/yes")?;
     put(&user("nproc"),       "/bin/nproc")?;
     put(&user("getent"),     "/bin/getent")?;
     put(&user("login"),       "/bin/login")?;
