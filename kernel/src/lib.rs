@@ -117,6 +117,8 @@ pub mod dev_inotify;
 pub mod dev_signalfd;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_timerfd;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod dev_virtio_net;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_epoll;
 #[cfg(target_os = "oxide-kernel")]
@@ -758,6 +760,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_raw(b"\n");
             }
         }
+    }
+
+    // virtio-net legacy driver detect + init. No-op if no device.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        crate::dev_virtio_net::init_legacy();
     }
 
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
