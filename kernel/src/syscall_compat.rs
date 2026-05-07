@@ -86,7 +86,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         NR_PTRACE
         // SPLICE/TEE/VMSPLICE moved to real impls in PR-N.
         // COPY_FILE_RANGE moved to real impl in PR-J.
-        | NR_MEMFD_SECRET // MEMFD_CREATE moved to real impl in PR-H.
+        // MEMFD_CREATE moved to real impl in PR-H; MEMFD_SECRET routes
+        // through it in PR-U (no per-AS hide-from-other-tasks v1).
         | NR_PIDFD_GETFD
         // xattr family: handled in the ENOTSUP arm below — Linux's
         // 'no xattr on this filesystem' response. Programs that
