@@ -111,7 +111,10 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // OPENAT2 / FACCESSAT2 aliased to openat / faccessat in PR-M.
         | NR_MOUNT_SETATTR | NR_OPEN_TREE | NR_MOVE_MOUNT
         | NR_FSOPEN | NR_FSCONFIG | NR_FSMOUNT | NR_FSPICK
-        | NR_FANOTIFY_INIT | NR_FANOTIFY_MARK
+        // FANOTIFY moved to real (narrow) impl in P27a — backed by
+        // existing inotify infra. Only init returns an fd; mark is a
+        // no-op accept that records nothing for v1. Real recursive-
+        // watch + permission-event reply ride a follow-up.
         // RECVMMSG/SENDMMSG moved to real impl in PR-G.
         // PSELECT6/SELECT moved to real impl in PR-Q (poll-based).
         // WAITID moved to real impl in PR-K (alias of wait4 + siginfo_t).
