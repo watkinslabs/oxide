@@ -18,6 +18,16 @@ pub type InodeRef = Arc<dyn Inode>;
 
 /// `16§2` Inode trait — v1 subset.
 pub trait Inode: Send + Sync {
+    /// Optional downcast hook. Returns `Some(self)` for inode
+    /// types whose syscall handlers need to recover a concrete
+    /// state struct from an `InodeRef` (e.g. POSIX MQ pulling
+    /// `MqQueue` out of an `MqInode` behind a fd). Default returns
+    /// `None`. Concrete impls that need it override with
+    /// `Some(self)` (requires the impl type be `'static`, which
+    /// every kernel inode is).
+    /// # C: O(1)
+    fn as_any(&self) -> Option<&dyn core::any::Any> { None }
+
     /// # C: O(1)
     fn ino(&self) -> Ino;
 

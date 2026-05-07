@@ -298,6 +298,46 @@ pub unsafe fn translate_4k<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<(u6
     }
 }
 
+/// Same as `translate_4k` but walks tables rooted at the
+/// caller-supplied `root_pa` instead of the active CR3 / TTBR.
+/// Used for foreign-mm reads (e.g. ptrace PEEK reading another
+/// task's user memory) where we have the AddressSpace's
+/// `root_pa()` but the target is not the running task.
+///
+/// # SAFETY: same as `translate_4k`, plus caller asserts
+/// `root_pa` is a valid 4 KiB-aligned page-table root frame
+/// owned by a live AddressSpace; the AS must outlive the walk
+/// (caller holds an Arc keeping it alive).
+/// # C: O(walk depth) = O(4)
+/// # Ctx: read-only walk
+pub unsafe fn translate_4k_at_root<W: PtWalker>(
+    root_pa: u64, va: u64, hhdm_offset: u64,
+) -> Option<(u64, u64)> {
+    let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+    // SAFETY: HHDM covers page-table memory per fn contract; reads only.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
+        let e0 = ptr::read_volatile(l0.add(i_l0));
+        if !W::is_valid(e0) || W::is_huge_or_block(e0) { return None; }
+        let l1_pa = e0 & W::PHYS_MASK;
+        let l1 = (hhdm_offset.wrapping_add(l1_pa)) as *const u64;
+        let e1 = ptr::read_volatile(l1.add(i_l1));
+        if !W::is_valid(e1) || W::is_huge_or_block(e1) { return None; }
+        let l2_pa = e1 & W::PHYS_MASK;
+        let l2 = (hhdm_offset.wrapping_add(l2_pa)) as *const u64;
+        let e2 = ptr::read_volatile(l2.add(i_l2));
+        if !W::is_valid(e2) || W::is_huge_or_block(e2) { return None; }
+        let l3_pa = e2 & W::PHYS_MASK;
+        let l3 = (hhdm_offset.wrapping_add(l3_pa)) as *const u64;
+        let leaf = ptr::read_volatile(l3.add(i_l3));
+        if !W::is_valid(leaf) { return None; }
+        Some((leaf & W::PHYS_MASK, leaf))
+    }
+}
+
 /// Translate `va` walking the live tables, recognising huge/block
 /// leaves at intermediate levels. Returns
 /// `Some((pa_for_va, raw_leaf, leaf_level))` where:
