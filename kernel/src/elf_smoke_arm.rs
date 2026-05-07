@@ -364,16 +364,30 @@ fn spawn_init_from_rootfs_arm() {
     }
 
     // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
-    if unsafe {
+    let task = match unsafe {
         crate::sched::spawn_user_thread(
             0xC0DE_0002, "init",
             img.entry.as_u64(),
             USER_STACK_TOP,
             mm,
         )
-    }.is_err() {
-        debug_irq! { klog::kerror!("init-arm: spawn_user_thread failed"); }
-    }
+    } {
+        Ok(t) => t,
+        Err(_) => {
+            debug_irq! { klog::kerror!("init-arm: spawn_user_thread failed"); }
+            return;
+        }
+    };
+
+    // Wire fd 0/1/2 to the console so busybox-as-shell (and any
+    // child after fork+exec) has working stdin/stdout/stderr —
+    // mirrors elf_smoke::spawn_user_blob_smoke on x86. Without this
+    // a forked child running real-libc /bin/sh hits EBADF on its
+    // first write to stderr and exits without printing anything.
+    let fdt = crate::dev_console::init_console_fd_table();
+    // SAFETY: task isn't yet scheduled; we are sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
+    unsafe { task.replace_fd_table(Some(fdt)); }
+    let _task = task;
 
     debug_irq! { klog::kinfo!("init-arm: spawned"); }
 }
