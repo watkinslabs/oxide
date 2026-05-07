@@ -109,8 +109,10 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_PROCESS_VM_READV | NR_PROCESS_VM_WRITEV
         | NR_NAME_TO_HANDLE_AT | NR_OPEN_BY_HANDLE_AT
         // OPENAT2 / FACCESSAT2 aliased to openat / faccessat in PR-M.
-        | NR_MOUNT_SETATTR | NR_OPEN_TREE | NR_MOVE_MOUNT
-        | NR_FSOPEN | NR_FSCONFIG | NR_FSMOUNT | NR_FSPICK
+        // Modern mount API moved to real (admit) impls in P29a — fsopen/
+        // fsconfig/fsmount/fspick/open_tree/move_mount/mount_setattr return
+        // fds where applicable, accept silently otherwise. Per-NS mount
+        // table substrate rides a follow-up.
         // FANOTIFY moved to real (narrow) impl in P27a — backed by
         // existing inotify infra. Only init returns an fd; mark is a
         // no-op accept that records nothing for v1. Real recursive-
