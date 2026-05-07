@@ -274,6 +274,27 @@ pub struct Task {
     /// addr + FUTEX_WAKE_PRIVATE. v1 stores for visibility; no
     /// per-thread cleanup in the single-thread model.
     pub clear_child_tid: AtomicU64,
+
+    /// Per-task namespace membership bitmap. Bit i set ⇔ this task
+    /// has its own slot for namespace i (rather than inheriting the
+    /// init-namespace). Bit assignments mirror Linux CLONE_NEW*:
+    ///   bit  0 = NEWNS    (mount)        | CLONE_NEWNS    = 0x00020000
+    ///   bit  1 = NEWUTS   (uts)          | CLONE_NEWUTS   = 0x04000000
+    ///   bit  2 = NEWIPC   (ipc)          | CLONE_NEWIPC   = 0x08000000
+    ///   bit  3 = NEWUSER  (user)         | CLONE_NEWUSER  = 0x10000000
+    ///   bit  4 = NEWPID   (pid)          | CLONE_NEWPID   = 0x20000000
+    ///   bit  5 = NEWNET   (net)          | CLONE_NEWNET   = 0x40000000
+    ///   bit  6 = NEWCGROUP                                = 0x02000000
+    /// `unshare(2)` sets bits; `setns(2)` clears the affected bit
+    /// (rejoining a target namespace identified by an fd; v1 honors
+    /// the syscall but doesn't yet have ns-fd machinery).
+    /// # C: O(1)
+    pub ns_membership: AtomicU64,
+
+    /// Per-NS UTS hostname when bit 1 of `ns_membership` is set.
+    /// Empty string means "inherit from global". Single-mutator per
+    /// `13§5`. # C: O(1) read
+    pub uts_hostname: UnsafeCell<alloc::string::String>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -400,6 +421,8 @@ impl Task {
             alarm_interval_ns: AtomicU64::new(0),
             umask:      AtomicU32::new(0o022),
             clear_child_tid: AtomicU64::new(0),
+            ns_membership: AtomicU64::new(0),
+            uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
         }
     }
 
