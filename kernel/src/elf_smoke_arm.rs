@@ -354,11 +354,7 @@ fn spawn_init_from_rootfs_arm() {
         debug_irq! { klog::kerror!("init-arm: TLS mmap failed"); }
         return;
     }
-    // SAFETY: writing TPIDR_EL0 at EL1 is always legal; eret carries
-    // the value into EL0; the value points to the boundary of two
-    // freshly-mmapped anonymous pages of `mm` (active TTBR0). musl's
-    // pthread_self()-based offsets in either direction land inside
-    // the 8 KiB region.
+    // SAFETY: msr tpidr_el0 at EL1 is always legal; eret carries the value into EL0; USER_TPIDR_VA points to the boundary of two freshly-mmapped anonymous user pages of `mm` (active TTBR0); pthread_self()-based offsets land inside the 8 KiB region.
     unsafe {
         core::arch::asm!(
             "msr tpidr_el0, {v}",
