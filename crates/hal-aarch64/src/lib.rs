@@ -35,7 +35,7 @@ pub use regs::{
 pub use vbar::{install_default as install_default_vbar, current_svc_frame, SvcFrame, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
 pub use fault::{install_fault_handler, FaultHandler};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};
-pub use context::ContextAArch64;
+pub use context::{ContextAArch64, ForkRegs};
 pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteArm64, PteFlags, PtIndices,
     ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, PTE_PHYS_MASK,

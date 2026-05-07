@@ -220,6 +220,98 @@ impl ContextAArch64 {
             tpidr: 0,
         }
     }
+
+    /// Fork-shaped user resume frame. Same `oxide_irq_resume_user`
+    /// epilogue as `new_user_with_irq_frame`, but the saved x0..x18,
+    /// x29, x30 slots get populated from the parent's `ForkRegs`
+    /// snapshot so the child resumes with parent register state.
+    /// x0 is overwritten to 0 — Linux clone(2) ABI: child returns 0.
+    /// `user_ip` should be the parent's saved ELR_EL1 (the
+    /// instruction *after* the SVC); `user_sp` is the parent's
+    /// saved SP_EL0 (or child_stack for clone(2)).
+    /// # SAFETY: same as `new_user_with_irq_frame`; `stack_top` must
+    /// be a writable 16-byte-aligned kernel stack of ≥208 B.
+    /// # C: O(1)
+    pub fn new_user_for_fork(
+        stack_top: *mut u8,
+        user_ip: u64,
+        user_sp: u64,
+        regs: &ForkRegs,
+    ) -> Self {
+        // SAFETY: caller asserts `stack_top` is the high end of a writable, 16-byte-aligned kernel stack of at least 208 B; mirror of new_user_with_irq_frame's SAFETY note.
+        let sp = unsafe {
+            let base = stack_top.cast::<u8>().sub(208) as *mut u64;
+            // Frame layout per `oxide_irq_resume_user` in vbar.rs:
+            //   sp+0x00 (idx 0) .. sp+0x90 (idx 18) — x0..x17 packed
+            //                    in stp pairs.
+            //   sp+0x90 (idx 18) — x18 in low half, x19 in high half
+            //                    (asm uses `ldp x18, x29, [sp, #144]`)
+            //   sp+0xa0 (idx 20) — x30 + pad
+            //   sp+0xb0 (idx 22) — ELR_EL1
+            //   sp+0xb8 (idx 23) — SPSR_EL1
+            //   sp+0xc0 (idx 24) — SP_EL0
+            //   sp+0xc8 (idx 25) — pad
+            base.add(0).write(0);                  // x0 = 0 (child's clone return)
+            base.add(1).write(regs.x[1]);
+            base.add(2).write(regs.x[2]);
+            base.add(3).write(regs.x[3]);
+            base.add(4).write(regs.x[4]);
+            base.add(5).write(regs.x[5]);
+            base.add(6).write(regs.x[6]);
+            base.add(7).write(regs.x[7]);
+            base.add(8).write(regs.x[8]);
+            base.add(9).write(regs.x[9]);
+            base.add(10).write(regs.x[10]);
+            base.add(11).write(regs.x[11]);
+            base.add(12).write(regs.x[12]);
+            base.add(13).write(regs.x[13]);
+            base.add(14).write(regs.x[14]);
+            base.add(15).write(regs.x[15]);
+            base.add(16).write(regs.x[16]);
+            base.add(17).write(regs.x[17]);
+            base.add(18).write(regs.x[18]);        // x18
+            base.add(19).write(regs.x[29]);        // x29 (paired in asm with x18)
+            base.add(20).write(regs.x[30]);        // x30 (lr)
+            base.add(21).write(0);                 // pad
+            base.add(22).write(user_ip);           // ELR_EL1 = parent's post-SVC PC
+            // SPSR_EL1 = 0: EL0t with all DAIF clear (IRQs allowed at EL0).
+            base.add(23).write(0);
+            base.add(24).write(user_sp);           // sp_el0
+            base.add(25).write(0);                 // pad
+            base
+        };
+        Self {
+            sp:    sp as u64,
+            // x19..x28 inherit parent's user state via the kernel
+            // Context — the IRQ epilogue doesn't pop them from the
+            // frame. context_switch restores these on dispatch.
+            x19: regs.x[19],
+            x20: regs.x[20],
+            x21: regs.x[21],
+            x22: regs.x[22],
+            x23: regs.x[23],
+            x24: regs.x[24],
+            x25: regs.x[25],
+            x26: regs.x[26],
+            x27: regs.x[27],
+            x28: regs.x[28],
+            x29: regs.x[29],
+            lr:    crate::vbar::irq_resume_user_addr(),
+            tpidr: 0,
+        }
+    }
+}
+
+/// Parent-side SVC-frame snapshot used by `new_user_for_fork`.
+/// Populated by `kernel_sys_clone_dispatch` from the saved frame
+/// at `current_svc_frame()`. v1 captures x0..x30 + the post-svc
+/// ELR_EL1 + SPSR_EL1 + SP_EL0.
+#[derive(Copy, Clone, Default)]
+pub struct ForkRegs {
+    pub x: [u64; 31],   // x0..x30
+    pub elr_el1:  u64,
+    pub spsr_el1: u64,
+    pub sp_el0:   u64,
 }
 
 #[cfg(test)]
