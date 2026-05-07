@@ -123,19 +123,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/hostname/hostname", "userspace/hostname/hostname.c"),
         ("userspace/mkdir/mkdir",       "userspace/mkdir/mkdir.c"),
         ("userspace/seq/seq",           "userspace/seq/seq.c"),
+        ("userspace/nproc/nproc",       "userspace/nproc/nproc.c"),
+        ("userspace/head/head",         "userspace/head/head.c"),
+        ("userspace/wc/wc",             "userspace/wc/wc.c"),
+        ("userspace/kill/kill",         "userspace/kill/kill.c"),
+        ("userspace/rm/rm",             "userspace/rm/rm.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
         ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
-        ("userspace/kill/kill",         "userspace/kill/kill.c"),
-        ("userspace/rm/rm",             "userspace/rm/rm.c"),
         ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
         ("userspace/ps/ps",             "userspace/ps/ps.c"),
         ("userspace/ls/ls",             "userspace/ls/ls.c"),
         ("userspace/mount/mount",       "userspace/mount/mount.c"),
         ("userspace/cp/cp",             "userspace/cp/cp.c"),
-        ("userspace/wc/wc",             "userspace/wc/wc.c"),
-        ("userspace/head/head",         "userspace/head/head.c"),
         ("userspace/dmesg/dmesg",       "userspace/dmesg/dmesg.c"),
         ("userspace/nc/nc",             "userspace/nc/nc.c"),
         ("userspace/tee/tee",           "userspace/tee/tee.c"),
@@ -145,7 +146,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/cmp/cmp",           "userspace/cmp/cmp.c"),
         ("userspace/route/route",       "userspace/route/route.c"),
         ("userspace/xxd/xxd",           "userspace/xxd/xxd.c"),
-        ("userspace/nproc/nproc",       "userspace/nproc/nproc.c"),
         ("userspace/getent/getent",     "userspace/getent/getent.c"),
         ("userspace/login/login",       "userspace/login/login.c"),
         ("userspace/su/su",             "userspace/su/su.c"),
@@ -325,6 +325,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("hostname"), "/bin/oxide-hostname")?;
     put(&user("mkdir"),       "/bin/oxide-mkdir")?;
     put(&user("seq"),           "/bin/oxide-seq")?;
+    put(&user("nproc"),       "/bin/oxide-nproc")?;
+    put(&user("head"),         "/bin/oxide-head")?;
+    put(&user("wc"),             "/bin/oxide-wc")?;
+    put(&user("kill"),         "/bin/oxide-kill")?;
+    put(&user("rm"),             "/bin/oxide-rm")?;
     // The remaining toy applets below still embed x86 inline-asm
     // syscalls; only stage them on x86_64 until they're ported. The
     // portable forms above ship at /bin/oxide-<name> so they don't
@@ -335,15 +340,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if arch == "x86_64" {
     put(&user("sh"),             "/bin/oxide-sh")?;
     put(&user("udp_echo"), "/bin/udp_echo")?;
-    put(&user("kill"),         "/bin/kill")?;
-    put(&user("rm"),             "/bin/rm")?;
     put(&user("tcp_echo"), "/bin/tcp_echo")?;
     put(&user("ps"),             "/bin/ps")?;
     put(&user("ls"),             "/bin/ls")?;
     put(&user("mount"),       "/bin/mount")?;
     put(&user("cp"),             "/bin/cp")?;
-    put(&user("wc"),             "/bin/wc")?;
-    put(&user("head"),         "/bin/head")?;
     put(&user("dmesg"),       "/bin/dmesg")?;
     put(&user("nc"),             "/bin/nc")?;
     put(&user("tee"),           "/bin/tee")?;
@@ -353,7 +354,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("cmp"),           "/bin/cmp")?;
     put(&user("route"),       "/bin/route")?;
     put(&user("xxd"),           "/bin/xxd")?;
-    put(&user("nproc"),       "/bin/nproc")?;
     put(&user("getent"),     "/bin/getent")?;
     put(&user("login"),       "/bin/login")?;
     put(&user("su"),             "/bin/su")?;
