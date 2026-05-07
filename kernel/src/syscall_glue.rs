@@ -789,6 +789,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_TKILL         => kernel_sys_kill(&args),
         crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_proc::kernel_sys_rt_sigpending(&args),
         crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_proc::kernel_sys_rt_sigsuspend(&args),
+        crate::syscall_nrs::NR_RT_SIGTIMEDWAIT  => crate::syscall_glue_proc::kernel_sys_rt_sigtimedwait(&args),
+        crate::syscall_nrs::NR_RT_SIGQUEUEINFO  => crate::syscall_glue_proc::kernel_sys_rt_sigqueueinfo(&args),
+        crate::syscall_nrs::NR_RT_TGSIGQUEUEINFO => crate::syscall_glue_proc::kernel_sys_rt_tgsigqueueinfo(&args),
         // Real-impl arms that overlap with compat-stub categories.
         crate::syscall_nrs::NR_PIPE          => kernel_sys_pipe2(&args),
         crate::syscall_nrs::NR_CREAT         => crate::syscall_glue_open::kernel_sys_open(&args),
