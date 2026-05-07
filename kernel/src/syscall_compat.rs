@@ -84,7 +84,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_MOUNT_SETATTR | NR_OPEN_TREE | NR_MOVE_MOUNT
         | NR_FSOPEN | NR_FSCONFIG | NR_FSMOUNT | NR_FSPICK
         | NR_FANOTIFY_INIT | NR_FANOTIFY_MARK
-        | NR_RECVMMSG | NR_SENDMMSG
+        // RECVMMSG/SENDMMSG moved to real impl in PR-G.
         | NR_PSELECT6 | NR_SELECT
         | NR_WAITID
         | NR_GET_ROBUST_LIST | NR_CACHESTAT
