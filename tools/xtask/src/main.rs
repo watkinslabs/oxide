@@ -279,7 +279,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         repo.join("vendor/busybox/busybox")
     };
     if bb.is_file() {
+        // Single copy of busybox at /bin/busybox; every applet path
+        // becomes a hardlink (debugfs `ln <existing> <new>`) so the
+        // ext4 image holds one inode + one set of blocks instead of
+        // ~70 duplicates. busybox routes on argv[0], so reading
+        // /bin/sh actually opens /bin/busybox and the kernel passes
+        // "/bin/sh" as argv[0].
         put(&bb, "/bin/busybox")?;
+        let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
+            let cmd = format!("ln {} {}", target, link);
+            let mut c = Command::new("debugfs");
+            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
+            c.stdout(std::process::Stdio::null());
+            c.stderr(std::process::Stdio::null());
+            run(c)
+        };
         for applet in &[
             "sh", "ash",
             "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
@@ -291,7 +305,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "kill", "sleep", "tee", "xxd", "hostname", "uname",
             "pwd", "basename", "dirname", "which", "clear", "reset",
         ] {
-            put(&bb, &format!("/bin/{applet}"))?;
+            dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
     }
     // Portable bins (use shared/oxide_start.h + musl libc wrappers,
