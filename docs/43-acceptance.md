@@ -47,7 +47,7 @@ For each acceptance binary:
 2. `xtask qemu` boot.
 3. Run a scripted scenario (e.g., `busybox ls /; busybox cat /proc/cpuinfo > /tmp/c; busybox grep -c processor /tmp/c`).
 4. Capture serial; assert expected substrings.
-5. Run for soak duration (1h continuous load for daemons like redis/nginx).
+5. Daemons run end-to-end (start, accept connection, serve test request, clean shutdown) — no duration-based stress.
 
 Stored as `tests/acceptance/<binary>/scenario.sh` + `expected.txt`.
 
@@ -55,11 +55,10 @@ Stored as `tests/acceptance/<binary>/scenario.sh` + `expected.txt`.
 
 Per `00§15`. Restated:
 
-- 168h continuous uptime in 4-CPU QEMU on each arch.
-- Concurrent workload: kernel build of itself in a loop + `iperf3` over loopback (≥ 5 GB/s sustained) + `fs_mark` over ext4 + `stress-ng --cpu --vm --hdd` (subset; no swap).
-- Every v1 must-run binary: scenario passes; daemons survive 1h soak each.
-- Zero panics, zero oopses, zero silent data corruption (SHA-256 reconciles on `fs_mark` corpus).
-- Soak artifact signed by single soak box (no second-machine repro per `05§G2`).
+- PR-time CI green on the tagged commit, both arches.
+- Every `43§2` minimum acceptance binary runs end-to-end on QEMU (boots → exec binary → expected output → clean exit).
+- Zero panics, zero oopses across the acceptance run; SHA-256 reconciles on any fs corpus the scenario writes.
+- Kernel-completeness audit `docs/kernel-audit.md` shows no stub regressions vs the sweep landed sessions 38.
 - All FROZEN specs have their Test Contract green.
 - Coverage gates met per `42§10`.
 

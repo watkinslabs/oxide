@@ -1,9 +1,9 @@
 # 42 Test Strategy
 
-FROZEN 2026-05-02. Dep:`02`,`05`,`06`,`07`,`08`,`40`.
+DRAFT 2026-05-07 (was FROZEN 2026-05-02; reopened to drop soak per `00§17`). Dep:`02`,`05`,`06`,`07`,`08`,`40`.
 ## 1 Purpose
 
-Concrete patterns: oracle property tests, loom, miri, hosted vs in-kernel tests, fuzz, soak. How each integrates with the workspace and CI.
+Concrete patterns: oracle property tests, loom, miri, hosted vs in-kernel tests, fuzz. How each integrates with the workspace and CI.
 
 ## 2 Invariants (frozen)
 
@@ -24,7 +24,6 @@ Concrete patterns: oracle property tests, loom, miri, hosted vs in-kernel tests,
 | In-kernel | `tests/integration/` | `xtask test --kernel` boots image w/ test runner | medium |
 | QEMU smoke | `tests/qemu/` | `xtask qemu` w/ expected output match | fast |
 | Bench | `bench/` (criterion or custom) | `xtask bench` | medium |
-| Soak | `tests/soak/<workload>` | `tools/soak-runner` | hours |
 | Fuzz | `fuzz/<crate>/` | `cargo fuzz run` | continuous |
 
 ## 4 Oracle pattern
@@ -100,21 +99,9 @@ Used for: VFS scenarios, syscall scenarios, signal delivery, mmap/fork combinati
 
 Continuous on a corpus dir; failed inputs auto-saved as regression tests.
 
-## 9 Soak workloads
+## 9 (retired) Soak workloads
 
-`tests/soak/<name>/`:
-
-| Workload | Stresses |
-|---|---|
-| pmm-mix | `10` (random alloc/free with poison injection) |
-| slab-mix | `12` |
-| sched-canary | `13`+`14` (canary + 1ms preempt) |
-| fs-stress | `16`+`17` (fs_mark + find + concurrent touch/unlink) |
-| net-loopback | `25` (iperf3 + curl loops) |
-| build-self | full kernel build of itself in a loop |
-| stress-ng | external `stress-ng --cpu --vm --hdd` if integrated |
-
-Background rotation (per `40§3`): each subsystem's primary workload + `stress-ng` mixed; 4h cycles on `main`. Failures → tickets; not phase-gating.
+Removed 2026-05-07 per `00§17`. The randomized concurrent-op stressors that lived here move into proptest harnesses (subsystem-specific) and into the `qemu-acceptance-{arch}` PR-time job (`40§2`). PR-time CI is the wall — duration-based runs aren't a gate.
 
 ## 10 Coverage
 

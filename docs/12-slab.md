@@ -82,7 +82,7 @@ Hot-path round trip ≤ 80 cy per `04§1`.
 - Loom: 4 threads × 100 ops; alloc/free interleavings; no UAF/leak; depth 6.
 - Miri: hosted unit tests; no UB.
 - Stress: 100 threads × 1M alloc/free random sizes; redzone+poison check at end; zero corruption.
-- Soak (bg, not gate per `40§3`): 4h SMP cycles, kernel-build+iperf3+fs_mark; objects-alive end ≈ start (slop). PR-time gate uses `paranoid-ci` (`debug-alloc`+redzone+poison per op).
+- PR-time gate uses `paranoid-ci` (`debug-alloc` + redzone + poison per op) per `41§3`. Randomized SMP alloc/free runs in proptest harnesses, not duration-based.
 - Coverage ≥95%.
 
 ## 7 Failure modes

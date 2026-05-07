@@ -40,7 +40,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-cgroup` | `cgroup` | per-cgroup charge trace | 20% | `26§10` |
 | `debug-security` | `security` | every cap_check denial logged; seccomp/landlock denials | <5% | `27§18` |
 | `debug-init` | `init` (userspace) | trace every fork+exec | boot-only | `29§12` |
-| `debug-syscalls` | `syscall` | log every syscall + args + retval | 50× | extreme; do not enable in soak |
+| `debug-syscalls` | `syscall` | log every syscall + args + retval | 50× | extreme; PR-time only on targeted bug hunt |
 | `debug-panic` | `panic` | full caller-saved reg dump on panic | panic-only | `38§10` |
 | `debug-obs` | `klog` | ring stats every 10s; tracepoint-enable history | <1% | `37§15` |
 | `debug-procfs` | `procfs` | log every open with path+caller | <1% | `19§11` |
@@ -50,7 +50,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-ipc` | `ipc` | pipe/AF_UNIX buffer dumps; futex queue dump; signal trace | 20% | `24§14` |
 | `debug-boot` | `boot-*` | dump Limine responses; full memmap | boot-only | `36§9` |
 | `debug-all` | meta | enables all `debug-*` except `debug-syscalls`, `debug-slab-audit`, `debug-net` (too expensive for general use) | varies | recommended for routine debug work |
-| `paranoid-ci` | meta | substitute for the dropped 24h soak gate. Enables: `debug-pmm` + `debug-alloc` + `debug-lockdep` + `debug-preempt` + `debug-sched-canary` + `debug-vmm` + `debug-vfs` for PR-time CI builds. Catches what soak would catch in a 5-min run by aggressive auditing instead of long randomized workloads. | 5–10× | **MANDATORY in `pr.yml` test-hosted job per `40§2`** |
+| `paranoid-ci` | meta | aggressive-audit PR-time build. Enables: `debug-pmm` + `debug-alloc` + `debug-lockdep` + `debug-preempt` + `debug-sched-canary` + `debug-vmm` + `debug-vfs`. Catches concurrency / memory / refcount bugs by per-op auditing in proptest harnesses, not by long workloads. | 5–10× | **MANDATORY in `pr.yml` test-hosted job per `40§2`** |
 
 ## 4 Combinations
 
