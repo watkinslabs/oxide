@@ -1072,6 +1072,100 @@ pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_membarrier(_args: &SyscallArgs) -> i64 { 0 }
 
+const CLONE_NEWNS:    u64 = 0x00020000;
+const CLONE_NEWCGROUP:u64 = 0x02000000;
+const CLONE_NEWUTS:   u64 = 0x04000000;
+const CLONE_NEWIPC:   u64 = 0x08000000;
+const CLONE_NEWUSER:  u64 = 0x10000000;
+const CLONE_NEWPID:   u64 = 0x20000000;
+const CLONE_NEWNET:   u64 = 0x40000000;
+
+#[inline]
+fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
+    Some(match clone_flag {
+        CLONE_NEWNS      => 0,
+        CLONE_NEWUTS     => 1,
+        CLONE_NEWIPC     => 2,
+        CLONE_NEWUSER    => 3,
+        CLONE_NEWPID     => 4,
+        CLONE_NEWNET     => 5,
+        CLONE_NEWCGROUP  => 6,
+        _ => return None,
+    })
+}
+
+/// `sys_unshare(flags)` — slot 272. Per Linux: detach the calling
+/// task from the named namespaces, taking up its own slot. v1 honors
+/// CLONE_NEWUTS by snapshotting the current global hostname into a
+/// per-task UTS slot (subsequent sethostname/uname see only the
+/// per-task copy). Other CLONE_NEW* bits are admitted (membership
+/// bit set) but per-NS isolation isn't enforced — that requires
+/// per-NS state for mount/ipc/pid/user/net/cgroup which are their
+/// own subsystem rewrites tracked under the v2 phase 21 follow-ups.
+///
+/// Linux also lets unshare() drop CLONE_FILES / CLONE_FS / CLONE_VM /
+/// CLONE_SIGHAND. v1 fork already disjoints these by default; we
+/// accept the bits silently.
+/// # C: O(1)
+pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let flags = args.a0;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let mut bits: u64 = 0;
+    for clone_flag in [
+        CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
+        CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWCGROUP,
+    ] {
+        if (flags & clone_flag) != 0 {
+            if let Some(b) = ns_bit_for_clone(clone_flag) {
+                bits |= 1u64 << b;
+            }
+        }
+    }
+    if bits == 0 { return 0; }
+    cur.ns_membership.fetch_or(bits, Ordering::Release);
+    if (bits & (1u64 << 1)) != 0 {
+        // CLONE_NEWUTS: snapshot the global hostname into the per-task slot.
+        let snap_bytes = crate::hostname::snapshot();
+        let snap = alloc::string::String::from_utf8(snap_bytes).unwrap_or_default();
+        // SAFETY: per-task slot single-mutator per `13§5`; running task
+        // on this CPU is the sole writer.
+        unsafe { *cur.uts_hostname.get() = snap; }
+    }
+    0
+}
+
+/// `sys_setns(fd, nstype)` — slot 308. Linux requires `fd` to refer
+/// to a `/proc/<pid>/ns/<type>` file; v1 doesn't yet expose those.
+/// We honor the syscall as a clear-the-membership-bit op so callers
+/// can re-attach to the init namespace. The fd argument is currently
+/// ignored.
+/// # C: O(1)
+pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let _fd  = args.a0;
+    let nstype = args.a1;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let mut clear: u64 = 0;
+    for clone_flag in [
+        CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
+        CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWCGROUP,
+    ] {
+        if (nstype & clone_flag) != 0 {
+            if let Some(b) = ns_bit_for_clone(clone_flag) {
+                clear |= 1u64 << b;
+            }
+        }
+    }
+    if clear == 0 { return 0; }
+    cur.ns_membership.fetch_and(!clear, Ordering::Release);
+    if (clear & (1u64 << 1)) != 0 {
+        // SAFETY: per-task slot single-mutator per `13§5`.
+        unsafe { (*cur.uts_hostname.get()).clear(); }
+    }
+    0
+}
+
 /// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
 /// v1: ignores clk_id + flags, reuses `kernel_sys_nanosleep` on
 /// the req timespec. TIMER_ABSTIME would compute deadline from
