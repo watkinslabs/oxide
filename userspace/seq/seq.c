@@ -1,14 +1,9 @@
 // /bin/seq — POSIX seq(1). Usage:
-//   seq <last>          1..last inclusive
-//   seq <first> <last>  first..last
+//   seq <last>            1..last inclusive
+//   seq <first> <last>    first..last
 //   seq <first> <step> <last>
-
-#include <sys/syscall.h>
-
-static long
-sc1(long nr, long a0) { long r; __asm__ volatile ("syscall" : "=a"(r) : "0"(nr), "D"(a0) : "rcx","r11","memory"); return r; }
-static long
-sc3(long nr, long a0, long a1, long a2) { long r; __asm__ volatile ("syscall" : "=a"(r) : "0"(nr), "D"(a0), "S"(a1), "d"(a2) : "rcx","r11","memory"); return r; }
+#include "../shared/oxide_start.h"
+#include <unistd.h>
 
 static long parse_long(const char *s) {
     long v = 0; int neg = 0;
@@ -25,22 +20,20 @@ static void put_long(long v) {
     if (neg) { buf[n++] = '-'; }
     char r[24]; for (int i = 0; i < n; i++) r[i] = buf[n-1-i];
     r[n++] = '\n';
-    sc3(SYS_write, 1, (long)r, n);
+    write(1, r, n);
 }
 
-__attribute__((force_align_arg_pointer))
-void _start(void) {
-    long argc; char **argv;
-    __asm__ volatile ("mov (%%rsp), %0\n\t lea 8(%%rsp), %1\n\t" : "=r"(argc), "=r"(argv));
+int main(int argc, char** argv, char** envp) {
+    (void)envp;
     long first = 1, step = 1, last = 0;
     if (argc == 2) last = parse_long(argv[1]);
     else if (argc == 3) { first = parse_long(argv[1]); last = parse_long(argv[2]); }
     else if (argc == 4) { first = parse_long(argv[1]); step = parse_long(argv[2]); last = parse_long(argv[3]); }
-    else sc1(SYS_exit, 1);
+    else return 1;
     if (step > 0) {
         for (long v = first; v <= last; v += step) put_long(v);
     } else if (step < 0) {
         for (long v = first; v >= last; v += step) put_long(v);
     }
-    sc1(SYS_exit, 0);
+    return 0;
 }
