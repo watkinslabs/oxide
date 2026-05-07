@@ -20,7 +20,7 @@ DRAFT: mutable, no changelog discipline, code may not be written for the subsyst
 Freeze gate (all required):
 1. Zero open questions (each → section or `docs/v2/<spec>.md` deferred entry).
 2. All cross-refs resolve via `tools/spec-lint/ xref` (target need not be FROZEN; section must exist).
-3. Test contract concrete (numbers, oracles, coverage gates) where the spec describes a subsystem with executable behavior. Charter / meta specs (this one, `08`, `09`) exempt. PR-time gates pass; soak background diagnostic only.
+3. Test contract concrete (numbers, oracles, coverage gates) where the spec describes a subsystem with executable behavior. Charter / meta specs (this one, `08`, `09`) exempt. PR-time gates pass.
 4. Cool-off ≥48h on spec text by default (edit resets clock); solo dev may waive when re-read fresh is unblocked. Decision recorded in freeze commit.
 5. Top-line `Status: FROZEN <date>`; commit `freeze: <spec>` on `Z<NN>-<spec>` branch.
 

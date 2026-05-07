@@ -20,9 +20,9 @@ Fix: systemd→v2 (`43§4`). v1.x adds BPF subset. Don't quietly miss.
 Rootless containers need fuse-overlayfs (real overlayfs needs CAP_SYS_ADMIN in init userns until recent kernels). Privileged runc fine without FUSE.
 Fix: v1.x = privileged runc only. Rootless = v2 (`43§3`).
 
-### A4 ext4+journal in 4 weeks
-JBD2 = 4–6mo: crash-safe, ordered-writeback, power-cut-survival. Linux JBD2 ~15KLOC, 20y, still bugs. 4-week phase incl block+pagecache+ext4 RW+power-cut soak off 4–6×.
-Fix: split phases — block+pagecache (own); ext4 RO (own); JBD2+ext4 RW (own). 12–16wk total.
+### A4 ext4+journal scope
+JBD2 is its own substrate — crash-safe, ordered-writeback, power-cut-survival; Linux JBD2 ~15KLOC and still gets bugs. Bundling it with block+pagecache+ext4 RW into a single phase under-scopes the work.
+Fix: split phases — block+pagecache (own); ext4 RO (own); JBD2+ext4 RW (own). Each phase advances on its §Test contract green, not on calendar.
 
 ### A5 Acceptance binary list mis-sorted
 v1 split (per `43§2-4`):
@@ -30,36 +30,18 @@ v1 split (per `43§2-4`):
 - v1.x: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
 - v2: systemd≥254 PID1 (~150 syscalls + BPF + cgroup subtree + sd_notify + journald + 100s of unit-file edges); rootless runc; Wayland GUI.
 
-## B Scope / calendar
+## B Scope
 
-### B1 9-phase calendar off ~3×
-Per-phase 24CPU-hr soak gate. Failed soak restarts. Real per-phase 4–5wk vs claimed 2.
+### B1 (retired 2026-05-07) Calendar / week-estimate framing
+Old plan listed per-phase week ranges + multi-month total. Removed 2026-05-07 — AI-driven solo work doesn't follow team-of-50 calendars; gate on per-spec §Test contract green, not duration. See `feedback_no_time_estimates`.
 
-| Phase | Stated | Realistic solo |
-|---|---|---|
-| 0 build infra | 1wk | 1–2wk |
-| 1 PMM | 2wk | 4–6wk |
-| 2 VMM | 3wk | 8–12wk |
-| 3 Slab+alloc | 2wk | 3–4wk |
-| 4 Sched+ctxsw+SMP | 4wk | 12–16wk |
-| 5 Syscalls+userspace | 3wk | 8–12wk |
-| 6 VFS+tmpfs+ext4 RO | 3wk | 6–8wk |
-| 7 Block+pagecache+ext4 RW | 4wk | 12–20wk (A4) |
-| 8 Net | 6wk | 20–30wk |
-| 9 Hardening/obs | ongoing | ongoing |
+### B2 io_uring scope
+Needs: SQ/CQ ring shared mmap, sqpoll worker(s), 80+ opcodes, polled completion, buffer registration, fixed files, multishot, chained SQEs, timeouts, cancels, IOPOLL. Standalone subsystem. Promoted to v2 phase 23 per `00-v2§3`. v1 epoll covers most use.
 
-Honest total v1: **18–24mo solo full-time**. Plan's "29+wk" off 2–3×.
-Fix: replace week-numbered headings with effort estimates + dependency edges in `00§3`. Calendar drift fine; pretending isn't.
-
-### B2 io_uring not in any phase
-Needs: SQ/CQ ring shared mmap, sqpoll worker(s), 80+ opcodes, polled completion, buffer registration, fixed files, multishot, chained SQEs, timeouts, cancels, IOPOLL.
-4–6mo standalone. v1 promise nginx+io_uring → need phase 5.5 with own soak. Or drop from v1; epoll covers most.
-Fix: io_uring → v1.x (`43§3`).
-
-### B3 TCP years not weeks
-smoltcp = single-thread, embedded. Linux-compat TCP needs: MP-CPU lock-free socket tables; BBR/CUBIC/DCTCP; TCP_NODELAY/CORK/FASTOPEN/SO_REUSEPORT (hash-LB); window-scale,SACK,TLP,RACK,PRR; conntrack for any iptables-userspace.
-Real-app compat is "every TCP_* opt has documented Linux semantic", not "iperf3 100Mb/s." Multi-month sub-phase.
-Fix: scope phase 8 honestly. v1 = "loopback + virtio-net + TCP passes must-run binary list"; not NIC-tuned line-rate.
+### B3 TCP scope vs Linux-app compatibility
+smoltcp = single-thread, embedded. Linux-compat TCP needs MP-CPU lock-free socket tables; BBR/CUBIC/DCTCP; TCP_NODELAY/CORK/FASTOPEN/SO_REUSEPORT (hash-LB); window-scale, SACK, TLP, RACK, PRR; conntrack for any iptables-userspace.
+Real-app compat is "every TCP_* opt has documented Linux semantic", not "iperf3 100Mb/s." Its own sub-phase.
+Fix: scope phase 8 honestly. v1 = "loopback + AF_INET TCP/UDP + AF_UNIX passes must-run binary list"; not NIC-tuned line-rate. Real virtio-net + DHCP/DNS = v2 phases 18-19.
 
 ## C Rust-as-kernel risks
 
@@ -93,20 +75,19 @@ Fix: spec reality. miri runs hosted unit tests of arch-free crates only (`pmm` p
 
 ### C8 loom is bounded
 Loom: depth-bounded all-interleavings; perfect for 2–4 threads on lock-free DS; for 8+ threads / whole-subsystem SMP → exponential / misses rare.
-Fix: loom mandatory for primitives (locks, MPSC, RCU). SMP soak mandatory for whole-subsystem behavior. Neither replaces other.
+Fix: loom mandatory for primitives (locks, MPSC, RCU). SMP differential mandatory for whole-subsystem behavior (proptest with seeded randomized concurrent ops + post-condition oracle). Neither replaces other.
 
 ## D Verification limits
 
 ### D1 Oracle proptest catches correctness, not liveness/perf
 proptest vs buddy oracle proves no overlapping memory. Doesn't prove no contention deadlock, no slow path, no slab leak over weeks.
-Fix: liveness watchdog (no-progress-N-sec); bench harness hooked to oracle (`04§5`); long-running counters (slab obj, PT pages, refcounts) tracked across soak.
+Fix: liveness watchdog (no-progress-N-sec); bench harness hooked to oracle (`04§5`); long-running counters (slab obj, PT pages, refcounts) tracked across QEMU-acceptance runs.
 
-### D2 (resolved) 24h soak gate ≠ solo dev calendar
-Original concern: 24h × 2 arches × per-phase gate = perpetual wall. Fix applied 2026-05-02: soak demoted to continuous bg diagnostic per `40§3`; phase gate moved to PR-time (≤5min + canary 1h) + `paranoid-ci` build (`41§3`). Single soak box; v1 tag is sole 168h wait.
+### D2 (retired) Soak gating
+Original concern: per-phase soak gate stalls a solo project. Resolved 2026-05-07 by removing soak gating entirely per `00§17`. PR-time CI is the only wall; v1 exit per `00§15` is acceptance-binary pass.
 
-### D3 Two-machine reproduction = CI infra
-v1 exit `00§15`: "second machine independently reproduces from same commit". Solo dev = "I ran it twice on different boxes". Team = "CI on multi-runner". Either way infra not yet planned.
-Fix: lower v1 exit → "same machine, same image hash, soak passes". Multi-machine = v1.x/v2 once CI exists.
+### D3 (retired) Two-machine reproduction
+v1 exit no longer requires multi-machine reproduction. PR-time CI on GHA hosted runners + `43§2` acceptance suffices.
 
 ## E Hardware reality
 
@@ -119,7 +100,7 @@ Most laptop power (thermal, sleep, lid, fan) flows through AML methods. UEFI Run
 Fix: explicit. v1 supports cloud + headless server bare-metal. Power = halt+reboot+CPU-temp-via-MSR. Laptops v2+.
 
 ### E3 virtio-only first deployment
-`03§7` lists igc/ice/mlx5 as if v1. Each 6–12mo solo. v1 = QEMU/KVM + virtio + serial. Real NICs v2.
+`03§7` lists igc/ice/mlx5 as if v1. Each is its own driver-grade subsystem. v1 = QEMU/KVM + virtio + serial. Real NICs v2.
 Fix: driver list amended (`35§4`). v1: virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2 kbd. Real NIC v1.x/v2.
 
 ## F Missing entirely
@@ -170,13 +151,11 @@ Fix: `06§4` (`PerCpu<T>` via `gs:`/`tpidr_el1`).
 Solo "sign-off" = self-loop. Discipline still has value (pre-commit forcing) but social mechanism absent.
 Fix: time-delayed self-review (`02§7`). 48h cool-off on text; re-read fresh.
 
-### G2 Two-machine repro unrealistic solo
-Cf D3.
-Fix: v1 exit lowered → same machine + image hash + soak. Multi-machine v1.x/v2.
+### G2 (retired) Two-machine repro
+Cf D3. Resolved 2026-05-07 — v1 exit now PR-time CI + `43§2` acceptance per `00§15`.
 
-### G3 18–24mo timeline kills projects
-Biggest risk = morale/abandonment. Mitigation = visible artifact every phase, not just v1. Phase 5 (busybox sh) = first "we have a thing" — should be wk30 honest calendar, not wk15.
-Fix: (a) compress phases by reducing verification rigor for NON-critical subsystems (never for mem/sched/ctxsw); or (b) accept timeline + demo every phase boundary so project feels alive.
+### G3 (retired 2026-05-07) Timeline-as-risk framing
+Old concern was "long calendar kills morale." AI-driven solo cadence makes that framing obsolete; risk is now scope creep and substrate gaps, not duration. Each phase ships a usable artifact (PMM smoke, kernel boots, login works, etc.) — the visible-artifact mitigation already applies regardless of calendar.
 
 ## H Summary fixes (priority)
 

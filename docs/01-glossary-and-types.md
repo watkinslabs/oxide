@@ -172,7 +172,6 @@ Const names: `Caps::CAP_<NAME>`.
 | Sleeping | calls fn that may yield; forbidden in atomic ctx |
 | Atomic ctx | union {IRQ, softIRQ, preempt-off, IRQ-off}; sleeping forbidden |
 | Oracle | reference impl, deliberately stupid, in `tools/oracle-*/`, used in differential tests |
-| Soak | hours-long randomized stress, measured in CPU-hours |
 | Property test | proptest-driven, checks invariant under random ops |
 | Loom test | exhaustive interleaving exploration, depth-bounded |
 | Hosted test | `cargo test` on dev host (not kernel target) |
