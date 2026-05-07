@@ -22,7 +22,7 @@ pub fn cap_check(cap:u8) -> KR<()>;                // EPERM if missing
 pub fn cap_check_in_userns(cap:u8, userns:&UserNs) -> KR<()>;
 
 pub fn seccomp_set_strict() -> KR<()>;             // only read,write,exit,sigreturn allowed
-pub fn seccomp_set_filter(prog:&BpfProg) -> KR<()>;// v1.x once BPF lands
+pub fn seccomp_set_filter(prog:&BpfProg) -> KR<()>;// v2 once BPF lands
 
 pub fn landlock_create_ruleset(attr:&LandlockRulesetAttr) -> KR<RawFd>;
 pub fn landlock_add_rule(ruleset:RawFd, kind:u32, attr:&LandlockAttr, flags:u32) -> KR<()>;
@@ -45,8 +45,8 @@ Only `read`, `write`, `_exit`, `rt_sigreturn` allowed; everything else → SIGKI
 ### 5.2 Filter mode
 BPF prog evaluated on every syscall; returns action (`ALLOW`,`KILL`,`KILL_PROCESS`,`TRAP`,`ERRNO`,`USER_NOTIF`,`LOG`,`TRACE`).
 
-v1.0: returns ENOSYS for filter mode (BPF deferred to v1.x). Strict mode works.
-v1.x: ship the BPF subset needed for seccomp filters.
+v1.0: returns ENOSYS for filter mode (BPF deferred to v2). Strict mode works.
+v2: ship the BPF subset needed for seccomp filters.
 
 ## 6 Landlock
 
@@ -54,7 +54,7 @@ Filesystem sandbox: ruleset of allowed filesystem ops (read_file, write_file, re
 
 v1.0: implement; this is the modern container sandbox primitive and stand-alone of BPF.
 
-## 7 Sigverify (modules + kexec when v1.x)
+## 7 Sigverify (modules + kexec when v2)
 
 Signature trailer: PKCS#7 / detached RSA-PSS-SHA256.
 Trust root: one or more X.509 certs embedded in kernel image at build (env var `OXIDE_TRUSTED_KEYS`).
@@ -82,7 +82,7 @@ Reset only by reboot.
 
 Kernel image base randomized at boot (8-bit entropy, page-aligned within the higher-half image area). Direct map base randomized (16-bit). vDSO mapped at randomized user va per process.
 
-v1.0: kernel base fixed (no relocation logic yet). v1.x: enable. Spec'd here so layout doesn't break later.
+v1.0: kernel base fixed (no relocation logic yet). v2: enable. Spec'd here so layout doesn't break later.
 
 ## 10 KPTI
 
@@ -152,7 +152,7 @@ Per-CPU rapid RNG (for non-cryptographic use): xoshiro256++ seeded from main DRB
 
 - Module-signing trust root: PEM cert(s) embedded at kernel build (env `OXIDE_TRUSTED_KEYS`); never modifiable at runtime.
 - TLS handshake: in userspace; kernel sees only symmetric keys via `kTLS` setsockopt.
-- Disk encryption (dm-crypt v1.x): keys held in kernel keyring (`add_key`/`request_key` v1.x); never in pageable memory.
+- Disk encryption (dm-crypt v2): keys held in kernel keyring (`add_key`/`request_key` v2); never in pageable memory.
 - Memfd_secret pages: phys never in kernel direct map per `03§4`.
 
 ### 14a.4 Constant-time invariants
@@ -173,7 +173,7 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 | `cap_check` (hit, in current ns) | ≤ 30 |
 | `cap_check_in_userns` (1-deep) | ≤ 80 |
 | Seccomp strict path-check (per syscall) | ≤ 20 |
-| Seccomp filter eval (BPF, v1.x) | ≤ 200 |
+| Seccomp filter eval (BPF, v2) | ≤ 200 |
 | Landlock check on `openat` | ≤ 300 |
 
 ## 16 Test contract (frozen)
@@ -184,7 +184,7 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 - W^X: `mmap(PROT_WRITE|PROT_EXEC)` returns EINVAL.
 - Stack smash: deliberately overflow buffer in test mode; panic with canary message.
 - Taint: load unsigned module with sig_enforce=0; `T_UNSIGNED` set; `/proc/sys/kernel/tainted` reflects.
-- KASLR (when v1.x): kernel base differs across boots.
+- KASLR (when v2): kernel base differs across boots.
 - Coverage ≥90% on `crates/security/`.
 
 ## 17 Failure modes

@@ -104,7 +104,7 @@ Single source of truth for shorthand used across `10+` specs and code. Add here 
 
 ## 5 Status tokens
 
-In tables: `V1` `V1.X` `V2` `STUB` `NEVER` per `15§2`.
+In tables: `V1` `V2` `V2` `STUB` `NEVER` per `15§2`.
 
 ## 6 Doc-comment markers (canonical)
 

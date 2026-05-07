@@ -118,7 +118,7 @@ Boot path is sole exception to alloc/free symmetry; single audited fn.
 
 Single global `Spinlock<PmmInner>` class `Buddy` (leaf). `lock_irqsave`. Lock-held duration O(MAX_ORDER) ≈ few hundred cy uncontended. Stats also take lock (not hot path).
 
-v1.x: per-CPU magazine cache layer (lean: defer; v1 ships bare buddy).
+v2: per-CPU magazine cache layer (lean: defer; v1 ships bare buddy).
 
 ## 8 Perf budget
 
