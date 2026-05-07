@@ -172,7 +172,7 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=1"]);
+                "bs=1M", "count=8"]);
         run(c)?;
     }
     {
@@ -201,6 +201,16 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)
     };
+    // Vendored busybox 1.37.0 — pre-built static-musl per
+    // vendor/busybox/build.sh. Acceptance binary covering the v1
+    // sh/ls/cat/etc. items in `43§2`. Lands at /bin/busybox; the
+    // kernel-side oxide-sh stays at /bin/sh so init's existing exec
+    // path doesn't change. Acceptance scenarios invoke busybox by
+    // its full name (e.g. `busybox ls /`).
+    let bb = repo.join("vendor/busybox/busybox");
+    if bb.is_file() {
+        put(&bb, "/bin/busybox")?;
+    }
     put(&repo.join("userspace/sh/sh"),             "/bin/sh")?;
     put(&repo.join("userspace/init/init"),         "/bin/init")?;
     put(&repo.join("userspace/init/init"),         "/sbin/init")?;
