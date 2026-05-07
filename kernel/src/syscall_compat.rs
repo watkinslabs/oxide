@@ -133,9 +133,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // follow-ups.
         | NR_IO_SETUP | NR_IO_DESTROY | NR_IO_GETEVENTS
         | NR_IO_SUBMIT | NR_IO_CANCEL | NR_IO_PGETEVENTS
-        | NR_PERF_EVENT_OPEN | NR_BPF | NR_SECCOMP
-        | NR_LANDLOCK_CREATE_RULESET | NR_LANDLOCK_ADD_RULE
-        | NR_LANDLOCK_RESTRICT_SELF
+        // SECCOMP / BPF / LANDLOCK / PERF_EVENT_OPEN moved to real
+        // (narrow) impls in P24a — seccomp filter via cBPF interpreter
+        // is the headliner; bpf + landlock + perf_event_open admit
+        // and return fds, but full verifier / JIT / LSM-hook delivery
+        // ride follow-ups.
         // UNSHARE / SETNS / PIVOT_ROOT: see real impl below (UNSHARE/SETNS)
         // and the privileged-refuse arm (PIVOT_ROOT).
         // socket family + signal-extras + preadv/pwritev (v1 alternates)

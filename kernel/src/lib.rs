@@ -121,6 +121,7 @@ pub mod dev_timerfd;
 pub mod dev_virtio_net;
 pub mod sysv_shm;
 pub mod io_uring;
+pub mod seccomp;
 pub mod syscall_glue_signal;
 pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
