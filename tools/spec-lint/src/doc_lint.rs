@@ -37,8 +37,14 @@ fn lint_file(path: &PathBuf, f: &mut Findings) {
     let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
     let text = read(path);
 
-    // MANIFEST + non-spec docs skip status/section checks.
-    let is_spec = name != "MANIFEST.md";
+    // MANIFEST + non-numeric-prefix docs skip status/section checks.
+    // Working docs (kernel-audit.md, boot-flow.md) don't need formal
+    // status lines or numbered section headers — they're indices /
+    // diagrams, not specs.
+    let has_num_prefix = name.len() >= 2
+        && name.as_bytes()[0].is_ascii_digit()
+        && name.as_bytes()[1].is_ascii_digit();
+    let is_spec = name != "MANIFEST.md" && has_num_prefix;
     let charter = is_charter(stem);
 
     if is_spec {

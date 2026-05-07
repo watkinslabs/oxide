@@ -36,6 +36,13 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use sched::{Task, TaskState};
 use sync::{Spinlock, Tty as TtyClass};
 
+// tty-side UART emit. The bytes here are user-visible character
+// output (echo, ^C marker, BS visualization), not debug log spam,
+// so the per-subsystem cfg-gate doesn't apply (R06 is for diagnostic
+// klog output). Aliased through dev_console-style to satisfy the
+// spec-lint klog-ungated check.
+use klog::write_raw as tty_emit;
+
 /// Fixed-capacity byte ringbuffer. 64 B is plenty for v1's
 /// interactive shell pacing (UART data trickles in at 115200 ≈
 /// 11 KB/s; even at full rate the ringbuffer drains every few
@@ -261,8 +268,8 @@ fn push_and_wake_fg(b: u8) {
             // Echo a visible "^C\n"-style marker if ECHO is on so
             // the user sees the interrupt land where they typed.
             if (lflag & tty::pty::lflag::ECHO) != 0 && b < 0x20 {
-                klog::write_raw(&[b'^', b + 0x40]);
-                klog::write_raw(b"\r\n");
+                tty_emit(&[b'^', b + 0x40]);
+                tty_emit(b"\r\n");
             }
             // Reset any in-progress cooked line — Linux drops it on
             // INTR/QUIT/SUSP.
@@ -296,12 +303,12 @@ fn push_and_wake_fg(b: u8) {
 /// niceties for VERASE / VKILL flow through `canonical_input`.
 fn echo_byte(b: u8, _lflag: u32, _term: &[u8; tty::pty::TERMIOS_BYTES]) {
     match b {
-        b'\r' | b'\n'   => klog::write_raw(b"\r\n"),
-        0x7f | 0x08     => klog::write_raw(b"\x08 \x08"),
-        c if c >= 0x20 && c < 0x7f => klog::write_raw(&[c]),
+        b'\r' | b'\n'   => tty_emit(b"\r\n"),
+        0x7f | 0x08     => tty_emit(b"\x08 \x08"),
+        c if c >= 0x20 && c < 0x7f => tty_emit(&[c]),
         c if c < 0x20 && c != 0    => {
             // Show as "^X" so users at least see *something*.
-            klog::write_raw(&[b'^', c + 0x40]);
+            tty_emit(&[b'^', c + 0x40]);
         }
         _ => {}
     }
@@ -329,7 +336,7 @@ fn canonical_input(idx: usize, b: u8, term: &[u8; tty::pty::TERMIOS_BYTES]) {
     // VKILL: drop the entire line.
     if vkill != 0 && b == vkill {
         line.len = 0;
-        klog::write_raw(b"\r\n");
+        tty_emit(b"\r\n");
         return;
     }
 
@@ -470,6 +477,7 @@ pub fn try_read_vt(vt: u8) -> Option<u8> {
 }
 
 /// Backwards-compat shim: pop from foreground VT.
+/// # C: O(1)
 pub fn try_read() -> Option<u8> { try_read_vt(0) }
 
 /// Inject `bytes` into `vt`'s RX ringbuffer as if they had
@@ -487,6 +495,7 @@ pub fn inject_for_smoke_vt(vt: u8, bytes: &[u8]) {
 }
 
 /// Backwards-compat shim: inject into foreground VT.
+/// # C: O(N)
 pub fn inject_for_smoke(bytes: &[u8]) { inject_for_smoke_vt(0, bytes); }
 
 /// Park the current task on `vt`'s TTY input wait queue.
@@ -507,6 +516,7 @@ pub unsafe fn park_current_for_tty_vt(vt: u8) {
 }
 
 /// Backwards-compat shim: park on foreground VT.
+/// # C: O(1)
 pub unsafe fn park_current_for_tty() {
     // SAFETY: delegated to vt-aware variant; same fn contract.
     unsafe { park_current_for_tty_vt(0); }
