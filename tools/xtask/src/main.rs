@@ -147,13 +147,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/id/id",             "userspace/id/id.c"),
         ("userspace/login/login",       "userspace/login/login.c"),
         ("userspace/su/su",             "userspace/su/su.c"),
+        ("userspace/agetty/agetty",     "userspace/agetty/agetty.c"),
+        ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
         ("userspace/svcd/svcd",         "userspace/svcd/svcd.c"),
-        ("userspace/agetty/agetty",     "userspace/agetty/agetty.c"),
         ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
-        ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
     let mut bins: Vec<(&str, &str)> = portable_bins.to_vec();
@@ -349,6 +349,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("id"),             "/bin/oxide-id")?;
     put(&user("login"),       "/bin/oxide-login")?;
     put(&user("su"),             "/bin/oxide-su")?;
+    put(&user("agetty"),     "/sbin/oxide-agetty")?;
+    put(&user("passwd"),     "/bin/oxide-passwd")?;
     // The remaining toy applets below still embed x86 inline-asm
     // syscalls; only stage them on x86_64 until they're ported. The
     // portable forms above ship at /bin/oxide-<name> so they don't
@@ -359,9 +361,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if arch == "x86_64" {
     put(&user("sh"),             "/bin/oxide-sh")?;
     put(&user("svcd"),         "/sbin/svcd")?;
-    put(&user("agetty"),     "/sbin/agetty")?;
     put(&user("rpm"),           "/bin/rpm")?;
-    put(&user("passwd"),     "/bin/passwd")?;
     // /lib/ld-musl-x86_64.so.1 — minimal dynamic-linker stub (P13-06).
     // Kernel ELF loader sees PT_INTERP="/lib/ld-musl-x86_64.so.1"
     // in any -pie (non-static) binary and dual-loads this image
