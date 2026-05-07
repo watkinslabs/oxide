@@ -139,14 +139,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/mount/mount",       "userspace/mount/mount.c"),
         ("userspace/ls/ls",             "userspace/ls/ls.c"),
         ("userspace/find/find",         "userspace/find/find.c"),
+        ("userspace/ps/ps",             "userspace/ps/ps.c"),
+        ("userspace/getent/getent",     "userspace/getent/getent.c"),
+        ("userspace/nc/nc",             "userspace/nc/nc.c"),
+        ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
+        ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/sh/sh",             "userspace/sh/sh.c"),
-        ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
-        ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
-        ("userspace/ps/ps",             "userspace/ps/ps.c"),
-        ("userspace/nc/nc",             "userspace/nc/nc.c"),
-        ("userspace/getent/getent",     "userspace/getent/getent.c"),
         ("userspace/login/login",       "userspace/login/login.c"),
         ("userspace/su/su",             "userspace/su/su.c"),
         ("userspace/id/id",             "userspace/id/id.c"),
@@ -341,6 +341,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("mount"),       "/bin/oxide-mount")?;
     put(&user("ls"),             "/bin/oxide-ls")?;
     put(&user("find"),         "/bin/oxide-find")?;
+    put(&user("ps"),             "/bin/oxide-ps")?;
+    put(&user("getent"),     "/bin/oxide-getent")?;
+    put(&user("nc"),             "/bin/oxide-nc")?;
+    put(&user("udp_echo"), "/bin/oxide-udp_echo")?;
+    put(&user("tcp_echo"), "/bin/oxide-tcp_echo")?;
     // The remaining toy applets below still embed x86 inline-asm
     // syscalls; only stage them on x86_64 until they're ported. The
     // portable forms above ship at /bin/oxide-<name> so they don't
@@ -350,11 +355,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     if arch == "x86_64" {
     put(&user("sh"),             "/bin/oxide-sh")?;
-    put(&user("udp_echo"), "/bin/udp_echo")?;
-    put(&user("tcp_echo"), "/bin/tcp_echo")?;
-    put(&user("ps"),             "/bin/ps")?;
-    put(&user("nc"),             "/bin/nc")?;
-    put(&user("getent"),     "/bin/getent")?;
     put(&user("login"),       "/bin/login")?;
     put(&user("su"),             "/bin/su")?;
     put(&user("id"),             "/bin/id")?;
