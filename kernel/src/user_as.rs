@@ -375,7 +375,19 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
         Some(k) => k,
         None    => return false,
     };
-    handle(cr2, kind)
+    if handle(cr2, kind) {
+        return true;
+    }
+    // Unhandled fault. If user-mode (CPL=3, err bit 2 set),
+    // terminate the task with SIGSEGV instead of halting the
+    // whole system — the fault is the task's bug (e.g. write
+    // to its own .rodata or stack underflow), not a kernel
+    // bug. Init's wait4 will reap. Kernel-mode unhandled
+    // faults still halt for diagnosis.
+    if err & 0x4 != 0 {
+        deliver_sigsegv_x86(vec, err, _rip, cr2);
+    }
+    false
 }
 
 /// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
@@ -385,7 +397,18 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
         Some(k) => k,
         None    => return false,
     };
-    handle(far, kind)
+    if handle(far, kind) {
+        return true;
+    }
+    // Same SIGSEGV-on-user-fault contract as x86. ESR EC bits 26..31
+    // distinguish lower-EL (user) from same-EL (kernel-mode user-buf
+    // access): EC=0x20/0x24 are EL0 (user), EC=0x21/0x25 are EL1
+    // same-EL (kernel-side). Only terminate the task on the EL0 case.
+    let ec = (esr >> 26) & 0x3F;
+    if matches!(ec, 0x20 | 0x24) {
+        deliver_sigsegv_arm(esr, far, _elr);
+    }
+    false
 }
 
 /// Public wrapper around `sigsegv_terminate_x86` so other modules
