@@ -1,3 +1,55 @@
+# State 2026-05-07 (session 39 — v2 phases 18-27 first cuts)
+
+## Headline (session 39)
+
+Autonomous run through v2 phase ladder. Bounded first-cut PRs landed
+on `main`; deferred items called out per-phase. v1 tightened + v2
+phase-ladder merged in D08/D09 (#631/#632) before this run started.
+
+| PR | Branch | Phase | What |
+|----|---|---|---|
+| #633 | P18a-af-inet6-admit | 18 | AF_INET6 socket admit + sockaddr_in6 ABI passthrough |
+| #634 | P19a-virtio-net-skeleton | 19 | virtio-net legacy driver: PCI detect + init handshake + queue alloc |
+| #635 | P20a-mm-completion | 20 | real mremap (shrink/grow/MOVE/FIXED) + MADV_DONTNEED |
+| #636 | P21a-namespaces | 21 | unshare/setns admit + per-task UTS hostname; pivot_root → EPERM |
+| #637 | P25a-sysv-shm | 25 | SysV shm — shmget/shmat/shmdt/shmctl on KernelBytes-backed VMA |
+| #638 | P22a-ptrace-admit | 22 | PTRACE_TRACEME admit + per-task traced_by |
+| (this PR) | P27a-fanotify-and-summary | 27 | fanotify_init returns inotify-shaped fd; fanotify_mark silent-0 |
+
+## Deferred follow-ups per phase
+
+Each phase has a "first cut landed; follow-ups required" footer:
+
+- **P18b** — V6 transport on loopback (UDP+TCP over IPv6 ::1), then real-wire V6 packetization (alongside P19 follow-ups).
+- **P18c** — DNS resolver (userspace; /etc/hosts → resolv.conf when DHCP lands).
+- **P18d** — DHCP client (needs P19 RX/TX live).
+- **P19b** — virtio-net frame TX path (alloc descriptor chain, copy frame + virtio_net_hdr, kick QUEUE_NOTIFY).
+- **P19c** — virtio-net RX descriptor pool + poll-mode RX drain.
+- **P19d** — virtio-net IRQ wiring (replaces poll-mode).
+- **P19e** — modern virtio-net (device=0x1041) capability list walk + MMIO BAR.
+- **P19f** — NetStack integration: AF_INET sends route through device when present.
+- **P20b** — per-PTE mprotect with TLB shootdown (currently VMA-side only).
+- **P20c** — MAP_SHARED real (page-cache-level shared frames).
+- **P21b/c/...** — per-NS state for mount, ipc, pid, user, net, cgroup. Each is its own subsystem rewrite.
+- **P22b** — real PTRACE_ATTACH / SINGLESTEP / PEEK/POKE / SYSCALL with signal-stop integration.
+- **P23 (io_uring)** — entire SQ/CQ ring substrate. Not started.
+- **P24 (bpf/seccomp/landlock)** — verifier + JIT + filter-program runtime. Not started.
+- **P25b** — SysV sem (semget/semop/semctl) + msg (msgget/msgsnd/msgrcv/msgctl) + POSIX MQ. Not started.
+- **P25c** — cross-process write-shared shm semantics (currently each process gets its own KernelBytes copy at fault).
+- **P27b** — real fanotify watch table + permission-event reply.
+- **P28 (userfaultfd)** — page-fault interception + memfd_secret enforced isolation. Not started.
+- **P29 (modern mount API)** — fsopen/fsconfig/fsmount/fspick + mount_setattr, real mount/umount/chroot. Not started.
+- **P30 (perf_event_open)** — PMU sampling, tracefs/ftrace, ebpf trace programs. Not started.
+- **P31 (core dump)** — sigaction SIGSEGV → ELF coredump. Not started.
+- **P32 (DRM/KMS + virtio-gpu + evdev)** — graphics + input substrate. Not started.
+- **P33 (real ld-musl)** — DT_NEEDED resolution + GOT/PLT + symbol table + ld.so.cache. Not started; existing stub at `userspace/dynlink/dynlink.c` covers static-PIE-style binaries only.
+
+## v1 status (unchanged from session 38)
+
+`v1.0` ships when `43§2` minimum acceptance binaries run end-to-end on
+QEMU + PR-time CI green + audit no-regression. Phase 8 net polish + phase
+9 hardening still open in v1.
+
 # State 2026-05-06 (session 38 — kernel-completeness sweep PR-A..P)
 
 ## Headline (session 38, on main)
