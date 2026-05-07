@@ -33,6 +33,27 @@ void _start(void) {
         write(1, no_svcd, sizeof(no_svcd) - 1);
     }
 
+    // Kernel-parity smoke: prove fork+execve+writev+wait4 round-trip
+    // on the kernel's syscall surface from a real-musl PID 1 by
+    // forking busybox-echo and waiting for its exit. Output:
+    //   "init-fork-exec works"
+    // is the success marker — if it appears the kernel-side
+    // primitives are sound. We deliberately don't chain larger
+    // applets here (their own argv parsing / TTY checks aren't
+    // kernel concerns); the v1 acceptance binaries get separate
+    // smoke harnesses.
+    {
+        long pid = (long)fork();
+        if (pid == 0) {
+            static char* argv0[] = { "echo", "init-fork-exec works", 0 };
+            static char* envp[] = { 0 };
+            execve("/bin/echo", argv0, envp);
+            _exit(127);
+        }
+        int status;
+        waitpid((int)pid, &status, 0);
+    }
+
     for (int i = 0; i < 8; i++) {
         long pid = (long)fork();
         if (pid == 0) {
