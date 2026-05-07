@@ -320,6 +320,15 @@ fn spawn_init_from_rootfs_arm() {
         return;
     }
 
+    // Zero TPIDR_EL0 so musl's pthread_self() reads sensible state
+    // before the first __set_thread_area-like syscall sets it. Without
+    // this, the EL0 task inherits whatever TPIDR_EL0 was at boot
+    // (often a stale kernel value), and musl's errno write-back path
+    // (which dereferences TPIDR_EL0+offset) faults.
+    // SAFETY: writing zero to TPIDR_EL0 at EL1 is always legal; the
+    // eret in the resume path will deliver it to user state.
+    unsafe { core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags)); }
+
     // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
     if unsafe {
         crate::sched::spawn_user_thread(
