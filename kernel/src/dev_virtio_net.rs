@@ -283,9 +283,11 @@ pub fn init_legacy() {
             return;
         }
     };
+    // SAFETY: queue setup writes serialized through this single-thread boot path; iobase from BAR0.
     let tx = match unsafe { setup_queue(iobase, QUEUE_TX) } {
         Some(q) => q,
         None    => {
+            // SAFETY: signal device-failed status so the device knows we bailed.
             unsafe { outb(iobase + VIO_DEVICE_STATUS, STATUS_FAILED); }
             return;
         }
