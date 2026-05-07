@@ -808,11 +808,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_DUP           => crate::syscall_glue_fs::kernel_sys_dup(&args),
         crate::syscall_nrs::NR_DUP2          => crate::syscall_glue_fs::kernel_sys_dup2(&args),
         crate::syscall_nrs::NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
-        #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_FORK          => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
-        #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_VFORK         => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
-        #[cfg(target_arch = "x86_64")]
         // Linux x86_64 clone(flags, child_stack, ptid, ctid, tls).
         crate::syscall_nrs::NR_CLONE         => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
         crate::syscall_nrs::NR_EXECVE        => crate::syscall_glue_execve::kernel_sys_execve(&args),
