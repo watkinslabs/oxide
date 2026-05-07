@@ -58,7 +58,7 @@ Single string: `oxide.<key>=<value> ... <kernel-cmdline>`. Examples:
 - `oxide.log=info,sched=debug`
 - `oxide.smp=N` (cap CPUs at N)
 - `oxide.pti=on|off`
-- `oxide.kaslr=on|off` (v1.x)
+- `oxide.kaslr=on|off` (v2)
 - `oxide.console=ttyS0,115200` or `=tty1`
 - `oxide.root=PARTUUID=...` or `=UUID=...`
 

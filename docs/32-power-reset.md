@@ -30,7 +30,7 @@ pub fn cpu_poweroff_secondary();// shut down secondary CPUs at shutdown
 - x86: `sti; hlt; cli` if interrupts pending (loop until IRQ wakes us).
 - arm: `wfi`.
 
-C-states: not used in v1 (no AML). v1.x with simple ACPI _CST table reading.
+C-states: not used in v1 (no AML). v2 with simple ACPI _CST table reading.
 
 ## 5 Reset / poweroff
 
@@ -50,7 +50,7 @@ After all userspace dies (init exit triggers panic; or `reboot(_HALT)`):
 ## 7 Frequency scaling
 
 v1.0: nothing. CPU runs at firmware-set frequency.
-v1.x: simple cpufreq stub via MSR (x86) / SCMI (arm); userspace `cpufreq` daemon manages governors.
+v2: simple cpufreq stub via MSR (x86) / SCMI (arm); userspace `cpufreq` daemon manages governors.
 
 ## 8 Concurrency
 

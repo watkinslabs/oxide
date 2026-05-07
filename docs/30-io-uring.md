@@ -1,6 +1,6 @@
 # 30 io_uring
 
-FROZEN 2026-05-02 (v1.x; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
+FROZEN 2026-05-02 (v2; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
 ## 1 Purpose
 
 Async I/O surface compatible with Linux io_uring. Submission/completion rings shared with userspace; kernel worker threads perform the work; results returned without per-op syscall.
@@ -24,7 +24,7 @@ sys_io_uring_register(fd:RawFd, opcode:u32, arg:UVA<&u8>, nr_args:u32) -> KR<u32
 
 `IoUringParams`,`io_uring_sqe`,`io_uring_cqe`: layout per Linux `include/uapi/linux/io_uring.h`.
 
-## 4 Opcodes (subset for v1.x)
+## 4 Opcodes (subset for v2)
 
 | Op | Notes |
 |---|---|
@@ -50,7 +50,7 @@ sys_io_uring_register(fd:RawFd, opcode:u32, arg:UVA<&u8>, nr_args:u32) -> KR<u32
 | MKDIRAT/SYMLINKAT/LINKAT/UNLINKAT/RENAMEAT | fs ops |
 | SHUTDOWN | socket shutdown |
 
-Deferred to later v1.x: BIND, LISTEN, PROVIDE_BUFFERS, REMOVE_BUFFERS, multishot variants, MSG_RING, SOCKET, FUTEX_WAIT/WAKE.
+Deferred to later v2: BIND, LISTEN, PROVIDE_BUFFERS, REMOVE_BUFFERS, multishot variants, MSG_RING, SOCKET, FUTEX_WAIT/WAKE.
 
 ## 5 Architecture
 
