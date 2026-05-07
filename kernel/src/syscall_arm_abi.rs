@@ -76,6 +76,7 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (113, 228),  // clock_gettime
         (114, 229),  // clock_getres
         (115, 230),  // clock_nanosleep
+        (117, 101),  // ptrace
         (122, 203),  // sched_setaffinity
         (123, 204),  // sched_getaffinity
         (124, 24),   // sched_yield
@@ -113,6 +114,20 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (177, 108),  // getegid
         (178, 186),  // gettid
         (179, 39),   // sysinfo (no x86 nr in our table — treat as getpid noop)
+        (180, 240),  // mq_open
+        (181, 241),  // mq_unlink
+        (182, 242),  // mq_timedsend
+        (183, 243),  // mq_timedreceive
+        (184, 244),  // mq_notify
+        (185, 245),  // mq_getsetattr
+        (186, 68),   // msgget
+        (187, 71),   // msgctl
+        (188, 70),   // msgrcv
+        (189, 69),   // msgsnd
+        (190, 64),   // semget
+        (191, 66),   // semctl
+        (192, 220),  // semtimedop
+        (193, 65),   // semop
         (198, 41),   // socket
         (199, 53),   // socketpair
         (200, 49),   // bind
