@@ -119,6 +119,7 @@ pub mod dev_signalfd;
 pub mod dev_timerfd;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod dev_virtio_net;
+pub mod sysv_shm;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_epoll;
 #[cfg(target_os = "oxide-kernel")]
