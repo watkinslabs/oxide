@@ -874,6 +874,24 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
         crate::syscall_nrs::NR_COPY_FILE_RANGE => crate::syscall_glue_xfer::kernel_sys_copy_file_range(&args),
         crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_open::kernel_sys_openat(&args),
+        // openat2(dirfd, path, struct open_how*, size). v1 reads the
+        // first 16 bytes (flags+mode) and routes through openat;
+        // RESOLVE_BENEATH/RESOLVE_NO_SYMLINKS dropped since we don't
+        // have the substrate to enforce them safely.
+        crate::syscall_nrs::NR_OPENAT2       => {
+            let how = args.a2;
+            let mut sa = args; sa.a2 = 0;
+            if how != 0 && how < USER_VA_END {
+                // SAFETY: how validated < USER_VA_END; struct open_how
+                // first u64 = flags, second = mode; CPL=0 reads.
+                unsafe {
+                    sa.a2 = core::ptr::read_volatile(how as *const u64);
+                    sa.a3 = core::ptr::read_volatile((how + 8) as *const u64);
+                }
+            }
+            crate::syscall_glue_open::kernel_sys_openat(&sa)
+        }
+        crate::syscall_nrs::NR_FACCESSAT2    => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
         crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC | crate::syscall_nrs::NR_SYNC
                                  => 0,
         // AF_INET dgram (UDP) — `25§3` minimum. The remaining
