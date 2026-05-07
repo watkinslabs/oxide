@@ -169,7 +169,9 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
 }
 
 
-fn kernel_sys_close(args: &SyscallArgs) -> i64 {
+/// `sys_close(fd)` — slot 3.
+/// # C: O(1)
+pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cur = match crate::sched::current() {
         Some(c) => c,
@@ -569,6 +571,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_SHMAT         => crate::sysv_shm::kernel_sys_shmat(&args),
         crate::syscall_nrs::NR_SHMDT         => crate::sysv_shm::kernel_sys_shmdt(&args),
         crate::syscall_nrs::NR_SHMCTL        => crate::sysv_shm::kernel_sys_shmctl(&args),
+        crate::syscall_nrs::NR_IO_URING_SETUP    => crate::io_uring::kernel_sys_io_uring_setup(&args),
+        crate::syscall_nrs::NR_IO_URING_ENTER    => crate::io_uring::kernel_sys_io_uring_enter(&args),
+        crate::syscall_nrs::NR_IO_URING_REGISTER => crate::io_uring::kernel_sys_io_uring_register(&args),
         crate::syscall_nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
         crate::syscall_nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
         crate::syscall_nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
