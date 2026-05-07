@@ -23,6 +23,7 @@ use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
 
 mod image_qemu;
+mod pkg;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
         "rootfs"    => cmd_rootfs(rest),
         "image"     => image_qemu::cmd_image(rest),
         "qemu"      => image_qemu::cmd_qemu(rest),
+        "pkg"       => pkg::cmd(rest),
         "soak"      => stub("soak", "40"),
         "bench"     => stub("bench", "04"),
         "doc-check" => cmd_doc_check(rest),
@@ -172,7 +174,11 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=1"]);
+                "bs=1M", "count=8"]);   // 8 MiB — fits bash + util-linux
+                                          // with headroom. Bigger needs the
+                                          // kernel to load rootfs from a
+                                          // separate disk image instead of
+                                          // include_bytes!ing it (planned).
         run(c)?;
     }
     {
@@ -252,6 +258,13 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&repo.join("userspace/dynlink/dynlink"),   "/lib/ld-musl-x86_64.so.1")?;
     put(&repo.join("userspace/hello_dyn/hello_dyn"), "/bin/hello_dyn")?;
 
+    // Install everything that `xtask pkg build <name>` produced into
+    // target/pkg-staging/<name>/. Adding a new package to the rootfs
+    // is just `xtask pkg build foo`; this loop picks up the artifacts
+    // automatically. Any pkg whose tree contains directories not yet
+    // in the ext4 image gets `mkdir`'d on the way in.
+    pkg::install_all_into_rootfs(&repo, |c| dbg(c))?;
+
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
     let tmp = repo.join("target/oxide-rootfs-staging");
@@ -270,8 +283,8 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
     put(&stage("hostname", b"oxide\n")?, "/etc/hostname")?;
     // root has no password (NoPassword path); alice has hash for "swordfish".
     put(&stage("passwd",
-        b"root:x:0:0:root:/root:/bin/sh\n\
-          alice:x:1000:1000:Alice User:/home/alice:/bin/sh\n\
+        b"root:x:0:0:root:/root:/bin/bash\n\
+          alice:x:1000:1000:Alice User:/home/alice:/bin/bash\n\
           nobody:x:65534:65534:nobody:/:/bin/false\n")?,
         "/etc/passwd")?;
     put(&stage("group",
