@@ -89,25 +89,102 @@ pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_ptrace(request, pid, addr, data)` — slot 101. v2 phase 22
-/// first cut: PTRACE_TRACEME marks the calling task as traced by its
-/// parent. Other requests return -EOPNOTSUPP until attached-task
-/// control + signal-stop integration land.
-/// # C: O(1)
+/// `sys_ptrace(request, pid, addr, data)` — slot 101. v2 P22b
+/// extension: admits the request set most tracer-class libraries
+/// probe (sandbox-detection, sentry-style runtime checks) so they
+/// pass beyond the ptrace gate. Real cross-AS memory access +
+/// signal-stop integration ride P22c (needs a foreign-mm read/
+/// write helper + sched-side ptrace stop-state).
+///
+/// PTRACE_TRACEME — sets caller's traced_by to its parent.
+/// PTRACE_ATTACH/SEIZE — sets target's traced_by to caller.
+/// PTRACE_DETACH/CONT/SYSCALL/SINGLESTEP/SETOPTIONS/KILL/LISTEN —
+///   silent 0 (no scheduler-stop machinery yet).
+/// PTRACE_PEEKTEXT/PEEKDATA/PEEKUSER — returns 0 word (does NOT
+///   read the target's actual memory; honest stub for tracer-
+///   present probes that only need the call to succeed).
+/// PTRACE_POKETEXT/POKEDATA/POKEUSER — silent 0 (does NOT mutate
+///   the target's memory).
+/// PTRACE_GETREGS/SETREGS/GETREGSET/SETREGSET/GETSIGINFO — silent 0.
+/// Anything else → -EINVAL (per Linux for unknown ptrace request).
+/// # C: O(N_tasks) on PTRACE_ATTACH lookup; O(1) otherwise.
 pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    const PTRACE_TRACEME: u64 = 0;
+    const PTRACE_TRACEME:    u64 = 0;
+    const PTRACE_PEEKTEXT:   u64 = 1;
+    const PTRACE_PEEKDATA:   u64 = 2;
+    const PTRACE_PEEKUSER:   u64 = 3;
+    const PTRACE_POKETEXT:   u64 = 4;
+    const PTRACE_POKEDATA:   u64 = 5;
+    const PTRACE_POKEUSER:   u64 = 6;
+    const PTRACE_CONT:       u64 = 7;
+    const PTRACE_KILL:       u64 = 8;
+    const PTRACE_SINGLESTEP: u64 = 9;
+    const PTRACE_GETREGS:    u64 = 12;
+    const PTRACE_SETREGS:    u64 = 13;
+    const PTRACE_GETFPREGS:  u64 = 14;
+    const PTRACE_SETFPREGS:  u64 = 15;
+    const PTRACE_ATTACH:     u64 = 16;
+    const PTRACE_DETACH:     u64 = 17;
+    const PTRACE_SYSCALL:    u64 = 24;
+    const PTRACE_GETREGSET:  u64 = 0x4204;
+    const PTRACE_SETREGSET:  u64 = 0x4205;
+    const PTRACE_SEIZE:      u64 = 0x4206;
+    const PTRACE_INTERRUPT:  u64 = 0x4207;
+    const PTRACE_LISTEN:     u64 = 0x4208;
+    const PTRACE_SETOPTIONS: u64 = 0x4200;
+    const PTRACE_GETEVENTMSG:u64 = 0x4201;
+    const PTRACE_GETSIGINFO: u64 = 0x4202;
+    const PTRACE_SETSIGINFO: u64 = 0x4203;
+
     let request = args.a0;
-    if request != PTRACE_TRACEME {
-        return -(Errno::Eopnotsupp.as_i32() as i64);
-    }
+    let pid     = args.a1 as u32;
+
     let cur = match crate::sched::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let parent = cur.parent_tid.load(Ordering::Acquire);
-    cur.traced_by.store(parent, Ordering::Release);
-    0
+    match request {
+        PTRACE_TRACEME => {
+            let parent = cur.parent_tid.load(Ordering::Acquire);
+            cur.traced_by.store(parent, Ordering::Release);
+            0
+        }
+        PTRACE_ATTACH | PTRACE_SEIZE => {
+            match crate::sched::registry::lookup(pid) {
+                Some(t) => { t.traced_by.store(cur.tid, Ordering::Release); 0 }
+                None    => -(Errno::Esrch.as_i32() as i64),
+            }
+        }
+        PTRACE_DETACH => {
+            if let Some(t) = crate::sched::registry::lookup(pid) {
+                t.traced_by.store(0, Ordering::Release);
+            }
+            0
+        }
+        PTRACE_KILL => {
+            // Set SIGKILL pending on target.
+            if let Some(t) = crate::sched::registry::lookup(pid) {
+                t.sigpending.fetch_or(1u64 << 8, Ordering::Release); // SIGKILL = 9 → bit 8
+            }
+            0
+        }
+        PTRACE_PEEKTEXT | PTRACE_PEEKDATA | PTRACE_PEEKUSER => {
+            // Stub: return 0 word. Honest in spec — does NOT
+            // read the target's memory. A real implementation
+            // needs a foreign-mm read helper (P22c follow-up).
+            0
+        }
+        PTRACE_POKETEXT | PTRACE_POKEDATA | PTRACE_POKEUSER
+            | PTRACE_CONT | PTRACE_SYSCALL | PTRACE_SINGLESTEP
+            | PTRACE_GETREGS | PTRACE_SETREGS
+            | PTRACE_GETFPREGS | PTRACE_SETFPREGS
+            | PTRACE_GETREGSET | PTRACE_SETREGSET
+            | PTRACE_INTERRUPT | PTRACE_LISTEN
+            | PTRACE_SETOPTIONS | PTRACE_GETEVENTMSG
+            | PTRACE_GETSIGINFO | PTRACE_SETSIGINFO => 0,
+        _ => -(Errno::Einval.as_i32() as i64),
+    }
 }
 
 /// `sys_kill(pid, sig)` — slot 62. pgrp-aware per `28§4`:
