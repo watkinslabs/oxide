@@ -69,10 +69,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // that only check non-negative). Real keyring storage +
         // permission checks ride a follow-up.
         | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL
-        // POSIX MQ admin ops (P25e). MQ_UNLINK/NOTIFY/GETSETATTR
-        // succeed silently. MQ_OPEN/TIMEDSEND/TIMEDRECEIVE are real
-        // (tmpfs-backed fd; FIFO byte semantics, no priority).
-        | NR_MQ_UNLINK | NR_MQ_NOTIFY | NR_MQ_GETSETATTR => Some(0),
+        // POSIX MQ admin ops. MQ_OPEN/UNLINK/TIMEDSEND/TIMEDRECEIVE
+        // are real (priority-ordered records via posix_mq.rs).
+        // MQ_NOTIFY/GETSETATTR stay silent-0 (no per-task signal-on-
+        // arrival yet, no live mq_attr mutation).
+        | NR_MQ_NOTIFY | NR_MQ_GETSETATTR => Some(0),
 
         // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
         // xattr family: tar/cp -a/rsync probe these and skip cleanly
@@ -109,10 +110,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // SysV sem moved to real impl (P25b — non-blocking semop;
         //   would-block returns EAGAIN).
         // SysV msg moved to real impl (P25c — non-blocking msgrcv).
-        // POSIX MQ_OPEN/TIMEDSEND/TIMEDRECEIVE moved to real impl
-        // (P25e — tmpfs-fd + write/read aliases).
-        // MQ_UNLINK/NOTIFY/GETSETATTR are silent-0 (above).
-        // Keyring moved to silent-0 admit (P38b) above.
+        // POSIX MQ moved to real impl (B16 — priority-ordered
+        // records in posix_mq.rs). MQ_NOTIFY/GETSETATTR stay
+        // silent-0 above. Keyring moved to silent-0 admit above.
         // Misc ENOSYS.
         | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
         | NR_USELIB | NR_USTAT | NR_SYSFS | NR_MODIFY_LDT

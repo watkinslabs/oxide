@@ -122,6 +122,7 @@ pub mod dev_virtio_net;
 pub mod sysv_shm;
 pub mod sysv_sem;
 pub mod sysv_msg;
+pub mod posix_mq;
 pub mod io_uring;
 pub mod seccomp;
 pub mod userfaultfd;
