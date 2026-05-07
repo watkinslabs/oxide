@@ -13,6 +13,7 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 3. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
 4. **Lean-mode calendar**: phase advance gated on PR-time CI (≤5min + paranoid-ci build) + QEMU smoke for the affected subsystem. v1 = 9–14mo solo.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
+6. **ARM/x86 lockstep** (HARD RULE): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` reaches the same milestone as `make qemu-x86`. If a feature exposes an aarch64 gap (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain), close the gap in the same PR — don't defer. Don't claim "works on both arches" without booting both via the qemu MCP and verifying the user-visible milestone. The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`; userspace `.c` sources must compile on both arches via musl libc wrappers, not raw `syscall` inline asm.
 
 ## Cross-references
 
