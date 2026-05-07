@@ -38,7 +38,5 @@ pub use schedule::{
     current, mark_done, schedule, schedule_from_irq, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
 };
-pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread};
-#[cfg(target_arch = "x86_64")]
-pub use spawn::spawn_user_thread_for_fork;
+pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork};
 pub use zombies::{park_for_wait4, park_zombie, reap_one};
