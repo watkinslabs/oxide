@@ -4,6 +4,9 @@
 /userspace/*/target/
 **/*.rs.bk
 
+# Cross-toolchains (~322 MiB; fetched on demand by tools/fetch-cross.sh).
+/vendor/cross/
+
 # Image artifacts (regenerated; not source)
 *.img
 !crates/ext4/tests/*.img
