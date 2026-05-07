@@ -160,8 +160,22 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
             let _ = fdt.set_cloexec(fd, (arg & 1) != 0);
             0
         }
-        F_GETFL => 2, // O_RDWR
-        F_SETFL => 0,
+        F_GETFL => {
+            let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+            file.flags().bits() as i64
+        }
+        F_SETFL => {
+            // POSIX: only O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME may
+            // be modified. Mask the user value to the settable bits
+            // and OR-merge over the existing access mode + creation
+            // flags to preserve them.
+            const SETTABLE: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
+            let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+            let cur_bits = file.flags().bits();
+            let new_bits = (cur_bits & !SETTABLE) | ((arg as u32) & SETTABLE);
+            file.set_flags(vfs::OpenFlags::from_bits_retain(new_bits));
+            0
+        }
         F_GETPIPE_SZ => 4096, // matches PipeBuf::PIPE_CAP
         F_SETPIPE_SZ => 4096, // accept but cap at the v1 fixed size
         F_GETOWN     => 0,
