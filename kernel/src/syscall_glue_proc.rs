@@ -229,10 +229,48 @@ pub fn kernel_sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_sigaltstack(ss, oldss)` — slot 131. v1 stub: signal
-/// frames don't exist yet; accept and ignore.
+/// `sys_sigaltstack(ss, oldss)` — slot 131. Records the
+/// alternate signal stack on the current task. The stored
+/// `ss_sp`/`ss_size`/`ss_flags` are honoured by `sig_dispatch`'s
+/// stack-pick path when a sigaction has SA_ONSTACK set.
+///
+/// `ss == 0`: just write the current values into `oldss` (if non-NULL).
+/// `oldss == 0`: skip the write-back. Both can be NULL — Linux uses
+/// that to query (no, that's getsigaltstack, but our shape stays
+/// permissive).
 /// # C: O(1)
-pub fn kernel_sys_sigaltstack(_args: &SyscallArgs) -> i64 { 0 }
+pub fn kernel_sys_sigaltstack(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let ss    = args.a0;
+    let oldss = args.a1;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
+    };
+    if oldss != 0 {
+        if oldss >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        let sp    = cur.sigaltstack_sp.load(Ordering::Acquire);
+        let size  = cur.sigaltstack_size.load(Ordering::Acquire);
+        let flags = cur.sigaltstack_flags.load(Ordering::Acquire);
+        // SAFETY: oldss validated < USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe {
+            core::ptr::write_volatile(oldss        as *mut u64, sp);
+            core::ptr::write_volatile((oldss + 8)  as *mut i32, flags as i32);
+            core::ptr::write_volatile((oldss + 16) as *mut u64, size);
+        }
+    }
+    if ss != 0 {
+        if ss >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: ss validated < USER_VA_END; CPL=0 reads through caller's AS.
+        let sp:    u64 = unsafe { core::ptr::read_volatile(ss as *const u64) };
+        let flags: i32 = unsafe { core::ptr::read_volatile((ss + 8) as *const i32) };
+        let size:  u64 = unsafe { core::ptr::read_volatile((ss + 16) as *const u64) };
+        cur.sigaltstack_sp.store(sp, Ordering::Release);
+        cur.sigaltstack_size.store(size, Ordering::Release);
+        cur.sigaltstack_flags.store(flags as u32, Ordering::Release);
+    }
+    0
+}
 
 /// `sys_nanosleep(req, rem)` — slot 35. yield-loop on monotonic clock.
 /// # C: O(req_ns / yield_quantum)
@@ -307,12 +345,17 @@ pub fn kernel_sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_rt_sigsuspend(mask, sz)` — slot 130. Temporarily
-/// replaces sigmask with `mask`. v1 has no real wait — returns
-/// -EINTR immediately; `take_lowest_pending` at the dispatch
-/// tail will terminate the task if any unmasked signal is
-/// already pending under the new mask.
-/// # C: O(1)
+/// `sys_rt_sigsuspend(mask, sz)` — slot 130. Atomically replaces
+/// sigmask with `mask`, parks the task (yield loop), and returns
+/// -EINTR once any unmasked signal becomes pending. The original
+/// sigmask is restored on return so the handler runs under the
+/// caller's pre-suspend mask.
+///
+/// v1 implementation is a tick_yield loop — every other task gets
+/// a chance to run, and signal-raising paths (kill, ^C, etc.) bump
+/// our `sigpending` which the loop notices on the next iteration.
+/// A real waitqueue + signal-arrival wakeup hook rides a follow-up.
+/// # C: O(yields until signal)
 pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
@@ -327,9 +370,116 @@ pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     };
     // SAFETY: mask validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 reads through user mapping.
     let m = unsafe { core::ptr::read_volatile(mask as *const u64) };
-    let m = m & !(1u64 << 8) & !(1u64 << 18); // SIGKILL/SIGSTOP unmaskable
-    cur.sigmask.store(m, Ordering::Release);
+    let new_mask = m & !(1u64 << 8) & !(1u64 << 18); // SIGKILL/SIGSTOP unmaskable
+    let old_mask = cur.sigmask.swap(new_mask, Ordering::AcqRel);
+    loop {
+        let pending = cur.sigpending.load(Ordering::Acquire);
+        if (pending & !cur.sigmask.load(Ordering::Acquire)) != 0 { break; }
+        // Briefly enable IRQs so timer + signal-raising IPIs can
+        // deliver. tick_yield gives every other task a slice. A
+        // real signal-waitqueue wakeup primitive replaces this
+        // when threading lands in PR-E.
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: process ctx; runqueue installed.
+        unsafe { crate::sched::tick_yield(); }
+    }
+    cur.sigmask.store(old_mask, Ordering::Release);
     -(Errno::Eintr.as_i32() as i64)
+}
+
+/// `sys_rt_sigtimedwait(set, info, timeout, sz)` — slot 128.
+/// Block until any signal in `set` becomes pending, then take
+/// it (clear from `sigpending`) and return the signal number.
+/// On timeout returns -EAGAIN. `info` (siginfo_t writeback) is
+/// zero-filled for v1 since signal-raising paths don't yet
+/// preserve siginfo.
+/// # C: O(yields until signal or timeout)
+pub fn kernel_sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use hal::TimerOps;
+    use syscall::errno::Errno;
+    let set     = args.a0;
+    let info    = args.a1;
+    let timeout = args.a2;
+    let sz      = args.a3;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if set == 0 || set >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: set validated < USER_VA_END; CPL=0 reads via active CR3.
+    let wanted = unsafe { core::ptr::read_volatile(set as *const u64) };
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
+    };
+    let deadline = if timeout != 0 && timeout < hal::USER_VA_END {
+        // SAFETY: timeout validated; struct timespec at +0 is tv_sec, +8 is tv_nsec.
+        let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
+        let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
+        if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        let total = (secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
+        #[cfg(target_arch = "x86_64")]
+        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        Some(now.saturating_add(total))
+    } else { None };
+    loop {
+        let pending = cur.sigpending.load(Ordering::Acquire);
+        let arrived = pending & wanted;
+        if arrived != 0 {
+            let sig = arrived.trailing_zeros() + 1;
+            // Atomically clear that bit from sigpending.
+            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+            // v1 siginfo_t writeback: zero-fill. Real siginfo
+            // (si_code, si_pid, si_uid, si_status) lands when
+            // signal-raising paths preserve it.
+            if info != 0 && info < hal::USER_VA_END {
+                unsafe {
+                    for i in 0..128usize {
+                        core::ptr::write_volatile((info + i as u64) as *mut u8, 0);
+                    }
+                    core::ptr::write_volatile(info as *mut i32, sig as i32); // si_signo
+                }
+            }
+            return sig as i64;
+        }
+        if let Some(dl) = deadline {
+            #[cfg(target_arch = "x86_64")]
+            let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+            #[cfg(target_arch = "aarch64")]
+            let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+            if now >= dl { return -(Errno::Eagain.as_i32() as i64); }
+        }
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
+        unsafe { crate::sched::tick_yield(); }
+    }
+}
+
+/// `sys_rt_sigqueueinfo(pid, sig, info)` — slot 129. v1 ignores
+/// the siginfo extras and routes through `kernel_sys_kill`. Real
+/// siginfo_t propagation rides a follow-up alongside per-signal
+/// queueing.
+/// # C: O(N_tasks)
+pub fn kernel_sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
+    let kill_args = SyscallArgs {
+        a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0,
+    };
+    kernel_sys_kill(&kill_args)
+}
+
+/// `sys_rt_tgsigqueueinfo(tgid, tid, sig, info)` — slot 297.
+/// v1 ignores tgid + siginfo, routes the signal to `tid` via
+/// `kernel_sys_tgkill`.
+/// # C: O(1)
+pub fn kernel_sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
+    let tgkill_args = SyscallArgs {
+        a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0,
+    };
+    kernel_sys_tgkill(&tgkill_args)
 }
 
 /// One signal ready for delivery: number + the registered
