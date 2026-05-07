@@ -1,51 +1,29 @@
 // /bin/id — print uid/gid for the calling process. Without args:
-// `uid=N(name) gid=M(name) groups=...`. With one arg: same shape
-// but for the named user (read /etc/passwd; lookup gid in
-// /etc/group). v1 prints only primary uid/gid; supplementary
-// group walk lands when getgrouplist exists.
+// `uid=N(name) gid=M(name)`. With one arg: same shape for the named user.
+// v1 prints only primary uid/gid; supplementary group walk later.
+#include "../shared/oxide_start.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/types.h>
 
-#include <sys/syscall.h>
-
-#define O_RDONLY 0
-#define AT_FDCWD -100
-
-static long sc1(long n, long a) {
-    long r; __asm__ volatile ("syscall" : "=a"(r) : "0"(n), "D"(a) : "rcx","r11","memory"); return r;
-}
-static long sc3(long n, long a, long b, long c) {
-    long r; __asm__ volatile ("syscall" : "=a"(r) : "0"(n), "D"(a), "S"(b), "d"(c) : "rcx","r11","memory"); return r;
-}
-static long sc4(long n, long a, long b, long c, long d) {
-    long r; register long r10 __asm__("r10") = d;
-    __asm__ volatile ("syscall" : "=a"(r) : "0"(n), "D"(a), "S"(b), "d"(c), "r"(r10) : "rcx","r11","memory");
-    return r;
-}
-
-static long mlen(const char* s) { long n=0; while (s[n]) n++; return n; }
-static void wstr(long fd, const char* s) { sc3(SYS_write, fd, (long)s, mlen(s)); }
-
-static int streq(const char* a, const char* b) {
-    while (*a && *b && *a == *b) { a++; b++; }
-    return *a == 0 && *b == 0;
-}
 static int memeq(const char* a, const char* b, long n) {
     for (long i = 0; i < n; i++) if (a[i] != b[i]) return 0;
     return 1;
 }
 
 static long read_file(const char* p, char* buf, long cap) {
-    long fd = sc4(SYS_openat, AT_FDCWD, (long)p, O_RDONLY, 0);
+    int fd = open(p, O_RDONLY);
     if (fd < 0) return -1;
     long t = 0;
     while (t < cap - 1) {
-        long n = sc3(SYS_read, fd, (long)(buf + t), cap - 1 - t);
+        ssize_t n = read(fd, buf + t, cap - 1 - t);
         if (n <= 0) break; t += n;
     }
-    sc1(SYS_close, fd);
+    close(fd);
     buf[t] = 0; return t;
 }
 
-// itoa for small unsigned. Returns chars written (no NUL).
 static int itoa10(unsigned long v, char* out) {
     char tmp[24]; int n = 0;
     if (v == 0) { out[0] = '0'; return 1; }
@@ -54,16 +32,15 @@ static int itoa10(unsigned long v, char* out) {
     return n;
 }
 
-// Find passwd/group line by name; copy into out.
 static int find_line(const char* text, const char* name, char* out, long cap) {
-    long nl = mlen(name); long i = 0;
+    long nl = strlen(name); long i = 0;
     while (text[i]) {
         long s = i;
         while (text[i] && text[i] != '\n') i++;
         long len = i - s;
         if (len > nl + 1 && text[s + nl] == ':' && memeq(text + s, name, nl)) {
             if (len >= cap) return 0;
-            for (long k = 0; k < len; k++) out[k] = text[s + k];
+            memcpy(out, text + s, len);
             out[len] = 0; return 1;
         }
         if (text[i] == '\n') i++;
@@ -71,29 +48,27 @@ static int find_line(const char* text, const char* name, char* out, long cap) {
     return 0;
 }
 
-// Find passwd line by uid (decimal field 3).
-static int find_by_uid(const char* text, unsigned long uid, char* out, long cap) {
+static int find_by_uid_or_gid(const char* text, unsigned long want, int field, char* out, long cap) {
+    // field=2 for passwd uid (uid is field index 2), field=2 for group gid
     long i = 0;
     while (text[i]) {
         long s = i;
         while (text[i] && text[i] != '\n') i++;
         long len = i - s;
-        // skip past two colons to reach uid field.
         int colons = 0; long k = 0;
-        while (k < len && colons < 2) {
+        while (k < len && colons < field) {
             if (text[s + k] == ':') colons++;
             k++;
         }
-        if (colons == 2) {
-            unsigned long u = 0; long m = k;
+        if (colons == field) {
+            unsigned long u = 0; long m = k; int valid = 1;
             while (m < len && text[s + m] != ':') {
-                if (text[s + m] < '0' || text[s + m] > '9') { u = ~0UL; break; }
+                if (text[s + m] < '0' || text[s + m] > '9') { valid = 0; break; }
                 u = u * 10 + (text[s + m] - '0'); m++;
             }
-            if (u == uid) {
+            if (valid && u == want) {
                 if (len >= cap) return 0;
-                for (long j = 0; j < len; j++) out[j] = text[s + j];
-                out[len] = 0; return 1;
+                memcpy(out, text + s, len); out[len] = 0; return 1;
             }
         }
         if (text[i] == '\n') i++;
@@ -117,43 +92,10 @@ static unsigned long parse_uint(const char* s) {
 
 static char passwd_buf[8192], group_buf[8192], line_buf[512];
 
-static int find_group_by_gid(const char* text, unsigned long gid, char* out, long cap) {
-    long i = 0;
-    while (text[i]) {
-        long s = i;
-        while (text[i] && text[i] != '\n') i++;
-        long len = i - s;
-        // group line: name:passwd:gid:members
-        int colons = 0; long k = 0;
-        while (k < len && colons < 2) {
-            if (text[s + k] == ':') colons++;
-            k++;
-        }
-        if (colons == 2) {
-            unsigned long g = 0; long m = k;
-            while (m < len && text[s + m] != ':') {
-                if (text[s + m] < '0' || text[s + m] > '9') { g = ~0UL; break; }
-                g = g * 10 + (text[s + m] - '0'); m++;
-            }
-            if (g == gid) {
-                if (len >= cap) return 0;
-                for (long j = 0; j < len; j++) out[j] = text[s + j];
-                out[len] = 0; return 1;
-            }
-        }
-        if (text[i] == '\n') i++;
-    }
-    return 0;
-}
-
-__attribute__((force_align_arg_pointer))
-void _start(void) {
-    long argc; char** argv;
-    __asm__ volatile ("mov (%%rsp), %0\n\t lea 8(%%rsp), %1\n\t"
-                      : "=r"(argc), "=r"(argv));
-
-    long uid = sc1(SYS_getuid, 0);
-    long gid = sc1(SYS_getgid, 0);
+int main(int argc, char** argv, char** envp) {
+    (void)envp;
+    long uid = (long)getuid();
+    long gid = (long)getgid();
 
     read_file("/etc/passwd", passwd_buf, sizeof(passwd_buf));
     read_file("/etc/group",  group_buf,  sizeof(group_buf));
@@ -169,35 +111,32 @@ void _start(void) {
             uid = (long)parse_uint(f[2]);
             gid = (long)parse_uint(f[3]);
         } else {
-            wstr(2, "id: no such user\n");
-            sc1(SYS_exit, 1);
+            write(2, "id: no such user\n", 17);
+            return 1;
         }
     } else {
-        if (find_by_uid(passwd_buf, (unsigned long)uid, line_buf, sizeof(line_buf))) {
+        if (find_by_uid_or_gid(passwd_buf, (unsigned long)uid, 2, line_buf, sizeof(line_buf))) {
             char* f[8]; split_colons(line_buf, f, 8);
-            // copy uname into tmp since line_buf is reused below
-            long ul = mlen(f[0]); for (long i = 0; i < ul; i++) tmp[i] = f[0][i];
+            long ul = strlen(f[0]); memcpy(tmp, f[0], ul);
             tmp[ul] = 0; uname = tmp;
-            // uid/gid already from syscall; trust them.
         }
     }
 
     char gtmp[64];
-    if (find_group_by_gid(group_buf, (unsigned long)gid, line_buf, sizeof(line_buf))) {
+    if (find_by_uid_or_gid(group_buf, (unsigned long)gid, 2, line_buf, sizeof(line_buf))) {
         char* f[8]; split_colons(line_buf, f, 8);
-        long gl = mlen(f[0]); for (long i = 0; i < gl; i++) gtmp[i] = f[0][i];
+        long gl = strlen(f[0]); memcpy(gtmp, f[0], gl);
         gtmp[gl] = 0; gname = gtmp;
     }
 
     char buf[256]; long o = 0;
-    const char* p; long n;
-    p = "uid="; n = mlen(p); for (long i = 0; i < n; i++) buf[o++] = p[i];
+    memcpy(buf + o, "uid=", 4); o += 4;
     o += itoa10((unsigned long)uid, buf + o);
-    buf[o++] = '('; n = mlen(uname); for (long i = 0; i < n; i++) buf[o++] = uname[i]; buf[o++] = ')';
-    p = " gid="; n = mlen(p); for (long i = 0; i < n; i++) buf[o++] = p[i];
+    buf[o++] = '('; long n = strlen(uname); memcpy(buf + o, uname, n); o += n; buf[o++] = ')';
+    memcpy(buf + o, " gid=", 5); o += 5;
     o += itoa10((unsigned long)gid, buf + o);
-    buf[o++] = '('; n = mlen(gname); for (long i = 0; i < n; i++) buf[o++] = gname[i]; buf[o++] = ')';
+    buf[o++] = '('; n = strlen(gname); memcpy(buf + o, gname, n); o += n; buf[o++] = ')';
     buf[o++] = '\n';
-    sc3(SYS_write, 1, (long)buf, o);
-    sc1(SYS_exit, 0);
+    write(1, buf, o);
+    return 0;
 }
