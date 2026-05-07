@@ -1,3 +1,59 @@
+# State 2026-05-07 (session 42 — v2 follow-up sweep, kernel-API admission)
+
+## Headline (session 42)
+
+Continuation of the v2 follow-up ladder after session 41 closed
+ARM/x86 kernel parity. Session 42 ships eight PRs against `main`,
+all bounded admission/first-cut work that unblocks specific class
+of userspace probes. Hosted tests stable at 894/0; both arches
+build; spec-lint clean throughout.
+
+| PR | Branch | Slot | What |
+|----|---|---|---|
+| #669 | P19b-virtio-net-tx     | 19b | virtio-net TX frame path: scratch-page DMA + desc/avail-ring fill + sfence + QUEUE_NOTIFY kick. Single in-flight; reclaim via used-ring poll at head of each tx_frame. |
+| #670 | P19c-virtio-net-rx-poll| 19c | RX descriptor pool (32 × 4 KiB DMA pages pre-published with VRING_DESC_F_WRITE) + `rx_poll(cb)` drain that strips virtio_net_hdr and re-publishes desc on each completion. |
+| #671 | P25b-sysv-sem          | 25b | semget/semop/semctl/semtimedop. Per-set Vec<i32> under per-set Spinlock; semop is trial+commit atomic; would-block returns EAGAIN (real wait queue rides P25d). |
+| #672 | P25c-sysv-msg          | 25c | msgget/msgsnd/msgrcv/msgctl. Per-queue VecDeque<Msg>; full→EAGAIN, empty/no-match→EAGAIN; Linux msgtyp matcher (==0/>0/<0). |
+| #673 | P22b-ptrace-ops        | 22b | ATTACH/DETACH/PEEK/POKE/CONT/GETREGS/SETOPTIONS admission. PEEK returns 0 word (honest stub), POKE silent-0. Real foreign-mm peek/poke rides P22c. |
+| #674 | D04-stale-compat-comments | (doc) | Refresh syscall_compat ENOSYS-list comments after P22b/P25b/P25c. |
+| #675 | P38b-keyring-admit     | 38b | add_key/request_key/keyctl → silent-0 (PAM/sudo/dbus auth probes pass). |
+| #676 | P25e-posix-mq          | 25e | mq_open returns tmpfs-fd; mq_timedsend/timedreceive alias write/read. Side-effect: kernel_sys_read/write now arch-portable + pub. |
+| #677 | P18b-procfs-net-extras | 18b | /proc/net/{unix,if_inet6,snmp} stubs (header-only or zero-counters). |
+
+## v2 status snapshot — net + IPC + ptrace tracks moved
+
+After this sweep, the v2 deferred list collapses where work landed:
+
+**Net (P18-19) — kernel-side TX+RX live:**
+- 18a admit, 18b procfs/net extras
+- 19a init handshake, 19b TX, 19c RX poll
+- 19d (IRQ wiring), 19e (modern virtio-mmio for ARM), 19f (NetStack glue)
+- 18c DNS, 18d DHCP — gated on 19f
+
+**IPC (P25) — full SysV + first-cut POSIX MQ:**
+- 25a SysV shm, 25b SysV sem (non-blocking), 25c SysV msg (non-blocking)
+- 25e POSIX MQ first cut (FIFO byte-stream)
+- 25d (blocking sem/msg via wait queue), 25f (real priority MQ)
+
+**ptrace (P22) — admission ladder complete:**
+- 22a TRACEME, 22b ATTACH/DETACH/PEEK/POKE/CONT/GETREGS
+- 22c (foreign-mm peek/poke + scheduler stop states)
+
+**Auth (P38) — keyring admitted:**
+- 38a SCM_CREDS, 38b keyring (silent-0 admit)
+- Real keyring storage rides a follow-up
+
+## What's queued (next session candidates)
+
+- P22c — foreign-mm read/write helper (gdb/strace memory access)
+- P19d — virtio-net IRQ wiring
+- P21b/c/... — per-NS state for mount/ipc/pid/user/net
+- P34 — real PAM/NSS (login flow already works with custom auth)
+- xattr real backing — needed for SELinux contexts
+- ARM virtio-mmio — modern transport on aarch64
+
+---
+
 # State 2026-05-07 (session 41 — ARM/x86 kernel parity reached)
 
 ## Headline (session 41)
