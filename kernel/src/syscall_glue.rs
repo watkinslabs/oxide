@@ -510,6 +510,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 ) -> u64 {
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
+    // seccomp filter check at dispatch entry. v1 honors KILL / TRAP /
+    // ERRNO / ALLOW. Tasks with no filters short-circuit through Ok(()).
+    if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) {
+        return rv as u64;
+    }
     // Arch-specific + per-arch-time syscalls handled here (kernel can
     // call hal); others fall through to the arch-neutral dispatch.
     let rv = match nr {
@@ -574,6 +579,36 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_IO_URING_SETUP    => crate::io_uring::kernel_sys_io_uring_setup(&args),
         crate::syscall_nrs::NR_IO_URING_ENTER    => crate::io_uring::kernel_sys_io_uring_enter(&args),
         crate::syscall_nrs::NR_IO_URING_REGISTER => crate::io_uring::kernel_sys_io_uring_register(&args),
+        crate::syscall_nrs::NR_SECCOMP       => crate::seccomp::kernel_sys_seccomp(&args),
+        // bpf(cmd, attr, size): admit fd-creating commands (BPF_PROG_LOAD,
+        // BPF_MAP_CREATE) by returning a sentinel fd backed by an
+        // anonymous tmpfs inode. v1 doesn't run loaded BPF programs;
+        // verifier + JIT ride a follow-up. Other cmds → -ENOSYS so
+        // userspace doesn't think it has a working bpf() world.
+        crate::syscall_nrs::NR_BPF           => {
+            let cmd = args.a0;
+            // BPF_PROG_LOAD = 5, BPF_MAP_CREATE = 0, BPF_OBJ_GET = 7.
+            if matches!(cmd, 0 | 5 | 7) {
+                let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+                crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            } else {
+                -(syscall::errno::Errno::Enosys.as_i32() as i64)
+            }
+        }
+        // landlock_create_ruleset: admit + return fd. Add-rule + restrict-self
+        // accept silently. Real LSM-hook-driven enforcement rides a follow-up.
+        crate::syscall_nrs::NR_LANDLOCK_CREATE_RULESET => {
+            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+        }
+        crate::syscall_nrs::NR_LANDLOCK_ADD_RULE      => 0,
+        crate::syscall_nrs::NR_LANDLOCK_RESTRICT_SELF => 0,
+        // perf_event_open(attr, pid, cpu, group_fd, flags): admit + return fd.
+        // Real PMU sampling rides a follow-up.
+        crate::syscall_nrs::NR_PERF_EVENT_OPEN => {
+            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+        }
         crate::syscall_nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
         crate::syscall_nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
         crate::syscall_nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
