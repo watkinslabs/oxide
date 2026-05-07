@@ -63,6 +63,10 @@ const VIRTIO_NET_F_STATUS: u32 = 1 << 16;
 const QUEUE_RX: u16 = 0;
 const QUEUE_TX: u16 = 1;
 
+/// VRING descriptor flag bits per Virtio 1.2 §2.6.5.
+const VRING_DESC_F_NEXT:  u16 = 1;
+const VRING_DESC_F_WRITE: u16 = 2;
+
 const PAGE_SIZE: u64 = 4096;
 const HHDM_FALLBACK: u64 = 0xFFFF_8000_0000_0000; // matches user_as::hhdm_offset() default
 
@@ -77,7 +81,26 @@ pub struct VirtioNetDevice {
     /// poll at the head of each tx_frame.
     pub tx_buf_pa: u64,
     pub tx_buf_va: u64,
+    /// Per-RX-descriptor 4 KiB buffer pages. Queue size is capped at
+    /// `RX_BUF_COUNT` ≤ queue size; each entry is one DMA-coherent
+    /// page. The descriptor at index `i` permanently points at
+    /// `rx_bufs[i].pa` for the device to write into; we re-publish
+    /// the same chain head on each rx_poll completion.
+    pub rx_bufs:   [RxBuf; RX_BUF_COUNT],
+    /// How many RX descriptors actually got allocated (≤ rx.size).
+    pub rx_count:  u16,
 }
+
+/// Per-RX-slot DMA-coherent receive buffer.
+#[derive(Copy, Clone, Default)]
+pub struct RxBuf {
+    pub pa: u64,
+    pub va: u64,
+}
+
+/// Maximum RX descriptors / buffers we pre-allocate at init.
+/// Capped at the legacy queue size we negotiated (≤64).
+pub const RX_BUF_COUNT: usize = 32;
 
 /// Per-queue runtime (descriptor / avail / used ring physical layout).
 /// All three structures live in a single page-aligned PMM allocation
@@ -321,8 +344,51 @@ pub fn init_legacy() {
     // SAFETY: HHDM-mapped scratch page; zero a single 4KiB region we just allocated.
     unsafe { core::ptr::write_bytes(tx_buf_va as *mut u8, 0, PAGE_SIZE as usize); }
 
+    // Pre-allocate RX buffer pages and pin descriptors at indices
+    // [0..rx_count). Each desc[i] = (rx_bufs[i].pa, PAGE_SIZE,
+    // VRING_DESC_F_WRITE, 0). Avail ring pre-loaded with all
+    // indices; avail.idx set to rx_count so the device sees them
+    // ready when DRIVER_OK is written below.
+    let target_rx = core::cmp::min(rx.size as usize, RX_BUF_COUNT);
+    let mut rx_bufs = [RxBuf::default(); RX_BUF_COUNT];
+    let mut rx_count: u16 = 0;
+    for i in 0..target_rx {
+        match crate::pmm_setup::alloc_one_frame() {
+            Some(pa) => {
+                let va = pa + crate::user_as::hhdm_offset();
+                // SAFETY: HHDM-mapped page just allocated; zero before publishing.
+                unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize); }
+                rx_bufs[i] = RxBuf { pa, va };
+                rx_count += 1;
+            }
+            None => break,
+        }
+    }
+    // SAFETY: rx region was set up by setup_queue → still HHDM-mapped, zeroed.
+    unsafe {
+        let desc_base  = rx.region_va;
+        let avail_base = rx.region_va + avail_off(rx.size) as u64;
+        for i in 0..rx_count as u64 {
+            let d = desc_base + (i * 16);
+            core::ptr::write_volatile(d as *mut u64,            rx_bufs[i as usize].pa);
+            core::ptr::write_volatile((d + 8) as *mut u32,      PAGE_SIZE as u32);
+            core::ptr::write_volatile((d + 12) as *mut u16,     VRING_DESC_F_WRITE);
+            core::ptr::write_volatile((d + 14) as *mut u16,     0);
+            core::ptr::write_volatile(
+                (avail_base + 4 + i * 2) as *mut u16,
+                i as u16,
+            );
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        // avail.idx (offset +2) ← rx_count
+        core::ptr::write_volatile((avail_base + 2) as *mut u16, rx_count);
+        core::sync::atomic::fence(Ordering::Release);
+    }
+    let mut rx = rx;
+    rx.next_avail = rx_count;
+
     *DEVICE.lock() = Some(VirtioNetDevice {
-        iobase, mac, rx, tx, tx_buf_pa, tx_buf_va,
+        iobase, mac, rx, tx, tx_buf_pa, tx_buf_va, rx_bufs, rx_count,
     });
     INITIALIZED.store(true, Ordering::Release);
 
@@ -491,4 +557,94 @@ pub fn tx_frame(frame: &[u8]) -> Result<usize, TxErr> {
 
     d.tx.next_avail = d.tx.next_avail.wrapping_add(1);
     Ok(frame.len())
+}
+
+// -------- RX poll path (P19c) --------
+
+/// Drain available RX completions and invoke `cb` with each frame
+/// (Ethernet header + payload, virtio_net_hdr stripped). After the
+/// callback returns, the descriptor is re-published to the device
+/// so it can write the next frame into the same buffer.
+///
+/// Returns the number of frames delivered. v1 is poll-mode only;
+/// callers drive this from a kthread or off the timer tick. IRQ
+/// wiring lands in P19d.
+///
+/// # C: O(frames_in_flight)
+/// # Lk: takes `DEVICE` spinlock around state mutation; the
+///        callback runs WHILE the lock is held — keep it short.
+pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
+    let mut g = DEVICE.lock();
+    let d = match g.as_mut() { Some(d) => d, None => return 0 };
+    if d.rx_count == 0 { return 0; }
+
+    let used_base  = d.rx.region_va + used_off(d.rx.size) as u64;
+    let avail_base = d.rx.region_va + avail_off(d.rx.size) as u64;
+
+    // SAFETY: queue region pinned + zero-initialized at setup; volatile
+    // read for device-written used.idx field at offset 2.
+    let dev_used_idx = unsafe {
+        core::ptr::read_volatile((used_base + 2) as *const u16)
+    };
+    if dev_used_idx == d.rx.last_used { return 0; }
+
+    let mut delivered = 0usize;
+    let mut last_used = d.rx.last_used;
+    while last_used != dev_used_idx {
+        let slot = (last_used as usize) % (d.rx.size as usize);
+        // used.ring[slot] = { id: u32, len: u32 } at offset 4 + slot*8.
+        // SAFETY: device writes the used ring; we read after the volatile
+        // idx fence above guarantees the entry is published.
+        let (id, len) = unsafe {
+            let base = used_base + 4 + (slot as u64) * 8;
+            (
+                core::ptr::read_volatile(base as *const u32),
+                core::ptr::read_volatile((base + 4) as *const u32),
+            )
+        };
+        last_used = last_used.wrapping_add(1);
+
+        let id_u = id as usize;
+        if id_u >= d.rx_count as usize { continue; }
+        let buf_va = d.rx_bufs[id_u].va;
+        let total  = len as usize;
+        if total < VIRTIO_NET_HDR_LEN { continue; }
+        let frame_len = total - VIRTIO_NET_HDR_LEN;
+        if frame_len > PAGE_SIZE as usize - VIRTIO_NET_HDR_LEN { continue; }
+
+        // SAFETY: rx_bufs[id].va is HHDM-mapped, owned exclusively
+        // under DEVICE.lock(); device finished writing this slot
+        // before populating used.ring (Virtio 1.2 §2.6.8).
+        let frame = unsafe {
+            core::slice::from_raw_parts(
+                (buf_va + VIRTIO_NET_HDR_LEN as u64) as *const u8,
+                frame_len,
+            )
+        };
+        cb(frame);
+        delivered += 1;
+
+        // Re-publish desc id back to the device by appending to
+        // avail.ring at next_avail % size and bumping avail.idx.
+        let pub_slot = (d.rx.next_avail as usize) % (d.rx.size as usize);
+        // SAFETY: avail ring is HHDM-mapped + exclusive under DEVICE.lock().
+        unsafe {
+            core::ptr::write_volatile(
+                (avail_base + 4 + (pub_slot as u64) * 2) as *mut u16,
+                id as u16,
+            );
+            core::sync::atomic::fence(Ordering::Release);
+            let new_idx = d.rx.next_avail.wrapping_add(1);
+            core::ptr::write_volatile((avail_base + 2) as *mut u16, new_idx);
+            core::sync::atomic::fence(Ordering::Release);
+        }
+        d.rx.next_avail = d.rx.next_avail.wrapping_add(1);
+    }
+    d.rx.last_used = last_used;
+
+    // One kick after batched re-publish so the device knows we
+    // refilled the ring. Cheap; legacy port-IO.
+    // SAFETY: NOTIFY is a write-only port per Virtio 1.2 §4.1.4.4.
+    unsafe { outw(d.iobase + VIO_QUEUE_NOTIFY, QUEUE_RX); }
+    delivered
 }
