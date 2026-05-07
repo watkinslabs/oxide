@@ -46,6 +46,14 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
     crate::devfs::register("/proc/locks",       StaticFileInode::new(b"") as InodeRef);
     crate::devfs::register("/proc/crypto",      StaticFileInode::new(b"") as InodeRef);
     crate::devfs::register("/proc/execdomains", StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
+    // cgroup-v2-style stubs. systemd + dbus + login probe both at
+    // start-up; missing nodes make them fall back through error
+    // paths or refuse to start. /proc/cgroups header lists no
+    // controllers (cgroup v2 hides v1 here); /proc/self/cgroup
+    // returns the v2 single-line "0::/" so the caller's parser
+    // sees a unified hierarchy with no controller.
+    crate::devfs::register("/proc/cgroups",     StaticFileInode::new(b"#subsys_name\thierarchy\tnum_cgroups\tenabled\n") as InodeRef);
+    crate::devfs::register("/proc/self/cgroup", StaticFileInode::new(b"0::/\n") as InodeRef);
     crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
     // /proc root inode for getdents64 enumeration of live tids.
     crate::devfs::register("/proc",              Arc::new(ProcRootInode)        as InodeRef);
