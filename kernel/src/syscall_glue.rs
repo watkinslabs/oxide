@@ -603,12 +603,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         }
         crate::syscall_nrs::NR_LANDLOCK_ADD_RULE      => 0,
         crate::syscall_nrs::NR_LANDLOCK_RESTRICT_SELF => 0,
-        // perf_event_open(attr, pid, cpu, group_fd, flags): admit + return fd.
-        // Real PMU sampling rides a follow-up.
-        crate::syscall_nrs::NR_PERF_EVENT_OPEN => {
-            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
-        }
+        // perf_event_open: real PerfEventInode whose read returns the
+        // monotonic-ns sample since open; ioctl handles ENABLE/DISABLE/
+        // RESET/REFRESH. PMU hardware sampling + ring-buffer mmap
+        // ride follow-ups.
+        crate::syscall_nrs::NR_PERF_EVENT_OPEN => crate::perf::kernel_sys_perf_event_open(&args),
         crate::syscall_nrs::NR_USERFAULTFD => crate::userfaultfd::kernel_sys_userfaultfd(&args),
         // Modern mount API (P29a). fsopen/fsmount/fspick/open_tree return
         // memfd-backed fds tagged with the call's identity for future
