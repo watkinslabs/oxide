@@ -509,6 +509,14 @@ fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
 pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 ) -> u64 {
+    // Linux ABI is per-arch: x86_64 uses its own numbering, arm64
+    // uses the "generic" numbering (write=64 vs write=1, etc.).
+    // The kernel's syscall table is keyed on x86_64 numbering, so
+    // remap aarch64 nrs at entry. Unknown aarch64 nrs pass through
+    // unchanged and will fall to the ENOSYS arm.
+    #[cfg(target_arch = "aarch64")]
+    let nr = crate::syscall_arm_abi::aarch64_nr_to_x86(nr);
+
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
     // seccomp filter check at dispatch entry. v1 honors KILL / TRAP /
     // ERRNO / ALLOW. Tasks with no filters short-circuit through Ok(()).

@@ -243,9 +243,145 @@ pub unsafe fn run() -> ! {
     debug_irq! {
         klog::kinfo!("elf-smoke-arm: user task exited cleanly, boot resumed");
     }
-    halt_forever();
+
+    // ARM lockstep with x86: after the smoke ELF exits, spawn
+    // /sbin/init from the mounted ext4 rootfs and run the
+    // init→svcd→agetty→login chain. Mirrors `elf_smoke::run_as_task`
+    // post-smoke behavior. Without this the arm boot path halted
+    // forever right here, leaving the user staring at a kernel-only
+    // log with no way to interact (`make qemu-arm` was useless).
+    spawn_init_from_rootfs_arm();
+
+    // Schedule loop with IRQs unmasked so the timer-tick UART poll
+    // keeps draining bytes into the tty rx ringbuffer.
+    loop {
+        // SAFETY: dispatch ctx; runqueue installed; preempt-off.
+        unsafe { crate::sched::schedule(); }
+        // SAFETY: msr daifclr opens DAIF.I to allow the timer / UART
+        // IRQ to wake us; wfi parks until next IRQ; both privileged at EL1.
+        unsafe { core::arch::asm!("msr daifclr, #2; wfi; msr daifset, #2",
+            options(nomem, nostack, preserves_flags)); }
+    }
 }
 
+/// aarch64 mirror of `elf_smoke::spawn_user_blob_smoke` for the
+/// init blob. Looks up /sbin/init (then /init) in the mounted ext4
+/// rootfs, allocates a fresh per-task L0 page table, builds an
+/// AddressSpace, activates it (TTBR0 swap), loads the static-PIE
+/// init binary, mmaps a user stack, spawns a user task on the
+/// runqueue. Returns when the spawn machinery is done; the task
+/// runs on the next schedule().
+fn spawn_init_from_rootfs_arm() {
+    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use hal::{MmuOps, UserVirtAddr};
+
+    // v1 aarch64 init candidate order:
+    //   1. /sbin/init  (real-musl init.c — minimal, but its fork+exec
+    //      paths require SYS_clone+SYS_execve on arm which aren't
+    //      wired yet, so it exits without launching a shell)
+    //   2. /init       (alias)
+    //   3. /bin/sh     (fall back to busybox-as-shell so the boot
+    //      reaches an interactive prompt even before clone/execve
+    //      land on arm)
+    let init_blob: &'static [u8] = {
+        let bytes_opt = crate::dev_ext4::read_file(b"/sbin/init")
+            .or_else(|| crate::dev_ext4::read_file(b"/init"))
+            .or_else(|| crate::dev_ext4::read_file(b"/bin/sh"));
+        match bytes_opt {
+            Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
+            None => {
+                debug_irq! { klog::kinfo!("elf-smoke-arm: no /sbin/init in rootfs; halting"); }
+                return;
+            }
+        }
+    };
+
+    // SAFETY: PMM + MmuOps up; new_user_l0 returns a fresh frame zeroed and populated with the kernel half.
+    let root_pa = match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
+        Some(p) => p,
+        None    => { debug_irq! { klog::kerror!("init-arm: new_user_l0 failed"); } return; }
+    };
+    let mm = match AddressSpace::new(root_pa) {
+        Ok(a)  => a,
+        Err(_) => { debug_irq! { klog::kerror!("init-arm: AS::new failed"); } return; }
+    };
+
+    // SAFETY: per-AS L0 was constructed with kernel-half shared from master so kernel mappings remain valid; TTBR0 swap legal at EL1 IRQ-off.
+    unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(root_pa); }
+
+    let img = match crate::elf_load::load_static_blob(init_blob, &mm) {
+        Ok(i)  => i,
+        Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
+    };
+
+    let stack_hint = match UserVirtAddr::new(USER_STACK_VA) {
+        Some(u) => u,
+        None    => { debug_irq! { klog::kerror!("init-arm: bad stack VA"); } return; }
+    };
+    if mm.mmap(
+        Some(stack_hint), 0x1000,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    ).is_err() {
+        debug_irq! { klog::kerror!("init-arm: stack mmap failed"); }
+        return;
+    }
+
+    // Allocate an 8 KiB TLS+TCB region in the user AS and point
+    // TPIDR_EL0 at the END of the first page (= start of the second).
+    // musl on aarch64 uses variant-I TLS with `TP_ADJ(p) = p +
+    // sizeof(struct pthread)`, so `pthread_self() = TPIDR_EL0 -
+    // sizeof(struct pthread)`. errno_val and other fields live at
+    // small *negative* offsets from TPIDR_EL0; positive offsets hold
+    // static TLS variables. Mapping 2 pages and putting TPIDR at the
+    // boundary covers both directions with one allocation.
+    const USER_TLS_BASE: u64 = 0x600_000;
+    const USER_TLS_LEN:  usize = 0x2000; // 8 KiB
+    const USER_TPIDR_VA: u64 = USER_TLS_BASE + 0x1000; // mid-point
+    let tls_hint = match UserVirtAddr::new(USER_TLS_BASE) {
+        Some(u) => u,
+        None    => { debug_irq! { klog::kerror!("init-arm: bad TLS VA"); } return; }
+    };
+    if mm.mmap(
+        Some(tls_hint), USER_TLS_LEN,
+        VmaProt::READ | VmaProt::WRITE,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    ).is_err() {
+        debug_irq! { klog::kerror!("init-arm: TLS mmap failed"); }
+        return;
+    }
+    // SAFETY: msr tpidr_el0 at EL1 is always legal; eret carries the value into EL0; USER_TPIDR_VA points to the boundary of two freshly-mmapped anonymous user pages of `mm` (active TTBR0); pthread_self()-based offsets land inside the 8 KiB region.
+    unsafe {
+        core::arch::asm!(
+            "msr tpidr_el0, {v}",
+            v = in(reg) USER_TPIDR_VA,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+
+    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
+    if unsafe {
+        crate::sched::spawn_user_thread(
+            0xC0DE_0002, "init",
+            img.entry.as_u64(),
+            USER_STACK_TOP,
+            mm,
+        )
+    }.is_err() {
+        debug_irq! { klog::kerror!("init-arm: spawn_user_thread failed"); }
+    }
+
+    debug_irq! { klog::kinfo!("init-arm: spawned"); }
+}
+
+/// arm-side init lookup helper. Tries /sbin/init first, then /init,
+/// falling back to the embedded INIT_REAL_BLOB which is x86-only —
+/// so on aarch64 if the rootfs has no init we return None and
+/// caller halts.
 fn halt_forever() -> ! {
     loop {
         // SAFETY: msr daifset masks IRQs; wfi parks the core; no wake — terminal halt.
