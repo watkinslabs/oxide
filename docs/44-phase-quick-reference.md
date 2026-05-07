@@ -6,9 +6,8 @@ DRAFT 2026-05-05. Dep:`00`,`40`,`43`.
 
 | Gate | Required |
 |---|---|
-| Phase advance | PR-time CI green, canary 1h green, bench within budget, coverage gate met (`00§3`,`40§2`) |
-| Not a phase gate | Background soak on `main` (`00§3`,`40§3`) |
-| v1 release-only gate | 168h soak artifact per arch on tagged commit (`00§10`,`40§4`) |
+| Phase advance | PR-time CI green, bench within budget, coverage gate met (`00§3`,`40§2`) |
+| v1 release tag | PR-time CI green on tag + `43§2` acceptance binaries pass + audit no-regression (`00§15`,`40§3`) |
 
 ## 2 Implementation phases (v1 path)
 

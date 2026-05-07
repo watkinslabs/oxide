@@ -33,7 +33,7 @@ Nightly required for: `-Zbuild-std`, custom target JSON, `naked_functions`, `asm
 
 ### 1.1 Bump cadence
 
-Min once/6mo, max once/6wk. PR title `toolchain: bump to nightly-YYYY-MM-DD` with: rationale, full CI green incl miri, source delta for renamed unstable features.
+Bump cadence is whatever the project's stability needs. PR title `toolchain: bump to nightly-YYYY-MM-DD` with: rationale, full CI green incl miri, source delta for renamed unstable features.
 
 ### 1.2 Stable migration
 
@@ -203,7 +203,6 @@ xtask user      --arch <a>
 xtask image     --arch <a>
 xtask test      [--hosted|--kernel|--loom|--miri|--proptest]
 xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
-xtask soak      --arch <a> --duration H
 xtask bench     --arch <a>
 xtask spec-lint
 xtask doc-check

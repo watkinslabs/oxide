@@ -53,14 +53,12 @@ oxide2/
 │   ├── oracle-{buddy,slab,sched}/
 │   ├── perfrunner/
 │   ├── spec-lint/
-│   ├── soak-runner/
 │   └── img-builder/
 ├── tests/
 │   ├── unit/                     # arch-free hosted #[cfg(test)]
 │   ├── integration/              # boots a kernel, runs a userspace test program
-│   ├── soak/                     # multi-hour
 │   └── bench/                    # criterion-based microbenchmarks
-└── bench-history/, perf-history/, soak-artifacts/
+└── bench-history/, perf-history/
 ```
 
 ## 4 xtask commands
@@ -71,7 +69,6 @@ xtask user      --arch <a>
 xtask image     --arch <a>            -> boot.img
 xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
 xtask test      [--hosted | --kernel | --loom | --miri | --proptest | --all]
-xtask soak      --arch <a> --duration <hrs> --workload <name>
 xtask bench     --arch <a>
 xtask spec-lint                       # CI lints from `08`,`07`
 xtask doc-check                       # MANIFEST consistency, frozen-revision-block lints

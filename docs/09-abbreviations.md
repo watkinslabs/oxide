@@ -61,7 +61,7 @@ Single source of truth for shorthand used across `10+` specs and code. Add here 
 | Obs | Observability (`37`) |
 | Err | Error handling (`38`) |
 | Img | Build/image (`39`) |
-| CI | CI/soak (`40`) |
+| CI | CI (`40`) |
 | Dbg | Debug-flags catalog (`41`) |
 | Tst | Test strategy (`42`) |
 | Acc | Acceptance (`43`) |
