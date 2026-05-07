@@ -42,8 +42,8 @@ fn kernel_munmap(args: &SyscallArgs) -> i64 {
 }
 
 /// sys_read via fd_table.
-#[cfg(target_arch = "x86_64")]
-fn kernel_sys_read(args: &SyscallArgs) -> i64 {
+/// # C: O(cnt) on the underlying inode read
+pub fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let cnt = args.a2;
@@ -81,7 +81,8 @@ fn kernel_sys_read(args: &SyscallArgs) -> i64 {
 }
 
 /// sys_write via fd_table.
-fn kernel_sys_write(args: &SyscallArgs) -> i64 {
+/// # C: O(cnt) on the underlying inode write
+pub fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let cnt = args.a2;
@@ -590,6 +591,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_MSGSND        => crate::sysv_msg::kernel_sys_msgsnd(&args),
         crate::syscall_nrs::NR_MSGRCV        => crate::sysv_msg::kernel_sys_msgrcv(&args),
         crate::syscall_nrs::NR_MSGCTL        => crate::sysv_msg::kernel_sys_msgctl(&args),
+        crate::syscall_nrs::NR_MQ_OPEN       => crate::syscall_glue_anonfd::kernel_sys_mq_open(&args),
+        crate::syscall_nrs::NR_MQ_TIMEDSEND  => crate::syscall_glue_anonfd::kernel_sys_mq_timedsend(&args),
+        crate::syscall_nrs::NR_MQ_TIMEDRECEIVE => crate::syscall_glue_anonfd::kernel_sys_mq_timedreceive(&args),
         crate::syscall_nrs::NR_IO_URING_SETUP    => crate::io_uring::kernel_sys_io_uring_setup(&args),
         crate::syscall_nrs::NR_IO_URING_ENTER    => crate::io_uring::kernel_sys_io_uring_enter(&args),
         crate::syscall_nrs::NR_IO_URING_REGISTER => crate::io_uring::kernel_sys_io_uring_register(&args),
