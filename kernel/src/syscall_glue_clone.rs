@@ -285,6 +285,10 @@ fn clone_spawn_arch(
     pregs.elr_el1  = svc.elr_el1;
     pregs.spsr_el1 = svc.spsr_el1;
     pregs.sp_el0   = svc.sp_el0;
+    // Callee-saved x19..x28 are now saved by the SVC entry asm into
+    // svc.x19_x28[0..10]. Copy through to the child's ForkRegs so
+    // the child resumes with the parent's full callee-saved state.
+    for i in 0..10 { pregs.x[19 + i] = svc.x19_x28[i]; }
 
     // fork(2): child_stack=0 → child resumes on parent's SP_EL0.
     // clone(2) with child_stack: child resumes on the supplied stack.

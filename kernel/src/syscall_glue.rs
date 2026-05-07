@@ -214,7 +214,6 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
 /// (CLD_EXITED). Linux requires waitid to write 0 to si_pid on a
 /// WNOHANG miss; we honor that.
 /// # C: same as wait4 — bounded by zombie poll
-#[cfg(target_arch = "x86_64")]
 fn kernel_sys_waitid(args: &SyscallArgs) -> i64 {
     const P_ALL: u64 = 0;
     const P_PID: u64 = 1;
@@ -254,7 +253,6 @@ fn kernel_sys_waitid(args: &SyscallArgs) -> i64 {
     if rv < 0 { rv } else { 0 }
 }
 
-#[cfg(target_arch = "x86_64")]
 fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const WNOHANG: u64 = 1;
@@ -820,9 +818,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             let mut sa = args; sa.a0 = args.a1; sa.a1 = args.a2; sa.a2 = args.a3; sa.a3 = 0;
             crate::syscall_glue_execve::kernel_sys_execve(&sa)
         }
-        #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_WAIT4         => kernel_sys_wait4(&args),
-        #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_WAITID        => kernel_sys_waitid(&args),
         crate::syscall_nrs::NR_TKILL         => kernel_sys_kill(&args),
         crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_signal::kernel_sys_rt_sigpending(&args),
