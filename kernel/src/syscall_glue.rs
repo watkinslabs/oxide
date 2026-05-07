@@ -873,6 +873,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
         crate::syscall_nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
         crate::syscall_nrs::NR_COPY_FILE_RANGE => crate::syscall_glue_xfer::kernel_sys_copy_file_range(&args),
+        crate::syscall_nrs::NR_SPLICE     => crate::syscall_glue_xfer::kernel_sys_splice(&args),
+        crate::syscall_nrs::NR_TEE        => crate::syscall_glue_xfer::kernel_sys_tee(&args),
+        crate::syscall_nrs::NR_VMSPLICE   => crate::syscall_glue_xfer::kernel_sys_vmsplice(&args),
         crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_open::kernel_sys_openat(&args),
         // openat2(dirfd, path, struct open_how*, size). v1 reads the
         // first 16 bytes (flags+mode) and routes through openat;
