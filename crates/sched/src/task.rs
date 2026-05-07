@@ -188,6 +188,16 @@ pub struct Task {
     /// # C: O(1)
     pub sigmask: AtomicU64,
 
+    /// Per-task alternate signal stack, set by `sigaltstack(2)`.
+    /// `sigaltstack_sp` is the user VA of the stack base, `_size`
+    /// is its byte length, `_flags` is SS_AUTODISARM / SS_DISABLE
+    /// per Linux. `sig_dispatch` reads these when an action with
+    /// SA_ONSTACK fires to pick the alternate stack.
+    /// # C: O(1)
+    pub sigaltstack_sp:    AtomicU64,
+    pub sigaltstack_size:  AtomicU64,
+    pub sigaltstack_flags: AtomicU32,
+
     /// Per-task `struct sigaction` array per `27§4`. Slot i holds
     /// the handler/flags/mask/restorer for signal i+1 (1..=64).
     /// `rt_sigaction` writes; signal-delivery reads to choose the
@@ -369,6 +379,9 @@ impl Task {
             fd_table: UnsafeCell::new(None),
             sigpending: AtomicU64::new(0),
             sigmask:    AtomicU64::new(0),
+            sigaltstack_sp:    AtomicU64::new(0),
+            sigaltstack_size:  AtomicU64::new(0),
+            sigaltstack_flags: AtomicU32::new(2 /* SS_DISABLE */),
             sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
