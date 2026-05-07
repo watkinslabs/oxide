@@ -198,11 +198,49 @@ impl Context for ContextX86_64 {
     unsafe fn switch(prev: *mut Self, next: *const Self) {
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         {
+            // Save the live FS_BASE into `prev->fs_base` and restore
+            // `next->fs_base` afterwards. Userspace musl uses FS-
+            // relative pthread storage; without this, a child task
+            // that called `arch_prctl(SET_FS, ...)` leaves the CPU
+            // FS_BASE pointing at *its* TLS region, which faults the
+            // moment the parent runs again.
+            // SAFETY: rdmsr/wrmsr IA32_FS_BASE legal at CPL=0; reads/writes only the FS_BASE MSR.
+            let cur_fs: u64 = unsafe {
+                let lo: u32; let hi: u32;
+                core::arch::asm!(
+                    "rdmsr",
+                    in("ecx") 0xC000_0100u32,
+                    out("eax") lo, out("edx") hi,
+                    options(nomem, nostack, preserves_flags),
+                );
+                ((hi as u64) << 32) | (lo as u64)
+            };
+            // SAFETY: prev is a valid &mut Self per fn contract.
+            unsafe { (*prev).fs_base = cur_fs; }
             // SAFETY: defers to `oxide_context_switch` whose preconditions
             // mirror this fn's; the asm preserves only the SysV
             // callee-saved set — caller must hold runqueue lock and
             // have preempt disabled, per the trait contract above.
             unsafe { oxide_context_switch(prev, next); }
+            // We're back on this task's stack (some other call to
+            // Context::switch eventually picked us). The Rust
+            // locals `prev`, `next` here are bound to the original
+            // outgoing call's frame — `prev` points at this task's
+            // own ctx — so we restore from `(*prev).fs_base`, NOT
+            // `(*next).fs_base` (which would be the unrelated task
+            // we *originally* switched into).
+            // SAFETY: prev is a valid *mut Self per fn contract; wrmsr IA32_FS_BASE legal at CPL=0.
+            unsafe {
+                let fs = (*prev).fs_base;
+                let lo = fs as u32;
+                let hi = (fs >> 32) as u32;
+                core::arch::asm!(
+                    "wrmsr",
+                    in("ecx") 0xC000_0100u32,
+                    in("eax") lo, in("edx") hi,
+                    options(nomem, nostack, preserves_flags),
+                );
+            }
         }
         #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
         {

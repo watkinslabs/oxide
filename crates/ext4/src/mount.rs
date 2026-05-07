@@ -507,17 +507,24 @@ impl Mount {
         Ok(removed)
     }
 
-    /// Look `name` up in the directory whose first data block
-    /// holds the entries. Only the first block is consulted —
-    /// large dirs split across multiple blocks land in P6-06+.
+    /// Look `name` up in the directory. Walks all data blocks
+    /// covered by the inode's `i_size`, not just the first —
+    /// rootfs `/bin` overflows one 1 KiB block once we stage
+    /// more than ~25 hardlinks alongside the busybox applets.
     /// # C: O(N_entries)
     pub fn lookup_in_dir(&self, dir_inode: &Inode, name: &[u8]) -> Result<u32, MountError> {
         if !dir_inode.is_dir() { return Err(MountError::NotDir); }
-        let blk = self.read_file_block(dir_inode, 0)?;
-        match dir::lookup(&blk, name)? {
-            Some(e) => Ok(e.inode),
-            None    => Err(MountError::NotFound),
+        let block_size = self.sb.block_size as u64;
+        let total = dir_inode.size;
+        let nblocks = ((total + block_size - 1) / block_size) as u32;
+        for fb in 0..nblocks {
+            let blk = self.read_file_block(dir_inode, fb)?;
+            match dir::lookup(&blk, name)? {
+                Some(e) => return Ok(e.inode),
+                None    => continue,
+            }
         }
+        Err(MountError::NotFound)
     }
 
     /// Walk an absolute path from the root inode (always 2 in ext4).
