@@ -88,18 +88,34 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: net::UnixRegistry = net::UnixRegistry::new();
 
-/// Per-AF_INET-socket VFS state — one Inode per socket fd.
+/// Per-AF_INET / AF_INET6 socket VFS state — one Inode per socket fd.
+///
+/// `family` records the address family the userspace `socket(2)` call
+/// asked for: AF_INET (2) or AF_INET6 (10). The `local_ip` / `peer`
+/// slots stay V4-shaped for v1 because the transport layer is V4-only
+/// on the wire; on AF_INET6 sockets the V4 slot mirrors the IPv4
+/// equivalent of an IPv6 address (V4-mapped ::ffff:x.x.x.x or the
+/// loopback `127.0.0.1` for `::1`). Real V6 transport lands in
+/// phase 18b. The `family` tag drives which sockaddr shape the
+/// syscall path reads + writes.
 pub struct InetSocket {
+    pub family:     core::sync::atomic::AtomicU16,
     pub local_port: Spinlock<Option<u16>, SockLockClass>,
     pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
 }
 
+/// Linux `AF_INET` numeric value — kept here so dev_net code can tag
+/// new sockets without depending on syscall_glue_net's private const.
+pub const AF_INET:  u16 = 2;
+pub const AF_INET6: u16 = 10;
+
 impl InetSocket {
     /// # C: O(1)
     pub fn new_udp() -> Self {
         Self {
+            family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
             peer:       Spinlock::new(None),
@@ -109,12 +125,28 @@ impl InetSocket {
     /// # C: O(1)
     pub fn new_tcp() -> Self {
         Self {
+            family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
             peer:       Spinlock::new(None),
             // Placeholder — set by listen() / connect() / accept().
             kind:       Spinlock::new(SockKind::Udp),
         }
+    }
+    /// `socket(AF_INET6, SOCK_DGRAM, …)` — same V4 transport substrate
+    /// for v1; `family = AF_INET6` flips the syscall ABI to the
+    /// 28-byte sockaddr_in6 shape on bind/connect/sendto/recv*.
+    /// # C: O(1)
+    pub fn new_udp6() -> Self {
+        let s = Self::new_udp();
+        s.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
+        s
+    }
+    /// `socket(AF_INET6, SOCK_STREAM, …)`. # C: O(1)
+    pub fn new_tcp6() -> Self {
+        let s = Self::new_tcp();
+        s.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
+        s
     }
 
     /// Ensure a local port is bound (auto-bind to an ephemeral
