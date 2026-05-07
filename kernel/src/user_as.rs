@@ -450,20 +450,50 @@ pub fn glue_mmap(
     if len == 0               { return Err(-(Errno::Einval.as_i32() as i64)); }
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
 
-    let r = with(|as_| {
-        as_.mmap(
-            None,
-            len_aligned,
-            prot_from_linux(prot),
+    // mmap into the *current task's* AS — not the boot global. The
+    // global path was correct only during the boot-anchor smoke that
+    // ran before any user task had its own mm; after execve the
+    // running task has a per-task `mm: Arc<AddressSpace>` and its
+    // mmap'd VMAs need to land there. Routing through `with()`
+    // inserted into the global which the running CR3 doesn't target
+    // — every demand-fault then missed the VMA + terminated the task
+    // (busybox / static-musl bins blocked here).
+    let r = if let Some(cur) = crate::sched::current() {
+        // SAFETY: caller is the syscall dispatcher; preempt-off; running task on this CPU is the sole writer of mm slot.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            mm.mmap(
+                None,
+                len_aligned,
+                prot_from_linux(prot),
+                VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+                VmaBacking::Anonymous,
+                false,
+            )
+        } else {
+            // kthread / boot anchor — no per-task mm; fall back to
+            // the global. (Hosted tests + early smokes hit this.)
+            match with(|as_| as_.mmap(
+                None, len_aligned, prot_from_linux(prot),
+                VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+                VmaBacking::Anonymous, false,
+            )) {
+                Some(r) => r,
+                None    => return Err(-(Errno::Enosys.as_i32() as i64)),
+            }
+        }
+    } else {
+        match with(|as_| as_.mmap(
+            None, len_aligned, prot_from_linux(prot),
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-            VmaBacking::Anonymous,
-            false,
-        )
-    });
+            VmaBacking::Anonymous, false,
+        )) {
+            Some(r) => r,
+            None    => return Err(-(Errno::Enosys.as_i32() as i64)),
+        }
+    };
     match r {
-        Some(Ok(uva))  => Ok(uva.as_u64()),
-        Some(Err(_))   => Err(-(Errno::Enomem.as_i32() as i64)),
-        None           => Err(-(Errno::Enosys.as_i32() as i64)),  // AS not init
+        Ok(uva)  => Ok(uva.as_u64()),
+        Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
     }
 }
 
