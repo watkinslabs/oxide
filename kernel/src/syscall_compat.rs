@@ -95,7 +95,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // whereas ENOSYS aborts the operation entirely.
         | NR_SWAPON | NR_SWAPOFF
         // SysV IPC + POSIX MQ + keyring.
-        | NR_SHMGET | NR_SHMAT | NR_SHMCTL | NR_SHMDT
+        // SysV shm moved to real impl (P25a). SEM/MSG still ENOSYS.
         | NR_SEMGET | NR_SEMOP | NR_SEMCTL | NR_SEMTIMEDOP
         | NR_MSGGET | NR_MSGSND | NR_MSGRCV | NR_MSGCTL
         | NR_MQ_OPEN | NR_MQ_UNLINK | NR_MQ_TIMEDSEND
