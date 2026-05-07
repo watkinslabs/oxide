@@ -82,13 +82,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
                                        => Some(eperm),
 
         // ---- substrate-not-implemented ----
-        // ptrace + xattr + sendfile/splice family.
-        NR_PTRACE
+        // PTRACE moved to real (narrow) impl in P22a — TRACEME admit.
         // SPLICE/TEE/VMSPLICE moved to real impls in PR-N.
         // COPY_FILE_RANGE moved to real impl in PR-J.
-        // MEMFD_CREATE moved to real impl in PR-H; MEMFD_SECRET routes
-        // through it in PR-U (no per-AS hide-from-other-tasks v1).
-        | NR_PIDFD_GETFD
+        // MEMFD_CREATE / MEMFD_SECRET — PR-H / PR-U.
+        NR_PIDFD_GETFD
         // xattr family: handled in the ENOTSUP arm below — Linux's
         // 'no xattr on this filesystem' response. Programs that
         // probe (e.g., tar, cp -a) treat ENOTSUP as gracefully-skip,
