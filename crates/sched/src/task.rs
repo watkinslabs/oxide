@@ -105,6 +105,11 @@ impl TaskState {
 /// is sound under that single-mutator-per-active-CPU invariant.
 pub struct Task {
     pub tid:  u32,
+    /// Thread-group id per Linux clone(CLONE_THREAD) semantics —
+    /// the leader's `tid` shared by every thread in the same
+    /// process. `getpid()` returns this; `gettid()` returns `tid`.
+    /// For non-CLONE_THREAD spawns (fork) `tgid == tid`.
+    pub tgid: AtomicU32,
     pub name: &'static str,
 
     pub state:    AtomicU8,
@@ -362,6 +367,7 @@ impl Task {
     ) -> Self {
         Self {
             tid,
+            tgid: AtomicU32::new(tid),
             name,
             state:    AtomicU8::new(TaskState::Runnable as u8),
             on_rq:    AtomicBool::new(false),
