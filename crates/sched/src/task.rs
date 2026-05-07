@@ -301,6 +301,13 @@ pub struct Task {
     /// PTRACE_ATTACH/SINGLESTEP/PEEK/POKE/SYSCALL surface lands with
     /// debugger-frontend integration in a v2 phase 22 follow-up.
     pub traced_by: AtomicU32,
+
+    /// Per-task seccomp filter chain (cBPF programs). Each entry is
+    /// a `Vec<u64>` representing 8-byte sock_filter words; the
+    /// kernel/seccomp interpreter reinterprets at run time. Single-
+    /// mutator per `13§5`; running task on this CPU is the sole
+    /// writer. Drop on task exit. # C: O(F × I) per syscall
+    pub seccomp_filters: UnsafeCell<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -430,6 +437,7 @@ impl Task {
             ns_membership: AtomicU64::new(0),
             uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
             traced_by:     AtomicU32::new(0),
+            seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
         }
     }
 
