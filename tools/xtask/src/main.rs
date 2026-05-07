@@ -202,16 +202,31 @@ pub(crate) fn cmd_rootfs(_rest: &[String]) -> Result<(), u8> {
         dbg(&cmd)
     };
     // Vendored busybox 1.37.0 — pre-built static-musl per
-    // vendor/busybox/build.sh. Acceptance binary covering the v1
-    // sh/ls/cat/etc. items in `43§2`. Lands at /bin/busybox; the
-    // kernel-side oxide-sh stays at /bin/sh so init's existing exec
-    // path doesn't change. Acceptance scenarios invoke busybox by
-    // its full name (e.g. `busybox ls /`).
+    // vendor/busybox/build.sh. busybox keys on argv[0]: the same
+    // binary at /bin/sh runs as ash, at /bin/ls runs as ls, etc.
+    // Stage it at every applet path (incl. /bin/sh) so login →
+    // /bin/sh hands straight into busybox-ash. The toy oxide-sh
+    // moves to /bin/oxide-sh for dev probing / boot smoke.
     let bb = repo.join("vendor/busybox/busybox");
     if bb.is_file() {
         put(&bb, "/bin/busybox")?;
+        for applet in &[
+            "sh", "ash",
+            "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
+            "ps", "top", "uptime", "free", "dmesg", "mount", "umount",
+            "grep", "find", "head", "tail", "wc", "sort", "uniq",
+            "touch", "chmod", "chown", "ln", "test", "true", "false",
+            "env", "printf", "yes", "seq", "expr", "id", "whoami",
+            "tr", "cut", "sed", "awk", "date", "df", "du", "stat",
+            "kill", "sleep", "tee", "xxd", "hostname", "uname",
+            "pwd", "basename", "dirname", "which", "clear", "reset",
+        ] {
+            put(&bb, &format!("/bin/{applet}"))?;
+        }
     }
-    put(&repo.join("userspace/sh/sh"),             "/bin/sh")?;
+    // Toy oxide-sh kept at a distinct path so it doesn't shadow
+    // busybox's sh applet but stays available for the boot smoke.
+    put(&repo.join("userspace/sh/sh"),             "/bin/oxide-sh")?;
     put(&repo.join("userspace/init/init"),         "/bin/init")?;
     put(&repo.join("userspace/init/init"),         "/sbin/init")?;
     put(&repo.join("userspace/init/init"),         "/init")?;

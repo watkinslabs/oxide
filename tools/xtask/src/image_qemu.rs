@@ -316,20 +316,27 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-machine", "q35",
         // x86 baseline = Haswell-v4 (BMI2/AVX2 era, 2013+). LLVM
         // emits SHRX/etc. by default for the kernel target; older
-        // CPU models (qemu64) trap #UD on those. Future PR: target-
-        // feature gating in `targets/x86_64-unknown-oxide-kernel.json`
-        // so the kernel runs on plain qemu64 too.
+        // CPU models (qemu64) trap #UD on those.
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
         "-drive", &format!("format=raw,file={}", img.display()),
-        "-serial", "stdio",
+        // Serial: dedicated chardev with `mux=on,signal=off` so Ctrl-A
+        // is QEMU's monitor escape and Ctrl-C reaches the guest.
+        // Plain `-serial stdio` puts host stdin in line-buffered cooked
+        // mode and drops single keystrokes — the kernel's tty line-
+        // discipline then sees malformed input ("the sh fucking up").
+        // `-nographic` would do the same but also kill `-display none`.
+        "-chardev", "stdio,id=ser0,mux=on,signal=off",
+        "-serial", "chardev:ser0",
+        "-mon",     "chardev=ser0",
         "-display", "none",
         "-no-reboot",
         "-no-shutdown",
     ]);
-    eprintln!("xtask qemu: launching qemu-system-x86_64 with GPT disk image (UEFI), smp={}", smp);
+    eprintln!("xtask qemu: launching qemu-system-x86_64 (q35 + Haswell-v4 + stdio chardev), smp={}", smp);
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest.");
     run(c)
 }
 
@@ -347,15 +354,25 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-smp", &smp_str,
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
-        "-drive", &format!("format=raw,file={},if=virtio", img.display()),
-        "-serial", "stdio",
+        // Drive on the `virt` machine: explicit virtio-blk-pci so
+        // OVMF aarch64 sees it as a UEFI block device and walks the
+        // GPT for our ESP. Plain `-drive if=virtio` defaults to the
+        // legacy MMIO transport which OVMF on virt sometimes ignores;
+        // attaching as virtio-blk-pci through the virt-machine's
+        // synthetic PCIe root is the path edk2 reliably discovers.
+        "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
+        "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0",
+        "-chardev", "stdio,id=ser0,mux=on,signal=off",
+        "-serial", "chardev:ser0",
+        "-mon",     "chardev=ser0",
         "-display", "none",
         "-no-reboot",
         // Semihosting target=native lets the boot crate emit debug
         // chars via `hlt #0xf000` while we're still pre-MMIO.
         "-semihosting-config", "enable=on,target=native",
     ]);
-    eprintln!("xtask qemu: launching qemu-system-aarch64 with GPT disk image (UEFI), smp={}", smp);
+    eprintln!("xtask qemu: launching qemu-system-aarch64 (virt + cortex-a72 + stdio chardev), smp={}", smp);
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit.");
     run(c)
 }
 
