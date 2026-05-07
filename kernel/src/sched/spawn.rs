@@ -219,8 +219,8 @@ pub unsafe fn spawn_user_thread(
 /// addition `regs` must reflect the parent's saved-syscall state
 /// (i.e., captured during dispatch on the parent's per-task
 /// kernel stack).
-#[cfg(target_arch = "x86_64")]
 /// # C: O(1)
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn spawn_user_thread_for_fork(
     tid: u32,
     name: &'static str,
@@ -247,6 +247,55 @@ pub unsafe fn spawn_user_thread_for_fork(
     unsafe {
         let p = task.arch_ctx_ptr::<ArchCtx>();
         core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, user_rflags, regs));
+    }
+
+    let arc = Arc::new(task);
+    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    super::registry::insert(&arc);
+    {
+        let mut inner = rq.inner.lock();
+        inner.enqueue(Arc::clone(&arc));
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    }
+    sched::preempt::set_need_resched();
+    Ok(arc)
+}
+
+/// aarch64 mirror of `spawn_user_thread_for_fork`. The arm path
+/// has no separate user_rflags arg (SPSR_EL1 is encoded inside
+/// `ForkRegs.spsr_el1`); `entry_va` is the parent's saved ELR_EL1
+/// (the post-SVC PC) and `user_sp` is either parent's SP_EL0 or
+/// the clone(2)-supplied child stack.
+/// # SAFETY: same preconditions as `spawn_user_thread`; in addition
+/// `regs` must reflect the parent's saved-syscall state captured
+/// during dispatch on the parent's per-task kernel stack.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn spawn_user_thread_for_fork(
+    tid: u32,
+    name: &'static str,
+    entry_va: u64,
+    user_sp: u64,
+    regs: &hal_aarch64::ForkRegs,
+    mm: Arc<AddressSpace>,
+) -> Result<Arc<Task>, SpawnError> {
+    let rq = match super::runqueue::global() {
+        Some(r) => r,
+        None    => return Err(SpawnError::NoRunqueue),
+    };
+
+    let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
+    let mut task = Task::new_user(tid, name, class, mm);
+
+    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
+    // SAFETY: task is local; no concurrent reader.
+    unsafe { task.install_stack(stack); }
+    let stack_top = task.kernel_stack.load(Ordering::Acquire);
+
+    // SAFETY: stack_top freshly installed; entry_va/user_sp/regs from parent's saved frame; new_user_for_fork lays out the IRQ-epilogue frame for EL0 resume with regs preloaded.
+    unsafe {
+        let p = task.arch_ctx_ptr::<ArchCtx>();
+        core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, regs));
     }
 
     let arc = Arc::new(task);
