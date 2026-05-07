@@ -32,7 +32,7 @@ pub use cpuid::midr_el1;
 pub use regs::{
     read_mair_el1, read_sctlr_el1, read_tcr_el1, read_ttbr0_el1, read_ttbr1_el1,
 };
-pub use vbar::{install_default as install_default_vbar, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
+pub use vbar::{install_default as install_default_vbar, current_svc_frame, SvcFrame, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
 pub use fault::{install_fault_handler, FaultHandler};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};
 pub use context::ContextAArch64;
