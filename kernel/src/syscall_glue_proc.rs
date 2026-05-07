@@ -1135,6 +1135,29 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
     0
 }
 
+/// `sys_ptrace(request, pid, addr, data)` — slot 101. v2 phase 22
+/// first cut: honors PTRACE_TRACEME (child marks itself as traced
+/// by its parent so a debugger can attach via the parent later).
+/// Returns 0. The other PTRACE_* requests need attached-task control
+/// + signal-stop integration + a debugger frontend; they remain
+/// `-EOPNOTSUPP` until that lands.
+/// # C: O(1)
+pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    const PTRACE_TRACEME: u64 = 0;
+    let request = args.a0;
+    if request != PTRACE_TRACEME {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let parent = cur.parent_tid.load(Ordering::Acquire);
+    cur.traced_by.store(parent, Ordering::Release);
+    0
+}
+
 /// `sys_setns(fd, nstype)` — slot 308. Linux requires `fd` to refer
 /// to a `/proc/<pid>/ns/<type>` file; v1 doesn't yet expose those.
 /// We honor the syscall as a clear-the-membership-bit op so callers
