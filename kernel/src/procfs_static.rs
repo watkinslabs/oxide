@@ -149,6 +149,23 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/proc/self/loginuid",
         StaticFileInode::new(b"4294967295\n") as InodeRef);
+
+    // /sys/kernel/tracing — tracefs surface (P30a). v1 exposes the
+    // bare minimum: tracing_on, current_tracer, available_tracers,
+    // and the trace pipe placeholder. Real ftrace event delivery
+    // rides a follow-up.
+    crate::devfs::register("/sys/kernel/tracing/tracing_on",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/tracing/current_tracer",
+        StaticFileInode::new(b"nop\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/tracing/available_tracers",
+        StaticFileInode::new(b"nop\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/tracing/trace",
+        StaticFileInode::new(b"# tracer: nop\n#\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/debug/tracing/tracing_on",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/sys/kernel/debug/tracing/current_tracer",
+        StaticFileInode::new(b"nop\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score",
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/proc/self/oom_score_adj",
