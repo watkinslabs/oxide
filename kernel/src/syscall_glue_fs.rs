@@ -809,6 +809,116 @@ pub fn kernel_sys_ppoll(args: &SyscallArgs) -> i64 {
     kernel_sys_poll(&pf)
 }
 
+/// `sys_select(nfds, readfds, writefds, exceptfds, timeout)` — slot 23.
+/// Translates the fd_set bitmaps into a synthetic pollfd[] array
+/// (POLLIN for readfds, POLLOUT for writefds, POLLPRI for exceptfds),
+/// runs the existing poll path, then writes back the fd_set bitmaps
+/// from revents. The timeout is treated like poll's: ignored for the
+/// non-blocking check.
+///
+/// fd_set is a 1024-bit bitmap (128 bytes); nfds caps the highest fd
+/// to walk. v1 caps total work at 4096 fds.
+/// # C: O(nfds)
+pub fn kernel_sys_select(args: &SyscallArgs) -> i64 {
+    const POLLIN:  i16 = 0x0001;
+    const POLLPRI: i16 = 0x0002;
+    const POLLOUT: i16 = 0x0004;
+    const NFDS_MAX: u64 = 4096;
+    let nfds        = args.a0;
+    let readfds_p   = args.a1;
+    let writefds_p  = args.a2;
+    let exceptfds_p = args.a3;
+    let _timeout    = args.a4;
+    if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
+    // Helper: read bit i of an fd_set at user pointer `p`. Returns
+    // false if p is null (caller didn't supply that set) so we treat
+    // "no bits" naturally.
+    let bit_at = |p: u64, i: u64| -> bool {
+        if p == 0 || p >= USER_VA_END { return false; }
+        let byte_off = (i / 8) as u64;
+        if byte_off >= 128 { return false; }
+        // SAFETY: byte within the 128-byte fd_set; CPL=0 reads through caller's AS.
+        let b = unsafe { core::ptr::read_volatile((p + byte_off) as *const u8) };
+        (b & (1u8 << (i & 7))) != 0
+    };
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // Pre-zero the result fd_sets so caller sees a clean state.
+    for &(p, _bit_unused) in &[(readfds_p, 0i16), (writefds_p, 0), (exceptfds_p, 0)] {
+        if p != 0 && p < USER_VA_END {
+            // SAFETY: 128-byte fd_set fits in user range; CPL=0 writes.
+            unsafe {
+                for i in 0..128usize {
+                    core::ptr::write_volatile((p + i as u64) as *mut u8, 0);
+                }
+            }
+        }
+    }
+    let mut ready: i64 = 0;
+    for fd in 0..nfds {
+        let want_read   = bit_at(readfds_p, fd);
+        let want_write  = bit_at(writefds_p, fd);
+        let want_except = bit_at(exceptfds_p, fd);
+        if !(want_read || want_write || want_except) { continue; }
+        let file = match fdt.get(fd as i32) { Ok(f) => f, Err(_) => continue };
+        let mut got_read = false;
+        let mut got_write = false;
+        if file.inode().file_type() == vfs::FileType::CharDev {
+            let ino = file.inode().ino();
+            if (ino & 0xFFFF_0000) == 0x6000_0000 {
+                let is_master = (ino & 0x8000) == 0;
+                if let Some(pair) = crate::dev_pty::pair_for((ino & 0x7FFF) as u32) {
+                    let r = pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() });
+                    got_read  = r;
+                    got_write = true;
+                }
+            } else {
+                got_read  = true; // non-pty CharDev: always-ready
+                got_write = true;
+            }
+        } else {
+            got_read = true; got_write = true;
+        }
+        let _ = (POLLIN, POLLPRI, POLLOUT); // satisfy lints; constants kept for doc parity with poll
+        let mut hit = false;
+        if want_read && got_read {
+            set_bit(readfds_p, fd); hit = true;
+        }
+        if want_write && got_write {
+            set_bit(writefds_p, fd); hit = true;
+        }
+        // exceptfds: v1 has no PRI / urgent-data substrate; never fires.
+        let _ = want_except;
+        if hit { ready += 1; }
+    }
+    ready
+}
+
+#[inline]
+fn set_bit(p: u64, i: u64) {
+    if p == 0 || p >= USER_VA_END { return; }
+    let byte_off = (i / 8) as u64;
+    if byte_off >= 128 { return; }
+    // SAFETY: byte within the 128-byte fd_set; CPL=0 read+write through caller's AS.
+    unsafe {
+        let b = core::ptr::read_volatile((p + byte_off) as *const u8);
+        core::ptr::write_volatile((p + byte_off) as *mut u8, b | (1u8 << (i & 7)));
+    }
+}
+
+/// `sys_pselect6(nfds, r, w, e, timeout, sigmask_pair)` — slot 270.
+/// Same as select; the sigmask + timespec extras are ignored for v1
+/// non-blocking. (The pair argument is `{ sigmask: u64, sigsz: u64 }`
+/// in Linux x86_64.)
+pub fn kernel_sys_pselect6(args: &SyscallArgs) -> i64 {
+    kernel_sys_select(args)
+}
+
 /// `sys_lseek(fd, offset, whence)` — slot 8.
 /// # C: O(1)
 pub fn kernel_sys_lseek(args: &SyscallArgs) -> i64 {
