@@ -114,7 +114,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_FSOPEN | NR_FSCONFIG | NR_FSMOUNT | NR_FSPICK
         | NR_FANOTIFY_INIT | NR_FANOTIFY_MARK
         // RECVMMSG/SENDMMSG moved to real impl in PR-G.
-        | NR_PSELECT6 | NR_SELECT
+        // PSELECT6/SELECT moved to real impl in PR-Q (poll-based).
         // WAITID moved to real impl in PR-K (alias of wait4 + siginfo_t).
         // GET_ROBUST_LIST + CACHESTAT handled below as silent-0.
         | NR_SET_MEMPOLICY | NR_GET_MEMPOLICY
