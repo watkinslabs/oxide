@@ -893,6 +893,9 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
                 "/proc/modules"  => Some(Arc::new(crate::procfs_net::ProcModulesInode) as InodeRef),
                 "/proc/net/route" => Some(Arc::new(crate::procfs_net::ProcNetRouteInode) as InodeRef),
                 "/proc/net/arp"   => Some(Arc::new(crate::procfs_net::ProcNetArpInode)   as InodeRef),
+                "/proc/net/unix"  => Some(Arc::new(crate::procfs_net::ProcNetUnixInode)  as InodeRef),
+                "/proc/net/if_inet6" => Some(Arc::new(crate::procfs_net::ProcNetIfInet6Inode) as InodeRef),
+                "/proc/net/snmp"  => Some(Arc::new(crate::procfs_net::ProcNetSnmpInode)  as InodeRef),
                 _ => None,
             }
         }
