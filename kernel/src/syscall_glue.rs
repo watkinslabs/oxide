@@ -806,6 +806,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_UNSHARE       => crate::syscall_glue_proc::kernel_sys_unshare(&args),
         crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_proc::kernel_sys_setns(&args),
         crate::syscall_nrs::NR_PTRACE        => crate::syscall_glue_proc::kernel_sys_ptrace(&args),
+        // fanotify_init: returns a new fd backed by an InotifyInode (the
+        // event-fd shape is similar enough that reusing the substrate
+        // is honest first-cut). fanotify_mark: silent 0 — v1 doesn't
+        // yet record per-mark watches.
+        crate::syscall_nrs::NR_FANOTIFY_INIT => crate::dev_inotify::kernel_sys_inotify_init1(&args),
+        crate::syscall_nrs::NR_FANOTIFY_MARK => 0,
         crate::syscall_nrs::NR_SHMGET        => crate::sysv_shm::kernel_sys_shmget(&args),
         crate::syscall_nrs::NR_SHMAT         => crate::sysv_shm::kernel_sys_shmat(&args),
         crate::syscall_nrs::NR_SHMDT         => crate::sysv_shm::kernel_sys_shmdt(&args),
