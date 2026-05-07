@@ -20,7 +20,7 @@ use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES, USER_VA_END};
 use sync::{AddressSpace as AddressSpaceClass, RwLock, RwReadGuard};
 
 use crate::tree::VmaTree;
-use crate::vma::{FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultAccess, FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
 /// Lowest user VA this allocator hands out. Page 0 is reserved as the
@@ -359,6 +359,49 @@ impl AddressSpace {
         hhdm_offset: u64,
         mut alloc_frame: F,
     ) -> KResult<()> {
+        // Protection write to a writable VMA — CoW-style
+        // upgrade. Three causes hit this:
+        //   (a) eager-copy at fork installed the leaf with the
+        //       VMA's prot, but the prot translation cleared
+        //       the W bit due to a to_page_flags quirk —
+        //       resolved by re-installing fresh with the same
+        //       flags.
+        //   (b) shared KernelBytes leaf (loader installed the
+        //       RO master Box for a PT_LOAD with W flag) — the
+        //       child needs its own writable copy of the page.
+        //   (c) future real CoW — a child wrote to a page the
+        //       parent shared at fork time. Same handler works:
+        //       allocate fresh frame, copy current bytes, install
+        //       writable PTE.
+        // VMA-prot mismatch (write to RO VMA) → Err(Inval) →
+        // upstream EFAULT or SIGSEGV per fault context.
+        if let FaultKind::Protection { access: FaultAccess::Write } = fault {
+            let vma = match self.vmas.read().find_containing(va) {
+                Some(v) => v.clone(),
+                None    => return Err(Error::Inval),
+            };
+            if !vma.prot.contains(VmaProt::WRITE) {
+                return Err(Error::Inval);
+            }
+            let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+            // SAFETY: va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
+            let cur = unsafe { M::translate(Va(va_page)) };
+            let new_pa = alloc_frame().ok_or(Error::NoMem)?;
+            // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror (when present); 4 KiB non-overlapping copy. If no prior leaf was present we zero the new page.
+            unsafe {
+                let dst = (hhdm_offset + new_pa) as *mut u8;
+                if let Some((src_pa, _)) = cur {
+                    let src = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
+                    core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
+                } else {
+                    core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
+                }
+            }
+            let pte_flags = vma.prot.to_page_flags();
+            // SAFETY: va_page page-aligned in user-half; new_pa fresh PMM frame; flags carry USER + WRITE since vma.prot.WRITE checked above.
+            unsafe { M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K); }
+            return Ok(());
+        }
         let access = match fault {
             FaultKind::NotPresent { access } => access,
             FaultKind::Protection { .. }     => return Err(Error::NotImplemented),

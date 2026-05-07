@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-use crate::syscall_glue::validate_user_buf;
+use crate::syscall_glue::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)
@@ -77,7 +77,7 @@ pub fn kernel_sys_getcwd(args: &SyscallArgs) -> i64 {
     let cwd = cwd_bytes.as_bytes();
     let need = (cwd.len() + 1) as u64;
     if size < need { return -(Errno::Erange.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf(buf, need, 1) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, need, 1) { return rv; }
     // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
         for (i, &b) in cwd.iter().enumerate() {
