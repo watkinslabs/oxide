@@ -331,15 +331,22 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
-    const EXEC_USER_STACK_VA:  u64 = 0x501_000;
-    const EXEC_USER_STACK_TOP: u64 = EXEC_USER_STACK_VA + 0x1000;
-    const USER_TLS_BASE: u64       = 0x600_000;
-    const USER_TLS_LEN:  usize     = 0x2000;
-    const USER_TPIDR_VA: u64       = USER_TLS_BASE + 0x1000;
+    // 64 KiB stack — busybox + glibc/musl static binaries (Go later)
+    // routinely use >4 KiB, especially through SIGCHLD handlers and
+    // /proc parsers. A single 4 KiB page overflows on the first
+    // wide stack frame (e.g. busybox sh's parser locals); 64 KiB is
+    // the same shape Linux's sysctl-default rlim_cur hands out for
+    // small static binaries.
+    const EXEC_USER_STACK_LEN:  usize = 0x10000;
+    const EXEC_USER_STACK_VA:   u64   = 0x4F1_000;
+    const EXEC_USER_STACK_TOP:  u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
+    const USER_TLS_BASE: u64        = 0x600_000;
+    const USER_TLS_LEN:  usize      = 0x2000;
+    const USER_TPIDR_VA: u64        = USER_TLS_BASE + 0x1000;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
     if new_as.mmap(
-        Some(stack_hint), 0x1000,
+        Some(stack_hint), EXEC_USER_STACK_LEN,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
         VmaBacking::Anonymous,
