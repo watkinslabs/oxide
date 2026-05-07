@@ -1,6 +1,6 @@
 # 37 Observability
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` v1.x).
+FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` v2).
 ## 1 Purpose
 
 Logging surface (`klog`), tracing (static tracepoints, function tracer), perf counters (PMU), eBPF (deferred). Crash dump (defer).
@@ -57,7 +57,7 @@ Userspace `tracefs` (mounted at `/sys/kernel/tracing`) controls per-tracepoint e
 
 ## 7 Function tracer (`ftrace`-like)
 
-Defer to v1.x (mcount/fentry hooks; recompile cost). Initial v1: tracepoints only.
+Defer to v2 (mcount/fentry hooks; recompile cost). Initial v1: tracepoints only.
 
 ## 8 PMU + perf
 
@@ -67,17 +67,17 @@ Defer to v1.x (mcount/fentry hooks; recompile cost). Initial v1: tracepoints onl
 
 `perf` userspace from Linux works against `perf_event_open` ABI.
 
-v1.0: subset (cycles, instructions, cache events). v1.x: full.
+v1.0: subset (cycles, instructions, cache events). v2: full.
 
 ## 9 eBPF
 
-Deferred to v1.x. Spec landing later in `30+`-ish range. v1.0: bpf() returns ENOSYS.
+Deferred to v2. Spec landing later in `30+`-ish range. v1.0: bpf() returns ENOSYS.
 
-When v1.x: verifier, BPF subset (sockets, kprobes, tracepoint progs, cgroup hooks). Maps: HASH, ARRAY, PERCPU_HASH, RINGBUF, LPM_TRIE.
+When v2: verifier, BPF subset (sockets, kprobes, tracepoint progs, cgroup hooks). Maps: HASH, ARRAY, PERCPU_HASH, RINGBUF, LPM_TRIE.
 
 ## 10 Crash dump (kdump)
 
-Defer. v1.x. Requires functional disk in panic path; complicates kernel.
+Defer. v2. Requires functional disk in panic path; complicates kernel.
 
 ## 11 Concurrency
 

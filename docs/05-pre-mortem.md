@@ -14,11 +14,11 @@ Fix: budgets rewritten in `04§1` (800 x86 KPTI+PCID, 600 arm; vDSO covers `cloc
 
 ### A2 systemd vs no-BPF
 systemd≥254 uses BPF: `IPAccounting=`, `IPAddressDeny=`, `RestrictNetworkInterfaces=`, parts of `ExecPaths=`/`NoExecPaths=`, cgroup-attached BPF for per-unit net counters. Without BPF, unit files silently no-op or fail.
-Fix: systemd→v2 (`43§4`). v1.x adds BPF subset. Don't quietly miss.
+Fix: full systemd PID 1 → v2.x (`43§4`). v2 phase 24 adds the BPF subset systemd needs. Don't quietly miss.
 
 ### A3 runc OCI vs no-FUSE
 Rootless containers need fuse-overlayfs (real overlayfs needs CAP_SYS_ADMIN in init userns until recent kernels). Privileged runc fine without FUSE.
-Fix: v1.x = privileged runc only. Rootless = v2 (`43§3`).
+Fix: v2 ships privileged runc only. Rootless runc → v2.x (`43§3`).
 
 ### A4 ext4+journal scope
 JBD2 is its own substrate — crash-safe, ordered-writeback, power-cut-survival; Linux JBD2 ~15KLOC and still gets bugs. Bundling it with block+pagecache+ext4 RW into a single phase under-scopes the work.
@@ -27,7 +27,7 @@ Fix: split phases — block+pagecache (own); ext4 RO (own); JBD2+ext4 RW (own). 
 ### A5 Acceptance binary list mis-sorted
 v1 split (per `43§2-4`):
 - v1: busybox, bash 5, coreutils 9, redis 7 (epoll/eventfd/signalfd/accept4/SO_REUSEPORT), Go≥1.22 + Rust≥1.75 statically-linked, openssh 9 (PTYs+modern crypto), nginx (without io_uring), sqlite 3.45.
-- v1.x: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
+- v2: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
 - v2: systemd≥254 PID1 (~150 syscalls + BPF + cgroup subtree + sd_notify + journald + 100s of unit-file edges); rootless runc; Wayland GUI.
 
 ## B Scope
@@ -101,7 +101,7 @@ Fix: explicit. v1 supports cloud + headless server bare-metal. Power = halt+rebo
 
 ### E3 virtio-only first deployment
 `03§7` lists igc/ice/mlx5 as if v1. Each is its own driver-grade subsystem. v1 = QEMU/KVM + virtio + serial. Real NICs v2.
-Fix: driver list amended (`35§4`). v1: virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2 kbd. Real NIC v1.x/v2.
+Fix: driver list amended (`35§4`). v1: virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2 kbd. Real NIC drivers (igc/ice/mlx5) → v2.x.
 
 ## F Missing entirely
 
@@ -160,7 +160,7 @@ Old concern was "long calendar kills morale." AI-driven solo cadence makes that 
 ## H Summary fixes (priority)
 
 1. Realign cycle budgets w/ KPTI on (`04§1`). ✓
-2. Split must-run binary list v1/v1.x/v2 (`03§11`,`43§2-4`). ✓
+2. Split must-run binary list v1/v2/v2.x (`03§11`,`43§2-4`). ✓
 3. Phases for io_uring, JBD2/ext4-RW, TCP-real-app (`00§3`). pending master-plan compress
 4. Toolchain strategy `-Zbuild-std` on pinned nightly (`07`). ✓
 5. `panic=abort`, `kassert!`-only, no-`dyn`-HAL rules (`07§5`). ✓

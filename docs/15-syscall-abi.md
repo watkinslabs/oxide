@@ -34,7 +34,7 @@ User ptr args wrapped in `UserPtr<T>` at dispatch:
 
 Legend:
 - **V1**: implemented v1, on must-run-binary path.
-- **V1.X**: v1 point release; v1.0 returns `ENOSYS`; number reserved.
+- **V2**: v1 point release; v1.0 returns `ENOSYS`; number reserved.
 - **V2**: deferred to v2.
 - **STUB**: number reserved, always returns `ENOSYS` (we will never implement, but the number is ABI).
 - **NEVER**: same as STUB but explicitly because the syscall is legacy. Linux still exposes some of these; we never will.
@@ -45,12 +45,12 @@ Where a syscall has a "modern replacement," we point to it.
 |---|---|---|---|
 | 0 | read | V1 | |
 | 1 | write | V1 | |
-| 2 | open | V1.X | Prefer `openat`/`openat2`; libc wraps. |
+| 2 | open | V2 | Prefer `openat`/`openat2`; libc wraps. |
 | 3 | close | V1 | |
 | 4 | stat | NEVER | Use `statx`. Linux still has it; we don't. |
 | 5 | fstat | V1 | Kept for fd-only metadata, libc compat. |
 | 6 | lstat | NEVER | Use `statx` with `AT_SYMLINK_NOFOLLOW`. |
-| 7 | poll | V1.X | Prefer `ppoll`. |
+| 7 | poll | V2 | Prefer `ppoll`. |
 | 8 | lseek | V1 | |
 | 9 | mmap | V1 | |
 | 10 | mprotect | V1 | |
@@ -64,8 +64,8 @@ Where a syscall has a "modern replacement," we point to it.
 | 18 | pwrite64 | V1 | |
 | 19 | readv | V1 | |
 | 20 | writev | V1 | |
-| 21 | access | V1.X | Prefer `faccessat2`. |
-| 22 | pipe | V1.X | Prefer `pipe2`. |
+| 21 | access | V2 | Prefer `faccessat2`. |
+| 22 | pipe | V2 | Prefer `pipe2`. |
 | 23 | select | NEVER | Use `epoll`/`ppoll`. |
 | 24 | sched_yield | V1 | |
 | 25 | mremap | V1 | |
@@ -76,7 +76,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 30 | shmat | NEVER | SysV shm dropped. |
 | 31 | shmctl | NEVER | SysV shm dropped. |
 | 32 | dup | V1 | |
-| 33 | dup2 | V1.X | Prefer `dup3`. |
+| 33 | dup2 | V2 | Prefer `dup3`. |
 | 34 | pause | V1 | |
 | 35 | nanosleep | V1 | |
 | 36 | getitimer | V2 | Use `timerfd_*`. |
@@ -86,7 +86,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 40 | sendfile | V1 | |
 | 41 | socket | V1 | |
 | 42 | connect | V1 | |
-| 43 | accept | V1.X | Prefer `accept4`. |
+| 43 | accept | V2 | Prefer `accept4`. |
 | 44 | sendto | V1 | |
 | 45 | recvfrom | V1 | |
 | 46 | sendmsg | V1 | |
@@ -99,12 +99,12 @@ Where a syscall has a "modern replacement," we point to it.
 | 53 | socketpair | V1 | |
 | 54 | setsockopt | V1 | Modern options only; legacy options return `ENOPROTOOPT`. |
 | 55 | getsockopt | V1 | |
-| 56 | clone | V1.X | Prefer `clone3`; libc wraps. |
-| 57 | fork | V1.X | Implemented as `clone3` with the right flags; libc wraps. |
+| 56 | clone | V2 | Prefer `clone3`; libc wraps. |
+| 57 | fork | V2 | Implemented as `clone3` with the right flags; libc wraps. |
 | 58 | vfork | NEVER | Replaced by `posix_spawn` userspace pattern. |
 | 59 | execve | V1 | |
 | 60 | exit | V1 | |
-| 61 | wait4 | V1.X | Prefer `waitid`. |
+| 61 | wait4 | V2 | Prefer `waitid`. |
 | 62 | kill | V1 | |
 | 63 | uname | V1 | Returns a fixed modern-looking string. |
 | 64 | semget | NEVER | SysV IPC dropped. |
@@ -125,21 +125,21 @@ Where a syscall has a "modern replacement," we point to it.
 | 79 | getcwd | V1 | |
 | 80 | chdir | V1 | |
 | 81 | fchdir | V1 | |
-| 82 | rename | V1.X | Prefer `renameat2`. |
-| 83 | mkdir | V1.X | Prefer `mkdirat`. |
-| 84 | rmdir | V1.X | Prefer `unlinkat(AT_REMOVEDIR)`. |
+| 82 | rename | V2 | Prefer `renameat2`. |
+| 83 | mkdir | V2 | Prefer `mkdirat`. |
+| 84 | rmdir | V2 | Prefer `unlinkat(AT_REMOVEDIR)`. |
 | 85 | creat | NEVER | Use `openat`. |
-| 86 | link | V1.X | Prefer `linkat`. |
-| 87 | unlink | V1.X | Prefer `unlinkat`. |
-| 88 | symlink | V1.X | Prefer `symlinkat`. |
-| 89 | readlink | V1.X | Prefer `readlinkat`. |
-| 90 | chmod | V1.X | Prefer `fchmodat2`. |
+| 86 | link | V2 | Prefer `linkat`. |
+| 87 | unlink | V2 | Prefer `unlinkat`. |
+| 88 | symlink | V2 | Prefer `symlinkat`. |
+| 89 | readlink | V2 | Prefer `readlinkat`. |
+| 90 | chmod | V2 | Prefer `fchmodat2`. |
 | 91 | fchmod | V1 | |
-| 92 | chown | V1.X | Prefer `fchownat`. |
+| 92 | chown | V2 | Prefer `fchownat`. |
 | 93 | fchown | V1 | |
-| 94 | lchown | V1.X | Prefer `fchownat(AT_SYMLINK_NOFOLLOW)`. |
+| 94 | lchown | V2 | Prefer `fchownat(AT_SYMLINK_NOFOLLOW)`. |
 | 95 | umask | V1 | |
-| 96 | gettimeofday | V1.X | vDSO-served when present; syscall path mostly for fallback. Prefer `clock_gettime`. |
+| 96 | gettimeofday | V2 | vDSO-served when present; syscall path mostly for fallback. Prefer `clock_gettime`. |
 | 97 | getrlimit | V1 | |
 | 98 | getrusage | V1 | |
 | 99 | sysinfo | V1 | |
@@ -175,8 +175,8 @@ Where a syscall has a "modern replacement," we point to it.
 | 129 | rt_sigqueueinfo | V1 | |
 | 130 | rt_sigsuspend | V1 | |
 | 131 | sigaltstack | V1 | |
-| 132 | utime | V1.X | Prefer `utimensat`. |
-| 133 | mknod | V1.X | Prefer `mknodat`. |
+| 132 | utime | V2 | Prefer `utimensat`. |
+| 133 | mknod | V2 | Prefer `mknodat`. |
 | 134 | uselib | NEVER | Legacy a.out shared-lib loading. |
 | 135 | personality | V1 | Only `PER_LINUX` and `ADDR_NO_RANDOMIZE` honored. |
 | 136 | ustat | NEVER | Use `statfs`/`fstatfs`. |
@@ -202,13 +202,13 @@ Where a syscall has a "modern replacement," we point to it.
 | 156 | _sysctl | NEVER | Removed in modern Linux (5.5). Use `/proc/sys/`. |
 | 157 | prctl | V1 | Modern subset: `PR_SET_NAME`, `PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE`, `PR_CAP_AMBIENT`, `PR_SET_CHILD_SUBREAPER`, `PR_SET_THP_DISABLE`, `PR_SET_VMA`, `PR_SET_TIMERSLACK`, `PR_SET_SECCOMP`, `PR_GET_KEEPCAPS`, `PR_SET_KEEPCAPS`. Legacy `PR_*` return `EINVAL`. |
 | 158 | arch_prctl | V1 | `ARCH_SET_FS`, `ARCH_GET_FS`, `ARCH_SET_GS`, `ARCH_GET_GS`. Used by libc TLS init. |
-| 159 | adjtimex | V1.X | Subset for NTP daemons. |
+| 159 | adjtimex | V2 | Subset for NTP daemons. |
 | 160 | setrlimit | V1 | |
 | 161 | chroot | V1 | |
 | 162 | sync | V1 | |
 | 163 | acct | V2 | Process accounting; not a v1 priority. |
-| 164 | settimeofday | V1.X | Prefer `clock_settime`. |
-| 165 | mount | V1.X | Implemented as compat shim over the new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`). |
+| 164 | settimeofday | V2 | Prefer `clock_settime`. |
+| 165 | mount | V2 | Implemented as compat shim over the new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`). |
 | 166 | umount2 | V1 | |
 | 167 | swapon | NEVER | No swap in v1. |
 | 168 | swapoff | NEVER | |
@@ -243,7 +243,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 197 | removexattr | V1 | |
 | 198 | lremovexattr | V1 | |
 | 199 | fremovexattr | V1 | |
-| 200 | tkill | V1.X | Prefer `tgkill`. |
+| 200 | tkill | V2 | Prefer `tgkill`. |
 | 201 | time | NEVER | Use `clock_gettime(CLOCK_REALTIME)`. |
 | 202 | futex | V1 | Classic futex required for libc compat. New code should use `futex_waitv` / `futex_wake`. |
 | 203 | sched_setaffinity | V1 | |
@@ -256,7 +256,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 210 | io_cancel | NEVER | |
 | 211 | get_thread_area | NEVER | x86_32 legacy. |
 | 212 | lookup_dcookie | NEVER | oprofile legacy. |
-| 213 | epoll_create | V1.X | Prefer `epoll_create1`. |
+| 213 | epoll_create | V2 | Prefer `epoll_create1`. |
 | 214 | epoll_ctl_old | NEVER | |
 | 215 | epoll_wait_old | NEVER | |
 | 216 | remap_file_pages | V2 | Deprecated; nontrivial to implement; not on must-run-binary path. |
@@ -275,10 +275,10 @@ Where a syscall has a "modern replacement," we point to it.
 | 229 | clock_getres | V1 | vDSO-served. |
 | 230 | clock_nanosleep | V1 | |
 | 231 | exit_group | V1 | |
-| 232 | epoll_wait | V1.X | Prefer `epoll_pwait2`. |
+| 232 | epoll_wait | V2 | Prefer `epoll_pwait2`. |
 | 233 | epoll_ctl | V1 | |
 | 234 | tgkill | V1 | |
-| 235 | utimes | V1.X | Prefer `utimensat`. |
+| 235 | utimes | V2 | Prefer `utimensat`. |
 | 236 | vserver | NEVER | |
 | 237 | mbind | V2 | NUMA memory policy. |
 | 238 | set_mempolicy | V2 | |
@@ -294,9 +294,9 @@ Where a syscall has a "modern replacement," we point to it.
 | 248 | add_key | V2 | Kernel keyring. |
 | 249 | request_key | V2 | |
 | 250 | keyctl | V2 | |
-| 251 | ioprio_set | V1.X | |
-| 252 | ioprio_get | V1.X | |
-| 253 | inotify_init | V1.X | Prefer `inotify_init1`. |
+| 251 | ioprio_set | V2 | |
+| 252 | ioprio_get | V2 | |
+| 253 | inotify_init | V2 | Prefer `inotify_init1`. |
 | 254 | inotify_add_watch | V1 | |
 | 255 | inotify_rm_watch | V1 | |
 | 256 | migrate_pages | V2 | NUMA. |
@@ -307,12 +307,12 @@ Where a syscall has a "modern replacement," we point to it.
 | 261 | futimesat | NEVER | Use `utimensat`. |
 | 262 | newfstatat | V1 | (a.k.a. `fstatat`) |
 | 263 | unlinkat | V1 | |
-| 264 | renameat | V1.X | Prefer `renameat2`. |
+| 264 | renameat | V2 | Prefer `renameat2`. |
 | 265 | linkat | V1 | |
 | 266 | symlinkat | V1 | |
 | 267 | readlinkat | V1 | |
-| 268 | fchmodat | V1.X | Prefer `fchmodat2`. |
-| 269 | faccessat | V1.X | Prefer `faccessat2`. |
+| 268 | fchmodat | V2 | Prefer `fchmodat2`. |
+| 269 | faccessat | V2 | Prefer `faccessat2`. |
 | 270 | pselect6 | NEVER | Use `ppoll`/`epoll`. |
 | 271 | ppoll | V1 | |
 | 272 | unshare | V1 | |
@@ -321,13 +321,13 @@ Where a syscall has a "modern replacement," we point to it.
 | 275 | splice | V1 | |
 | 276 | tee | V1 | |
 | 277 | sync_file_range | V1 | |
-| 278 | vmsplice | V1.X | |
+| 278 | vmsplice | V2 | |
 | 279 | move_pages | V2 | NUMA. |
 | 280 | utimensat | V1 | |
 | 281 | epoll_pwait | V1 | |
-| 282 | signalfd | V1.X | Prefer `signalfd4`. |
+| 282 | signalfd | V2 | Prefer `signalfd4`. |
 | 283 | timerfd_create | V1 | |
-| 284 | eventfd | V1.X | Prefer `eventfd2`. |
+| 284 | eventfd | V2 | Prefer `eventfd2`. |
 | 285 | fallocate | V1 | |
 | 286 | timerfd_settime | V1 | |
 | 287 | timerfd_gettime | V1 | |
@@ -341,30 +341,30 @@ Where a syscall has a "modern replacement," we point to it.
 | 295 | preadv | V1 | |
 | 296 | pwritev | V1 | |
 | 297 | rt_tgsigqueueinfo | V1 | |
-| 298 | perf_event_open | V1.X | Hardware PMU access for `perf`. Subset in v1.x. |
+| 298 | perf_event_open | V2 | Hardware PMU access for `perf`. Subset in v2. |
 | 299 | recvmmsg | V1 | |
-| 300 | fanotify_init | V1.X | |
-| 301 | fanotify_mark | V1.X | |
+| 300 | fanotify_init | V2 | |
+| 301 | fanotify_mark | V2 | |
 | 302 | prlimit64 | V1 | |
 | 303 | name_to_handle_at | V2 | NFS-style file handles. |
 | 304 | open_by_handle_at | V2 | |
-| 305 | clock_adjtime | V1.X | |
+| 305 | clock_adjtime | V2 | |
 | 306 | syncfs | V1 | |
 | 307 | sendmmsg | V1 | |
 | 308 | setns | V1 | |
 | 309 | getcpu | V1 | vDSO-served. |
 | 310 | process_vm_readv | V1 | |
 | 311 | process_vm_writev | V1 | |
-| 312 | kcmp | V1.X | Used by CRIU; v1.x. |
+| 312 | kcmp | V2 | Used by CRIU; v2. |
 | 313 | finit_module | V1 | Modular kernel: load `.ko` from fd, signature-checked. |
 | 314 | sched_setattr | V1 | |
 | 315 | sched_getattr | V1 | |
 | 316 | renameat2 | V1 | Adds `RENAME_NOREPLACE`, `RENAME_EXCHANGE`, `RENAME_WHITEOUT`. |
-| 317 | seccomp | V1 | `SECCOMP_SET_MODE_STRICT` and `SECCOMP_SET_MODE_FILTER`. Filter requires the BPF verifier (V1.X). v1.0 ships with strict mode only; filter mode returns `ENOSYS` until BPF lands. |
+| 317 | seccomp | V1 | `SECCOMP_SET_MODE_STRICT` and `SECCOMP_SET_MODE_FILTER`. Filter requires the BPF verifier (V2). v1.0 ships with strict mode only; filter mode returns `ENOSYS` until BPF lands. |
 | 318 | getrandom | V1 | |
 | 319 | memfd_create | V1 | |
 | 320 | kexec_file_load | V2 | |
-| 321 | bpf | V1.X | BPF deferred to v1.x; a substantial subsystem. |
+| 321 | bpf | V2 | BPF deferred to v2; a substantial subsystem. |
 | 322 | execveat | V1 | |
 | 323 | userfaultfd | V1 | Required by Go runtime, CRIU. |
 | 324 | membarrier | V1 | |
@@ -372,16 +372,16 @@ Where a syscall has a "modern replacement," we point to it.
 | 326 | copy_file_range | V1 | |
 | 327 | preadv2 | V1 | |
 | 328 | pwritev2 | V1 | |
-| 329 | pkey_mprotect | V1.X | Memory protection keys. |
-| 330 | pkey_alloc | V1.X | |
-| 331 | pkey_free | V1.X | |
+| 329 | pkey_mprotect | V2 | Memory protection keys. |
+| 330 | pkey_alloc | V2 | |
+| 331 | pkey_free | V2 | |
 | 332 | statx | V1 | Modern stat. |
 | 333 | io_pgetevents | NEVER | POSIX AIO. |
 | 334 | rseq | V1 | Restartable sequences; required by glibc/musl. |
 | 424 | pidfd_send_signal | V1 | |
 | 425 | io_uring_setup | V2 | v2 phase 23; v1.0 stubs. |
-| 426 | io_uring_enter | V1.X | |
-| 427 | io_uring_register | V1.X | |
+| 426 | io_uring_enter | V2 | |
+| 427 | io_uring_register | V2 | |
 | 428 | open_tree | V1 | New mount API. |
 | 429 | move_mount | V1 | New mount API. |
 | 430 | fsopen | V1 | New mount API. |
@@ -394,20 +394,20 @@ Where a syscall has a "modern replacement," we point to it.
 | 437 | openat2 | V1 | With `RESOLVE_*` flags for safe path resolution. |
 | 438 | pidfd_getfd | V1 | |
 | 439 | faccessat2 | V1 | |
-| 440 | process_madvise | V1.X | Required by some modern OOM-killer userspace. |
+| 440 | process_madvise | V2 | Required by some modern OOM-killer userspace. |
 | 441 | epoll_pwait2 | V1 | |
 | 442 | mount_setattr | V1 | New mount API. |
 | 443 | quotactl_fd | V2 | |
-| 444 | landlock_create_ruleset | V1.X | Landlock; the v1 sandboxing primitive. v1.0 may stub. |
-| 445 | landlock_add_rule | V1.X | |
-| 446 | landlock_restrict_self | V1.X | |
+| 444 | landlock_create_ruleset | V2 | Landlock; the v1 sandboxing primitive. v1.0 may stub. |
+| 445 | landlock_add_rule | V2 | |
+| 446 | landlock_restrict_self | V2 | |
 | 447 | memfd_secret | V1 | |
-| 448 | process_mrelease | V1.X | |
+| 448 | process_mrelease | V2 | |
 | 449 | futex_waitv | V1 | Modern futex; vector wait. |
 | 450 | set_mempolicy_home_node | V2 | NUMA. |
 | 451 | cachestat | V1 | Page-cache visibility. |
 | 452 | fchmodat2 | V1 | |
-| 453 | map_shadow_stack | V1.X | CET shadow-stack. |
+| 453 | map_shadow_stack | V2 | CET shadow-stack. |
 | 454 | futex_wake | V1 | |
 | 455 | futex_wait | V1 | |
 | 456 | futex_requeue | V1 | |
@@ -456,7 +456,7 @@ Per-arch trampoline ≤200 lines `.S`; reviewed line-by-line. See `20`,`21`.
 
 ## 5 ABI-shaped types (in `userspace-abi` crate)
 
-`iovec`,`timespec`(time_t=i64),`timeval`,`sockaddr*` (`_in`,`_in6`,`_un`),`stat` (legacy; `fstat` only),`statx`+`statx_timestamp`,`epoll_event`+`epoll_data`,`sigaction`+`siginfo_t`+`ucontext_t`+`mcontext_t` (per-arch),`rusage`,`rlimit64`,`dirent64`,`cmsghdr`+`msghdr`+`mmsghdr`,`clone_args` (clone3),`open_how` (openat2),`io_uring_*` (v1.x).
+`iovec`,`timespec`(time_t=i64),`timeval`,`sockaddr*` (`_in`,`_in6`,`_un`),`stat` (legacy; `fstat` only),`statx`+`statx_timestamp`,`epoll_event`+`epoll_data`,`sigaction`+`siginfo_t`+`ucontext_t`+`mcontext_t` (per-arch),`rusage`,`rlimit64`,`dirent64`,`cmsghdr`+`msghdr`+`mmsghdr`,`clone_args` (clone3),`open_how` (openat2),`io_uring_*` (v2).
 
 Each `#[repr(C)]` + `static_assertions::assert_eq_size!` vs Linux struct layout per arch.
 
@@ -737,7 +737,7 @@ Per-arch impls in `crates/vdso-x86_64/`,`crates/vdso-aarch64/`. Time data in per
 ## 10 Cross-spec
 
 Touched by every subsystem spec (user-facing surface):
-`16` (read/write/open/close/...), `13` (sched_*, clone3, exit), `11` (mmap/mprotect/munmap/mremap), `17` (pread/pwrite/fsync), `25` (socket/...), `23` (clock_*, vDSO), `27` (seccomp/landlock_*/capset), `26` (unshare/setns/clone3 ns flags), `30` v1.x (io_uring_*), `18` (finit_module/delete_module).
+`16` (read/write/open/close/...), `13` (sched_*, clone3, exit), `11` (mmap/mprotect/munmap/mremap), `17` (pread/pwrite/fsync), `25` (socket/...), `23` (clock_*, vDSO), `27` (seccomp/landlock_*/capset), `26` (unshare/setns/clone3 ns flags), `30` v2 (io_uring_*), `18` (finit_module/delete_module).
 
 ## 11 Changelog
 

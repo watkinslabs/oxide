@@ -55,7 +55,7 @@ Mandatory (must run):
 - `drv-ahci`
 - `drv-ps2-keyboard` (x86 only; legacy fallback)
 
-Deferred to v1.x:
+Deferred to v2:
 - `drv-igc`,`drv-ice` (Intel NIC), `drv-mlx5` (Mellanox).
 - `drv-xhci` (USB host) + USB stack.
 - `drv-hda` (Intel audio).

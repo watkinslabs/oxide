@@ -19,7 +19,7 @@ DRAFT 2026-05-05. Dep:`00`,`40`,`43`.
 | 3 | Slab allocator + `GlobalAlloc` wiring | `12` |
 | 4 | Scheduler, context switch, preemption, SMP | `13`,`14` |
 | 5 | Syscalls, ELF loader, init, busybox shell path | `15`,`31`,`29` |
-| 5.5 | io_uring (deferred to v1.x) | `30` |
+(io_uring is v2 phase 23, not a v1 phase.)
 | 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | `16`,`19` |
 | 7a | Block layer + page cache | `17` |
 | 7b | ext4 RW + JBD2 | `17` |
@@ -31,5 +31,5 @@ DRAFT 2026-05-05. Dep:`00`,`40`,`43`.
 | Milestone | Includes |
 |---|---|
 | v1 | busybox shell/core tools, static Go binary, static Rust+tokio binary, redis, nginx (no io_uring), openssh-server, chrony/ntpd (`43§2`) |
-| v1.x | nginx with io_uring, runc privileged OCI bundle, bpftrace simple probe, perf record/report, cri-o or containerd minimal (`43§3`) |
-| v2 | systemd as PID1, Wayland GUI path, full Docker/Moby path, KVM backend (`43§4`) |
+| v2 | nginx with io_uring, runc privileged OCI bundle, bpftrace simple probe, perf record/report, cri-o or containerd minimal (`43§3`) |
+| v2.x | systemd as PID1, Wayland GUI path, full Docker/Moby path, KVM backend (`43§4`) |
