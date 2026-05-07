@@ -295,6 +295,12 @@ pub struct Task {
     /// Empty string means "inherit from global". Single-mutator per
     /// `13§5`. # C: O(1) read
     pub uts_hostname: UnsafeCell<alloc::string::String>,
+
+    /// Tracer tid for `ptrace(2)` — 0 = no tracer attached. v1 honors
+    /// PTRACE_TRACEME (child sets traced_by=parent_tid). The full
+    /// PTRACE_ATTACH/SINGLESTEP/PEEK/POKE/SYSCALL surface lands with
+    /// debugger-frontend integration in a v2 phase 22 follow-up.
+    pub traced_by: AtomicU32,
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -423,6 +429,7 @@ impl Task {
             clear_child_tid: AtomicU64::new(0),
             ns_membership: AtomicU64::new(0),
             uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
+            traced_by:     AtomicU32::new(0),
         }
     }
 
