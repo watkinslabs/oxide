@@ -21,6 +21,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCSPTLCK: u64 = 0x40045431;
     const TIOCGPGRP:  u64 = 0x540F;
     const TIOCSPGRP:  u64 = 0x5410;
+    const TIOCSCTTY:  u64 = 0x540E;
     let fd  = args.a0 as i32;
     let req = args.a1;
     let arg = args.a2;
@@ -137,17 +138,52 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
         }
         TIOCSPTLCK => 0,
         TIOCGPGRP | TIOCSPGRP => {
-            let pair = match pty_pair { Some(p) => p, None => return -(Errno::Enotty.as_i32() as i64) };
             if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
-            if req == TIOCGPGRP {
-                let pgid = pair.with_pair(|p| p.foreground_pgid);
-                // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
-                unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
+            // PTY fds: read/write the pair's foreground_pgid. Boot
+            // UART /dev/console + /dev/tty<N>: use the per-VT slot.
+            // Bash + glibc job-control issue these on fd 0 / fd 2
+            // at startup; without TIOCGPGRP returning a sensible
+            // value bash falls back to "no job control" mode.
+            if let Some(pair) = &pty_pair {
+                if req == TIOCGPGRP {
+                    let pgid = pair.with_pair(|p| p.foreground_pgid);
+                    // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
+                    unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
+                } else {
+                    // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
+                    let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
+                    pair.with_pair(|p| p.foreground_pgid = pgid);
+                }
             } else {
-                // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
-                let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
-                pair.with_pair(|p| p.foreground_pgid = pgid);
+                let vt = (ino & 0xff) as u8;
+                if req == TIOCGPGRP {
+                    let pgid = crate::tty::foreground_pgid(vt);
+                    // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
+                    unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
+                } else {
+                    // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
+                    let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
+                    crate::tty::set_foreground_pgid(vt, pgid);
+                }
             }
+            0
+        }
+        TIOCSCTTY => {
+            // Make this fd's tty the controlling terminal for the
+            // caller's session. v1 records sid on the VT but doesn't
+            // enforce session-match checks on subsequent TIOCSPGRP.
+            if pty_pair.is_some() {
+                // PTY controlling-tty already tracked via pair's
+                // session field — pre-existing semantics, no-op
+                // here for the v1 path.
+                return 0;
+            }
+            let vt = (ino & 0xff) as u8;
+            let cur = match crate::sched::current() {
+                Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
+            };
+            use core::sync::atomic::Ordering;
+            crate::tty::set_session(vt, cur.sid.load(Ordering::Acquire));
             0
         }
         _ => -(Errno::Enotty.as_i32() as i64),
