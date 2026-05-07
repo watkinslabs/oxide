@@ -908,7 +908,7 @@ Pre-existing latent issues uncovered (not introduced this session, deferred to f
 - x86 init.c with libc errno path faults on execve ENOENT (FS_BASE=0; needs arch_prctl(SET_FS) which musl _start under -nostartfiles skips). Workaround in init.c is the fork+echo smoke.
 - /sbin/svcd has a NULL-deref under busybox-style argv; staging temporarily disabled.
 
-## Session 42 (PRs #669 – #677) — 2026-05-07
+## Session 42 (PRs #669 – #679) — 2026-05-07
 
 **Subject**: v2 follow-up admission sweep. Eight bounded PRs that
 collapse the v2 deferred list across net/IPC/ptrace/auth tracks.
@@ -926,6 +926,7 @@ boot-flow change). 894 hosted tests stay green; spec-lint clean.
 | #675 | `P38b-keyring-admit`     | add_key/request_key/keyctl → silent-0 (PAM/sudo/dbus). |
 | #676 | `P25e-posix-mq`          | mq_open tmpfs-fd; mq_timedsend/timedreceive alias write/read. kernel_sys_read/write promoted to portable + pub. |
 | #677 | `P18b-procfs-net-extras` | /proc/net/{unix,if_inet6,snmp} stubs (header-only). |
+| #679 | `P21c-procfs-cgroup`     | /proc/cgroups + /proc/self/cgroup cgroup-v2 stubs ("0::/"). |
 
 End-of-session-42 verified-green:
 - both arches build with default + debug-all
