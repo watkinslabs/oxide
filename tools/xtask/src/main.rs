@@ -352,6 +352,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("agetty"),     "/sbin/oxide-agetty")?;
     put(&user("passwd"),     "/bin/oxide-passwd")?;
     put(&user("svcd"),         "/sbin/oxide-svcd")?;
+    // Also stage at the canonical /sbin/svcd so init's
+    // `execve("/sbin/svcd", ...)` lands on the real binary on both
+    // arches (was x86-only before the userspace portability sweep).
+    put(&user("svcd"),         "/sbin/svcd")?;
     put(&user("rpm"),           "/bin/oxide-rpm")?;
     put(&user("sh"),             "/bin/oxide-sh")?;
     // The remaining x86-only bins are the dynlink+hello_dyn pair (the
