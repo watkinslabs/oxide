@@ -36,6 +36,7 @@ impl ConsoleInode {
     /// Build an inode pinned to `vt`. Use 0 for foreground-alias
     /// (`/dev/console`, `/dev/tty`, `/dev/tty0`); 1..=N_VT for
     /// the per-VT slots.
+    /// # C: O(1)
     pub const fn new(vt: u8) -> Self { Self { vt } }
 }
 

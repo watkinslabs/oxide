@@ -201,253 +201,6 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(0)
 }
 
-/// `kernel_sys_clone_dispatch` — unified clone path for fork/vfork/
-/// clone/clone3. `flags` carries the Linux CLONE_* bitmap; the lowest
-/// 8 bits are the exit_signal (SIGCHLD = 17 for fork). `child_stack`
-/// is non-zero for thread spawns (libc-allocated user stack); `ptid`
-/// + `ctid` are user pointers honored by CLONE_PARENT_SETTID /
-/// CLONE_CHILD_SETTID / CLONE_CHILD_CLEARTID.
-///
-/// Honored flag bits (best-effort; rest accepted silently):
-///   CLONE_VM       0x100   — share parent's mm via `Arc::clone`
-///   CLONE_FILES    0x400   — share parent's fd_table via `Arc::clone`
-///   CLONE_SIGHAND  0x800   — share parent's sigactions (Arc-on-write
-///                            unsupported v1; copy on spawn)
-///   CLONE_THREAD   0x10000 — child.tgid = parent.tgid; same process
-///   CLONE_PARENT_SETTID  0x100000 — write child tid to *ptid
-///   CLONE_CHILD_SETTID   0x1000000 — write child tid to *ctid (in child AS)
-///   CLONE_CHILD_CLEARTID 0x200000 — store ctid in clear_child_tid
-///   CLONE_SETTLS         0x80000 — write tls to child's FS_BASE
-/// # C: O(parent VMAs) for COW; O(1) for CLONE_VM
-#[cfg(target_arch = "x86_64")]
-pub fn kernel_sys_clone_dispatch_pub(
-    args: &SyscallArgs, flags: u64, child_stack: u64, ptid: u64, ctid: u64, tls: u64,
-) -> i64 { kernel_sys_clone_dispatch(args, flags, child_stack, ptid, ctid, tls) }
-
-#[cfg(target_arch = "x86_64")]
-fn kernel_sys_clone_dispatch(
-    _args: &SyscallArgs,
-    flags: u64,
-    child_stack: u64,
-    ptid: u64,
-    ctid: u64,
-    tls: u64,
-) -> i64 {
-    use core::sync::atomic::Ordering;
-    const CLONE_VM:        u64 = 0x100;
-    const CLONE_FS:        u64 = 0x200;
-    const CLONE_FILES:     u64 = 0x400;
-    const CLONE_SIGHAND:   u64 = 0x800;
-    const CLONE_THREAD:    u64 = 0x10000;
-    const CLONE_SETTLS:    u64 = 0x80000;
-    const CLONE_PARENT_SETTID: u64 = 0x100000;
-    const CLONE_CHILD_CLEARTID: u64 = 0x200000;
-    const CLONE_CHILD_SETTID:   u64 = 0x1000000;
-    let _ = CLONE_FS; // accepted but not yet differentiated from cwd-inherit
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return -(Errno::Einval.as_i32() as i64),
-    };
-    // SAFETY: we are the running task on this CPU; no concurrent writer to our mm; preempt-off through the syscall handler.
-    let parent_mm = match unsafe { cur.mm_ref() } {
-        Some(m) => m,
-        None    => return -(Errno::Einval.as_i32() as i64),
-    };
-
-    let share_vm = (flags & CLONE_VM) != 0;
-    let child_mm: alloc::sync::Arc<vmm::AddressSpace> = if share_vm {
-        // CLONE_VM: child shares parent's address space; no PML4
-        // alloc, no per-page copy. Threads land here.
-        alloc::sync::Arc::clone(parent_mm)
-    } else {
-        // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
-        let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
-            Some(r) => r,
-            None    => return -(Errno::Enomem.as_i32() as i64),
-        };
-        let hhdm = crate::user_as::hhdm_offset();
-        match parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            new_root, hhdm, || crate::pmm_setup::alloc_one_frame(),
-        ) {
-            Ok(m) => m,
-            Err(_) => return -(Errno::Enomem.as_i32() as i64),
-        }
-    };
-
-    // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
-    let frame = unsafe { &*hal_x86_64::current_user_frame() };
-    let user_rip = frame[0];
-    let user_rflags = frame[1];
-    // Thread spawns pass a libc-allocated stack via clone()/clone3();
-    // honor it so each thread has its own user stack rather than
-    // racing on the parent's. fork(2) leaves child_stack=0 and the
-    // child resumes on the parent's RSP after the COW copy.
-    let user_rsp = if child_stack != 0 { child_stack } else { frame[2] };
-    // user_rip points at the instruction RIGHT AFTER the syscall
-    // (rcx is post-syscall in x86_64) — the child resumes there
-    // with rax=0.
-
-    // P5-10: capture parent's full saved-syscall reg block so the
-    // child's iretq frame + Context get parent values for every
-    // reg the user code may rely on across the fork syscall (Linux
-    // ABI: rdi/rsi/rdx/r10/r8/r9 preserved + all callee-saved
-    // regs unchanged). Pre-P5-10 the kernel zeroed these and the
-    // child resumed with junk regs — fatal once a real shell
-    // started using `|` (child A's run_one(seg=rdx, n=rbp) saw 0/0).
-    // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
-    let full = unsafe { hal_x86_64::current_user_full_frame() };
-    // SAFETY: full points to the 15-quadword saved area at top-0x78..top of the kernel stack for the current user task; layout is fixed by syscall entry asm.
-    let pregs = unsafe {
-        hal_x86_64::ForkRegs {
-            rdi: *full.add(1),
-            rsi: *full.add(2),
-            rdx: *full.add(3),
-            r10: *full.add(4),
-            r8:  *full.add(5),
-            r9:  *full.add(6),
-            rcx: *full.add(7),
-            r11: *full.add(8),
-            // index 9 = user RSP, NOT user's r12. r12 sits in the
-            // B04-added save at index 15 (top of the 16-slot frame).
-            rbx: *full.add(10),
-            rbp: *full.add(11),
-            r13: *full.add(12),
-            r14: *full.add(13),
-            r15: *full.add(14),
-            r12: *full.add(15),
-        }
-    };
-
-    let child_tid = crate::sched::next_tid();
-    // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
-    let spawn = unsafe {
-        crate::sched::spawn_user_thread_for_fork(
-            child_tid, "fork-child", user_rip, user_rsp, user_rflags,
-            &pregs, child_mm,
-        )
-    };
-    let child = match spawn {
-        Ok(t)  => t,
-        Err(_) => return -(Errno::Enomem.as_i32() as i64),
-    };
-
-    // CLONE_THREAD: the new task joins the caller's thread group.
-    // Without it the child is its own process leader and tgid==tid.
-    if (flags & CLONE_THREAD) != 0 {
-        child.tgid.store(cur.tgid.load(Ordering::Acquire), Ordering::Release);
-    }
-    // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
-    // for `park_zombie` SIGCHLD delivery (P3-67).
-    child.parent_tid.store(cur.tid, Ordering::Release);
-    // Inherit parent's pgid + sid per POSIX fork(2). setpgid/setsid in
-    // child override later. Without inheritance every fork would land
-    // in its own pgrp and shells couldn't track job state.
-    child.pgid.store(cur.pgid.load(Ordering::Acquire), Ordering::Release);
-    child.sid.store(cur.sid.load(Ordering::Acquire), Ordering::Release);
-    // Inherit cwd + rlimits per POSIX fork(2).
-    // SAFETY: child not yet scheduled; we are sole writer to its slots;
-    // parent reads are the running task on this CPU per single-mutator invariant.
-    unsafe {
-        *child.cwd.get() = (*cur.cwd.get()).clone();
-        *child.rlimits.get() = *cur.rlimits.get();
-    }
-    child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
-    // Materialise an Arc<Task> for the parent by bumping its
-    // strong count (the runqueue's `current` AtomicPtr already
-    // holds one), then downgrade to Weak<Task>. Drops the bumped
-    // Arc immediately — Weak alone keeps the slot live.
-    if let Some(rq) = crate::sched::global() {
-        let raw = rq.current.load(Ordering::Acquire);
-        if !raw.is_null() {
-            // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because the conceptual Arc held by current is alive while we run on it.
-            unsafe { alloc::sync::Arc::increment_strong_count(raw); }
-            // SAFETY: matching from_raw consumes the bumped count.
-            let parent_arc = unsafe { alloc::sync::Arc::from_raw(raw) };
-            // SAFETY: child task hasn't been scheduled yet (just spawned); we are sole writer to its parent_arc slot per the single-mutator-per-active-CPU invariant in `13§5`.
-            unsafe { *child.parent_arc.get() = Some(alloc::sync::Arc::downgrade(&parent_arc)); }
-        }
-    }
-
-    // Fd-table inheritance.
-    //   CLONE_FILES: share the parent's `Arc<FdTable>` so dup/close
-    //                in either task is visible to the other (Linux
-    //                pthreads default).
-    //   default:     copy entries into a fresh FdTable so child
-    //                close/dup doesn't disturb parent's slots
-    //                (POSIX fork(2)). Underlying `Arc<File>` still
-    //                shared so open-file descriptions match.
-    // SAFETY: we're sole writer on the parent's fd_table read; child not yet scheduled (sole writer there too).
-    let parent_fdt = unsafe { cur.fd_table_ref().cloned() };
-    if let Some(fdt) = parent_fdt {
-        let child_fdt = if (flags & CLONE_FILES) != 0 {
-            fdt
-        } else {
-            alloc::sync::Arc::new(fdt.fork_clone())
-        };
-        // SAFETY: child task hasn't been scheduled yet (just spawned); we are the sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
-        unsafe { child.replace_fd_table(Some(child_fdt)); }
-    }
-
-    // Inherit signal handlers; CLONE_SIGHAND callers get the same
-    // copy. v1 doesn't yet share a single sigaction array via Arc,
-    // so SIGHAND vs default both perform a deep copy. Real sharing
-    // lands when the threading subsystem grows a sighand_struct.
-    // SAFETY: child not yet scheduled (sole writer); parent reads happen on its running CPU per single-mutator invariant.
-    unsafe {
-        *child.sigactions.get() = *cur.sigactions.get();
-    }
-    if (flags & CLONE_SIGHAND) != 0 {
-        // Inherit pending+mask too — CLONE_SIGHAND siblings share
-        // the disposition table; v1 also clones the mask.
-        child.sigmask.store(cur.sigmask.load(Ordering::Acquire), Ordering::Release);
-    }
-
-    // CLONE_PARENT_SETTID: write child tid in caller's AS.
-    if (flags & CLONE_PARENT_SETTID) != 0 && ptid != 0 && ptid < hal::USER_VA_END {
-        // SAFETY: ptid validated < USER_VA_END; CPL=0 writes in caller's AS.
-        unsafe { core::ptr::write_volatile(ptid as *mut i32, child_tid as i32); }
-    }
-    // CLONE_CHILD_SETTID: writes happen in child AS — for CLONE_VM
-    // the AS is shared with parent so the write is visible directly;
-    // for non-CLONE_VM the child's freshly forked AS still has the
-    // page COW-mapped from parent (write-fault on its first store
-    // splits per P2-15c). The write here goes through the parent's
-    // active CR3, which only matches the child for CLONE_VM. Skip
-    // it otherwise — a real impl would queue the write for the
-    // child's first instruction.
-    if (flags & CLONE_CHILD_SETTID) != 0 && ctid != 0 && ctid < hal::USER_VA_END
-       && (flags & CLONE_VM) != 0
-    {
-        // SAFETY: ctid validated < USER_VA_END; AS shared (CLONE_VM); CPL=0.
-        unsafe { core::ptr::write_volatile(ctid as *mut i32, child_tid as i32); }
-    }
-    // CLONE_CHILD_CLEARTID: stash for thread-exit FUTEX_WAKE path.
-    if (flags & CLONE_CHILD_CLEARTID) != 0 {
-        child.clear_child_tid.store(ctid, Ordering::Release);
-    }
-    // CLONE_SETTLS: x86_64 stores TLS in FS_BASE; child resumes
-    // with this base via wrmsr at iretq-prep. The fork-spawn path
-    // doesn't yet thread a separate FS_BASE through ArchCtx;
-    // glibc/musl set FS_BASE via arch_prctl post-clone too, so we
-    // accept the flag silently for now.
-    let _ = tls;
-
-    debug_sched! {
-        klog::write_raw(b"[INFO]  sys_clone: parent_tid=");
-        klog::write_dec_u64(cur.tid as u64);
-        klog::write_raw(b" child_tid=");
-        klog::write_dec_u64(child_tid as u64);
-        klog::write_raw(b" flags=");
-        klog::write_hex_u64(flags);
-        klog::write_raw(b"\n");
-    }
-
-    // Drop our local Arc; the runqueue's enqueue clone keeps the
-    // child alive until it Zombies + parks to the zombie registry.
-    drop(child);
-
-    child_tid as i64
-}
 
 /// `sys_waitid(idtype, id, infop, options, rusage)` — slot 247.
 /// Linux idtype: P_ALL=0, P_PID=1, P_PGID=2, P_PIDFD=3.
@@ -673,7 +426,7 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     written as i64
 }
 
-use crate::syscall_glue_proc::{kernel_sys_kill, kernel_sys_tgkill};
+use crate::syscall_glue_signal::{kernel_sys_kill, kernel_sys_tgkill};
 
 fn kernel_uname(args: &SyscallArgs) -> i64 {
     let tp = args.a0;
@@ -794,8 +547,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_READV         => crate::syscall_glue_fs::kernel_sys_readv(&args),
         crate::syscall_nrs::NR_POLL          => crate::syscall_glue_fs::kernel_sys_poll(&args),
         crate::syscall_nrs::NR_PPOLL         => crate::syscall_glue_fs::kernel_sys_ppoll(&args),
-        crate::syscall_nrs::NR_SELECT        => crate::syscall_glue_fs::kernel_sys_select(&args),
-        crate::syscall_nrs::NR_PSELECT6      => crate::syscall_glue_fs::kernel_sys_pselect6(&args),
+        crate::syscall_nrs::NR_SELECT        => crate::syscall_glue_select::kernel_sys_select(&args),
+        crate::syscall_nrs::NR_PSELECT6      => crate::syscall_glue_select::kernel_sys_pselect6(&args),
         crate::syscall_nrs::NR_LSEEK         => crate::syscall_glue_fs::kernel_sys_lseek(&args),
         crate::syscall_nrs::NR_READLINK      => crate::syscall_glue_fs::kernel_sys_readlink(&args),
         crate::syscall_nrs::NR_READLINKAT    => crate::syscall_glue_fs::kernel_sys_readlinkat(&args),
@@ -803,9 +556,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_FCNTL         => crate::syscall_glue_fs::kernel_sys_fcntl(&args),
         crate::syscall_nrs::NR_RSEQ          => crate::syscall_glue_proc::kernel_sys_rseq(&args),
         crate::syscall_nrs::NR_MEMBARRIER    => crate::syscall_glue_proc::kernel_sys_membarrier(&args),
-        crate::syscall_nrs::NR_UNSHARE       => crate::syscall_glue_proc::kernel_sys_unshare(&args),
-        crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_proc::kernel_sys_setns(&args),
-        crate::syscall_nrs::NR_PTRACE        => crate::syscall_glue_proc::kernel_sys_ptrace(&args),
+        crate::syscall_nrs::NR_UNSHARE       => crate::syscall_glue_signal::kernel_sys_unshare(&args),
+        crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_signal::kernel_sys_setns(&args),
+        crate::syscall_nrs::NR_PTRACE        => crate::syscall_glue_signal::kernel_sys_ptrace(&args),
         // fanotify_init: returns a new fd backed by an InotifyInode (the
         // event-fd shape is similar enough that reusing the substrate
         // is honest first-cut). fanotify_mark: silent 0 — v1 doesn't
@@ -866,7 +619,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_ACCESS        => crate::syscall_glue_fs::kernel_sys_access(&args),
         crate::syscall_nrs::NR_FACCESSAT     => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
         crate::syscall_nrs::NR_EVENTFD | crate::syscall_nrs::NR_EVENTFD2
-                                 => crate::syscall_glue_fs::kernel_sys_eventfd2(&args),
+                                 => crate::syscall_glue_anonfd::kernel_sys_eventfd2(&args),
         crate::syscall_nrs::NR_GETDENTS | crate::syscall_nrs::NR_GETDENTS64
                                  => crate::syscall_glue_fs::kernel_sys_getdents64(&args),
         crate::syscall_nrs::NR_PREAD64       => crate::syscall_glue_fs::kernel_sys_pread64(&args),
@@ -875,14 +628,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_PWRITEV => crate::syscall_glue_fs::kernel_sys_pwritev(&args),
         crate::syscall_nrs::NR_PREADV2 => crate::syscall_glue_fs::kernel_sys_preadv(&args),
         crate::syscall_nrs::NR_PWRITEV2 => crate::syscall_glue_fs::kernel_sys_pwritev(&args),
-        crate::syscall_nrs::NR_MEMFD_CREATE => crate::syscall_glue_fs::kernel_sys_memfd_create(&args),
+        crate::syscall_nrs::NR_MEMFD_CREATE => crate::syscall_glue_anonfd::kernel_sys_memfd_create(&args),
         // memfd_secret(flags) — Linux's "hide from other tasks via
         // page-table partitioning" variant. v1 single-AS scheduler
         // doesn't enforce that hide; we route through memfd_create
         // so the fd is at least functional.
         crate::syscall_nrs::NR_MEMFD_SECRET => {
             let mut sa = args; sa.a0 = 0; sa.a1 = args.a0;
-            crate::syscall_glue_fs::kernel_sys_memfd_create(&sa)
+            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
         }
         crate::syscall_nrs::NR_MKDIR    => crate::syscall_glue_namei::kernel_sys_mkdir(&args),
         crate::syscall_nrs::NR_MKDIRAT  => crate::syscall_glue_namei::kernel_sys_mkdirat(&args),
@@ -974,9 +727,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
         crate::syscall_nrs::NR_MADVISE       => crate::syscall_glue_proc::kernel_sys_madvise(&args),
         crate::syscall_nrs::NR_PRLIMIT64     => crate::syscall_glue_proc::kernel_sys_prlimit64(&args),
-        crate::syscall_nrs::NR_RT_SIGACTION  => crate::syscall_glue_proc::kernel_sys_rt_sigaction(&args),
-        crate::syscall_nrs::NR_RT_SIGPROCMASK => crate::syscall_glue_proc::kernel_sys_rt_sigprocmask(&args),
-        crate::syscall_nrs::NR_SIGALTSTACK   => crate::syscall_glue_proc::kernel_sys_sigaltstack(&args),
+        crate::syscall_nrs::NR_RT_SIGACTION  => crate::syscall_glue_signal::kernel_sys_rt_sigaction(&args),
+        crate::syscall_nrs::NR_RT_SIGPROCMASK => crate::syscall_glue_signal::kernel_sys_rt_sigprocmask(&args),
+        crate::syscall_nrs::NR_SIGALTSTACK   => crate::syscall_glue_signal::kernel_sys_sigaltstack(&args),
         crate::syscall_nrs::NR_NANOSLEEP     => crate::syscall_glue_proc::kernel_sys_nanosleep(&args),
         crate::syscall_nrs::NR_CLOCK_NANOSLEEP => crate::syscall_glue_proc::kernel_sys_clock_nanosleep(&args),
         crate::syscall_nrs::NR_CLOSE         => kernel_sys_close(&args),
@@ -985,12 +738,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_DUP2          => crate::syscall_glue_fs::kernel_sys_dup2(&args),
         crate::syscall_nrs::NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
         #[cfg(target_arch = "x86_64")]
-        crate::syscall_nrs::NR_FORK          => kernel_sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
+        crate::syscall_nrs::NR_FORK          => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
         #[cfg(target_arch = "x86_64")]
-        crate::syscall_nrs::NR_VFORK         => kernel_sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
+        crate::syscall_nrs::NR_VFORK         => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
         #[cfg(target_arch = "x86_64")]
         // Linux x86_64 clone(flags, child_stack, ptid, ctid, tls).
-        crate::syscall_nrs::NR_CLONE         => kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
+        crate::syscall_nrs::NR_CLONE         => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_EXECVE        => crate::syscall_glue_execve::kernel_sys_execve(&args),
         // execveat(dirfd, path, argv, envp, flags). v1 ignores dirfd
@@ -1006,11 +759,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_WAITID        => kernel_sys_waitid(&args),
         crate::syscall_nrs::NR_TKILL         => kernel_sys_kill(&args),
-        crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_proc::kernel_sys_rt_sigpending(&args),
-        crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_proc::kernel_sys_rt_sigsuspend(&args),
-        crate::syscall_nrs::NR_RT_SIGTIMEDWAIT  => crate::syscall_glue_proc::kernel_sys_rt_sigtimedwait(&args),
-        crate::syscall_nrs::NR_RT_SIGQUEUEINFO  => crate::syscall_glue_proc::kernel_sys_rt_sigqueueinfo(&args),
-        crate::syscall_nrs::NR_RT_TGSIGQUEUEINFO => crate::syscall_glue_proc::kernel_sys_rt_tgsigqueueinfo(&args),
+        crate::syscall_nrs::NR_RT_SIGPENDING => crate::syscall_glue_signal::kernel_sys_rt_sigpending(&args),
+        crate::syscall_nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_signal::kernel_sys_rt_sigsuspend(&args),
+        crate::syscall_nrs::NR_RT_SIGTIMEDWAIT  => crate::syscall_glue_signal::kernel_sys_rt_sigtimedwait(&args),
+        crate::syscall_nrs::NR_RT_SIGQUEUEINFO  => crate::syscall_glue_signal::kernel_sys_rt_sigqueueinfo(&args),
+        crate::syscall_nrs::NR_RT_TGSIGQUEUEINFO => crate::syscall_glue_signal::kernel_sys_rt_tgsigqueueinfo(&args),
         // Real-impl arms that overlap with compat-stub categories.
         crate::syscall_nrs::NR_PIPE          => kernel_sys_pipe2(&args),
         crate::syscall_nrs::NR_CREAT         => crate::syscall_glue_open::kernel_sys_open(&args),
@@ -1078,7 +831,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         unsafe { crate::sched::schedule(); }
     }
     // P3-65: deliver pending signals at syscall return.
-    if let Some(p) = crate::syscall_glue_proc::take_lowest_pending() {
+    if let Some(p) = crate::syscall_glue_signal::take_lowest_pending() {
         // Job-control signals come first — their default action is
         // stop / continue, not terminate, regardless of handler.
         // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP

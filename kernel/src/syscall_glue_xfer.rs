@@ -77,6 +77,7 @@ pub fn kernel_sys_splice(args: &SyscallArgs) -> i64 {
         let _ = in_file.seek(vfs::SeekFrom::Start, off);
     }
     if out_off != 0 && out_off < hal::USER_VA_END {
+        // SAFETY: out_off validated < USER_VA_END; CPL=0 reads i64 through caller's AS.
         let off = unsafe { core::ptr::read_volatile(out_off as *const i64) };
         let _ = out_file.seek(vfs::SeekFrom::Start, off);
     }
@@ -147,8 +148,9 @@ pub fn kernel_sys_vmsplice(args: &SyscallArgs) -> i64 {
     for i in 0..nr {
         let entry = iov + i * 16;
         if entry >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: entry < USER_VA_END; iovec entry is { base: u64, len: u64 }.
+        // SAFETY: entry validated < USER_VA_END; iovec entry layout {base: u64, len: u64}; aligned u64 read.
         let base = unsafe { core::ptr::read_volatile(entry as *const u64) };
+        // SAFETY: entry+8 still inside the 16-byte iovec entry; aligned u64 read.
         let len  = unsafe { core::ptr::read_volatile((entry + 8) as *const u64) };
         if base == 0 || len == 0 { continue; }
         let mut off: u64 = 0;
@@ -233,6 +235,7 @@ pub fn kernel_sys_copy_file_range(args: &SyscallArgs) -> i64 {
         unsafe { core::ptr::write_volatile(in_off as *mut i64, in_file.pos() as i64); }
     }
     if out_off != 0 && out_off < hal::USER_VA_END {
+        // SAFETY: out_off validated < USER_VA_END; CPL=0 writes i64 through caller's AS.
         unsafe { core::ptr::write_volatile(out_off as *mut i64, out_file.pos() as i64); }
     }
     total as i64
