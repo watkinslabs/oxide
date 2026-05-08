@@ -322,7 +322,13 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-smp", &smp_str,
         "-m", "256M",
         "-bios", ovmf.to_str().unwrap(),
-        "-drive", &format!("format=raw,file={}", img.display()),
+        // Boot drive attached as virtio-blk-pci (not legacy IDE) so the
+        // F19-F30 modern virtio-pci transport bring-up runs on x86 the
+        // same way it does on aarch64. Mirrors the aarch64 launcher
+        // (qemu_run_aarch64_disk below). serial=oxide-virt-blk-0 makes
+        // VIRTIO_BLK_T_GET_ID return a recognizable string (F31).
+        "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
+        "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         // Serial: dedicated chardev with `mux=on,signal=off` so Ctrl-A
         // is QEMU's monitor escape and Ctrl-C reaches the guest.
         // Plain `-serial stdio` puts host stdin in line-buffered cooked
