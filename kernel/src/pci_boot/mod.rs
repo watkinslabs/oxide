@@ -273,15 +273,35 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                         // entry, leave masked (vector_control bit 0=1)
                         // so no IRQ fires until F39 binds queue_msix
                         // and the dispatcher learns to route the SPI.
+                        // F56-08: prefer the ITS path on virtio-blk
+                        // (DeviceID 0x10 was pre-bound to LPI 8192 in
+                        // smoke_device_map_arm), fall back to GICv2m
+                        // SPI for everyone else. If neither is
+                        // available, skip the bind and let the
+                        // device sit in INTx-style ISR delivery.
                         #[cfg(target_arch = "aarch64")]
-                        if let Some(spi) = crate::msi::alloc_arm_spi() {
-                            // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
-                            unsafe { crate::gic::enable_intid(spi); }
+                        {
+                            let its_translater = crate::its::translater_pa();
+                            let is_blk_bdf = bdf.bus == 0 && bdf.device == 2 && bdf.function == 0;
+                            let use_its = its_translater != 0 && is_blk_bdf;
+                            let spi_opt: Option<u32> = if use_its {
+                                Some(0)
+                            } else {
+                                crate::msi::alloc_arm_spi()
+                            };
+                            if let Some(spi) = spi_opt {
+                            if !use_its {
+                                // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
+                                unsafe { crate::gic::enable_intid(spi); }
+                            }
                             let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
                                 .load(core::sync::atomic::Ordering::Acquire);
-                            // MSI_SETSPI_NS at +0x40.
-                            let msg_addr = v2m_pa + 0x40;
-                            let msg_data = spi;
+                            let (msg_addr, msg_data) = if use_its {
+                                (its_translater, 0u32)
+                            } else {
+                                // MSI_SETSPI_NS at +0x40.
+                                (v2m_pa + 0x40, spi)
+                            };
                             let entry_va = tbl_va; // entry 0
                             // SAFETY: entry_va is the freshly Device-attr-mapped MSI-X table base; aligned u32 stores within the 16-byte entry.
                             unsafe {
@@ -370,6 +390,7 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             klog::write_raw(b" ctl=");
                             klog::write_hex_u64(vc as u64);
                             klog::write_raw(b"\n");
+                            }
                         }
                     }
                 }
