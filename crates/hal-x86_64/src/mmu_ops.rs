@@ -47,6 +47,12 @@ pub unsafe fn set_hhdm_offset(offset: u64) {
     kassert!(prev == 0 || prev == offset, "MmuOps HHDM offset double-init mismatch");
 }
 
+/// Read the published HHDM offset. Returns 0 if not yet set.
+/// # C: O(1)
+pub fn hhdm_offset() -> u64 {
+    HHDM_OFFSET.load(Ordering::Acquire)
+}
+
 /// Set the frame allocator the walker uses for intermediate tables.
 /// `f` returns the PA of a fresh, page-aligned, kernel-owned 4 KiB
 /// frame, or `None` on exhaustion. Idempotent only if invoked with
