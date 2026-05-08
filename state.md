@@ -1,4 +1,25 @@
-# State 2026-05-08 (session 47 — virtio-pci F19→F41 + MSI delivery wiring)
+# State 2026-05-08 (session 47 ENDED — F19→F44 + D10/D11/D12 state checkpoints)
+
+## ⚡ Session 48 first task: restart qemu-mcp + verify x86 virtio-blk
+
+The user is restarting with a **fresh qemu-mcp server** to pick up
+F31 (#711) and F34 (#715) edits to `tools/qemu-mcp/server.py`:
+  - F31: virtio-blk-pci `serial=oxide-virt-blk-0` propagated to the device
+  - F34: explicit `-drive if=none,id=hd0` + `-device virtio-blk-pci,drive=hd0,bus=pcie.0,serial=...` on x86
+
+The session-47 daemon was launched before those edits and cached the
+old args, so live verify of the x86 virtio-blk closed-loop never ran.
+**First action on session 48**: `mcp__qemu__qemu_start arch=x86_64`,
+then `qemu_run_until pattern="virtio-blk-rd"`. Expect:
+  - `pci 0:?.0 vendor=0x1AF4 device=0x1001` (virtio-blk-pci on q35)
+  - `virtio-blk-rd 0:?.0 status=0x00 id="EFI PART..."` (sector-1 read)
+  - all user smokes still PASS
+
+If the device-id string contains "oxide-virt-blk-0" (or a prefix),
+F31 took effect too. That's the x86 leg of the F19-F44 lockstep
+chain — the only piece not live-verified in session 47.
+
+
 
 ## Headline (session 47, second leg, F29-F41)
 
