@@ -73,6 +73,23 @@ void _start(void) {
         waitpid((int)pid, &status, 0);
     }
 
+    // PT_INTERP dual-image smoke: fork+exec /bin/hello_dyn (a -pie
+    // binary linked against /lib/ld-musl-<arch>.so.1). Kernel ELF
+    // loader sees PT_INTERP, dual-loads our stub linker, lands at
+    // ld-musl entry, ld-musl falls through to hello_dyn's _start
+    // which prints "hello-from-dyn". Marker is the gate.
+    {
+        long pid = (long)fork();
+        if (pid == 0) {
+            static char* argv0[] = { "hello_dyn", 0 };
+            static char* envp[] = { 0 };
+            execve("/bin/hello_dyn", argv0, envp);
+            _exit(127);
+        }
+        int status;
+        waitpid((int)pid, &status, 0);
+    }
+
     for (int i = 0; i < 8; i++) {
         long pid = (long)fork();
         if (pid == 0) {
