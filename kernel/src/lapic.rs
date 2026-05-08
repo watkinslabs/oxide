@@ -45,7 +45,7 @@ const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
 
 /// Mapped kernel VA after `enable` runs. `0` until then.
 #[cfg(target_arch = "x86_64")]
-static LAPIC_BASE_VA: AtomicU64 = AtomicU64::new(0);
+pub static LAPIC_BASE_VA: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU tick counter incremented by the timer-IRQ dispatcher.
 #[cfg(target_arch = "x86_64")]
@@ -117,6 +117,13 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             crate::preempt::set_need_resched();
             // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
             unsafe { crate::preempt::tick_pick_next(); }
+        }
+        hal_x86_64::VEC_MSI => {
+            // F57: virtio MSI delivery. EOI already issued above; bump
+            // the diagnostic counter so msi-fires-post-enum picks it up.
+            // No scheduler interaction — completion-callback dispatch
+            // arrives with F58.
+            crate::msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         _ => { /* unknown vector -- EOI'd, fall through */ }
     }
