@@ -51,6 +51,33 @@ pub(super) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 mod virtio_drv;
 use virtio_drv::virtio_probe_arch;
 
+/// Enable PCI command reg bits 1 (Memory Space) + 2 (Bus Master) on
+/// `bdf`. UEFI on QEMU virt leaves Memory OFF; without this any BAR
+/// MMIO read returns 0xFFFFFFFF and any write is silently dropped.
+/// # C: O(1) — one config-space R/W pair.
+fn enable_pci_mem_bm(bdf: pci::Bdf) {
+    use pci::ConfigSpaceReader as _;
+    let cur = {
+        #[cfg(target_arch = "x86_64")]
+        { let r = hal_x86_64::pci::LegacyPci;
+          <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04) }
+        #[cfg(target_arch = "aarch64")]
+        { match hal_aarch64::pci::EcamPci::from_published() {
+            Some(r) => <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04),
+            None => return,
+        } }
+    };
+    let new = (cur & 0xFFFF_0000) | ((cur & 0xFFFF) | 0x0006);
+    if new == cur { return; }
+    #[cfg(target_arch = "x86_64")]
+    { let r = hal_x86_64::pci::LegacyPci;
+      <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, new); }
+    #[cfg(target_arch = "aarch64")]
+    { if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+        <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, new);
+    } }
+}
+
 /// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
 /// # C: O(1) — at most 6 BARs.
 fn bar_dump_arch(bdf: pci::Bdf) {
@@ -240,6 +267,58 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             klog::write_dec_u64((vc & 0x1) as u64);
                             klog::write_raw(b"\n");
                         }
+                        // F38: program entry 0 with a real GICv2m MSI
+                        // message on aarch64. Allocate one SPI, enable
+                        // it at the GIC distributor, write the table
+                        // entry, leave masked (vector_control bit 0=1)
+                        // so no IRQ fires until F39 binds queue_msix
+                        // and the dispatcher learns to route the SPI.
+                        #[cfg(target_arch = "aarch64")]
+                        if let Some(spi) = crate::msi::alloc_arm_spi() {
+                            // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
+                            unsafe { crate::gic::enable_intid(spi); }
+                            let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
+                                .load(core::sync::atomic::Ordering::Acquire);
+                            // MSI_SETSPI_NS at +0x40.
+                            let msg_addr = v2m_pa + 0x40;
+                            let msg_data = spi;
+                            let entry_va = tbl_va; // entry 0
+                            // SAFETY: entry_va is the freshly Device-attr-mapped MSI-X table base; aligned u32 stores within the 16-byte entry.
+                            unsafe {
+                                core::ptr::write_volatile(entry_va as *mut u32,
+                                    (msg_addr & 0xFFFF_FFFF) as u32);
+                                core::ptr::write_volatile((entry_va + 4) as *mut u32,
+                                    (msg_addr >> 32) as u32);
+                                core::ptr::write_volatile((entry_va + 8) as *mut u32,
+                                    msg_data);
+                                // vector_control: leave masked (bit 0 = 1)
+                                // until F39 binds + handler is installed.
+                                core::ptr::write_volatile((entry_va + 12) as *mut u32, 1);
+                            }
+                            // Read back to confirm the writes landed.
+                            // SAFETY: same Device-attr-mapped entry; aligned u32 loads of fields just written.
+                            let (al, ah, dt, vc) = unsafe {(
+                                core::ptr::read_volatile(entry_va as *const u32),
+                                core::ptr::read_volatile((entry_va + 4) as *const u32),
+                                core::ptr::read_volatile((entry_va + 8) as *const u32),
+                                core::ptr::read_volatile((entry_va + 12) as *const u32),
+                            )};
+                            klog::write_raw(b"[INFO]  msix-bind ");
+                            klog::write_dec_u64(bdf.bus as u64);
+                            klog::write_raw(b":");
+                            klog::write_dec_u64(bdf.device as u64);
+                            klog::write_raw(b".");
+                            klog::write_dec_u64(bdf.function as u64);
+                            klog::write_raw(b" spi=");
+                            klog::write_dec_u64(spi as u64);
+                            klog::write_raw(b" addr=");
+                            klog::write_hex_u64(((ah as u64) << 32) | (al as u64));
+                            klog::write_raw(b" data=");
+                            klog::write_hex_u64(dt as u64);
+                            klog::write_raw(b" ctl=");
+                            klog::write_hex_u64(vc as u64);
+                            klog::write_raw(b"\n");
+                        }
                     }
                 }
             }
@@ -326,6 +405,12 @@ pub fn enumerate_and_log() {
             klog::write_raw(b" class=");
             klog::write_hex_u64(d.class_code as u64);
             klog::write_raw(b"\n");
+            // F38 ordering fix: enable Memory + BusMaster bits in the
+            // PCI command reg BEFORE cap_dump_arch tries to read or
+            // write the MSI-X table BAR. Previously this only happened
+            // inside virtio_probe_arch (which runs LAST), so MSI-X
+            // table writes from cap_dump bounced as 0xFF reads.
+            enable_pci_mem_bm(d.bdf);
             // Capability list — modern devices always advertise MSI-X
             // + (for virtio) vendor-specific virtio-pci caps. Foundation
             // for upcoming MSI-X routing + virtio modern-transport work.
