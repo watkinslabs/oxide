@@ -451,6 +451,29 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                     }
                 }
             }
+            // F56-07: MAPTI + INV + SYNC for virtio-blk's first MSI
+            // vector. Maps DeviceID 0x10, EventID 0 → LPI 8192 on
+            // ICID 0; then invalidates the per-event cache and waits
+            // for completion. F56-08 will write the LPI PROPBASER
+            // byte (priority + enable) and retarget the MSI-X table
+            // entry's message_address to GITS_TRANSLATER.
+            for (label, cmd) in [
+                (b"mapti-blk" as &[u8],
+                 crate::its::cmd_mapti(0x10, 0, 8192, 0)),
+                (b"inv-blk"   as &[u8],
+                 crate::its::cmd_inv(0x10, 0)),
+                (b"sync"      as &[u8],
+                 crate::its::cmd_sync(0)),
+            ] {
+                // SAFETY: ITS enabled; MAPC + MAPD posted above.
+                let s = unsafe { crate::its::cmd_post(hhdm, cmd) };
+                debug_irq! {
+                    klog::write_raw(b"[INFO]  its-cmd ");
+                    klog::write_raw(label);
+                    klog::write_raw(b" ");
+                    log_cmd_status(s);
+                }
+            }
         } else {
             debug_irq! {
                 klog::write_raw(b"[INFO]  its: no MADT type-15 reported\n");
