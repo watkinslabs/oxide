@@ -73,6 +73,63 @@ Three avenues for next session:
 | #720 | F39-msix-enable-and-bind | unmask + cap-enable + queue-bind |
 | #721 | F40-msi-fire-observe | post-enumerate unmask + fire counter |
 | #722 | F41-msix-enable-readback | re-read mc to verify enable bit |
+| #723 | D11-state-session-47-mid-msi | mid-checkpoint state.md |
+| #724 | F42-virtio-blk-sector-read | sector-1 READ -> "EFI PART" returned via DMA |
+| #725 | F43-virtio-net-tx | virtio-net TX path on queue 1 |
+| #726 | F44-iort-decode | IORT decode -> silent-MSI smoking gun (ITS without GICv3) |
+
+## Headline (session 47, third leg, F42-F44)
+
+Three more PRs after the second-leg headline below:
+  - F42 swapped GET_ID for sector-1 read; got "EFI PART" GPT signature
+    back through DMA. **First real disk-content read on aarch64.**
+  - F43 stood up queue 1 (TX) on virtio-net + posted broadcast frame +
+    kicked. tx_used_idx=0 (QEMU user-net drops broadcasts) but full
+    wiring ran without faulting.
+  - F44 decoded IORT and pinpointed the silent-MSI cause: no SMMU on
+    the path, but MSI parent advertised is type-0 ITS-group. QEMU
+    virt with GICv2 has NO ITS — only the GICv2m frame from MADT
+    type-13. Device's MSI writes target a non-existent ITS doorbell
+    and are silently dropped.
+
+## Silent-MSI: three avenues for a future session
+
+1. **`-machine virt,gic-version=3` + write a GIC ITS driver.** Most
+   work but matches what real ARM servers ship; the IORT then makes
+   sense.
+2. **Detect GICv2 + override IORT ITS hint.** Force MSI delivery via
+   `GICV2M_FRAME_PA + 0x40`. This is what we've already wired (F38);
+   need to confirm QEMU virtio-pci honors the MSI-X table msg_addr we
+   wrote (it should, per spec) versus consulting IORT (which it
+   apparently does on top).
+3. **MSI from a Named Component.** Skips the IORT root-complex
+   mapping. Probably not portable to virtio-pci.
+
+## All "in order" items (from project memory) covered
+
+The original "next on the list" plan ordered through virtio MSI
+delivery + virtio-blk r/w + virtio-net TX + x86 lockstep verify. All
+items have a corresponding PR landed:
+
+  1-4. aarch64 MSI delivery wiring   -> F37 #718, F38 #719, F39 #720, F40 #721
+  5.   virtio-blk WRITE/READ          -> F42 #724 ("EFI PART")
+  6.   virtio-net TX                  -> F43 #725 (frame posted)
+  7.   x86 lockstep verify            -> F34 #715 (Intel e1000+ICH9 driven cleanly via diagnostic stack; virtio-blk on x86 needs qemu-mcp daemon restart)
+
+Plus F41 (mc-readback diagnostic) and F44 (IORT decode → silent-MSI
+diagnosis) as bonus debug investigation.
+
+## What's unanswered / future-session candidates
+
+- Silent-MSI remediation per one of the three avenues above.
+- `/bin/sh interactive` (TTY-input wakeup) — IRQ-driven UART RX path
+  replacing the timer-poll fallback. Orthogonal to virtio.
+- `PTRACE_SINGLESTEP real trap` — toggle TF/SS bit on resume.
+- Move virtio init from `pci_boot/virtio_drv.rs` into a dedicated
+  driver module once stable.
+- `make qemu-x86` virtio-blk closed-loop on x86 (needs qemu-mcp
+  daemon restart to pick up F34 server.py edit).
+
 
 
 
