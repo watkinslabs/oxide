@@ -489,5 +489,50 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"[INFO]  msi-fires-post-enum=");
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
+
+        // F45: GICv2m self-fire diagnostic. Allocate a fresh SPI,
+        // enable it at the GICD, then write the SPI number to the
+        // v2m frame's SETSPI_NS register (+0x040) FROM THE KERNEL.
+        // If MSI_FIRES bumps, the v2m frame + GIC delivery path
+        // works end-to-end and the silent-MSI is device-side
+        // (QEMU virtio-pci ignored the msg_addr we wrote). If it
+        // does not bump, the v2m frame is inert under this QEMU
+        // virt configuration and silent-MSI requires a different
+        // delivery path (e.g. GICv3 + ITS).
+        #[cfg(target_arch = "aarch64")]
+        {
+            let v2m_va = crate::msi::GICV2M_VA
+                .load(core::sync::atomic::Ordering::Acquire);
+            if v2m_va != 0 {
+                if let Some(spi) = crate::msi::alloc_arm_spi() {
+                    // SAFETY: gic::enable was called before any IRQ unmask; SPI is freshly allocated, owned by this diagnostic; single-CPU pre-init.
+                    unsafe { crate::gic::enable_intid(spi); }
+                    let before = crate::msi::MSI_FIRES
+                        .load(core::sync::atomic::Ordering::Acquire);
+                    let setspi_ns = (v2m_va + 0x040) as *mut u32;
+                    // SAFETY: boot phase, single-CPU; brief unmask
+                    // window mirrors F40 above; v2m_va is freshly
+                    // Device-attr mapped, +0x40 is the SETSPI_NS
+                    // doorbell within the same 4 KiB; SPI is enabled.
+                    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
+                    // SAFETY: aligned u32 write to SETSPI_NS register, value is the target SPI number.
+                    unsafe { core::ptr::write_volatile(setspi_ns, spi); }
+                    for _ in 0..2_000_000 { core::hint::spin_loop(); }
+                    // SAFETY: pairs with the daifclr above; restores the boot-mask state on this CPU.
+                    unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
+                    let after = crate::msi::MSI_FIRES
+                        .load(core::sync::atomic::Ordering::Acquire);
+                    klog::write_raw(b"[INFO]  gicv2m-self-fire spi=");
+                    klog::write_dec_u64(spi as u64);
+                    klog::write_raw(b" before=");
+                    klog::write_dec_u64(before as u64);
+                    klog::write_raw(b" after=");
+                    klog::write_dec_u64(after as u64);
+                    klog::write_raw(b" delta=");
+                    klog::write_dec_u64((after - before) as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
     }
 }
