@@ -1,28 +1,76 @@
-# State 2026-05-08 (session 49 ENDED — F55 verified + F56-01..F56-09 ITS complete)
+# State 2026-05-08 (session 50 leg-1 — aarch64 MSI verified + x86 lockstep gap exposed)
 
-## ⚡ Session 50 first task: restart Claude / qemu-mcp + verify modern virtio MSI
+## ⚡ Session 50 leg-1 result: aarch64 MSI VERIFIED, x86 MSI gap found
 
-PR #752 (F56-09) edited `tools/qemu-mcp/server.py` to add
-`disable-legacy=on` to the aarch64 virtio-blk-pci launch line
-(switches the device from transitional 0x1001 → modern 0x1041 so
-MSI-X is honoured per Virtio 1.2 §4.1.4.5). The qemu-mcp daemon
-caches the launch args at module load, so verifying needs a fresh
-daemon. **First action on session 50**: restart the Claude session
-so qemu-mcp respawns, then run
-`mcp__qemu__qemu_start arch=aarch64` +
-`qemu_run_until pattern="msi-fires-post-enum"`. Expect:
+Daemon restart + `qemu_start arch=aarch64` produced (excerpt):
 
-  - `pci 0:2.0 vendor=0x1af4 device=0x1041` (was 0x1001 pre-restart)
-  - `msix-bind 0:2.0 ... addr=0x08080040 data=0x0`  (unchanged)
-  - `its-self-fire pre=0 post=1 delta=1 last_intid=0x2000` (kernel-side proof)
-  - `virtio-msix 0:2.0 q0_msix_vec=0x0000 msi_fires>0` ← NEW
-  - `msi-fires-post-enum>0` ← NEW
+  - `pci 0:2.0 vendor=0x1af4 device=0x1042` (modern non-transitional
+    virtio-blk; state-49 prediction said 0x1041 — typo: 0x1041 is
+    virtio-net's modern ID, virtio-blk's modern ID is 0x1042)
+  - `msix-bind 0:2.0 ... addr=0x08080040 data=0x0` ✓
+  - `its-self-fire pre=0 post=1 delta=1 last_intid=0x2000` ✓
+  - `virtio-msix 0:2.0 q0_msix_vec=0x0000 msi_fires=1` ✓
+  - `msi-fires-post-enum=1` ✓
 
-If `msi-fires-post-enum > 0`, silent-MSI is genuinely fixed
-end-to-end and the F30-F44 ISR-poll fallback can be retired in
-F57. If still 0 despite device 0x1041, virtio queue_msix_vector
-binding in `pci_boot/virtio_drv.rs` may need explicit MSI-X-aware
-plumbing (currently inherits from cap.enable + table writes).
+**aarch64 silent-MSI is genuinely fixed end-to-end.** All 6 user
+smokes still PASS post the modern-device flip; hello-from-dyn
+reached.
+
+But the x86 lockstep cross-check (`qemu_start arch=x86_64`)
+exposed a real gap:
+
+  - `pci 0:3.0 vendor=0x1af4 device=0x1042` (modern, no flip needed)
+  - `virtio-msix 0:3.0 q0_msix_vec=0x0000 msi_fires=0` ← STILL ZERO
+  - `msi-fires-post-enum=0` ← STILL ZERO
+  - NO `msix-en` line, NO `msix-bind` line
+
+Root cause: `kernel/src/pci_boot/mod.rs:282` gates the entire
+MSI-X enable + table-write + Enable-bit block under
+`#[cfg(target_arch = "aarch64")]`. x86 never enables MSI-X,
+never writes the MSI message addr/data, never sets the cap's
+Enable bit. Device falls back to INTx delivery (ISR=0x01 in
+the post-kick log proves the device DID complete the request,
+just via INTx not MSI). The ISR-poll path on x86 is therefore
+the *primary* completion signal today, not a fallback —
+deleting it would break x86 outright.
+
+## Session 50 leg-2 plan: F57 = x86 MSI-X bring-up (lockstep)
+
+F57 is NOT "retire ISR-poll" as state-49 implied. ARM/x86
+lockstep (CLAUDE.md HARD RULE: gap closes in same PR that
+exposes it) means F57 is x86 MSI-X enable to match aarch64.
+Concretely:
+
+  1. Promote the aarch64-gated MSI bind block in `pci_boot/mod.rs`
+     to a `#[cfg(any(...))]` block with arch-specific tail for
+     `(msg_addr, msg_data)` computation:
+     - aarch64 (already): ITS_TRANSLATER + EventID 0, OR
+       v2m+SETSPI + spi-num.
+     - x86_64 (new): `0xFEE0_0000` (LAPIC base, dest=0,
+       RH=0, DM=0) for addr; `vector` for data (delivery_mode
+       = Fixed = 000, level=0, trigger=edge).
+  2. Add `crate::msi::alloc_x86_vector()` returning a vector
+     in the IDT user range (e.g., 0x60..0x80 reserved for
+     MSI). Hook the IDT entry to bump `MSI_FIRES` like the
+     aarch64 dispatcher does on LPI/SPI.
+  3. Verify x86 boot prints `msix-en 0:3.0 mc=0x8000+ enabled=1`
+     + `msix-bind 0:3.0 addr=0xFEE00000 data=<vec>` +
+     `msi_fires>0` + `msi-fires-post-enum>0`.
+  4. Once both arches show `msi_fires>0`, F58 can retire the
+     ISR-poll diagnostic (lines 576-600 of `virtio_drv.rs`).
+
+After F57+F58 the ISR cap probe + read can disappear and
+`virtio-rx-post`'s `isr=` field can drop. Until then, ISR-poll
+remains the x86 primary path.
+
+Useful refs:
+  - `kernel/src/pci_boot/mod.rs:282-394` — the aarch64-only
+    MSI-X bind block to generalize.
+  - `kernel/src/msi.rs` — MSI_FIRES counter + alloc_arm_spi()
+    sibling for the new alloc_x86_vector().
+  - `kernel/src/idt.rs` (or arch dispatcher equivalent) — MSI
+    vector handler that bumps MSI_FIRES.
+  - Intel SDM Vol 3A §10.11.1 — MSI message format.
 
 ## Headline (session 49 leg-2, F56-06..F56-09)
 
