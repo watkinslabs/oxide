@@ -43,6 +43,9 @@ const GICD_ITARGETSR: usize = 0x800;
 /// level. Writable only for SPIs (INTID >= 32).
 #[cfg(target_arch = "aarch64")]
 const GICD_ICFGR: usize = 0xC00;
+/// GICD_ISPENDR — 1 bit per INTID; reads pending state.
+#[cfg(target_arch = "aarch64")]
+const GICD_ISPENDR: usize = 0x200;
 /// IAR INTID field is bits [9:0] (GICv2 with up to 1020 INTIDs).
 #[cfg(target_arch = "aarch64")]
 const IAR_INTID_MASK: u32 = 0x3FF;
@@ -156,6 +159,22 @@ pub unsafe fn enable_intid(intid: u32) {
             core::ptr::write_volatile(icfgr, cleared | (0b10u32 << shift));
         }
     }
+}
+
+/// Read the GICD_ISPENDR word covering `intid`. One bit per INTID;
+/// bit set = IRQ has been received by the distributor and is queued
+/// for delivery (or already in-flight). Diagnostic read — does not
+/// clear pending state.
+///
+/// # SAFETY: distributor must have been mapped via `enable`.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn ispendr_word(intid: u32) -> u32 {
+    let gicd = GICD_VA.load(Ordering::Acquire);
+    if gicd == 0 { return 0; }
+    let off = (intid / 32) as u64 * 4;
+    // SAFETY: GICD_VA is freshly Device-attr-mapped; ISPENDR offset within the 4 KiB; aligned u32 read.
+    unsafe { core::ptr::read_volatile((gicd + GICD_ISPENDR as u64 + off) as *const u32) }
 }
 
 /// Acknowledge the highest-priority pending INTID; returns it.
