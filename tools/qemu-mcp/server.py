@@ -369,6 +369,49 @@ def qemu_continue() -> str:
 
 
 @mcp.tool()
+def qemu_run_until(pattern: str, timeout: float = 60.0,
+                   poll_interval: float = 0.1) -> str:
+    """Resume execution and watch the serial buffer for a regex.
+
+    Returns the moment the pattern matches (or `timeout` elapses)
+    — does NOT wait for `*stopped`. Use this when you boot the
+    guest and just want to confirm specific output appeared on
+    the UART (test markers like "PASS", login prompts, etc.)
+    rather than hitting a breakpoint.
+
+    `pattern` is a Python regex applied to the accumulated serial
+    text. On match returns the full serial buffer up to that
+    point. On timeout returns the buffer with a ``[TIMEOUT]``
+    prefix so the caller can see what was captured.
+
+    The CPU keeps running on return — call again with a new
+    pattern, or `qemu_interrupt` / `qemu_stop` when done.
+    """
+    s = _require()
+    import re as _re
+    rx = _re.compile(pattern)
+    # -exec-continue returns ^running immediately; we don't wait
+    # for *stopped, just poll the serial buffer.
+    try:
+        s.gdb.stdin.write("-exec-continue\n")
+        s.gdb.stdin.flush()
+        _gdb_wait_prompt(s, timeout=2.0)
+    except Exception:
+        # Already running is fine; serial poll still works.
+        pass
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        with s.serial_lock:
+            buf = "\n".join(s.serial)
+        if rx.search(buf):
+            return buf
+        time.sleep(poll_interval)
+    with s.serial_lock:
+        buf = "\n".join(s.serial)
+    return f"[TIMEOUT after {timeout}s]\n{buf}"
+
+
+@mcp.tool()
 def qemu_interrupt(timeout: float = 5.0) -> str:
     """Interrupt a running guest. Sends `-exec-interrupt` to GDB so
     the next memory/register read can succeed. Returns the stop

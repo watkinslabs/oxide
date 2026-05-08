@@ -58,6 +58,7 @@ void _start(void) {
         "/bin/msg_smoke",
         "/bin/mq_smoke",
         "/bin/ptrace_smoke",
+        "/bin/mprotect_smoke",
         0,
     };
     for (int i = 0; smokes[i]; i++) {
