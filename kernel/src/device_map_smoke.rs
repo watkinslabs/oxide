@@ -361,6 +361,17 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                     klog::write_raw(b"\n");
                 }
             }
+            // F56-05: flip GITS_CTLR.Enabled. After this, the ITS
+            // begins consuming commands posted via GITS_CWRITER. No
+            // commands are queued yet — F56-06+ will post MAPD/MAPC/
+            // MAPTI to bind PCI MSI to LPIs.
+            // SAFETY: cmdq + BASERs programmed above; LPIs enabled at the RD; single-CPU pre-init.
+            let _ctlr = unsafe { crate::its::ctlr_enable() };
+            debug_irq! {
+                klog::write_raw(b"[INFO]  its-ctlr: post=");
+                klog::write_hex_u64(_ctlr as u64);
+                klog::write_raw(b"\n");
+            }
         } else {
             debug_irq! {
                 klog::write_raw(b"[INFO]  its: no MADT type-15 reported\n");
