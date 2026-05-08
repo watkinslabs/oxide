@@ -257,7 +257,7 @@ def qemu_start(arch: str) -> str:
             ovmf = REPO_ROOT / "vendor/firmware/ovmf-aarch64.fd"
             qemu_cmd = [
                 qemu_bin,
-                "-machine", "virt",
+                "-machine", "virt,gic-version=3,its=on",
                 "-cpu", "cortex-a72",
                 "-m", "256M",
                 "-bios", str(ovmf),
