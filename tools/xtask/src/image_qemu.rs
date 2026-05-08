@@ -362,7 +362,7 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         // attaching as virtio-blk-pci through the virt-machine's
         // synthetic PCIe root is the path edk2 reliably discovers.
         "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
-        "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0",
+        "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
