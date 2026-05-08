@@ -1,3 +1,72 @@
+# State 2026-05-07 (session 44 — ARM mprotect_smoke fix + AS drop frees PT)
+
+## Headline (session 44)
+
+User flagged session 43's "ARM mprotect_smoke FAIL" as the immediate
+blocker. Session 44 closed it (5/5 both arches now PASS via qemu MCP)
+and went one layer deeper: fixed an x86 stack underflow that had been
+masked by the same code path's working ARM variant, and added the
+first piece of `AddressSpace` lifecycle hygiene (real `Drop` that
+frees user-half PT pages + leaf frames + the staged ELF segments
+that `Box::leak`'d per exec pre-B22).
+
+## PRs landed (#688 – #690)
+
+| PR | Branch | What |
+|---|---|---|
+| #688 | `B20-arm-mprotect-page-size` | Two latent bugs: (a) musl-aarch64's `mprotect` reads `__libc.page_size` (offset 0x30) at runtime; under `-nostartfiles` `__init_libc` never runs so page_size=0 and every mprotect saw `addr=0,len=0` → kernel returns EINVAL. New `oxide_libc_init()` C shim called from `_start` writes 4096 there before main runs. (b) x86 execve mmap'd only 4 KiB stack; F12 bumped ARM but missed x86. musl libc init overflowed the 4 KiB → SIGSEGV before any smoke reached main. Bumped x86 to 64 KiB matching ARM. run-smokes.sh: x86 boot_budget 30→60s. |
+| #689 | `B21-as-drop-frees-pt`        | `hal::pt_walker::free_user_tree<W>` recursively frees user-half page tables (L0[0..256]) plus all leaf frames. `vmm::AddressSpace` gains `teardown: AtomicU64` (fn-ptr cast slot) + `Drop` impl that fires the kernel-installed teardown with `root_pa` when last Arc ref releases. `user_as::as_teardown` (per-arch) wires the walker + PMM free; `install_teardown` invoked from fork's `fork_copy_pages`, x86 execve, aarch64 execve. Pre-B21 every fork+exec leaked ~16 KiB PT pages. |
+| #690 | `B22-kernelbytes-arc`         | `vmm::AddressSpace` gains `staged_bytes: Spinlock<Vec<Box<[u8]>>>` (declared after `vmas` so the tree drops first). `AddressSpace::stash_bytes(box) -> &'static [u8]` takes ownership and returns a slice into the box's heap data. `elf_load::place_image` swaps `Box::leak` for `stash_bytes` so per-exec ELF segment storage frees on AS drop. |
+
+## QEMU smoke results
+
+Both arches via qemu MCP socket-chardev (and `tools/run-smokes.sh`
+when run interactively — backgrounded runs have a flaky stdio path):
+
+```
+=== smoke results (arch=x86_64) ===
+  sem_smoke: PASS
+  msg_smoke: PASS
+  mq_smoke: PASS
+  ptrace_smoke: PASS
+  mprotect_smoke: PASS
+=== smoke results (arch=aarch64) ===
+  sem_smoke: PASS
+  msg_smoke: PASS
+  mq_smoke: PASS
+  ptrace_smoke: PASS
+  mprotect_smoke: PASS
+```
+
+Hosted tests stable at 894/0.
+
+## Open follow-ups for next session
+
+- **Arc<AddressSpace> ref-leak** — kernel still panics in `alloc.rs:573`
+  around the 16th fork/exec/exit cycle. Instrumented `as_teardown` saw
+  only 11 teardowns vs 16 reaps; ~5 ASs never drop. Next session: hunt
+  every `Arc<AddressSpace>` clone site (sysv_shm, procfs, futex,
+  syscall_glue's `m.clone()` patterns) for a path that leaks the Arc
+  past the syscall return. Also check whether the smokes' grandchild-
+  through-fork path keeps its fork_copy AS alive in some implicit way.
+- **`tools/run-smokes.sh` flaky in background** — direct `qemu-system`
+  with `-serial stdio` works interactively but reports MISSING when
+  invoked via `run_in_background`. Likely an stdout-buffering or
+  parent-process-tty issue. Workaround: use the qemu MCP socket-
+  chardev path for any verification driven by an autonomous loop.
+- **stdio chardev boot stall on aarch64** — pre-existing (state.md
+  session 43), surfaces intermittently. MCP path always works.
+
+## What's queued (next session candidates)
+
+- Arc<AS> leak hunt → close OOM panic.
+- P22c: real PTRACE_CONT / SINGLESTEP via sched stop-states.
+- P19d: virtio-net IRQ wiring.
+- Real ld-musl on ARM (P33a was x86-only).
+- /bin/sh interactive on both arches.
+
+---
+
 # State 2026-05-07 (session 43 — fix-the-lies + per-PTE mprotect + smoke harness)
 
 ## Headline (session 43)
