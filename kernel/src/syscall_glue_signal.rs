@@ -237,17 +237,20 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // semantic: 0 = continue without signal; non-zero = post
             // that signal pending so syscall-return delivers it.
             //
-            // SINGLESTEP is treated as CONT for v1 (no actual TF/SS
-            // hardware bit toggle); a single-shot trap would need
-            // arch-specific saved-frame mutation per call. Acceptable
-            // first-cut so debuggers' continue / step / syscall paths
-            // get the same wake behaviour.
+            // SINGLESTEP additionally arms target.singlestep so the
+            // kernel-to-user resume path (per-arch follow-ups) sets
+            // RFLAGS.TF / MDSCR_EL1.SS on the next entry. Until those
+            // arches land, behaviour matches CONT — flag is set but
+            // no trap fires; first-cut wake semantics preserved.
             let target = match crate::sched::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let sig = args.a3 as i32;
             if sig > 0 && sig <= 64 {
                 target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+            }
+            if request == PTRACE_SINGLESTEP {
+                target.singlestep.store(1, Ordering::Release);
             }
             crate::sched::registry::wake_if_stopped(&target);
             0
