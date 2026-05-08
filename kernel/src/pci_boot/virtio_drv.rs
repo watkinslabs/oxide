@@ -46,8 +46,10 @@ struct VirtioProbe {
     /// F29: ISR status byte read post-kick. Bit 0 = queue interrupt,
     /// bit 1 = config interrupt. Reading clears the register.
     isr_status: u8,
-    /// F30: 20-byte device-ID string from VIRTIO_BLK_T_GET_ID, or
-    /// zeros if not a virtio-blk device or the request didn't complete.
+    /// F42: first 20 bytes of sector 1 (GPT primary header), or zeros
+    /// if not a virtio-blk device or the request didn't complete.
+    /// First 8 bytes should be ASCII "EFI PART" on a GPT disk.
+    /// (F30 used this slot for VIRTIO_BLK_T_GET_ID's 20-byte string.)
     blk_id: [u8; 20],
     /// F30: virtio-blk request status byte. 0=OK, 1=IOERR, 2=UNSUPP,
     /// 0xFF=request not issued / not completed.
@@ -250,10 +252,12 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, post_status as u8)
     };
-    // F30: for virtio-blk (transitional 0x1001 or modern 0x1042),
-    // issue a VIRTIO_BLK_T_GET_ID request: header (16B) + data (20B) +
-    // status (1B) in a 3-descriptor chain. Returns the device-id string
-    // — a real DMA roundtrip without needing IRQs.
+    // F42: for virtio-blk (transitional 0x1001 or modern 0x1042),
+    // issue a VIRTIO_BLK_T_IN read of sector 1 — the GPT primary
+    // header on a GPT-partitioned disk. Header (16B) + data (512B) +
+    // status (1B) in a 3-descriptor chain. Proves bidirectional DMA
+    // roundtrip with real disk content; first 8 bytes of the data
+    // buffer should be the ASCII "EFI PART" GPT signature.
     let mut blk_id = [0u8; 20];
     let mut blk_status: u8 = 0xFF;
     let is_virtio_blk = d.vendor_id == 0x1AF4
@@ -280,15 +284,20 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 unsafe {
                     // Zero the buf first.
                     for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
-                    // Header at +0x000: type=8 (VIRTIO_BLK_T_GET_ID), reserved=0, sector=0
-                    core::ptr::write_volatile(buf_va.add(0) as *mut u32, 8);
-                    // Pre-fill status byte at +0x200 with sentinel 0xFF.
-                    core::ptr::write_volatile(buf_va.add(0x200), 0xFFu8);
+                    // F42: VIRTIO_BLK_T_IN read of sector 1 (GPT primary
+                    // header). Header layout (16B):
+                    //   le32 type=0 (IN/read)
+                    //   le32 reserved=0
+                    //   le64 sector=1
+                    core::ptr::write_volatile(buf_va.add(0) as *mut u32, 0);
+                    core::ptr::write_volatile(buf_va.add(8) as *mut u64, 1u64);
+                    // Pre-fill status byte at +0x600 with sentinel 0xFF.
+                    core::ptr::write_volatile(buf_va.add(0x600), 0xFFu8);
                 }
                 // 3 descriptors at desc table:
-                //   d0: { addr=buf+0x000, len=16, flags=NEXT(1),     next=1 }
-                //   d1: { addr=buf+0x100, len=20, flags=WRITE|NEXT(3), next=2 }
-                //   d2: { addr=buf+0x200, len= 1, flags=WRITE(2),     next=0 }
+                //   d0: { addr=buf+0x000, len=16,  flags=NEXT(1),       next=1 }
+                //   d1: { addr=buf+0x200, len=512, flags=WRITE|NEXT(3), next=2 }
+                //   d2: { addr=buf+0x600, len=1,   flags=WRITE(2),      next=0 }
                 let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
                 // SAFETY: HHDM-mapped virtio queue-0 descriptor table; aligned u64 stores within the frame the driver owns.
                 unsafe {
@@ -298,15 +307,18 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     let d0_flags = (virtio::VRING_DESC_F_NEXT as u64) << 32;
                     let d0_next = 1u64 << 48;
                     core::ptr::write_volatile(desc0.add(1), d0_lo | d0_flags | d0_next);
-                    // Descriptor 1
-                    core::ptr::write_volatile(desc0.add(2), buf_pa + 0x100);
-                    let d1_lo = 20u64;
+                    // Descriptor 1: data buffer for the device's sector
+                    // payload (512 bytes), positioned at buf+0x200 to
+                    // leave header room at +0x000..+0x010.
+                    core::ptr::write_volatile(desc0.add(2), buf_pa + 0x200);
+                    let d1_lo = 512u64;
                     let d1_flags = ((virtio::VRING_DESC_F_NEXT
                                    | virtio::VRING_DESC_F_WRITE) as u64) << 32;
                     let d1_next = 2u64 << 48;
                     core::ptr::write_volatile(desc0.add(3), d1_lo | d1_flags | d1_next);
-                    // Descriptor 2
-                    core::ptr::write_volatile(desc0.add(4), buf_pa + 0x200);
+                    // Descriptor 2 — status byte at buf+0x600 (after the
+                    // 512-byte sector payload at +0x200..+0x600).
+                    core::ptr::write_volatile(desc0.add(4), buf_pa + 0x600);
                     let d2_lo = 1u64;
                     let d2_flags = (virtio::VRING_DESC_F_WRITE as u64) << 32;
                     core::ptr::write_volatile(desc0.add(5), d2_lo | d2_flags);
@@ -454,10 +466,14 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 let buf_va = hhdm.wrapping_add(buf_pa) as *const u8;
                 // SAFETY: HHDM-mapped data buf within the same page.
                 unsafe {
+                    // F42: data is at buf+0x200 (sector 1 contents).
+                    // Capture first 20 bytes — first 8 are the GPT
+                    // signature "EFI PART" if this is a GPT-partitioned
+                    // disk. blk_id reuses the F30 array for the dump.
                     for i in 0..20 {
-                        blk_id[i] = core::ptr::read_volatile(buf_va.add(0x100 + i));
+                        blk_id[i] = core::ptr::read_volatile(buf_va.add(0x200 + i));
                     }
-                    blk_status = core::ptr::read_volatile(buf_va.add(0x200));
+                    blk_status = core::ptr::read_volatile(buf_va.add(0x600));
                 }
             }
         }
@@ -563,7 +579,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_raw(b"\n");
         }
         if p.blk_status != 0xFF {
-            klog::write_raw(b"[INFO]  virtio-blk-id ");
+            klog::write_raw(b"[INFO]  virtio-blk-rd ");
             klog::write_dec_u64(bdf.bus as u64);
             klog::write_raw(b":");
             klog::write_dec_u64(bdf.device as u64);
