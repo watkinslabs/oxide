@@ -206,6 +206,16 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         klog::set_byte_sink(pl011::pl011_emit);
         klog::kinfo!("pl011: switched klog sink to real UART");
     }
+    // F47: turn on PL011 RX + RX-timeout IRQs and enable the matching
+    // SPI at the distributor. SPCR exposes irq=33 as the PL011 line on
+    // QEMU virt; with F45's ITARGETSR+ICFGR programming, SPI 33 will
+    // now actually deliver to oxide_arm_irq_dispatch. Replaces the
+    // timer-poll fallback for stdin wakeup.
+    // SAFETY: pl011::enable just ran; gic::enable_intid is idempotent and the GIC was enabled earlier in this fn; single-CPU pre-init.
+    unsafe {
+        crate::pl011::enable_rx_irq();
+        crate::gic::enable_intid(33);
+    }
 
     // ARM virtual generic-timer IRQ smoke. Pure diagnostic — gated.
     // Production timer arming will live alongside scheduler bring-up.
