@@ -1,9 +1,13 @@
-// /lib/ld-musl-x86_64.so.1 — real dynamic linker for oxide v2 phase 33.
+// /lib/ld-musl-<arch>.so.1 — real dynamic linker for oxide v2 phase 33.
+//
+// Arch-portable now (#ifdef __aarch64__ blocks for syscall ABI +
+// reloc constants + _start). Built per-arch as the matching
+// /lib/ld-musl-x86_64.so.1 / /lib/ld-musl-aarch64.so.1 binary.
 //
 // Replaces the P13-06 stub with a working DT_NEEDED resolver. Loads
 // each named shared object from /lib/ → /lib64/ → /usr/lib/, mmaps
 // its PT_LOAD segments, recurses into its DT_NEEDED transitively,
-// builds a symbol-resolution chain (BFS), applies R_X86_64_RELATIVE /
+// builds a symbol-resolution chain (BFS), applies R_RELATIVE /
 // _GLOB_DAT / _JUMP_SLOT / _64 relocations on every loaded DSO + the
 // exec, runs DT_INIT_ARRAY for each library, then jumps to the exec.
 //
@@ -20,15 +24,33 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// ---- syscall numbers (Linux x86_64) ----
-#define SYS_read   0
-#define SYS_write  1
-#define SYS_open   2
-#define SYS_close  3
-#define SYS_mmap   9
-#define SYS_exit   60
-#define SYS_lseek  8
+// ---- syscall numbers ----
+//
+// Both arches honor Linux's per-arch ABI; oxide's kernel translates
+// the aarch64 generic NRs to x86_64 internally (see kernel/src/
+// syscall_arm_abi.rs). aarch64 lacks plain open(2); use openat with
+// AT_FDCWD on both arches for symmetry.
+#if defined(__x86_64__)
+  #define SYS_read    0
+  #define SYS_write   1
+  #define SYS_close   3
+  #define SYS_lseek   8
+  #define SYS_mmap    9
+  #define SYS_exit    60
+  #define SYS_openat  257
+#elif defined(__aarch64__)
+  #define SYS_read    63
+  #define SYS_write   64
+  #define SYS_close   57
+  #define SYS_lseek   62
+  #define SYS_mmap    222
+  #define SYS_exit    93
+  #define SYS_openat  56
+#else
+  #error "unsupported architecture"
+#endif
 
+#define AT_FDCWD   (-100)
 #define O_RDONLY   0
 #define MAP_PRIVATE 0x02
 #define PROT_READ   1
@@ -37,6 +59,7 @@
 
 // ---- inline syscalls ----
 
+#if defined(__x86_64__)
 static inline long sc1(long n, long a) {
     long r;
     __asm__ volatile ("syscall" : "=a"(r) : "0"(n), "D"(a) : "rcx","r11","memory");
@@ -52,6 +75,14 @@ static inline long sc3(long n, long a, long b, long c) {
     __asm__ volatile ("syscall" : "=a"(r) : "0"(n), "D"(a), "S"(b), "d"(c) : "rcx","r11","memory");
     return r;
 }
+static inline long sc4(long n, long a, long b, long c, long d) {
+    long r;
+    register long r10 __asm__("r10") = d;
+    __asm__ volatile ("syscall" : "=a"(r)
+        : "0"(n), "D"(a), "S"(b), "d"(c), "r"(r10)
+        : "rcx","r11","memory");
+    return r;
+}
 static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
     long r;
     register long r10 __asm__("r10") = d;
@@ -61,6 +92,56 @@ static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
         : "0"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
         : "rcx","r11","memory");
     return r;
+}
+#elif defined(__aarch64__)
+static inline long sc1(long n, long a) {
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    __asm__ volatile ("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return x0;
+}
+static inline long sc2(long n, long a, long b) {
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    __asm__ volatile ("svc #0" : "+r"(x0) : "r"(x8), "r"(x1) : "memory");
+    return x0;
+}
+static inline long sc3(long n, long a, long b, long c) {
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    __asm__ volatile ("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return x0;
+}
+static inline long sc4(long n, long a, long b, long c, long d) {
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    register long x3 __asm__("x3") = d;
+    __asm__ volatile ("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory");
+    return x0;
+}
+static inline long sc6(long n, long a, long b, long c, long d, long e, long f) {
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    register long x3 __asm__("x3") = d;
+    register long x4 __asm__("x4") = e;
+    register long x5 __asm__("x5") = f;
+    __asm__ volatile ("svc #0" : "+r"(x0)
+        : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+        : "memory");
+    return x0;
+}
+#endif
+
+// ---- open() shim that uses openat(AT_FDCWD, ...) on both arches ----
+static inline long sys_open(const char* path, long flags) {
+    return sc4(SYS_openat, AT_FDCWD, (long)path, flags, 0);
 }
 
 // ---- minimal libc ----
@@ -134,11 +215,19 @@ typedef struct { uint64_t r_offset; uint64_t r_info; int64_t r_addend; } Rela;
 #define DT_INIT_ARRAYSZ  27
 #define DT_GNU_HASH  0x6ffffef5
 
-#define R_X86_64_NONE      0
-#define R_X86_64_64        1
-#define R_X86_64_GLOB_DAT  6
-#define R_X86_64_JUMP_SLOT 7
-#define R_X86_64_RELATIVE  8
+#if defined(__x86_64__)
+  #define R_NONE      0    // R_NONE
+  #define R_ABS64     1    // R_ABS64
+  #define R_GLOB_DAT  6    // R_GLOB_DAT
+  #define R_JUMP_SLOT 7    // R_JUMP_SLOT
+  #define R_RELATIVE  8    // R_RELATIVE
+#elif defined(__aarch64__)
+  #define R_NONE      0    // R_AARCH64_NONE
+  #define R_ABS64     257  // R_AARCH64_ABS64
+  #define R_GLOB_DAT  1025 // R_AARCH64_GLOB_DAT
+  #define R_JUMP_SLOT 1026 // R_AARCH64_JUMP_SLOT
+  #define R_RELATIVE  1027 // R_AARCH64_RELATIVE
+#endif
 
 #define ELF64_R_SYM(i)  ((i) >> 32)
 #define ELF64_R_TYPE(i) ((i) & 0xffffffff)
@@ -172,7 +261,7 @@ static int     n_dsos = 0;
 // ---- read full file at path into a kernel-allocated buffer ----
 
 static long open_path(const char* path) {
-    return sc3(SYS_open, (long)path, O_RDONLY, 0);
+    return sys_open(path, O_RDONLY);
 }
 
 static long read_full(int fd, void* buf, long want) {
@@ -388,10 +477,10 @@ static void apply_relas(Dso* d, Rela* tab, long size_bytes) {
         uint64_t  type = ELF64_R_TYPE(r->r_info);
         uint64_t  symi = ELF64_R_SYM(r->r_info);
         switch (type) {
-            case R_X86_64_RELATIVE:
+            case R_RELATIVE:
                 *slot = d->base + (uint64_t)r->r_addend;
                 break;
-            case R_X86_64_64: {
+            case R_ABS64: {
                 Sym* s = &d->symtab[symi];
                 const char* nm = d->strtab + s->st_name;
                 uint64_t v;
@@ -404,8 +493,8 @@ static void apply_relas(Dso* d, Rela* tab, long size_bytes) {
                 *slot = v;
                 break;
             }
-            case R_X86_64_GLOB_DAT:
-            case R_X86_64_JUMP_SLOT: {
+            case R_GLOB_DAT:
+            case R_JUMP_SLOT: {
                 Sym* s = &d->symtab[symi];
                 const char* nm = d->strtab + s->st_name;
                 uint64_t v;
@@ -417,7 +506,7 @@ static void apply_relas(Dso* d, Rela* tab, long size_bytes) {
                 *slot = v;
                 break;
             }
-            case R_X86_64_NONE: break;
+            case R_NONE: break;
             default:
                 writes("dl: unsupported reloc type "); writex(type); writes("\n");
                 break;
@@ -453,6 +542,10 @@ static void run_init_arrays(void) {
 #define AT_ENTRY   9
 
 long dl_main(long* sp) {
+    // Marker so smokes can prove the PT_INTERP dual-image load
+    // actually routed through us (rather than the kernel jumping
+    // straight to the exec).
+    writes("dl: hello\n");
     long argc = sp[0];
     long* p = sp + 1 + argc + 1;
     while (*p) p++;
@@ -540,6 +633,7 @@ long dl_main(long* sp) {
     return (long)exec_entry;
 }
 
+#if defined(__x86_64__)
 __attribute__((naked, noreturn))
 void _start(void) {
     __asm__ volatile (
@@ -553,3 +647,22 @@ void _start(void) {
         : : : "rbx","memory"
     );
 }
+#elif defined(__aarch64__)
+// aarch64: hand the *initial* SP (argc, argv, envp, auxv layout) to
+// dl_main via x0; preserve the SP across the call by stashing in
+// x19 (callee-saved); after dl_main returns the exec entry in x0,
+// restore SP and branch — the exec's _start picks up argc/argv/envp
+// from sp natively. File-scope inline asm so GCC can't emit any
+// prologue that disturbs the initial stack layout (`__attribute__((naked))`
+// is silently ignored on aarch64 by older GCCs).
+__asm__ (
+    ".global _start\n\t"
+    ".type   _start, %function\n\t"
+    "_start:\n\t"
+    "    mov  x19, sp\n\t"
+    "    mov  x0,  sp\n\t"
+    "    bl   dl_main\n\t"
+    "    mov  sp,  x19\n\t"
+    "    br   x0\n\t"
+);
+#endif
