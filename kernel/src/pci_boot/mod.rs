@@ -279,29 +279,39 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                         // SPI for everyone else. If neither is
                         // available, skip the bind and let the
                         // device sit in INTx-style ISR delivery.
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            let its_translater = crate::its::translater_pa();
-                            let is_blk_bdf = bdf.bus == 0 && bdf.device == 2 && bdf.function == 0;
-                            let use_its = its_translater != 0 && is_blk_bdf;
-                            let spi_opt: Option<u32> = if use_its {
-                                Some(0)
-                            } else {
-                                crate::msi::alloc_arm_spi()
-                            };
-                            if let Some(spi) = spi_opt {
-                            if !use_its {
-                                // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
-                                unsafe { crate::gic::enable_intid(spi); }
+                        // F57: per-arch MSI bind. aarch64 prefers ITS
+                        // for virtio-blk (DeviceID 0x10 → LPI 8192,
+                        // bound by smoke_device_map_arm), falls back
+                        // to GICv2m SPI. x86 allocates an IDT vector
+                        // (`VEC_MSI = 0x50`) and writes the LAPIC MSI
+                        // message addr `0xFEE0_0000` (boot CPU dest=0,
+                        // RH=0, DM=0, Fixed delivery).
+                        let bind: Option<(u32, u64, u32)> = {
+                            #[cfg(target_arch = "aarch64")]
+                            {
+                                let its_translater = crate::its::translater_pa();
+                                let is_blk_bdf = bdf.bus == 0 && bdf.device == 2 && bdf.function == 0;
+                                let use_its = its_translater != 0 && is_blk_bdf;
+                                if use_its {
+                                    Some((0u32, its_translater, 0u32))
+                                } else if let Some(spi) = crate::msi::alloc_arm_spi() {
+                                    // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
+                                    unsafe { crate::gic::enable_intid(spi); }
+                                    let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
+                                        .load(core::sync::atomic::Ordering::Acquire);
+                                    Some((spi, v2m_pa + 0x40, spi))
+                                } else {
+                                    None
+                                }
                             }
-                            let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
-                                .load(core::sync::atomic::Ordering::Acquire);
-                            let (msg_addr, msg_data) = if use_its {
-                                (its_translater, 0u32)
-                            } else {
-                                // MSI_SETSPI_NS at +0x40.
-                                (v2m_pa + 0x40, spi)
-                            };
+                            #[cfg(target_arch = "x86_64")]
+                            {
+                                if let Some(vec) = crate::msi::alloc_x86_vector() {
+                                    Some((vec as u32, 0xFEE0_0000u64, vec as u32))
+                                } else { None }
+                            }
+                        };
+                        if let Some((id, msg_addr, msg_data)) = bind {
                             let entry_va = tbl_va; // entry 0
                             // SAFETY: entry_va is the freshly Device-attr-mapped MSI-X table base; aligned u32 stores within the 16-byte entry.
                             unsafe {
@@ -382,7 +392,7 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             klog::write_raw(b".");
                             klog::write_dec_u64(bdf.function as u64);
                             klog::write_raw(b" spi=");
-                            klog::write_dec_u64(spi as u64);
+                            klog::write_dec_u64(id as u64);
                             klog::write_raw(b" addr=");
                             klog::write_hex_u64(((ah as u64) << 32) | (al as u64));
                             klog::write_raw(b" data=");
@@ -390,7 +400,6 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             klog::write_raw(b" ctl=");
                             klog::write_hex_u64(vc as u64);
                             klog::write_raw(b"\n");
-                            }
                         }
                     }
                 }
@@ -491,12 +500,11 @@ pub fn enumerate_and_log() {
             cap_dump_arch(d);
             virtio_probe_arch(d);
         }
-        // F40: brief IRQ unmask window so any MSIs queued during the
-        // F30 closed-loop drain through oxide_arm_irq_dispatch and
-        // bump MSI_FIRES. Without this the counter stays 0 (CPU IRQs
-        // are masked at probe time). Mirrors the timer-smoke pattern
-        // device_map_smoke_arm uses (already proven safe in this
-        // phase). x86 path is unmasked already so this is aarch64-only.
+        // F40 + F57: brief IRQ unmask window so any MSIs queued
+        // during the closed-loop drain through the per-arch IRQ
+        // dispatcher and bump MSI_FIRES. Without this the counter
+        // stays 0 (canary.rs leaves IRQs masked on the boot CPU
+        // before pci_boot runs on both arches).
         #[cfg(target_arch = "aarch64")]
         {
             // SAFETY: boot phase, GIC enabled by smoke_device_map_arm; brief unmask window mirrors arm-timer smoke; we re-mask immediately after the spin.
@@ -504,6 +512,38 @@ pub fn enumerate_and_log() {
             for _ in 0..2_000_000 { core::hint::spin_loop(); }
             // SAFETY: pairs with daifclr above, restoring boot-mask state.
             unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: boot phase; LAPIC enabled by device_map_smoke; brief STI window drains queued MSI IRRs into the IDT vec=0x50 stub which bumps MSI_FIRES.
+            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+            for _ in 0..2_000_000 { core::hint::spin_loop(); }
+            // F57 self-fire: write LAPIC ICR-LO with self-shorthand
+            // (bits 19:18 = 01) + vec 0x50 + Fixed delivery + level
+            // assert. If MSI_FIRES bumps post this write, the IDT
+            // entry for 0x50 + dispatcher arm + LAPIC EOI path are
+            // all correct end-to-end and any device-driven MSI gap
+            // is in the PCI MSI write path, not kernel.
+            let pre = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+            // SAFETY: LAPIC mapped+enabled; ICR write is well-defined; self-shorthand targets this CPU; IF=1 from the sti above.
+            unsafe {
+                let va = crate::lapic::LAPIC_BASE_VA.load(core::sync::atomic::Ordering::Acquire);
+                if va != 0 {
+                    let icr_lo = (1u32 << 18) | (1u32 << 14) | 0x50;
+                    core::ptr::write_volatile((va + 0x300) as *mut u32, icr_lo);
+                }
+            }
+            for _ in 0..1_000_000 { core::hint::spin_loop(); }
+            let post = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+            klog::write_raw(b"[INFO]  lapic-self-fire pre=");
+            klog::write_dec_u64(pre as u64);
+            klog::write_raw(b" post=");
+            klog::write_dec_u64(post as u64);
+            klog::write_raw(b" delta=");
+            klog::write_dec_u64((post - pre) as u64);
+            klog::write_raw(b"\n");
+            // SAFETY: pairs with sti above; restores canary's boot-mask state.
+            unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
         }
         let fires = crate::msi::MSI_FIRES
             .load(core::sync::atomic::Ordering::Acquire);
