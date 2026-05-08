@@ -212,6 +212,67 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         }
     }
 
+    // F56-01: ITS bring-up. Map the 64 KiB control frame published
+    // via MADT type-15 (`acpi::GIC_ITS_PA`), probe GITS_TYPER/CTLR.
+    // No enable yet — subsequent F56 PRs add command queue, tables,
+    // LPI prop/pend, GITS_CTLR.Enabled.
+    {
+        let its_pa = crate::acpi::GIC_ITS_PA
+            .load(core::sync::atomic::Ordering::Acquire);
+        if its_pa != 0 {
+            let its_va = KERNEL_DEVICE_BASE | (its_pa & 0xFFFF_FFFF);
+            // SAFETY: chosen kernel VA disjoint; phys came from MADT type-15; we own the device pre-init.
+            unsafe {
+                for i in 0..16u64 {
+                    <ArmMmu as MmuOps>::map(
+                        Va(its_va + i * 0x1000),
+                        Pa(its_pa + i * 0x1000),
+                        device_flags(),
+                        PageSize::P4K,
+                    );
+                }
+            }
+            // SAFETY: ITS control frame freshly Device-attr mapped; single-CPU pre-init.
+            let _s = unsafe { crate::its::enable(its_va) };
+            debug_irq! {
+                match _s {
+                    crate::its::ItsStatus::Absent => {
+                        klog::write_raw(b"[INFO]  its: absent\n");
+                    }
+                    crate::its::ItsStatus::AlreadyOn => {
+                        klog::write_raw(b"[INFO]  its: already on\n");
+                    }
+                    crate::its::ItsStatus::Discovered { typer, ctlr, iidr, baser0 } => {
+                        klog::write_raw(b"[INFO]  its: discovered typer=");
+                        klog::write_hex_u64(typer);
+                        klog::write_raw(b" ctlr=");
+                        klog::write_hex_u64(ctlr as u64);
+                        klog::write_raw(b" iidr=");
+                        klog::write_hex_u64(iidr as u64);
+                        klog::write_raw(b" baser0=");
+                        klog::write_hex_u64(baser0);
+                        klog::write_raw(b"\n");
+                        klog::write_raw(b"[INFO]  its: dev_id_bits=");
+                        klog::write_dec_u64(crate::its::typer_devbits(typer) as u64);
+                        klog::write_raw(b" event_id_bits=");
+                        klog::write_dec_u64(crate::its::typer_id_bits(typer) as u64);
+                        klog::write_raw(b" itt_entry_size=");
+                        klog::write_dec_u64(crate::its::typer_itt_entry_size(typer) as u64);
+                        klog::write_raw(b" phys_lpi=");
+                        klog::write_dec_u64(crate::its::typer_phys_lpi(typer) as u64);
+                        klog::write_raw(b" translater_pa=");
+                        klog::write_hex_u64(crate::its::translater_pa());
+                        klog::write_raw(b"\n");
+                    }
+                }
+            }
+        } else {
+            debug_irq! {
+                klog::write_raw(b"[INFO]  its: no MADT type-15 reported\n");
+            }
+        }
+    }
+
     // Map PL011 + swap klog sink from semihosting to the real UART.
     // SAFETY: same contract; chosen kernel VA disjoint from existing
     // mappings; phys 0x09000000 is the QEMU virt PL011 base from SPCR.
