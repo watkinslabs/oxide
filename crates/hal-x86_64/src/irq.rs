@@ -74,6 +74,31 @@ core::arch::global_asm!(
     "3:  jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_41, . - oxide_irq_vec_41",
 
+    // ----- vec 0x50 -- MSI vector (F57). Same shape as the timer
+    //       stub; oxide_irq_dispatch differentiates by reading the
+    //       saved vec tag and bumps MSI_FIRES. ----------------------
+    ".globl oxide_irq_vec_50",
+    ".type  oxide_irq_vec_50, @function",
+    "oxide_irq_vec_50:",
+    "    push 0",
+    "    push 0x50",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld",
+    "    mov rdi, rsp",
+    "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax",
+    "    jz   4f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "4:  jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_50, . - oxide_irq_vec_50",
+
     // ----- shared IRQ epilogue --------------------------------------------
     // Globally addressable so `Context::new_kernel_with_irq_frame`
     // can park its address as the saved-RIP at scaffold base.
@@ -92,6 +117,7 @@ core::arch::global_asm!(
 extern "C" {
     fn oxide_irq_vec_40();
     fn oxide_irq_vec_41();
+    fn oxide_irq_vec_50();
     fn oxide_irq_resume_user() -> !;
 }
 
@@ -99,6 +125,10 @@ extern "C" {
 pub const VEC_TIMER:   u8 = 0x40;
 /// Cross-CPU resched IPI vector per `13§9`.
 pub const VEC_RESCHED: u8 = 0x41;
+/// MSI delivery vector (F57). Boot-time virtio MSI-X programs this
+/// into the device MSI message-data field; LAPIC delivers it; the
+/// dispatcher bumps `MSI_FIRES`.
+pub const VEC_MSI:     u8 = 0x50;
 
 /// Address of the IRQ stub for `vec`, or `0` if no IRQ stub is
 /// registered for that vector (caller falls back to fault stub).
@@ -109,6 +139,7 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
         match vec {
             VEC_TIMER   => return oxide_irq_vec_40 as *const () as usize as u64,
             VEC_RESCHED => return oxide_irq_vec_41 as *const () as usize as u64,
+            VEC_MSI     => return oxide_irq_vec_50 as *const () as usize as u64,
             _ => {}
         }
     }

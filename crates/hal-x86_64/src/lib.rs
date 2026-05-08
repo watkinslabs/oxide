@@ -40,7 +40,7 @@ pub use fault::{
     install_fault_handler, install_user_trap_hook, vector_stub_addr,
     FaultFrame, FaultHandler, UserTrapHook,
 };
-pub use irq::{irq_stub_addr, VEC_RESCHED, VEC_TIMER};
+pub use irq::{irq_stub_addr, VEC_MSI, VEC_RESCHED, VEC_TIMER};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES};
 pub use gdt::{install_kernel_gdt, GdtPointer, GDT_LEN, USER_CS, USER_DS};
 pub use tss::{install_tss, set_rsp0, tss_base_addr, Tss64, TSS_SEL};
