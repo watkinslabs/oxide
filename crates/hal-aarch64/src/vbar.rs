@@ -177,7 +177,15 @@ core::arch::global_asm!(
     "    lsr x9, x9, #26",
     "    and x9, x9, #0x3f",
     "    cmp x9, #0x15",
-    "    b.ne oxide_default_vector_handler",
+    "    b.eq oxide_svc_save_block",
+    // F51: EC=0x32 = Software-Step exception from a lower EL.
+    // Per ARM ARM D1.16. Saved frame format identical to SVC; the
+    // post-save dispatch differs (Rust hook posts SIGTRAP + clears
+    // SS bits instead of running the syscall dispatcher).
+    "    cmp x9, #0x32",
+    "    b.eq oxide_softstep_save_block",
+    "    b oxide_default_vector_handler",
+    "oxide_svc_save_block:",
     "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0x00]",
     "    stp  x2,  x3,  [sp, #0x10]",
@@ -225,8 +233,53 @@ core::arch::global_asm!(
     "    mov  x0, x8",
     "    bl   oxide_syscall_dispatch",
     "    str  x0,       [sp, #0xc8]",
+    "    b    oxide_lower_sync_restore",
+    // F51: Software-Step path. Save block is the SVC's, copied;
+    // post-save we call the Rust hook with frame_ptr and let it
+    // (a) clear SPSR.SS in the saved SPSR slot, (b) clear MDSCR.SS
+    // kernel-side, (c) post SIGTRAP + clear Task.singlestep on the
+    // current task. Hook returns the original user x0 so the shared
+    // restore block's `ldr x0, [sp, #0xc8]` is a no-op for this path.
+    "oxide_softstep_save_block:",
+    "    sub  sp, sp, #288",
+    "    stp  x0,  x1,  [sp, #0x00]",
+    "    stp  x2,  x3,  [sp, #0x10]",
+    "    stp  x4,  x5,  [sp, #0x20]",
+    "    stp  x6,  x7,  [sp, #0x30]",
+    "    stp  x8,  x9,  [sp, #0x40]",
+    "    stp  x10, x11, [sp, #0x50]",
+    "    stp  x12, x13, [sp, #0x60]",
+    "    stp  x14, x15, [sp, #0x70]",
+    "    stp  x16, x17, [sp, #0x80]",
+    "    stp  x18, x29, [sp, #0x90]",
+    "    str  x30,      [sp, #0xa0]",
+    "    mrs  x9,  elr_el1",
+    "    mrs  x10, spsr_el1",
+    "    stp  x9,  x10, [sp, #0xb0]",
+    "    mrs  x9,  sp_el0",
+    "    str  x9,       [sp, #0xc0]",
+    "    stp  x19, x20, [sp, #0xd0]",
+    "    stp  x21, x22, [sp, #0xe0]",
+    "    stp  x23, x24, [sp, #0xf0]",
+    "    stp  x25, x26, [sp, #0x100]",
+    "    stp  x27, x28, [sp, #0x110]",
+    "    adrp x9, oxide_svc_frame_base",
+    "    add  x9, x9, :lo12:oxide_svc_frame_base",
+    "    mov  x10, sp",
+    "    str  x10, [x9]",
+    "    mov  x0, sp",
+    "    bl   oxide_arm_software_step_handler",
+    "    str  x0,       [sp, #0xc8]",
+    "oxide_lower_sync_restore:",
+    // F51: arm SS bits if Task.singlestep is set. Hook ORs (1<<21)
+    // into the saved SPSR slot at [sp+0xb8] and writes MDSCR_EL1.SS.
+    // Hook clobbers x0..x15; the post-hook restores reload
+    // everything we care about from the frame.
+    "    mov  x0, sp",
+    "    bl   oxide_arm_arm_singlestep",
     // Restore everything; load x0 LAST from the retval slot so we
-    // override the user's saved x0 with the dispatcher's u64 retval.
+    // override the user's saved x0 with the dispatcher's u64 retval
+    // (SVC) or the original user x0 (software-step, no-op).
     "    ldp  x9,  x10, [sp, #0xb0]",
     "    msr  elr_el1,  x9",
     "    msr  spsr_el1, x10",
