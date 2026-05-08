@@ -1,6 +1,47 @@
-# State 2026-05-08 (session 48 mid — F45-F49 + D14 checkpoint)
+# State 2026-05-08 (session 48 ENDED — F45-F52 + D14/D15 checkpoints)
 
-## Headline (session 48 so far, F45-F49)
+## Headline (session 48 final, F45-F52)
+
+9 PRs landed (#729-#737):
+  - **F45-F46**  GIC SPI bug fix + diagnostic. Silent-MSI cause
+                  isolated to PCI root-complex routing (parked,
+                  ISR-poll path remains functional).
+  - **F47-F48**  PL011 RX IRQ wired + counter. Code path correct
+                  but masked by timer-poll race; F47-cleanup PR
+                  to gate timer-poll is the next surgical move.
+  - **F49**      Task.singlestep flag wired for PTRACE_SINGLESTEP.
+  - **F50**      x86_64 PTRACE_SINGLESTEP — RFLAGS.TF arm + #DB→
+                  SIGTRAP via UserTrapHook.
+  - **F51**      aarch64 PTRACE_SINGLESTEP — SPSR.SS + MDSCR_EL1.SS
+                  arm + Software-Step exception → SIGTRAP.
+  - **F52**      ptrace_singlestep_smoke userspace test staged
+                  (not booted; needs default-action SIGTRAP
+                  terminate in the signal subsystem).
+
+x86 virtio-blk lockstep verify also done first thing in session 48
+(without a PR): `qemu_run_until "virtio-blk-rd"` returned status=0x00
++ "EFI PART..." on q35 with virtio-blk-pci 0:3.0 attached. Closes
+the only F19-F44 gap from session 47.
+
+## All "in order" items now addressed
+
+  1. ~~Silent-MSI remediation~~ — parked (PCI root-complex level).
+  2. ~~/bin/sh interactive / IRQ-driven UART RX~~ — F47/F48 wiring
+     done; timer-poll gating (next surgical move) blocks isolation.
+  3. ~~PTRACE_SINGLESTEP real trap~~ — F49+F50+F51 done both arches.
+  4. ~~Move virtio_drv.rs to dedicated module~~ — pure refactor,
+     skipped per "don't churn for cleanup's sake."
+  5. ~~make qemu-x86 virtio-blk closed-loop~~ — verified live.
+
+## Open follow-ups (next session candidates)
+
+- Default-action SIGTRAP termination (so F52 smoke can run)
+- F47 timer-poll gating (so SPI 33 IRQ path is observable in isolation)
+- Silent-MSI remediation via GICv3+ITS rewrite (multi-PR; only if
+  device-driven MSI becomes a v1 requirement)
+- Phase 8+ work per master plan §3 (net hardening, etc.)
+
+## Headline (session 48 first leg, F45-F49)
 
 5 PRs landed after session 47 close-out:
   - **F45 #729**  GIC SPI bug fix: ITARGETSR + ICFGR programming. Was
