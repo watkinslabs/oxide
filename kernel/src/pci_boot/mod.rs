@@ -291,9 +291,31 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                                     (msg_addr >> 32) as u32);
                                 core::ptr::write_volatile((entry_va + 8) as *mut u32,
                                     msg_data);
-                                // vector_control: leave masked (bit 0 = 1)
-                                // until F39 binds + handler is installed.
-                                core::ptr::write_volatile((entry_va + 12) as *mut u32, 1);
+                                // F39: unmask the vector (vector_control bit 0 = 0).
+                                // The handler in oxide_arm_irq_dispatch only
+                                // bumps a counter today, so spurious fires are
+                                // harmless; F40 will bind to a real callback.
+                                core::ptr::write_volatile((entry_va + 12) as *mut u32, 0);
+                            }
+                            // F39: set MSI-X Enable bit (bit 15 of message
+                            // control at cap_off+0x02). PCI 3.0 §6.8.2 —
+                            // until this is set the device routes IRQs via
+                            // INTx and ignores table entries.
+                            #[cfg(target_arch = "aarch64")]
+                            { if let Some(rr) = hal_aarch64::pci::EcamPci::from_published() {
+                                use pci::ConfigSpaceReader as _;
+                                let off = c.cfg_off & 0xFC;
+                                let cur = <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&rr, bdf, off);
+                                let new = cur | (1u32 << 31); // MC bit 15 -> dword bit 31
+                                <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&rr, bdf, off, new);
+                            } }
+                            #[cfg(target_arch = "x86_64")]
+                            { let rr = hal_x86_64::pci::LegacyPci;
+                              use pci::ConfigSpaceReader as _;
+                              let off = c.cfg_off & 0xFC;
+                              let cur = <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&rr, bdf, off);
+                              let new = cur | (1u32 << 31);
+                              <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&rr, bdf, off, new);
                             }
                             // Read back to confirm the writes landed.
                             // SAFETY: same Device-attr-mapped entry; aligned u32 loads of fields just written.
