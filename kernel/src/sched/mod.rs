@@ -41,4 +41,4 @@ pub use schedule::{
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork};
 pub use wait_list::WaitList;
-pub use zombies::{park_for_wait4, park_zombie, reap_one};
+pub use zombies::{enqueue_zombie, park_for_wait4, park_zombie, reap_one, signal_child_exit};
