@@ -274,6 +274,21 @@ pub enum LpisStatus {
 static LPIS_ENABLED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// PA of the global LPI configuration table (one byte per LPI).
+/// Written by `lpi_set_config` after `lpis_enable` publishes it.
+#[cfg(target_arch = "aarch64")]
+static LPI_PROP_PA: AtomicU64 = AtomicU64::new(0);
+
+/// First LPI INTID (per ARM ARM, LPIs occupy [8192, 8192 + N)).
+#[cfg(target_arch = "aarch64")]
+pub const LPI_BASE: u32 = 8192;
+
+/// Default LPI configuration byte: priority 0xA0 + Group1 RES1 +
+/// Enable=1. ARM IHI 0069 §11.2.1 byte layout: [7:2] priority,
+/// [1] RES1, [0] Enable.
+#[cfg(target_arch = "aarch64")]
+pub const LPI_PROP_DEFAULT: u8 = 0xA0 | 0x02 | 0x01;
+
 /// Bring up LPIs on the boot CPU's redistributor: allocate +
 /// zero the global LPI configuration table (16 KiB) and the per-RD
 /// pending table (64 KiB; the architecture-required minimum), program
@@ -339,8 +354,32 @@ pub unsafe fn lpis_enable(hhdm: u64) -> LpisStatus {
         let post = core::ptr::read_volatile((gicr + GICR_CTLR as u64) as *const u32);
         (p_rd, e_rd, post)
     };
+    LPI_PROP_PA.store(prop_pa, Ordering::Release);
     LPIS_ENABLED.store(true, O::Release);
     LpisStatus::Ready { prop_pa, pend_pa, propbaser_rd, pendbaser_rd, ctlr_post }
+}
+
+/// Write one byte of the LPI configuration table for `lpi_id`. The
+/// caller MUST follow with an ITS `INV` (or `INVALL`) command so the
+/// ITS reloads the cached entry.
+///
+/// # SAFETY: `lpis_enable` must have published `LPI_PROP_PA`; HHDM
+/// must cover the table; runs single-CPU pre-init.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn lpi_set_config(hhdm: u64, lpi_id: u32, byte: u8) -> bool {
+    if lpi_id < LPI_BASE { return false; }
+    let prop_pa = LPI_PROP_PA.load(Ordering::Acquire);
+    if prop_pa == 0 || hhdm == 0 { return false; }
+    let off = (lpi_id - LPI_BASE) as u64;
+    // SAFETY: HHDM-mapped LPI prop table; offset within (1 << ID_BITS) bytes.
+    unsafe {
+        core::ptr::write_volatile(
+            hhdm.wrapping_add(prop_pa + off) as *mut u8,
+            byte,
+        );
+    }
+    true
 }
 
 /// Read the GICD_ISPENDR word covering `intid`. Diagnostic only.
@@ -405,10 +444,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
     LAST_INTID.store(intid, Ordering::Relaxed);
     if intid != SPURIOUS_INTID {
         TICK_COUNT.fetch_add(1, Ordering::Relaxed);
-        // F39: count MSI deliveries observed via the v2m SPI range
-        // (legacy diagnostic; also fires on ITS-delivered LPIs once
-        // F55+ wires LPI INTIDs into the same allocator).
-        if crate::msi::intid_is_v2m(intid) {
+        // F39 + F56-08: count MSI deliveries via either the legacy
+        // GICv2m SPI range or the GICv3 LPI range (≥ 8192).
+        if crate::msi::intid_is_v2m(intid) || intid >= LPI_BASE {
             crate::msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
