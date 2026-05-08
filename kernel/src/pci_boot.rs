@@ -45,65 +45,171 @@ unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
     base
 }
 
-/// Probe one modern virtio-pci device: maps the BAR holding COMMON
-/// cfg, reads num_queues + status + config_generation, logs them.
-/// Diagnostic only — does NOT clear status or write features.
-/// # C: O(BAR pages mapped + a few u32 reads)
-fn virtio_probe_arch(d: &pci::PciDevice) {
-    debug_boot! {
-        if !virtio::is_modern(d.vendor_id, d.device_id) { return; }
-        let bdf = d.bdf;
+/// Outcome of one virtio-pci modern probe. All side-effect work
+/// (cmd-reg write, BAR mapping, status state machine, feature
+/// negotiation, queue size scan) runs unconditionally; only the
+/// trace logging consumes this struct under `debug_boot!`.
+struct VirtioProbe {
+    cmd_orig: u16,
+    cmd_new:  u16,
+    cfg_va:   u64,
+    dev_features: u64,
+    drv_features: u64,
+    post_status: u32,
+    features_ok: bool,
+    msix_cfg:    u16,
+    num_queues:  u16,
+    /// Up to 8 (queue_idx, queue_size) entries seen in the scan.
+    queues: [(u16, u16); 8],
+    queues_len: usize,
+}
 
-        // Re-walk caps + decode virtio cfgs + decode BARs (all 3 are
-        // O(1) over already-cached config space).
-        let (caps, vcaps, bars) = {
-            #[cfg(target_arch = "x86_64")]
-            {
-                let r = hal_x86_64::pci::LegacyPci;
-                let c = pci::capabilities(&r, bdf);
-                let v = virtio::decode_all(&r, bdf, &c);
-                let b = pci::decode_bars(&r, bdf);
-                (c, v, b)
-            }
-            #[cfg(target_arch = "aarch64")]
-            {
-                match hal_aarch64::pci::EcamPci::from_published() {
-                    Some(r) => {
-                        let c = pci::capabilities(&r, bdf);
-                        let v = virtio::decode_all(&r, bdf, &c);
-                        let b = pci::decode_bars(&r, bdf);
-                        (c, v, b)
-                    }
-                    None => return,
-                }
-            }
-        };
-        let _ = caps;
+/// Drive one modern virtio-pci device through FEATURES_OK and
+/// scan its queue layout. Returns Some(probe) on success.
+/// # SAFETY: caller is the boot path; PMM ready; single-CPU; IRQs masked.
+/// # C: O(BAR pages mapped + ~num_queues u32 reads)
+fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
+    if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
+    let bdf = d.bdf;
 
-        // Enable memory decode + bus master in the PCI command reg.
-        // PCI Local Bus 3.0 §6.2.2: bit 1=Mem, bit 2=BusMaster. UEFI
-        // usually sets these but explicit is safe.
-        use pci::ConfigSpaceReader as _;
-        let cmd_orig = {
-            #[cfg(target_arch = "x86_64")]
-            { let r = hal_x86_64::pci::LegacyPci;
-              <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04) }
-            #[cfg(target_arch = "aarch64")]
-            { match hal_aarch64::pci::EcamPci::from_published() {
-                Some(r) => <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04),
-                None => return,
-            } }
-        };
-        let cmd_new = (cmd_orig & 0xFFFF_0000) | ((cmd_orig & 0xFFFF) | 0x0006);
-        if cmd_new != cmd_orig {
-            #[cfg(target_arch = "x86_64")]
-            { let r = hal_x86_64::pci::LegacyPci;
-              <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, cmd_new); }
-            #[cfg(target_arch = "aarch64")]
-            { if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-                <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, cmd_new);
-            } }
+    // Re-walk caps + decode virtio cfgs + decode BARs.
+    let (vcaps, bars) = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let r = hal_x86_64::pci::LegacyPci;
+            let c = pci::capabilities(&r, bdf);
+            let v = virtio::decode_all(&r, bdf, &c);
+            let b = pci::decode_bars(&r, bdf);
+            (v, b)
         }
+        #[cfg(target_arch = "aarch64")]
+        {
+            match hal_aarch64::pci::EcamPci::from_published() {
+                Some(r) => {
+                    let c = pci::capabilities(&r, bdf);
+                    let v = virtio::decode_all(&r, bdf, &c);
+                    let b = pci::decode_bars(&r, bdf);
+                    (v, b)
+                }
+                None => return None,
+            }
+        }
+    };
+
+    // Enable Memory + BusMaster in the PCI command reg (UEFI on QEMU
+    // virt leaves Memory bit OFF — confirmed by F22 boot trace).
+    let cmd_orig = {
+        #[cfg(target_arch = "x86_64")]
+        { let r = hal_x86_64::pci::LegacyPci;
+          <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04) }
+        #[cfg(target_arch = "aarch64")]
+        { match hal_aarch64::pci::EcamPci::from_published() {
+            Some(r) => <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, 0x04),
+            None => return None,
+        } }
+    };
+    let cmd_new = (cmd_orig & 0xFFFF_0000) | ((cmd_orig & 0xFFFF) | 0x0006);
+    if cmd_new != cmd_orig {
+        #[cfg(target_arch = "x86_64")]
+        { let r = hal_x86_64::pci::LegacyPci;
+          <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, cmd_new); }
+        #[cfg(target_arch = "aarch64")]
+        { if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
+            <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::write32(&r, bdf, 0x04, cmd_new);
+        } }
+    }
+
+    // Locate COMMON cfg + map the BAR page.
+    let common = vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG)?;
+    let bar_pa = match bars[common.bar as usize] {
+        pci::Bar::Mem32 { base, .. } => base as u64,
+        pci::Bar::Mem64 { base, .. } => base,
+        _ => return None,
+    };
+    let common_pa = bar_pa + common.offset as u64;
+    let page_pa = common_pa & !0xFFF;
+    let page_off = (common_pa - page_pa) as u64;
+    // SAFETY: BAR PA decoded from device BAR reg; bump VA is exclusive.
+    let base_va = unsafe { map_mmio_pages(page_pa, 1) };
+    let cfg_va = base_va + page_off;
+
+    // u32 volatile R/W over the Device-attr MMIO window.
+    let r32 = |off: u64| -> u32 {
+        // SAFETY: cfg_va Device-attr mapped; off < 0x1000.
+        unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
+    };
+    let w32 = |off: u64, v: u32| {
+        // SAFETY: same window; writes drive device per spec.
+        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u32, v); }
+    };
+
+    // Spec §3.1.1 driver init sequence.
+    let st = |s: u8| -> u32 { s as u32 };
+    w32(0x14, st(0));                                              // reset
+    let _ = r32(0x14);
+    w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE));
+    w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
+               | virtio::VIRTIO_STATUS_DRIVER));
+
+    // Feature negotiation (insist on VIRTIO_F_VERSION_1, bit 32).
+    w32(0x00, 0); let dev_feat_lo = r32(0x04);
+    w32(0x00, 1); let dev_feat_hi = r32(0x04);
+    let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
+    let drv_features: u64 = dev_features & virtio::VIRTIO_F_VERSION_1;
+    w32(0x08, 1); w32(0x0C, (drv_features >> 32) as u32);
+    w32(0x08, 0); w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
+    w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
+               | virtio::VIRTIO_STATUS_DRIVER
+               | virtio::VIRTIO_STATUS_FEATURES_OK));
+
+    let post_status = r32(0x14) & 0xFF;
+    let features_ok = post_status & virtio::VIRTIO_STATUS_FEATURES_OK as u32 != 0;
+
+    let w_msix_nq = r32(0x10);
+    let msix_cfg   = (w_msix_nq & 0xFFFF) as u16;
+    let num_queues = (w_msix_nq >> 16) as u16;
+
+    // Queue scan: iterate queue_select 0..min(num_queues, 8) reading
+    // queue_size at +0x18. queue_size==0 means the queue is disabled
+    // (per spec). queue_select sits in the high u16 of the same dword
+    // as device_status; preserve status when writing.
+    let mut queues = [(0u16, 0u16); 8];
+    let mut queues_len = 0usize;
+    let cap = if num_queues == 0 || num_queues > 8 { 8 } else { num_queues } as u16;
+    for qi in 0..cap {
+        // Preserve status low byte; queue_select is bits 16..31.
+        let qs_word = (post_status & 0xFF) | ((qi as u32) << 16);
+        w32(0x14, qs_word);
+        let qs_data = r32(0x18);
+        let queue_size = (qs_data & 0xFFFF) as u16;
+        queues[queues_len] = (qi, queue_size);
+        queues_len += 1;
+        if queue_size == 0 { break; }
+    }
+
+    Some(VirtioProbe {
+        cmd_orig: (cmd_orig & 0xFFFF) as u16,
+        cmd_new:  (cmd_new  & 0xFFFF) as u16,
+        cfg_va,
+        dev_features,
+        drv_features,
+        post_status,
+        features_ok,
+        msix_cfg,
+        num_queues,
+        queues,
+        queues_len,
+    })
+}
+
+/// Drive one modern virtio-pci device + emit `[INFO] virtio-cfg ...`
+/// + per-queue `[INFO] virtio-q ...` lines under `debug-boot`.
+/// Side-effect work runs unconditionally; only the trace is gated.
+/// # C: O(BAR pages mapped + ~num_queues u32 reads)
+fn virtio_probe_arch(d: &pci::PciDevice) {
+    let p = match virtio_init_arch(d) { Some(p) => p, None => return };
+    let bdf = d.bdf;
+    debug_boot! {
         klog::write_raw(b"[INFO]  pci-cmd ");
         klog::write_dec_u64(bdf.bus as u64);
         klog::write_raw(b":");
@@ -111,88 +217,10 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
         klog::write_raw(b".");
         klog::write_dec_u64(bdf.function as u64);
         klog::write_raw(b" was=");
-        klog::write_hex_u64((cmd_orig & 0xFFFF) as u64);
+        klog::write_hex_u64(p.cmd_orig as u64);
         klog::write_raw(b" now=");
-        klog::write_hex_u64((cmd_new & 0xFFFF) as u64);
+        klog::write_hex_u64(p.cmd_new as u64);
         klog::write_raw(b"\n");
-
-        let common = match vcaps.find(virtio::VIRTIO_PCI_CAP_COMMON_CFG) {
-            Some(c) => c, None => return,
-        };
-        let bar = bars[common.bar as usize];
-        let bar_pa = match bar {
-            pci::Bar::Mem32 { base, .. } => base as u64,
-            pci::Bar::Mem64 { base, .. } => base,
-            _ => return,
-        };
-        // 4 KiB covers the COMMON cfg window (1 KiB on QEMU).
-        let common_pa = bar_pa + common.offset as u64;
-        let page_pa = common_pa & !0xFFF;
-        let page_off = (common_pa - page_pa) as u64;
-        // SAFETY: BAR PA was decoded from the device's own BAR reg
-        // and this is the boot path before any other consumer maps
-        // virtio MMIO; the bump allocator hands out a fresh VA slot.
-        let base_va = unsafe { map_mmio_pages(page_pa, 1) };
-        let cfg_va = base_va + page_off;
-
-        // Helper closures over the freshly mapped MMIO window. All
-        // accesses are naturally-aligned u32 volatile loads/stores
-        // against Device-nGnRnE memory.
-        let r32 = |off: u64| -> u32 {
-            // SAFETY: cfg_va Device-attr mapped above; off < 0x1000.
-            unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
-        };
-        let w32 = |off: u64, v: u32| {
-            // SAFETY: same window; writes drive device-defined state per spec.
-            unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u32, v); }
-        };
-
-        // Spec §3.1.1 driver init sequence (modern transport).
-        // Status reg is byte 0x14; we use a u32 R/M/W since we have
-        // u32 access (low byte = device_status, high bits unaffected
-        // because config_generation is RO and queue_select is RW but
-        // we'll leave it 0 here).
-        let status_word = |s: u8| -> u32 { s as u32 };
-
-        // 1. Reset
-        w32(0x14, status_word(0));
-        let _ = r32(0x14); // ack flush
-        // 2. ACKNOWLEDGE
-        w32(0x14, status_word(virtio::VIRTIO_STATUS_ACKNOWLEDGE));
-        // 3. DRIVER
-        w32(0x14, status_word(virtio::VIRTIO_STATUS_ACKNOWLEDGE
-                            | virtio::VIRTIO_STATUS_DRIVER));
-
-        // 4. Read device features (low + high halves).
-        w32(0x00, 0); // device_feature_select = 0 → bits 0..31
-        let dev_feat_lo = r32(0x04);
-        w32(0x00, 1); // → bits 32..63
-        let dev_feat_hi = r32(0x04);
-        let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
-
-        // 5. Negotiate: insist on VIRTIO_F_VERSION_1 (bit 32). Without
-        //    it the device falls back to legacy (which we don't drive
-        //    via the modern transport).
-        let want: u64 = virtio::VIRTIO_F_VERSION_1;
-        let drv_features: u64 = dev_features & want;
-        w32(0x08, 1); // driver_feature_select = 1 (bits 32..63)
-        w32(0x0C, (drv_features >> 32) as u32);
-        w32(0x08, 0);
-        w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
-
-        // 6. FEATURES_OK
-        w32(0x14, status_word(virtio::VIRTIO_STATUS_ACKNOWLEDGE
-                            | virtio::VIRTIO_STATUS_DRIVER
-                            | virtio::VIRTIO_STATUS_FEATURES_OK));
-        // 7. Re-read status — if FEATURES_OK is still set, OK; else
-        //    the device rejected our subset.
-        let post_status = r32(0x14) & 0xFF;
-        let features_ok = post_status & virtio::VIRTIO_STATUS_FEATURES_OK as u32 != 0;
-
-        // 8. Re-read num_queues (now should reflect real device max).
-        let w_msix_nq = r32(0x10);
-        let msix_cfg   = (w_msix_nq & 0xFFFF) as u16;
-        let num_queues = (w_msix_nq >> 16) as u16;
 
         klog::write_raw(b"[INFO]  virtio-cfg ");
         klog::write_dec_u64(bdf.bus as u64);
@@ -200,23 +228,36 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
         klog::write_dec_u64(bdf.device as u64);
         klog::write_raw(b".");
         klog::write_dec_u64(bdf.function as u64);
+        klog::write_raw(b" common-va=");
+        klog::write_hex_u64(p.cfg_va);
         klog::write_raw(b" feat=");
-        klog::write_hex_u64(dev_features);
+        klog::write_hex_u64(p.dev_features);
         klog::write_raw(b" drv_feat=");
-        klog::write_hex_u64(drv_features);
+        klog::write_hex_u64(p.drv_features);
         klog::write_raw(b" status=");
-        klog::write_hex_u64(post_status as u64);
+        klog::write_hex_u64(p.post_status as u64);
         klog::write_raw(b" features_ok=");
-        klog::write_dec_u64(features_ok as u64);
+        klog::write_dec_u64(p.features_ok as u64);
         klog::write_raw(b" num_queues=");
-        klog::write_dec_u64(num_queues as u64);
+        klog::write_dec_u64(p.num_queues as u64);
         klog::write_raw(b" msix_cfg=");
-        klog::write_hex_u64(msix_cfg as u64);
+        klog::write_hex_u64(p.msix_cfg as u64);
         klog::write_raw(b"\n");
 
-        // Leave the device at FEATURES_OK (NOT DRIVER_OK) so we don't
-        // start servicing IRQs the kernel can't handle yet. F24 wires
-        // queues + IRQs and writes DRIVER_OK.
+        for i in 0..p.queues_len {
+            let (qi, qsz) = p.queues[i];
+            klog::write_raw(b"[INFO]  virtio-q ");
+            klog::write_dec_u64(bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" idx=");
+            klog::write_dec_u64(qi as u64);
+            klog::write_raw(b" size=");
+            klog::write_dec_u64(qsz as u64);
+            klog::write_raw(b"\n");
+        }
     }
 }
 
