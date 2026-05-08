@@ -551,6 +551,27 @@ pub fn enumerate_and_log() {
                     klog::write_raw(b"\n");
                 }
             }
+            // F48: open a longer unmask window so any bytes pushed
+            // into the UART RX FIFO via qemu_send_serial (or typing)
+            // during boot get a chance to fire SPI 33. Logs the
+            // UART IRQ counter delta — nonzero proves the
+            // IRQ-driven RX path replaces the timer-poll fallback.
+            let uart_before = crate::gic::UART_IRQ_FIRES
+                .load(core::sync::atomic::Ordering::Acquire);
+            // SAFETY: brief unmask window, mirrors F40 pattern; gic+pl011 already up.
+            unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
+            for _ in 0..200_000_000 { core::hint::spin_loop(); }
+            // SAFETY: pairs with the daifclr above; restores boot-mask state on this CPU.
+            unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
+            let uart_after = crate::gic::UART_IRQ_FIRES
+                .load(core::sync::atomic::Ordering::Acquire);
+            klog::write_raw(b"[INFO]  uart-irq-fires before=");
+            klog::write_dec_u64(uart_before as u64);
+            klog::write_raw(b" after=");
+            klog::write_dec_u64(uart_after as u64);
+            klog::write_raw(b" delta=");
+            klog::write_dec_u64((uart_after - uart_before) as u64);
+            klog::write_raw(b"\n");
         }
     }
 }
