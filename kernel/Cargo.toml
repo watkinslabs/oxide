@@ -14,6 +14,7 @@ elf     = { path = "../crates/elf" }
 net     = { path = "../crates/net" }
 modules = { path = "../crates/modules" }
 pci     = { path = "../crates/pci" }
+virtio  = { path = "../crates/virtio" }
 ext4    = { path = "../crates/ext4" }
 hal     = { path = "../crates/hal" }
 klog    = { path = "../crates/klog" }
