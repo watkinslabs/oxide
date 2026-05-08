@@ -69,6 +69,16 @@ struct VirtioProbe {
     q0_device_pa: u64,
     /// Final status byte after writing DRIVER_OK + re-reading.
     final_status: u8,
+    /// F26: queue-0 notify offset (raw value from queue_notify_off
+    /// at common cfg +0x1E; multiply by notify_off_multiplier and
+    /// add to NOTIFY BAR base to get the kick address).
+    q0_notify_off: u16,
+    /// F26: kernel VA the NOTIFY BAR window was mapped at, plus the
+    /// per-queue offset baked in. 0 = notify path not brought up.
+    q0_notify_va:  u64,
+    /// F26: status byte after writing queue_index=0 to the notify
+    /// address. Should remain 0x0f (no FAILED transition).
+    post_notify_status: u8,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -194,6 +204,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         if queue_size == 0 { break; }
     }
 
+    // F26: capture queue-0 notify_off before any further state writes.
+    // queue_notify_off is the high u16 of the dword at +0x1C.
+    let q0_notify_off = (r32(0x1C) >> 16) as u16;
+
     // F25: program queue 0 if the device exposed one with a non-zero size.
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, final_status) = if q0_size != 0 && features_ok {
@@ -235,6 +249,41 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, post_status as u8)
     };
+    // F26: kick the notify register for queue 0. Notify address per
+    // Virtio 1.2 §4.1.4.4:
+    //   notify_pa = NOTIFY_BAR_pa + notify_cap.offset + qoff * notify_mult
+    // where qoff = the queue_notify_off captured above.
+    let (q0_notify_va, post_notify_status) = if final_status & virtio::VIRTIO_STATUS_FAILED == 0
+        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+    {
+        if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
+            let nbar_pa = match bars[notify_cap.bar as usize] {
+                pci::Bar::Mem32 { base, .. } => base as u64,
+                pci::Bar::Mem64 { base, .. } => base,
+                _ => 0,
+            };
+            if nbar_pa != 0 {
+                let nfy_pa = nbar_pa + notify_cap.offset as u64
+                           + (q0_notify_off as u64) * (notify_cap.notify_off_multiplier as u64);
+                let n_page_pa = nfy_pa & !0xFFF;
+                let n_page_off = nfy_pa - n_page_pa;
+                // SAFETY: NOTIFY BAR PA decoded from device cap; bump VA private.
+                let n_va = unsafe { map_mmio_pages(n_page_pa, 1) };
+                let kick_va = n_va + n_page_off;
+                // Write queue index 0 as a u16 to the notify address.
+                // SAFETY: kick_va Device-attr; aligned u16 write.
+                unsafe { core::ptr::write_volatile(kick_va as *mut u16, 0u16); }
+                let st = (r32(0x14) & 0xFF) as u8;
+                (kick_va, st)
+            } else {
+                (0u64, final_status)
+            }
+        } else {
+            (0u64, final_status)
+        }
+    } else {
+        (0u64, final_status)
+    };
 
     Some(VirtioProbe {
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
@@ -252,6 +301,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         q0_driver_pa,
         q0_device_pa,
         final_status,
+        q0_notify_off,
+        q0_notify_va,
+        post_notify_status,
     })
 }
 
@@ -309,6 +361,21 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_dec_u64(qi as u64);
             klog::write_raw(b" size=");
             klog::write_dec_u64(qsz as u64);
+            klog::write_raw(b"\n");
+        }
+        if p.q0_notify_va != 0 {
+            klog::write_raw(b"[INFO]  virtio-notify ");
+            klog::write_dec_u64(bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" q=0 off=");
+            klog::write_hex_u64(p.q0_notify_off as u64);
+            klog::write_raw(b" va=");
+            klog::write_hex_u64(p.q0_notify_va);
+            klog::write_raw(b" post_status=");
+            klog::write_hex_u64(p.post_notify_status as u64);
             klog::write_raw(b"\n");
         }
         if p.q0_desc_pa != 0 {
