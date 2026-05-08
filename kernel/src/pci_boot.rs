@@ -135,22 +135,64 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
         let base_va = unsafe { map_mmio_pages(page_pa, 1) };
         let cfg_va = base_va + page_off;
 
-        // Read dword at +0x10: msix_config(u16) | num_queues(u16)<<16
-        // Read dword at +0x14: status(u8) | gen(u8)<<8 | queue_select(u16)<<16
-        // SAFETY: cfg_va is a freshly Device-attr-mapped MMIO region;
-        // u32 access is naturally aligned to the cfg layout.
-        let w_msix_nq = unsafe {
-            core::ptr::read_volatile((cfg_va + 0x10) as *const u32)
+        // Helper closures over the freshly mapped MMIO window. All
+        // accesses are naturally-aligned u32 volatile loads/stores
+        // against Device-nGnRnE memory.
+        let r32 = |off: u64| -> u32 {
+            // SAFETY: cfg_va Device-attr mapped above; off < 0x1000.
+            unsafe { core::ptr::read_volatile((cfg_va + off) as *const u32) }
         };
-        // SAFETY: same VA window, same justification.
-        let w_status = unsafe {
-            core::ptr::read_volatile((cfg_va + 0x14) as *const u32)
+        let w32 = |off: u64, v: u32| {
+            // SAFETY: same window; writes drive device-defined state per spec.
+            unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u32, v); }
         };
 
-        let msix_cfg  = (w_msix_nq & 0xFFFF) as u16;
+        // Spec §3.1.1 driver init sequence (modern transport).
+        // Status reg is byte 0x14; we use a u32 R/M/W since we have
+        // u32 access (low byte = device_status, high bits unaffected
+        // because config_generation is RO and queue_select is RW but
+        // we'll leave it 0 here).
+        let status_word = |s: u8| -> u32 { s as u32 };
+
+        // 1. Reset
+        w32(0x14, status_word(0));
+        let _ = r32(0x14); // ack flush
+        // 2. ACKNOWLEDGE
+        w32(0x14, status_word(virtio::VIRTIO_STATUS_ACKNOWLEDGE));
+        // 3. DRIVER
+        w32(0x14, status_word(virtio::VIRTIO_STATUS_ACKNOWLEDGE
+                            | virtio::VIRTIO_STATUS_DRIVER));
+
+        // 4. Read device features (low + high halves).
+        w32(0x00, 0); // device_feature_select = 0 → bits 0..31
+        let dev_feat_lo = r32(0x04);
+        w32(0x00, 1); // → bits 32..63
+        let dev_feat_hi = r32(0x04);
+        let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
+
+        // 5. Negotiate: insist on VIRTIO_F_VERSION_1 (bit 32). Without
+        //    it the device falls back to legacy (which we don't drive
+        //    via the modern transport).
+        let want: u64 = virtio::VIRTIO_F_VERSION_1;
+        let drv_features: u64 = dev_features & want;
+        w32(0x08, 1); // driver_feature_select = 1 (bits 32..63)
+        w32(0x0C, (drv_features >> 32) as u32);
+        w32(0x08, 0);
+        w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
+
+        // 6. FEATURES_OK
+        w32(0x14, status_word(virtio::VIRTIO_STATUS_ACKNOWLEDGE
+                            | virtio::VIRTIO_STATUS_DRIVER
+                            | virtio::VIRTIO_STATUS_FEATURES_OK));
+        // 7. Re-read status — if FEATURES_OK is still set, OK; else
+        //    the device rejected our subset.
+        let post_status = r32(0x14) & 0xFF;
+        let features_ok = post_status & virtio::VIRTIO_STATUS_FEATURES_OK as u32 != 0;
+
+        // 8. Re-read num_queues (now should reflect real device max).
+        let w_msix_nq = r32(0x10);
+        let msix_cfg   = (w_msix_nq & 0xFFFF) as u16;
         let num_queues = (w_msix_nq >> 16) as u16;
-        let status   = (w_status & 0xFF) as u8;
-        let gen      = ((w_status >> 8) & 0xFF) as u8;
 
         klog::write_raw(b"[INFO]  virtio-cfg ");
         klog::write_dec_u64(bdf.bus as u64);
@@ -158,17 +200,23 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
         klog::write_dec_u64(bdf.device as u64);
         klog::write_raw(b".");
         klog::write_dec_u64(bdf.function as u64);
-        klog::write_raw(b" common-va=");
-        klog::write_hex_u64(cfg_va);
+        klog::write_raw(b" feat=");
+        klog::write_hex_u64(dev_features);
+        klog::write_raw(b" drv_feat=");
+        klog::write_hex_u64(drv_features);
+        klog::write_raw(b" status=");
+        klog::write_hex_u64(post_status as u64);
+        klog::write_raw(b" features_ok=");
+        klog::write_dec_u64(features_ok as u64);
         klog::write_raw(b" num_queues=");
         klog::write_dec_u64(num_queues as u64);
-        klog::write_raw(b" status=");
-        klog::write_hex_u64(status as u64);
-        klog::write_raw(b" gen=");
-        klog::write_hex_u64(gen as u64);
         klog::write_raw(b" msix_cfg=");
         klog::write_hex_u64(msix_cfg as u64);
         klog::write_raw(b"\n");
+
+        // Leave the device at FEATURES_OK (NOT DRIVER_OK) so we don't
+        // start servicing IRQs the kernel can't handle yet. F24 wires
+        // queues + IRQs and writes DRIVER_OK.
     }
 }
 
