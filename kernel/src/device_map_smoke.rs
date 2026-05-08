@@ -122,6 +122,37 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
 // aarch64
 // ---------------------------------------------------------------------------
 
+/// Print an `its::CmdStatus` in a one-line format. Used by the
+/// MAPC/MAPD/MAPTI bring-up sites in `smoke_device_map_arm`.
+/// Gated to `debug-irq` so the klog call sites stay zero-cost in
+/// stripped builds.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-irq"))]
+fn log_cmd_status(s: crate::its::CmdStatus) {
+    match s {
+        crate::its::CmdStatus::NotReady => {
+            klog::write_raw(b"NotReady\n");
+        }
+        crate::its::CmdStatus::Posted { cwriter, creadr, polls } => {
+            klog::write_raw(b"Posted cwriter=");
+            klog::write_hex_u64(cwriter);
+            klog::write_raw(b" creadr=");
+            klog::write_hex_u64(creadr);
+            klog::write_raw(b" polls=");
+            klog::write_dec_u64(polls as u64);
+            klog::write_raw(b"\n");
+        }
+        crate::its::CmdStatus::Timeout { cwriter, creadr } => {
+            klog::write_raw(b"Timeout cwriter=");
+            klog::write_hex_u64(cwriter);
+            klog::write_raw(b" creadr=");
+            klog::write_hex_u64(creadr);
+            klog::write_raw(b"\n");
+        }
+    }
+}
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", not(feature = "debug-irq")))]
+fn log_cmd_status(_s: crate::its::CmdStatus) {}
+
 /// GIC distributor base on QEMU virt (matches MADT log; same address
 /// for v2 and v3).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -361,16 +392,64 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                     klog::write_raw(b"\n");
                 }
             }
-            // F56-05: flip GITS_CTLR.Enabled. After this, the ITS
-            // begins consuming commands posted via GITS_CWRITER. No
-            // commands are queued yet — F56-06+ will post MAPD/MAPC/
-            // MAPTI to bind PCI MSI to LPIs.
+            // F56-05: flip GITS_CTLR.Enabled.
             // SAFETY: cmdq + BASERs programmed above; LPIs enabled at the RD; single-CPU pre-init.
             let _ctlr = unsafe { crate::its::ctlr_enable() };
             debug_irq! {
                 klog::write_raw(b"[INFO]  its-ctlr: post=");
                 klog::write_hex_u64(_ctlr as u64);
                 klog::write_raw(b"\n");
+            }
+
+            // F56-06: post MAPC (ICID 0 → boot CPU) + MAPD for the
+            // two virtio devices (BDF 0x08 = virtio-net, 0x10 =
+            // virtio-blk; QEMU virt's IORT does identity BDF→DeviceID
+            // mapping). Verifies the cmd-post protocol: CREADR
+            // catches up to CWRITER without ITS errors.
+            for (label, cmd) in [
+                (b"mapc-icid0" as &[u8],
+                 crate::its::cmd_mapc(0, 0)),
+            ] {
+                // SAFETY: ITS enabled; HHDM live; single-CPU pre-init; pre-issue barrier inside cmd_post.
+                let s = unsafe { crate::its::cmd_post(hhdm, cmd) };
+                debug_irq! {
+                    klog::write_raw(b"[INFO]  its-cmd ");
+                    klog::write_raw(label);
+                    klog::write_raw(b" ");
+                    log_cmd_status(s);
+                }
+            }
+            // Allocate one ITT per virtio device. 4 KiB / 12B-entry
+            // = 341 events; plenty for ≤4-vector virtio MSI-X.
+            for (label, did) in [
+                (b"mapd-net" as &[u8], 0x08u32),
+                (b"mapd-blk" as &[u8], 0x10u32),
+            ] {
+                if let Some(itt_pa) = crate::pmm_setup::alloc_one_frame() {
+                    if hhdm != 0 {
+                        // SAFETY: HHDM-mapped freshly-allocated PMM frame; aligned u64 stores.
+                        unsafe {
+                            let p = hhdm.wrapping_add(itt_pa) as *mut u64;
+                            for i in 0..(0x1000 / 8) {
+                                core::ptr::write_volatile(p.add(i), 0);
+                            }
+                        }
+                    }
+                    // Size=4 → 32 EventIDs supported by this device.
+                    let cmd = crate::its::cmd_mapd(did, itt_pa, 4);
+                    // SAFETY: ITS enabled; ITT freshly zeroed and 4 KiB-aligned.
+                    let s = unsafe { crate::its::cmd_post(hhdm, cmd) };
+                    debug_irq! {
+                        klog::write_raw(b"[INFO]  its-cmd ");
+                        klog::write_raw(label);
+                        klog::write_raw(b" did=");
+                        klog::write_hex_u64(did as u64);
+                        klog::write_raw(b" itt_pa=");
+                        klog::write_hex_u64(itt_pa);
+                        klog::write_raw(b" ");
+                        log_cmd_status(s);
+                    }
+                }
             }
         } else {
             debug_irq! {
