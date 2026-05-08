@@ -83,6 +83,9 @@ struct VirtioProbe {
     avail_idx_posted: u16,
     /// F28: used.idx read after the kick + brief wait.
     used_idx_observed: u16,
+    /// F29: ISR status byte read post-kick. Bit 0 = queue interrupt,
+    /// bit 1 = config interrupt. Reading clears the register.
+    isr_status: u8,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -359,6 +362,32 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         (0u64, final_status)
     };
 
+    // F29: locate ISR cap, map its BAR page, and read the ISR byte
+    // post-kick. Per Virtio 1.2 §4.1.4.5: ISR is a 1-byte read-to-clear
+    // register; bit 0 = queue interrupt, bit 1 = config-change
+    // interrupt. With MSI-X unbound the device would normally route via
+    // INTx; we're not catching those yet but the ISR poll lets us see
+    // whether the device attempted notification.
+    let isr_status = if avail_idx_posted > 0 {
+        if let Some(isr_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_ISR_CFG) {
+            let ibar_pa = match bars[isr_cap.bar as usize] {
+                pci::Bar::Mem32 { base, .. } => base as u64,
+                pci::Bar::Mem64 { base, .. } => base,
+                _ => 0,
+            };
+            if ibar_pa != 0 {
+                let isr_pa = ibar_pa + isr_cap.offset as u64;
+                let i_page_pa = isr_pa & !0xFFF;
+                let i_page_off = isr_pa - i_page_pa;
+                // SAFETY: ISR BAR PA decoded from device cap; bump VA private.
+                let i_va = unsafe { map_mmio_pages(i_page_pa, 1) };
+                let isr_va = i_va + i_page_off;
+                // SAFETY: isr_va Device-attr; aligned u8 read clears it.
+                unsafe { core::ptr::read_volatile(isr_va as *const u8) }
+            } else { 0 }
+        } else { 0 }
+    } else { 0 };
+
     // F28: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
         let hhdm = {
@@ -396,6 +425,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         post_notify_status,
         avail_idx_posted,
         used_idx_observed,
+        isr_status,
     })
 }
 
@@ -466,6 +496,8 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_dec_u64(p.avail_idx_posted as u64);
             klog::write_raw(b" used_idx=");
             klog::write_dec_u64(p.used_idx_observed as u64);
+            klog::write_raw(b" isr=");
+            klog::write_hex_u64(p.isr_status as u64);
             klog::write_raw(b"\n");
         }
         if p.q0_notify_va != 0 {
