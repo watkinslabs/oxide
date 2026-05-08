@@ -272,10 +272,18 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     // exit + park.
     loop {
         if let Some((tid, code)) = crate::sched::reap_one(parent_tid, pid) {
-            // POSIX wstatus encoding: low 7 bits = signal (0 for
-            // normal exit), bit 7 = core flag, bits 8..16 =
-            // exit code. v1 only handles normal exits.
-            let wstat: i32 = (code & 0xff) << 8;
+            // POSIX wstatus encoding:
+            //   WIFEXITED:    low 7 bits = 0,  bits 8..16 = exit code
+            //   WIFSIGNALED:  low 7 bits = signal number, bit 7 = core
+            // We use bit 8 of the kernel-side `exit_status` as a
+            // "killed-by-signal" marker (set by `sigsegv_terminate_*`,
+            // tgkill SIGSEGV/SIGKILL paths). _exit just stores the
+            // user-supplied code in the low 8 bits.
+            let wstat: i32 = if code & 0x100 != 0 {
+                code & 0x7f
+            } else {
+                (code & 0xff) << 8
+            };
             if wstatus != 0 && wstatus < USER_VA_END {
                 // SAFETY: wstatus validated < USER_VA_END; user page mapped (caller's user code already executed from this AS); CPL=0 reads/writes through the user mapping.
                 unsafe { core::ptr::write_volatile(wstatus as *mut i32, wstat); }
