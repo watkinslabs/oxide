@@ -29,7 +29,12 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // directly per `15§3` (kernel can read user memory while
     // running on its kernel stack with CR3 = user AS).
     let path_ptr = args.a0;
-    let blob = if path_ptr == 0 {
+    // Owned ext4 read storage; rooted in this fn frame so the blob's
+    // lifetime extends across `load_static_blob` and drops at fn end
+    // — no per-exec Box::leak (replaces the prior `Box::leak` pattern;
+    // B22 made `load_static_blob` accept a non-'static slice).
+    let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
+    let blob: &[u8] = if path_ptr == 0 {
         crate::elf_smoke::EXEC_BLOB
     } else {
         if path_ptr >= USER_VA_END {
@@ -46,11 +51,15 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
             path_len = (i + 1) as usize;
         }
         let path = &path_buf[..path_len];
-        // Path-string lookup first; fall back to first-byte
-        // selector form (init blob's iter_block uses non-NUL-
-        // terminated single-byte selectors at known VAs).
-        if let Some(b) = crate::elf_smoke::lookup_blob_by_path(path) {
-            b
+        // Read from ext4 directly into an owned Vec — no per-exec
+        // Box::leak (B23-followup: the blob only lives for the
+        // duration of `load_static_blob`; segment bytes get copied
+        // into AS-owned staging via `stash_bytes` per B22).
+        if let Some(v) = crate::dev_ext4::read_file(path) {
+            ext4_blob = Some(v);
+            // SAFETY: ext4_blob is rooted in this stack frame and
+            // outlives the load_static_blob call below.
+            ext4_blob.as_deref().expect("just set")
         } else if path_len >= 1 {
             match crate::elf_smoke::lookup_blob(path[0]) {
                 Some(b) => b,
@@ -306,10 +315,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
-    // Leak to 'static so the load_static_blob lifetime contract is satisfied
-    // (the blob must outlive the address space). Per-execve leak is bounded
-    // by the lifetime of the new program's text VMAs.
-    let blob: &'static [u8] = alloc::boxed::Box::leak(blob_vec.into_boxed_slice());
+    // Borrow the owned Vec for `load_static_blob` — no Box::leak.
+    // The Vec drops at end of fn after place_image has copied the
+    // segment bytes into AS-owned `staged_bytes` per B22.
+    let blob: &[u8] = &blob_vec;
 
     // 1a. Snapshot argv / envp from the OLD AS (still active TTBR0).
     const MAX_VEC: usize = 8;
