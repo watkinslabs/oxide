@@ -97,6 +97,57 @@ pub struct PciCap {
     pub cfg_off: u8,
 }
 
+/// MSI-X cap layout (PCI Local Bus 3.0 §6.8.2). Header lives in PCI
+/// config space at the cap_id=0x11 cap offset:
+///
+/// | off | field            | desc                                 |
+/// | 0x0 | cap_id (1B)      | 0x11                                 |
+/// | 0x1 | cap_next (1B)    | next cap pointer                     |
+/// | 0x2 | message_control  | le16: bit15=enable, bit14=fn_mask,   |
+/// |     |                  |       bits[10:0]=table_size (N-1)    |
+/// | 0x4 | table_offset_bir | le32: bits[2:0]=BIR, bits[31:3]<<3   |
+/// | 0x8 | pba_offset_bir   | le32: bits[2:0]=BIR, bits[31:3]<<3   |
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct MsixCap {
+    /// True when bit 15 of message_control is set.
+    pub enabled:      bool,
+    /// True when bit 14 of message_control is set (all-vectors mask).
+    pub function_mask: bool,
+    /// Number of vectors the table holds (1..=2048).
+    pub table_size:   u16,
+    /// BAR index (0..5) holding the table.
+    pub table_bir:    u8,
+    /// Byte offset within `table_bir` of the table base.
+    pub table_offset: u32,
+    /// BAR index (0..5) holding the PBA (Pending Bit Array).
+    pub pba_bir:      u8,
+    /// Byte offset within `pba_bir` of the PBA base.
+    pub pba_offset:   u32,
+}
+
+/// Decode the MSI-X cap header (3 dwords at `cfg_off`). Returns None
+/// if `cfg_off` doesn't actually point at an MSI-X cap.
+/// # C: O(1)
+pub fn decode_msix_cap<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cfg_off: u8) -> Option<MsixCap> {
+    let off = cfg_off & 0xFC;
+    let w0 = r.read32(bdf, off);
+    if (w0 & 0xFF) as u8 != CAP_ID_MSIX { return None; }
+    let mc = ((w0 >> 16) & 0xFFFF) as u16;
+    let enabled       = mc & 0x8000 != 0;
+    let function_mask = mc & 0x4000 != 0;
+    let table_size    = (mc & 0x07FF) + 1;
+    let tob = r.read32(bdf, off.wrapping_add(4));
+    let table_bir    = (tob & 0x7) as u8;
+    let table_offset = tob & !0x7;
+    let pba = r.read32(bdf, off.wrapping_add(8));
+    let pba_bir    = (pba & 0x7) as u8;
+    let pba_offset = pba & !0x7;
+    Some(MsixCap {
+        enabled, function_mask, table_size,
+        table_bir, table_offset, pba_bir, pba_offset,
+    })
+}
+
 /// Walk a device's capability chain. Returns up to 16 caps in order
 /// (more would indicate a malformed device); silently stops on the
 /// first cycle / out-of-range pointer to avoid wedging on garbage.
@@ -334,6 +385,35 @@ mod tests {
         let bars = decode_bars(&r, bdf);
         assert_eq!(bars[0], Bar::Mem32 { base: 0x1000_0000, prefetch: false });
         assert_eq!(bars[1], Bar::Io { port: 0xC000 });
+    }
+
+    #[test]
+    fn decode_msix_cap_basic() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 1, function: 0 };
+        // cfg_off = 0x40
+        // dword0: cap_id=0x11, cap_next=0x00, mc=0x8003 (enable + table_size=4)
+        r.write32(bdf, 0x40, 0x8003_0011);
+        // dword1: BIR=4, offset=0x1000 -> 0x1004
+        r.write32(bdf, 0x44, 0x0000_1004);
+        // dword2: BIR=4, offset=0x2000 -> 0x2004
+        r.write32(bdf, 0x48, 0x0000_2004);
+        let m = decode_msix_cap(&r, bdf, 0x40).unwrap();
+        assert!(m.enabled);
+        assert!(!m.function_mask);
+        assert_eq!(m.table_size, 4);
+        assert_eq!(m.table_bir, 4);
+        assert_eq!(m.table_offset, 0x1000);
+        assert_eq!(m.pba_bir, 4);
+        assert_eq!(m.pba_offset, 0x2000);
+    }
+
+    #[test]
+    fn decode_msix_cap_rejects_non_msix() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 1, function: 0 };
+        r.write32(bdf, 0x40, 0x0000_0009); // cap_id=0x09 (vendor)
+        assert!(decode_msix_cap(&r, bdf, 0x40).is_none());
     }
 
     #[test]
