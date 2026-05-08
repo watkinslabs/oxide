@@ -1,24 +1,74 @@
-# State 2026-05-08 (session 48 ENDED — F45-F55 + D14/D15/D16 checkpoints)
+# State 2026-05-08 (session 49 leg-1 — F55 verified + F56-01..05 ITS skeleton)
 
-## ⚡ Session 49 first task: restart Claude / qemu-mcp + verify GICv3
+## Headline (session 49, F56-01..F56-05)
 
-The qemu-mcp daemon caches QEMU machine args at startup. Session 48
-edited `tools/qemu-mcp/server.py` to add `gic-version=3,its=on` to
-the aarch64 launch line; verifying the GICv3 conversion (PR #742,
-F55) requires a fresh daemon. **First action on session 49**:
-restart the Claude session so qemu-mcp respawns, then run
-`mcp__qemu__qemu_start arch=aarch64` + `qemu_run_until pattern=
-"hello-from-dyn"`. Expect:
+Session 49 opened by verifying PR #742's F55 GICv3 conversion clean
+on aarch64 (`gicd v=3`, `gicv3: enabled typer=0x37a0008`, 6 smokes
+PASS, `hello-from-dyn`). The remainder of the leg shipped 5 ITS
+bring-up PRs (#743-#747):
 
-  - `madt ... gicd ... v=3` (was v=2 pre-F55)
-  - `gicv3: enabled typer=0x37a0008 gicd_iidr=0x43b ...`
-  - `arm-timer counting`
-  - 6 user smokes PASS
+  - **F56-01 #743** MADT type-15 decode → `acpi::GIC_ITS_PA`;
+                     `kernel/src/its.rs` + `enable()` probe of
+                     GITS_TYPER/CTLR/IIDR/BASER0; control frame
+                     mapped Device-attr (64 KiB).
+                     QEMU virt: gic-its pa=0x08080000,
+                     typer=0x1f0001efb1 (DevID=16, EventID=16,
+                     ITT=12B, Phys=1), translater=0x08080040.
+  - **F56-02 #744** GITS_CBASER + 4 KiB cmd queue. Inner-NC,
+                     Inner-Sh, 4 KiB pagesize, Size=1page=128cmds.
+                     Readback bit-exact (cbaser_rd=0x81000000488f4400).
+  - **F56-03 #745** Walk all 8 GITS_BASER<n>; for each implemented
+                     slot allocate one 4 KiB page, OR-write
+                     Valid+IC+Sh, preserve RO Type+EntrySize. QEMU
+                     reports type=1 (Devices) and type=4 (Collections).
+  - **F56-04 #746** GICR_PROPBASER (16 KiB, ID_BITS=14) +
+                     GICR_PENDBASER (64 KiB, PTZ=1) on boot RD,
+                     then GICR_CTLR.EnableLPI=1. Both BASER readbacks
+                     bit-exact. CTLR=0x3 post-write (EnableLPI + CES).
+  - **F56-05 #747** GITS_CTLR.Enabled=1. ITS now consumes commands
+                     posted via GITS_CWRITER advances. CTLR readback
+                     0x80000001 (Quiescent RO bit preserved).
 
-If boot completes cleanly, F56 picks up with the ITS driver
-(LPI prop/pend tables + command queue + MAPD/MAPC/MAPTI) so
-virtio-pci MSI delivery actually fires. Without ITS, MSI is still
-in ISR-poll fallback even on GICv3.
+All 6 user smokes still PASS post each PR; hello-from-dyn reached;
+no behavioural change yet for MSI delivery — virtio-blk still
+falls back to ISR-poll (`isr=0x01`, `msi_fires=0`).
+
+## Session 50 first task: F56-06 MAPD + MAPC commands
+
+Now that the ITS is enabled with empty queue, the next surgical
+step is the command-posting protocol. The 32-byte ITS command
+format (ARM IHI 0069 §5.13) packs four u64 fields:
+
+  - byte 0: command opcode in [7:0]
+  - MAPD (0x08): DeviceID + ITT base PA + Size_minus_one + Valid
+  - MAPC (0x09): CollectionID + RDbase (target PE) + Valid
+
+Steps for F56-06 PR:
+
+  1. Add `cmd_post(cmd: [u64; 4])` in its.rs that writes the four
+     u64s to the queue (via HHDM at `CMDQ_PA + (CWRITER & mask)`),
+     advances CWRITER by 32, then spins until CREADR catches up.
+  2. Allocate one 4 KiB ITT for DeviceID 0 (PCI 0:1.0 = 0x08, but
+     QEMU on virt assigns BDF-based DeviceIDs; verify via the IORT
+     RC node mapping or use a small hand-picked DeviceID set).
+     ITT entry size=12 bytes (from F56-01 typer decode); 4 KiB
+     ITT covers ~341 events — fine.
+  3. Post MAPD for DeviceID=0:08 with the ITT base.
+  4. Post MAPC for CollectionID=0 → RDbase=0 (boot CPU's RD via
+     GICR_TYPER's processor-number field).
+  5. Read CREADR and verify it advanced (= CWRITER) without ITS
+     error register set.
+
+**Don't proceed to F56-07 (MAPTI + MSI retarget) until the cmd
+posting protocol shows CREADR catching up cleanly** — silent ITS
+errors (DeviceID OOB, ITT size mismatch, etc.) just leave CREADR
+stuck and `msi_fires=0` will look identical to the current state.
+
+Useful refs in tree:
+  - `kernel/src/its.rs` — has cmdq_pa(), translater_pa() helpers
+  - `kernel/src/gic.rs` — has eoi() showing the IAR/EOI pair
+  - `kernel/src/pci_boot/virtio_drv.rs:208+` — virtio queue alloc
+    pattern using `pmm_setup::alloc_one_frame` + HHDM zero-init
 
 
 
