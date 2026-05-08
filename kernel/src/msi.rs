@@ -41,6 +41,17 @@ pub fn intid_is_v2m(intid: u32) -> bool {
     first != 0 && count != 0 && intid >= first && intid < first + count
 }
 
+/// Hand out the shared x86 MSI IDT vector. Today every MSI-X-capable
+/// device on the boot scan gets the same `VEC_MSI = 0x50` because the
+/// dispatcher bumps a global `MSI_FIRES` counter regardless of source
+/// — per-device callback dispatch arrives in F58, at which point this
+/// becomes a real bump-allocator over `0x50..` with extra IDT stubs.
+/// # C: O(1).
+#[cfg(target_arch = "x86_64")]
+pub fn alloc_x86_vector() -> Option<u8> {
+    Some(0x50)
+}
+
 /// Allocate one SPI from the GICv2m frame's range. Returns `None`
 /// when the range is unconfigured or exhausted.
 /// # C: O(1) — atomic CAS bump.
