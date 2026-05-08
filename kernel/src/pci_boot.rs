@@ -79,6 +79,10 @@ struct VirtioProbe {
     /// F26: status byte after writing queue_index=0 to the notify
     /// address. Should remain 0x0f (no FAILED transition).
     post_notify_status: u8,
+    /// F28: avail.idx written by the driver (1 = one descriptor posted).
+    avail_idx_posted: u16,
+    /// F28: used.idx read after the kick + brief wait.
+    used_idx_observed: u16,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -271,6 +275,50 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, post_status as u8)
     };
+    // F28: for virtio-net (transitional 0x1000 or modern 0x1041),
+    // post one RX buffer descriptor on queue 0 and bump avail.idx
+    // before kicking. For other devices the queue stays empty so the
+    // kick is a no-op nudge.
+    let mut avail_idx_posted = 0u16;
+    let is_virtio_net = d.vendor_id == 0x1AF4
+        && (d.device_id == 0x1000 || d.device_id == 0x1041);
+    if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        if let Some(rx_pa) = crate::pmm_setup::alloc_one_frame() {
+            if hhdm != 0 {
+                // Descriptor[0]: { addr=rx_pa; len=2048; flags=WRITE(2); next=0 }
+                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
+                // SAFETY: HHDM-mapped, freshly-allocated frame, single-CPU.
+                unsafe {
+                    core::ptr::write_volatile(desc0, rx_pa);
+                    // len=2048 (low 32) | flags=WRITE(2) << 32 | next=0 << 48
+                    let lo32 = 2048u32 as u64;
+                    let flags_next = (virtio::VRING_DESC_F_WRITE as u64) << 32;
+                    core::ptr::write_volatile(desc0.add(1), lo32 | flags_next);
+                }
+                // avail.ring[0] = 0 at driver_pa+0x04
+                let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+                // SAFETY: same frame, ring[0] at byte +4 = u16 offset 2.
+                unsafe {
+                    core::ptr::write_volatile(avail.add(2), 0u16);
+                }
+                // Memory barrier so the descriptor + ring writes are
+                // observable before avail.idx bump.
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                // avail.idx = 1 at driver_pa+0x02 (u16 offset 1).
+                // SAFETY: same frame.
+                unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                avail_idx_posted = 1;
+            }
+        }
+    }
+
     // F26: kick the notify register for queue 0. Notify address per
     // Virtio 1.2 §4.1.4.4:
     //   notify_pa = NOTIFY_BAR_pa + notify_cap.offset + qoff * notify_mult
@@ -295,6 +343,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 // Write queue index 0 as a u16 to the notify address.
                 // SAFETY: kick_va Device-attr; aligned u16 write.
                 unsafe { core::ptr::write_volatile(kick_va as *mut u16, 0u16); }
+                // Brief observation window for any device-driven RX
+                // completion (QEMU user-net delivers nothing without
+                // packets, so used.idx will normally stay 0).
+                for _ in 0..1_000_000 { core::hint::spin_loop(); }
                 let st = (r32(0x14) & 0xFF) as u8;
                 (kick_va, st)
             } else {
@@ -306,6 +358,22 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0u64, final_status)
     };
+
+    // F28: read used.idx after the kick.
+    let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        if hhdm != 0 {
+            let used = (hhdm.wrapping_add(q0_device_pa)) as *const u16;
+            // used.idx at +0x02 (u16 offset 1).
+            // SAFETY: HHDM-mapped frame; aligned u16 load.
+            unsafe { core::ptr::read_volatile(used.add(1)) }
+        } else { 0 }
+    } else { 0 };
 
     Some(VirtioProbe {
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
@@ -326,6 +394,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         q0_notify_off,
         q0_notify_va,
         post_notify_status,
+        avail_idx_posted,
+        used_idx_observed,
     })
 }
 
@@ -383,6 +453,19 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_dec_u64(qi as u64);
             klog::write_raw(b" size=");
             klog::write_dec_u64(qsz as u64);
+            klog::write_raw(b"\n");
+        }
+        if p.avail_idx_posted > 0 {
+            klog::write_raw(b"[INFO]  virtio-rx-post ");
+            klog::write_dec_u64(bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" avail_idx=");
+            klog::write_dec_u64(p.avail_idx_posted as u64);
+            klog::write_raw(b" used_idx=");
+            klog::write_dec_u64(p.used_idx_observed as u64);
             klog::write_raw(b"\n");
         }
         if p.q0_notify_va != 0 {
