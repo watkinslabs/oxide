@@ -240,7 +240,12 @@ def qemu_start(arch: str) -> str:
                 "-cpu", "Haswell-v4",
                 "-m", "256M",
                 "-bios", str(ovmf),
-                "-drive", f"format=raw,file={img}",
+                # Boot drive as virtio-blk-pci (modern transport) so the
+                # F19-F30 stack runs lockstep with aarch64. The legacy
+                # `-drive format=raw,file=...` default attached as IDE,
+                # which left no virtio device on the bus.
+                "-drive", f"if=none,id=hd0,format=raw,file={img}",
+                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",
