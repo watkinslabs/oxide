@@ -60,7 +60,7 @@ run_one() {
   "${qemu_args[@]}" </dev/null >"$log" 2>&1 &
   local qemu_pid=$!
 
-  local expected=(sem_smoke msg_smoke mq_smoke ptrace_smoke mprotect_smoke)
+  local expected=(sem_smoke msg_smoke mq_smoke ptrace_smoke ptrace_singlestep_smoke mprotect_smoke)
   local total=${#expected[@]}
   declare -A status
   # ARM UEFI firmware boot is ~25s slower than x86; budget separately.
