@@ -78,8 +78,18 @@ impl PciDevice {
 /// past function 0 unless the header_type's MF bit (0x80) is set.
 /// # C: O(256 × 32 × 8) — single sweep at boot
 pub fn enumerate<R: ConfigSpaceReader>(r: &R) -> Vec<PciDevice> {
+    enumerate_buses(r, 256)
+}
+
+/// Like `enumerate` but caps the bus scan at `n_buses`. Used by
+/// callers where the per-arch `ConfigSpaceReader` only has the
+/// first N buses device-mapped (v1 aarch64 ECAM maps bus 0 only;
+/// scanning past it would dereference an unmapped page).
+/// # C: O(n_buses × 32 × 8)
+pub fn enumerate_buses<R: ConfigSpaceReader>(r: &R, n_buses: u16) -> Vec<PciDevice> {
     let mut out = Vec::new();
-    for bus in 0u32..=255 {
+    let cap = (n_buses as u32).min(256);
+    for bus in 0u32..cap {
         for dev in 0u8..32 {
             for func in 0u8..8 {
                 let bdf = Bdf { bus: bus as u8, device: dev, function: func };

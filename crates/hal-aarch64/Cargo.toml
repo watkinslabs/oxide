@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 hal      = { path = "../hal" }
 klog     = { path = "../klog" }
+pci      = { path = "../pci" }
 sync     = { path = "../sync" }
 syscall  = { path = "../syscall" }
 bitflags = { version = "2", default-features = false }
