@@ -205,6 +205,111 @@ pub fn cmdq_pa() -> u64 { CMDQ_PA.load(Ordering::Acquire) }
 #[cfg(target_arch = "aarch64")]
 const GITS_CTLR_ENABLED: u32 = 1 << 0;
 
+// ---- Command-post protocol (F56-06) ---------------------------------------
+
+/// Per-command size on GICv3 ITS (ARM IHI 0069 §5.13).
+#[cfg(target_arch = "aarch64")]
+const CMD_SIZE: u64 = 32;
+
+/// Command-queue size in bytes (F56-02 allocates 1 page → 128 cmds).
+#[cfg(target_arch = "aarch64")]
+const CMDQ_SIZE: u64 = 0x1000;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CmdStatus {
+    /// `cmdq_setup` / `enable` haven't run yet.
+    NotReady,
+    /// CREADR caught up to the new CWRITER. `polls` records spin
+    /// iterations consumed (0 ≈ ITS drained synchronously).
+    Posted { cwriter: u64, creadr: u64, polls: u32 },
+    /// CREADR did not catch up within `polls` iterations — likely
+    /// a malformed command or stuck queue. `creadr` is the last
+    /// observed value.
+    Timeout { cwriter: u64, creadr: u64 },
+}
+
+/// MAPC opcode (ICID → Collection-table entry → target RD).
+#[cfg(target_arch = "aarch64")]
+pub const ITS_CMD_MAPC: u8 = 0x09;
+/// MAPD opcode (DeviceID → ITT base + size).
+#[cfg(target_arch = "aarch64")]
+pub const ITS_CMD_MAPD: u8 = 0x08;
+
+/// Build a MAPD command (ARM IHI 0069 §5.13.4).
+/// `size` = number-of-EventID-bits - 1; ITT must be 256-byte aligned.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn cmd_mapd(device_id: u32, itt_pa: u64, size: u32) -> [u64; 4] {
+    let dw0 = ITS_CMD_MAPD as u64 | ((device_id as u64) << 32);
+    let dw1 = (size & 0x1f) as u64;
+    let dw2 = (1u64 << 63) | (itt_pa & 0x000F_FFFF_FFFF_FF00);
+    [dw0, dw1, dw2, 0]
+}
+
+/// Build a MAPC command (ARM IHI 0069 §5.13.5).
+/// `rdbase` = processor number when GITS_TYPER.PTA=0, else the
+/// 64 KiB-aligned RD PA. QEMU virt + GICv3 has PTA=0 → use 0 for
+/// the boot CPU.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn cmd_mapc(icid: u16, rdbase: u32) -> [u64; 4] {
+    let dw0 = ITS_CMD_MAPC as u64;
+    let dw2 = (1u64 << 63)
+            | ((rdbase as u64 & 0x7_FFFF_FFFF) << 16)
+            | (icid as u64 & 0xFFFF);
+    [dw0, 0, dw2, 0]
+}
+
+/// Post a 32-byte command at `CWRITER`, advance the write index,
+/// then poll `CREADR` until it catches up. CREADR's bit[0]
+/// (Stalled) is masked out of the comparison.
+///
+/// # SAFETY: caller asserts cmdq + BASERs programmed and
+/// GITS_CTLR.Enabled latched; HHDM covers the queue PMM frame;
+/// runs single-CPU pre-init IRQ-off.
+/// # C: O(polls) — typically tens of cycles on QEMU.
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn cmd_post(hhdm: u64, cmd: [u64; 4]) -> CmdStatus {
+    let its_va = ITS_VA.load(Ordering::Acquire);
+    let q_pa   = CMDQ_PA.load(Ordering::Acquire);
+    if its_va == 0 || q_pa == 0 || hhdm == 0 {
+        return CmdStatus::NotReady;
+    }
+    // SAFETY: ITS frame Device-attr mapped; HHDM-mapped cmdq frame; widths per spec.
+    unsafe {
+        let cwriter_pre = core::ptr::read_volatile(
+            (its_va + GITS_CWRITER as u64) as *const u64,
+        );
+        let off = cwriter_pre & (CMDQ_SIZE - 1);
+        let dst = hhdm.wrapping_add(q_pa + off) as *mut u64;
+        for i in 0..4 {
+            core::ptr::write_volatile(dst.add(i), cmd[i]);
+        }
+        // Ensure command bytes hit memory before the doorbell.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        let new_cwriter = (cwriter_pre + CMD_SIZE) & (CMDQ_SIZE - 1);
+        core::ptr::write_volatile(
+            (its_va + GITS_CWRITER as u64) as *mut u64,
+            new_cwriter,
+        );
+        let mut polls = 0u32;
+        loop {
+            let creadr = core::ptr::read_volatile(
+                (its_va + GITS_CREADR as u64) as *const u64,
+            );
+            if (creadr & !1) == new_cwriter {
+                return CmdStatus::Posted { cwriter: new_cwriter, creadr, polls };
+            }
+            polls = polls.wrapping_add(1);
+            if polls > 1_000_000 {
+                return CmdStatus::Timeout { cwriter: new_cwriter, creadr };
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
 /// Set `GITS_CTLR.Enabled`. Must be called only after `cmdq_setup`
 /// + `baser_setup` have programmed the queue and tables.
 ///
@@ -410,6 +515,31 @@ mod tests {
         let c = ItsStatus::Discovered { typer: 0, ctlr: 0, iidr: 0, baser0: 0 };
         assert_ne!(a, b);
         assert_ne!(b, c);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn cmd_mapd_encoding() {
+        // DeviceID=0x10, ITT_pa=0x4a6f3000, Size=4.
+        let c = cmd_mapd(0x10, 0x4a6f3000, 4);
+        assert_eq!(c[0] & 0xFF, 0x08);                  // opcode
+        assert_eq!((c[0] >> 32) & 0xFFFF_FFFF, 0x10);   // DeviceID
+        assert_eq!(c[1] & 0x1f, 4);                     // Size
+        assert!(c[2] & (1 << 63) != 0);                 // Valid
+        assert_eq!(c[2] & 0x000F_FFFF_FFFF_FF00, 0x4a6f3000);
+        assert_eq!(c[3], 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn cmd_mapc_encoding() {
+        // ICID=0, RDbase=0 (boot CPU, processor number).
+        let c = cmd_mapc(0, 0);
+        assert_eq!(c[0] & 0xFF, 0x09);
+        assert_eq!(c[1], 0);
+        assert!(c[2] & (1 << 63) != 0);
+        assert_eq!(c[2] & 0xFFFF, 0);
+        assert_eq!(c[3], 0);
     }
 
     #[test]
