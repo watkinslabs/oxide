@@ -24,6 +24,7 @@ mod fault;
 mod fpu;
 mod mmu;
 pub mod mmu_ops;
+pub mod pci;
 mod pt_regs;
 mod regs;
 mod vbar;
