@@ -293,4 +293,32 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         hal_aarch64::pci::ECAM_BASE_VA
             .store(ECAM_BUS0_VA, core::sync::atomic::Ordering::Release);
     }
+
+    // F36: GICv2m MSI frame device-map (1 page) + read MSI_TYPER at +0x008.
+    // Bits[25:16] = first SPI; bits[9:0] = SPI count. Together with the
+    // frame base PA published by F35, this lets F37+ MSI wiring allocate
+    // SPIs and encode MSI message addr/data correctly.
+    let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
+        .load(core::sync::atomic::Ordering::Acquire);
+    if v2m_pa != 0 {
+        const V2M_VA: u64 = 0xffff_fc00_0000_0000;
+        // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BUS0_VA.
+        unsafe { <ArmMmu as MmuOps>::map(Va(V2M_VA), Pa(v2m_pa), device_flags(), PageSize::P4K); }
+        debug_boot! {
+            // SAFETY: V2M_VA is freshly Device-attr mapped above; aligned
+            // u32 read of the MSI_TYPER register at offset 0x008.
+            let typer = unsafe {
+                core::ptr::read_volatile((V2M_VA + 0x008) as *const u32)
+            };
+            let spi_first = (typer >> 16) & 0x3FF;
+            let spi_count = typer & 0x3FF;
+            klog::write_raw(b"[INFO]  gicv2m typer=");
+            klog::write_hex_u64(typer as u64);
+            klog::write_raw(b" spi_first=");
+            klog::write_dec_u64(spi_first as u64);
+            klog::write_raw(b" spi_count=");
+            klog::write_dec_u64(spi_count as u64);
+            klog::write_raw(b"\n");
+        }
+    }
 }
