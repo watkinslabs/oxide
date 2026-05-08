@@ -156,6 +156,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/msg_smoke/msg_smoke",       "userspace/msg_smoke/msg_smoke.c"),
         ("userspace/mq_smoke/mq_smoke",         "userspace/mq_smoke/mq_smoke.c"),
         ("userspace/ptrace_smoke/ptrace_smoke", "userspace/ptrace_smoke/ptrace_smoke.c"),
+        ("userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke", "userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke.c"),
         ("userspace/mprotect_smoke/mprotect_smoke", "userspace/mprotect_smoke/mprotect_smoke.c"),
     ];
     // dynlink is now arch-portable (#ifdef __aarch64__ for syscall ABI
@@ -372,6 +373,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
+    put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
     // dynamic-linker stub at the per-arch musl path. The kernel's
     // ELF loader sees PT_INTERP="/lib/ld-musl-<arch>.so.1" in any
