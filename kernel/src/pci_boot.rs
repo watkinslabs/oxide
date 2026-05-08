@@ -5,6 +5,73 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+/// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
+/// # C: O(1) — at most 6 BARs.
+fn bar_dump_arch(bdf: pci::Bdf) {
+    debug_boot! {
+        let bars = {
+            #[cfg(target_arch = "x86_64")]
+            {
+                let r = hal_x86_64::pci::LegacyPci;
+                pci::decode_bars(&r, bdf)
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                match hal_aarch64::pci::EcamPci::from_published() {
+                    Some(r) => pci::decode_bars(&r, bdf),
+                    None    => [pci::Bar::None; 6],
+                }
+            }
+        };
+        for (i, b) in bars.iter().enumerate() {
+            match *b {
+                pci::Bar::None | pci::Bar::HighHalfConsumed => continue,
+                pci::Bar::Io { port } => {
+                    klog::write_raw(b"[INFO]  pci-bar ");
+                    klog::write_dec_u64(bdf.bus as u64);
+                    klog::write_raw(b":");
+                    klog::write_dec_u64(bdf.device as u64);
+                    klog::write_raw(b".");
+                    klog::write_dec_u64(bdf.function as u64);
+                    klog::write_raw(b" b");
+                    klog::write_dec_u64(i as u64);
+                    klog::write_raw(b" io=");
+                    klog::write_hex_u64(port as u64);
+                    klog::write_raw(b"\n");
+                }
+                pci::Bar::Mem32 { base, prefetch } => {
+                    klog::write_raw(b"[INFO]  pci-bar ");
+                    klog::write_dec_u64(bdf.bus as u64);
+                    klog::write_raw(b":");
+                    klog::write_dec_u64(bdf.device as u64);
+                    klog::write_raw(b".");
+                    klog::write_dec_u64(bdf.function as u64);
+                    klog::write_raw(b" b");
+                    klog::write_dec_u64(i as u64);
+                    klog::write_raw(b" mem32=");
+                    klog::write_hex_u64(base as u64);
+                    if prefetch { klog::write_raw(b" pf"); }
+                    klog::write_raw(b"\n");
+                }
+                pci::Bar::Mem64 { base, prefetch } => {
+                    klog::write_raw(b"[INFO]  pci-bar ");
+                    klog::write_dec_u64(bdf.bus as u64);
+                    klog::write_raw(b":");
+                    klog::write_dec_u64(bdf.device as u64);
+                    klog::write_raw(b".");
+                    klog::write_dec_u64(bdf.function as u64);
+                    klog::write_raw(b" b");
+                    klog::write_dec_u64(i as u64);
+                    klog::write_raw(b" mem64=");
+                    klog::write_hex_u64(base);
+                    if prefetch { klog::write_raw(b" pf"); }
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+    }
+}
+
 /// Per-arch wrapper that walks the capability list for one BDF and
 /// emits `[INFO] pci-cap ... id=...` lines. For modern virtio devices
 /// (vendor=0x1AF4, device>=0x1040) it also decodes each vendor cap and
@@ -125,6 +192,7 @@ pub fn enumerate_and_log() {
             // Capability list — modern devices always advertise MSI-X
             // + (for virtio) vendor-specific virtio-pci caps. Foundation
             // for upcoming MSI-X routing + virtio modern-transport work.
+            bar_dump_arch(d.bdf);
             cap_dump_arch(d);
         }
     }
