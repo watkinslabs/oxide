@@ -289,6 +289,63 @@ fn leaf_writable(leaf: u64) -> bool {
     valid && ap == 0b01
 }
 
+/// Per-PTE mprotect helper. After `AddressSpace::mprotect`
+/// updates the VMA tree, call this to actually flip the PTE bits
+/// for every present 4 KiB leaf in `[va, va+len)` so the live
+/// page tables match the new VmaProt. Otherwise a JIT page that
+/// was mapped RW and got mprotect'd to R-only is still
+/// hardware-writable (or worse, was R-only and got mprotect'd to
+/// RWX but stays unwritable, breaking jemalloc/mimalloc).
+///
+/// Caller passes the AS root_pa (typically `mm.root_pa()`) plus
+/// the new `VmaProt`. Issues per-page TLB flush after rewriting
+/// each page's leaf.
+///
+/// # SAFETY: caller asserts (a) `root_pa` is a live AS root the
+/// caller has exclusive write access to (per-AS PT lock or UP +
+/// preempt-off), (b) `va`/`len` are page-aligned and inside the
+/// user range. HHDM-mapped table memory is read/written.
+/// # C: O(len/4096 * walk_depth) + per-page TLB flush
+pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
+    let hhdm = hhdm_offset();
+    let new_flags = prot.to_page_flags();
+    let va_start = va & !0xFFF;
+    let va_end = va.checked_add(len as u64).map_or(va_start, |e| (e + 0xFFF) & !0xFFF);
+    if va_end <= va_start { return; }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: forwards to the per-arch walker; caller's contract above.
+        let _n = unsafe {
+            hal::pt_walker::protect_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
+                root_pa, va_start, va_end, new_flags, hhdm,
+            )
+        };
+        // Flush each page in the range so the new PTE bits take effect.
+        let mut p = va_start;
+        while p < va_end {
+            // SAFETY: invlpg legal at CPL=0; flushes one TLB entry.
+            unsafe { hal_x86_64::flush_local_va(p); }
+            p = p.wrapping_add(0x1000);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: forwards to the per-arch walker; caller's contract above.
+        let _n = unsafe {
+            hal::pt_walker::protect_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(
+                root_pa, va_start, va_end, new_flags, hhdm,
+            )
+        };
+        let mut p = va_start;
+        while p < va_end {
+            // SAFETY: tlbi+dsb sequence per `21§5`; flushes one EL0/EL1 user page.
+            unsafe { hal_aarch64::flush_local_va(p); }
+            p = p.wrapping_add(0x1000);
+        }
+    }
+    let _ = (root_pa, new_flags, hhdm); // touch on host/test build
+}
+
 /// Translate Linux `PROT_*` bits (per `15§6.2`) to `VmaProt`.
 /// # C: O(1)
 pub fn prot_from_linux(prot: u64) -> VmaProt {
@@ -458,7 +515,9 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             unsafe { Arc::increment_strong_count(raw); }
             // SAFETY: matching Arc::from_raw consumes the bumped count.
             let arc = unsafe { Arc::from_raw(raw) };
-            arc.exit_status.store(11, Ordering::Release);
+            // exit_status low 8 = signal num, bit 8 = "killed by
+            // signal" flag (per the wait4 encoder in syscall_glue).
+            arc.exit_status.store(11 | 0x100, Ordering::Release);
             crate::sched::mark_done(&arc);
             crate::sched::park_zombie(arc);
         }
@@ -491,7 +550,9 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
             unsafe { Arc::increment_strong_count(raw); }
             // SAFETY: matching Arc::from_raw consumes the bumped count.
             let arc = unsafe { Arc::from_raw(raw) };
-            arc.exit_status.store(11, Ordering::Release);
+            // exit_status low 8 = signal num, bit 8 = "killed by
+            // signal" flag (per the wait4 encoder in syscall_glue).
+            arc.exit_status.store(11 | 0x100, Ordering::Release);
             crate::sched::mark_done(&arc);
             crate::sched::park_zombie(arc);
         }

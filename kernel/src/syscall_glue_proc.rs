@@ -141,7 +141,15 @@ pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
         Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
     };
     match mm.mprotect(ua, len, vp) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // VMA tree updated; flip the live PTE bits + flush
+            // TLB so hardware enforces the new permissions
+            // (otherwise a JIT-style RW→RX flip is silently
+            // ignored and an R-only page can still be written).
+            // SAFETY: caller is the running task; mm matches active AS; per-AS UP + preempt-off serialises with fault path.
+            unsafe { crate::user_as::mprotect_pages(mm.root_pa(), addr, len, vp); }
+            0
+        }
         Err(_) => -(Errno::Einval.as_i32() as i64),
     }
 }
