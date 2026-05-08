@@ -302,6 +302,14 @@ pub struct Task {
     /// debugger-frontend integration in a v2 phase 22 follow-up.
     pub traced_by: AtomicU32,
 
+    /// Set by PTRACE_SINGLESTEP, cleared by the trap handler after a
+    /// single instruction has retired in user mode. While set, the
+    /// kernel-to-user resume path arms the per-arch single-step bit
+    /// (RFLAGS.TF on x86_64, MDSCR_EL1.SS + SPSR.SS on aarch64) so
+    /// the next user instruction traps and the kernel posts SIGTRAP.
+    /// # C: O(1)
+    pub singlestep: AtomicU32,
+
     /// Per-task seccomp filter chain (cBPF programs). Each entry is
     /// a `Vec<u64>` representing 8-byte sock_filter words; the
     /// kernel/seccomp interpreter reinterprets at run time. Single-
@@ -437,6 +445,7 @@ impl Task {
             ns_membership: AtomicU64::new(0),
             uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
             traced_by:     AtomicU32::new(0),
+            singlestep:    AtomicU32::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
         }
     }
