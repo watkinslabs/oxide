@@ -131,6 +131,7 @@ pub mod perf;
 pub mod coredump;
 pub mod dev_drm;
 pub mod syscall_glue_signal;
+pub mod ptrace_singlestep;
 pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
 #[cfg(target_os = "oxide-kernel")]
@@ -764,6 +765,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
+        // F50: install per-arch user-trap hook BEFORE any user task
+        // runs so PTRACE_SINGLESTEP #DB delivers SIGTRAP instead of
+        // halting the kernel via the default fault path.
+        // SAFETY: pre-init single-CPU; ptrace_singlestep::install is idempotent and only swaps a 'static fn pointer.
+        unsafe { crate::ptrace_singlestep::install(); }
         // SAFETY: every prerequisite established above — kernel-owned
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
         // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)
