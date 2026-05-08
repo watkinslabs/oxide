@@ -253,9 +253,16 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         }
         // SAFETY: mirrors the IAR read above; same INTID; GIC was mapped Device-attr.
         unsafe { eoi(raw); }
-        // P3-23: drain PL011 RX FIFO + wake stdin waiters.
-        // SAFETY: timer ISR context, IRQs masked; tty path is single-CPU UP.
-        unsafe { crate::tty::tick_poll_uart(); }
+        // F54: PL011 RX FIFO drain is now SPI-33-only. The earlier
+        // unconditional tick_poll_uart from any IRQ (P3-23 belt) was
+        // a fallback for the pre-F47 era when no UART IRQ wiring
+        // existed. With F45's GIC fix + F47's enable_rx_irq, SPI 33
+        // delivers reliably, so the timer-poll redundancy hides the
+        // real IRQ-driven path. Drain only on the actual UART line.
+        if intid == 33 {
+            // SAFETY: SPI 33 dispatch context, IRQs masked; tty path is single-CPU UP.
+            unsafe { crate::tty::tick_poll_uart(); }
+        }
         crate::preempt::set_need_resched();
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked
         // (vector entry clears DAIF.I); reads/writes the per-CPU
