@@ -304,6 +304,8 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         const V2M_VA: u64 = 0xffff_fc00_0000_0000;
         // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BUS0_VA.
         unsafe { <ArmMmu as MmuOps>::map(Va(V2M_VA), Pa(v2m_pa), device_flags(), PageSize::P4K); }
+        // F45: publish VA so pci_boot self-fire diagnostic can write SETSPI_NS directly.
+        crate::msi::GICV2M_VA.store(V2M_VA, core::sync::atomic::Ordering::Release);
         // SAFETY: V2M_VA is freshly Device-attr mapped above; aligned u32 read of the MSI_TYPER register at offset 0x008.
         let typer = unsafe {
             core::ptr::read_volatile((V2M_VA + 0x008) as *const u32)
