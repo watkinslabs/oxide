@@ -1,4 +1,40 @@
-# State 2026-05-08 (session 50 leg-1 — aarch64 MSI verified + x86 lockstep gap exposed)
+# State 2026-05-08 (session 50 leg-2 — F57 x86 MSI-X lockstep landed, phase 8 next)
+
+## ⚡ Session 50 leg-2: F57 x86 MSI-X bring-up landed (#755)
+
+Closed the lockstep gap exposed in leg-1:
+
+  - `hal-x86_64::oxide_irq_vec_50` + `VEC_MSI = 0x50`.
+  - `lapic::oxide_irq_dispatch` arms VEC_MSI → `MSI_FIRES.fetch_add`.
+  - `msi::alloc_x86_vector` hands out shared 0x50 (per-device
+    callback dispatch arrives in F58).
+  - `pci_boot::probe` MSI-X bind block generalized: aarch64 keeps
+    ITS/v2m, x86 emits `0xFEE0_0000` / vector for LAPIC delivery.
+  - STI window during probe drains queued MSIs; self-IPI
+    diagnostic (`lapic-self-fire`) proves IDT[0x50] + dispatcher
+    + EOI path correct (delta=1).
+
+Verified both arches:
+  - aarch64: `msi_fires=1`, `msi-fires-post-enum=1` (no regression).
+  - x86: `msix-en 0:3.0 enabled=1`, `msix-bind 0:3.0 addr=0xfee00000
+    data=0x50`, `lapic-self-fire delta=1`.
+
+Residual: x86 device-driven MSI silence (PCI 0:3.0 doesn't actually
+emit posted writes to FEE0_0000 despite cap.Enable=1, ctl=0,
+correct addr/data). Distinct mechanism from aarch64 silent-MSI
+(which was transitional-only). Tracked as F57b — kernel-side is
+done; this is a routing/QEMU q35 investigation, not a kernel fix.
+
+## Session 50 leg-3 plan: phase 8 (net) — next concrete step
+
+Per master-plan §3: phase 8 = real TCP/IPv4 stack on virtio-net.
+Today: UDP loopback works (`net udp lo round-trip: oxide-boot-smoke`),
+virtio-net TX wired (F43). Missing: ARP, ICMP, real IP/TCP stack
+on the device-driven RX path.
+
+Smallest concrete next PR: virtio-net RX path drain — receive an
+ARP request from the host, hand it to the kernel net stack, parse
+it. (Without real RX, none of the higher protocols can land.)
 
 ## ⚡ Session 50 leg-1 result: aarch64 MSI VERIFIED, x86 MSI gap found
 
