@@ -1,3 +1,74 @@
+# State 2026-05-08 (session 46 — ARM/x86 lockstep audit + closure)
+
+## Headline (session 46)
+
+User mandate: "ARM 100% on par with x86_64. lets get ARM 100% PAR
+with x86_64." Multiple sessions had let small ARM-deferred items
+accumulate; this session enforced the lockstep rule by inventorying
+every `#[cfg(target_arch = "x86_64")]` gate in the kernel and closing
+the ones that masked real capability gaps (vs legitimate per-arch
+register sets / opcodes / ABI shapes).
+
+Five PRs landed (#688/#689/#690/#691/#692 from session 44 + 45 plus
+B23 + F15 + F16 + F17 here). The ARM lockstep matrix went from
+"static-PIE busybox + 5 IPC smokes" to full parity with x86 across:
+
+  - Per-PTE mprotect with proper musl libc init (B20)
+  - AddressSpace lifecycle (B21 PT-frame drop + B22 staging-buf drop +
+    B23 scheduler zombie-Arc transfer — closes the per-fork OOM at
+    tid 4112 that B21/B22 alone couldn't)
+  - PT_INTERP dual-image load + arch-portable dynlink stub (F15)
+  - User signal delivery (`deliver_arm` + `rt_sigreturn_arm`) +
+    SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU stop disposition (F16)
+  - PCI bus enumeration via ECAM (F17) — finds virtio-net + virtio-blk
+
+## PRs landed (#688 – #695)
+
+| PR | Branch | What |
+|---|---|---|
+| #688 | `B20-arm-mprotect-page-size`     | musl-aarch64's mprotect reads `__libc.page_size` (offset 0x30) at runtime; under -nostartfiles `__init_libc` never runs so it stays 0 → mprotect saw addr=0,len=0 → kernel returns EINVAL. New `oxide_libc_init()` C shim called from `_start` writes 4096 there. Plus: x86 execve only mmap'd 4 KiB stack vs ARM's 64 KiB — bumped to match. |
+| #689 | `B21-as-drop-frees-pt`           | `hal::pt_walker::free_user_tree<W>` recursively frees user-half PT pages + leaf frames. `vmm::AddressSpace` Drop fires kernel-installed teardown with `root_pa` to release them on Arc-strong-zero. Wired into fork's `fork_copy_pages` + both arch execves. |
+| #690 | `B22-kernelbytes-arc`            | `vmm::AddressSpace` owns a `Vec<Box<[u8]>>` of staged ELF segments (declared after `vmas` so the tree drops first). `stash_bytes` replaces elf_load's `Box::leak` — segment storage frees on AS drop. |
+| #691 | `D08-state-session-44`           | EOD docs update. |
+| #692 | `B23-arc-as-leak-hunt`           | The OOM at ~tid 4112 was a real Arc<Task> leak: every dying user task's `prev_arc` (returned by `swap_current` in voluntary `schedule()`) was permanently stranded on the dead task's kernel stack because the trailing `drop(prev_arc)` only fires on resume. Combined with the explicit `Arc::increment_strong_count` + `park_zombie(arc)` pattern in sys_exit/sigsegv, every task leaked one strong ref. Fix: schedule() detects Zombie prev and transfers the prev_arc into ZOMBIES via `enqueue_zombie`; sys_exit/sigsegv stop bumping (use new `signal_child_exit(&Task)` for SIGCHLD-post + wait4-wake). 27 teardowns / 16 reaps post-fix (was 11/16); kernel runs indefinitely past tid 4112. |
+| #693 | `F15-arm-ld-musl-parity`         | `elf_load::load_static_blob` PT_INTERP path no longer x86-only. New arch-neutral `read_interp_blob` reads `/lib/ld-musl-<arch>.so.1` from ext4. `dynlink.c` and `hello_dyn.c` ported with `#ifdef __aarch64__` blocks (Linux generic ABI syscalls, R_AARCH64_* relocs, svc-asm, file-scope-asm `_start`). xtask stages dynlink at the per-arch musl path. Bonus: relaxed `place_image`/`load_static_blob` blob args from `&'static [u8]` to `&[u8]` and dropped the `Box::leak` in both execve paths and `read_interp_blob` (owned `Vec<u8>` rooted in caller's frame; bytes copied into AS-owned staging via B22). |
+| #694 | `F16-arm-sig-dispatch-parity`    | `sched_stop` lost its accidental file-level x86 gate. New `sig_dispatch::deliver_arm` mirrors `deliver_x86` against `SvcFrame.elr_el1`/`spsr_el1`/`sp_el0` with AAPCS64 conventions (`x0=sig`, `x30=restorer`); `rt_sigreturn_arm` mirror restores. `sig_dispatch::deliver` / `::rt_sigreturn` arch-neutral routers. The three `#[cfg(target_arch = "x86_64")]` gates around stop_until_cont, the SIGCONT user-handler arm, and the general user-handler arm in `syscall_glue.rs` dropped — ARM no longer falls through to terminate-on-signal. |
+| #695 | `F17-arm-pci-ecam`               | `acpi::ECAM_BASE_PA` published from MCFG decode. `hal_aarch64::pci::EcamPci` is the ECAM-backed `pci::ConfigSpaceReader`. `device_map_smoke_arm` device-maps bus 0 (256 × 4 KiB) at `0xffff_fe00_0000_0000` and publishes `ECAM_BASE_VA`. `pci::enumerate_buses(r, n)` caps the scan to the mapped span. New `kernel/src/pci_boot.rs` does per-arch reader selection (split out of lib.rs to stay under the 1000-line cap). ARM boot trace now: `[INFO] pci: devices=3` followed by host-bridge + virtio-net + virtio-blk. |
+
+## ARM/x86 parity matrix (post-session 46)
+
+| Subsystem | x86_64 | aarch64 |
+|---|---|---|
+| Boot → kernel_main | ✅ | ✅ |
+| PMM, VMM, slab, sched + preempt | ✅ | ✅ |
+| ELF loader (static-PIE) | ✅ | ✅ |
+| Per-PTE mprotect | ✅ | ✅ (B20) |
+| AddressSpace::Drop frees PT pages + leaf frames | ✅ | ✅ (B21) |
+| AS owns ELF staging (no Box::leak per exec) | ✅ | ✅ (B22) |
+| Scheduler zombie path drops Task Arc properly | ✅ | ✅ (B23) |
+| ext4 mount + read + RW + page cache | ✅ | ✅ |
+| Syscall dispatch (Linux generic ABI translator on aarch64) | ✅ | ✅ |
+| fork / clone / execve / wait4 / waitid / signals | ✅ | ✅ |
+| FP/SIMD at EL0 | ✅ | ✅ |
+| TLS (FS_BASE / TPIDR_EL0) | ✅ | ✅ |
+| 5/5 IPC smokes (sem/msg/mq/ptrace/mprotect) | ✅ | ✅ |
+| User sa_handler + rt_sigreturn | ✅ | ✅ (F16) |
+| SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU stop disposition | ✅ | ✅ (F16) |
+| PT_INTERP dual-image load + dynlink stub | ✅ | ✅ (F15) |
+| -pie binary (hello_dyn) round-trip via stub linker | ✅ | ✅ (F15) |
+| PCI bus enumeration | ✅ | ✅ ECAM (F17) |
+| Indefinite fork+exec without OOM | ✅ | ✅ |
+
+## Remaining lockstep gaps (next session candidates)
+
+- **virtio-net driver on ARM** — F17 enumerates the device (vendor=0x1af4 device=0x1000 at 0:1.0); `dev_virtio_net.rs` is a 650-line legacy port-IO driver still gated x86-only. Real port = rewrite to modern virtio-pci transport (capability-list walk + BAR0 MMIO) which then works on both arches. Or add a parallel virtio-mmio path for ARM.
+- **virtio-blk driver** — same shape; `0:2.0` is virtio-blk, no driver yet on either arch.
+- **PTRACE_CONT / PTRACE_SINGLESTEP** — both arches stub it out via foreign-mm peek/poke only (B16 closed PEEK/POKE; CONT/SINGLESTEP need sched stop-states, which sched_stop now has on both arches post-F16).
+- **`/bin/sh` interactive on both arches** — TTY input loop + line discipline + busybox-ash session glue. busybox is staged; just needs the read-from-fd-0 wakeup wiring to make a prompt feel responsive.
+- **pf_recover_smoke** + **lookup_smoke** + **virtio-net legacy init** — all x86-only diagnostics; minor parity polish.
+
+---
+
 # State 2026-05-07 (session 44 — ARM mprotect_smoke fix + AS drop frees PT)
 
 ## Headline (session 44)
