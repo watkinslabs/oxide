@@ -47,8 +47,9 @@ unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 
 /// Outcome of one virtio-pci modern probe. All side-effect work
 /// (cmd-reg write, BAR mapping, status state machine, feature
-/// negotiation, queue size scan) runs unconditionally; only the
-/// trace logging consumes this struct under `debug_boot!`.
+/// negotiation, queue size scan, queue 0 ring program + DRIVER_OK)
+/// runs unconditionally; only the trace logging consumes this struct
+/// under `debug_boot!`.
 struct VirtioProbe {
     cmd_orig: u16,
     cmd_new:  u16,
@@ -62,6 +63,12 @@ struct VirtioProbe {
     /// Up to 8 (queue_idx, queue_size) entries seen in the scan.
     queues: [(u16, u16); 8],
     queues_len: usize,
+    /// Queue-0 ring frame PAs after F25 setup (0 = not allocated).
+    q0_desc_pa:   u64,
+    q0_driver_pa: u64,
+    q0_device_pa: u64,
+    /// Final status byte after writing DRIVER_OK + re-reading.
+    final_status: u8,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -187,6 +194,48 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         if queue_size == 0 { break; }
     }
 
+    // F25: program queue 0 if the device exposed one with a non-zero size.
+    let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
+    let (q0_desc_pa, q0_driver_pa, q0_device_pa, final_status) = if q0_size != 0 && features_ok {
+        let pa_desc   = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
+        let pa_driver = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
+        let pa_device = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
+        if pa_desc != 0 && pa_driver != 0 && pa_device != 0 {
+            // Re-select queue 0 (queue_select sits in upper u16 of 0x14;
+            // status low byte is sticky as device_status, preserve it).
+            let qs0 = (post_status & 0xFF) | (0u32 << 16);
+            w32(0x14, qs0);
+            // queue_size at 0x18 (low u16) — leave as-is. queue_msix_vector
+            // at 0x1A — leave 0xFFFF default for now (no MSI-X bound; F26).
+            // queue_enable at 0x1C (low u16); queue_notify_off at 0x1E.
+            // queue_desc le64 at +0x20:
+            w32(0x20, (pa_desc & 0xFFFF_FFFF) as u32);
+            w32(0x24, (pa_desc >> 32) as u32);
+            // queue_driver (avail) le64 at +0x28:
+            w32(0x28, (pa_driver & 0xFFFF_FFFF) as u32);
+            w32(0x2C, (pa_driver >> 32) as u32);
+            // queue_device (used) le64 at +0x30:
+            w32(0x30, (pa_device & 0xFFFF_FFFF) as u32);
+            w32(0x34, (pa_device >> 32) as u32);
+            // queue_enable=1 (low u16 of dword at 0x1C; preserve high
+            // u16 = queue_notify_off which is RO).
+            let qen_word = r32(0x1C) & 0xFFFF_0000;
+            w32(0x1C, qen_word | 0x0001);
+
+            // DRIVER_OK
+            w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
+                       | virtio::VIRTIO_STATUS_DRIVER
+                       | virtio::VIRTIO_STATUS_FEATURES_OK
+                       | virtio::VIRTIO_STATUS_DRIVER_OK));
+            let final_status = (r32(0x14) & 0xFF) as u8;
+            (pa_desc, pa_driver, pa_device, final_status)
+        } else {
+            (0, 0, 0, post_status as u8)
+        }
+    } else {
+        (0, 0, 0, post_status as u8)
+    };
+
     Some(VirtioProbe {
         cmd_orig: (cmd_orig & 0xFFFF) as u16,
         cmd_new:  (cmd_new  & 0xFFFF) as u16,
@@ -199,6 +248,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         num_queues,
         queues,
         queues_len,
+        q0_desc_pa,
+        q0_driver_pa,
+        q0_device_pa,
+        final_status,
     })
 }
 
@@ -256,6 +309,23 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_dec_u64(qi as u64);
             klog::write_raw(b" size=");
             klog::write_dec_u64(qsz as u64);
+            klog::write_raw(b"\n");
+        }
+        if p.q0_desc_pa != 0 {
+            klog::write_raw(b"[INFO]  virtio-q0-prog ");
+            klog::write_dec_u64(bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" desc_pa=");
+            klog::write_hex_u64(p.q0_desc_pa);
+            klog::write_raw(b" driver_pa=");
+            klog::write_hex_u64(p.q0_driver_pa);
+            klog::write_raw(b" device_pa=");
+            klog::write_hex_u64(p.q0_device_pa);
+            klog::write_raw(b" final_status=");
+            klog::write_hex_u64(p.final_status as u64);
             klog::write_raw(b"\n");
         }
     }
