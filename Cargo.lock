@@ -332,6 +332,7 @@ dependencies = [
  "syscall",
  "tty",
  "vfs",
+ "virtio",
  "vmm",
 ]
 
@@ -811,6 +812,9 @@ dependencies = [
 [[package]]
 name = "virtio"
 version = "0.1.0"
+dependencies = [
+ "pci",
+]
 
 [[package]]
 name = "vmm"
