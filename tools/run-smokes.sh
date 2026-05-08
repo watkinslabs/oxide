@@ -64,7 +64,8 @@ run_one() {
   local total=${#expected[@]}
   declare -A status
   # ARM UEFI firmware boot is ~25s slower than x86; budget separately.
-  local boot_budget; [ "$arch" = "aarch64" ] && boot_budget=120 || boot_budget=30
+  # x86 needs >30s once init runs all 5 IPC smokes back-to-back.
+  local boot_budget; [ "$arch" = "aarch64" ] && boot_budget=120 || boot_budget=60
   local deadline=$(( $(date +%s) + boot_budget ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     for name in "${expected[@]}"; do
