@@ -346,6 +346,62 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     let _ = (root_pa, new_flags, hhdm); // touch on host/test build
 }
 
+/// `extern "C"` teardown invoked from `Arc<AddressSpace>::drop`:
+/// walks the user-half page tables rooted at `root_pa`, hands every
+/// present leaf frame and intermediate-table page back to PMM, then
+/// frees the root frame itself. Without this every fork/exec would
+/// leak ~16 KiB of PT pages plus every demand-faulted user page.
+///
+/// # SAFETY: caller is `AddressSpace::drop` after the last Arc strong
+/// ref hit zero — the root is no longer active on any CPU and no
+/// concurrent walker / writer remains.
+/// # C: O(N_present_leaves + N_present_tables)
+#[cfg(target_arch = "x86_64")]
+pub unsafe extern "C" fn as_teardown(root_pa: u64) {
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
+    unsafe {
+        hal::pt_walker::free_user_tree::<hal_x86_64::vmm::PtWalkerX86, _>(
+            root_pa, hhdm,
+            // SAFETY: `pa` was previously returned by `alloc_one_frame`
+            // for this AS's tables/leaves; the AS root is quiesced per
+            // fn contract so the page is no longer reachable.
+            |pa| unsafe { crate::pmm_setup::free_one_frame(pa); },
+        );
+    }
+    // Free the root frame itself.
+    // SAFETY: root_pa is the AS-private root from the per-arch
+    // `new_user_*` allocator; no longer reachable per fn contract.
+    unsafe { crate::pmm_setup::free_one_frame(root_pa); }
+}
+
+/// aarch64 mirror of `as_teardown`.
+#[cfg(target_arch = "aarch64")]
+pub unsafe extern "C" fn as_teardown(root_pa: u64) {
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
+    unsafe {
+        hal::pt_walker::free_user_tree::<hal_aarch64::vmm::PtWalkerArm, _>(
+            root_pa, hhdm,
+            // SAFETY: `pa` was previously returned by `alloc_one_frame`
+            // for this AS's tables/leaves; the AS root is quiesced per
+            // fn contract so the page is no longer reachable.
+            |pa| unsafe { crate::pmm_setup::free_one_frame(pa); },
+        );
+    }
+    // SAFETY: root_pa is the AS-private root from the per-arch
+    // `new_user_*` allocator; no longer reachable per fn contract.
+    unsafe { crate::pmm_setup::free_one_frame(root_pa); }
+}
+
+/// Convenience wrapper: install `as_teardown` on a freshly-built AS.
+/// Boot-anchor + hosted-test code paths SHOULD NOT call this — their
+/// roots are either fake (test) or shared kernel state (boot).
+/// # C: O(1)
+pub fn install_teardown(as_: &Arc<AddressSpace>) {
+    as_.set_teardown(as_teardown);
+}
+
 /// Translate Linux `PROT_*` bits (per `15§6.2`) to `VmaProt`.
 /// # C: O(1)
 pub fn prot_from_linux(prot: u64) -> VmaProt {
