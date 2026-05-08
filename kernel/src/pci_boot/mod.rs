@@ -440,5 +440,24 @@ pub fn enumerate_and_log() {
             cap_dump_arch(d);
             virtio_probe_arch(d);
         }
+        // F40: brief IRQ unmask window so any MSIs queued during the
+        // F30 closed-loop drain through oxide_arm_irq_dispatch and
+        // bump MSI_FIRES. Without this the counter stays 0 (CPU IRQs
+        // are masked at probe time). Mirrors the timer-smoke pattern
+        // device_map_smoke_arm uses (already proven safe in this
+        // phase). x86 path is unmasked already so this is aarch64-only.
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: boot phase, GIC enabled by smoke_device_map_arm; brief unmask window mirrors arm-timer smoke; we re-mask immediately after the spin.
+            unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
+            for _ in 0..2_000_000 { core::hint::spin_loop(); }
+            // SAFETY: pairs with daifclr above, restoring boot-mask state.
+            unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
+        }
+        let fires = crate::msi::MSI_FIRES
+            .load(core::sync::atomic::Ordering::Acquire);
+        klog::write_raw(b"[INFO]  msi-fires-post-enum=");
+        klog::write_dec_u64(fires as u64);
+        klog::write_raw(b"\n");
     }
 }
