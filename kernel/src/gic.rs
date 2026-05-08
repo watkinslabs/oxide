@@ -78,6 +78,12 @@ pub static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static LAST_INTID: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
+/// Count of PL011 RX/RT IRQs (INTID 33) the dispatcher has handled.
+/// Diagnostic — proves the IRQ-driven path delivers vs the
+/// timer-poll fallback.
+#[cfg(target_arch = "aarch64")]
+pub static UART_IRQ_FIRES: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum GicStatus {
     AlreadyOn,
@@ -243,6 +249,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // batch of input.
             // SAFETY: dispatcher context, IRQs masked; pl011 was enabled in smoke_device_map_arm; single-CPU.
             unsafe { crate::pl011::ack_rx_irq(); }
+            UART_IRQ_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: mirrors the IAR read above; same INTID; GIC was mapped Device-attr.
         unsafe { eoi(raw); }
