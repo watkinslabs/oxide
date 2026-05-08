@@ -269,4 +269,28 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         klog::write_hex_u64(vbar);
         klog::write_raw(b"\n");
     }
+
+    // PCIe ECAM device-mapping. After acpi::decode_mcfg published
+    // the segment-0 base PA, map bus 0 (256 × 4 KiB = 1 MiB) at a
+    // dedicated kernel VA so `hal_aarch64::pci::EcamPci` can MMIO
+    // the per-BDF config space. v1 only enumerates bus 0 (one
+    // segment, one bus is enough for QEMU virt's host + virtio
+    // devices); higher buses fault if probed and need a follow-up.
+    let ecam_pa = crate::acpi::ECAM_BASE_PA
+        .load(core::sync::atomic::Ordering::Acquire);
+    if ecam_pa != 0 {
+        // Disjoint VA from KERNEL_DEVICE_BASE so the (pa & 0xffff_ffff)
+        // convention there isn't aliased.
+        const ECAM_BUS0_VA: u64 = 0xffff_fe00_0000_0000;
+        for page in 0..256u64 {
+            let pa = ecam_pa + page * 0x1000;
+            let va = ECAM_BUS0_VA + page * 0x1000;
+            // SAFETY: same contract as the GICD/PL011 maps above —
+            // single-CPU pre-init, MmuOps state initialised; ECAM_PA
+            // came from ACPI MCFG so QEMU has the matching device.
+            unsafe { <ArmMmu as MmuOps>::map(Va(va), Pa(pa), device_flags(), PageSize::P4K); }
+        }
+        hal_aarch64::pci::ECAM_BASE_VA
+            .store(ECAM_BUS0_VA, core::sync::atomic::Ordering::Release);
+    }
 }
