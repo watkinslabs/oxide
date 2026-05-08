@@ -199,6 +199,32 @@ pub unsafe fn cmdq_setup(hhdm: u64) -> CmdqStatus {
 #[cfg(target_arch = "aarch64")]
 pub fn cmdq_pa() -> u64 { CMDQ_PA.load(Ordering::Acquire) }
 
+/// GITS_CTLR.Enabled = bit 0. Once flipped, the ITS begins consuming
+/// commands posted via GITS_CWRITER advances. ARM IHI 0069 §11.5.5
+/// (RAO/WI for some bits; bit 0 is the only one we touch).
+#[cfg(target_arch = "aarch64")]
+const GITS_CTLR_ENABLED: u32 = 1 << 0;
+
+/// Set `GITS_CTLR.Enabled`. Must be called only after `cmdq_setup`
+/// + `baser_setup` have programmed the queue and tables.
+///
+/// # SAFETY: caller asserts cmdq + BASERs programmed; LPIs enabled
+/// at the RD; single-CPU pre-init IRQ-off.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn ctlr_enable() -> u32 {
+    let its_va = ITS_VA.load(Ordering::Acquire);
+    if its_va == 0 { return 0; }
+    // SAFETY: ITS frame Device-attr mapped; CTLR is RW at offset 0.
+    unsafe {
+        let p = (its_va + GITS_CTLR as u64) as *mut u32;
+        let cur = core::ptr::read_volatile(p);
+        core::ptr::write_volatile(p, cur | GITS_CTLR_ENABLED);
+        core::ptr::read_volatile(p)
+    }
+}
+
 // ---- GITS_BASER<n> ---------------------------------------------------------
 
 /// Number of GITS_BASER<n> table descriptors (ARM IHI 0069 §11.5.2).
