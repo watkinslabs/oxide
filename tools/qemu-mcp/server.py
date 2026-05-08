@@ -246,6 +246,13 @@ def qemu_start(arch: str) -> str:
                 # which left no virtio device on the bus.
                 "-drive", f"if=none,id=hd0,format=raw,file={img}",
                 "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
+                # Phase 8 prep: explicit modern virtio-net so the
+                # kernel sees device 0x1041 (not the QEMU-default
+                # transitional 0x1000) and can DHCP/ARP through
+                # SLIRP. `-nic none` suppresses the default e1000.
+                "-nic", "none",
+                "-netdev", "user,id=net0",
+                "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",
@@ -263,6 +270,11 @@ def qemu_start(arch: str) -> str:
                 "-bios", str(ovmf),
                 "-drive", f"if=none,id=hd0,format=raw,file={img}",
                 "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
+                # Phase 8 prep: explicit modern virtio-net (0x1041)
+                # symmetric with x86; aarch64 virt has no
+                # default-NIC so `-nic none` is unnecessary.
+                "-netdev", "user,id=net0",
+                "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",
