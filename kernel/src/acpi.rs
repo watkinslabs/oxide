@@ -412,6 +412,12 @@ pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
     }
 }
 
+/// First-segment ECAM base PA published by `decode_mcfg`. Zero if
+/// MCFG was absent / empty. The aarch64 PCI bring-up reads this to
+/// know what to device-map.
+pub static ECAM_BASE_PA: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
+
 /// Decode the MCFG ACPI table (PCI Express memory-mapped
 /// configuration). Header is 36 SDT bytes + 8 reserved + an array
 /// of 16-byte allocation entries. Each entry pins one ECAM region:
@@ -437,6 +443,12 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             let segment    = read_u32_le(p.add(off + 8)) as u16;
             let start_bus  = core::ptr::read_volatile(p.add(off + 10));
             let end_bus    = core::ptr::read_volatile(p.add(off + 11));
+            // Publish the first segment's base for the aarch64 PCI
+            // bring-up. Multi-segment systems would loop; QEMU virt
+            // exposes a single segment so first-wins is fine for v1.
+            if i == 0 {
+                ECAM_BASE_PA.store(base, core::sync::atomic::Ordering::Release);
+            }
             alog_raw(b"[INFO]    mcfg ecam pa=");
             alog_hex(base);
             alog_raw(b" segment=");

@@ -750,33 +750,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
-    // PCI bus enumeration (x86 only for v1; aarch64 ECAM rides
-    // alongside its real-driver work).
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    {
-        debug_boot! {
-            let r = hal_x86_64::pci::LegacyPci;
-            let devs = pci::enumerate(&r);
-            klog::write_raw(b"[INFO]  pci: devices=");
-            klog::write_dec_u64(devs.len() as u64);
-            klog::write_raw(b"\n");
-            for d in devs.iter().take(16) {
-                klog::write_raw(b"[INFO]  pci ");
-                klog::write_dec_u64(d.bdf.bus as u64);
-                klog::write_raw(b":");
-                klog::write_dec_u64(d.bdf.device as u64);
-                klog::write_raw(b".");
-                klog::write_dec_u64(d.bdf.function as u64);
-                klog::write_raw(b" vendor=");
-                klog::write_hex_u64(d.vendor_id as u64);
-                klog::write_raw(b" device=");
-                klog::write_hex_u64(d.device_id as u64);
-                klog::write_raw(b" class=");
-                klog::write_hex_u64(d.class_code as u64);
-                klog::write_raw(b"\n");
-            }
-        }
-    }
+    // PCI bus enumeration — both arches via `pci::enumerate`; per-arch
+    // `ConfigSpaceReader` differs (x86 CF8/CFC, aarch64 ECAM MMIO).
+    #[cfg(target_os = "oxide-kernel")]
+    { crate::pci_boot::enumerate_and_log(); }
 
     // virtio-net legacy driver detect + init. No-op if no device.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -934,6 +911,11 @@ pub mod futex;
 // shape; only the saved-state register set differs.
 #[cfg(target_os = "oxide-kernel")]
 pub mod sig_dispatch;
+
+// PCI bus enumeration boot helper (per-arch ConfigSpaceReader
+// dispatch). Split out of lib.rs to keep that file under cap.
+#[cfg(target_os = "oxide-kernel")]
+pub mod pci_boot;
 
 // P2-21c initial user-stack builder per docs/31§4 step 5.
 // SysV argc/argv/envp/auxv layout written at execve time.
