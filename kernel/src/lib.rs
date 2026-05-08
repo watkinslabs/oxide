@@ -59,6 +59,7 @@ pub mod smp_x86;
 pub mod arm_timer;
 #[cfg(target_arch = "aarch64")]
 pub mod gic;
+pub mod msi;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod canary;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]

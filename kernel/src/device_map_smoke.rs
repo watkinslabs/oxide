@@ -304,14 +304,20 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         const V2M_VA: u64 = 0xffff_fc00_0000_0000;
         // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BUS0_VA.
         unsafe { <ArmMmu as MmuOps>::map(Va(V2M_VA), Pa(v2m_pa), device_flags(), PageSize::P4K); }
+        // SAFETY: V2M_VA is freshly Device-attr mapped above; aligned u32 read of the MSI_TYPER register at offset 0x008.
+        let typer = unsafe {
+            core::ptr::read_volatile((V2M_VA + 0x008) as *const u32)
+        };
+        let spi_first = (typer >> 16) & 0x3FF;
+        let spi_count = typer & 0x3FF;
+        // F37: publish the SPI range so `crate::msi::alloc_arm_spi`
+        // can hand out vectors. Side effect runs unconditionally;
+        // klog stays gated under R06.
+        crate::msi::GICV2M_SPI_FIRST
+            .store(spi_first, core::sync::atomic::Ordering::Release);
+        crate::msi::GICV2M_SPI_COUNT
+            .store(spi_count, core::sync::atomic::Ordering::Release);
         debug_boot! {
-            // SAFETY: V2M_VA is freshly Device-attr mapped above; aligned
-            // u32 read of the MSI_TYPER register at offset 0x008.
-            let typer = unsafe {
-                core::ptr::read_volatile((V2M_VA + 0x008) as *const u32)
-            };
-            let spi_first = (typer >> 16) & 0x3FF;
-            let spi_count = typer & 0x3FF;
             klog::write_raw(b"[INFO]  gicv2m typer=");
             klog::write_hex_u64(typer as u64);
             klog::write_raw(b" spi_first=");
@@ -319,6 +325,16 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
             klog::write_raw(b" spi_count=");
             klog::write_dec_u64(spi_count as u64);
             klog::write_raw(b"\n");
+            // F37 demo: allocate one SPI + enable it at the GIC
+            // distributor. No MSI-X table write yet (F38), so nothing
+            // will fire — this just proves the alloc + GIC enable path.
+            if let Some(spi) = crate::msi::alloc_arm_spi() {
+                // SAFETY: gic::enable was called earlier in this same fn (smoke_device_map_arm); SPI is freshly allocated and owned by F37; single-CPU pre-init.
+                unsafe { crate::gic::enable_intid(spi); }
+                klog::write_raw(b"[INFO]  msi-spi alloc=");
+                klog::write_dec_u64(spi as u64);
+                klog::write_raw(b" enabled\n");
+            }
         }
     }
 }
