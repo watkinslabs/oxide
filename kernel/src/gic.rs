@@ -236,6 +236,14 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
                 core::arch::asm!("msr cntv_tval_el0, {v:x}", v = in(reg) p, options(nomem, nostack, preserves_flags));
             }
         }
+        if intid == 33 {
+            // F47: PL011 RX/RT IRQ — drain FIFO via tick_poll_uart
+            // below, then write-1-to-clear the IMSC-matched bits in
+            // UARTICR so the line drops and re-arms for the next
+            // batch of input.
+            // SAFETY: dispatcher context, IRQs masked; pl011 was enabled in smoke_device_map_arm; single-CPU.
+            unsafe { crate::pl011::ack_rx_irq(); }
+        }
         // SAFETY: mirrors the IAR read above; same INTID; GIC was mapped Device-attr.
         unsafe { eoi(raw); }
         // P3-23: drain PL011 RX FIFO + wake stdin waiters.
