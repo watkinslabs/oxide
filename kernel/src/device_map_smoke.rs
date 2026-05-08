@@ -122,17 +122,19 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
 // aarch64
 // ---------------------------------------------------------------------------
 
-/// GICv2 distributor base on QEMU virt (matches MADT log).
+/// GIC distributor base on QEMU virt (matches MADT log; same address
+/// for v2 and v3).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const GICD_PHYS: u64 = 0x0800_0000;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const GICD_VA: u64 = KERNEL_DEVICE_BASE | (GICD_PHYS & 0xFFFF_FFFF);
 
-/// GICv2 CPU-interface base on QEMU virt (GICD + 0x10000 by convention).
+/// GICv3 redistributor base on QEMU virt. 128 KiB per CPU (RD frame
+/// at +0, SGI frame at +0x10000); single-CPU UP only maps the first.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-const GICC_PHYS: u64 = 0x0801_0000;
+const GICR_PHYS: u64 = 0x080A_0000;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-const GICC_VA: u64 = KERNEL_DEVICE_BASE | (GICC_PHYS & 0xFFFF_FFFF);
+const GICR_VA: u64 = KERNEL_DEVICE_BASE | (GICR_PHYS & 0xFFFF_FFFF);
 
 /// PL011 phys base on QEMU virt (matches SPCR log).
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -154,7 +156,18 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
     use hal_aarch64::mmu_ops::ArmMmu;
     // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active,
     // single-CPU, IRQs off; mmu_ops state initialised.
-    unsafe { <ArmMmu as MmuOps>::map(Va(GICD_VA), Pa(GICD_PHYS), device_flags(), PageSize::P4K); }
+    // Map all 16 pages (64 KiB) of the GICD region so GICv3
+    // IROUTER (offset 0x6000+) is reachable.
+    unsafe {
+        for i in 0..16u64 {
+            <ArmMmu as MmuOps>::map(
+                Va(GICD_VA + i * 0x1000),
+                Pa(GICD_PHYS + i * 0x1000),
+                device_flags(),
+                PageSize::P4K,
+            );
+        }
+    }
     debug_vmm! {
         // SAFETY: GICD_VA was just mapped Device-nGnRnE; read GICD_TYPER at offset 4.
         let typer = unsafe { core::ptr::read_volatile((GICD_VA + 0x4) as *const u32) };
@@ -163,22 +176,26 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         klog::write_raw(b"\n");
     }
 
-    // GICv2 enable: map GICC and program both halves.
-    // SAFETY: same contract; GICC at GICD+0x10000 on QEMU virt.
-    unsafe { <ArmMmu as MmuOps>::map(Va(GICC_VA), Pa(GICC_PHYS), device_flags(), PageSize::P4K); }
+    // GICv3 enable: map both 64 KiB redistributor frames (RD + SGI)
+    // for CPU 0 and program the distributor + per-CPU sysregs.
+    // SAFETY: GICR_PHYS is the QEMU virt redistributor base; we own the device pre-init.
+    unsafe {
+        <ArmMmu as MmuOps>::map(Va(GICR_VA),               Pa(GICR_PHYS),               device_flags(), PageSize::P4K);
+        <ArmMmu as MmuOps>::map(Va(GICR_VA + 0x10000),     Pa(GICR_PHYS + 0x10000),     device_flags(), PageSize::P4K);
+    }
     {
         // SAFETY: both VAs are freshly Device-attr mapped; single-CPU pre-init.
-        let s = unsafe { gic::enable(GICD_VA, GICC_VA) };
+        let s = unsafe { gic::enable(GICD_VA, GICR_VA) };
         match s {
             gic::GicStatus::AlreadyOn => { debug_irq! { klog::kinfo!("gic: already on"); } }
-            gic::GicStatus::Enabled { typer: _typer, gicd_iidr: _gicd_iidr, gicc_iidr: _gicc_iidr } => {
+            gic::GicStatus::Enabled { typer: _typer, gicd_iidr: _gicd_iidr, gicr_typer_lo: _gicr_typer } => {
                 debug_irq! {
-                    klog::write_raw(b"[INFO]  gic: enabled typer=");
+                    klog::write_raw(b"[INFO]  gicv3: enabled typer=");
                     klog::write_hex_u64(_typer as u64);
                     klog::write_raw(b" gicd_iidr=");
                     klog::write_hex_u64(_gicd_iidr as u64);
-                    klog::write_raw(b" gicc_iidr=");
-                    klog::write_hex_u64(_gicc_iidr as u64);
+                    klog::write_raw(b" gicr_typer_lo=");
+                    klog::write_hex_u64(_gicr_typer as u64);
                     klog::write_raw(b"\n");
                     // Polled-timer smoke: virtual generic-timer
                     // counts down from 0xFFFF_FFFF over a brief spin.

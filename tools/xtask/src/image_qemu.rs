@@ -356,7 +356,7 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
     let smp_str = smp.to_string();
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
-        "-machine", "virt",
+        "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
         "-m", "256M",
@@ -423,7 +423,7 @@ fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> 
     let smp_str = smp.to_string();
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
-        "-machine", "virt",
+        "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
         "-m", "256M",
