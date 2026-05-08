@@ -129,10 +129,17 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
-    let stack_hint = UserVirtAddr::new(crate::elf_smoke::EXEC_USER_STACK_VA)
+    // 64 KiB stack — busybox + glibc/musl static binaries routinely
+    // use >4 KiB through SIGCHLD handlers, /proc parsers, and stdio
+    // init. A single 4 KiB page underflows on the first wide musl
+    // libc init frame. Matches the aarch64 execve path below.
+    const EXEC_USER_STACK_LEN: usize = 0x10000;
+    const EXEC_USER_STACK_VA:  u64   = 0x4F1_000;
+    const EXEC_USER_STACK_TOP: u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
+    let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
     if new_as.mmap(
-        Some(stack_hint), 0x1000,
+        Some(stack_hint), EXEC_USER_STACK_LEN,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
         VmaBacking::Anonymous,
@@ -212,7 +219,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         crate::exec_stack::build_user_stack(
-            crate::elf_smoke::EXEC_USER_STACK_TOP,
+            EXEC_USER_STACK_TOP,
             &argv_slices[..argc],
             &envp_slices[..envc],
             &img,
