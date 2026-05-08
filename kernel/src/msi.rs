@@ -9,7 +9,12 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+/// Kernel VA the GICv2m frame is device-mapped at. Published by
+/// `device_map_smoke_arm` after mapping. Zero = unmapped.
+/// SETSPI_NS register lives at `+0x040`.
+pub static GICV2M_VA: AtomicU64 = AtomicU64::new(0);
 
 /// First SPI the GICv2m frame can trigger. Published by F36's TYPER
 /// read at boot. Zero = no GICv2m discovered (e.g. pre-init or x86).
