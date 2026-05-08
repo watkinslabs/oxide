@@ -26,6 +26,15 @@ const SIGTRAP: u32 = 5;
 /// RFLAGS.TF (Trap Flag) — single-step on x86.
 #[cfg(target_arch = "x86_64")]
 const RFLAGS_TF: u64 = 0x100;
+/// SPSR_EL1.SS — software-step on aarch64. Bit 21.
+#[cfg(target_arch = "aarch64")]
+const SPSR_SS: u64 = 1 << 21;
+/// SVC frame layout slot offsets per `oxide_lower_el_sync_handler`'s
+/// 288-byte frame (see `vbar.rs` save block).
+#[cfg(target_arch = "aarch64")]
+const FRAME_X0_OFF:   usize = 0x00;
+#[cfg(target_arch = "aarch64")]
+const FRAME_SPSR_OFF: usize = 0xb8;
 
 /// Asm-callable hook from `oxide_syscall_entry`'s sysretq prologue.
 /// Reads `Task.singlestep` and ORs RFLAGS.TF into `*rflags_ptr` if
@@ -63,6 +72,81 @@ fn x86_user_trap_hook(frame: &mut hal_x86_64::FaultFrame) -> bool {
         cur.singlestep.store(0, Ordering::Release);
     }
     true
+}
+
+/// Asm-callable hook from `oxide_lower_sync_restore` — arms
+/// SPSR.SS + MDSCR_EL1.SS in the saved frame so the next user
+/// instruction triggers a Software-Step exception.
+///
+/// # SAFETY: caller is the SVC/softstep return asm; `frame_ptr`
+/// points at a 288 B SVC frame on the kernel stack.
+/// # C: O(1)
+/// # Ctx: kernel-mode tail of sync handler, IRQs masked
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+pub unsafe extern "C" fn oxide_arm_arm_singlestep(frame_ptr: *mut u8) {
+    let cur = match crate::sched::current() { Some(c) => c, None => return };
+    if cur.singlestep.load(Ordering::Acquire) == 0 { return; }
+    // SAFETY: per fn contract; the SPSR slot is an aligned u64 within the 288 B frame we own.
+    unsafe {
+        let spsr_ptr = frame_ptr.add(FRAME_SPSR_OFF) as *mut u64;
+        *spsr_ptr |= SPSR_SS;
+    }
+    // Set MDSCR_EL1.SS (bit 0) so the CPU treats SPSR.SS as
+    // single-step rather than ignoring it. Stays set across the
+    // step; cleared by the software-step handler.
+    // SAFETY: MDSCR_EL1 is privileged; legal at EL1; RMW on a sysreg.
+    unsafe {
+        core::arch::asm!(
+            "mrs  x9,  mdscr_el1",
+            "orr  x9,  x9, #1",
+            "msr  mdscr_el1, x9",
+            out("x9") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Asm-callable hook from `oxide_softstep_save_block` — handles a
+/// Software-Step exception from user mode. Clears SPSR.SS in the
+/// saved frame, clears MDSCR_EL1.SS kernel-side, posts SIGTRAP, and
+/// clears Task.singlestep. Returns the original user x0 so the
+/// shared restore block can store it to the retval slot — making
+/// the post-restore `ldr x0, [sp, #0xc8]` a no-op for this path.
+///
+/// # SAFETY: caller is the softstep asm; `frame_ptr` points at a
+/// fully-saved 288 B SVC frame.
+/// # C: O(1)
+/// # Ctx: synchronous exception, IRQs masked
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+pub unsafe extern "C" fn oxide_arm_software_step_handler(frame_ptr: *mut u8) -> u64 {
+    // SAFETY: per fn contract; frame is on our stack with valid SPSR + x0 slots.
+    let (orig_x0, spsr_ptr) = unsafe {
+        let x0_ptr   = frame_ptr.add(FRAME_X0_OFF)   as *const u64;
+        let spsr_ptr = frame_ptr.add(FRAME_SPSR_OFF) as *mut u64;
+        (core::ptr::read_volatile(x0_ptr), spsr_ptr)
+    };
+    // Clear SPSR.SS so the next instruction doesn't single-step.
+    // SAFETY: spsr_ptr is the SPSR slot in the saved 288 B SVC frame; aligned u64; we own it for the duration of this hook.
+    unsafe { *spsr_ptr &= !SPSR_SS; }
+    // Clear MDSCR_EL1.SS so the CPU stops generating step exceptions
+    // until the next PTRACE_SINGLESTEP arms it again.
+    // SAFETY: MDSCR_EL1 is a privileged debug sysreg; legal RMW at EL1; single-CPU UP at this synchronous-trap context.
+    unsafe {
+        core::arch::asm!(
+            "mrs  x9,  mdscr_el1",
+            "bic  x9,  x9, #1",
+            "msr  mdscr_el1, x9",
+            out("x9") _,
+            options(nostack, preserves_flags),
+        );
+    }
+    if let Some(cur) = crate::sched::current() {
+        cur.sigpending.fetch_or(1u64 << (SIGTRAP - 1), Ordering::Release);
+        cur.singlestep.store(0, Ordering::Release);
+    }
+    orig_x0
 }
 
 /// Install the per-arch user-trap hook so #DB / Software-Step traps
