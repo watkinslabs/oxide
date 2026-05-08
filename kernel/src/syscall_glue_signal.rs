@@ -229,8 +229,30 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             0
         }
         PTRACE_POKEUSER => -(Errno::Eopnotsupp.as_i32() as i64),
-        PTRACE_CONT | PTRACE_SYSCALL | PTRACE_SINGLESTEP
-            | PTRACE_GETREGS | PTRACE_SETREGS
+        PTRACE_CONT | PTRACE_SYSCALL | PTRACE_SINGLESTEP => {
+            // Real wake: target was Stopped (via SIGSTOP/TSTP/etc. or
+            // ATTACH-induced stop in a future PTRACE_INTERRUPT path).
+            // Flip Stopped → Runnable + re-enqueue. Optionally inject
+            // a signal from `data` (caller's `data` arg = a3) — Linux
+            // semantic: 0 = continue without signal; non-zero = post
+            // that signal pending so syscall-return delivers it.
+            //
+            // SINGLESTEP is treated as CONT for v1 (no actual TF/SS
+            // hardware bit toggle); a single-shot trap would need
+            // arch-specific saved-frame mutation per call. Acceptable
+            // first-cut so debuggers' continue / step / syscall paths
+            // get the same wake behaviour.
+            let target = match crate::sched::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let sig = args.a3 as i32;
+            if sig > 0 && sig <= 64 {
+                target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+            }
+            crate::sched::registry::wake_if_stopped(&target);
+            0
+        }
+        PTRACE_GETREGS | PTRACE_SETREGS
             | PTRACE_GETFPREGS | PTRACE_SETFPREGS
             | PTRACE_GETREGSET | PTRACE_SETREGSET
             | PTRACE_INTERRUPT | PTRACE_LISTEN
