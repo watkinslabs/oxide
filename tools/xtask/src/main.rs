@@ -156,6 +156,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/msg_smoke/msg_smoke",       "userspace/msg_smoke/msg_smoke.c"),
         ("userspace/mq_smoke/mq_smoke",         "userspace/mq_smoke/mq_smoke.c"),
         ("userspace/ptrace_smoke/ptrace_smoke", "userspace/ptrace_smoke/ptrace_smoke.c"),
+        ("userspace/mprotect_smoke/mprotect_smoke", "userspace/mprotect_smoke/mprotect_smoke.c"),
     ];
     let x86_bins: &[(&str, &str)] = &[
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
@@ -375,6 +376,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
+    put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
     // The remaining x86-only bins are the dynlink+hello_dyn pair (the
     // dynamic-linker smoke harness, x86 ABI inherent for now). Skip
     // staging them on aarch64 until we have aarch64 ld-musl.

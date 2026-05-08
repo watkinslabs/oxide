@@ -338,6 +338,64 @@ pub unsafe fn translate_4k_at_root<W: PtWalker>(
     }
 }
 
+/// Walk `[va_start, va_end)` in 4 KiB steps and rewrite each
+/// present 4 KiB leaf with `W::pack_4k_leaf(pa, new_flags)`,
+/// preserving the leaf's PA. Skips not-present and huge/block
+/// leaves (per-page mprotect on a huge mapping needs split-down
+/// first; rare in v1 — most user mappings are 4 KiB). Returns
+/// the count of leaves actually rewritten.
+///
+/// Caller is responsible for TLB invalidation of every va in
+/// the range AFTER this returns; this fn writes the PTE entries
+/// only.
+///
+/// # SAFETY: same contract as `translate_4k_at_root` plus
+/// caller asserts no concurrent walker / fault path is racing
+/// with the rewrite (single-CPU + IRQ-off or per-AS PT lock).
+/// # C: O((va_end - va_start) / 4096 * walk_depth)
+/// # Ctx: under PT lock or pre-init single-CPU.
+pub unsafe fn protect_4k_at_root<W: PtWalker>(
+    root_pa: u64, va_start: u64, va_end: u64, new_flags: crate::PageFlags,
+    hhdm_offset: u64,
+) -> usize {
+    let mut updated = 0usize;
+    let mut va = va_start & !((1u64 << L3_SHIFT) - 1);
+    while va < va_end {
+        let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+        let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+        let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+        let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+        // SAFETY: HHDM covers PT memory per fn contract; reads/writes only the L3 leaf slot which is exclusive under the PT lock.
+        unsafe {
+            let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
+            let e0 = ptr::read_volatile(l0.add(i_l0));
+            if W::is_valid(e0) && !W::is_huge_or_block(e0) {
+                let l1_pa = e0 & W::PHYS_MASK;
+                let l1 = (hhdm_offset.wrapping_add(l1_pa)) as *const u64;
+                let e1 = ptr::read_volatile(l1.add(i_l1));
+                if W::is_valid(e1) && !W::is_huge_or_block(e1) {
+                    let l2_pa = e1 & W::PHYS_MASK;
+                    let l2 = (hhdm_offset.wrapping_add(l2_pa)) as *const u64;
+                    let e2 = ptr::read_volatile(l2.add(i_l2));
+                    if W::is_valid(e2) && !W::is_huge_or_block(e2) {
+                        let l3_pa = e2 & W::PHYS_MASK;
+                        let l3 = (hhdm_offset.wrapping_add(l3_pa)) as *mut u64;
+                        let leaf = ptr::read_volatile(l3.add(i_l3));
+                        if W::is_valid(leaf) {
+                            let pa = leaf & W::PHYS_MASK;
+                            let new_leaf = W::pack_4k_leaf(pa, new_flags);
+                            ptr::write_volatile(l3.add(i_l3), new_leaf);
+                            updated += 1;
+                        }
+                    }
+                }
+            }
+        }
+        va = va.wrapping_add(1u64 << L3_SHIFT);
+    }
+    updated
+}
+
 /// Translate `va` walking the live tables, recognising huge/block
 /// leaves at intermediate levels. Returns
 /// `Some((pa_for_va, raw_leaf, leaf_level))` where:
