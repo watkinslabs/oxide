@@ -1,8 +1,55 @@
-# State 2026-05-08 (session 48 ENDED — F45-F52 + D14/D15 checkpoints)
+# State 2026-05-08 (session 48 ENDED — F45-F54 + D14/D15/D16 checkpoints)
 
-## Headline (session 48 final, F45-F52)
+## Headline (session 48 final, F45-F54)
 
-9 PRs landed (#729-#737):
+12 PRs landed (#729-#740):
+  - **F45-F46**  GIC SPI fix + ISPENDR2 probe → silent-MSI traced
+                  to PCI root-complex routing (parked).
+  - **F47-F48**  PL011 RX IRQ wired + UART_IRQ_FIRES counter.
+  - **F49-F52**  PTRACE_SINGLESTEP — Task.singlestep flag,
+                  x86_64 + aarch64 trap arming, userspace smoke.
+  - **F53**      Signal default-action terminate encodes
+                  WIFSIGNALED status. Unblocked ptrace_singlestep_smoke
+                  (now PASS at boot on aarch64).
+  - **F54**      Removed unconditional timer-IRQ UART drain;
+                  IRQ-driven SPI-33 path is sole RX drain.
+
+x86 virtio-blk lockstep verify also done first thing in session 48
+(without a PR): `qemu_run_until "virtio-blk-rd"` returned status=0x00
++ "EFI PART..." on q35.
+
+## All "in order" items now addressed
+
+  1. ~~Silent-MSI remediation~~ — parked (PCI root-complex level).
+  2. ~~/bin/sh interactive / IRQ-driven UART RX~~ — F47/F48 wiring,
+     F54 timer-poll retired.
+  3. ~~PTRACE_SINGLESTEP real trap~~ — F49+F50+F51 done both arches;
+     F52 userspace smoke PASS post-F53.
+  4. ~~Default-action SIGTRAP terminate~~ — F53 wstat encoding fix.
+  5. ~~Move virtio_drv.rs to dedicated module~~ — pure refactor,
+     skipped per "don't churn for cleanup's sake."
+  6. ~~make qemu-x86 virtio-blk closed-loop~~ — verified live.
+
+## Six user smokes now PASS at boot (aarch64)
+
+  sem_smoke, msg_smoke, mq_smoke, ptrace_smoke,
+  ptrace_singlestep_smoke, mprotect_smoke
+
+## Open follow-ups (next session candidates)
+
+- Silent-MSI remediation via GICv3+ITS rewrite (multi-week; only
+  if device-driven MSI becomes a v1 requirement).
+- Phase 8+ work per master plan §3 — real TCP/IPv4 stack, ARP,
+  ICMP. virtio-net TX wired (F43); RX path needs full stack lift.
+- Phase 9+ hardening — KASLR, stack canaries, SMEP/SMAP, SECCOMP
+  full coverage.
+- Phase 10+ modules loader — kmod-style ELF reloc + insmod.
+- Interactive shell smoke that exercises stdin via the F54 IRQ-driven
+  path (would validate end-to-end TTY input).
+
+## Headline (session 48 first leg, F45-F49)
+
+5 PRs landed after session 47 close-out:
   - **F45-F46**  GIC SPI bug fix + diagnostic. Silent-MSI cause
                   isolated to PCI root-complex routing (parked,
                   ISR-poll path remains functional).
