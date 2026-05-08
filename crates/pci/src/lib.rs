@@ -170,6 +170,68 @@ pub mod heapless_caps {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BAR decoder per PCI Local Bus 3.0 §6.2.5.1. Pure read of the values the
+// firmware already programmed — no write-probe sizing here (that needs the
+// command register decode disabled and is for the driver, not enumeration).
+// ---------------------------------------------------------------------------
+
+/// One decoded BAR. Header-type-0 devices have BAR0..BAR5.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Bar {
+    /// Empty / unprogrammed slot (reads as 0).
+    None,
+    /// I/O port range. v1 only sees these on x86 legacy.
+    Io { port: u32 },
+    /// 32-bit memory BAR.
+    Mem32 { base: u32, prefetch: bool },
+    /// 64-bit memory BAR. Consumes BAR_N AND BAR_N+1.
+    Mem64 { base: u64, prefetch: bool },
+    /// The high half of a 64-bit BAR — caller already consumed it as
+    /// part of the prior `Mem64`. Listed here so the index<->BAR_N map
+    /// stays 1:1.
+    HighHalfConsumed,
+}
+
+/// BAR offset in config space for header type 0. # C: O(1)
+pub const fn bar_offset(idx: u8) -> u8 {
+    debug_assert!(idx < 6);
+    0x10 + idx * 4
+}
+
+/// Decode all 6 BARs of a header-type-0 device. # C: O(1) — at most 12 reads.
+pub fn decode_bars<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> [Bar; 6] {
+    let mut out = [Bar::None; 6];
+    let mut idx = 0u8;
+    while idx < 6 {
+        let off = bar_offset(idx);
+        let raw = r.read32(bdf, off);
+        if raw == 0 {
+            out[idx as usize] = Bar::None;
+            idx += 1;
+            continue;
+        }
+        if raw & 0x1 != 0 {
+            out[idx as usize] = Bar::Io { port: raw & 0xFFFF_FFFC };
+            idx += 1;
+            continue;
+        }
+        let prefetch = raw & 0x8 != 0;
+        let kind = (raw >> 1) & 0x3;
+        let lo = (raw & 0xFFFF_FFF0) as u64;
+        if kind == 0x2 && idx + 1 < 6 {
+            let hi = r.read32(bdf, bar_offset(idx + 1)) as u64;
+            out[idx as usize] = Bar::Mem64 { base: (hi << 32) | lo, prefetch };
+            out[(idx + 1) as usize] = Bar::HighHalfConsumed;
+            idx += 2;
+        } else {
+            out[idx as usize] = Bar::Mem32 { base: lo as u32, prefetch };
+            idx += 1;
+        }
+    }
+    out
+}
+
 /// Walk the PCI bus: 256 buses × 32 devices × 8 functions.
 /// Returns every present device. Skips multi-function probing
 /// past function 0 unless the header_type's MF bit (0x80) is set.
@@ -235,6 +297,43 @@ mod tests {
         assert_eq!(v[0].vendor_id, 0x1AF4);
         assert_eq!(v[0].device_id, 0x1041);
         assert_eq!(v[0].class_code, 0x02);
+    }
+
+    #[test]
+    fn decode_mem64_bar() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 1, function: 0 };
+        // BAR0: Mem64 prefetch, base=0x1_0000_0000
+        // raw lo = base_lo | type=10b<<1 | prefetch<<3 = 0 | 0x4 | 0x8 = 0x0C
+        r.write32(bdf, 0x10, 0x0000_000C);
+        // BAR1 = high half = 0x00000001
+        r.write32(bdf, 0x14, 0x0000_0001);
+        // Zero remaining BARs (test reader defaults to 0xFFFFFFFF).
+        r.write32(bdf, 0x18, 0);
+        r.write32(bdf, 0x1C, 0);
+        r.write32(bdf, 0x20, 0);
+        r.write32(bdf, 0x24, 0);
+        let bars = decode_bars(&r, bdf);
+        assert_eq!(bars[0], Bar::Mem64 { base: 0x1_0000_0000, prefetch: true });
+        assert_eq!(bars[1], Bar::HighHalfConsumed);
+        assert_eq!(bars[2], Bar::None);
+    }
+
+    #[test]
+    fn decode_mem32_and_io() {
+        let r = MapReader { m: Mutex::new(HashMap::new()) };
+        let bdf = Bdf { bus: 0, device: 2, function: 0 };
+        // BAR0: Mem32 base=0x1000_0000, no prefetch
+        r.write32(bdf, 0x10, 0x1000_0000);
+        // BAR1: I/O port 0xC000
+        r.write32(bdf, 0x14, 0x0000_C001);
+        r.write32(bdf, 0x18, 0);
+        r.write32(bdf, 0x1C, 0);
+        r.write32(bdf, 0x20, 0);
+        r.write32(bdf, 0x24, 0);
+        let bars = decode_bars(&r, bdf);
+        assert_eq!(bars[0], Bar::Mem32 { base: 0x1000_0000, prefetch: false });
+        assert_eq!(bars[1], Bar::Io { port: 0xC000 });
     }
 
     #[test]
