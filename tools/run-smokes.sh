@@ -69,9 +69,9 @@ run_one() {
   while [ "$(date +%s)" -lt "$deadline" ]; do
     for name in "${expected[@]}"; do
       [ -n "${status[$name]:-}" ] && continue
-      if grep -q "${name}: PASS" "$log" 2>/dev/null; then
+      if grep -aq "${name}: PASS" "$log" 2>/dev/null; then
         status[$name]=PASS
-      elif grep -q "${name}: FAIL" "$log" 2>/dev/null; then
+      elif grep -aq "${name}: FAIL" "$log" 2>/dev/null; then
         status[$name]=FAIL
       fi
     done
