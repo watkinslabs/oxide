@@ -482,6 +482,41 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                 klog::write_raw(b"[INFO]  its-cmd inv-blk ");  log_cmd_status(s_inv);
                 klog::write_raw(b"[INFO]  its-cmd sync ");      log_cmd_status(s_sync);
             }
+            // F56-09: kernel-side self-test of the ITS → LPI →
+            // dispatcher path. Post INT(DeviceID=0x10, EventID=0)
+            // which makes the ITS synthesise LPI 8192 as if
+            // virtio-blk had written GITS_TRANSLATER. Briefly
+            // unmask DAIF.I so the dispatcher can take the IRQ
+            // and bump MSI_FIRES. If this counter increments, the
+            // ITS-side plumbing is correct and any later silent-
+            // MSI is the device's fault, not ours.
+            let pre = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            // SAFETY: ITS enabled, MAPD+MAPC+MAPTI posted above, LPI 8192 enabled in PROPBASER; cmd_post follows the F56-06 protocol.
+            let s_int = unsafe {
+                crate::its::cmd_post(hhdm, crate::its::cmd_int(0x10, 0))
+            };
+            // SAFETY: clear DAIF.I momentarily so a pending LPI
+            // can deliver; we re-mask before returning. Single
+            // CPU pre-init context.
+            unsafe {
+                core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
+                for _ in 0..2_000_000 { core::hint::spin_loop(); }
+                core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
+            }
+            let post = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            debug_irq! {
+                klog::write_raw(b"[INFO]  its-cmd int-self ");  log_cmd_status(s_int);
+                klog::write_raw(b"[INFO]  its-self-fire pre=");
+                klog::write_dec_u64(pre as u64);
+                klog::write_raw(b" post=");
+                klog::write_dec_u64(post as u64);
+                klog::write_raw(b" delta=");
+                klog::write_dec_u64(post.saturating_sub(pre) as u64);
+                klog::write_raw(b" last_intid=");
+                klog::write_hex_u64(crate::gic::LAST_INTID
+                    .load(core::sync::atomic::Ordering::Relaxed) as u64);
+                klog::write_raw(b"\n");
+            }
         } else {
             debug_irq! {
                 klog::write_raw(b"[INFO]  its: no MADT type-15 reported\n");
