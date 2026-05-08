@@ -212,6 +212,39 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         }
     }
 
+    // F56-04: LPI bring-up on the boot CPU's redistributor. Allocates
+    // the global LPI configuration table (16 KiB) + per-RD pending
+    // table (64 KiB) and sets GICR_CTLR.EnableLPI. Must precede ITS
+    // setup — once the ITS posts MAPD/MAPC/MAPTI, LPIs delivered via
+    // GITS_TRANSLATER need a configured pending region or the RD
+    // drops them silently.
+    {
+        let hhdm_lpi = hal_aarch64::mmu_ops::hhdm_offset();
+        // SAFETY: gic::enable just ran (publishes GICR_VA); PMM is up; GICR RD frame Device-attr mapped above; single-CPU pre-init.
+        let _l = unsafe { gic::lpis_enable(hhdm_lpi) };
+        debug_irq! {
+            match _l {
+                gic::LpisStatus::AlreadyOn =>
+                    klog::write_raw(b"[INFO]  lpis: already on\n"),
+                gic::LpisStatus::AllocFailed =>
+                    klog::write_raw(b"[ERROR] lpis: pmm alloc failed\n"),
+                gic::LpisStatus::Ready { prop_pa, pend_pa, propbaser_rd, pendbaser_rd, ctlr_post } => {
+                    klog::write_raw(b"[INFO]  lpis: prop_pa=");
+                    klog::write_hex_u64(prop_pa);
+                    klog::write_raw(b" pend_pa=");
+                    klog::write_hex_u64(pend_pa);
+                    klog::write_raw(b" propbaser_rd=");
+                    klog::write_hex_u64(propbaser_rd);
+                    klog::write_raw(b" pendbaser_rd=");
+                    klog::write_hex_u64(pendbaser_rd);
+                    klog::write_raw(b" gicr_ctlr=");
+                    klog::write_hex_u64(ctlr_post as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
+        }
+    }
+
     // F56-01: ITS bring-up. Map the 64 KiB control frame published
     // via MADT type-15 (`acpi::GIC_ITS_PA`), probe GITS_TYPER/CTLR.
     // No enable yet — subsequent F56 PRs add command queue, tables,
