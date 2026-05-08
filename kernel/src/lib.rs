@@ -930,7 +930,9 @@ pub mod syscall_glue_time;
 pub mod futex;
 
 // P3-65 signal dispatch (build user-stack frame + jump to sa_handler).
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+// Arch-portable since F16 — x86 + aarch64 paths share the wire frame
+// shape; only the saved-state register set differs.
+#[cfg(target_os = "oxide-kernel")]
 pub mod sig_dispatch;
 
 // P2-21c initial user-stack builder per docs/31§4 step 5.

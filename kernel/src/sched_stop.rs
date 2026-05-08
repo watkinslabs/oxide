@@ -8,7 +8,10 @@
 // schedule() round picks it up and we resume.
 
 #![cfg(target_os = "oxide-kernel")]
-#![cfg(target_arch = "x86_64")]
+// Arch-neutral now: only uses sched + state primitives that exist on
+// both arches. Pre-F16 was gated x86-only by oversight, blocking the
+// SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU default-stop disposition on
+// aarch64.
 
 use core::sync::atomic::Ordering;
 

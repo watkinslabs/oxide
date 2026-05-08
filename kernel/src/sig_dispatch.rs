@@ -24,10 +24,46 @@
 //
 //   - rt_sigreturn reads back from new_rsp + 8..40 and restores.
 
-#![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+// Arch-portable now: x86_64 path saves (rip, rflags, rsp) into the
+// per-task user_frame; aarch64 mirror saves (elr_el1, spsr_el1, sp_el0)
+// into the same SvcFrame slots that the SVC asm already writes/reads
+// for the `eret` epilogue. Same wire-frame layout on the user stack
+// (magic + saved-3 + restorer = 40 bytes) so user-side sa_restorer
+// thunks are arch-only in the syscall instruction they emit.
+
+#![cfg(target_os = "oxide-kernel")]
 
 const SIG_FRAME_MAGIC: u64 = 0x5A55_5A55_DEAD_BEEF;
 const SIG_FRAME_BYTES: u64 = 40;
+
+/// Arch-neutral entry: route to deliver_x86 / deliver_arm.
+/// # SAFETY: caller is the syscall dispatch tail on the running
+/// task's per-task kernel stack; the per-arch saved frame is live;
+/// active CR3/TTBR0 is the running task's user AS.
+/// # C: O(1)
+#[inline]
+pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: defers to deliver_x86 whose preconditions are exactly the caller's per fn contract.
+    unsafe { deliver_x86(handler, restorer, sig); }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: defers to deliver_arm whose preconditions are exactly the caller's per fn contract.
+    unsafe { deliver_arm(handler, restorer, sig); }
+}
+
+/// Arch-neutral entry: route to rt_sigreturn_x86 / rt_sigreturn_arm.
+/// # SAFETY: caller is the rt_sigreturn syscall dispatch on the
+/// running task's per-task kernel stack; per-arch saved frame is live.
+/// # C: O(1)
+#[inline]
+pub unsafe fn rt_sigreturn() -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: per fn contract; defers to rt_sigreturn_x86.
+    unsafe { return rt_sigreturn_x86(); }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: per fn contract; defers to rt_sigreturn_arm.
+    unsafe { return rt_sigreturn_arm(); }
+}
 
 /// Build the signal frame on the user stack and rewrite the
 /// per-task user_frame so sysretq enters `handler` with `sig`
@@ -36,6 +72,7 @@ const SIG_FRAME_BYTES: u64 = 40;
 /// kernel stack; current_user_frame() points at the live saved
 /// tail; user-VA writes target the active CR3 (caller's user AS).
 /// # C: O(1)
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
     // Read the saved user context (rip, rflags, rsp).
     // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
@@ -96,6 +133,7 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
 /// # SAFETY: caller is the syscall dispatch on cur's syscall stack;
 /// user_rsp + frame validated against USER_VA_END.
 /// # C: O(1)
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn rt_sigreturn_x86() -> i64 {
     use syscall::errno::Errno;
     // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
@@ -129,6 +167,105 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
         klog::write_hex_u64(saved_rip);
         klog::write_raw(b" rsp=");
         klog::write_hex_u64(saved_rsp);
+        klog::write_raw(b"\n");
+    }
+    0
+}
+
+// ---- aarch64 mirror ------------------------------------------------
+
+/// Build the signal frame on the user stack and rewrite the saved
+/// SVC frame so `eret` enters `handler` with `sig` in x0 and
+/// `restorer` as the eventual return target (sa_restorer must
+/// issue `mov x8, #139; svc #0` — Linux generic ABI rt_sigreturn).
+/// # SAFETY: caller is the syscall dispatch tail on cur's per-task
+/// kernel stack; current_svc_frame() points at the live saved frame
+/// the SVC asm wrote on entry; user-VA writes target the active
+/// TTBR0 (caller's user AS).
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
+    // SAFETY: per fn contract — frame is the live saved SVC frame at the top of cur's syscall stack; sole writer for the lifetime of this dispatch tail per `13§5`.
+    let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
+    let saved_pc    = frame.elr_el1;
+    let saved_pstate = frame.spsr_el1;
+    let saved_sp    = frame.sp_el0;
+
+    // Carve a 40-byte signal frame on the user stack: same wire
+    // shape as x86 so the per-arch sa_restorer thunks differ only
+    // in the syscall-instruction tail.
+    let mut sp = saved_sp.saturating_sub(SIG_FRAME_BYTES);
+    // SAFETY: sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
+    unsafe {
+        core::ptr::write_volatile((sp +  0) as *mut u64, SIG_FRAME_MAGIC);
+        core::ptr::write_volatile((sp +  8) as *mut u64, saved_pstate);
+        core::ptr::write_volatile((sp + 16) as *mut u64, saved_sp);
+        core::ptr::write_volatile((sp + 24) as *mut u64, saved_pc);
+        core::ptr::write_volatile((sp + 32) as *mut u64, restorer);
+    }
+
+    // The handler enters with x30 = restorer (so a final `ret`
+    // tail-calls into the restorer thunk) and sp = sp+32 (pointing
+    // at restorer slot). Per AAPCS64, sig goes in x0.
+    let new_sp = sp + 32;
+
+    debug_sched! {
+        klog::write_raw(b"[INFO]  sig: deliver_arm sig=");
+        klog::write_dec_u64(sig as u64);
+        klog::write_raw(b" handler=");
+        klog::write_hex_u64(handler);
+        klog::write_raw(b" new_sp=");
+        klog::write_hex_u64(new_sp);
+        klog::write_raw(b"\n");
+    }
+
+    frame.elr_el1 = handler;
+    frame.sp_el0  = new_sp;
+    frame.gp[0]   = sig as u64;       // x0 = sig per AAPCS64
+    frame.x30     = restorer;         // lr — handler `ret` lands at restorer
+    // SPSR_EL1 unchanged: stays EL0t with the same DAIF bits the
+    // user had when the syscall fired.
+    let _ = saved_pstate;
+}
+
+/// `sys_rt_sigreturn` body for aarch64. Mirrors rt_sigreturn_x86 —
+/// pops the 40-byte signal frame at sp_el0 - 40 and restores
+/// (elr_el1, spsr_el1, sp_el0) into the saved SVC frame so `eret`
+/// returns to the original user state.
+/// # SAFETY: caller is the rt_sigreturn syscall dispatch on cur's
+/// per-task kernel stack; sp_el0 + frame validated against USER_VA_END.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn rt_sigreturn_arm() -> i64 {
+    use syscall::errno::Errno;
+    // SAFETY: per fn contract — live saved SVC frame, sole writer per dispatch.
+    let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
+    let cur_sp = frame.sp_el0;
+    // sa_restorer's `svc #0` happens with sp at frame_base+40 (handler
+    // entered at sp+32 = restorer slot, then ret popped 8 → +40).
+    let frame_base = cur_sp.saturating_sub(40);
+    if frame_base == 0 || frame_base >= hal::USER_VA_END {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // SAFETY: frame_base validated < USER_VA_END; CPL=EL1 reads through caller's TTBR0.
+    let magic = unsafe { core::ptr::read_volatile(frame_base as *const u64) };
+    if magic != SIG_FRAME_MAGIC {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // SAFETY: same validated range; saved fields at +8/+16/+24 are 8-byte aligned per layout in deliver_arm.
+    let (saved_pstate, saved_sp, saved_pc) = unsafe { (
+        core::ptr::read_volatile((frame_base +  8) as *const u64),
+        core::ptr::read_volatile((frame_base + 16) as *const u64),
+        core::ptr::read_volatile((frame_base + 24) as *const u64),
+    ) };
+    frame.elr_el1  = saved_pc;
+    frame.spsr_el1 = saved_pstate;
+    frame.sp_el0   = saved_sp;
+    debug_sched! {
+        klog::write_raw(b"[INFO]  sig: rt_sigreturn_arm pc=");
+        klog::write_hex_u64(saved_pc);
+        klog::write_raw(b" sp=");
+        klog::write_hex_u64(saved_sp);
         klog::write_raw(b"\n");
     }
     0
