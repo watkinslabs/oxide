@@ -230,6 +230,16 @@ pub unsafe fn schedule() {
     // current Task's stack remains live across the asm.
     // SAFETY: caller asserts preempt-off; we are about to context-switch off this Task. Until that completes the prev Arc must remain alive — store it in a function-local where its destructor runs only on the eventual return.
     let prev_arc = unsafe { rq.swap_current(next_arc) };
+    // If prev is heading to Zombie, the local `prev_arc` would be
+    // permanently stranded on its kernel stack: the asm switch never
+    // returns into this frame again. Transfer ownership into ZOMBIES
+    // up front so the dying task's Arc lives in a real data structure
+    // and reap_one can drop it. Wrapping in Option lets us conditionally
+    // skip the trailing drop without touching dead memory.
+    let mut prev_arc_opt = Some(prev_arc);
+    if matches!(prev_arc_opt.as_ref().expect("just set").state(), TaskState::Zombie) {
+        crate::sched::enqueue_zombie(prev_arc_opt.take().expect("just set"));
+    }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
 
     // Update the per-CPU TSS so future ring-3→ring-0 transitions
@@ -255,8 +265,9 @@ pub unsafe fn schedule() {
     // Control resumes here when something switches back to prev.
     // Drop prev_arc: by now it's already been re-enqueued (above)
     // OR is the idle task (boot frame's idle), so dropping our
-    // local strong ref is safe.
-    drop(prev_arc);
+    // local strong ref is safe. For Zombie prev this is None
+    // (ownership moved to ZOMBIES above) and drop is a no-op.
+    drop(prev_arc_opt);
 }
 
 /// IRQ-exit preempt picker per `14§R07`. Called from the per-arch
