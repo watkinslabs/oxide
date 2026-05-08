@@ -1,3 +1,86 @@
+# State 2026-05-08 (session 47 — virtio-pci modern transport bring-up F19→F28)
+
+## Headline (session 47)
+
+10 PRs landed (#698 F19 → #707 F28). Drove the modern virtio-pci
+transport from cold-boot enumeration all the way through descriptor
+post + notify kick + used-ring poll, on real QEMU virt aarch64
+hardware (and structurally lockstep on x86, though not bound at runtime
+because x86's QEMU configuration has no virtio-pci modern device by
+default in this image).
+
+End-to-end pipeline (every step verified live on aarch64):
+  enumerate (per-bus PCI walk via ECAM)
+  -> capabilities walker (cap_id list 0x09/0x11/...)
+  -> virtio-pci modern cap decoder (5 cfg_types: COMMON/NOTIFY/ISR/
+     DEVICE/PCI_CFG)
+  -> BAR decoder (Mem32/Mem64/Io)
+  -> map BAR4 page Device-attr at 0xffff_fd00_0000_0000+
+  -> PCI command-reg memory-decode fix (UEFI leaves Memory bit OFF on
+     QEMU virt — confirmed by trace)
+  -> status FSM: reset -> ACK -> DRIVER -> FEATURES_OK
+  -> feature negotiation: read dev_features 0..63, write VIRTIO_F_VERSION_1
+  -> per-queue size scan (8 queues x 256 entries each)
+  -> ring frame allocation (PMM 3 frames per queue) + zero via HHDM
+  -> queue_desc/queue_driver/queue_device le64 writes + queue_enable=1
+  -> DRIVER_OK
+  -> queue_notify_off + notify_off_multiplier -> notify VA computed
+  -> for virtio-net: descriptor[0] + avail.ring[0] + avail.idx=1 via HHDM
+  -> queue_index=0 written to NOTIFY MMIO (kick)
+  -> spin briefly + read used.idx via HHDM
+
+Final aarch64 trace excerpt:
+  pci-cmd 0:1.0 was=5 now=7
+  virtio-cfg 0:1.0 feat=0x010130bf8024 drv_feat=0x100000000 status=0x0b features_ok=1
+  virtio-q 0:1.0 idx=0 size=256
+  virtio-rx-post 0:1.0 avail_idx=1 used_idx=0
+  virtio-notify 0:1.0 q=0 va=0xfffffd00_00001000 post_status=0x0f
+  virtio-q0-prog 0:1.0 final_status=0x0f
+
+used_idx=0 is correct idle: QEMU user-mode net delivers no incoming
+packets without external traffic. The transport is functional;
+proving real RX completion needs an upstream packet (or a TX path).
+
+All existing user smokes still PASS through every PR (sem/msg/mq/
+ptrace/mprotect/elf-dyn/init-fork-exec/hello-from-dyn).
+
+## PRs landed (session 47, #698 – #707)
+
+| PR | Branch | Subsystem | Headline |
+|---|---|---|---|
+| #698 | F19-pci-cap-walker | crates/pci | PCI capability list walker + heapless CapVec |
+| #699 | F20-virtio-pci-modern-probe | crates/virtio | virtio-pci modern cap decoder (5 cfg_types) |
+| #700 | F21-pci-bar-decoder | crates/pci | BAR decoder Mem32/Mem64/Io + HighHalfConsumed |
+| #701 | F22-virtio-bar4-map-and-read | kernel/pci_boot | BAR4 MMIO map + COMMON-cfg read |
+| #702 | F23-virtio-feature-negotiation | kernel/pci_boot | feature negotiation through FEATURES_OK |
+| #703 | F24-virtio-queue-probe | kernel/pci_boot | queue size scan + lift init from debug_boot! gate |
+| #704 | F25-virtio-queue-rings | kernel/pci_boot | queue 0 ring program + DRIVER_OK |
+| #705 | F26-virtio-notify-kick | kernel/pci_boot | notify-register kick for queue 0 |
+| #706 | F27-virtio-ring-hhdm-init | hal-x86_64,hal-aarch64,kernel | hhdm_offset() getter + zero ring frames |
+| #707 | F28-virtio-rx-post-and-kick | kernel/pci_boot | post one RX descriptor on virtio-net |
+
+## Key gotchas discovered
+
+- UEFI on QEMU virt leaves PCI command Memory-decode bit OFF (cmd was=0x05 = I/O+BM only). Modern transport reads return all-1s until the driver explicitly enables bit 1.
+- Transitional virtio devices (0x1000/0x1001) read num_queues=0 from the COMMON cfg field even after FEATURES_OK; the per-queue queue_size scan via queue_select 0..N is the reliable source.
+- PMM's `alloc_one_frame` does NOT zero the page; rings need explicit HHDM-based zeroing before queue_enable so the device sees deterministic state.
+- Side-effect work (cmd-reg writes, status FSM, feature negotiation, ring program) MUST run unconditionally; only klog calls go behind `debug_boot!`. F24 split the prior gating per the user's klog-must-be-cfg-gated rule (R06).
+
+## VA layout (cumulative)
+
+  0xffff_ff00_0000_0000  KERNEL_DEVICE_BASE (low-32 PA alias for HPET/LAPIC/GICD/PL011)
+  0xffff_fe00_0000_0000  ECAM_BUS0_VA (1 MiB bus-0 PCIe config space)
+  0xffff_fd00_0000_0000  VIRTIO_BAR_VA_BASE (bump allocator: COMMON/NOTIFY pages, 4 KiB each)
+
+## Pending for session 48+
+
+- ISR cap mapping + read on completion path (F29).
+- MSI-X table setup + IRQ vector wiring (per-arch: GIC-distributor target on aarch64, LAPIC on x86).
+- Real packet flow: virtio-net TX path (queue 1) so we can observe used.idx incrementing on a kick we initiated, not just hope for upstream RX.
+- virtio-blk request issue (queue 0 = req queue): VIRTIO_BLK_T_GET_ID returns the device-id string in 20 bytes — clean closed-loop verification.
+- x86 lockstep verification: `make qemu-x86` should run virtio_init_arch identically; need a virtio-pci modern device wired into the x86 image config.
+- Net-stack glue so virtio-net replaces the loopback-only smoke once RX/TX are real.
+
 # State 2026-05-08 (session 46 — ARM/x86 lockstep audit + closure)
 
 ## Headline (session 46)
