@@ -125,6 +125,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Ok(a)  => a,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
+    crate::user_as::install_teardown(&new_as);
     let img = match crate::elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
@@ -366,6 +367,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Ok(a)  => a,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
+    crate::user_as::install_teardown(&new_as);
     let img = match crate::elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
