@@ -317,6 +317,36 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                               let new = cur | (1u32 << 31);
                               <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::write32(&rr, bdf, off, new);
                             }
+                            // F41: re-read message_control to verify the
+                            // Enable bit stuck. If `mc_after & 0x8000 == 0`
+                            // then the device rejected the write (bit is
+                            // RO), and the device will keep delivering via
+                            // INTx (ISR bit) instead of MSI-X.
+                            let mc_after = {
+                                #[cfg(target_arch = "aarch64")]
+                                { match hal_aarch64::pci::EcamPci::from_published() {
+                                    Some(rr) => {
+                                        use pci::ConfigSpaceReader as _;
+                                        <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&rr, bdf, c.cfg_off & 0xFC) >> 16
+                                    }
+                                    None => 0,
+                                } }
+                                #[cfg(target_arch = "x86_64")]
+                                { let rr = hal_x86_64::pci::LegacyPci;
+                                  use pci::ConfigSpaceReader as _;
+                                  <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&rr, bdf, c.cfg_off & 0xFC) >> 16 }
+                            };
+                            klog::write_raw(b"[INFO]  msix-en ");
+                            klog::write_dec_u64(bdf.bus as u64);
+                            klog::write_raw(b":");
+                            klog::write_dec_u64(bdf.device as u64);
+                            klog::write_raw(b".");
+                            klog::write_dec_u64(bdf.function as u64);
+                            klog::write_raw(b" mc=");
+                            klog::write_hex_u64(mc_after as u64);
+                            klog::write_raw(b" enabled=");
+                            klog::write_dec_u64(((mc_after >> 15) & 1) as u64);
+                            klog::write_raw(b"\n");
                             // Read back to confirm the writes landed.
                             // SAFETY: same Device-attr-mapped entry; aligned u32 loads of fields just written.
                             let (al, ah, dt, vc) = unsafe {(
