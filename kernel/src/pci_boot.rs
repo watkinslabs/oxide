@@ -766,6 +766,47 @@ fn cap_dump_arch(d: &pci::PciDevice) {
             klog::write_raw(b" off=");
             klog::write_hex_u64(c.cfg_off as u64);
             klog::write_raw(b"\n");
+            // F32: decode the MSI-X cap header inline so the trace
+            // reports table_size + BIR + offsets per device.
+            if c.id == pci::CAP_ID_MSIX {
+                let mx = {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let r = hal_x86_64::pci::LegacyPci;
+                        pci::decode_msix_cap(&r, bdf, c.cfg_off)
+                    }
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        match hal_aarch64::pci::EcamPci::from_published() {
+                            Some(r) => pci::decode_msix_cap(&r, bdf, c.cfg_off),
+                            None => None,
+                        }
+                    }
+                };
+                if let Some(m) = mx {
+                    klog::write_raw(b"[INFO]  msix ");
+                    klog::write_dec_u64(bdf.bus as u64);
+                    klog::write_raw(b":");
+                    klog::write_dec_u64(bdf.device as u64);
+                    klog::write_raw(b".");
+                    klog::write_dec_u64(bdf.function as u64);
+                    klog::write_raw(b" enable=");
+                    klog::write_dec_u64(m.enabled as u64);
+                    klog::write_raw(b" fn_mask=");
+                    klog::write_dec_u64(m.function_mask as u64);
+                    klog::write_raw(b" n=");
+                    klog::write_dec_u64(m.table_size as u64);
+                    klog::write_raw(b" tbl_bir=");
+                    klog::write_dec_u64(m.table_bir as u64);
+                    klog::write_raw(b" tbl_off=");
+                    klog::write_hex_u64(m.table_offset as u64);
+                    klog::write_raw(b" pba_bir=");
+                    klog::write_dec_u64(m.pba_bir as u64);
+                    klog::write_raw(b" pba_off=");
+                    klog::write_hex_u64(m.pba_offset as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
         }
         if virtio::is_modern(d.vendor_id, d.device_id) {
             let vcaps = {
