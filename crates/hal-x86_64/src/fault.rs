@@ -197,16 +197,17 @@ pub fn vector_stub_addr(vec: u8) -> u64 {
 }
 
 /// Frame layout at `oxide_fault_common` entry — see module-level
-/// stack diagram. Read once via `*const u64` offsets, never written.
+/// stack diagram. Mutable via `*mut` so the user-trap hook can
+/// clear RFLAGS.TF after a single-step #DB.
 #[repr(C)]
-struct FaultFrame {
-    vector:    u64,
-    error:     u64,
-    rip:       u64,
-    cs:        u64,
-    rflags:    u64,
-    rsp:       u64,
-    ss:        u64,
+pub struct FaultFrame {
+    pub vector:    u64,
+    pub error:     u64,
+    pub rip:       u64,
+    pub cs:        u64,
+    pub rflags:    u64,
+    pub rsp:       u64,
+    pub ss:        u64,
 }
 
 /// Read CR2 (page-fault linear address). Only meaningful for vec 14.
@@ -251,6 +252,37 @@ fn default_handler(_vec: u64, _error: u64, _rip: u64, _cr2: u64) -> bool { false
 static FAULT_HANDLER: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(default_handler as *const () as *mut ());
 
+/// Kernel-installed hook invoked from `oxide_fault_print_rust` BEFORE
+/// the generic FaultHandler chain when the trap originates in user
+/// mode (CS RPL == 3) and the vector is software-debug related.
+/// Receives a mutable frame so the hook can clear RFLAGS.TF after a
+/// PTRACE_SINGLESTEP #DB. Returns true if it consumed the trap and
+/// the asm should `iretq` back to user (with the mutated frame).
+pub type UserTrapHook = fn(frame: &mut FaultFrame) -> bool;
+
+fn default_user_trap_hook(_f: &mut FaultFrame) -> bool { false }
+
+static USER_TRAP_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(default_user_trap_hook as *const () as *mut ());
+
+/// Install the user-trap hook (PTRACE_SINGLESTEP #DB delivery, etc.).
+/// Returns the previous one so callers can compose / restore.
+/// # SAFETY: caller guarantees `h` lives for the rest of the kernel's
+/// lifetime; single-CPU pre-init context.
+/// # C: O(1)
+pub unsafe fn install_user_trap_hook(h: UserTrapHook) -> UserTrapHook {
+    let new = h as *const () as *mut ();
+    let prev = USER_TRAP_HOOK.swap(new, core::sync::atomic::Ordering::AcqRel);
+    // SAFETY: `prev` was installed via this same fn (or default initialiser) which only writes valid `UserTrapHook` values; transmute is sound under that single-writer invariant.
+    unsafe { core::mem::transmute::<*mut (), UserTrapHook>(prev) }
+}
+
+fn current_user_trap_hook() -> UserTrapHook {
+    let p = USER_TRAP_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    // SAFETY: non-null by initialisation; written only via install_user_trap_hook with valid values.
+    unsafe { core::mem::transmute::<*mut (), UserTrapHook>(p) }
+}
+
 /// Install a kernel-side fault handler. Returns the previous one
 /// so callers can compose / restore.
 /// # SAFETY: caller must guarantee `h` lives for the rest of the
@@ -274,9 +306,18 @@ fn current_handler() -> FaultHandler {
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *const FaultFrame) -> bool {
-    // SAFETY: stub-built frame on the kernel stack, valid for read.
-    let f = unsafe { &*frame_ptr };
+unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame) -> bool {
+    // SAFETY: stub-built frame on the kernel stack, valid for read+write.
+    let f = unsafe { &mut *frame_ptr };
+    // Early-handle user-mode software-debug traps (#DB, #BP) via the
+    // installed UserTrapHook. The hook consumes the trap (returns true)
+    // and may mutate the frame (clear RFLAGS.TF) before iretq resumes
+    // the user task.
+    if (f.cs & 3) == 3 && (f.vector == 1 || f.vector == 3) {
+        if (current_user_trap_hook())(f) {
+            return true;
+        }
+    }
     let cr2 = if f.vector == 14 {
         // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
         unsafe { read_cr2() }

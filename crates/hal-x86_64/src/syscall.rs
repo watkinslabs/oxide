@@ -175,12 +175,22 @@ core::arch::global_asm!(
     "    mov  r12, [rsp + 0x78]",
     // Discard the 7 saved-arg slots (nr + a0..a5).
     "    add  rsp, 0x38",
+    // F50: arm RFLAGS.TF for PTRACE_SINGLESTEP if the current task
+    // has Task.singlestep set. Stack at this point holds:
+    //   [rsp+0x00] user RIP   (rcx)
+    //   [rsp+0x08] user RFLAGS (r11)
+    //   [rsp+0x10] user RSP
+    // Preserve rax (syscall return value) across the SysV call.
+    "    push rax",
+    "    lea  rdi, [rsp + 0x10]",                      // &user RFLAGS
+    "    call oxide_x86_arm_singlestep",
+    "    pop  rax",
     // Restore user state from the per-task syscall-stack tail.
     // `execve` (P2-21) modifies these in-place via
     // `current_user_frame()` so sysretq lands the user at the new
     // program entry.
     "    pop  rcx",                                    // user RIP
-    "    pop  r11",                                    // user RFLAGS
+    "    pop  r11",                                    // user RFLAGS (TF possibly set above)
     "    pop  rsp",                                    // user RSP (last write per sysretq spec)
     // 5 callee-saved slots remain unconsumed below the abandoned
     // kernel rsp; next syscall starts fresh from KSTACK top.
