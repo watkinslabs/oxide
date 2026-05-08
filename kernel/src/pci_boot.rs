@@ -6,11 +6,12 @@
 #![cfg(target_os = "oxide-kernel")]
 
 /// Per-arch wrapper that walks the capability list for one BDF and
-/// emits `[INFO] pci-cap ... id=...` lines. Pulled out of the main
-/// enumeration block so the per-arch `ConfigSpaceReader` selection
-/// only happens once per call.
+/// emits `[INFO] pci-cap ... id=...` lines. For modern virtio devices
+/// (vendor=0x1AF4, device>=0x1040) it also decodes each vendor cap and
+/// emits a `[INFO] virtio-cap ...` line per cfg_type.
 /// # C: O(N_caps) — typical N is 1–6.
-fn cap_dump_arch(bdf: pci::Bdf) {
+fn cap_dump_arch(d: &pci::PciDevice) {
+    let bdf = d.bdf;
     debug_boot! {
         let caps = {
             #[cfg(target_arch = "x86_64")]
@@ -38,6 +39,43 @@ fn cap_dump_arch(bdf: pci::Bdf) {
             klog::write_raw(b" off=");
             klog::write_hex_u64(c.cfg_off as u64);
             klog::write_raw(b"\n");
+        }
+        if virtio::is_modern(d.vendor_id, d.device_id) {
+            let vcaps = {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let r = hal_x86_64::pci::LegacyPci;
+                    virtio::decode_all(&r, bdf, &caps)
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    match hal_aarch64::pci::EcamPci::from_published() {
+                        Some(r) => virtio::decode_all(&r, bdf, &caps),
+                        None    => virtio::pci::heapless_v::VCapVec::new(),
+                    }
+                }
+            };
+            for v in vcaps.iter() {
+                klog::write_raw(b"[INFO]  virtio-cap ");
+                klog::write_dec_u64(bdf.bus as u64);
+                klog::write_raw(b":");
+                klog::write_dec_u64(bdf.device as u64);
+                klog::write_raw(b".");
+                klog::write_dec_u64(bdf.function as u64);
+                klog::write_raw(b" type=");
+                klog::write_dec_u64(v.cfg_type as u64);
+                klog::write_raw(b" bar=");
+                klog::write_dec_u64(v.bar as u64);
+                klog::write_raw(b" off=");
+                klog::write_hex_u64(v.offset as u64);
+                klog::write_raw(b" len=");
+                klog::write_hex_u64(v.length as u64);
+                if v.cfg_type == virtio::VIRTIO_PCI_CAP_NOTIFY_CFG {
+                    klog::write_raw(b" notify_mult=");
+                    klog::write_hex_u64(v.notify_off_multiplier as u64);
+                }
+                klog::write_raw(b"\n");
+            }
         }
     }
 }
@@ -87,7 +125,7 @@ pub fn enumerate_and_log() {
             // Capability list — modern devices always advertise MSI-X
             // + (for virtio) vendor-specific virtio-pci caps. Foundation
             // for upcoming MSI-X routing + virtio modern-transport work.
-            cap_dump_arch(d.bdf);
+            cap_dump_arch(d);
         }
     }
 }
