@@ -51,6 +51,13 @@ struct VirtioProbe {
     /// First 8 bytes should be ASCII "EFI PART" on a GPT disk.
     /// (F30 used this slot for VIRTIO_BLK_T_GET_ID's 20-byte string.)
     blk_id: [u8; 20],
+    /// F43: queue 1 used.idx after a TX kick on virtio-net (0 if no
+    /// TX issued / device didn't bump). queue_size for q1 = 256 same
+    /// as q0; we post one descriptor and check used.
+    tx_used_idx: u16,
+    /// F43: per-queue 1 notify VA computed from notify_cap +
+    /// (queue_notify_off_q1 * notify_off_multiplier).
+    q1_notify_va: u64,
     /// F30: virtio-blk request status byte. 0=OK, 1=IOERR, 2=UNSUPP,
     /// 0xFF=request not issued / not completed.
     blk_status: u8,
@@ -63,6 +70,10 @@ struct VirtioProbe {
 fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
     let bdf = d.bdf;
+    // Hoist device-class detection so queue 1 (TX) setup can hook in
+    // alongside queue 0 inside the per-queue setup block below.
+    let is_virtio_net_early = d.vendor_id == 0x1AF4
+        && (d.device_id == 0x1000 || d.device_id == 0x1041);
 
     // Re-walk caps + decode virtio cfgs + decode BARs.
     let (vcaps, bars) = {
@@ -183,6 +194,14 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // queue_notify_off is the high u16 of the dword at +0x1C.
     let q0_notify_off = (r32(0x1C) >> 16) as u16;
 
+    // F43: queue 1 (TX) state captured during the q0 setup block when
+    // we transiently flip queue_select to 1 for virtio-net. Used after
+    // DRIVER_OK to compute the kick VA and post a frame.
+    let mut q1_desc_pa: u64 = 0;
+    let mut q1_driver_pa: u64 = 0;
+    let mut q1_device_pa: u64 = 0;
+    let mut q1_notify_off_local: u16 = 0;
+
     // F25: program queue 0 if the device exposed one with a non-zero size.
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, final_status) = if q0_size != 0 && features_ok {
@@ -238,6 +257,61 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // u16 = queue_notify_off which is RO).
             let qen_word = r32(0x1C) & 0xFFFF_0000;
             w32(0x1C, qen_word | 0x0001);
+
+            // F43: for virtio-net, also stand up queue 1 (TX) so we
+            // can post outgoing frames. queue 0 = RX, queue 1 = TX
+            // by spec §5.1.6 Device Operation.
+            if is_virtio_net_early {
+                if let (Some(q1d), Some(q1v), Some(q1u)) = (
+                    crate::pmm_setup::alloc_one_frame(),
+                    crate::pmm_setup::alloc_one_frame(),
+                    crate::pmm_setup::alloc_one_frame(),
+                ) {
+                    let hhdm = {
+                        #[cfg(target_arch = "x86_64")]
+                        { hal_x86_64::mmu_ops::hhdm_offset() }
+                        #[cfg(target_arch = "aarch64")]
+                        { hal_aarch64::mmu_ops::hhdm_offset() }
+                    };
+                    if hhdm != 0 {
+                        for &p in &[q1d, q1v, q1u] {
+                            let v = hhdm.wrapping_add(p) as *mut u64;
+                            // SAFETY: HHDM-mapped freshly-allocated frame; aligned u64 stores within the 4 KiB page bounds we own.
+                            unsafe {
+                                for i in 0..(0x1000 / 8) {
+                                    core::ptr::write_volatile(v.add(i), 0);
+                                }
+                            }
+                        }
+                    }
+                    // queue_select = 1 (high u16 of dword at 0x14;
+                    // preserve status low byte).
+                    let qs1 = (post_status & 0xFF) | (1u32 << 16);
+                    w32(0x14, qs1);
+                    // Capture per-queue notify_off (high u16 of 0x1C).
+                    q1_notify_off_local = (r32(0x1C) >> 16) as u16;
+                    // F39 binding: queue_msix_vector = 1 for queue 1.
+                    let qsz_w = r32(0x18) & 0x0000_FFFF;
+                    w32(0x18, qsz_w | (1u32 << 16));
+                    // queue_desc/driver/device for q1
+                    w32(0x20, (q1d & 0xFFFF_FFFF) as u32);
+                    w32(0x24, (q1d >> 32) as u32);
+                    w32(0x28, (q1v & 0xFFFF_FFFF) as u32);
+                    w32(0x2C, (q1v >> 32) as u32);
+                    w32(0x30, (q1u & 0xFFFF_FFFF) as u32);
+                    w32(0x34, (q1u >> 32) as u32);
+                    // queue_enable q1 = 1
+                    let qen1 = r32(0x1C) & 0xFFFF_0000;
+                    w32(0x1C, qen1 | 0x0001);
+                    // Stash for outer-scope use post-DRIVER_OK.
+                    q1_desc_pa = q1d;
+                    q1_driver_pa = q1v;
+                    q1_device_pa = q1u;
+                    // Restore queue_select=0 so subsequent reads in
+                    // the F26 kick path see q0 state.
+                    w32(0x14, (post_status & 0xFF) | (0u32 << 16));
+                }
+            }
 
             // DRIVER_OK
             w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
@@ -413,6 +487,92 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         (0u64, final_status)
     };
 
+    // F43: virtio-net TX path. After DRIVER_OK + (existing F26) q0
+    // kick, post one ethernet frame to queue 1, kick q1, observe
+    // q1.used.idx. Frame = 12-byte virtio_net_hdr (zeros) + 60-byte
+    // dummy ethernet broadcast frame. Single descriptor, flags=0
+    // (driver-side only).
+    let mut q1_notify_va_local: u64 = 0;
+    let mut tx_used_idx_local: u16 = 0;
+    if is_virtio_net_early
+        && q1_desc_pa != 0
+        && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+    {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        if let Some(tx_pa) = crate::pmm_setup::alloc_one_frame() {
+            if hhdm != 0 {
+                let tx_va = hhdm.wrapping_add(tx_pa) as *mut u8;
+                // SAFETY: HHDM-mapped freshly-allocated frame; bytes 0..72 stay within the 4 KiB page; we own this frame exclusively.
+                unsafe {
+                    // virtio_net_hdr: 12 bytes of zeros (no checksum, no GSO, num_buffers=0).
+                    for i in 0..12usize { core::ptr::write_volatile(tx_va.add(i), 0); }
+                    // 60-byte dummy ethernet frame at +12.
+                    // dst MAC (broadcast) ff*6
+                    for i in 0..6 { core::ptr::write_volatile(tx_va.add(12 + i), 0xFF); }
+                    // src MAC 02:00:00:00:00:01
+                    core::ptr::write_volatile(tx_va.add(18), 0x02);
+                    for i in 19..24 { core::ptr::write_volatile(tx_va.add(i), 0); }
+                    core::ptr::write_volatile(tx_va.add(23), 0x01);
+                    // ethertype 0x0800 (IPv4)
+                    core::ptr::write_volatile(tx_va.add(24), 0x08);
+                    core::ptr::write_volatile(tx_va.add(25), 0x00);
+                    // 46 bytes of pad (already zeroed via PMM in some
+                    // setups; explicit for safety).
+                    for i in 26..72 { core::ptr::write_volatile(tx_va.add(i), 0); }
+                }
+                // descriptor[0] for q1 = { addr=tx_pa, len=72, flags=0, next=0 }
+                let q1_desc = (hhdm.wrapping_add(q1_desc_pa)) as *mut u64;
+                // SAFETY: HHDM-mapped queue-1 descriptor table; aligned u64 stores within frame bounds; driver owns it.
+                unsafe {
+                    core::ptr::write_volatile(q1_desc, tx_pa);
+                    core::ptr::write_volatile(q1_desc.add(1), 72u64);
+                }
+                // avail.ring[0] = 0; avail.idx = 1
+                let q1_avail = (hhdm.wrapping_add(q1_driver_pa)) as *mut u16;
+                // SAFETY: HHDM-mapped q1 avail ring frame; u16 offset 2 = ring[0], offset 1 = idx.
+                unsafe {
+                    core::ptr::write_volatile(q1_avail.add(2), 0u16);
+                }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                // SAFETY: same frame; published idx=1 after the desc and ring writes are observable.
+                unsafe { core::ptr::write_volatile(q1_avail.add(1), 1u16); }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                // Compute q1 notify VA from notify_cap + q1_off * mult.
+                if let Some(notify_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_NOTIFY_CFG) {
+                    let nbar_pa = match bars[notify_cap.bar as usize] {
+                        pci::Bar::Mem32 { base, .. } => base as u64,
+                        pci::Bar::Mem64 { base, .. } => base,
+                        _ => 0,
+                    };
+                    if nbar_pa != 0 {
+                        let nfy_pa = nbar_pa + notify_cap.offset as u64
+                            + (q1_notify_off_local as u64)
+                              * (notify_cap.notify_off_multiplier as u64);
+                        let n_page_pa = nfy_pa & !0xFFF;
+                        let n_page_off = nfy_pa - n_page_pa;
+                        // SAFETY: NOTIFY BAR PA decoded from device cap; bump VA private to virtio.
+                        let n_va = unsafe { super::map_mmio_pages(n_page_pa, 1) };
+                        let kick_va = n_va + n_page_off;
+                        q1_notify_va_local = kick_va;
+                        // Write queue index 1 to the q1 notify VA.
+                        // SAFETY: kick_va Device-attr mapped above; aligned u16 write.
+                        unsafe { core::ptr::write_volatile(kick_va as *mut u16, 1u16); }
+                        // Brief observation window for any TX completion.
+                        for _ in 0..1_000_000 { core::hint::spin_loop(); }
+                        let q1_used = (hhdm.wrapping_add(q1_device_pa)) as *const u16;
+                        // SAFETY: HHDM-mapped q1 used ring; u16 idx at offset 1.
+                        tx_used_idx_local = unsafe { core::ptr::read_volatile(q1_used.add(1)) };
+                    }
+                }
+            }
+        }
+    }
+
     // F29: locate ISR cap, map its BAR page, and read the ISR byte
     // post-kick. Per Virtio 1.2 §4.1.4.5: ISR is a 1-byte read-to-clear
     // register; bit 0 = queue interrupt, bit 1 = config-change
@@ -519,6 +679,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         isr_status,
         blk_id,
         blk_status,
+        tx_used_idx: tx_used_idx_local,
+        q1_notify_va: q1_notify_va_local,
     })
 }
 
@@ -610,6 +772,19 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_dec_u64(p.used_idx_observed as u64);
             klog::write_raw(b" isr=");
             klog::write_hex_u64(p.isr_status as u64);
+            klog::write_raw(b"\n");
+        }
+        if p.q1_notify_va != 0 {
+            klog::write_raw(b"[INFO]  virtio-tx ");
+            klog::write_dec_u64(bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" q1_notify_va=");
+            klog::write_hex_u64(p.q1_notify_va);
+            klog::write_raw(b" tx_used_idx=");
+            klog::write_dec_u64(p.tx_used_idx as u64);
             klog::write_raw(b"\n");
         }
         if p.q0_notify_va != 0 {
