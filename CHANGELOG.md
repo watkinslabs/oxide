@@ -959,3 +959,77 @@ End-of-session-43 verified-green:
 
 Open for next session:
 - ARM mprotect_smoke FAIL: `mm.mprotect` returns -EINVAL on aarch64 before per-PTE walker runs; klog diagnostics needed but blocked by `-serial stdio` boot stall after kernel rebuild. Use the new `qemu_run_until` MCP tool (after restart) + socket chardev for diagnosis.
+
+---
+
+## Session 47 (PRs #698 – #727) — 2026-05-08
+
+**Subject**: modern virtio-pci transport bring-up — cold boot through real bidirectional DMA + first ethernet TX on aarch64. Plus per-arch MSI delivery wiring (cap-level enable, GIC SPI alloc, MSI-X table write with GICv2m message), with the IORT-decode diagnostic in F44 explaining why MSIs land silent on QEMU virt with GICv2.
+
+30 PRs landed across the session (29 features/refactors + 3 state checkpoints D10/D11/D12). Spec-lint clean throughout (precommit guard added per user feedback after early failures).
+
+| PR  | Branch | Headline |
+|-----|--------|----------|
+| #698 | F19-pci-cap-walker | PCI capability list walker + heapless CapVec |
+| #699 | F20-virtio-pci-modern-probe | virtio-pci modern cap decoder (5 cfg_types) |
+| #700 | F21-pci-bar-decoder | BAR decoder Mem32/Mem64/Io + HighHalfConsumed |
+| #701 | F22-virtio-bar4-map-and-read | BAR4 MMIO map + COMMON-cfg read |
+| #702 | F23-virtio-feature-negotiation | feature negotiation through FEATURES_OK |
+| #703 | F24-virtio-queue-probe | queue size scan + lift init from `debug_boot!` (R06) |
+| #704 | F25-virtio-queue-rings | queue 0 ring program + DRIVER_OK |
+| #705 | F26-virtio-notify-kick | notify-register kick (queue_index → NOTIFY MMIO) |
+| #706 | F27-virtio-ring-hhdm-init | `hhdm_offset()` getter + zero ring frames |
+| #707 | F28-virtio-rx-post-and-kick | post one RX descriptor on virtio-net |
+| #708 | D10-state-session-47-virtio-pci | first state checkpoint |
+| #709 | F29-virtio-isr-cap | map + read ISR cap on completion poll path |
+| #710 | F30-virtio-blk-get-id | **virtio-blk GET_ID closed-loop — first device-driven completion (status=0x00, used_idx=1)** |
+| #711 | F31-virtio-blk-serial | qemu launchers `serial=oxide-virt-blk-0` |
+| #712 | F32-msix-cap-decode | MSI-X cap header decoder |
+| #713 | F33-msix-table-read | MSI-X table read + spec-lint sweep |
+| #714 | C05-pci-boot-split | split `pci_boot.rs` → `mod.rs (337) + virtio_drv.rs (626)` |
+| #715 | F34-x86-virtio-lockstep | virtio-blk-pci on x86 launchers + Intel e1000/ICH9 lockstep proof |
+| #716 | F35-madt-gicv2m-decode | MADT type-13 GIC MSI Frame decoder |
+| #717 | F36-gicv2m-typer | map GICv2m frame + read MSI_TYPER (spi_first=80, count=64) |
+| #718 | F37-arm-spi-alloc | SPI allocator + GIC distributor enable |
+| #719 | F38-msix-table-write | write MSI-X entry with GICv2m msg + cmd-reg ordering fix |
+| #720 | F39-msix-enable-and-bind | unmask + cap-enable + queue_msix_vector bind + IRQ counter |
+| #721 | F40-msi-fire-observe | post-enumerate IRQ unmask window + fire summary |
+| #722 | F41-msix-enable-readback | re-read message_control to verify enable bit stuck |
+| #723 | D11-state-session-47-mid-msi | mid-checkpoint |
+| #724 | F42-virtio-blk-sector-read | **virtio-blk sector-1 READ — `"EFI PART"` GPT signature returned via DMA** |
+| #725 | F43-virtio-net-tx | virtio-net TX path on queue 1 (broadcast frame posted) |
+| #726 | F44-iort-decode | **IORT decode → silent-MSI smoking gun: ITS-group advertised but no ITS exists on GICv2** |
+| #727 | D12-state-session-47-end | end-of-session checkpoint |
+
+End-of-session aarch64 trace highlights:
+```
+gic-msi-frame id=0 pa=0x0802_0000 flags=0x1
+gicv2m typer=0x00500040 spi_first=80 spi_count=64
+iort num_nodes=2; type=0 (ITS-group); type=2 (root-complex)
+msix-en 0:1.0 mc=0x8003 enabled=1
+msix-bind 0:1.0 spi=81 addr=0x08020040 data=0x51 ctl=0x00000000
+msix-bind 0:2.0 spi=82 addr=0x08020040 data=0x52 ctl=0x00000000
+virtio-blk-rd 0:2.0 status=0x00 id="EFI PART..."
+virtio-tx     0:1.0 q1_notify_va=0xfffffd00_00003000 tx_used_idx=0
+msi-fires-post-enum=0
+```
+
+End-of-session-47 verified-green:
+- both arches build, 894+ hosted tests pass, spec-lint clean (precommit guard active)
+- aarch64 QEMU: full pipeline cold-boot → DRIVER_OK → DMA roundtrip (`"EFI PART"`) + virtio-net TX post; all user smokes PASS
+- x86 q35 lockstep: F19-F33 diagnostic stack drives Intel e1000 (MSI-X 5 vectors) + ICH9 LPC/AHCI/USB cleanly; virtio-blk-pci attached in F34 launchers, live verify pending **qemu-mcp daemon restart** (the running daemon during session 47 was launched before the F31/F34 server.py edits and cached old launch args)
+
+**User-driven discipline tightening (mid-session):**
+- Mandatory `cargo run -p xtask -- spec-lint` before every commit AND PR — saved memory at `feedback_run_spec_lint.md`. Added after several PRs failed CI on SAFETY-too-short and the 1000-line file cap.
+
+**Session ended with explicit handoff: user is restarting with a fresh qemu-mcp server** so F31/F34 server.py edits become live. The first verification on session 48 should be re-running `make qemu-x86` (or `qemu_start arch=x86_64` via mcp) and confirming the virtio-blk closed-loop trace appears on x86 with `"EFI PART"` returned via DMA — that's the lockstep gap that couldn't be live-verified during session 47.
+
+Open for next session 48 (with restarted qemu-mcp):
+1. **Live verify x86 virtio-blk closed-loop** — F30/F42 should produce `status=0x00 + EFI PART` on x86 q35 once daemon refreshes. First task on session start.
+2. **Silent-MSI remediation** — three avenues recorded:
+   - (a) `-machine virt,gic-version=3` + write a GIC ITS driver (matches real ARM-server topology),
+   - (b) detect GICv2 + override IORT ITS hint, force MSI via GICv2m frame,
+   - (c) MSI from a Named Component (skips IORT mapping).
+3. **Move virtio init out of `pci_boot/virtio_drv.rs`** into a real `kernel/drivers/virtio/` module once IRQ-driven completion lands. Currently 842 lines, well under the 1000 cap but that's the right time to refactor.
+4. **`/bin/sh` interactive — TTY-input wakeup** (orthogonal): replace timer-tick polling in `tty::tick_poll_uart` with UART RX IRQ. Quality-of-life win.
+5. **`PTRACE_SINGLESTEP` real trap** (orthogonal): toggle per-arch TF/SS bit on resume.
