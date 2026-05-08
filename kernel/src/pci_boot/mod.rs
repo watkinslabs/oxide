@@ -490,6 +490,24 @@ pub fn enumerate_and_log() {
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
 
+        // F46: read GICD_ISPENDR2 (covers SPIs 64..95). If SPI 81 or
+        // 82 is pending here, the device-driven MSI write reached
+        // the GIC but didn't deliver to CPU (mask/priority issue).
+        // If both bits are clear, the MSI write never reached the
+        // distributor at all (PCI root-complex routing dropped it).
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: GIC was mapped+enabled by smoke_device_map_arm; diagnostic read of ISPENDR via the published GICD_VA.
+            let ispendr2 = unsafe { crate::gic::ispendr_word(81) };
+            klog::write_raw(b"[INFO]  gicd-ispendr2=");
+            klog::write_hex_u64(ispendr2 as u64);
+            klog::write_raw(b" spi81_bit=");
+            klog::write_dec_u64(((ispendr2 >> (81 - 64)) & 1) as u64);
+            klog::write_raw(b" spi82_bit=");
+            klog::write_dec_u64(((ispendr2 >> (82 - 64)) & 1) as u64);
+            klog::write_raw(b"\n");
+        }
+
         // F45: GICv2m self-fire diagnostic. Allocate a fresh SPI,
         // enable it at the GICD, then write the SPI number to the
         // v2m frame's SETSPI_NS register (+0x040) FROM THE KERNEL.
