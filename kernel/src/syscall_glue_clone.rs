@@ -84,7 +84,10 @@ pub fn kernel_sys_clone_dispatch(
         let res = parent_mm.fork_copy_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
             new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
         match res {
-            Ok(m) => m,
+            Ok(m) => {
+                crate::user_as::install_teardown(&m);
+                m
+            }
             Err(_) => return -(Errno::Enomem.as_i32() as i64),
         }
     };

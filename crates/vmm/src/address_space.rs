@@ -43,6 +43,31 @@ pub struct AddressSpace {
     /// Upper bound of the loader-reserved heap region. `sys_brk(N)`
     /// fails for `N > brk_max`.
     brk_max: core::sync::atomic::AtomicU64,
+    /// Optional teardown callback invoked from `Drop` with `root_pa`.
+    /// Stored as a raw fn-ptr cast to u64 in an atomic so an Arc'd
+    /// AS can install it after construction without violating shared-
+    /// reference aliasing. Zero means no teardown (boot-anchor AS,
+    /// hosted tests).
+    teardown: core::sync::atomic::AtomicU64,
+}
+
+impl Drop for AddressSpace {
+    fn drop(&mut self) {
+        let raw = self.teardown.load(core::sync::atomic::Ordering::Acquire);
+        if raw != 0 {
+            // SAFETY: kernel installs `td` (an `unsafe extern "C" fn(u64)`
+            // cast to u64) to free the user-half PT tree rooted at
+            // `root_pa` plus the root itself. The AS is in its final
+            // drop (Arc strong count just hit 0) so no CPU still
+            // walks this root and no concurrent writer remains.
+            let td: unsafe extern "C" fn(u64) = unsafe {
+                core::mem::transmute(raw as usize)
+            };
+            // SAFETY: `td` accepts a u64 root_pa per its installer
+            // contract; root is no longer active per the prior comment.
+            unsafe { td(self.root_pa); }
+        }
+    }
 }
 
 impl AddressSpace {
@@ -64,7 +89,26 @@ impl AddressSpace {
             root_pa,
             brk:     core::sync::atomic::AtomicU64::new(0),
             brk_max: core::sync::atomic::AtomicU64::new(0),
+            teardown: core::sync::atomic::AtomicU64::new(0),
         }))
+    }
+
+    /// Install a teardown callback fired from `Drop` with this AS's
+    /// `root_pa`. The kernel passes its arch-specific walker that
+    /// recursively frees user-half PT levels + each leaf frame +
+    /// the root frame itself. Without this, every fork/exec leaks a
+    /// few KiB of page tables plus every demand-faulted user page.
+    ///
+    /// Idempotent: a second call replaces the prior callback. The
+    /// boot-anchor AS deliberately leaves it unset (its root is the
+    /// shared master kernel-half template; freeing would crash).
+    /// # C: O(1)
+    pub fn set_teardown(&self, td: unsafe extern "C" fn(u64)) {
+        // SAFETY: cast a function pointer to u64 for atomic storage.
+        // ABI guarantees fn-ptr fits in usize; usize fits in u64 on
+        // both arches we target.
+        let raw = (td as usize) as u64;
+        self.teardown.store(raw, core::sync::atomic::Ordering::Release);
     }
 
     /// Initialise the brk region. Called by the ELF loader once the
@@ -136,6 +180,7 @@ impl AddressSpace {
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
+            teardown: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -209,6 +254,7 @@ impl AddressSpace {
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
+            teardown: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
