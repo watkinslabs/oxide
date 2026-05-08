@@ -1,4 +1,26 @@
-# State 2026-05-08 (session 48 ENDED — F45-F54 + D14/D15/D16 checkpoints)
+# State 2026-05-08 (session 48 ENDED — F45-F55 + D14/D15/D16 checkpoints)
+
+## ⚡ Session 49 first task: restart Claude / qemu-mcp + verify GICv3
+
+The qemu-mcp daemon caches QEMU machine args at startup. Session 48
+edited `tools/qemu-mcp/server.py` to add `gic-version=3,its=on` to
+the aarch64 launch line; verifying the GICv3 conversion (PR #742,
+F55) requires a fresh daemon. **First action on session 49**:
+restart the Claude session so qemu-mcp respawns, then run
+`mcp__qemu__qemu_start arch=aarch64` + `qemu_run_until pattern=
+"hello-from-dyn"`. Expect:
+
+  - `madt ... gicd ... v=3` (was v=2 pre-F55)
+  - `gicv3: enabled typer=0x37a0008 gicd_iidr=0x43b ...`
+  - `arm-timer counting`
+  - 6 user smokes PASS
+
+If boot completes cleanly, F56 picks up with the ITS driver
+(LPI prop/pend tables + command queue + MAPD/MAPC/MAPTI) so
+virtio-pci MSI delivery actually fires. Without ITS, MSI is still
+in ISR-poll fallback even on GICv3.
+
+
 
 ## Headline (session 48 final, F45-F54)
 
