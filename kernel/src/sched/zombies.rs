@@ -58,6 +58,36 @@ pub fn park_zombie(task: Arc<Task>) {
     wake_wait4_parent(parent_tid);
 }
 
+/// Post-mortem signaling without taking ownership of the Arc. Splits
+/// the SIGCHLD + wake-wait4 work out of `park_zombie` so the dying
+/// task can call this from sys_exit / sigsegv without bumping the
+/// rq.current strong count. The actual ZOMBIES push happens later
+/// inside `schedule()` when it detects `TaskState::Zombie` on prev
+/// and transfers the prev_arc returned by `swap_current` directly
+/// — that avoids the leak where a zombie's prev_arc on its dead
+/// kernel stack never drops because the dead task never resumes.
+/// # C: O(N_waiters) wake.
+pub fn signal_child_exit(task: &Task) {
+    use core::sync::atomic::Ordering;
+    // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
+    let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
+    if let Some(p) = parent {
+        // SIGCHLD = 17; bit (17-1) = 16 in the 64-bit pending bitmap.
+        p.sigpending.fetch_or(1u64 << 16, Ordering::Release);
+    }
+    let parent_tid = task.parent_tid.load(Ordering::Acquire);
+    wake_wait4_parent(parent_tid);
+}
+
+/// Push `task` onto the ZOMBIES list. Used by `schedule()` when it
+/// detects that prev's state is Zombie: rather than leaking the Arc
+/// returned by `swap_current` on the dying task's about-to-be-orphaned
+/// kernel stack, transfer ownership here so reap_one can release it.
+/// # C: O(1) push.
+pub fn enqueue_zombie(task: Arc<Task>) {
+    ZOMBIES.lock().push(task);
+}
+
 /// Park the current task in WAITERS, marking it Sleeping. Caller
 /// (kernel_sys_wait4) must call `schedule()` immediately after; the
 /// task only resumes when `wake_wait4_parent` re-enqueues it.
