@@ -316,6 +316,28 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_dec(version as u64);
                     alog_raw(b"\n");
                 }
+                13 if elen >= 24 => {
+                    // GIC MSI Frame (GICv2m). ACPI 6.4 Table 5.50:
+                    //   u8 type=13; u8 len=24; u16 rsvd; u32 frame_id;
+                    //   u64 phys_base; u32 flags;
+                    let frame_id  = read_u32_le(p.add(off + 4));
+                    let phys      = read_u64_le(p.add(off + 8));
+                    let flags     = read_u32_le(p.add(off + 16));
+                    alog_raw(b"[INFO]      gic-msi-frame id=");
+                    alog_dec(frame_id as u64);
+                    alog_raw(b" pa=");
+                    alog_hex(phys);
+                    alog_raw(b" flags=");
+                    alog_hex(flags as u64);
+                    alog_raw(b"\n");
+                    // Publish to a static slot for per-arch MSI delivery
+                    // wiring (F36+). Single-frame v1 takes the first.
+                    GIC_MSI_FRAME_PA.compare_exchange(
+                        0, phys,
+                        core::sync::atomic::Ordering::Release,
+                        core::sync::atomic::Ordering::Relaxed,
+                    ).ok();
+                }
                 14 if elen >= 16 => {
                     let phys   = read_u64_le(p.add(off + 4));
                     let length = read_u32_le(p.add(off + 12));
@@ -416,6 +438,14 @@ pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
 /// MCFG was absent / empty. The aarch64 PCI bring-up reads this to
 /// know what to device-map.
 pub static ECAM_BASE_PA: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
+
+/// Physical base of the first GICv2m MSI frame discovered via MADT
+/// type-13 entries (ACPI 6.4 Table 5.50). Zero = no GICv2m frame
+/// reported (could be GICv3 ITS-only or x86, or pre-MADT-walk).
+/// Per-arch MSI delivery wiring (F36+) reads this to compute
+/// MSI message addresses on aarch64.
+pub static GIC_MSI_FRAME_PA: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
 
 /// Decode the MCFG ACPI table (PCI Express memory-mapped
