@@ -324,7 +324,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 //   d1: { addr=buf+0x100, len=20, flags=WRITE|NEXT(3), next=2 }
                 //   d2: { addr=buf+0x200, len= 1, flags=WRITE(2),     next=0 }
                 let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
-                // SAFETY: HHDM-mapped descriptor table.
+                // SAFETY: HHDM-mapped virtio queue-0 descriptor table; aligned u64 stores within the frame the driver owns.
                 unsafe {
                     // Descriptor 0
                     core::ptr::write_volatile(desc0.add(0), buf_pa);
@@ -347,7 +347,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 }
                 // avail.ring[0] = 0; avail.idx = 1.
                 let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
-                // SAFETY: HHDM-mapped avail ring.
+                // SAFETY: HHDM-mapped virtio queue-0 avail ring; aligned u16 stores within the driver-owned frame.
                 unsafe {
                     core::ptr::write_volatile(avail.add(2), 0u16); // ring[0]
                 }
@@ -387,7 +387,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 // observable before avail.idx bump.
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
                 // avail.idx = 1 at driver_pa+0x02 (u16 offset 1).
-                // SAFETY: same frame.
+                // SAFETY: HHDM-mapped avail ring as above; this u16 store at idx publishes the descriptor we just wrote.
                 unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
                 avail_idx_posted = 1;
@@ -477,12 +477,12 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // used.ring[0].id is at +0x04..+0x08 (le32 = chain head idx),
             // which we can use to recover the buffer PA via desc table.
             let used = (hhdm.wrapping_add(q0_device_pa)) as *const u16;
-            // SAFETY: HHDM-mapped used ring.
+            // SAFETY: HHDM-mapped virtio queue-0 used ring; aligned u16 load at the idx field.
             let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
             if uidx > 0 {
                 // descriptor-table is HHDM-mapped at q0_desc_pa
                 let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *const u64;
-                // SAFETY: HHDM-mapped descriptor table.
+                // SAFETY: HHDM-mapped virtio queue-0 descriptor table; aligned u64 load of the chain head's addr field.
                 let d0_addr = unsafe { core::ptr::read_volatile(desc0.add(0)) };
                 let buf_pa = d0_addr; // descriptor 0's addr is buf_pa + 0
                 let buf_va = hhdm.wrapping_add(buf_pa) as *const u8;
@@ -805,6 +805,56 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                     klog::write_raw(b" pba_off=");
                     klog::write_hex_u64(m.pba_offset as u64);
                     klog::write_raw(b"\n");
+
+                    // F33: map the BAR holding the MSI-X table and read
+                    // each entry's vector_control. At reset the spec says
+                    // every entry is masked (bit 0 of vector_control set).
+                    let bars2 = {
+                        #[cfg(target_arch = "x86_64")]
+                        { let r = hal_x86_64::pci::LegacyPci;
+                          pci::decode_bars(&r, bdf) }
+                        #[cfg(target_arch = "aarch64")]
+                        { match hal_aarch64::pci::EcamPci::from_published() {
+                            Some(r) => pci::decode_bars(&r, bdf),
+                            None => [pci::Bar::None; 6],
+                        } }
+                    };
+                    let tbar_pa = match bars2[m.table_bir as usize] {
+                        pci::Bar::Mem32 { base, .. } => base as u64,
+                        pci::Bar::Mem64 { base, .. } => base,
+                        _ => 0,
+                    };
+                    if tbar_pa != 0 {
+                        let tbl_pa = tbar_pa + m.table_offset as u64;
+                        let page_pa = tbl_pa & !0xFFF;
+                        let page_off = tbl_pa - page_pa;
+                        // SAFETY: BAR PA decoded from cap; bump VA private.
+                        let base_va = unsafe { map_mmio_pages(page_pa, 1) };
+                        let tbl_va = base_va + page_off;
+                        // Read up to 4 entries (cap of MAX MSI-X size for
+                        // virtio-net here) and log vector_control.
+                        let n = if m.table_size > 4 { 4 } else { m.table_size };
+                        for i in 0..n {
+                            let entry_va = tbl_va + (i as u64) * 16;
+                            // SAFETY: entry_va is Device-attr; aligned u32 reads.
+                            let vc = unsafe {
+                                core::ptr::read_volatile((entry_va + 12) as *const u32)
+                            };
+                            klog::write_raw(b"[INFO]  msix-tbl ");
+                            klog::write_dec_u64(bdf.bus as u64);
+                            klog::write_raw(b":");
+                            klog::write_dec_u64(bdf.device as u64);
+                            klog::write_raw(b".");
+                            klog::write_dec_u64(bdf.function as u64);
+                            klog::write_raw(b" v=");
+                            klog::write_dec_u64(i as u64);
+                            klog::write_raw(b" ctl=");
+                            klog::write_hex_u64(vc as u64);
+                            klog::write_raw(b" masked=");
+                            klog::write_dec_u64((vc & 0x1) as u64);
+                            klog::write_raw(b"\n");
+                        }
+                    }
                 }
             }
         }
