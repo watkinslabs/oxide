@@ -35,6 +35,14 @@ const GICD_ISENABLER: usize = 0x100;
 /// GICD_IPRIORITYR — one byte per INTID.
 #[cfg(target_arch = "aarch64")]
 const GICD_IPRIORITYR: usize = 0x400;
+/// GICD_ITARGETSR — one byte per INTID; bitmask of target CPU(s).
+/// Read-only for SGIs/PPIs (INTID < 32); writable for SPIs.
+#[cfg(target_arch = "aarch64")]
+const GICD_ITARGETSR: usize = 0x800;
+/// GICD_ICFGR — 2 bits per INTID. 0b10 = edge-triggered, 0b00 =
+/// level. Writable only for SPIs (INTID >= 32).
+#[cfg(target_arch = "aarch64")]
+const GICD_ICFGR: usize = 0xC00;
 /// IAR INTID field is bits [9:0] (GICv2 with up to 1020 INTIDs).
 #[cfg(target_arch = "aarch64")]
 const IAR_INTID_MASK: u32 = 0x3FF;
@@ -120,7 +128,7 @@ pub unsafe fn enable(gicd_va: u64, gicc_va: u64) -> GicStatus {
 pub unsafe fn enable_intid(intid: u32) {
     let gicd = GICD_VA.load(Ordering::Acquire);
     if gicd == 0 { return; }
-    // SAFETY: GICD_VA is the freshly-mapped Device-attr distributor; ISENABLER + IPRIORITYR offsets stay within the 4 KiB; per-CPU banked regs (INTID < 32) are write-1-to-set so no RMW race.
+    // SAFETY: GICD_VA is the freshly-mapped Device-attr distributor; ISENABLER + IPRIORITYR + ITARGETSR offsets stay within the 4 KiB; per-CPU banked regs (INTID < 32) are write-1-to-set so no RMW race; ITARGETSR for INTID < 32 is RO so the byte write is a no-op there.
     unsafe {
         let word = (intid / 32) as usize;
         let bit  = intid & 31;
@@ -129,6 +137,24 @@ pub unsafe fn enable_intid(intid: u32) {
         // Priority byte: 0x80 < PMR (0xFF) so this INTID can interrupt.
         let prio = (gicd + GICD_IPRIORITYR as u64 + intid as u64) as *mut u8;
         core::ptr::write_volatile(prio, 0x80);
+        // SPIs (INTID >= 32) need explicit CPU targeting via
+        // ITARGETSR. v1 is single-CPU so route everything to CPU 0
+        // (bit 0). Without this the GIC accepts SETSPI_NS writes
+        // but never delivers — SPI sits enabled-but-unrouted.
+        if intid >= 32 {
+            let targets = (gicd + GICD_ITARGETSR as u64 + intid as u64) as *mut u8;
+            core::ptr::write_volatile(targets, 0x01);
+            // ICFGR: 2 bits per INTID, 16 INTIDs per word. Set 0b10
+            // (edge-triggered) so v2m's SETSPI_NS pulse latches as
+            // pending; level mode would require a held line that
+            // SETSPI_NS does not provide.
+            let icfgr_off = (intid / 16) as u64 * 4;
+            let shift     = ((intid % 16) * 2) as u32;
+            let icfgr     = (gicd + GICD_ICFGR as u64 + icfgr_off) as *mut u32;
+            let cur       = core::ptr::read_volatile(icfgr);
+            let cleared   = cur & !(0b11u32 << shift);
+            core::ptr::write_volatile(icfgr, cleared | (0b10u32 << shift));
+        }
     }
 }
 
