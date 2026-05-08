@@ -243,6 +243,11 @@ pub const ITS_CMD_INV: u8 = 0x0c;
 /// SYNC opcode (barrier — wait for prior commands targeting RDbase).
 #[cfg(target_arch = "aarch64")]
 pub const ITS_CMD_SYNC: u8 = 0x05;
+/// INT opcode (synthesise an LPI from (DeviceID, EventID) without a
+/// PCI requester write). Used as a kernel-side self-test of the
+/// ITS → RD pending-table → CPU dispatch path.
+#[cfg(target_arch = "aarch64")]
+pub const ITS_CMD_INT: u8 = 0x03;
 
 /// Build a MAPD command (ARM IHI 0069 §5.13.4).
 /// `size` = number-of-EventID-bits - 1; ITT must be 256-byte aligned.
@@ -274,6 +279,19 @@ pub fn cmd_mapti(device_id: u32, event_id: u32, lpi_intid: u32, icid: u16) -> [u
 #[cfg(target_arch = "aarch64")]
 pub fn cmd_inv(device_id: u32, event_id: u32) -> [u64; 4] {
     let dw0 = ITS_CMD_INV as u64 | ((device_id as u64) << 32);
+    let dw1 = event_id as u64;
+    [dw0, dw1, 0, 0]
+}
+
+/// Build an INT command (ARM IHI 0069 §5.13.3). Causes the ITS to
+/// internally synthesise the LPI mapped to (DeviceID, EventID) —
+/// equivalent to a device writing EventID to GITS_TRANSLATER, but
+/// triggered by the kernel posting a command. Used to self-test
+/// the ITS delivery path independent of any PCI requester.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn cmd_int(device_id: u32, event_id: u32) -> [u64; 4] {
+    let dw0 = ITS_CMD_INT as u64 | ((device_id as u64) << 32);
     let dw1 = event_id as u64;
     [dw0, dw1, 0, 0]
 }
