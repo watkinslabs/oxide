@@ -58,12 +58,7 @@ void _start(void) {
         "/bin/msg_smoke",
         "/bin/mq_smoke",
         "/bin/ptrace_smoke",
-        // F52: ptrace_singlestep_smoke is staged but not run from
-        // boot — needs default-action SIGTRAP termination wired in
-        // the kernel signal subsystem (currently sigpending bits get
-        // set but no auto-terminate). Pulling forward when that
-        // lands. Source is at /bin/ptrace_singlestep_smoke for
-        // ad-hoc invocation.
+        "/bin/ptrace_singlestep_smoke",
         "/bin/mprotect_smoke",
         0,
     };
