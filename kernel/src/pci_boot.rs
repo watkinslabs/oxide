@@ -86,6 +86,12 @@ struct VirtioProbe {
     /// F29: ISR status byte read post-kick. Bit 0 = queue interrupt,
     /// bit 1 = config interrupt. Reading clears the register.
     isr_status: u8,
+    /// F30: 20-byte device-ID string from VIRTIO_BLK_T_GET_ID, or
+    /// zeros if not a virtio-blk device or the request didn't complete.
+    blk_id: [u8; 20],
+    /// F30: virtio-blk request status byte. 0=OK, 1=IOERR, 2=UNSUPP,
+    /// 0xFF=request not issued / not completed.
+    blk_status: u8,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -278,6 +284,15 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, post_status as u8)
     };
+    // F30: for virtio-blk (transitional 0x1001 or modern 0x1042),
+    // issue a VIRTIO_BLK_T_GET_ID request: header (16B) + data (20B) +
+    // status (1B) in a 3-descriptor chain. Returns the device-id string
+    // — a real DMA roundtrip without needing IRQs.
+    let mut blk_id = [0u8; 20];
+    let mut blk_status: u8 = 0xFF;
+    let is_virtio_blk = d.vendor_id == 0x1AF4
+        && (d.device_id == 0x1001 || d.device_id == 0x1042);
+
     // F28: for virtio-net (transitional 0x1000 or modern 0x1041),
     // post one RX buffer descriptor on queue 0 and bump avail.idx
     // before kicking. For other devices the queue stays empty so the
@@ -285,7 +300,65 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut avail_idx_posted = 0u16;
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
-    if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+    if is_virtio_blk && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        if let Some(buf_pa) = crate::pmm_setup::alloc_one_frame() {
+            if hhdm != 0 {
+                let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
+                // SAFETY: HHDM-mapped frame; aligned writes within 4 KiB.
+                unsafe {
+                    // Zero the buf first.
+                    for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
+                    // Header at +0x000: type=8 (VIRTIO_BLK_T_GET_ID), reserved=0, sector=0
+                    core::ptr::write_volatile(buf_va.add(0) as *mut u32, 8);
+                    // Pre-fill status byte at +0x200 with sentinel 0xFF.
+                    core::ptr::write_volatile(buf_va.add(0x200), 0xFFu8);
+                }
+                // 3 descriptors at desc table:
+                //   d0: { addr=buf+0x000, len=16, flags=NEXT(1),     next=1 }
+                //   d1: { addr=buf+0x100, len=20, flags=WRITE|NEXT(3), next=2 }
+                //   d2: { addr=buf+0x200, len= 1, flags=WRITE(2),     next=0 }
+                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
+                // SAFETY: HHDM-mapped descriptor table.
+                unsafe {
+                    // Descriptor 0
+                    core::ptr::write_volatile(desc0.add(0), buf_pa);
+                    let d0_lo = 16u64;
+                    let d0_flags = (virtio::VRING_DESC_F_NEXT as u64) << 32;
+                    let d0_next = 1u64 << 48;
+                    core::ptr::write_volatile(desc0.add(1), d0_lo | d0_flags | d0_next);
+                    // Descriptor 1
+                    core::ptr::write_volatile(desc0.add(2), buf_pa + 0x100);
+                    let d1_lo = 20u64;
+                    let d1_flags = ((virtio::VRING_DESC_F_NEXT
+                                   | virtio::VRING_DESC_F_WRITE) as u64) << 32;
+                    let d1_next = 2u64 << 48;
+                    core::ptr::write_volatile(desc0.add(3), d1_lo | d1_flags | d1_next);
+                    // Descriptor 2
+                    core::ptr::write_volatile(desc0.add(4), buf_pa + 0x200);
+                    let d2_lo = 1u64;
+                    let d2_flags = (virtio::VRING_DESC_F_WRITE as u64) << 32;
+                    core::ptr::write_volatile(desc0.add(5), d2_lo | d2_flags);
+                }
+                // avail.ring[0] = 0; avail.idx = 1.
+                let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+                // SAFETY: HHDM-mapped avail ring.
+                unsafe {
+                    core::ptr::write_volatile(avail.add(2), 0u16); // ring[0]
+                }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                // SAFETY: same ring; idx at u16 offset 1.
+                unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                avail_idx_posted = 1;
+            }
+        }
+    } else if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
             #[cfg(target_arch = "x86_64")]
             { hal_x86_64::mmu_ops::hhdm_offset() }
@@ -388,6 +461,42 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         } else { 0 }
     } else { 0 };
 
+    // F30: harvest virtio-blk GET_ID result if we issued one. The data
+    // descriptor's buffer pa = q0_desc_pa is encoded in desc[2*1+0] but
+    // we already know it's `buf_pa+0x100`; rather than read the desc
+    // back, walk the used ring to find the chain head, then dereference.
+    if is_virtio_blk && avail_idx_posted > 0 {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        if hhdm != 0 {
+            // Read used.idx at q0_device_pa+0x02 to confirm completion;
+            // used.ring[0].id is at +0x04..+0x08 (le32 = chain head idx),
+            // which we can use to recover the buffer PA via desc table.
+            let used = (hhdm.wrapping_add(q0_device_pa)) as *const u16;
+            // SAFETY: HHDM-mapped used ring.
+            let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
+            if uidx > 0 {
+                // descriptor-table is HHDM-mapped at q0_desc_pa
+                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *const u64;
+                // SAFETY: HHDM-mapped descriptor table.
+                let d0_addr = unsafe { core::ptr::read_volatile(desc0.add(0)) };
+                let buf_pa = d0_addr; // descriptor 0's addr is buf_pa + 0
+                let buf_va = hhdm.wrapping_add(buf_pa) as *const u8;
+                // SAFETY: HHDM-mapped data buf within the same page.
+                unsafe {
+                    for i in 0..20 {
+                        blk_id[i] = core::ptr::read_volatile(buf_va.add(0x100 + i));
+                    }
+                    blk_status = core::ptr::read_volatile(buf_va.add(0x200));
+                }
+            }
+        }
+    }
+
     // F28: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
         let hhdm = {
@@ -426,6 +535,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         avail_idx_posted,
         used_idx_observed,
         isr_status,
+        blk_id,
+        blk_status,
     })
 }
 
@@ -484,6 +595,25 @@ fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_raw(b" size=");
             klog::write_dec_u64(qsz as u64);
             klog::write_raw(b"\n");
+        }
+        if p.blk_status != 0xFF {
+            klog::write_raw(b"[INFO]  virtio-blk-id ");
+            klog::write_dec_u64(bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" status=");
+            klog::write_hex_u64(p.blk_status as u64);
+            klog::write_raw(b" id=\"");
+            // Render printable bytes; replace non-printables with '.'
+            let mut buf = [b'.'; 20];
+            for i in 0..20 {
+                let b = p.blk_id[i];
+                buf[i] = if b >= 0x20 && b < 0x7f { b } else if b == 0 { b'.' } else { b'?' };
+            }
+            klog::write_raw(&buf);
+            klog::write_raw(b"\"\n");
         }
         if p.avail_idx_posted > 0 {
             klog::write_raw(b"[INFO]  virtio-rx-post ");
