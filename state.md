@@ -1,4 +1,80 @@
-# State 2026-05-08 (session 47 — virtio-pci modern transport bring-up F19→F28)
+# State 2026-05-08 (session 47 — virtio-pci F19→F41 + MSI delivery wiring)
+
+## Headline (session 47, second leg, F29-F41)
+
+Continuing from the first headline below: 25 cumulative PRs landed
+across F19-F41 + C05 split + D10 first checkpoint + F31 qemu serial
+tweak. Beyond the F30 milestone (first device-driven completion), the
+second leg added the per-arch MSI-X delivery wiring on aarch64:
+
+  - F29  ISR cap mapped + read post-kick
+  - F32  MSI-X cap header decoder
+  - F33  MSI-X table read (initial vector_control state)
+  - C05  pci_boot.rs split into mod.rs + virtio_drv.rs (file-cap relief)
+  - F34  attach virtio-blk-pci on x86 launchers (mirrors aarch64)
+  - F35  decode MADT type-13 GIC MSI Frame, publish GIC_MSI_FRAME_PA
+  - F36  map GICv2m frame, read MSI_TYPER (spi_first=80, spi_count=64)
+  - F37  msi.rs SPI allocator + gic::enable_intid demo (alloc=80)
+  - F38  write MSI-X table entry msg_addr/data + cmd-reg ordering fix
+  - F39  unmask + cap MSI-X enable + bind queue_msix_vector + IRQ count
+  - F40  brief post-enumerate IRQ unmask window + msi-fires summary
+  - F41  re-read message_control to verify Enable bit stuck
+
+End-state aarch64 trace highlights:
+  gic-msi-frame id=0 pa=0x0802_0000 flags=0x1
+  gicv2m typer=0x00500040 spi_first=80 spi_count=64
+  msi-spi alloc=80 enabled
+  msix-en 0:1.0 mc=0x8003 enabled=1   (virtio-net cap-bit set)
+  msix-en 0:2.0 mc=0x8001 enabled=1   (virtio-blk cap-bit set)
+  msix-bind 0:1.0 spi=81 addr=0x08020040 data=0x51 ctl=0x00000000
+  msix-bind 0:2.0 spi=82 addr=0x08020040 data=0x52 ctl=0x00000000
+  virtio-msix 0:1.0 q0_msix_vec=0x0000 msi_fires=0
+  virtio-msix 0:2.0 q0_msix_vec=0x0000 msi_fires=0
+  virtio-blk-id 0:2.0 status=0x00 (F30 closed-loop preserved)
+  virtio-rx-post 0:2.0 avail_idx=1 used_idx=1 isr=0x01
+  msi-fires-post-enum=0
+
+## Open question for session 48 (silent-MSI)
+
+`msi_fires=0` despite cap.enable=1 + queue 0 bound to vector 0 + entry
+unmasked + brief IRQ-unmask drain window post-enum. The device sets
+`isr=0x01` on completion, which per Virtio 1.2 §4.1.4.5 should NOT
+happen when MSI-X is enabled — the device should route via the table
+instead. Suggests QEMU's transitional virtio-blk-pci (0x1001) falls
+back to INTx-style ISR even with cap-level MSI-X enabled.
+
+Three avenues for next session:
+1. Decode ACPI IORT (currently logged as `acpi IORT pa=...` but
+   undecoded) — confirm no SMMU is blocking MSI writes from PCI.
+2. Try non-transitional virtio device (modern-only IDs 0x1041/0x1042)
+   to see if that QEMU code path delivers MSI correctly. Likely needs
+   `-device virtio-blk-pci-modern` or `virtio-blk-pci,disable-legacy=on`.
+3. Read QEMU virtio-pci source: hw/virtio/virtio-pci.c MSI delivery
+   path; check if there's a config-bit beyond MSI-X cap enable that
+   gates the transitional device into modern-MSI mode.
+
+## PRs landed (session 47, second leg, #707-#722)
+
+| PR  | Branch | Headline |
+|-----|--------|----------|
+| #707 | F28-virtio-rx-post-and-kick | post one RX descriptor + kick |
+| #708 | D10-state-session-47-virtio-pci | first state checkpoint |
+| #709 | F29-virtio-isr-cap | ISR cap mapped + read |
+| #710 | F30-virtio-blk-get-id | virtio-blk GET_ID closed-loop (status=0x00) |
+| #711 | F31-virtio-blk-serial | qemu serial=oxide-virt-blk-0 |
+| #712 | F32-msix-cap-decode | MSI-X cap header decoder |
+| #713 | F33-msix-table-read | MSI-X table read + lint sweep |
+| #714 | C05-pci-boot-split | pci_boot/{mod.rs, virtio_drv.rs} split |
+| #715 | F34-x86-virtio-lockstep | attach virtio-blk-pci on x86 |
+| #716 | F35-madt-gicv2m-decode | MADT type-13 decoder |
+| #717 | F36-gicv2m-typer | map v2m + read TYPER |
+| #718 | F37-arm-spi-alloc | SPI allocator + GIC enable demo |
+| #719 | F38-msix-table-write | write MSI-X entry + cmd-reg ordering fix |
+| #720 | F39-msix-enable-and-bind | unmask + cap-enable + queue-bind |
+| #721 | F40-msi-fire-observe | post-enumerate unmask + fire counter |
+| #722 | F41-msix-enable-readback | re-read mc to verify enable bit |
+
+
 
 ## Headline (session 47)
 
