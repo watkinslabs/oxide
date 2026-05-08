@@ -7,6 +7,9 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+pci = { path = "../pci" }
+
 [features]
 default = []
 hosted = []
