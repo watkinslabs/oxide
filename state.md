@@ -1,8 +1,66 @@
-# State 2026-05-08 (session 49 leg-1 — F55 verified + F56-01..05 ITS skeleton)
+# State 2026-05-08 (session 49 ENDED — F55 verified + F56-01..F56-09 ITS complete)
 
-## Headline (session 49, F56-01..F56-05)
+## ⚡ Session 50 first task: restart Claude / qemu-mcp + verify modern virtio MSI
 
-Session 49 opened by verifying PR #742's F55 GICv3 conversion clean
+PR #752 (F56-09) edited `tools/qemu-mcp/server.py` to add
+`disable-legacy=on` to the aarch64 virtio-blk-pci launch line
+(switches the device from transitional 0x1001 → modern 0x1041 so
+MSI-X is honoured per Virtio 1.2 §4.1.4.5). The qemu-mcp daemon
+caches the launch args at module load, so verifying needs a fresh
+daemon. **First action on session 50**: restart the Claude session
+so qemu-mcp respawns, then run
+`mcp__qemu__qemu_start arch=aarch64` +
+`qemu_run_until pattern="msi-fires-post-enum"`. Expect:
+
+  - `pci 0:2.0 vendor=0x1af4 device=0x1041` (was 0x1001 pre-restart)
+  - `msix-bind 0:2.0 ... addr=0x08080040 data=0x0`  (unchanged)
+  - `its-self-fire pre=0 post=1 delta=1 last_intid=0x2000` (kernel-side proof)
+  - `virtio-msix 0:2.0 q0_msix_vec=0x0000 msi_fires>0` ← NEW
+  - `msi-fires-post-enum>0` ← NEW
+
+If `msi-fires-post-enum > 0`, silent-MSI is genuinely fixed
+end-to-end and the F30-F44 ISR-poll fallback can be retired in
+F57. If still 0 despite device 0x1041, virtio queue_msix_vector
+binding in `pci_boot/virtio_drv.rs` may need explicit MSI-X-aware
+plumbing (currently inherits from cap.enable + table writes).
+
+## Headline (session 49 leg-2, F56-06..F56-09)
+
+After the leg-1 checkpoint, 4 more PRs landed (#749-#752) closing
+out the ITS workstream end-to-end:
+
+  - **F56-06 #749** cmd-post protocol (32-byte CWRITER/CREADR ring)
+                     + MAPC ICID 0→RD 0 + MAPD DeviceID 0x08
+                     (virtio-net) + MAPD 0x10 (virtio-blk).
+                     All polls=0 (drained synchronously on QEMU).
+  - **F56-07 #750** MAPTI(0x10, 0)→LPI 8192, ICID 0 + INV + SYNC.
+  - **F56-08 #751** GICR PROPBASER byte 0xA3 (Prio+Group1+Enable)
+                     for LPI 8192 + retarget virtio-blk's MSI-X
+                     msg_addr to GITS_TRANSLATER (0x08080040) /
+                     msg_data=EventID 0. Dispatcher counts INTID
+                     ≥ LPI_BASE (8192) into MSI_FIRES.
+  - **F56-09 #752** ITS INT command (opcode 0x03) self-fire test.
+                     `its-self-fire delta=1 last_intid=0x2000`
+                     proves the kernel-side path is correct.
+                     Also sets `disable-legacy=on` on qemu-mcp's
+                     virtio-blk-pci launch (effective on restart).
+
+## ❗ Silent-MSI verdict (revised, supersedes session 47/48 parking)
+
+Session 48 parked silent-MSI as "PCI root-complex routing drops
+device MSI writes." The F56-09 INT self-fire diagnostic proves
+that wrong: with the ITS up, the GIC delivers LPI 8192 cleanly
+on a kernel-issued INT command — the kernel-side path was never
+broken. The reason device-driven MSI writes "vanish" is that
+QEMU's **transitional** virtio-blk-pci (device 0x1001) skips MSI
+emission despite cap.MSI-X-enable=1. The fix is the
+non-transitional variant (0x1041) which honours MSI-X per Virtio
+1.2 §4.1.4.5. Update applied; verify on session 50 daemon
+restart.
+
+## Headline (session 49 leg-1, F55 verify + F56-01..F56-05)
+
+(Superseded by leg-2 above; kept for reference.) Session 49 opened by verifying PR #742's F55 GICv3 conversion clean
 on aarch64 (`gicd v=3`, `gicv3: enabled typer=0x37a0008`, 6 smokes
 PASS, `hello-from-dyn`). The remainder of the leg shipped 5 ITS
 bring-up PRs (#743-#747):
@@ -33,7 +91,11 @@ All 6 user smokes still PASS post each PR; hello-from-dyn reached;
 no behavioural change yet for MSI delivery — virtio-blk still
 falls back to ISR-poll (`isr=0x01`, `msi_fires=0`).
 
-## Session 50 first task: F56-06 MAPD + MAPC commands
+## (obsolete) Session 50 first task: F56-06 MAPD + MAPC commands
+
+(F56-06..09 all shipped in session 49 leg-2; see top section for
+the new session-50 first task — daemon restart + modern virtio
+MSI verify.) Original notes preserved below for reference.
 
 Now that the ITS is enabled with empty queue, the next surgical
 step is the command-posting protocol. The 32-byte ITS command
