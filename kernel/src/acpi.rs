@@ -134,6 +134,7 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
                 b"SPCR" => decode_spcr(entry_pa, hhdm_offset),
                 b"MCFG" => decode_mcfg(entry_pa, hhdm_offset),
                 b"GTDT" => decode_gtdt(entry_pa, hhdm_offset),
+                b"IORT" => decode_iort(entry_pa, hhdm_offset),
                 _       => {}
             }
         }
@@ -523,6 +524,81 @@ pub unsafe fn decode_gtdt(pa: u64, hhdm_offset: u64) {
         alog_raw(b" el2=");
         alog_dec(el2_gsiv as u64);
         alog_raw(b"\n");
+    }
+}
+
+/// Decode the IORT (I/O Remapping Table) per ACPI 6.4 §5.2.30. The
+/// IORT describes the topology between PCI devices and the ARM IRQ /
+/// MMU subsystems — most importantly whether an SMMU sits on the
+/// path. Header (after the 36-byte SDT) is:
+///   u32 num_nodes; u32 node_offset; u32 reserved;
+/// Then `num_nodes` variable-length nodes, each starting with:
+///   u8 type; u16 length; u8 revision; u32 identifier;
+///   u32 num_id_mappings; u32 id_array_offset;
+/// Type values (relevant subset):
+///   0 = ITS group       (GIC ITS — interrupt-translation service)
+///   1 = Named Component (named device, usually doesn't gate MSI)
+///   2 = Root Complex    (PCI host bridge — MSI source on PCI path)
+///   3 = SMMUv1/v2       (legacy SMMU on the path → blocks DMA without setup)
+///   4 = SMMUv3          (modern SMMU)
+///   5 = PMCG            (performance monitor)
+///   6 = Memory Range    (named memory windows, ACPI 6.4+)
+///
+/// We log {type,length} per node so the silent-MSI debugging note
+/// can confirm/refute SMMU presence on QEMU virt.
+///
+/// # SAFETY: caller asserted `iort_pa` came from a valid XSDT entry
+/// and is HHDM-mapped contiguously for the table's declared length.
+/// # C: O(num_nodes)
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn decode_iort(iort_pa: u64, hhdm_offset: u64) {
+    let p = (hhdm_offset + iort_pa) as *const u8;
+    // SAFETY: iort_pa lies in HHDM-mapped ACPI memory; the SDT length
+    // field at +0x04 covers the trailing IORT header + nodes.
+    let sdt_len = unsafe { read_u32_le(p.add(4)) } as usize;
+    if sdt_len < 48 {
+        alog_raw(b"[INFO]    iort: too short\n");
+        return;
+    }
+    // SAFETY: HHDM-mapped IORT, sdt_len verified >= 48 above; reads at u32-aligned offsets 36/40 stay in-bounds.
+    let num_nodes  = unsafe { read_u32_le(p.add(36)) } as usize;
+    // SAFETY: same HHDM-mapped IORT region; offset 40 is u32-aligned and within sdt_len.
+    let node_off0  = unsafe { read_u32_le(p.add(40)) } as usize;
+    alog_raw(b"[INFO]    iort num_nodes=");
+    alog_dec(num_nodes as u64);
+    alog_raw(b" first_node_off=");
+    alog_hex(node_off0 as u64);
+    alog_raw(b"\n");
+    let mut off = node_off0;
+    let mut idx = 0usize;
+    while idx < num_nodes && off + 16 <= sdt_len {
+        // SAFETY: HHDM-mapped IORT region; loop guard ensures off+16 <= sdt_len so this u8 read is in-bounds.
+        let nty = unsafe { core::ptr::read_volatile(p.add(off)) };
+        // SAFETY: same HHDM-mapped IORT region; off+1 < off+16 <= sdt_len verified by loop guard.
+        let nlen_lo = unsafe { core::ptr::read_volatile(p.add(off + 1)) } as usize;
+        // SAFETY: same HHDM-mapped IORT region; off+2 < off+16 <= sdt_len verified by loop guard.
+        let nlen_hi = unsafe { core::ptr::read_volatile(p.add(off + 2)) } as usize;
+        let nlen = nlen_lo | (nlen_hi << 8);
+        if nlen < 16 || off + nlen > sdt_len { break; }
+        let label: &[u8] = match nty {
+            0 => b"ITS-group",
+            1 => b"named-component",
+            2 => b"root-complex",
+            3 => b"SMMUv1/v2",
+            4 => b"SMMUv3",
+            5 => b"PMCG",
+            6 => b"memory-range",
+            _ => b"unknown",
+        };
+        alog_raw(b"[INFO]    iort-node type=");
+        alog_dec(nty as u64);
+        alog_raw(b" (");
+        alog_raw(label);
+        alog_raw(b") len=");
+        alog_dec(nlen as u64);
+        alog_raw(b"\n");
+        off += nlen;
+        idx += 1;
     }
 }
 
