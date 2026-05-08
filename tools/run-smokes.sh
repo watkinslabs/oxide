@@ -46,7 +46,7 @@ run_one() {
       -serial stdio)
   else
     qemu_args=(qemu-system-aarch64
-      -machine virt -cpu cortex-a72 -m 256M
+      -machine virt,gic-version=3,its=on -cpu cortex-a72 -m 256M
       -bios "$repo/vendor/firmware/ovmf-aarch64.fd"
       -drive "format=raw,file=$img,if=virtio"
       -display none -no-reboot
