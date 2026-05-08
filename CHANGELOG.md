@@ -932,3 +932,30 @@ End-of-session-42 verified-green:
 - both arches build with default + debug-all
 - 894 hosted tests pass
 - spec-lint clean
+
+## Session 43 (PRs #681 – #686) — 2026-05-07
+
+**Subject**: fix-the-lies sweep + per-PTE mprotect + userspace
+smoke harness. User push-back at session start: session 42 shipped
+admission stubs labeled as "v2 P25b / P22b / etc.", inheriting the
+weight of the v2 ladder for what was actually stub work (semop
+returning EAGAIN instead of blocking, ptrace PEEK returning 0
+word, POSIX MQ as tmpfs FIFO bytes). Session 43 turned each into
+a real implementation backed by an end-to-end QEMU smoke.
+
+| PR | Branch | Lands |
+|---|---|---|
+| #681 | `B15-fix-sem-blocking-real` | Generic `WaitList` (sched/wait_list.rs); real blocking `semop`/`msgsnd`/`msgrcv` with publisher-wakes-under-resource-lock to close lost-wakeup race. IPC_RMID wakes everyone with EIDRM. |
+| #682 | `B16-real-ptrace-real-mq` | Real ptrace PEEK/POKE via foreign-mm walker (`pt_walker::translate_4k_at_root<W>` + `user_as::read_foreign_user`/`write_foreign_user`). Refuses RO leaf writes. Real POSIX MQ (priority-descending FIFO-within-priority records). vfs::Inode gains `as_any()`. |
+| #683 | `B17-ipc-smokes-and-fs-base-fix` | 4 userspace smokes (sem/msg/mq/ptrace). Infrastructure fixes: ext4 multi-block dir lookup, x86_64 TLS scratch + self-pointer + FS_BASE save/restore in context switch, PTRACE_PEEK writes `*data`, `validate_user_buf_writable` for getcwd-class kernel-side writes. |
+| #684 | `B18-arm-smokes-cow-sigsegv` | ARM IPC ABI translator: 15 missing entries (ptrace, mq, msg, sem). CoW-style fault upgrade for Protection-write to writable VMA. User-fault SIGSEGV path. ARM 4/5 smokes PASS. |
+| #685 | `F14-per-pte-mprotect` | Real per-PTE mprotect: walker + flush + wired into `kernel_sys_mprotect` after VMA update. wait4 wstatus: bit 8 = WIFSIGNALED marker; sigsegv_terminate stores `11 \| 0x100`. New mprotect_smoke + `tools/run-smokes.sh` (qemu direct, watch stdio for markers — **x86 4s, ARM 7s** vs prior 90s+ MCP qemu_continue dead-wait). New `qemu_run_until(pattern, timeout)` MCP tool added (requires restart to surface). |
+| #686 | `B19-runner-binary-fix` | `tools/run-smokes.sh`: `grep -a` for binary-safe match — limine's ANSI escapes were tripping grep's binary-mode silent-skip. |
+
+End-of-session-43 verified-green:
+- both arches build, 894 hosted tests pass, spec-lint clean
+- QEMU x86_64: 5/5 smokes PASS (sem/msg/mq/ptrace/mprotect)
+- QEMU aarch64: 4/5 PASS — mprotect_smoke FAIL (handed off to next session)
+
+Open for next session:
+- ARM mprotect_smoke FAIL: `mm.mprotect` returns -EINVAL on aarch64 before per-PTE walker runs; klog diagnostics needed but blocked by `-serial stdio` boot stall after kernel rebuild. Use the new `qemu_run_until` MCP tool (after restart) + socket chardev for diagnosis.

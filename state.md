@@ -1,3 +1,70 @@
+# State 2026-05-07 (session 43 — fix-the-lies + per-PTE mprotect + smoke harness)
+
+## Headline (session 43)
+
+User push-back at the start of the session: session 42 had labeled
+admission stubs as "v2 P25b / P19b / etc." — borrowing the formal
+weight of the v2 ladder for what was actually stub work
+(semop returning EAGAIN instead of blocking, ptrace PEEK returning
+0 word, POSIX MQ as a tmpfs FIFO byte-stream). User asked to
+"build this shit properly" and "fix the things, then write tests."
+
+Session 43 did exactly that: each session-42 lie became a real
+implementation backed by an end-to-end userspace smoke that runs
+on QEMU x86_64 (5/5) and aarch64 (4/5; mprotect_smoke is the lone
+FAIL — arch-specific dispatch quirk in `mm.mprotect`, kernel-side
+fix tracked but blocked by an unrelated stdio-chardev boot stall
+that the next session resolves with the new `qemu_run_until` MCP
+tool added below).
+
+## PRs landed (#681 – #686)
+
+| PR | Branch | What |
+|---|---|---|
+| #681 | `B15-fix-sem-blocking-real`        | Generic `WaitList` (kernel/src/sched/wait_list.rs); real blocking `semop`/`msgsnd`/`msgrcv` instead of the EAGAIN-on-contention lie. Lock-ordering: caller parks under resource lock, publisher wakes WHILE holding resource lock (closes lost-wakeup race). IPC_NOWAIT short-circuits. IPC_RMID wakes everyone with EIDRM. Errno: Eidrm/Enomsg added. |
+| #682 | `B16-real-ptrace-real-mq`          | Real ptrace PEEK/POKE via foreign-mm walker (`hal::pt_walker::translate_4k_at_root<W>` + `user_as::read_foreign_user`/`write_foreign_user`). Refuses RO leaf writes (no W^X bypass). Real POSIX MQ in `kernel/src/posix_mq.rs` with priority-descending FIFO-within-priority records (insertion sort). vfs::Inode gains optional `as_any()`. read/write on mq fd → -EINVAL. |
+| #683 | `B17-ipc-smokes-and-fs-base-fix`   | 4 userspace smokes (sem/msg/mq/ptrace). 5 infra fixes uncovered: ext4 `lookup_in_dir` walks all dir blocks (not just first; /bin overflowed); x86_64 TLS scratch + self-pointer write at init/execve so musl FS:0x28 canary works; FS_BASE rdmsr/wrmsr in `ContextX86_64::switch` (restore via `(*prev).fs_base` since post-switch locals are self's); PTRACE_PEEK writes `*data` per glibc/musl wrapper expectation; `validate_user_buf_writable` gates getcwd-class kernel writes by VMA prot. |
+| #684 | `B18-arm-smokes-cow-sigsegv`       | ARM IPC ABI translator: 15 missing entries (ptrace 117, mq 180-185, msg 186-189, sem 190-193). CoW-style fault upgrade for Protection-write to a writable VMA (`AddressSpace::handle_page_fault` Protection arm). User-fault SIGSEGV path: unhandled user-mode #PF terminates task, kernel-mode still halts. ARM 4/5 smokes PASS at this point. |
+| #685 | `F14-per-pte-mprotect`             | Real per-PTE mprotect: `hal::pt_walker::protect_4k_at_root<W>` + `user_as::mprotect_pages` (rewrite leaves + per-page TLB flush) + `kernel_sys_mprotect` calls it after `mm.mprotect` succeeds. Pre-F14: VMA prot updated, PTE.W stayed set → silent no-op. wait4 wstatus: bit 8 of `exit_status` = WIFSIGNALED marker; sigsegv_terminate stores `11 \| 0x100` so `WTERMSIG` works. New mprotect_smoke (parent forks; child mprotect→R then writes; parent reaps + checks WIFSIGNALED). New `tools/run-smokes.sh` runs qemu-system directly, watches stdio for markers — **x86 4s, ARM 7s** (was 90s+ MCP qemu_continue dead-wait). |
+| #686 | `B19-runner-binary-fix`            | `tools/run-smokes.sh`: `grep -a` for binary-safe match (the limine boot ANSI cursor-position escapes were tripping grep into binary-mode silent-skip). |
+
+## QEMU smoke results
+
+`tools/run-smokes.sh both` should report:
+
+```
+=== smoke results (arch=x86_64) ===     (4s)
+  sem_smoke:    PASS
+  msg_smoke:    PASS
+  mq_smoke:     PASS
+  ptrace_smoke: PASS
+  mprotect_smoke: PASS
+=== smoke results (arch=aarch64) ===    (7s)
+  sem_smoke:    PASS
+  msg_smoke:    PASS
+  mq_smoke:     PASS
+  ptrace_smoke: PASS
+  mprotect_smoke: FAIL
+```
+
+## Open follow-ups for next session
+
+- **ARM mprotect_smoke FAIL** — `mm.mprotect(addr, len, prot)` returns -EINVAL on aarch64 BEFORE my per-PTE walker runs. Same VMA-tree code as x86. The match arm at `syscall_glue.rs:852` (`NR_MPROTECT => kernel_sys_mprotect`) appears not to fire on ARM (a klog at the function entry didn't surface). NR translation in `syscall_arm_abi.rs` has `(226, 10)` so generic NR=226 → x86 NR=10. Either the translation is dropped, or `dispatch.rs`'s slot-10 stub fires first via the catch-all and returns -EINVAL somewhere. Diagnostic loop bottlenecked because adding klog/diagnostics-then-rebuild produced an ARM kernel that boots fine via MCP socket-chardev but stalls in limine via `-serial stdio` — `tools/run-smokes.sh` couldn't iterate, blocked further debugging.
+
+- **`tools/qemu-mcp/server.py`: new `qemu_run_until(pattern, timeout)` tool** — added in F14. Resumes execution and polls serial buffer for a regex without waiting for `*stopped`. **Requires Claude Code restart to surface.** The intended next-session debug flow for ARM mprotect: `qemu_start aarch64; qemu_run_until "mprotect_smoke: (PASS\|FAIL)" timeout=15`. With kernel-side klog diagnostics, the MCP socket chardev will surface them where stdio currently doesn't.
+
+- **stdio chardev boot stall on aarch64** — `qemu-system-aarch64 -serial stdio` reproducibly hangs in limine after fresh kernel rebuilds; same image via MCP `-chardev socket` works. Worth a separate look once the MCP path proves the kernel side is fine.
+
+## What's queued (next session candidates after ARM mprotect)
+
+- P22c: foreign-mm peek WORKS (B16); foreign-mm POKE works for writable leaves; missing piece is real PTRACE_CONT / SINGLESTEP via sched stop-states.
+- P19d: virtio-net IRQ wiring (TX/RX exist from session 42).
+- Real ld-musl on ARM (P33a was x86 only).
+- /bin/sh interactive on both arches.
+- Per-PTE mprotect on aarch64 (this branch's ARM fix).
+
+---
+
 # State 2026-05-07 (session 42 — v2 follow-up sweep, kernel-API admission)
 
 ## Headline (session 42)
