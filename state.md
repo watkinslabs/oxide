@@ -1,4 +1,26 @@
-# State 2026-05-08 (session 50 leg-2 — F57 x86 MSI-X lockstep landed, phase 8 next)
+# State 2026-05-08 (session 50 ENDED — F57 + F58 landed, phase 8 RX next)
+
+## ⚡ Session 51 first task: daemon restart + verify modern virtio-net
+
+F58 (#757) added `-netdev user,id=net0` + `-device
+virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on` on
+both arches in `tools/qemu-mcp/server.py`. qemu-mcp caches the
+launch args at module load (same constraint as F56-09's
+virtio-blk transitional→modern flip), so verification needs a
+fresh daemon. **First action on session 51**: restart Claude
+so qemu-mcp respawns, then `mcp__qemu__qemu_start arch=x86_64`
++ `qemu_run_until pattern="device=0000000000001041"`. Expect:
+
+  - x86: `pci 0:N.0 vendor=0x1af4 device=0x1041 class=0x02` (modern
+    virtio-net, replacing the previous default e1000 0x10d3).
+  - aarch64: same — replacing the default transitional 0x1000.
+  - Both arches still boot through to the 6 user smokes + login.
+
+If the modern virtio-net appears on both arches, phase 8 RX path
+work is unblocked: wire `dev_virtio_net::rx_poll` into a periodic
+poll site (boot smoke + later timer-driven), receive an ARP
+request from SLIRP, hand it to `crate::net::stack()`. That's the
+F59 candidate.
 
 ## ⚡ Session 50 leg-2: F57 x86 MSI-X bring-up landed (#755)
 
