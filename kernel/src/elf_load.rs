@@ -87,6 +87,21 @@ impl LoadedImage {
     }
 }
 
+/// Read the dynamic-linker (PT_INTERP) file from the rootfs and
+/// return an owned `Vec<u8>`. Caller drops it after `place_image`
+/// has copied the segment bytes into AS-owned staging buffers
+/// (per B22) — no per-exec leak.
+/// # SAFETY: caller is the ELF loader; ext4 mount has been brought
+/// up by `kernel_main` before any execve runs.
+/// # C: O(file size) — one ext4 read.
+#[cfg(target_os = "oxide-kernel")]
+fn read_interp_blob(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
+    crate::dev_ext4::read_file(path)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn read_interp_blob(_path: &[u8]) -> Option<alloc::vec::Vec<u8>> { None }
+
 /// Default load bias for ET_DYN (PIE) images. Real Linux
 /// randomises this per-exec; v1 uses a fixed value disjoint from
 /// the hand-rolled-blob VAs (0x400000) and from the user stack
@@ -108,8 +123,10 @@ const INTERP_LOAD_BIAS: u64 = 0x4000_0000;
 /// (`ET_EXEC`) load at their declared `p_vaddr`. All `entry`,
 /// `phdr_va`, `brk`, and stack VAs are biased accordingly.
 ///
-/// `blob` must outlive the address space (in practice always
-/// 'static — it's `include_bytes!`'d from the kernel image).
+/// `blob` only needs to live for the duration of this call: the
+/// segment bytes are copied into AS-owned staging Vecs (B22), so
+/// the input slice can be a transient `&Vec<u8>` from an ext4 read
+/// or a `&'static` const-blob — both work.
 ///
 struct LoadStaging {
     vstart:   u64,
@@ -121,7 +138,7 @@ struct LoadStaging {
 
 /// # C: O(phdrs) parse + O(phdrs) mmap
 pub fn load_static_blob(
-    blob: &'static [u8],
+    blob: &[u8],
     as_: &AddressSpace,
 ) -> Result<LoadedImage, LoadError> {
     // Load the exec at its declared bias.
@@ -134,22 +151,21 @@ pub fn load_static_blob(
     let parsed = parse(blob, ARCH_MACHINE)?;
     let mut interp_base: u64 = 0;
     let mut interp_entry: u64 = 0;
-    // PT_INTERP dual-image load is wired through `elf_smoke` which
-    // owns the boot-baked blob registry; only x86_64 has that module
-    // (the arm path uses `elf_smoke_arm` and doesn't yet host the
-    // dual-image flow). aarch64 callers pass static-PIE binaries with
-    // no PT_INTERP so this path stays unreached on that arch.
-    #[cfg(target_arch = "x86_64")]
+    // PT_INTERP dual-image load: read the interpreter file directly
+    // from ext4 (arch-neutral) and stage as a second `place_image`.
+    // Both arches use the same flow now — the interpreter binary
+    // itself is per-arch (`/lib/ld-musl-x86_64.so.1` vs
+    // `/lib/ld-musl-aarch64.so.1`), but the kernel-side mechanics
+    // are identical.
     if let Some(interp_path) = parsed.interp {
-        let interp_blob = crate::elf_smoke::lookup_blob_by_path(interp_path)
+        let interp_blob = read_interp_blob(interp_path)
             .ok_or(LoadError::Enoexec)?;
-        let interp = place_image(interp_blob, as_, Some(INTERP_LOAD_BIAS))?;
+        // place_image copies the segment bytes it needs into the
+        // AS-owned `staged_bytes` Vec via `stash_bytes`. The original
+        // interp_blob Vec drops at end of this scope — no leak.
+        let interp = place_image(&interp_blob, as_, Some(INTERP_LOAD_BIAS))?;
         interp_base  = INTERP_LOAD_BIAS;
         interp_entry = interp.entry.as_u64();
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    if parsed.interp.is_some() {
-        return Err(LoadError::Enoexec);
     }
 
     Ok(LoadedImage {
@@ -171,7 +187,7 @@ pub fn load_static_blob(
 /// Returns a `LoadedImage` with `interp_*` zeroed — those fields
 /// are populated only by `load_static_blob` after the second pass.
 fn place_image(
-    blob: &'static [u8],
+    blob: &[u8],
     as_: &AddressSpace,
     bias_override: Option<u64>,
 ) -> Result<LoadedImage, LoadError> {
@@ -316,7 +332,7 @@ fn align_up(v: u64, a: u64)   -> u64 { (v + (a - 1)) & !(a - 1) }
 /// writes through user mapping.
 /// # C: O(N_relas)
 fn apply_relative_relocs_into(
-    blob: &'static [u8],
+    blob: &[u8],
     parsed: &elf::ParsedElf,
     bias: u64,
     staging: &mut [LoadStaging],
@@ -393,7 +409,7 @@ fn apply_relative_relocs_into(
 
 #[allow(dead_code)]
 fn apply_relative_relocs(
-    blob: &'static [u8],
+    blob: &[u8],
     parsed: &elf::ParsedElf,
     bias: u64,
 ) -> Result<(), LoadError> {

@@ -158,15 +158,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/ptrace_smoke/ptrace_smoke", "userspace/ptrace_smoke/ptrace_smoke.c"),
         ("userspace/mprotect_smoke/mprotect_smoke", "userspace/mprotect_smoke/mprotect_smoke.c"),
     ];
-    let x86_bins: &[(&str, &str)] = &[
+    // dynlink is now arch-portable (#ifdef __aarch64__ for syscall ABI
+    // + reloc constants + _start). Build for both arches; per-arch
+    // staging at /lib/ld-musl-<arch>.so.1 happens below.
+    let dynlink_bins: &[(&str, &str)] = &[
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
     let mut bins: Vec<(&str, &str)> = portable_bins.to_vec();
-    if arch == "x86_64" {
-        bins.extend_from_slice(x86_bins);
-    } else {
-        eprintln!("xtask rootfs: arch={arch} skipping {} x86-asm-only userspace bins; init only", x86_bins.len());
-    }
+    bins.extend_from_slice(dynlink_bins);
     for (out_rel, src_rel) in &bins {
         // Out path is per-arch: target/userspace-<arch>/<basename>.
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -187,16 +186,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-x86_64.so.1
+    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-<arch>.so.1
     // so the kernel exercises the dual-image load path through our
     // stub interpreter. Keep this list short until the full ld-musl
     // runtime lands; static-pie is the only flavor most utilities
-    // need today.
-    let dyn_bins: &[(&str, &str)] = if arch == "x86_64" {
-        &[("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c")]
-    } else {
-        &[]
-    };
+    // need today. hello_dyn is now arch-portable (#ifdef syscall ABI).
+    let dyn_bins: &[(&str, &str)] =
+        &[("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c")];
     for (out_rel, src_rel) in dyn_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
         let out = user_out.join(basename);
@@ -377,20 +373,16 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
-    // The remaining x86-only bins are the dynlink+hello_dyn pair (the
-    // dynamic-linker smoke harness, x86 ABI inherent for now). Skip
-    // staging them on aarch64 until we have aarch64 ld-musl.
-    if arch != "x86_64" {
-        eprintln!("xtask rootfs: arch={arch} skipping x86-only dynlink + hello_dyn (need aarch64 ld-musl)");
-    }
-    if arch == "x86_64" {
-    // /lib/ld-musl-x86_64.so.1 — minimal dynamic-linker stub (P13-06).
-    // Kernel ELF loader sees PT_INTERP="/lib/ld-musl-x86_64.so.1"
-    // in any -pie (non-static) binary and dual-loads this image
-    // alongside the exec.
-    put(&user("dynlink"),   "/lib/ld-musl-x86_64.so.1")?;
+    // dynamic-linker stub at the per-arch musl path. The kernel's
+    // ELF loader sees PT_INTERP="/lib/ld-musl-<arch>.so.1" in any
+    // -pie binary and dual-loads this stub alongside the exec.
+    let interp_path = if arch == "aarch64" {
+        "/lib/ld-musl-aarch64.so.1"
+    } else {
+        "/lib/ld-musl-x86_64.so.1"
+    };
+    put(&user("dynlink"),   interp_path)?;
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
-    } // end if arch == "x86_64"
 
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
