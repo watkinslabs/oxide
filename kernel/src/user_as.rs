@@ -552,7 +552,6 @@ pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
 #[cfg(target_arch = "x86_64")]
 fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     use core::sync::atomic::Ordering;
-    use alloc::sync::Arc;
     debug_irq! {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = crate::sched::current() { klog::write_dec_u64(c.tid as u64); }
@@ -567,18 +566,21 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     if let Some(rq) = crate::sched::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
-            // SAFETY: rq.current non-null after install; matching Arc bump.
-            unsafe { Arc::increment_strong_count(raw); }
-            // SAFETY: matching Arc::from_raw consumes the bumped count.
-            let arc = unsafe { Arc::from_raw(raw) };
+            // SAFETY: rq.current non-null after install; the AtomicPtr's
+            // strong-ref-via-raw keeps the pointee alive through this borrow;
+            // we are running on this task's syscall stack so no concurrent freer.
+            let task: &sched::Task = unsafe { &*raw };
             // exit_status low 8 = signal num, bit 8 = "killed by
             // signal" flag (per the wait4 encoder in syscall_glue).
-            arc.exit_status.store(11 | 0x100, Ordering::Release);
-            crate::sched::mark_done(&arc);
-            crate::sched::park_zombie(arc);
+            task.exit_status.store(11 | 0x100, Ordering::Release);
+            crate::sched::mark_done(task);
+            crate::sched::signal_child_exit(task);
         }
     }
     // SAFETY: kernel ctx (fault dispatcher), preempt-off, runqueue installed.
+    // schedule() detects the Zombie state and pushes the prev_arc
+    // returned by swap_current into ZOMBIES — no leak via the dead
+    // task's stack frame.
     unsafe { crate::sched::schedule(); }
     loop {
         // SAFETY: cli+hlt at CPL=0; final terminal halt if schedule returns.
@@ -590,7 +592,6 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
 #[cfg(target_arch = "aarch64")]
 fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
     use core::sync::atomic::Ordering;
-    use alloc::sync::Arc;
     debug_irq! {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = crate::sched::current() { klog::write_dec_u64(c.tid as u64); }
@@ -602,18 +603,16 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
     if let Some(rq) = crate::sched::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
-            // SAFETY: rq.current non-null after install; matching Arc bump.
-            unsafe { Arc::increment_strong_count(raw); }
-            // SAFETY: matching Arc::from_raw consumes the bumped count.
-            let arc = unsafe { Arc::from_raw(raw) };
-            // exit_status low 8 = signal num, bit 8 = "killed by
-            // signal" flag (per the wait4 encoder in syscall_glue).
-            arc.exit_status.store(11 | 0x100, Ordering::Release);
-            crate::sched::mark_done(&arc);
-            crate::sched::park_zombie(arc);
+            // SAFETY: rq.current non-null after install; AtomicPtr's
+            // strong-ref-via-raw keeps pointee alive across this borrow.
+            let task: &sched::Task = unsafe { &*raw };
+            task.exit_status.store(11 | 0x100, Ordering::Release);
+            crate::sched::mark_done(task);
+            crate::sched::signal_child_exit(task);
         }
     }
-    // SAFETY: kernel ctx, preempt-off, runqueue installed.
+    // SAFETY: kernel ctx, preempt-off, runqueue installed; schedule()
+    // detects Zombie prev and transfers the prev_arc into ZOMBIES.
     unsafe { crate::sched::schedule(); }
     loop {
         // SAFETY: msr daifset+wfi at EL1; final halt path.

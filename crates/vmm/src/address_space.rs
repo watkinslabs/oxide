@@ -66,16 +66,11 @@ impl Drop for AddressSpace {
     fn drop(&mut self) {
         let raw = self.teardown.load(core::sync::atomic::Ordering::Acquire);
         if raw != 0 {
-            // SAFETY: kernel installs `td` (an `unsafe extern "C" fn(u64)`
-            // cast to u64) to free the user-half PT tree rooted at
-            // `root_pa` plus the root itself. The AS is in its final
-            // drop (Arc strong count just hit 0) so no CPU still
-            // walks this root and no concurrent writer remains.
+            // SAFETY: `set_teardown` installs `td` as an `unsafe extern "C" fn(u64)` cast through `as usize` to a u64; the inverse transmute restores the same fn-ptr, ABI guarantees match, and zero is checked above so we never transmute a null.
             let td: unsafe extern "C" fn(u64) = unsafe {
                 core::mem::transmute(raw as usize)
             };
-            // SAFETY: `td` accepts a u64 root_pa per its installer
-            // contract; root is no longer active per the prior comment.
+            // SAFETY: `td` accepts the AS's own `root_pa` per the installer contract; the AS is in its final Drop (Arc strong count hit zero) so the root is no longer active on any CPU and no concurrent walker remains.
             unsafe { td(self.root_pa); }
         }
     }

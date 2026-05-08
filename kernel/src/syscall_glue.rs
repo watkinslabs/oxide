@@ -377,7 +377,6 @@ fn kernel_sys_finit_module(args: &SyscallArgs) -> i64 {
 
 fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    use alloc::sync::Arc;
     let _ = args;
     // No runqueue (arm direct drop_to_el0 pre-P2-13e): nothing
     // to Zombie. Pre-P2-22 fallthrough behavior.
@@ -385,25 +384,26 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
         return 0;
     }
     if let Some(rq) = crate::sched::global() {
-        // Snapshot exit code + state before parking — the
-        // current task's strong ref needs to live in the zombie
-        // registry until wait4 reaps it.
+        // Mark prev Zombie + post SIGCHLD without bumping the
+        // rq.current strong count. `schedule()` below detects
+        // the Zombie state on prev and transfers the swap_current-
+        // returned Arc into ZOMBIES — that avoids the prior leak
+        // where the bumped Arc was permanently stranded on the
+        // dead task's kernel-stack frame inside `schedule()`.
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
-            // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because we then matching `from_raw` to materialise an owned Arc.
-            unsafe { Arc::increment_strong_count(raw); }
-            // SAFETY: matching from_raw consumes the bumped count.
-            let arc = unsafe { Arc::from_raw(raw) };
-            arc.exit_status.store(args.a0 as i32, Ordering::Release);
-            crate::sched::mark_done(&arc);
+            // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
+            let task: &sched::Task = unsafe { &*raw };
+            task.exit_status.store(args.a0 as i32, Ordering::Release);
+            crate::sched::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
-                klog::write_dec_u64(arc.tid as u64);
+                klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" code=");
                 klog::write_dec_u64(args.a0);
                 klog::write_raw(b"\n");
             }
-            crate::sched::park_zombie(arc);
+            crate::sched::signal_child_exit(task);
         }
     }
     // SAFETY: process ctx; preempt-off; Zombie state means no re-enqueue.
