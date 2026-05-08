@@ -20,6 +20,22 @@ pub static GICV2M_SPI_COUNT: AtomicU32 = AtomicU32::new(0);
 /// `GICV2M_SPI_FIRST` on the first call.
 static SPI_NEXT: AtomicU32 = AtomicU32::new(0);
 
+/// Count of MSI deliveries observed by the IRQ dispatcher, per arch.
+/// Bumped every time `oxide_arm_irq_dispatch` (or x86 equivalent)
+/// sees an INTID in the GICv2m SPI range. Diagnostic only — once
+/// virtio drivers learn to dispatch by SPI to a specific completion
+/// callback, this counter goes away.
+pub static MSI_FIRES: AtomicU32 = AtomicU32::new(0);
+
+/// True iff `intid` falls inside the published v2m SPI range. Cheap
+/// check used by the per-arch IRQ dispatcher.
+/// # C: O(1) — two atomic loads.
+pub fn intid_is_v2m(intid: u32) -> bool {
+    let first = GICV2M_SPI_FIRST.load(Ordering::Acquire);
+    let count = GICV2M_SPI_COUNT.load(Ordering::Acquire);
+    first != 0 && count != 0 && intid >= first && intid < first + count
+}
+
 /// Allocate one SPI from the GICv2m frame's range. Returns `None`
 /// when the range is unconfigured or exhausted.
 /// # C: O(1) — atomic CAS bump.

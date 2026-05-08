@@ -174,6 +174,12 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
     LAST_INTID.store(intid, Ordering::Relaxed);
     if intid != SPURIOUS_INTID {
         TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+        // F39: count MSI deliveries observed via the v2m SPI range.
+        // Drivers will later dispatch to specific completion callbacks
+        // by SPI; this counter is the diagnostic stand-in.
+        if crate::msi::intid_is_v2m(intid) {
+            crate::msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+        }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
         // so the level-triggered line drops and re-arms for the next
         // period; otherwise the IRQ would re-fire immediately on
