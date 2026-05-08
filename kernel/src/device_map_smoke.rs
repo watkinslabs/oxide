@@ -295,6 +295,39 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                     }
                 }
             }
+            // F56-03: program GITS_BASER<n> for every implemented
+            // table slot. Each slot gets one 4 KiB page (flat table)
+            // — enough for low-DeviceID PCI devices and small
+            // collection counts; Indirect tables come later when SMP
+            // CPU counts or wide DeviceIDs need them.
+            let mut slots = [crate::its::BaserSlot {
+                idx: 0,
+                ty: crate::its::BaserType::Unimplemented,
+                raw_pre: 0,
+                raw_post: 0,
+                table_pa: 0,
+            }; crate::its::GITS_BASER_COUNT];
+            // SAFETY: cmdq_setup completed; PMM up; ITS control frame mapped; single-CPU pre-init.
+            let _n = unsafe { crate::its::baser_setup(hhdm, &mut slots) };
+            debug_irq! {
+                klog::write_raw(b"[INFO]  its-baser: programmed=");
+                klog::write_dec_u64(_n as u64);
+                klog::write_raw(b"\n");
+                for s in slots.iter() {
+                    if s.raw_pre == 0 && s.raw_post == 0 { continue; }
+                    klog::write_raw(b"[INFO]  its-baser[");
+                    klog::write_dec_u64(s.idx as u64);
+                    klog::write_raw(b"] type=");
+                    klog::write_dec_u64(s.ty as u64);
+                    klog::write_raw(b" pre=");
+                    klog::write_hex_u64(s.raw_pre);
+                    klog::write_raw(b" post=");
+                    klog::write_hex_u64(s.raw_post);
+                    klog::write_raw(b" table_pa=");
+                    klog::write_hex_u64(s.table_pa);
+                    klog::write_raw(b"\n");
+                }
+            }
         } else {
             debug_irq! {
                 klog::write_raw(b"[INFO]  its: no MADT type-15 reported\n");
