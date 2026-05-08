@@ -234,6 +234,15 @@ pub const ITS_CMD_MAPC: u8 = 0x09;
 /// MAPD opcode (DeviceID → ITT base + size).
 #[cfg(target_arch = "aarch64")]
 pub const ITS_CMD_MAPD: u8 = 0x08;
+/// MAPTI opcode (Device+EventID → LPI INTID + ICID, full ITT entry).
+#[cfg(target_arch = "aarch64")]
+pub const ITS_CMD_MAPTI: u8 = 0x0a;
+/// INV opcode (invalidate cached LPI config for one Device+Event).
+#[cfg(target_arch = "aarch64")]
+pub const ITS_CMD_INV: u8 = 0x0c;
+/// SYNC opcode (barrier — wait for prior commands targeting RDbase).
+#[cfg(target_arch = "aarch64")]
+pub const ITS_CMD_SYNC: u8 = 0x05;
 
 /// Build a MAPD command (ARM IHI 0069 §5.13.4).
 /// `size` = number-of-EventID-bits - 1; ITT must be 256-byte aligned.
@@ -244,6 +253,39 @@ pub fn cmd_mapd(device_id: u32, itt_pa: u64, size: u32) -> [u64; 4] {
     let dw1 = (size & 0x1f) as u64;
     let dw2 = (1u64 << 63) | (itt_pa & 0x000F_FFFF_FFFF_FF00);
     [dw0, dw1, dw2, 0]
+}
+
+/// Build a MAPTI command (ARM IHI 0069 §5.13.6). Maps
+/// (DeviceID, EventID) → (LPI pINTID, ICID).
+/// `lpi_intid` must be ≥ 8192 (LPI base) and < 8192+(1 << ID_BITS).
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn cmd_mapti(device_id: u32, event_id: u32, lpi_intid: u32, icid: u16) -> [u64; 4] {
+    let dw0 = ITS_CMD_MAPTI as u64 | ((device_id as u64) << 32);
+    let dw1 = (event_id as u64) | ((lpi_intid as u64) << 32);
+    let dw2 = icid as u64 & 0xFFFF;
+    [dw0, dw1, dw2, 0]
+}
+
+/// Build an INV command (ARM IHI 0069 §5.13.2). Invalidates the
+/// ITS's cached LPI configuration for one (DeviceID, EventID) so a
+/// subsequent PROPBASER-table edit takes effect.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn cmd_inv(device_id: u32, event_id: u32) -> [u64; 4] {
+    let dw0 = ITS_CMD_INV as u64 | ((device_id as u64) << 32);
+    let dw1 = event_id as u64;
+    [dw0, dw1, 0, 0]
+}
+
+/// Build a SYNC command (ARM IHI 0069 §5.13.13). Waits for prior
+/// commands targeting `rdbase` (processor number when PTA=0) to
+/// complete before subsequent commands proceed.
+/// # C: O(1)
+#[cfg(target_arch = "aarch64")]
+pub fn cmd_sync(rdbase: u32) -> [u64; 4] {
+    let dw2 = (rdbase as u64 & 0x7_FFFF_FFFF) << 16;
+    [ITS_CMD_SYNC as u64, 0, dw2, 0]
 }
 
 /// Build a MAPC command (ARM IHI 0069 §5.13.5).
@@ -527,6 +569,39 @@ mod tests {
         assert_eq!(c[1] & 0x1f, 4);                     // Size
         assert!(c[2] & (1 << 63) != 0);                 // Valid
         assert_eq!(c[2] & 0x000F_FFFF_FFFF_FF00, 0x4a6f3000);
+        assert_eq!(c[3], 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn cmd_mapti_encoding() {
+        let c = cmd_mapti(0x10, 0, 8192, 0);
+        assert_eq!(c[0] & 0xFF, 0x0a);
+        assert_eq!((c[0] >> 32) & 0xFFFF_FFFF, 0x10);
+        assert_eq!(c[1] & 0xFFFF_FFFF, 0);
+        assert_eq!((c[1] >> 32) & 0xFFFF_FFFF, 8192);
+        assert_eq!(c[2] & 0xFFFF, 0);
+        assert_eq!(c[3], 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn cmd_inv_encoding() {
+        let c = cmd_inv(0x10, 7);
+        assert_eq!(c[0] & 0xFF, 0x0c);
+        assert_eq!((c[0] >> 32) & 0xFFFF_FFFF, 0x10);
+        assert_eq!(c[1], 7);
+        assert_eq!(c[2], 0);
+        assert_eq!(c[3], 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn cmd_sync_encoding() {
+        let c = cmd_sync(0);
+        assert_eq!(c[0] & 0xFF, 0x05);
+        assert_eq!(c[1], 0);
+        assert_eq!(c[2], 0);
         assert_eq!(c[3], 0);
     }
 
