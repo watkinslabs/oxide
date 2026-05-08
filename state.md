@@ -1,23 +1,46 @@
-# State 2026-05-08 (session 47 ENDED — F19→F44 + D10/D11/D12 state checkpoints)
+# State 2026-05-08 (session 48 mid — F45-F49 + D14 checkpoint)
 
-## ⚡ Session 48 first task: restart qemu-mcp + verify x86 virtio-blk
+## Headline (session 48 so far, F45-F49)
 
-The user is restarting with a **fresh qemu-mcp server** to pick up
-F31 (#711) and F34 (#715) edits to `tools/qemu-mcp/server.py`:
-  - F31: virtio-blk-pci `serial=oxide-virt-blk-0` propagated to the device
-  - F34: explicit `-drive if=none,id=hd0` + `-device virtio-blk-pci,drive=hd0,bus=pcie.0,serial=...` on x86
+5 PRs landed after session 47 close-out:
+  - **F45 #729**  GIC SPI bug fix: ITARGETSR + ICFGR programming. Was
+                  the missing piece — `gicv2m-self-fire spi=83 delta=1`
+                  on aarch64 confirms v2m + GIC end-to-end.
+  - **F46 #730**  GICD_ISPENDR2 readback after virtio kicks. Combined
+                  with F45 self-fire: device-driven MSI never reaches
+                  the GIC distributor (`spi81/82_bit=0`). Conclusion:
+                  silent-MSI is **PCI root-complex routing**, not GIC
+                  programming — QEMU drops PCI MSI writes because IORT
+                  advertises a non-existent ITS as parent.
+  - **F47 #731**  PL011 RX IRQ wiring: enable_rx_irq (UARTIMSC.RXIM+RTIM)
+                  + gic::enable_intid(33) + ack_rx_irq in dispatcher.
+                  Code-correct but runtime-masked by timer-poll race
+                  (see F48).
+  - **F48 #732**  UART_IRQ_FIRES counter + 200M-cycle window. Counter
+                  stays 0 because timer-IRQ's tick_poll_uart drains
+                  FIFO before RXIM threshold (8 bytes) or RTIM timeout
+                  (~278us at 115200) latches SPI 33. Wiring is wired;
+                  isolating it from timer-poll is a separate change.
+  - **F49 #733**  Task.singlestep AtomicU32 + PTRACE_SINGLESTEP sets it.
+                  Structural prep — behaviour matches CONT until
+                  per-arch resume paths arm RFLAGS.TF / MDSCR_EL1.SS.
 
-The session-47 daemon was launched before those edits and cached the
-old args, so live verify of the x86 virtio-blk closed-loop never ran.
-**First action on session 48**: `mcp__qemu__qemu_start arch=x86_64`,
-then `qemu_run_until pattern="virtio-blk-rd"`. Expect:
-  - `pci 0:?.0 vendor=0x1AF4 device=0x1001` (virtio-blk-pci on q35)
-  - `virtio-blk-rd 0:?.0 status=0x00 id="EFI PART..."` (sector-1 read)
-  - all user smokes still PASS
+x86 virtio-blk lockstep verify also done first thing in session 48
+(without a PR): `qemu_run_until "virtio-blk-rd"` returned status=0x00
++ "EFI PART..." on q35 with virtio-blk-pci 0:3.0 attached. Closes
+the only F19-F44 gap from session 47.
 
-If the device-id string contains "oxide-virt-blk-0" (or a prefix),
-F31 took effect too. That's the x86 leg of the F19-F44 lockstep
-chain — the only piece not live-verified in session 47.
+## Silent-MSI status (parked)
+
+Conclusion: **PCI root-complex routing drops device MSI writes** in
+QEMU virt + GICv2 + GICv2m. Kernel-side writes to the v2m doorbell
+deliver fine (F45). Device-side writes do not (F46). Practical
+options:
+  - GICv3 + ITS rewrite (multi-week aarch64 IRQ subsystem rewrite)
+  - Accept ISR-poll path (already functional via `isr=0x01`; F30/F42/
+    F43 closed loops all work)
+
+User chose: **accept ISR-poll, move on**. Silent-MSI parked.
 
 
 
