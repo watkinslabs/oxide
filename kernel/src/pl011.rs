@@ -91,6 +91,42 @@ unsafe fn read_reg(va: u64, off: usize) -> u32 {
 #[cfg(target_os = "oxide-kernel")]
 pub fn base_va() -> u64 { PL011_BASE_VA.load(Ordering::Acquire) }
 
+/// Enable PL011 RX + RX-timeout IRQs by setting `UARTIMSC` bits 4
+/// (RXIM) + 6 (RTIM). After this the device asserts SPI 33 on the
+/// GIC whenever bytes arrive in the FIFO; pair with
+/// `gic::enable_intid(33)` so the distributor delivers them.
+///
+/// # SAFETY: caller asserts `enable` has run; runs single-CPU,
+/// IRQ-off; UARTIMSC offset 0x38 lives inside the mapped page.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn enable_rx_irq() {
+    const PL011_IMSC: usize = 0x38;
+    let va = PL011_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return; }
+    // SAFETY: per fn contract; aligned u32 RMW within the 4 KiB Device-nGnRnE PL011 register page.
+    unsafe {
+        let cur = read_reg(va, PL011_IMSC);
+        write_reg(va, PL011_IMSC, cur | (1 << 4) | (1 << 6));
+    }
+}
+
+/// Acknowledge PL011 RX + RX-timeout IRQs by writing 1s to the
+/// matching bits in `UARTICR` (offset 0x44). Called from the IRQ
+/// dispatcher after the FIFO has been drained.
+///
+/// # SAFETY: caller is the IRQ dispatcher; `enable` has run.
+/// # C: O(1)
+/// # Ctx: IRQ
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn ack_rx_irq() {
+    let va = PL011_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return; }
+    // SAFETY: per fn contract; UARTICR (0x44) is within the mapped 4 KiB page; W1C of RXIC|RTIC.
+    unsafe { write_reg(va, PL011_ICR, (1 << 4) | (1 << 6)); }
+}
+
 /// klog `LogSink` thunk. No-op if `enable` hasn't run yet.
 /// # C: O(len)
 #[cfg(target_os = "oxide-kernel")]
