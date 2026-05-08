@@ -215,6 +215,28 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         let pa_driver = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
         let pa_device = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
         if pa_desc != 0 && pa_driver != 0 && pa_device != 0 {
+            // F27: zero the 3 ring frames via HHDM BEFORE programming
+            // queue_enable so the device sees deterministic ring state.
+            // PMM doesn't guarantee zero-init.
+            let hhdm = {
+                #[cfg(target_arch = "x86_64")]
+                { hal_x86_64::mmu_ops::hhdm_offset() }
+                #[cfg(target_arch = "aarch64")]
+                { hal_aarch64::mmu_ops::hhdm_offset() }
+            };
+            if hhdm != 0 {
+                for &pa in &[pa_desc, pa_driver, pa_device] {
+                    let va = hhdm.wrapping_add(pa) as *mut u64;
+                    // SAFETY: HHDM covers all RAM PMM hands out;
+                    // single-CPU pre-init; we own these freshly-allocated
+                    // frames; aligned u64 stores within a 4 KiB page.
+                    unsafe {
+                        for i in 0..(0x1000 / 8) {
+                            core::ptr::write_volatile(va.add(i), 0);
+                        }
+                    }
+                }
+            }
             // Re-select queue 0 (queue_select sits in upper u16 of 0x14;
             // status low byte is sticky as device_status, preserve it).
             let qs0 = (post_status & 0xFF) | (0u32 << 16);
