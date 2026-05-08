@@ -266,6 +266,35 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                     }
                 }
             }
+            // F56-02: program the ITS command queue. Allocates one
+            // 4 KiB frame, zeroes it via HHDM, writes GITS_CBASER +
+            // CWRITER. Does NOT enable the ITS yet (no GITS_CTLR
+            // flip); subsequent F56 PRs add device/collection tables
+            // + LPI prop/pend + GITS_CTLR.Enabled + MAPD/MAPC/MAPTI.
+            let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
+            // SAFETY: ITS control frame Device-attr mapped above; PMM up; HHDM covers PMM frames; single-CPU pre-init.
+            let _q = unsafe { crate::its::cmdq_setup(hhdm) };
+            debug_irq! {
+                match _q {
+                    crate::its::CmdqStatus::NoIts =>
+                        klog::write_raw(b"[INFO]  its-cmdq: no its\n"),
+                    crate::its::CmdqStatus::AllocFailed =>
+                        klog::write_raw(b"[ERROR] its-cmdq: pmm alloc failed\n"),
+                    crate::its::CmdqStatus::AlreadyOn =>
+                        klog::write_raw(b"[INFO]  its-cmdq: already on\n"),
+                    crate::its::CmdqStatus::Ready { cmdq_pa, cbaser_wr, cbaser_rd, creadr } => {
+                        klog::write_raw(b"[INFO]  its-cmdq: pa=");
+                        klog::write_hex_u64(cmdq_pa);
+                        klog::write_raw(b" cbaser_wr=");
+                        klog::write_hex_u64(cbaser_wr);
+                        klog::write_raw(b" cbaser_rd=");
+                        klog::write_hex_u64(cbaser_rd);
+                        klog::write_raw(b" creadr=");
+                        klog::write_hex_u64(creadr);
+                        klog::write_raw(b"\n");
+                    }
+                }
+            }
         } else {
             debug_irq! {
                 klog::write_raw(b"[INFO]  its: no MADT type-15 reported\n");
