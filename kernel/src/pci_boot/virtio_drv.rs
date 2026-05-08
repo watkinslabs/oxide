@@ -214,8 +214,14 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // status low byte is sticky as device_status, preserve it).
             let qs0 = (post_status & 0xFF) | (0u32 << 16);
             w32(0x14, qs0);
-            // queue_size at 0x18 (low u16) — leave as-is. queue_msix_vector
-            // at 0x1A — leave 0xFFFF default for now (no MSI-X bound; F26).
+            // queue_size at 0x18 (low u16) — leave as-is.
+            // F39: bind queue_msix_vector at +0x1A to MSI-X table
+            // index 0 (cap_dump_arch programmed entry 0 already).
+            // The dword at +0x18 holds queue_size (RO, low u16) +
+            // queue_msix_vector (RW, high u16). Read+rewrite preserves
+            // the (RO) size while clearing the high u16 to 0.
+            let qsz_word = r32(0x18) & 0x0000_FFFF;
+            w32(0x18, qsz_word | (0u32 << 16));
             // queue_enable at 0x1C (low u16); queue_notify_off at 0x1E.
             // queue_desc le64 at +0x20:
             w32(0x20, (pa_desc & 0xFFFF_FFFF) as u32);
@@ -605,6 +611,25 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_hex_u64(p.post_notify_status as u64);
             klog::write_raw(b"\n");
         }
+        // F39: read back queue_msix_vector (high u16 of dword at 0x18)
+        // and report MSI delivery count seen by the IRQ dispatcher.
+        // SAFETY: cfg_va Device-attr mapped during init; aligned u32 read.
+        let qmv_word = unsafe {
+            core::ptr::read_volatile((p.cfg_va + 0x18) as *const u32)
+        };
+        let qmv = (qmv_word >> 16) as u16;
+        let fires = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+        klog::write_raw(b"[INFO]  virtio-msix ");
+        klog::write_dec_u64(bdf.bus as u64);
+        klog::write_raw(b":");
+        klog::write_dec_u64(bdf.device as u64);
+        klog::write_raw(b".");
+        klog::write_dec_u64(bdf.function as u64);
+        klog::write_raw(b" q0_msix_vec=");
+        klog::write_hex_u64(qmv as u64);
+        klog::write_raw(b" msi_fires=");
+        klog::write_dec_u64(fires as u64);
+        klog::write_raw(b"\n");
         if p.q0_desc_pa != 0 {
             klog::write_raw(b"[INFO]  virtio-q0-prog ");
             klog::write_dec_u64(bdf.bus as u64);
