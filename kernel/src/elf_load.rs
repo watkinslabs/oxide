@@ -229,9 +229,16 @@ fn place_image(
         apply_relative_relocs_into(blob, &parsed, bias, &mut staging)?;
     }
 
-    // Second pass: leak each staging buf and mmap as KernelBytes.
+    // Second pass: stash each staging buf into the AS (so it frees
+    // when the AS drops, instead of `Box::leak`'ing per exec) and
+    // mmap as KernelBytes pointing into the stashed bytes.
     for s in staging {
-        let data: &'static [u8] = alloc::boxed::Box::leak(s.padded.into_boxed_slice());
+        // SAFETY: the &'static slice is held only by VMAs in this AS;
+        // when the AS drops, the VMA tree releases the slice ref before
+        // staged_bytes drops (declaration order in AddressSpace).
+        let data: &'static [u8] = unsafe {
+            as_.stash_bytes(s.padded.into_boxed_slice())
+        };
         let hint = UserVirtAddr::new(s.vstart).ok_or(LoadError::Einval)?;
         let _ = as_.mmap(
             Some(hint),
