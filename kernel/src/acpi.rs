@@ -348,6 +348,24 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_hex(length as u64);
                     alog_raw(b"\n");
                 }
+                15 if elen >= 20 => {
+                    // GIC ITS Structure (ACPI 6.4 Table 5.51):
+                    //   u8 type=15; u8 len=20; u16 rsvd;
+                    //   u32 its_id; u64 phys_base; u32 rsvd2.
+                    let its_id = read_u32_le(p.add(off + 4));
+                    let phys   = read_u64_le(p.add(off + 8));
+                    alog_raw(b"[INFO]      gic-its id=");
+                    alog_dec(its_id as u64);
+                    alog_raw(b" pa=");
+                    alog_hex(phys);
+                    alog_raw(b"\n");
+                    // Single-ITS v1: take the first reported.
+                    GIC_ITS_PA.compare_exchange(
+                        0, phys,
+                        core::sync::atomic::Ordering::Release,
+                        core::sync::atomic::Ordering::Relaxed,
+                    ).ok();
+                }
                 _ => {
                     alog_raw(b"[INFO]      madt-entry type=");
                     alog_dec(etype as u64);
@@ -447,6 +465,14 @@ pub static ECAM_BASE_PA: core::sync::atomic::AtomicU64
 /// Per-arch MSI delivery wiring (F36+) reads this to compute
 /// MSI message addresses on aarch64.
 pub static GIC_MSI_FRAME_PA: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
+
+/// Physical base of the first GICv3 ITS discovered via MADT type-15
+/// entries (ACPI 6.4 Table 5.51). Zero = no ITS reported (GICv2m or
+/// pre-MADT-walk). The ITS driver (`its.rs`) reads this to map the
+/// GITS_* registers and post commands; MSI delivery on GICv3 routes
+/// device writes to `GITS_TRANSLATER` at `pa + 0x0040`.
+pub static GIC_ITS_PA: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
 
 /// Decode the MCFG ACPI table (PCI Express memory-mapped
