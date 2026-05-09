@@ -424,7 +424,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // Present → init runs sem/msg/mq/ptrace/etc. before dropping to
     // sh. Absent → init goes straight to sh (interactive boot path).
     // Default = staged so CI keeps exercising the kernel-IPC suite.
-    put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
+    // Set OXIDE_INIT_SMOKES=0 to skip the marker (interactive boot).
+    if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
+        put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
+    }
     put(&stage("os-release",
         b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")?,
         "/etc/os-release")?;
