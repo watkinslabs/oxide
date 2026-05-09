@@ -12,7 +12,7 @@
 // Failure mode (pre-B15): parent semop returns -EAGAIN because
 // kernel never blocked → parent prints FAIL and exits 1.
 
-#include "../shared/oxide_start.h"
+/* F152-1: real musl crt1 — no shim */
 #include <unistd.h>
 #include <sys/sem.h>
 #include <sys/wait.h>

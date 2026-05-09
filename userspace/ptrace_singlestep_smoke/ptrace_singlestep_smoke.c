@@ -9,7 +9,7 @@
 // == SIGTRAP. If single-step is treated as plain CONT (pre-F50/51
 // behaviour), the child runs to completion and _exit(99)s — FAIL.
 
-#include "../shared/oxide_start.h"
+/* F152-1: real musl crt1 — no shim */
 #include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
