@@ -9,9 +9,9 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 ## Discipline (READ BEFORE EDITING)
 
 1. **Spec-before-code** (`docs/02`): subsystem code may not be written while its spec is DRAFT. Charters (`02`,`08`,`09`,`01`,`06`,`07`) gate everything below.
-2. **Cool-off**: spec freezes after 48h of no edits + cold re-read. Edits reset the clock.
-3. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
-4. **Lean-mode calendar**: phase advance gated on PR-time CI (≤5min + paranoid-ci build) + QEMU smoke for the affected subsystem. v1 = 9–14mo solo.
+2. **No cool-off / no soak**: a spec freezes the moment its text is correct. Code merges the moment tests are green and spec-lint is clean. Duration-gated waits and 24h/48h/168h soaks are forbidden discipline-theater. Reject them in PR review.
+3. **No deferrals — there is no v2**: every spec describes the full Linux-equivalent surface. No "rides v2.x", no "deferred to v2", no "subset" framing. If a feature is part of the Linux contract for that subsystem, it is in scope for v1 and gets implemented before the spec freezes. Old `v2-arch-plan.md` and `docs/v2/` directory are dead history.
+4. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
 6. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
    - PR-time CI green on both `build kernel x86_64` AND `build kernel aarch64`
