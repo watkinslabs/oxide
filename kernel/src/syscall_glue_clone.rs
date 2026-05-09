@@ -77,12 +77,20 @@ pub fn kernel_sys_clone_dispatch(
             }
         };
         let hhdm = crate::user_as::hhdm_offset();
+        // F157: COW fork (Linux mm/memory.c semantic). Walks parent
+        // PT, bumps struct-page refcount via inc_ref, maps same PA
+        // RO in child + remaps parent RO. First write on either
+        // side triggers handle_page_fault_cow which copies+splits.
         #[cfg(target_arch = "x86_64")]
-        let res = parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let res = parent_mm.fork_cow_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
+            new_root, hhdm,
+            // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
+            |pa| unsafe { crate::pmm_setup::inc_ref(pa); });
         #[cfg(target_arch = "aarch64")]
-        let res = parent_mm.fork_copy_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
-            new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let res = parent_mm.fork_cow_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
+            new_root, hhdm,
+            // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
+            |pa| unsafe { crate::pmm_setup::inc_ref(pa); });
         match res {
             Ok(m) => {
                 crate::user_as::install_teardown(&m);

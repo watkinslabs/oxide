@@ -243,6 +243,106 @@ impl AddressSpace {
     /// `M::translate` resolves source PTEs); single-CPU UP;
     /// preempt-off; caller is the `sys_fork` handler.
     /// # C: O(N_vmas + P_anon_pages)
+    /// F157: COW fork (Linux equivalent). Replaces the eager-copy
+    /// `fork_copy_pages` with refcount-based page sharing per
+    /// `mm/memory.c` `copy_present_pte`:
+    /// 1. Clone the VMA tree.
+    /// 2. Walk parent's mapped pages: for each present leaf,
+    ///    - bump struct-page refcount via `inc_ref`,
+    ///    - install the SAME PA in the child PT,
+    ///    - if the VMA is writable, clear the W bit on BOTH PTEs
+    ///      (parent + child) and TLB-flush parent's VA so the next
+    ///      write fault dispatches to `handle_page_fault` for COW
+    ///      split.
+    /// Read-only VMAs (.text / .rodata) keep their RO PTEs and
+    /// share frames forever — same Linux behaviour for shared file
+    /// pages.
+    ///
+    /// `new_root_pa` must be an already-allocated PT root with
+    /// kernel-half cloned from master per `11§2` invariant 5.
+    /// `inc_ref(pa)` bumps the struct-page refcount for shared frames.
+    ///
+    /// # SAFETY: source AS is the active CR3 / TTBR0; preempt-off;
+    /// single-CPU UP; caller is `sys_fork` / `sys_clone` handler.
+    /// # C: O(N_vmas + P_mapped_pages)
+    pub fn fork_cow_pages<M: MmuOps, IR: FnMut(u64)>(
+        &self,
+        new_root_pa: u64,
+        _hhdm_offset: u64,
+        mut inc_ref: IR,
+    ) -> KResult<Arc<Self>> {
+        let src = self.vmas.read();
+        let mut dst = VmaTree::new();
+        for vma in src.iter() {
+            dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+        }
+        for vma in src.iter() {
+            let writable = vma.prot.contains(VmaProt::WRITE);
+            // For COW we share both Anonymous and KernelBytes frames.
+            // Only Anonymous + KernelBytes ever get faulted leaves;
+            // File / Special are out of scope for v1.
+            let share_pages = matches!(
+                vma.backing,
+                VmaBacking::Anonymous | VmaBacking::KernelBytes { .. }
+            );
+            if !share_pages { continue; }
+            let mut va = vma.start.as_u64();
+            let end = vma.end.as_u64();
+            while va < end {
+                // SAFETY: M::translate reads the active PT for the parent.
+                if let Some((src_pa, _)) = unsafe { Some(M::translate(Va(va))).flatten() } {
+                    let pa = src_pa.0 & !0xfff;
+                    // Bump per-page refcount: child + parent both ref it.
+                    inc_ref(pa);
+                    // Compute child PTE flags. If the VMA is writable,
+                    // strip the W bit so first-write triggers
+                    // copy-on-write split. Else use the VMA prot
+                    // verbatim (RO/RX pages stay shared forever).
+                    let child_prot = if writable {
+                        let mut p = vma.prot;
+                        p.remove(VmaProt::WRITE);
+                        p
+                    } else {
+                        vma.prot
+                    };
+                    let child_flags = child_prot.to_page_flags();
+                    // SAFETY: new_root_pa carries kernel-half clone; va aligned in user range; flags carry USER per `11§5`; pa is the parent's mapped frame whose refcount we just bumped.
+                    unsafe {
+                        M::map_at(new_root_pa, Va(va), Pa(pa), child_flags, PageSize::P4K);
+                    }
+                    // If parent's PTE was writable, remap RO so the
+                    // next parent write also triggers COW split. The
+                    // M::map writes through the active CR3 (parent's
+                    // root). M::map's own implementation flushes the
+                    // VA on x86; aarch64 may need an explicit flush.
+                    if writable {
+                        // SAFETY: parent's CR3 is active; same-PA remap
+                        // with W bit cleared; pa is current mapping per
+                        // translate above.
+                        unsafe { M::map(Va(va), Pa(pa), child_flags, PageSize::P4K); }
+                        // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
+                        unsafe { M::flush_va(Va(va)); }
+                    }
+                }
+                va += PAGE_SIZE_BYTES;
+            }
+        }
+        Ok(Arc::new(Self {
+            vmas: RwLock::new(dst),
+            root_pa: new_root_pa,
+            brk:     core::sync::atomic::AtomicU64::new(self.brk()),
+            brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
+            teardown: core::sync::atomic::AtomicU64::new(0),
+            exe_path: Spinlock::new(self.exe_path.lock().clone()),
+        }))
+    }
+
+    /// Eager-copy fork — pre-COW path retained for callers that
+    /// haven't migrated. Prefer `fork_cow_pages` (Linux-equivalent
+    /// COW). This path allocates fresh frames for every writable
+    /// page in the parent.
+    /// # SAFETY: same as `fork_cow_pages`.
+    /// # C: O(N_vmas + P_writable_pages) eager-copy.
     pub fn fork_copy_pages<M: MmuOps, F: FnMut() -> Option<u64>>(
         &self,
         new_root_pa: u64,
@@ -444,13 +544,58 @@ impl AddressSpace {
     /// recursion).
     /// # C: O(log N) VMA lookup + O(1) frame zero + O(walk depth) map
     /// # Ctx: fault, IRQ-off
+    /// Back-compat wrapper: handle_page_fault without per-page
+    /// refcount awareness. Always copies on Protection-write
+    /// (correct for refcount==1 owner-only writes; suboptimal for
+    /// COW-shared frames where a refcount-aware handler could
+    /// short-circuit the copy when count==1). Real COW-aware path:
+    /// `handle_page_fault_cow`.
+    /// # SAFETY: same as `handle_page_fault_cow`.
+    /// # C: same as `handle_page_fault_cow`.
     pub unsafe fn handle_page_fault<M: MmuOps, F: FnMut() -> Option<u64>>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
         hhdm_offset: u64,
-        mut alloc_frame: F,
+        alloc_frame: F,
     ) -> KResult<()> {
+        // SAFETY: forward to COW path with no-op refcount/dec hooks.
+        unsafe {
+            self.handle_page_fault_cow::<M, _, _, _>(
+                va, fault, hhdm_offset, alloc_frame,
+                |_pa: u64| 2u32, // pretend always shared so the
+                                  // copy path runs (matches old
+                                  // behaviour: copy on Protection-write).
+                |_pa: u64| {},
+            )
+        }
+    }
+
+    /// COW-aware page-fault handler. Adds two callbacks to the
+    /// classic resolver:
+    ///   - `frame_refcount(pa) -> u32`: per-PA struct-page refcount.
+    ///     If 1, the faulting AS is the sole owner — flip the W bit
+    ///     in place (no copy).
+    ///   - `dec_ref(pa)`: drop one reference (used when COW splits a
+    ///     shared frame; the faulting AS now points at a fresh frame
+    ///     and no longer references the shared one).
+    /// # SAFETY: same as `handle_page_fault`.
+    /// # C: O(log N_vmas) + O(1) on Anonymous; +O(page) on COW-copy.
+    pub unsafe fn handle_page_fault_cow<M, A, RC, DR>(
+        &self,
+        va: UserVirtAddr,
+        fault: FaultKind,
+        hhdm_offset: u64,
+        mut alloc_frame: A,
+        mut frame_refcount: RC,
+        mut dec_ref: DR,
+    ) -> KResult<()>
+    where
+        M:  MmuOps,
+        A:  FnMut() -> Option<u64>,
+        RC: FnMut(u64) -> u32,
+        DR: FnMut(u64),
+    {
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
         //   (a) eager-copy at fork installed the leaf with the
@@ -478,6 +623,26 @@ impl AddressSpace {
             let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
             // SAFETY: va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
             let cur = unsafe { M::translate(Va(va_page)) };
+            // COW fast path: if we're the sole owner of the frame
+            // (refcount==1), no copy needed — flip the W bit in
+            // place. Linux `mm/memory.c` `wp_page_copy` short-circuit.
+            if let Some((src_pa, _)) = cur {
+                let pa = src_pa.0 & !0xfff;
+                if frame_refcount(pa) <= 1 {
+                    let pte_flags = vma.prot.to_page_flags();
+                    // SAFETY: same-PA remap with W bit set; no other
+                    // AS holds this frame per refcount==1; flush_va
+                    // ensures hardware re-walks.
+                    unsafe {
+                        M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K);
+                        M::flush_va(Va(va_page));
+                    }
+                    let _ = hhdm_offset;
+                    return Ok(());
+                }
+            }
+            // Shared frame (refcount > 1) or no current mapping:
+            // alloc fresh + copy + install writable + dec_ref shared.
             let new_pa = alloc_frame().ok_or(Error::NoMem)?;
             // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror (when present); 4 KiB non-overlapping copy. If no prior leaf was present we zero the new page.
             unsafe {
@@ -491,7 +656,17 @@ impl AddressSpace {
             }
             let pte_flags = vma.prot.to_page_flags();
             // SAFETY: va_page page-aligned in user-half; new_pa fresh PMM frame; flags carry USER + WRITE since vma.prot.WRITE checked above.
-            unsafe { M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K); }
+            unsafe {
+                M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
+                M::flush_va(Va(va_page));
+            }
+            // F157: drop our reference to the shared frame. If its
+            // refcount hits zero (other AS already unmapped), the
+            // dec_ref callback chains into pmm_setup::dec_and_maybe_free
+            // and returns the page to the allocator.
+            if let Some((src_pa, _)) = cur {
+                dec_ref(src_pa.0 & !0xfff);
+            }
             return Ok(());
         }
         let access = match fault {
