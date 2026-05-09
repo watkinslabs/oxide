@@ -646,14 +646,15 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                 -(syscall::errno::Errno::Enosys.as_i32() as i64)
             }
         }
-        // landlock_create_ruleset: admit + return fd. Add-rule + restrict-self
-        // accept silently. Real LSM-hook-driven enforcement rides a follow-up.
+        // landlock_create_ruleset: returns a memfd-shaped placeholder.
         crate::syscall_nrs::NR_LANDLOCK_CREATE_RULESET => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
             crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
         }
-        crate::syscall_nrs::NR_LANDLOCK_ADD_RULE      => 0,
-        crate::syscall_nrs::NR_LANDLOCK_RESTRICT_SELF => 0,
+        // add_rule / restrict_self → EOPNOTSUPP (silent-0 would let
+        // programs think they sandboxed themselves when they didn't).
+        crate::syscall_nrs::NR_LANDLOCK_ADD_RULE | crate::syscall_nrs::NR_LANDLOCK_RESTRICT_SELF
+            => -(Errno::Eopnotsupp.as_i32() as i64),
         // perf_event_open: real PerfEventInode whose read returns the
         // monotonic-ns sample since open; ioctl handles ENABLE/DISABLE/
         // RESET/REFRESH. PMU hardware sampling + ring-buffer mmap
