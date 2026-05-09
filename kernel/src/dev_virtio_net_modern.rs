@@ -333,13 +333,17 @@ pub struct ArpProbeResult {
     /// MAC valid, frame fit the scratch buffer).
     pub tx_attempted: bool,
     /// Device acknowledged TX completion (q1.used.idx advanced).
-    /// If false but `tx_attempted=true`, the kick may not have been
-    /// processed — see qemu pcap / monitor for diagnosis.
     pub tx_confirmed: bool,
     /// Total RX frames drained across the wait windows.
     pub rx_frames: usize,
     /// At least one drained frame was an ARP reply (op=0x0002).
     pub reply_seen: bool,
+    /// F59-10: gateway MAC harvested from the ARP reply when one
+    /// arrives. Zero if no reply was parsed successfully.
+    pub gateway_mac: [u8; 6],
+    /// F59-10: gateway IPv4 (sender_ip from the ARP reply, in
+    /// network byte order octets). [0;4] if no reply.
+    pub gateway_ip:  [u8; 4],
 }
 
 /// Send one ARP-request to `target_ip` using the device MAC + the
@@ -357,6 +361,8 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
         tx_confirmed: false,
         rx_frames:    0,
         reply_seen:   false,
+        gateway_mac:  [0; 6],
+        gateway_ip:   [0; 4],
     };
     let mac = match mac() { Some(m) => m, None => return out };
 
@@ -390,6 +396,8 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
     // short spin + drain windows up to ~50M cycles total to give QEMU
     // time to compose + post the reply.
     let mut reply_seen = false;
+    let mut gw_mac: [u8; 6] = [0; 6];
+    let mut gw_ip:  [u8; 4] = [0; 4];
     let mut frames_total = 0usize;
     let mut drained_total = 0usize;
     for _ in 0..50usize {
@@ -414,20 +422,61 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
                 }
                 klog::write_raw(b"\n");
             }
-            if f.len() >= 22 {
+            if f.len() >= 14 + 28 {
                 let et = ((f[12] as u16) << 8) | (f[13] as u16);
-                let op = ((f[20] as u16) << 8) | (f[21] as u16);
-                if et == ETHERTYPE_ARP && op == ARP_OP_REPLY {
-                    reply_seen = true;
+                if et == ETHERTYPE_ARP {
+                    // F59-10: parse the ARP body via the kernel net
+                    // crate so the encoding is shared, not re-rolled.
+                    if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
+                        if arp.opcode == net::arp::ARP_OP_REPLY {
+                            reply_seen = true;
+                            gw_mac = arp.sender_mac.0;
+                            gw_ip  = arp.sender_ip.octets();
+                            // Stash in the kernel's persistent ARP
+                            // cache so later IP/UDP code can resolve
+                            // 10.0.2.2 without re-arping.
+                            arp_cache().insert(arp.sender_ip, arp.sender_mac);
+                        }
+                    }
                 }
             }
         });
         drained_total += drained;
         if reply_seen { break; }
     }
-    out.rx_frames  = drained_total.max(frames_total);
-    out.reply_seen = reply_seen;
+    out.rx_frames   = drained_total.max(frames_total);
+    out.reply_seen  = reply_seen;
+    out.gateway_mac = gw_mac;
+    out.gateway_ip  = gw_ip;
     out
+}
+
+// -------- F59-10: global ARP cache ------------------------------------
+//
+// Lazily-initialised process-global `net::arp::ArpCache`. Every ARP
+// reply harvested by `boot_arp_probe` (and later, by the per-packet
+// RX path) gets inserted here so future code resolving 10.0.2.2
+// (or the configured gateway, when DHCP lands) doesn't need to
+// re-arp. v1 is one cache shared across all virtio-net devices —
+// per-iface caches arrive when we register virtio-net via NetDev.
+
+static ARP_CACHE: Spinlock<Option<&'static net::arp::ArpCache>, DriverLockClass> =
+    Spinlock::new(None);
+
+/// Access the boot-time ARP cache, creating it on first call.
+/// Caller may insert/lookup against the returned reference.
+/// # C: O(1) amortised
+pub fn arp_cache() -> &'static net::arp::ArpCache {
+    let mut g = ARP_CACHE.lock();
+    if g.is_none() {
+        // SAFETY: ArpCache::new is const-style + heap-only via Vec
+        // inside; leaking a Box gives us a 'static reference that
+        // lives for the rest of the kernel's lifetime — fine for a
+        // process-global cache.
+        let boxed = alloc::boxed::Box::leak(alloc::boxed::Box::new(net::arp::ArpCache::new()));
+        *g = Some(boxed);
+    }
+    g.unwrap()
 }
 
 /// Snapshot of the registered modern device (None until init_modern).
