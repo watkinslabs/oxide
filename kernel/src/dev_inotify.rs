@@ -139,6 +139,27 @@ fn vfs_open_notify(inode: &InodeRef)  { fire_event(inode, IN_OPEN); }
 fn vfs_read_notify(inode: &InodeRef)  { fire_event(inode, IN_ACCESS); }
 fn vfs_close_notify(inode: &InodeRef, was_writable: bool) {
     fire_event(inode, if was_writable { IN_CLOSE_WRITE } else { IN_CLOSE_NOWRITE });
+    // Pipe writer/reader-count tracking for true EOF + Epipe per
+    // Linux pipe(7). Each close on a Fifo inode decrements the
+    // matching half-side count.
+    if inode.file_type() == vfs::FileType::Fifo {
+        if let Some(any) = inode.as_any() {
+            if let Some(p) = any.downcast_ref::<crate::dev_pipe::PipeInode>() {
+                use core::sync::atomic::Ordering;
+                if was_writable {
+                    let _ = p.writers.fetch_update(
+                        Ordering::AcqRel, Ordering::Acquire,
+                        |n| if n > 0 { Some(n - 1) } else { None },
+                    );
+                } else {
+                    let _ = p.readers.fetch_update(
+                        Ordering::AcqRel, Ordering::Acquire,
+                        |n| if n > 0 { Some(n - 1) } else { None },
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Install all inotify event hooks into vfs. Called once at kernel_main.

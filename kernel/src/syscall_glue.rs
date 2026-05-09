@@ -109,6 +109,8 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let inode = crate::dev_pipe::PipeInode::new();
+    inode.writers.store(1, core::sync::atomic::Ordering::Release);
+    inode.readers.store(1, core::sync::atomic::Ordering::Release);
     let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;
@@ -506,11 +508,8 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
 }
 
 
-/// x86 sys_arch_prctl — slot 158. ARCH_SET_FS writes IA32_FS_BASE
-/// via wrmsr; ARCH_GET_FS reads IA32_FS_BASE via rdmsr and stores
-/// to the user pointer in `val`; else -EINVAL. Matches Linux
-/// `arch_prctl(2)` semantics for the FS-base subset; GS-base
-/// rides v2.x once SWAPGS / KERNEL_GS_BASE bring-up lands.
+/// arch_prctl: ARCH_SET_FS=wrmsr, ARCH_GET_FS=rdmsr+writeback,
+/// else EINVAL. GS-base rides v2.x.
 #[cfg(target_arch = "x86_64")]
 fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
     let code = args.a0;
@@ -779,11 +778,18 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             crate::syscall_glue_open::kernel_sys_openat(&sa)
         }
         crate::syscall_nrs::NR_FACCESSAT2    => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
-        crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC | crate::syscall_nrs::NR_SYNC
-                                 => 0,
-        // AF_INET dgram (UDP) — `25§3` minimum. The remaining
-        // socket calls (LISTEN/ACCEPT/CONNECT/SENDMSG/etc.) wait
-        // on TCP + AF_UNIX which are their own arcs.
+        crate::syscall_nrs::NR_SYNC => 0,
+        nr if matches!(nr, crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC
+                       | crate::syscall_nrs::NR_SYNCFS | crate::syscall_nrs::NR_SYNC_FILE_RANGE)
+                                 => crate::syscall_glue_misc::kernel_sys_fsync(&args),
+        nr if matches!(nr, crate::syscall_nrs::NR_PKEY_ALLOC | crate::syscall_nrs::NR_PKEY_FREE
+                       | crate::syscall_nrs::NR_PKEY_MPROTECT | crate::syscall_nrs::NR_KCMP
+                       | crate::syscall_nrs::NR_SET_MEMPOLICY | crate::syscall_nrs::NR_GET_MEMPOLICY
+                       | crate::syscall_nrs::NR_MBIND | crate::syscall_nrs::NR_SET_MEMPOLICY_HOME_NODE
+                       | crate::syscall_nrs::NR_MIGRATE_PAGES | crate::syscall_nrs::NR_MOVE_PAGES
+                       | crate::syscall_nrs::NR_PROCESS_MADVISE | crate::syscall_nrs::NR_PROCESS_MRELEASE)
+                                 => crate::syscall_glue_misc::dispatch(nr, &args),
+        // AF_INET dgram (UDP) per `25§3`.
         crate::syscall_nrs::NR_SOCKET   => crate::syscall_glue_net::kernel_sys_socket(&args),
         crate::syscall_nrs::NR_BIND     => crate::syscall_glue_net::kernel_sys_bind(&args),
         crate::syscall_nrs::NR_SENDTO   => crate::syscall_glue_net::kernel_sys_sendto(&args),
