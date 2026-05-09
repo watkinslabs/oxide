@@ -78,6 +78,11 @@ struct VirtioProbe {
     /// same descriptor on each completion (one-buffer ring v1).
     rx0_buf_pa:  u64,
     rx0_buf_len: u16,
+    /// F59-04: 6-byte MAC harvested from device-cfg cap (virtio_net
+    /// config offset 0) for virtio-net devices. `mac_valid` gates
+    /// downstream consumers; zero MAC is otherwise a legal value.
+    mac:       [u8; 6],
+    mac_valid: bool,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -624,6 +629,38 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         } else { 0 }
     } else { 0 };
 
+    // F59-04: harvest virtio-net MAC from the device-cfg region. Per
+    // Virtio 1.2 §5.1.4 `virtio_net_config`, the first 6 bytes of the
+    // device-cfg space are the MAC address (when F_MAC negotiated;
+    // QEMU's virtio-net always supports it). Layout: bar=N off=M from
+    // the `VIRTIO_PCI_CAP_DEVICE_CFG` capability decoded above.
+    let mut mac_local: [u8; 6] = [0; 6];
+    let mut mac_valid_local: bool = false;
+    if is_virtio_net {
+        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+            let dbar_pa = match bars[devcfg_cap.bar as usize] {
+                pci::Bar::Mem32 { base, .. } => base as u64,
+                pci::Bar::Mem64 { base, .. } => base,
+                _ => 0,
+            };
+            if dbar_pa != 0 {
+                let d_pa = dbar_pa + devcfg_cap.offset as u64;
+                let d_page_pa = d_pa & !0xFFF;
+                let d_page_off = d_pa - d_page_pa;
+                // SAFETY: device-cfg BAR PA decoded from device cap; bump VA private; one-page window covers the 6-byte MAC at offset 0.
+                let d_va = unsafe { map_mmio_pages(d_page_pa, 1) };
+                let mac_va = d_va + d_page_off;
+                for i in 0..6 {
+                    // SAFETY: mac_va Device-attr-mapped above via map_mmio_pages; aligned u8 read within the one-page MAC window.
+                    mac_local[i] = unsafe {
+                        core::ptr::read_volatile((mac_va + i as u64) as *const u8)
+                    };
+                }
+                mac_valid_local = true;
+            }
+        }
+    }
+
     // F30: harvest virtio-blk GET_ID result if we issued one. The data
     // descriptor's buffer pa = q0_desc_pa is encoded in desc[2*1+0] but
     // we already know it's `buf_pa+0x100`; rather than read the desc
@@ -713,6 +750,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         q1_device_pa,
         rx0_buf_pa:  rx0_buf_pa_local,
         rx0_buf_len: rx0_buf_len_local,
+        mac:       mac_local,
+        mac_valid: mac_valid_local,
     })
 }
 
@@ -903,6 +942,8 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 q1_size:       p.q1_size,
                 rx0_buf_pa:    p.rx0_buf_pa,
                 rx0_buf_len:   p.rx0_buf_len,
+                mac:           p.mac,
+                mac_valid:     p.mac_valid,
             },
         );
     }
