@@ -619,10 +619,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_UNSHARE       => crate::syscall_glue_signal::kernel_sys_unshare(&args),
         crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_signal::kernel_sys_setns(&args),
         crate::syscall_nrs::NR_PTRACE        => crate::syscall_glue_signal::kernel_sys_ptrace(&args),
-        // fanotify_init: returns a new fd backed by an InotifyInode (the
-        // event-fd shape is similar enough that reusing the substrate
-        // is honest first-cut). fanotify_mark: silent 0 — v1 doesn't
-        // yet record per-mark watches.
+        // fanotify_init: reuses the inotify substrate; mark: silent 0.
         crate::syscall_nrs::NR_FANOTIFY_INIT => crate::dev_inotify::kernel_sys_inotify_init1(&args),
         crate::syscall_nrs::NR_FANOTIFY_MARK => 0,
         crate::syscall_nrs::NR_SHMGET        => crate::sysv_shm::kernel_sys_shmget(&args),
@@ -909,6 +906,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         _ => {
             if let Some(rv) = crate::syscall_glue_cred::cred_dispatch(nr, &args) {
                 rv
+            } else if let Some(rv) = crate::syscall_glue_timers::timer_dispatch(nr, &args) {
+                rv
             } else if let Some(rv) = crate::syscall_compat::try_compat(nr, &args) {
                 rv
             } else {
@@ -923,8 +922,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
     }
-    // alarm(2) deadline check: post SIGALRM (sig 14, bit 13) if the
-    // task's alarm_ns has passed.
+    // POSIX timers fire here; alarm(2) shares the SIGALRM path below.
+    crate::syscall_glue_timers::fire_due_timers();
+    // alarm(2) deadline check: post SIGALRM (bit 13) if the alarm_ns has passed.
     if let Some(cur) = crate::sched::current() {
         use core::sync::atomic::Ordering;
         let deadline = cur.alarm_ns.load(Ordering::Acquire);

@@ -44,8 +44,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // ---- silent-0 (accept; nothing to track v1) ----
         // get_robust_list / set_robust_list moved to real impl in F65.
         NR_CACHESTAT
-        | NR_TIMER_CREATE | NR_TIMER_SETTIME | NR_TIMER_GETTIME
-        | NR_TIMER_GETOVERRUN | NR_TIMER_DELETE
+        // POSIX timer family moved to real impl in F71 (per-task slot
+        // array + syscall-return-tail firing).
         // pkey_* — userspace 'always have pkey 0' fallback. Linux pkey
         // alloc returns -1 (and EINVAL) when MPK isn't supported; we
         // return 0 because callers (glibc/musl) treat any non-negative
