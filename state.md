@@ -47,6 +47,9 @@ real impl or honest ENOSYS. Breakdown:
   - **F95 #817** real chroot — per-task root prefix in devfs::lookup (CAP_SYS_CHROOT; fork inherits; nested compose)
   - **F96 #819** real fanotify_mark forwarded to inotify substrate
   - **F97 #820** real UTS namespace — per-task hostname via CLONE_NEWUTS (uname + sethostname dispatch)
+  - **F98 #823** Inode trait — first-class atime/mtime/perm/uid/gid (overlay fallback)
+  - **F99 #824** Inode meta accessors return Option<T> (honest "no override")
+  - **F100 #825** real IPC namespace — per-task SysV+POSIX MQ tables via CLONE_NEWIPC
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
