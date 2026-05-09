@@ -379,37 +379,36 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
     let is_virtio_gpu = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
+    let is_virtio_input = d.vendor_id == 0x1AF4 && d.device_id == 0x1052;
+    let bdf_word = (d.bdf.bus as u32) << 16
+                 | (d.bdf.device as u32) << 8
+                 | (d.bdf.function as u32);
     if is_virtio_gpu && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        // Per docs/45§7: virtio-gpu post-DRIVER_OK bring-up. The
-        // GET_DISPLAY_INFO submit + response parse rides the same
-        // CTRLQ helper path used by virtio-blk above (F132 lands the
-        // queue plumbing in this branch). For now install a device
-        // record with empty display info so 47 (DRM/KMS) sees the
-        // device exists; MODE_GETRESOURCES returns 0 CRTCs until the
-        // actual GET_DISPLAY_INFO submit lands.
         use core::sync::atomic::{AtomicU32, AtomicU64};
-        let dev = drv_virtio_gpu::VirtioGpuDev {
-            bdf:                 (d.bdf.bus as u32) << 16
-                                 | (d.bdf.device as u32) << 8
-                                 | (d.bdf.function as u32),
-            features_negotiated: drv_features as u64,
-            display:             drv_virtio_gpu::DisplayInfo::default(),
-            resource_id_alloc:   AtomicU32::new(1),
-            blob_uuid_alloc:     AtomicU64::new(1),
-            capset_count:        0,
-        };
-        drv_virtio_gpu::install(dev);
-        debug_boot! {
-            klog::write_raw(b"[INFO]  virtio-gpu installed bdf=");
-            klog::write_dec_u64(d.bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(d.bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(d.bdf.function as u64);
-            klog::write_raw(b" feat=");
-            klog::write_hex_u64(drv_features);
-            klog::write_raw(b"\n");
-        }
+        drv_virtio_gpu::install(drv_virtio_gpu::VirtioGpuDev {
+            bdf: bdf_word, features_negotiated: drv_features as u64,
+            display: drv_virtio_gpu::DisplayInfo::default(),
+            resource_id_alloc: AtomicU32::new(1),
+            blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
+        });
+        debug_boot! { klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
+            klog::write_hex_u64(drv_features); klog::write_raw(b"\n"); }
+    }
+    if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+        let evdev_id = drv_virtio_input::count() as u32;
+        drv_virtio_input::install(drv_virtio_input::VirtioInputDev {
+            bdf: bdf_word, evdev_id,
+            name: [0; 128], name_len: 0, serial: [0; 128], serial_len: 0,
+            ids: drv_virtio_input::VirtioInputDevIds::default(),
+            ev_bits: [0; 32],
+            key_bits: drv_virtio_input::CapBitmap::default(),
+            rel_bits: drv_virtio_input::CapBitmap::default(),
+            abs_bits: drv_virtio_input::CapBitmap::default(),
+            led_bits: drv_virtio_input::CapBitmap::default(),
+            abs_info: [None; 64],
+        });
+        debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
+            klog::write_dec_u64(evdev_id as u64); klog::write_raw(b"\n"); }
     }
     if is_virtio_blk && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
