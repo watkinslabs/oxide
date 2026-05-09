@@ -681,9 +681,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
             crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
         }
-        crate::syscall_nrs::NR_FSCONFIG       => 0,
-        crate::syscall_nrs::NR_MOVE_MOUNT     => 0,
-        crate::syscall_nrs::NR_MOUNT_SETATTR  => 0,
+        // fsconfig/move_mount/mount_setattr → EOPNOTSUPP (silent-0 lied).
+        crate::syscall_nrs::NR_FSCONFIG | crate::syscall_nrs::NR_MOVE_MOUNT
+            | crate::syscall_nrs::NR_MOUNT_SETATTR => -(Errno::Eopnotsupp.as_i32() as i64),
         crate::syscall_nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
         crate::syscall_nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
         crate::syscall_nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
