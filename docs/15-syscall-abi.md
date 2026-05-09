@@ -2,6 +2,23 @@
 
 FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 
+## Revision 2026-05-09 (R04)
+
+- Changed: pinned the v1 `ptrace(2)` op disposition. Slot 101 still
+  V1 (Linux subset) but the disposition table now says explicitly:
+  TRACEME / ATTACH / SEIZE / DETACH / CONT / SYSCALL / SINGLESTEP /
+  KILL / PEEKTEXT / PEEKDATA / POKETEXT / POKEDATA / GETREGS /
+  GETREGSET (NT_PRSTATUS) are real; PEEKUSER / SETREGS / SETREGSET
+  / GETFPREGS / SETFPREGS / SETOPTIONS / GETEVENTMSG / GETSIGINFO /
+  SETSIGINFO are silent-0 admit (substrate not yet wired).
+- Why: F104/F108/F115 landed real ATTACH/SYSCALL-stop/GETREGS;
+  callers (gdb, strace, ltrace) need to know exactly which ops
+  affect tracee state vs return ok-but-noop. Without this row the
+  ABI table left "subset" undefined.
+- Affected code: `kernel/src/syscall_glue_signal.rs` (kernel_sys_ptrace).
+- Test contract change: §9 acceptance gains a "ptrace subset
+  matches the table" check; gdb attach + step is the smoke.
+
 ## Revision 2026-05-02 (R03)
 
 - Changed: added §6.7 "UAPI surface boundary" enumerating the public-to-userspace contract.
@@ -144,7 +161,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 98 | getrusage | V1 | |
 | 99 | sysinfo | V1 | |
 | 100 | times | V1 | |
-| 101 | ptrace | V1 | gdb/strace subset only. No legacy `PTRACE_PEEKUSR` for non-current arch reg sets. |
+| 101 | ptrace | V1 | Real: TRACEME/ATTACH/SEIZE/DETACH/CONT/SYSCALL/SINGLESTEP/KILL/PEEK{TEXT,DATA}/POKE{TEXT,DATA}/GETREGS/GETREGSET(NT_PRSTATUS). Silent-0 admit: PEEKUSER/SETREGS/SETREGSET/GETFPREGS/SETFPREGS/SETOPTIONS/GETEVENTMSG/{GET,SET}SIGINFO. Per R04. |
 | 102 | getuid | V1 | |
 | 103 | syslog | V1 | Reads `/dev/kmsg` ring; subset of actions. |
 | 104 | getgid | V1 | |
