@@ -63,6 +63,7 @@ real impl or honest ENOSYS. Breakdown:
   - **F111 #843** pre-mount tmpfs at /dev/shm and /run (POSIX shm_open + systemd-class /run/<svc>.pid)
   - **F112 #845** /proc/self/ns/* dynamic readlink + /proc/self/root chroot-aware
   - **F113 #846** /proc/<pid>/{uid_map,gid_map,setgroups} identity-map files
+  - **F114 #848** socket(AF_UNIX, SOCK_STREAM) admits (was EAFNOSUPPORT)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
