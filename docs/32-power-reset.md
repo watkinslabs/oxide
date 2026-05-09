@@ -1,6 +1,20 @@
 # 32 Power + Reset
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall, `init` shutdown.
+
+## Revision 2026-05-09 (R01)
+
+- Changed: `crates/power` is now the real owner of the
+  reboot/halt/power-off primitives. `power::cmd(c)` dispatches
+  Linux reboot(2) commands; `power::halt()` is the canonical
+  CPU-park; `power::restart()` triple-faults (x86) or PSCI
+  SYSTEM_RESET (arm); `power::power_off()` writes QEMU
+  isa-debug-exit (x86) or PSCI SYSTEM_OFF (arm).
+- Wiring: `kernel_sys_reboot` validates magic1/magic2 + CAP_SYS_BOOT
+  then dispatches through `power::cmd`. `halt_forever` in
+  `kernel/src/lib.rs` now delegates to `power::halt`.
+- ACPI _S5 walk + PCI cf9 + 8042 reset port stay v2.x.
+
 ## 1 Purpose
 
 Halt, reboot, poweroff. Cpu idle. Frequency scaling stub.

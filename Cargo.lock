@@ -326,6 +326,7 @@ dependencies = [
  "net",
  "pci",
  "pmm",
+ "power",
  "procfs",
  "sched",
  "sync",
