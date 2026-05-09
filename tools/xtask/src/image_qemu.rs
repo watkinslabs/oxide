@@ -343,14 +343,15 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        // GTK window so virtio-gpu's scanout becomes visible. Falls
-        // back to env-controlled "headless" via OXIDE_QEMU_HEADLESS=1.
-        "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
+        // Default: headless (terminal-only). GUI opt-in via
+        // OXIDE_QEMU_GUI=1 — virtio-gpu scanout is rarely useful
+        // for kernel debugging and the GTK window wedges when
+        // `-no-shutdown` is set, leaving an unkillable QEMU.
+        "-display", if std::env::var("OXIDE_QEMU_GUI").is_ok() { "gtk" } else { "none" },
         "-no-reboot",
-        "-no-shutdown",
     ]);
     eprintln!("xtask qemu: launching qemu-system-x86_64 (q35 + Haswell-v4 + stdio chardev), smp={}", smp);
-    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest.");
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest. OXIDE_QEMU_GUI=1 for GTK window.");
     run(c)
 }
 
@@ -384,14 +385,15 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
+        // Headless by default; OXIDE_QEMU_GUI=1 opts into GTK.
+        "-display", if std::env::var("OXIDE_QEMU_GUI").is_ok() { "gtk" } else { "none" },
         "-no-reboot",
         // Semihosting target=native lets the boot crate emit debug
         // chars via `hlt #0xf000` while we're still pre-MMIO.
         "-semihosting-config", "enable=on,target=native",
     ]);
     eprintln!("xtask qemu: launching qemu-system-aarch64 (virt + cortex-a72 + stdio chardev), smp={}", smp);
-    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit.");
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit. OXIDE_QEMU_GUI=1 for GTK.");
     run(c)
 }
 
