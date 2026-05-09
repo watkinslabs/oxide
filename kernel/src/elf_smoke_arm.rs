@@ -329,36 +329,14 @@ fn spawn_init_from_rootfs_arm() {
         return;
     }
 
-    // Allocate an 8 KiB TLS+TCB region in the user AS and point
-    // TPIDR_EL0 at the END of the first page (= start of the second).
-    // musl on aarch64 uses variant-I TLS with `TP_ADJ(p) = p +
-    // sizeof(struct pthread)`, so `pthread_self() = TPIDR_EL0 -
-    // sizeof(struct pthread)`. errno_val and other fields live at
-    // small *negative* offsets from TPIDR_EL0; positive offsets hold
-    // static TLS variables. Mapping 2 pages and putting TPIDR at the
-    // boundary covers both directions with one allocation.
-    const USER_TLS_BASE: u64 = 0x600_000;
-    const USER_TLS_LEN:  usize = 0x2000; // 8 KiB
-    const USER_TPIDR_VA: u64 = USER_TLS_BASE + 0x1000; // mid-point
-    let tls_hint = match UserVirtAddr::new(USER_TLS_BASE) {
-        Some(u) => u,
-        None    => { debug_irq! { klog::kerror!("init-arm: bad TLS VA"); } return; }
-    };
-    if mm.mmap(
-        Some(tls_hint), USER_TLS_LEN,
-        VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-        VmaBacking::Anonymous,
-        true,
-    ).is_err() {
-        debug_irq! { klog::kerror!("init-arm: TLS mmap failed"); }
-        return;
-    }
-    // SAFETY: msr tpidr_el0 at EL1 is always legal; eret carries the value into EL0; USER_TPIDR_VA points to the boundary of two freshly-mmapped anonymous user pages of `mm` (active TTBR0); pthread_self()-based offsets land inside the 8 KiB region.
+    // F152-2: leave TPIDR_EL0 = 0 on first user entry. musl crt1's
+    // __init_tls mmaps a TCB and writes TPIDR_EL0 directly (EL0
+    // can write TPIDR_EL0 on aarch64) before any TLS access.
+    // SAFETY: msr tpidr_el0, xzr at EL1 is always legal; user
+    // crt1 overwrites with the real TCB before first TLS load.
     unsafe {
         core::arch::asm!(
-            "msr tpidr_el0, {v}",
-            v = in(reg) USER_TPIDR_VA,
+            "msr tpidr_el0, xzr",
             options(nomem, nostack, preserves_flags),
         );
     }

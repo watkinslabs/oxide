@@ -735,35 +735,8 @@ unsafe fn spawn_user_blob_smoke(
             VmaBacking::Anonymous,
             true,
         ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
-        // TLS scratch — mirrors the aarch64 path. musl's libc uses
-        // FS-relative loads even from -nostartfiles binaries (stack
-        // canary at FS:0x28, errno_val later). Without a real TLS
-        // pointer the first call into a libc wrapper faults reading
-        // FS:0x28. 8 KiB region (2 pages); FS_BASE points at the
-        // mid-point so positive AND negative offsets land inside.
-        const USER_TLS_BASE: u64 = 0x600_000;
-        const USER_TLS_LEN:  usize = 0x2000;
-        let tls_hint = UserVirtAddr::new(USER_TLS_BASE)
-            .ok_or(crate::elf_load::LoadError::Einval)?;
-        mm.mmap(
-            Some(tls_hint), USER_TLS_LEN,
-            VmaProt::READ | VmaProt::WRITE,
-            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-            VmaBacking::Anonymous,
-            true,
-        ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
-        // x86_64 musl uses variant-II TLS: pthread_self() does
-        // `mov %fs:0, %rax`. The TLS region's first 8 bytes must
-        // hold the self-pointer (the FS_BASE itself). Otherwise
-        // any libc call that reaches into pthread state derefs
-        // NULL.
-        // SAFETY: mm.mmap installed the page in the active CR3 with
-        // demand-fault backing; first write here demand-faults a
-        // fresh zero page in, then sets the self-pointer slot.
-        unsafe {
-            const USER_FS_BASE: u64 = 0x600_000 + 0x1000;
-            core::ptr::write_volatile(USER_FS_BASE as *mut u64, USER_FS_BASE);
-        }
+        // F152-2: no kernel-side TLS region — user crt1 mmaps its
+        // own TCB and installs FS_BASE via arch_prctl(ARCH_SET_FS).
         Ok(img)
     })() {
         Ok(i)  => i,
@@ -807,14 +780,12 @@ unsafe fn spawn_user_blob_smoke(
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;
 
-    // Set FS_BASE to the TLS region's mid-point. iretq doesn't
-    // touch FS_BASE so this value persists into user mode for
-    // the first run. (Context-switch save/restore for FS_BASE
-    // is in syscall_glue.rs's arch_prctl path; init's first run
-    // before any swap is what this MSR write covers.)
-    const USER_FS_BASE: u64 = 0x600_000 + 0x1000;
-    // SAFETY: wrmsr IA32_FS_BASE is legal at CPL=0; USER_FS_BASE points into the freshly mmap'd TLS region of `mm` (active CR3).
-    unsafe { hal_x86_64::set_user_fs_base(USER_FS_BASE); }
+    // F152-2: leave FS_BASE = 0 on first user entry. musl crt1's
+    // __init_tls calls arch_prctl(ARCH_SET_FS, tcb) before any
+    // FS-relative access, matching Linux execve semantics.
+    // SAFETY: wrmsr IA32_FS_BASE = 0 at CPL=0 is legal; user crt1
+    // overwrites with the real TCB before first FS-relative load.
+    unsafe { hal_x86_64::set_user_fs_base(0); }
 
     debug_irq! {
         klog::write_raw(b"[INFO]  user-blob: spawned name=");
