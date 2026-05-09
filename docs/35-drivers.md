@@ -2,6 +2,23 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver crate.
 
+## Revision 2026-05-09 (R02)
+
+- Changed: `crates/drv` is now the real owner of the driver-model
+  dispatch substrate. v1 surface:
+    - `drv::DriverEntry { name, probe }`
+    - `drv::register(DriverEntry)` — boot-time registration
+    - `drv::probe_all(bdf)` — first-match probe walker
+    - `drv::registered_count()` — diagnostics
+- Per-driver hardware crates (`drv-virtio-net`, `drv-virtio-blk`,
+  `drv-nvme`, etc.) ride phase 11 onward per `35§3` invariant 1.
+  v1 hardware drivers stay in `kernel/src/dev_virtio_*` +
+  `kernel/src/pci_boot/*` because they need direct access to PMM
+  / HHDM mapping / IRQ controller; per-crate split is per-driver
+  work that lands as each driver gets its own `drv-*` crate.
+- `drv::init()` reports ready at boot. `linkme`-style distributed
+  slice rides v2.x.
+
 ## Revision 2026-05-09 (R01)
 
 - Changed: pinned the v1 virtio-gpu + virtio-input + DRM/evdev

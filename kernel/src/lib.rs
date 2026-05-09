@@ -691,6 +691,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { nscg::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; security::init reports ready (per-task seccomp slot is None until prctl/seccomp installs).
     let _ = unsafe { security::init() };
+    // SAFETY: kernel_main runs single-CPU pre-init; drv::init reports ready; per-driver register() happens during PCI enumeration.
+    let _ = unsafe { drv::init() };
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
