@@ -451,6 +451,91 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
     out
 }
 
+// -------- F59-11: NetDev iface registration ---------------------------
+//
+// Wraps the modern transport in a `net::NetDev` so the kernel net
+// stack can route packets through this device. xmit() concatenates
+// caller's L3 payload with an Ethernet header (dst from arp_cache,
+// src from device MAC, ethertype from `pkt.proto`) and hands it to
+// `tx_frame`. Ring exhaustion / setup gaps return `NetError::Eio`
+// so the stack can drop or retry.
+//
+// RX delivery into the stack arrives in F59-12; today this struct
+// only supports xmit + identity (name/mac/mtu/stats). Stats counters
+// live as AtomicU64 since xmit may be called from soft-IRQ context
+// where MODERN_DEV.lock is already held.
+
+use core::sync::atomic::AtomicU64;
+
+pub struct VirtioNetDev {
+    mac: [u8; 6],
+    tx_packets: AtomicU64,
+    tx_bytes:   AtomicU64,
+    tx_dropped: AtomicU64,
+}
+
+impl VirtioNetDev {
+    /// Build a `VirtioNetDev` from the persisted modern state.
+    /// Returns `None` if `init_modern` hasn't run or MAC is invalid.
+    /// # C: O(1)
+    pub fn new() -> Option<alloc::sync::Arc<Self>> {
+        let m = mac()?;
+        Some(alloc::sync::Arc::new(Self {
+            mac: m,
+            tx_packets: AtomicU64::new(0),
+            tx_bytes:   AtomicU64::new(0),
+            tx_dropped: AtomicU64::new(0),
+        }))
+    }
+}
+
+impl net::NetDev for VirtioNetDev {
+    fn name(&self) -> &str { "eth0" }
+    fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
+    fn mtu(&self)  -> u32 { 1500 }
+    fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {
+        // F59-11: synchronous xmit. Caller has filled `pkt.data()`
+        // with the L3 (or L2 already-framed) payload and set
+        // `pkt.proto` to the ethertype. We always prepend a fresh
+        // Ethernet header here using the cached gateway MAC for
+        // off-link destinations; on-link / explicit-dst routing is
+        // F59-13 (route table consultation). v1 fallback: broadcast
+        // dst when arp_cache has no entry.
+        let body = pkt.data();
+        if body.len() + 14 > 1518 {
+            self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(net::NetError::Erange);
+        }
+        // Resolve dst MAC: gateway-of-cache for now, else broadcast.
+        let dst = arp_cache().snapshot().first().map(|(_, m)| *m)
+            .unwrap_or(net::MacAddr([0xFF; 6]));
+        let mut frame = alloc::vec![0u8; 14 + body.len()];
+        net::ethernet::EthHdr::write_to(
+            dst, net::MacAddr(self.mac), pkt.proto, &mut frame[..14],
+        );
+        frame[14..].copy_from_slice(body);
+        match tx_frame(&frame) {
+            Ok(_) => {
+                self.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.tx_bytes  .fetch_add(frame.len() as u64, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(_) => {
+                self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+                Err(net::NetError::Eio)
+            }
+        }
+    }
+    fn stats(&self) -> net::NetStats {
+        net::NetStats {
+            tx_packets: self.tx_packets.load(Ordering::Relaxed),
+            tx_bytes:   self.tx_bytes.load(Ordering::Relaxed),
+            tx_dropped: self.tx_dropped.load(Ordering::Relaxed),
+            ..net::NetStats::default()
+        }
+    }
+}
+
 // -------- F59-10: global ARP cache ------------------------------------
 //
 // Lazily-initialised process-global `net::arp::ArpCache`. Every ARP
