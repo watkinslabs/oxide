@@ -641,6 +641,10 @@ impl Inode for ProcPidDirInode {
             "sched"   => Ok(Arc::new(ProcPidSchedInode { tid: self.tid }) as InodeRef),
             "schedstat" => Ok(StaticFileInode::new(b"0 0 0\n") as InodeRef),
             "autogroup" => Ok(StaticFileInode::new(b"/autogroup-1 nice 0\n") as InodeRef),
+            // F117 / 26§R01: ns subdir. Lookup yields a NsDirInode
+            // whose lookup(<type>) returns an NsInode with the task's
+            // current id snapshot for that NS kind.
+            "ns" => Ok(Arc::new(ProcPidNsDirInode { tid: self.tid }) as InodeRef),
             // F113: USER NS uid/gid mapping. Identity mapping is the
             // honest answer for v1 — we don't enforce per-NS uid
             // translation. Format: "<inside_id> <outside_id> <range>".
@@ -938,4 +942,40 @@ pub fn smoke_test() {
         kassert!(&buf[..prefix.len()] == *prefix, "procfs body mismatch");
     }
     debug_boot! { klog::write_raw(b"[INFO]  procfs-smoke: ok\n"); }
+}
+
+/// `/proc/<pid>/ns` directory inode. F117. Lookup yields an NsInode
+/// snapshotting the target task's current id for that NS kind;
+/// readdir enumerates the seven subentries.
+pub struct ProcPidNsDirInode { pub tid: u32 }
+
+impl Inode for ProcPidNsDirInode {
+    fn ino(&self) -> Ino { 0x3000_8000 | (self.tid as Ino) }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let kind = match crate::dev_proc_ns::NsKind::from_leaf(name) {
+            Some(k) => k, None => return Err(VfsError::Enoent),
+        };
+        let task = match crate::sched::registry::lookup(self.tid) {
+            Some(t) => t, None => return Err(VfsError::Enoent),
+        };
+        Ok(crate::dev_proc_ns::ns_inode_for(&task, kind))
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        const NAMES: &[&str] = &[
+            "mnt", "cgroup", "uts", "ipc", "user", "pid", "net", "pid_for_children",
+        ];
+        let mut idx = off as usize;
+        while idx < NAMES.len() {
+            let next = idx as u64 + 1;
+            if !f(next, NAMES[idx], FileType::Symlink) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
 }
