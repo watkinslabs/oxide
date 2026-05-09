@@ -892,20 +892,22 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
         crate::syscall_nrs::NR_STAT
             | crate::syscall_nrs::NR_LSTAT   => crate::syscall_glue_fs::kernel_sys_stat(&args),
-        crate::syscall_nrs::NR_GETRESUID | crate::syscall_nrs::NR_GETRESGID
-                                 => crate::syscall_glue_proc::kernel_sys_getres_uid(&args),
-        crate::syscall_nrs::NR_GETUID | crate::syscall_nrs::NR_GETEUID
-        | crate::syscall_nrs::NR_GETGID | crate::syscall_nrs::NR_GETEGID
-                                 => crate::syscall_glue_proc::kernel_sys_getuid_zero(&args),
+        // Cred family: dispatched via syscall_glue_cred::cred_dispatch.
+        // Handled in the fallthrough below to keep this match arm small.
         crate::syscall_nrs::NR_RT_SIGRETURN  => {
             // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
             unsafe { crate::sig_dispatch::rt_sigreturn() }
         }
         // Compat-stub fall-through table per P3-46.
-        _ => match crate::syscall_compat::try_compat(nr, &args) {
-            Some(rv) => rv,
-            None     => dispatch(nr as u32, &args),
-        },
+        _ => {
+            if let Some(rv) = crate::syscall_glue_cred::cred_dispatch(nr, &args) {
+                rv
+            } else if let Some(rv) = crate::syscall_compat::try_compat(nr, &args) {
+                rv
+            } else {
+                dispatch(nr as u32, &args)
+            }
+        }
     };
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");

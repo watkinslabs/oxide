@@ -138,6 +138,8 @@ pub mod ptrace_singlestep;
 pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
 #[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_cred;
+#[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_epoll;
