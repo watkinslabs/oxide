@@ -78,6 +78,9 @@ real impl or honest ENOSYS. Breakdown:
   - **F120 #863** AF_UNIX SOCK_DGRAM admits with per-socket queue (first slice of §1.5)
   - **F121 #865** AF_UNIX SOCK_DGRAM bind/sendto/recvfrom — path-keyed queue lookup
   - **F122 #867** AF_UNIX SOCK_DGRAM recvmsg writes SCM_CREDENTIALS cmsg (§1.5 third slice)
+  - **R09 #869** 16-vfs R02 — dirent-mutation hooks (substrate for §1.6 IN_CREATE/IN_DELETE)
+
+v2-arch-plan progress: §1.1-1.5 substantively done (1.5 SCM_RIGHTS deferred to v2 — needs Arc<File> capture path). §1.6 dentry-mutation hooks specced (R02); code rides next session. §1.7 BPF / §1.8 tracefs / §1.9 DRM/KMS each remain large multi-PR architectural pieces.
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
