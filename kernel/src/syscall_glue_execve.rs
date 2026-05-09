@@ -193,6 +193,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     if let Some(fdt) = unsafe { cur.fd_table_ref() } {
         fdt.close_on_exec();
     }
+    // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
+    // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
+    // exec time so the parent stops sharing the now-replaced mm.
+    cur.vfork_pending.store(false, core::sync::atomic::Ordering::Release);
 
     // 4. Build the SysV initial stack (argc/argv/envp/auxv) per
     //    docs/31§4 step 5. v1 passes empty argv/envp; auxv carries
@@ -419,6 +423,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     if let Some(fdt) = unsafe { cur.fd_table_ref() } {
         fdt.close_on_exec();
     }
+    // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
+    // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
+    // exec time so the parent stops sharing the now-replaced mm.
+    cur.vfork_pending.store(false, core::sync::atomic::Ordering::Release);
 
     // F152-2: Linux execve resets TPIDR_EL0 = 0; user crt1 calls
     // PR_SET_TLS / writes TPIDR_EL0 directly (EL0-writable on

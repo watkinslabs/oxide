@@ -59,15 +59,6 @@ pub struct AddressSpace {
     /// reference aliasing. Zero means no teardown (boot-anchor AS,
     /// hosted tests).
     teardown: core::sync::atomic::AtomicU64,
-    /// Per-AS owned ELF / shm staging buffers. Pre-B22 the loader
-    /// `Box::leak`'d each PT_LOAD's padded buffer to satisfy the
-    /// `&'static [u8]` contract on `VmaBacking::KernelBytes`. With
-    /// the AS now owning the boxes, the slices passed to KernelBytes
-    /// stay valid for the AS's lifetime and the segment storage
-    /// frees on AS drop. Field order matters: must come AFTER `vmas`
-    /// so the VMA tree drops first (releases its KernelBytes refs)
-    /// before the boxes here do.
-    staged_bytes: Spinlock<Vec<Box<[u8]>>, AddressSpaceClass>,
     /// Linux `mm_struct::exe_file` analogue. Captured at `execve`
     /// time as the path the user named, NOT the inode-canonical path.
     /// `/proc/<pid>/exe` readlinks to this. Threads sharing this mm
@@ -111,7 +102,6 @@ impl AddressSpace {
             brk:     core::sync::atomic::AtomicU64::new(0),
             brk_max: core::sync::atomic::AtomicU64::new(0),
             teardown: core::sync::atomic::AtomicU64::new(0),
-            staged_bytes: Spinlock::new(Vec::new()),
             exe_path: Spinlock::new(None),
         }))
     }
@@ -134,26 +124,19 @@ impl AddressSpace {
         self.teardown.store(raw, core::sync::atomic::Ordering::Release);
     }
 
-    /// Take ownership of an ELF / shm staging buffer and return a
-    /// stable byte-slice the caller can hand to `VmaBacking::KernelBytes`.
-    /// The slice's data stays valid for this AS's lifetime; when the
-    /// last `Arc<AddressSpace>` ref drops, the boxes vector drops too
-    /// (after the VMA tree releases its `&'static [u8]` views, per
-    /// the field declaration order).
-    ///
-    /// # SAFETY: caller asserts the returned `&'static [u8]` is only
-    /// stored in VMAs / kernel state owned by this AS — never escapes
-    /// elsewhere with a real 'static lifetime expectation. The slice
-    /// becomes dangling at AS drop.
-    /// # C: O(1) amortised (Vec push).
-    pub unsafe fn stash_bytes(&self, b: alloc::boxed::Box<[u8]>) -> &'static [u8] {
-        let ptr = b.as_ptr();
-        let len = b.len();
-        self.staged_bytes.lock().push(b);
-        // SAFETY: the Box's heap allocation is now owned by `staged_bytes`;
-        // a subsequent Vec grow may relocate the Box header but never the
-        // underlying byte buffer. The slice stays valid until AS drop.
-        unsafe { core::slice::from_raw_parts(ptr, len) }
+    /// Wrap an ELF / shm staging buffer as `Arc<[u8]>` for use as a
+    /// `VmaBacking::KernelBytes` backing. Refcount-based lifetime: a
+    /// child AS that fork-clones the VMA tree bumps each Arc, so
+    /// child KernelBytes references stay valid even after the parent
+    /// AS drops. Pre-Arc design used `&'static [u8]` views into a
+    /// per-AS `Vec<Box<[u8]>>`, which dangled in fork children when
+    /// the parent dropped first.
+    /// # C: O(N) — converts `Box<[u8]>` to `Arc<[u8]>` (one alloc).
+    pub fn stash_bytes(&self, b: alloc::boxed::Box<[u8]>) -> alloc::sync::Arc<[u8]> {
+        // `Box<[u8]>` → `Arc<[u8]>` is a noop conversion under the
+        // hood (Arc grows the box's header to add a strong+weak
+        // count); no byte copy.
+        alloc::sync::Arc::from(b)
     }
 
     /// Initialise the brk region. Called by the ELF loader once the
@@ -242,7 +225,6 @@ impl AddressSpace {
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
-            staged_bytes: Spinlock::new(Vec::new()),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
         }))
     }
@@ -318,7 +300,6 @@ impl AddressSpace {
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
-            staged_bytes: Spinlock::new(Vec::new()),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
         }))
     }
@@ -528,7 +509,7 @@ impl AddressSpace {
             return Err(Error::Inval);                // EFAULT upstream
         }
 
-        match vma.backing {
+        match &vma.backing {
             VmaBacking::Anonymous => {
                 let pa = alloc_frame().ok_or(Error::NoMem)?;
                 // Zero-fill via HHDM kernel mirror per `11§5` "zero_or_loaded".
@@ -546,30 +527,34 @@ impl AddressSpace {
                 unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
                 Ok(())
             }
-            VmaBacking::KernelBytes { data } => {
+            VmaBacking::KernelBytes { data, off: backing_off } => {
                 // ELF-loader-style demand-fault path per docs/31 §4
                 // step 3: copy the file-backed bytes for this page
-                // into a fresh PMM frame; bytes past `data.len()`
+                // into a fresh PMM frame; bytes past the slice length
                 // (BSS tail of a PT_LOAD with `p_memsz > p_filesz`)
-                // are zero-filled.
+                // are zero-filled. `backing_off` lets sub-range VMAs
+                // (from `clone_subrange`) start mid-Arc without
+                // copying the underlying buffer.
                 let pa = alloc_frame().ok_or(Error::NoMem)?;
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
-                let off = (va_page - vma.start.as_u64()) as usize;
+                let vma_off = (va_page - vma.start.as_u64()) as usize;
+                let off = backing_off.saturating_add(vma_off);
                 let page = PAGE_SIZE_BYTES as usize;
+                let data_slice: &[u8] = &data[..];
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM
                 // mirror at hhdm_offset+pa is mapped writable; we
                 // own the full page exclusively until M::map below
                 // makes it user-visible.
                 unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;
-                    if off >= data.len() {
+                    if off >= data_slice.len() {
                         // Entirely BSS (past file-backed extent).
                         core::ptr::write_bytes(dst, 0, page);
                     } else {
-                        let avail = (data.len() - off).min(page);
-                        // SAFETY: src is a valid &'static [u8] slice covering [off..off+avail]; dst owns `page` bytes; non-overlapping.
+                        let avail = (data_slice.len() - off).min(page);
+                        // SAFETY: src is a valid Arc<[u8]> slice covering [off..off+avail]; dst owns `page` bytes; non-overlapping.
                         core::ptr::copy_nonoverlapping(
-                            data.as_ptr().add(off), dst, avail,
+                            data_slice.as_ptr().add(off), dst, avail,
                         );
                         if avail < page {
                             // SAFETY: dst+avail is within the freshly-allocated frame; tail zero-fills the BSS portion of this page.
