@@ -1,0 +1,16 @@
+[package]
+name = "drv-virtio-gpu"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+hal     = { path = "../hal" }
+klog    = { path = "../klog" }
+drv     = { path = "../drv" }
+virtio  = { path = "../virtio" }
+sync    = { path = "../sync" }
+pci     = { path = "../pci" }
