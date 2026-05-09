@@ -92,6 +92,54 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> InodeRef {
     Arc::new(NsInode { kind, id }) as InodeRef
 }
 
+/// Global registry mapping `user_ns id → parent_user_ns id` so the
+/// `has_cap_for` ancestor walk works without scanning every task.
+/// Init NS (id 0) has parent 0 (self-loop terminator).
+static USER_NS_PARENT: sync::Spinlock<alloc::collections::BTreeMap<u64, u64>, sync::TaskList> =
+    sync::Spinlock::new(alloc::collections::BTreeMap::new());
+
+/// Record `(child_id, parent_id)` at unshare(CLONE_NEWUSER) time.
+/// # C: O(log N)
+pub fn user_ns_record(child_id: u64, parent_id: u64) {
+    let mut g = USER_NS_PARENT.lock();
+    g.insert(child_id, parent_id);
+}
+
+/// Look up the parent of `id`. Init NS or unrecorded → returns 0.
+/// # C: O(log N)
+pub fn user_ns_parent(id: u64) -> u64 {
+    if id == 0 { return 0; }
+    let g = USER_NS_PARENT.lock();
+    g.get(&id).copied().unwrap_or(0)
+}
+
+/// True if `ancestor` is `descendant` itself or any ancestor up the
+/// user_ns chain. Init NS (id 0) is the implicit ancestor of every
+/// NS.
+/// # C: O(depth)
+pub fn user_ns_is_ancestor(ancestor: u64, descendant: u64) -> bool {
+    if ancestor == 0 { return true; }
+    let mut cur = descendant;
+    let mut steps = 0;
+    while cur != 0 && steps < 64 {
+        if cur == ancestor { return true; }
+        cur = user_ns_parent(cur);
+        steps += 1;
+    }
+    false
+}
+
+/// Per-user-NS cap check (`27§R01`). Returns true when `cur` holds
+/// `cap` in its effective set AND `target_user_ns` is `cur.user_ns`
+/// or a descendant of it.
+/// # C: O(depth)
+pub fn has_cap_for(cur: &sched::Task, target_user_ns: u64, cap: u32) -> bool {
+    use core::sync::atomic::Ordering;
+    if !cur.has_cap(cap) { return false; }
+    let cur_ns = cur.user_ns.load(Ordering::Acquire);
+    user_ns_is_ancestor(cur_ns, target_user_ns)
+}
+
 /// Apply an NsInode (resolved from setns's fd arg) to the calling
 /// task. Returns 0 on success or -EINVAL when nstype mismatches.
 /// # C: O(1)
