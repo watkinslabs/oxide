@@ -19,11 +19,14 @@ pub fn kernel_sys_sched_yield(_args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_gettid()` — slot 186. Returns the current task's `tid`.
-/// v1 single-thread-per-process → tgid == tid (`sys_getpid`
-/// returns the same value).
+/// PID-NS-virtualized; tasks in init NS see real tid.
 /// # C: O(1)
 pub fn kernel_sys_gettid(_args: &SyscallArgs) -> i64 {
-    crate::sched::current().map(|c| c.tid as i64).unwrap_or(1)
+    use core::sync::atomic::Ordering;
+    crate::sched::current().map(|c| {
+        let v = c.vtid.load(Ordering::Acquire);
+        if v != 0 { v as i64 } else { c.tid as i64 }
+    }).unwrap_or(1)
 }
 
 /// `sys_set_tid_address(tidptr)` — slot 218. Stores the user

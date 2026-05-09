@@ -174,15 +174,30 @@ pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     crate::sched::current()
-        .map(|c| c.tgid.load(Ordering::Acquire) as i64)
+        .map(|c| {
+            // F105: PID NS — return virtualized vtgid if non-zero,
+            // else real tgid. Init NS tasks have vtgid=0 → real tgid.
+            let v = c.vtgid.load(Ordering::Acquire);
+            if v != 0 { v as i64 } else { c.tgid.load(Ordering::Acquire) as i64 }
+        })
         .unwrap_or(1)
 }
 
 fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current()
-        .map(|c| c.parent_tid.load(Ordering::Acquire) as i64)
-        .unwrap_or(0)
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let ppid = cur.parent_tid.load(Ordering::Acquire);
+    // F105: in a non-init pid_ns, parent visible only if it's in the
+    // same NS. Tasks in init NS see real ppid as before.
+    let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+    if cur_ns == 0 { return ppid as i64; }
+    match crate::sched::registry::lookup(ppid) {
+        Some(p) if p.pid_ns.load(Ordering::Acquire) == cur_ns => {
+            let v = p.vtgid.load(Ordering::Acquire);
+            if v != 0 { v as i64 } else { p.tgid.load(Ordering::Acquire) as i64 }
+        }
+        _ => 0, // parent not visible from our NS — Linux reports 0 (no parent).
+    }
 }
 
 
