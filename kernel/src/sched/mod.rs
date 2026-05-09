@@ -39,6 +39,6 @@ pub use schedule::{
     current, mark_done, schedule, schedule_from_irq, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
 };
-pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork};
+pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};
 pub use wait_list::WaitList;
 pub use zombies::{enqueue_zombie, park_for_wait4, park_zombie, reap_one, signal_child_exit};

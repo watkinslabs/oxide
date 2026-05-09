@@ -377,12 +377,6 @@ pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
 /// segments, real auxv consumption).
 pub const HELLO_BLOB: &'static [u8] = include_bytes!("../blobs/hello.elf");
 
-/// Real-musl static-PIE PID 1 init (P5-01). Source at
-/// `userspace/init/init.c`; built via `musl-gcc -static-pie -fPIE
-/// -O2 -nostartfiles`. Replaces the hand-synthesized const-fn
-/// orchestrator as `/init` once `OXIDE_INIT_REAL_MUSL` is on.
-pub const INIT_REAL_BLOB: &'static [u8] = include_bytes!("../blobs/init.elf");
-
 /// P3-66 sa_handler dispatch smoke. Hand-rolled static-PIE ELF
 /// that registers a SIGUSR1 handler, raises SIGUSR1 to itself
 /// via sys_kill, and verifies the handler ran + rt_sigreturn
@@ -632,20 +626,34 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // see timer IRQs.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
-    // PID 1: prefer the live /sbin/init from the mounted rootfs
-    // ext4. Falls back to the embedded blob if the rootfs entry
-    // is missing (test-only kernels with `kernel/blobs/rootfs.img`
-    // empty). Any edits to `userspace/init/init.c` flow through
-    // `xtask rootfs` → kernel/blobs/init.elf → here, so the kernel
-    // actually executes the latest source.
-    let init_blob = lookup_blob_by_path(b"/sbin/init")
-        .or_else(|| lookup_blob_by_path(b"/init"))
-        .unwrap_or(INIT_REAL_BLOB);
-    // SAFETY: same boot-path discipline as the elf-smoke above;
-    // user_as / runqueue installed; init blob is real-musl
-    // static-PIE.
+    // PID 1: load /sbin/init from the mounted rootfs ext4. /sbin/init
+    // is a hardlink to /bin/busybox; busybox's `init` applet reads
+    // /etc/inittab, runs the sysinit script, and respawns the
+    // console shell. No bespoke PID 1 in this tree — the kernel
+    // and image are ours, the userspace is upstream.
+    // PID 1 must exist on the rootfs. Per 51§2 invariant 1 the
+    // kernel does not embed a fallback init blob in v1.
+    let init_blob_opt = lookup_blob_by_path(b"/sbin/init")
+        .or_else(|| lookup_blob_by_path(b"/init"));
+    hal::kassert!(init_blob_opt.is_some(),
+        "no /sbin/init or /init in rootfs (51§2 invariant 1)");
+    let init_blob = init_blob_opt.unwrap_or(b"");
+    // Linux kernel convention: PID 1 is started with argv[0] =
+    // "/sbin/init" so the binary (esp. multi-call binaries like
+    // busybox) dispatches the right applet.
+    // busybox-init refuses to run unless getpid()==1. Stamp
+    // vtgid=1 / vtid=1 on the Task BEFORE it's visible via the
+    // registry or runqueue — `spawn_user_blob_with_vpid` writes
+    // them on the local Task before Arc-wrap + insert + enqueue,
+    // so any concurrent reader (including the very first syscall
+    // from this task) sees PID 1.
+    // SAFETY: boot-path discipline; user_as / runqueue installed.
     unsafe {
-        spawn_user_blob_smoke(init_blob, "init", 0xC0DE_0002, &[]);
+        spawn_user_blob_with_vpid(
+            init_blob, "init",
+            0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1,
+            &[b"/sbin/init" as &[u8]],
+        );
     }
     // No second sh fallback: init→svcd→agetty→login→sh is the
     // real chain and login has its own `/bin/sh` exec on success.
@@ -689,6 +697,27 @@ unsafe fn spawn_user_blob_smoke(
     name:    &'static str,
     tid:     u32,
     argv:    &[&[u8]],
+) {
+    // SAFETY: vpid_tgid=0 / vpid_tid=0 means "no namespace remap" — equivalent to the bare spawn_user_thread the elf-smoke and dynlink callers used historically.
+    unsafe { spawn_user_blob_with_vpid(blob, name, tid, 0, 0, argv) }
+}
+
+/// Variant of `spawn_user_blob_smoke` that stamps explicit
+/// `vtgid` / `vtid` on the spawned task before it's enqueued.
+/// Used by the PID 1 spawn path to make `getpid()` /
+/// `set_tid_address()` report Linux PID 1 from the very first
+/// syscall (musl crt1's `__init_main_thread` caches the
+/// set_tid_address return as `__libc.tid`).
+///
+/// # SAFETY: same preconditions as `spawn_user_blob_smoke`.
+/// # C: O(phdrs) parse + O(log N) enqueue
+unsafe fn spawn_user_blob_with_vpid(
+    blob:      &'static [u8],
+    name:      &'static str,
+    tid:       u32,
+    vpid_tgid: u32,
+    vpid_tid:  u32,
+    argv:      &[&[u8]],
 ) {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
@@ -767,9 +796,11 @@ unsafe fn spawn_user_blob_smoke(
         )
     }.unwrap_or(USER_STACK_TOP);
 
-    // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range.
+    // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range; vpid stamped pre-enqueue so musl's __init_main_thread sees PID 1 on its very first syscall.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(tid, name, img.user_ip(), new_sp, mm)
+        crate::sched::spawn_user_thread_with_vpid(
+            tid, vpid_tgid, vpid_tid, name, img.user_ip(), new_sp, mm,
+        )
     } {
         Ok(t)  => t,
         Err(_) => { debug_irq! { klog::kerror!("user-blob: spawn failed"); } return; }
