@@ -60,6 +60,13 @@ pub struct AddressSpace {
     /// so the VMA tree drops first (releases its KernelBytes refs)
     /// before the boxes here do.
     staged_bytes: Spinlock<Vec<Box<[u8]>>, AddressSpaceClass>,
+    /// Linux `mm_struct::exe_file` analogue. Captured at `execve`
+    /// time as the path the user named, NOT the inode-canonical path.
+    /// `/proc/<pid>/exe` readlinks to this. Threads sharing this mm
+    /// (CLONE_VM) all see the same value; fork copies it to the
+    /// child mm. Hardlinks to the same inode produce different
+    /// `exe_path`s — the dentry-of-record is what the user invoked.
+    exe_path: Spinlock<Option<alloc::string::String>, AddressSpaceClass>,
 }
 
 impl Drop for AddressSpace {
@@ -97,6 +104,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(0),
             teardown: core::sync::atomic::AtomicU64::new(0),
             staged_bytes: Spinlock::new(Vec::new()),
+            exe_path: Spinlock::new(None),
         }))
     }
 
@@ -189,6 +197,22 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn root_pa(&self) -> u64 { self.root_pa }
 
+    /// Set the per-mm exe path captured at `execve`. Linux's
+    /// `mm_struct::exe_file` analogue: stores the dentry-of-record
+    /// path (e.g. `/bin/echo`), NOT the inode-canonical path.
+    /// `/proc/<pid>/exe` readlinks to this.
+    /// # C: O(1)
+    pub fn set_exe_path(&self, path: alloc::string::String) {
+        *self.exe_path.lock() = Some(path);
+    }
+
+    /// Snapshot current exe path. None until `execve` runs against
+    /// this AS, or fork-copied from parent.
+    /// # C: O(1)
+    pub fn exe_path(&self) -> Option<alloc::string::String> {
+        self.exe_path.lock().clone()
+    }
+
     /// Clone this AS's VMA tree into a new AS with the supplied
     /// PT root PA. Mapped pages are NOT copied — child PT entries
     /// start empty; first user access demand-pages from
@@ -211,6 +235,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
             staged_bytes: Spinlock::new(Vec::new()),
+            exe_path: Spinlock::new(self.exe_path.lock().clone()),
         }))
     }
 
@@ -286,6 +311,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
             staged_bytes: Spinlock::new(Vec::new()),
+            exe_path: Spinlock::new(self.exe_path.lock().clone()),
         }))
     }
 
