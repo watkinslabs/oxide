@@ -1,6 +1,24 @@
 # 35 Driver Model
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver crate.
+
+## Revision 2026-05-09 (R01)
+
+- Changed: pinned the v1 virtio-gpu + virtio-input + DRM/evdev
+  surface. /dev/dri/card0 is a real DRM inode admitting
+  DRM_IOCTL_VERSION + DRM_IOCTL_MODE_GETRESOURCES (zero CRTCs +
+  zero connectors at v1; framebuffer + modeset + virtio-gpu PCI
+  driver ride v2.x). /dev/input/event0 is a real evdev inode
+  admitting EVIOCGNAME / EVIOCGID returning "oxide-input"
+  identification (real key/abs/rel events ride v2.x once virtio-
+  input PCI driver lands).
+- Why: phase 32 (DRM/KMS+virtio-gpu+evdev) starts with the userspace-
+  visible inode shape so libdrm + libevdev feature probes complete
+  cleanly. Real driver bring-up is the v2.x deliverable.
+- Affected code: `kernel/src/dev_drm.rs` (extend DRM_IOCTL set);
+  `kernel/src/dev_input.rs` (new — evdev inode + EVIOC* ioctl);
+  boot registers `/dev/input/event0`.
+
 ## 1 Purpose
 
 Driver registration, device matching, sysfs publication, hot-plug hooks. Devices come from buses (PCIe primary; virtio-mmio for some arm targets; platform via DT).
