@@ -123,7 +123,6 @@ pub mod dev_timerfd;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod dev_virtio_net;
 pub mod dev_virtio_net_modern;
-pub mod dev_virtio_net_boot;
 pub mod sysv_shm;
 pub mod sysv_sem;
 pub mod sysv_msg;
