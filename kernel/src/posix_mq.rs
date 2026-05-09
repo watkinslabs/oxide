@@ -54,6 +54,11 @@ pub struct MqQueue {
     pub msgs:        Spinlock<Vec<MqMsg>, MqLockClass>,
     pub wait_send:   crate::sched::WaitList,
     pub wait_recv:   crate::sched::WaitList,
+    /// `mq_notify` registration: tid + signo. (0, 0) = no notifier.
+    /// Per POSIX, only one notifier at a time; fires once when a
+    /// message arrives on a previously-empty queue, then unregisters.
+    pub notifier_tid:   core::sync::atomic::AtomicU32,
+    pub notifier_signo: core::sync::atomic::AtomicI32,
 }
 
 impl MqQueue {
@@ -65,6 +70,8 @@ impl MqQueue {
             msgs: Spinlock::new(Vec::new()),
             wait_send: crate::sched::WaitList::new(),
             wait_recv: crate::sched::WaitList::new(),
+            notifier_tid:   core::sync::atomic::AtomicU32::new(0),
+            notifier_signo: core::sync::atomic::AtomicI32::new(0),
         })
     }
 }
@@ -247,6 +254,7 @@ pub fn kernel_sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
     loop {
         let mut g = q.msgs.lock();
         if g.len() < q.max_msgs {
+            let was_empty = g.is_empty();
             let m = slot.take().expect("msg owned by sender");
             // Insert in priority-descending FIFO-within-priority
             // order. Find first index where existing.priority < m.priority.
@@ -254,6 +262,16 @@ pub fn kernel_sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
             g.insert(pos, m);
             q.wait_recv.wake_one();
             drop(g);
+            if was_empty {
+                use core::sync::atomic::Ordering;
+                let tid = q.notifier_tid.swap(0, Ordering::AcqRel);
+                let signo = q.notifier_signo.swap(0, Ordering::AcqRel);
+                if tid != 0 && (1..=64).contains(&signo) {
+                    if let Some(t) = crate::sched::registry::lookup(tid) {
+                        t.sigpending.fetch_or(1u64 << (signo - 1), Ordering::Release);
+                    }
+                }
+            }
             return 0;
         }
         if nonblock {
@@ -324,4 +342,104 @@ pub fn kernel_sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
         unsafe { core::ptr::write_volatile(prio_p as *mut u32, m.priority); }
     }
     n as i64
+}
+
+/// `sys_mq_notify(mqdes, sevp)` — slot 244. Registers (or clears) a
+/// per-queue notifier. Linux semantics: at most one notifier per
+/// queue; sevp == NULL clears.
+/// # C: O(1)
+pub fn kernel_sys_mq_notify(args: &syscall::SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let mqdes = args.a0 as i32;
+    let sevp  = args.a1;
+    let (q, _nb) = match fd_to_mq(mqdes) {
+        Some(t) => t, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if sevp == 0 {
+        q.notifier_tid.store(0,   Ordering::Release);
+        q.notifier_signo.store(0, Ordering::Release);
+        return 0;
+    }
+    if sevp >= hal::USER_VA_END
+        || sevp.checked_add(16).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // sigevent layout: { sigval_t value; int signo; int notify; }.
+    // SAFETY: sevp+16 validated < USER_VA_END; CPL=0 reads through caller's AS at the sigevent layout offsets.
+    let (signo, notify) = unsafe {
+        (core::ptr::read_volatile((sevp + 8)  as *const i32),
+         core::ptr::read_volatile((sevp + 12) as *const i32))
+    };
+    if notify == 1 /* SIGEV_NONE */ {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if !(1..=64).contains(&signo) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    // BUSY if already armed (Linux EBUSY).
+    let prev = q.notifier_tid.load(Ordering::Acquire);
+    if prev != 0 { return -(Errno::Ebusy.as_i32() as i64); }
+    q.notifier_tid.store(cur.tid, Ordering::Release);
+    q.notifier_signo.store(signo, Ordering::Release);
+    0
+}
+
+/// `sys_mq_getsetattr(mqdes, new, old)` — slot 245.
+/// `mq_attr` layout: { long flags; long maxmsg; long msgsize; long curmsgs; long _pad[4]; }
+/// Linux only honours O_NONBLOCK in `flags` on set. Other fields are
+/// read-only (queue creation parameters) and are ignored on set.
+/// # C: O(1)
+pub fn kernel_sys_mq_getsetattr(args: &syscall::SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let mqdes = args.a0 as i32;
+    let new_p = args.a1;
+    let old_p = args.a2;
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(mqdes) {
+        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let inode = file.inode();
+    let mq = match inode.as_any().and_then(|a| a.downcast_ref::<MqInode>()) {
+        Some(m) => m, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let q = &mq.queue;
+    let cur_msgs = q.msgs.lock().len() as i64;
+    let nb_now = mq.nonblock.load(Ordering::Acquire);
+    if old_p != 0 {
+        if old_p >= hal::USER_VA_END
+            || old_p.checked_add(64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        let flags: i64 = if nb_now { 0o4000 /* O_NONBLOCK */ } else { 0 };
+        // SAFETY: old_p+64 validated < USER_VA_END; CPL=0 writes the four mq_attr longs through caller's AS.
+        unsafe {
+            core::ptr::write_volatile( old_p        as *mut i64, flags);
+            core::ptr::write_volatile((old_p +  8)  as *mut i64, q.max_msgs    as i64);
+            core::ptr::write_volatile((old_p + 16)  as *mut i64, q.max_msgsize as i64);
+            core::ptr::write_volatile((old_p + 24)  as *mut i64, cur_msgs);
+            for off in (32..64u64).step_by(8) {
+                core::ptr::write_volatile((old_p + off) as *mut i64, 0);
+            }
+        }
+    }
+    if new_p != 0 {
+        if new_p >= hal::USER_VA_END
+            || new_p.checked_add(8).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        // SAFETY: new_p+8 validated < USER_VA_END; CPL=0 reads the flags field of mq_attr through caller's AS.
+        let new_flags = unsafe { core::ptr::read_volatile(new_p as *const i64) };
+        let want_nb = (new_flags & 0o4000) != 0;
+        mq.nonblock.store(want_nb, Ordering::Release);
+    }
+    0
 }
