@@ -8,23 +8,7 @@ use hal::{USER_VA_END};
 #[cfg(target_arch = "x86_64")]
 use hal::TimerOps;
 
-const UTSNAME_FIELD_LEN: usize = 65;
-const UTSNAME_TOTAL_LEN: usize = UTSNAME_FIELD_LEN * 6;
-
-#[cfg(target_arch = "x86_64")]
-const UNAME_MACHINE: &[u8] = b"x86_64";
-#[cfg(target_arch = "aarch64")]
-const UNAME_MACHINE: &[u8] = b"aarch64";
-
-/// Write a utsname field at offset `off`: `src` then NUL pad to 65 B.
-unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
-    let n = src.len().min(UTSNAME_FIELD_LEN - 1);
-    // SAFETY: caller validated [tp, tp + UTSNAME_TOTAL_LEN) < USER_VA_END mapped writable; CPL=0 byte writes through caller AS for both src copy and NUL pad.
-    unsafe {
-        for i in 0..n         { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, src[i]); }
-        for i in n..UTSNAME_FIELD_LEN { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
-    }
-}
+// utsname-related constants + write_utsname_field + uts_hostname_for_current + kernel_uname moved to syscall_glue_uname.rs (F97).
 
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
@@ -434,26 +418,6 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
 
 use crate::syscall_glue_signal::{kernel_sys_kill, kernel_sys_tgkill};
 
-fn kernel_uname(args: &SyscallArgs) -> i64 {
-    let tp = args.a0;
-    if let Err(rv) = validate_user_buf(tp, UTSNAME_TOTAL_LEN as u64, 1) { return rv; }
-    // SAFETY: range validated above; user-half VA is mapped writable
-    // by the userspace-smoke setup. Each field write iterates byte-
-    // by-byte so no alignment requirement.
-    unsafe {
-        // sysname == "Linux" so libc/configure scripts that gate on it pass.
-        write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"Linux");
-        let host = crate::hostname::snapshot();
-        write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, &host);
-        write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"5.15.0-oxide");
-        write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"#1 SMP PREEMPT oxide v0.1.0");
-        write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);
-        let dom = crate::hostname::domain_snapshot();
-        let dom_bytes: &[u8] = if dom.is_empty() { b"(none)" } else { &dom };
-        write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, dom_bytes);
-    }
-    0
-}
 
 /// Validate that a user buffer `[ptr, ptr + len)` lies entirely
 /// below `USER_VA_END` and is `align`-byte aligned at `ptr`.
@@ -568,7 +532,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_GETTIMEOFDAY  => crate::syscall_glue_time::kernel_gettimeofday(&args),
         crate::syscall_nrs::NR_SETTIMEOFDAY  => crate::syscall_glue_time::kernel_settimeofday(&args),
         crate::syscall_nrs::NR_TIME          => crate::syscall_glue_time::kernel_time(&args),
-        crate::syscall_nrs::NR_UNAME         => kernel_uname(&args),
+        crate::syscall_nrs::NR_UNAME         => crate::syscall_glue_uname::kernel_uname(&args),
         crate::syscall_nrs::NR_SETHOSTNAME   => crate::syscall_glue_proc::kernel_sys_sethostname(&args),
         crate::syscall_nrs::NR_SETDOMAINNAME => crate::hostname::kernel_sys_setdomainname(&args),
         crate::syscall_nrs::NR_MMAP          => kernel_mmap(&args),
