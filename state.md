@@ -33,9 +33,24 @@ real impl or honest ENOSYS. Breakdown:
   - **F78 #798** real personality(2) + futimesat alias to utimensat
   - **F79 #799** real get_mempolicy (single-node UMA writeback)
   - **F80 #800** honest ENOSYS for futex_waitv + fanotify_mark
+  - **F82 #802** honest EOPNOTSUPP for landlock_add_rule + landlock_restrict_self
+  - **F83 #803** honest EOPNOTSUPP for fsconfig + move_mount + mount_setattr
+  - **F84 #804** real chmod/chown family (mode + uid/gid overlay)
+  - **F86 #806** real rseq with cpu_id writeback at syscall return
+  - **F87 #807** real vhangup (SIGHUP to session)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
+
+Remaining silent-0 entries are genuinely correct on the v1 substrate:
+NR_READAHEAD / NR_FADVISE64 (pure hints), NR_SYNC_FILE_RANGE / NR_SYNCFS
+(no pagecache), NR_MLOCK2 (no swap), NR_CACHESTAT (no pagecache),
+NR_PKEY_* (no MPK), NR_PROCESS_MADVISE/MRELEASE (advisory), NR_KCMP
+(probe), NUMA family (single UMA node). Remaining ENOSYS entries are
+either deprecated/removed Linux syscalls (USELIB, USTAT, SYSFS, _SYSCTL,
+VSERVER, LOOKUP_DCOOKIE, REMAP_FILE_PAGES) or v2-deferred substrates
+(QUOTACTL, ACCT, NAME_TO_HANDLE_AT, IO_* libaio family — superseded by
+io_uring).
 
 The F59-13 RX-into-stack work that started session 51 is the next
 concrete user-visible step.
