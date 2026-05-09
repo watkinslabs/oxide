@@ -48,6 +48,9 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
         return rv;
     }
     // DRM/render fd ioctls.
+    if let Some(rv) = crate::dev_fbdev::handle_fbdev_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
     if let Some(rv) = crate::dev_drm::handle_drm_ioctl(file.inode(), req, arg) {
         return rv;
     }
