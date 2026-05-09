@@ -317,6 +317,7 @@ dependencies = [
  "block",
  "elf",
  "ext4",
+ "firmware",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

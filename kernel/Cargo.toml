@@ -27,7 +27,8 @@ syscall = { path = "../crates/syscall" }
 tty     = { path = "../crates/tty" }
 vfs     = { path = "../crates/vfs" }
 vmm     = { path = "../crates/vmm" }
-power   = { path = "../crates/power" }
+power    = { path = "../crates/power" }
+firmware = { path = "../crates/firmware" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../crates/hal-x86_64" }
@@ -43,7 +44,7 @@ default = []
 debug-pmm  = []  # PMM smoke + stress + memmap dump
 debug-vmm  = []  # device-map MMIO sanity reads (HPET cap, GICD typer)
 debug-irq  = []  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
-debug-acpi = []  # RSDP/XSDT walk + per-table decoder traces
+debug-acpi = ["firmware/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = []  # first-kthread coroutine smoke + Context::switch trace
 debug-boot = []  # operational-pulse trace (init started, pmm: ready, …)
 debug-modules = []  # kmod thunk write_raw / kassert traces

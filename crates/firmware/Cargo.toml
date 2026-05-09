@@ -10,3 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 hal  = { path = "../hal" }
 klog = { path = "../klog" }
+
+[features]
+default = []
+debug-acpi = []
