@@ -70,11 +70,20 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
         cur.net_ns.store(id, Ordering::Release);
     }
     if (bits & (1u64 << 4)) != 0 {
-        // CLONE_NEWPID — Linux semantics: the calling task itself is
-        // NOT moved into a new pid_ns; the next fork's CHILD lands
-        // in a fresh ns with vtgid=1. Mark the pending flag for the
-        // fork dispatcher (F105).
+        // CLONE_NEWPID — pending bit; fork dispatcher allocates ns (F105).
         cur.unshare_pid_pending.store(true, Ordering::Release);
+    }
+    if (bits & (1u64 << 3)) != 0 {
+        // CLONE_NEWUSER — fresh user_ns id (F106 substrate).
+        static NEXT_USER_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_USER_NS.fetch_add(1, Ordering::AcqRel);
+        cur.user_ns.store(id, Ordering::Release);
+    }
+    if (bits & (1u64 << 6)) != 0 {
+        // CLONE_NEWCGROUP — fresh cgroup_ns id (F106 substrate).
+        static NEXT_CGROUP_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_CGROUP_NS.fetch_add(1, Ordering::AcqRel);
+        cur.cgroup_ns.store(id, Ordering::Release);
     }
     0
 }
