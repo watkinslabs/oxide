@@ -239,10 +239,12 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
         FileType::Fifo      => (0o010000, 0),
         FileType::Socket    => (0o140000, 0),
     };
-    let mode = mode_type | 0o600;
-    // statx layout per linux/stat.h. Zero everything then fill the
-    // fields we actually have.
     let times = crate::inode_times::get(&inode).unwrap_or_default();
+    let mode_perm = if times.owner_set && times.mode_bits != 0 { times.mode_bits } else { 0o600 };
+    let mode = mode_type | mode_perm;
+    let stx_uid = if times.owner_set { times.uid } else { 0 };
+    let stx_gid = if times.owner_set { times.gid } else { 0 };
+    // statx layout per linux/stat.h. Zero everything then fill the fields we have.
     // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
         for off in (0..256u64).step_by(8) {
@@ -258,6 +260,8 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
             STATX_TYPE | STATX_MODE | STATX_INO | STATX_ATIME | STATX_MTIME | STATX_CTIME);
         core::ptr::write_volatile((buf +   4)     as *mut u32, 4096);                                // stx_blksize
         core::ptr::write_volatile((buf +  16)     as *mut u32, 1);                                   // stx_nlink
+        core::ptr::write_volatile((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
+        core::ptr::write_volatile((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
         core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
         core::ptr::write_volatile((buf +  32)     as *mut u64, inode.ino());                         // stx_ino
         core::ptr::write_volatile((buf +  40)     as *mut u64, inode.size());                        // stx_size

@@ -810,10 +810,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_RECVMSG => crate::syscall_glue_net::kernel_sys_recvmsg(&args),
         crate::syscall_nrs::NR_SENDMMSG => crate::syscall_glue_net::kernel_sys_sendmmsg(&args),
         crate::syscall_nrs::NR_RECVMMSG => crate::syscall_glue_net::kernel_sys_recvmmsg(&args),
-        // chmod/chown family — devfs is read-only; accept silently.
-        crate::syscall_nrs::NR_FCHMOD | crate::syscall_nrs::NR_FCHMODAT | crate::syscall_nrs::NR_CHMOD
-            | crate::syscall_nrs::NR_FCHOWN | crate::syscall_nrs::NR_CHOWN | crate::syscall_nrs::NR_LCHOWN
-            | crate::syscall_nrs::NR_FCHOWNAT => 0,
+        // chmod/chown family handled via perms_dispatch below.
         crate::syscall_nrs::NR_FLOCK         => crate::flock::kernel_sys_flock(&args),
         crate::syscall_nrs::NR_PERSONALITY   => crate::syscall_glue_prctl::kernel_sys_personality(&args),
         crate::syscall_nrs::NR_GET_MEMPOLICY => crate::syscall_glue_numa::kernel_sys_get_mempolicy(&args),
@@ -905,6 +902,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             if let Some(rv) = crate::syscall_glue_cred::cred_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::syscall_glue_timers::timer_dispatch(nr, &args) {
+                rv
+            } else if let Some(rv) = crate::syscall_glue_perms::perms_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::keyring::keyring_dispatch(nr, &args) {
                 rv
