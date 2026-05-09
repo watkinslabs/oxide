@@ -76,6 +76,7 @@ real impl or honest ENOSYS. Breakdown:
   - **F119 #861** per-mount-NS table — closes CLONE_NEWNS isolation gap
   - **R08 #862** 24-ipc R01 — AF_UNIX SOCK_DGRAM + SCM_CREDS + SCM_RIGHTS
   - **F120 #863** AF_UNIX SOCK_DGRAM admits with per-socket queue (first slice of §1.5)
+  - **F121 #865** AF_UNIX SOCK_DGRAM bind/sendto/recvfrom — path-keyed queue lookup
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
