@@ -313,9 +313,52 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             crate::sched::registry::wake_if_stopped(&target);
             0
         }
-        PTRACE_GETREGS | PTRACE_SETREGS
+        PTRACE_GETREGS | PTRACE_GETREGSET => {
+            // F115: real reg snapshot from target's saved syscall frame.
+            // Target must be stopped or attached; we read its
+            // kernel_stack top and copy the 15-u64 user-reg block at
+            // offset -0x80 (x86) / SVC frame (aarch64) into `data`.
+            let target = match crate::sched::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let top = target.kernel_stack.load(Ordering::Acquire);
+            if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
+            let data = args.a3;
+            if data == 0 || data >= hal::USER_VA_END {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            // SAFETY: top is the target task's per-task kernel stack
+            // top installed at spawn; saved syscall frame lies in the
+            // 0x80 bytes immediately below it per the syscall-entry
+            // asm prologue. Target is stopped (caller arranged
+            // PTRACE_ATTACH SIGSTOP) so the frame is stable.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let frame = (top as u64 - 0x80) as *const u64;
+                // SAFETY: data validated < USER_VA_END; CPL=0 writes 27*8 bytes (struct user_regs_struct shape, partially populated) through caller's AS.
+                unsafe {
+                    for i in 0..15 {
+                        let v = core::ptr::read_volatile(frame.add(i));
+                        core::ptr::write_volatile((data + (i as u64) * 8) as *mut u64, v);
+                    }
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                // aarch64 SVC frame layout: 18 u64s at the same offset.
+                let frame = (top as u64 - 0xD0) as *const u64;
+                // SAFETY: data validated < USER_VA_END; CPL=0 writes 18*8 bytes through caller's AS; frame layout matches `hal_aarch64::SvcFrame.gp[..]`.
+                unsafe {
+                    for i in 0..18 {
+                        let v = core::ptr::read_volatile(frame.add(i));
+                        core::ptr::write_volatile((data + (i as u64) * 8) as *mut u64, v);
+                    }
+                }
+            }
+            0
+        }
+        PTRACE_SETREGS | PTRACE_SETREGSET
             | PTRACE_GETFPREGS | PTRACE_SETFPREGS
-            | PTRACE_GETREGSET | PTRACE_SETREGSET
             | PTRACE_INTERRUPT | PTRACE_LISTEN
             | PTRACE_SETOPTIONS | PTRACE_GETEVENTMSG
             | PTRACE_GETSIGINFO | PTRACE_SETSIGINFO => 0,
