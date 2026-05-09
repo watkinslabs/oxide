@@ -75,7 +75,8 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // substrate-landing PRs (v2 phases 29 mount, etc.) will check
         // the relevant CAP_* in the real handler.
         // MOUNT / UMOUNT2 moved to real impl in F110 (tmpfs backend).
-        NR_REBOOT | NR_PIVOT_ROOT
+        // NR_REBOOT moved to real impl (kernel_sys_reboot via power crate).
+        NR_PIVOT_ROOT
         | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
         | NR_IOPL | NR_IOPERM
