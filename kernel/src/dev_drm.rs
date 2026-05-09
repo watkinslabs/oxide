@@ -158,7 +158,20 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         }
         DRM_IOCTL_GET_UNIQUE => Some(0),
         DRM_IOCTL_SET_VERSION => Some(0),
-        DRM_IOCTL_MODE_GETRESOURCES => Some(0),
+        DRM_IOCTL_MODE_GETRESOURCES => {
+            // struct drm_mode_card_res { fb_id_ptr, crtc_id_ptr,
+            // connector_id_ptr, encoder_id_ptr (4×u64), then
+            // count_fbs, count_crtcs, count_connectors,
+            // count_encoders, min_w, max_w, min_h, max_h (8×u32) }.
+            // V1: zero counts + max bounds (no display surface).
+            // SAFETY: arg validated < USER_VA_END; struct ≥ 64 bytes; aligned u32 stores.
+            unsafe {
+                for i in 0..8u64 {
+                    core::ptr::write_volatile((arg + 32 + i*4) as *mut u32, 0);
+                }
+            }
+            Some(0)
+        }
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
 }
