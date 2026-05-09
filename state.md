@@ -57,6 +57,7 @@ real impl or honest ENOSYS. Breakdown:
   - **F105 #833** real PID namespace substrate (CLONE_NEWPID + vtgid/vtid; getpid/gettid/getppid NS-aware)
   - **F106 #835** user_ns + cgroup_ns substrate (CLONE_NEWUSER, CLONE_NEWCGROUP)
   - **F107 #836** mount_ns substrate (CLONE_NEWNS) — completes 7-NS family for phase 21
+  - **F108 #838** ptrace SYSCALL stop on entry + return (strace/gdb/ltrace see real syscall events)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
