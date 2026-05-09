@@ -168,13 +168,29 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
         }
         PTRACE_ATTACH | PTRACE_SEIZE => {
             match crate::sched::registry::lookup(pid) {
-                Some(t) => { t.traced_by.store(cur.tid, Ordering::Release); 0 }
+                Some(t) => {
+                    t.traced_by.store(cur.tid, Ordering::Release);
+                    // F104: ATTACH posts SIGSTOP so the target stops at
+                    // its next signal-delivery point. SEIZE attaches
+                    // without the implicit stop (Linux semantics —
+                    // tracer must use PTRACE_INTERRUPT to stop the
+                    // target later).
+                    if request == PTRACE_ATTACH {
+                        // SIGSTOP is signal 19 → bit 18.
+                        t.sigpending.fetch_or(1u64 << 18, Ordering::Release);
+                    }
+                    0
+                }
                 None    => -(Errno::Esrch.as_i32() as i64),
             }
         }
         PTRACE_DETACH => {
             if let Some(t) = crate::sched::registry::lookup(pid) {
                 t.traced_by.store(0, Ordering::Release);
+                // F104: clear any pending SIGSTOP from a prior ATTACH
+                // and wake the target if it parked in stop_until_cont.
+                t.sigpending.fetch_and(!(1u64 << 18), Ordering::Release);
+                crate::sched::registry::wake_if_stopped(&t);
             }
             0
         }
