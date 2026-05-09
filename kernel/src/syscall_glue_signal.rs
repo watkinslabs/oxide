@@ -75,9 +75,14 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
     }
     if (bits & (1u64 << 3)) != 0 {
         // CLONE_NEWUSER — fresh user_ns id (F106 substrate).
+        // F118: also record (new, parent) so has_cap_for can walk
+        // ancestors per `27§R01`.
         static NEXT_USER_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_USER_NS.fetch_add(1, Ordering::AcqRel);
-        cur.user_ns.store(id, Ordering::Release);
+        let new_id = NEXT_USER_NS.fetch_add(1, Ordering::AcqRel);
+        let parent = cur.user_ns.load(Ordering::Acquire);
+        crate::dev_proc_ns::user_ns_record(new_id, parent);
+        cur.parent_user_ns.store(parent, Ordering::Release);
+        cur.user_ns.store(new_id, Ordering::Release);
     }
     if (bits & (1u64 << 6)) != 0 {
         // CLONE_NEWCGROUP — fresh cgroup_ns id (F106 substrate).
@@ -478,7 +483,10 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
 pub fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
     use core::sync::atomic::Ordering;
     if cur.tid == target.tid { return true; }
-    if cur.has_cap(sched::cap::KILL) { return true; }
+    // F118: CAP_KILL must be held in a NS that's an ancestor of (or
+    // equal to) the target's user_ns. Init-NS callers pass through.
+    let target_ns = target.user_ns.load(Ordering::Acquire);
+    if crate::dev_proc_ns::has_cap_for(cur, target_ns, sched::cap::KILL) { return true; }
     let ce = cur.creds.euid.load(Ordering::Acquire);
     let cr = cur.creds.ruid.load(Ordering::Acquire);
     let tr = target.creds.ruid.load(Ordering::Acquire);
