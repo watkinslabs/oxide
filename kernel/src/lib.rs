@@ -147,6 +147,7 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_utime;
 #[cfg(target_os = "oxide-kernel")] pub mod flock;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
+#[cfg(target_os = "oxide-kernel")] pub mod keyring;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
 #[cfg(target_os = "oxide-kernel")]
