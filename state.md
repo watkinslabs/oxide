@@ -1,6 +1,132 @@
-# State 2026-05-09 (session 53 — F147..F149 interactive shell prep)
+# State 2026-05-09 (session 54 — F150-1 + F151 syscall trace, busybox NX fault)
 
-## ⚡ Session 53 headline: real interactive sh, blocked on Claude restart
+## ⚡ Session 54 headline: real interactive shell verified; busybox-ash blocked on NX fault at 0x500012
+
+Two PRs merged this session, both gating the off-the-shelf-Linux-userspace
+direction the user committed to ("kernel + image are ours, the rest is
+shit we pull off the shelf").
+
+- **F150-1 #913** — init.c rewritten as a normal `int main(int, char**,
+  char**)` linked through real musl crt1 (`-static -no-pie`, no shim, no
+  `-nostartfiles`). musl's `__init_libc` + `__init_tls` now run before
+  main: AT_PHDR/PHENT/PHNUM/PAGESZ/ENTRY/RANDOM/PLATFORM/EXECFN auxv from
+  `kernel/src/exec_stack.rs` is consumed exactly as upstream Linux init
+  does, TCB allocated via mmap, FS_BASE/TPIDR_EL0 installed via real
+  arch_prctl(ARCH_SET_FS) (or aarch64 equivalent). errno + stack-canary
+  paths are now safe. Both arches reach all kernel-IPC smokes PASS.
+  /bin/oxide-sh interactive `echo` round-trip verified end-to-end on
+  x86_64 (kernel UART → ICANON → ConsoleInode → shell → fd 1 → UART).
+- **F151 (this PR — diagnostic infra)** — added `[SYS] pid nr a0 a1 a2`
+  per-syscall entry trace gated by the `debug-syscall` cargo feature
+  (R05). Lives in a new `kernel/src/syscall_trace.rs` so
+  `syscall_glue.rs` stays under the 1000-line cap. Use:
+  `mcp__qemu__qemu_start arch=x86_64 features="debug-boot,debug-syscall,debug-irq"`.
+
+## ⚡ Session 55 first task: busybox-ash NX fault root-cause + fix
+
+With F150-1 + F151 trace, captured the failure mode:
+
+```
+[SYS] pid=4100 nr=110 a0=0x1 a1=0xffffffd0 a2=0x4   ← getppid (last syscall)
+[FAULT] sigsegv: kill tid=4100 vec=0xe err=0x15 rip=0x500012 cr2=0x500012
+```
+
+`err=0x15` decodes as Present + User + InstructionFetch — busybox's RIP
+jumped to 0x500012 in a present-but-non-executable page. Trace shows
+that page came from this sequence right before the fault:
+
+```
+nr=9  mmap(0, 0x2000, prot=0)         ← PROT_NONE 2-page region
+nr=10 mprotect(0x2000, 0x1000, 0x3)   ← R+W on half; no PROT_EXEC
+nr=9  mmap(0, 0x1000, …) (3×)
+nr=39 getpid
+nr=14 sigprocmask(SIG_BLOCK, …)
+nr=13 sigaction(SIGCHLD, sa@0x5008a0, NULL)
+nr=110 getppid                        ← last syscall before fault
+[FAULT] rip=cr2=0x500012  ← jump into a R+W mmap'd region
+```
+
+So busybox installed a SIGCHLD handler, called getppid, then ran user
+code that branched into 0x500012 (an mmap'd-but-not-executable page).
+Hypotheses, ordered by likelihood:
+
+1. **Signal-restorer trampoline.** musl sets `sa_flags |= SA_RESTORER`
+   and `sa_restorer = &__restore_rt` (in libc text). If our sigaction
+   ignores SA_RESTORER and uses a default value of 0x500012 (or trips
+   over a mis-sized struct sigaction copy that overlaps the next mmap'd
+   page), signal return jumps into a R+W page → NX. But we haven't
+   delivered a signal yet between sigaction and the fault — so this
+   needs a separate trigger.
+2. **TLS / pthread-internal jump table.** musl-x86_64 does some lazy
+   binding for `__nptl_set_robust_list` etc. that could land in a non-
+   executable region if the function-pointer table backing-store is
+   the R+W mmap. Less likely.
+3. **musl's signal-trampoline VA computation** falls back to a vDSO
+   address (we don't have one), which musl resolves to whatever the
+   first writable mmap returned — i.e. 0x500000-ish.
+
+Concrete next steps:
+
+1. Read busybox-ash's main entry + musl's `__init_tls` / `__sigaction`
+   path against the syscall trace; map exactly what user code runs
+   between `getppid` (0x500012-relative-call?) and the fault.
+2. Inspect the kernel's `sys_rt_sigaction` (slot 13) — verify it
+   honours SA_RESTORER and copies all 8 sigsetops into the per-task
+   sigaction table (not just the first 64 bits).
+3. If needed: add a `vDSO`-style page at a fixed VA carrying just the
+   `__restore_rt` 6-byte trampoline (`mov $0xf, %rax; syscall`).
+   Linux x86_64 sigreturn frame stamps this as the return address.
+4. Re-run with `debug-boot,debug-syscall,debug-irq`. If fault moves
+   later in the trace, narrow further. If fault stays at 0x500012,
+   read the page contents — it may already contain the
+   trampoline-as-data and just needs PROT_EXEC.
+
+If the issue is sigreturn trampoline, the proper fix is a vDSO with
+the canonical Linux x86_64 trampoline page — same shape as the kernel's
+`sys_rt_sigreturn` expects. That's a small kernel addition (mmap-ed
+read-only EXEC page at AT_SYSINFO_EHDR's slot in auxv).
+
+## ⚡ Strategic pivot (user direction, this session)
+
+Session 53/54 had been generating a lot of `userspace/oxide-*` toy
+programs (oxide-true, oxide-pwd, oxide-sleep, oxide-cat, ... ~40 .c
+files behind `userspace/shared/oxide_start.h` shim). User direction
+this session was unambiguous: **delete that scaffolding; the kernel
+and image are ours, the userspace is off-the-shelf** — busybox,
+GNU coreutils, bash, util-linux, e2fsprogs, dropbear, cross-built
+against musl. The `oxide-*` programs are stop-gap dev probes; they
+should not propagate.
+
+Concrete plan (sized for next session):
+
+- **F152-1**: delete `userspace/oxide-*` (every duplicate-of-busybox
+  program), `userspace/shared/oxide_start.h` shim, `userspace/sh/sh.c`
+  (the oxide-sh probe — replaced once busybox-ash works). Keep:
+  `userspace/init/init.c` (PID 1), `userspace/{sem,msg,mq,ptrace,
+  ptrace_singlestep,mprotect}_smoke/*.c` (kernel-acceptance tests of
+  our specific syscall surface — these are legit), `userspace/dynlink`
+  + `userspace/hello_dyn` (kernel ELF-loader smoke), `userspace/bare3`
+  (real-musl-crt1 isolation case).
+- **F152-2**: drop the kernel FS_BASE = 0x600_000+0x1000 hardcoding
+  from `syscall_glue_execve.rs:191-202` and `elf_smoke.rs:818-825`.
+  Once the shim users are gone, only real-crt1 programs run, and
+  they install FS_BASE themselves via arch_prctl. Linux semantics:
+  execve resets FS_BASE = 0; user crt1 installs it.
+- **F152-3** (independent): close the busybox-ash NX fault per
+  Session 55 first task above. Once busybox sh works, every applet
+  works (ls, cat, mount, sed, awk, vi, …) — that's the real Linux
+  userspace landing.
+- **F152-4** (independent, larger): vendor and cross-build bash +
+  GNU coreutils against musl, stage hardlinks at `/bin/bash`,
+  `/bin/ls`, `/usr/bin/cat`, etc. Same toolchain we already use for
+  busybox.
+
+The combined effect is: kernel + image continue to be all-ours, but
+every binary in the rootfs is upstream. That's the path to v1
+distro-class userspace — bash login, real GNU tools, eventually
+GNOME/Wayland/systemd per `project_distro_goal`.
+
+## ⚡ Session 53 headline (kept for context): real interactive sh, blocked on Claude restart
 
 User asked for a working shell after catching that prior sessions
 were claiming progress on graphics + busybox without ever actually
