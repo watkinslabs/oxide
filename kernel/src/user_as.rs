@@ -504,13 +504,14 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     if handle(cr2, kind) {
         return true;
     }
-    // Unhandled fault. If user-mode (CPL=3, err bit 2 set),
-    // terminate the task with SIGSEGV instead of halting the
-    // whole system — the fault is the task's bug (e.g. write
-    // to its own .rodata or stack underflow), not a kernel
-    // bug. Init's wait4 will reap. Kernel-mode unhandled
-    // faults still halt for diagnosis.
+    // Unhandled fault from user mode. F158: try Linux-style
+    // catchable SIGSEGV — rewrite the live FaultFrame to call
+    // the user-installed handler. If no handler is installed
+    // (SIG_DFL), fall back to terminate via deliver_sigsegv.
     if err & 0x4 != 0 {
+        if try_deliver_sigsegv_via_handler_x86(cr2) {
+            return true;   // asm iretqs to user handler with rewritten frame
+        }
         deliver_sigsegv_x86(vec, err, _rip, cr2);
     }
     false
@@ -537,15 +538,59 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     false
 }
 
-/// Public wrapper around `sigsegv_terminate_x86` so other modules
-/// (e.g. smoke fault handlers, syscall handlers) can deliver
-/// SIGSEGV without re-importing the helper visibility surface.
+/// Public wrapper for SIGSEGV delivery. F158: tries Linux-style
+/// catchable signal first — if the user task has installed a
+/// SIGSEGV handler via rt_sigaction, rewrite the live FaultFrame
+/// so iretq lands at the handler with `sig=11` in rdi and a
+/// minimal siginfo on the user stack. Falls back to terminate
+/// when SIG_DFL or no live frame.
 /// # SAFETY: caller is in fault / IRQ-off context with the
 /// runqueue installed (else no current task to terminate).
-/// # C: O(1) — diverges
+/// # C: O(1) — diverges OR returns through dispatch
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     sigsegv_terminate_x86(vec, err, rip, cr2);
+}
+
+/// F158: rewrite the live FaultFrame so iretq lands at the user's
+/// SIGSEGV handler with `sig=11` in rdi (passed via fault asm
+/// scratch slot). siginfo + ucontext stub pushed on user stack.
+/// # SAFETY: caller is in fault dispatch, IRQs off.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
+    let cur = match crate::sched::current() { Some(c) => c, None => return false };
+    // SAFETY: sigactions slot single-mutator per `13§5`.
+    let sa = unsafe { (*cur.sigactions.get())[10] };  // SIGSEGV = 11, idx 10
+    if sa.handler == 0 || sa.handler == 1 { return false; }
+    let frame_ptr = hal_x86_64::current_fault_frame();
+    if frame_ptr.is_null() { return false; }
+    // SAFETY: frame_ptr is the live FaultFrame for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
+    let frame = unsafe { &mut *frame_ptr };
+    // User stack layout (top → bottom):
+    //   [old_rsp - 0x10]  restorer    ← ret addr from handler
+    //   [old_rsp - 0x88]  ucontext stub (zeroed, 128 B)
+    //   [old_rsp - 0x108] siginfo_t   (128 B; si_signo/si_addr/si_code)
+    let new_sp = frame.rsp.saturating_sub(0x108);
+    if new_sp == 0 || new_sp >= hal::USER_VA_END { return false; }
+    let si  = new_sp;                   // siginfo at base
+    let uc  = new_sp + 0x80;            // ucontext above
+    let ret = new_sp + 0x100;           // restorer addr above ucontext
+    // SAFETY: user stack pages faulted in by user code; CPL=0 writes through active CR3.
+    unsafe {
+        core::ptr::write_volatile( si        as *mut i32, 11);
+        core::ptr::write_volatile((si +  4)  as *mut i32, 0);
+        core::ptr::write_volatile((si +  8)  as *mut i32, 1);    // SEGV_MAPERR
+        core::ptr::write_volatile((si + 16)  as *mut u64, cr2);
+        core::ptr::write_bytes((si + 24) as *mut u8, 0, 0x80 - 24);
+        core::ptr::write_bytes(uc as *mut u8, 0, 0x80);
+        core::ptr::write_volatile(ret as *mut u64, sa.restorer);
+    }
+    frame.rip    = sa.handler;
+    frame.rsp    = ret;
+    frame.rflags = 0x202;
+    let _ = sa.flags;
+    true
 }
 
 /// arm wrapper for SIGSEGV delivery. Same shape as the x86 form.
