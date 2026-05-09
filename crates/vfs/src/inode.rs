@@ -85,6 +85,53 @@ pub trait Inode: Send + Sync {
     /// (synthetic / static inodes never block).
     /// # C: O(1)
     fn poll(&self) -> u32 { POLL_IN | POLL_OUT }
+
+    /// Last-modified time in monotonic-ns. Default 0 (no recorded
+    /// modification). Per-FS impls override to return on-disk mtime;
+    /// pseudo-fs (devfs/procfs/tmpfs) inherit the default and the
+    /// kernel-side `inode_times` overlay supplies the answer when set.
+    /// # C: O(1)
+    fn mtime(&self) -> u64 { 0 }
+
+    /// Last-access time. Default 0; same overlay-fallback rule as `mtime`.
+    /// # C: O(1)
+    fn atime(&self) -> u64 { 0 }
+
+    /// Status-change time. Default 0; same rule.
+    /// # C: O(1)
+    fn ctime(&self) -> u64 { 0 }
+
+    /// Update the inode's atime/mtime/ctime. `None` means "leave alone"
+    /// (UTIME_OMIT semantics). Default `Erofs` so pseudo-fs inodes
+    /// without their own timestamp store fall through to the kernel's
+    /// `inode_times` overlay at the syscall layer.
+    /// # C: O(1)
+    fn set_times(&self, _atime: Option<u64>, _mtime: Option<u64>, _ctime: u64) -> KResult<()> {
+        Err(VfsError::Erofs)
+    }
+
+    /// Permission bits — low 12 bits of mode (rwxrwxrwx + suid/sgid/
+    /// sticky). Type bits come from `file_type()`. Default 0 means
+    /// "use 0o600 fallback at statx layer"; pseudo-fs with their own
+    /// stored mode override.
+    /// # C: O(1)
+    fn perm(&self) -> u16 { 0 }
+
+    /// Owner uid. Default 0 (root).
+    /// # C: O(1)
+    fn uid(&self) -> u32 { 0 }
+
+    /// Owner gid. Default 0 (root).
+    /// # C: O(1)
+    fn gid(&self) -> u32 { 0 }
+
+    /// `chmod(2)` backend. Default `Erofs`; overlay handles it.
+    /// # C: O(1)
+    fn set_perm(&self, _perm: u16) -> KResult<()> { Err(VfsError::Erofs) }
+
+    /// `chown(2)` backend. Default `Erofs`; overlay handles it.
+    /// # C: O(1)
+    fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
 }
 
 /// `poll(2)` event bitmasks. Numeric reps match Linux exactly.
