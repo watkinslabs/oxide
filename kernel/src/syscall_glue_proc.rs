@@ -273,6 +273,26 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 // `sys_rseq` + rseq_writeback live in `syscall_glue_rseq.rs` (F86).
 pub use crate::syscall_glue_rseq::{kernel_sys_rseq, rseq_writeback};
 
+/// `sys_vhangup` — slot 153. Linux: revoke access to the calling task's
+/// controlling terminal by posting SIGHUP to every task in the same
+/// session. Privileged (CAP_SYS_TTY_CONFIG / root).
+/// # C: O(N_tasks)
+pub fn kernel_sys_vhangup(_args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    if !cur.creds.is_root() { return -(Errno::Eperm.as_i32() as i64); }
+    let sid = cur.sid.load(Ordering::Acquire);
+    for tid in crate::sched::registry::live_tids() {
+        if let Some(t) = crate::sched::registry::lookup(tid) {
+            if t.sid.load(Ordering::Acquire) == sid {
+                t.sigpending.fetch_or(1u64 /* SIGHUP bit 0 */, Ordering::Release);
+            }
+        }
+    }
+    0
+}
+
 // `sys_syslog` moved to `syscall_glue_dmesg.rs` (F67) to keep this
 // file under the 1000-line cap.
 
