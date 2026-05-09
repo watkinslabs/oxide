@@ -55,6 +55,8 @@ real impl or honest ENOSYS. Breakdown:
   - **F103 #829** file capabilities at execve via security.capability xattr
   - **F104 #831** ptrace ATTACH posts SIGSTOP; DETACH wakes target
   - **F105 #833** real PID namespace substrate (CLONE_NEWPID + vtgid/vtid; getpid/gettid/getppid NS-aware)
+  - **F106 #835** user_ns + cgroup_ns substrate (CLONE_NEWUSER, CLONE_NEWCGROUP)
+  - **F107 #836** mount_ns substrate (CLONE_NEWNS) — completes 7-NS family for phase 21
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
