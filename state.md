@@ -1,6 +1,59 @@
-# State 2026-05-08 (session 50 ENDED — F57 + F58 landed, phase 8 RX next)
+# State 2026-05-08 (session 51 mid-flight — F59-01..03 landed, F59-04 ARP next)
 
-## ⚡ Session 51 first task: daemon restart + verify modern virtio-net
+## ⚡ Session 51 next task: F59-04 — outbound TX + ARP through SLIRP
+
+`dev_virtio_net_modern::rx_poll` is wired and exercised at boot
+(F59-03, #761). The drain returns `delivered=0` because the device
+has nothing to deliver until we send something outbound. Next step:
+
+  1. Read MAC from device-cfg cap (cfg_type=4) for the virtio-net
+     device. Persist it in `ModernNetState`.
+  2. Add `dev_virtio_net_modern::tx_frame(&[u8]) -> Result<(), TxErr>`:
+     allocate a TX scratch frame at init_modern time, write
+     `virtio_net_hdr` (12 zero bytes) + the caller's body, post on
+     queue 1 descriptor 0, bump avail.idx, kick `q1_notify_va`.
+     Track q1 cursors via AtomicU16s like rx_poll does.
+  3. After `init_modern` lands, in `pci_boot::enumerate_and_log`
+     (post `virtio-net-rx-boot drained=0`), build an ARP request:
+     - eth dst = ff:ff:ff:ff:ff:ff, src = MAC, type = 0x0806
+     - htype=1, ptype=0x0800, hlen=6, plen=4, op=1
+     - sender hw = MAC, sender ip = 10.0.2.15
+     - target hw = 0, target ip = 10.0.2.2 (SLIRP gateway)
+     Send via tx_frame. Spin a million-cycle window. Drain rx_poll;
+     log delivered, frame[0..14] hex (eth header). Expect ARP reply
+     (op=2) from SLIRP.
+
+If the ARP path works, phase 8 has its first end-to-end packet.
+F59-05 then hands frames to `crate::net::stack` and runs the ARP
+state machine through `arp_table` so subsequent packets resolve.
+
+## ⚡ Session 51 progress: F59-01, F59-02, F59-03 landed
+
+  - **F58 verification (no PR)**: After session 50 daemon restart,
+    confirmed `pci 0:3.0 vendor=0x1af4 device=0x1041 class=0x02`
+    (x86) and `pci 0:2.0 vendor=0x1af4 device=0x1041 class=0x02`
+    (aarch64) — modern virtio-net active on both arches; smokes +
+    `hello-from-dyn` pass; `lapic-self-fire delta=1` (x86) and
+    `its-self-fire delta=1 last_intid=0x2000` (aarch64); first
+    `msi_fires=1` on virtio-net 0:2.0 aarch64.
+  - **F59-01 #759** persists modern virtio-net runtime state from
+    `pci_boot::virtio_drv::virtio_init_arch` to a new arch-neutral
+    `crate::dev_virtio_net_modern` module. Adds `ModernNetState`
+    (cfg VA, q0/q1 notify VAs + ring PAs, queue sizes, RX buffer
+    PA+len) + `init_modern` + `is_modern_present` + `modern_state`.
+    One log line: `virtio-net-modern <BDF> cfg_va=... q0/q1 ...`.
+  - **F59-02 #760** implements `rx_poll<F>(cb)` on the modern
+    transport. Drains queue-0 used-ring entries (Virtio 1.2 §2.6.8),
+    strips the 12-byte `virtio_net_hdr`, hands the body to `cb`,
+    re-publishes desc 0 onto avail, kicks `q0_notify_va`. v1 single
+    buffer (descriptor 0 only). Cursors as AtomicU16 statics.
+  - **F59-03 #761** calls `rx_poll` once at the tail of
+    `pci_boot::enumerate_and_log` when `is_modern_present()`.
+    Logs `virtio-net-rx-boot drained=N bytes=M`. At boot N=M=0
+    because no outbound has gone out — the point of this PR is to
+    prove the path doesn't fault on an empty ring.
+
+## ⚡ Session 51 first task: daemon restart + verify modern virtio-net (DONE)
 
 F58 (#757) added `-netdev user,id=net0` + `-device
 virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on` on
