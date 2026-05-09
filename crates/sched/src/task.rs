@@ -366,6 +366,13 @@ pub struct Task {
     /// updates atomically when arg != 0xFFFFFFFF.
     pub personality: AtomicU32,
 
+    /// `chroot(2)` root path. Default "/" — every absolute path
+    /// resolves directly. After chroot, devfs::lookup prepends this
+    /// path so the task sees a subtree as "/". Single-mutator per
+    /// `13§5`. Inherited by fork/clone (children share parent's
+    /// chroot view); cleared on execve only via explicit chroot.
+    pub root: UnsafeCell<alloc::string::String>,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -724,6 +731,7 @@ impl Task {
             pdeathsig:      AtomicU32::new(0),
             child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),
+            root:           UnsafeCell::new(alloc::string::String::from("/")),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
