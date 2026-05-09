@@ -397,6 +397,14 @@ pub struct Task {
     /// by the fork dispatcher.
     pub unshare_pid_pending: AtomicBool,
 
+    /// User namespace id (CLONE_NEWUSER). Default 0 (init NS).
+    /// V1 substrate only: cross-NS cap-scope enforcement rides v2.
+    pub user_ns: AtomicU64,
+    /// Cgroup namespace id (CLONE_NEWCGROUP). Default 0 (init NS).
+    /// /proc/self/cgroup rebasing rides v2 (v1 has a flat single-
+    /// cgroup hierarchy, so every NS sees the same "0::/" path).
+    pub cgroup_ns: AtomicU64,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -762,6 +770,8 @@ impl Task {
             vtgid:          AtomicU32::new(0),
             vtid:           AtomicU32::new(0),
             unshare_pid_pending: AtomicBool::new(false),
+            user_ns:        AtomicU64::new(0),
+            cgroup_ns:      AtomicU64::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
