@@ -177,6 +177,21 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         // SAFETY: same window; writes drive device per spec.
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u32, v); }
     };
+    // F59-09: u16-precise writes for the byte/word fields in
+    // virtio_pci_common_cfg. QEMU's `virtio_pci_common_write`
+    // dispatches by `switch(addr)` — a 4-byte store at 0x14
+    // only triggers the DEVSTATUS handler (byte 0); bytes 1-3
+    // (config_generation @ 0x15 + queue_select @ 0x16) are
+    // silently dropped. queue_select MUST be written as a u16
+    // at 0x16 or it never takes effect.
+    let w16 = |off: u64, v: u16| {
+        // SAFETY: same window; per Virtio 1.2 §4.1.4.3 the field at `off` is u16-aligned.
+        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u16, v); }
+    };
+    let w8 = |off: u64, v: u8| {
+        // SAFETY: same window; per Virtio 1.2 §4.1.4.3 device_status is a u8 at +0x14.
+        unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
+    };
 
     // Spec §3.1.1 driver init sequence.
     let st = |s: u8| -> u32 { s as u32 };
@@ -222,9 +237,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut queues_len = 0usize;
     let cap = if num_queues == 0 || num_queues > 8 { 8 } else { num_queues } as u16;
     for qi in 0..cap {
-        // Preserve status low byte; queue_select is bits 16..31.
-        let qs_word = (post_status & 0xFF) | ((qi as u32) << 16);
-        w32(0x14, qs_word);
+        // F59-09: queue_select is a u16 at +0x16 — must be a u16
+        // store, not a u32 store at 0x14 (QEMU's switch-based
+        // dispatcher would only update DEVSTATUS @ 0x14).
+        w16(0x16, qi);
         let qs_data = r32(0x18);
         let queue_size = (qs_data & 0xFFFF) as u16;
         queues[queues_len] = (qi, queue_size);
@@ -273,20 +289,15 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     }
                 }
             }
-            // Re-select queue 0 (queue_select sits in upper u16 of 0x14;
-            // status low byte is sticky as device_status, preserve it).
-            let qs0 = (post_status & 0xFF) | (0u32 << 16);
-            w32(0x14, qs0);
+            // F59-09: queue_select=0 via u16 store at +0x16.
+            w16(0x16, 0);
             // queue_size at 0x18 (low u16) — leave as-is.
             // F39: bind queue_msix_vector at +0x1A to MSI-X table
-            // index 0 (cap_dump_arch programmed entry 0 already).
-            // The dword at +0x18 holds queue_size (RO, low u16) +
-            // queue_msix_vector (RW, high u16). Read+rewrite preserves
-            // the (RO) size while clearing the high u16 to 0.
-            let qsz_word = r32(0x18) & 0x0000_FFFF;
-            w32(0x18, qsz_word | (0u32 << 16));
-            // queue_enable at 0x1C (low u16); queue_notify_off at 0x1E.
-            // queue_desc le64 at +0x20:
+            // F59-09: queue_msix_vector is u16 at +0x1A — must be a
+            // u16 store (QEMU's switch dispatcher would drop a u32
+            // store at 0x18, only triggering queue_size).
+            w16(0x1A, 0);
+            // queue_desc le64 at +0x20: separate u32 cases at 0x20/0x24.
             w32(0x20, (pa_desc & 0xFFFF_FFFF) as u32);
             w32(0x24, (pa_desc >> 32) as u32);
             // queue_driver (avail) le64 at +0x28:
@@ -295,10 +306,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // queue_device (used) le64 at +0x30:
             w32(0x30, (pa_device & 0xFFFF_FFFF) as u32);
             w32(0x34, (pa_device >> 32) as u32);
-            // queue_enable=1 (low u16 of dword at 0x1C; preserve high
-            // u16 = queue_notify_off which is RO).
-            let qen_word = r32(0x1C) & 0xFFFF_0000;
-            w32(0x1C, qen_word | 0x0001);
+            // F59-09: queue_enable is u16 at +0x1C — must be a u16 store.
+            w16(0x1C, 1);
 
             // F43: for virtio-net, also stand up queue 1 (TX) so we
             // can post outgoing frames. queue 0 = RX, queue 1 = TX
@@ -326,23 +335,22 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                             }
                         }
                     }
-                    // queue_select = 1 (high u16 of dword at 0x14;
-                    // preserve status low byte).
-                    let qs1 = (post_status & 0xFF) | (1u32 << 16);
-                    w32(0x14, qs1);
-                    // Capture per-queue notify_off (high u16 of 0x1C).
-                    q1_notify_off_local = (r32(0x1C) >> 16) as u16;
-                    // F59-08: queue_msix_vector = 0xFFFF (VIRTIO_MSI_NO_VECTOR)
-                    // for q1. Per Virtio 1.2 §4.1.5.1.2 + QEMU
-                    // hw/virtio/virtio-pci.c, when a queue's msix
-                    // vector points at a masked / unconfigured table
-                    // entry, QEMU silently drops queue_notify writes
-                    // for that queue — explaining F59-07's
-                    // tx_confirmed=0. We poll q1.used.idx so we
-                    // don't need device→driver MSI on TX, and
-                    // NO_VECTOR keeps QEMU processing kicks normally.
-                    let qsz_w = r32(0x18) & 0x0000_FFFF;
-                    w32(0x18, qsz_w | (0xFFFFu32 << 16));
+                    // F59-09: queue_select=1 via u16 store at +0x16.
+                    // The earlier u32 store at 0x14 was dropped by
+                    // QEMU's switch-on-addr dispatcher, so q1's ring
+                    // PA writes were silently going to q0 instead.
+                    // Confirmed: with the u16 store, q1_notify_off
+                    // reads back as 1 (was 0 with the bug), TX kicks
+                    // reach the device, SLIRP replies to ARP.
+                    w16(0x16, 1);
+                    // Capture per-queue notify_off (u16 at +0x1E).
+                    // SAFETY: cfg_va Device-attr-mapped above; aligned u16 load of queue_notify_off for the currently-selected queue (q1).
+                    q1_notify_off_local = unsafe {
+                        core::ptr::read_volatile((cfg_va + 0x1E) as *const u16)
+                    };
+                    // q1 polls used.idx, no MSI-X needed.
+                    // F59-09: queue_msix_vector u16 at +0x1A.
+                    w16(0x1A, 0xFFFF);
                     // queue_desc/driver/device for q1
                     w32(0x20, (q1d & 0xFFFF_FFFF) as u32);
                     w32(0x24, (q1d >> 32) as u32);
@@ -350,16 +358,15 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     w32(0x2C, (q1v >> 32) as u32);
                     w32(0x30, (q1u & 0xFFFF_FFFF) as u32);
                     w32(0x34, (q1u >> 32) as u32);
-                    // queue_enable q1 = 1
-                    let qen1 = r32(0x1C) & 0xFFFF_0000;
-                    w32(0x1C, qen1 | 0x0001);
+                    // F59-09: queue_enable u16 at +0x1C.
+                    w16(0x1C, 1);
                     // Stash for outer-scope use post-DRIVER_OK.
                     q1_desc_pa = q1d;
                     q1_driver_pa = q1v;
                     q1_device_pa = q1u;
                     // Restore queue_select=0 so subsequent reads in
                     // the F26 kick path see q0 state.
-                    w32(0x14, (post_status & 0xFF) | (0u32 << 16));
+                    w16(0x16, 0); // F59-09: restore queue_select=0 via u16 store
                 }
             }
 
