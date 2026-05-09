@@ -2,6 +2,26 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
 
+## Revision 2026-05-09 (R02)
+
+- Changed: pinned the v1 BPF subset shape. `bpf(2)` admits
+  BPF_PROG_LOAD with cBPF (32-bit classic-BPF) instructions stored
+  in a BpfProgInode; BPF_MAP_CREATE returns a BpfMapInode (hash-map,
+  byte-keyed). Helper-fn calls from cBPF land via the existing
+  seccomp interpreter (which is cBPF-shaped). All ops require
+  CAP_BPF. eBPF + verifier + JIT ride v2.x.
+- Why: phase 24 (bpf+seccomp+landlock) unblocks userspace tools
+  (bpftool admit, libbpf feature probes) once `bpf(2)` returns a
+  real fd instead of ENOSYS. The cBPF subset is small (no
+  verifier means we restrict to CAP_BPF callers and document the
+  unverified-program risk).
+- Affected code: `kernel/src/dev_bpf.rs` (new — BpfProgInode +
+  BpfMapInode + bpf(2) op dispatch); `kernel/src/syscall_glue.rs`
+  (NR_BPF arm).
+- Test contract change: §16 acceptance gains "bpf(BPF_PROG_LOAD)
+  admit + close" smoke; programs that load a no-op cBPF and
+  immediately close get a real fd.
+
 ## Revision 2026-05-09 (R01)
 
 - Changed: pinned per-user-NS cap scoping. `cap_effective` bits scope
