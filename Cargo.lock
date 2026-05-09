@@ -325,6 +325,7 @@ dependencies = [
  "klog",
  "modules",
  "net",
+ "nscg",
  "pci",
  "pmm",
  "power",
@@ -420,6 +421,10 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]

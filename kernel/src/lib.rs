@@ -16,10 +16,7 @@
 
 extern crate alloc;
 
-// Compile-time check: the per-arch HAL `Context` type must fit in
-// `Task.arch_ctx` per `13§5`. If a future arch grows past
-// `::sched::ARCH_CTX_SIZE`, bump the constant in `crates/sched`
-// rather than working around here.
+// Compile-time check: per-arch Context must fit in Task.arch_ctx.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const _: () = assert!(
     core::mem::size_of::<hal_x86_64::ContextX86_64>() <= ::sched::ARCH_CTX_SIZE,
@@ -31,22 +28,16 @@ const _: () = assert!(
     "ContextAArch64 exceeds ::sched::ARCH_CTX_SIZE — bump the const",
 );
 
-// Per-subsystem debug-trace gates per `04§3` (R05) + `04§4.0` (R06).
-// `#[macro_use]` hoists the `debug_<sub>!` macros into all sibling
-// modules so they can use them without per-call `use`.
+// Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 mod debug_macros;
 
-// Per `04§4.0` (R06): modules whose entire surface is diagnostic
-// trace are gated at the module declaration so their klog call
-// sites are absent from the binary unless the matching debug
-// feature is on. Production-bring-up modules (lapic, gic, pmm_setup)
-// keep their non-trace surface always-on; their klog call sites
-// inside lib.rs are individually wrapped in `debug_<sub>!`.
-// ACPI parsing lives in `crates/firmware` per `33§R01`; the kernel
-// installs cpu_topology::add_cpu as the firmware add-cpu hook then
-// invokes `firmware::try_log_acpi` from kernel_main.
+// Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
+// ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
+// `crates/nscg` (`26§R01`). Re-exports keep call sites stable.
 pub use firmware::acpi;
+#[cfg(target_os = "oxide-kernel")]
+pub use nscg::proc_ns as dev_proc_ns;
 pub mod cpu_topology;
 pub mod smp;
 #[cfg(target_arch = "aarch64")]
@@ -148,7 +139,7 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
 #[cfg(target_os = "oxide-kernel")] pub mod keyring;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_numa;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod dev_proc_ns;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_bpf;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_bpf;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  #[cfg(target_os = "oxide-kernel")] pub mod xattr_overlay;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
@@ -698,6 +689,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { power::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; firmware::init reports ready (real ACPI walk happened earlier).
     let _ = unsafe { firmware::init() };
+    // SAFETY: kernel_main runs single-CPU pre-init; nscg::init reports ready (per-task ns slots set up by sched).
+    let _ = unsafe { nscg::init() };
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
