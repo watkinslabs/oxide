@@ -638,9 +638,20 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
 /// Protection-write faults short-circuit to a same-PA W-flip when
 /// we're the sole owner, and copy + dec_ref the shared frame
 /// otherwise.
+/// F158: NotPresent faults try MAP_GROWSDOWN stack auto-extension
+/// before falling through to the normal demand-page path.
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
+    // F158: stack auto-grow. If the fault lands just below a
+    // GROWSDOWN VMA's start (within Linux's 64 KiB guard distance),
+    // extend the VMA to cover the faulting address. Subsequent
+    // demand-page resolves it normally.
+    if matches!(fault, FaultKind::NotPresent { .. }) {
+        if as_.find_vma(uva).is_none() {
+            as_.try_grow_stack(uva);
+        }
+    }
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally).
     unsafe {
         #[cfg(target_arch = "x86_64")]
@@ -726,6 +737,8 @@ pub fn glue_mmap(
     const MAP_PRIVATE: u64 = 0x02;
     const MAP_FIXED:   u64 = 0x10;
     const MAP_ANON:    u64 = 0x20;
+    const MAP_GROWSDOWN: u64       = 0x100;
+    const MAP_FIXED_NOREPLACE: u64 = 0x100000;
 
     // F60: file-backed mmap stays out of v1 (needs VFS+pagecache
     // wiring per `17§5`). Anonymous mmap now honours MAP_FIXED, the
@@ -739,9 +752,35 @@ pub fn glue_mmap(
     let is_private = flags & MAP_PRIVATE != 0;
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
     let want_fixed = flags & MAP_FIXED != 0;
+    let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
+    let want_grows_down = flags & MAP_GROWSDOWN != 0;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
-    if want_fixed && (addr == 0 || (addr & 0xfff) != 0) {
+    if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    // F158: MAP_FIXED_NOREPLACE — Linux 4.17+. Like MAP_FIXED but
+    // returns EEXIST instead of clearing overlap. Used by JIT
+    // engines that want to verify no clobber. Detect overlap by
+    // probing the AS before the insert.
+    if want_no_replace {
+        if let Some(cur) = crate::sched::current() {
+            // SAFETY: mm slot single-mutator per `13§5`.
+            if let Some(mm) = unsafe { cur.mm_ref() } {
+                let probe = match UserVirtAddr::new(addr) {
+                    Some(u) => u, None => return Err(-(Errno::Einval.as_i32() as i64)),
+                };
+                let probe_end = addr.saturating_add(len_aligned as u64);
+                let mut p = probe.as_u64();
+                while p < probe_end {
+                    if let Some(u) = UserVirtAddr::new(p) {
+                        if mm.find_vma(u).is_some() {
+                            return Err(-(Errno::Eexist.as_i32() as i64));
+                        }
+                    }
+                    p = p.saturating_add(0x1000);
+                }
+            }
+        }
     }
     // F89: MAP_FIXED is destructive (overlaps unmapped per 11§6).
     // F60 enabled it via `tree.remove_range` but the page-table side
@@ -751,18 +790,23 @@ pub fn glue_mmap(
     // then proceed with a non-fixed VMA insertion (the range is now
     // hole, so the hint-first path in vmm::mmap lands on the requested
     // addr without conflicting with stale state).
-    if want_fixed {
+    if want_fixed && !want_no_replace {
         let _ = glue_munmap(addr, len_aligned as u64);
     }
     // We pass fixed=false to vmm::mmap regardless: after the munmap
     // above, the hint range is clear and the non-fixed path's
     // hint-first placement will pick it.
     let is_fixed = false;
-    let vma_flags = if is_shared {
+    let mut vma_flags = if is_shared {
         VmaFlags::SHARED | VmaFlags::ANONYMOUS
     } else {
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS
     };
+    // F158: MAP_GROWSDOWN — stack-style auto-grow VMA. Linux extends
+    // the VMA downward when a PF lands within the GROWSDOWN guard
+    // distance below vma.start. Glibc threading uses this for
+    // pthread stacks; ld.so uses it for the main process stack.
+    if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
     let hint = if addr != 0 {
         match UserVirtAddr::new(addr) {
             Some(uva) => Some(uva),
