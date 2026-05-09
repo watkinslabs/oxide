@@ -419,6 +419,25 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
+    /// F158: try to extend a `MAP_GROWSDOWN` VMA whose `start` is
+    /// just above `va` to cover `va`. Linux uses a 64 KiB guard
+    /// distance — a fault below that is treated as a stack
+    /// underflow (SIGSEGV) rather than auto-extension. Returns
+    /// `true` if the VMA was extended (caller can retry the fault),
+    /// `false` if no GROWSDOWN VMA covers the access.
+    /// # C: O(log N)
+    pub fn try_grow_stack(&self, va: UserVirtAddr) -> bool {
+        const STACK_GUARD_GAP: u64 = 64 * 1024;
+        let mut tree = self.vmas.write();
+        let cur_start = match tree.find_growsdown_above(va, STACK_GUARD_GAP) {
+            Some(v) => v.start,
+            None    => return false,
+        };
+        let new_start = UserVirtAddr::new(va.as_u64() & !0xfff)
+            .expect("va in user range");
+        tree.extend_growsdown_start(cur_start, new_start).is_ok()
+    }
+
     /// Snapshot every VMA into a Vec for callers that need a stable
     /// view (e.g. /proc/self/maps). Read-locks the tree briefly.
     /// # C: O(N) clone
@@ -497,7 +516,9 @@ impl AddressSpace {
     }
 
     /// Change the protection bits over `[addr, addr+len)`. Holes are
-    /// rejected with `Inval` per `11§6` ("walk affected VMAs").
+    /// rejected with `Inval` per `11§6` ("walk affected VMAs"). VMA
+    /// tree is updated; the kernel-side caller (sys_mprotect) walks
+    /// affected PT leaves via `mprotect_pages` to flush stale PTEs.
     /// # C: O(K log N)
     pub fn mprotect(
         &self,
