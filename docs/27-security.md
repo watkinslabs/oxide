@@ -1,6 +1,28 @@
 # 27 Security
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
+
+## Revision 2026-05-09 (R01)
+
+- Changed: pinned per-user-NS cap scoping. `cap_effective` bits scope
+  to the calling task's user_ns chain; new helper
+  `has_cap_for(target_user_ns, cap)` returns true only when the bit
+  is set AND target_user_ns is the calling task's user_ns OR a
+  descendant of it (caller in init NS sees all NSes as descendants).
+- Why: F92/F93/F95 use the global `cap_effective` mask; a task that
+  unshared CLONE_NEWUSER and gained CAP_FULL in its own NS could
+  affect resources owned by a sibling user_ns. Without scoping, the
+  F106 substrate would be a security regression. Each user_ns
+  records its parent at unshare time in a side registry; descendant
+  checks walk up.
+- Affected code: `crates/sched/src/task.rs` (parent_user_ns field);
+  `kernel/src/syscall_glue_signal.rs` (unshare records parent);
+  ~10 privileged sites convert `has_cap` to `has_cap_for(target, cap)`.
+- Test contract change: §16 gains a "user-NS containment" smoke —
+  child unshares CLONE_NEWUSER, parent in init NS still kills it
+  (init NS is ancestor of child's NS); reverse direction returns
+  EPERM since init is not a descendant of the child's NS.
+
 ## 1 Purpose
 
 Capabilities (Linux v3, 64-bit), seccomp (strict + filter), Landlock (filesystem sandbox), KASLR/KPTI/SMEP/SMAP/PAN/PXN/CET/BTI baseline, signature trust root, taint flags, sysctl tree.
