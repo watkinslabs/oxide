@@ -146,19 +146,24 @@ unsafe fn setup_scanout(
     let mut frames: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(pages_req);
     for i in 0..pages_req { frames.push(base_pa + (i as u64) * 0x1000); }
     let _ = pages_alloc;
-    // Paint a solid color into the FB so userspace sees something
-    // immediately. BGRA32 dark blue.
+    // Render a boot banner through fbcon and copy the result into
+    // the virtio-gpu backing FB. Userspace sees rendered text on
+    // the QEMU display immediately at boot.
     {
+        let mut console = fbcon::Console::new(w, h);
+        console.fg = [0xff, 0xff, 0xff];
+        console.bg = [0x00, 0x10, 0x40];
+        // EraseDisplay first to fill background.
+        console.put(b"\x1b[2J\x1b[H");
+        console.put(b"oxide kernel ready\n");
+        console.put(b"virtio-gpu scanout active\n");
         let va = hhdm.wrapping_add(base_pa) as *mut u8;
-        // SAFETY: HHDM-mapped contig run of `pages_req * 4 KiB`; bounded length.
+        let n = fb_bytes as usize;
+        // SAFETY: HHDM-mapped contig run of pages_req * 4 KiB; bounded copy of n bytes ≤ that span.
         unsafe {
-            let mut j = 0usize;
-            while j + 4 <= fb_bytes as usize {
-                core::ptr::write_volatile(va.add(j),     0x80);  // B
-                core::ptr::write_volatile(va.add(j + 1), 0x10);  // G
-                core::ptr::write_volatile(va.add(j + 2), 0x00);  // R
-                core::ptr::write_volatile(va.add(j + 3), 0xFF);  // A
-                j += 4;
+            let src = console.fb.as_ptr();
+            for j in 0..n.min(console.fb.len()) {
+                core::ptr::write_volatile(va.add(j), *src.add(j));
             }
         }
     }
