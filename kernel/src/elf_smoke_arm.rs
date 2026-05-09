@@ -356,10 +356,10 @@ fn spawn_init_from_rootfs_arm() {
         );
     }
 
-    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
+    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off; vpid stamped pre-enqueue so busybox-init's first syscall sees PID 1.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(
-            0xC0DE_0002, "init",
+        crate::sched::spawn_user_thread_with_vpid(
+            0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1, "init",
             img.entry.as_u64(),
             new_sp,
             mm,
@@ -371,15 +371,6 @@ fn spawn_init_from_rootfs_arm() {
             return;
         }
     };
-
-    // busybox-init refuses to run unless getpid()==1. vtgid/vtid
-    // make the syscall report PID 1 without remapping the kernel's
-    // internal tid.
-    {
-        use core::sync::atomic::Ordering;
-        task.vtgid.store(1, Ordering::Release);
-        task.vtid.store(1, Ordering::Release);
-    }
 
     // Wire fd 0/1/2 to the console so busybox-as-shell (and any
     // child after fork+exec) has working stdin/stdout/stderr —
