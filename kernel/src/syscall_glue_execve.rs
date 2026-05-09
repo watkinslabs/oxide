@@ -167,25 +167,6 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         return -(Errno::Enomem.as_i32() as i64);
     }
 
-    // TLS scratch — every userspace binary built with musl libc
-    // wrappers does FS-relative loads (canary at FS:0x28, errno
-    // at higher offsets, pthread_self at FS:0). Without a real
-    // TLS pointer the first call into a libc wrapper faults.
-    // Mirrors the init-spawn TLS setup in elf_smoke.rs.
-    const USER_TLS_BASE: u64 = 0x600_000;
-    const USER_TLS_LEN:  usize = 0x2000;
-    let tls_hint = UserVirtAddr::new(USER_TLS_BASE)
-        .expect("USER_TLS_BASE in user range");
-    if new_as.mmap(
-        Some(tls_hint), USER_TLS_LEN,
-        VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-        VmaBacking::Anonymous,
-        true,
-    ).is_err() {
-        return -(Errno::Enomem.as_i32() as i64);
-    }
-
     // 3. Replace `current.mm` with the new AS and activate it.
     //    Order: activate BEFORE replace_mm so CR3 doesn't dangle
     //    if drop runs concurrently — but on UP single-CPU the
@@ -196,17 +177,21 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
 
-    // Write TLS self-pointer + reset FS_BASE for the new program.
-    // SAFETY: new mm is active; demand-fault resolves the page; sole writer.
+    // F152-2: Linux execve resets FS_BASE = 0; user crt1 calls
+    // arch_prctl(ARCH_SET_FS, tcb) once musl's __init_tls picks
+    // a TCB VA. The previous code mmap'd a fixed kernel-side TLS
+    // region at 0x600000 + wrote a self-pointer + set FS_BASE to
+    // 0x601000 — a hack to support oxide_start.h-shimmed binaries
+    // that bypassed musl's TLS init. With every userspace binary
+    // now linked against full musl crt1 (F150-1 + F152-1), that
+    // hack is dead weight; the user-side __init_tls path is the
+    // canonical one.
+    // SAFETY: zeroing FS_BASE is a wrmsr at CPL=0; subsequent
+    // arch_prctl from user crt1 overwrites with the real TCB.
     unsafe {
-        const USER_FS_BASE: u64 = 0x600_000 + 0x1000;
-        core::ptr::write_volatile(USER_FS_BASE as *mut u64, USER_FS_BASE);
-        hal_x86_64::set_user_fs_base(USER_FS_BASE);
-        // Persist into Task ctx so context switch save/restore
-        // picks up the new value when this task is next swapped
-        // back in. SAFETY: running task on this CPU; sole writer.
+        hal_x86_64::set_user_fs_base(0);
         let ctx_ptr: *mut hal_x86_64::ContextX86_64 = cur.arch_ctx_ptr();
-        (*ctx_ptr).fs_base = USER_FS_BASE;
+        (*ctx_ptr).fs_base = 0;
     }
 
     // P3-61: drop FD_CLOEXEC fds before the new program runs.
@@ -423,26 +408,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     const EXEC_USER_STACK_LEN:  usize = 0x10000;
     const EXEC_USER_STACK_VA:   u64   = 0x4F1_000;
     const EXEC_USER_STACK_TOP:  u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
-    const USER_TLS_BASE: u64        = 0x600_000;
-    const USER_TLS_LEN:  usize      = 0x2000;
-    const USER_TPIDR_VA: u64        = USER_TLS_BASE + 0x1000;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
     if new_as.mmap(
         Some(stack_hint), EXEC_USER_STACK_LEN,
-        VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-        VmaBacking::Anonymous,
-        true,
-    ).is_err() {
-        return -(Errno::Enomem.as_i32() as i64);
-    }
-    // TLS scratch — same layout as elf_smoke_arm spawn_init so musl's
-    // pthread_self() lookups resolve in the new AS too.
-    let tls_hint = UserVirtAddr::new(USER_TLS_BASE)
-        .expect("USER_TLS_BASE in user range");
-    if new_as.mmap(
-        Some(tls_hint), USER_TLS_LEN,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
         VmaBacking::Anonymous,
@@ -463,12 +432,18 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         fdt.close_on_exec();
     }
 
-    // Update TPIDR_EL0 for the new program's TLS scratch.
-    // SAFETY: msr tpidr_el0 at EL1 is always legal; eret carries the value into EL0; USER_TPIDR_VA points into the freshly mmap'd TLS region of `new_as` (active TTBR0).
+    // F152-2: Linux execve resets TPIDR_EL0 = 0; user crt1 calls
+    // PR_SET_TLS / writes TPIDR_EL0 directly (EL0-writable on
+    // aarch64) once musl's __init_tls picks a TCB VA. The previous
+    // code mmap'd a fixed TLS region at 0x600000 + set TPIDR_EL0 to
+    // 0x601000 — a hack to support the now-deleted oxide_start.h
+    // shim. Real-musl-crt1 binaries (everything post-F152-1) install
+    // their own TCB.
+    // SAFETY: msr tpidr_el0 at EL1 is always legal; user crt1
+    // overwrites with the real TCB.
     unsafe {
         core::arch::asm!(
-            "msr tpidr_el0, {v}",
-            v = in(reg) USER_TPIDR_VA,
+            "msr tpidr_el0, xzr",
             options(nomem, nostack, preserves_flags),
         );
     }
