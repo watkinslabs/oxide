@@ -289,6 +289,9 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
         }
         match crate::sched::registry::lookup(pid as u32) {
             Some(t) => {
+                if !sig_perm_check(cur, &t, sig) {
+                    return -(syscall::errno::Errno::Eperm.as_i32() as i64);
+                }
                 if sig != 0 {
                     t.sigpending.fetch_or(bit, Ordering::Release);
                     if sig == 18 { crate::sched::registry::wake_if_stopped(&t); }
@@ -312,14 +315,43 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
 fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
     use core::sync::atomic::Ordering;
     let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
-    let n = tasks.len();
-    if sig != 0 {
-        for t in &tasks {
+    let mut n = 0usize;
+    let cur = crate::sched::current();
+    for t in &tasks {
+        let allowed = match cur {
+            Some(c) => sig_perm_check(c, t, sig),
+            None    => true,
+        };
+        if !allowed { continue; }
+        if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
             if sig == 18 { crate::sched::registry::wake_if_stopped(t); }
         }
+        n += 1;
     }
     n
+}
+
+/// Linux signal-permission check per `kill(2)`: sender may signal
+/// receiver if sender holds CAP_KILL OR sender's real/effective uid
+/// matches receiver's real or saved-set uid. SIGCONT is additionally
+/// allowed within the same session (so `kill -CONT 0` from a parent
+/// shell works even after setuid drops).
+/// # C: O(1)
+pub fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
+    use core::sync::atomic::Ordering;
+    if cur.tid == target.tid { return true; }
+    if cur.has_cap(sched::cap::KILL) { return true; }
+    let ce = cur.creds.euid.load(Ordering::Acquire);
+    let cr = cur.creds.ruid.load(Ordering::Acquire);
+    let tr = target.creds.ruid.load(Ordering::Acquire);
+    let ts = target.creds.suid.load(Ordering::Acquire);
+    if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
+    // SIGCONT (18) — same session bypass.
+    if sig == 18 && cur.sid.load(Ordering::Acquire) == target.sid.load(Ordering::Acquire) {
+        return true;
+    }
+    false
 }
 
 /// `sys_rt_sigaction(sig, act, oldact, sz)` — slot 13. Reads + stores
@@ -617,6 +649,12 @@ pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
         Some(t) => {
             if t.tgid.load(Ordering::Acquire) != tgid as u32 {
                 return -(Errno::Esrch.as_i32() as i64);
+            }
+            let cur = match crate::sched::current() {
+                Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            if !sig_perm_check(cur, &t, sig) {
+                return -(Errno::Eperm.as_i32() as i64);
             }
             if sig != 0 {
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
