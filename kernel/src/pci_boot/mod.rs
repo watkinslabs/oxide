@@ -570,6 +570,19 @@ pub fn enumerate_and_log() {
             klog::write_raw(b" reply=");
             klog::write_dec_u64(r.reply_seen as u64);
             klog::write_raw(b"\n");
+            if r.reply_seen {
+                klog::write_raw(b"[INFO]  arp-learn gw_ip=");
+                for (i, b) in r.gateway_ip.iter().enumerate() {
+                    klog::write_dec_u64(*b as u64);
+                    if i < 3 { klog::write_raw(b"."); }
+                }
+                klog::write_raw(b" gw_mac=");
+                for (i, b) in r.gateway_mac.iter().enumerate() {
+                    klog::write_hex_u64(*b as u64);
+                    if i < 5 { klog::write_raw(b":"); }
+                }
+                klog::write_raw(b"\n");
+            }
         }
 
         // F46: read GICD_ISPENDR2 (covers SPIs 64..95). If SPI 81 or
