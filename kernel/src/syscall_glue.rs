@@ -775,6 +775,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_RENAMEAT2 => crate::syscall_glue_namei::kernel_sys_renameat2(&args),
         crate::syscall_nrs::NR_TRUNCATE  => crate::syscall_glue_fs::kernel_sys_truncate(&args),
         crate::syscall_nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
+        crate::syscall_nrs::NR_FALLOCATE => crate::syscall_glue_falloc::kernel_sys_fallocate(&args),
         crate::syscall_nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
         crate::syscall_nrs::NR_COPY_FILE_RANGE => crate::syscall_glue_xfer::kernel_sys_copy_file_range(&args),
         crate::syscall_nrs::NR_SPLICE     => crate::syscall_glue_xfer::kernel_sys_splice(&args),
