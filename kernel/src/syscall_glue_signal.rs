@@ -357,8 +357,45 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             }
             0
         }
-        PTRACE_SETREGS | PTRACE_SETREGSET
-            | PTRACE_GETFPREGS | PTRACE_SETFPREGS
+        PTRACE_SETREGS | PTRACE_SETREGSET => {
+            // F116: real reg writeback into target's saved syscall
+            // frame, symmetric with F115 GETREGS. Target must be
+            // stopped; the frame at kstack_top - 0x80 (x86) /
+            // -0xD0 (aarch64) is stable while the tracee is parked.
+            let target = match crate::sched::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let top = target.kernel_stack.load(Ordering::Acquire);
+            if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
+            let data = args.a3;
+            if data == 0 || data >= hal::USER_VA_END {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let frame = (top as u64 - 0x80) as *mut u64;
+                // SAFETY: data validated < USER_VA_END; CPL=0 reads 15*8 bytes from caller AS into the target task's saved syscall frame; the SyscallFrame layout is stable while the target is parked (caller's responsibility).
+                unsafe {
+                    for i in 0..15 {
+                        let v = core::ptr::read_volatile((data + (i as u64) * 8) as *const u64);
+                        core::ptr::write_volatile(frame.add(i), v);
+                    }
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                let frame = (top as u64 - 0xD0) as *mut u64;
+                // SAFETY: same — data validated; SVC frame layout stable while target parked.
+                unsafe {
+                    for i in 0..18 {
+                        let v = core::ptr::read_volatile((data + (i as u64) * 8) as *const u64);
+                        core::ptr::write_volatile(frame.add(i), v);
+                    }
+                }
+            }
+            0
+        }
+        PTRACE_GETFPREGS | PTRACE_SETFPREGS
             | PTRACE_INTERRUPT | PTRACE_LISTEN
             | PTRACE_SETOPTIONS | PTRACE_GETEVENTMSG
             | PTRACE_GETSIGINFO | PTRACE_SETSIGINFO => 0,
