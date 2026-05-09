@@ -61,6 +61,17 @@ struct VirtioProbe {
     /// F30: virtio-blk request status byte. 0=OK, 1=IOERR, 2=UNSUPP,
     /// 0xFF=request not issued / not completed.
     blk_status: u8,
+    /// F59-01: queue 0 size (negotiated, in entries). 0 if queue 0
+    /// not programmed. Needed for runtime ring index modulo.
+    q0_size: u16,
+    /// F59-01: queue 1 size. 0 if not programmed (non-net devices
+    /// or net device that failed q1 setup).
+    q1_size: u16,
+    /// F59-01: queue 1 ring frame PAs after virtio-net TX setup
+    /// (0 = not allocated). Mirrors q0_*_pa.
+    q1_desc_pa:   u64,
+    q1_driver_pa: u64,
+    q1_device_pa: u64,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -681,6 +692,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         blk_status,
         tx_used_idx: tx_used_idx_local,
         q1_notify_va: q1_notify_va_local,
+        q0_size,
+        q1_size: if queues_len > 1 { queues[1].1 } else { 0 },
+        q1_desc_pa,
+        q1_driver_pa,
+        q1_device_pa,
     })
 }
 
@@ -838,5 +854,38 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_hex_u64(p.final_status as u64);
             klog::write_raw(b"\n");
         }
+    }
+    // F59-01: hand persistent runtime state for the modern virtio-net
+    // device to dev_virtio_net so later phases (RX poll, TX, ARP) can
+    // drive the queues post-boot. Only register if the device reached
+    // DRIVER_OK with both queues programmed; ring PAs and notify VAs
+    // are required for the runtime path.
+    let is_virtio_net = d.vendor_id == 0x1AF4
+        && (d.device_id == 0x1000 || d.device_id == 0x1041);
+    if is_virtio_net
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0
+        && p.q1_desc_pa != 0
+        && p.q0_notify_va != 0
+        && p.q1_notify_va != 0
+    {
+        crate::dev_virtio_net_modern::init_modern(
+            crate::dev_virtio_net_modern::ModernNetState {
+                bus:      bdf.bus,
+                device:   bdf.device,
+                function: bdf.function,
+                cfg_va:        p.cfg_va,
+                q0_notify_va:  p.q0_notify_va,
+                q1_notify_va:  p.q1_notify_va,
+                q0_desc_pa:    p.q0_desc_pa,
+                q0_driver_pa:  p.q0_driver_pa,
+                q0_device_pa:  p.q0_device_pa,
+                q1_desc_pa:    p.q1_desc_pa,
+                q1_driver_pa:  p.q1_driver_pa,
+                q1_device_pa:  p.q1_device_pa,
+                q0_size:       p.q0_size,
+                q1_size:       p.q1_size,
+            },
+        );
     }
 }
