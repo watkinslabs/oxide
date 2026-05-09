@@ -145,7 +145,15 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // init. A single 4 KiB page underflows on the first wide musl
     // libc init frame. Matches the aarch64 execve path below.
     const EXEC_USER_STACK_LEN: usize = 0x10000;
-    const EXEC_USER_STACK_VA:  u64   = 0x4F1_000;
+    // F152-3: stack near the top of the user-half VA range, Linux-style.
+    // The previous fixed VA of 0x4F1_000 collided with the text
+    // segment of any ELF whose .text extended past 0xF1000 bytes —
+    // busybox-ash's text PT_LOAD ends at 0x50e000, so its 0x500012
+    // function pointer landed in the stack VMA (R+W, NX) and faulted
+    // on the first call into that page. Place stack at
+    // USER_VA_END - 0x20000 so the [start, end) range stays
+    // strictly below USER_VA_END (`UserVirtAddr::new` rejects ==).
+    const EXEC_USER_STACK_VA:  u64   = hal::USER_VA_END - 0x20000;
     const EXEC_USER_STACK_TOP: u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
