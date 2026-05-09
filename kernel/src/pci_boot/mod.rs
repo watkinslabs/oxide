@@ -551,20 +551,23 @@ pub fn enumerate_and_log() {
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
 
-        // F59-03: boot-time RX-poll exercise. Drain whatever the
-        // virtio-net probe's queue-0 RX descriptor caught (expected 0
-        // at boot since SLIRP only responds to outbound traffic, which
-        // F59-04 will issue). The point here is to prove the modern
-        // rx_poll path doesn't fault on an empty ring.
+        // F59-06: boot-time ARP probe. Build an ARP request from
+        // src_ip 10.0.2.15 → target_ip 10.0.2.2 (SLIRP gateway),
+        // tx_frame it, spin briefly, then drain rx_poll. SLIRP
+        // responds to ARP for the gateway IP; a successful reply
+        // proves both directions of the modern transport end to end.
         if crate::dev_virtio_net_modern::is_modern_present() {
-            let mut rx_bytes_total: usize = 0;
-            let drained = crate::dev_virtio_net_modern::rx_poll(|frame| {
-                rx_bytes_total = rx_bytes_total.saturating_add(frame.len());
-            });
-            klog::write_raw(b"[INFO]  virtio-net-rx-boot drained=");
+            let (tx_ok, drained, reply) =
+                crate::dev_virtio_net_modern::boot_arp_probe(
+                    [10, 0, 2, 15],
+                    [10, 0, 2, 2],
+                );
+            klog::write_raw(b"[INFO]  virtio-net-arp-boot tx=");
+            klog::write_dec_u64(tx_ok as u64);
+            klog::write_raw(b" rx=");
             klog::write_dec_u64(drained as u64);
-            klog::write_raw(b" bytes=");
-            klog::write_dec_u64(rx_bytes_total as u64);
+            klog::write_raw(b" reply=");
+            klog::write_dec_u64(reply as u64);
             klog::write_raw(b"\n");
         }
 
