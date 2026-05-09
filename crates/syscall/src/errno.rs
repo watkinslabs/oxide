@@ -34,6 +34,7 @@ pub enum Errno {
     Enotty  = 25,
     Espipe  = 29,
     Erofs   = 30,
+    Enospc  = 28,
     Epipe   = 32,
     Erange  = 34,
     Enametoolong = 36,

@@ -65,16 +65,25 @@ pub fn smoke_test() {
 
     // Pipe round-trip: write 5 bytes → read 5 bytes back.
     let pipe = PipeInode::new();
+    pipe.writers.store(1, core::sync::atomic::Ordering::Release);
+    pipe.readers.store(1, core::sync::atomic::Ordering::Release);
     let n = pipe.write(0, b"hello").expect("pipe.write");
     kassert!(n == 5, "pipe write len");
     let mut buf = [0u8; 8];
     let n = pipe.read(0, &mut buf).expect("pipe.read");
     kassert!(n == 5, "pipe read len");
     kassert!(&buf[..5] == b"hello", "pipe round-trip body");
-    // Drained pipe with active write-side: Eagain per Linux pipe(7)
-    // (true 0=EOF only when all writers closed — rides P3-01b).
+    // Drained pipe with active write-side: Eagain.
     let r = pipe.read(0, &mut buf);
     kassert!(matches!(r, Err(vfs::VfsError::Eagain)), "pipe drained = EAGAIN");
+    // Drop the writer → next read returns Ok(0) (true EOF).
+    pipe.writers.store(0, core::sync::atomic::Ordering::Release);
+    let n = pipe.read(0, &mut buf).expect("pipe.read post-writer-close");
+    kassert!(n == 0, "pipe EOF after writers=0");
+    // Write to pipe with no readers: Epipe.
+    pipe.readers.store(0, core::sync::atomic::Ordering::Release);
+    let r = pipe.write(0, b"x");
+    kassert!(matches!(r, Err(vfs::VfsError::Epipe)), "pipe write w/o readers = EPIPE");
 
     // Eventfd round-trip: write 0x1234 → read swaps to 0,
     // returns prior value as 8-byte LE.
@@ -145,6 +154,17 @@ pub struct PipeInode {
     /// Inode number — globally unique among pipes; allocated from
     /// a monotonic counter per `01§4`.
     ino: Ino,
+    /// Live write-end count. `sys_pipe2` initialises to 1 (one
+    /// write-end File outlives this constructor); each writable
+    /// File's Drop decrements via the vfs close hook. A read on
+    /// an empty pipe returns `0` (EOF) when this hits zero,
+    /// matching Linux pipe(7) — non-zero means writers still
+    /// exist and the read returns `Eagain` (v1 non-blocking).
+    pub writers: core::sync::atomic::AtomicUsize,
+    /// Live read-end count. Symmetric tracking so a write to a
+    /// pipe with zero readers can return `Epipe` (Linux SIGPIPE
+    /// substrate landing alongside).
+    pub readers: core::sync::atomic::AtomicUsize,
 }
 
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
@@ -154,7 +174,12 @@ impl PipeInode {
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
         let ino = NEXT_PIPE_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { buf: Spinlock::new(PipeBuf::new()), ino })
+        Arc::new(Self {
+            buf: Spinlock::new(PipeBuf::new()),
+            ino,
+            writers: core::sync::atomic::AtomicUsize::new(0),
+            readers: core::sync::atomic::AtomicUsize::new(0),
+        })
     }
 }
 
@@ -162,21 +187,25 @@ impl Inode for PipeInode {
     fn ino(&self) -> Ino { self.ino }
     fn file_type(&self) -> FileType { FileType::Fifo }
     fn size(&self) -> u64 { 0 }
+    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
 
     fn lookup(&self, _name: &str) -> KResult<InodeRef> {
         Err(VfsError::Enotdir)
     }
 
-    /// Pipe read per `24§3` + Linux pipe(7). Returns up to
-    /// `buf.len()` bytes from the ringbuffer when data is present.
-    /// On an empty pipe, returns `Eagain` (matches Linux
-    /// `O_NONBLOCK` semantics — `0` would be EOF, which Linux only
-    /// signals when all write-ends are closed). True blocking +
-    /// proper EOF detection ride writer-count tracking + the
-    /// `WaitQueue` plumbing per `24§3`.
+    /// Pipe read per `24§3` + Linux pipe(7).
+    /// - data available    → return up to `buf.len()` bytes
+    /// - empty + writers>0 → `Eagain` (v1 non-blocking; full
+    ///                       blocking rides the WaitQueue plumbing)
+    /// - empty + writers=0 → `Ok(0)` (true EOF — all write ends closed)
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut g = self.buf.lock();
-        if g.len == 0 { return Err(VfsError::Eagain); }
+        if g.len == 0 {
+            if self.writers.load(Ordering::Acquire) == 0 {
+                return Ok(0);
+            }
+            return Err(VfsError::Eagain);
+        }
         let mut n = 0;
         while n < buf.len() {
             match g.pop() {
@@ -187,11 +216,17 @@ impl Inode for PipeInode {
         Ok(n)
     }
 
-    /// Non-blocking write: copies up to `buf.len()` bytes into the
-    /// ringbuffer. Returns the count actually written; `0` if
-    /// the buffer is full (caller's choice to retry / EAGAIN).
+    /// Pipe write per `24§3` + Linux pipe(7).
+    /// - readers==0       → `Epipe` (caller should also receive
+    ///                      SIGPIPE; signal substrate rides v2.x)
+    /// - room available   → push up to `buf.len()` bytes, return n
+    /// - buffer full      → `Eagain` (v1 non-blocking)
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if self.readers.load(Ordering::Acquire) == 0 {
+            return Err(VfsError::Epipe);
+        }
         let mut g = self.buf.lock();
+        if g.len == PIPE_CAP { return Err(VfsError::Eagain); }
         let mut n = 0;
         while n < buf.len() {
             if !g.push(buf[n]) { break; }
