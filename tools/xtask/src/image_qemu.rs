@@ -331,6 +331,9 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         // virtio-gpu modern PCI for `45` graphical-terminal arc.
         "-device", "virtio-gpu-pci,bus=pcie.0",
+        // virtio-input keyboard + mouse for `46`.
+        "-device", "virtio-keyboard-pci,bus=pcie.0",
+        "-device", "virtio-mouse-pci,bus=pcie.0",
         // Serial: dedicated chardev with `mux=on,signal=off` so Ctrl-A
         // is QEMU's monitor escape and Ctrl-C reaches the guest.
         // Plain `-serial stdio` puts host stdin in line-buffered cooked
@@ -373,6 +376,9 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         // virtio-gpu modern PCI for `45` graphical-terminal arc.
         "-device", "virtio-gpu-pci,bus=pcie.0",
+        // virtio-input keyboard + mouse for `46`.
+        "-device", "virtio-keyboard-pci,bus=pcie.0",
+        "-device", "virtio-mouse-pci,bus=pcie.0",
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",

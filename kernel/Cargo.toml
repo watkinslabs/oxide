@@ -32,7 +32,8 @@ firmware = { path = "../crates/firmware" }
 nscg     = { path = "../crates/nscg" }
 security = { path = "../crates/security" }
 drv             = { path = "../crates/drv" }
-drv-virtio-gpu  = { path = "../crates/drv-virtio-gpu" }
+drv-virtio-gpu    = { path = "../crates/drv-virtio-gpu" }
+drv-virtio-input  = { path = "../crates/drv-virtio-input" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../crates/hal-x86_64" }
