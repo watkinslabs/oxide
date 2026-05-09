@@ -281,7 +281,7 @@ pub fn kernel_sys_vhangup(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
-    if !cur.creds.is_root() { return -(Errno::Eperm.as_i32() as i64); }
+    if !cur.has_cap(sched::cap::SYS_TTY_CONFIG) { return -(Errno::Eperm.as_i32() as i64); }
     let sid = cur.sid.load(Ordering::Acquire);
     for tid in crate::sched::registry::live_tids() {
         if let Some(t) = crate::sched::registry::lookup(tid) {

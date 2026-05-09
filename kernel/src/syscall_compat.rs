@@ -79,6 +79,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // xattr family moved to real impl (F90, xattr_overlay.rs).
 
         // ---- privileged-op refuse ----
+        // No substrate yet for any of these (mount/reboot/modules/
+        // kexec/iopl/timex). Cap-gating (F92) doesn't change the
+        // outcome on v1 since both paths land on EPERM, but the
+        // substrate-landing PRs (v2 phases 29 mount, etc.) will check
+        // the relevant CAP_* in the real handler.
         NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_CHROOT | NR_PIVOT_ROOT
         | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
