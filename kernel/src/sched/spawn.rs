@@ -170,6 +170,33 @@ pub unsafe fn spawn_user_thread(
     user_sp: u64,
     mm: Arc<AddressSpace>,
 ) -> Result<Arc<Task>, SpawnError> {
+    // SAFETY: caller upholds spawn_user_thread_with_vpid's preconditions; vpid=0 means "use real tgid/tid" (no namespace remapping).
+    unsafe { spawn_user_thread_with_vpid(tid, 0, 0, name, entry_va, user_sp, mm) }
+}
+
+/// Same as `spawn_user_thread` but stamps `vtgid` / `vtid` into the
+/// new `Task` BEFORE registry insert + runqueue enqueue. Used by the
+/// PID 1 spawn path: musl crt1 calls `set_tid_address` very early
+/// and caches the return as `__libc.tid`, so the pid-namespace
+/// virtualization MUST be in place by the time the task makes its
+/// first syscall — race-free guarantees require setting it on the
+/// `Task` before any other CPU / preemption point can observe it.
+///
+/// `vpid_tgid == 0` and `vpid_tid == 0` mean "no namespace
+/// remapping" (Task::new_user defaults).
+///
+/// # SAFETY: same preconditions as `spawn_user_thread`.
+/// # C: O(stack_size) zero-fill + O(log N) CFS insert
+/// # Ctx: pre-init or kernel ctx; preempt-off
+pub unsafe fn spawn_user_thread_with_vpid(
+    tid: u32,
+    vpid_tgid: u32,
+    vpid_tid: u32,
+    name: &'static str,
+    entry_va: u64,
+    user_sp: u64,
+    mm: Arc<AddressSpace>,
+) -> Result<Arc<Task>, SpawnError> {
     let rq = match super::runqueue::global() {
         Some(r) => r,
         None    => return Err(SpawnError::NoRunqueue),
@@ -177,6 +204,11 @@ pub unsafe fn spawn_user_thread(
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut task = Task::new_user(tid, name, class, mm);
+
+    // F153-1: stamp namespace-visible pids on the local Task before
+    // it's wrapped in Arc + made visible via registry/runqueue.
+    if vpid_tgid != 0 { task.vtgid.store(vpid_tgid, Ordering::Release); }
+    if vpid_tid  != 0 { task.vtid.store(vpid_tid,   Ordering::Release); }
 
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
     // SAFETY: task is local; no concurrent reader.
