@@ -117,7 +117,7 @@ pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
         PR_CAPBSET_DROP => {
             let cap = args.a1;
             if cap >= 64 { return -(Errno::Einval.as_i32() as i64); }
-            if !cur.creds.is_root() { return -(Errno::Eperm.as_i32() as i64); }
+            if !cur.has_cap(sched::cap::SETPCAP) { return -(Errno::Eperm.as_i32() as i64); }
             let mask = !(1u64 << cap);
             cur.creds.cap_bounding.fetch_and(mask, Ordering::AcqRel);
             0
