@@ -59,8 +59,15 @@ const SEM_MAX_VALUE:  i32   = 32_767;
 pub struct SemSet {
     pub id:     i32,
     pub key:    i32,
+    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
+    pub ns:     u64,
     pub vals:   Spinlock<Vec<i32>, SemLockClass>,
     pub wait:   crate::sched::WaitList,
+}
+
+fn current_ipc_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 struct SemRegistry {
@@ -74,14 +81,16 @@ static REG: SemRegistry = SemRegistry {
 };
 
 fn lookup_by_id(id: i32) -> Option<Arc<SemSet>> {
+    let ns = current_ipc_ns();
     let g = REG.sets.lock();
-    g.iter().find(|s| s.id == id).cloned()
+    g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }
 
 fn lookup_by_key(key: i32) -> Option<Arc<SemSet>> {
     if key == IPC_PRIVATE { return None; }
+    let ns = current_ipc_ns();
     let g = REG.sets.lock();
-    g.iter().find(|s| s.key == key).cloned()
+    g.iter().find(|s| s.key == key && s.ns == ns).cloned()
 }
 
 /// `semget(key, nsems, semflg)` — slot NR_SEMGET.
@@ -104,7 +113,7 @@ pub fn kernel_sys_semget(args: &syscall::SyscallArgs) -> i64 {
     }
     vals.resize(nsems, 0i32);
     let set = Arc::new(SemSet {
-        id, key,
+        id, key, ns: current_ipc_ns(),
         vals: Spinlock::new(vals),
         wait: crate::sched::WaitList::new(),
     });
