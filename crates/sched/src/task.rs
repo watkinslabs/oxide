@@ -378,6 +378,11 @@ pub struct Task {
     /// so containers see disjoint key spaces.
     pub ipc_ns: AtomicU64,
 
+    /// Net namespace id (CLONE_NEWNET). Default 0 (init NS).
+    /// IfaceRegistry filters by this id so unshared tasks see only
+    /// their own NS's network interfaces.
+    pub net_ns: AtomicU64,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -738,6 +743,7 @@ impl Task {
             personality:    AtomicU32::new(0),
             root:           UnsafeCell::new(alloc::string::String::from("/")),
             ipc_ns:         AtomicU64::new(0),
+            net_ns:         AtomicU64::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
