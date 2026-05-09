@@ -80,7 +80,7 @@ impl RxBuf {
 
 /// Number of distinct VT slots (1..=N_VT). VT 0 is reserved as
 /// the "foreground alias" — nothing is stored at index 0.
-pub const N_VT: usize = 6;
+pub const N_VT: usize = 63;
 
 /// Foreground VT (1..=N_VT). UART RX bytes route here. `0` is
 /// not a valid stored value — readers using vt=0 dereference
