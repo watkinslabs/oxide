@@ -405,6 +405,12 @@ pub struct Task {
     /// cgroup hierarchy, so every NS sees the same "0::/" path).
     pub cgroup_ns: AtomicU64,
 
+    /// Mount namespace id (CLONE_NEWNS). Default 0 (init NS).
+    /// V1 substrate only: real mount-table virtualisation rides v2
+    /// phase 29 (needs ext4 + block). Until then unshare(CLONE_NEWNS)
+    /// just allocates an id; mount itself remains EPERM.
+    pub mount_ns: AtomicU64,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -772,6 +778,7 @@ impl Task {
             unshare_pid_pending: AtomicBool::new(false),
             user_ns:        AtomicU64::new(0),
             cgroup_ns:      AtomicU64::new(0),
+            mount_ns:       AtomicU64::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
