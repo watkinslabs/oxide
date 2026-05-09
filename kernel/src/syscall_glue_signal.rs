@@ -344,7 +344,10 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
             if sig != 0 { cur.sigpending.fetch_or(bit, Ordering::Release); }
             return 0;
         }
-        match crate::sched::registry::lookup(pid as u32) {
+        // F109: cross-NS pid translation. Caller in non-init pid_ns
+        // means `pid` is a vpid in their NS, not a global tid.
+        let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+        match crate::sched::registry::lookup_in_ns(cur_ns, pid as u32) {
             Some(t) => {
                 if !sig_perm_check(cur, &t, sig) {
                     return -(syscall::errno::Errno::Eperm.as_i32() as i64);
@@ -702,14 +705,20 @@ pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
     let sig  = args.a2 as i32;
     if tgid <= 0 || tid <= 0 { return -(Errno::Esrch.as_i32() as i64); }
     if !(0..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
-    match crate::sched::registry::lookup(tid as u32) {
+    let cur = match crate::sched::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+    // F109: in non-init pid_ns, `tid` is a vtid in caller's NS.
+    match crate::sched::registry::lookup_in_ns(cur_ns, tid as u32) {
         Some(t) => {
-            if t.tgid.load(Ordering::Acquire) != tgid as u32 {
+            // Validate the tgid matches as well (vtgid in NS, real otherwise).
+            let want_tgid = tgid as u32;
+            let got_tgid = if cur_ns == 0 { t.tgid.load(Ordering::Acquire) }
+                           else { t.vtgid.load(Ordering::Acquire) };
+            if got_tgid != want_tgid {
                 return -(Errno::Esrch.as_i32() as i64);
             }
-            let cur = match crate::sched::current() {
-                Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
-            };
             if !sig_perm_check(cur, &t, sig) {
                 return -(Errno::Eperm.as_i32() as i64);
             }
