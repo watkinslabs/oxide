@@ -21,6 +21,32 @@ void _start(void) {
     static const char hello[] = "oxide init: hello from real-musl PID 1\n";
     write(1, hello, sizeof(hello) - 1);
 
+    // F62 exec-path bring-up smokes. /bin/bare = oxide_start.h
+    // _start, no musl init. /bin/bare2 = same + reads argv[1].
+    // /bin/bare3 = full musl crt1 (the same path busybox follows).
+    // All three pass; busybox itself still mis-dispatches —
+    // tracked separately, see state.md F62 notes.
+    {
+        long pid = (long)fork();
+        if (pid == 0) {
+            static char* argv0[] = { "bare", 0 };
+            static char* envp[] = { 0 };
+            execve("/bin/bare", argv0, envp);
+            _exit(127);
+        }
+        int status; waitpid((int)pid, &status, 0);
+    }
+    {
+        long pid = (long)fork();
+        if (pid == 0) {
+            static char* argv0[] = { "bare3", 0 };
+            static char* envp[] = { 0 };
+            execve("/bin/bare3", argv0, envp);
+            _exit(127);
+        }
+        int status; waitpid((int)pid, &status, 0);
+    }
+
     // svcd handoff was here but is disabled — staged at /bin/oxide-svcd
     // not /sbin/svcd, so the execve was guaranteed to fail with ENOENT,
     // and musl's errno write-on-failure path faults under FS_BASE=0
@@ -91,6 +117,27 @@ void _start(void) {
         waitpid((int)pid, &status, 0);
     }
 
+    // F61 stage 0 — invoke /bin/oxide-echo (our static-musl tool,
+    // NOT busybox). Isolates kernel exec/argv from any busybox
+    // applet-routing concerns. Expected: "v1-oxide-echo: hello\n".
+    {
+        long pid = (long)fork();
+        if (pid == 0) {
+            static char* argv[] = { "oxide-echo", "hello", 0 };
+            static char* envp[] = { 0 };
+            static const char tag[] = "v1-oxide-echo: ";
+            write(1, tag, sizeof(tag) - 1);
+            execve("/bin/oxide-echo", argv, envp);
+            static const char fail[] = "init: exec /bin/oxide-echo failed\n";
+            write(1, fail, sizeof(fail) - 1);
+            _exit(127);
+        }
+        int status;
+        waitpid((int)pid, &status, 0);
+    }
+
+    // Fallback: legacy interactive sh loop (login flow). Capped
+    // to avoid runaway when sh refuses to start.
     for (int i = 0; i < 8; i++) {
         long pid = (long)fork();
         if (pid == 0) {

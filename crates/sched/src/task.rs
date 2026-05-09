@@ -227,6 +227,15 @@ pub struct Task {
     /// for the same single-mutator invariant as `mm`.
     pub cmdline: UnsafeCell<Option<alloc::string::String>>,
 
+    /// Absolute path passed to the most recent `sys_execve(path,…)`,
+    /// per Linux `/proc/<pid>/exe`. Distinct from `cmdline` (which
+    /// stores argv[0..]; argv[0] is conventionally the basename
+    /// the program was invoked as, not its filesystem path).
+    /// Busybox + glibc readlink `/proc/self/exe` to discover their
+    /// own binary path; without the real exec path here, busybox
+    /// falls into help-dump mode. Single-mutator per `13§5`.
+    pub exe_path: UnsafeCell<Option<alloc::string::String>>,
+
     /// Current working directory per POSIX getcwd(3) / chdir(2).
     /// Always an absolute path. `sys_chdir` / `sys_fchdir` write,
     /// `sys_getcwd` reads. Default "/" for boot tasks; fork inherits
@@ -433,6 +442,7 @@ impl Task {
             sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
+            exe_path:   UnsafeCell::new(None),
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
             environ:    UnsafeCell::new(None),
             rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),

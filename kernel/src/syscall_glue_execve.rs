@@ -34,15 +34,16 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // — no per-exec Box::leak (replaces the prior `Box::leak` pattern;
     // B22 made `load_static_blob` accept a non-'static slice).
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
+    // F62: hoist path_buf/path_len so we can record the exec path
+    // for /proc/self/exe even when path_ptr != 0.
+    let mut path_buf = [0u8; 64];
+    let mut path_len = 0usize;
     let blob: &[u8] = if path_ptr == 0 {
         crate::elf_smoke::EXEC_BLOB
     } else {
         if path_ptr >= USER_VA_END {
             return -(Errno::Efault.as_i32() as i64);
         }
-        // Read up to 64 bytes of the user path, NUL-terminated.
-        let mut path_buf = [0u8; 64];
-        let mut path_len = 0;
         for i in 0..64 {
             // SAFETY: bounded read up to 64 bytes from a user pointer < USER_VA_END; CPL=0 reads through user mapping pre-activate.
             let b = unsafe { core::ptr::read_volatile((path_ptr + i) as *const u8) };
@@ -221,10 +222,20 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
     let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
-    // SAFETY: single-mutator per `13§5` for both cmdline + environ slots.
+    // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
     unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
         *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
+        // F62: record the actual exec path (path argument of execve)
+        // so /proc/self/exe → readlink returns the real binary path
+        // (busybox needs this to find its applet name).
+        let path_str = match core::str::from_utf8(&path_buf[..path_len]) {
+            Ok(s) => alloc::string::String::from(s),
+            Err(_) => alloc::string::String::new(),
+        };
+        if !path_str.is_empty() {
+            *cur.exe_path.get() = Some(path_str);
+        }
     }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
@@ -234,6 +245,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
             &envp_slices[..envc],
             &img,
             &random16,
+            &path_buf[..path_len],
         )
     } {
         Some(sp) => sp,
@@ -451,10 +463,17 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
     let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
-    // SAFETY: single-mutator per `13§5` for both cmdline + environ slots.
+    // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
     unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
         *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
+        let path_str = match core::str::from_utf8(&path_buf[..path_len]) {
+            Ok(s) => alloc::string::String::from(s),
+            Err(_) => alloc::string::String::new(),
+        };
+        if !path_str.is_empty() {
+            *cur.exe_path.get() = Some(path_str);
+        }
     }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
@@ -464,6 +483,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
             &envp_slices[..envc],
             &img,
             &random16,
+            &path_buf[..path_len],
         )
     } {
         Some(sp) => sp,

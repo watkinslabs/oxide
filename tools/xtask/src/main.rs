@@ -111,6 +111,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // cross-build of busybox lands.
     let portable_bins: &[(&str, &str)] = &[
         ("userspace/init/init",         "userspace/init/init.c"),
+        ("userspace/bare/bare",         "userspace/bare/bare.c"),
+        ("userspace/bare/bare2",        "userspace/bare/bare2.c"),
         ("userspace/true/true",         "userspace/true/true.c"),
         ("userspace/false/false",       "userspace/false/false.c"),
         ("userspace/echo/echo",         "userspace/echo/echo.c"),
@@ -184,6 +186,23 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "-fno-stack-protector",
             "-o", out.to_str().unwrap(), src.to_str().unwrap(),
         ]);
+        run(c)?;
+    }
+
+    // F62: static-musl-with-crt1 binaries — same build flags as
+    // upstream busybox (LDFLAGS=--static, full musl crt1). Used to
+    // isolate musl __libc_start_main behavior from our oxide_start.h.
+    let crt_bins: &[(&str, &str)] = &[
+        ("userspace/bare/bare3", "userspace/bare/bare3.c"),
+    ];
+    for (out_rel, src_rel) in crt_bins {
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
+        let src = repo.join(src_rel);
+        eprintln!("xtask rootfs: {} -static {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+        let mut c = Command::new(&cc);
+        c.args(["-static", "-O2", "-fno-stack-protector",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
 
@@ -324,6 +343,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("init"),         "/bin/init")?;
     put(&user("init"),         "/sbin/init")?;
     put(&user("init"),         "/init")?;
+    put(&user("bare"),         "/bin/bare")?;
+    put(&user("bare2"),        "/bin/bare2")?;
+    put(&user("bare3"),        "/bin/bare3")?;
     put(&user("true"),         "/bin/oxide-true")?;
     put(&user("false"),       "/bin/oxide-false")?;
     put(&user("echo"),         "/bin/oxide-echo")?;

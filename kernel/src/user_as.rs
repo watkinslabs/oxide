@@ -713,10 +713,16 @@ pub fn glue_mmap(
     let is_shared  = flags & MAP_SHARED  != 0;
     let is_private = flags & MAP_PRIVATE != 0;
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
-    let is_fixed = flags & MAP_FIXED != 0;
-    if is_fixed && (addr == 0 || (addr & 0xfff) != 0) {
-        return Err(-(Errno::Einval.as_i32() as i64));
-    }
+    // F62: MAP_FIXED is destructive (overlaps get unmapped per
+    // 11§6); userspace expects it to silently overwrite any
+    // existing VMA. F60 enabled it but breaks programs that
+    // share an AS with the loader (e.g., busybox' early TLS /
+    // brk-region carving against the existing PT_LOAD VMAs).
+    // Keep MAP_FIXED returning ENOSYS until per-process MAP_FIXED
+    // accounting (overlap exact-cover-only or vma_flags::PLACEHOLDER)
+    // lands.
+    if flags & MAP_FIXED != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
+    let is_fixed = false;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
     let vma_flags = if is_shared {
         VmaFlags::SHARED | VmaFlags::ANONYMOUS
