@@ -27,6 +27,7 @@ syscall = { path = "../crates/syscall" }
 tty     = { path = "../crates/tty" }
 vfs     = { path = "../crates/vfs" }
 vmm     = { path = "../crates/vmm" }
+power   = { path = "../crates/power" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../crates/hal-x86_64" }
