@@ -58,13 +58,19 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
         unsafe { *cur.uts_hostname.get() = snap; }
     }
     if (bits & (1u64 << 2)) != 0 {
-        // CLONE_NEWIPC — allocate a fresh namespace id for this task.
-        // SysV shm/sem/msg key lookups now match only entries tagged
-        // with this id; new entries are tagged here. Init NS is 0;
-        // first unshare gets 1, etc.
+        // CLONE_NEWIPC — fresh ipc_ns id (F100).
         static NEXT_IPC_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
         let id = NEXT_IPC_NS.fetch_add(1, Ordering::AcqRel);
         cur.ipc_ns.store(id, Ordering::Release);
+    }
+    if (bits & (1u64 << 5)) != 0 {
+        // CLONE_NEWNET — fresh net_ns id (F101). Subsequent
+        // IfaceRegistry lookups from this task match only entries
+        // registered in the new NS (initially empty — userspace must
+        // create veth/lo for the new NS).
+        static NEXT_NET_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_NET_NS.fetch_add(1, Ordering::AcqRel);
+        cur.net_ns.store(id, Ordering::Release);
     }
     0
 }

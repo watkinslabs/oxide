@@ -66,6 +66,9 @@ pub trait NetDev: Send + Sync {
 /// Registered iface — the registry assigns the `NetIfaceId`.
 pub struct IfaceEntry {
     pub id:   NetIfaceId,
+    /// Network namespace id (CLONE_NEWNET). 0 = init NS. Tasks see
+    /// only entries matching their own net_ns.
+    pub ns:   u64,
     pub dev:  Arc<dyn NetDev>,
 }
 
@@ -86,41 +89,67 @@ impl IfaceRegistry {
         Self { inner: Spinlock::new(RegistryInner { next: 1, entries: Vec::new() }) }
     }
 
-    /// Register `dev` and return its newly-assigned id. Names are
-    /// not enforced unique here; caller is responsible for picking
-    /// a stable name (per `25§3`'s `name()` contract).
+    /// Register `dev` in the init namespace (ns=0). For per-NS
+    /// registration use `register_in_ns`.
     /// # C: O(1)
     pub fn register(&self, dev: Arc<dyn NetDev>) -> NetIfaceId {
+        self.register_in_ns(dev, 0)
+    }
+
+    /// Register `dev` in the given net namespace.
+    /// # C: O(1)
+    pub fn register_in_ns(&self, dev: Arc<dyn NetDev>, ns: u64) -> NetIfaceId {
         let mut g = self.inner.lock();
         let id = NetIfaceId::from_raw(g.next);
         g.next += 1;
-        g.entries.push(IfaceEntry { id, dev });
+        g.entries.push(IfaceEntry { id, ns, dev });
         id
     }
 
-    /// Look up a registered iface by id.
+    /// Look up a registered iface by id, restricted to the given
+    /// net namespace. `ns=0` is the init NS.
     /// # C: O(N)
-    pub fn lookup(&self, id: NetIfaceId) -> Option<Arc<dyn NetDev>> {
+    pub fn lookup_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<Arc<dyn NetDev>> {
         let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id).map(|e| Arc::clone(&e.dev))
+        g.entries.iter().find(|e| e.id == id && e.ns == ns).map(|e| Arc::clone(&e.dev))
     }
 
-    /// Look up by stable name (`"lo"`, `"eth0"`, …).
+    /// Init-NS lookup compatibility shim — pre-F101 callers default
+    /// to ns=0 until they're updated to pass the calling task's NS.
     /// # C: O(N)
-    pub fn lookup_name(&self, name: &str) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
+    pub fn lookup(&self, id: NetIfaceId) -> Option<Arc<dyn NetDev>> {
+        self.lookup_in_ns(id, 0)
+    }
+
+    /// Look up by stable name within the given namespace.
+    /// # C: O(N)
+    pub fn lookup_name_in_ns(&self, name: &str, ns: u64) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
         let g = self.inner.lock();
         g.entries.iter()
-            .find(|e| e.dev.name() == name)
+            .find(|e| e.dev.name() == name && e.ns == ns)
             .map(|e| (e.id, Arc::clone(&e.dev)))
     }
 
-    /// Snapshot (id, name, mtu) triples for trace dumps.
+    /// Init-NS name lookup compatibility shim.
     /// # C: O(N)
-    pub fn snapshot(&self) -> Vec<(NetIfaceId, String, u32)> {
+    pub fn lookup_name(&self, name: &str) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
+        self.lookup_name_in_ns(name, 0)
+    }
+
+    /// Snapshot (id, name, mtu) triples in the given namespace.
+    /// # C: O(N)
+    pub fn snapshot_in_ns(&self, ns: u64) -> Vec<(NetIfaceId, String, u32)> {
         let g = self.inner.lock();
         g.entries.iter()
+            .filter(|e| e.ns == ns)
             .map(|e| (e.id, String::from(e.dev.name()), e.dev.mtu()))
             .collect()
+    }
+
+    /// Init-NS snapshot compatibility shim.
+    /// # C: O(N)
+    pub fn snapshot(&self) -> Vec<(NetIfaceId, String, u32)> {
+        self.snapshot_in_ns(0)
     }
 }
 
