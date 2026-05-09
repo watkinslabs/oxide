@@ -50,17 +50,47 @@ pub fn set_write_hook(f: fn(&InodeRef)) {
     WRITE_HOOK.store(f as u64, Ordering::Release);
 }
 
+static OPEN_HOOK:  AtomicU64 = AtomicU64::new(0);
+static READ_HOOK:  AtomicU64 = AtomicU64::new(0);
+static CLOSE_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Install the open hook (fires IN_OPEN at File::new).
+/// # C: O(1)
+pub fn set_open_hook(f: fn(&InodeRef))  { OPEN_HOOK.store(f as u64, Ordering::Release); }
+
+/// Install the read hook (fires IN_ACCESS after File::read returns >0).
+/// # C: O(1)
+pub fn set_read_hook(f: fn(&InodeRef))  { READ_HOOK.store(f as u64, Ordering::Release); }
+
+/// Install the close hook (fires IN_CLOSE_WRITE / IN_CLOSE_NOWRITE
+/// at File::Drop). Bool argument is true when the closed File was
+/// opened writable.
+/// # C: O(1)
+pub fn set_close_hook(f: fn(&InodeRef, bool)) {
+    CLOSE_HOOK.store(f as u64, Ordering::Release);
+}
+
 impl Drop for File {
     fn drop(&mut self) {
         if self.flock_op.load(Ordering::Acquire) != 0 {
             let h = FLOCK_RELEASE_HOOK.load(Ordering::Acquire);
             if h != 0 {
-                // SAFETY: h was installed by `set_drop_hook` with a real
-                // fn(usize, &InodeRef) pointer; the cast back to that
-                // signature is the documented-shape contract.
+                // SAFETY: h was installed by `set_drop_hook` with a real fn(usize, &InodeRef) pointer.
                 let f: fn(usize, &InodeRef) = unsafe { core::mem::transmute(h) };
                 f(self as *const Self as usize, &self.inode);
             }
+        }
+        // inotify IN_CLOSE_WRITE / IN_CLOSE_NOWRITE.
+        let h = CLOSE_HOOK.load(Ordering::Acquire);
+        if h != 0 {
+            let was_writable = {
+                let bits = self.flags.load(Ordering::Acquire);
+                let f = OpenFlags::from_bits_retain(bits);
+                f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
+            };
+            // SAFETY: h was installed by `set_close_hook` with a real fn(&InodeRef, bool) pointer.
+            let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
+            f(&self.inode, was_writable);
         }
     }
 }
@@ -68,6 +98,12 @@ impl Drop for File {
 impl File {
     /// # C: O(1)
     pub fn new(inode: InodeRef, dentry: Arc<Dentry>, flags: OpenFlags) -> Arc<Self> {
+        let h = OPEN_HOOK.load(Ordering::Acquire);
+        if h != 0 {
+            // SAFETY: h was installed by `set_open_hook` with a real fn(&InodeRef) pointer.
+            let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+            f(&inode);
+        }
         Arc::new(Self {
             inode,
             dentry,
@@ -112,6 +148,14 @@ impl File {
         let pos = self.pos.load(Ordering::Acquire);
         let n = self.inode.read(pos, buf)?;
         self.pos.store(pos + n as u64, Ordering::Release);
+        if n > 0 {
+            let h = READ_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_read_hook` with a real fn(&InodeRef) pointer.
+                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+                f(&self.inode);
+            }
+        }
         Ok(n)
     }
 
