@@ -85,6 +85,12 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
         let id = NEXT_CGROUP_NS.fetch_add(1, Ordering::AcqRel);
         cur.cgroup_ns.store(id, Ordering::Release);
     }
+    if (bits & (1u64 << 0)) != 0 {
+        // CLONE_NEWNS — fresh mount_ns id (F107 substrate).
+        static NEXT_MOUNT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_MOUNT_NS.fetch_add(1, Ordering::AcqRel);
+        cur.mount_ns.store(id, Ordering::Release);
+    }
     0
 }
 
