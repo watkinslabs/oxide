@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+
 // ============================================================
 // PSF font header (per linux/include/uapi/linux/kd.h notes +
 // kernel `pcscreen_font.h`)
@@ -258,6 +260,235 @@ pub const VGA_PALETTE: [[u8; 3]; 16] = [
     [0x55, 0x55, 0xff], [0xff, 0x55, 0xff], [0x55, 0xff, 0xff], [0xff, 0xff, 0xff],
 ];
 
+// ============================================================
+// Console — owns a backing BGRA32 pixel buffer + cell grid + cursor
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct Console {
+    pub xres:    u32,
+    pub yres:    u32,
+    pub pitch:   u32,             // bytes per scanline (xres * 4 for BGRA32)
+    pub fb:      Vec<u8>,         // backing pixel buffer (size = pitch * yres)
+    pub cell_w:  u32,             // glyph width  (8 for built-in font)
+    pub cell_h:  u32,             // glyph height (16 for built-in font)
+    pub cols:    u32,             // xres / cell_w
+    pub rows:    u32,             // yres / cell_h
+    pub cur_col: u32,
+    pub cur_row: u32,
+    pub fg:      [u8; 3],
+    pub bg:      [u8; 3],
+    pub parser:  ParserState,
+}
+
+impl Console {
+    /// Allocate a console for the given resolution (BGRA32, 8×16 cells).
+    /// # C: O(xres * yres) for the zero-fill.
+    pub fn new(xres: u32, yres: u32) -> Self {
+        let pitch = xres * 4;
+        let mut fb = Vec::with_capacity((pitch * yres) as usize);
+        fb.resize((pitch * yres) as usize, 0);
+        let cell_w = 8;
+        let cell_h = 16;
+        Self {
+            xres, yres, pitch, fb, cell_w, cell_h,
+            cols: xres / cell_w, rows: yres / cell_h,
+            cur_col: 0, cur_row: 0,
+            fg: [0xff, 0xff, 0xff],
+            bg: [0x00, 0x00, 0x00],
+            parser: ParserState::default(),
+        }
+    }
+
+    /// Feed one byte through the ANSI parser; apply the resulting
+    /// Action against the backing buffer.
+    /// # C: O(cell_w * cell_h) for PutChar (glyph blit).
+    pub fn put_byte(&mut self, byte: u8) {
+        let action = step(&mut self.parser, byte);
+        self.apply(action);
+    }
+
+    /// Feed a buffer of bytes.
+    /// # C: O(N * cell_w * cell_h) — bounded glyph blit per byte.
+    pub fn put(&mut self, bytes: &[u8]) {
+        for &b in bytes { self.put_byte(b); }
+    }
+
+    fn apply(&mut self, action: Action) {
+        match action {
+            Action::None => {}
+            Action::PutChar(cp) => {
+                self.blit_glyph(cp);
+                self.advance_cursor();
+            }
+            Action::Backspace => {
+                if self.cur_col > 0 { self.cur_col -= 1; }
+                else if self.cur_row > 0 { self.cur_row -= 1; self.cur_col = self.cols - 1; }
+            }
+            Action::Tab => {
+                let next = ((self.cur_col / 8) + 1) * 8;
+                self.cur_col = next.min(self.cols - 1);
+            }
+            Action::Linefeed => { self.cur_row += 1; if self.cur_row >= self.rows { self.scroll_up(1); self.cur_row = self.rows - 1; } }
+            Action::CarriageReturn => { self.cur_col = 0; }
+            Action::CursorUp(n)        => { self.cur_row = self.cur_row.saturating_sub(n); }
+            Action::CursorDown(n)      => { self.cur_row = (self.cur_row + n).min(self.rows.saturating_sub(1)); }
+            Action::CursorForward(n)   => { self.cur_col = (self.cur_col + n).min(self.cols.saturating_sub(1)); }
+            Action::CursorBackward(n)  => { self.cur_col = self.cur_col.saturating_sub(n); }
+            Action::CursorColumn(n)    => { self.cur_col = (n.saturating_sub(1)).min(self.cols.saturating_sub(1)); }
+            Action::CursorRow(n)       => { self.cur_row = (n.saturating_sub(1)).min(self.rows.saturating_sub(1)); }
+            Action::CursorPosition(r, c) => {
+                self.cur_row = (r.saturating_sub(1)).min(self.rows.saturating_sub(1));
+                self.cur_col = (c.saturating_sub(1)).min(self.cols.saturating_sub(1));
+            }
+            Action::EraseDisplay(_) => {
+                for px in self.fb.iter_mut() { *px = 0; }
+            }
+            Action::EraseLine(_) => {
+                let row_pixel = self.cur_row * self.cell_h;
+                for y in row_pixel..(row_pixel + self.cell_h).min(self.yres) {
+                    let off = (y * self.pitch) as usize;
+                    for x in 0..self.pitch as usize {
+                        self.fb[off + x] = 0;
+                    }
+                }
+            }
+            Action::ScrollUp(n)   => self.scroll_up(n),
+            Action::ScrollDown(_) => {}
+            Action::SetGraphicRendition(p, n) => self.apply_sgr(&p[..n as usize]),
+            Action::FullReset => {
+                for px in self.fb.iter_mut() { *px = 0; }
+                self.cur_col = 0; self.cur_row = 0;
+                self.fg = [0xff, 0xff, 0xff];
+                self.bg = [0, 0, 0];
+            }
+            _ => {}
+        }
+    }
+
+    fn advance_cursor(&mut self) {
+        self.cur_col += 1;
+        if self.cur_col >= self.cols {
+            self.cur_col = 0;
+            self.cur_row += 1;
+            if self.cur_row >= self.rows {
+                self.scroll_up(1);
+                self.cur_row = self.rows - 1;
+            }
+        }
+    }
+
+    fn scroll_up(&mut self, n: u32) {
+        let n_px = (n * self.cell_h).min(self.yres);
+        let pitch = self.pitch as usize;
+        let total = (self.yres * self.pitch) as usize;
+        let shift = (n_px * self.pitch) as usize;
+        if shift >= total { for b in self.fb.iter_mut() { *b = 0; } return; }
+        self.fb.copy_within(shift..total, 0);
+        for b in self.fb[total - shift..].iter_mut() { *b = 0; }
+        let _ = pitch;
+    }
+
+    fn apply_sgr(&mut self, params: &[u32]) {
+        let mut i = 0;
+        while i < params.len() {
+            let p = params[i];
+            match p {
+                0 => { self.fg = [0xff, 0xff, 0xff]; self.bg = [0, 0, 0]; }
+                30..=37 => {
+                    let pal = VGA_PALETTE[(p - 30) as usize];
+                    self.fg = pal;
+                }
+                90..=97 => {
+                    let pal = VGA_PALETTE[(p - 90 + 8) as usize];
+                    self.fg = pal;
+                }
+                40..=47 => {
+                    let pal = VGA_PALETTE[(p - 40) as usize];
+                    self.bg = pal;
+                }
+                100..=107 => {
+                    let pal = VGA_PALETTE[(p - 100 + 8) as usize];
+                    self.bg = pal;
+                }
+                38 if i + 2 < params.len() && params[i + 1] == 5 => {
+                    self.fg = xterm_256(params[i + 2]); i += 2;
+                }
+                48 if i + 2 < params.len() && params[i + 1] == 5 => {
+                    self.bg = xterm_256(params[i + 2]); i += 2;
+                }
+                38 if i + 4 < params.len() && params[i + 1] == 2 => {
+                    self.fg = [params[i + 2] as u8, params[i + 3] as u8, params[i + 4] as u8];
+                    i += 4;
+                }
+                48 if i + 4 < params.len() && params[i + 1] == 2 => {
+                    self.bg = [params[i + 2] as u8, params[i + 3] as u8, params[i + 4] as u8];
+                    i += 4;
+                }
+                39 => self.fg = [0xff, 0xff, 0xff],
+                49 => self.bg = [0, 0, 0],
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    fn blit_glyph(&mut self, codepoint: u32) {
+        // Map any codepoint outside ASCII to '?'. The built-in
+        // 8×16 font (BUILTIN_FONT) only covers 0x20..0x7e; non-ASCII
+        // gets a placeholder.
+        let g = if codepoint >= 0x20 && codepoint < 0x7f {
+            (codepoint - 0x20) as usize
+        } else { ('?' as usize) - 0x20 };
+
+        let font = BUILTIN_FONT;
+        let cw = self.cell_w as usize;
+        let ch = self.cell_h as usize;
+        let pitch = self.pitch as usize;
+        let cell_x = (self.cur_col * self.cell_w) as usize;
+        let cell_y = (self.cur_row * self.cell_h) as usize;
+        for py in 0..ch {
+            let row = font[g * ch + py];
+            let buf_row_off = (cell_y + py) * pitch + cell_x * 4;
+            for px in 0..cw {
+                let bit = (row >> (7 - px)) & 1;
+                let color = if bit == 1 { self.fg } else { self.bg };
+                if buf_row_off + px * 4 + 3 < self.fb.len() {
+                    self.fb[buf_row_off + px * 4]     = color[2];     // B
+                    self.fb[buf_row_off + px * 4 + 1] = color[1];     // G
+                    self.fb[buf_row_off + px * 4 + 2] = color[0];     // R
+                    self.fb[buf_row_off + px * 4 + 3] = 0xff;         // A
+                }
+            }
+        }
+    }
+}
+
+/// Built-in 8×16 font — minimum viable: spaces for 0x20-0x7e where
+/// every glyph is solid for testing the blit path. Real PSF font
+/// data lands when KDFONTOP is wired (`50§14`).
+const BUILTIN_FONT_LEN: usize = 95 * 16;
+const BUILTIN_FONT: &[u8; BUILTIN_FONT_LEN] = &builtin_font_pattern();
+
+const fn builtin_font_pattern() -> [u8; BUILTIN_FONT_LEN] {
+    let mut out = [0u8; BUILTIN_FONT_LEN];
+    let mut g = 0;
+    while g < 95 {
+        // ASCII char `0x20 + g`.
+        // Render a centered solid rectangle (rows 4..12, cols 1..7)
+        // so every glyph looks distinct from background; real glyphs
+        // load via KDFONTOP.
+        let mut row = 4;
+        while row < 12 {
+            // bits 1..6 set
+            out[g * 16 + row] = 0b0111_1110;
+            row += 1;
+        }
+        g += 1;
+    }
+    out
+}
+
 /// Resolve an SGR 256-color cube index to RGB per xterm.
 /// 0..15  = VGA palette
 /// 16..231 = 6×6×6 cube
@@ -351,5 +582,63 @@ mod tests {
     #[test]
     fn vga_palette_size() {
         assert_eq!(VGA_PALETTE.len(), 16);
+    }
+
+    #[test]
+    fn console_new_dims() {
+        let c = Console::new(640, 480);
+        assert_eq!(c.cols, 80);
+        assert_eq!(c.rows, 30);
+        assert_eq!(c.fb.len(), 640 * 480 * 4);
+    }
+
+    #[test]
+    fn put_advances_cursor() {
+        let mut c = Console::new(640, 480);
+        c.put(b"abc");
+        assert_eq!((c.cur_col, c.cur_row), (3, 0));
+    }
+
+    #[test]
+    fn newline_advances_row_only() {
+        // Raw LF moves down without column reset (Linux semantics).
+        // \r\n is the cooked tty line discipline's job.
+        let mut c = Console::new(640, 480);
+        c.put(b"abc\nx");
+        assert_eq!(c.cur_col, 4);
+        assert_eq!(c.cur_row, 1);
+    }
+
+    #[test]
+    fn carriage_return_resets_column() {
+        let mut c = Console::new(640, 480);
+        c.put(b"abc\rx");
+        assert_eq!((c.cur_col, c.cur_row), (1, 0));
+    }
+
+    #[test]
+    fn ansi_csi_h_positions_cursor() {
+        let mut c = Console::new(640, 480);
+        c.put(b"\x1b[10;20H");
+        assert_eq!((c.cur_row, c.cur_col), (9, 19));
+    }
+
+    #[test]
+    fn sgr_red_changes_fg() {
+        let mut c = Console::new(640, 480);
+        c.put(b"\x1b[31m");
+        assert_eq!(c.fg, VGA_PALETTE[1]);   // VGA red
+    }
+
+    #[test]
+    fn glyph_blit_writes_pixels() {
+        let mut c = Console::new(64, 32);   // 8×2 cells
+        c.fg = [0xff, 0, 0];
+        c.put(b"X");
+        // Built-in placeholder glyph fills rows 4..12 cols 1..6.
+        // Check pixel at (cell_x=1, cell_y=4) is foreground RGB.
+        let off = (4 * 64 + 1) * 4;
+        assert_eq!(c.fb[off], 0);             // B
+        assert_eq!(c.fb[off + 2], 0xff);      // R
     }
 }
