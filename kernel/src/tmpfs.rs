@@ -166,6 +166,15 @@ impl Inode for TmpfsRootInode {
 /// # C: O(1)
 pub fn init() {
     register("/tmp".into(), Arc::new(TmpfsRootInode::at_tmp()) as InodeRef);
+    // F111: POSIX shared memory backing — POSIX `shm_open(name, ...)`
+    // resolves to `/dev/shm/<name>` per `shm_open(3)` linker contract.
+    // Pre-mount tmpfs there so glibc/musl shm_open works without an
+    // explicit mount(2) call from userspace at boot.
+    register("/dev/shm".into(), Arc::new(TmpfsRootInode::new(String::from("/dev/shm"))) as InodeRef);
+    // /run is the modern systemd-class tmpfs root (replaces /var/run).
+    // Pre-mount so init scripts that write /run/<service>.pid don't
+    // fail before the userspace mount sequence runs.
+    register("/run".into(), Arc::new(TmpfsRootInode::new(String::from("/run"))) as InodeRef);
 }
 
 /// Boot-time round-trip smoke for the tmpfs path. Creates an
