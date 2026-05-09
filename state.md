@@ -1,4 +1,23 @@
-# State 2026-05-09 (session 52 mid-flight — F63..F80 syscall stub-sweep landed)
+# State 2026-05-09 (session 52 — v2-arch-plan §1.1–§1.9 closed)
+
+## v2-arch-plan landed (v2.x architectural pieces folded into v1)
+
+All nine items in `docs/v2-arch-plan.md` shipped as PRs. Each
+piece got an R-revision block on its FROZEN spec before code per
+`02§1`. Total: ~9 spec revisions + ~20 code PRs across the run.
+
+  - §1.1 PTRACE_SETREGS / SETREGSET — saved-frame writeback (15§R04)
+  - §1.2 setns() + NsInode downcast (26§R01)
+  - §1.3 USER NS cap-scoping via `has_cap_for(target_ns, cap)` (27§R01)
+  - §1.4 per-mount-NS path registry (16§R01) + tmpfs mount admit
+  - §1.5 AF_UNIX SOCK_DGRAM + SCM_CREDENTIALS (24§R01)
+  - §1.6 dirent-mutation hooks → IN_CREATE/IN_DELETE inotify (16§R02)
+  - §1.7 cBPF subset + bpf(2) MAP_CREATE/PROG_LOAD + CAP_BPF (27§R02)
+  - §1.8 tracefs root + control-files (37§R01)
+  - §1.9 DRM/KMS substrate (MODE_GETRESOURCES) + evdev event0 (35§R01)
+
+Tests: 900 passed, 0 failed. Both arches build clean.
+spec-lint: clean. F126 + R12 latest (PR #876, #877).
 
 ## ⚡ Session 53 first task: F59-13 — wire RX into `stack.deliver_rx`
 
