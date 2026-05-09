@@ -13,57 +13,32 @@ struct VirtioProbe {
     features_ok: bool,
     msix_cfg:    u16,
     num_queues:  u16,
-    /// Up to 8 (queue_idx, queue_size) entries seen in the scan.
     queues: [(u16, u16); 8],
     queues_len: usize,
-    /// Queue-0 ring frame PAs after F25 setup (0 = not allocated).
     q0_desc_pa:   u64,
     q0_driver_pa: u64,
     q0_device_pa: u64,
-    /// Final status byte after writing DRIVER_OK + re-reading.
     final_status: u8,
-    /// F26: queue-0 notify offset (raw value from queue_notify_off
-    /// at common cfg +0x1E; multiply by notify_off_multiplier and
-    /// add to NOTIFY BAR base to get the kick address).
     q0_notify_off: u16,
-    /// F26: kernel VA the NOTIFY BAR window was mapped at, plus the
-    /// per-queue offset baked in. 0 = notify path not brought up.
     q0_notify_va:  u64,
-    /// F26: status byte after writing queue_index=0 to the notify
-    /// address. Should remain 0x0f (no FAILED transition).
     post_notify_status: u8,
-    /// F28: avail.idx written by the driver (1 = one descriptor posted).
     avail_idx_posted: u16,
-    /// F28: used.idx read after the kick + brief wait.
     used_idx_observed: u16,
-    /// F29: ISR status byte read post-kick. Bit 0 = queue interrupt,
-    /// bit 1 = config interrupt. Reading clears the register.
     isr_status: u8,
-    /// F42: first 20 bytes of sector 1 (GPT header) or zeros.
     blk_id: [u8; 20],
-    /// F43: q1 used.idx after a virtio-net TX kick (0 = none).
     tx_used_idx: u16,
-    /// F43: q1 notify VA = notify_cap + q1_notify_off * mult.
     q1_notify_va: u64,
-    /// F59-08: queue_notify_off for q1 (raw, before multiplier).
     q1_notify_off: u16,
-    /// F30: virtio-blk status byte. 0=OK,1=IOERR,2=UNSUPP,0xFF=none.
     blk_status: u8,
-    /// F59-01: q0 negotiated size. 0 if not programmed.
     q0_size: u16,
-    /// F59-01: q1 negotiated size. 0 if not programmed.
     q1_size: u16,
-    /// F59-01: q1 ring PAs (virtio-net TX). 0 = not allocated.
     q1_desc_pa:   u64,
     q1_driver_pa: u64,
     q1_device_pa: u64,
-    /// F59-02: PA + len of boot-allocated virtio-net RX buffer at q0.d0.
     rx0_buf_pa:  u64,
     rx0_buf_len: u16,
-    /// F59-04: virtio-net device-cfg MAC. `mac_valid` gates use.
     mac:       [u8; 6],
     mac_valid: bool,
-    /// F59-05: PA of virtio-net TX scratch frame at q1.d0. 0 = none.
     tx0_buf_pa: u64,
 }
 
@@ -103,8 +78,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     };
 
-    // Enable Memory + BusMaster in the PCI command reg (UEFI on QEMU
-    // virt leaves Memory bit OFF — confirmed by F22 boot trace).
+    // Enable Memory + BusMaster in PCI cmd reg.
     let cmd_orig = {
         #[cfg(target_arch = "x86_64")]
         { let r = hal_x86_64::pci::LegacyPci;
@@ -184,7 +158,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     w32(0x00, 1); let dev_feat_hi = r32(0x04);
     let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
     let mut want = virtio::VIRTIO_F_VERSION_1;
-    if d.vendor_id == 0x1AF4 && (d.device_id == 0x1000 || d.device_id == 0x1041) {
+    if d.vendor_id == 0x1A&& (d.device_id == 0x1000 || d.device_id == 0x1041) {
         want |= virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
     }
     let drv_features: u64 = dev_features & want;
@@ -220,26 +194,20 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         if queue_size == 0 { break; }
     }
 
-    // F26: capture queue-0 notify_off before any further state writes.
-    // queue_notify_off is the high u16 of the dword at +0x1C.
+    // queue_notify_off = hi-u16 of cfg+0x1C.
     let q0_notify_off = (r32(0x1C) >> 16) as u16;
-
-    // F43: queue 1 (TX) state captured during the q0 setup block when
-    // we transiently flip queue_select to 1 for virtio-net. Used after
-    // DRIVER_OK to compute the kick VA and post a frame.
+    // queue 1 (TX) state captured via queue_select switch.
     let mut q1_desc_pa: u64 = 0;
     let mut q1_driver_pa: u64 = 0;
     let mut q1_device_pa: u64 = 0;
     let mut q1_notify_off_local: u16 = 0;
-
-    // F25: program queue 0 if the device exposed one with a non-zero size.
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, final_status) = if q0_size != 0 && features_ok {
         let pa_desc   = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
         let pa_driver = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
         let pa_device = crate::pmm_setup::alloc_one_frame().unwrap_or(0);
         if pa_desc != 0 && pa_driver != 0 && pa_device != 0 {
-            // F27: zero the 3 ring frames via HHDM BEFORE programming
+            //: zero the 3 ring frames via HHDM BEFORE programming
             // queue_enable so the device sees deterministic ring state.
             // PMM doesn't guarantee zero-init.
             let hhdm = {
@@ -264,7 +232,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // F59-09: queue_select=0 via u16 store at +0x16.
             w16(0x16, 0);
             // queue_size at 0x18 (low u16) — leave as-is.
-            // F39: bind queue_msix_vector at +0x1A to MSI-X table
+            //: bind queue_msix_vector at +0x1A to MSI-X table
             // F59-09: queue_msix_vector is u16 at +0x1A — must be a
             // u16 store (QEMU's switch dispatcher would drop a u32
             // store at 0x18, only triggering queue_size).
@@ -281,7 +249,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // F59-09: queue_enable is u16 at +0x1C — must be a u16 store.
             w16(0x1C, 1);
 
-            // F43: for virtio-net, also stand up queue 1 (TX) so we
+            //: for virtio-net, also stand up queue 1 (TX) so we
             // can post outgoing frames. queue 0 = RX, queue 1 = TX
             // by spec §5.1.6 Device Operation.
             if is_virtio_net_early {
@@ -337,7 +305,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     q1_driver_pa = q1v;
                     q1_device_pa = q1u;
                     // Restore queue_select=0 so subsequent reads in
-                    // the F26 kick path see q0 state.
+                    // the kick path see q0 state.
                     w16(0x16, 0); // F59-09: restore queue_select=0 via u16 store
                 }
             }
@@ -355,7 +323,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, post_status as u8)
     };
-    // F42: for virtio-blk (transitional 0x1001 or modern 0x1042),
+    //: for virtio-blk (transitional 0x1001 or modern 0x1042),
     // issue a VIRTIO_BLK_T_IN read of sector 1 — the GPT primary
     // header on a GPT-partitioned disk. Header (16B) + data (512B) +
     // status (1B) in a 3-descriptor chain. Proves bidirectional DMA
@@ -366,7 +334,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let is_virtio_blk = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1001 || d.device_id == 0x1042);
 
-    // F28: for virtio-net (transitional 0x1000 or modern 0x1041),
+    //: for virtio-net (transitional 0x1000 or modern 0x1041),
     // post one RX buffer descriptor on queue 0 and bump avail.idx
     // before kicking. For other devices the queue stays empty so the
     // kick is a no-op nudge.
@@ -378,8 +346,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut rx0_buf_len_local: u16 = 0;
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
-    let is_virtio_gpu = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
-    let is_virtio_input = d.vendor_id == 0x1AF4 && d.device_id == 0x1052;
+    let is_virtio_gpu = d.vendor_id == 0x1A&& d.device_id == 0x1050;
+    let is_virtio_input = d.vendor_id == 0x1A&& d.device_id == 0x1052;
     let bdf_word = (d.bdf.bus as u32) << 16
                  | (d.bdf.device as u32) << 8
                  | (d.bdf.function as u32);
@@ -425,7 +393,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 unsafe {
                     // Zero the buf first.
                     for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
-                    // F42: VIRTIO_BLK_T_IN read of sector 1 (GPT primary
+                    //: VIRTIO_BLK_T_IN read of sector 1 (GPT primary
                     // header). Header layout (16B):
                     //   le32 type=0 (IN/read)
                     //   le32 reserved=0
@@ -517,7 +485,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
-    // F26: kick the notify register for queue 0. Notify address per
+    //: kick the notify register for queue 0. Notify address per
     // Virtio 1.2 §4.1.4.4:
     //   notify_pa = NOTIFY_BAR_pa + notify_cap.offset + qoff * notify_mult
     // where qoff = the queue_notify_off captured above.
@@ -557,7 +525,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         (0u64, final_status)
     };
 
-    // F43: virtio-net TX path. After DRIVER_OK + (existing F26) q0
+    //: virtio-net TX path. After DRIVER_OK + (existing F26) q0
     // kick, post one ethernet frame to queue 1, kick q1, observe
     // q1.used.idx. Frame = 12-byte virtio_net_hdr (zeros) + 60-byte
     // dummy ethernet broadcast frame. Single descriptor, flags=0
@@ -648,7 +616,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
-    // F29: locate ISR cap, map its BAR page, and read the ISR byte
+    //: locate ISR cap, map its BAR page, and read the ISR byte
     // post-kick. Per Virtio 1.2 §4.1.4.5: ISR is a 1-byte read-to-clear
     // register; bit 0 = queue interrupt, bit 1 = config-change
     // interrupt. With MSI-X unbound the device would normally route via
@@ -706,7 +674,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
-    // F30: harvest virtio-blk GET_ID result if we issued one. The data
+    //: harvest virtio-blk GET_ID result if we issued one. The data
     // descriptor's buffer pa = q0_desc_pa is encoded in desc[2*1+0] but
     // we already know it's `buf_pa+0x100`; rather than read the desc
     // back, walk the used ring to find the chain head, then dereference.
@@ -733,10 +701,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                 let buf_va = hhdm.wrapping_add(buf_pa) as *const u8;
                 // SAFETY: HHDM-mapped data buf within the same page.
                 unsafe {
-                    // F42: data is at buf+0x200 (sector 1 contents).
+                    //: data is at buf+0x200 (sector 1 contents).
                     // Capture first 20 bytes — first 8 are the GPT
                     // signature "EFI PART" if this is a GPT-partitioned
-                    // disk. blk_id reuses the F30 array for the dump.
+                    // disk. blk_id reuses the array for the dump.
                     for i in 0..20 {
                         blk_id[i] = core::ptr::read_volatile(buf_va.add(0x200 + i));
                     }
@@ -746,7 +714,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
-    // F28: read used.idx after the kick.
+    //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
         let hhdm = {
             #[cfg(target_arch = "x86_64")]
@@ -922,7 +890,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_hex_u64(p.post_notify_status as u64);
             klog::write_raw(b"\n");
         }
-        // F39: read back queue_msix_vector (high u16 of dword at 0x18)
+        //: read back queue_msix_vector (high u16 of dword at 0x18)
         // and report MSI delivery count seen by the IRQ dispatcher.
         // SAFETY: cfg_va Device-attr mapped during init; aligned u32 read.
         let qmv_word = unsafe {
@@ -962,6 +930,24 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
     // F59-01: hand persistent runtime state for the modern virtio-net
     // device to dev_virtio_net so later phases (RX poll, TX, ARP) can
     // drive the queues post-boot. Only register if the device reached
+    // virtio-gpu post-init: submit CMD_GET_DISPLAY_INFO over CTRLQ.
+    let is_virtio_gpu_post = d.vendor_id == 0x1A&& d.device_id == 0x1050;
+    if is_virtio_gpu_post
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0
+        && p.q0_notify_va != 0
+    {
+        // SAFETY: caller is boot path; PMM up; q0 + notify VAs valid; single-CPU.
+        let _ = unsafe {
+            crate::dev_virtio_gpu_modern::get_display_info(
+                bdf.bus, bdf.device, bdf.function,
+                p.drv_features,
+                p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
+                p.q0_notify_va,
+            )
+        };
+    }
+
     // DRIVER_OK with both queues programmed; ring PAs and notify VAs
     // are required for the runtime path.
     let is_virtio_net = d.vendor_id == 0x1AF4

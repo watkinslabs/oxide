@@ -119,6 +119,8 @@ pub mod coredump;
 pub mod dev_drm;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_fbdev;
+#[cfg(target_os = "oxide-kernel")]
+pub mod dev_virtio_gpu_modern;
 pub mod syscall_glue_signal;
 pub mod ptrace_singlestep;
 pub mod syscall_glue_select;
