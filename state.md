@@ -65,6 +65,13 @@ real impl or honest ENOSYS. Breakdown:
   - **F113 #846** /proc/<pid>/{uid_map,gid_map,setgroups} identity-map files
   - **F114 #848** socket(AF_UNIX, SOCK_STREAM) admits (was EAFNOSUPPORT)
   - **F115 #850** real PTRACE_GETREGS/GETREGSET (gdb/lldb attach sees real reg state)
+  - **D46 #852** v2-arch-plan.md — sized plan for remaining v2 architectural pieces
+  - **R04 #853** 15-syscall-abi R04 — pin v1 ptrace op disposition
+  - **F116 #854** real PTRACE_SETREGS/SETREGSET (writeback to saved frame)
+  - **R05 #855** 26-namespaces-cgroups R01 — setns/NsInode contract
+  - **F117 #856** real setns + NsInode (open /proc/<pid>/ns/<type> → real Inode)
+  - **R06 #857** 27-security R01 — per-user-NS cap scoping
+  - **F118 #858** per-user-NS cap scoping via has_cap_for ancestor walk
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
