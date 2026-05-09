@@ -497,6 +497,48 @@ pub fn negotiated_features() -> u64 {
     DEV.lock().as_ref().map(|d| d.features_negotiated).unwrap_or(0)
 }
 
+/// `47` DrmDriver impl over a `VirtioGpuDev` snapshot. Registered
+/// at install() time so MODE_GETRESOURCES sees real CRTC counts.
+pub struct VirtioGpuDrm {
+    pub display:             DisplayInfo,
+    pub features_negotiated: u64,
+    pub bdf:                 u32,
+}
+
+impl drm::DrmDriver for VirtioGpuDrm {
+    fn name(&self) -> &'static str { "virtio_gpu" }
+    fn version(&self) -> (u32, u32, u32) { (0, 1, 0) }
+    fn date(&self) -> &'static str { "20260509" }
+    fn desc(&self) -> &'static str { "virtio GPU" }
+    fn unique(&self) -> &str { "pci:virtio-gpu" }
+    /// (count_fbs, count_crtcs, count_connectors, count_encoders).
+    /// V1 maps each enabled scanout to a (CRTC, connector, encoder)
+    /// triple; framebuffers are allocated dynamically via
+    /// `MODE_CREATE_DUMB` so count_fbs starts at 0.
+    fn resource_counts(&self) -> (u32, u32, u32, u32) {
+        let n = self.display.count_enabled;
+        (0, n, n, n)
+    }
+    fn dim_bounds(&self) -> (u32, u32, u32, u32) {
+        // QEMU virtio-gpu accepts up to 4096×2160; min 1×1.
+        (1, 4096, 1, 2160)
+    }
+    fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
+}
+
+/// Install + register with the DRM core (`47`).
+/// # C: O(1)
+pub fn install_with_drm(dev: VirtioGpuDev) -> u32 {
+    let drm_dev = alloc::sync::Arc::new(VirtioGpuDrm {
+        display:             dev.display,
+        features_negotiated: dev.features_negotiated,
+        bdf:                 dev.bdf,
+    });
+    let card_id = drm::register(drm_dev);
+    install(dev);
+    card_id
+}
+
 // AtomicPtr is referenced for future per-device queue notify pointers
 // once the queue plumbing moves into this crate; keep the import live
 // by aliasing it as a private no-op type marker.
