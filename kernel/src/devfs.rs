@@ -48,15 +48,33 @@ pub fn register_owned(path: String, inode: InodeRef) {
 }
 
 /// Register `(path, inode)` in the given mount_ns. Idempotent within
-/// that NS (last writer wins).
+/// that NS (last writer wins). Fires the dirent-create hook
+/// (`16§R02`) so inotify watches on the parent directory see
+/// IN_CREATE with the leaf name.
 /// # C: O(N)
 pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
+    let (parent, leaf) = match split_parent_leaf(&path) {
+        Some((p, l)) => (alloc::string::String::from(p), alloc::string::String::from(l)),
+        None         => (alloc::string::String::new(), alloc::string::String::new()),
+    };
     let mut g = REGISTRY.lock();
     if let Some(slot) = g.iter_mut().find(|(n, p, _)| *n == ns && *p == path) {
         slot.2 = inode;
-    } else {
-        g.push((ns, path, inode));
+        return;
     }
+    g.push((ns, path, inode));
+    drop(g);
+    if !parent.is_empty() {
+        vfs::fire_dirent_create(&parent, &leaf);
+    }
+}
+
+/// Split `/dev/pts/3` → ("/dev/pts", "3"). Returns None for paths
+/// with no parent (e.g. "/" or "").
+fn split_parent_leaf(path: &str) -> Option<(&str, &str)> {
+    let i = path.rfind('/')?;
+    if i == 0 { Some(("/", &path[1..])) }
+    else      { Some((&path[..i], &path[i+1..])) }
 }
 
 /// Look up a path. Tries caller's mount_ns first, then init NS.
