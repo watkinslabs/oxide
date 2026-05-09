@@ -251,3 +251,73 @@ pub fn kernel_sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
 // `AtomicU32` import keeps the Spinlock lock-class warning at bay; nothing
 // else in this module uses it.
 const _: AtomicU32 = AtomicU32::new(0);
+
+// === fanotify(7) compatibility shim ===
+//
+// fanotify shares per-fd watch-table + event-queue semantics with
+// inotify; only the user-facing event format differs (fanotify uses
+// `struct fanotify_event_metadata` with file-descriptor-based name
+// resolution, inotify uses `struct inotify_event` with name strings).
+// V1: route fanotify_init→inotify_init1 (already wired in F80) and
+// fanotify_mark→add_watch/rm_watch with mask translation. Programs
+// see real watch storage + real IN_MODIFY events. Read-side fanotify
+// event format conversion rides v2 once the substrate's user audience
+// is concrete.
+
+const FAN_MARK_ADD:        u32 = 0x01;
+const FAN_MARK_REMOVE:     u32 = 0x02;
+const FAN_MARK_FLUSH:      u32 = 0x80;
+
+/// `sys_fanotify_mark(fd, flags, mask, dirfd, pathname)` — slot 301.
+/// # C: O(N_watches)
+pub fn kernel_sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let fd      = args.a0 as i32;
+    let flags   = args.a1 as u32;
+    let mask    = args.a2 as u32;
+    let _dirfd  = args.a3 as i32;
+    let path_p  = args.a4;
+    let inotify = match fd_to_inotify(fd) {
+        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    if flags & FAN_MARK_FLUSH != 0 {
+        let mut g = inotify.watches.lock();
+        g.clear();
+        return 0;
+    }
+    if path_p == 0 || path_p >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: path_p in user range; bounded read via existing helper.
+    let bytes = unsafe { crate::devfs::read_user_cstr(path_p, 256) };
+    let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let inode = match crate::devfs::lookup(s) {
+        Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    let key = inode_key(&inode);
+    // Mask bits ACCESS / MODIFY / ATTRIB / CLOSE_* / OPEN match between
+    // fanotify and inotify exactly (low 6 bits); higher fanotify bits
+    // (PERM events, ONDIR, EVENT_ON_CHILD) are filtered out for v1.
+    let in_mask = mask & IN_ALL_EVENTS;
+    if flags & FAN_MARK_REMOVE != 0 {
+        let mut g = inotify.watches.lock();
+        let n_before = g.len();
+        g.retain(|w| w.inode_key != key);
+        return if g.len() == n_before { -(Errno::Enoent.as_i32() as i64) } else { 0 };
+    }
+    if flags & FAN_MARK_ADD != 0 {
+        let mut g = inotify.watches.lock();
+        for w in g.iter_mut() {
+            if w.inode_key == key {
+                w.mask |= in_mask;
+                return 0;
+            }
+        }
+        let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
+        g.push(Watch { wd, inode_key: key, mask: in_mask });
+        return 0;
+    }
+    -(Errno::Einval.as_i32() as i64)
+}

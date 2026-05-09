@@ -610,7 +610,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_signal::kernel_sys_setns(&args),
         crate::syscall_nrs::NR_PTRACE        => crate::syscall_glue_signal::kernel_sys_ptrace(&args),
         crate::syscall_nrs::NR_FANOTIFY_INIT => crate::dev_inotify::kernel_sys_inotify_init1(&args),
-        crate::syscall_nrs::NR_FANOTIFY_MARK => -(Errno::Enosys.as_i32() as i64),
+        crate::syscall_nrs::NR_FANOTIFY_MARK => crate::dev_inotify::kernel_sys_fanotify_mark(&args),
         crate::syscall_nrs::NR_SHMGET        => crate::sysv_shm::kernel_sys_shmget(&args),
         crate::syscall_nrs::NR_SHMAT         => crate::sysv_shm::kernel_sys_shmat(&args),
         crate::syscall_nrs::NR_SHMDT         => crate::sysv_shm::kernel_sys_shmdt(&args),
