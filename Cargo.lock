@@ -96,6 +96,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "drm"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+]
+
+[[package]]
 name = "drv"
 version = "0.1.0"
 dependencies = [
