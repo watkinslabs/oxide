@@ -90,7 +90,9 @@ pub fn kernel_sys_utimensat(args: &SyscallArgs) -> i64 {
         let m = match read_user_ns_pair(times_ptr, 1, now) { Ok(v) => v, Err(rv) => return rv };
         (a, m)
     };
-    crate::inode_times::set(&inode, atime, mtime, now);
+    if inode.set_times(atime, mtime, now).is_err() {
+        crate::inode_times::set(&inode, atime, mtime, now);
+    }
     0
 }
 
@@ -134,7 +136,9 @@ pub fn kernel_sys_utimes(args: &SyscallArgs) -> i64 {
         let mtime_ns = (msec as u64) * 1_000_000_000 + (musec as u64) * 1_000;
         (Some(atime_ns), Some(mtime_ns))
     };
-    crate::inode_times::set(&inode, atime, mtime, now);
+    if inode.set_times(atime, mtime, now).is_err() {
+        crate::inode_times::set(&inode, atime, mtime, now);
+    }
     0
 }
 
@@ -165,6 +169,8 @@ pub fn kernel_sys_utime(args: &SyscallArgs) -> i64 {
         }
         (Some((asec as u64) * 1_000_000_000), Some((msec as u64) * 1_000_000_000))
     };
-    crate::inode_times::set(&inode, atime, mtime, now);
+    if inode.set_times(atime, mtime, now).is_err() {
+        crate::inode_times::set(&inode, atime, mtime, now);
+    }
     0
 }
