@@ -2,6 +2,45 @@
 
 FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 
+## Revision 2026-05-09 (R05)
+
+- Changed: explicit disposition rows for every syscall slot that
+  is admit / silent-0 / EPERM / ENOSYS instead of full Linux
+  semantics. Previously the table left these as ambiguous "V1"
+  rows; userspace consumers (musl, busybox, distro programs)
+  could not predict whether a return code reflected real work.
+- Disposition labels and where each slot lives:
+    - **REAL (v1 Linux semantics)** — most slots; see syscall_glue.rs
+      direct dispatch.
+    - **REAL (validate-then-noop)** — `fsync`/`fdatasync`/`syncfs`/
+      `sync_file_range` / `fadvise64` / `readahead` / `mlock2`:
+      validate fd + length, return 0. RAM-fs is always sync; no
+      page-cache to advise. Real disk-backed fsync rides phase 7b.
+    - **REAL subset** — `ptrace` per R04 disposition table.
+    - **silent-0 admit** — `cachestat` (no page cache), `mq_notify`/
+      `mq_getsetattr` (no per-task signal-on-arrival yet),
+      `io_uring_register` (no fixed-buffer/file table — see `30`
+      R01), `fanotify_mark` (records nothing v1).
+    - **EPERM (privileged refuse)** — `pivot_root`, `init_module`/
+      `delete_module`/`finit_module`, `kexec_load`/`kexec_file_load`,
+      `iopl`/`ioperm`, `adjtimex`/`clock_adjtime`. v1 has no
+      substrate; cap-gating identical for now.
+    - **ENOSYS** — `swapon`/`swapoff`, `lookup_dcookie`,
+      `remap_file_pages`, `uselib`, `ustat`, `sysfs`, `modify_ldt`,
+      `quotactl[_fd]`, `acct`, `name_to_handle_at`/
+      `open_by_handle_at`, `vserver`, `_sysctl`, `futex_waitv`,
+      libaio family (`io_setup`/`io_destroy`/`io_getevents`/
+      `io_submit`/`io_cancel`/`io_pgetevents`).
+- Why: g.md flagged ambiguity as a Linux-conformance hazard.
+  Ambiguous "V1" rows let code drift from spec without anyone
+  noticing — explicit labels make the contract auditable per slot.
+- Affected code: `kernel/src/syscall_compat.rs::try_compat`
+  (silent-0/EPERM/ENOSYS arms), `kernel/src/syscall_glue.rs`
+  (validate-then-noop arms — fsync/pkey/numa/etc).
+- Test contract change: §9 acceptance gains "every slot in the
+  disposition table matches its actual return code class" — the
+  smoke walks the table and validates each slot.
+
 ## Revision 2026-05-09 (R04)
 
 - Changed: pinned the v1 `ptrace(2)` op disposition. Slot 101 still
