@@ -111,7 +111,6 @@ dependencies = [
  "drv",
  "hal",
  "klog",
- "pci",
  "sync",
  "virtio",
 ]
@@ -329,6 +328,7 @@ version = "0.1.0"
 dependencies = [
  "block",
  "drv",
+ "drv-virtio-gpu",
  "elf",
  "ext4",
  "firmware",
