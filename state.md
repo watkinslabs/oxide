@@ -1,6 +1,83 @@
-# State 2026-05-08 (session 51 mid-flight — F59-01..06 landed, F59-07 SLIRP-reply debug next)
+# State 2026-05-08 (session 51 mid-flight — F59-01..12 landed, F59-13 RX→stack next)
 
-## ⚡ Session 52 first task: F59-07 — debug "reply=0" from SLIRP
+## ⚡ Session 52 first task: F59-13 — wire RX into `stack.deliver_rx`
+
+End-to-end IPv4/ICMP round-trip through SLIRP works at boot
+(F59-12 #773). Both arches log:
+
+```
+virtio-net-arp-boot   tx_attempted=1 tx_confirmed=1 rx_frames=1 reply=1
+arp-learn             gw_ip=10.0.2.2 gw_mac=52:55:0a:00:02:02
+virtio-net-icmp-boot  tx_attempted=1 tx_confirmed=1 rx_frames=1 reply=1
+virtio-net-iface      registered id=2 name=eth0
+```
+
+Pcap on the SLIRP netdev shows 4 frames: ARP req+reply, ICMP req+reply.
+
+Next concrete step: deliver RX frames into the kernel net stack
+so user-space sockets can receive. Plan:
+
+  1. Add a route 10.0.2.0/24 via the eth0 NetIfaceId after
+     registration. Possibly also a default route (0.0.0.0/0) via
+     10.0.2.2 once we know our local IP.
+  2. Replace the boot-time rx_poll one-shots (ARP probe, ICMP
+     probe) with a periodic RX drain — kthread + timer or
+     per-tick hook. Each drained frame:
+       a) Strip 14-byte eth header.
+       b) If ethertype=0x0806 (ARP): parse, update arp_cache,
+          if request for our IP → reply via tx_frame.
+       c) If ethertype=0x0800 (IPv4): wrap in `Pkt::from_owned`,
+          set `pkt.iface = eth0`, `pkt.proto = ETH_P_IPV4`, call
+          `stack().deliver_rx(eth0, &pkt)` to feed UDP/TCP/ICMP
+          demuxers.
+  3. Per-iface ARP cache (replace the current process-global
+     `dev_virtio_net_modern::arp_cache()` with one tied to the
+     NetIfaceId).
+
+That unlocks: user-space `recvfrom` on AF_INET via virtio-net,
+DHCP (F59-14: discover/offer/request/ack), DNS (F59-15), and
+TCP open to a remote (F59-16).
+
+## ⚡ The F59-09 fix worth remembering
+
+QEMU's `hw/virtio/virtio-pci.c` `virtio_pci_common_write` dispatches
+on `addr` via switch — a 4-byte store at 0x14 only triggers the
+DEVSTATUS handler at byte 0; bytes 1-3 (config_generation,
+queue_select) are silently dropped. Same pattern at 0x18
+(queue_size only, queue_msix_vector dropped) and 0x1C (queue_enable
+only). u16 fields MUST be u16 stores at their byte-precise spec
+addresses (0x16, 0x1A, 0x1C). This bit us for the entire F59-05/06
+TX path — kicks went out, but q1's ring PAs had silently been
+written to q0 instead because queue_select=1 never stuck.
+
+## ⚡ Session 51 progress: F59-01 through F59-12 landed
+
+  - **F59-01 #759** persist modern virtio-net runtime state
+  - **F59-02 #760** rx_poll on modern transport
+  - **F59-03 #761** boot rx_poll exercise
+  - **F59-04 #763** harvest MAC from device-cfg
+  - **F59-05 #765** tx_frame on modern transport
+  - **F59-06 #766** boot ARP probe (stub — TX never reached SLIRP)
+  - **F59-07 #768** honest tx_confirmed reporting (Confirmed/Timeout)
+  - **F59-08 #769** narrowed bug — 3 ruled-out hypotheses (msix
+    vector, F_MAC/F_STATUS negotiation, kick via q0_notify_va)
+  - **F59-09 #770** root cause + fix: u16-precise virtio_pci_common_cfg
+    writes; ARP req+reply on the wire, both arches
+  - **F59-10 #771** parse ARP, populate net::arp::ArpCache global
+  - **F59-11 #772** register virtio-net as NetDev (eth0, id=2)
+  - **F59-12 #773** boot ICMP echo to gateway: SLIRP responds,
+    Echo Reply parsed and matched
+
+## ⚡ Tooling: pcap baked into qemu-mcp
+
+`tools/qemu-mcp/server.py` now adds
+`-object filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap`
+on both arches. After Claude restart this is automatic via
+`mcp__qemu__qemu_start`. Direct-QEMU runs (used to debug F59-08/09)
+add it explicitly. Saved to `/tmp/oxide-slirp.pcap` for
+post-run inspection with `tcpdump -r`.
+
+## ⚡ Session 51 first task: F59-07 SLIRP-reply debug — DONE
 
 After F59-06 (#766) shipped, both arches log:
 ```
