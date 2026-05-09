@@ -103,8 +103,9 @@ pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
 /// PTRACE_PEEKTEXT/PEEKDATA/PEEKUSER — returns 0 word (does NOT
 ///   read the target's actual memory; honest stub for tracer-
 ///   present probes that only need the call to succeed).
-/// PTRACE_POKETEXT/POKEDATA/POKEUSER — silent 0 (does NOT mutate
-///   the target's memory).
+/// PTRACE_POKETEXT/POKEDATA — real foreign-mm write via write_foreign_user
+/// (refuses non-writable leaves; no silent W^X bypass).
+/// PTRACE_POKEUSER — EOPNOTSUPP (no per-arch user-area materializer yet).
 /// PTRACE_GETREGS/SETREGS/GETREGSET/SETREGSET/GETSIGINFO — silent 0.
 /// Anything else → -EINVAL (per Linux for unknown ptrace request).
 /// # C: O(N_tasks) on PTRACE_ATTACH lookup; O(1) otherwise.
