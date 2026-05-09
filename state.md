@@ -50,6 +50,9 @@ real impl or honest ENOSYS. Breakdown:
   - **F98 #823** Inode trait — first-class atime/mtime/perm/uid/gid (overlay fallback)
   - **F99 #824** Inode meta accessors return Option<T> (honest "no override")
   - **F100 #825** real IPC namespace — per-task SysV+POSIX MQ tables via CLONE_NEWIPC
+  - **F101 #827** IfaceRegistry NS-aware (CLONE_NEWNET substrate)
+  - **F102 #828** inotify IN_OPEN / IN_ACCESS / IN_CLOSE_{WRITE,NOWRITE}
+  - **F103 #829** file capabilities at execve via security.capability xattr
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
