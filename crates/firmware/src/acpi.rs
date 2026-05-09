@@ -256,7 +256,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_hex(flags as u64);
                     alog_raw(b"\n");
                     // SAFETY: boot path; ACPI walk is single-threaded.
-                    let _ = crate::cpu_topology::add_cpu(apic_id as u32, flags);
+                    let _ = crate::fire_add_cpu(apic_id as u32, flags);
                 }
                 1 if elen >= 12 => {
                     let ioapic_id = core::ptr::read_volatile(p.add(off + 2));
@@ -288,7 +288,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_hex(flags as u64);
                     alog_raw(b"\n");
                     // SAFETY: boot path; ACPI walk is single-threaded.
-                    let _ = crate::cpu_topology::add_cpu(x2apic_id, flags);
+                    let _ = crate::fire_add_cpu(x2apic_id, flags);
                 }
                 11 if elen >= 80 => {
                     let cpu_iface = read_u32_le(p.add(off + 4));
@@ -304,7 +304,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_raw(b"\n");
                     // ARM mpidr fits 24 low bits in v1 systems we target.
                     // SAFETY: boot path; ACPI walk is single-threaded.
-                    let _ = crate::cpu_topology::add_cpu(mpidr as u32, flags);
+                    let _ = crate::fire_add_cpu(mpidr as u32, flags);
                 }
                 12 if elen >= 24 => {
                     let gic_id   = read_u32_le(p.add(off + 4));
