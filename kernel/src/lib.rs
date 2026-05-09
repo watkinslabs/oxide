@@ -139,8 +139,7 @@ pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_cred;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_dmesg;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_falloc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_dmesg;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_falloc;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_timers;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_prctl;
 #[cfg(target_os = "oxide-kernel")] pub mod inode_times;
@@ -150,6 +149,7 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")] pub mod keyring;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_numa;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
 #[cfg(target_os = "oxide-kernel")]
