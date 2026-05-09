@@ -820,13 +820,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_RECVMSG => crate::syscall_glue_net::kernel_sys_recvmsg(&args),
         crate::syscall_nrs::NR_SENDMMSG => crate::syscall_glue_net::kernel_sys_sendmmsg(&args),
         crate::syscall_nrs::NR_RECVMMSG => crate::syscall_glue_net::kernel_sys_recvmmsg(&args),
-        // chmod/chown family — devfs is read-only, but accept silently
-        // for tooling that probes mode/owner without erroring.
+        // chmod/chown family — devfs is read-only; accept silently.
         crate::syscall_nrs::NR_FCHMOD | crate::syscall_nrs::NR_FCHMODAT | crate::syscall_nrs::NR_CHMOD
             | crate::syscall_nrs::NR_FCHOWN | crate::syscall_nrs::NR_CHOWN | crate::syscall_nrs::NR_LCHOWN
-            | crate::syscall_nrs::NR_FCHOWNAT
-            | crate::syscall_nrs::NR_UTIMENSAT | crate::syscall_nrs::NR_UTIMES | crate::syscall_nrs::NR_UTIME
-                                 => 0,
+            | crate::syscall_nrs::NR_FCHOWNAT => 0,
+        crate::syscall_nrs::NR_UTIMENSAT  => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
+        crate::syscall_nrs::NR_UTIMES | crate::syscall_nrs::NR_UTIME
+            => crate::syscall_glue_utime::kernel_sys_utime_dispatch(nr, &args),
         // link/symlink/mknod family — devfs is read-only, refuse.
         crate::syscall_nrs::NR_LINK   => crate::syscall_glue_namei::kernel_sys_link(&args),
         crate::syscall_nrs::NR_LINKAT => crate::syscall_glue_namei::kernel_sys_linkat(&args),
