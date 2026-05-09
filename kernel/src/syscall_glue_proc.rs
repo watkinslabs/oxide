@@ -76,7 +76,6 @@ pub fn kernel_sys_futex(args: &SyscallArgs) -> i64 {
 ///   u64 cgroup         — cgroup fd (ignored v1).
 ///
 /// # C: O(parent VMAs) | O(1) for CLONE_VM
-#[cfg(target_arch = "x86_64")]
 pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let cl_args = args.a0;
@@ -111,12 +110,6 @@ pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
             args, merged_flags, user_sp, parent_tid, child_tid, tls,
         )
     }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-/// # C: O(1)
-pub fn kernel_sys_clone3(_args: &SyscallArgs) -> i64 {
-    -(syscall::errno::Errno::Enosys.as_i32() as i64)
 }
 
 /// `sys_mprotect(addr, len, prot)` — slot 10. v1: accept and
