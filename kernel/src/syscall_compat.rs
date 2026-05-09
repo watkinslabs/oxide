@@ -84,7 +84,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // outcome on v1 since both paths land on EPERM, but the
         // substrate-landing PRs (v2 phases 29 mount, etc.) will check
         // the relevant CAP_* in the real handler.
-        NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_PIVOT_ROOT
+        // MOUNT / UMOUNT2 moved to real impl in F110 (tmpfs backend).
+        NR_REBOOT | NR_PIVOT_ROOT
         | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
         | NR_IOPL | NR_IOPERM
