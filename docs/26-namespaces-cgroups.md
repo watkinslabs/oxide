@@ -1,6 +1,26 @@
 # 26 Namespaces + cgroup v2
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
+
+## Revision 2026-05-09 (R01)
+
+- Changed: pinned the v1 setns/NsInode contract. `/proc/<pid>/ns/<type>`
+  lookup returns a real `NsInode { kind: NsKind, id: u64 }` whose
+  open(2) yields a fd. setns(fd, nstype) downcasts the fd's inode via
+  `Inode::as_any` (per `16§5`), validates `kind` matches `nstype` (or
+  nstype==0 to accept any), then writes the matching ns id into the
+  caller's per-task slot (uts/ipc/net/pid/user/cgroup/mount).
+- Why: F100/F101/F105/F106/F107 added the per-task ns id slots and
+  F112 made the readlink dynamic, but setns was still silent-0 — the
+  fd argument went un-inspected. Without an NsInode, lsns / nsenter /
+  unshare-rejoin patterns silently no-op'd.
+- Affected code: `kernel/src/dev_proc_ns.rs` (new — NsInode + lookup);
+  `kernel/src/syscall_glue_signal.rs` (kernel_sys_setns rewrite);
+  `kernel/src/procfs.rs` (/proc/<pid>/ns/<type> directory inode arm).
+- Test contract change: §6 acceptance gains a setns smoke — open
+  /proc/self/ns/uts in a CLONE_NEWUTS-unshared child; setns from the
+  parent; verify the parent's uts_hostname slot now matches.
+
 ## 1 Purpose
 
 Namespaces (mnt, pid, net, uts, ipc, user, cgroup, time) and cgroup v2 unified hierarchy.
