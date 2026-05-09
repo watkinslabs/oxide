@@ -47,7 +47,10 @@ pub fn kernel_sys_mount(args: &SyscallArgs) -> i64 {
     match fstype.as_str() {
         "tmpfs" => {
             let inode: InodeRef = Arc::new(crate::tmpfs::TmpfsRootInode::new(target.clone()));
-            crate::devfs::register_owned(target, inode);
+            // F119: register in caller's mount_ns so unshared tasks
+            // see only their own mounts.
+            let ns = cur.mount_ns.load(core::sync::atomic::Ordering::Acquire);
+            crate::devfs::register_in_ns(ns, target, inode);
             0
         }
         // proc and sysfs are already registered at boot; admit-and-noop
