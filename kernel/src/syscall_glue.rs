@@ -553,6 +553,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let nr = crate::syscall_arm_abi::aarch64_nr_to_x86(nr);
 
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
+    debug_syscall! { crate::syscall_trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
     // F108: PTRACE_SYSCALL — if a tracer armed us, self-stop at entry.
