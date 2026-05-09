@@ -2,6 +2,28 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`12`,`15`. Provides:`fs-tmpfs`,`fs-ext4`, etc.; `19`,`28`.
 
+## Revision 2026-05-09 (R02)
+
+- Changed: pinned the v1 dirent-mutation hook contract. Two new
+  fn-ptr slots in vfs::file: `set_dirent_create_hook(fn(&InodeRef, &str))`
+  and `set_dirent_delete_hook(fn(&InodeRef, &str))`. devfs and tmpfs
+  fire them when `register`/`register_in_ns`/(future) `unregister`
+  splits the path into (parent, leaf). The kernel's inotify module
+  installs these to fire IN_CREATE/IN_DELETE/IN_MOVED with the leaf
+  name as the trailing `name[]` field.
+- Why: F94/F102 inotify substrate fires only on FILE-level events
+  (open/access/modify/close). Directory-level events (IN_CREATE on
+  /dev when a new entry is registered) need a hook at the path-
+  registry mutation site. Tracking what programs need: containerd /
+  systemd-machined watch /run + /var/run for socket appearance.
+- Affected code: `crates/vfs/src/file.rs` (two new fn-ptr slots);
+  `kernel/src/devfs.rs` (fire on register / register_in_ns);
+  `kernel/src/dev_inotify.rs` (install + dispatch);
+  `kernel/src/tmpfs.rs` (mutable-fs paths fire on add/remove).
+- Test contract change: §9 acceptance gains a "directory-watch"
+  smoke — inotify_add_watch on /dev/pts; openpt creates a slave;
+  the watcher sees IN_CREATE with the slave's name.
+
 ## Revision 2026-05-09 (R01)
 
 - Changed: pinned the v1 mount-table representation. Per-NS table is
