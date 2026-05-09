@@ -1,22 +1,18 @@
-// DRM/KMS card stub per `35` — first cut for v2 phase 32. Exposes
-// `/dev/dri/card0` as a CharDev whose ioctls answer the most common
-// userspace probes (DRM_IOCTL_VERSION + DRM_IOCTL_GET_CAP). Real
-// modesetting + framebuffer alloc + virtio-gpu ring service ride
-// follow-ups; this gets X / Wayland / libdrm probes past the
-// open()/ioctl() barrier.
-//
-// Layout reference: include/uapi/drm/drm.h.
+// DRM/KMS card per `47`. /dev/dri/card0 + /dev/dri/renderD128
+// dispatch ioctls through the registered DrmDriver in the drm
+// crate. virtio-gpu installs itself as the first card via
+// drv_virtio_gpu::install_with_drm; real per-card responses
+// flow from there.
 
 #![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use alloc::sync::Arc;
 
-const DRM_IOCTL_VERSION:    u64 = 0xc040_6400;
-const DRM_IOCTL_GET_CAP:    u64 = 0xc010_640c;
-const DRM_IOCTL_GET_UNIQUE: u64 = 0xc010_6401;
-const DRM_IOCTL_SET_VERSION:u64 = 0xc010_6407;
-const DRM_IOCTL_MODE_GETRESOURCES: u64 = 0xc04064a0;
+use drm::{
+    DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
+    DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
+};
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
 #[repr(C)]
@@ -32,9 +28,11 @@ struct DrmVersion {
     desc:        u64,   // user pointer
 }
 
-const DRIVER_NAME: &str = "oxide";
-const DRIVER_DATE: &str = "20260507";
-const DRIVER_DESC: &str = "Oxide DRM stub";
+// Fallback strings used when no DrmDriver is registered (e.g.
+// QEMU launched without -device virtio-gpu-pci).
+const FALLBACK_NAME: &str = "oxide";
+const FALLBACK_DATE: &str = "20260509";
+const FALLBACK_DESC: &str = "Oxide DRM (no GPU)";
 
 pub struct DrmCardInode;
 
@@ -111,64 +109,85 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
     }
     match req {
         DRM_IOCTL_VERSION => {
+            // Look up the registered DrmDriver (card 0); fall back
+            // to "oxide / no-GPU" strings when none registered.
+            let cards = drm::cards();
+            let (name, date, desc, ver) = match cards.first() {
+                Some(d) => (d.name(), d.date(), d.desc(), d.version()),
+                None    => (FALLBACK_NAME, FALLBACK_DATE, FALLBACK_DESC, (1, 6, 0)),
+            };
             // SAFETY: arg validated < USER_VA_END; struct drm_version is 88 bytes.
             let mut v: DrmVersion = unsafe { core::ptr::read_volatile(arg as *const DrmVersion) };
-            v.version_major = 1;
-            v.version_minor = 6;
-            v.version_patchlevel = 0;
-            // Write back the user-pointer-targeted strings (truncate
-            // to the buffer length the caller supplied; userspace
-            // libdrm uses two-pass: first call asks for sizes, second
-            // call provides buffers).
+            v.version_major     = ver.0 as i32;
+            v.version_minor     = ver.1 as i32;
+            v.version_patchlevel = ver.2 as i32;
             // SAFETY: each user pointer + len validated < USER_VA_END before write; CPL=0 writes through caller's AS.
             unsafe {
                 if v.name != 0 && v.name < hal::USER_VA_END && v.name_len > 0 {
-                    let n = (v.name_len as usize).min(DRIVER_NAME.len());
+                    let n = (v.name_len as usize).min(name.len());
                     for i in 0..n {
-                        core::ptr::write_volatile((v.name + i as u64) as *mut u8, DRIVER_NAME.as_bytes()[i]);
+                        core::ptr::write_volatile((v.name + i as u64) as *mut u8, name.as_bytes()[i]);
                     }
                 }
                 if v.date != 0 && v.date < hal::USER_VA_END && v.date_len > 0 {
-                    let n = (v.date_len as usize).min(DRIVER_DATE.len());
+                    let n = (v.date_len as usize).min(date.len());
                     for i in 0..n {
-                        core::ptr::write_volatile((v.date + i as u64) as *mut u8, DRIVER_DATE.as_bytes()[i]);
+                        core::ptr::write_volatile((v.date + i as u64) as *mut u8, date.as_bytes()[i]);
                     }
                 }
                 if v.desc != 0 && v.desc < hal::USER_VA_END && v.desc_len > 0 {
-                    let n = (v.desc_len as usize).min(DRIVER_DESC.len());
+                    let n = (v.desc_len as usize).min(desc.len());
                     for i in 0..n {
-                        core::ptr::write_volatile((v.desc + i as u64) as *mut u8, DRIVER_DESC.as_bytes()[i]);
+                        core::ptr::write_volatile((v.desc + i as u64) as *mut u8, desc.as_bytes()[i]);
                     }
                 }
             }
-            v.name_len = DRIVER_NAME.len() as u64;
-            v.date_len = DRIVER_DATE.len() as u64;
-            v.desc_len = DRIVER_DESC.len() as u64;
-            // SAFETY: arg validated < USER_VA_END at the top of this fn; struct drm_version is 88 bytes; CPL=0 writes through caller's AS.
+            v.name_len = name.len() as u64;
+            v.date_len = date.len() as u64;
+            v.desc_len = desc.len() as u64;
+            // SAFETY: arg validated; struct drm_version is 88 bytes; CPL=0 writes through caller's AS.
             unsafe { core::ptr::write_volatile(arg as *mut DrmVersion, v); }
             Some(0)
         }
         DRM_IOCTL_GET_CAP => {
-            // Linux drm_get_cap takes (capability u64, value u64).
-            // Return value=0 for every cap so libdrm sees a "no
-            // capabilities" device, which is correct for our stub.
-            // SAFETY: arg validated < USER_VA_END; cap struct is 16 bytes; aligned u64 write.
-            unsafe { core::ptr::write_volatile((arg + 8) as *mut u64, 0); }
+            // struct drm_get_cap { capability u64; value u64; }.
+            // Delegate to driver.cap(); fall back to drm::default_cap.
+            // SAFETY: arg validated < USER_VA_END; aligned u64 read of capability + write of value.
+            let cap = unsafe { core::ptr::read_volatile(arg as *const u64) };
+            let cards = drm::cards();
+            let val = match cards.first() {
+                Some(d) => d.cap(cap),
+                None    => drm::default_cap(cap),
+            };
+            // SAFETY: arg validated; cap struct is 16 bytes; value at +8.
+            unsafe { core::ptr::write_volatile((arg + 8) as *mut u64, val); }
             Some(0)
         }
         DRM_IOCTL_GET_UNIQUE => Some(0),
         DRM_IOCTL_SET_VERSION => Some(0),
         DRM_IOCTL_MODE_GETRESOURCES => {
-            // struct drm_mode_card_res { fb_id_ptr, crtc_id_ptr,
-            // connector_id_ptr, encoder_id_ptr (4×u64), then
-            // count_fbs, count_crtcs, count_connectors,
-            // count_encoders, min_w, max_w, min_h, max_h (8×u32) }.
-            // V1: zero counts + max bounds (no display surface).
-            // SAFETY: arg validated < USER_VA_END; struct ≥ 64 bytes; aligned u32 stores.
+            // drm_mode_card_res: 4 ptrs (32 B) + count_fbs/crtcs/
+            // connectors/encoders (4×u32) + min/max width/height
+            // (4×u32). Total 64 B.
+            let cards = drm::cards();
+            let (count_fbs, count_crtcs, count_conns, count_encs) = match cards.first() {
+                Some(d) => d.resource_counts(),
+                None    => (0, 0, 0, 0),
+            };
+            let (min_w, max_w, min_h, max_h) = match cards.first() {
+                Some(d) => d.dim_bounds(),
+                None    => (0, 0, 0, 0),
+            };
+            // SAFETY: arg validated; struct ≥ 64 B; aligned u32 stores.
             unsafe {
-                for i in 0..8u64 {
-                    core::ptr::write_volatile((arg + 32 + i*4) as *mut u32, 0);
-                }
+                core::ptr::write_volatile((arg + 32) as *mut u32, count_fbs);
+                core::ptr::write_volatile((arg + 36) as *mut u32, count_crtcs);
+                core::ptr::write_volatile((arg + 40) as *mut u32, count_conns);
+                core::ptr::write_volatile((arg + 44) as *mut u32, count_encs);
+                core::ptr::write_volatile((arg + 48) as *mut u32, min_w);
+                core::ptr::write_volatile((arg + 52) as *mut u32, max_w);
+                core::ptr::write_volatile((arg + 56) as *mut u32, min_h);
+                core::ptr::write_volatile((arg + 60) as *mut u32, max_h);
             }
             Some(0)
         }

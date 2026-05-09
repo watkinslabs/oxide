@@ -117,6 +117,8 @@ pub mod userfaultfd;
 pub mod perf;
 pub mod coredump;
 pub mod dev_drm;
+#[cfg(target_os = "oxide-kernel")]
+pub mod dev_fbdev;
 pub mod syscall_glue_signal;
 pub mod ptrace_singlestep;
 pub mod syscall_glue_select;
@@ -556,22 +558,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { pf_recover_smoke::run(); }
     }
 
-    // Initialise the global user AddressSpace + demand-paging fault
-    // hook per `11§3`/`11§5`. Must run before any userspace smoke so
-    // mmap and #PF go through the real AS.
+    // user AS + demand-paging fault hook per 11§3/11§5; must run
+    // before any userspace smoke so mmap and #PF go through the real AS.
     #[cfg(target_os = "oxide-kernel")]
     {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { user_as::init(info.hhdm_offset); }
-        // Register `/dev/console` + `/dev/tty*` in the v1 devfs
-        // registry per docs/19. `sys_open(2)` resolves through here.
-        devfs::init();
-        // P3-17 procfs static-file entries.
-        procfs::init();
+        devfs::init(); procfs::init();
         crate::dev_drm::register();
         tmpfs::init(); dev_tracefs::init(); dev_input::init();
-        dev_pty::init();
-        // P3-16/P3-18/P3-29/P3-77 boot-time smokes.
+        dev_fbdev::init(); dev_pty::init();
+        // boot smokes:
         dev_misc::smoke_test();
         procfs::smoke_test();
         dev_pipe::smoke_test();
