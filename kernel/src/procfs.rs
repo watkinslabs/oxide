@@ -702,17 +702,7 @@ pub struct ProcPidLimitsInode { pub tid: u32 }
 pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
-    use core::sync::atomic::Ordering;
-    let mut out = alloc::vec::Vec::with_capacity(256);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
-    let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
-    push(&mut out, b"Name:\t"); push(&mut out, task.name.as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"State:\t"); push(&mut out, task.state().linux_status_label().as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid as u64); push(&mut out, b"\n");
-    push(&mut out, b"Pid:\t");  push_u64(&mut out, tid as u64); push(&mut out, b"\n");
-    push(&mut out, b"PPid:\t"); push_u64(&mut out, ppid); push(&mut out, b"\n");
-    push(&mut out, b"Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nThreads:\t1\n");
-    out
+    crate::procfs_pid_status::body(tid)
 }
 
 fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {

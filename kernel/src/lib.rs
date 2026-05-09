@@ -70,6 +70,8 @@ pub mod sched;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs_meminfo;
 /// F158: /proc/<pid>/smaps detailed per-VMA memory stats.
 #[cfg(target_os = "oxide-kernel")] pub mod procfs_smaps;
+/// F158: /proc/<pid>/status body builder (Linux-conformant fields).
+#[cfg(target_os = "oxide-kernel")] pub mod procfs_pid_status;
 
 /// Minimal devfs registry per docs/16 + docs/19. Path → InodeRef
 /// table for `/dev/console` + `/dev/tty*`. Resolved by `sys_open`.
