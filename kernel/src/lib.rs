@@ -303,9 +303,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
     }
 
-    // flock(2) per-inode drop hook (release on last close).
+    // vfs hooks: flock release-on-close + inotify IN_MODIFY-on-write.
     #[cfg(target_os = "oxide-kernel")]
-    crate::flock::install_drop_hook();
+    { crate::flock::install_drop_hook(); crate::dev_inotify::install_write_hook(); }
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
