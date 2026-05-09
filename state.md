@@ -38,6 +38,9 @@ real impl or honest ENOSYS. Breakdown:
   - **F84 #804** real chmod/chown family (mode + uid/gid overlay)
   - **F86 #806** real rseq with cpu_id writeback at syscall return
   - **F87 #807** real vhangup (SIGHUP to session)
+  - **F89 #809** real MAP_FIXED via munmap-then-insert (closes audit PR-G)
+  - **D29 #810** kernel-audit doc reflects PR-G closed
+  - **F90 #811** real xattr family via per-inode overlay (v2 phase 26 substrate)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
