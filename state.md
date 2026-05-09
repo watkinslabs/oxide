@@ -72,6 +72,10 @@ real impl or honest ENOSYS. Breakdown:
   - **F117 #856** real setns + NsInode (open /proc/<pid>/ns/<type> → real Inode)
   - **R06 #857** 27-security R01 — per-user-NS cap scoping
   - **F118 #858** per-user-NS cap scoping via has_cap_for ancestor walk
+  - **R07 #860** 16-vfs R01 — per-mount-NS table representation
+  - **F119 #861** per-mount-NS table — closes CLONE_NEWNS isolation gap
+  - **R08 #862** 24-ipc R01 — AF_UNIX SOCK_DGRAM + SCM_CREDS + SCM_RIGHTS
+  - **F120 #863** AF_UNIX SOCK_DGRAM admits with per-socket queue (first slice of §1.5)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
