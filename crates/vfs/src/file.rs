@@ -70,6 +70,44 @@ pub fn set_close_hook(f: fn(&InodeRef, bool)) {
     CLOSE_HOOK.store(f as u64, Ordering::Release);
 }
 
+/// Dirent-mutation hooks per `16§R02`. Fired by devfs / tmpfs path-
+/// registry mutations so inotify watches on the parent directory
+/// can dispatch IN_CREATE / IN_DELETE / IN_MOVED with the new dirent
+/// name. Args: (parent_path, leaf_name).
+static DIRENT_CREATE_HOOK: AtomicU64 = AtomicU64::new(0);
+static DIRENT_DELETE_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// # C: O(1)
+pub fn set_dirent_create_hook(f: fn(&str, &str)) {
+    DIRENT_CREATE_HOOK.store(f as u64, Ordering::Release);
+}
+/// # C: O(1)
+pub fn set_dirent_delete_hook(f: fn(&str, &str)) {
+    DIRENT_DELETE_HOOK.store(f as u64, Ordering::Release);
+}
+
+/// Fire the dirent-create hook (no-op when not installed).
+/// # C: O(1)
+pub fn fire_dirent_create(parent: &str, leaf: &str) {
+    let h = DIRENT_CREATE_HOOK.load(Ordering::Acquire);
+    if h == 0 { return; }
+    // SAFETY: h was installed by `set_dirent_create_hook` with the
+    // documented signature.
+    let f: fn(&str, &str) = unsafe { core::mem::transmute(h) };
+    f(parent, leaf);
+}
+
+/// Fire the dirent-delete hook (no-op when not installed).
+/// # C: O(1)
+pub fn fire_dirent_delete(parent: &str, leaf: &str) {
+    let h = DIRENT_DELETE_HOOK.load(Ordering::Acquire);
+    if h == 0 { return; }
+    // SAFETY: h was installed by `set_dirent_delete_hook` with the
+    // documented signature.
+    let f: fn(&str, &str) = unsafe { core::mem::transmute(h) };
+    f(parent, leaf);
+}
+
 impl Drop for File {
     fn drop(&mut self) {
         if self.flock_op.load(Ordering::Acquire) != 0 {
