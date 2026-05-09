@@ -57,6 +57,15 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
         // SAFETY: per-task slot single-mutator per `13§5`; running task on this CPU is the sole writer of uts_hostname.
         unsafe { *cur.uts_hostname.get() = snap; }
     }
+    if (bits & (1u64 << 2)) != 0 {
+        // CLONE_NEWIPC — allocate a fresh namespace id for this task.
+        // SysV shm/sem/msg key lookups now match only entries tagged
+        // with this id; new entries are tagged here. Init NS is 0;
+        // first unshare gets 1, etc.
+        static NEXT_IPC_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_IPC_NS.fetch_add(1, Ordering::AcqRel);
+        cur.ipc_ns.store(id, Ordering::Release);
+    }
     0
 }
 
