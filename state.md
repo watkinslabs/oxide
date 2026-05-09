@@ -53,6 +53,7 @@ real impl or honest ENOSYS. Breakdown:
   - **F101 #827** IfaceRegistry NS-aware (CLONE_NEWNET substrate)
   - **F102 #828** inotify IN_OPEN / IN_ACCESS / IN_CLOSE_{WRITE,NOWRITE}
   - **F103 #829** file capabilities at execve via security.capability xattr
+  - **F104 #831** ptrace ATTACH posts SIGSTOP; DETACH wakes target
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
