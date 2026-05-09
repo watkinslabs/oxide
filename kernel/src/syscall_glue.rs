@@ -896,6 +896,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // Handled in the fallthrough below to keep this match arm small.
         crate::syscall_nrs::NR_SET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_set_robust_list(&args),
         crate::syscall_nrs::NR_GET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_get_robust_list(&args),
+        crate::syscall_nrs::NR_SYSLOG          => crate::syscall_glue_dmesg::kernel_sys_syslog(&args),
         crate::syscall_nrs::NR_RT_SIGRETURN  => {
             // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
             unsafe { crate::sig_dispatch::rt_sigreturn() }

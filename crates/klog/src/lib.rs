@@ -173,6 +173,18 @@ fn invoke_sink(bytes: &[u8]) {
 
 const RING_BYTES: usize = 64 * 1024;
 
+/// Public copy of the ring buffer size for `syslog(SYSLOG_ACTION_SIZE_BUFFER)`.
+/// # C: O(1)
+pub const fn ring_size() -> usize { RING_BYTES }
+
+/// Total bytes ever written into the ring (monotonic). syslog
+/// SYSLOG_ACTION_SIZE_UNREAD reports `min(total, RING_BYTES)`.
+/// # C: O(1)
+pub fn ring_total() -> usize {
+    use core::sync::atomic::Ordering;
+    RING.total.load(Ordering::Acquire)
+}
+
 struct DmesgRing {
     buf:  core::cell::UnsafeCell<[u8; RING_BYTES]>,
     head: core::sync::atomic::AtomicUsize,
