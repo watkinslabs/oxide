@@ -245,8 +245,7 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
     core::sync::atomic::fence(Ordering::Release);
     TX_NEXT_AVAIL.store(new_idx, Ordering::Release);
 
-    // Kick the per-queue 1 notify VA (modern transport, MMIO).
-    // SAFETY: q1_notify_va = NOTIFY_BAR + queue 1 * notify_off_multiplier mapped Device-attr by pci_boot::virtio_drv during DRIVER_OK; aligned u16 store.
+    // SAFETY: q1_notify_va Device-attr-mapped during DRIVER_OK; aligned u16 store of queue index 1.
     unsafe {
         core::ptr::write_volatile(s.q1_notify_va as *mut u16, 1u16);
     }
