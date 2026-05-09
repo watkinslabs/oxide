@@ -600,16 +600,33 @@ pub fn enumerate_and_log() {
             }
 
             // F59-11: register the modern virtio-net device as a
-            // NetDev in the kernel iface registry so the net stack
-            // can route through it. v1: just registration + log;
-            // RX delivery into stack.deliver_rx is F59-12.
+            // NetDev in the kernel iface registry. F59-13: also
+            // install a route 10.0.2.0/24 via this iface (SLIRP
+            // network), then drain any pending RX frames into
+            // stack.deliver_rx for one diagnostic pass.
             if let Some(dev) = crate::dev_virtio_net_modern::VirtioNetDev::new() {
-                let id = crate::dev_net::stack().ifaces.register(
+                let stack = crate::dev_net::stack();
+                let id = stack.ifaces.register(
                     dev as alloc::sync::Arc<dyn net::NetDev>,
                 );
                 klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
                 klog::write_dec_u64(id.0 as u64);
                 klog::write_raw(b" name=eth0\n");
+
+                stack.routes.add(net::RouteEntry {
+                    dst:        net::Ipv4Addr::new(10, 0, 2, 0),
+                    prefix_len: 24,
+                    iface:      id,
+                    gateway:    None,
+                    src_hint:   Some(net::Ipv4Addr::new(10, 0, 2, 15)),
+                });
+
+                let drained = crate::dev_virtio_net_modern::poll_into_stack(
+                    id, [10, 0, 2, 15],
+                );
+                klog::write_raw(b"[INFO]  virtio-net-rx-stack drained=");
+                klog::write_dec_u64(drained as u64);
+                klog::write_raw(b"\n");
             }
         }
 
