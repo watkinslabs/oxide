@@ -117,6 +117,7 @@ dependencies = [
 name = "drv-virtio-gpu"
 version = "0.1.0"
 dependencies = [
+ "drm",
  "drv",
  "hal",
  "klog",
@@ -367,11 +368,14 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "block",
+ "drm",
  "drv",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "elf",
  "ext4",
+ "fbcon",
+ "fbdev",
  "firmware",
  "hal",
  "hal-aarch64",
@@ -393,6 +397,7 @@ dependencies = [
  "vfs",
  "virtio",
  "vmm",
+ "vt",
 ]
 
 [[package]]
