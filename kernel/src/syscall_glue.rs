@@ -393,6 +393,7 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
             // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(args.a0 as i32, Ordering::Release);
+            task.vfork_pending.store(false, Ordering::Release); // F156 vfork
             crate::sched::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
