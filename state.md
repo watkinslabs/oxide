@@ -1,32 +1,74 @@
-# State 2026-05-08 (session 51 mid-flight — F59-01..04 landed, F59-05 TX next)
+# State 2026-05-08 (session 51 mid-flight — F59-01..06 landed, F59-07 SLIRP-reply debug next)
 
-## ⚡ Session 52 first task: F59-05 — tx_frame on modern virtio-net
+## ⚡ Session 52 first task: F59-07 — debug "reply=0" from SLIRP
 
-F59-04 (#763) reads the 6-byte MAC from device-cfg cap and persists
-it; `dev_virtio_net_modern::mac()` returns `Some([0x52, 0x54, 0x00,
-0x12, 0x34, 0x56])` (QEMU default) on both arches. Next step is the
-runtime TX path:
+After F59-06 (#766) shipped, both arches log:
+```
+arp-tx src=52:54:00:12:34:56 target_ip=10.0.2.2
+virtio-net-arp-boot tx=1 rx=0 reply=0
+```
 
-  1. Allocate a 4 KiB TX scratch frame at `init_modern` time. Add
-     `tx_buf_pa: u64` to `ModernNetState`.
-  2. `pub fn tx_frame(body: &[u8]) -> Result<(), TxErr>`:
-     - Bail if `body.len()` exceeds `4096 - VIRTIO_NET_HDR_LEN` (12).
-     - Take MODERN_DEV.lock(), HHDM into the scratch buffer, write
-       `virtio_net_hdr` zeros (12 bytes) followed by `body`.
-     - Read q1 used.idx; reclaim any prior in-flight slot (boot
-       probe already issued one; check TX_LAST_USED).
-     - Update q1 desc[0] = { addr=tx_buf_pa, len=12+body.len, flags=0 }.
-     - Append to q1 avail.ring at TX_NEXT_AVAIL%q1_size, fence,
-       bump avail.idx, fence.
-     - Write u16(1) to `q1_notify_va` to kick.
-     - Spin a brief observation window, advance TX_LAST_USED by
-       reading q1 used.idx. Return Ok.
-  3. Cursors: `TX_LAST_USED`, `TX_NEXT_AVAIL` AtomicU16, mirroring
-     RX_LAST_USED/RX_NEXT_AVAIL. Initial state: TX_NEXT_AVAIL=1,
-     TX_LAST_USED=0 (boot probe posted desc 0 already; subsequent
-     calls treat TX_NEXT_AVAIL as next slot to publish).
+The TX path runs end-to-end — q1 used.idx advances after our kick
+— but SLIRP's reply never lands in the RX ring within 50M busy-spin
+cycles. Candidate causes to investigate:
 
-No call site yet (boot ARP comes in F59-06).
+  1. **Feature negotiation gap.** We currently negotiate only
+     `VIRTIO_F_VERSION_1` (`drv_feat=0x100000000`). Modern QEMU
+     virtio-net might require `VIRTIO_NET_F_MAC` (bit 5) +
+     `VIRTIO_NET_F_STATUS` (bit 16) or refuse to actually transmit.
+     Check by adding those bits to `drv_features` before
+     FEATURES_OK. Per Virtio 1.2 §5.1.6.2 a packet header still
+     applies regardless, but feature gating can affect device
+     behaviour around link state.
+  2. **virtio_net_hdr layout.** With `VIRTIO_NET_F_MRG_RXBUF` not
+     negotiated, the header is still 12 bytes per Virtio 1.2
+     §5.1.6.1 (gso_type/csum/hdr_len/etc + num_buffers). We zero
+     all 12. If QEMU rejects on a malformed hdr we'd see
+     virtio-net config errors in QEMU's stderr — check.
+  3. **TX descriptor flags.** `tx_frame` writes `flags=0` on q1
+     desc[0]. Per spec that's correct — the device reads the
+     buffer (driver→device direction).
+  4. **Boot-probe leftover desc state.** The boot probe posted a
+     dummy 60-byte ethernet frame before we override q1 desc[0]
+     with our ARP. Maybe the probe's avail.idx=1 entry is still
+     "in flight" and the device hasn't completed it. Confirm by
+     reading q1 used.idx BEFORE our kick (we now do this
+     post-F59-06 fix); if pre_used=0, the probe's TX never
+     completed, suggesting deeper feature-negotiation issue.
+  5. **QEMU monitor inspection.** Adding `-qmp` or `-monitor`
+     access to the qemu-mcp launch would let us query
+     `info network` / `info pci` for SLIRP state during the wait
+     window. Not strictly needed but informative.
+  6. **Packet capture.** Add `-object filter-dump,id=f0,netdev=
+     net0,file=/tmp/slirp.pcap` to qemu-mcp to capture the wire
+     traffic. If our ARP frame appears there but no reply, SLIRP
+     is rejecting; if not even our request is captured, the kick
+     never reached SLIRP.
+
+Recommend starting at #6 (pcap) — fastest signal on whether our
+TX even leaves the guest. If the request appears, address #1
+(feature negotiation). If not, the kick path is suspect.
+
+## ⚡ Session 51 progress: F59-01..06 landed
+
+  - **F58 verification (no PR)**: modern virtio-net 0x1041 active
+    on both arches; smokes + dyn pass; `lapic-self-fire delta=1`
+    (x86), `its-self-fire last_intid=0x2000` (aarch64); first
+    `msi_fires=1` on virtio-net 0:2.0 aarch64.
+  - **F59-01 #759** persists modern virtio-net runtime state from
+    `pci_boot::virtio_drv` to a new arch-neutral
+    `crate::dev_virtio_net_modern` module.
+  - **F59-02 #760** implements `rx_poll<F>(cb)` on the modern
+    transport (queue 0; one in-flight buffer; cursors as
+    AtomicU16).
+  - **F59-03 #761** calls `rx_poll` once at the tail of
+    `pci_boot::enumerate_and_log` to prove the path doesn't fault.
+  - **F59-04 #763** harvests MAC from device-cfg cap.
+    `dev_virtio_net_modern::mac()` accessor.
+  - **F59-05 #765** `tx_frame(body)` on the modern transport
+    (queue 1; pinned scratch buffer; cursors).
+  - **F59-06 #766** boot-time ARP probe end-to-end. TX works on
+    both arches, SLIRP reply not yet visible (F59-07 above).
 
 ## ⚡ Session 51 progress: F59-01, F59-02, F59-03, F59-04 landed
 
