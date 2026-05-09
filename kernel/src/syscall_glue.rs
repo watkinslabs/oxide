@@ -634,16 +634,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // anonymous tmpfs inode. v1 doesn't run loaded BPF programs;
         // verifier + JIT ride a follow-up. Other cmds → -ENOSYS so
         // userspace doesn't think it has a working bpf() world.
-        crate::syscall_nrs::NR_BPF           => {
-            let cmd = args.a0;
-            // BPF_PROG_LOAD = 5, BPF_MAP_CREATE = 0, BPF_OBJ_GET = 7.
-            if matches!(cmd, 0 | 5 | 7) {
-                let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-                crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
-            } else {
-                -(syscall::errno::Errno::Enosys.as_i32() as i64)
-            }
-        }
+        crate::syscall_nrs::NR_BPF           => crate::dev_bpf::kernel_sys_bpf(&args),
         // landlock_create_ruleset: returns a memfd-shaped placeholder.
         crate::syscall_nrs::NR_LANDLOCK_CREATE_RULESET => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
