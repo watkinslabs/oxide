@@ -35,6 +35,23 @@ pub fn lookup(tid: u32) -> Option<Arc<Task>> {
     g.iter().find(|(t, _)| *t == tid).and_then(|(_, w)| w.upgrade())
 }
 
+/// Resolve `(ns, vpid)` → live `Arc<Task>`. F109: pid-NS-aware
+/// lookup for kill/wait4/tgkill from a task in a non-init pid_ns —
+/// caller's vpid arg is interpreted within their NS instead of as a
+/// real tid. Init-NS callers (`ns == 0`) match by real tid (the
+/// init-NS shortcut).
+/// # C: O(N_tasks)
+pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
+    use core::sync::atomic::Ordering;
+    if ns == 0 { return lookup(vpid); }
+    let g = REG.lock();
+    g.iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .find(|t| t.pid_ns.load(Ordering::Acquire) == ns
+              && (t.vtgid.load(Ordering::Acquire) == vpid
+                  || t.vtid.load(Ordering::Acquire) == vpid))
+}
+
 /// Snapshot live tids for procfs readdir. Skips entries whose
 /// `Weak<Task>` has decayed; opportunistically prunes them.
 /// # C: O(N_tasks)

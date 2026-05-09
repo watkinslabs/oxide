@@ -50,7 +50,11 @@ pub fn kernel_sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
     let pid = args.a0 as u32;
-    if crate::sched::registry::lookup(pid).is_none() {
+    // F109: pidfd_open with pid arg interpreted in caller's pid_ns.
+    let cur_ns = crate::sched::current()
+        .map(|c| c.pid_ns.load(core::sync::atomic::Ordering::Acquire))
+        .unwrap_or(0);
+    if crate::sched::registry::lookup_in_ns(cur_ns, pid).is_none() {
         return -(Errno::Esrch.as_i32() as i64);
     }
     let cur = match crate::sched::current() {
