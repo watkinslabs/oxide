@@ -1,6 +1,28 @@
 # 24 IPC: pipes, signals, futex, eventfd, signalfd, timerfd, AF_UNIX
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
+
+## Revision 2026-05-09 (R01)
+
+- Changed: pinned the v1 AF_UNIX cmsg shape. SOCK_DGRAM admitted via
+  socket(AF_UNIX, SOCK_DGRAM, 0); each datagram carries its sender's
+  (pid, uid, gid) snapshot taken at sendmsg time. recvmsg with
+  msg_control buffer writes back any pending SCM_CREDENTIALS or
+  SCM_RIGHTS cmsgs. SCM_RIGHTS at sendmsg dups each fd into a
+  per-message side-array; recvmsg dups them into the receiver's
+  fd_table at delivery.
+- Why: F114 admitted socket(AF_UNIX, SOCK_STREAM); SOCK_DGRAM was
+  EAFNOSUPPORT. systemd-journald, dbus, ssh-agent rely on dgram +
+  SCM_RIGHTS for fd passing. Without per-message metadata the cmsg
+  contract can't ride the existing byte-stream rings.
+- Affected code: `crates/net/src/unix_sock.rs` (UnixDgramQueue +
+  UnixMsg + Cmsg); `kernel/src/syscall_glue_net.rs` (sendmsg
+  parses msg_control, recvmsg writes msg_control); fd dup at
+  recv-time uses the existing dup3 path.
+- Test contract change: §10 acceptance gains a "fd passing over
+  AF_UNIX" smoke — task A creates a pipe, sends the read end via
+  SCM_RIGHTS, task B receives the cmsg and reads from it.
+
 ## 1 Purpose
 
 Bundle of small inter-task primitives. Each is small individually; spec'd together because they share patterns (wait queue + fd-as-handle).
