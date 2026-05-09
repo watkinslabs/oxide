@@ -6,13 +6,14 @@
 //
 // Boot chain:
 //   1. Print "oxide init: hello\n".
-//   2. Try execve("/sbin/svcd", argv=["svcd"], envp=[]) — if svcd
-//      exists, hand off the supervision job.
-//   3. Fallback: respawn /bin/sh in a loop (legacy P5 behavior),
-//      capped at 8 iterations to avoid runaway when sh refuses
-//      to start.
+//   2. If /etc/oxide-init-smokes exists → run kernel-IPC + dual-image
+//      acceptance smokes (sem/msg/mq/ptrace/mprotect/hello_dyn/
+//      oxide-echo). Each prints its own PASS/FAIL marker.
+//   3. Drop into /bin/sh respawn loop. With /dev/console fd 0/1/2
+//      already wired by the kernel, busybox sh comes up interactive.
 
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 
 static long mlen(const char* s) { long n = 0; while (s[n]) n++; return n; }
@@ -21,6 +22,12 @@ void _start(void) {
     static const char hello[] = "oxide init: hello from real-musl PID 1\n";
     write(1, hello, sizeof(hello) - 1);
 
+    // Smokes gate: present file → run acceptance suite, absent →
+    // skip straight to sh. xtask rootfs creates the marker by
+    // default so existing CI keeps exercising the kernel-IPC path;
+    // an interactive boot drops the marker before image build.
+    int run_smokes = (access("/etc/oxide-init-smokes", F_OK) == 0);
+    if (run_smokes) {
     // F62 exec-path bring-up smokes. /bin/bare = oxide_start.h
     // _start, no musl init. /bin/bare2 = same + reads argv[1].
     // /bin/bare3 = full musl crt1 (the same path busybox follows).
@@ -139,8 +146,13 @@ void _start(void) {
         waitpid((int)pid, &status, 0);
     }
 
-    // Fallback: legacy interactive sh loop (login flow). Capped
-    // to avoid runaway when sh refuses to start.
+    } // end if (run_smokes)
+
+    // Interactive sh loop. /dev/console fd 0/1/2 is wired by the
+    // kernel before user-blob spawn (see dev_console.rs init_console_
+    // fd_table); busybox sh comes up with a working stdin and prints
+    // its prompt. Cap at 8 iters to avoid runaway when sh refuses to
+    // start.
     for (int i = 0; i < 8; i++) {
         long pid = (long)fork();
         if (pid == 0) {
