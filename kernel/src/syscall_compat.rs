@@ -77,7 +77,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // are real (priority-ordered records via posix_mq.rs).
         // MQ_NOTIFY/GETSETATTR stay silent-0 (no per-task signal-on-
         // arrival yet, no live mq_attr mutation).
-        | NR_MQ_NOTIFY | NR_MQ_GETSETATTR => Some(0),
+        // MQ_NOTIFY / MQ_GETSETATTR moved to real impl (F77).
+                                       => Some(0),
 
         // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
         // xattr family: tar/cp -a/rsync probe these and skip cleanly
