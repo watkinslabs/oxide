@@ -103,6 +103,8 @@ fn uid_allowed(target: u32, r: u32, e: u32, s: u32) -> bool {
 }
 
 /// `sys_setresuid(ruid, euid, suid)` — slot 117.
+/// Free-transition allowed when the task holds CAP_SETUID (F92).
+/// Without the cap, transitions are confined to the existing triple.
 /// # C: O(1)
 pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
@@ -112,7 +114,7 @@ pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
     let cr = cur.creds.ruid.load(Ordering::Acquire);
     let ce = cur.creds.euid.load(Ordering::Acquire);
     let cs = cur.creds.suid.load(Ordering::Acquire);
-    if !cur.creds.is_root() {
+    if !cur.has_cap(sched::cap::SETUID) {
         if r != NOCHANGE && !uid_allowed(r, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if e != NOCHANGE && !uid_allowed(e, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if s != NOCHANGE && !uid_allowed(s, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
@@ -126,7 +128,7 @@ pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_setresgid(rgid, egid, sgid)` — slot 119.
+/// `sys_setresgid(rgid, egid, sgid)` — slot 119. Cap = SETGID.
 /// # C: O(1)
 pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
@@ -136,7 +138,7 @@ pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
     let cr = cur.creds.rgid.load(Ordering::Acquire);
     let ce = cur.creds.egid.load(Ordering::Acquire);
     let cs = cur.creds.sgid.load(Ordering::Acquire);
-    if !cur.creds.is_root() {
+    if !cur.has_cap(sched::cap::SETGID) {
         if r != NOCHANGE && !uid_allowed(r, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if e != NOCHANGE && !uid_allowed(e, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if s != NOCHANGE && !uid_allowed(s, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
@@ -155,7 +157,7 @@ pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_setuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
     let uid = args.a0 as u32;
-    if cur.creds.is_root() {
+    if cur.has_cap(sched::cap::SETUID) {
         cur.creds.ruid.store(uid,  Ordering::Release);
         cur.creds.euid.store(uid,  Ordering::Release);
         cur.creds.suid.store(uid,  Ordering::Release);
@@ -176,7 +178,7 @@ pub fn kernel_sys_setuid(args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_setgid(args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
     let gid = args.a0 as u32;
-    if cur.creds.is_root() {
+    if cur.has_cap(sched::cap::SETGID) {
         cur.creds.rgid.store(gid,  Ordering::Release);
         cur.creds.egid.store(gid,  Ordering::Release);
         cur.creds.sgid.store(gid,  Ordering::Release);
@@ -204,7 +206,7 @@ pub fn kernel_sys_setreuid(args: &SyscallArgs) -> i64 {
     let cr = cur.creds.ruid.load(Ordering::Acquire);
     let ce = cur.creds.euid.load(Ordering::Acquire);
     let cs = cur.creds.suid.load(Ordering::Acquire);
-    if !cur.creds.is_root() {
+    if !cur.has_cap(sched::cap::SETUID) {
         if r != NOCHANGE && !uid_allowed(r, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if e != NOCHANGE && !uid_allowed(e, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
     }
@@ -229,7 +231,7 @@ pub fn kernel_sys_setregid(args: &SyscallArgs) -> i64 {
     let cr = cur.creds.rgid.load(Ordering::Acquire);
     let ce = cur.creds.egid.load(Ordering::Acquire);
     let cs = cur.creds.sgid.load(Ordering::Acquire);
-    if !cur.creds.is_root() {
+    if !cur.has_cap(sched::cap::SETGID) {
         if r != NOCHANGE && !uid_allowed(r, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if e != NOCHANGE && !uid_allowed(e, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
     }
@@ -257,7 +259,7 @@ pub fn kernel_sys_setfsuid(args: &SyscallArgs) -> i64 {
     let cr = cur.creds.ruid.load(Ordering::Acquire);
     let ce = cur.creds.euid.load(Ordering::Acquire);
     let cs = cur.creds.suid.load(Ordering::Acquire);
-    if cur.creds.is_root() || uid == prev || uid_allowed(uid, cr, ce, cs) {
+    if cur.has_cap(sched::cap::SETUID) || uid == prev || uid_allowed(uid, cr, ce, cs) {
         cur.creds.fsuid.store(uid, Ordering::Release);
     }
     prev as i64
@@ -274,7 +276,7 @@ pub fn kernel_sys_setfsgid(args: &SyscallArgs) -> i64 {
     let cr = cur.creds.rgid.load(Ordering::Acquire);
     let ce = cur.creds.egid.load(Ordering::Acquire);
     let cs = cur.creds.sgid.load(Ordering::Acquire);
-    if cur.creds.is_root() || gid == prev || uid_allowed(gid, cr, ce, cs) {
+    if cur.has_cap(sched::cap::SETGID) || gid == prev || uid_allowed(gid, cr, ce, cs) {
         cur.creds.fsgid.store(gid, Ordering::Release);
     }
     prev as i64
@@ -311,7 +313,7 @@ pub fn kernel_sys_getgroups(args: &SyscallArgs) -> i64 {
 /// # C: O(NGROUPS_V1)
 pub fn kernel_sys_setgroups(args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
-    if !cur.creds.is_root() { return -(Errno::Eperm.as_i32() as i64); }
+    if !cur.has_cap(sched::cap::SETGID) { return -(Errno::Eperm.as_i32() as i64); }
     let size = args.a0 as usize;
     let list = args.a1;
     if size > sched::Creds::NGROUPS_V1 { return -(Errno::Einval.as_i32() as i64); }
