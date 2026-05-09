@@ -561,6 +561,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
             &[b"/init"], &[],
             &img,
             &random16,
+            b"/init",
         )
     }.unwrap_or(USER_STACK_TOP);
 
@@ -797,6 +798,7 @@ unsafe fn spawn_user_blob_smoke(
             argv_ref, &[],
             &img,
             &random16,
+            argv_ref.first().copied().unwrap_or(b""),
         )
     }.unwrap_or(USER_STACK_TOP);
 
