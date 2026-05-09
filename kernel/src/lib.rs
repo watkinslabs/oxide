@@ -142,6 +142,8 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_dmesg;
 #[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_falloc;
+#[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_epoll;
