@@ -507,7 +507,10 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
 
 
 /// x86 sys_arch_prctl — slot 158. ARCH_SET_FS writes IA32_FS_BASE
-/// via wrmsr; ARCH_GET_FS returns 0 (rdmsr stub); else -EINVAL.
+/// via wrmsr; ARCH_GET_FS reads IA32_FS_BASE via rdmsr and stores
+/// to the user pointer in `val`; else -EINVAL. Matches Linux
+/// `arch_prctl(2)` semantics for the FS-base subset; GS-base
+/// rides v2.x once SWAPGS / KERNEL_GS_BASE bring-up lands.
 #[cfg(target_arch = "x86_64")]
 fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
     let code = args.a0;

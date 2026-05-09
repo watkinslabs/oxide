@@ -71,8 +71,10 @@ pub fn smoke_test() {
     let n = pipe.read(0, &mut buf).expect("pipe.read");
     kassert!(n == 5, "pipe read len");
     kassert!(&buf[..5] == b"hello", "pipe round-trip body");
-    let n = pipe.read(0, &mut buf).expect("pipe.read empty");
-    kassert!(n == 0, "pipe drained");
+    // Drained pipe with active write-side: Eagain per Linux pipe(7)
+    // (true 0=EOF only when all writers closed — rides P3-01b).
+    let r = pipe.read(0, &mut buf);
+    kassert!(matches!(r, Err(vfs::VfsError::Eagain)), "pipe drained = EAGAIN");
 
     // Eventfd round-trip: write 0x1234 → read swaps to 0,
     // returns prior value as 8-byte LE.
@@ -165,12 +167,16 @@ impl Inode for PipeInode {
         Err(VfsError::Enotdir)
     }
 
-    /// Non-blocking read: copies up to `buf.len()` bytes from the
-    /// ringbuffer. Returns `Ok(0)` (treated as EOF by some callers
-    /// or EAGAIN by others) if the buffer is empty. Real Linux
-    /// blocks unless `O_NONBLOCK`; v1 stub returns 0.
+    /// Pipe read per `24§3` + Linux pipe(7). Returns up to
+    /// `buf.len()` bytes from the ringbuffer when data is present.
+    /// On an empty pipe, returns `Eagain` (matches Linux
+    /// `O_NONBLOCK` semantics — `0` would be EOF, which Linux only
+    /// signals when all write-ends are closed). True blocking +
+    /// proper EOF detection ride writer-count tracking + the
+    /// `WaitQueue` plumbing per `24§3`.
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut g = self.buf.lock();
+        if g.len == 0 { return Err(VfsError::Eagain); }
         let mut n = 0;
         while n < buf.len() {
             match g.pop() {
