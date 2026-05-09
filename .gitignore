@@ -133,3 +133,4 @@ vmcore*
 # /tools/docker/Dockerfile.* — image source
 # /.github/workflows/*.yml — CI source
 # /rust-toolchain.toml     — toolchain pin
+vendor/busybox/busybox-1.37.0/
