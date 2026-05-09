@@ -738,7 +738,26 @@ pub fn glue_mmap(
     const MAP_FIXED:   u64 = 0x10;
     const MAP_ANON:    u64 = 0x20;
     const MAP_GROWSDOWN: u64       = 0x100;
+    const MAP_DENYWRITE: u64       = 0x800;     // no-op since 2.6
+    const MAP_EXECUTABLE: u64      = 0x1000;    // no-op since 2.6
+    const MAP_LOCKED:    u64       = 0x2000;    // accept as no-op (no swap)
+    const MAP_NORESERVE: u64       = 0x4000;    // accept; we don't overcommit
+    const MAP_POPULATE:  u64       = 0x8000;    // accept; demand-fault still works
+    const MAP_NONBLOCK:  u64       = 0x10000;   // accept; no readahead anyway
+    const MAP_STACK:     u64       = 0x20000;   // alias for GROWSDOWN per Linux
+    const MAP_HUGETLB:   u64       = 0x40000;   // reject (no huge-tlb yet)
+    const MAP_SYNC:      u64       = 0x80000;   // DAX; accept as no-op
     const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+    const MAP_UNINITIALIZED: u64   = 0x4000000; // CONFIG_MMAP_ALLOW_UNINITIALIZED
+    // Bit-field of all flags we tolerate without semantic effect.
+    const MAP_KNOWN: u64 = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANON
+        | MAP_GROWSDOWN | MAP_DENYWRITE | MAP_EXECUTABLE | MAP_LOCKED
+        | MAP_NORESERVE | MAP_POPULATE | MAP_NONBLOCK | MAP_STACK
+        | MAP_HUGETLB | MAP_SYNC | MAP_FIXED_NOREPLACE | MAP_UNINITIALIZED;
+    // Linux: unknown flags → EINVAL (kernel rejects future bits).
+    if (flags & !MAP_KNOWN) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    // MAP_HUGETLB: huge-page backing; v1 has no huge-tlb pool. Reject.
+    if (flags & MAP_HUGETLB) != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
 
     // F60: file-backed mmap stays out of v1 (needs VFS+pagecache
     // wiring per `17§5`). Anonymous mmap now honours MAP_FIXED, the
@@ -753,7 +772,9 @@ pub fn glue_mmap(
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
     let want_fixed = flags & MAP_FIXED != 0;
     let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
-    let want_grows_down = flags & MAP_GROWSDOWN != 0;
+    // F158: MAP_STACK is documented as an alias for MAP_GROWSDOWN
+    // (sets up a stack VMA the kernel can auto-extend on PF).
+    let want_grows_down = flags & (MAP_GROWSDOWN | MAP_STACK) != 0;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
     if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
