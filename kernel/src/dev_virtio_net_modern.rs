@@ -451,6 +451,55 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
     out
 }
 
+// -------- F59-13: poll RX into the kernel net stack -------------------
+//
+// `poll_into_stack(iface)` drains rx_poll once and dispatches each
+// frame: ARP → arp_cache (with a synchronous reply if it's a
+// request for `our_ip`); IPv4 → strip eth header + hand to
+// `stack.deliver_rx(iface, l3)`. Intended call site is a periodic
+// kthread or per-tick hook; v1 invokes it once at boot for a
+// diagnostic line, replacing the explicit ARP+ICMP probes once the
+// stack is fully wired (F59-14+). Returns frames consumed.
+
+/// Drain pending RX frames into the kernel net stack. ARP requests
+/// for `our_ip` get a synchronous reply via `tx_frame`. Returns the
+/// number of frames consumed.
+/// # C: O(rx_drain)
+pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
+    let our_mac = match mac() { Some(m) => m, None => return 0 };
+    let stack = crate::dev_net::stack();
+    rx_poll(|f: &[u8]| {
+        if f.len() < 14 { return; }
+        let et = ((f[12] as u16) << 8) | (f[13] as u16);
+        match et {
+            0x0806 => {
+                if f.len() < 14 + 28 { return; }
+                if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
+                    arp_cache().insert(arp.sender_ip, arp.sender_mac);
+                    if arp.opcode == net::arp::ARP_OP_REQUEST
+                        && arp.target_ip.octets() == our_ip
+                    {
+                        let reply_body = net::arp::build_reply(
+                            &arp, net::MacAddr(our_mac),
+                        );
+                        let mut frame = alloc::vec![0u8; 14 + reply_body.len()];
+                        net::ethernet::EthHdr::write_to(
+                            arp.sender_mac, net::MacAddr(our_mac),
+                            net::eth_p::ARP, &mut frame[..14],
+                        );
+                        frame[14..].copy_from_slice(&reply_body);
+                        let _ = tx_frame(&frame);
+                    }
+                }
+            }
+            0x0800 => {
+                let _ = stack.deliver_rx(iface, &f[14..]);
+            }
+            _ => {}
+        }
+    })
+}
+
 // -------- F59-12: boot ICMP echo to the gateway -----------------------
 //
 // After the ARP probe lands a gateway MAC in arp_cache, send an
