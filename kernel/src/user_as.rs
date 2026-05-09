@@ -713,17 +713,26 @@ pub fn glue_mmap(
     let is_shared  = flags & MAP_SHARED  != 0;
     let is_private = flags & MAP_PRIVATE != 0;
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
-    // F62: MAP_FIXED is destructive (overlaps get unmapped per
-    // 11§6); userspace expects it to silently overwrite any
-    // existing VMA. F60 enabled it but breaks programs that
-    // share an AS with the loader (e.g., busybox' early TLS /
-    // brk-region carving against the existing PT_LOAD VMAs).
-    // Keep MAP_FIXED returning ENOSYS until per-process MAP_FIXED
-    // accounting (overlap exact-cover-only or vma_flags::PLACEHOLDER)
-    // lands.
-    if flags & MAP_FIXED != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
-    let is_fixed = false;
+    let want_fixed = flags & MAP_FIXED != 0;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
+    if want_fixed && (addr == 0 || (addr & 0xfff) != 0) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    // F89: MAP_FIXED is destructive (overlaps unmapped per 11§6).
+    // F60 enabled it via `tree.remove_range` but the page-table side
+    // wasn't cleared, leaving stale PTEs that broke programs sharing
+    // an AS with the loader. The fix: call glue_munmap on the overlap
+    // range FIRST so PTEs + frames + TLB are all properly torn down,
+    // then proceed with a non-fixed VMA insertion (the range is now
+    // hole, so the hint-first path in vmm::mmap lands on the requested
+    // addr without conflicting with stale state).
+    if want_fixed {
+        let _ = glue_munmap(addr, len_aligned as u64);
+    }
+    // We pass fixed=false to vmm::mmap regardless: after the munmap
+    // above, the hint range is clear and the non-fixed path's
+    // hint-first placement will pick it.
+    let is_fixed = false;
     let vma_flags = if is_shared {
         VmaFlags::SHARED | VmaFlags::ANONYMOUS
     } else {
