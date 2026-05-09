@@ -72,6 +72,7 @@ pub unsafe fn build_user_stack(
     envp: &[&[u8]],
     img:  &LoadedImage,
     random16: &[u8; 16],
+    exec_path: &[u8],
 ) -> Option<u64> {
     let mut cursor = stack_top;
 
@@ -82,6 +83,10 @@ pub unsafe fn build_user_stack(
     // SAFETY: same as above; PLATFORM is a 'static byte slice, in-bounds writes only.
     let platform_va = unsafe { push_bytes(&mut cursor, PLATFORM) }?;
 
+    // F62 attempted to set AT_EXECFN to the real exec path — but that
+    // broke busybox's startup path. Revert to the legacy argv[0]
+    // value while we investigate.
+    let _ = exec_path;
     let execfn_bytes: &[u8] = if !argv.is_empty() { argv[0] } else { b"\0" };
     // SAFETY: same as above; bytes len is bounded by caller-supplied argv slice.
     let execfn_va = unsafe { push_cstr(&mut cursor, execfn_bytes) }?;
