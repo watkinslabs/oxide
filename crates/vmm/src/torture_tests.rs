@@ -583,3 +583,124 @@ fn allocator_returns_none_when_full() {
         VmaBacking::Anonymous, false);
     assert!(r.is_err(), "no hole left → NoMem");
 }
+
+// ---------------------------------------------------------------
+// PROT_NONE enforcement — every access kind must be denied
+// ---------------------------------------------------------------
+
+#[test]
+fn prot_none_denies_read_write_exec() {
+    use crate::vma::FaultAccess;
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), PAGE, VmaProt::empty(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    let v = a.find_vma(h).unwrap();
+    assert!(!v.permits(FaultAccess::Read));
+    assert!(!v.permits(FaultAccess::Write));
+    assert!(!v.permits(FaultAccess::Exec));
+}
+
+#[test]
+fn prot_x_only_denies_read_and_write() {
+    use crate::vma::FaultAccess;
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), PAGE, VmaProt::EXEC, priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    let v = a.find_vma(h).unwrap();
+    assert!(!v.permits(FaultAccess::Read));
+    assert!(!v.permits(FaultAccess::Write));
+    assert!(v.permits(FaultAccess::Exec));
+}
+
+#[test]
+fn prot_r_only_denies_write_and_exec() {
+    use crate::vma::FaultAccess;
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), PAGE, VmaProt::READ, priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    let v = a.find_vma(h).unwrap();
+    assert!(v.permits(FaultAccess::Read));
+    assert!(!v.permits(FaultAccess::Write));
+    assert!(!v.permits(FaultAccess::Exec));
+}
+
+// ---------------------------------------------------------------
+// Mremap shrink / no-op / grow MAYMOVE preserves data semantics
+// ---------------------------------------------------------------
+
+#[test]
+fn munmap_idempotent_on_already_torn_down() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), 2 * PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    a.munmap(h, 2 * PAGE).unwrap();
+    // Second munmap of the same range — Linux returns 0.
+    a.munmap(h, 2 * PAGE).unwrap();
+    assert_eq!(a.vma_count(), 0);
+}
+
+#[test]
+fn growsdown_within_one_page_of_lower_neighbor() {
+    // Lower neighbor at [0x4000_0000, 0x4000_1000); stack at
+    // [0x4000_2000, 0x4000_3000). Fault at 0x4000_1000 — exactly
+    // adjacent — extension would go to 0x4000_1000 which is the
+    // lower neighbor's end. Allowed (touching, not overlapping).
+    let a = AddressSpace::new(0).unwrap();
+    a.mmap(Some(uva(0x4000_0000)), PAGE, VmaProt::READ, priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    a.mmap(Some(uva(0x4000_2000)), PAGE, r_w(),
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    let fault = uva(0x4000_1000);
+    assert!(a.try_grow_stack(fault), "abutting extension allowed");
+}
+
+// ---------------------------------------------------------------
+// VmaProt -> page-flags translation
+// ---------------------------------------------------------------
+
+#[test]
+fn page_flags_carry_user_bit_always() {
+    use hal::PageFlags;
+    let pf = VmaProt::empty().to_page_flags();
+    assert!(pf.contains(PageFlags::USER), "USER bit always set on user VMA");
+    let pf2 = (VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC).to_page_flags();
+    assert!(pf2.contains(PageFlags::USER));
+    assert!(pf2.contains(PageFlags::READ));
+    assert!(pf2.contains(PageFlags::WRITE));
+    assert!(pf2.contains(PageFlags::EXEC));
+}
+
+// ---------------------------------------------------------------
+// Maximum churn at fragmentation extreme
+// ---------------------------------------------------------------
+
+#[test]
+fn fragmentation_extreme_recovery() {
+    // Allocate, free every other, alloc again — verify allocator
+    // recovers the freed slots.
+    let a = AddressSpace::new(0).unwrap();
+    let mut allocated: alloc::vec::Vec<UserVirtAddr> = alloc::vec::Vec::new();
+    for _ in 0..256 {
+        let v = a.mmap(None, PAGE, r_w(), priv_anon(),
+            VmaBacking::Anonymous, false).unwrap();
+        allocated.push(v);
+    }
+    // Free every other.
+    let n = allocated.len();
+    for i in (0..n).rev().step_by(2) {
+        let v = allocated.remove(i);
+        a.munmap(v, PAGE).unwrap();
+    }
+    // Alloc 128 more — should fit.
+    for _ in 0..128 {
+        let v = a.mmap(None, PAGE, r_w(), priv_anon(),
+            VmaBacking::Anonymous, false).unwrap();
+        allocated.push(v);
+    }
+    a.audit().unwrap();
+}
