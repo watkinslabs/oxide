@@ -1,12 +1,5 @@
-// Modern virtio-pci transport bring-up: cap discovery -> map -> status
-// FSM -> features -> queue rings -> DRIVER_OK -> notify kick -> RX/TX
-// post + completion poll. Split out of `pci_boot/mod.rs` to keep that
-// file under the 1000-line cap (08§7).
-//
-// `super::map_mmio_pages` provides the bump-VA Device-attr mapper.
-// All side-effect work (cmd-reg writes, status writes, feature
-// negotiation, ring program, kick) runs unconditionally; only klog
-// calls are gated under `debug_boot!` per R06.
+// Modern virtio-pci transport bring-up. Split from pci_boot/mod.rs.
+// klog calls gated under debug_boot! per R06.
 
 use super::map_mmio_pages;
 
@@ -46,52 +39,31 @@ struct VirtioProbe {
     /// F29: ISR status byte read post-kick. Bit 0 = queue interrupt,
     /// bit 1 = config interrupt. Reading clears the register.
     isr_status: u8,
-    /// F42: first 20 bytes of sector 1 (GPT primary header), or zeros
-    /// if not a virtio-blk device or the request didn't complete.
-    /// First 8 bytes should be ASCII "EFI PART" on a GPT disk.
-    /// (F30 used this slot for VIRTIO_BLK_T_GET_ID's 20-byte string.)
+    /// F42: first 20 bytes of sector 1 (GPT header) or zeros.
     blk_id: [u8; 20],
-    /// F43: queue 1 used.idx after a TX kick on virtio-net (0 if no
-    /// TX issued / device didn't bump). queue_size for q1 = 256 same
-    /// as q0; we post one descriptor and check used.
+    /// F43: q1 used.idx after a virtio-net TX kick (0 = none).
     tx_used_idx: u16,
-    /// F43: per-queue 1 notify VA computed from notify_cap +
-    /// (queue_notify_off_q1 * notify_off_multiplier).
+    /// F43: q1 notify VA = notify_cap + q1_notify_off * mult.
     q1_notify_va: u64,
-    /// F59-08: raw queue_notify_off value read for queue 1 (Virtio
-    /// 1.2 §4.1.4.3 +0x1E). With notify_off_multiplier=4 the spec
-    /// implies each queue gets a distinct offset; if QEMU reports
-    /// 0 here that means q0 and q1 share a notify address and the
-    /// value written distinguishes them.
+    /// F59-08: queue_notify_off for q1 (raw, before multiplier).
     q1_notify_off: u16,
-    /// F30: virtio-blk request status byte. 0=OK, 1=IOERR, 2=UNSUPP,
-    /// 0xFF=request not issued / not completed.
+    /// F30: virtio-blk status byte. 0=OK,1=IOERR,2=UNSUPP,0xFF=none.
     blk_status: u8,
-    /// F59-01: queue 0 size (negotiated, in entries). 0 if queue 0
-    /// not programmed. Needed for runtime ring index modulo.
+    /// F59-01: q0 negotiated size. 0 if not programmed.
     q0_size: u16,
-    /// F59-01: queue 1 size. 0 if not programmed (non-net devices
-    /// or net device that failed q1 setup).
+    /// F59-01: q1 negotiated size. 0 if not programmed.
     q1_size: u16,
-    /// F59-01: queue 1 ring frame PAs after virtio-net TX setup
-    /// (0 = not allocated). Mirrors q0_*_pa.
+    /// F59-01: q1 ring PAs (virtio-net TX). 0 = not allocated.
     q1_desc_pa:   u64,
     q1_driver_pa: u64,
     q1_device_pa: u64,
-    /// F59-02: PA + len of the boot-allocated RX buffer published at
-    /// queue-0 descriptor 0 for virtio-net. 0/0 if no virtio-net or
-    /// DRIVER_OK didn't land. The runtime rx_poll re-publishes this
-    /// same descriptor on each completion (one-buffer ring v1).
+    /// F59-02: PA + len of boot-allocated virtio-net RX buffer at q0.d0.
     rx0_buf_pa:  u64,
     rx0_buf_len: u16,
-    /// F59-04: 6-byte MAC harvested from device-cfg cap (virtio_net
-    /// config offset 0) for virtio-net devices. `mac_valid` gates
-    /// downstream consumers; zero MAC is otherwise a legal value.
+    /// F59-04: virtio-net device-cfg MAC. `mac_valid` gates use.
     mac:       [u8; 6],
     mac_valid: bool,
-    /// F59-05: PA of the boot-allocated TX scratch frame (queue 1
-    /// descriptor 0 buffer). 0 if no virtio-net or q1 setup didn't
-    /// allocate. Runtime tx_frame rewrites this buffer + reposts.
+    /// F59-05: PA of virtio-net TX scratch frame at q1.d0. 0 = none.
     tx0_buf_pa: u64,
 }
 
@@ -406,6 +378,39 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut rx0_buf_len_local: u16 = 0;
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
+    let is_virtio_gpu = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
+    if is_virtio_gpu && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+        // Per docs/45§7: virtio-gpu post-DRIVER_OK bring-up. The
+        // GET_DISPLAY_INFO submit + response parse rides the same
+        // CTRLQ helper path used by virtio-blk above (F132 lands the
+        // queue plumbing in this branch). For now install a device
+        // record with empty display info so 47 (DRM/KMS) sees the
+        // device exists; MODE_GETRESOURCES returns 0 CRTCs until the
+        // actual GET_DISPLAY_INFO submit lands.
+        use core::sync::atomic::{AtomicU32, AtomicU64};
+        let dev = drv_virtio_gpu::VirtioGpuDev {
+            bdf:                 (d.bdf.bus as u32) << 16
+                                 | (d.bdf.device as u32) << 8
+                                 | (d.bdf.function as u32),
+            features_negotiated: drv_features as u64,
+            display:             drv_virtio_gpu::DisplayInfo::default(),
+            resource_id_alloc:   AtomicU32::new(1),
+            blob_uuid_alloc:     AtomicU64::new(1),
+            capset_count:        0,
+        };
+        drv_virtio_gpu::install(dev);
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-gpu installed bdf=");
+            klog::write_dec_u64(d.bdf.bus as u64);
+            klog::write_raw(b":");
+            klog::write_dec_u64(d.bdf.device as u64);
+            klog::write_raw(b".");
+            klog::write_dec_u64(d.bdf.function as u64);
+            klog::write_raw(b" feat=");
+            klog::write_hex_u64(drv_features);
+            klog::write_raw(b"\n");
+        }
+    }
     if is_virtio_blk && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
             #[cfg(target_arch = "x86_64")]

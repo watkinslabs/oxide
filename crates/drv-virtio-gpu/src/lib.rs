@@ -8,7 +8,9 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicPtr, Ordering};
+
+use sync::{Spinlock, TaskList as DriverLockClass};
 
 // ============================================================
 // Wire constants per linux/include/uapi/linux/virtio_gpu.h
@@ -293,6 +295,214 @@ pub fn negotiate_features(host_bits: u64, driver_bits: u64) -> u64 {
     host_bits & driver_bits
 }
 
+// ============================================================
+// Wire encode / decode helpers
+// ============================================================
+
+/// Encode `CMD_GET_DISPLAY_INFO` request into `buf`. Writes 24
+/// bytes (one `VirtioGpuCtrlHdr`). Returns the byte count.
+/// # C: O(1)
+pub fn encode_get_display_info(buf: &mut [u8]) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, 0, 0)
+}
+
+/// Encode `CMD_GET_EDID` request for a given scanout. Writes 32
+/// bytes (24-byte hdr + scanout + padding).
+/// # C: O(1)
+pub fn encode_get_edid(buf: &mut [u8], scanout: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_EDID, 0, 0);
+    write_u32_le(buf, 24, scanout);
+    write_u32_le(buf, 28, 0);
+    32
+}
+
+/// Encode `CMD_RESOURCE_CREATE_2D`. Writes 40 bytes.
+/// # C: O(1)
+pub fn encode_resource_create_2d(buf: &mut [u8], res_id: u32, fmt: u32, w: u32, h: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, fmt);
+    write_u32_le(buf, 32, w);
+    write_u32_le(buf, 36, h);
+    40
+}
+
+/// Encode `CMD_RESOURCE_ATTACH_BACKING` with a single mem entry.
+/// Writes 48 bytes (32 hdr+payload + 16 mem-entry).
+/// # C: O(1)
+pub fn encode_resource_attach_backing_one(buf: &mut [u8], res_id: u32, pa: u64, len: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, 0, 0);
+    write_u32_le(buf, 24, res_id);
+    write_u32_le(buf, 28, 1);
+    // virtio_gpu_mem_entry { addr, length, padding }
+    write_u64_le(buf, 32, pa);
+    write_u32_le(buf, 40, len);
+    write_u32_le(buf, 44, 0);
+    48
+}
+
+/// Encode `CMD_SET_SCANOUT(scanout, res_id, x, y, w, h)`.
+/// Writes 48 bytes.
+/// # C: O(1)
+pub fn encode_set_scanout(buf: &mut [u8], scanout: u32, res_id: u32, x: u32, y: u32, w: u32, h: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_SET_SCANOUT, 0, 0);
+    write_u32_le(buf, 24, x);
+    write_u32_le(buf, 28, y);
+    write_u32_le(buf, 32, w);
+    write_u32_le(buf, 36, h);
+    write_u32_le(buf, 40, scanout);
+    write_u32_le(buf, 44, res_id);
+    48
+}
+
+/// Encode `CMD_TRANSFER_TO_HOST_2D`. Writes 56 bytes.
+/// # C: O(1)
+pub fn encode_transfer_to_host_2d(buf: &mut [u8], res_id: u32, x: u32, y: u32, w: u32, h: u32, off: u64) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, 0, 0);
+    write_u32_le(buf, 24, x);
+    write_u32_le(buf, 28, y);
+    write_u32_le(buf, 32, w);
+    write_u32_le(buf, 36, h);
+    write_u64_le(buf, 40, off);
+    write_u32_le(buf, 48, res_id);
+    write_u32_le(buf, 52, 0);
+    56
+}
+
+/// Encode `CMD_RESOURCE_FLUSH`. Writes 48 bytes.
+/// # C: O(1)
+pub fn encode_resource_flush(buf: &mut [u8], res_id: u32, x: u32, y: u32, w: u32, h: u32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_RESOURCE_FLUSH, 0, 0);
+    write_u32_le(buf, 24, x);
+    write_u32_le(buf, 28, y);
+    write_u32_le(buf, 32, w);
+    write_u32_le(buf, 36, h);
+    write_u32_le(buf, 40, res_id);
+    write_u32_le(buf, 44, 0);
+    48
+}
+
+/// Parse a `CMD_GET_DISPLAY_INFO` response. Validates type ==
+/// `RESP_OK_DISPLAY_INFO` and decodes the 16-entry pmodes array.
+/// # C: O(VIRTIO_GPU_MAX_SCANOUTS)
+pub fn parse_display_info(resp: &[u8]) -> KResult<DisplayInfo> {
+    if resp.len() < 24 + 16 * 24 { return Err(Error::Inval); }
+    let ty = read_u32_le(resp, 0);
+    if ty != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
+        return Err(Error::BadResp(ty));
+    }
+    let mut info = DisplayInfo::default();
+    let mut count = 0u32;
+    for i in 0..VIRTIO_GPU_MAX_SCANOUTS {
+        let base = 24 + i * 24;
+        let one = VirtioGpuDisplayOne {
+            r: VirtioGpuRect {
+                x:      read_u32_le(resp, base),
+                y:      read_u32_le(resp, base + 4),
+                width:  read_u32_le(resp, base + 8),
+                height: read_u32_le(resp, base + 12),
+            },
+            enabled: read_u32_le(resp, base + 16),
+            flags:   read_u32_le(resp, base + 20),
+        };
+        if one.enabled != 0 { count += 1; }
+        info.modes[i] = one;
+    }
+    info.count_enabled = count;
+    Ok(info)
+}
+
+/// Parse a `CMD_GET_EDID` response into the 1024-byte EDID block.
+/// # C: O(1) — fixed-size copy.
+pub fn parse_edid(resp: &[u8]) -> KResult<[u8; 1024]> {
+    if resp.len() < 24 + 8 + 1024 { return Err(Error::Inval); }
+    let ty = read_u32_le(resp, 0);
+    if ty != VIRTIO_GPU_RESP_OK_EDID {
+        return Err(Error::BadResp(ty));
+    }
+    let mut out = [0u8; 1024];
+    out.copy_from_slice(&resp[32..32 + 1024]);
+    Ok(out)
+}
+
+/// Parse a generic OK/ERROR response (24-byte hdr only) and return
+/// `Ok(())` for any `RESP_OK_*` type, `Err(BadResp(ty))` otherwise.
+/// # C: O(1)
+pub fn parse_nodata_resp(resp: &[u8]) -> KResult<()> {
+    if resp.len() < 24 { return Err(Error::Inval); }
+    let ty = read_u32_le(resp, 0);
+    if ty >= 0x1100 && ty < 0x1200 { Ok(()) } else { Err(Error::BadResp(ty)) }
+}
+
+// helpers
+fn encode_hdr_only(buf: &mut [u8], ty: u32, fence: u64, ctx: u32) -> usize {
+    if buf.len() < 24 { return 0; }
+    for b in &mut buf[..24] { *b = 0; }
+    write_u32_le(buf, 0, ty);
+    write_u32_le(buf, 4, 0);
+    write_u64_le(buf, 8, fence);
+    write_u32_le(buf, 16, ctx);
+    write_u32_le(buf, 20, 0);
+    24
+}
+
+fn write_u32_le(buf: &mut [u8], off: usize, val: u32) {
+    let b = val.to_le_bytes();
+    buf[off]     = b[0]; buf[off + 1] = b[1];
+    buf[off + 2] = b[2]; buf[off + 3] = b[3];
+}
+fn write_u64_le(buf: &mut [u8], off: usize, val: u64) {
+    let b = val.to_le_bytes();
+    for i in 0..8 { buf[off + i] = b[i]; }
+}
+fn read_u32_le(buf: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+}
+
+// ============================================================
+// Per-device install / lookup (kernel hands us a populated dev
+// after running the modern-transport bring-up + GET_DISPLAY_INFO).
+// ============================================================
+
+/// Single-device slot. v1 supports one virtio-gpu PCI function;
+/// the slot turns into a Vec<Box<VirtioGpuDev>> when multi-GPU
+/// systems land.
+static DEV: Spinlock<Option<VirtioGpuDev>, DriverLockClass> = Spinlock::new(None);
+
+/// Surface for the kernel to install a fully-initialised device
+/// after running modern-transport bring-up + GET_DISPLAY_INFO.
+/// # C: O(1)
+pub fn install(dev: VirtioGpuDev) {
+    let mut g = DEV.lock();
+    *g = Some(dev);
+}
+
+/// Snapshot the cached display info. `47` (DRM/KMS) calls this
+/// from `MODE_GETRESOURCES` to enumerate CRTCs/connectors.
+/// # C: O(1)
+pub fn current_display_info() -> Option<DisplayInfo> {
+    DEV.lock().as_ref().map(|d| d.display)
+}
+
+/// Returns true once at least one virtio-gpu device has been
+/// installed by the kernel-side bring-up.
+/// # C: O(1)
+pub fn is_present() -> bool {
+    DEV.lock().is_some()
+}
+
+/// Take the negotiated feature mask of the installed device.
+/// # C: O(1)
+pub fn negotiated_features() -> u64 {
+    DEV.lock().as_ref().map(|d| d.features_negotiated).unwrap_or(0)
+}
+
+// AtomicPtr is referenced for future per-device queue notify pointers
+// once the queue plumbing moves into this crate; keep the import live
+// by aliasing it as a private no-op type marker.
+#[allow(dead_code)]
+type _NotifyMarker = AtomicPtr<()>;
+
 /// Default driver feature set (everything `45§3` advertises).
 /// # C: O(1)
 pub fn default_driver_features() -> u64 {
@@ -358,6 +568,119 @@ mod tests {
         assert_eq!(VirtioGpuDev::bytes_per_pixel(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM), 4);
         assert_eq!(VirtioGpuDev::bytes_per_pixel(VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM), 4);
         assert_eq!(VirtioGpuDev::bytes_per_pixel(0xdead), 0);
+    }
+
+    #[test]
+    fn encode_get_display_info_writes_24() {
+        let mut buf = [0xAAu8; 64];
+        let n = encode_get_display_info(&mut buf);
+        assert_eq!(n, 24);
+        assert_eq!(read_u32_le(&buf, 0), VIRTIO_GPU_CMD_GET_DISPLAY_INFO);
+        assert_eq!(read_u32_le(&buf, 4), 0);
+        for i in 8..24 { assert_eq!(buf[i], 0); }
+    }
+
+    #[test]
+    fn encode_get_edid_writes_32_with_scanout() {
+        let mut buf = [0u8; 64];
+        let n = encode_get_edid(&mut buf, 7);
+        assert_eq!(n, 32);
+        assert_eq!(read_u32_le(&buf, 0), VIRTIO_GPU_CMD_GET_EDID);
+        assert_eq!(read_u32_le(&buf, 24), 7);
+    }
+
+    #[test]
+    fn encode_resource_create_2d_layout() {
+        let mut buf = [0u8; 64];
+        let n = encode_resource_create_2d(&mut buf, 5, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, 800, 600);
+        assert_eq!(n, 40);
+        assert_eq!(read_u32_le(&buf, 0),  VIRTIO_GPU_CMD_RESOURCE_CREATE_2D);
+        assert_eq!(read_u32_le(&buf, 24), 5);
+        assert_eq!(read_u32_le(&buf, 28), VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM);
+        assert_eq!(read_u32_le(&buf, 32), 800);
+        assert_eq!(read_u32_le(&buf, 36), 600);
+    }
+
+    #[test]
+    fn encode_set_scanout_layout() {
+        let mut buf = [0u8; 64];
+        let n = encode_set_scanout(&mut buf, 0, 5, 0, 0, 800, 600);
+        assert_eq!(n, 48);
+        assert_eq!(read_u32_le(&buf, 0),  VIRTIO_GPU_CMD_SET_SCANOUT);
+        assert_eq!(read_u32_le(&buf, 32), 800);   // rect width
+        assert_eq!(read_u32_le(&buf, 36), 600);   // rect height
+        assert_eq!(read_u32_le(&buf, 40), 0);     // scanout
+        assert_eq!(read_u32_le(&buf, 44), 5);     // res_id
+    }
+
+    #[test]
+    fn parse_display_info_decodes_one_enabled() {
+        let mut resp = [0u8; 24 + 16 * 24];
+        // type = RESP_OK_DISPLAY_INFO
+        write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_OK_DISPLAY_INFO);
+        // pmode[0] = enabled at 800x600
+        write_u32_le(&mut resp, 24 + 0,  0);   // x
+        write_u32_le(&mut resp, 24 + 4,  0);   // y
+        write_u32_le(&mut resp, 24 + 8,  800); // w
+        write_u32_le(&mut resp, 24 + 12, 600); // h
+        write_u32_le(&mut resp, 24 + 16, 1);   // enabled
+        let info = parse_display_info(&resp).unwrap();
+        assert_eq!(info.count_enabled, 1);
+        assert_eq!(info.modes[0].r.width,  800);
+        assert_eq!(info.modes[0].r.height, 600);
+        assert_eq!(info.modes[0].enabled, 1);
+    }
+
+    #[test]
+    fn parse_display_info_rejects_wrong_type() {
+        let mut resp = [0u8; 24 + 16 * 24];
+        write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_ERR_UNSPEC);
+        let r = parse_display_info(&resp);
+        assert!(matches!(r, Err(Error::BadResp(VIRTIO_GPU_RESP_ERR_UNSPEC))));
+    }
+
+    #[test]
+    fn parse_edid_decodes_block() {
+        let mut resp = [0u8; 24 + 8 + 1024];
+        write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_OK_EDID);
+        // canonical EDID magic at offset 32
+        let magic = [0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x00];
+        for i in 0..8 { resp[32 + i] = magic[i]; }
+        let edid = parse_edid(&resp).unwrap();
+        assert_eq!(&edid[..8], &magic);
+    }
+
+    #[test]
+    fn parse_nodata_accepts_any_ok() {
+        let mut resp = [0u8; 24];
+        write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_OK_NODATA);
+        assert!(parse_nodata_resp(&resp).is_ok());
+        write_u32_le(&mut resp, 0, VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+        assert!(parse_nodata_resp(&resp).is_err());
+    }
+
+    #[test]
+    fn install_and_lookup_roundtrip() {
+        // Reset the global slot first to keep tests order-independent.
+        *DEV.lock() = None;
+        assert!(!is_present());
+        install(VirtioGpuDev {
+            bdf: 0,
+            features_negotiated: (1u64 << VIRTIO_GPU_F_EDID),
+            display: DisplayInfo {
+                modes: [VirtioGpuDisplayOne::default(); VIRTIO_GPU_MAX_SCANOUTS],
+                count_enabled: 1,
+            },
+            resource_id_alloc: AtomicU32::new(1),
+            blob_uuid_alloc: AtomicU64::new(1),
+            capset_count: 0,
+        });
+        assert!(is_present());
+        let info = current_display_info().unwrap();
+        assert_eq!(info.count_enabled, 1);
+        assert!(negotiated_features() & (1u64 << VIRTIO_GPU_F_EDID) != 0);
+        // Cleanup.
+        *DEV.lock() = None;
     }
 
     #[test]

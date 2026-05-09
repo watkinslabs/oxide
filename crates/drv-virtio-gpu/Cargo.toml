@@ -13,4 +13,3 @@ klog    = { path = "../klog" }
 drv     = { path = "../drv" }
 virtio  = { path = "../virtio" }
 sync    = { path = "../sync" }
-pci     = { path = "../pci" }
