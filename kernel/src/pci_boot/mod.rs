@@ -557,7 +557,7 @@ pub fn enumerate_and_log() {
         // responds to ARP for the gateway IP; a successful reply
         // proves both directions of the modern transport end to end.
         if crate::dev_virtio_net_modern::is_modern_present() {
-            let r = crate::dev_virtio_net_modern::boot_arp_probe(
+            let r = crate::dev_virtio_net_boot::boot_arp_probe(
                 [10, 0, 2, 15],
                 [10, 0, 2, 2],
             );
@@ -585,7 +585,7 @@ pub fn enumerate_and_log() {
 
                 // F59-12: with the gateway MAC cached, send an ICMP
                 // echo to it. Proves IPv4 + ICMP path through SLIRP.
-                let icmp = crate::dev_virtio_net_modern::boot_icmp_echo_probe(
+                let icmp = crate::dev_virtio_net_boot::boot_icmp_echo_probe(
                     [10, 0, 2, 15], r.gateway_ip, r.gateway_mac,
                 );
                 klog::write_raw(b"[INFO]  virtio-net-icmp-boot tx_attempted=");
@@ -597,6 +597,31 @@ pub fn enumerate_and_log() {
                 klog::write_raw(b" reply=");
                 klog::write_dec_u64(icmp.reply_seen as u64);
                 klog::write_raw(b"\n");
+
+                // F59-14: ask SLIRP's built-in DHCP server for an
+                // IP offer. Single DISCOVER → OFFER round-trip;
+                // REQUEST/ACK lands in F59-15.
+                let dhcp = crate::dev_virtio_net_boot::boot_dhcp_discover();
+                klog::write_raw(b"[INFO]  virtio-net-dhcp-boot tx_confirmed=");
+                klog::write_dec_u64(dhcp.tx_confirmed as u64);
+                klog::write_raw(b" rx_frames=");
+                klog::write_dec_u64(dhcp.rx_frames as u64);
+                klog::write_raw(b" offer=");
+                klog::write_dec_u64(dhcp.offer_seen as u64);
+                klog::write_raw(b"\n");
+                if dhcp.offer_seen {
+                    klog::write_raw(b"[INFO]  dhcp-offer your_ip=");
+                    for (i, b) in dhcp.offered_ip.iter().enumerate() {
+                        klog::write_dec_u64(*b as u64);
+                        if i < 3 { klog::write_raw(b"."); }
+                    }
+                    klog::write_raw(b" server_ip=");
+                    for (i, b) in dhcp.server_ip.iter().enumerate() {
+                        klog::write_dec_u64(*b as u64);
+                        if i < 3 { klog::write_raw(b"."); }
+                    }
+                    klog::write_raw(b"\n");
+                }
             }
 
             // F59-11: register the modern virtio-net device as a
