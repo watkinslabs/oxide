@@ -15,10 +15,14 @@ LOC scanned for `Errno::Enosys`, `// v1`, `// stub`, `// minimal`,
 `// rides a follow-up`, `accept-and-no-op`, "future PR".
 
 **2026-05-08 refresh:** session-38 sweep + subsequent PRs landed
-PR-B, PR-C, PR-D, PR-E, PR-F, PR-H wholesale. The only genuine
-remaining sweep gap is PR-G mmap completeness (MAP_SHARED,
-MAP_FIXED, non-zero addr hint, file-backed mmap). Status table
-updated below; sweep-order section trimmed.
+PR-B, PR-C, PR-D, PR-E, PR-F, PR-H wholesale. The only remaining
+sweep gap was PR-G mmap completeness (MAP_SHARED, MAP_FIXED, addr
+hint, file-backed mmap).
+
+**2026-05-09 refresh:** F89 closed PR-G's MAP_FIXED via the munmap-
+then-insert pattern; MAP_SHARED + addr hint had landed in F60. All
+v1 sweep PRs A..I are now closed. File-backed mmap is the only
+remaining sub-item, gated on VFS+pagecache (v2 phase 23).
 
 **2026-05-09 syscall stub-sweep (F63..F84):** at user direction, a
 wholesale pass across `syscall_compat.rs` + `syscall_glue.rs` removed
@@ -52,12 +56,10 @@ node, no pagecache).
 
 ## TL;DR — what blocks bash + login + util-linux right now
 
-After the session-38 sweep + follow-on PRs, the single remaining
-v1 sweep gap is **mmap completeness** (PR-G): `MAP_SHARED`,
-`MAP_FIXED`, non-zero `addr` hint, and file-backed mmap all
-short-circuit to `ENOSYS`/`EINVAL` at `user_as.rs:692-757`. Modern
-allocators (jemalloc, tcmalloc) and Wayland clients depend on
-these. Plumbed into a follow-up PR after this audit refresh.
+All v1 sweep PRs A..I are closed as of F89 (2026-05-09). MAP_SHARED
++ addr hint landed in F60; MAP_FIXED via munmap-then-insert in F89.
+File-backed mmap is the last sub-item; gated on VFS+pagecache wiring
+(`17§5`) and tracked as v2 phase 23.
 
 PR-B (termios + line discipline on /dev/console), PR-C (job
 control), PR-D (signal completeness), PR-E (real threading),
@@ -328,14 +330,15 @@ references.
 | D  | Signal completeness (rt_sigsuspend / sigaltstack / rt_sigtimedwait / rt_sigqueueinfo) | ✅ done | `kernel/src/syscall_glue_signal.rs:407-561` |
 | E  | Real threading (clone CLONE_VM\|CLONE_THREAD, clone3, gettid distinct) | ✅ done | `kernel/src/syscall_glue_clone.rs`, `kernel/src/syscall_glue_proc.rs:25-118` |
 | F  | /proc completion (`/proc/self/{maps,status,cmdline,exe,fd,environ,stat}`, `/proc/{cpuinfo,meminfo,uptime,loadavg}`) | ✅ done | `kernel/src/procfs.rs`, `kernel/src/procfs_static.rs` |
-| **G** | **mmap completeness (MAP_SHARED, MAP_FIXED, addr hint, file-backed; mremap, MADV_DONTNEED, mlockall)** | 🟡 **open** | `kernel/src/user_as.rs:692-757` short-circuits to ENOSYS for non-anon non-zero-addr non-private/MAP_FIXED |
+| G  | mmap completeness — MAP_SHARED, MAP_FIXED, addr hint, MADV_DONTNEED, mlockall | ✅ done | `kernel/src/user_as.rs` — F60 (MAP_SHARED + addr hint), F89 (MAP_FIXED via munmap-then-insert). File-backed mmap still ENOSYS pending VFS+pagecache wiring (`17§5`); listed as v2 phase 23 in `00§3.2`. |
 | H  | Modern fd-creating syscalls (pidfd_open, eventfd2, signalfd, timerfd, dup3, close_range, pipe2) | ✅ done | `kernel/src/syscall_glue_anonfd.rs`, `kernel/src/syscall_glue_fs.rs:499-540`, `kernel/src/dev_pidfd.rs`, `kernel/src/syscall_glue.rs:117` |
 | I  | Real virtio-net live driver | ✅ done | this session — F59-01..15. DHCP/DNS deferred to v2 phase 18 (userspace). |
 | J  | AF_INET6 + sendmmsg/recvmmsg / real getsockopt | v2 phase 18/38 | not v1 |
 | K  | xattr + chroot + mount + namespaces | v2 phase 21/26/29 | not v1 |
 
-Only **G** remains open as a v1 sweep PR. The `J`/`K` entries are
-v2 work per `00§3.2`.
+All v1 sweep PRs A..I closed as of F89 (2026-05-09). The `J`/`K`
+entries are v2 work per `00§3.2`. File-backed mmap remains a v2
+follow-up (gated on VFS+pagecache).
 
 ## Notes on the bigger gaps that DON'T sit under "syscall stubs"
 
