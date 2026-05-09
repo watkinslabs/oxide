@@ -34,7 +34,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         NR_VHANGUP
         | NR_READAHEAD | NR_FADVISE64
         | NR_SYNC_FILE_RANGE
-        | NR_SYNCFS | NR_FUTEX_WAITV | NR_MLOCK2
+        | NR_SYNCFS | NR_MLOCK2
                                        => Some(0),
 
         // ---- POSIX shape: pause/sigsuspend behaviour ----
@@ -141,6 +141,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // NUMA SET/MBIND/MIGRATE/MOVE/HOME silent-0 above.
         // GET_MEMPOLICY moved to real impl (F79).
         | NR_VSERVER | NR__SYSCTL
+        // FUTEX_WAITV: real multi-futex wait substrate not yet wired.
+        // Silent-0 was the worst possible answer (programs thought a
+        // wait completed without one). ENOSYS makes glibc fall back
+        // to the per-futex FUTEX_WAIT polling loop.
+        | NR_FUTEX_WAITV
         // EXECVEAT aliased to execve in PR-P (path resolved relative to dirfd).
         // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
         // userfaultfd; epoll moved to real impl.
