@@ -21,7 +21,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
     let enosys  = -(Errno::Enosys.as_i32() as i64);
     let eperm   = -(Errno::Eperm.as_i32()  as i64);
     let eintr   = -(Errno::Eintr.as_i32()  as i64);
-    let enotsup = -(Errno::Eopnotsupp.as_i32() as i64);
+    let _ = -(Errno::Eopnotsupp.as_i32() as i64); // unused after F90
 
     match nr {
         // ---- accept silently ----
@@ -76,14 +76,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // MQ_NOTIFY / MQ_GETSETATTR moved to real impl (F77).
                                        => Some(0),
 
-        // ---- ENOTSUP (Linux 'feature not supported on this fs') ----
-        // xattr family: tar/cp -a/rsync probe these and skip cleanly
-        // on ENOTSUP, whereas ENOSYS makes them abort the file.
-        NR_GETXATTR | NR_LGETXATTR | NR_FGETXATTR
-        | NR_LISTXATTR | NR_LLISTXATTR | NR_FLISTXATTR
-        | NR_SETXATTR | NR_LSETXATTR | NR_FSETXATTR
-        | NR_REMOVEXATTR | NR_LREMOVEXATTR | NR_FREMOVEXATTR
-                                       => Some(enotsup),
+        // xattr family moved to real impl (F90, xattr_overlay.rs).
 
         // ---- privileged-op refuse ----
         NR_REBOOT | NR_MOUNT | NR_UMOUNT2 | NR_CHROOT | NR_PIVOT_ROOT

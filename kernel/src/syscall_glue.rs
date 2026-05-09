@@ -893,10 +893,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_SET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_set_robust_list(&args),
         crate::syscall_nrs::NR_GET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_get_robust_list(&args),
         crate::syscall_nrs::NR_SYSLOG          => crate::syscall_glue_dmesg::kernel_sys_syslog(&args),
-        crate::syscall_nrs::NR_RT_SIGRETURN  => {
-            // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
-            unsafe { crate::sig_dispatch::rt_sigreturn() }
-        }
+        // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
+        crate::syscall_nrs::NR_RT_SIGRETURN  => unsafe { crate::sig_dispatch::rt_sigreturn() },
         // Compat-stub fall-through table per P3-46.
         _ => {
             if let Some(rv) = crate::syscall_glue_cred::cred_dispatch(nr, &args) {
@@ -905,7 +903,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                 rv
             } else if let Some(rv) = crate::syscall_glue_perms::perms_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = crate::keyring::keyring_dispatch(nr, &args) {
+            } else if let Some(rv) = crate::xattr_overlay::xattr_dispatch(nr, &args) { rv }
+            else if let Some(rv) = crate::keyring::keyring_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::syscall_compat::try_compat(nr, &args) {
                 rv
