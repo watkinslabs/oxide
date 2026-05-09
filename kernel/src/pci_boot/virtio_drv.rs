@@ -83,6 +83,10 @@ struct VirtioProbe {
     /// downstream consumers; zero MAC is otherwise a legal value.
     mac:       [u8; 6],
     mac_valid: bool,
+    /// F59-05: PA of the boot-allocated TX scratch frame (queue 1
+    /// descriptor 0 buffer). 0 if no virtio-net or q1 setup didn't
+    /// allocate. Runtime tx_frame rewrites this buffer + reposts.
+    tx0_buf_pa: u64,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -524,6 +528,10 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // (driver-side only).
     let mut q1_notify_va_local: u64 = 0;
     let mut tx_used_idx_local: u16 = 0;
+    // F59-05: persist TX scratch buffer PA so dev_virtio_net_modern::
+    // tx_frame can rewrite + repost it after boot. 0 if no virtio-net
+    // or DRIVER_OK didn't land or the q1 setup bailed before alloc.
+    let mut tx0_buf_pa_local: u64 = 0;
     if is_virtio_net_early
         && q1_desc_pa != 0
         && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
@@ -535,6 +543,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             { hal_aarch64::mmu_ops::hhdm_offset() }
         };
         if let Some(tx_pa) = crate::pmm_setup::alloc_one_frame() {
+            tx0_buf_pa_local = tx_pa;
             if hhdm != 0 {
                 let tx_va = hhdm.wrapping_add(tx_pa) as *mut u8;
                 // SAFETY: HHDM-mapped freshly-allocated frame; bytes 0..72 stay within the 4 KiB page; we own this frame exclusively.
@@ -752,6 +761,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         rx0_buf_len: rx0_buf_len_local,
         mac:       mac_local,
         mac_valid: mac_valid_local,
+        tx0_buf_pa: tx0_buf_pa_local,
     })
 }
 
@@ -944,6 +954,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 rx0_buf_len:   p.rx0_buf_len,
                 mac:           p.mac,
                 mac_valid:     p.mac_valid,
+                tx0_buf_pa:    p.tx0_buf_pa,
             },
         );
     }
