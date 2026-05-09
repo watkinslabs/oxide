@@ -24,6 +24,19 @@ then-insert pattern; MAP_SHARED + addr hint had landed in F60. All
 v1 sweep PRs A..I are now closed. File-backed mmap is the only
 remaining sub-item, gated on VFS+pagecache (v2 phase 23).
 
+**2026-05-09 v2-rollin pass (F89..F97):** at user direction
+("roll in v2 things now"), nine PRs landed taking deferred items
+from the v2 phase ladder (`docs/00-v2.md§3.1`) and folding them into
+v1 substrate.
+  * F89 closes audit PR-G (MAP_FIXED real via munmap-then-insert).
+  * F90 lands xattr family real per-inode overlay (v2 phase 26 substrate).
+  * F92 cap-gates setuid/setgid family + capbset (replaces is_root() lies).
+  * F93 cap-aware kill/tgkill/pidfd_send_signal (CAP_KILL + uid match).
+  * F94 real inotify watch storage + IN_MODIFY firing via vfs::File hook.
+  * F95 real chroot via per-task root prefix in devfs::lookup.
+  * F96 fanotify_mark forwarded to inotify substrate.
+  * F97 real UTS namespace (per-task hostname via CLONE_NEWUTS).
+
 **2026-05-09 syscall stub-sweep (F63..F84):** at user direction, a
 wholesale pass across `syscall_compat.rs` + `syscall_glue.rs` removed
 ~20 silent-0 / synthetic-success lies and replaced them with real
@@ -334,7 +347,7 @@ references.
 | H  | Modern fd-creating syscalls (pidfd_open, eventfd2, signalfd, timerfd, dup3, close_range, pipe2) | ✅ done | `kernel/src/syscall_glue_anonfd.rs`, `kernel/src/syscall_glue_fs.rs:499-540`, `kernel/src/dev_pidfd.rs`, `kernel/src/syscall_glue.rs:117` |
 | I  | Real virtio-net live driver | ✅ done | this session — F59-01..15. DHCP/DNS deferred to v2 phase 18 (userspace). |
 | J  | AF_INET6 + sendmmsg/recvmmsg / real getsockopt | v2 phase 18/38 | not v1 |
-| K  | xattr + chroot + mount + namespaces | v2 phase 21/26/29 | not v1 |
+| K  | xattr + chroot + mount + namespaces | partial v1 + v2 carryover | F90 xattr overlay (real per-inode storage; ext4-on-disk rides v2). F95 chroot (per-task root + devfs::lookup prefix; CAP_SYS_CHROOT-gated). F97 UTS namespace (per-task hostname via CLONE_NEWUTS). Mount/umount + per-NS mount table still v2 phase 29. CLONE_NEWPID/NEWUSER/NEWNET still v2 phase 21. |
 
 All v1 sweep PRs A..I closed as of F89 (2026-05-09). The `J`/`K`
 entries are v2 work per `00§3.2`. File-backed mmap remains a v2
