@@ -110,6 +110,7 @@ pub struct InetSocket {
 /// new sockets without depending on syscall_glue_net's private const.
 pub const AF_INET:  u16 = 2;
 pub const AF_INET6: u16 = 10;
+pub const AF_UNIX:  u16 = 1;
 
 impl InetSocket {
     /// # C: O(1)
@@ -146,6 +147,18 @@ impl InetSocket {
     pub fn new_tcp6() -> Self {
         let s = Self::new_tcp();
         s.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
+        s
+    }
+
+    /// `socket(AF_UNIX, SOCK_STREAM, …)`. F114: InetSocket shell
+    /// tagged AF_UNIX with no kind set yet — bind/connect/accept
+    /// transition it to `SockKind::Unix(pair, end)`. Without this
+    /// `socket(AF_UNIX, …)` returned EAFNOSUPPORT, breaking the
+    /// standard 4-step AF_UNIX flow.
+    /// # C: O(1)
+    pub fn new_unix() -> Self {
+        let s = Self::new_tcp();
+        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         s
     }
 
