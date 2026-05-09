@@ -19,13 +19,10 @@ const UNAME_MACHINE: &[u8] = b"aarch64";
 /// Write a utsname field at offset `off`: `src` then NUL pad to 65 B.
 unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     let n = src.len().min(UTSNAME_FIELD_LEN - 1);
-    for i in 0..n {
-        // SAFETY: caller validated [tp, tp + UTSNAME_TOTAL_LEN) lies below USER_VA_END and is mapped writable; CPL=0 ignores leaf U-bit.
-        unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, src[i]); }
-    }
-    for i in n..UTSNAME_FIELD_LEN {
-        // SAFETY: same validated range as the byte writes above; NUL pad to 65-byte slot length.
-        unsafe { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
+    // SAFETY: caller validated [tp, tp + UTSNAME_TOTAL_LEN) < USER_VA_END mapped writable; CPL=0 byte writes through caller AS for both src copy and NUL pad.
+    unsafe {
+        for i in 0..n         { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, src[i]); }
+        for i in n..UTSNAME_FIELD_LEN { core::ptr::write_volatile((tp + (off + i) as u64) as *mut u8, 0u8); }
     }
 }
 
@@ -817,6 +814,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             | crate::syscall_nrs::NR_FCHOWN | crate::syscall_nrs::NR_CHOWN | crate::syscall_nrs::NR_LCHOWN
             | crate::syscall_nrs::NR_FCHOWNAT => 0,
         crate::syscall_nrs::NR_FLOCK         => crate::flock::kernel_sys_flock(&args),
+        crate::syscall_nrs::NR_PERSONALITY   => crate::syscall_glue_prctl::kernel_sys_personality(&args),
+        crate::syscall_nrs::NR_FUTIMESAT     => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
         crate::syscall_nrs::NR_MQ_NOTIFY     => crate::posix_mq::kernel_sys_mq_notify(&args),
         crate::syscall_nrs::NR_MQ_GETSETATTR => crate::posix_mq::kernel_sys_mq_getsetattr(&args),
         crate::syscall_nrs::NR_PROCESS_VM_READV  => crate::syscall_glue_pvmrw::kernel_sys_process_vm_readv(&args),
