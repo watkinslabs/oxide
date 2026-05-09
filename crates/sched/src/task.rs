@@ -366,6 +366,19 @@ pub struct Task {
     /// updates atomically when arg != 0xFFFFFFFF.
     pub personality: AtomicU32,
 
+    /// `rseq(2)` registration pointer. Per-task user-space pointer to a
+    /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
+    /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
+    /// (cpu_id_start) and 4 (cpu_id) so glibc's fast-path sees correct
+    /// data instead of stale zeros from initialisation.
+    pub rseq_ptr: AtomicU64,
+    /// Length of the user `struct rseq` (typically 32). Stored to
+    /// validate the writeback range fits in user memory.
+    pub rseq_len: AtomicU32,
+    /// 4-byte signature passed at registration; used by glibc/musl as
+    /// a cookie. Stored but not enforced by the kernel.
+    pub rseq_sig: AtomicU32,
+
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
     /// Init starts as root (all zero). fork copies, execve preserves.
@@ -643,6 +656,9 @@ impl Task {
             pdeathsig:      AtomicU32::new(0),
             child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),
+            rseq_ptr:       AtomicU64::new(0),
+            rseq_len:       AtomicU32::new(0),
+            rseq_sig:       AtomicU32::new(0),
             creds: Creds::root(),
         }
     }
