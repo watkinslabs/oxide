@@ -97,5 +97,206 @@ pub unsafe fn get_display_info(
         }
         klog::write_raw(b"\n");
     }
+    if info.count_enabled > 0 {
+        // SAFETY: boot path; queue + notify VAs valid; PMM up.
+        let _ = unsafe {
+            setup_scanout(
+                info.modes[0].r.width, info.modes[0].r.height,
+                q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
+                buf_va, buf_pa,
+            )
+        };
+    }
     true
+}
+
+/// Allocate a backing fb (RESOURCE_CREATE_2D) + attach a contiguous
+/// PMM region as the backing storage + bind it to scanout 0
+/// (SET_SCANOUT) + transfer + flush so the host displays the buffer.
+/// Paints a solid fill to validate the pipeline end-to-end.
+/// # SAFETY: caller is the boot path; queue + notify VAs valid; PMM up.
+/// # C: O(width * height) for the fill + O(1) per command.
+unsafe fn setup_scanout(
+    w: u32, h: u32,
+    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
+    cmd_buf_va: *mut u8, cmd_buf_pa: u64,
+) -> bool {
+    let hhdm = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::mmu_ops::hhdm_offset() }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::mmu_ops::hhdm_offset() }
+    };
+    let pitch = w as u64 * 4;
+    let fb_bytes = pitch * h as u64;
+    // Allocate the FB as a run of contig 4KiB frames. v1 caps at 16
+    // pages = 64 KiB; large screens (>= 128KiB) defer to follow-up
+    // multi-page-allocator.
+    let pages = ((fb_bytes + 0xFFF) / 0x1000) as usize;
+    if pages == 0 || pages > 16 { return false; }
+    // First frame address; subsequent frames must be the next page
+    // (PMM doesn't guarantee contig alloc — we accept any layout
+    // because RESOURCE_ATTACH_BACKING accepts a scatter list).
+    let mut frames: [u64; 16] = [0; 16];
+    for i in 0..pages {
+        frames[i] = match crate::pmm_setup::alloc_one_frame() {
+            Some(pa) => pa, None => return false,
+        };
+    }
+    // Paint a solid color into the FB so userspace sees something
+    // immediately. BGRA32 dark blue.
+    for i in 0..pages {
+        let va = hhdm.wrapping_add(frames[i]) as *mut u8;
+        let len = if i + 1 == pages {
+            (fb_bytes - (i as u64) * 0x1000) as usize
+        } else { 0x1000 };
+        // SAFETY: HHDM-mapped frame; bounded length within the single page.
+        unsafe {
+            let mut j = 0;
+            while j + 4 <= len {
+                core::ptr::write_volatile(va.add(j),     0x80);  // B
+                core::ptr::write_volatile(va.add(j + 1), 0x10);  // G
+                core::ptr::write_volatile(va.add(j + 2), 0x00);  // R
+                core::ptr::write_volatile(va.add(j + 3), 0xFF);  // A
+                j += 4;
+            }
+        }
+    }
+    let res_id: u32 = 1;
+    // ---- 1. CMD_RESOURCE_CREATE_2D (40 B request, 24 B response) ----
+    // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+        |buf| drv_virtio_gpu::encode_resource_create_2d(buf, res_id,
+            drv_virtio_gpu::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
+    ) } { return false; }
+    // ---- 2. CMD_RESOURCE_ATTACH_BACKING with N entries ----
+    {
+        // SAFETY: HHDM-mapped 4 KiB cmd buffer; bounded write of a 32+16*pages-byte struct.
+        unsafe {
+            for k in 0..0x1000usize {
+                core::ptr::write_volatile(cmd_buf_va.add(k), 0);
+            }
+            // hdr + resource_id + nr_entries
+            let buf = core::slice::from_raw_parts_mut(cmd_buf_va, 32);
+            let _ = drv_virtio_gpu::encode_resource_attach_backing_one(buf, res_id, frames[0], 0);
+            // Overwrite nr_entries with `pages`.
+            let nr_bytes = (pages as u32).to_le_bytes();
+            for i in 0..4 {
+                core::ptr::write_volatile(cmd_buf_va.add(28 + i), nr_bytes[i]);
+            }
+            // Append page entries (16 B each) starting at +32.
+            for i in 0..pages {
+                let off = 32 + i * 16;
+                let addr_b = frames[i].to_le_bytes();
+                for j in 0..8 { core::ptr::write_volatile(cmd_buf_va.add(off + j), addr_b[j]); }
+                let len = if i + 1 == pages {
+                    (fb_bytes - (i as u64) * 0x1000) as u32
+                } else { 0x1000 };
+                let len_b = len.to_le_bytes();
+                for j in 0..4 { core::ptr::write_volatile(cmd_buf_va.add(off + 8 + j), len_b[j]); }
+                // padding 4 B = already zero.
+            }
+        }
+        let req_len = 32 + pages * 16;
+        // SAFETY: cmd buffer + queue VAs valid; caller's boot-path preconditions hold.
+        if unsafe { !submit_raw(cmd_buf_pa, req_len, q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm) } {
+            return false;
+        }
+    }
+    // ---- 3. CMD_SET_SCANOUT ----
+    // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+        |buf| drv_virtio_gpu::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
+    ) } { return false; }
+    // ---- 4. CMD_TRANSFER_TO_HOST_2D ----
+    // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+        |buf| drv_virtio_gpu::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
+    ) } { return false; }
+    // ---- 5. CMD_RESOURCE_FLUSH ----
+    // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+        |buf| drv_virtio_gpu::encode_resource_flush(buf, res_id, 0, 0, w, h),
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
+    ) } { return false; }
+    debug_boot! {
+        klog::write_raw(b"[INFO]  virtio-gpu scanout: ");
+        klog::write_dec_u64(w as u64);
+        klog::write_raw(b"x");
+        klog::write_dec_u64(h as u64);
+        klog::write_raw(b" pages=");
+        klog::write_dec_u64(pages as u64);
+        klog::write_raw(b" painted\n");
+    }
+    true
+}
+
+/// Submit a single CTRLQ command via the encoder closure.
+/// 2-descriptor chain (req-out / resp-in 24 B). Returns true on
+/// successful round-trip.
+unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
+    buf_va: *mut u8, buf_pa: u64, encode: F,
+    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
+    hhdm: u64,
+) -> bool {
+    // SAFETY: HHDM-mapped 4 KiB buffer; bounded zero of 0x100 + write of <0x100 B encoded request.
+    unsafe {
+        for k in 0..0x100usize { core::ptr::write_volatile(buf_va.add(k), 0); }
+        for k in 0x200..0x230usize { core::ptr::write_volatile(buf_va.add(k), 0); }
+        let req = core::slice::from_raw_parts_mut(buf_va, 0x100);
+        let _ = encode(req);
+    }
+    // First descriptor sees the request length encoded as 0x100 max
+    // (every encoder we call writes < 64 B). For exact length we
+    // could parse it; using 64 B is enough for all encoders in the
+    // arc so far per `45§5`.
+    // SAFETY: cmd buffer + queue VAs valid by caller's contract.
+    unsafe { submit_raw(buf_pa, 64, q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm) }
+}
+
+/// Submit a request of length `req_len` followed by a 24-byte
+/// response slot. Polls used.idx for completion.
+unsafe fn submit_raw(
+    buf_pa: u64, req_len: usize,
+    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
+    hhdm: u64,
+) -> bool {
+    let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
+    // SAFETY: HHDM-mapped virtio q0 descriptor table; aligned u64 stores into the driver-owned frame.
+    unsafe {
+        core::ptr::write_volatile(desc0.add(0), buf_pa);
+        let d0 = req_len as u64
+               | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
+               | (1u64 << 48);
+        core::ptr::write_volatile(desc0.add(1), d0);
+        core::ptr::write_volatile(desc0.add(2), buf_pa + 0x200);
+        let d1 = 24u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
+        core::ptr::write_volatile(desc0.add(3), d1);
+    }
+    let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
+    // Read current avail.idx to know where to write the next ring slot.
+    // SAFETY: HHDM-mapped avail ring; aligned u16 read of avail.idx then write of next slot.
+    let cur_idx = unsafe { core::ptr::read_volatile(avail.add(1)) };
+    // SAFETY: avail.ring is u16 ring of size N (>=256); cur_idx is a wrapping index used per virtio spec.
+    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % 256)), 0u16); }
+    core::sync::atomic::fence(Ordering::Release);
+    // SAFETY: same avail ring; idx at u16 offset 1.
+    unsafe { core::ptr::write_volatile(avail.add(1), cur_idx + 1); }
+    core::sync::atomic::fence(Ordering::Release);
+    // SAFETY: notify VA mapped Device-attr; queue idx written per virtio 1.2 §4.1.5.2.
+    unsafe { core::ptr::write_volatile(q0_notify_va as *mut u16, 0u16); }
+    let used = (hhdm.wrapping_add(q0_device_pa)) as *mut u16;
+    let want = cur_idx + 1;
+    let mut polls = 0u32;
+    loop {
+        // SAFETY: HHDM-mapped used ring; aligned u16 read.
+        let idx = unsafe { core::ptr::read_volatile(used.add(1)) };
+        if idx >= want || polls > 1_000_000 { break; }
+        polls += 1;
+        core::hint::spin_loop();
+    }
+    polls <= 1_000_000
 }
