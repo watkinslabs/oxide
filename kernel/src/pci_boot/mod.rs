@@ -551,6 +551,23 @@ pub fn enumerate_and_log() {
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
 
+        // F59-03: boot-time RX-poll exercise. Drain whatever the
+        // virtio-net probe's queue-0 RX descriptor caught (expected 0
+        // at boot since SLIRP only responds to outbound traffic, which
+        // F59-04 will issue). The point here is to prove the modern
+        // rx_poll path doesn't fault on an empty ring.
+        if crate::dev_virtio_net_modern::is_modern_present() {
+            let mut rx_bytes_total: usize = 0;
+            let drained = crate::dev_virtio_net_modern::rx_poll(|frame| {
+                rx_bytes_total = rx_bytes_total.saturating_add(frame.len());
+            });
+            klog::write_raw(b"[INFO]  virtio-net-rx-boot drained=");
+            klog::write_dec_u64(drained as u64);
+            klog::write_raw(b" bytes=");
+            klog::write_dec_u64(rx_bytes_total as u64);
+            klog::write_raw(b"\n");
+        }
+
         // F46: read GICD_ISPENDR2 (covers SPIs 64..95). If SPI 81 or
         // 82 is pending here, the device-driven MSI write reached
         // the GIC but didn't deliver to CPU (mask/priority issue).
