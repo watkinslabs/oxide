@@ -30,6 +30,7 @@ vmm     = { path = "../crates/vmm" }
 power    = { path = "../crates/power" }
 firmware = { path = "../crates/firmware" }
 nscg     = { path = "../crates/nscg" }
+security = { path = "../crates/security" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../crates/hal-x86_64" }

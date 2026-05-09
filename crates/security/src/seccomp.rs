@@ -29,7 +29,6 @@
 // out-of-range jumps, and bail on unknown opcodes (treated as KILL
 // per Linux). No JIT — interpreter only.
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
@@ -264,7 +263,7 @@ fn action_priority(rv: u32) -> u32 {
 /// # C: O(F × I) F filters, I instructions per filter
 pub fn check(nr: u64, args: &[u64; 6]) -> Result<(), i64> {
     use syscall::errno::Errno;
-    let cur = match crate::sched::current() { Some(c) => c, None => return Ok(()) };
+    let cur = match sched::current() { Some(c) => c, None => return Ok(()) };
     // SAFETY: per-task slot single-mutator per `13§5`; running task on this CPU is the sole writer.
     let filters_ref: &Vec<Vec<u64>> = unsafe { &*cur.seccomp_filters.get() };
     if filters_ref.is_empty() { return Ok(()); }
@@ -323,7 +322,7 @@ pub fn kernel_sys_seccomp(args: &syscall::SyscallArgs) -> i64 {
     let op    = args.a0;
     let _flg  = args.a1;
     let arg2  = args.a2;
-    let cur = match crate::sched::current() {
+    let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     match op {

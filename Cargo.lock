@@ -331,6 +331,7 @@ dependencies = [
  "power",
  "procfs",
  "sched",
+ "security",
  "sync",
  "syscall",
  "tty",
@@ -672,6 +673,10 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
