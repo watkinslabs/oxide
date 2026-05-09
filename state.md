@@ -61,6 +61,8 @@ real impl or honest ENOSYS. Breakdown:
   - **F109 #840** cross-NS pid translation for kill/tgkill/pidfd_open (completes F105 user contract)
   - **F110 #841** real mount(2) — tmpfs backend + admit-only for proc/sysfs/etc
   - **F111 #843** pre-mount tmpfs at /dev/shm and /run (POSIX shm_open + systemd-class /run/<svc>.pid)
+  - **F112 #845** /proc/self/ns/* dynamic readlink + /proc/self/root chroot-aware
+  - **F113 #846** /proc/<pid>/{uid_map,gid_map,setgroups} identity-map files
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
