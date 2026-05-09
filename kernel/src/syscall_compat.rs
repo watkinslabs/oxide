@@ -72,7 +72,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // returns silent-0 (a synthetic "key serial" for callers
         // that only check non-negative). Real keyring storage +
         // permission checks ride a follow-up.
-        | NR_ADD_KEY | NR_REQUEST_KEY | NR_KEYCTL
+        // ADD_KEY / REQUEST_KEY / KEYCTL moved to real impl (F76).
         // POSIX MQ admin ops. MQ_OPEN/UNLINK/TIMEDSEND/TIMEDRECEIVE
         // are real (priority-ordered records via posix_mq.rs).
         // MQ_NOTIFY/GETSETATTR stay silent-0 (no per-task signal-on-
