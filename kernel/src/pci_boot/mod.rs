@@ -551,84 +551,13 @@ pub fn enumerate_and_log() {
         klog::write_dec_u64(fires as u64);
         klog::write_raw(b"\n");
 
-        // F59-06: boot-time ARP probe. Build an ARP request from
-        // src_ip 10.0.2.15 → target_ip 10.0.2.2 (SLIRP gateway),
-        // tx_frame it, spin briefly, then drain rx_poll. SLIRP
-        // responds to ARP for the gateway IP; a successful reply
-        // proves both directions of the modern transport end to end.
+        // F59-15: register the modern virtio-net device as a NetDev
+        // and install a default L2 route. ARP/ICMP-request/DHCP
+        // belong in user-space (`dhclient`, `ping`, etc.) — the
+        // kernel only provides the iface + protocol stack via the
+        // AF_INET socket API. Userspace gets the iface up via
+        // ioctl/netlink (TODO) and runs DHCP from there.
         if crate::dev_virtio_net_modern::is_modern_present() {
-            let r = crate::dev_virtio_net_boot::boot_arp_probe(
-                [10, 0, 2, 15],
-                [10, 0, 2, 2],
-            );
-            klog::write_raw(b"[INFO]  virtio-net-arp-boot tx_attempted=");
-            klog::write_dec_u64(r.tx_attempted as u64);
-            klog::write_raw(b" tx_confirmed=");
-            klog::write_dec_u64(r.tx_confirmed as u64);
-            klog::write_raw(b" rx_frames=");
-            klog::write_dec_u64(r.rx_frames as u64);
-            klog::write_raw(b" reply=");
-            klog::write_dec_u64(r.reply_seen as u64);
-            klog::write_raw(b"\n");
-            if r.reply_seen {
-                klog::write_raw(b"[INFO]  arp-learn gw_ip=");
-                for (i, b) in r.gateway_ip.iter().enumerate() {
-                    klog::write_dec_u64(*b as u64);
-                    if i < 3 { klog::write_raw(b"."); }
-                }
-                klog::write_raw(b" gw_mac=");
-                for (i, b) in r.gateway_mac.iter().enumerate() {
-                    klog::write_hex_u64(*b as u64);
-                    if i < 5 { klog::write_raw(b":"); }
-                }
-                klog::write_raw(b"\n");
-
-                // F59-12: with the gateway MAC cached, send an ICMP
-                // echo to it. Proves IPv4 + ICMP path through SLIRP.
-                let icmp = crate::dev_virtio_net_boot::boot_icmp_echo_probe(
-                    [10, 0, 2, 15], r.gateway_ip, r.gateway_mac,
-                );
-                klog::write_raw(b"[INFO]  virtio-net-icmp-boot tx_attempted=");
-                klog::write_dec_u64(icmp.tx_attempted as u64);
-                klog::write_raw(b" tx_confirmed=");
-                klog::write_dec_u64(icmp.tx_confirmed as u64);
-                klog::write_raw(b" rx_frames=");
-                klog::write_dec_u64(icmp.rx_frames as u64);
-                klog::write_raw(b" reply=");
-                klog::write_dec_u64(icmp.reply_seen as u64);
-                klog::write_raw(b"\n");
-
-                // F59-14: ask SLIRP's built-in DHCP server for an
-                // IP offer. Single DISCOVER → OFFER round-trip;
-                // REQUEST/ACK lands in F59-15.
-                let dhcp = crate::dev_virtio_net_boot::boot_dhcp_discover();
-                klog::write_raw(b"[INFO]  virtio-net-dhcp-boot tx_confirmed=");
-                klog::write_dec_u64(dhcp.tx_confirmed as u64);
-                klog::write_raw(b" rx_frames=");
-                klog::write_dec_u64(dhcp.rx_frames as u64);
-                klog::write_raw(b" offer=");
-                klog::write_dec_u64(dhcp.offer_seen as u64);
-                klog::write_raw(b"\n");
-                if dhcp.offer_seen {
-                    klog::write_raw(b"[INFO]  dhcp-offer your_ip=");
-                    for (i, b) in dhcp.offered_ip.iter().enumerate() {
-                        klog::write_dec_u64(*b as u64);
-                        if i < 3 { klog::write_raw(b"."); }
-                    }
-                    klog::write_raw(b" server_ip=");
-                    for (i, b) in dhcp.server_ip.iter().enumerate() {
-                        klog::write_dec_u64(*b as u64);
-                        if i < 3 { klog::write_raw(b"."); }
-                    }
-                    klog::write_raw(b"\n");
-                }
-            }
-
-            // F59-11: register the modern virtio-net device as a
-            // NetDev in the kernel iface registry. F59-13: also
-            // install a route 10.0.2.0/24 via this iface (SLIRP
-            // network), then drain any pending RX frames into
-            // stack.deliver_rx for one diagnostic pass.
             if let Some(dev) = crate::dev_virtio_net_modern::VirtioNetDev::new() {
                 let stack = crate::dev_net::stack();
                 let id = stack.ifaces.register(
@@ -637,21 +566,6 @@ pub fn enumerate_and_log() {
                 klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
                 klog::write_dec_u64(id.0 as u64);
                 klog::write_raw(b" name=eth0\n");
-
-                stack.routes.add(net::RouteEntry {
-                    dst:        net::Ipv4Addr::new(10, 0, 2, 0),
-                    prefix_len: 24,
-                    iface:      id,
-                    gateway:    None,
-                    src_hint:   Some(net::Ipv4Addr::new(10, 0, 2, 15)),
-                });
-
-                let drained = crate::dev_virtio_net_modern::poll_into_stack(
-                    id, [10, 0, 2, 15],
-                );
-                klog::write_raw(b"[INFO]  virtio-net-rx-stack drained=");
-                klog::write_dec_u64(drained as u64);
-                klog::write_raw(b"\n");
             }
         }
 
