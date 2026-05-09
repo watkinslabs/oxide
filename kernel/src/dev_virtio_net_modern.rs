@@ -199,6 +199,16 @@ pub fn tx_frame(body: &[u8]) -> Result<(), TxErr> {
         core::ptr::write_volatile((desc_va + 14) as *mut u16, 0u16); // next
     }
 
+    // Read q1 used.idx BEFORE the kick so we can poll for a real
+    // post-kick change — the static cursor is unreliable since the
+    // boot probe's own TX may or may not have completed before our
+    // call (depends on SLIRP timing).
+    // SAFETY: HHDM-mapped q1 used ring; aligned u16 load at +2.
+    let pre_used = unsafe {
+        core::ptr::read_volatile((used_va + 2) as *const u16)
+    };
+    TX_LAST_USED.store(pre_used, Ordering::Release);
+
     let q1_size = s.q1_size as usize;
     let next_avail = TX_NEXT_AVAIL.load(Ordering::Acquire);
     let pub_slot = (next_avail as usize) % q1_size;
@@ -241,6 +251,141 @@ pub fn tx_frame(body: &[u8]) -> Result<(), TxErr> {
     // Even on timeout, the avail-side state is consistent. Caller
     // can reissue if a stronger completion signal is needed.
     Ok(())
+}
+
+// -------- F59-06: boot-time ARP exchange ------------------------------
+//
+// Build an ARP request frame (eth + ARP, 42 bytes) using the device
+// MAC + a hard-coded SLIRP-friendly source IP (10.0.2.15) and target
+// IP (10.0.2.2 = SLIRP gateway). Send it via tx_frame, spin briefly
+// to give SLIRP time to reply, drain rx_poll. The callback logs
+// `arp-rx` lines for inspection. Returns (delivered, reply_seen).
+//
+// Frame layout (Virtio 1.2 §5.1.6 + IETF RFC 826):
+//   off 0..6   eth dst = ff:ff:ff:ff:ff:ff
+//   off 6..12  eth src = our MAC
+//   off 12..14 ethertype = 0x0806 BE
+//   off 14..16 arp htype = 0x0001 BE  (Ethernet)
+//   off 16..18 arp ptype = 0x0800 BE  (IPv4)
+//   off 18     arp hlen  = 6
+//   off 19     arp plen  = 4
+//   off 20..22 arp op    = 0x0001 BE  (request)
+//   off 22..28 arp sha   = our MAC
+//   off 28..32 arp spa   = sender IP
+//   off 32..38 arp tha   = 00:00:00:00:00:00
+//   off 38..42 arp tpa   = target IP
+
+const ETHERTYPE_ARP: u16 = 0x0806;
+const ARP_OP_REQUEST: u16 = 0x0001;
+const ARP_OP_REPLY:   u16 = 0x0002;
+
+fn build_arp_request(
+    src_mac: [u8; 6],
+    src_ip:  [u8; 4],
+    dst_ip:  [u8; 4],
+    out: &mut [u8; 42],
+) {
+    // eth dst = broadcast
+    for i in 0..6 { out[i] = 0xFF; }
+    // eth src
+    out[6..12].copy_from_slice(&src_mac);
+    // ethertype 0x0806 BE
+    out[12] = (ETHERTYPE_ARP >> 8) as u8;
+    out[13] = (ETHERTYPE_ARP & 0xFF) as u8;
+    // arp htype 0x0001 BE
+    out[14] = 0x00; out[15] = 0x01;
+    // arp ptype 0x0800 BE
+    out[16] = 0x08; out[17] = 0x00;
+    // arp hlen / plen
+    out[18] = 6;
+    out[19] = 4;
+    // arp op 0x0001 BE
+    out[20] = (ARP_OP_REQUEST >> 8) as u8;
+    out[21] = (ARP_OP_REQUEST & 0xFF) as u8;
+    // arp sha = src MAC
+    out[22..28].copy_from_slice(&src_mac);
+    // arp spa = src ip
+    out[28..32].copy_from_slice(&src_ip);
+    // arp tha = 00:00:00:00:00:00
+    for i in 32..38 { out[i] = 0; }
+    // arp tpa = target ip
+    out[38..42].copy_from_slice(&dst_ip);
+}
+
+/// Send one ARP-request to `target_ip` using the device MAC + the
+/// supplied `src_ip`, then poll RX for replies up to 1M spin cycles.
+/// Returns (`tx_ok`, `frames_drained`, `reply_seen`).
+///
+/// Logs (under `debug-boot`):
+///   `arp-tx <src_mac> -> <target_ip>`
+///   `arp-rx eth_dst=... eth_src=... ethertype=...`  per frame
+///   `arp-reply ok` if any frame matches eth.type=0x0806 + arp.op=2
+///
+/// # C: O(1) TX path + O(rx_drain)
+pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> (bool, usize, bool) {
+    let mac = match mac() { Some(m) => m, None => return (false, 0, false) };
+
+    let mut frame = [0u8; 42];
+    build_arp_request(mac, src_ip, target_ip, &mut frame);
+
+    debug_boot! {
+        klog::write_raw(b"[INFO]  arp-tx src=");
+        for (i, b) in mac.iter().enumerate() {
+            klog::write_hex_u64(*b as u64);
+            if i < 5 { klog::write_raw(b":"); }
+        }
+        klog::write_raw(b" target_ip=");
+        for (i, b) in target_ip.iter().enumerate() {
+            klog::write_dec_u64(*b as u64);
+            if i < 3 { klog::write_raw(b"."); }
+        }
+        klog::write_raw(b"\n");
+    }
+
+    let tx_ok = tx_frame(&frame).is_ok();
+
+    // QEMU's user-mode networking (SLIRP) runs in the host IO thread.
+    // With TCG the guest hot-spins on a single core, so the IO thread
+    // only gets a chance to deliver between guest exits. Loop with
+    // short spin + drain windows up to ~50M cycles total to give QEMU
+    // time to compose + post the reply.
+    let mut reply_seen = false;
+    let mut frames_total = 0usize;
+    let mut drained_total = 0usize;
+    for _ in 0..50usize {
+        for _ in 0..1_000_000usize { core::hint::spin_loop(); }
+        let drained = rx_poll(|f| {
+            frames_total += 1;
+            debug_boot! {
+                klog::write_raw(b"[INFO]  arp-rx len=");
+                klog::write_dec_u64(f.len() as u64);
+                if f.len() >= 14 {
+                    klog::write_raw(b" ethertype=");
+                    let et = ((f[12] as u16) << 8) | (f[13] as u16);
+                    klog::write_hex_u64(et as u64);
+                }
+                if f.len() >= 22 {
+                    let et = ((f[12] as u16) << 8) | (f[13] as u16);
+                    let op = ((f[20] as u16) << 8) | (f[21] as u16);
+                    if et == ETHERTYPE_ARP {
+                        klog::write_raw(b" arp_op=");
+                        klog::write_hex_u64(op as u64);
+                    }
+                }
+                klog::write_raw(b"\n");
+            }
+            if f.len() >= 22 {
+                let et = ((f[12] as u16) << 8) | (f[13] as u16);
+                let op = ((f[20] as u16) << 8) | (f[21] as u16);
+                if et == ETHERTYPE_ARP && op == ARP_OP_REPLY {
+                    reply_seen = true;
+                }
+            }
+        });
+        drained_total += drained;
+        if reply_seen { break; }
+    }
+    (tx_ok, drained_total.max(frames_total), reply_seen)
 }
 
 /// Snapshot of the registered modern device (None until init_modern).
