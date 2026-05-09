@@ -451,6 +451,131 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
     out
 }
 
+// -------- F59-12: boot ICMP echo to the gateway -----------------------
+//
+// After the ARP probe lands a gateway MAC in arp_cache, send an
+// ICMP echo request to the gateway via tx_frame, then drain rx_poll
+// for an Echo Reply. v1 builds the eth/ip/icmp frame inline (no
+// stack involvement yet). Proves the cached MAC + tx path + RX
+// IPv4 demux work end-to-end at boot. Runs only when
+// `arp_probe_result.reply_seen` so we have a real dst MAC.
+
+const IPV4_PROTO_ICMP: u8 = 1;
+
+/// Outcome of `boot_icmp_echo_probe`.
+#[derive(Copy, Clone, Debug)]
+pub struct IcmpProbeResult {
+    /// Setup + tx_frame succeeded.
+    pub tx_attempted: bool,
+    /// Device confirmed TX completion.
+    pub tx_confirmed: bool,
+    /// Total RX frames seen during the wait window.
+    pub rx_frames: usize,
+    /// At least one drained frame parsed as an Echo Reply matching
+    /// our id+seq.
+    pub reply_seen: bool,
+    /// Round-trip latency in spin iterations (best-effort) when
+    /// reply_seen; 0 otherwise. Useful as a timing sanity check.
+    pub round_trips: usize,
+}
+
+/// Build + send an ICMP Echo Request from `src_ip` to `gw_ip` using
+/// `gw_mac` as the L2 destination. Polls rx_poll for an Echo Reply
+/// matching our chosen id+seq.
+///
+/// # C: O(rx_drain)
+pub fn boot_icmp_echo_probe(
+    src_ip: [u8; 4],
+    gw_ip:  [u8; 4],
+    gw_mac: [u8; 6],
+) -> IcmpProbeResult {
+    let mut out = IcmpProbeResult {
+        tx_attempted: false,
+        tx_confirmed: false,
+        rx_frames:    0,
+        reply_seen:   false,
+        round_trips:  0,
+    };
+    let our_mac = match mac() { Some(m) => m, None => return out };
+
+    // ICMP header (8 bytes) + payload "oxide-pi" (8 bytes) = 16 bytes.
+    let payload: [u8; 8] = *b"oxide-pi";
+    let echo_id:  u16 = 0xC0DE;
+    let echo_seq: u16 = 0x0001;
+    let mut icmp_buf = [0u8; 16];
+    let mut echo = net::icmp::IcmpEcho {
+        typ:      net::icmp::ICMP_TYPE_ECHO_REQUEST,
+        code:     0,
+        checksum: 0,
+        id:       echo_id,
+        seq:      echo_seq,
+    };
+    echo.build_into(&payload, &mut icmp_buf);
+
+    // IPv4 header.
+    let ip_hdr = net::ipv4::Ipv4Hdr::build(
+        net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
+        net::Ipv4Addr::new(gw_ip[0],  gw_ip[1],  gw_ip[2],  gw_ip[3]),
+        net::IpProto::Icmp,
+        icmp_buf.len() as u16,
+        0xCAFE,
+    );
+    let mut frame = [0u8; 14 + 20 + 16];
+    net::ethernet::EthHdr::write_to(
+        net::MacAddr(gw_mac), net::MacAddr(our_mac),
+        net::eth_p::IPV4, &mut frame[..14],
+    );
+    ip_hdr.write_to(&mut frame[14..14 + 20]);
+    frame[14 + 20..].copy_from_slice(&icmp_buf);
+
+    out.tx_attempted = true;
+    match tx_frame(&frame) {
+        Ok(TxOutcome::Confirmed) => { out.tx_confirmed = true; }
+        Ok(TxOutcome::Timeout)   => { out.tx_confirmed = false; }
+        Err(_)                   => { out.tx_attempted = false; return out; }
+    }
+
+    let mut reply_seen = false;
+    let mut frames_total = 0usize;
+    let mut drained_total = 0usize;
+    let mut spin_used = 0usize;
+    for _ in 0..50usize {
+        for _ in 0..1_000_000usize {
+            core::hint::spin_loop();
+            spin_used = spin_used.wrapping_add(1);
+        }
+        let drained = rx_poll(|f: &[u8]| {
+            frames_total += 1;
+            if f.len() < 14 + 20 + 8 { return; }
+            let et = ((f[12] as u16) << 8) | (f[13] as u16);
+            if et != IPV4_ETHERTYPE { return; }
+            let ip_hdr = match net::ipv4::Ipv4Hdr::parse(&f[14..14 + 20]) {
+                Ok(h) => h, Err(_) => return,
+            };
+            if ip_hdr.proto != IPV4_PROTO_ICMP { return; }
+            let total = ip_hdr.total_len as usize;
+            if 14 + total > f.len() { return; }
+            let icmp_body = &f[14 + 20..14 + total];
+            if let Ok(reply) = net::icmp::IcmpEcho::parse(icmp_body) {
+                if reply.typ == net::icmp::ICMP_TYPE_ECHO_REPLY
+                    && reply.id == echo_id
+                    && reply.seq == echo_seq
+                {
+                    reply_seen = true;
+                }
+            }
+        });
+        drained_total += drained;
+        if reply_seen { break; }
+    }
+    out.rx_frames   = drained_total.max(frames_total);
+    out.reply_seen  = reply_seen;
+    out.round_trips = if reply_seen { spin_used } else { 0 };
+    out
+}
+
+const IPV4_ETHERTYPE: u16 = 0x0800;
+
 // -------- F59-11: NetDev iface registration ---------------------------
 //
 // Wraps the modern transport in a `net::NetDev` so the kernel net
