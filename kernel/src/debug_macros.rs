@@ -34,3 +34,7 @@ macro_rules! debug_sched { ($($t:tt)*) => {} }
 macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-boot"))]
 macro_rules! debug_boot { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-syscall")]
+macro_rules! debug_syscall { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-syscall"))]
+macro_rules! debug_syscall { ($($t:tt)*) => {} }
