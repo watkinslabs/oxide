@@ -136,17 +136,34 @@ static TX_NEXT_AVAIL: AtomicU16 = AtomicU16::new(1);
 /// 12-byte virtio_net_hdr; ethernet MTU 1500 fits comfortably).
 pub const TX_MAX_BODY: usize = 4096 - VIRTIO_NET_HDR_LEN;
 
+/// Outcome of a `tx_frame` call when no setup error occurred.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TxOutcome {
+    /// Device advanced `q1.used.idx` within the post-kick spin
+    /// window — the frame is on the wire (or at least owned by
+    /// the device's TX path).
+    Confirmed,
+    /// We posted + kicked, but the device hadn't advanced
+    /// `q1.used.idx` by the time the spin window expired. The
+    /// avail-side state is consistent (caller can reissue) but
+    /// the kick may not have been processed.
+    Timeout,
+}
+
 /// Send one frame out the modern virtio-net transmit queue. Writes
 /// the 12-byte zero virtio_net_hdr followed by `body` into the
 /// pinned TX scratch buffer, updates queue-1 descriptor 0 with the
-/// new len, posts on avail, and kicks `q1_notify_va`. Briefly
-/// observes the device's q1 used.idx; the wait is cooperative,
-/// not blocking — completion is best-effort and the cursor is
-/// advanced from whatever the device managed to drain.
+/// new len, posts on avail, and kicks `q1_notify_va`. Polls
+/// `q1.used.idx` for change relative to the pre-kick value.
+///
+/// Returns `TxOutcome::Confirmed` only when the device acknowledged
+/// completion. `Timeout` means we issued the kick but didn't see
+/// `used.idx` advance — distinct from `Err(_)` which means we
+/// couldn't even attempt the post.
 ///
 /// # C: O(1) under MODERN_DEV.lock()
 /// # Lk: takes MODERN_DEV across MMIO writes; no callbacks.
-pub fn tx_frame(body: &[u8]) -> Result<(), TxErr> {
+pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
     if !MODERN_PRESENT.load(Ordering::Acquire) {
         return Err(TxErr::NotPresent);
     }
@@ -235,22 +252,20 @@ pub fn tx_frame(body: &[u8]) -> Result<(), TxErr> {
     }
 
     // Brief observation window: poll q1 used.idx for the device to
-    // bump it. Best-effort; if we time out the cursor is advanced
-    // from whatever did drain.
+    // advance past pre_used. Returns Confirmed on real completion,
+    // Timeout if the device didn't move.
     for _ in 0..1_000_000usize {
         // SAFETY: HHDM-mapped q1 used ring idx field at +2; aligned u16 load.
         let dev_used = unsafe {
             core::ptr::read_volatile((used_va + 2) as *const u16)
         };
-        if dev_used != TX_LAST_USED.load(Ordering::Acquire) {
+        if dev_used != pre_used {
             TX_LAST_USED.store(dev_used, Ordering::Release);
-            return Ok(());
+            return Ok(TxOutcome::Confirmed);
         }
         core::hint::spin_loop();
     }
-    // Even on timeout, the avail-side state is consistent. Caller
-    // can reissue if a stronger completion signal is needed.
-    Ok(())
+    Ok(TxOutcome::Timeout)
 }
 
 // -------- F59-06: boot-time ARP exchange ------------------------------
@@ -312,9 +327,24 @@ fn build_arp_request(
     out[38..42].copy_from_slice(&dst_ip);
 }
 
+/// Outcome of `boot_arp_probe` for boot-log + caller introspection.
+#[derive(Copy, Clone, Debug)]
+pub struct ArpProbeResult {
+    /// Setup succeeded enough to attempt the post (device present,
+    /// MAC valid, frame fit the scratch buffer).
+    pub tx_attempted: bool,
+    /// Device acknowledged TX completion (q1.used.idx advanced).
+    /// If false but `tx_attempted=true`, the kick may not have been
+    /// processed — see qemu pcap / monitor for diagnosis.
+    pub tx_confirmed: bool,
+    /// Total RX frames drained across the wait windows.
+    pub rx_frames: usize,
+    /// At least one drained frame was an ARP reply (op=0x0002).
+    pub reply_seen: bool,
+}
+
 /// Send one ARP-request to `target_ip` using the device MAC + the
-/// supplied `src_ip`, then poll RX for replies up to 1M spin cycles.
-/// Returns (`tx_ok`, `frames_drained`, `reply_seen`).
+/// supplied `src_ip`, then poll RX for replies up to 50M spin cycles.
 ///
 /// Logs (under `debug-boot`):
 ///   `arp-tx <src_mac> -> <target_ip>`
@@ -322,8 +352,14 @@ fn build_arp_request(
 ///   `arp-reply ok` if any frame matches eth.type=0x0806 + arp.op=2
 ///
 /// # C: O(1) TX path + O(rx_drain)
-pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> (bool, usize, bool) {
-    let mac = match mac() { Some(m) => m, None => return (false, 0, false) };
+pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> ArpProbeResult {
+    let mut out = ArpProbeResult {
+        tx_attempted: false,
+        tx_confirmed: false,
+        rx_frames:    0,
+        reply_seen:   false,
+    };
+    let mac = match mac() { Some(m) => m, None => return out };
 
     let mut frame = [0u8; 42];
     build_arp_request(mac, src_ip, target_ip, &mut frame);
@@ -342,7 +378,12 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> (bool, usize, bool
         klog::write_raw(b"\n");
     }
 
-    let tx_ok = tx_frame(&frame).is_ok();
+    out.tx_attempted = true;
+    match tx_frame(&frame) {
+        Ok(TxOutcome::Confirmed) => { out.tx_confirmed = true; }
+        Ok(TxOutcome::Timeout)   => { out.tx_confirmed = false; }
+        Err(_)                   => { out.tx_attempted = false; return out; }
+    }
 
     // QEMU's user-mode networking (SLIRP) runs in the host IO thread.
     // With TCG the guest hot-spins on a single core, so the IO thread
@@ -354,7 +395,7 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> (bool, usize, bool
     let mut drained_total = 0usize;
     for _ in 0..50usize {
         for _ in 0..1_000_000usize { core::hint::spin_loop(); }
-        let drained = rx_poll(|f| {
+        let drained = rx_poll(|f: &[u8]| {
             frames_total += 1;
             debug_boot! {
                 klog::write_raw(b"[INFO]  arp-rx len=");
@@ -385,7 +426,9 @@ pub fn boot_arp_probe(src_ip: [u8; 4], target_ip: [u8; 4]) -> (bool, usize, bool
         drained_total += drained;
         if reply_seen { break; }
     }
-    (tx_ok, drained_total.max(frames_total), reply_seen)
+    out.rx_frames  = drained_total.max(frames_total);
+    out.reply_seen = reply_seen;
+    out
 }
 
 /// Snapshot of the registered modern device (None until init_modern).
