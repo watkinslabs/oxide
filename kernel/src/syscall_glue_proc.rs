@@ -828,6 +828,8 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
     0
 }
 
+// `sys_setdomainname` lives in `hostname.rs` alongside the slot.
+
 /// `sys_getpriority(which, who)` — slot 140. v1 honours
 /// PRIO_PROCESS (which=0): returns 20 - nice for matching tid
 /// (Linux convention; positive == lower priority).

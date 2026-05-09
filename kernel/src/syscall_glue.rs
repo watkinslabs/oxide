@@ -451,7 +451,9 @@ fn kernel_uname(args: &SyscallArgs) -> i64 {
         write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"5.15.0-oxide");
         write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, b"#1 SMP PREEMPT oxide v0.1.0");
         write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);
-        write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, b"(none)");
+        let dom = crate::hostname::domain_snapshot();
+        let dom_bytes: &[u8] = if dom.is_empty() { b"(none)" } else { &dom };
+        write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, dom_bytes);
     }
     0
 }
@@ -578,6 +580,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_TIME          => crate::syscall_glue_time::kernel_time(&args),
         crate::syscall_nrs::NR_UNAME         => kernel_uname(&args),
         crate::syscall_nrs::NR_SETHOSTNAME   => crate::syscall_glue_proc::kernel_sys_sethostname(&args),
+        crate::syscall_nrs::NR_SETDOMAINNAME => crate::hostname::kernel_sys_setdomainname(&args),
         crate::syscall_nrs::NR_MMAP          => kernel_mmap(&args),
         crate::syscall_nrs::NR_MUNMAP        => kernel_munmap(&args),
         crate::syscall_nrs::NR_EXIT          => kernel_sys_exit(&args),
