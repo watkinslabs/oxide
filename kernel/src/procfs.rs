@@ -641,6 +641,11 @@ impl Inode for ProcPidDirInode {
             "sched"   => Ok(Arc::new(ProcPidSchedInode { tid: self.tid }) as InodeRef),
             "schedstat" => Ok(StaticFileInode::new(b"0 0 0\n") as InodeRef),
             "autogroup" => Ok(StaticFileInode::new(b"/autogroup-1 nice 0\n") as InodeRef),
+            // F113: USER NS uid/gid mapping. Identity mapping is the
+            // honest answer for v1 — we don't enforce per-NS uid
+            // translation. Format: "<inside_id> <outside_id> <range>".
+            "uid_map" | "gid_map" => Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef),
+            "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -653,6 +658,7 @@ impl Inode for ProcPidDirInode {
             "status", "cmdline", "stat", "maps", "comm", "environ", "statm",
             "wchan", "oom_score", "oom_score_adj", "loginuid", "sessionid",
             "io", "limits", "personality", "sched", "schedstat", "autogroup",
+            "uid_map", "gid_map", "setgroups",
         ];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
