@@ -57,5 +57,6 @@ debug-acpi = ["firmware/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = []  # first-kthread coroutine smoke + Context::switch trace
 debug-boot = []  # operational-pulse trace (init started, pmm: ready, …)
 debug-modules = []  # kmod thunk write_raw / kassert traces
-debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules"]
+debug-syscall = []  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules","debug-syscall"]
 
