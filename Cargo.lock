@@ -101,6 +101,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "sync",
 ]
 
 [[package]]
@@ -315,6 +316,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "block",
+ "drv",
  "elf",
  "ext4",
  "firmware",
