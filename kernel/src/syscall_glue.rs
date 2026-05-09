@@ -921,8 +921,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
     }
-    // POSIX timers fire here; alarm(2) shares the SIGALRM path below.
+    // POSIX timers + rseq cpu_id writeback at syscall-return tail.
     crate::syscall_glue_timers::fire_due_timers();
+    crate::syscall_glue_proc::rseq_writeback();
     // alarm(2) deadline check: post SIGALRM (bit 13) if the alarm_ns has passed.
     if let Some(cur) = crate::sched::current() {
         use core::sync::atomic::Ordering;
