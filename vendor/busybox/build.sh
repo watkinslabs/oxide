@@ -32,6 +32,15 @@ done
 
 CC=musl-gcc HOSTCC=gcc make defconfig
 sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
+# FEATURE_INSTALLER off: the --list/--install code path inside
+# busybox 1.37 mis-fires under our exec+argv handoff and dumps
+# the applet table when invoked as a hardlinked applet name
+# (e.g., /bin/echo). With INSTALLER disabled, run_applet_and_exit
+# takes the find_applet_by_name route and dispatches /bin/echo
+# etc. correctly. The `busybox --install` step is a one-time
+# rootfs-setup operation, not a runtime requirement, so leaving
+# INSTALLER off permanently is safe.
+sed -i 's/^CONFIG_FEATURE_INSTALLER=y/# CONFIG_FEATURE_INSTALLER is not set/' .config
 make CC=musl-gcc HOSTCC=gcc EXTRA_CFLAGS="-isystem /tmp/musl-hdrs" -j8 LDFLAGS=--static
 cp -f busybox ../busybox
 echo "vendor/busybox/busybox: $(./busybox --help 2>&1 | head -1)"
