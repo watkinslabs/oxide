@@ -335,6 +335,12 @@ pub struct Task {
     pub robust_list_head: AtomicU64,
     pub robust_list_len:  AtomicU64,
 
+    /// POSIX timers per `timer_create(2)`. Fixed-size array of slots;
+    /// each slot is either free (`signo == 0`), allocated-disarmed
+    /// (`deadline_ns == 0`), or armed (`deadline_ns > 0`). Single-
+    /// mutator on the running task per `13§5`.
+    pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
+
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
     /// Init starts as root (all zero). fork copies, execve preserves.
@@ -488,6 +494,36 @@ impl Task {
     }
 }
 
+/// POSIX `timer_create` slot per Linux `timer_create(2)`. Stored
+/// inline on Task in a fixed-size array — N=8 timers per task is
+/// enough for the v1 audience (systemd-service-timer, ssh keepalive).
+/// Real waitqueue + cross-CPU signal-on-fire ride a follow-up; v1
+/// fires from the syscall-return tail of the owning task.
+#[repr(C)]
+#[derive(Default, Copy, Clone)]
+pub struct PosixTimer {
+    /// Absolute monotonic-ns deadline. `0` means disarmed (or empty
+    /// when `signo == 0`).
+    pub deadline_ns: u64,
+    /// Repeat interval. `0` = one-shot.
+    pub interval_ns: u64,
+    /// `sigev_value` from sigevent (passed into siginfo on fire).
+    pub sigev_value: u64,
+    /// Linux-side signal number (1..=64). `0` ⇒ slot is FREE.
+    /// `signo != 0` + `deadline_ns == 0` ⇒ allocated but disarmed.
+    pub signo: i32,
+    /// Number of expirations missed since the last `timer_getoverrun`.
+    pub overrun: u32,
+    /// Clock id used at create time (CLOCK_REALTIME / CLOCK_MONOTONIC).
+    pub clockid: u32,
+    /// Padding to 8-byte alignment.
+    pub _pad: u32,
+}
+
+impl PosixTimer {
+    pub const SLOTS: usize = 8;
+}
+
 /// 8-byte-aligned byte buffer holding a per-arch HAL `Context`.
 /// Per-arch Context types start with `rsp`/`sp` which are u64;
 /// the explicit alignment keeps that field at offset 0 with
@@ -576,6 +612,7 @@ impl Task {
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),
+            posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             creds: Creds::root(),
         }
     }
