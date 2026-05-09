@@ -50,11 +50,29 @@ pub fn register_owned(path: String, inode: InodeRef) {
     }
 }
 
-/// Look up a path. Returns `Some(inode)` on hit.
+/// Look up a path. Returns `Some(inode)` on hit. Applies the calling
+/// task's chroot prefix (F95) before matching against the registry.
 /// # C: O(N)
 pub fn lookup(path: &str) -> Option<InodeRef> {
+    let resolved = chroot_resolve(path);
     let g = REGISTRY.lock();
-    g.iter().find(|(p, _)| p.as_str() == path).map(|(_, i)| Arc::clone(i))
+    g.iter().find(|(p, _)| p.as_str() == resolved.as_str()).map(|(_, i)| Arc::clone(i))
+}
+
+/// Apply the calling task's chroot root to an absolute path. Relative
+/// paths and boot-context calls (no current task) pass through.
+/// # C: O(len)
+fn chroot_resolve(path: &str) -> alloc::string::String {
+    use alloc::string::String;
+    if !path.starts_with('/') { return String::from(path); }
+    let cur = match crate::sched::current() { Some(c) => c, None => return String::from(path) };
+    // SAFETY: task.root single-mutator per `13§5`; running task on this CPU is the sole writer (sys_chroot updates only on the calling task).
+    let root = unsafe { (*cur.root.get()).clone() };
+    if root == "/" { return String::from(path); }
+    let mut out = root;
+    if out.ends_with('/') { out.pop(); }
+    out.push_str(path);
+    out
 }
 
 /// Boot-time devfs population per docs/19. Registers the v1
