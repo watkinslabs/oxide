@@ -65,15 +65,12 @@ void _start(void) {
     {
         long pid = (long)fork();
         if (pid == 0) {
-            // Use the oxide-built echo at /bin/oxide-echo, not the
-            // busybox /bin/echo hardlink — busybox 1.37 misdispatches
-            // when invoked-as-applet via our argv handoff (tracked
-            // separately as a userspace/build issue, not a kernel
-            // ABI bug — bare3 with full musl crt1 prints argv[0]
-            // correctly).
-            static char* argv0[] = { "oxide-echo", "init-fork-exec works", 0 };
+            // /bin/echo is a busybox hardlink. The vendored busybox
+            // is rebuilt with FEATURE_INSTALLER off so the --list/
+            // --install code path is absent (per F147).
+            static char* argv0[] = { "echo", "init-fork-exec works", 0 };
             static char* envp[] = { 0 };
-            execve("/bin/oxide-echo", argv0, envp);
+            execve("/bin/echo", argv0, envp);
             _exit(127);
         }
         int status;
