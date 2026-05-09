@@ -553,11 +553,7 @@ fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
 pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 ) -> u64 {
-    // Linux ABI is per-arch: x86_64 uses its own numbering, arm64
-    // uses the "generic" numbering (write=64 vs write=1, etc.).
-    // The kernel's syscall table is keyed on x86_64 numbering, so
-    // remap aarch64 nrs at entry. Unknown aarch64 nrs pass through
-    // unchanged and will fall to the ENOSYS arm.
+    // arm64 uses generic numbering; remap to x86_64 (the table key).
     #[cfg(target_arch = "aarch64")]
     let nr = crate::syscall_arm_abi::aarch64_nr_to_x86(nr);
 
@@ -616,9 +612,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_UNSHARE       => crate::syscall_glue_signal::kernel_sys_unshare(&args),
         crate::syscall_nrs::NR_SETNS         => crate::syscall_glue_signal::kernel_sys_setns(&args),
         crate::syscall_nrs::NR_PTRACE        => crate::syscall_glue_signal::kernel_sys_ptrace(&args),
-        // fanotify_init: reuses the inotify substrate; mark: silent 0.
         crate::syscall_nrs::NR_FANOTIFY_INIT => crate::dev_inotify::kernel_sys_inotify_init1(&args),
-        crate::syscall_nrs::NR_FANOTIFY_MARK => 0,
+        crate::syscall_nrs::NR_FANOTIFY_MARK => 0, // reuses inotify substrate
         crate::syscall_nrs::NR_SHMGET        => crate::sysv_shm::kernel_sys_shmget(&args),
         crate::syscall_nrs::NR_SHMAT         => crate::sysv_shm::kernel_sys_shmat(&args),
         crate::syscall_nrs::NR_SHMDT         => crate::sysv_shm::kernel_sys_shmdt(&args),
@@ -907,6 +902,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             if let Some(rv) = crate::syscall_glue_cred::cred_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::syscall_glue_timers::timer_dispatch(nr, &args) {
+                rv
+            } else if let Some(rv) = crate::keyring::keyring_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::syscall_compat::try_compat(nr, &args) {
                 rv
