@@ -94,33 +94,30 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_setns(fd, nstype)` — slot 308. v1 honors the syscall as a
-/// clear-the-membership-bit op so callers can re-attach to the init
-/// namespace. fd argument is currently ignored.
+/// `sys_setns(fd, nstype)` — slot 308. F117: real downcast of fd's
+/// inode to NsInode (per `26§R01`); validates kind, writes the
+/// captured ns id into the calling task's matching slot.
 /// # C: O(1)
 pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let _fd  = args.a0;
+    use syscall::errno::Errno;
+    let fd     = args.a0 as i32;
     let nstype = args.a1;
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
-    let mut clear: u64 = 0;
-    for clone_flag in [
-        CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
-        CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWCGROUP,
-    ] {
-        if (nstype & clone_flag) != 0 {
-            if let Some(b) = ns_bit_for_clone(clone_flag) {
-                clear |= 1u64 << b;
-            }
-        }
-    }
-    if clear == 0 { return 0; }
-    cur.ns_membership.fetch_and(!clear, Ordering::Release);
-    if (clear & (1u64 << 1)) != 0 {
-        // SAFETY: per-task slot single-mutator per `13§5`; running task on this CPU is the sole writer of uts_hostname.
-        unsafe { (*cur.uts_hostname.get()).clear(); }
-    }
-    0
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let inode = file.inode();
+    let any = match inode.as_any() {
+        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let ns = match any.downcast_ref::<crate::dev_proc_ns::NsInode>() {
+        Some(n) => n, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    crate::dev_proc_ns::setns_apply(ns, nstype, cur)
 }
 
 /// `sys_ptrace(request, pid, addr, data)` — slot 101. v2 P22b
