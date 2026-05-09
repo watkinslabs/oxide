@@ -25,12 +25,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
 
     match nr {
         // ---- accept silently ----
-        NR_GETGROUPS  | NR_SETGROUPS
-        | NR_SETUID | NR_SETGID
-        | NR_SETREUID | NR_SETREGID
-        | NR_SETRESUID | NR_SETRESGID
-        | NR_SETFSUID | NR_SETFSGID
-        | NR_CAPGET | NR_CAPSET
+        // GETGROUPS/SETGROUPS/SETUID/SETGID/SETREUID/SETREGID/SETRES{U,G}ID/SETFS{U,G}ID
+        // moved to real impl in syscall_glue_cred.rs (F64).
+        NR_CAPGET | NR_CAPSET
         | NR_PERSONALITY | NR_VHANGUP | NR_SYSLOG
         | NR_SETDOMAINNAME
         | NR_FALLOCATE | NR_READAHEAD | NR_FADVISE64

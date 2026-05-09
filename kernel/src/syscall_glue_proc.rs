@@ -274,17 +274,8 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 { 0 }
 
-/// `sys_getresuid(ruid, euid, suid)` / `sys_getresgid` — slots 118/120.
-/// # C: O(1)
-pub fn kernel_sys_getres_uid(args: &SyscallArgs) -> i64 {
-    for &p in &[args.a0, args.a1, args.a2] {
-        if p != 0 && p < hal::USER_VA_END {
-            // SAFETY: each pointer validated < USER_VA_END; CPL=0 writes through caller's AS.
-            unsafe { core::ptr::write_volatile(p as *mut u32, 0); }
-        }
-    }
-    0
-}
+// `sys_getresuid` / `sys_getresgid` — moved to syscall_glue_cred (F64)
+// with real ruid/euid/suid writeback from Task.creds.
 
 /// `sys_getrlimit(res, rlim)` — slot 97. Reads the per-task
 /// rlimit slot for `res` and writes `(cur, max)` to user `rlim`.
@@ -771,11 +762,6 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
     crate::hostname::set(&buf[..len]);
     0
 }
-
-/// `sys_getuid` / `sys_geteuid` / `sys_getgid` / `sys_getegid`
-/// — slots 102/107/104/108. v1 single-user; always returns 0 (root).
-/// # C: O(1)
-pub fn kernel_sys_getuid_zero(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_getpriority(which, who)` — slot 140. v1 honours
 /// PRIO_PROCESS (which=0): returns 20 - nice for matching tid
