@@ -60,20 +60,12 @@ pub mod preempt;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sched;
 
-/// ELF loader glue per docs/31. Loads a `&'static [u8]` ELF into
-/// an `AddressSpace` using `VmaBacking::KernelBytes` (P2-17).
-#[cfg(target_os = "oxide-kernel")]
-pub mod elf_load;
-
-/// TTY input per docs/28. v1: timer-tick UART poll + ringbuffer
-/// + WaitQueue-based blocking sys_read. Both arches per P3-23.
-#[cfg(target_os = "oxide-kernel")]
-pub mod tty;
-
-/// `/dev/console` char-device per docs/16 + docs/28. v1 stub
-/// of the real /dev plumbing; full VFS + devfs ride P2-30.
-#[cfg(target_os = "oxide-kernel")]
-pub mod dev_console;
+/// ELF loader glue per docs/31. PT_LOADs → KernelBytes (P2-17).
+#[cfg(target_os = "oxide-kernel")] pub mod elf_load;
+/// TTY input per docs/28. timer-poll + ringbuffer + waitqueue.
+#[cfg(target_os = "oxide-kernel")] pub mod tty;
+/// `/dev/console` char-device per docs/16 + docs/28.
+#[cfg(target_os = "oxide-kernel")] pub mod dev_console;
 
 /// Minimal devfs registry per docs/16 + docs/19. Path → InodeRef
 /// table for `/dev/console` + `/dev/tty*`. Resolved by `sys_open`.
@@ -356,6 +348,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
     let pmm = unsafe { pmm_setup::init_from_boot_info(info) };
+    if pmm.is_ok() { pmm_setup::init_page_meta(pmm_setup::pfn_max_from_boot_info(info)); }
     debug_boot! {
         match &pmm {
             Ok(_)                                       => klog::kinfo!("pmm: ready"),

@@ -421,9 +421,6 @@ pub unsafe fn free_user_tree<W: PtWalker, F: FnMut(u64)>(
     // SAFETY: per-fn contract — HHDM maps the root + child tables read/write.
     unsafe {
         let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
-        // Only iterate the user half: L0 indices 0..256. The kernel
-        // half (256..512) is shared from the master template and
-        // must not be freed.
         for i_l0 in 0..(ENTRIES_PER_TABLE / 2) {
             let e0 = ptr::read_volatile(l0.add(i_l0));
             if !W::is_valid(e0) || W::is_huge_or_block(e0) { continue; }
@@ -449,6 +446,59 @@ pub unsafe fn free_user_tree<W: PtWalker, F: FnMut(u64)>(
                 free_pa(l2_pa);
             }
             free_pa(l1_pa);
+        }
+    }
+}
+
+/// Like `free_user_tree` but with separate callbacks for **leaves**
+/// (4 KiB pages mapped to user) and **tables** (intermediate PT
+/// frames). F157: lets the kernel call `dec_and_maybe_free_frame`
+/// for leaves (COW-aware refcount) while always-freeing the
+/// intermediate tables (always private to one AS).
+/// # SAFETY: same as `free_user_tree`.
+/// # C: same as `free_user_tree`.
+pub unsafe fn free_user_tree_leafmap<W, FL, FT>(
+    root_pa: u64,
+    hhdm_offset: u64,
+    free_leaf: &mut FL,
+    free_table: &mut FT,
+)
+where
+    W: PtWalker,
+    FL: FnMut(u64),
+    FT: FnMut(u64),
+{
+    // SAFETY: per-fn contract — HHDM maps the root + child tables read/write.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
+        // Only iterate the user half: L0 indices 0..256. The kernel
+        // half (256..512) is shared from the master template and
+        // must not be freed.
+        for i_l0 in 0..(ENTRIES_PER_TABLE / 2) {
+            let e0 = ptr::read_volatile(l0.add(i_l0));
+            if !W::is_valid(e0) || W::is_huge_or_block(e0) { continue; }
+            let l1_pa = e0 & W::PHYS_MASK;
+            let l1 = (hhdm_offset.wrapping_add(l1_pa)) as *const u64;
+            for i_l1 in 0..ENTRIES_PER_TABLE {
+                let e1 = ptr::read_volatile(l1.add(i_l1));
+                if !W::is_valid(e1) || W::is_huge_or_block(e1) { continue; }
+                let l2_pa = e1 & W::PHYS_MASK;
+                let l2 = (hhdm_offset.wrapping_add(l2_pa)) as *const u64;
+                for i_l2 in 0..ENTRIES_PER_TABLE {
+                    let e2 = ptr::read_volatile(l2.add(i_l2));
+                    if !W::is_valid(e2) || W::is_huge_or_block(e2) { continue; }
+                    let l3_pa = e2 & W::PHYS_MASK;
+                    let l3 = (hhdm_offset.wrapping_add(l3_pa)) as *const u64;
+                    for i_l3 in 0..ENTRIES_PER_TABLE {
+                        let leaf = ptr::read_volatile(l3.add(i_l3));
+                        if !W::is_valid(leaf) { continue; }
+                        free_leaf(leaf & W::PHYS_MASK);
+                    }
+                    free_table(l3_pa);
+                }
+                free_table(l2_pa);
+            }
+            free_table(l1_pa);
         }
     }
 }
