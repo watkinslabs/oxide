@@ -17,7 +17,8 @@ use crate::syscall_nrs::*;
 /// `oxide_syscall_dispatch` — `try_compat` only fires when nothing
 /// upstream has claimed the slot.
 /// # C: O(1)
-pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
+pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
+    let _args = args;
     let enosys  = -(Errno::Enosys.as_i32() as i64);
     let eperm   = -(Errno::Eperm.as_i32()  as i64);
     let eintr   = -(Errno::Eintr.as_i32()  as i64);
@@ -30,10 +31,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // CAPGET/CAPSET moved to real impl in F66 (Creds carries cap masks).
         // SYSLOG moved to real impl (F67) — exposes klog ring as dmesg.
         // PERSONALITY (F78), FUTIMESAT (F78), VHANGUP (F87) moved to real impls.
-        NR_READAHEAD | NR_FADVISE64
-        | NR_SYNC_FILE_RANGE
-        | NR_SYNCFS | NR_MLOCK2
-                                       => Some(0),
+        // NR_SYNCFS / NR_SYNC_FILE_RANGE moved to kernel_sys_fsync
+        // (real fd validation; v1 RAM-only fs is always sync, so the
+        // syscall is a true no-op for valid fds and EBADF for bad).
+        NR_READAHEAD | NR_FADVISE64 | NR_MLOCK2
+                                       => kernel_sys_fadvise_validate(_args),
 
         // ---- POSIX shape: pause/sigsuspend behaviour ----
         NR_RESTART_SYSCALL  => Some(eintr),
@@ -48,21 +50,9 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // return 0 because callers (glibc/musl) treat any non-negative
         // alloc result as "you have a key" and skip the unsupported branch
         // by reading /proc/self/status PkeyMask. Real MPK rides docs/06.
-        | NR_PKEY_ALLOC | NR_PKEY_FREE | NR_PKEY_MPROTECT
-        // process_madvise / process_mrelease — same advise-only
-        // semantics as madvise; silent 0 matches the existing madvise
-        // arm. process_mrelease is a release-after-OOM optimisation.
-        | NR_PROCESS_MADVISE | NR_PROCESS_MRELEASE
-        // kcmp — compares two task resources. v1 returns 0 (equal)
-        // for every comparison; bash + glibc only use it as an
-        // optimization probe.
-        | NR_KCMP
-        // NUMA family — single-node UMA on v1, so these are no-ops.
-        // ENOSYS makes glibc/jemalloc abort their NUMA probe; silent-0
-        // matches "policy applied, just one node available". GET_MEMPOLICY
-        // is handled separately below since it has writeback semantics.
-        | NR_SET_MEMPOLICY | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
-        | NR_SET_MEMPOLICY_HOME_NODE
+        // pkey_* moved to real (per-task) allocator below.
+        // process_madvise / process_mrelease — KCMP / NUMA family
+        // moved to real impls in `syscall_glue_misc.rs`.
         // Keyring (P38b admit). PAM/login/sudo/dbus probe these at
         // start-up; -ENOSYS makes them refuse to authenticate. v1
         // returns silent-0 (a synthetic "key serial" for callers
@@ -169,4 +159,24 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
 
         _ => None,
     }
+}
+
+/// Shared validation for advisory cache hints (fadvise/readahead/mlock2).
+/// Linux returns 0 when args are sane, EBADF for bad fds, EINVAL for
+/// negative lengths. v1 has no page cache so the hint itself is a
+/// true no-op once validation passes.
+/// # C: O(1)
+pub fn kernel_sys_fadvise_validate(args: &SyscallArgs) -> Option<i64> {
+    let fd  = args.a0 as i32;
+    let len = args.a2 as i64;
+    if len < 0 {
+        return Some(-(Errno::Einval.as_i32() as i64));
+    }
+    let cur = match crate::sched::current() { Some(c) => c, None => return Some(0) };
+    // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; Arc clone.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Some(0) };
+    if fdt.get(fd).is_err() {
+        return Some(-(Errno::Ebadf.as_i32() as i64));
+    }
+    Some(0)
 }
