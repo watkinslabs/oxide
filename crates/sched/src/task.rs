@@ -361,6 +361,11 @@ pub struct Task {
     /// re-parent to this task instead of init.
     pub child_subreaper: AtomicBool,
 
+    /// `personality(2)` execution domain. 0 = PER_LINUX, the v1 default.
+    /// Stored per-task; `personality()` returns the previous value and
+    /// updates atomically when arg != 0xFFFFFFFF.
+    pub personality: AtomicU32,
+
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
     /// Init starts as root (all zero). fork copies, execve preserves.
@@ -637,6 +642,7 @@ impl Task {
             keep_caps:      AtomicBool::new(false),
             pdeathsig:      AtomicU32::new(0),
             child_subreaper: AtomicBool::new(false),
+            personality:    AtomicU32::new(0),
             creds: Creds::root(),
         }
     }
