@@ -557,17 +557,18 @@ pub fn enumerate_and_log() {
         // responds to ARP for the gateway IP; a successful reply
         // proves both directions of the modern transport end to end.
         if crate::dev_virtio_net_modern::is_modern_present() {
-            let (tx_ok, drained, reply) =
-                crate::dev_virtio_net_modern::boot_arp_probe(
-                    [10, 0, 2, 15],
-                    [10, 0, 2, 2],
-                );
-            klog::write_raw(b"[INFO]  virtio-net-arp-boot tx=");
-            klog::write_dec_u64(tx_ok as u64);
-            klog::write_raw(b" rx=");
-            klog::write_dec_u64(drained as u64);
+            let r = crate::dev_virtio_net_modern::boot_arp_probe(
+                [10, 0, 2, 15],
+                [10, 0, 2, 2],
+            );
+            klog::write_raw(b"[INFO]  virtio-net-arp-boot tx_attempted=");
+            klog::write_dec_u64(r.tx_attempted as u64);
+            klog::write_raw(b" tx_confirmed=");
+            klog::write_dec_u64(r.tx_confirmed as u64);
+            klog::write_raw(b" rx_frames=");
+            klog::write_dec_u64(r.rx_frames as u64);
             klog::write_raw(b" reply=");
-            klog::write_dec_u64(reply as u64);
+            klog::write_dec_u64(r.reply_seen as u64);
             klog::write_raw(b"\n");
         }
 
