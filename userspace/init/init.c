@@ -142,25 +142,16 @@ int main(int argc, char** argv, char** envp_in) {
 
     // Interactive shell respawn loop. /dev/console fd 0/1/2 is wired
     // by the kernel before user-blob spawn (see dev_console.rs
-    // init_console_fd_table). Cap at 8 iterations to prevent runaway
-    // when sh refuses to start.
-    //
-    // F150-1: target /bin/oxide-sh (the in-tree minimal shell built
-    // against real musl crt1). It prints banner + prompt, reads
-    // commands via the kernel's ICANON line discipline, and writes
-    // results to fd 1. Verified end-to-end on x86_64 + aarch64.
-    //
-    // /bin/sh (busybox-ash) currently fast-exits silently when started
-    // against this kernel — the kernel substrate is sound (oxide-sh
-    // proves that), but busybox's interactive-mode setup hits a path
-    // we don't satisfy yet. Tracked as F151.
+    // init_console_fd_table). Targets /bin/sh (busybox-ash) — every
+    // applet is reachable through this one binary. Cap at 8 iters
+    // to prevent runaway when sh refuses to start.
     for (int i = 0; i < 8; i++) {
         long pid = (long)fork();
         if (pid == 0) {
-            static char* argv[] = { "oxide-sh", 0 };
-            static char* envp[] = { 0 };
-            execve("/bin/oxide-sh", argv, envp);
-            static const char fail[] = "init: exec /bin/oxide-sh failed\n";
+            static char* argv[] = { "sh", 0 };
+            static char* envp[] = { "PATH=/bin:/sbin", "HOME=/", "TERM=linux", 0 };
+            execve("/bin/sh", argv, envp);
+            static const char fail[] = "init: exec /bin/sh failed\n";
             write(1, fail, sizeof(fail) - 1);
             _exit(1);
         }
