@@ -33,7 +33,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // SETDOMAINNAME moved to real impl (F68) alongside hostname.
         // FALLOCATE moved to real impl (F69).
         | NR_READAHEAD | NR_FADVISE64
-        | NR_FLOCK | NR_SYNC_FILE_RANGE
+        // FLOCK moved to real impl (F74).
+        | NR_SYNC_FILE_RANGE
         | NR_SYNCFS | NR_FUTEX_WAITV | NR_MLOCK2
         | NR_FUTIMESAT
                                        => Some(0),

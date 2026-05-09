@@ -562,11 +562,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let nr = crate::syscall_arm_abi::aarch64_nr_to_x86(nr);
 
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
-    // seccomp filter check at dispatch entry. v1 honors KILL / TRAP /
-    // ERRNO / ALLOW. Tasks with no filters short-circuit through Ok(()).
-    if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) {
-        return rv as u64;
-    }
+    // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
+    if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
     // Arch-specific + per-arch-time syscalls handled here (kernel can
     // call hal); others fall through to the arch-neutral dispatch.
     let rv = match nr {
@@ -824,7 +821,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_FCHMOD | crate::syscall_nrs::NR_FCHMODAT | crate::syscall_nrs::NR_CHMOD
             | crate::syscall_nrs::NR_FCHOWN | crate::syscall_nrs::NR_CHOWN | crate::syscall_nrs::NR_LCHOWN
             | crate::syscall_nrs::NR_FCHOWNAT => 0,
-        crate::syscall_nrs::NR_UTIMENSAT  => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
+        crate::syscall_nrs::NR_FLOCK     => crate::flock::kernel_sys_flock(&args),
+        crate::syscall_nrs::NR_UTIMENSAT => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
         crate::syscall_nrs::NR_UTIMES | crate::syscall_nrs::NR_UTIME
             => crate::syscall_glue_utime::kernel_sys_utime_dispatch(nr, &args),
         // link/symlink/mknod family — devfs is read-only, refuse.
