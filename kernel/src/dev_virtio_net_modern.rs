@@ -47,6 +47,12 @@ pub struct ModernNetState {
     /// on every completion (one-in-flight RX ring v1; pool comes later).
     pub rx0_buf_pa:  u64,
     pub rx0_buf_len: u16,
+    /// F59-04: 6-byte device MAC read from the device-cfg cap during
+    /// the boot probe. `mac_valid=true` once the cap was located and
+    /// read; F59-05 (TX) and the ARP path consume this to fill the
+    /// ethernet src + ARP sender-hw fields.
+    pub mac:       [u8; 6],
+    pub mac_valid: bool,
 }
 
 static MODERN_DEV: Spinlock<Option<ModernNetState>, DriverLockClass> =
@@ -77,8 +83,25 @@ pub fn init_modern(state: ModernNetState) {
         klog::write_hex_u64(state.q0_notify_va);
         klog::write_raw(b" q1_notify_va=");
         klog::write_hex_u64(state.q1_notify_va);
+        klog::write_raw(b" mac=");
+        if state.mac_valid {
+            for (i, b) in state.mac.iter().enumerate() {
+                klog::write_hex_u64(*b as u64);
+                if i < 5 { klog::write_raw(b":"); }
+            }
+        } else {
+            klog::write_raw(b"unread");
+        }
         klog::write_raw(b"\n");
     }
+}
+
+/// Read-only accessor for the device MAC. Returns `None` until
+/// `init_modern` has run with `mac_valid=true`.
+/// # C: O(1) under MODERN_DEV.lock()
+pub fn mac() -> Option<[u8; 6]> {
+    let g = MODERN_DEV.lock();
+    g.and_then(|s| if s.mac_valid { Some(s.mac) } else { None })
 }
 
 /// Snapshot of the registered modern device (None until init_modern).
