@@ -161,15 +161,20 @@ def _gdb_cmd(s: Session, cmd: str, timeout: float = 30.0) -> list[str]:
 # Build helper
 # ---------------------------------------------------------------------------
 
-def _build_image(arch: str) -> Path:
+def _build_image(arch: str, features: str = "debug-boot") -> Path:
     """Run `cargo run -p xtask -- image --arch <arch>` from the repo
-    root. Returns the path to the produced disk image."""
+    root. Returns the path to the produced disk image.
+
+    Default features = `debug-boot` (matches `make qemu-x86`/`-arm`):
+    boot UART sink installs + operational-pulse log lines, but no
+    per-syscall flood. Pass features="debug-all" for the full firehose
+    when debugging kernel internals."""
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
     # Build the kernel + boot artifact + GPT disk image.
     cmd = [
         "cargo", "run", "--quiet", "-p", "xtask", "--",
-        "image", "--arch", arch, "--features", "debug-all",
+        "image", "--arch", arch, "--features", features,
     ]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -196,10 +201,15 @@ def _kernel_elf(arch: str) -> Path:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def qemu_start(arch: str) -> str:
+def qemu_start(arch: str, features: str = "debug-boot") -> str:
     """Build the kernel image for `arch` (x86_64 or aarch64), spawn
     QEMU paused at start with the gdb-stub on :1234, and attach a
     GDB/MI session targeting the kernel ELF for symbols.
+
+    `features` selects the kernel Cargo features (default "debug-boot"
+    matches `make qemu-x86`/`qemu-arm` — boot pulse + UART sink, no
+    per-syscall trace flood). Pass "debug-all" for the full firehose
+    when debugging kernel internals.
 
     Re-uses the same QEMU args as `xtask qemu --arch <arch>`
     (q35 + Haswell-v4 + OVMF on x86; virt + cortex-a72 + OVMF on
@@ -219,7 +229,7 @@ def qemu_start(arch: str) -> str:
         if not shutil.which(qemu_bin):
             raise RuntimeError(f"`{qemu_bin}` not on PATH — install QEMU")
 
-        img = _build_image(arch)
+        img = _build_image(arch, features)
         elf = _kernel_elf(arch)
         if not elf.is_file():
             raise RuntimeError(f"kernel ELF missing at {elf} — image build did not produce it")

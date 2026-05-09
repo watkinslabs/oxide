@@ -49,7 +49,8 @@ qemu_stop()
 Pure stdlib + the `mcp` Python package (already on Claude Code's
 path). No `pygdbmi` / `pwntools` / venv requirement.
 
-* `qemu_start` runs `cargo run -p xtask -- image --arch <arch> --features debug-all`,
+* `qemu_start(arch, features="debug-boot")` runs
+  `cargo run -p xtask -- image --arch <arch> --features <features>`,
   then spawns `qemu-system-<arch>` with the same args as
   `xtask qemu` plus `-s -S` (gdb-stub on :1234, paused at entry).
 * `gdb --interpreter=mi3 <kernel.elf>` is spawned alongside;
