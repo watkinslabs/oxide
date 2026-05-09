@@ -5,3 +5,14 @@
 *
 !.gitignore
 !README.md
+# busybox vendored binaries: x86_64 already tracked; aarch64 added
+# per F148 once the cross-toolchain landed.
+!busybox/
+!busybox/build.sh
+!busybox/busybox
+!busybox/busybox-aarch64
+busybox/busybox-1.37.0/
+# vendor/cross: README tracked, toolchain blobs ignored (~370 MB).
+!cross/
+!cross/README.md
+cross/aarch64-linux-musl-cross/
