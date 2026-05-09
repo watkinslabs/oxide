@@ -22,9 +22,9 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver
   arc lands. The DRM core itself lives in `crates/drm`; fbcon in
   `crates/fbcon`; VT in `crates/vt`; fbdev compat shim in
   `crates/fbdev`. None depend on `kernel/src/`.
-- v2.x tail (VIRGL, multi-display, sync objs, format modifiers,
-  hot-plug, multi-keymap, KDFONTOP) documented per spec §v2.x
-  deferrals; v1 acceptance gates only the listed v1 features.
+- The full Linux feature set (VIRGL, multi-display, sync objs,
+  format modifiers, hot-plug, multi-keymap, KDFONTOP) is in scope
+  for the arc; no per-spec deferral lists per docs/02 R02.
 
 ## Revision 2026-05-09 (R02)
 
