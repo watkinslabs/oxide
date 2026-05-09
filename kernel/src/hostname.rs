@@ -46,3 +46,51 @@ pub fn set(new: &[u8]) {
     for i in end..g.len { g.bytes[i] = 0; }
     g.len = end;
 }
+
+/// NIS/YP domain name slot. Same shape as hostname; read by
+/// uname.domainname + /proc/sys/kernel/domainname; written by
+/// `setdomainname(2)`.
+static DOMAINNAME: Spinlock<Hostname, TaskListClass> = Spinlock::new(Hostname::empty());
+
+impl Hostname {
+    /// # C: O(1)
+    pub const fn empty() -> Self {
+        Self { bytes: [0u8; HOST_NAME_MAX], len: 0 }
+    }
+}
+
+/// Snapshot the current domain name.
+/// # C: O(N)
+pub fn domain_snapshot() -> alloc::vec::Vec<u8> {
+    let g = DOMAINNAME.lock();
+    g.bytes[..g.len].to_vec()
+}
+
+/// Replace the domain name. Same trim/clear discipline as `set`.
+/// # C: O(N)
+pub fn domain_set(new: &[u8]) {
+    let trimmed = vfs::path::trim_hostname(new, HOST_NAME_MAX);
+    let mut g = DOMAINNAME.lock();
+    let end = trimmed.len();
+    g.bytes[..end].copy_from_slice(trimmed);
+    for i in end..g.len { g.bytes[i] = 0; }
+    g.len = end;
+}
+
+/// `sys_setdomainname(name, len)` — slot 171. Mirror of sethostname
+/// for the NIS/YP domain name slot.
+/// # C: O(N)
+pub fn kernel_sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let ptr = args.a0;
+    let len = args.a1 as usize;
+    if len > HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = crate::syscall_glue::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    let mut buf = [0u8; HOST_NAME_MAX];
+    // SAFETY: ptr range validated < USER_VA_END by validate_user_buf above; CPL=0 byte read through caller's AS for `len` bytes.
+    unsafe {
+        for i in 0..len { buf[i] = core::ptr::read_volatile((ptr + i as u64) as *const u8); }
+    }
+    domain_set(&buf[..len]);
+    0
+}
