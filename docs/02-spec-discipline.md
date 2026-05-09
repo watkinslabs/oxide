@@ -2,6 +2,26 @@
 
 FROZEN 2026-05-02. Dep:none. Umbrella for all specs.
 
+## Revision 2026-05-09 (R02)
+
+- Changed: cool-off rule deleted everywhere (§1 lifecycle, §7,
+  §9 rule 5). A spec freezes the moment its text is correct;
+  no duration gate. Soak periods are forbidden discipline-theater.
+- Changed: v2 divergence framing deleted. There is no v2.
+  Removed §9 rule 8 ("v2 divergences live in `docs/v2/<spec>.md`")
+  and every "v2.x deferral" / "rides v2.x" / "deferred to v2"
+  pattern. Every spec must describe the full Linux-equivalent
+  surface; partial subsets are not freezeable.
+- Why: user direction. Cool-off was a single-developer reviewer
+  substitute; it introduced wall-clock waits with no defect-find
+  benefit at solo scale. v2 deferrals were a way to ship partial
+  Linux compat and call it done; they leave userspace looking
+  for features that aren't there. Spec full or don't spec it.
+- Affected code: none directly; CLAUDE.md § Discipline rules 2 + 3
+  reworded; `tools/spec-lint/` continues enforcing the structural
+  rules with no duration check.
+- Test contract change: none.
+
 ## Revision 2026-05-02
 
 - Changed: §5. Distinguish "Dep:" line (cross-reference list) from freeze-prereq order. Allow co-frozen groups when cross-references cycle (HAL/IRQ/timer triplet).
@@ -13,16 +33,15 @@ Specs are contracts. Spec wins; code follows. Spec is the durable artifact.
 
 ## 1 Lifecycle
 
-`DRAFT —(48h cool-off + checks)→ FROZEN —(revision block)→ FROZEN'`
+`DRAFT —(checks)→ FROZEN —(revision block)→ FROZEN'`
 
 DRAFT: mutable, no changelog discipline, code may not be written for the subsystem, OQ at bottom is sole ambiguity site.
 
 Freeze gate (all required):
-1. Zero open questions (each → section or `docs/v2/<spec>.md` deferred entry).
+1. Zero open questions; every section in §4 template populated.
 2. All cross-refs resolve via `tools/spec-lint/ xref` (target need not be FROZEN; section must exist).
 3. Test contract concrete (numbers, oracles, coverage gates) where the spec describes a subsystem with executable behavior. Charter / meta specs (this one, `08`, `09`) exempt. PR-time gates pass.
-4. Cool-off ≥48h on spec text by default (edit resets clock); solo dev may waive when re-read fresh is unblocked. Decision recorded in freeze commit.
-5. Top-line `Status: FROZEN <date>`; commit `freeze: <spec>` on `Z<NN>-<spec>` branch.
+4. Top-line `Status: FROZEN <date>`; commit `freeze: <spec>` on `Z<NN>-<spec>` branch.
 
 Post-freeze change: prepend revision block:
 ```
@@ -40,7 +59,7 @@ Frozen: invariants, public ifc, ABI, on-disk fmt, complexity, test contract. Cha
 
 Negotiable: tuning constants, internal algo choices, debug instr, log strings. Edit ⇒ Changelog line, same commit.
 
-OQ (DRAFT only): deferred decisions; either become a section or move to `docs/v2/<spec>.md` with rationale. Never silently disappear.
+OQ (DRAFT only): deferred decisions inside the same spec text. Either become a numbered section or get answered before freeze. Never silently disappear; never move to a v2 doc (there is no v2).
 
 ## 3 Drift handling
 
@@ -89,9 +108,9 @@ Editing a frozen spec marks downstream dependents `REVIEW` in MANIFEST; dependen
 
 `docs/MANIFEST.md` = authoritative index. Per-spec row: file, status, frozen-date, deps. Same-commit update on status change. Verification: `tools/spec-lint/` (`docs|code|manifest|xref|all`) checks file-vs-MANIFEST presence diff, status mismatch, status-line form, header form, forbidden phrases, cross-ref resolution.
 
-## 7 Cool-off (substitute for reviewer)
+## 7 Pre-freeze re-read (no duration gate)
 
-≥48h default on spec text (edit resets). Then re-read top-to-bottom with no context except the page; deliberately try to break each invariant; mentally implement §4 ifc against §3 invariants. Solo-dev waiver per §1.4: when external pressure (release, blocker) outweighs the cool-off win, freeze early; the freeze commit names the waiver.
+Before flipping a spec to FROZEN, re-read top-to-bottom with no context except the page; deliberately try to break each invariant; mentally implement §4 ifc against §3 invariants. No clock; no soak; correctness is the gate.
 
 ## 8 Not this
 
@@ -106,10 +125,10 @@ Editing a frozen spec marks downstream dependents `REVIEW` in MANIFEST; dependen
 2. Frozen sections change only via dated revision block + rationale.
 3. OQ are sole ambiguity site; absent in FROZEN.
 4. Drift → revise spec → code. Never reverse.
-5. Cool-off ≥48h on text by default; solo-dev waiver per §1.4 + §7.
+5. No duration-gated waits at any layer (no cool-off, no soak, no 24h/48h/168h gates). Correctness is the gate, not the clock.
 6. MANIFEST authoritative; `tools/spec-lint/` enforces.
 7. Cross-deps acyclic, listed in §2 of every spec.
-8. v2 divergences live in `docs/v2/<spec>.md`; never in-file.
+8. No v2. Every spec describes the full Linux-equivalent surface. "Deferred to v2", "rides v2.x", "v2.x deferrals" sections forbidden.
 9. Freeze branch form `Z<NN>-<spec>`; revise branch form `R<NN>-<spec>` (per `CLAUDE.md§Git workflow`).
 
 ## 10 Changelog
