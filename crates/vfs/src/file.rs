@@ -39,6 +39,17 @@ pub fn set_drop_hook(f: fn(usize, &InodeRef)) {
     FLOCK_RELEASE_HOOK.store(f as u64, Ordering::Release);
 }
 
+/// Kernel-side write hook called from `File::write` after a successful
+/// inode write. Used by the inotify subsystem to fire IN_MODIFY events.
+/// `0` = no hook installed.
+static WRITE_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Install the post-write hook used by inotify(7) to fire IN_MODIFY.
+/// # C: O(1)
+pub fn set_write_hook(f: fn(&InodeRef)) {
+    WRITE_HOOK.store(f as u64, Ordering::Release);
+}
+
 impl Drop for File {
     fn drop(&mut self) {
         if self.flock_op.load(Ordering::Acquire) != 0 {
@@ -120,6 +131,15 @@ impl File {
         };
         let n = self.inode.write(off, buf)?;
         self.pos.store(off + n as u64, Ordering::Release);
+        // inotify IN_MODIFY hook (no-op when nothing installed).
+        if n > 0 {
+            let h = WRITE_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_write_hook` with a real fn(&InodeRef) pointer; the cast back to that signature is the documented-shape contract.
+                let f: fn(&InodeRef) = unsafe { core::mem::transmute(h) };
+                f(&self.inode);
+            }
+        }
         Ok(n)
     }
 
