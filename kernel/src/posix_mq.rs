@@ -49,22 +49,27 @@ struct MqMsg {
 /// because we insert at the end of the matching priority run.
 pub struct MqQueue {
     pub name:        String,
+    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
+    pub ns:          u64,
     pub max_msgs:    usize,
     pub max_msgsize: usize,
     pub msgs:        Spinlock<Vec<MqMsg>, MqLockClass>,
     pub wait_send:   crate::sched::WaitList,
     pub wait_recv:   crate::sched::WaitList,
-    /// `mq_notify` registration: tid + signo. (0, 0) = no notifier.
-    /// Per POSIX, only one notifier at a time; fires once when a
-    /// message arrives on a previously-empty queue, then unregisters.
     pub notifier_tid:   core::sync::atomic::AtomicU32,
     pub notifier_signo: core::sync::atomic::AtomicI32,
+}
+
+fn current_ipc_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 impl MqQueue {
     fn new(name: String, max_msgs: usize, max_msgsize: usize) -> Arc<Self> {
         Arc::new(Self {
             name,
+            ns: current_ipc_ns(),
             max_msgs,
             max_msgsize,
             msgs: Spinlock::new(Vec::new()),
@@ -85,13 +90,15 @@ static REG: MqRegistry = MqRegistry {
 };
 
 fn lookup_by_name(name: &str) -> Option<Arc<MqQueue>> {
+    let ns = current_ipc_ns();
     let g = REG.queues.lock();
-    g.iter().find(|q| q.name == name).cloned()
+    g.iter().find(|q| q.name == name && q.ns == ns).cloned()
 }
 
 fn unlink_by_name(name: &str) -> bool {
+    let ns = current_ipc_ns();
     let mut g = REG.queues.lock();
-    if let Some(i) = g.iter().position(|q| q.name == name) {
+    if let Some(i) = g.iter().position(|q| q.name == name && q.ns == ns) {
         g.swap_remove(i);
         true
     } else {

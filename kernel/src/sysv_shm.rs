@@ -48,7 +48,14 @@ const SHM_MAX_SIZE: usize = 64 * 1024 * 1024; // 64 MiB v1 cap
 pub struct ShmSegment {
     pub id:    i32,
     pub key:   i32,
+    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
+    pub ns:    u64,
     pub bytes: Vec<u8>,
+}
+
+fn current_ipc_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 struct ShmRegistry {
@@ -71,11 +78,12 @@ pub fn kernel_sys_shmget(args: &syscall::SyscallArgs) -> i64 {
     if size < SHM_MIN_SIZE || size > SHM_MAX_SIZE {
         return -(Errno::Einval.as_i32() as i64);
     }
+    let ns = current_ipc_ns();
     if key != IPC_PRIVATE {
-        // Lookup by key.
+        // Lookup by (ns, key).
         let g = REG.segs.lock();
         for s in g.iter() {
-            if s.key == key {
+            if s.key == key && s.ns == ns {
                 return s.id as i64;
             }
         }
@@ -86,15 +94,16 @@ pub fn kernel_sys_shmget(args: &syscall::SyscallArgs) -> i64 {
         return -(Errno::Enomem.as_i32() as i64);
     }
     bytes.resize(size, 0);
-    let seg = Arc::new(ShmSegment { id, key, bytes });
+    let seg = Arc::new(ShmSegment { id, key, ns, bytes });
     let mut g = REG.segs.lock();
     g.push(seg);
     id as i64
 }
 
 fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
+    let ns = current_ipc_ns();
     let g = REG.segs.lock();
-    g.iter().find(|s| s.id == id).cloned()
+    g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }
 
 /// `shmat(shmid, shmaddr, shmflg)` — slot 30.
