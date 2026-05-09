@@ -96,6 +96,42 @@ pub fn lookup(path: &str) -> Option<InodeRef> {
     g.iter().find(|(n, p, _)| *n == 0 && p.as_str() == resolved.as_str()).map(|(_, _, i)| Arc::clone(i))
 }
 
+/// Detach every entry whose path is under `mount_point` from
+/// `mount_ns`. Linux umount2(2) detaches a mount; v1 implements
+/// this by removing every devfs registry row whose path matches
+/// `mount_point` exactly OR starts with `mount_point + "/"`. Fires
+/// the dirent-delete hook on each removal so inotify watches see
+/// IN_DELETE / IN_UNMOUNT.
+/// Returns the number of entries removed; 0 = nothing to detach.
+/// # C: O(N) over the registry.
+pub fn unregister_subtree(ns: u64, mount_point: &str) -> usize {
+    let mut g = REGISTRY.lock();
+    let prefix_slash: alloc::string::String = {
+        let mut s = alloc::string::String::from(mount_point);
+        if !s.ends_with('/') { s.push('/'); }
+        s
+    };
+    let mut removed: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+        = alloc::vec::Vec::new();
+    g.retain(|(n, p, _)| {
+        if *n != ns { return true; }
+        let hit = p == mount_point || p.starts_with(&prefix_slash);
+        if hit {
+            if let Some((par, leaf)) = split_parent_leaf(p) {
+                removed.push((alloc::string::String::from(par),
+                              alloc::string::String::from(leaf)));
+            }
+        }
+        !hit
+    });
+    let n = removed.len();
+    drop(g);
+    for (par, leaf) in removed {
+        vfs::fire_dirent_delete(&par, &leaf);
+    }
+    n
+}
+
 /// Snapshot every (path, inode) entry in `src_ns` into `dst_ns`.
 /// Used by unshare(CLONE_NEWNS) to give a fresh NS the parent's
 /// view of the mount tree at unshare time. Per-mount CoW rides v2.
