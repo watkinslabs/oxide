@@ -238,6 +238,15 @@ pub unsafe fn spawn_user_thread_for_fork(
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut task = Task::new_user(tid, name, class, mm);
 
+    // Inherit credentials from the running parent. Parent is current()
+    // since fork is a synchronous syscall on the parent's CPU. If
+    // current() is None (boot path) the default Creds::root() stands.
+    if let Some(parent) = super::current() {
+        // SAFETY: parent is the running task on this CPU (single-mutator
+        // invariant per `13§5`); `task` is local and not yet scheduled.
+        unsafe { task.creds = parent.creds.snapshot(); }
+    }
+
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
     // SAFETY: task is local; no concurrent reader.
     unsafe { task.install_stack(stack); }
@@ -286,6 +295,12 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut task = Task::new_user(tid, name, class, mm);
+
+    if let Some(parent) = super::current() {
+        // SAFETY: parent is the running task on this CPU (single-mutator
+        // invariant per `13§5`); `task` is local and not yet scheduled.
+        unsafe { task.creds = parent.creds.snapshot(); }
+    }
 
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
     // SAFETY: task is local; no concurrent reader.
