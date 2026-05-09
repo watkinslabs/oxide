@@ -253,6 +253,9 @@ def qemu_start(arch: str) -> str:
                 "-nic", "none",
                 "-netdev", "user,id=net0",
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+                # F59-09: dump every frame on/off net0 to pcap so we can
+                # see whether the guest's TX kicks reach SLIRP at all.
+                "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",
@@ -275,6 +278,9 @@ def qemu_start(arch: str) -> str:
                 # default-NIC so `-nic none` is unnecessary.
                 "-netdev", "user,id=net0",
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+                # F59-09: dump every frame on/off net0 to pcap so we can
+                # see whether the guest's TX kicks reach SLIRP at all.
+                "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",
