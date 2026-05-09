@@ -58,3 +58,9 @@ mod stub_tests {
 
 #[cfg(test)]
 mod tests;
+
+// F157: comprehensive memory torture test suite — boundary
+// conditions, fragmentation, fork chains, churn stress, brk
+// underflow/overflow, ARG_MAX, alignment edge cases.
+#[cfg(test)]
+mod torture_tests;

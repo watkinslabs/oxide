@@ -360,18 +360,27 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
+    // F157: leaves go through dec_and_maybe_free so COW-shared frames
+    // (multiple AS map them) only release once the last AS drops.
+    // Tables (intermediate PT levels) are always per-AS — direct free.
+    let mut free_leaf = |pa: u64| {
+        // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
+        // quiesced per fn contract; pmm_setup::dec_and_maybe_free drops
+        // refcount and frees on zero.
+        unsafe { crate::pmm_setup::dec_and_maybe_free_frame(pa); }
+    };
+    let mut free_table = |pa: u64| {
+        // SAFETY: PT tables are always private to this AS; free directly.
+        unsafe { crate::pmm_setup::free_one_frame(pa); }
+    };
+    // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
-        hal::pt_walker::free_user_tree::<hal_x86_64::vmm::PtWalkerX86, _>(
-            root_pa, hhdm,
-            // SAFETY: `pa` was previously returned by `alloc_one_frame`
-            // for this AS's tables/leaves; the AS root is quiesced per
-            // fn contract so the page is no longer reachable.
-            |pa| unsafe { crate::pmm_setup::free_one_frame(pa); },
+        hal::pt_walker::free_user_tree_leafmap::<hal_x86_64::vmm::PtWalkerX86, _, _>(
+            root_pa, hhdm, &mut free_leaf, &mut free_table,
         );
     }
     // Free the root frame itself.
-    // SAFETY: root_pa is the AS-private root from the per-arch
-    // `new_user_*` allocator; no longer reachable per fn contract.
+    // SAFETY: root_pa is the AS-private root; no longer reachable.
     unsafe { crate::pmm_setup::free_one_frame(root_pa); }
 }
 
@@ -380,17 +389,21 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
+    let mut free_leaf = |pa: u64| {
+        // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
+        unsafe { crate::pmm_setup::dec_and_maybe_free_frame(pa); }
+    };
+    let mut free_table = |pa: u64| {
+        // SAFETY: PT tables are always per-AS; direct free.
+        unsafe { crate::pmm_setup::free_one_frame(pa); }
+    };
+    // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
-        hal::pt_walker::free_user_tree::<hal_aarch64::vmm::PtWalkerArm, _>(
-            root_pa, hhdm,
-            // SAFETY: `pa` was previously returned by `alloc_one_frame`
-            // for this AS's tables/leaves; the AS root is quiesced per
-            // fn contract so the page is no longer reachable.
-            |pa| unsafe { crate::pmm_setup::free_one_frame(pa); },
+        hal::pt_walker::free_user_tree_leafmap::<hal_aarch64::vmm::PtWalkerArm, _, _>(
+            root_pa, hhdm, &mut free_leaf, &mut free_table,
         );
     }
-    // SAFETY: root_pa is the AS-private root from the per-arch
-    // `new_user_*` allocator; no longer reachable per fn contract.
+    // SAFETY: root_pa is the AS-private root; no longer reachable.
     unsafe { crate::pmm_setup::free_one_frame(root_pa); }
 }
 

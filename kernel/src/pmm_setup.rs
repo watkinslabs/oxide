@@ -86,6 +86,16 @@ unsafe impl Sync for PmmCell {}
 static PMM_STORAGE: PmmCell = PmmCell(UnsafeCell::new(MaybeUninit::uninit()));
 static PMM_READY: AtomicBool = AtomicBool::new(false);
 
+// F157: Per-page metadata array backing COW + Linux-style page
+// refcount. `init_page_meta` installs a `Box::leak`'d
+// `PageMetaArr` covering [0, pfn_max). Pre-init the global is
+// null; alloc/free fall back to no-refcount semantics so the boot
+// path before `init_page_meta` keeps working. Once installed, every
+// alloc bumps refcount to 1 and every dec_and_maybe_free decrements
+// + frees on zero — Linux-equivalent struct page lifecycle.
+static PAGE_META_PTR: core::sync::atomic::AtomicPtr<pmm::PageMetaArr>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
 struct RegionBuf(UnsafeCell<[UsableRegion; MAX_REGIONS]>);
 // SAFETY: Written exactly once during single-CPU init; read once
 // (passed into `Pmm::init` by reference); never mutated afterwards.
@@ -267,10 +277,123 @@ pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking>> {
 /// Suitable for `MmuOps::set_frame_alloc`. Returns the PA of a
 /// fresh, page-aligned, kernel-owned 4 KiB frame, or `None` on
 /// exhaustion / pre-init.
+///
+/// F157: when the per-page metadata array is installed, the new
+/// frame's refcount is set to 1 (Linux `struct page` semantics —
+/// freshly allocated page has one mapping pending). Pre-init
+/// (during boot before `init_page_meta`), refcount is implicit.
 /// # C: O(1) amortised (PMM buddy alloc).
 pub fn alloc_one_frame() -> Option<u64> {
     let p = pmm_static()?;
-    p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096)
+    let pa = p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096)?;
+    // F157: stamp refcount=1 if metadata installed.
+    if let Some(meta) = page_meta() {
+        let _ = meta.get(hal::Pfn(pa / 4096)).map(|m| {
+            m.refcount.store(1, core::sync::atomic::Ordering::Release);
+        });
+    }
+    Some(pa)
+}
+
+/// F157: bump refcount on a frame already returned by `alloc_one_frame`.
+/// Called by COW fork when adding a second mapping of the same physical
+/// page. Mirrors Linux `get_page()`. No-op pre-init.
+/// # SAFETY: caller is the COW fork path or another callsite that holds
+/// a reference to a live PMM-allocated frame; we don't validate that the
+/// page is actually mapped or owned, just that it's within PMM range.
+/// # C: O(1)
+pub unsafe fn inc_ref(pa: u64) {
+    if let Some(meta) = page_meta() {
+        let _ = meta.inc_ref(hal::Pfn(pa / 4096));
+    }
+}
+
+/// F157: refcount snapshot. Returns 0 if pre-init or out-of-range.
+/// # C: O(1)
+pub fn frame_refcount(pa: u64) -> u32 {
+    page_meta()
+        .and_then(|m| m.refcount(hal::Pfn(pa / 4096)))
+        .unwrap_or(0)
+}
+
+/// F157: decrement refcount; if it reaches 0, return the frame to
+/// the PMM. The standard "drop a page reference" path used by
+/// AS-teardown leaf walk and COW shared-page split. Mirrors Linux
+/// `put_page()` + `__free_pages()` when refcount hits zero.
+/// Pre-init: falls back to `free_one_frame` (always frees).
+/// # SAFETY: `pa` is a page-aligned PA originally returned by
+/// `alloc_one_frame`; the caller asserts the calling site has
+/// dropped its reference. If refcount reaches 0 the page must not
+/// be reachable via any live PTE.
+/// # C: O(1) amortised
+pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
+    let pfn = hal::Pfn(pa / 4096);
+    if let Some(meta) = page_meta() {
+        if let Some(new) = meta.dec_ref(pfn) {
+            if new == 0 {
+                // SAFETY: refcount hit zero — no other AS holds this
+                // frame; caller asserts the leaf PTE was already torn
+                // down. Same preconditions as free_one_frame.
+                unsafe { free_one_frame(pa); }
+            }
+            return;
+        }
+    }
+    // Pre-init or out-of-range PFN: fall back to unconditional free.
+    // SAFETY: same as free_one_frame; caller assertion stands.
+    unsafe { free_one_frame(pa); }
+}
+
+/// F157: install the per-page metadata array covering [0, pfn_max).
+/// Called from `kernel_main` once after `init_from_boot_info` so the
+/// COW path has refcount storage to use. Idempotent: a second call
+/// is a no-op (first installer wins). Storage is `Box::leak`'d to
+/// give the `&'static` lifetime PageMetaArr requires.
+/// # C: O(pfn_max) — zero-fill the slab once.
+pub fn init_page_meta(pfn_max: u64) {
+    use core::sync::atomic::Ordering;
+    if pfn_max == 0 { return; }
+    if !PAGE_META_PTR.load(Ordering::Acquire).is_null() { return; }
+    let n = pfn_max as usize;
+    let mut v: alloc::vec::Vec<pmm::PageMeta>
+        = alloc::vec::Vec::with_capacity(n);
+    for _ in 0..n { v.push(pmm::PageMeta::new()); }
+    let leaked: &'static [pmm::PageMeta] =
+        alloc::boxed::Box::leak(v.into_boxed_slice());
+    let arr = pmm::PageMetaArr::new(0, leaked);
+    let arr_box = alloc::boxed::Box::new(arr);
+    let raw = alloc::boxed::Box::leak(arr_box) as *mut _;
+    PAGE_META_PTR.store(raw, Ordering::Release);
+}
+
+/// F157: compute pfn_max from a `BootInfo`. Used by `kernel_main` to
+/// size the per-page metadata array. Same walk as
+/// `init_from_boot_info`; lifted here so callers don't have to
+/// touch `BootMemRegion` themselves.
+/// # C: O(memmap.len)
+pub fn pfn_max_from_boot_info(info: &crate::BootInfo) -> u64 {
+    if info.memmap_count == 0 { return 0; }
+    // SAFETY: caller passed valid memmap_ptr/count per BootInfo contract.
+    let regions: &[crate::BootMemRegion] = unsafe {
+        core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
+    };
+    let mut pfn_max: u64 = 0;
+    for r in regions {
+        if r.kind != crate::BootMemKind::Usable { continue; }
+        let end_pa = r.base_pa.saturating_add(r.len);
+        let end_pfn = end_pa >> PAGE_SHIFT;
+        if end_pfn > pfn_max { pfn_max = end_pfn; }
+    }
+    pfn_max
+}
+
+/// Internal: snapshot the metadata array if installed.
+fn page_meta() -> Option<&'static pmm::PageMetaArr> {
+    let p = PAGE_META_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: PAGE_META_PTR is set exactly once via Box::leak in
+    // init_page_meta; the pointee has 'static lifetime; never freed.
+    Some(unsafe { &*p })
 }
 
 /// Allocate a single contiguous physical region of `2^order` 4 KiB
