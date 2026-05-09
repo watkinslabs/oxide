@@ -242,20 +242,36 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
     let mode = mode_type | 0o600;
     // statx layout per linux/stat.h. Zero everything then fill the
     // fields we actually have.
+    let times = crate::inode_times::get(&inode).unwrap_or_default();
     // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
         for off in (0..256u64).step_by(8) {
             core::ptr::write_volatile((buf + off) as *mut u64, 0);
         }
-        const STATX_TYPE: u32 = 1;
-        const STATX_MODE: u32 = 2;
-        const STATX_INO:  u32 = 0x100;
-        core::ptr::write_volatile( buf            as *mut u32, STATX_TYPE | STATX_MODE | STATX_INO); // stx_mask
+        const STATX_TYPE:  u32 = 1;
+        const STATX_MODE:  u32 = 2;
+        const STATX_INO:   u32 = 0x100;
+        const STATX_ATIME: u32 = 0x20;
+        const STATX_MTIME: u32 = 0x40;
+        const STATX_CTIME: u32 = 0x80;
+        core::ptr::write_volatile( buf            as *mut u32,
+            STATX_TYPE | STATX_MODE | STATX_INO | STATX_ATIME | STATX_MTIME | STATX_CTIME);
         core::ptr::write_volatile((buf +   4)     as *mut u32, 4096);                                // stx_blksize
         core::ptr::write_volatile((buf +  16)     as *mut u32, 1);                                   // stx_nlink
         core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
         core::ptr::write_volatile((buf +  32)     as *mut u64, inode.ino());                         // stx_ino
         core::ptr::write_volatile((buf +  40)     as *mut u64, inode.size());                        // stx_size
+        // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
+        // Linux statx layout: atime@72, btime@88, ctime@104, mtime@120.
+        let write_ts = |off: u64, ns: u64| {
+            let sec  = (ns / 1_000_000_000) as i64;
+            let nsec = (ns % 1_000_000_000) as i32;
+            core::ptr::write_volatile((buf + off)      as *mut i64, sec);
+            core::ptr::write_volatile((buf + off + 8)  as *mut i32, nsec);
+        };
+        write_ts(72,  times.atime_ns);
+        write_ts(104, times.ctime_ns);
+        write_ts(120, times.mtime_ns);
         core::ptr::write_volatile((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
         core::ptr::write_volatile((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
     }
