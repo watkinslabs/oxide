@@ -5,7 +5,6 @@
 // stored in a BpfMapInode). All ops require CAP_BPF. eBPF + verifier
 // + JIT ride v2.x.
 
-#![cfg(target_os = "oxide-kernel")]
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -66,7 +65,7 @@ pub fn kernel_sys_bpf(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     let cmd = args.a0;
-    let cur = match crate::sched::current() {
+    let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !cur.has_cap(sched::cap::BPF) {
@@ -100,7 +99,7 @@ fn install_fd(inode: InodeRef, name: &str) -> i64 {
     use alloc::string::ToString;
     use alloc::sync::Arc;
     use vfs::{Dentry, File, OpenFlags};
-    let cur = match crate::sched::current() {
+    let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

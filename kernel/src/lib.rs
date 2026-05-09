@@ -1,15 +1,5 @@
-// Kernel library. The actual binary is the per-arch boot crate
-// (`crates/boot-x86_64`, `crates/boot-aarch64`) which provides the
-// arch `_start` symbol, sets up a minimal env, then tail-calls
-// `kernel_main`.
-//
-// This library is `#![no_std]`; it compiles on host so hosted unit
-// tests can exercise everything that doesn't require asm.
-//
-// Phase 0 exit goal per `00§3`: hello-world boots both arches via
-// QEMU, prints "init started" on UART, exits cleanly. The string is
-// emitted here; the UART backend is wired by the per-arch boot
-// crate.
+// Kernel lib. Per-arch boot crates own _start; this lib hosts
+// kernel_main. #![no_std]; compiles on host for unit tests.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -119,7 +109,10 @@ pub mod sysv_sem;
 pub mod sysv_msg;
 pub mod posix_mq;
 pub mod io_uring;
-pub mod seccomp;
+// seccomp + bpf moved to `crates/security` per `27§R03`.
+pub use security::seccomp;
+#[cfg(target_os = "oxide-kernel")]
+pub use security::bpf as dev_bpf;
 pub mod userfaultfd;
 pub mod perf;
 pub mod coredump;
@@ -139,7 +132,7 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
 #[cfg(target_os = "oxide-kernel")] pub mod keyring;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_numa;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_bpf;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  #[cfg(target_os = "oxide-kernel")] pub mod xattr_overlay;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
@@ -689,8 +682,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     let _ = unsafe { power::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; firmware::init reports ready (real ACPI walk happened earlier).
     let _ = unsafe { firmware::init() };
+    // Install the cross-crate `current task` accessor so downstream
+    // workspace crates (security, nscg) can ask without importing
+    // kernel-internal sched module.
+    #[cfg(target_os = "oxide-kernel")]
+    ::sched::set_current_hook(|| crate::sched::current());
     // SAFETY: kernel_main runs single-CPU pre-init; nscg::init reports ready (per-task ns slots set up by sched).
     let _ = unsafe { nscg::init() };
+    // SAFETY: kernel_main runs single-CPU pre-init; security::init reports ready (per-task seccomp slot is None until prctl/seccomp installs).
+    let _ = unsafe { security::init() };
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
