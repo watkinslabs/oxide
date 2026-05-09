@@ -20,6 +20,27 @@ remaining sweep gap is PR-G mmap completeness (MAP_SHARED,
 MAP_FIXED, non-zero addr hint, file-backed mmap). Status table
 updated below; sweep-order section trimmed.
 
+**2026-05-09 syscall stub-sweep (F63..F84):** at user direction, a
+wholesale pass across `syscall_compat.rs` + `syscall_glue.rs` removed
+~20 silent-0 / synthetic-success lies and replaced them with real
+storage-backed impls or honest ENOSYS. PRs #783..#804 landed:
+clone3 parity, real Creds (uid/gid/groups/caps), real robust_list,
+real syslog/dmesg, real setdomainname, real fallocate, real
+pidfd_getfd, real POSIX timers, real prctl (NO_NEW_PRIVS, KEEPCAPS,
+PDEATHSIG, SUBREAPER, CAPBSET), real utimensat/utimes/utime via
+inode_times overlay, real flock with vfs::File Drop hook, real
+process_vm_readv/writev, real keyring (single global ring), real
+mq_notify + mq_getsetattr, real personality, real get_mempolicy,
+real chmod/chown family with mode + uid/gid overlay, honest ENOSYS
+for futex_waitv / fanotify_mark / landlock_add_rule /
+landlock_restrict_self / fsconfig / move_mount / mount_setattr.
+The kernel's syscall surface is now substantially less mendacious —
+remaining silent-0 entries (NR_VHANGUP, NR_READAHEAD, NR_FADVISE64,
+NR_SYNC_FILE_RANGE, NR_SYNCFS, NR_MLOCK2, NR_CACHESTAT, NR_PKEY_*,
+NR_PROCESS_MADVISE, NR_PROCESS_MRELEASE, NR_KCMP, NUMA family) are
+honest no-ops on the v1 substrate (no swap, no MPU/MPK, single UMA
+node, no pagecache).
+
 ## Status legend
 
 | code | meaning |
