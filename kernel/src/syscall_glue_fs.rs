@@ -239,12 +239,14 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
         FileType::Fifo      => (0o010000, 0),
         FileType::Socket    => (0o140000, 0),
     };
-    // F98: Inode trait first; overlay fallback per pseudo-fs.
+    // F98+F99: Inode trait first via Option<>; overlay fallback per pseudo-fs.
     let overlay = crate::inode_times::get(&inode).unwrap_or_default();
-    let ip = inode.perm();
-    let mode = mode_type | (if ip != 0 { ip } else if overlay.owner_set && overlay.mode_bits != 0 { overlay.mode_bits } else { 0o600 });
-    let stx_uid = { let v = inode.uid(); if v != 0 { v } else if overlay.owner_set { overlay.uid } else { 0 } };
-    let stx_gid = { let v = inode.gid(); if v != 0 { v } else if overlay.owner_set { overlay.gid } else { 0 } };
+    let mode_perm = inode.perm()
+        .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
+        .unwrap_or(0o600);
+    let mode = mode_type | mode_perm;
+    let stx_uid = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
+    let stx_gid = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
     let (ia, im, ic) = (inode.atime(), inode.mtime(), inode.ctime());
     // statx layout per linux/stat.h. Zero everything then fill the fields we have.
     // SAFETY: buf validated 256-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
@@ -275,9 +277,9 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile((buf + off)      as *mut i64, sec);
             core::ptr::write_volatile((buf + off + 8)  as *mut i32, nsec);
         };
-        write_ts(72,  if ia != 0 { ia } else { overlay.atime_ns });
-        write_ts(104, if ic != 0 { ic } else { overlay.ctime_ns });
-        write_ts(120, if im != 0 { im } else { overlay.mtime_ns });
+        write_ts(72,  ia.unwrap_or(overlay.atime_ns));
+        write_ts(104, ic.unwrap_or(overlay.ctime_ns));
+        write_ts(120, im.unwrap_or(overlay.mtime_ns));
         core::ptr::write_volatile((buf + 128)     as *mut u32, (rdev >> 8)  & 0xfff);                // stx_rdev_major
         core::ptr::write_volatile((buf + 132)     as *mut u32,  rdev        & 0xff);                 // stx_rdev_minor
     }
