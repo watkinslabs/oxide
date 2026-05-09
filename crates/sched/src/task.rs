@@ -325,6 +325,88 @@ pub struct Task {
     /// mutator per `13§5`; running task on this CPU is the sole
     /// writer. Drop on task exit. # C: O(F × I) per syscall
     pub seccomp_filters: UnsafeCell<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
+
+    /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
+    /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
+    /// Init starts as root (all zero). fork copies, execve preserves.
+    /// Single-mutator: the running task on this CPU is the sole writer
+    /// (setuid family runs on the calling task only).
+    pub creds: Creds,
+}
+
+/// POSIX credentials triple (real/effective/saved + fs* mirror), per
+/// `13§5` and Linux `struct cred`. Supplementary groups stored inline
+/// as a fixed-size array to avoid heap allocation in clone/fork.
+/// `NGROUPS_V1 = 32` matches the small-process tail Linux historically
+/// supported; raising the cap is a v2 extension.
+#[repr(C)]
+pub struct Creds {
+    pub ruid:  AtomicU32,
+    pub euid:  AtomicU32,
+    pub suid:  AtomicU32,
+    pub fsuid: AtomicU32,
+    pub rgid:  AtomicU32,
+    pub egid:  AtomicU32,
+    pub sgid:  AtomicU32,
+    pub fsgid: AtomicU32,
+    pub ngroups: AtomicU32,
+    pub groups:  UnsafeCell<[u32; Creds::NGROUPS_V1]>,
+}
+
+impl Creds {
+    pub const NGROUPS_V1: usize = 32;
+
+    /// Initial creds for a fresh task — root, no supplementary groups.
+    /// # C: O(1)
+    pub const fn root() -> Self {
+        Self {
+            ruid: AtomicU32::new(0), euid: AtomicU32::new(0),
+            suid: AtomicU32::new(0), fsuid: AtomicU32::new(0),
+            rgid: AtomicU32::new(0), egid: AtomicU32::new(0),
+            sgid: AtomicU32::new(0), fsgid: AtomicU32::new(0),
+            ngroups: AtomicU32::new(0),
+            groups: UnsafeCell::new([0u32; Self::NGROUPS_V1]),
+        }
+    }
+
+    /// Snapshot for fork/clone — copies every field including
+    /// supplementary group list. Caller is the running parent task,
+    /// preempt-off; child task is not yet scheduled (no concurrent
+    /// reader on the new Creds).
+    /// # SAFETY: caller holds the single-mutator invariant on `self`.
+    /// # C: O(NGROUPS_V1)
+    pub unsafe fn snapshot(&self) -> Self {
+        use core::sync::atomic::Ordering::Relaxed;
+        let out = Self {
+            ruid:  AtomicU32::new(self.ruid.load(Relaxed)),
+            euid:  AtomicU32::new(self.euid.load(Relaxed)),
+            suid:  AtomicU32::new(self.suid.load(Relaxed)),
+            fsuid: AtomicU32::new(self.fsuid.load(Relaxed)),
+            rgid:  AtomicU32::new(self.rgid.load(Relaxed)),
+            egid:  AtomicU32::new(self.egid.load(Relaxed)),
+            sgid:  AtomicU32::new(self.sgid.load(Relaxed)),
+            fsgid: AtomicU32::new(self.fsgid.load(Relaxed)),
+            ngroups: AtomicU32::new(self.ngroups.load(Relaxed)),
+            groups:  UnsafeCell::new([0u32; Self::NGROUPS_V1]),
+        };
+        // SAFETY: caller holds the single-mutator invariant; we just
+        // built `out` and no other CPU has observed it yet, so writing
+        // its `groups` UnsafeCell is sound.
+        unsafe {
+            let dst = &mut *out.groups.get();
+            let src = &*self.groups.get();
+            dst.copy_from_slice(src);
+        }
+        out
+    }
+
+    /// True when the effective uid is root (uid 0). Used by setuid
+    /// permission checks: root may set ids freely; non-root may only
+    /// transition between {ruid, euid, suid}.
+    /// # C: O(1)
+    pub fn is_root(&self) -> bool {
+        self.euid.load(core::sync::atomic::Ordering::Acquire) == 0
+    }
 }
 
 /// Linux `struct sigaction` core fields per `27§3`. Stored
@@ -457,6 +539,7 @@ impl Task {
             traced_by:     AtomicU32::new(0),
             singlestep:    AtomicU32::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
+            creds: Creds::root(),
         }
     }
 

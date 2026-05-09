@@ -134,6 +134,7 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
                 b"SPCR" => decode_spcr(entry_pa, hhdm_offset),
                 b"MCFG" => decode_mcfg(entry_pa, hhdm_offset),
                 b"GTDT" => decode_gtdt(entry_pa, hhdm_offset),
+                #[cfg(target_os = "oxide-kernel")]
                 b"IORT" => decode_iort(entry_pa, hhdm_offset),
                 _       => {}
             }
