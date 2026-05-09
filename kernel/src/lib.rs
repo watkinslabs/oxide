@@ -139,18 +139,13 @@ pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_cred;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_dmesg;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_falloc;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_timers;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_prctl;
-#[cfg(target_os = "oxide-kernel")]
-pub mod inode_times;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_utime;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_dmesg;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_falloc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_timers;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_prctl;
+#[cfg(target_os = "oxide-kernel")] pub mod inode_times;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_utime;
+#[cfg(target_os = "oxide-kernel")] pub mod flock;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
 #[cfg(target_os = "oxide-kernel")]
@@ -304,6 +299,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
     }
 
+    // flock(2) per-inode drop hook (release on last close).
+    #[cfg(target_os = "oxide-kernel")]
+    crate::flock::install_drop_hook();
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
