@@ -143,12 +143,35 @@ impl UnixListener {
 /// here on `bind`; clients consult on `connect`.
 pub struct UnixRegistry {
     pub(crate) inner: Spinlock<BTreeMap<String, Arc<UnixListener>>, UnixLockClass>,
+    /// AF_UNIX SOCK_DGRAM path-bound queues (F121). bind(path) on a
+    /// SOCK_DGRAM socket inserts (path → its queue); sendto from any
+    /// peer socket looks up here.
+    pub(crate) dgrams: Spinlock<BTreeMap<String, Arc<UnixDgramQueue>>, UnixLockClass>,
 }
 
 impl UnixRegistry {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(BTreeMap::new()) }
+        Self {
+            inner: Spinlock::new(BTreeMap::new()),
+            dgrams: Spinlock::new(BTreeMap::new()),
+        }
+    }
+
+    /// Bind a SOCK_DGRAM socket's queue to `path`. Eaddrinuse if
+    /// already bound.
+    /// # C: O(log N)
+    pub fn dgram_bind(&self, path: String, q: Arc<UnixDgramQueue>) -> Result<(), ()> {
+        let mut g = self.dgrams.lock();
+        if g.contains_key(&path) { return Err(()); }
+        g.insert(path, q);
+        Ok(())
+    }
+
+    /// Look up a SOCK_DGRAM queue by path.
+    /// # C: O(log N)
+    pub fn dgram_lookup(&self, path: &str) -> Option<Arc<UnixDgramQueue>> {
+        self.dgrams.lock().get(path).cloned()
     }
 
     /// Insert a listener for `path`. `Eaddrinuse` semantic if
