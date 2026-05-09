@@ -641,25 +641,19 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // Linux kernel convention: PID 1 is started with argv[0] =
     // "/sbin/init" so the binary (esp. multi-call binaries like
     // busybox) dispatches the right applet.
-    // busybox-init refuses to run unless getpid()==1. Reuse the
-    // existing pid-namespace `vtgid`/`vtid` fields to make
-    // getpid/getppid/set_tid_address report Linux PID 1 even though
-    // the kernel's internal tid is 0xC0DE_0002. CLI between spawn
-    // and the vtgid set so the timer can't preempt and run init
-    // before vtgid lands (musl crt1 calls set_tid_address very
-    // early and caches the return as pid_t).
-    // SAFETY: boot path with runqueue + user_as installed; CLI
-    // legal at CPL=0; STI restores after vtgid is in place; both
-    // asm forms are nomem/nostack and preserve flags.
+    // busybox-init refuses to run unless getpid()==1. Stamp
+    // vtgid=1 / vtid=1 on the Task BEFORE it's visible via the
+    // registry or runqueue — `spawn_user_blob_with_vpid` writes
+    // them on the local Task before Arc-wrap + insert + enqueue,
+    // so any concurrent reader (including the very first syscall
+    // from this task) sees PID 1.
+    // SAFETY: boot-path discipline; user_as / runqueue installed.
     unsafe {
-        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-        spawn_user_blob_smoke(init_blob, "init", 0xC0DE_0002, &[b"/sbin/init" as &[u8]]);
-        if let Some(t) = crate::sched::registry::lookup(0xC0DE_0002) {
-            use core::sync::atomic::Ordering;
-            t.vtgid.store(1, Ordering::Release);
-            t.vtid.store(1, Ordering::Release);
-        }
-        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+        spawn_user_blob_with_vpid(
+            init_blob, "init",
+            0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1,
+            &[b"/sbin/init" as &[u8]],
+        );
     }
     // No second sh fallback: init→svcd→agetty→login→sh is the
     // real chain and login has its own `/bin/sh` exec on success.
@@ -703,6 +697,27 @@ unsafe fn spawn_user_blob_smoke(
     name:    &'static str,
     tid:     u32,
     argv:    &[&[u8]],
+) {
+    // SAFETY: vpid_tgid=0 / vpid_tid=0 means "no namespace remap" — equivalent to the bare spawn_user_thread the elf-smoke and dynlink callers used historically.
+    unsafe { spawn_user_blob_with_vpid(blob, name, tid, 0, 0, argv) }
+}
+
+/// Variant of `spawn_user_blob_smoke` that stamps explicit
+/// `vtgid` / `vtid` on the spawned task before it's enqueued.
+/// Used by the PID 1 spawn path to make `getpid()` /
+/// `set_tid_address()` report Linux PID 1 from the very first
+/// syscall (musl crt1's `__init_main_thread` caches the
+/// set_tid_address return as `__libc.tid`).
+///
+/// # SAFETY: same preconditions as `spawn_user_blob_smoke`.
+/// # C: O(phdrs) parse + O(log N) enqueue
+unsafe fn spawn_user_blob_with_vpid(
+    blob:      &'static [u8],
+    name:      &'static str,
+    tid:       u32,
+    vpid_tgid: u32,
+    vpid_tid:  u32,
+    argv:      &[&[u8]],
 ) {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
@@ -781,9 +796,11 @@ unsafe fn spawn_user_blob_smoke(
         )
     }.unwrap_or(USER_STACK_TOP);
 
-    // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range.
+    // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range; vpid stamped pre-enqueue so musl's __init_main_thread sees PID 1 on its very first syscall.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(tid, name, img.user_ip(), new_sp, mm)
+        crate::sched::spawn_user_thread_with_vpid(
+            tid, vpid_tgid, vpid_tid, name, img.user_ip(), new_sp, mm,
+        )
     } {
         Ok(t)  => t,
         Err(_) => { debug_irq! { klog::kerror!("user-blob: spawn failed"); } return; }
