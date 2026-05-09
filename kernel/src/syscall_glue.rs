@@ -810,10 +810,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_RECVMSG => crate::syscall_glue_net::kernel_sys_recvmsg(&args),
         crate::syscall_nrs::NR_SENDMMSG => crate::syscall_glue_net::kernel_sys_sendmmsg(&args),
         crate::syscall_nrs::NR_RECVMMSG => crate::syscall_glue_net::kernel_sys_recvmmsg(&args),
-        // chmod/chown family handled via perms_dispatch below.
         crate::syscall_nrs::NR_FLOCK         => crate::flock::kernel_sys_flock(&args),
         crate::syscall_nrs::NR_PERSONALITY   => crate::syscall_glue_prctl::kernel_sys_personality(&args),
         crate::syscall_nrs::NR_GET_MEMPOLICY => crate::syscall_glue_numa::kernel_sys_get_mempolicy(&args),
+        crate::syscall_nrs::NR_VHANGUP       => crate::syscall_glue_proc::kernel_sys_vhangup(&args),
         crate::syscall_nrs::NR_FUTIMESAT     => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
         crate::syscall_nrs::NR_MQ_NOTIFY     => crate::posix_mq::kernel_sys_mq_notify(&args),
         crate::syscall_nrs::NR_MQ_GETSETATTR => crate::posix_mq::kernel_sys_mq_getsetattr(&args),
