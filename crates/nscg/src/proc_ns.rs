@@ -5,8 +5,6 @@
 // matches nstype, and writes the captured ns id into the calling
 // task's matching slot.
 
-#![cfg(target_os = "oxide-kernel")]
-
 use alloc::sync::Arc;
 use core::any::Any;
 
