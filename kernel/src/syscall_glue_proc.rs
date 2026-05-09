@@ -763,36 +763,7 @@ pub fn kernel_sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
 
-/// `sys_prctl(option, ...)` — slot 157. v1 honours
-/// PR_SET_NAME / PR_GET_NAME (no-op since name is &'static str)
-/// and PR_SET_DUMPABLE / PR_GET_DUMPABLE; returns 0 elsewhere.
-/// # C: O(1)
-pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
-    const PR_SET_NAME:     u64 = 15;
-    const PR_GET_NAME:     u64 = 16;
-    const PR_SET_DUMPABLE: u64 = 4;
-    const PR_GET_DUMPABLE: u64 = 3;
-    match args.a0 {
-        PR_SET_NAME | PR_SET_DUMPABLE => 0,
-        PR_GET_DUMPABLE              => 1,
-        PR_GET_NAME => {
-            let p = args.a1;
-            if p != 0 && p < hal::USER_VA_END {
-                let name = crate::sched::current().map(|c| c.name).unwrap_or("oxide");
-                let n = name.len().min(15);
-                // SAFETY: p validated < USER_VA_END; n bytes from a 'static str fit in the user 16-byte name buf.
-                unsafe {
-                    for i in 0..n {
-                        core::ptr::write_volatile((p + i as u64) as *mut u8, name.as_bytes()[i]);
-                    }
-                    core::ptr::write_volatile((p + n as u64) as *mut u8, 0);
-                }
-            }
-            0
-        }
-        _ => 0,
-    }
-}
+// `sys_prctl` real impl moved to `syscall_glue_prctl.rs` (F72).
 
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324. v1 single-
 /// CPU UP: every memory op is already globally ordered, so any

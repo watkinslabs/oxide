@@ -847,7 +847,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => crate::syscall_glue_proc::kernel_sys_sched_getaffinity(&args),
         crate::syscall_nrs::NR_SCHED_SETAFFINITY
                                  => crate::syscall_glue_proc::kernel_sys_sched_setaffinity(&args),
-        crate::syscall_nrs::NR_PRCTL         => crate::syscall_glue_proc::kernel_sys_prctl(&args),
+        crate::syscall_nrs::NR_PRCTL         => crate::syscall_glue_prctl::kernel_sys_prctl(&args),
         crate::syscall_nrs::NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
         crate::syscall_nrs::NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
         crate::syscall_nrs::NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
