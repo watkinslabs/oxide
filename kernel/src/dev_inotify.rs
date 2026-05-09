@@ -116,30 +116,38 @@ fn register_instance(w: Weak<InotifyInode>) {
     g.push(w);
 }
 
-/// vfs::File write-hook callback. For each live InotifyInode whose
-/// watch list mentions `inode_key`, push an IN_MODIFY event into
-/// that inode's event queue.
+/// Generic event-firing helper. Walks live InotifyInode list, finds
+/// watches matching `inode_key + mask_bit`, pushes one event each.
 /// # C: O(N_inotify * N_watches_per)
-fn vfs_write_notify(inode: &InodeRef) {
+fn fire_event(inode: &InodeRef, mask_bit: u32) {
     let key = inode_key(inode);
     let g = INSTANCES.lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
         let watches = arc.watches.lock();
         for wi in watches.iter() {
-            if wi.inode_key == key && (wi.mask & IN_MODIFY) != 0 {
+            if wi.inode_key == key && (wi.mask & mask_bit) != 0 {
                 let mut q = arc.events.lock();
-                q.push_back(Event { wd: wi.wd, mask: IN_MODIFY, cookie: 0, len: 0 });
+                q.push_back(Event { wd: wi.wd, mask: mask_bit, cookie: 0, len: 0 });
             }
         }
     }
 }
 
-/// Install `vfs_write_notify` as the vfs::File write-hook. Called once
-/// at kernel_main.
+fn vfs_write_notify(inode: &InodeRef) { fire_event(inode, IN_MODIFY); }
+fn vfs_open_notify(inode: &InodeRef)  { fire_event(inode, IN_OPEN); }
+fn vfs_read_notify(inode: &InodeRef)  { fire_event(inode, IN_ACCESS); }
+fn vfs_close_notify(inode: &InodeRef, was_writable: bool) {
+    fire_event(inode, if was_writable { IN_CLOSE_WRITE } else { IN_CLOSE_NOWRITE });
+}
+
+/// Install all inotify event hooks into vfs. Called once at kernel_main.
 /// # C: O(1)
 pub fn install_write_hook() {
     vfs::set_write_hook(vfs_write_notify);
+    vfs::set_open_hook(vfs_open_notify);
+    vfs::set_read_hook(vfs_read_notify);
+    vfs::set_close_hook(vfs_close_notify);
 }
 
 fn inode_key(inode: &InodeRef) -> usize {
