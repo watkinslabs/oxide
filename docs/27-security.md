@@ -2,6 +2,23 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
 
+## Revision 2026-05-09 (R03)
+
+- Changed: `crates/security` is the real owner of the seccomp cBPF
+  interpreter (`security::seccomp`) and bpf(2) admit
+  (`security::bpf`). `kernel/src/seccomp.rs` (392 lines) and
+  `kernel/src/dev_bpf.rs` (113 lines) moved verbatim.
+- Cross-crate `current task` accessor: `sched::set_current_hook` /
+  `sched::current()` lets workspace crates query the running task
+  without depending on the kernel-internal sched module. Kernel
+  installs the hook at boot from `crate::sched::current`.
+- Wiring: `kernel::seccomp` and `kernel::dev_bpf` are `pub use`
+  re-exports from `security::*` so syscall_glue / glue_seccomp /
+  glue_bpf keep working.
+- Capability bits stay on `sched::Creds`; `has_cap_for` /
+  user-NS scoping stay in `crates/nscg`. File caps + Landlock
+  admit stay in kernel-side glue.
+
 ## Revision 2026-05-09 (R02)
 
 - Changed: pinned the v1 BPF subset shape. `bpf(2)` admits
