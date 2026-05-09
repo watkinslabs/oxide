@@ -18,6 +18,40 @@ pub struct File {
     dentry: Arc<Dentry>,
     pos:    AtomicU64,
     flags:  AtomicU32,
+    /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used
+    /// by the kernel-side flock registry to find which lock to drop
+    /// when the last reference to this open-file-description goes
+    /// away (Drop impl below).
+    pub flock_op: AtomicU32,
+}
+
+/// Kernel-side hook installed at boot. Called from `File::drop` for
+/// the last-Arc-reference release (close+last-dup gone). The kernel
+/// flock module installs a release fn that walks the per-inode
+/// registry. `0` = no hook installed (host tests, early boot).
+static FLOCK_RELEASE_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Install the per-File drop hook used by `flock(2)` to release any
+/// held lock. Called once at kernel init. The `usize` argument the
+/// hook receives is the dropped File's `&self` raw pointer cast.
+/// # C: O(1)
+pub fn set_drop_hook(f: fn(usize, &InodeRef)) {
+    FLOCK_RELEASE_HOOK.store(f as u64, Ordering::Release);
+}
+
+impl Drop for File {
+    fn drop(&mut self) {
+        if self.flock_op.load(Ordering::Acquire) != 0 {
+            let h = FLOCK_RELEASE_HOOK.load(Ordering::Acquire);
+            if h != 0 {
+                // SAFETY: h was installed by `set_drop_hook` with a real
+                // fn(usize, &InodeRef) pointer; the cast back to that
+                // signature is the documented-shape contract.
+                let f: fn(usize, &InodeRef) = unsafe { core::mem::transmute(h) };
+                f(self as *const Self as usize, &self.inode);
+            }
+        }
+    }
 }
 
 impl File {
@@ -28,6 +62,7 @@ impl File {
             dentry,
             pos:   AtomicU64::new(0),
             flags: AtomicU32::new(flags.bits()),
+            flock_op: AtomicU32::new(0),
         })
     }
 
