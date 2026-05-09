@@ -58,9 +58,16 @@ struct Msg {
 pub struct MsgQueue {
     pub id:        i32,
     pub key:       i32,
+    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
+    pub ns:        u64,
     pub q:         Spinlock<VecDeque<Msg>, MsgLockClass>,
     pub wait_send: crate::sched::WaitList,
     pub wait_recv: crate::sched::WaitList,
+}
+
+fn current_ipc_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 struct MsgRegistry {
@@ -74,14 +81,16 @@ static REG: MsgRegistry = MsgRegistry {
 };
 
 fn lookup_by_id(id: i32) -> Option<Arc<MsgQueue>> {
+    let ns = current_ipc_ns();
     let g = REG.queues.lock();
-    g.iter().find(|q| q.id == id).cloned()
+    g.iter().find(|q| q.id == id && q.ns == ns).cloned()
 }
 
 fn lookup_by_key(key: i32) -> Option<Arc<MsgQueue>> {
     if key == IPC_PRIVATE { return None; }
+    let ns = current_ipc_ns();
     let g = REG.queues.lock();
-    g.iter().find(|q| q.key == key).cloned()
+    g.iter().find(|q| q.key == key && q.ns == ns).cloned()
 }
 
 /// `msgget(key, msgflg)` — slot NR_MSGGET.
@@ -94,7 +103,7 @@ pub fn kernel_sys_msgget(args: &syscall::SyscallArgs) -> i64 {
     }
     let id = REG.next_id.fetch_add(1, Ordering::AcqRel);
     let q = Arc::new(MsgQueue {
-        id, key,
+        id, key, ns: current_ipc_ns(),
         q: Spinlock::new(VecDeque::new()),
         wait_send: crate::sched::WaitList::new(),
         wait_recv: crate::sched::WaitList::new(),
