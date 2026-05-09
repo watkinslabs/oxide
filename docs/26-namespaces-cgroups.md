@@ -2,6 +2,17 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 
+## Revision 2026-05-09 (R02)
+
+- Changed: `crates/nscg` is now the real owner of `NsInode`,
+  `setns_apply`, `has_cap_for`, and the user-NS parent registry.
+  Per-task ns id slots stay on `sched::Task` (uts/ipc/net/pid/
+  user/cgroup/mount); the crate provides the inode-side bridge.
+- Wiring: `kernel::dev_proc_ns` is a `pub use nscg::proc_ns`
+  re-export so existing call sites stay stable. `kernel_main`
+  calls `nscg::init()` at boot ready.
+- cgroup v2 hierarchy walker rides v2.x.
+
 ## Revision 2026-05-09 (R01)
 
 - Changed: pinned the v1 setns/NsInode contract. `/proc/<pid>/ns/<type>`
