@@ -1,6 +1,49 @@
 # 30 io_uring
 
 FROZEN 2026-05-02 (v2; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
+
+## Revision 2026-05-09 (R01)
+
+- Changed: pinned the precise v1 io_uring subset that `io_uring.rs`
+  implements vs the v2 invariants in §2. Previously the
+  status line said "v1.0 ships stubs returning ENOSYS" but the
+  code has shipped a real synchronous-execution subset since P23a;
+  the spec needed to catch up.
+- v1 implemented surface:
+    - **`io_uring_setup(entries, *params)`**  REAL. Allocates a
+      per-ring kernel state struct with SQ + CQ; returns an fd.
+      The user-space ring `mmap` (Linux IORING_OFF_SQ_RING /
+      IORING_OFF_CQES / IORING_OFF_SQES) is **NOT** wired — v1
+      callers stash the ring in kernel memory and submit via
+      `io_uring_enter` directly. Linux compat for shared-mmap
+      rings rides v2.x.
+    - **`io_uring_enter(fd, to_submit, min_complete, ...)`** REAL.
+      Drains SQ head→tail, executes each SQE **synchronously** in
+      the calling task's context (no kernel worker), posts CQEs.
+      `min_complete > to_submit` returns `EINVAL` (synchronous mode
+      can't wait for events that haven't been submitted).
+    - **`io_uring_register(fd, op, arg, nr_args)`** silent-0 admit.
+      No fixed-buffer / file table; opcodes that would consume
+      registered buffers fall back to per-SQE pointers.
+    - **Opcodes implemented**: `NOP`, `READV`, `WRITEV`, `READ`,
+      `WRITE`, `SEND`, `RECV`, `ACCEPT`, `CONNECT`, `CLOSE`,
+      `OPENAT`, `FSYNC` (validate-only). Each delegates to the
+      matching synchronous syscall handler.
+    - **NOT implemented**: `IOSQE_ASYNC` async-mode worker thread;
+      `IORING_SETUP_SQPOLL` polling thread; `IORING_SETUP_IOPOLL`
+      block-device polling; fixed-buffer / fixed-file fast path;
+      `IORING_OP_TIMEOUT` / `LINK_TIMEOUT` / `POLL_ADD` / etc.
+      Programs probing these opcodes get `EINVAL` per opcode.
+- Why: g.md flagged "io_uring still partial: registration is
+  silent-0; userspace ring mmap deferred" as a Linux-conformance
+  hazard. The spec previously claimed ENOSYS; the code shipped a
+  real subset; userspace consumers (modern liburing-using daemons)
+  could not predict which features work. R01 pins the exact
+  subset so users know to use the synchronous-only path until
+  v2.x lands the worker / SQPOLL / mmap-ring substrate.
+- Affected code: `kernel/src/io_uring.rs` (`kernel_sys_io_uring_setup`,
+  `kernel_sys_io_uring_enter`, `kernel_sys_io_uring_register`).
+
 ## 1 Purpose
 
 Async I/O surface compatible with Linux io_uring. Submission/completion rings shared with userspace; kernel worker threads perform the work; results returned without per-op syscall.

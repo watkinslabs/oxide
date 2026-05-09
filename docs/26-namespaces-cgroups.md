@@ -2,6 +2,43 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 
+## Revision 2026-05-09 (R03)
+
+- Changed: pinned the precise enforcement state of `unshare(2)` per
+  CLONE_NEW* bit. Previously the spec said "containers" without
+  specifying which ns flags isolate vs which only update
+  membership ids. Per-bit truth:
+    - **CLONE_NEWUTS**  REAL — per-task `uts_hostname` snapshot;
+      `uname()`/`sethostname()` reads/writes the per-task slot.
+    - **CLONE_NEWIPC**  REAL — fresh `ipc_ns` id; SysV shm/sem/msg
+      and POSIX MQ stores are tagged-by-ns and lookup uses the
+      caller's id (init-NS fallback).
+    - **CLONE_NEWNET**  REAL — fresh `net_ns` id; `register_in_ns`/
+      `lookup_name_in_ns` on the netdev registry; AF_INET / AF_UNIX
+      sockets bind into the caller's net_ns.
+    - **CLONE_NEWUSER** REAL — fresh `user_ns` id + parent recorded
+      in the global registry; `has_cap_for(target_ns, cap)` walks
+      the ancestor chain (per docs/27 R01).
+    - **CLONE_NEWNS**   REAL — fresh `mount_ns` id; `devfs::snapshot_ns`
+      copies the parent's NS-tagged mount entries into the new id;
+      mount lookups try caller's mount_ns first, fall back to ns=0
+      (per docs/16 R01).
+    - **CLONE_NEWPID**  REAL (deferred-allocate) — sets
+      `unshare_pid_pending`; the next `fork()` allocates a fresh
+      pid_ns and gives the child vpid=1; pid translation across
+      namespaces uses `registry::lookup_in_ns`.
+    - **CLONE_NEWCGROUP** PARTIAL — sets a fresh `cgroup_ns` id but
+      cgroup tree v2 (controllers, hierarchy walk, scope membership)
+      isn't wired; the id alone has no enforcement effect. Real
+      cgroup v2 rides v2.x.
+- Why: g.md flagged "namespace partial enforcement under unshare"
+  as a Linux-conformance hazard. Userspace runtimes (systemd,
+  unshare(1), bwrap, runc) check membership ids AND expect the
+  isolation behavior to follow; without per-bit truth the spec
+  read as "all ns work" while CGROUP only works for id stamping.
+- Affected code: `kernel/src/syscall_glue_signal.rs::kernel_sys_unshare`
+  (the per-bit allocate + scope path).
+
 ## Revision 2026-05-09 (R02)
 
 - Changed: `crates/nscg` is now the real owner of `NsInode`,
