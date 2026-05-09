@@ -83,6 +83,10 @@ pub enum SockKind {
     Unix(Arc<net::UnixPair>, net::UnixEnd),
     /// AF_UNIX path-bound listener. `accept` pops a queued pair.
     UnixListener(Arc<net::UnixListener>),
+    /// AF_UNIX SOCK_DGRAM (F120 / `24§R01`). Per-socket message
+    /// queue; sendto/recvfrom push/pop here. Real per-message SCM
+    /// metadata (sender creds, fd array) rides F121.
+    UnixDgram(Arc<net::UnixDgramQueue>),
 }
 
 /// Process-global AF_UNIX path registry.
@@ -159,6 +163,19 @@ impl InetSocket {
     pub fn new_unix() -> Self {
         let s = Self::new_tcp();
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
+        s
+    }
+
+    /// `socket(AF_UNIX, SOCK_DGRAM, …)` per F120 / `24§R01`. Allocates
+    /// a fresh `UnixDgramQueue` so sendto from a peer can push
+    /// payloads. v1 sends are EOPNOTSUPP until the path-keyed dgram
+    /// registry lands in F121; the queue alone lets feature-probing
+    /// programs succeed at socket() + close().
+    /// # C: O(1)
+    pub fn new_unix_dgram() -> Self {
+        let s = Self::new_tcp();
+        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
+        *s.kind.lock() = SockKind::UnixDgram(net::UnixDgramQueue::new());
         s
     }
 
@@ -258,6 +275,11 @@ impl vfs::Inode for InetSocket {
             }
             SockKind::UnixListener(l) => {
                 if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }
+            }
+            SockKind::UnixDgram(q) => {
+                let mut mask = POLL_OUT;
+                if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
+                mask
             }
         }
     }
