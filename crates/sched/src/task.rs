@@ -373,6 +373,11 @@ pub struct Task {
     /// chroot view); cleared on execve only via explicit chroot.
     pub root: UnsafeCell<alloc::string::String>,
 
+    /// IPC namespace id (CLONE_NEWIPC). Default 0 (init NS).
+    /// SysV shm/sem/msg + POSIX MQ tables are virtualised by this id
+    /// so containers see disjoint key spaces.
+    pub ipc_ns: AtomicU64,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -732,6 +737,7 @@ impl Task {
             child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),
             root:           UnsafeCell::new(alloc::string::String::from("/")),
+            ipc_ns:         AtomicU64::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
