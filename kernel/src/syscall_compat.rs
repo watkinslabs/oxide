@@ -34,16 +34,14 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         | NR_FLOCK | NR_SYNC_FILE_RANGE
         | NR_SYNCFS | NR_FUTEX_WAITV | NR_MLOCK2
         | NR_FUTIMESAT
-        | NR_SET_ROBUST_LIST
                                        => Some(0),
 
         // ---- POSIX shape: pause/sigsuspend behaviour ----
         NR_RESTART_SYSCALL  => Some(eintr),
 
         // ---- silent-0 (accept; nothing to track v1) ----
-        // get_robust_list: glibc thread-cleanup probe. Returning 0
-        // with no head/len keeps it from spinning on -ENOSYS.
-        NR_GET_ROBUST_LIST | NR_CACHESTAT
+        // get_robust_list / set_robust_list moved to real impl in F65.
+        NR_CACHESTAT
         | NR_TIMER_CREATE | NR_TIMER_SETTIME | NR_TIMER_GETTIME
         | NR_TIMER_GETOVERRUN | NR_TIMER_DELETE
         // pkey_* — userspace 'always have pkey 0' fallback. Linux pkey
