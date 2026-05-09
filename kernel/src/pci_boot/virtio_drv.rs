@@ -385,14 +385,15 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                  | (d.bdf.function as u32);
     if is_virtio_gpu && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         use core::sync::atomic::{AtomicU32, AtomicU64};
-        drv_virtio_gpu::install(drv_virtio_gpu::VirtioGpuDev {
+        let card_id = drv_virtio_gpu::install_with_drm(drv_virtio_gpu::VirtioGpuDev {
             bdf: bdf_word, features_negotiated: drv_features as u64,
             display: drv_virtio_gpu::DisplayInfo::default(),
             resource_id_alloc: AtomicU32::new(1),
             blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
         });
         debug_boot! { klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
-            klog::write_hex_u64(drv_features); klog::write_raw(b"\n"); }
+            klog::write_hex_u64(drv_features); klog::write_raw(b" card=");
+            klog::write_dec_u64(card_id as u64); klog::write_raw(b"\n"); }
     }
     if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let evdev_id = drv_virtio_input::count() as u32;
