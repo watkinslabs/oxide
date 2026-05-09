@@ -124,7 +124,7 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // POSIX timer family (timer_create/settime/gettime/getoverrun/delete)
         // moved to silent-0 below — userspace tolerates "no timer fires"
         // better than -ENOSYS, which crashes hardened systemd setups.
-        | NR_PROCESS_VM_READV | NR_PROCESS_VM_WRITEV
+        // PROCESS_VM_READV/WRITEV moved to real impl (F75).
         | NR_NAME_TO_HANDLE_AT | NR_OPEN_BY_HANDLE_AT
         // OPENAT2 / FACCESSAT2 aliased to openat / faccessat in PR-M.
         // Modern mount API moved to real (admit) impls in P29a — fsopen/
