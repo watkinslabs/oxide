@@ -7,7 +7,7 @@
 // (PRIO 10), second must return the low (PRIO 1). If kernel
 // were FIFO-only, parent would get them in send order → FAIL.
 
-#include "../shared/oxide_start.h"
+/* F152-1: real musl crt1 — no shim */
 #include <unistd.h>
 #include <fcntl.h>
 #include <mqueue.h>

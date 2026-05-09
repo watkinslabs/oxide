@@ -109,106 +109,26 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // aarch64 boot path only needs init to reach userspace today;
     // shell + applets come via vendored busybox once the aarch64
     // cross-build of busybox lands.
-    let portable_bins: &[(&str, &str)] = &[
-        // init lives in `crt_bins` below — built with full musl crt1
-        // so __init_libc / __init_tls run, FS_BASE / TPIDR_EL0 land
-        // in a real TCB, errno/stack-canary paths are safe (F150-1).
-        ("userspace/bare/bare",         "userspace/bare/bare.c"),
-        ("userspace/bare/bare2",        "userspace/bare/bare2.c"),
-        ("userspace/true/true",         "userspace/true/true.c"),
-        ("userspace/false/false",       "userspace/false/false.c"),
-        ("userspace/echo/echo",         "userspace/echo/echo.c"),
-        ("userspace/whoami/whoami",     "userspace/whoami/whoami.c"),
-        ("userspace/pwd/pwd",           "userspace/pwd/pwd.c"),
-        ("userspace/sleep/sleep",       "userspace/sleep/sleep.c"),
-        ("userspace/yes/yes",           "userspace/yes/yes.c"),
-        ("userspace/cat/cat",           "userspace/cat/cat.c"),
-        ("userspace/uname/uname",       "userspace/uname/uname.c"),
-        ("userspace/hostname/hostname", "userspace/hostname/hostname.c"),
-        ("userspace/mkdir/mkdir",       "userspace/mkdir/mkdir.c"),
-        ("userspace/seq/seq",           "userspace/seq/seq.c"),
-        ("userspace/nproc/nproc",       "userspace/nproc/nproc.c"),
-        ("userspace/head/head",         "userspace/head/head.c"),
-        ("userspace/wc/wc",             "userspace/wc/wc.c"),
-        ("userspace/kill/kill",         "userspace/kill/kill.c"),
-        ("userspace/rm/rm",             "userspace/rm/rm.c"),
-        ("userspace/dmesg/dmesg",       "userspace/dmesg/dmesg.c"),
-        ("userspace/ln/ln",             "userspace/ln/ln.c"),
-        ("userspace/cmp/cmp",           "userspace/cmp/cmp.c"),
-        ("userspace/cp/cp",             "userspace/cp/cp.c"),
-        ("userspace/tee/tee",           "userspace/tee/tee.c"),
-        ("userspace/df/df",             "userspace/df/df.c"),
-        ("userspace/xxd/xxd",           "userspace/xxd/xxd.c"),
-        ("userspace/route/route",       "userspace/route/route.c"),
-        ("userspace/mount/mount",       "userspace/mount/mount.c"),
-        ("userspace/ls/ls",             "userspace/ls/ls.c"),
-        ("userspace/find/find",         "userspace/find/find.c"),
-        ("userspace/ps/ps",             "userspace/ps/ps.c"),
-        ("userspace/getent/getent",     "userspace/getent/getent.c"),
-        ("userspace/nc/nc",             "userspace/nc/nc.c"),
-        ("userspace/udp_echo/udp_echo", "userspace/udp_echo/udp_echo.c"),
-        ("userspace/tcp_echo/tcp_echo", "userspace/tcp_echo/tcp_echo.c"),
-        ("userspace/id/id",             "userspace/id/id.c"),
-        ("userspace/login/login",       "userspace/login/login.c"),
-        ("userspace/su/su",             "userspace/su/su.c"),
-        ("userspace/agetty/agetty",     "userspace/agetty/agetty.c"),
-        ("userspace/passwd/passwd",     "userspace/passwd/passwd.c"),
-        ("userspace/svcd/svcd",         "userspace/svcd/svcd.c"),
-        ("userspace/rpm/rpm",           "userspace/rpm/rpm.c"),
-        ("userspace/sh/sh",             "userspace/sh/sh.c"),
-        ("userspace/sem_smoke/sem_smoke",       "userspace/sem_smoke/sem_smoke.c"),
-        ("userspace/msg_smoke/msg_smoke",       "userspace/msg_smoke/msg_smoke.c"),
-        ("userspace/mq_smoke/mq_smoke",         "userspace/mq_smoke/mq_smoke.c"),
-        ("userspace/ptrace_smoke/ptrace_smoke", "userspace/ptrace_smoke/ptrace_smoke.c"),
-        ("userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke", "userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke.c"),
-        ("userspace/mprotect_smoke/mprotect_smoke", "userspace/mprotect_smoke/mprotect_smoke.c"),
-    ];
-    // dynlink is now arch-portable (#ifdef __aarch64__ for syscall ABI
-    // + reloc constants + _start). Build for both arches; per-arch
-    // staging at /lib/ld-musl-<arch>.so.1 happens below.
-    let dynlink_bins: &[(&str, &str)] = &[
-        ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
-    ];
-    let mut bins: Vec<(&str, &str)> = portable_bins.to_vec();
-    bins.extend_from_slice(dynlink_bins);
-    for (out_rel, src_rel) in &bins {
-        // Out path is per-arch: target/userspace-<arch>/<basename>.
-        let basename = out_rel.rsplit('/').next().unwrap();
-        let out = user_out.join(basename);
-        let src = repo.join(src_rel);
-        eprintln!("xtask rootfs: {} {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
-        let mut c = Command::new(&cc);
-        c.args([
-            "-static-pie", "-fPIE", "-O2", "-nostartfiles",
-            // -fno-stack-protector: gcc -O2 with stack protector
-            // emits canary loads from FS:0x28 (musl pthread struct
-            // slot). Our oxide_start.h skips musl TLS init →
-            // FS_BASE=0 → canary read NULL-derefs. Disable the
-            // canary until a TLS-stub is installed in _start.
-            "-fno-stack-protector",
-            "-o", out.to_str().unwrap(), src.to_str().unwrap(),
-        ]);
-        run(c)?;
-    }
-
-    // Static-musl-with-crt1 binaries. Same build flags as upstream
-    // busybox: LDFLAGS includes the full musl crt1, so musl's
-    // __libc_start_main runs __init_libc + __init_tls before main.
-    // This is the canonical Linux PID-1 path (F150-1) — no shim,
-    // no -nostartfiles, no fake kernel-set FS_BASE; the user-side
-    // TLS init installs a real TCB via arch_prctl(ARCH_SET_FS) on
-    // x86_64 / TPIDR_EL0 on aarch64, after which errno + stack
-    // canaries + getauxval all work normally.
-    //
-    // bare3 already uses plain `-static` (ET_EXEC) and works on
-    // both arches end-to-end through fork+exec from old-init.
-    // init itself joins the same flag set so x86_64 and aarch64
-    // share one startup path. (`-static-pie` works on x86 but
-    // hangs the aarch64 musl crt1 on this kernel today; that gap
-    // is F151's investigation.)
+    // F152-1 erased the userspace/oxide-* toy programs (echo, ls,
+    // cat, login, getty, …) and the userspace/shared/oxide_start.h
+    // shim. The rootfs now relies on vendored upstream busybox for
+    // those applets. What stays in `userspace/` is the
+    // kernel-acceptance test surface: PID 1 (init), the syscall-
+    // corner smokes (sem/msg/mq/ptrace/ptrace_singlestep/mprotect),
+    // bare3 (real-musl-crt1 isolation case for F62), and the
+    // dynamic-loader smokes (dynlink + hello_dyn). All of those
+    // build against full musl crt1 — the same path upstream
+    // busybox/coreutils/bash use.
     let crt_bins: &[(&str, &str)] = &[
-        ("userspace/init/init",   "userspace/init/init.c"),
-        ("userspace/bare/bare3",  "userspace/bare/bare3.c"),
+        ("userspace/init/init",                       "userspace/init/init.c"),
+        ("userspace/bare/bare3",                      "userspace/bare/bare3.c"),
+        ("userspace/sem_smoke/sem_smoke",             "userspace/sem_smoke/sem_smoke.c"),
+        ("userspace/msg_smoke/msg_smoke",             "userspace/msg_smoke/msg_smoke.c"),
+        ("userspace/mq_smoke/mq_smoke",               "userspace/mq_smoke/mq_smoke.c"),
+        ("userspace/ptrace_smoke/ptrace_smoke",       "userspace/ptrace_smoke/ptrace_smoke.c"),
+        ("userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke",
+                                                      "userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke.c"),
+        ("userspace/mprotect_smoke/mprotect_smoke",   "userspace/mprotect_smoke/mprotect_smoke.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -217,6 +137,24 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         eprintln!("xtask rootfs: {} -static {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
         let mut c = Command::new(&cc);
         c.args(["-static", "-no-pie", "-O2", "-fno-stack-protector",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
+
+    // dynlink is our v1 dynamic linker stub — keeps its own _start
+    // (no musl crt1) since it IS the loader. Built per-arch and
+    // staged at /lib/ld-musl-<arch>.so.1 below.
+    let dynlink_bins: &[(&str, &str)] = &[
+        ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
+    ];
+    for (out_rel, src_rel) in dynlink_bins {
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
+        let src = repo.join(src_rel);
+        eprintln!("xtask rootfs: {} -static-pie {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+        let mut c = Command::new(&cc);
+        c.args(["-static-pie", "-fPIE", "-O2", "-nostartfiles",
+                "-fno-stack-protector",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
@@ -249,11 +187,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // 1b. Refresh kernel/blobs/<arch>/<init,sh>.elf per-arch so the
     // embedded boot blobs match what we just compiled.
     let blob_dir = repo.join("kernel/blobs");
-    let elf_refresh: &[(&str, &str)] = if arch == "x86_64" {
-        &[("init", "init.elf"), ("sh", "sh.elf")]
-    } else {
-        &[("init", "init.elf")]
-    };
+    let elf_refresh: &[(&str, &str)] = &[("init", "init.elf")];
     for (basename, blob_name) in elf_refresh {
         let src = user_out.join(basename);
         // Per-arch blob filename; x86_64 keeps the existing
@@ -353,59 +287,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
     }
-    // Portable bins (use shared/oxide_start.h + musl libc wrappers,
-    // build for both arches). Stage on every arch.
+    // PID 1 + kernel-acceptance smoke binaries. Real-musl-crt1
+    // builds; everything user-facing (echo, ls, cat, mount, getty,
+    // login, su, passwd, …) comes from vendored busybox above.
     put(&user("init"),         "/bin/init")?;
     put(&user("init"),         "/sbin/init")?;
     put(&user("init"),         "/init")?;
-    put(&user("bare"),         "/bin/bare")?;
-    put(&user("bare2"),        "/bin/bare2")?;
     put(&user("bare3"),        "/bin/bare3")?;
-    put(&user("true"),         "/bin/oxide-true")?;
-    put(&user("false"),       "/bin/oxide-false")?;
-    put(&user("echo"),         "/bin/oxide-echo")?;
-    put(&user("whoami"),     "/bin/oxide-whoami")?;
-    put(&user("pwd"),           "/bin/oxide-pwd")?;
-    put(&user("sleep"),       "/bin/oxide-sleep")?;
-    put(&user("yes"),           "/bin/oxide-yes")?;
-    put(&user("cat"),           "/bin/oxide-cat")?;
-    put(&user("uname"),       "/bin/oxide-uname")?;
-    put(&user("hostname"), "/bin/oxide-hostname")?;
-    put(&user("mkdir"),       "/bin/oxide-mkdir")?;
-    put(&user("seq"),           "/bin/oxide-seq")?;
-    put(&user("nproc"),       "/bin/oxide-nproc")?;
-    put(&user("head"),         "/bin/oxide-head")?;
-    put(&user("wc"),             "/bin/oxide-wc")?;
-    put(&user("kill"),         "/bin/oxide-kill")?;
-    put(&user("rm"),             "/bin/oxide-rm")?;
-    put(&user("dmesg"),       "/bin/oxide-dmesg")?;
-    put(&user("ln"),             "/bin/oxide-ln")?;
-    put(&user("cmp"),           "/bin/oxide-cmp")?;
-    put(&user("cp"),             "/bin/oxide-cp")?;
-    put(&user("tee"),           "/bin/oxide-tee")?;
-    put(&user("df"),             "/bin/oxide-df")?;
-    put(&user("xxd"),           "/bin/oxide-xxd")?;
-    put(&user("route"),       "/bin/oxide-route")?;
-    put(&user("mount"),       "/bin/oxide-mount")?;
-    put(&user("ls"),             "/bin/oxide-ls")?;
-    put(&user("find"),         "/bin/oxide-find")?;
-    put(&user("ps"),             "/bin/oxide-ps")?;
-    put(&user("getent"),     "/bin/oxide-getent")?;
-    put(&user("nc"),             "/bin/oxide-nc")?;
-    put(&user("udp_echo"), "/bin/oxide-udp_echo")?;
-    put(&user("tcp_echo"), "/bin/oxide-tcp_echo")?;
-    put(&user("id"),             "/bin/oxide-id")?;
-    put(&user("login"),       "/bin/oxide-login")?;
-    put(&user("su"),             "/bin/oxide-su")?;
-    put(&user("agetty"),     "/sbin/oxide-agetty")?;
-    put(&user("passwd"),     "/bin/oxide-passwd")?;
-    put(&user("svcd"),         "/sbin/oxide-svcd")?;
-    // NOTE: do NOT stage at /sbin/svcd — init.c is built against
-    // the assumption that svcd is missing and the fallback fork +
-    // exec(/bin/sh) loop kicks in. Keep svcd at the oxide-prefixed
-    // path until svcd is robust enough to run as PID 2 end-to-end.
-    put(&user("rpm"),           "/bin/oxide-rpm")?;
-    put(&user("sh"),             "/bin/oxide-sh")?;
     put(&user("sem_smoke"),    "/bin/sem_smoke")?;
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;

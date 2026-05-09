@@ -6,7 +6,7 @@
 // child's msgsnd; if child runs first the message is queued and
 // parent's msgrcv gets it without blocking. Either path → PASS.
 
-#include "../shared/oxide_start.h"
+/* F152-1: real musl crt1 — no shim */
 #include <unistd.h>
 #include <sys/msg.h>
 #include <sys/wait.h>

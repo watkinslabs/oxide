@@ -383,14 +383,6 @@ pub const HELLO_BLOB: &'static [u8] = include_bytes!("../blobs/hello.elf");
 /// orchestrator as `/init` once `OXIDE_INIT_REAL_MUSL` is on.
 pub const INIT_REAL_BLOB: &'static [u8] = include_bytes!("../blobs/init.elf");
 
-/// Tiny interactive shell (P5-02). Source at
-/// `userspace/sh/sh.c`; static-PIE musl. Builtins: `exit`,
-/// `echo`, `help`. Reads from fd 0 (console), writes prompt +
-/// echo to fd 1. Exercises the read+write+exit loop end-to-end
-/// for a real toolchain-built userspace binary; predecessor to
-/// real busybox-sh integration.
-pub const SH_BLOB: &'static [u8] = include_bytes!("../blobs/sh.elf");
-
 /// P3-66 sa_handler dispatch smoke. Hand-rolled static-PIE ELF
 /// that registers a SIGUSR1 handler, raises SIGUSR1 to itself
 /// via sys_kill, and verifies the handler ran + rt_sigreturn

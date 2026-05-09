@@ -10,7 +10,7 @@
 // a sentinel volatile that the parent never clears, so it stays
 // runnable until parent SIGKILLs it via PTRACE_KILL.
 
-#include "../shared/oxide_start.h"
+/* F152-1: real musl crt1 — no shim */
 #include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>

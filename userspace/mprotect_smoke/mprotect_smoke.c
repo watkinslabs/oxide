@@ -13,7 +13,7 @@
 // task with status=signal. Detection from the parent works
 // without that machinery.
 
-#include "../shared/oxide_start.h"
+/* F152-1: real musl crt1 — no shim */
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
