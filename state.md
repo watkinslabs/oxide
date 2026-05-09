@@ -77,6 +77,7 @@ real impl or honest ENOSYS. Breakdown:
   - **R08 #862** 24-ipc R01 — AF_UNIX SOCK_DGRAM + SCM_CREDS + SCM_RIGHTS
   - **F120 #863** AF_UNIX SOCK_DGRAM admits with per-socket queue (first slice of §1.5)
   - **F121 #865** AF_UNIX SOCK_DGRAM bind/sendto/recvfrom — path-keyed queue lookup
+  - **F122 #867** AF_UNIX SOCK_DGRAM recvmsg writes SCM_CREDENTIALS cmsg (§1.5 third slice)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
