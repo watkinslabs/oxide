@@ -105,6 +105,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-virtio-gpu"
+version = "0.1.0"
+dependencies = [
+ "drv",
+ "hal",
+ "klog",
+ "pci",
+ "sync",
+ "virtio",
+]
+
+[[package]]
 name = "elf"
 version = "0.1.0"
 dependencies = [
