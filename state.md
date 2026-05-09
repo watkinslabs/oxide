@@ -1,4 +1,81 @@
-# State 2026-05-09 (session 52 — v2-arch-plan §1.1–§1.9 closed)
+# State 2026-05-09 (session 53 — F147..F149 interactive shell prep)
+
+## ⚡ Session 53 headline: real interactive sh, blocked on Claude restart
+
+User asked for a working shell after catching that prior sessions
+were claiming progress on graphics + busybox without ever actually
+booting the QEMU display or producing a sh prompt. Five PRs landed
+addressing the real blockers; one verification step is gated on
+qemu-mcp restart so the new default takes effect.
+
+PRs merged (in order):
+
+- **F147 (prior session)** — busybox 1.37 rebuild with
+  `CONFIG_FEATURE_INSTALLER=n` so `/bin/echo` (and other applet
+  hardlinks) dispatch through `find_applet_by_name` instead of the
+  broken `--list/--install` path. Fixes the applet-table dump that
+  prior sessions had been masking with a `/bin/oxide-echo` bypass.
+- **F148 #908** — aarch64 cross-build of busybox via
+  `vendor/cross/aarch64-linux-musl-cross` (fetched from musl.cc).
+  Same `FEATURE_INSTALLER=n` config plus `SHA1/256_HWACCEL=n`
+  (SHA-NI is x86-only; arm64 build dies on undefined symbols
+  otherwise). `vendor/.gitignore` whitelist updated to track
+  `vendor/cross/README.md` while ignoring the ~370 MB extracted
+  toolchain. Verified `make qemu-arm` reaches `init-fork-exec
+  works` + sem/msg/mq/ptrace PASS on aarch64, matching x86.
+- **F149-1 (audit)** — `/dev/console` plumbing turned out to
+  already be wired: `ConsoleInode` registered in devfs (vt=0),
+  blocking reads via per-VT ringbuffer + park/wake, full ICANON +
+  ECHO + ISIG line-discipline in `tty.rs`, fd 0/1/2 installed
+  for init by `init_console_fd_table` before user-blob spawn,
+  pl011 RX IRQ-driven (SPI 33), 16550 RX timer-polled. ARM is
+  IRQ-driven; x86 is timer-poll fallback (functional). So F149-2
+  collapsed to a no-op.
+- **F149-3 #910** — gated init's 6 userspace fork+exec smokes
+  (sem/msg/mq/ptrace × 2/mprotect/hello_dyn/oxide-echo) behind
+  `access("/etc/oxide-init-smokes", F_OK)`. xtask rootfs stages
+  the marker by default so CI keeps exercising the kernel-IPC
+  suite. Without the marker, init drops straight into the
+  `/bin/sh` respawn loop — and since `/dev/console` fd 0/1/2 is
+  already wired, busybox sh inherits a real stdin/stdout/stderr.
+- **F149-3b #911** — `OXIDE_INIT_SMOKES=0 cargo run -p xtask --
+  rootfs ...` env opt-out so an interactive boot can be built
+  without the marker file (and without touching CI defaults).
+- **F149-4 #909** — qemu-mcp's `qemu_start(arch)` was hardcoded
+  to `--features debug-all`, which turns on `debug-sched` — the
+  per-syscall trace flood (sys_clone/execve/exit/wait4 + every
+  nr/rv pair). Boot under that drowns the UART for minutes; even
+  240s `qemu_run_until` windows can't reach the sh fallback past
+  the syscall noise. Default flipped to `debug-boot` (matches
+  `make qemu-x86`/`qemu-arm`). Caller can still pass
+  `features="debug-all"` for kernel-internal debugging. Also
+  added a `debug-syscall` feature + `debug_syscall!` macro per
+  04§3 R05 for a future per-syscall bucket separate from
+  `debug-sched`.
+
+## ⚡ Session 54 first task: F149-5 verify interactive shell
+
+Blocked on qemu-mcp restart. After Claude Code restart picks up
+the F149-4 server.py change:
+
+```
+OXIDE_INIT_SMOKES=0 cargo run -p xtask -- rootfs --arch x86_64
+# In Claude:
+mcp__qemu__qemu_start arch=x86_64
+mcp__qemu__qemu_run_until pattern="/ #|init: exec /bin/sh failed" timeout=90
+mcp__qemu__qemu_send_serial "echo hi\n"
+mcp__qemu__qemu_run_until pattern="^hi$" timeout=10
+```
+
+If `^hi$` comes back, the entire console RX → ICANON → fd 0 →
+busybox sh → fd 1 → UART round-trip is verified end-to-end. Then
+do the same on aarch64 (`qemu_start arch=aarch64`).
+
+If it doesn't: the console plumbing IS present per F149-1 audit,
+so the failure mode is most likely (a) busybox sh's `isatty(0)`
+returning false → non-interactive mode → silent EOF exit, or
+(b) a TTY detection gap in `ConsoleInode::ioctl` (TCGETS / TIOCGWINSZ).
+Neither blocks v1 — they're follow-ups.
 
 ## v2-arch-plan landed (v2.x architectural pieces folded into v1)
 
