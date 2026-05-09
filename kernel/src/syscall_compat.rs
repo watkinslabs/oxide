@@ -63,6 +63,12 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // for every comparison; bash + glibc only use it as an
         // optimization probe.
         | NR_KCMP
+        // NUMA family — single-node UMA on v1, so these are no-ops.
+        // ENOSYS makes glibc/jemalloc abort their NUMA probe; silent-0
+        // matches "policy applied, just one node available". GET_MEMPOLICY
+        // is handled separately below since it has writeback semantics.
+        | NR_SET_MEMPOLICY | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
+        | NR_SET_MEMPOLICY_HOME_NODE
         // Keyring (P38b admit). PAM/login/sudo/dbus probe these at
         // start-up; -ENOSYS makes them refuse to authenticate. v1
         // returns silent-0 (a synthetic "key serial" for callers
@@ -135,9 +141,11 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // PSELECT6/SELECT moved to real impl in PR-Q (poll-based).
         // WAITID moved to real impl in PR-K (alias of wait4 + siginfo_t).
         // GET_ROBUST_LIST + CACHESTAT handled below as silent-0.
-        | NR_SET_MEMPOLICY | NR_GET_MEMPOLICY
-        | NR_MBIND | NR_MIGRATE_PAGES | NR_MOVE_PAGES
-        | NR_SET_MEMPOLICY_HOME_NODE
+        // NUMA SET/MBIND/MIGRATE/MOVE/HOME promoted to silent-0 above.
+        // GET_MEMPOLICY stays ENOSYS — has writeback semantics (mode/nodemask
+        // pointers); silent-0 would leave caller buffers uninitialised.
+        // Real impl rides v2 if anything actually depends on it.
+        | NR_GET_MEMPOLICY
         | NR_VSERVER | NR__SYSCTL
         // EXECVEAT aliased to execve in PR-P (path resolved relative to dirfd).
         // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
