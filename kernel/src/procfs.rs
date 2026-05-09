@@ -665,6 +665,22 @@ impl Inode for ProcPidDirInode {
             // translation. Format: "<inside_id> <outside_id> <range>".
             "uid_map" | "gid_map" => Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef),
             "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
+            // F158: Linux per-pid files. Most stub to plausible values;
+            // tools that probe these (systemd, glibc, gdb) accept them.
+            "syscall"  => Ok(StaticFileInode::new(b"running\n") as InodeRef),
+            "mounts"   => Ok(StaticFileInode::new(MOUNTS_BODY) as InodeRef),
+            "mountinfo" => Ok(StaticFileInode::new(MOUNTINFO_BODY) as InodeRef),
+            "cgroup"   => Ok(StaticFileInode::new(b"0::/\n") as InodeRef),
+            "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
+            "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
+            "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
+            "smaps_rollup" => Ok(Arc::new(crate::procfs_smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
+            "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid: self.tid }) as InodeRef),
+            "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map"
+              | "pagemap" | "kpagecount" | "kpageflags" | "attr"
+              => Ok(StaticFileInode::new(b"") as InodeRef),
+            "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "exe" | "cwd" | "root" => Ok(StaticFileInode::new(b"/") as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -673,12 +689,7 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &[
-            "status", "cmdline", "stat", "maps", "smaps", "comm", "environ", "statm",
-            "wchan", "oom_score", "oom_score_adj", "loginuid", "sessionid",
-            "io", "limits", "personality", "sched", "schedstat", "autogroup",
-            "uid_map", "gid_map", "setgroups",
-        ];
+        const ENTRIES: &[&str] = &["status","cmdline","stat","maps","smaps","smaps_rollup","numa_maps","comm","environ","statm","wchan","oom_score","oom_score_adj","loginuid","sessionid","io","limits","personality","sched","schedstat","autogroup","uid_map","gid_map","setgroups","syscall","stack","mounts","mountinfo","mountstats","cgroup","auxv","timerslack_ns","coredump_filter","exe","cwd","root"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
