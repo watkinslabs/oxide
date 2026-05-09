@@ -691,6 +691,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
+    // SAFETY: kernel_main runs single-CPU pre-init; power::init has no per-arch state to set up at v1 and reports ready.
+    let _ = unsafe { power::init() };
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
@@ -970,16 +972,8 @@ pub mod userspace_smoke_arm;
 ///
 /// # C: O(∞)
 pub fn halt_forever() -> ! {
-    loop {
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-        // SAFETY: `hlt` parks the core until next IRQ; legal at CPL=0.
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-        // SAFETY: `wfi` parks the core until any wake event; unprivileged at EL1.
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)); }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        core::hint::spin_loop();
-    }
+    // SAFETY: park-only operation; the per-arch hlt/wfi requires CPL=0/EL1 which the kernel always holds.
+    unsafe { power::halt() }
 }
 
 #[cfg(test)]

@@ -760,10 +760,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_TEE        => crate::syscall_glue_xfer::kernel_sys_tee(&args),
         crate::syscall_nrs::NR_VMSPLICE   => crate::syscall_glue_xfer::kernel_sys_vmsplice(&args),
         crate::syscall_nrs::NR_OPENAT        => crate::syscall_glue_open::kernel_sys_openat(&args),
-        // openat2(dirfd, path, struct open_how*, size). v1 reads the
-        // first 16 bytes (flags+mode) and routes through openat;
-        // RESOLVE_BENEATH/RESOLVE_NO_SYMLINKS dropped since we don't
-        // have the substrate to enforce them safely.
+        // openat2: read flags+mode from open_how, route through openat.
         crate::syscall_nrs::NR_OPENAT2       => {
             let how = args.a2;
             let mut sa = args; sa.a2 = 0;
@@ -779,6 +776,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         }
         crate::syscall_nrs::NR_FACCESSAT2    => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
         crate::syscall_nrs::NR_SYNC => 0,
+        crate::syscall_nrs::NR_REBOOT => crate::syscall_glue_misc::kernel_sys_reboot(&args),
         nr if matches!(nr, crate::syscall_nrs::NR_FSYNC | crate::syscall_nrs::NR_FDATASYNC
                        | crate::syscall_nrs::NR_SYNCFS | crate::syscall_nrs::NR_SYNC_FILE_RANGE)
                                  => crate::syscall_glue_misc::kernel_sys_fsync(&args),
