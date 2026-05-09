@@ -326,6 +326,15 @@ pub struct Task {
     /// writer. Drop on task exit. # C: O(F × I) per syscall
     pub seccomp_filters: UnsafeCell<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
 
+    /// Per-thread robust-mutex list head + len per
+    /// `set_robust_list(2)` (slot 273) and Linux `struct robust_list_head`.
+    /// glibc/musl pass a thread-local pointer at startup; on thread
+    /// exit the kernel walks the list and wakes contending futexes
+    /// (substrate for that walk rides a follow-up). Storing real
+    /// values means `get_robust_list` returns what userspace set.
+    pub robust_list_head: AtomicU64,
+    pub robust_list_len:  AtomicU64,
+
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
     /// Init starts as root (all zero). fork copies, execve preserves.
@@ -539,6 +548,8 @@ impl Task {
             traced_by:     AtomicU32::new(0),
             singlestep:    AtomicU32::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
+            robust_list_head: AtomicU64::new(0),
+            robust_list_len:  AtomicU64::new(0),
             creds: Creds::root(),
         }
     }
