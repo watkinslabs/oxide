@@ -58,6 +58,8 @@ real impl or honest ENOSYS. Breakdown:
   - **F106 #835** user_ns + cgroup_ns substrate (CLONE_NEWUSER, CLONE_NEWCGROUP)
   - **F107 #836** mount_ns substrate (CLONE_NEWNS) — completes 7-NS family for phase 21
   - **F108 #838** ptrace SYSCALL stop on entry + return (strace/gdb/ltrace see real syscall events)
+  - **F109 #840** cross-NS pid translation for kill/tgkill/pidfd_open (completes F105 user contract)
+  - **F110 #841** real mount(2) — tmpfs backend + admit-only for proc/sysfs/etc
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
