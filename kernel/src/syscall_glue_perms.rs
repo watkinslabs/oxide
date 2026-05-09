@@ -47,7 +47,8 @@ fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
 /// # C: O(N_path)
 pub fn kernel_sys_chmod(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
-    crate::inode_times::set_mode(&inode, args.a1 as u16, now_ns());
+    let m = args.a1 as u16;
+    if inode.set_perm(m).is_err() { crate::inode_times::set_mode(&inode, m, now_ns()); }
     0
 }
 
@@ -55,7 +56,8 @@ pub fn kernel_sys_chmod(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_fchmod(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
-    crate::inode_times::set_mode(&inode, args.a1 as u16, now_ns());
+    let m = args.a1 as u16;
+    if inode.set_perm(m).is_err() { crate::inode_times::set_mode(&inode, m, now_ns()); }
     0
 }
 
@@ -64,7 +66,8 @@ pub fn kernel_sys_fchmod(args: &SyscallArgs) -> i64 {
 /// # C: O(N_path)
 pub fn kernel_sys_fchmodat(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a1) { Ok(i) => i, Err(rv) => return rv };
-    crate::inode_times::set_mode(&inode, args.a2 as u16, now_ns());
+    let m = args.a2 as u16;
+    if inode.set_perm(m).is_err() { crate::inode_times::set_mode(&inode, m, now_ns()); }
     0
 }
 
@@ -72,7 +75,8 @@ pub fn kernel_sys_fchmodat(args: &SyscallArgs) -> i64 {
 /// # C: O(N_path)
 pub fn kernel_sys_chown(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
-    crate::inode_times::set_owner(&inode, args.a1 as u32, args.a2 as u32, now_ns());
+    let u = args.a1 as u32; let g = args.a2 as u32;
+    if inode.set_owner(u, g).is_err() { crate::inode_times::set_owner(&inode, u, g, now_ns()); }
     0
 }
 
@@ -80,7 +84,8 @@ pub fn kernel_sys_chown(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_fchown(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
-    crate::inode_times::set_owner(&inode, args.a1 as u32, args.a2 as u32, now_ns());
+    let u = args.a1 as u32; let g = args.a2 as u32;
+    if inode.set_owner(u, g).is_err() { crate::inode_times::set_owner(&inode, u, g, now_ns()); }
     0
 }
 
@@ -88,7 +93,8 @@ pub fn kernel_sys_fchown(args: &SyscallArgs) -> i64 {
 /// # C: O(N_path)
 pub fn kernel_sys_fchownat(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a1) { Ok(i) => i, Err(rv) => return rv };
-    crate::inode_times::set_owner(&inode, args.a2 as u32, args.a3 as u32, now_ns());
+    let u = args.a2 as u32; let g = args.a3 as u32;
+    if inode.set_owner(u, g).is_err() { crate::inode_times::set_owner(&inode, u, g, now_ns()); }
     0
 }
 
