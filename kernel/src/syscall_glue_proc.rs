@@ -270,16 +270,8 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_rseq(rseq, len, flags, sig)` — slot 334. v1 returns ENOSYS
-/// instead of silent-0 because storing the pointer without updating
-/// `rseq->cpu_id` on every context switch would leave glibc reading
-/// stale data and making wrong fast-path decisions. ENOSYS forces
-/// glibc/musl to fall back to `getcpu(2)`. Real impl with per-task
-/// rseq slot + syscall-return cpu_id writeback rides F66.
-/// # C: O(1)
-pub fn kernel_sys_rseq(_args: &SyscallArgs) -> i64 {
-    -(syscall::errno::Errno::Enosys.as_i32() as i64)
-}
+// `sys_rseq` + rseq_writeback live in `syscall_glue_rseq.rs` (F86).
+pub use crate::syscall_glue_rseq::{kernel_sys_rseq, rseq_writeback};
 
 // `sys_syslog` moved to `syscall_glue_dmesg.rs` (F67) to keep this
 // file under the 1000-line cap.
