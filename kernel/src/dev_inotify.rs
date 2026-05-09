@@ -148,7 +148,35 @@ pub fn install_write_hook() {
     vfs::set_open_hook(vfs_open_notify);
     vfs::set_read_hook(vfs_read_notify);
     vfs::set_close_hook(vfs_close_notify);
+    vfs::set_dirent_create_hook(vfs_dirent_create);
+    vfs::set_dirent_delete_hook(vfs_dirent_delete);
 }
+
+/// Dirent-mutation event firing (F123 / `16§R02`). For each live
+/// inotify instance whose watch list mentions the parent path's
+/// inode (resolved via devfs::lookup), push an event with the leaf
+/// name in the trailing `name[]` field of inotify_event.
+///
+/// V1 limit: events still emit `len=0` because read() encoding hasn't
+/// been extended to write the name tail. The hook fires (so the count
+/// is visible via SIZE_UNREAD-style probes); name carriage rides v3
+/// alongside the read() format extension.
+fn vfs_dirent_create(parent: &str, _leaf: &str) {
+    if let Some(parent_inode) = crate::devfs::lookup(parent) {
+        fire_event(&parent_inode, IN_CREATE);
+    }
+}
+fn vfs_dirent_delete(parent: &str, _leaf: &str) {
+    if let Some(parent_inode) = crate::devfs::lookup(parent) {
+        fire_event(&parent_inode, IN_DELETE);
+    }
+}
+
+/// IN_CREATE / IN_DELETE bit values per `linux/inotify.h`.
+pub const IN_CREATE: u32 = 0x100;
+pub const IN_DELETE: u32 = 0x200;
+pub const IN_MOVED_FROM: u32 = 0x40;
+pub const IN_MOVED_TO:   u32 = 0x80;
 
 fn inode_key(inode: &InodeRef) -> usize {
     let raw: *const dyn Inode = Arc::as_ptr(inode);
