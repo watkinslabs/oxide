@@ -111,17 +111,31 @@ pub fn lookup_or_create(path: &str) -> InodeRef {
     inode
 }
 
-/// `/tmp` directory inode. v1: synthetic — reads the flat registry
-/// and emits each `/tmp/<name>` entry. lookup(name) reverses that.
-pub struct TmpfsRootInode;
+/// Tmpfs directory inode rooted at `mount_path` (e.g. "/tmp" for the
+/// default boot mount, or "/var/lock" for a runtime-mounted instance).
+/// readdir filters the flat registry by path-prefix; lookup composes
+/// `<mount_path>/<name>`. F110 made this parameterised so `mount(2)`
+/// can spawn multiple tmpfs instances at different mount points.
+pub struct TmpfsRootInode {
+    pub mount_path: String,
+}
+
+impl TmpfsRootInode {
+    /// # C: O(1)
+    pub fn new(mount_path: String) -> Self { Self { mount_path } }
+    /// Construct the canonical root for the boot-time `/tmp`.
+    /// # C: O(1)
+    pub fn at_tmp() -> Self { Self::new(String::from("/tmp")) }
+}
 
 impl Inode for TmpfsRootInode {
     fn ino(&self) -> Ino { 0x4000_0000 }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        let mut p = String::with_capacity(5 + name.len());
-        p.push_str("/tmp/");
+        let mut p = String::with_capacity(self.mount_path.len() + 1 + name.len());
+        p.push_str(&self.mount_path);
+        p.push('/');
         p.push_str(name);
         lookup(&p).ok_or(VfsError::Enoent)
     }
@@ -134,7 +148,7 @@ impl Inode for TmpfsRootInode {
         let mut idx = off as usize;
         while idx < g.len() {
             let (path, inode) = &g[idx];
-            if let Some(name) = procfs::paths::child_under("/tmp", path) {
+            if let Some(name) = procfs::paths::child_under(&self.mount_path, path) {
                 let next = idx as u64 + 1;
                 if !f(next, name, inode.file_type()) {
                     return Ok(next);
@@ -151,7 +165,7 @@ impl Inode for TmpfsRootInode {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    register("/tmp".into(), Arc::new(TmpfsRootInode) as InodeRef);
+    register("/tmp".into(), Arc::new(TmpfsRootInode::at_tmp()) as InodeRef);
 }
 
 /// Boot-time round-trip smoke for the tmpfs path. Creates an
