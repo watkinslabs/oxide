@@ -33,7 +33,7 @@ exist).
 ### 1.2 Real setns + NsInode
 
 **Today:** `setns(fd, nstype)` clears membership bits on the calling
-task. Doesn't actually move into the NS represented by the fd.
+task. Does not move into the NS represented by the fd.
 F112 made `/proc/<pid>/ns/<type>` readlinks dynamic but the leaf
 itself isn't an Inode.
 
@@ -131,8 +131,8 @@ Inotify watches on a directory now fire IN_CREATE/IN_DELETE with
 the new dirent name in the event's name tail.
 
 **Spec:** `16-vfs.md` dentry section — R-revision pinning the tree
-shape + dirent hook. `19-dev-proc-sysfs.md` — note that devfs
-backs onto the dentry layer instead of a flat string registry.
+shape + dirent hook. `19-dev-proc-sysfs.md` — devfs backs onto
+the dentry layer instead of a flat string registry.
 
 **Code surface:** ~400 lines (touches devfs, procfs, inotify,
 several callsites).
