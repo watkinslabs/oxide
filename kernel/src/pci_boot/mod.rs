@@ -583,6 +583,19 @@ pub fn enumerate_and_log() {
                 }
                 klog::write_raw(b"\n");
             }
+
+            // F59-11: register the modern virtio-net device as a
+            // NetDev in the kernel iface registry so the net stack
+            // can route through it. v1: just registration + log;
+            // RX delivery into stack.deliver_rx is F59-12.
+            if let Some(dev) = crate::dev_virtio_net_modern::VirtioNetDev::new() {
+                let id = crate::dev_net::stack().ifaces.register(
+                    dev as alloc::sync::Arc<dyn net::NetDev>,
+                );
+                klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
+                klog::write_dec_u64(id.0 as u64);
+                klog::write_raw(b" name=eth0\n");
+            }
         }
 
         // F46: read GICD_ISPENDR2 (covers SPIs 64..95). If SPI 81 or
