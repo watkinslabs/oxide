@@ -697,17 +697,40 @@ pub fn glue_mmap(
     fd: i64,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
+    const MAP_SHARED:  u64 = 0x01;
     const MAP_PRIVATE: u64 = 0x02;
-    const MAP_ANON:    u64 = 0x20;
     const MAP_FIXED:   u64 = 0x10;
+    const MAP_ANON:    u64 = 0x20;
 
-    if flags & MAP_ANON  == 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
-    if flags & MAP_PRIVATE == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    if flags & MAP_FIXED != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
+    // F60: file-backed mmap stays out of v1 (needs VFS+pagecache
+    // wiring per `17§5`). Anonymous mmap now honours MAP_FIXED, the
+    // addr hint, and MAP_SHARED.
+    if flags & MAP_ANON == 0  { return Err(-(Errno::Enosys.as_i32() as i64)); }
     if fd != -1               { return Err(-(Errno::Einval.as_i32() as i64)); }
-    if addr != 0              { return Err(-(Errno::Enosys.as_i32() as i64)); }
     if len == 0               { return Err(-(Errno::Einval.as_i32() as i64)); }
+    // SHARED + PRIVATE are mutually exclusive per Linux; require
+    // exactly one. Linux returns EINVAL when neither is set.
+    let is_shared  = flags & MAP_SHARED  != 0;
+    let is_private = flags & MAP_PRIVATE != 0;
+    if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
+    let is_fixed = flags & MAP_FIXED != 0;
+    if is_fixed && (addr == 0 || (addr & 0xfff) != 0) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
+    let vma_flags = if is_shared {
+        VmaFlags::SHARED | VmaFlags::ANONYMOUS
+    } else {
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS
+    };
+    let hint = if addr != 0 {
+        match UserVirtAddr::new(addr) {
+            Some(uva) => Some(uva),
+            None      => return Err(-(Errno::Einval.as_i32() as i64)),
+        }
+    } else {
+        None
+    };
 
     // mmap into the *current task's* AS — not the boot global. The
     // global path was correct only during the boot-anchor smoke that
@@ -721,20 +744,17 @@ pub fn glue_mmap(
         // SAFETY: caller is the syscall dispatcher; preempt-off; running task on this CPU is the sole writer of mm slot.
         if let Some(mm) = unsafe { cur.mm_ref() } {
             mm.mmap(
-                None,
+                hint,
                 len_aligned,
                 prot_from_linux(prot),
-                VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+                vma_flags,
                 VmaBacking::Anonymous,
-                false,
+                is_fixed,
             )
         } else {
-            // kthread / boot anchor — no per-task mm; fall back to
-            // the global. (Hosted tests + early smokes hit this.)
             match with(|as_| as_.mmap(
-                None, len_aligned, prot_from_linux(prot),
-                VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-                VmaBacking::Anonymous, false,
+                hint, len_aligned, prot_from_linux(prot),
+                vma_flags, VmaBacking::Anonymous, is_fixed,
             )) {
                 Some(r) => r,
                 None    => return Err(-(Errno::Enosys.as_i32() as i64)),
@@ -742,9 +762,8 @@ pub fn glue_mmap(
         }
     } else {
         match with(|as_| as_.mmap(
-            None, len_aligned, prot_from_linux(prot),
-            VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-            VmaBacking::Anonymous, false,
+            hint, len_aligned, prot_from_linux(prot),
+            vma_flags, VmaBacking::Anonymous, is_fixed,
         )) {
             Some(r) => r,
             None    => return Err(-(Errno::Enosys.as_i32() as i64)),
