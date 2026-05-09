@@ -1,31 +1,65 @@
-# State 2026-05-08 (session 51 mid-flight — F59-01..03 landed, F59-04 ARP next)
+# State 2026-05-08 (session 51 mid-flight — F59-01..04 landed, F59-05 TX next)
 
-## ⚡ Session 51 next task: F59-04 — outbound TX + ARP through SLIRP
+## ⚡ Session 52 first task: F59-05 — tx_frame on modern virtio-net
 
-`dev_virtio_net_modern::rx_poll` is wired and exercised at boot
-(F59-03, #761). The drain returns `delivered=0` because the device
-has nothing to deliver until we send something outbound. Next step:
+F59-04 (#763) reads the 6-byte MAC from device-cfg cap and persists
+it; `dev_virtio_net_modern::mac()` returns `Some([0x52, 0x54, 0x00,
+0x12, 0x34, 0x56])` (QEMU default) on both arches. Next step is the
+runtime TX path:
 
-  1. Read MAC from device-cfg cap (cfg_type=4) for the virtio-net
-     device. Persist it in `ModernNetState`.
-  2. Add `dev_virtio_net_modern::tx_frame(&[u8]) -> Result<(), TxErr>`:
-     allocate a TX scratch frame at init_modern time, write
-     `virtio_net_hdr` (12 zero bytes) + the caller's body, post on
-     queue 1 descriptor 0, bump avail.idx, kick `q1_notify_va`.
-     Track q1 cursors via AtomicU16s like rx_poll does.
-  3. After `init_modern` lands, in `pci_boot::enumerate_and_log`
-     (post `virtio-net-rx-boot drained=0`), build an ARP request:
-     - eth dst = ff:ff:ff:ff:ff:ff, src = MAC, type = 0x0806
-     - htype=1, ptype=0x0800, hlen=6, plen=4, op=1
-     - sender hw = MAC, sender ip = 10.0.2.15
-     - target hw = 0, target ip = 10.0.2.2 (SLIRP gateway)
-     Send via tx_frame. Spin a million-cycle window. Drain rx_poll;
-     log delivered, frame[0..14] hex (eth header). Expect ARP reply
-     (op=2) from SLIRP.
+  1. Allocate a 4 KiB TX scratch frame at `init_modern` time. Add
+     `tx_buf_pa: u64` to `ModernNetState`.
+  2. `pub fn tx_frame(body: &[u8]) -> Result<(), TxErr>`:
+     - Bail if `body.len()` exceeds `4096 - VIRTIO_NET_HDR_LEN` (12).
+     - Take MODERN_DEV.lock(), HHDM into the scratch buffer, write
+       `virtio_net_hdr` zeros (12 bytes) followed by `body`.
+     - Read q1 used.idx; reclaim any prior in-flight slot (boot
+       probe already issued one; check TX_LAST_USED).
+     - Update q1 desc[0] = { addr=tx_buf_pa, len=12+body.len, flags=0 }.
+     - Append to q1 avail.ring at TX_NEXT_AVAIL%q1_size, fence,
+       bump avail.idx, fence.
+     - Write u16(1) to `q1_notify_va` to kick.
+     - Spin a brief observation window, advance TX_LAST_USED by
+       reading q1 used.idx. Return Ok.
+  3. Cursors: `TX_LAST_USED`, `TX_NEXT_AVAIL` AtomicU16, mirroring
+     RX_LAST_USED/RX_NEXT_AVAIL. Initial state: TX_NEXT_AVAIL=1,
+     TX_LAST_USED=0 (boot probe posted desc 0 already; subsequent
+     calls treat TX_NEXT_AVAIL as next slot to publish).
 
-If the ARP path works, phase 8 has its first end-to-end packet.
-F59-05 then hands frames to `crate::net::stack` and runs the ARP
-state machine through `arp_table` so subsequent packets resolve.
+No call site yet (boot ARP comes in F59-06).
+
+## ⚡ Session 51 progress: F59-01, F59-02, F59-03, F59-04 landed
+
+  - **F58 verification (no PR)**: After session 50 daemon restart,
+    confirmed `pci 0:3.0 vendor=0x1af4 device=0x1041 class=0x02`
+    (x86) and `pci 0:2.0 vendor=0x1af4 device=0x1041 class=0x02`
+    (aarch64) — modern virtio-net active on both arches; smokes +
+    `hello-from-dyn` pass; `lapic-self-fire delta=1` (x86) and
+    `its-self-fire delta=1 last_intid=0x2000` (aarch64); first
+    `msi_fires=1` on virtio-net 0:2.0 aarch64.
+  - **F59-01 #759** persists modern virtio-net runtime state from
+    `pci_boot::virtio_drv::virtio_init_arch` to a new arch-neutral
+    `crate::dev_virtio_net_modern` module. `ModernNetState`
+    (cfg VA, q0/q1 notify VAs + ring PAs, queue sizes, RX buffer
+    PA+len) + `init_modern` + `is_modern_present` + `modern_state`.
+  - **F59-02 #760** implements `rx_poll<F>(cb)` on the modern
+    transport. Drains queue-0 used-ring entries, strips the 12-byte
+    `virtio_net_hdr`, hands the body to `cb`, re-publishes desc 0
+    onto avail, kicks `q0_notify_va`. Cursors as AtomicU16 statics.
+  - **F59-03 #761** calls `rx_poll` once at the tail of
+    `pci_boot::enumerate_and_log` when `is_modern_present()`.
+    Logs `virtio-net-rx-boot drained=N bytes=M`. At boot N=M=0
+    (empty ring) — proves the path doesn't fault.
+  - **F59-04 #763** harvests MAC from device-cfg cap. Persists
+    `mac+mac_valid` on `ModernNetState`; `dev_virtio_net_modern::mac()`
+    accessor. New log line: `virtio-net-modern ... mac=...`.
+
+Known cosmetic: `klog::write_hex_u64` pads each MAC byte to 16
+hex chars in the log; bytes are correct. A future cleanup PR could
+add `klog::write_hex_u8` (pads to 2 chars) for tidier MAC + IP
+hex output. Not blocking.
+
+## ⚡ Session 51 first task: daemon restart + verify modern virtio-net (DONE)
 
 ## ⚡ Session 51 progress: F59-01, F59-02, F59-03 landed
 
