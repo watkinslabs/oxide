@@ -303,6 +303,13 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             if request == PTRACE_SINGLESTEP {
                 target.singlestep.store(1, Ordering::Release);
             }
+            if request == PTRACE_SYSCALL {
+                // F108: arm the tracee to self-stop at the next syscall
+                // entry + return. Cleared at the stop.
+                target.ptrace_syscall_armed.store(true, Ordering::Release);
+            } else {
+                target.ptrace_syscall_armed.store(false, Ordering::Release);
+            }
             crate::sched::registry::wake_if_stopped(&target);
             0
         }

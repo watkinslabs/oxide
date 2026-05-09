@@ -411,6 +411,12 @@ pub struct Task {
     /// just allocates an id; mount itself remains EPERM.
     pub mount_ns: AtomicU64,
 
+    /// PTRACE_SYSCALL armed: when set, the tracee self-stops at every
+    /// syscall entry + return, posts SIGTRAP, and waits for tracer
+    /// wake via PTRACE_SYSCALL/CONT. Cleared and re-armed by the
+    /// tracer (per-stop). Default false.
+    pub ptrace_syscall_armed: AtomicBool,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -779,6 +785,7 @@ impl Task {
             user_ns:        AtomicU64::new(0),
             cgroup_ns:      AtomicU64::new(0),
             mount_ns:       AtomicU64::new(0),
+            ptrace_syscall_armed: AtomicBool::new(false),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
