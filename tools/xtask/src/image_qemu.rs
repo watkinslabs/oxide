@@ -343,15 +343,17 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        // Default: headless (terminal-only). GUI opt-in via
-        // OXIDE_QEMU_GUI=1 — virtio-gpu scanout is rarely useful
-        // for kernel debugging and the GTK window wedges when
-        // `-no-shutdown` is set, leaving an unkillable QEMU.
-        "-display", if std::env::var("OXIDE_QEMU_GUI").is_ok() { "gtk" } else { "none" },
+        // GTK on by default so virtio-gpu scanout is visible.
+        // OXIDE_QEMU_HEADLESS=1 suppresses for CI / soak runs.
+        // -no-shutdown was REMOVED — that flag plus GTK was the
+        // wedge: kernel halt → QEMU stays alive → unkillable
+        // window. Without it, halt exits cleanly and the GTK
+        // window closes on its own.
+        "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
         "-no-reboot",
     ]);
     eprintln!("xtask qemu: launching qemu-system-x86_64 (q35 + Haswell-v4 + stdio chardev), smp={}", smp);
-    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest. OXIDE_QEMU_GUI=1 for GTK window.");
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest. OXIDE_QEMU_HEADLESS=1 for headless.");
     run(c)
 }
 
@@ -385,15 +387,18 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        // Headless by default; OXIDE_QEMU_GUI=1 opts into GTK.
-        "-display", if std::env::var("OXIDE_QEMU_GUI").is_ok() { "gtk" } else { "none" },
+        // GTK on by default for ARM too — `virt` machine wires
+        // virtio-gpu-pci to the synthetic PCIe root, OVMF aarch64
+        // exposes a UEFI GOP and the kernel scanout driver paints
+        // pixels there. Headless toggle for soak/CI runs.
+        "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
         "-no-reboot",
         // Semihosting target=native lets the boot crate emit debug
         // chars via `hlt #0xf000` while we're still pre-MMIO.
         "-semihosting-config", "enable=on,target=native",
     ]);
     eprintln!("xtask qemu: launching qemu-system-aarch64 (virt + cortex-a72 + stdio chardev), smp={}", smp);
-    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit. OXIDE_QEMU_GUI=1 for GTK.");
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit. OXIDE_QEMU_HEADLESS=1 for headless.");
     run(c)
 }
 
