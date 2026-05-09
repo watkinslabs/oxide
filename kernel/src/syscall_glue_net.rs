@@ -653,6 +653,17 @@ pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
     let msgp   = args.a1;
     let _flags = args.a2;
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // F122: AF_UNIX SOCK_DGRAM cmsg writeback. Pop one msg from
+    // queue; copy payload into iovs; if msg_control buffer is
+    // supplied, write SCM_CREDENTIALS cmsg with sender's
+    // (pid, uid, gid). SCM_RIGHTS rides v2 (Arc<File> capture path).
+    let sock = socket_from_fd(fd);
+    if let Some(s) = &sock {
+        let is_dgram = matches!(*s.kind.lock(), SockKind::UnixDgram(_));
+        if is_dgram {
+            return crate::syscall_glue_unix_cmsg::recvmsg_unix_dgram(s, msgp);
+        }
+    }
     // SAFETY: msgp range validated; user page mapped under caller's AS.
     let (name, _namelen, iov, iovlen) = unsafe {
         let name      = core::ptr::read_volatile(msgp as *const u64);
@@ -912,3 +923,5 @@ pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
     }
     take as i64
 }
+
+// recvmsg_unix_dgram moved to `syscall_glue_unix_cmsg.rs` (F122).
