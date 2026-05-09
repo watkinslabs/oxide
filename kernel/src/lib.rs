@@ -43,10 +43,10 @@ mod debug_macros;
 // feature is on. Production-bring-up modules (lapic, gic, pmm_setup)
 // keep their non-trace surface always-on; their klog call sites
 // inside lib.rs are individually wrapped in `debug_<sub>!`.
-// `acpi` parses the RSDP/XSDT/MADT unconditionally so cpu_topology
-// gets populated for SMP enumeration; only the per-line klog calls
-// inside acpi.rs are gated on `debug-acpi`.
-pub mod acpi;
+// ACPI parsing lives in `crates/firmware` per `33§R01`; the kernel
+// installs cpu_topology::add_cpu as the firmware add-cpu hook then
+// invokes `firmware::try_log_acpi` from kernel_main.
+pub use firmware::acpi;
 pub mod cpu_topology;
 pub mod smp;
 #[cfg(target_arch = "aarch64")]
@@ -327,12 +327,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             klog::write_hex_u64(info.rsdp_pa);
             klog::write_raw(b"\n");
         }
-        // Run unconditionally so cpu_topology gets populated even
-        // without debug-acpi; alog_* helpers gate the trace lines.
+        // Install the firmware → cpu_topology add-cpu hook, then
+        // walk ACPI tables. Walk runs unconditionally so SMP gets
+        // populated without `debug-acpi`; the alog_* helpers inside
+        // firmware::acpi gate the trace lines.
+        firmware::set_add_cpu_hook(crate::cpu_topology::add_cpu);
         // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
-        unsafe { acpi::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
+        unsafe { firmware::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
         // SMP bring-up scaffolding: capture the boot CPU id from
         // the first cpu_topology entry. ACPI 6.5 §5.2.12.2 lists
         // the boot CPU first in MADT, so cpu_topology[0] is the
@@ -691,8 +694,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
-    // SAFETY: kernel_main runs single-CPU pre-init; power::init has no per-arch state to set up at v1 and reports ready.
+    // SAFETY: kernel_main runs single-CPU pre-init; power::init reports ready (no static state).
     let _ = unsafe { power::init() };
+    // SAFETY: kernel_main runs single-CPU pre-init; firmware::init reports ready (real ACPI walk happened earlier).
+    let _ = unsafe { firmware::init() };
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).

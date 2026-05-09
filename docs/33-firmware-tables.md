@@ -1,6 +1,24 @@
 # 33 Firmware Tables (ACPI + DT)
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`19`,`20`,`21`,`34`. Provides:PMM (mem map), `13` (CPU topology), `34` (PCI host bridges, MSI), IrqOps (controller), Time (frequency).
+
+## Revision 2026-05-09 (R01)
+
+- Changed: `crates/firmware` is the real owner of ACPI table
+  parsing. `firmware::try_log_acpi(rsdp_pa, hhdm)` walks
+  RSDP→XSDT→{FACP, APIC/MADT, HPET, MCFG, WAET, BGRT}. The
+  add-cpu callback fires per MADT processor entry via the
+  `firmware::set_add_cpu_hook`-installed function pointer.
+- Wiring: `kernel_main` installs
+  `set_add_cpu_hook(kernel::cpu_topology::add_cpu)` then invokes
+  `firmware::try_log_acpi`. `firmware::init` reports ready (no
+  static state).
+- DT (device-tree) parsing rides v2.x. arm64 still uses Limine
+  HHDM + ACPI (QEMU virt + EDK2 ships ACPI tables); pure DT-only
+  embedded boards land later.
+- `debug-acpi` feature now lives on `crates/firmware`; the kernel
+  forwards via `kernel/debug-acpi = ["firmware/debug-acpi"]`.
+
 ## 1 Purpose
 
 Parse static ACPI tables (x86, optionally arm) and DT (arm primary; x86 fallback never). Expose results to subsystems.
