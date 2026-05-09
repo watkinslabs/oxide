@@ -58,18 +58,34 @@ impl ProcSelfMapsInode {
         let cur = match crate::sched::current() { Some(c) => c, None => return out };
         // SAFETY: running task on this CPU; preempt-off; sole reader of the mm slot per the single-mutator invariant in `13§5`.
         let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return out };
+        let brk_lo = mm.brk_max().saturating_sub(0);
+        let brk_hi = mm.brk();
+        let _ = brk_lo;
         for vma in mm.snapshot_vmas() {
             push_hex(&mut out, vma.start.as_u64());
             out.push(b'-');
             push_hex(&mut out, vma.end.as_u64());
             out.push(b' ');
-            // perms: rwxp / rwxs (we only support PRIVATE backing today)
+            // perms: rwx + p/s (private/shared) per Linux man page.
             let p = vma.prot;
             out.push(if p.contains(vmm::VmaProt::READ)  { b'r' } else { b'-' });
             out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
             out.push(if p.contains(vmm::VmaProt::EXEC)  { b'x' } else { b'-' });
-            out.push(b'p');
-            push(&mut out, b" 00000000 00:00 0 \n");
+            out.push(if vma.flags.contains(vmm::VmaFlags::SHARED) { b's' } else { b'p' });
+            push(&mut out, b" 00000000 00:00 0 ");
+            // F158: synthesise pathname pseudo-tags Linux emits for
+            // unnamed VMAs. [stack] for GROWSDOWN; [heap] for the
+            // anon VMA covering the current brk range.
+            if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
+                push(&mut out, b"[stack]");
+            } else if vma.start.as_u64() <= brk_hi
+                   && vma.end.as_u64()   >  0
+                   && brk_hi > 0
+                   && vma.end.as_u64()   >  brk_hi.saturating_sub(0x10000)
+                   && matches!(vma.backing, vmm::VmaBacking::Anonymous) {
+                push(&mut out, b"[heap]");
+            }
+            out.push(b'\n');
         }
         out
     }
