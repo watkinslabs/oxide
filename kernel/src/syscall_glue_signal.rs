@@ -91,10 +91,13 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
         cur.cgroup_ns.store(id, Ordering::Release);
     }
     if (bits & (1u64 << 0)) != 0 {
-        // CLONE_NEWNS — fresh mount_ns id (F107 substrate).
+        // CLONE_NEWNS — fresh mount_ns id (F107 substrate) + snapshot
+        // parent's NS-tagged mount entries into the new id (F119).
         static NEXT_MOUNT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_MOUNT_NS.fetch_add(1, Ordering::AcqRel);
-        cur.mount_ns.store(id, Ordering::Release);
+        let new_id = NEXT_MOUNT_NS.fetch_add(1, Ordering::AcqRel);
+        let parent_ns = cur.mount_ns.load(Ordering::Acquire);
+        crate::devfs::snapshot_ns(parent_ns, new_id);
+        cur.mount_ns.store(new_id, Ordering::Release);
     }
     0
 }
