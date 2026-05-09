@@ -232,6 +232,14 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         };
         if !path_str.is_empty() {
             *cur.exe_path.get() = Some(path_str.clone());
+            // Linux semantics: /proc/<pid>/exe lives on the mm
+            // (struct mm_struct::exe_file), shared by CLONE_VM
+            // threads and fork-copied. Bind it to the new AS so
+            // hardlinks to the same inode produce different
+            // readlinks based on what the user actually invoked.
+            if let Some(mm) = cur.mm_ref() {
+                mm.set_exe_path(path_str.clone());
+            }
             Some(path_str)
         } else { None }
     };
@@ -478,6 +486,14 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         };
         if !path_str.is_empty() {
             *cur.exe_path.get() = Some(path_str.clone());
+            // Linux semantics: /proc/<pid>/exe lives on the mm
+            // (struct mm_struct::exe_file), shared by CLONE_VM
+            // threads and fork-copied. Bind it to the new AS so
+            // hardlinks to the same inode produce different
+            // readlinks based on what the user actually invoked.
+            if let Some(mm) = cur.mm_ref() {
+                mm.set_exe_path(path_str.clone());
+            }
             Some(path_str)
         } else { None }
     };
