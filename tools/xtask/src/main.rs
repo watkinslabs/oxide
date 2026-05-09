@@ -109,18 +109,15 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // aarch64 boot path only needs init to reach userspace today;
     // shell + applets come via vendored busybox once the aarch64
     // cross-build of busybox lands.
-    // F152-1 erased the userspace/oxide-* toy programs (echo, ls,
-    // cat, login, getty, …) and the userspace/shared/oxide_start.h
-    // shim. The rootfs now relies on vendored upstream busybox for
-    // those applets. What stays in `userspace/` is the
-    // kernel-acceptance test surface: PID 1 (init), the syscall-
-    // corner smokes (sem/msg/mq/ptrace/ptrace_singlestep/mprotect),
-    // bare3 (real-musl-crt1 isolation case for F62), and the
-    // dynamic-loader smokes (dynlink + hello_dyn). All of those
-    // build against full musl crt1 — the same path upstream
-    // busybox/coreutils/bash use.
+    // F153-1 erased userspace/init/ — PID 1 is now /sbin/init,
+    // a hardlink to /bin/busybox (busybox dispatches the `init`
+    // applet). What stays in `userspace/` is the kernel-acceptance
+    // test surface: syscall-corner smokes (sem/msg/mq/ptrace/
+    // ptrace_singlestep/mprotect), bare3 (real-musl-crt1 isolation
+    // case for F62), and the dynamic-loader smokes (dynlink +
+    // hello_dyn). All of those build against full musl crt1 — the
+    // same path upstream busybox/coreutils/bash use.
     let crt_bins: &[(&str, &str)] = &[
-        ("userspace/init/init",                       "userspace/init/init.c"),
         ("userspace/bare/bare3",                      "userspace/bare/bare3.c"),
         ("userspace/sem_smoke/sem_smoke",             "userspace/sem_smoke/sem_smoke.c"),
         ("userspace/msg_smoke/msg_smoke",             "userspace/msg_smoke/msg_smoke.c"),
@@ -178,29 +175,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // 1b. Refresh kernel/blobs/<init,sh>.elf from the freshly-built
-    // userspace binaries so the embedded boot blobs (consumed via
-    // `include_bytes!` from `kernel/src/elf_smoke.rs`) match what
-    // we just compiled — without this, edits to userspace/init/init.c
-    // ship in rootfs.img but the kernel keeps running the stale
-    // blob it baked in at last `cargo build`.
-    // 1b. Refresh kernel/blobs/<arch>/<init,sh>.elf per-arch so the
-    // embedded boot blobs match what we just compiled.
-    let blob_dir = repo.join("kernel/blobs");
-    let elf_refresh: &[(&str, &str)] = &[("init", "init.elf")];
-    for (basename, blob_name) in elf_refresh {
-        let src = user_out.join(basename);
-        // Per-arch blob filename; x86_64 keeps the existing
-        // (un-suffixed) name for back-compat with elf_smoke's
-        // include_bytes!, aarch64 gets a .arm-suffixed copy.
-        let dst = if arch == "x86_64" {
-            blob_dir.join(blob_name)
-        } else {
-            blob_dir.join(format!("{}-aarch64.elf", blob_name.trim_end_matches(".elf")))
-        };
-        eprintln!("xtask rootfs: refresh {} ← {}", dst.display(), src.display());
-        std::fs::copy(&src, &dst).map_err(|_| 1u8)?;
-    }
+    // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
+    // /sbin/init busybox hardlink; the kernel reads it from ext4 at
+    // boot. Nothing to refresh under kernel/blobs/.
 
     // 2. Build a fresh 8 MiB ext4 image at kernel/blobs/rootfs-<arch>.img.
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
@@ -228,12 +205,18 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         c.stderr(std::process::Stdio::null());
         run(c)
     };
-    dbg("mkdir /bin")?;
-    dbg("mkdir /etc")?;
-    dbg("mkdir /etc/svc")?;
-    dbg("mkdir /sbin")?;
-    dbg("mkdir /lib")?;
-    dbg("mkdir /lib64")?;
+    // FHS skeleton (51§4). Empty mount-point dirs for rcS, plus
+    // /home /root for login shells, /var/log for syslog.
+    for d in &[
+        "/bin", "/sbin", "/lib", "/lib64",
+        "/etc", "/etc/init.d",
+        "/proc", "/sys", "/tmp", "/run",
+        "/dev", "/dev/pts",
+        "/home", "/home/alice", "/root",
+        "/var", "/var/log",
+    ] {
+        dbg(&format!("mkdir {d}"))?;
+    }
     let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)
@@ -273,26 +256,41 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             c.stderr(std::process::Stdio::null());
             run(c)
         };
+        // /bin applets — every user-facing tool dispatched via argv[0].
         for applet in &[
-            "sh", "ash",
+            "sh", "ash", "hush",
             "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
             "ps", "top", "uptime", "free", "dmesg", "mount", "umount",
-            "grep", "find", "head", "tail", "wc", "sort", "uniq",
+            "grep", "egrep", "fgrep", "find", "head", "tail", "wc", "sort", "uniq",
             "touch", "chmod", "chown", "ln", "test", "true", "false",
             "env", "printf", "yes", "seq", "expr", "id", "whoami",
             "tr", "cut", "sed", "awk", "date", "df", "du", "stat",
             "kill", "sleep", "tee", "xxd", "hostname", "uname",
             "pwd", "basename", "dirname", "which", "clear", "reset",
+            "more", "less", "vi", "tar", "gzip", "gunzip",
+            "ifconfig", "route", "ping", "nc", "wget",
+            "su", "passwd", "login", "getty", "init",
+            "mknod", "stty", "tty", "mesg",
         ] {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
+        // /sbin applets — system-management dispatch. Per FHS, init,
+        // halt, reboot, getty, mount.* live here. Hardlinking under
+        // both /bin and /sbin matches every standard distro layout.
+        for applet in &[
+            "init", "halt", "reboot", "poweroff", "shutdown",
+            "getty", "agetty", "login",
+            "mdev", "ifconfig", "route", "ip",
+            "mount", "umount",
+            "fdisk", "swapon", "swapoff",
+        ] {
+            dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
+        }
+        // Kernel boot path probes /sbin/init then /init.
+        dbg_ln("/bin/busybox", "/init")?;
     }
-    // PID 1 + kernel-acceptance smoke binaries. Real-musl-crt1
-    // builds; everything user-facing (echo, ls, cat, mount, getty,
-    // login, su, passwd, …) comes from vendored busybox above.
-    put(&user("init"),         "/bin/init")?;
-    put(&user("init"),         "/sbin/init")?;
-    put(&user("init"),         "/init")?;
+    // Kernel-acceptance smoke binaries. Real-musl-crt1 builds; every
+    // user-facing tool comes from busybox hardlinks above.
     put(&user("bare3"),        "/bin/bare3")?;
     put(&user("sem_smoke"),    "/bin/sem_smoke")?;
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
@@ -355,32 +353,78 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
           alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
+    // /etc/inittab per 51§5.1. busybox init reads this verbatim:
+    //   <id>:<runlevels>:<action>:<process>
+    // sysinit runs synchronously before respawn lines start.
     put(&stage("inittab",
-        b"# v1 inittab - agetty per tty\n\
-          tty1::respawn:/sbin/agetty tty1\n\
-          tty2::respawn:/sbin/agetty tty2\n")?,
+b"::sysinit:/etc/init.d/rcS
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r
+tty1::respawn:/sbin/getty -L 38400 tty1 vt100
+tty2::respawn:/sbin/getty -L 38400 tty2 vt100
+")?,
         "/etc/inittab")?;
-    put(&stage("hello.txt", b"hello-from-ext4-mini\n")?, "/hello.txt")?;
 
-    // /etc/svc/*.service unit files for /sbin/svcd to consume.
-    put(&stage("getty.service",
-        b"[Unit]\n\
-          Description=Console getty on tty1\n\
-          \n\
-          [Service]\n\
-          ExecStart=/sbin/agetty tty1\n\
-          Type=simple\n\
-          Restart=always\n")?,
-        "/etc/svc/getty.service")?;
-    put(&stage("sshd.service",
-        b"[Unit]\n\
-          Description=OpenSSH placeholder (not yet built)\n\
-          \n\
-          [Service]\n\
-          ExecStart=/bin/false\n\
-          Type=oneshot\n\
-          Restart=no\n")?,
-        "/etc/svc/sshd.service")?;
+    // /etc/init.d/rcS — sysinit shell script per 51§5.2. Mounts
+    // virtual filesystems, sets hostname, brings up loopback, then
+    // optionally runs the kernel-acceptance smokes.
+    put(&stage("rcS",
+b"#!/bin/sh
+mount -t proc  proc  /proc 2>/dev/null
+mount -t sysfs sysfs /sys  2>/dev/null
+mount -t tmpfs tmpfs /tmp  2>/dev/null
+mount -t devpts devpts /dev/pts 2>/dev/null
+hostname -F /etc/hostname 2>/dev/null
+ifconfig lo 127.0.0.1 up 2>/dev/null
+[ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
+:
+")?,
+        "/etc/init.d/rcS")?;
+    dbg("sif /etc/init.d/rcS mode 0100755")?;
+
+    // /etc/init.d/oxide-smokes — kernel-acceptance smoke harness
+    // (replaces the C harness from old userspace/init/init.c).
+    // Gated by the marker file so OXIDE_INIT_SMOKES=0 boots skip it.
+    put(&stage("oxide-smokes",
+b"#!/bin/sh
+[ -e /etc/oxide-init-smokes ] || exit 0
+echo init-fork-exec works
+for s in /bin/bare3 /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
+         /bin/ptrace_smoke /bin/ptrace_singlestep_smoke \\
+         /bin/mprotect_smoke /bin/hello_dyn ; do
+    [ -x \"$s\" ] && \"$s\"
+done
+")?,
+        "/etc/init.d/oxide-smokes")?;
+    dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;
+
+    // /etc/profile — login-shell environment.
+    put(&stage("profile",
+b"export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PS1='\\h:\\w\\$ '
+export TERM=linux
+")?,
+        "/etc/profile")?;
+
+    // /etc/fstab (informational; for `mount -a`).
+    put(&stage("fstab",
+b"proc    /proc    proc    defaults  0 0
+sysfs   /sys     sysfs   defaults  0 0
+tmpfs   /tmp     tmpfs   defaults  0 0
+devpts  /dev/pts devpts  defaults  0 0
+")?,
+        "/etc/fstab")?;
+
+    // /etc/nsswitch.conf — files-only resolver.
+    put(&stage("nsswitch.conf",
+b"passwd: files
+group:  files
+shadow: files
+hosts:  files
+")?,
+        "/etc/nsswitch.conf")?;
+
+    put(&stage("hello.txt", b"hello-from-ext4-mini\n")?, "/hello.txt")?;
 
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),

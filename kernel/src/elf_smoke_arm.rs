@@ -275,18 +275,11 @@ fn spawn_init_from_rootfs_arm() {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
-    // v1 aarch64 init candidate order:
-    //   1. /sbin/init  (real-musl init.c — minimal, but its fork+exec
-    //      paths require SYS_clone+SYS_execve on arm which aren't
-    //      wired yet, so it exits without launching a shell)
-    //   2. /init       (alias)
-    //   3. /bin/sh     (fall back to busybox-as-shell so the boot
-    //      reaches an interactive prompt even before clone/execve
-    //      land on arm)
+    // PID 1: load /sbin/init from the mounted rootfs (busybox
+    // hardlinked to /sbin/init via /bin/busybox).
     let init_blob: &'static [u8] = {
         let bytes_opt = crate::dev_ext4::read_file(b"/sbin/init")
-            .or_else(|| crate::dev_ext4::read_file(b"/init"))
-            .or_else(|| crate::dev_ext4::read_file(b"/bin/sh"));
+            .or_else(|| crate::dev_ext4::read_file(b"/init"));
         match bytes_opt {
             Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
             None => {
@@ -329,6 +322,28 @@ fn spawn_init_from_rootfs_arm() {
         return;
     }
 
+    // F153-1: build a real SysV initial stack with argv[0]=/sbin/init
+    // so busybox dispatches the `init` applet. Same shape as the
+    // x86 spawn_user_blob_smoke path.
+    let random16 = {
+        use hal::TimerOps;
+        let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        let mut r = [0u8; 16];
+        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
+        r
+    };
+    let argv0: &[&[u8]] = &[b"/sbin/init"];
+    // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
+    let new_sp = unsafe {
+        crate::exec_stack::build_user_stack(
+            USER_STACK_TOP,
+            argv0, &[],
+            &img,
+            &random16,
+            b"/sbin/init",
+        )
+    }.unwrap_or(USER_STACK_TOP);
+
     // F152-2: leave TPIDR_EL0 = 0 on first user entry. musl crt1's
     // __init_tls mmaps a TCB and writes TPIDR_EL0 directly (EL0
     // can write TPIDR_EL0 on aarch64) before any TLS access.
@@ -341,12 +356,12 @@ fn spawn_init_from_rootfs_arm() {
         );
     }
 
-    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
+    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off; vpid stamped pre-enqueue so busybox-init's first syscall sees PID 1.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(
-            0xC0DE_0002, "init",
+        crate::sched::spawn_user_thread_with_vpid(
+            0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1, "init",
             img.entry.as_u64(),
-            USER_STACK_TOP,
+            new_sp,
             mm,
         )
     } {
