@@ -223,18 +223,23 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
     // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
-    unsafe {
+    let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
         *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
-        // F62: record the actual exec path (path argument of execve)
-        // so /proc/self/exe → readlink returns the real binary path
-        // (busybox needs this to find its applet name).
         let path_str = match core::str::from_utf8(&path_buf[..path_len]) {
             Ok(s) => alloc::string::String::from(s),
             Err(_) => alloc::string::String::new(),
         };
         if !path_str.is_empty() {
-            *cur.exe_path.get() = Some(path_str);
+            *cur.exe_path.get() = Some(path_str.clone());
+            Some(path_str)
+        } else { None }
+    };
+    // F103: file capabilities — apply security.capability xattr from the
+    // exec path's inode to the calling task's cap_permitted / cap_effective.
+    if let Some(p) = exec_path_for_caps {
+        if let Some(inode) = crate::devfs::lookup(&p) {
+            apply_file_caps_at_execve(&inode, cur);
         }
     }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
@@ -464,7 +469,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
     for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
     // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
-    unsafe {
+    let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
         *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
         let path_str = match core::str::from_utf8(&path_buf[..path_len]) {
@@ -472,7 +477,13 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
             Err(_) => alloc::string::String::new(),
         };
         if !path_str.is_empty() {
-            *cur.exe_path.get() = Some(path_str);
+            *cur.exe_path.get() = Some(path_str.clone());
+            Some(path_str)
+        } else { None }
+    };
+    if let Some(p) = exec_path_for_caps {
+        if let Some(inode) = crate::devfs::lookup(&p) {
+            apply_file_caps_at_execve(&inode, cur);
         }
     }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
@@ -518,4 +529,46 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     }
 
     0
+}
+
+/// Decode the `security.capability` xattr on `inode` (Linux's
+/// `struct vfs_cap_data` v2/v3 layout) and apply file capabilities
+/// to `task.creds` per `capabilities(7)` semantics.
+///
+/// Layout (`linux/capability.h`):
+///   magic_etc:  u32 (low 24 bits version, top 8 = flags;
+///                    VFS_CAP_FLAGS_EFFECTIVE = 0x01)
+///   permitted:  [u32; 2]
+///   inheritable: [u32; 2]
+///   v3 adds rootid: u32 at the tail (24 bytes total). v2 = 20 bytes.
+///
+/// Effect on the task post-execve (simplified Linux rule):
+///   new_perm  = (file.perm  | (cap_inheritable & file.inh)) & cap_bounding
+///   new_eff   = if VFS_CAP_FLAGS_EFFECTIVE then new_perm else 0
+///   inh stays unchanged.
+/// # C: O(1)
+fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
+    use core::sync::atomic::Ordering;
+    const VFS_CAP_FLAGS_EFFECTIVE: u32 = 0x01;
+    // First probe the value length via getxattr-len (buf=0).
+    let s = "security.capability";
+    let want = crate::xattr_overlay::query_len(inode, s);
+    if want < 12 { return; }
+    let mut buf = alloc::vec![0u8; want.min(24)];
+    if !crate::xattr_overlay::query_into(inode, s, &mut buf) { return; }
+    if buf.len() < 12 { return; }
+    let read_u32 = |off: usize| -> u32 {
+        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+    };
+    let magic_etc = read_u32(0);
+    let perm = ((read_u32(4) as u64) | ((read_u32(8) as u64) << 32)) & ((1u64 << 40) - 1);
+    let inh  = if buf.len() >= 20 {
+        ((read_u32(12) as u64) | ((read_u32(16) as u64) << 32)) & ((1u64 << 40) - 1)
+    } else { 0 };
+    let task_inh = cur.creds.cap_inheritable.load(Ordering::Acquire);
+    let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
+    let new_perm = (perm | (task_inh & inh)) & bounding;
+    let new_eff  = if magic_etc & VFS_CAP_FLAGS_EFFECTIVE != 0 { new_perm } else { 0 };
+    cur.creds.cap_permitted.store(new_perm, Ordering::Release);
+    cur.creds.cap_effective.store(new_eff,  Ordering::Release);
 }

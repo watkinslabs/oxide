@@ -155,6 +155,29 @@ fn do_remove(inode: &InodeRef, name: &str) -> i64 {
     if entry.0.remove(name).is_some() { 0 } else { -(ENODATA as i64) }
 }
 
+/// Kernel-side xattr query (no user-buffer hop). Returns the value's
+/// length, or 0 if absent. Used by F103 file-cap probe at execve.
+/// # C: O(log N)
+pub fn query_len(inode: &InodeRef, name: &str) -> usize {
+    let g = TABLE.lock();
+    g.get(&inode_key(inode))
+        .and_then(|e| e.0.get(name))
+        .map(|v| v.len())
+        .unwrap_or(0)
+}
+
+/// Kernel-side xattr read into a buffer. Returns true on hit.
+/// # C: O(log N) + O(value len)
+pub fn query_into(inode: &InodeRef, name: &str, buf: &mut [u8]) -> bool {
+    let g = TABLE.lock();
+    let v = match g.get(&inode_key(inode)).and_then(|e| e.0.get(name)) {
+        Some(v) => v, None => return false,
+    };
+    let n = v.len().min(buf.len());
+    buf[..n].copy_from_slice(&v[..n]);
+    true
+}
+
 /// `sys_setxattr / lsetxattr` (slots 188/189). path / name / value / size / flags.
 /// # C: O(N_xattrs)
 pub fn kernel_sys_setxattr(args: &SyscallArgs) -> i64 {
