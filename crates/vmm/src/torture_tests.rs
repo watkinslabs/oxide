@@ -490,6 +490,85 @@ fn churn_1024_iterations_keeps_invariants() {
 // Allocator exhaustion — request more than fits
 // ---------------------------------------------------------------
 
+// ---------------------------------------------------------------
+// F158: stack auto-grow (MAP_GROWSDOWN)
+// ---------------------------------------------------------------
+
+#[test]
+fn growsdown_extends_within_guard_gap() {
+    let a = AddressSpace::new(0).unwrap();
+    let stack_start = uva(0x4000_2000);
+    let stack_top = stack_start.as_u64() + 4 * PAGE as u64;
+    a.mmap(Some(stack_start), 4 * PAGE, r_w(),
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    // Fault at one page below stack_start — within guard gap.
+    let fault_va = uva(0x4000_1000);
+    assert!(a.try_grow_stack(fault_va), "extend within guard");
+    let v = a.find_vma(fault_va).expect("VMA now covers fault");
+    assert_eq!(v.start.as_u64(), 0x4000_1000);
+    assert_eq!(v.end.as_u64(), stack_top);
+}
+
+#[test]
+fn growsdown_rejects_beyond_guard_gap() {
+    let a = AddressSpace::new(0).unwrap();
+    let stack_start = uva(0x8000_0000);
+    a.mmap(Some(stack_start), 4 * PAGE, r_w(),
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    // Fault way below — beyond 64 KiB guard (0x10000 = exactly
+    // 64K; need strictly greater).
+    let fault_va = uva(0x7ffe_0000); // 0x20000 below = 128K
+    assert!(!a.try_grow_stack(fault_va), "beyond guard rejects");
+    assert!(a.find_vma(fault_va).is_none());
+}
+
+#[test]
+fn growsdown_skips_non_growsdown_vmas() {
+    let a = AddressSpace::new(0).unwrap();
+    // Plain anon (no GROWSDOWN).
+    let h = uva(0x4000_2000);
+    a.mmap(Some(h), PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    // Fault below — must NOT extend.
+    let fault_va = uva(0x4000_1000);
+    assert!(!a.try_grow_stack(fault_va));
+}
+
+#[test]
+fn growsdown_blocked_by_lower_neighbor() {
+    let a = AddressSpace::new(0).unwrap();
+    // Lower neighbor at [0x4000_0000, 0x4000_1000).
+    a.mmap(Some(uva(0x4000_0000)), PAGE, VmaProt::READ, priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    // Stack at [0x4000_2000, 0x4000_3000).
+    let stack_start = uva(0x4000_2000);
+    a.mmap(Some(stack_start), PAGE, r_w(),
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    // Fault at 0x4000_1000 (in the gap) — stack would need to
+    // extend down INTO the lower neighbor. Linux blocks this.
+    let fault_va = uva(0x4000_0500);
+    assert!(!a.try_grow_stack(fault_va));
+}
+
+// ---------------------------------------------------------------
+// F157: COW fork preserves GROWSDOWN flag in child VMA tree
+// ---------------------------------------------------------------
+
+#[test]
+fn fork_preserves_growsdown_flag() {
+    let parent = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    parent.mmap(Some(h), 2 * PAGE, r_w(),
+        priv_anon() | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    let child = parent.fork(0).unwrap();
+    let v = child.find_vma(h).expect("child inherits VMA");
+    assert!(v.flags.contains(VmaFlags::GROWSDOWN));
+}
+
 #[test]
 fn allocator_returns_none_when_full() {
     let a = AddressSpace::new(0).unwrap();
