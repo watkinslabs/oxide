@@ -816,7 +816,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_FCHMOD | crate::syscall_nrs::NR_FCHMODAT | crate::syscall_nrs::NR_CHMOD
             | crate::syscall_nrs::NR_FCHOWN | crate::syscall_nrs::NR_CHOWN | crate::syscall_nrs::NR_LCHOWN
             | crate::syscall_nrs::NR_FCHOWNAT => 0,
-        crate::syscall_nrs::NR_FLOCK     => crate::flock::kernel_sys_flock(&args),
+        crate::syscall_nrs::NR_FLOCK         => crate::flock::kernel_sys_flock(&args),
+        crate::syscall_nrs::NR_MQ_NOTIFY     => crate::posix_mq::kernel_sys_mq_notify(&args),
+        crate::syscall_nrs::NR_MQ_GETSETATTR => crate::posix_mq::kernel_sys_mq_getsetattr(&args),
         crate::syscall_nrs::NR_PROCESS_VM_READV  => crate::syscall_glue_pvmrw::kernel_sys_process_vm_readv(&args),
         crate::syscall_nrs::NR_PROCESS_VM_WRITEV => crate::syscall_glue_pvmrw::kernel_sys_process_vm_writev(&args),
         crate::syscall_nrs::NR_UTIMENSAT => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
