@@ -343,7 +343,9 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        "-display", "none",
+        // GTK window so virtio-gpu's scanout becomes visible. Falls
+        // back to env-controlled "headless" via OXIDE_QEMU_HEADLESS=1.
+        "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
         "-no-reboot",
         "-no-shutdown",
     ]);
@@ -382,7 +384,7 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        "-display", "none",
+        "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
         "-no-reboot",
         // Semihosting target=native lets the boot crate emit debug
         // chars via `hlt #0xf000` while we're still pre-MMIO.
