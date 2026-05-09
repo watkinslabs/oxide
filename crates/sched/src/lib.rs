@@ -52,6 +52,34 @@ pub enum Error {
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
+// Kernel-installed `current task` accessor. The per-CPU "current"
+// pointer lives in the kernel module (it depends on per-CPU state
+// the sched crate doesn't own — gs_base on x86, tpidr_el1 on arm).
+// Other workspace crates that need `current()` (security, nscg,
+// drivers) consume it through this hook so they don't have to
+// import kernel-internal modules.
+use core::sync::atomic::{AtomicU64, Ordering};
+static CURRENT_HOOK: AtomicU64 = AtomicU64::new(0);
+pub type CurrentFn = fn() -> Option<&'static Task>;
+
+/// Install the per-CPU `current` accessor. Called once at boot from
+/// the kernel module that owns the per-CPU state.
+/// # C: O(1)
+pub fn set_current_hook(f: CurrentFn) {
+    CURRENT_HOOK.store(f as u64, Ordering::Release);
+}
+
+/// Returns the running task on this CPU, or `None` if unset (host
+/// tests, pre-init).
+/// # C: O(1)
+pub fn current() -> Option<&'static Task> {
+    let h = CURRENT_HOOK.load(Ordering::Acquire);
+    if h == 0 { return None; }
+    // SAFETY: h was installed by `set_current_hook` with matching ABI; sched_crate is the only writer.
+    let f: CurrentFn = unsafe { core::mem::transmute(h) };
+    f()
+}
+
 /// Initialization entry; called by the kernel boot phase per `00§3` /
 /// `boot-flow.md`. v1 returns `NotImplemented`; bodies in P1-N.
 ///
