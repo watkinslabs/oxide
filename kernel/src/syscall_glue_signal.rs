@@ -64,13 +64,17 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
         cur.ipc_ns.store(id, Ordering::Release);
     }
     if (bits & (1u64 << 5)) != 0 {
-        // CLONE_NEWNET — fresh net_ns id (F101). Subsequent
-        // IfaceRegistry lookups from this task match only entries
-        // registered in the new NS (initially empty — userspace must
-        // create veth/lo for the new NS).
+        // CLONE_NEWNET — fresh net_ns id (F101).
         static NEXT_NET_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
         let id = NEXT_NET_NS.fetch_add(1, Ordering::AcqRel);
         cur.net_ns.store(id, Ordering::Release);
+    }
+    if (bits & (1u64 << 4)) != 0 {
+        // CLONE_NEWPID — Linux semantics: the calling task itself is
+        // NOT moved into a new pid_ns; the next fork's CHILD lands
+        // in a fresh ns with vtgid=1. Mark the pending flag for the
+        // fork dispatcher (F105).
+        cur.unshare_pid_pending.store(true, Ordering::Release);
     }
     0
 }
