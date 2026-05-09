@@ -714,8 +714,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_PAUSE     => crate::syscall_glue_proc::kernel_sys_pause(&args),
         crate::syscall_nrs::NR_GETITIMER => crate::syscall_glue_proc::kernel_sys_getitimer(&args),
         crate::syscall_nrs::NR_SETITIMER => crate::syscall_glue_proc::kernel_sys_setitimer(&args),
-        crate::syscall_nrs::NR_PIDFD_OPEN
-                                 => crate::dev_pidfd::kernel_sys_pidfd_open(&args),
+        crate::syscall_nrs::NR_PIDFD_OPEN  => crate::dev_pidfd::kernel_sys_pidfd_open(&args),
+        crate::syscall_nrs::NR_PIDFD_GETFD => crate::dev_pidfd::kernel_sys_pidfd_getfd(&args),
         crate::syscall_nrs::NR_PIDFD_SEND_SIGNAL
                                  => crate::dev_pidfd::kernel_sys_pidfd_send_signal(&args),
         crate::syscall_nrs::NR_INOTIFY_INIT | crate::syscall_nrs::NR_INOTIFY_INIT1

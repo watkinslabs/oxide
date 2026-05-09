@@ -102,12 +102,12 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // SPLICE/TEE/VMSPLICE moved to real impls in PR-N.
         // COPY_FILE_RANGE moved to real impl in PR-J.
         // MEMFD_CREATE / MEMFD_SECRET — PR-H / PR-U.
-        NR_PIDFD_GETFD
+        // PIDFD_GETFD moved to real impl (F70).
         // xattr family: handled in the ENOTSUP arm below — Linux's
         // 'no xattr on this filesystem' response. Programs that
         // probe (e.g., tar, cp -a) treat ENOTSUP as gracefully-skip,
         // whereas ENOSYS aborts the operation entirely.
-        | NR_SWAPON | NR_SWAPOFF
+        NR_SWAPON | NR_SWAPOFF
         // SysV IPC + POSIX MQ + keyring.
         // SysV shm moved to real impl (P25a).
         // SysV sem moved to real impl (P25b — non-blocking semop;
