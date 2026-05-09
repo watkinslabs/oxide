@@ -360,6 +360,17 @@ pub struct Creds {
     pub fsgid: AtomicU32,
     pub ngroups: AtomicU32,
     pub groups:  UnsafeCell<[u32; Creds::NGROUPS_V1]>,
+
+    /// Linux capability bitmasks (CAP_*). 64-bit for v3 layout
+    /// per `capget(2)` / `capset(2)` and `capability.h`. Init = all
+    /// bits set on root tasks; non-root inherits parent's. Real
+    /// permission checks at privileged operations ride a follow-up;
+    /// storage + capget/capset round-trip is the substrate.
+    pub cap_effective:   AtomicU64,
+    pub cap_permitted:   AtomicU64,
+    pub cap_inheritable: AtomicU64,
+    pub cap_ambient:     AtomicU64,
+    pub cap_bounding:    AtomicU64,
 }
 
 impl Creds {
@@ -375,8 +386,18 @@ impl Creds {
             sgid: AtomicU32::new(0), fsgid: AtomicU32::new(0),
             ngroups: AtomicU32::new(0),
             groups: UnsafeCell::new([0u32; Self::NGROUPS_V1]),
+            cap_effective:   AtomicU64::new(Self::CAP_FULL),
+            cap_permitted:   AtomicU64::new(Self::CAP_FULL),
+            cap_inheritable: AtomicU64::new(0),
+            cap_ambient:     AtomicU64::new(0),
+            cap_bounding:    AtomicU64::new(Self::CAP_FULL),
         }
     }
+
+    /// All-bits-set bounding/permitted mask for v1 root tasks. Linux
+    /// has ~40 capability bits defined; storing 64 leaves room for
+    /// future additions and matches the v3 capset ABI shape exactly.
+    pub const CAP_FULL: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
     /// Snapshot for fork/clone — copies every field including
     /// supplementary group list. Caller is the running parent task,
@@ -397,6 +418,11 @@ impl Creds {
             fsgid: AtomicU32::new(self.fsgid.load(Relaxed)),
             ngroups: AtomicU32::new(self.ngroups.load(Relaxed)),
             groups:  UnsafeCell::new([0u32; Self::NGROUPS_V1]),
+            cap_effective:   AtomicU64::new(self.cap_effective.load(Relaxed)),
+            cap_permitted:   AtomicU64::new(self.cap_permitted.load(Relaxed)),
+            cap_inheritable: AtomicU64::new(self.cap_inheritable.load(Relaxed)),
+            cap_ambient:     AtomicU64::new(self.cap_ambient.load(Relaxed)),
+            cap_bounding:    AtomicU64::new(self.cap_bounding.load(Relaxed)),
         };
         // SAFETY: caller holds the single-mutator invariant; we just
         // built `out` and no other CPU has observed it yet, so writing
