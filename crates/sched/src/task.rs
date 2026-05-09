@@ -398,8 +398,13 @@ pub struct Task {
     pub unshare_pid_pending: AtomicBool,
 
     /// User namespace id (CLONE_NEWUSER). Default 0 (init NS).
-    /// V1 substrate only: cross-NS cap-scope enforcement rides v2.
+    /// Per-NS cap scoping per `27§R01` lives in F118.
     pub user_ns: AtomicU64,
+    /// Parent user_ns id at the moment this task last unshared
+    /// CLONE_NEWUSER. Together with `dev_proc_ns::user_ns_parent`
+    /// global registry, this lets `has_cap_for(target, cap)` walk
+    /// the ancestor chain.
+    pub parent_user_ns: AtomicU64,
     /// Cgroup namespace id (CLONE_NEWCGROUP). Default 0 (init NS).
     /// /proc/self/cgroup rebasing rides v2 (v1 has a flat single-
     /// cgroup hierarchy, so every NS sees the same "0::/" path).
@@ -783,6 +788,7 @@ impl Task {
             vtid:           AtomicU32::new(0),
             unshare_pid_pending: AtomicBool::new(false),
             user_ns:        AtomicU64::new(0),
+            parent_user_ns: AtomicU64::new(0),
             cgroup_ns:      AtomicU64::new(0),
             mount_ns:       AtomicU64::new(0),
             ptrace_syscall_armed: AtomicBool::new(false),
