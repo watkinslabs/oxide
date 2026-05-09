@@ -110,7 +110,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // shell + applets come via vendored busybox once the aarch64
     // cross-build of busybox lands.
     let portable_bins: &[(&str, &str)] = &[
-        ("userspace/init/init",         "userspace/init/init.c"),
+        // init lives in `crt_bins` below — built with full musl crt1
+        // so __init_libc / __init_tls run, FS_BASE / TPIDR_EL0 land
+        // in a real TCB, errno/stack-canary paths are safe (F150-1).
         ("userspace/bare/bare",         "userspace/bare/bare.c"),
         ("userspace/bare/bare2",        "userspace/bare/bare2.c"),
         ("userspace/true/true",         "userspace/true/true.c"),
@@ -189,11 +191,24 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F62: static-musl-with-crt1 binaries — same build flags as
-    // upstream busybox (LDFLAGS=--static, full musl crt1). Used to
-    // isolate musl __libc_start_main behavior from our oxide_start.h.
+    // Static-musl-with-crt1 binaries. Same build flags as upstream
+    // busybox: LDFLAGS includes the full musl crt1, so musl's
+    // __libc_start_main runs __init_libc + __init_tls before main.
+    // This is the canonical Linux PID-1 path (F150-1) — no shim,
+    // no -nostartfiles, no fake kernel-set FS_BASE; the user-side
+    // TLS init installs a real TCB via arch_prctl(ARCH_SET_FS) on
+    // x86_64 / TPIDR_EL0 on aarch64, after which errno + stack
+    // canaries + getauxval all work normally.
+    //
+    // bare3 already uses plain `-static` (ET_EXEC) and works on
+    // both arches end-to-end through fork+exec from old-init.
+    // init itself joins the same flag set so x86_64 and aarch64
+    // share one startup path. (`-static-pie` works on x86 but
+    // hangs the aarch64 musl crt1 on this kernel today; that gap
+    // is F151's investigation.)
     let crt_bins: &[(&str, &str)] = &[
-        ("userspace/bare/bare3", "userspace/bare/bare3.c"),
+        ("userspace/init/init",   "userspace/init/init.c"),
+        ("userspace/bare/bare3",  "userspace/bare/bare3.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -201,7 +216,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let src = repo.join(src_rel);
         eprintln!("xtask rootfs: {} -static {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
         let mut c = Command::new(&cc);
-        c.args(["-static", "-O2", "-fno-stack-protector",
+        c.args(["-static", "-no-pie", "-O2", "-fno-stack-protector",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
