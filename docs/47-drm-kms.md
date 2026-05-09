@@ -1,6 +1,8 @@
 # 47 DRM/KMS
 
-DRAFT 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`45`,`48`. Provides:`/dev/dri/card0` (master),`/dev/dri/renderD128` (render),`48` (fbdev backend),`49` (fbcon backend).
+FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`45`,`48`. Provides:`/dev/dri/card0` (master),`/dev/dri/renderD128` (render),`48` (fbdev backend),`49` (fbcon backend).
+
+Full Linux DRM/KMS UAPI per `linux/include/uapi/drm/drm.h` + `drm_mode.h` + `drm_fourcc.h` + per-driver headers. No deferrals.
 
 ## 1 Purpose
 
@@ -11,11 +13,11 @@ Linux DRM/KMS UAPI per `linux/include/uapi/drm/drm.h` + `drm_mode.h`. Master nod
 1. `/dev/dri/card0` ino = `0x70000000`. `/dev/dri/renderD128` ino = `0x70000080`. devfs registers both at boot.
 2. DRM ioctl numbers are stable per `drm.h` — driver must NOT renumber.
 3. Master/render split per Linux DRM 4.x: card-node ioctls require `DRM_AUTH` + master rights for modesetting; render-node accepts `DRM_RENDER_ALLOW`-flagged ioctls without master.
-4. v1 ships GEM dumb-buffer subset only; per-driver buffer objects (i915 GTT etc.) ride per-driver crates.
-5. Atomic modesetting (`DRM_IOCTL_MODE_ATOMIC`) is the v1 modesetting path; legacy `MODE_SETCRTC` accepted but routes through atomic internally.
-6. Format modifier `DRM_FORMAT_MOD_LINEAR` (0) only on v1; tiling modifiers v2.x.
-7. Fence FDs (`DRM_CAP_SYNCOBJ`) v2.x; v1 is synchronous (every commit blocks until host-side flush).
-8. Connector hot-plug (`DRM_IOCTL_MODE_GETCONNECTOR` repolled) emits `DRM_EVENT_CRTC_SEQUENCE` on `read(/dev/dri/card0)` v2.x; v1 is static (no hotplug).
+4. GEM dumb-buffer is the universal buffer surface; per-driver buffer objects (i915 GTT, amdgpu BO, virtio-gpu blob) coexist via the `DrmDriver` trait — each driver crate owns its allocator, exports via PRIME / `RESOURCE_HANDLE_TO_FD`.
+5. Atomic modesetting (`DRM_IOCTL_MODE_ATOMIC`) is the modesetting path; legacy `MODE_SETCRTC` / `MODE_PAGE_FLIP` accepted but route through atomic internally.
+6. Format modifiers per `linux/include/uapi/drm/drm_fourcc.h` advertised per-plane via `MODE_GETPLANE.format_modifiers`; per-driver advertise their supported set (§20).
+7. Sync objects + fence FDs per §19; `OUT_FENCE_PTR` on atomic commits returns a fence fd that signals on hardware completion.
+8. Hot-plug per §21; `DRM_EVENT_HOTPLUG` posts to every fd on `/dev/dri/card0` when `45` notifies a connector state change.
 
 ## 3 Public ifc
 
@@ -100,19 +102,19 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 | Cap | Value | v1 |
 |---|---|---|
 | `DRM_CAP_DUMB_BUFFER` | `1` | `1` |
-| `DRM_CAP_VBLANK_HIGH_CRTC` | `2` | `0` |
+| `DRM_CAP_VBLANK_HIGH_CRTC` | `2` | `1` |
 | `DRM_CAP_DUMB_PREFERRED_DEPTH` | `3` | `32` |
 | `DRM_CAP_DUMB_PREFER_SHADOW` | `4` | `0` |
-| `DRM_CAP_PRIME` | `5` | `1` (import + export) |
+| `DRM_CAP_PRIME` | `5` | `3` (import + export) |
 | `DRM_CAP_TIMESTAMP_MONOTONIC` | `6` | `1` |
-| `DRM_CAP_ASYNC_PAGE_FLIP` | `7` | `0` |
+| `DRM_CAP_ASYNC_PAGE_FLIP` | `7` | `1` |
 | `DRM_CAP_CURSOR_WIDTH` | `8` | `64` |
 | `DRM_CAP_CURSOR_HEIGHT` | `9` | `64` |
 | `DRM_CAP_ADDFB2_MODIFIERS` | `0x10` | `1` |
-| `DRM_CAP_PAGE_FLIP_TARGET` | `0x11` | `0` |
+| `DRM_CAP_PAGE_FLIP_TARGET` | `0x11` | `1` |
 | `DRM_CAP_CRTC_IN_VBLANK_EVENT` | `0x12` | `1` |
-| `DRM_CAP_SYNCOBJ` | `0x13` | `0` |
-| `DRM_CAP_SYNCOBJ_TIMELINE` | `0x14` | `0` |
+| `DRM_CAP_SYNCOBJ` | `0x13` | `1` |
+| `DRM_CAP_SYNCOBJ_TIMELINE` | `0x14` | `1` |
 
 ## 8 Client capabilities (`DRM_CLIENT_CAP_*`)
 
@@ -122,7 +124,8 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 | `DRM_CLIENT_CAP_UNIVERSAL_PLANES` | `2` | accept; primary+cursor planes exposed |
 | `DRM_CLIENT_CAP_ATOMIC` | `3` | accept; ATOMIC ioctl + non-legacy props enabled |
 | `DRM_CLIENT_CAP_ASPECT_RATIO` | `4` | accept |
-| `DRM_CLIENT_CAP_WRITEBACK_CONNECTORS` | `5` | reject (`EOPNOTSUPP`) |
+| `DRM_CLIENT_CAP_WRITEBACK_CONNECTORS` | `5` | accept; writeback connectors per §22 |
+| `DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT` | `6` | accept; hot-spot props on cursor plane |
 
 ## 9 Object types (atomic-modeset properties)
 
@@ -218,14 +221,74 @@ Connector exports the EDID block as a blob property. v1:
 
 `45` (virtio-gpu backend), `48` (fbdev compat over DRM), `49` (fbcon glyph blit on top of DRM dumb-buffer), `35` (driver-model trait), `19` (devfs nodes), `15§5` (read/poll on `/dev/dri/card0`).
 
-## 19 v2.x deferrals
+## 19 Sync objects + fences
 
-- Sync objects (`DRM_CAP_SYNCOBJ`, drm_syncobj_*)
-- Real fence FDs (`OUT_FENCE_PTR`)
-- Format modifiers (tiling)
-- Multi-master coordination (DRM_RENDER_ALLOW separation is enough for v1)
-- Writeback connectors
-- Hot-plug events
-- Gamma/CSC properties beyond identity
-- VRR + adaptive sync
-- HDR metadata + colorspace properties
+`DRM_CAP_SYNCOBJ` and `DRM_CAP_SYNCOBJ_TIMELINE` reported as 1. The drm_syncobj API per `linux/include/uapi/drm/drm.h`:
+
+| ioctl | Code | Behavior |
+|---|---|---|
+| `DRM_IOCTL_SYNCOBJ_CREATE` | `0xc00864bf` | allocate a syncobj; flags=`SIGNALED` (1) starts it pre-signaled |
+| `DRM_IOCTL_SYNCOBJ_DESTROY` | `0xc00864c0` | free |
+| `DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD` | `0xc00c64c1` | export to a sync_file fd |
+| `DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE` | `0xc00c64c2` | import |
+| `DRM_IOCTL_SYNCOBJ_WAIT` | `0xc01864c3` | wait for one/all-of N syncobjs to signal; absolute or relative timeout |
+| `DRM_IOCTL_SYNCOBJ_RESET` | `0xc00864c4` | reset to unsignaled |
+| `DRM_IOCTL_SYNCOBJ_SIGNAL` | `0xc00864c5` | force signal |
+| `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` | `0xc02864ca` | wait for timeline points |
+| `DRM_IOCTL_SYNCOBJ_QUERY` | `0xc01864cb` | read current timeline value |
+| `DRM_IOCTL_SYNCOBJ_TRANSFER` | `0xc02064cc` | move timeline value between syncobjs |
+| `DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL` | `0xc01864cd` | signal at timeline point |
+
+Atomic commits accept `OUT_FENCE_PTR` per-CRTC: kernel returns a fence fd that signals when the commit completes on hardware.
+
+## 20 Format modifiers
+
+`DRM_CAP_ADDFB2_MODIFIERS` reported as 1. `MODE_ADDFB2` accepts a per-plane `modifier[4]` array. Modifiers per `linux/include/uapi/drm/drm_fourcc.h`:
+
+| Modifier name | Value | Use |
+|---|---|---|
+| `DRM_FORMAT_MOD_LINEAR` | `0` | row-major; default |
+| `DRM_FORMAT_MOD_VENDOR_NONE` | `0x00ff_ffff_ffff_ffff` | invalid sentinel |
+| `I915_FORMAT_MOD_X_TILED` | `(I915,1)` | Intel X-tiled |
+| `I915_FORMAT_MOD_Y_TILED` | `(I915,2)` | Intel Y-tiled |
+| `AMD_FMT_MOD_TILED` | `(AMD,*)` | AMD GFX9+ tiling encoding |
+| `NVIDIA_BLOCK_LINEAR_2D` | `(NVIDIA,*)` | NV block-linear |
+| `LINEAR_DRMTILED_*` | `(BROADCOM/SAMSUNG/etc,*)` | per-vendor tilings |
+
+`MODE_GETPLANE` exposes per-plane `format_modifier_count` + array. Real driver crates (i915, amdgpu, nouveau, virtio-gpu) advertise their supported modifier set; v1 virtio-gpu advertises `LINEAR` only.
+
+## 21 Hot-plug events
+
+`DRM_EVENT_HOTPLUG` (0x80000004) posted to every fd open on `/dev/dri/card0` when `45` (virtio-gpu) signals a connector state change:
+
+```c
+struct drm_event_hotplug { struct drm_event base; };  // base.length = 8
+```
+
+Userspace `read(/dev/dri/card0)` returns the event; libdrm and Wayland compositors re-enumerate connectors on receipt.
+
+## 22 Writeback connectors
+
+`DRM_CLIENT_CAP_WRITEBACK_CONNECTORS` accepted. Writeback connectors expose CRTCs that render into a buffer object instead of a physical display. Properties:
+- `WRITEBACK_PIXEL_FORMATS` — blob, supported FBs
+- `WRITEBACK_FB_ID` — target FB
+- `WRITEBACK_OUT_FENCE_PTR` — fence fd written when scanout-into-fb completes
+
+Used by gnome-shell screencast, virtual displays for VNC, headless rendering.
+
+## 23 Gamma / CSC / HDR metadata
+
+Per-CRTC properties:
+- `GAMMA_LUT` — blob, RGB gamma table
+- `GAMMA_LUT_SIZE` — read-only, hardware LUT size
+- `DEGAMMA_LUT` — blob, input gamma
+- `CTM` — blob, 9-entry color transform matrix
+- `HDR_OUTPUT_METADATA` — blob, EDID HDR static metadata block
+
+Per-connector properties:
+- `Colorspace` — enum (Default, BT2020_RGB, BT2020_YCC, BT2020_CYCC, etc.)
+- `HDR_OUTPUT_METADATA` — sink-side HDR signal
+
+## 24 VRR / adaptive sync
+
+`vrr_capable` + `vrr_enabled` per-connector enum properties. CRTC `VRR_ENABLED` flips at runtime; userspace pageflips with timing within the VRR range vary refresh interval per FreeSync/G-Sync.
