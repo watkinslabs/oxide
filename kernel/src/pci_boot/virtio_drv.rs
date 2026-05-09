@@ -72,6 +72,12 @@ struct VirtioProbe {
     q1_desc_pa:   u64,
     q1_driver_pa: u64,
     q1_device_pa: u64,
+    /// F59-02: PA + len of the boot-allocated RX buffer published at
+    /// queue-0 descriptor 0 for virtio-net. 0/0 if no virtio-net or
+    /// DRIVER_OK didn't land. The runtime rx_poll re-publishes this
+    /// same descriptor on each completion (one-buffer ring v1).
+    rx0_buf_pa:  u64,
+    rx0_buf_len: u16,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -353,6 +359,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // before kicking. For other devices the queue stays empty so the
     // kick is a no-op nudge.
     let mut avail_idx_posted = 0u16;
+    // F59-02: persisted RX-buffer info for runtime rx_poll. Set when
+    // the virtio-net branch below allocates the boot-time RX page;
+    // 0/0 if no virtio-net device or DRIVER_OK didn't land.
+    let mut rx0_buf_pa_local: u64 = 0;
+    let mut rx0_buf_len_local: u16 = 0;
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
     if is_virtio_blk && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
@@ -430,6 +441,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         };
         if let Some(rx_pa) = crate::pmm_setup::alloc_one_frame() {
             if hhdm != 0 {
+                // F59-02: capture rx_pa for runtime rx_poll re-publish.
+                rx0_buf_pa_local = rx_pa;
+                rx0_buf_len_local = 2048;
                 // Descriptor[0]: { addr=rx_pa; len=2048; flags=WRITE(2); next=0 }
                 let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
                 // SAFETY: HHDM-mapped, freshly-allocated frame, single-CPU.
@@ -697,6 +711,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         q1_desc_pa,
         q1_driver_pa,
         q1_device_pa,
+        rx0_buf_pa:  rx0_buf_pa_local,
+        rx0_buf_len: rx0_buf_len_local,
     })
 }
 
@@ -885,6 +901,8 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 q1_device_pa:  p.q1_device_pa,
                 q0_size:       p.q0_size,
                 q1_size:       p.q1_size,
+                rx0_buf_pa:    p.rx0_buf_pa,
+                rx0_buf_len:   p.rx0_buf_len,
             },
         );
     }
