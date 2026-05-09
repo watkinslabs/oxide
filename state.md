@@ -60,6 +60,7 @@ real impl or honest ENOSYS. Breakdown:
   - **F108 #838** ptrace SYSCALL stop on entry + return (strace/gdb/ltrace see real syscall events)
   - **F109 #840** cross-NS pid translation for kill/tgkill/pidfd_open (completes F105 user contract)
   - **F110 #841** real mount(2) — tmpfs backend + admit-only for proc/sysfs/etc
+  - **F111 #843** pre-mount tmpfs at /dev/shm and /run (POSIX shm_open + systemd-class /run/<svc>.pid)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
