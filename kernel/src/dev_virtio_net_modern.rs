@@ -53,6 +53,10 @@ pub struct ModernNetState {
     /// ethernet src + ARP sender-hw fields.
     pub mac:       [u8; 6],
     pub mac_valid: bool,
+    /// F59-05: PA of the boot-allocated TX scratch frame. 4 KiB.
+    /// `tx_frame` rewrites this buffer (12-byte virtio_net_hdr +
+    /// caller body) and reposts q1 descriptor 0 each call.
+    pub tx0_buf_pa: u64,
 }
 
 static MODERN_DEV: Spinlock<Option<ModernNetState>, DriverLockClass> =
@@ -102,6 +106,141 @@ pub fn init_modern(state: ModernNetState) {
 pub fn mac() -> Option<[u8; 6]> {
     let g = MODERN_DEV.lock();
     g.and_then(|s| if s.mac_valid { Some(s.mac) } else { None })
+}
+
+// -------- F59-05: TX on the modern transport ---------------------------
+//
+// One scratch buffer pinned to queue 1 descriptor 0; tx_frame rewrites
+// the buffer (12-byte virtio_net_hdr zeros + caller body) and posts a
+// fresh avail.idx entry referring to descriptor 0. The boot probe
+// already issued one TX with size 72; we resume from TX_NEXT_AVAIL=1
+// (next slot) and TX_LAST_USED=1 (boot probe's completion was logged
+// in `virtio-tx tx_used_idx=N`; we trust the device finished it).
+
+/// Errors returned by `tx_frame`.
+#[derive(Copy, Clone, Debug)]
+pub enum TxErr {
+    /// Modern virtio-net not initialized; `init_modern` has not run.
+    NotPresent,
+    /// `body.len() + virtio_net_hdr` exceeds the 4 KiB scratch buffer.
+    TooLarge,
+    /// Boot probe didn't allocate a TX scratch buffer (hit pmm
+    /// pressure or bailed before DRIVER_OK).
+    NoBuf,
+}
+
+static TX_LAST_USED:  AtomicU16 = AtomicU16::new(1);
+static TX_NEXT_AVAIL: AtomicU16 = AtomicU16::new(1);
+
+/// Maximum payload `tx_frame` accepts (4 KiB scratch minus the
+/// 12-byte virtio_net_hdr; ethernet MTU 1500 fits comfortably).
+pub const TX_MAX_BODY: usize = 4096 - VIRTIO_NET_HDR_LEN;
+
+/// Send one frame out the modern virtio-net transmit queue. Writes
+/// the 12-byte zero virtio_net_hdr followed by `body` into the
+/// pinned TX scratch buffer, updates queue-1 descriptor 0 with the
+/// new len, posts on avail, and kicks `q1_notify_va`. Briefly
+/// observes the device's q1 used.idx; the wait is cooperative,
+/// not blocking — completion is best-effort and the cursor is
+/// advanced from whatever the device managed to drain.
+///
+/// # C: O(1) under MODERN_DEV.lock()
+/// # Lk: takes MODERN_DEV across MMIO writes; no callbacks.
+pub fn tx_frame(body: &[u8]) -> Result<(), TxErr> {
+    if !MODERN_PRESENT.load(Ordering::Acquire) {
+        return Err(TxErr::NotPresent);
+    }
+    if body.len() > TX_MAX_BODY {
+        return Err(TxErr::TooLarge);
+    }
+    let g = MODERN_DEV.lock();
+    let s = match *g { Some(s) => s, None => return Err(TxErr::NotPresent) };
+    if s.tx0_buf_pa == 0 || s.q1_size == 0 || s.q1_notify_va == 0 {
+        return Err(TxErr::NoBuf);
+    }
+
+    let hhdm = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::mmu_ops::hhdm_offset() }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::mmu_ops::hhdm_offset() }
+    };
+    if hhdm == 0 { return Err(TxErr::NoBuf); }
+
+    let buf_va   = hhdm.wrapping_add(s.tx0_buf_pa);
+    let desc_va  = hhdm.wrapping_add(s.q1_desc_pa);
+    let avail_va = hhdm.wrapping_add(s.q1_driver_pa);
+    let used_va  = hhdm.wrapping_add(s.q1_device_pa);
+
+    // Write virtio_net_hdr (12 zero bytes) + body into the scratch
+    // buffer. Use byte writes via volatile to avoid relying on memcpy
+    // ordering; total len fits in one PMM page.
+    let total_len = (VIRTIO_NET_HDR_LEN + body.len()) as u32;
+    // SAFETY: HHDM-mapped freshly-owned scratch frame; bytes 0..total_len stay within the 4 KiB page; single CPU under MODERN_DEV.lock.
+    unsafe {
+        for i in 0..VIRTIO_NET_HDR_LEN {
+            core::ptr::write_volatile((buf_va + i as u64) as *mut u8, 0);
+        }
+        for (i, b) in body.iter().enumerate() {
+            core::ptr::write_volatile(
+                (buf_va + VIRTIO_NET_HDR_LEN as u64 + i as u64) as *mut u8,
+                *b,
+            );
+        }
+    }
+
+    // Update q1 descriptor 0: { addr=tx_buf_pa; len=total_len; flags=0 }.
+    // Layout: u64 addr at +0; u32 len at +8; u16 flags at +12; u16 next at +14.
+    // SAFETY: HHDM-mapped queue-1 descriptor table owned by driver under MODERN_DEV.lock; aligned u64+u32+u16 stores within the desc-0 slot.
+    unsafe {
+        core::ptr::write_volatile(desc_va as *mut u64, s.tx0_buf_pa);
+        core::ptr::write_volatile((desc_va + 8)  as *mut u32, total_len);
+        core::ptr::write_volatile((desc_va + 12) as *mut u16, 0u16); // flags
+        core::ptr::write_volatile((desc_va + 14) as *mut u16, 0u16); // next
+    }
+
+    let q1_size = s.q1_size as usize;
+    let next_avail = TX_NEXT_AVAIL.load(Ordering::Acquire);
+    let pub_slot = (next_avail as usize) % q1_size;
+    // SAFETY: HHDM-mapped q1 avail ring; ring[pub_slot] at byte +4 = u16 offset 2+pub_slot.
+    unsafe {
+        core::ptr::write_volatile(
+            (avail_va + 4 + (pub_slot as u64) * 2) as *mut u16,
+            0u16, // descriptor id 0
+        );
+    }
+    core::sync::atomic::fence(Ordering::Release);
+    let new_idx = next_avail.wrapping_add(1);
+    // SAFETY: HHDM-mapped q1 avail ring; idx field at +2; published after the ring write fence above.
+    unsafe {
+        core::ptr::write_volatile((avail_va + 2) as *mut u16, new_idx);
+    }
+    core::sync::atomic::fence(Ordering::Release);
+    TX_NEXT_AVAIL.store(new_idx, Ordering::Release);
+
+    // Kick the per-queue 1 notify VA (modern transport, MMIO).
+    // SAFETY: q1_notify_va = NOTIFY_BAR + queue 1 * notify_off_multiplier mapped Device-attr by pci_boot::virtio_drv during DRIVER_OK; aligned u16 store.
+    unsafe {
+        core::ptr::write_volatile(s.q1_notify_va as *mut u16, 1u16);
+    }
+
+    // Brief observation window: poll q1 used.idx for the device to
+    // bump it. Best-effort; if we time out the cursor is advanced
+    // from whatever did drain.
+    for _ in 0..1_000_000usize {
+        // SAFETY: HHDM-mapped q1 used ring idx field at +2; aligned u16 load.
+        let dev_used = unsafe {
+            core::ptr::read_volatile((used_va + 2) as *const u16)
+        };
+        if dev_used != TX_LAST_USED.load(Ordering::Acquire) {
+            TX_LAST_USED.store(dev_used, Ordering::Release);
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    // Even on timeout, the avail-side state is consistent. Caller
+    // can reissue if a stronger completion signal is needed.
+    Ok(())
 }
 
 /// Snapshot of the registered modern device (None until init_modern).
