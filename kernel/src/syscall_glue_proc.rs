@@ -273,6 +273,8 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 // `sys_rseq` + rseq_writeback live in `syscall_glue_rseq.rs` (F86).
 pub use crate::syscall_glue_rseq::{kernel_sys_rseq, rseq_writeback};
 
+// `sys_chroot` real impl moved to `syscall_glue_chroot.rs` (F95).
+
 /// `sys_vhangup` — slot 153. Linux: revoke access to the calling task's
 /// controlling terminal by posting SIGHUP to every task in the same
 /// session. Privileged (CAP_SYS_TTY_CONFIG / root).
