@@ -35,6 +35,17 @@ fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
         None      => crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
+        // Linux: /proc/<pid>/exe is rooted on mm_struct::exe_file
+        // — the dentry the user named at execve, shared across all
+        // CLONE_VM threads. Prefer the mm slot over the per-task
+        // mirror so hardlinks resolve to the invoked path.
+        // SAFETY: mm slot single-mutator per `13§5`; we hold a
+        // current-task snapshot.
+        if let Some(mm) = unsafe { t.mm_ref() } {
+            if let Some(s) = mm.exe_path() {
+                if !s.is_empty() { return s.into_bytes(); }
+            }
+        }
         // SAFETY: exe_path single-mutator per `13§5`; snapshot.
         if let Some(s) = unsafe { (*t.exe_path.get()).clone() } {
             if !s.is_empty() { return s.into_bytes(); }

@@ -92,6 +92,8 @@ pub enum VfsError {
     Emfile  = 24,
     Enotty  = 25,
     Espipe  = 29,
+    Eagain  = 11,
+    Epipe   = 32,
     Erofs   = 30,
     Enosys  = 38,
 }
