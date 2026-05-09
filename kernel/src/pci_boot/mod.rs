@@ -582,6 +582,21 @@ pub fn enumerate_and_log() {
                     if i < 5 { klog::write_raw(b":"); }
                 }
                 klog::write_raw(b"\n");
+
+                // F59-12: with the gateway MAC cached, send an ICMP
+                // echo to it. Proves IPv4 + ICMP path through SLIRP.
+                let icmp = crate::dev_virtio_net_modern::boot_icmp_echo_probe(
+                    [10, 0, 2, 15], r.gateway_ip, r.gateway_mac,
+                );
+                klog::write_raw(b"[INFO]  virtio-net-icmp-boot tx_attempted=");
+                klog::write_dec_u64(icmp.tx_attempted as u64);
+                klog::write_raw(b" tx_confirmed=");
+                klog::write_dec_u64(icmp.tx_confirmed as u64);
+                klog::write_raw(b" rx_frames=");
+                klog::write_dec_u64(icmp.rx_frames as u64);
+                klog::write_raw(b" reply=");
+                klog::write_dec_u64(icmp.reply_seen as u64);
+                klog::write_raw(b"\n");
             }
 
             // F59-11: register the modern virtio-net device as a
