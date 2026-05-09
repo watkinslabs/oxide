@@ -287,7 +287,7 @@ Per `02`. MANIFEST authoritative. Every spec has §Cross-spec. Boot flow Mermaid
 
 `v1.0` ships when:
 1. PR-time CI green on the tagged commit, both arches, both profiles.
-2. All `43§2` minimum acceptance binaries run end-to-end on QEMU (boots → login → run binary → exit clean).
+2. All `43§2` minimum acceptance binaries (busybox-only per R05) run end-to-end on QEMU (boots → login → busybox sh → run util → exit clean). Distro-class binaries (Go, Rust+tokio, redis, nginx, openssh, chrony) moved to `43§3` v2.
 3. Kernel-completeness audit `docs/kernel-audit.md` shows no remaining stub regressions vs the sweep landed sessions 38.
 
 That's it. No 168h soak, no duration-based wait — PR-time green + acceptance is the wall. AI-driven oracle proptests + miri + loom + QEMU differential are how bugs get found, not duration runs.
@@ -300,6 +300,7 @@ See `MANIFEST.md`.
 
 ## 17 Changelog
 
+- 2026-05-08: `43§2` v1 acceptance shrunk to busybox-only (R05). Go/Rust/redis/nginx/openssh/chrony promoted to `43§3` v2 — those binaries need real ld.so + libc/NSS/PAM + system manager (v2 phases 33-35). v1 contract now matches `00§3.1` scope ("kernel substrate + minimum userspace"); v1 exit gates only on busybox sh + utils running end-to-end.
 - 2026-05-07b: folded v1.x into v2. There's no real dependency between userspace-platform work (real ld.so, libc/NSS/PAM, system manager, RPM, agetty/login) and kernel-parity work (AF_INET6, namespaces, io_uring, etc.) — they're parallel. Single v2 ladder (§3.2), single endgame tag. Old v1.x phases 13-17 renumbered as v2 phases 33-37. New phase 38 = AF_INET6 + sendmmsg/recvmmsg + AF_UNIX SCM_CREDS net completion. All `v1.x` references in the doc tree bulk-renamed to `v2`.
 - 2026-05-07: v1 tightened to "kernel substrate + minimum userspace" (phases 0-12 + minimal acceptance). Old phases 13-17 initially placed in a "v1.x" bridge; superseded by 2026-05-07b fold. NEW v2 phase ladder (§3.2) covers kernel parity + userspace platform + de-stubbed subsystems. v2.x covers desktop/hardware-rich. **All soak gating removed** — duration-based runs are not a v1 exit criterion or phase gate; PR-time CI + `43§2` acceptance is the wall.
 - 2026-05-06: phase ladder gains explicit rows 10/11/12 for modules loader, PCI enumeration, virtio common infra. Spun out from "phase 9 + driver work backing phase 8" because each turned out to be a multi-PR slug deserving its own gate.
