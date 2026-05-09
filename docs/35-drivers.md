@@ -2,6 +2,30 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver crate.
 
+## Revision 2026-05-09 (R03)
+
+- Changed: graphical-terminal arc spec ladder lands. The probe-only
+  v1 framing in R01 (DRM/evdev as identification-only inodes) is
+  superseded for the case of QEMU virt: the arc now has its own
+  spec docs covering each layer:
+    - `45` virtio-gpu — wire protocol + `drv-virtio-gpu` crate
+    - `46` virtio-input — wire protocol + `drv-virtio-input` crate
+    - `47` DRM/KMS UAPI — `/dev/dri/card0` + `/renderD128` ioctls
+    - `48` fbdev (legacy framebuffer) — `/dev/fb0`
+    - `49` fbcon — kernel framebuffer console (PSF + ANSI + scroll)
+    - `50` VT — `/dev/tty0..6`, KDSETMODE, VT_ACTIVATE
+- Each spec defines its UAPI/wire surface 1:1 against the matching
+  Linux header (`linux/include/uapi/drm/`, `linux/include/uapi/linux/`,
+  `virtio-protocol-1.2 §5.7`/`§5.8`).
+- Per `35§3` invariant 1, virtio-gpu / virtio-input drivers move
+  out of the kernel module into their own `drv-*` crates as the
+  arc lands. The DRM core itself lives in `crates/drm`; fbcon in
+  `crates/fbcon`; VT in `crates/vt`; fbdev compat shim in
+  `crates/fbdev`. None depend on `kernel/src/`.
+- v2.x tail (VIRGL, multi-display, sync objs, format modifiers,
+  hot-plug, multi-keymap, KDFONTOP) documented per spec §v2.x
+  deferrals; v1 acceptance gates only the listed v1 features.
+
 ## Revision 2026-05-09 (R02)
 
 - Changed: `crates/drv` is now the real owner of the driver-model

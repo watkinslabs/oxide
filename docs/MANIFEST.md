@@ -57,6 +57,12 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `41-debug-flags-catalog.md` | FROZEN | 2026-05-02 | `04`,`07`,`08` |
 | `42-test-strategy.md` | DRAFT | 2026-05-07 | `02`,`05`,`06`,`07`,`08`,`40` |
 | `43-acceptance.md` | FROZEN | 2026-05-02 | every spec |
+| `45-virtio-gpu.md` | DRAFT | — | `01`,`02`,`07`,`11`,`13`,`15`,`22`,`33`,`34`,`35`,`47` |
+| `46-virtio-input.md` | DRAFT | — | `01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50` |
+| `47-drm-kms.md` | DRAFT | — | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`45`,`48` |
+| `48-fbdev.md` | DRAFT | — | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47` |
+| `49-fbcon.md` | DRAFT | — | `01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50` |
+| `50-vt.md` | DRAFT | — | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`28`,`46`,`47`,`49` |
 
 ## Cross-cutting
 
