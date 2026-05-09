@@ -200,35 +200,38 @@ impl ProcSelfStatusInode {
         let tid    = cur.map(|c| c.tid as u64).unwrap_or(1);
         let ppid   = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
         let name   = cur.map(|c| c.name).unwrap_or("oxide");
-        push(&mut out, b"Name:\t");        push(&mut out, name.as_bytes()); push(&mut out, b"\n");
+        push(&mut out, b"Name:\t"); push(&mut out, name.as_bytes()); push(&mut out, b"\n");
         let state_label = cur.map(|c| c.state().linux_status_label()).unwrap_or("R (running)");
         push(&mut out, b"State:\t"); push(&mut out, state_label.as_bytes()); push(&mut out, b"\n");
-        push(&mut out, b"Tgid:\t");        push_u64(&mut out, tid); push(&mut out, b"\n");
-        push(&mut out, b"Pid:\t");         push_u64(&mut out, tid); push(&mut out, b"\n");
-        push(&mut out, b"PPid:\t");        push_u64(&mut out, ppid); push(&mut out, b"\n");
-        push(&mut out, b"Uid:\t0\t0\t0\t0\n");
-        push(&mut out, b"Gid:\t0\t0\t0\t0\n");
+        push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid); push(&mut out, b"\nPid:\t"); push_u64(&mut out, tid);
+        push(&mut out, b"\nPPid:\t"); push_u64(&mut out, ppid); push(&mut out, b"\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n");
         push(&mut out, b"FDSize:\t");
         // SAFETY: fd_table slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
         let fds = cur.and_then(|c| unsafe { (*c.fd_table.get()).as_ref().cloned() })
             .map(|t| t.count() as u64).unwrap_or(0);
         push_u64(&mut out, fds); push(&mut out, b"\n");
         push(&mut out, b"Groups:\t\n");
-        // SAFETY: mm slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
-        let vm_kb = cur.and_then(|c| unsafe { (*c.mm.get()).as_ref().map(|m| {
-            m.snapshot_vmas().iter()
-                .map(|v| (v.end.as_u64() - v.start.as_u64()) / 1024).sum::<u64>()
-        })}).unwrap_or(0);
-        push(&mut out, b"VmPeak:\t"); push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
-        push(&mut out, b"VmSize:\t"); push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
-        push(&mut out, b"VmRSS:\t");  push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
+        // SAFETY: mm slot single-mutator per `13§5`.
+        let (vm, d, s, e, l) = cur.and_then(|c| unsafe {
+            (*c.mm.get()).as_ref().map(|m| {
+                let (mut v, mut d, mut s, mut e, mut l) = (0u64,0u64,0u64,0u64,0u64);
+                for x in m.snapshot_vmas() {
+                    let kb = (x.end.as_u64() - x.start.as_u64()) / 1024;
+                    v += kb;
+                    if x.flags.contains(vmm::VmaFlags::GROWSDOWN)    { s += kb; }
+                    else if x.prot.contains(vmm::VmaProt::EXEC)      { e += kb; }
+                    else if x.prot.contains(vmm::VmaProt::WRITE)     { d += kb; }
+                    else                                             { l += kb; }
+                } (v, d, s, e, l) })
+        }).unwrap_or((0, 0, 0, 0, 0));
+        let row = |out: &mut alloc::vec::Vec<u8>, k: &[u8], v: u64| { push(out, k); push_u64(out, v); push(out, b" kB\n"); };
+        for &(k, v) in &[(b"VmPeak:\t" as &[u8], vm), (b"VmSize:\t", vm), (b"VmHWM:\t", vm), (b"VmRSS:\t", vm), (b"VmData:\t", d), (b"VmStk:\t", s), (b"VmExe:\t", e), (b"VmLib:\t", l)] { row(&mut out, k, v); }
         push(&mut out, STATUS_TAIL);
         out
     }
 }
 
 const STATUS_TAIL: &[u8] = b"\
-VmData:\t0 kB\nVmStk:\t8 kB\nVmExe:\t4 kB\nVmLib:\t0 kB\n\
 Threads:\t1\n\
 SigQ:\t0/0\n\
 SigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n\
@@ -927,7 +930,6 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
         }
     }
 }
-
 
 /// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
