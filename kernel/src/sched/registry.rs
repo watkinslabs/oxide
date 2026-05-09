@@ -5,7 +5,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub use sched::registry::{insert, live_tids, lookup, tasks_in_pgrp, try_wake_stopped};
+pub use sched::registry::{insert, live_tids, lookup, lookup_in_ns, tasks_in_pgrp, try_wake_stopped};
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
