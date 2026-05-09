@@ -1,6 +1,44 @@
-# State 2026-05-08 (session 51 mid-flight — F59-01..12 landed, F59-13 RX→stack next)
+# State 2026-05-09 (session 52 mid-flight — F63..F80 syscall stub-sweep landed)
 
-## ⚡ Session 52 first task: F59-13 — wire RX into `stack.deliver_rx`
+## ⚡ Session 53 first task: F59-13 — wire RX into `stack.deliver_rx`
+
+Session 52 detoured into a wholesale syscall stub-sweep at user request
+("fill out all the syscalls and fix all the stubs"). 18 PRs landed
+(F63..F80), each replacing a silent-0 / synthetic-success lie with a
+real impl or honest ENOSYS. Breakdown:
+
+  - **F63 #783** clone3 arch-neutral + NUMA single-node silent-0
+  - **F64 #784** real POSIX credentials (Creds on Task: ruid/euid/suid
+                /fsuid + rgid/egid/sgid/fsgid + 32 supplementary groups)
+  - **F65 #785** real set_robust_list / get_robust_list; rseq → ENOSYS
+  - **F66 #786** real capget/capset (cap_effective/permitted/inheritable
+                /ambient/bounding on Creds)
+  - **F67 #787** real syslog(2) reading klog ring as dmesg
+  - **F68 #788** real setdomainname; uname.domainname reads it
+  - **F69 #789** real fallocate (mode 0 truncate-up + ZERO_RANGE)
+  - **F70 #790** real pidfd_getfd
+  - **F71 #791** real POSIX timers (timer_create family) on per-task
+                slot array; fires from syscall-return tail
+  - **F72 #792** real prctl (NO_NEW_PRIVS/KEEPCAPS/PDEATHSIG/SUBREAPER
+                /CAPBSET; default-0 lie → EINVAL on unknown)
+  - **F73 #793** real utimensat / utimes / utime via inode_times overlay
+                (statx reads back atime/mtime/ctime)
+  - **F74 #794** real flock(2) per-inode advisory lock; vfs::File Drop
+                hook for close-time release
+  - **F75 #795** real process_vm_readv / process_vm_writev via existing
+                foreign-mm peek/poke helpers
+  - **F76 #796** real keyring (add_key/request_key/keyctl) — single
+                global ring v1
+  - **F77 #797** real mq_notify + mq_getsetattr on existing posix_mq
+  - **F78 #798** real personality(2) + futimesat alias to utimensat
+  - **F79 #799** real get_mempolicy (single-node UMA writeback)
+  - **F80 #800** honest ENOSYS for futex_waitv + fanotify_mark
+
+All landed with PR-time CI clean on both arches; spec-lint clean;
+900 hosted tests pass, 0 failed. No regressions.
+
+The F59-13 RX-into-stack work that started session 51 is the next
+concrete user-visible step.
 
 End-to-end IPv4/ICMP round-trip through SLIRP works at boot
 (F59-12 #773). Both arches log:
