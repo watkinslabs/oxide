@@ -41,6 +41,8 @@ real impl or honest ENOSYS. Breakdown:
   - **F89 #809** real MAP_FIXED via munmap-then-insert (closes audit PR-G)
   - **D29 #810** kernel-audit doc reflects PR-G closed
   - **F90 #811** real xattr family via per-inode overlay (v2 phase 26 substrate)
+  - **F92 #813** cap-gated setuid/setgid/setgroups/vhangup/capbset (`sched::cap` consts; replaces is_root() lies)
+  - **F93 #814** cap-aware kill/tgkill/pidfd_send_signal (uid match OR CAP_KILL; SIGCONT same-session bypass)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
