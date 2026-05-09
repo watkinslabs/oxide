@@ -697,6 +697,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // pci_boot::virtio_probe_arch when the device id is found.
     drv_virtio_gpu::register();
     drv_virtio_input::register();
+    // SAFETY: kernel_main runs single-CPU pre-init; vt::init allocates VT 1 + sets ACTIVE_VT.
+    let _ = unsafe { vt::init() };
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
