@@ -622,7 +622,7 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
     let path_s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let target: alloc::vec::Vec<u8> = match resolve_proc_link(path_s) {
+    let target: alloc::vec::Vec<u8> = match crate::syscall_glue_proclink::resolve_proc_link(path_s) {
         Some(t) => t,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
@@ -636,76 +636,7 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
     n as i64
 }
 
-fn task_exe_path(tid_opt: Option<u32>) -> alloc::vec::Vec<u8> {
-    let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid),
-        None      => crate::sched::current().and_then(|c|
-            crate::sched::registry::lookup(c.tid)),
-    };
-    if let Some(t) = task {
-        // F62: prefer the recorded exec path (sys_execve's `path`
-        // argument). Busybox readlinks /proc/self/exe to discover
-        // its own binary; without the real path it falls into
-        // dispatcher mode and dumps applet help.
-        // SAFETY: exe_path single-mutator per `13§5`; snapshot.
-        if let Some(s) = unsafe { (*t.exe_path.get()).clone() } {
-            if !s.is_empty() { return s.into_bytes(); }
-        }
-        // Fallback: argv[0] (legacy path; better than `/init`).
-        // SAFETY: cmdline single-mutator per `13§5`.
-        if let Some(s) = unsafe { (*t.cmdline.get()).clone() } {
-            let bytes = s.as_bytes();
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            if end > 0 { return bytes[..end].to_vec(); }
-        }
-    }
-    b"/init".to_vec()
-}
-
-fn task_cwd_path(tid_opt: Option<u32>) -> alloc::vec::Vec<u8> {
-    let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid),
-        None      => crate::sched::current().and_then(|c|
-            crate::sched::registry::lookup(c.tid)),
-    };
-    if let Some(t) = task {
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let snap = unsafe { (*t.cwd.get()).clone() };
-        if !snap.is_empty() { return snap.into_bytes(); }
-    }
-    b"/".to_vec()
-}
-
-fn resolve_proc_link(path: &str) -> Option<alloc::vec::Vec<u8>> {
-    let rest = path.strip_prefix("/proc/")?;
-    let mut parts = rest.splitn(2, '/');
-    let head = parts.next()?;
-    let leaf = parts.next()?;
-    let tid_opt: Option<u32> = if head == "self" { None } else { head.parse().ok() };
-    if head != "self" && tid_opt.is_none() { return None; }
-    if let Some(tid) = tid_opt {
-        if crate::sched::registry::lookup(tid).is_none() { return None; }
-    }
-    match leaf {
-        "exe"  => Some(task_exe_path(tid_opt)),
-        "cwd"  => Some(task_cwd_path(tid_opt)),
-        "root" => Some(b"/".to_vec()),
-        l if l.starts_with("fd/") => task_fd_path(tid_opt, &l[3..]),
-        _      => None,
-    }
-}
-
-fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<alloc::vec::Vec<u8>> {
-    let fd: i32 = fd_str.parse().ok()?;
-    let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid)?,
-        None      => crate::sched::registry::lookup(crate::sched::current()?.tid)?,
-    };
-    // SAFETY: fd_table slot single-mutator per `13§5`.
-    let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
-    let file = fdt.get(fd).ok()?;
-    Some(file.dentry().name().as_bytes().to_vec())
-}
+// proc-link helpers (exe/cwd/root/fd/ns) moved to syscall_glue_proclink.rs (F112).
 
 /// `sys_readlinkat(dirfd, path, buf, bufsize)` — slot 267.
 /// v1 ignores `dirfd` (no real cwd resolution) and routes
