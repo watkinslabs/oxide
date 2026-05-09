@@ -341,6 +341,26 @@ pub struct Task {
     /// mutator on the running task per `13§5`.
     pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
 
+    /// Linux `PR_SET_NO_NEW_PRIVS` flag. Once set, the task and its
+    /// descendants can no longer gain privileges via setuid binaries
+    /// or capability-conferring file caps. Sticky: clearing is not
+    /// allowed by Linux; we mirror that.
+    pub no_new_privs: AtomicBool,
+
+    /// `PR_SET_KEEPCAPS` flag. When 1, transitioning ruid 0→nonzero
+    /// preserves the current cap_permitted instead of clearing it.
+    /// Reset to 0 on each execve per Linux semantics.
+    pub keep_caps: AtomicBool,
+
+    /// `PR_SET_PDEATHSIG` — signal delivered to this task when its
+    /// parent exits. `0` means "no signal". Cleared by execve when
+    /// uid/gid change or setuid bits fire.
+    pub pdeathsig: AtomicU32,
+
+    /// `PR_SET_CHILD_SUBREAPER` flag. When 1, orphaned descendants
+    /// re-parent to this task instead of init.
+    pub child_subreaper: AtomicBool,
+
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
     /// Init starts as root (all zero). fork copies, execve preserves.
@@ -613,6 +633,10 @@ impl Task {
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
+            no_new_privs:   AtomicBool::new(false),
+            keep_caps:      AtomicBool::new(false),
+            pdeathsig:      AtomicU32::new(0),
+            child_subreaper: AtomicBool::new(false),
             creds: Creds::root(),
         }
     }
