@@ -186,14 +186,14 @@ pub fn init() {
     register("/dev/tty",     Arc::clone(&fg));
     register("/dev/tty0",    Arc::clone(&fg));
     register("/dev/ttyS0",   fg);
+    // /dev/tty1..tty63 per Linux MAX_NR_CONSOLES (vt::MAX_NR_CONSOLES).
     for vt in 1..=crate::tty::N_VT as u8 {
-        let path: &'static str = match vt {
-            1 => "/dev/tty1", 2 => "/dev/tty2", 3 => "/dev/tty3",
-            4 => "/dev/tty4", 5 => "/dev/tty5", 6 => "/dev/tty6",
-            _ => continue,
-        };
+        let mut path = alloc::string::String::with_capacity(10);
+        path.push_str("/dev/tty");
+        if vt >= 10 { path.push((b'0' + (vt / 10)) as char); }
+        path.push((b'0' + (vt % 10)) as char);
         let inode: InodeRef = Arc::new(crate::dev_console::ConsoleInode::new(vt));
-        register(path, inode);
+        register_owned(path, inode);
     }
 
     // P3-04 misc char devices.

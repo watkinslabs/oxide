@@ -57,6 +57,11 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     if file.inode().file_type() != vfs::FileType::CharDev {
         return -(Errno::Enotty.as_i32() as i64);
     }
+    // KD_*/VT_* ioctls on /dev/tty<N> + /dev/tty0 + /dev/console
+    // route through the vt crate.
+    if let Some(rv) = handle_vt_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
     let ino = file.inode().ino();
     let pty_pair = if (ino & 0xFFFF_0000) == 0x6000_0000 {
         crate::dev_pty::pair_for((ino & 0x7FFF) as u32)
@@ -206,5 +211,112 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         _ => -(Errno::Enotty.as_i32() as i64),
+    }
+}
+
+/// KD_*/VT_* ioctls on /dev/tty<N> via the vt crate. Returns
+/// `Some(rv)` when the ioctl is recognised; `None` to fall back to
+/// the existing tty-line-discipline path.
+/// # C: O(1)
+fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
+    if inode.file_type() != vfs::FileType::CharDev { return None; }
+    // /dev/tty<N> + /dev/tty0 + /dev/console all use ConsoleInode
+    // whose ino == max(vt, 1); 0 means foreground alias.
+    let ino_low = (inode.ino() & 0xFF) as u8;
+    let vt_target = if ino_low == 1 { vt::active() } else { ino_low };
+    if !(1..=63).contains(&vt_target) { return None; }
+    use syscall::errno::Errno;
+    let errno = |e: Errno| -(e.as_i32() as i64);
+    match req {
+        vt::KDGETMODE => {
+            let v = vt::slot(vt_target).map(|s| s.kd_mode).unwrap_or(vt::KD_TEXT);
+            if arg != 0 && arg < hal::USER_VA_END {
+                // SAFETY: arg validated < USER_VA_END; aligned u32 store of mode value into caller's AS.
+                unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
+            }
+            Some(0)
+        }
+        vt::KDSETMODE => {
+            let mode = arg as u32;
+            match vt::set_kd_mode(vt_target, mode) {
+                Ok(()) => Some(0),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::KDGKBMODE => {
+            let v = vt::slot(vt_target).map(|s| s.kb_mode).unwrap_or(vt::K_XLATE);
+            if arg != 0 && arg < hal::USER_VA_END {
+                // SAFETY: arg validated < USER_VA_END; aligned u32 store.
+                unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
+            }
+            Some(0)
+        }
+        vt::KDSKBMODE => {
+            let mode = arg as u32;
+            match vt::set_kb_mode(vt_target, mode) {
+                Ok(()) => Some(0),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::KDGKBTYPE => {
+            // KB_101 = 2; arg is u8 user pointer.
+            if arg != 0 && arg < hal::USER_VA_END {
+                // SAFETY: arg validated < USER_VA_END; single-byte store.
+                unsafe { core::ptr::write_volatile(arg as *mut u8, 2u8); }
+            }
+            Some(0)
+        }
+        vt::VT_OPENQRY => {
+            let id = match vt::openqry() { Ok(n) => n as u32, Err(_) => return Some(errno(Errno::Ebusy)) };
+            if arg != 0 && arg < hal::USER_VA_END {
+                // SAFETY: arg validated < USER_VA_END; aligned u32 store.
+                unsafe { core::ptr::write_volatile(arg as *mut u32, id); }
+            }
+            Some(0)
+        }
+        vt::VT_GETSTATE => {
+            let st = vt::get_state();
+            if arg == 0 || arg + 6 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
+            // SAFETY: arg validated < USER_VA_END - 6; struct vt_stat is 6 bytes.
+            unsafe {
+                core::ptr::write_volatile(arg as *mut u16, st.v_active);
+                core::ptr::write_volatile((arg + 2) as *mut u16, st.v_signal);
+                core::ptr::write_volatile((arg + 4) as *mut u16, st.v_state);
+            }
+            Some(0)
+        }
+        vt::VT_ACTIVATE => {
+            let n = arg as u8;
+            match vt::activate(n) {
+                Ok(()) => Some(0),
+                Err(vt::Error::Busy) => Some(errno(Errno::Ebusy)),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::VT_WAITACTIVE => {
+            // Synchronous (current single-CPU model): switch already
+            // happened by the time VT_ACTIVATE returned, so this is
+            // a no-op when n matches current; otherwise EINVAL.
+            if (arg as u8) == vt::active() { Some(0) }
+            else { Some(errno(Errno::Einval)) }
+        }
+        vt::VT_DISALLOCATE => {
+            match vt::disallocate(arg as u8) {
+                Ok(()) => Some(0),
+                Err(vt::Error::Busy) => Some(errno(Errno::Ebusy)),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        vt::VT_LOCKSWITCH | vt::VT_UNLOCKSWITCH => {
+            let lock = req == vt::VT_LOCKSWITCH;
+            match vt::lock_switch(vt_target, lock) {
+                Ok(()) => Some(0),
+                Err(_) => Some(errno(Errno::Einval)),
+            }
+        }
+        // KIOCSOUND / KDMKTONE / KDADDIO — accept silently or EPERM.
+        vt::KIOCSOUND | vt::KDMKTONE => Some(0),
+        vt::KDADDIO => Some(errno(Errno::Eperm)),
+        _ => None,
     }
 }
