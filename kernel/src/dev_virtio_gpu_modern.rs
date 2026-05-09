@@ -4,6 +4,8 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+extern crate alloc;
+
 use core::sync::atomic::Ordering;
 
 /// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
@@ -129,31 +131,29 @@ unsafe fn setup_scanout(
     };
     let pitch = w as u64 * 4;
     let fb_bytes = pitch * h as u64;
-    // Allocate the FB as a run of contig 4KiB frames. v1 caps at 16
-    // pages = 64 KiB; large screens (>= 128KiB) defer to follow-up
-    // multi-page-allocator.
-    let pages = ((fb_bytes + 0xFFF) / 0x1000) as usize;
-    if pages == 0 || pages > 16 { return false; }
-    // First frame address; subsequent frames must be the next page
-    // (PMM doesn't guarantee contig alloc — we accept any layout
-    // because RESOURCE_ATTACH_BACKING accepts a scatter list).
-    let mut frames: [u64; 16] = [0; 16];
-    for i in 0..pages {
-        frames[i] = match crate::pmm_setup::alloc_one_frame() {
-            Some(pa) => pa, None => return false,
-        };
-    }
+    let pages_req = ((fb_bytes + 0xFFF) / 0x1000) as usize;
+    if pages_req == 0 { return false; }
+    // Allocate the FB as ONE contig run via the PMM buddy allocator.
+    // Order = ceil_log2(pages_req); 1.92 MiB at 800×600 = 480 pages
+    // → order 9 (512 pages = 2 MiB).
+    let mut order: u32 = 0;
+    while (1usize << order) < pages_req { order += 1; }
+    let base_pa = match crate::pmm_setup::alloc_contig(pmm::Order(order as u8)) {
+        Some(pa) => pa, None => return false,
+    };
+    let pages_alloc = 1usize << order;
+    // Build the per-page mem-entry list (each at +0x1000 offset).
+    let mut frames: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(pages_req);
+    for i in 0..pages_req { frames.push(base_pa + (i as u64) * 0x1000); }
+    let _ = pages_alloc;
     // Paint a solid color into the FB so userspace sees something
     // immediately. BGRA32 dark blue.
-    for i in 0..pages {
-        let va = hhdm.wrapping_add(frames[i]) as *mut u8;
-        let len = if i + 1 == pages {
-            (fb_bytes - (i as u64) * 0x1000) as usize
-        } else { 0x1000 };
-        // SAFETY: HHDM-mapped frame; bounded length within the single page.
+    {
+        let va = hhdm.wrapping_add(base_pa) as *mut u8;
+        // SAFETY: HHDM-mapped contig run of `pages_req * 4 KiB`; bounded length.
         unsafe {
-            let mut j = 0;
-            while j + 4 <= len {
+            let mut j = 0usize;
+            while j + 4 <= fb_bytes as usize {
                 core::ptr::write_volatile(va.add(j),     0x80);  // B
                 core::ptr::write_volatile(va.add(j + 1), 0x10);  // G
                 core::ptr::write_volatile(va.add(j + 2), 0x00);  // R
@@ -172,6 +172,7 @@ unsafe fn setup_scanout(
     ) } { return false; }
     // ---- 2. CMD_RESOURCE_ATTACH_BACKING with N entries ----
     {
+        let pages = frames.len();
         // SAFETY: HHDM-mapped 4 KiB cmd buffer; bounded write of a 32+16*pages-byte struct.
         unsafe {
             for k in 0..0x1000usize {
@@ -228,7 +229,7 @@ unsafe fn setup_scanout(
         klog::write_raw(b"x");
         klog::write_dec_u64(h as u64);
         klog::write_raw(b" pages=");
-        klog::write_dec_u64(pages as u64);
+        klog::write_dec_u64(frames.len() as u64);
         klog::write_raw(b" painted\n");
     }
     true
