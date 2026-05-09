@@ -84,6 +84,42 @@ impl UnixPair {
     }
 }
 
+/// AF_UNIX SOCK_DGRAM per-socket message queue. Each enqueued
+/// `UnixDgram` carries its payload bytes plus the metadata needed
+/// to honor SCM_CREDS / SCM_RIGHTS at recvmsg time. F120 admits the
+/// queue + payload path; F121 wires creds + fd-passing.
+pub struct UnixDgramQueue {
+    pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
+}
+
+pub struct UnixDgram {
+    pub payload: Vec<u8>,
+    /// Sender's (pid, uid, gid) at sendmsg time. (0, 0, 0) if unset.
+    pub creds: (u32, u32, u32),
+    /// fds-to-pass — placeholder for SCM_RIGHTS. F121 wires the real
+    /// kernel-side Arc<File> capture; F120 keeps the field at length
+    /// zero (caller's cmsg parsing ignores).
+    pub fds: Vec<u32>,
+}
+
+impl UnixDgramQueue {
+    /// # C: O(1)
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { msgs: Spinlock::new(VecDeque::new()) })
+    }
+    /// Push a complete dgram onto the queue.
+    /// # C: O(1)
+    pub fn push(&self, msg: UnixDgram) {
+        self.msgs.lock().push_back(msg);
+    }
+    /// Pop one dgram if any. Returns the full message (caller copies
+    /// payload + cmsgs into user buffers).
+    /// # C: O(1)
+    pub fn pop(&self) -> Option<UnixDgram> {
+        self.msgs.lock().pop_front()
+    }
+}
+
 /// AF_UNIX path-bound listener. `bind(path)` inserts one into
 /// `UnixRegistry`; `connect(path)` looks it up + allocates a
 /// fresh `UnixPair`, queues the listener's-side handle into the
