@@ -1,6 +1,8 @@
 # 48 fbdev (legacy framebuffer)
 
-DRAFT 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47`. Provides:`/dev/fb0`,`49` (fbcon backend),legacy SDL/efifb/`Xorg fbdev` userspace.
+FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47`. Provides:`/dev/fb0..fbN`,`49` (fbcon backend),legacy SDL/efifb/`Xorg fbdev` userspace.
+
+Full Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. No deferrals.
 
 ## 1 Purpose
 
@@ -9,11 +11,11 @@ Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. `/dev/fb0` is a memory-map
 ## 2 Invariants (frozen)
 
 1. `/dev/fb0` ino = `0x70010000`. devfs registers at boot AFTER `47` (DRM) registers a backing card.
-2. There is exactly ONE fbdev device on v1 (`/dev/fb0`); multi-head display rides v2.x.
-3. The backing buffer is a DRM dumb-buffer + a SETCRTC binding it to scanout 0. fbdev does NOT own its own pixel memory; releasing `/dev/fb0` does not free pages.
-4. `mmap(/dev/fb0)` returns the same pa range that DRM's MAP_DUMB returns — userspace dumping pixels via fbdev sees the same memory the DRM client sees.
-5. Pixel format frozen at boot from the backing FB: 32 bpp BGRA on v1 (matches `45§6` virtio-gpu B8G8R8A8). `PUT_VSCREENINFO` rejecting changing bpp is a v2.x relaxation.
-6. Resolution change via `PUT_VSCREENINFO` requires a DRM modeset under the hood; v1 rejects with `EINVAL` if the requested mode isn't in the connector's mode list.
+2. One `/dev/fbN` per active scanout (CRTC). Multi-head display exposes `/dev/fb0`, `/dev/fb1`, ... in scanout-id order.
+3. The backing buffer is a DRM dumb-buffer + a SETCRTC binding. fbdev does NOT own its own pixel memory; releasing `/dev/fbN` does not free pages.
+4. `mmap(/dev/fbN)` returns the same pa range that DRM's MAP_DUMB returns — userspace dumping pixels via fbdev sees the same memory the DRM client sees.
+5. Pixel formats: every fb_var_screeninfo configuration that maps to a `45§6` format is accepted: 8/15/16/24/32 bpp; pseudocolor (CMAP) for 8 bpp; truecolor for 15/16/24/32. `FBIOPUT_VSCREENINFO` reallocates the backing dumb-buffer if bpp or resolution changes.
+6. Resolution change via `PUT_VSCREENINFO` performs a DRM modeset; rejected with `EINVAL` only if the requested mode isn't in the connector's mode list.
 
 ## 3 Public ifc
 
@@ -107,13 +109,13 @@ Bitfields for 32 bpp BGRA on v1:
 | `FB_VISUAL_STATIC_PSEUDOCOLOR` | `5` |
 | `FB_ACCEL_NONE` | `0` |
 
-V1 always reports `FB_VISUAL_TRUECOLOR` + `FB_TYPE_PACKED_PIXELS` + `FB_ACCEL_NONE`.
+Visual reported per current fb_var bpp: 8 bpp = `FB_VISUAL_PSEUDOCOLOR`, 15/16/24/32 bpp = `FB_VISUAL_TRUECOLOR`. `FB_TYPE_PACKED_PIXELS` always; `FB_ACCEL_NONE` (acceleration ioctls handled by DRM render-node).
 
 ## 7 mmap semantics
 
 `mmap(fd, len, PROT_RW, MAP_SHARED, /dev/fb0_fd, off=0)`:
 1. Map the underlying DRM dumb-buffer's pa range into the caller's user VA.
-2. PTE flags: read+write+user, write-back cacheable. Userspace + kernel-side fbcon both read+write the same pages; cache coherency is handled by virtio-gpu's `TRANSFER_TO_HOST_2D` issued from the fbcon scroll path or explicit `FBIO_WAITFORVSYNC` / `FBIO_FLUSH` (v2.x extension).
+2. PTE flags: read+write+user, write-back cacheable. Userspace + kernel-side fbcon both read+write the same pages; cache coherency is handled by virtio-gpu's `TRANSFER_TO_HOST_2D` issued from the fbcon scroll path or explicit `FBIO_WAITFORVSYNC` / `FBIO_FLUSH` ioctls.
 3. Length must equal `smem_len`; partial mappings rejected with `EINVAL`.
 
 ## 8 read/write
@@ -141,15 +143,23 @@ V1 always reports `FB_VISUAL_TRUECOLOR` + `FB_TYPE_PACKED_PIXELS` + `FB_ACCEL_NO
 - write smoke: `dd if=red.bgra of=/dev/fb0 bs=1024 count=1` shows a red strip top-left of host display.
 - Coverage ≥80%.
 
-## 12 Cross-spec
+## 16 Cross-spec
 
 `47` (DRM provides backing buffer + scanout binding), `45` (virtio-gpu issues actual TRANSFER_TO_HOST), `49` (fbcon writes glyphs into the same fb), `19` (devfs node).
 
-## 13 v2.x deferrals
+## 13 Pan-display + double-buffering
 
-- Variable bpp via `FBIOPUT_VSCREENINFO` (16/24/30bpp)
-- Multi-head (`/dev/fb1`, `/dev/fb2`)
-- Hardware acceleration ioctls (`FBIO_CURSOR`, `FBIO_BLIT`)
-- Real CMAP for pseudocolor visuals
-- Pan-display with double-buffering
-- Real `FBIO_WAITFORVSYNC` synced to host vsync (currently fake 60Hz)
+`FBIOPAN_DISPLAY` accepts `(xoffset, yoffset)` pairs that adjust where the visible window starts within the larger virtual framebuffer. Allocators set `yres_virtual = 2 * yres` to enable double-buffering: render to `[yres..2*yres]`, pan to view, then swap roles. Pan completion synced to host vblank via the underlying `47` PAGE_FLIP path.
+
+## 14 CMAP for pseudocolor
+
+`FBIOGETCMAP` / `FBIOPUTCMAP` operate on a 256-entry `fb_cmap`:
+```c
+struct fb_cmap {
+    __u32 start, len;
+    __u16 *red, *green, *blue, *transp;   // 16-bit values
+};
+```
+
+In `FB_VISUAL_PSEUDOCOLOR` mode (8 bpp), the cmap is the active palette. In truecolor visuals (15/16/24/32 bpp) the cmap is identity and writes are stored but ignored at scanout.
+

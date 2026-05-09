@@ -1,6 +1,8 @@
 # 46 virtio-input
 
-DRAFT 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50`. Provides:`drv-virtio-input`,`50` (VT keyboard backend),evdev `/dev/input/event*`.
+FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50`. Provides:`drv-virtio-input`,`50` (VT keyboard backend),evdev `/dev/input/event*`.
+
+Full Linux compat surface per `linux/include/uapi/linux/input.h` + `input-event-codes.h` + virtio 1.2 §5.8. No deferrals.
 
 ## 1 Purpose
 
@@ -150,10 +152,32 @@ EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group
 
 `34` (PCI host bridge for device discovery), `35` (driver-model trait), `50` (VT keyboard input consumer), `15§5` (poll(2)/read(2) on event fds).
 
-## 13 v2.x deferrals
+## 13 Tablet + touchscreen + multi-touch
 
-- Tablet absolute-position (`-device virtio-tablet-pci`) — config probe works v1, full ABS-axis range/calibration v2.x
-- Touchscreen multi-touch (`MT_*` slot codes)
-- Force-feedback (`EV_FF`)
-- Per-device autorepeat enforcement (currently stored from EVIOCSREP but not honored)
-- LED autonomous management (caps lock, num lock — works via STATUSQ but VT-side LED-update path lands with `50`)
+ABS-axis devices (tablets, touchscreens) report ABS_X / ABS_Y / ABS_PRESSURE per `linux/Documentation/input/event-codes.rst`. Full ABS_INFO (min/max/fuzz/flat/res) read from config-space and forwarded via `EVIOCGABS`.
+
+Multi-touch via the Linux MT-B protocol (slotted) per `linux/Documentation/input/multi-touch-protocol.rst`:
+
+| Code | Meaning |
+|---|---|
+| `ABS_MT_SLOT` (0x2f) | active slot id |
+| `ABS_MT_TRACKING_ID` (0x39) | per-touch tracking id; `-1` = release |
+| `ABS_MT_POSITION_X` / `_Y` | per-touch position |
+| `ABS_MT_PRESSURE` | per-touch pressure |
+| `ABS_MT_TOUCH_MAJOR` / `_MINOR` | contact area axes |
+| `ABS_MT_ORIENTATION` | contact rotation |
+| `BTN_TOUCH` | aggregate "any contact present" flag |
+
+`SYN_REPORT` terminates each multi-touch frame; `SYN_MT_REPORT` legacy MT-A code accepted but driver always emits MT-B.
+
+## 14 Force feedback (EV_FF)
+
+When the device exposes `EV_FF` in its capability bitmap, `EVIOCSFF` uploads an effect, `EVIOCRMFF` removes it, and writes to the fd of `(EV_FF, effect_id, value)` start/stop playback. Effect types per `linux/include/uapi/linux/input.h`: `FF_RUMBLE`, `FF_PERIODIC` (sine/triangle/sawtooth/square), `FF_CONSTANT`, `FF_SPRING`, `FF_FRICTION`, `FF_DAMPER`, `FF_INERTIA`, `FF_RAMP`. Driver round-trips these to the host via STATUSQ.
+
+## 15 Autorepeat
+
+`EVIOCSREP` accepts `int[2] = [delay_ms, period_ms]`. Driver enforces the schedule kernel-side: when an `EV_KEY` press is received and not released for `delay_ms`, the driver injects synthetic `(EV_KEY, code, 2)` events at `period_ms` intervals into the read-side stream.
+
+## 16 LEDs
+
+Caps Lock / Num Lock / Scroll Lock LED state lives on the device. `EVIOCGLED` reads the bitmap; the VT layer (`50`) calls `set_led(dev_id, led, on)` which sends a STATUSQ event `(EV_LED, code, value)` to the host. Caps + Num + Scroll LED toggling driven by the matching modifier keys is handled in `50` (VT) so the kernel keymap layer owns the policy.

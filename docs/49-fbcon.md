@@ -1,6 +1,8 @@
 # 49 fbcon (kernel framebuffer console)
 
-DRAFT 2026-05-09. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
+FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
+
+Full Linux fbcon-equivalent surface per `linux/drivers/video/console/fbcon.c` + `linux/drivers/tty/vt/vt.c` console code paths. No deferrals.
 
 ## 1 Purpose
 
@@ -8,12 +10,12 @@ Linux fbcon-equivalent kernel module per `linux/drivers/video/console/fbcon.c`. 
 
 ## 2 Invariants (frozen)
 
-1. Font format is PSF v1 (`PSF1_MAGIC=0x36 0x04`) and PSF v2 (`PSF2_MAGIC=0x72 0xb5 0x4a 0x86`) per `linux/include/uapi/linux/console.h` `pcscreen_font.h`. v1 ships ONE compiled-in font: 8x16 IBM VGA (256 glyphs, no Unicode table); future fonts ride v2.x via `KDFONTOP`.
-2. Default cell size 8×16 px → 80×30 cell grid at 640×480; 80×25 at 640×400.
-3. Backing surface: a single DRM dumb-buffer per VT (allocated lazily on first write) sized to `xres × yres × 4 bytes`; format BGRA per `48§4`.
-4. Scrolling is software memmove on the backing buffer (top→bottom shift, last line cleared); after each scroll, fbcon issues a virtio-gpu TRANSFER + FLUSH for the changed region.
-5. ANSI parser handles: CSI `m` (SGR colors + reset + bold), CSI `H` / `f` (cursor pos), CSI `J`/`K` (erase), CSI `A`/`B`/`C`/`D` (cursor move), CSI `n` (DSR), CSI `r` (scroll region), `\r` `\n` `\b` `\t`, `\x1b 7` / `\x1b 8` (save/restore cursor). Linux's full vt102 emulation tail (DECSET/DECRST modes, mouse, etc.) rides v2.x.
-6. Color palette: 16-color VGA palette per Linux `linux/drivers/video/console/vgacon.c`; 256-color + 24-bit truecolor supported in CSI 38;5;N / 38;2;R;G;B sequences.
+1. Font format PSF v1 (`PSF1_MAGIC=0x36 0x04`) and PSF v2 (`PSF2_MAGIC=0x72 0xb5 0x4a 0x86`) per `linux/include/uapi/linux/kd.h` + `pcscreen_font.h`. Compiled-in defaults: 8×16 IBM VGA, 8×8 mini, 16×32 SUN. Runtime font load via `KDFONTOP` (`50` VT layer).
+2. Cell size matches loaded font; cell grid = `(xres / cw, yres / ch)`. Default 8×16 → 80×30 @ 640×480 / 80×25 @ 640×400 / 100×37 @ 800×600 / 128×48 @ 1024×768.
+3. Backing surface: one DRM dumb-buffer per VT (allocated lazily on first write) sized to `xres × yres × bpp/8`; format honours the active fbdev pixel format per `48`.
+4. Scrolling is software memmove on the backing buffer (top→bottom shift, last line cleared); fbcon issues a single virtio-gpu TRANSFER + FLUSH covering the dirty rect after each batch.
+5. Full vt102 / xterm-256color emulation per `terminfo` `linux` + `xterm-256color` entries: CSI/OSC/DCS escape parsing, DECSET/DECRST modes, mouse (X10/normal/SGR), bracketed paste, OSC 52 clipboard, OSC 4/10/11/12 palette set/query, CSI `?7`/`?25`/`?47`/`?1049` (alt-screen), CSI `t` (window manipulation).
+6. Color palette: 16-color VGA palette default; 256-color xterm cube; 24-bit truecolor via `CSI 38;2;R;G;B m`. Palette runtime-mutable via OSC 4 / `CSI ] 4 ; n ; rgb:RR/GG/BB ESC \`.
 
 ## 3 Public ifc
 
@@ -139,18 +141,22 @@ Block cursor drawn as inverted cell at `(cursor_col, cursor_row)`. Blinks at 2 H
 - Cursor pos smoke: `\x1b[10;20H` sets cursor to row 9 col 19 (0-indexed in our addressing).
 - Coverage ≥80% of `crates/fbcon`.
 
-## 13 Cross-spec
+## 13 Wide / composing / bidi
+
+UTF-8 input parsed to Unicode code points; East-Asian wide characters (CJK Unified Ideographs, Hangul Syllables, full-width forms per `EastAsianWidth.txt`) take TWO cells; cursor advance respects the width.
+
+Combining characters (Unicode general category `Mn`/`Me`/`Mc`) merge into the previous cell's glyph stack; fbcon renders them by overlay-blitting each combining glyph onto the base cell's bitmap. Cell attribute storage is 64-bit per cell to fit (fg:24, bg:24, attrs:8, combining-stack-id:8).
+
+Bidi reordering per UAX#9: when the active VT has `KD_RTL` enabled (Linux `fbcon=rotate:N`-style runtime flag), each line is reordered visually before rendering. Default is LTR.
+
+## 14 GPU-accelerated glyph blit
+
+Where the underlying driver advertises a hardware-accelerated rect-fill / rect-copy primitive (i915 BLT, amdgpu CB, virtio-gpu via VIRGL `glBlitFramebuffer`), fbcon delegates the per-line scroll memmove + the per-cell solid-color clear paths to GPU; falls back to CPU memmove for software-only drivers.
+
+## 15 Subpixel + freetype
+
+When a TrueType font is loaded via `KDFONTOP(KD_FONT_OP_SET_DEFAULT)` with a TTF blob, fbcon hands rendering to a kernel-bundled subset of FreeType (mono + grayscale only — LCD subpixel anti-aliasing lives in user-side renderers). Default fonts stay PSF.
+
+## 16 Cross-spec
 
 `47` (DRM dumb-buffer + atomic commit), `48` (fbdev shares the same backing buffer, so `dd > /dev/fb0` and fbcon writes coexist), `50` (VT layer drives this for tty1..6 in KD_TEXT mode), `28` (tty line discipline feeds keystrokes back to the active VT's stdin).
-
-## 14 v2.x deferrals
-
-- Multi-font support (`KDFONTOP`)
-- True double-buffering (currently single-buffer + flush)
-- GPU-accelerated glyph blit
-- Subpixel rendering / freetype
-- Sixel / SGR mouse / OSC 52 paste
-- Wide character (East-Asian) rendering
-- Composing-character handling
-- Bidi
-- Per-cell character attributes wider than 32 bit (we keep `(fg:8, bg:8, attr:8)` v1)
