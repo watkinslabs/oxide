@@ -30,6 +30,14 @@ use crate::{Error, KResult};
 /// bound is in `01§1`).
 pub const MIN_USER_VA: u64 = PAGE_SIZE_BYTES;
 
+/// Top of the mmap arena used by anon mmap with no hint. Linux places
+/// anonymous mmaps in a high-address region below the stack and grows
+/// downward (`arch_get_unmapped_area_topdown`). Our v1 uses a fixed
+/// mmap_base = USER_VA_END - 0x40000 (256 KiB below the top), with the
+/// initial-exec stack reserving the top 128 KiB at `USER_VA_END - 0x20000`.
+/// 256 KiB headroom keeps the stack VMA out of the mmap-search path.
+pub const MMAP_TOP: u64 = USER_VA_END - 0x40000;
+
 /// Per-process AS. Public surface mirrors `11§3`. The Page Table side
 /// (`11§9`) lives in `root_pa`: the PA of this AS's top-level table
 /// (PML4 on x86_64; L0 on aarch64). `MmuOps::activate(root_pa)`
@@ -620,20 +628,36 @@ fn hole_clear(tree: &VmaTree, start: UserVirtAddr, end: UserVirtAddr) -> bool {
     true
 }
 
-/// First-fit hole search across `[MIN_USER_VA, USER_VA_END)`.
-/// # C: O(N)
+/// Top-down hole search starting at `MMAP_TOP`, descending toward
+/// `MIN_USER_VA`. Mirrors Linux `arch_get_unmapped_area_topdown` —
+/// anonymous mmap with no hint lands in the high-address mmap arena,
+/// not at low addresses where userspace doesn't expect them
+/// (programs assume mmap returns strictly above `.text`). The search
+/// returns the *highest* candidate `cand` in `[MIN_USER_VA, MMAP_TOP)`
+/// such that `[cand, cand+len)` is hole.
+/// # C: O(N) over VMAs (one ascending walk + reverse over a small Vec)
 fn find_hole(tree: &VmaTree, len: u64) -> Option<UserVirtAddr> {
-    let mut cursor = MIN_USER_VA;
+    if len == 0 || len > MMAP_TOP - MIN_USER_VA { return None; }
+    // Snapshot VMA spans clipped to [MIN_USER_VA, MMAP_TOP) into a
+    // Vec we can reverse-iterate.
+    let mut vmas: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
     for v in tree.iter() {
-        let s = v.start.as_u64();
-        if s > cursor && s - cursor >= len {
-            return UserVirtAddr::new(cursor);
-        }
-        let e = v.end.as_u64();
-        if e > cursor { cursor = e; }
+        let s = v.start.as_u64().max(MIN_USER_VA);
+        let e = v.end.as_u64().min(MMAP_TOP);
+        if e > s { vmas.push((s, e)); }
     }
-    if USER_VA_END.checked_sub(cursor)? >= len {
-        UserVirtAddr::new(cursor)
+    // Walk gaps from highest to lowest.
+    let mut top = MMAP_TOP;
+    for &(s, e) in vmas.iter().rev() {
+        // Gap is [e, top). If it fits, place at top-len (highest).
+        if top.saturating_sub(e) >= len {
+            return UserVirtAddr::new(top - len);
+        }
+        top = s;
+    }
+    // Final gap: [MIN_USER_VA, top).
+    if top.saturating_sub(MIN_USER_VA) >= len {
+        UserVirtAddr::new(top - len)
     } else {
         None
     }

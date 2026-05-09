@@ -74,54 +74,48 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // 1a. Snapshot argv + envp from the OLD user AS into kernel
     //     storage. After we activate the new AS, the old user
     //     pages are unmapped and the user-side argv/envp pointers
-    //     would resolve to nothing. v1 caps: 8 entries each, 64
-    //     bytes per string.
-    const MAX_VEC: usize = 8;
-    const MAX_STR: usize = 64;
-    let mut argv_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut argv_len = [0usize; MAX_VEC];
-    let mut argc: usize = 0;
-    let mut envp_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut envp_len = [0usize; MAX_VEC];
-    let mut envc: usize = 0;
-    if args.a1 != 0 && args.a1 < USER_VA_END {
-        let argv_uva = args.a1;
-        for i in 0..MAX_VEC {
-            let p = argv_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: argv array entries are 8-byte aligned per Linux ABI; we bound at MAX_VEC; CPL=0 reads through user mapping pre-activate.
+    //     would resolve to nothing. Linux ARG_MAX = 128 KiB total
+    //     across both vectors; per-string limit is 32 pages. We
+    //     enforce a generous total budget; per-string we cap at
+    //     PATH_MAX-equivalent (4 KiB).
+    const ARG_MAX_BYTES: usize  = 128 * 1024;   // Linux ARG_MAX
+    const ARG_MAX_ENTRIES: usize = 1024;        // generous; Linux unlimited
+    const ARG_MAX_STR: usize    = 4096;
+    let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut envp_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut total_bytes: usize = 0;
+    let read_vec = |uva: u64,
+                    out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+                    total: &mut usize| -> bool {
+        if uva == 0 || uva >= USER_VA_END { return true; }
+        for i in 0..ARG_MAX_ENTRIES {
+            let p = uva + (i as u64) * 8;
+            if p >= USER_VA_END { return false; }
+            // SAFETY: argv/envp entries are 8-byte aligned per Linux ABI; bounded ARG_MAX_ENTRIES; CPL=0 reads through caller's active AS.
             let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 { break; }
-            if s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read of user string up to MAX_STR; CPL=0 reads through caller's AS.
+            if s == 0 { return true; }
+            if s >= USER_VA_END { return false; }
+            let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            for j in 0..ARG_MAX_STR {
+                // SAFETY: bounded read up to ARG_MAX_STR from user pointer < USER_VA_END; CPL=0 reads through caller's AS.
                 let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { argv_len[i] = j; break; }
-                argv_buf[i][j] = b;
-                argv_len[i] = j + 1;
+                if b == 0 { break; }
+                buf.push(b);
+                *total += 1;
+                if *total > ARG_MAX_BYTES { return false; }
             }
-            argc += 1;
+            out.push(buf);
         }
+        true
+    };
+    if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
     }
-    if args.a2 != 0 && args.a2 < USER_VA_END {
-        let envp_uva = args.a2;
-        for i in 0..MAX_VEC {
-            let p = envp_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: envp array entries 8-byte aligned per Linux ABI; bounded MAX_VEC; CPL=0 reads through user mapping pre-activate.
-            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 { break; }
-            if s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read of user string up to MAX_STR; CPL=0 reads through caller's AS.
-                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { envp_len[i] = j; break; }
-                envp_buf[i][j] = b;
-                envp_len[i] = j + 1;
-            }
-            envc += 1;
-        }
+    if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
     }
+    let argc = argv_vec.len();
+    let envc = envp_vec.len();
 
     // 1. Allocate new PT root for the post-execve AS.
     // SAFETY: master PML4 captured at user_as::init; PMM up.
@@ -210,11 +204,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    // Materialise stack-allocated &[&[u8]] slices for the OLD-AS snapshot.
-    let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
-    let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
+    // Materialise &[&[u8]] slices for the OLD-AS snapshot from the
+    // heap-allocated argv/envp Vecs.
+    let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+    let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
     let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
@@ -339,50 +332,45 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     let blob: &[u8] = &blob_vec;
 
     // 1a. Snapshot argv / envp from the OLD AS (still active TTBR0).
-    const MAX_VEC: usize = 8;
-    const MAX_STR: usize = 64;
-    let mut argv_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut argv_len = [0usize; MAX_VEC];
-    let mut argc: usize = 0;
-    let mut envp_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut envp_len = [0usize; MAX_VEC];
-    let mut envc: usize = 0;
-    if args.a1 != 0 && args.a1 < USER_VA_END {
-        let argv_uva = args.a1;
-        for i in 0..MAX_VEC {
-            let p = argv_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: 8-byte aligned argv array entry per Linux ABI; bound at MAX_VEC; CPL=EL1 read through caller's TTBR0 pre-activate.
+    // Linux ARG_MAX = 128 KiB total; per-string PATH_MAX = 4 KiB.
+    const ARG_MAX_BYTES: usize  = 128 * 1024;
+    const ARG_MAX_ENTRIES: usize = 1024;
+    const ARG_MAX_STR: usize    = 4096;
+    let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut envp_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut total_bytes: usize = 0;
+    let read_vec = |uva: u64,
+                    out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+                    total: &mut usize| -> bool {
+        if uva == 0 || uva >= USER_VA_END { return true; }
+        for i in 0..ARG_MAX_ENTRIES {
+            let p = uva + (i as u64) * 8;
+            if p >= USER_VA_END { return false; }
+            // SAFETY: 8-byte aligned argv/envp entry per Linux ABI; bounded ARG_MAX_ENTRIES; EL1 read through caller's TTBR0 pre-activate.
             let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 || s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read up to MAX_STR bytes of user string; same CR3/TTBR0 precondition as the array read above.
+            if s == 0 { return true; }
+            if s >= USER_VA_END { return false; }
+            let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            for j in 0..ARG_MAX_STR {
+                // SAFETY: bounded read up to ARG_MAX_STR; user pointer < USER_VA_END; pre-activate TTBR0 resolves caller's user mapping.
                 let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { argv_len[i] = j; break; }
-                argv_buf[i][j] = b;
-                argv_len[i] = j + 1;
+                if b == 0 { break; }
+                buf.push(b);
+                *total += 1;
+                if *total > ARG_MAX_BYTES { return false; }
             }
-            argc += 1;
+            out.push(buf);
         }
+        true
+    };
+    if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
     }
-    if args.a2 != 0 && args.a2 < USER_VA_END {
-        let envp_uva = args.a2;
-        for i in 0..MAX_VEC {
-            let p = envp_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: 8-byte aligned envp array entry; bounded MAX_VEC; same TTBR0 precondition.
-            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 || s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read up to MAX_STR bytes; pre-activate so caller's user mapping resolves.
-                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { envp_len[i] = j; break; }
-                envp_buf[i][j] = b;
-                envp_len[i] = j + 1;
-            }
-            envc += 1;
-        }
+    if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
     }
+    let argc = argv_vec.len();
+    let envc = envp_vec.len();
 
     // 2. Allocate new PT root + build the post-execve AS.
     // SAFETY: master L0 captured at user_as::init; PMM up; new_user_l0 returns a fresh frame zeroed and populated with the kernel half.
@@ -455,10 +443,8 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
-    let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
+    let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+    let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
     let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
