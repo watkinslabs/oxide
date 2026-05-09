@@ -889,6 +889,7 @@ pub mod pf_recover_smoke;
 // gates inside the module.
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-syscall"))] pub mod syscall_trace;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
