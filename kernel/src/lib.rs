@@ -146,6 +146,8 @@ pub mod syscall_glue_falloc;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_timers;
 #[cfg(target_os = "oxide-kernel")]
+pub mod syscall_glue_prctl;
+#[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_epoll;
