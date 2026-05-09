@@ -24,39 +24,78 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
-/// Flat path → inode map. v1 single-CPU UP with `TaskList` lock
-/// class (matching the rank used elsewhere for boot-time
-/// kernel-state registries).
-static REGISTRY: Spinlock<Vec<(String, InodeRef)>, TaskListClass>
+/// Per-mount-NS path → inode map. F119 / `16§R01`. Each entry is
+/// scoped to a mount_ns id; init NS uses id=0. Lookup tries the
+/// caller's mount_ns first, then falls back to 0 so init-NS bind
+/// mounts and boot-time entries remain visible from every NS unless
+/// shadowed.
+pub(crate) static REGISTRY: Spinlock<Vec<(u64, String, InodeRef)>, TaskListClass>
     = Spinlock::new(Vec::new());
 
-/// Register a path → inode mapping (boot-time, &'static str).
-/// Idempotent: last writer wins.
+/// Register a path → inode mapping in the init NS (mount_ns=0).
+/// Boot-time uses this. Runtime callers from non-init mount-NS
+/// should use `register_in_ns`.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N)
 pub fn register(path: &'static str, inode: InodeRef) {
     register_owned(String::from(path), inode);
 }
 
-/// Same as `register` but accepts an owned String — used at runtime
-/// for dynamically-allocated paths (e.g. `/dev/pts/<n>` per `28§5`).
+/// Owned-string variant — runtime registration in init NS.
 /// # C: O(N)
 pub fn register_owned(path: String, inode: InodeRef) {
+    register_in_ns(0, path, inode);
+}
+
+/// Register `(path, inode)` in the given mount_ns. Idempotent within
+/// that NS (last writer wins).
+/// # C: O(N)
+pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
     let mut g = REGISTRY.lock();
-    if let Some(slot) = g.iter_mut().find(|(p, _)| *p == path) {
-        slot.1 = inode;
+    if let Some(slot) = g.iter_mut().find(|(n, p, _)| *n == ns && *p == path) {
+        slot.2 = inode;
     } else {
-        g.push((path, inode));
+        g.push((ns, path, inode));
     }
 }
 
-/// Look up a path. Returns `Some(inode)` on hit. Applies the calling
-/// task's chroot prefix (F95) before matching against the registry.
+/// Look up a path. Tries caller's mount_ns first, then init NS.
+/// Applies the chroot prefix (F95) before matching.
 /// # C: O(N)
 pub fn lookup(path: &str) -> Option<InodeRef> {
     let resolved = chroot_resolve(path);
+    let cur_ns = crate::sched::current()
+        .map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire))
+        .unwrap_or(0);
     let g = REGISTRY.lock();
-    g.iter().find(|(p, _)| p.as_str() == resolved.as_str()).map(|(_, i)| Arc::clone(i))
+    // Caller's NS first.
+    if cur_ns != 0 {
+        if let Some((_, _, i)) = g.iter().find(|(n, p, _)| *n == cur_ns && p.as_str() == resolved.as_str()) {
+            return Some(Arc::clone(i));
+        }
+    }
+    // Init NS fallback.
+    g.iter().find(|(n, p, _)| *n == 0 && p.as_str() == resolved.as_str()).map(|(_, _, i)| Arc::clone(i))
+}
+
+/// Snapshot every (path, inode) entry in `src_ns` into `dst_ns`.
+/// Used by unshare(CLONE_NEWNS) to give a fresh NS the parent's
+/// view of the mount tree at unshare time. Per-mount CoW rides v2.
+/// # C: O(N)
+pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
+    let mut g = REGISTRY.lock();
+    let mut adds: Vec<(u64, String, InodeRef)> = Vec::new();
+    for (ns, p, i) in g.iter() {
+        if *ns == src_ns {
+            adds.push((dst_ns, p.clone(), Arc::clone(i)));
+        }
+    }
+    for (ns, p, i) in adds {
+        // Insert without dedupe; src_ns shouldn't have duplicates.
+        if !g.iter().any(|(n, q, _)| *n == ns && *q == p) {
+            g.push((ns, p, i));
+        }
+    }
 }
 
 /// Apply the calling task's chroot root to an absolute path. Relative
@@ -165,15 +204,22 @@ impl Inode for PrefixDirInode {
     ) -> KResult<u64> {
         // Phase 1: walk the devfs registry for synthetic / overlay
         // children of `self.prefix`. Inode-numbered offsets 1..=R.
+        // F119: registry tuple is (ns, path, inode); filter to caller's
+        // mount_ns plus init NS (0) for shared boot entries.
+        let cur_ns = crate::sched::current()
+            .map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire))
+            .unwrap_or(0);
         let g = REGISTRY.lock();
         let r_len = g.len() as u64;
         let mut idx = off as usize;
         while idx < g.len() {
-            let (path, inode) = &g[idx];
-            if let Some(name) = procfs::paths::child_under(self.prefix, path) {
-                let next = idx as u64 + 1;
-                if !f(next, name, inode.file_type()) {
-                    return Ok(next);
+            let (ns, path, inode) = &g[idx];
+            if (*ns == cur_ns || *ns == 0) {
+                if let Some(name) = procfs::paths::child_under(self.prefix, path) {
+                    let next = idx as u64 + 1;
+                    if !f(next, name, inode.file_type()) {
+                        return Ok(next);
+                    }
                 }
             }
             idx += 1;
