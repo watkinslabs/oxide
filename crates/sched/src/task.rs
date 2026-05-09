@@ -383,6 +383,20 @@ pub struct Task {
     /// their own NS's network interfaces.
     pub net_ns: AtomicU64,
 
+    /// PID namespace id (CLONE_NEWPID). Default 0 (init NS).
+    /// Tasks in non-zero pid_ns get virtualized pids via `vtgid`/`vtid`.
+    pub pid_ns: AtomicU64,
+    /// Virtualised tgid as seen from this task's pid_ns. `0` means
+    /// "use the real tgid" (init-NS shortcut).
+    pub vtgid:  AtomicU32,
+    /// Virtualised tid (per-thread) as seen from this task's pid_ns.
+    /// `0` means "use the real tid".
+    pub vtid:   AtomicU32,
+    /// True if `unshare(CLONE_NEWPID)` ran on this task and the next
+    /// fork from it should land the child in a fresh pid_ns. Cleared
+    /// by the fork dispatcher.
+    pub unshare_pid_pending: AtomicBool,
+
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
     /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
@@ -744,6 +758,10 @@ impl Task {
             root:           UnsafeCell::new(alloc::string::String::from("/")),
             ipc_ns:         AtomicU64::new(0),
             net_ns:         AtomicU64::new(0),
+            pid_ns:         AtomicU64::new(0),
+            vtgid:          AtomicU32::new(0),
+            vtid:           AtomicU32::new(0),
+            unshare_pid_pending: AtomicBool::new(false),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
