@@ -589,6 +589,21 @@ fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     frame.rip    = sa.handler;
     frame.rsp    = ret;
     frame.rflags = 0x202;
+    // F158: rewrite the saved-scratch slots that oxide_fault_common
+    // pops back into rdi/rsi/rdx before iretq, so the user handler
+    // sees Linux ABI args:
+    //   rdi = sig num (11)
+    //   rsi = ptr to siginfo_t (only meaningful with SA_SIGINFO)
+    //   rdx = ptr to ucontext_t (only meaningful with SA_SIGINFO)
+    // Per fault.rs stack diagram, the slots are at frame_ptr -
+    // 0x30 (rdi), -0x28 (rsi), -0x20 (rdx).
+    let frame_addr = frame_ptr as u64;
+    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x30/-0x28/-0x20 are within the per-task syscall/fault stack and only oxide_fault_common (which runs after we return) reads them.
+    unsafe {
+        core::ptr::write_volatile((frame_addr - 0x30) as *mut u64, 11);
+        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, si);
+        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, uc);
+    }
     let _ = sa.flags;
     true
 }
