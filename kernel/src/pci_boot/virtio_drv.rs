@@ -58,6 +58,12 @@ struct VirtioProbe {
     /// F43: per-queue 1 notify VA computed from notify_cap +
     /// (queue_notify_off_q1 * notify_off_multiplier).
     q1_notify_va: u64,
+    /// F59-08: raw queue_notify_off value read for queue 1 (Virtio
+    /// 1.2 §4.1.4.3 +0x1E). With notify_off_multiplier=4 the spec
+    /// implies each queue gets a distinct offset; if QEMU reports
+    /// 0 here that means q0 and q1 share a notify address and the
+    /// value written distinguishes them.
+    q1_notify_off: u16,
     /// F30: virtio-blk request status byte. 0=OK, 1=IOERR, 2=UNSUPP,
     /// 0xFF=request not issued / not completed.
     blk_status: u8,
@@ -180,11 +186,21 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
                | virtio::VIRTIO_STATUS_DRIVER));
 
-    // Feature negotiation (insist on VIRTIO_F_VERSION_1, bit 32).
+    // Feature negotiation. Insist on VIRTIO_F_VERSION_1 (bit 32) for
+    // modern transport. F59-08: also accept VIRTIO_NET_F_MAC (bit 5)
+    // + VIRTIO_NET_F_STATUS (bit 16) for virtio-net so QEMU's modern
+    // virtio-net-pci queues actually start processing kicks. The
+    // boot probe's q1 TX never advanced used.idx with only V1
+    // negotiated; QEMU's virtio_net_set_status() gates queue
+    // activation on a complete enough feature set for nets.
     w32(0x00, 0); let dev_feat_lo = r32(0x04);
     w32(0x00, 1); let dev_feat_hi = r32(0x04);
     let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
-    let drv_features: u64 = dev_features & virtio::VIRTIO_F_VERSION_1;
+    let mut want = virtio::VIRTIO_F_VERSION_1;
+    if d.vendor_id == 0x1AF4 && (d.device_id == 0x1000 || d.device_id == 0x1041) {
+        want |= virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
+    }
+    let drv_features: u64 = dev_features & want;
     w32(0x08, 1); w32(0x0C, (drv_features >> 32) as u32);
     w32(0x08, 0); w32(0x0C, (drv_features & 0xFFFF_FFFF) as u32);
     w32(0x14, st(virtio::VIRTIO_STATUS_ACKNOWLEDGE
@@ -316,9 +332,17 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                     w32(0x14, qs1);
                     // Capture per-queue notify_off (high u16 of 0x1C).
                     q1_notify_off_local = (r32(0x1C) >> 16) as u16;
-                    // F39 binding: queue_msix_vector = 1 for queue 1.
+                    // F59-08: queue_msix_vector = 0xFFFF (VIRTIO_MSI_NO_VECTOR)
+                    // for q1. Per Virtio 1.2 §4.1.5.1.2 + QEMU
+                    // hw/virtio/virtio-pci.c, when a queue's msix
+                    // vector points at a masked / unconfigured table
+                    // entry, QEMU silently drops queue_notify writes
+                    // for that queue — explaining F59-07's
+                    // tx_confirmed=0. We poll q1.used.idx so we
+                    // don't need device→driver MSI on TX, and
+                    // NO_VECTOR keeps QEMU processing kicks normally.
                     let qsz_w = r32(0x18) & 0x0000_FFFF;
-                    w32(0x18, qsz_w | (1u32 << 16));
+                    w32(0x18, qsz_w | (0xFFFFu32 << 16));
                     // queue_desc/driver/device for q1
                     w32(0x20, (q1d & 0xFFFF_FFFF) as u32);
                     w32(0x24, (q1d >> 32) as u32);
@@ -752,6 +776,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         blk_status,
         tx_used_idx: tx_used_idx_local,
         q1_notify_va: q1_notify_va_local,
+        q1_notify_off: q1_notify_off_local,
         q0_size,
         q1_size: if queues_len > 1 { queues[1].1 } else { 0 },
         q1_desc_pa,
@@ -862,6 +887,8 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_dec_u64(bdf.device as u64);
             klog::write_raw(b".");
             klog::write_dec_u64(bdf.function as u64);
+            klog::write_raw(b" q1_notify_off=");
+            klog::write_dec_u64(p.q1_notify_off as u64);
             klog::write_raw(b" q1_notify_va=");
             klog::write_hex_u64(p.q1_notify_va);
             klog::write_raw(b" tx_used_idx=");
