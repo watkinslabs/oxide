@@ -138,11 +138,7 @@ pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
     };
     match mm.mprotect(ua, len, vp) {
         Ok(()) => {
-            // VMA tree updated; flip the live PTE bits + flush
-            // TLB so hardware enforces the new permissions
-            // (otherwise a JIT-style RW→RX flip is silently
-            // ignored and an R-only page can still be written).
-            // SAFETY: caller is the running task; mm matches active AS; per-AS UP + preempt-off serialises with fault path.
+            // SAFETY: caller is the running task; mm matches active AS; per-AS UP + preempt-off serialises with fault path; mprotect_pages walks PT + flushes TLB so hardware enforces the new permissions.
             unsafe { crate::user_as::mprotect_pages(mm.root_pa(), addr, len, vp); }
             0
         }
@@ -150,24 +146,20 @@ pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_madvise(addr, len, advice)` — slot 28.
-///
-/// MADV_DONTNEED (4) zeroes the affected anonymous-VMA pages by
-/// unmapping them from the AS — next access faults a fresh zero
-/// page. Other advice values are accepted as hints (no state change).
-///
-/// MADV_DONTNEED on file-backed VMAs returns 0 silently — Linux
-/// treats this as drop-clean-pages, which our v1 doesn't yet have a
-/// page cache to flush; behaviorally indistinguishable from no-op.
+/// `sys_madvise(addr, len, advice)` — slot 28. DONTNEED/FREE/REMOVE
+/// drop pages (refault as zero); hints (NORMAL/RANDOM/SEQUENTIAL/etc)
+/// no-op; HWPOISON needs CAP_SYS_ADMIN → EPERM; unknown → EINVAL.
 /// # C: O(len/4096)
 pub fn kernel_sys_madvise(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
-    const MADV_DONTNEED: u64 = 4;
+    // Drop-pages set: DONTNEED=4, FREE=8, REMOVE=9 — all observably
+    // "drop and refault as zero" in v1 (no swap, no shmem hole).
+    // Pure hints: NORMAL/RANDOM/SEQUENTIAL/WILLNEED/HUGEPAGE/etc.
+    // HWPOISON=100 needs CAP_SYS_ADMIN → EPERM. Unknown → EINVAL.
     let addr   = args.a0;
     let len    = args.a1 as usize;
     let advice = args.a2;
-    if advice != MADV_DONTNEED { return 0; }
     if addr == 0 || (addr & 0xFFF) != 0 { return -(Errno::Einval.as_i32() as i64); }
     if len == 0 { return 0; }
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
@@ -176,19 +168,20 @@ pub fn kernel_sys_madvise(args: &SyscallArgs) -> i64 {
     let ua = match UserVirtAddr::new(addr) {
         Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // munmap then re-add an anonymous VMA covering the same region.
-    // Next page-fault on the region zero-fills via the existing
-    // demand-fault handler. Cleaner than walking PTEs by hand and
-    // matches Linux's "drop pages, refault zero" semantic.
-    let _ = mm.munmap(ua, len);
-    use vmm::{VmaProt, VmaFlags, VmaBacking};
-    let _ = mm.mmap(
-        Some(ua), len,
-        VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::ANONYMOUS | VmaFlags::PRIVATE,
-        VmaBacking::Anonymous, /*fixed=*/ true,
-    );
-    0
+    match advice {
+        4 | 8 | 9 => {
+            let _ = mm.munmap(ua, len);
+            use vmm::{VmaProt, VmaFlags, VmaBacking};
+            let _ = mm.mmap(
+                Some(ua), len, VmaProt::READ | VmaProt::WRITE,
+                VmaFlags::ANONYMOUS | VmaFlags::PRIVATE,
+                VmaBacking::Anonymous, true);
+            0
+        }
+        0..=3 | 10..=21 => 0,                          // hints
+        100 => -(Errno::Eperm.as_i32() as i64),        // MADV_HWPOISON
+        _   => -(Errno::Einval.as_i32() as i64),
+    }
 }
 
 /// `sys_prlimit64(pid, resource, new, old)` — slot 302. v1
@@ -610,20 +603,27 @@ pub fn kernel_sys_msync(_args: &SyscallArgs) -> i64 { 0 }
 /// reports every page resident (bit 0 set per byte).
 /// # C: O(len/4096)
 pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
+    use hal::UserVirtAddr;
     use syscall::errno::Errno;
-    let _addr = args.a0;
+    let addr  = args.a0;
     let len   = args.a1;
     let vec   = args.a2;
+    if addr == 0 || (addr & 0xFFF) != 0 { return -(Errno::Einval.as_i32() as i64); }
     let pages = (len + 0xfff) / 0x1000;
     if vec == 0 || vec.checked_add(pages).map_or(true, |e| e >= hal::USER_VA_END) {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: validated user range below USER_VA_END; CPL=0 writes through caller's AS; pages bytes inside the validated range.
-    unsafe {
-        for i in 0..pages {
-            core::ptr::write_volatile((vec + i) as *mut u8, 1);
-        }
+    let cur = match crate::sched::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
+    // SAFETY: mm slot single-mutator per `13§5`.
+    let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64) };
+    for i in 0..pages {
+        let p = match addr.checked_add(i * 0x1000).and_then(UserVirtAddr::new) {
+            Some(u) => u, None => return -(Errno::Enomem.as_i32() as i64),
+        };
+        if mm.find_vma(p).is_none() { return -(Errno::Enomem.as_i32() as i64); }
     }
+    // SAFETY: validated user range below USER_VA_END; CPL=0 writes through caller's AS.
+    unsafe { for i in 0..pages { core::ptr::write_volatile((vec + i) as *mut u8, 1); } }
     0
 }
 
@@ -990,10 +990,10 @@ pub fn kernel_sys_getitimer(args: &SyscallArgs) -> i64 {
     let (r_s, r_us) = sched::clock::ns_to_timeval(remain);
     // SAFETY: curr validated < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
-        core::ptr::write_volatile( curr        as *mut u64, i_s);
-        core::ptr::write_volatile((curr +  8)  as *mut u64, i_us);
-        core::ptr::write_volatile((curr + 16)  as *mut u64, r_s);
-        core::ptr::write_volatile((curr + 24)  as *mut u64, r_us);
+        core::ptr::write_volatile( curr       as *mut u64, i_s);
+        core::ptr::write_volatile((curr +  8) as *mut u64, i_us);
+        core::ptr::write_volatile((curr + 16) as *mut u64, r_s);
+        core::ptr::write_volatile((curr + 24) as *mut u64, r_us);
     }
     0
 }
