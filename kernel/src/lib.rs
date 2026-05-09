@@ -148,7 +148,7 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
 #[cfg(target_os = "oxide-kernel")] pub mod keyring;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_numa;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod dev_proc_ns;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_bpf;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod dev_proc_ns;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_bpf;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod dev_input;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  #[cfg(target_os = "oxide-kernel")] pub mod xattr_overlay;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
@@ -582,7 +582,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // P3-17 procfs static-file entries.
         procfs::init();
         crate::dev_drm::register();
-        tmpfs::init(); dev_tracefs::init();
+        tmpfs::init(); dev_tracefs::init(); dev_input::init();
         dev_pty::init();
         // P3-16/P3-18/P3-29/P3-77 boot-time smokes.
         dev_misc::smoke_test();
