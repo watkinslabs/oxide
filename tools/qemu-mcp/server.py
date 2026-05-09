@@ -258,6 +258,9 @@ def qemu_start(arch: str) -> str:
                 "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
                 # virtio-gpu modern PCI for `45` graphical-terminal arc.
                 "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
+                # virtio-input keyboard + mouse for `46`.
+                "-device", "virtio-keyboard-pci,bus=pcie.0,disable-legacy=on",
+                "-device", "virtio-mouse-pci,bus=pcie.0,disable-legacy=on",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",
@@ -285,6 +288,9 @@ def qemu_start(arch: str) -> str:
                 "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
                 # virtio-gpu modern PCI for `45` graphical-terminal arc.
                 "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
+                # virtio-input keyboard + mouse for `46`.
+                "-device", "virtio-keyboard-pci,bus=pcie.0,disable-legacy=on",
+                "-device", "virtio-mouse-pci,bus=pcie.0,disable-legacy=on",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-display", "none",

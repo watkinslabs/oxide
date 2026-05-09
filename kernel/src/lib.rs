@@ -696,6 +696,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Register virtio-gpu wire driver. The matching probe runs from
     // pci_boot::virtio_probe_arch when the device id is found.
     drv_virtio_gpu::register();
+    drv_virtio_input::register();
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 
     // ELF-loaded userspace via real Task on the runqueue (P2-13c).
