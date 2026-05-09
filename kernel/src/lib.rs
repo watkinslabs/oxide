@@ -66,6 +66,10 @@ pub mod sched;
 #[cfg(target_os = "oxide-kernel")] pub mod tty;
 /// `/dev/console` char-device per docs/16 + docs/28.
 #[cfg(target_os = "oxide-kernel")] pub mod dev_console;
+/// F158: /proc/meminfo body builder (split out of procfs.rs).
+#[cfg(target_os = "oxide-kernel")] pub mod procfs_meminfo;
+/// F158: /proc/<pid>/smaps detailed per-VMA memory stats.
+#[cfg(target_os = "oxide-kernel")] pub mod procfs_smaps;
 
 /// Minimal devfs registry per docs/16 + docs/19. Path → InodeRef
 /// table for `/dev/console` + `/dev/tty*`. Resolved by `sys_open`.

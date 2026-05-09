@@ -439,12 +439,7 @@ impl Inode for ProcMeminfoInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(192);
-        let (free_kb, alloc_kb) = pmm_kb_stats();
-        let total_kb = free_kb + alloc_kb;
-        push(&mut body, b"MemTotal:        "); push_u64(&mut body, total_kb); push(&mut body, b" kB\n");
-        push(&mut body, b"MemFree:         "); push_u64(&mut body, free_kb);  push(&mut body, b" kB\n");
-        push(&mut body, b"MemAvailable:    "); push_u64(&mut body, free_kb);  push(&mut body, b" kB\n");
+        let body = crate::procfs_meminfo::build();
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
         let n = (body.len() - off).min(buf.len());
@@ -646,6 +641,7 @@ impl Inode for ProcPidDirInode {
             "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
+            "smaps"   => Ok(Arc::new(crate::procfs_smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
             "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
@@ -678,7 +674,7 @@ impl Inode for ProcPidDirInode {
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         const ENTRIES: &[&str] = &[
-            "status", "cmdline", "stat", "maps", "comm", "environ", "statm",
+            "status", "cmdline", "stat", "maps", "smaps", "comm", "environ", "statm",
             "wchan", "oom_score", "oom_score_adj", "loginuid", "sessionid",
             "io", "limits", "personality", "sched", "schedstat", "autogroup",
             "uid_map", "gid_map", "setgroups",
