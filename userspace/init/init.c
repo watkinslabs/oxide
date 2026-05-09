@@ -46,17 +46,7 @@ int main(int argc, char** argv, char** envp_in) {
     }
 
     if (run_smokes) {
-    // F62 exec-path bring-up smokes.
-    {
-        long pid = (long)fork();
-        if (pid == 0) {
-            static char* argv0[] = { "bare", 0 };
-            static char* envp[] = { 0 };
-            execve("/bin/bare", argv0, envp);
-            _exit(127);
-        }
-        int status; waitpid((int)pid, &status, 0);
-    }
+    // F62 exec-path bring-up smoke (real-musl-crt1 isolation case).
     {
         long pid = (long)fork();
         if (pid == 0) {
@@ -114,24 +104,6 @@ int main(int argc, char** argv, char** envp_in) {
             static char* argv0[] = { "hello_dyn", 0 };
             static char* envp[] = { 0 };
             execve("/bin/hello_dyn", argv0, envp);
-            _exit(127);
-        }
-        int status;
-        waitpid((int)pid, &status, 0);
-    }
-
-    // F61 stage 0 — invoke /bin/oxide-echo (static-musl tool, NOT
-    // busybox). Isolates kernel exec/argv from busybox applet-routing.
-    {
-        long pid = (long)fork();
-        if (pid == 0) {
-            static char* argv[] = { "oxide-echo", "hello", 0 };
-            static char* envp[] = { 0 };
-            static const char tag[] = "v1-oxide-echo: ";
-            write(1, tag, sizeof(tag) - 1);
-            execve("/bin/oxide-echo", argv, envp);
-            static const char fail[] = "init: exec /bin/oxide-echo failed\n";
-            write(1, fail, sizeof(fail) - 1);
             _exit(127);
         }
         int status;
