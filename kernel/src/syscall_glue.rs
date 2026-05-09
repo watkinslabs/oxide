@@ -433,6 +433,23 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
 
 use crate::syscall_glue_signal::{kernel_sys_kill, kernel_sys_tgkill};
 
+/// PTRACE_SYSCALL self-stop helper. If the calling task is being
+/// traced and the tracer armed PTRACE_SYSCALL on it, post SIGTRAP
+/// and park until the tracer wakes us via PTRACE_SYSCALL/CONT.
+/// Called at syscall entry + return. F108.
+/// # C: O(1)
+fn ptrace_syscall_stop_if_armed() {
+    use core::sync::atomic::Ordering;
+    let cur = match crate::sched::current() { Some(c) => c, None => return };
+    if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
+    if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return; }
+    // SIGTRAP = 5 → bit 4. Tracer's wait4 picks up the stop.
+    cur.sigpending.fetch_or(1u64 << 4, Ordering::Release);
+    // SAFETY: process ctx; runqueue installed; preempt-off; immediate
+    // self-park via stop_until_cont matches the SIGSTOP path.
+    unsafe { crate::sched_stop::stop_until_cont(); }
+}
+
 
 /// Validate that a user buffer `[ptr, ptr + len)` lies entirely
 /// below `USER_VA_END` and is `align`-byte aligned at `ptr`.
@@ -536,6 +553,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
+    // F108: PTRACE_SYSCALL — if a tracer armed us, self-stop at entry.
+    ptrace_syscall_stop_if_armed();
     // Arch-specific + per-arch-time syscalls handled here (kernel can
     // call hal); others fall through to the arch-neutral dispatch.
     let rv = match nr {
@@ -903,6 +922,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // POSIX timers + rseq cpu_id writeback at syscall-return tail.
     crate::syscall_glue_timers::fire_due_timers();
     crate::syscall_glue_proc::rseq_writeback();
+    // F108: PTRACE_SYSCALL exit-stop, symmetric with the entry-stop above.
+    ptrace_syscall_stop_if_armed();
     // alarm(2) deadline check: post SIGALRM (bit 13) if the alarm_ns has passed.
     if let Some(cur) = crate::sched::current() {
         use core::sync::atomic::Ordering;
