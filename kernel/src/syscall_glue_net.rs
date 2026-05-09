@@ -43,12 +43,14 @@ fn errno_from_neterr(e: net::NetError) -> i64 {
 pub fn kernel_sys_socket(args: &SyscallArgs) -> i64 {
     let domain = args.a0 as u32;
     let typ    = args.a1 as u32 & 0xFF;  // strip SOCK_NONBLOCK / SOCK_CLOEXEC
+    const AF_UNIX_DOM: u32 = 1;
     let inet = match (domain, typ) {
         (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
         (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp(),
         (AF_INET6, SOCK_DGRAM)  => InetSocket::new_udp6(),
         (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
-        (AF_INET, _) | (AF_INET6, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
+        (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
+        (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
         _ => return -(Errno::Eafnosupport.as_i32() as i64),
     };
     let inode: vfs::InodeRef = Arc::new(inet) as _;
