@@ -63,6 +63,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `48-fbdev.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47` |
 | `49-fbcon.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50` |
 | `50-vt.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`28`,`46`,`47`,`49` |
+| `51-userspace-handoff.md` | DRAFT | — | `16`,`19`,`28`,`29`,`29a`,`31` |
 
 ## Cross-cutting
 
