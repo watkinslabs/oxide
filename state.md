@@ -64,6 +64,7 @@ real impl or honest ENOSYS. Breakdown:
   - **F112 #845** /proc/self/ns/* dynamic readlink + /proc/self/root chroot-aware
   - **F113 #846** /proc/<pid>/{uid_map,gid_map,setgroups} identity-map files
   - **F114 #848** socket(AF_UNIX, SOCK_STREAM) admits (was EAFNOSUPPORT)
+  - **F115 #850** real PTRACE_GETREGS/GETREGSET (gdb/lldb attach sees real reg state)
 
 All landed with PR-time CI clean on both arches; spec-lint clean;
 900 hosted tests pass, 0 failed. No regressions.
