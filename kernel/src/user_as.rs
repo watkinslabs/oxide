@@ -633,18 +633,30 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
     }
 }
 
-/// Run the demand-page resolver against a specific AS.
+/// Run the demand-page resolver against a specific AS. F157: uses
+/// the COW-aware variant — passes refcount + dec_ref callbacks so
+/// Protection-write faults short-circuit to a same-PA W-flip when
+/// we're the sole owner, and copy + dec_ref the shared frame
+/// otherwise.
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally).
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            uva, fault, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let r = as_.handle_page_fault_cow::<hal_x86_64::mmu_ops::X86Mmu, _, _, _>(
+            uva, fault, hhdm,
+            || crate::pmm_setup::alloc_one_frame(),
+            |pa| crate::pmm_setup::frame_refcount(pa),
+            // SAFETY: dec_ref of a previously-mapped shared frame after COW split.
+            |pa| crate::pmm_setup::dec_and_maybe_free_frame(pa));
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault::<hal_aarch64::mmu_ops::ArmMmu, _>(
-            uva, fault, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let r = as_.handle_page_fault_cow::<hal_aarch64::mmu_ops::ArmMmu, _, _, _>(
+            uva, fault, hhdm,
+            || crate::pmm_setup::alloc_one_frame(),
+            |pa| crate::pmm_setup::frame_refcount(pa),
+            // SAFETY: dec_ref of a previously-mapped shared frame after COW split.
+            |pa| crate::pmm_setup::dec_and_maybe_free_frame(pa));
         r
     }
 }
