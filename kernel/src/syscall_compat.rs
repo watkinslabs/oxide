@@ -31,7 +31,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // SYSLOG moved to real impl (F67) — exposes klog ring as dmesg.
         NR_PERSONALITY | NR_VHANGUP
         // SETDOMAINNAME moved to real impl (F68) alongside hostname.
-        | NR_FALLOCATE | NR_READAHEAD | NR_FADVISE64
+        // FALLOCATE moved to real impl (F69).
+        | NR_READAHEAD | NR_FADVISE64
         | NR_FLOCK | NR_SYNC_FILE_RANGE
         | NR_SYNCFS | NR_FUTEX_WAITV | NR_MLOCK2
         | NR_FUTIMESAT

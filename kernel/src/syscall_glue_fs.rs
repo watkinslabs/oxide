@@ -967,3 +967,5 @@ pub fn kernel_sys_ftruncate(args: &SyscallArgs) -> i64 {
     };
     match file.inode().truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
+
+// `sys_fallocate` lives in `syscall_glue_falloc.rs` (F69).
