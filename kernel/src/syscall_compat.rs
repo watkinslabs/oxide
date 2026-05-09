@@ -138,11 +138,8 @@ pub fn try_compat(nr: u64, _args: &SyscallArgs) -> Option<i64> {
         // PSELECT6/SELECT moved to real impl in PR-Q (poll-based).
         // WAITID moved to real impl in PR-K (alias of wait4 + siginfo_t).
         // GET_ROBUST_LIST + CACHESTAT handled below as silent-0.
-        // NUMA SET/MBIND/MIGRATE/MOVE/HOME promoted to silent-0 above.
-        // GET_MEMPOLICY stays ENOSYS — has writeback semantics (mode/nodemask
-        // pointers); silent-0 would leave caller buffers uninitialised.
-        // Real impl rides v2 if anything actually depends on it.
-        | NR_GET_MEMPOLICY
+        // NUMA SET/MBIND/MIGRATE/MOVE/HOME silent-0 above.
+        // GET_MEMPOLICY moved to real impl (F79).
         | NR_VSERVER | NR__SYSCTL
         // EXECVEAT aliased to execve in PR-P (path resolved relative to dirfd).
         // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
