@@ -1,39 +1,38 @@
-# State 2026-05-10
+# State 2026-05-10 (session 2)
 
 ## Branch
 
-`F156-mm-linux-conformance` — PR #920 against `main`. ~28 commits, all pushed.
+`F156-mm-linux-conformance` — PR #920 against `main`. ~30 commits, all pushed (HEAD = `e34d60d`).
 
-## What's working end-to-end
+## What's working end-to-end (x86_64)
 
-- x86_64 boots through Limine → kernel → busybox-init → getty → login.
-- `oxide login: root` → `Welcome to oxide.` → `/ # echo hello` → `hello`.
-- All virtio drivers initialize: blk, net, gpu, input (kbd + mouse).
-- `virtio-gpu scanout: 1280x800 painted` (host-side commands all `RESP_OK_NODATA`).
-- Hosted tests: 1015 pass, 0 fail. Both arches build, spec-lint clean.
+- `cargo run -p xtask -- qemu --arch x86_64` → boot to `oxide login: root` → `~ #` shell prompt with cwd = `/root` (chdir to ext4 paths now resolves).
+- Shebang chain in execve: busybox init → `#!/bin/sh /etc/init.d/rcS` resolves and runs.
+- `access(/etc/init.d/rcS, R_OK)` succeeds (was the silent killer of "can't open … No error information").
+- `stat`/`lstat`/`statx` resolve ext4 dirs + symlinks (was devfs-only).
+- `/etc/login.defs` + `/root/.profile` ship — busybox login sets PATH so `ls`, `cat`, … work from first prompt.
+- Single getty on tty1 (was double-attached on tty1+tty2 fighting for the muxed serial).
+- Hosted tests: 1015+ pass, 0 fail. Both arches build, spec-lint clean.
 
-## Last-session fixes (relevant SHAs)
+## Last-session fixes (this session, on top of 2026-05-10 morning state)
 
-- `de9b6a6` — boot init user stack moved off 0x501000 (was chopping busybox `.text`); root cause of session 55's `0x4250df` red herring.
-- `c423ac2` — kernel heap 16→32 MiB; panic handler now renders `format_args!` so OOM prints actual size.
-- `3472310` — rootfs `mkfs.ext4 -b 4096 -F count=16` so debugfs `ln` doesn't run out of dir space silently dropping `/bin/login` etc.
-- `7a33d0a` — virtio vendor-id typo `0x1A` → `0x1AF4` (was wedging GPU + input + early-net).
-- `20eaad9` — virtio-gpu single-mem-entry `RESOURCE_ATTACH_BACKING` (was overflowing 4 KiB cmd_buf w/ 16 KiB of mem-entries) + xtask + qemu-mcp `-vga none`.
-- `409dfb3` — re-enable virtio-input cleanly.
+- `e34d60d` — ext4 fallback in `sys_access`/`sys_stat`/`sys_statx` + `/etc/login.defs` + `/root/.profile` + drop `tty2` from inittab.
+- `e0ad8d3` — execve shebang chain (Linux `fs/binfmt_script.c` shape, `BINPRM_MAX_RECURSION`=4) + `sys_chdir` ext4 fallback + `xtask qemu` defaults to `--features debug-all`.
 
 ## Open / next session
 
-1. **GTK display still black via qemu-mcp.** xtask launcher has `-vga none` (`20eaad9`); qemu-mcp `server.py` got the same edit but the running MCP server hadn't reloaded. Verify on next-session restart with `qemu_screen` or just `cargo run -p xtask -- qemu --arch x86_64` and eyeball the painted scanout. If still black after the qemu-mcp restart, the stdvga isn't the culprit — chase the virtio-gpu→GTK binding next.
-2. **`/etc/init.d/rcS` Exec format error** — script lacks `#!` handling in our execve; busybox doesn't retry via shell, so rcS never mounts /proc, sets hostname, brings up loopback. Pick: handle shebang in execve, or have busybox-init fall back to /bin/sh.
-3. **`login: can't change directory to '/root'`** — rootfs missing `/root` dir; xtask FHS list claims to mkdir it, check why it didn't land.
-4. **aarch64 end-to-end** — builds clean, never booted to login on ARM. `make qemu-arm` + login test before claiming F156 done.
+1. **aarch64 boot to login parity** — *blocker*. busybox init spawns (`init-arm: spawned`), opens fd 3 successfully, then `sys_read(fd=3)` returns `-EBADF` (rv=fffffffffffffff7). Init then enters sigsuspend/wait4/nanosleep idle loop with no clone/execve of rcS or getty. Root cause likely a procfs or pseudo-fs inode whose `read` returns Ebadf — busybox init reads `/proc/cmdline` or similar early. Needs targeted klog in `kernel_sys_read` to identify the failing fd's path/inode type. The new `lookup_inode_any` helper on x86 may also be at play; verify arm openat path.
+2. **`xtask rootfs --arch aarch64` is stale** — kernel/blobs/rootfs-aarch64.img dated `9-May-2026 21:25` while x86 is `10-May-2026`. The MCP qemu start path doesn't run rootfs build. Ensure `cmd_qemu` builds rootfs for the chosen arch (it does call `cmd_rootfs(rest)` per `image_qemu.rs:57`, but check if MCP server bypasses that).
+3. **Cosmetic but useful:** klog character drops under heavy syscall trace. Multiple writers to UART racing → `n` and other bytes dropped from contiguous output. Consider buffering the `[SYS]/[INFO]` lines with a per-CPU spinlock or atomic ringbuf so only complete lines hit the UART.
+4. **Tty hosts the same console twice** — fixed at the rootfs level by dropping tty2 from inittab; if we ever want multi-tty, need to bind tty2 to a separate console device or virtual console.
 
 ## First task next session
 
 ```
-cargo run -p xtask -- qemu --arch x86_64
-# log in as root, eyeball GTK window
-# if blank, diff virtio-gpu paint vs known-good ref kernel
+cargo run -p xtask -- qemu --arch aarch64
+# observe: init-arm spawns, opens fd 3, reads return -EBADF, idle loop
+# instrument: klog in kernel_sys_read for fd whose file.read() returns Ebadf
+# print path/file_type so we see which inode is the culprit
 ```
 
-If GTK is fine, switch to `make qemu-arm` parity.
+If x86 needs re-verification: `cargo run -p xtask -- qemu --arch x86_64`, login as root, run `/bin/ls` (full path), then `. /etc/profile`, then `ls` — should all work.
