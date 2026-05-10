@@ -411,11 +411,13 @@ dependencies = [
 name = "ipc"
 version = "0.1.0"
 dependencies = [
+ "devfs",
  "hal",
  "klog",
  "sched",
  "sync",
  "syscall",
+ "vfs",
  "vmm",
 ]
 

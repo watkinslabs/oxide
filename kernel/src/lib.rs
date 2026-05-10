@@ -738,7 +738,6 @@ fn log_memmap(regions: &[BootMemRegion]) {
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
-#[cfg(target_os = "oxide-kernel")] pub mod ipc;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))] pub mod smoke;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs;
 
