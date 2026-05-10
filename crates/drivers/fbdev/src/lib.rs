@@ -264,3 +264,7 @@ mod tests {
         FBS.lock().clear();
     }
 }
+
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod devfs;
