@@ -52,63 +52,32 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     };
     let resolved = resolve_path_for_open(path_raw);
     let path_str: &str = resolved.as_deref().unwrap_or(path_raw);
-    // Lookup chain. Real-fs paths (/bin /etc /usr /sbin /lib /opt
-    // /home /root) prefer ext4; pseudo paths (/dev /proc /sys /tmp)
-    // stay on the synthetic providers. Per the Linux mount-table
-    // shape: pseudo-fs mounts shadow real-fs paths.
-    let prefer_ext4 = path_str.starts_with("/bin/")
-                   || path_str.starts_with("/etc/")
-                   || path_str.starts_with("/usr/")
-                   || path_str.starts_with("/sbin/")
-                   || path_str.starts_with("/lib/")
-                   || path_str.starts_with("/opt/")
-                   || path_str.starts_with("/home/")
-                   || path_str.starts_with("/root/")
-                   || path_str == "/init"
-                   || path_str == "/hello.txt";
+    // Unified mount-table lookup (R67). Special-case /dev/ptmx since
+    // it allocates a new pair per open rather than resolving to a
+    // pre-registered inode.
     let inode = if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
-    } else if prefer_ext4 {
-        if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
-        else if let Some(i) = crate::devfs::lookup(path_str) { i }
-        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
-        else if (flags & O_CREAT) != 0 {
-            match ext4::rootfs::create_at(path_str.as_bytes(), 0o644) {
-                Some(i) => i,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
+    } else if let Ok(i) = vfs::mount::lookup(path_str) {
+        i
+    } else if (flags & O_CREAT) != 0 {
+        // O_CREAT: ask the owning mount's FS to create.
+        match vfs::mount::resolve_mount(path_str) {
+            Some((mnt, rel)) => match mnt.fs.create(&rel, 0o644) {
+                Ok(i) => i,
+                Err(_) => return -(Errno::Enoent.as_i32() as i64),
+            },
+            None => return -(Errno::Enoent.as_i32() as i64),
         }
-        else { return -(Errno::Enoent.as_i32() as i64); }
-    } else if let Some(i) = crate::devfs::lookup(path_str) { i }
-        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
-        else if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
-        else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
-            ::fs::tmpfs::lookup_or_create(path_str)
-        } else { return -(Errno::Enoent.as_i32() as i64); };
-    if (flags & O_DIRECTORY) != 0
-        && !matches!(inode.file_type(), vfs::FileType::Directory)
-    {
-        return -(Errno::Enotdir.as_i32() as i64);
-    }
-    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
-    let cur = match sched::live::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
+    } else {
+        return -(Errno::Enoent.as_i32() as i64);
     };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let dentry = Dentry::new(None, path_str.to_string(), Arc::clone(&inode));
-    let oflags = OpenFlags::from_bits_truncate(flags);
-    let file = File::new(inode, dentry, oflags);
-    match fdt.alloc(file) {
-        Ok(fd)  => fd as i64,
-        Err(e)  => -(e as i64),
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags)) {
+        Ok(fd) => fd as i64,
+        Err(e) => -(e as i64),
     }
 }
 
@@ -130,42 +99,26 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     };
     let resolved = resolve_path_for_open(s);
     let path_str: &str = resolved.as_deref().unwrap_or(s);
-    // Lookup chain. Real-fs paths (/bin /etc /usr /sbin /lib /opt
-    // /home /root) prefer ext4; pseudo paths (/dev /proc /sys /tmp)
-    // stay on the synthetic providers. Per the Linux mount-table
-    // shape: pseudo-fs mounts shadow real-fs paths.
-    let prefer_ext4 = path_str.starts_with("/bin/")
-                   || path_str.starts_with("/etc/")
-                   || path_str.starts_with("/usr/")
-                   || path_str.starts_with("/sbin/")
-                   || path_str.starts_with("/lib/")
-                   || path_str.starts_with("/opt/")
-                   || path_str.starts_with("/home/")
-                   || path_str.starts_with("/root/")
-                   || path_str == "/init"
-                   || path_str == "/hello.txt";
+    // Unified mount-table lookup (R67). Special-case /dev/ptmx since
+    // it allocates a new pair per open rather than resolving to a
+    // pre-registered inode.
     let inode = if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
-    } else if prefer_ext4 {
-        if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
-        else if let Some(i) = crate::devfs::lookup(path_str) { i }
-        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
-        else if (flags & O_CREAT) != 0 {
-            match ext4::rootfs::create_at(path_str.as_bytes(), 0o644) {
-                Some(i) => i,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
+    } else if let Ok(i) = vfs::mount::lookup(path_str) {
+        i
+    } else if (flags & O_CREAT) != 0 {
+        // O_CREAT: ask the owning mount's FS to create.
+        match vfs::mount::resolve_mount(path_str) {
+            Some((mnt, rel)) => match mnt.fs.create(&rel, 0o644) {
+                Ok(i) => i,
+                Err(_) => return -(Errno::Enoent.as_i32() as i64),
+            },
+            None => return -(Errno::Enoent.as_i32() as i64),
         }
-        else { return -(Errno::Enoent.as_i32() as i64); }
-    } else if let Some(i) = crate::devfs::lookup(path_str) { i }
-        else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
-        else if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
-        else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
-            ::fs::tmpfs::lookup_or_create(path_str)
-        } else { return -(Errno::Enoent.as_i32() as i64); };
+    } else {
+        return -(Errno::Enoent.as_i32() as i64);
+    };
     if (flags & O_DIRECTORY) != 0
         && !matches!(inode.file_type(), vfs::FileType::Directory)
     {
