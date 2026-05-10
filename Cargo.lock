@@ -571,6 +571,7 @@ dependencies = [
  "syscall",
  "syscall-glue-dmesg",
  "syscall-glue-numa",
+ "syscall-glue-unix-cmsg",
  "timerfd",
  "tmpfs",
  "tty",
@@ -1117,6 +1118,16 @@ name = "syscall-glue-numa"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "syscall",
+]
+
+[[package]]
+name = "syscall-glue-unix-cmsg"
+version = "0.1.0"
+dependencies = [
+ "dev-net",
+ "hal",
+ "sync",
  "syscall",
 ]
 

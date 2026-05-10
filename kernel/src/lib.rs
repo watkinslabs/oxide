@@ -134,7 +134,7 @@ pub mod syscall_glue_cred;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
 #[cfg(target_os = "oxide-kernel")] pub use ::keyring;
 #[cfg(target_os = "oxide-kernel")] pub use ::syscall_glue_numa;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub use ::dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub use ::syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub use ::dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  #[cfg(target_os = "oxide-kernel")] pub use ::xattr as xattr_overlay;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
