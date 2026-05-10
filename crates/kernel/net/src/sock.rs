@@ -518,3 +518,42 @@ pub fn sendto(
     };
     socket_sendto(sock, dst_ip, dst_port, payload)
 }
+
+
+/// `recvfrom` result. Caller (Tier-3 shim) copies payload into user
+/// buf, optionally writes peer sockaddr.
+pub struct Received {
+    pub payload: alloc::vec::Vec<u8>,
+    pub peer: Option<(Ipv4Addr, u16)>,
+}
+
+/// `recvfrom` per `recvfrom(2)`. Tier-2 work fn. Returns the payload
+/// and an optional peer address (None for AF_UNIX SOCK_DGRAM and
+/// for sockets without a stored peer).
+/// # C: O(payload bytes)
+pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<Received, NetError> {
+    // AF_UNIX SOCK_DGRAM.
+    if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
+        let q = q.clone();
+        let msg = q.pop().ok_or(NetError::Eagain)?;
+        let take = core::cmp::min(max_len, msg.payload.len());
+        let mut out = alloc::vec::Vec::with_capacity(take);
+        out.extend_from_slice(&msg.payload[..take]);
+        return Ok(Received { payload: out, peer: None });
+    }
+    // TCP.
+    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        let entry = entry.clone();
+        drain_loopback();
+        let payload = stack().tcp_recv(&entry, max_len);
+        if payload.is_empty() { return Err(NetError::Eagain); }
+        let peer = *sock.peer.lock();
+        return Ok(Received { payload, peer });
+    }
+    // UDP / others.
+    let (src_ip, src_port, full) = socket_recv(sock).ok_or(NetError::Eagain)?;
+    let take = core::cmp::min(max_len, full.len());
+    let mut out = alloc::vec::Vec::with_capacity(take);
+    out.extend_from_slice(&full[..take]);
+    Ok(Received { payload: out, peer: Some((src_ip, src_port)) })
+}
