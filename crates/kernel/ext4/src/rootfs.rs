@@ -120,6 +120,10 @@ pub fn cache_stats() -> (u64, u64) {
 pub unsafe fn init() {
     if !MOUNT_PTR.load(Ordering::Acquire).is_null() { return; }
     let disk = ImageDisk::from_static(ROOTFS, BLOCK_SIZE) as Arc<dyn BlockDevice>;
+    // Register with the block-device table per `docs/17`. Future
+    // virtio-blk drivers register here too; ext4's Mount could be
+    // re-bound to a discovered disk in a v1.x scenario.
+    let _idx = block::registry::register("rootfs", disk.clone());
     let mount = match Mount::open(disk) {
         Ok(m)  => m,
         Err(_) => return,
