@@ -60,7 +60,7 @@ pub fn kernel_sys_memfd_create(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = tmpfs::TmpfsFileInode::new();
+    let inode = ::fs::tmpfs::TmpfsFileInode::new();
     let dentry = Dentry::new(None, name, inode.clone() as vfs::InodeRef);
     let file = File::new(inode as vfs::InodeRef, dentry, OpenFlags::O_RDWR);
     let fd = match fdt.alloc(file) {

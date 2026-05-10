@@ -73,7 +73,7 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
         else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = tmpfs::lookup(path_str) { i }
+        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
         else if (flags & O_CREAT) != 0 {
             match ext4::rootfs::create_at(path_str.as_bytes(), 0o644) {
                 Some(i) => i,
@@ -83,10 +83,10 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         else { return -(Errno::Enoent.as_i32() as i64); }
     } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = tmpfs::lookup(path_str) { i }
+        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
         else if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
         else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
-            tmpfs::lookup_or_create(path_str)
+            ::fs::tmpfs::lookup_or_create(path_str)
         } else { return -(Errno::Enoent.as_i32() as i64); };
     if (flags & O_DIRECTORY) != 0
         && !matches!(inode.file_type(), vfs::FileType::Directory)
@@ -151,7 +151,7 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
         if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
         else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = tmpfs::lookup(path_str) { i }
+        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
         else if (flags & O_CREAT) != 0 {
             match ext4::rootfs::create_at(path_str.as_bytes(), 0o644) {
                 Some(i) => i,
@@ -161,10 +161,10 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
         else { return -(Errno::Enoent.as_i32() as i64); }
     } else if let Some(i) = crate::devfs::lookup(path_str) { i }
         else if let Some(i) = crate::procfs::lookup_dynamic(path_str) { i }
-        else if let Some(i) = tmpfs::lookup(path_str) { i }
+        else if let Some(i) = ::fs::tmpfs::lookup(path_str) { i }
         else if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
         else if (flags & O_CREAT) != 0 && path_str.starts_with("/tmp/") {
-            tmpfs::lookup_or_create(path_str)
+            ::fs::tmpfs::lookup_or_create(path_str)
         } else { return -(Errno::Enoent.as_i32() as i64); };
     if (flags & O_DIRECTORY) != 0
         && !matches!(inode.file_type(), vfs::FileType::Directory)
