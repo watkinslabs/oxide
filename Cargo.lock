@@ -683,8 +683,10 @@ dependencies = [
  "modules",
  "net",
  "pmm",
+ "sched",
  "sync",
  "vfs",
+ "vmm",
 ]
 
 [[package]]
