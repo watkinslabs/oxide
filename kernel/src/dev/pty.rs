@@ -8,7 +8,6 @@
 // stall briefly across the pair); per-ring locks ride a follow-up
 // once we measure contention.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::format;
 use alloc::sync::Arc;

@@ -702,7 +702,7 @@ pub fn kernel_sys_poll(args: &SyscallArgs) -> i64 {
                 let ino = file.inode().ino();
                 let pty_readable = if (ino & 0xFFFF_0000) == 0x6000_0000 {
                     let is_master = (ino & 0x8000) == 0;
-                    crate::dev_pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
+                    crate::dev::pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
                         pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
                     })
                 } else { None };
