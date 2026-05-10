@@ -1,0 +1,15 @@
+[package]
+name = "epoll"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# epoll(7) inode + sys_epoll_create/ctl/wait per `52§3` domain layer.
+
+[dependencies]
+hal     = { path = "../../arch/hal" }
+sched   = { path = "../../kernel/sched" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../../kernel/syscall" }
+vfs     = { path = "../../kernel/vfs" }
