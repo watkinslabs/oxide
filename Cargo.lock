@@ -130,17 +130,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dev-misc"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "hal",
- "klog",
- "sync",
- "vfs",
-]
-
-[[package]]
 name = "dev-modules"
 version = "0.1.0"
 dependencies = [
@@ -167,6 +156,7 @@ name = "devfs"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "klog",
  "sched",
  "sync",
  "vfs",
@@ -506,7 +496,6 @@ dependencies = [
  "cpu",
  "dev-fbdev",
  "dev-input",
- "dev-misc",
  "dev-modules",
  "dev-virtio-gpu-modern",
  "devfs",

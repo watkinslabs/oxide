@@ -15,3 +15,8 @@ hal   = { path = "../../arch/hal" }
 sched = { path = "../../kernel/sched" }
 sync  = { path = "../../shared/sync" }
 vfs   = { path = "../../kernel/vfs" }
+klog  = { path = "../../shared/klog" }
+
+[features]
+default = []
+debug-boot = []

@@ -49,12 +49,12 @@ pub fn init() {
     }
 
     // P3-04 misc char devices.
-    register("/dev/null",    Arc::new(dev_misc::NullInode)   as InodeRef);
-    register("/dev/kmsg",    Arc::new(dev_misc::KmsgInode)   as InodeRef);
-    register("/dev/log",     Arc::new(dev_misc::NullInode)   as InodeRef);
-    register("/dev/zero",    Arc::new(dev_misc::ZeroInode)   as InodeRef);
-    register("/dev/full",    Arc::new(dev_misc::FullInode)   as InodeRef);
-    let rand: InodeRef = Arc::new(dev_misc::RandomInode);
+    register("/dev/null",    Arc::new(devfs::misc::NullInode)   as InodeRef);
+    register("/dev/kmsg",    Arc::new(devfs::misc::KmsgInode)   as InodeRef);
+    register("/dev/log",     Arc::new(devfs::misc::NullInode)   as InodeRef);
+    register("/dev/zero",    Arc::new(devfs::misc::ZeroInode)   as InodeRef);
+    register("/dev/full",    Arc::new(devfs::misc::FullInode)   as InodeRef);
+    let rand: InodeRef = Arc::new(devfs::misc::RandomInode);
     register("/dev/random",  Arc::clone(&rand));
     register("/dev/urandom", rand);
 
