@@ -104,11 +104,7 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
         Ok(s)  => s,
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolves = s == "/"
-        || crate::devfs::lookup(s).is_some()
-        || crate::procfs::lookup_dynamic(s).is_some()
-        || ::fs::tmpfs::lookup(s).is_some()
-        || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
+    let resolves = s == "/" || vfs::mount::lookup(s).is_ok();
     if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
@@ -210,11 +206,13 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
             let s = match core::str::from_utf8(p) {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
-            if let Some(i) = crate::devfs::lookup(s) { i }
-            else if let Some(i) = crate::procfs::lookup_dynamic(s) { i }
-            else if let Some(i) = ::fs::tmpfs::lookup(s) { i }
-            else if let Some(i) = ext4::rootfs::lookup_inode_any(s.as_bytes()) { i }
-            else { return -(Errno::Enoent.as_i32() as i64); }
+            match vfs::mount::lookup(s) {
+                Ok(i) => i,
+                Err(_) => match ext4::rootfs::lookup_inode_any(s.as_bytes()) {
+                    Some(i) => i,
+                    None    => return -(Errno::Enoent.as_i32() as i64),
+                }
+            }
         }
         _ if (flags & AT_EMPTY_PATH) != 0 => {
             let cur = match sched::live::current() {
@@ -310,17 +308,14 @@ pub fn sys_stat(args: &SyscallArgs) -> i64 {
     // Resolve through pseudo-fs first (devfs/procfs/tmpfs) for shadow
     // mounts, fall back to ext4 stat_path which handles any file type
     // (dirs, symlinks, regular). lookup_inode would reject dirs.
-    let (ino_num, file_type, size): (u64, vfs::FileType, u64) = if let Some(i) = crate::devfs::lookup(s) {
-        (i.ino(), i.file_type(), i.size())
-    } else if let Some(i) = crate::procfs::lookup_dynamic(s) {
-        (i.ino(), i.file_type(), i.size())
-    } else if let Some(i) = ::fs::tmpfs::lookup(s) {
-        (i.ino(), i.file_type(), i.size())
-    } else if let Some((ino, ft, sz)) = ext4::rootfs::stat_path(s.as_bytes()) {
-        ((0x6E54_0000u64 | ino as u64), ft, sz)
-    } else {
-        return -(Errno::Enoent.as_i32() as i64);
-    };
+    let (ino_num, file_type, size): (u64, vfs::FileType, u64) =
+        if let Ok(i) = vfs::mount::lookup(s) {
+            (i.ino(), i.file_type(), i.size())
+        } else if let Some((ino, ft, sz)) = ext4::rootfs::stat_path(s.as_bytes()) {
+            ((0x6E54_0000u64 | ino as u64), ft, sz)
+        } else {
+            return -(Errno::Enoent.as_i32() as i64);
+        };
     let (mode_type, rdev): (u32, u64) = match file_type {
         vfs::FileType::CharDev   => (0o020000, 0x0103),
         vfs::FileType::BlockDev  => (0o060000, 0),
@@ -583,11 +578,7 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolves = crate::devfs::lookup(s).is_some()
-        || crate::procfs::lookup_dynamic(s).is_some()
-        || ::fs::tmpfs::lookup(s).is_some()
-        || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
-    if resolves { 0 } else { -(Errno::Enoent.as_i32() as i64) }
+    if vfs::mount::lookup(s).is_ok() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
 /// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1
