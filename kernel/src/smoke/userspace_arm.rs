@@ -131,7 +131,7 @@ pub unsafe fn run<M: MmuOps>() -> ! {
 }
 
 /// Install `fault_handler` and `eret` into EL0 at `(elr, sp)`.
-/// Diverges. Mirrors x86_64's `userspace_smoke::drop_to_ring3` —
+/// Diverges. Mirrors x86_64's `crate::smoke::userspace::drop_to_ring3` —
 /// the ELF smoke (P2-16c) reuses this primitive.
 ///
 /// SPSR_EL1 = 0x3C0 → M=EL0t (0b0000), DAIF all masked. User runs
