@@ -2,9 +2,7 @@
 // CTRLQ to populate real DisplayInfo. Called from
 // `pci_boot::virtio_probe_arch` when the device id matches.
 
-#![no_std]
 
-extern crate alloc;
 
 use core::sync::atomic::Ordering;
 
@@ -38,7 +36,7 @@ pub unsafe fn get_display_info(
     unsafe {
         for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
         let req = core::slice::from_raw_parts_mut(buf_va, 24);
-        drv_virtio_gpu::encode_get_display_info(req);
+        crate::encode_get_display_info(req);
     }
     let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
     // SAFETY: HHDM-mapped virtio q0 descriptor table; aligned u64 stores into driver-owned frame.
@@ -74,7 +72,7 @@ pub unsafe fn get_display_info(
     let resp_slice = unsafe {
         core::slice::from_raw_parts(buf_va.add(0x200) as *const u8, 408)
     };
-    let info = match drv_virtio_gpu::parse_display_info(resp_slice) {
+    let info = match crate::parse_display_info(resp_slice) {
         Ok(i)  => i,
         Err(_) => return false,
     };
@@ -82,7 +80,7 @@ pub unsafe fn get_display_info(
     let bdf_word = (bdf_bus as u32) << 16
                  | (bdf_dev as u32) << 8
                  | (bdf_fn as u32);
-    drv_virtio_gpu::install_with_drm(drv_virtio_gpu::VirtioGpuDev {
+    crate::install_with_drm(crate::VirtioGpuDev {
         bdf: bdf_word, features_negotiated: drv_features,
         display: info,
         resource_id_alloc: AtomicU32::new(1),
@@ -184,8 +182,8 @@ unsafe fn setup_scanout(
     // ---- 1. CMD_RESOURCE_CREATE_2D (40 B request, 24 B response) ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
-        |buf| drv_virtio_gpu::encode_resource_create_2d(buf, res_id,
-            drv_virtio_gpu::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
+        |buf| crate::encode_resource_create_2d(buf, res_id,
+            crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
     log_resp(b"create");
@@ -202,7 +200,7 @@ unsafe fn setup_scanout(
     // into the per-call slice we hand it; submit_raw advertises the
     // request as 48 bytes.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
-        |buf| drv_virtio_gpu::encode_resource_attach_backing_one(
+        |buf| crate::encode_resource_attach_backing_one(
             buf, res_id, base_pa, fb_bytes as u32),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
@@ -210,21 +208,21 @@ unsafe fn setup_scanout(
     // ---- 3. CMD_SET_SCANOUT ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
-        |buf| drv_virtio_gpu::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
+        |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
     log_resp(b"setscanout");
     // ---- 4. CMD_TRANSFER_TO_HOST_2D ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
-        |buf| drv_virtio_gpu::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
+        |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
     log_resp(b"transfer");
     // ---- 5. CMD_RESOURCE_FLUSH ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
-        |buf| drv_virtio_gpu::encode_resource_flush(buf, res_id, 0, 0, w, h),
+        |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
     log_resp(b"flush");
