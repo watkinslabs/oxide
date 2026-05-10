@@ -14,7 +14,7 @@ license = "MPL-2.0"
 [dependencies]
 boot-info = { path = "../../shared/boot-info" }
 hal       = { path = "../../arch/hal" }
-pmm       = { path = "../../kernel/pmm" }
-vmm       = { path = "../../kernel/vmm" }
+pmm       = { path = "../../kernel/mm-pmm" }
+vmm       = { path = "../../kernel/mm-vmm" }
 klog      = { path = "../../shared/klog" }
 sync      = { path = "../../shared/sync" }
