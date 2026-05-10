@@ -753,7 +753,7 @@ impl AddressSpace {
             }
             // F157: drop our reference to the shared frame. If its
             // refcount hits zero (other AS already unmapped), the
-            // dec_ref callback chains into pmm_setup::dec_and_maybe_free
+            // dec_ref callback chains into pmm::setup::dec_and_maybe_free
             // and returns the page to the allocator.
             if let Some((src_pa, _)) = cur {
                 dec_ref(src_pa.0 & !0xfff);

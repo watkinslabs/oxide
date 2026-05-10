@@ -346,7 +346,7 @@ fn spawn_init_from_rootfs_arm() {
         let prot = (VmaProt::READ | VmaProt::WRITE).to_page_flags();
         let mut va = INIT_STACK_VA;
         while va < INIT_STACK_TOP {
-            let pa = match pmm_setup::alloc_one_frame() {
+            let pa = match pmm::setup::alloc_one_frame() {
                 Some(p) => p,
                 None    => {
                     debug_irq! { klog::kerror!("init-arm: stack page alloc failed"); }

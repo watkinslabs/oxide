@@ -11,17 +11,14 @@
 // `pmm` for the allocator + per-PFN PageMeta, `vmm` for the AnonVma
 // type bound to PageMeta.mapping by the F156 rmap adapter.
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::{Pfn, PAGE_SHIFT, PAGE_SIZE_BYTES};
-use pmm::{Error as PmmError, PageBacking, Pmm, UsableRegion, ORDERS};
+use crate::{Error as PmmError, PageBacking, Pmm, UsableRegion, ORDERS};
 
 use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 
@@ -102,7 +99,7 @@ static PMM_READY: AtomicBool = AtomicBool::new(false);
 // path before `init_page_meta` keeps working. Once installed, every
 // alloc bumps refcount to 1 and every dec_and_maybe_free decrements
 // + frees on zero — Linux-equivalent struct page lifecycle.
-static PAGE_META_PTR: core::sync::atomic::AtomicPtr<pmm::PageMetaArr>
+static PAGE_META_PTR: core::sync::atomic::AtomicPtr<crate::PageMetaArr>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
 struct RegionBuf(UnsafeCell<[UsableRegion; MAX_REGIONS]>);
@@ -294,7 +291,7 @@ pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking>> {
 /// # C: O(1) amortised (PMM buddy alloc).
 pub fn alloc_one_frame() -> Option<u64> {
     let p = pmm_static()?;
-    let pa = p.alloc(pmm::Order(0)).ok().map(|pfn| pfn.0 * 4096)?;
+    let pa = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * 4096)?;
     // F157: stamp refcount=1 if metadata installed.
     if let Some(meta) = page_meta() {
         let _ = meta.get(hal::Pfn(pa / 4096)).map(|m| {
@@ -364,12 +361,12 @@ pub fn init_page_meta(pfn_max: u64) {
     if pfn_max == 0 { return; }
     if !PAGE_META_PTR.load(Ordering::Acquire).is_null() { return; }
     let n = pfn_max as usize;
-    let mut v: alloc::vec::Vec<pmm::PageMeta>
+    let mut v: alloc::vec::Vec<crate::PageMeta>
         = alloc::vec::Vec::with_capacity(n);
-    for _ in 0..n { v.push(pmm::PageMeta::new()); }
-    let leaked: &'static [pmm::PageMeta] =
+    for _ in 0..n { v.push(crate::PageMeta::new()); }
+    let leaked: &'static [crate::PageMeta] =
         alloc::boxed::Box::leak(v.into_boxed_slice());
-    let arr = pmm::PageMetaArr::new(0, leaked);
+    let arr = crate::PageMetaArr::new(0, leaked);
     let arr_box = alloc::boxed::Box::new(arr);
     let raw = alloc::boxed::Box::leak(arr_box) as *mut _;
     PAGE_META_PTR.store(raw, Ordering::Release);
@@ -489,7 +486,7 @@ pub fn pfn_max_from_boot_info(info: &BootInfo) -> u64 {
 }
 
 /// Internal: snapshot the metadata array if installed.
-fn page_meta() -> Option<&'static pmm::PageMetaArr> {
+fn page_meta() -> Option<&'static crate::PageMetaArr> {
     let p = PAGE_META_PTR.load(core::sync::atomic::Ordering::Acquire);
     if p.is_null() { return None; }
     // SAFETY: PAGE_META_PTR is set exactly once via Box::leak in
@@ -502,7 +499,7 @@ fn page_meta() -> Option<&'static pmm::PageMetaArr> {
 /// by huge-page smokes / future huge-leaf consumers. `Order(0)` =
 /// 4 KiB, `Order(9)` = 2 MiB, `Order(18)` = 1 GiB.
 /// # C: O(log heap) (PMM buddy alloc at higher order).
-pub fn alloc_contig(order: pmm::Order) -> Option<u64> {
+pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     let p = pmm_static()?;
     p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
 }
@@ -518,8 +515,8 @@ pub fn alloc_contig(order: pmm::Order) -> Option<u64> {
 pub unsafe fn free_one_frame(pa: u64) {
     let p = match pmm_static() { Some(p) => p, None => return };
     let pfn = hal::Pfn(pa / 4096);
-    // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; pmm::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.
-    unsafe { p.free(pfn, pmm::Order(0)); }
+    // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; crate::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.
+    unsafe { p.free(pfn, crate::Order(0)); }
 }
 
 #[cfg(test)]

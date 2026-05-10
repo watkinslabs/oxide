@@ -426,7 +426,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
                 (b"mapd-net" as &[u8], 0x08u32),
                 (b"mapd-blk" as &[u8], 0x10u32),
             ] {
-                if let Some(itt_pa) = pmm_setup::alloc_one_frame() {
+                if let Some(itt_pa) = pmm::setup::alloc_one_frame() {
                     if hhdm != 0 {
                         // SAFETY: HHDM-mapped freshly-allocated PMM frame; aligned u64 stores.
                         unsafe {

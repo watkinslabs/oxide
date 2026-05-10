@@ -85,12 +85,12 @@ pub fn kernel_sys_clone_dispatch(
         let res = parent_mm.fork_cow_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
             new_root, hhdm,
             // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
-            |pa| unsafe { pmm_setup::inc_ref(pa); });
+            |pa| unsafe { pmm::setup::inc_ref(pa); });
         #[cfg(target_arch = "aarch64")]
         let res = parent_mm.fork_cow_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
             new_root, hhdm,
             // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
-            |pa| unsafe { pmm_setup::inc_ref(pa); });
+            |pa| unsafe { pmm::setup::inc_ref(pa); });
         match res {
             Ok(m) => {
                 crate::user_as::install_teardown(&m);

@@ -14,9 +14,8 @@ drv     = { path = "../../drivers/drv" }
 virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
 drm     = { path = "../../drivers/drm" }
+pmm     = { path = "../../kernel/mm-pmm" }
 fbcon       = { path = "../../drivers/fbcon" }
-pmm         = { path = "../../kernel/mm-pmm" }
-pmm-setup   = { path = "../../kernel/mm-pmm-setup" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64  = { path = "../../arch/hal-x86_64" }

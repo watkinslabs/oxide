@@ -453,7 +453,7 @@ impl Inode for ProcMeminfoInode {
 }
 
 fn pmm_kb_stats() -> (u64, u64) {
-    match pmm_setup::pmm_static() {
+    match pmm::setup::pmm_static() {
         Some(p) => {
             let free  = p.free_pages() * 4; // 4 KiB pages
             let alloc = p.allocated_pages() * 4;

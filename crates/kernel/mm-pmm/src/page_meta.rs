@@ -36,7 +36,7 @@ bitflags::bitflags! {
 /// `mapping` is a type-erased pointer per Linux `struct page->mapping`:
 /// for anonymous pages it's an `Arc<vmm::AnonVma>` raw pointer with
 /// `Arc::into_raw` semantics (pmm doesn't depend on vmm; the kernel
-/// adapter — `pmm_setup::set_anon_rmap_for_pfn` — owns the typed
+/// adapter — `pmm::setup::set_anon_rmap_for_pfn` — owns the typed
 /// dance). `page_index` is the page-aligned offset within the
 /// originating VMA, used by `rmap_walk_anon` to compute the VA.
 #[repr(C)]
