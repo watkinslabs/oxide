@@ -131,7 +131,7 @@ impl Inode for MqInode {
 fn read_user_string(uptr: u64, max: usize) -> Option<String> {
     if uptr == 0 || uptr >= hal::USER_VA_END { return None; }
     // SAFETY: caller-provided user pointer; bounded read via devfs helper which checks USER_VA_END internally.
-    let bytes = unsafe { crate::devfs::read_user_cstr(uptr, max) }?;
+    let bytes = unsafe { devfs::read_user_cstr(uptr, max) }?;
     let s = core::str::from_utf8(bytes).ok()?;
     Some(String::from(s))
 }
