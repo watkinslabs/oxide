@@ -546,7 +546,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
 ) -> u64 {
     // arm64 uses generic numbering; remap to x86_64 (the table key).
     #[cfg(target_arch = "aarch64")]
-    let nr = crate::syscall_arm_abi::aarch64_nr_to_x86(nr);
+    let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
 
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
     debug_syscall! { crate::syscall_trace::entry(nr, a0, a1, a2); }
@@ -886,8 +886,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SET_ROBUST_LIST => crate::syscalls::proc::kernel_sys_set_robust_list(&args),
         syscall::nrs::NR_GET_ROBUST_LIST => crate::syscalls::proc::kernel_sys_get_robust_list(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::kernel_sys_syslog(&args),
-        // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
-        syscall::nrs::NR_RT_SIGRETURN  => unsafe { crate::sig_dispatch::rt_sigreturn() },
+        // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; ::fs::sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
+        syscall::nrs::NR_RT_SIGRETURN  => unsafe { ::fs::sig_dispatch::rt_sigreturn() },
         // Compat-stub fall-through table per P3-46.
         _ => {
             if let Some(rv) = crate::syscalls::cred::cred_dispatch(nr, &args) {
@@ -963,7 +963,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             // SIG_DFL silently drops.
             if p.handler != 0 && p.handler != 1 {
                 // SAFETY: dispatch tail; same conditions as the SIG_DFL→handler arm below.
-                unsafe { crate::sig_dispatch::deliver(p.handler, p.restorer, p.sig); }
+                unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig); }
             }
             return rv as u64;
         }
@@ -985,8 +985,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             }
             1 => {  /* SIG_IGN: drop */ }
             handler => {
-                // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; per-arch saved frame is live; sig_dispatch::deliver dispatches to deliver_x86/_arm which rewrite the saved frame so the asm epilogue's sysretq/eret enters the user handler with the constructed signal frame on the user stack.
-                unsafe { crate::sig_dispatch::deliver(handler, p.restorer, p.sig); }
+                // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; per-arch saved frame is live; ::fs::sig_dispatch::deliver dispatches to deliver_x86/_arm which rewrite the saved frame so the asm epilogue's sysretq/eret enters the user handler with the constructed signal frame on the user stack.
+                unsafe { ::fs::sig_dispatch::deliver(handler, p.restorer, p.sig); }
             }
         }
     }
