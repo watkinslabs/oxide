@@ -487,56 +487,45 @@ pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_dup(oldfd)` — slot 32. Lowest free fd → same File.
+/// `sys_dup(oldfd)` — slot 32. Tier-3 shim per `docs/53§4`.
+/// Work fn: `vfs::FdTable::dup`. Lowest free fd → same File.
 /// # C: O(N_fds)
-pub fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
+pub fn sys_dup(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     match fdt.dup(oldfd) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
 }
 
-/// `sys_dup2(oldfd, newfd)` — slot 33. Closes newfd, clones
-/// oldfd. oldfd==newfd returns newfd unchanged.
+/// `sys_dup2(oldfd, newfd)` — slot 33. Tier-3 shim per `docs/53§4`.
+/// Work fn: `vfs::FdTable::dup2`. oldfd==newfd returns newfd unchanged.
 /// # C: O(1) + close
-pub fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
+pub fn sys_dup2(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     match fdt.dup2(oldfd, newfd) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
 }
 
-/// `sys_dup3(oldfd, newfd, flags)` — slot 292. Like dup2 but
-/// rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
+/// `sys_dup3(oldfd, newfd, flags)` — slot 292. Tier-3 shim.
+/// Like dup2 but rejects oldfd==newfd; accepts O_CLOEXEC (ignored in v1).
 /// # C: O(1) + close
-pub fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
+pub fn sys_dup3(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
     if oldfd == newfd { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     match fdt.dup2(oldfd, newfd) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
@@ -731,25 +720,18 @@ pub fn kernel_sys_ppoll(args: &SyscallArgs) -> i64 {
 }
 
 
-/// `sys_lseek(fd, offset, whence)` — slot 8.
+/// `sys_lseek(fd, offset, whence)` — slot 8. Tier-3 shim.
+/// v1 always returns 0 for seekable file types, Espipe otherwise.
+/// Work fn `vfs::File::lseek` lands as a follow-up.
 /// # C: O(1)
-pub fn kernel_sys_lseek(args: &SyscallArgs) -> i64 {
+pub fn sys_lseek(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let _off = args.a1 as i64;
     let _whence = args.a2 as i32;
-    let cur = match sched::live::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let file = match fdt.get(fd) {
-        Ok(f)  => f,
-        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     match file.inode().file_type() {
         vfs::FileType::Regular | vfs::FileType::BlockDev => 0,
         _                                                 => -(Errno::Espipe.as_i32() as i64),
