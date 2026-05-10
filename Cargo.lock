@@ -96,6 +96,17 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
+name = "dev-misc"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "klog",
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "devfs"
 version = "0.1.0"
 dependencies = [
@@ -412,6 +423,7 @@ dependencies = [
  "block",
  "boot-info",
  "cpu",
+ "dev-misc",
  "devfs",
  "drm",
  "drv",
@@ -429,6 +441,7 @@ dependencies = [
  "hal-x86_64",
  "ipc",
  "kalloc",
+ "keyring",
  "klog",
  "modules",
  "net",
@@ -451,6 +464,7 @@ dependencies = [
  "virtio",
  "vmm",
  "vt",
+ "xattr",
 ]
 
 [[package]]
@@ -466,6 +480,19 @@ version = "0.1.0"
 dependencies = [
  "boot-x86_64",
  "klog",
+]
+
+[[package]]
+name = "keyring"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "sched",
+ "sync",
+ "syscall",
 ]
 
 [[package]]
@@ -1184,6 +1211,18 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "xattr"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]

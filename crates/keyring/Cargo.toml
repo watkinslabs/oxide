@@ -1,0 +1,22 @@
+[package]
+name = "keyring"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# Linux keyring (`add_key` / `request_key` / `keyctl`) per `52§3`
+# domain layer. v1 stores keys in-memory keyed by user/session.
+
+[dependencies]
+devfs   = { path = "../devfs" }
+hal     = { path = "../hal" }
+sched   = { path = "../sched" }
+sync    = { path = "../sync" }
+syscall = { path = "../syscall" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../hal-aarch64" }

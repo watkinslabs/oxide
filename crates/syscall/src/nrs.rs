@@ -6,7 +6,6 @@
 // aarch64 numbers differ; the glue treats these as the dispatch
 // keys (the asm stub remaps arch-native numbers to this set).
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 pub const NR_READ:                u64 = 0;
