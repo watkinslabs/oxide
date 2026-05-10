@@ -103,7 +103,6 @@ pub mod dev_drm;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
-pub mod procfs_net;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs_static;
 

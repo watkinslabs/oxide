@@ -62,3 +62,6 @@ mod stub_tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod meminfo;
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod net;
