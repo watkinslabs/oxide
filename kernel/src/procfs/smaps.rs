@@ -18,7 +18,6 @@
 // Each VMA emits ~16 lines × ~20 chars = 320 bytes; 50 VMAs × 320
 // = ~16 KiB. We size the Vec generously and use streaming reads.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
 use vfs::{FileType, Inode, InodeRef, Ino, KResult, VfsError};
