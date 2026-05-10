@@ -572,6 +572,12 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         ext4::rootfs::init();
         net::sock::init();
         modules::registry::init_exports();
+        // Register every FS backend with the unified mount table per docs/16.
+        // Order matters only for human readability; lookup uses longest-prefix-match.
+        let _ = vfs::mount::register("/",     alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
+        let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
+        let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(crate::procfs::fs_impl::ProcfsFs));
+        let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
     }
     #[cfg(target_os = "oxide-kernel")]
     {
