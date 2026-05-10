@@ -622,7 +622,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     unsafe {
         ext4::rootfs::init();
         net::sock::init();
-        dev_modules::init_exports();
+        modules::registry::init_exports();
     }
     #[cfg(target_os = "oxide-kernel")]
     {
