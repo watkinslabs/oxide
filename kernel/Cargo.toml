@@ -10,6 +10,8 @@ path = "src/lib.rs"
 
 [dependencies]
 block   = { path = "../crates/block" }
+boot-info = { path = "../crates/boot-info" }
+pmm-setup = { path = "../crates/pmm-setup" }
 elf     = { path = "../crates/elf" }
 net     = { path = "../crates/net" }
 modules = { path = "../crates/modules" }
