@@ -120,7 +120,7 @@ pub unsafe fn enable(its_va: u64) -> ItsStatus {
 /// # C: O(1)
 #[cfg(target_arch = "aarch64")]
 pub fn translater_pa() -> u64 {
-    let base = crate::acpi::GIC_ITS_PA.load(Ordering::Acquire);
+    let base = firmware::acpi::GIC_ITS_PA.load(Ordering::Acquire);
     if base == 0 { 0 } else { base + GITS_TRANSLATER as u64 }
 }
 

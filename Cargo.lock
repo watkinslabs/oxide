@@ -9,6 +9,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arch-irq"
+version = "0.1.0"
+dependencies = [
+ "firmware",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "sched",
+ "sync",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -420,6 +434,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "block",
  "boot-info",
  "cpu",
@@ -442,7 +457,6 @@ dependencies = [
  "kalloc",
  "klog",
  "modules",
- "msi",
  "net",
  "nscg",
  "pci",
@@ -525,10 +539,6 @@ dependencies = [
  "klog",
  "sync",
 ]
-
-[[package]]
-name = "msi"
-version = "0.1.0"
 
 [[package]]
 name = "net"
