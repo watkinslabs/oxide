@@ -22,6 +22,7 @@ extern crate std;
 
 pub mod dispatch;
 pub mod errno;
+pub mod nrs;
 pub mod userptr;
 
 pub use dispatch::{

@@ -897,6 +897,7 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+ "syscall",
 ]
 
 [[package]]
