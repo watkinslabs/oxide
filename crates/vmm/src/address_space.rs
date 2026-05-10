@@ -188,6 +188,15 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn root_pa(&self) -> u64 { self.root_pa }
 
+    /// Read-locked snapshot of the VMA tree for tests + diagnostics.
+    /// Hot-path callers should use the per-method internal lock; this
+    /// is a coarse read borrow used by hosted tests in tests_rmap_cow
+    /// to assert chain attach/detach invariants.
+    /// # C: O(1) lock acquire
+    pub fn vmas_for_test(&self) -> RwReadGuard<'_, VmaTree, AddressSpaceClass> {
+        self.vmas.read()
+    }
+
     /// Set the per-mm exe path captured at `execve`. Linux's
     /// `mm_struct::exe_file` analogue: stores the dentry-of-record
     /// path (e.g. `/bin/echo`), NOT the inode-canonical path.
@@ -327,14 +336,29 @@ impl AddressSpace {
                 va += PAGE_SIZE_BYTES;
             }
         }
-        Ok(Arc::new(Self {
+        let child = Arc::new(Self {
             vmas: RwLock::new(dst),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
-        }))
+        });
+        // Linux `anon_vma_fork`: each anonymous VMA in the child
+        // inherits the parent's `Arc<AnonVma>` (already cloned by
+        // `Vma::clone` above) and adds an rmap chain edge for the
+        // child's own (mm, vma_range). Without this, rmap_walk on a
+        // shared frame would only enumerate the parent — child PTEs
+        // would be invisible to migration / KSM / pageout.
+        let child_weak = Arc::downgrade(&child);
+        let child_tree = child.vmas.read();
+        for cv in child_tree.iter() {
+            if let Some(av) = cv.anon_vma.as_ref() {
+                av.attach(child_weak.clone(), cv.start.as_u64(), cv.end.as_u64());
+            }
+        }
+        drop(child_tree);
+        Ok(child)
     }
 
     /// Eager-copy fork — pre-COW path retained for callers that
