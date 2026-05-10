@@ -25,6 +25,8 @@ coredump  = { path = "../crates/kernel/coredump" }
 dev-net   = { path = "../crates/kernel/dev-net" }
 dev-ext4  = { path = "../crates/kernel/dev-ext4" }
 elf-load  = { path = "../crates/kernel/elf-load" }
+msi       = { path = "../crates/kernel/msi" }
+dev-modules = { path = "../crates/kernel/dev-modules" }
 ipc       = { path = "../crates/kernel/ipc" }
 pipe      = { path = "../crates/kernel/pipe", default-features = false }
 pmm-setup = { path = "../crates/kernel/pmm-setup" }
