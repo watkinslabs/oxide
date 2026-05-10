@@ -96,6 +96,16 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
+name = "devfs"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "sched",
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "dl"
 version = "0.1.0"
 dependencies = [
@@ -402,6 +412,7 @@ dependencies = [
  "block",
  "boot-info",
  "cpu",
+ "devfs",
  "drm",
  "drv",
  "drv-virtio-gpu",
