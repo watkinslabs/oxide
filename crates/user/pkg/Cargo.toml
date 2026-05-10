@@ -1,0 +1,17 @@
+[package]
+name = "pkg"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+hosted = []
+
+[dependencies]
+rpm     = { path = "../../user/rpm" }
+cpio    = { path = "../../shared/cpio" }
+inflate = { path = "../../shared/inflate" }

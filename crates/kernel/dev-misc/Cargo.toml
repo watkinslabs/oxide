@@ -1,0 +1,21 @@
+[package]
+name = "dev-misc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# /dev/null /dev/zero /dev/full /dev/random /dev/urandom /dev/kmsg
+# pseudo-devices per `52§3` domain layer. Pure VFS-inode producers.
+
+[dependencies]
+devfs = { path = "../../kernel/devfs" }
+hal   = { path = "../../arch/hal" }
+klog  = { path = "../../shared/klog" }
+sync  = { path = "../../shared/sync" }
+vfs   = { path = "../../kernel/vfs" }
+
+[features]
+default = []
+# Per `04§3` R06 — gates the boot-time dev-misc-smoke klog::write_raw.
+debug-boot = []

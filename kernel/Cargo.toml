@@ -9,59 +9,59 @@ name = "kernel"
 path = "src/lib.rs"
 
 [dependencies]
-block   = { path = "../crates/block" }
-boot-info = { path = "../crates/boot-info" }
-cpu       = { path = "../crates/cpu" }
-devfs     = { path = "../crates/devfs" }
-dev-misc  = { path = "../crates/dev-misc", default-features = false }
-keyring   = { path = "../crates/keyring" }
-xattr     = { path = "../crates/xattr" }
-inotify   = { path = "../crates/inotify" }
-timerfd   = { path = "../crates/timerfd" }
-ptrace    = { path = "../crates/ptrace" }
-perf      = { path = "../crates/perf" }
-ipc       = { path = "../crates/ipc" }
-pipe      = { path = "../crates/pipe", default-features = false }
-pmm-setup = { path = "../crates/pmm-setup" }
-smp       = { path = "../crates/smp" }
-epoll     = { path = "../crates/epoll" }
-flock     = { path = "../crates/flock" }
-signalfd  = { path = "../crates/signalfd" }
-userfaultfd = { path = "../crates/userfaultfd" }
-elf     = { path = "../crates/elf" }
-net     = { path = "../crates/net" }
-modules = { path = "../crates/modules" }
-pci     = { path = "../crates/pci" }
-virtio  = { path = "../crates/virtio" }
-ext4    = { path = "../crates/ext4" }
-hal     = { path = "../crates/hal" }
-klog    = { path = "../crates/klog" }
-kalloc  = { path = "../crates/kalloc" }
-pmm     = { path = "../crates/pmm" }
-procfs  = { path = "../crates/procfs" }
-sched   = { path = "../crates/sched" }
-sync    = { path = "../crates/sync" }
-syscall = { path = "../crates/syscall" }
-tty     = { path = "../crates/tty" }
-vfs     = { path = "../crates/vfs" }
-vmm     = { path = "../crates/vmm" }
-power    = { path = "../crates/power" }
-firmware = { path = "../crates/firmware" }
-nscg     = { path = "../crates/nscg" }
-security = { path = "../crates/security" }
-drv             = { path = "../crates/drv" }
-drv-virtio-gpu    = { path = "../crates/drv-virtio-gpu" }
-drv-virtio-input  = { path = "../crates/drv-virtio-input" }
-drm               = { path = "../crates/drm" }
-fbdev             = { path = "../crates/fbdev" }
-fbcon             = { path = "../crates/fbcon" }
-vt                = { path = "../crates/vt" }
+block   = { path = "../crates/kernel/block" }
+boot-info = { path = "../crates/shared/boot-info" }
+cpu       = { path = "../crates/kernel/cpu" }
+devfs     = { path = "../crates/kernel/devfs" }
+dev-misc  = { path = "../crates/kernel/dev-misc", default-features = false }
+keyring   = { path = "../crates/kernel/keyring" }
+xattr     = { path = "../crates/kernel/xattr" }
+inotify   = { path = "../crates/kernel/inotify" }
+timerfd   = { path = "../crates/kernel/timerfd" }
+ptrace    = { path = "../crates/kernel/ptrace" }
+perf      = { path = "../crates/kernel/perf" }
+ipc       = { path = "../crates/kernel/ipc" }
+pipe      = { path = "../crates/kernel/pipe", default-features = false }
+pmm-setup = { path = "../crates/kernel/pmm-setup" }
+smp       = { path = "../crates/kernel/smp" }
+epoll     = { path = "../crates/kernel/epoll" }
+flock     = { path = "../crates/kernel/flock" }
+signalfd  = { path = "../crates/kernel/signalfd" }
+userfaultfd = { path = "../crates/kernel/userfaultfd" }
+elf     = { path = "../crates/shared/elf" }
+net     = { path = "../crates/kernel/net" }
+modules = { path = "../crates/kernel/modules" }
+pci     = { path = "../crates/drivers/pci" }
+virtio  = { path = "../crates/drivers/virtio" }
+ext4    = { path = "../crates/kernel/ext4" }
+hal     = { path = "../crates/arch/hal" }
+klog    = { path = "../crates/shared/klog" }
+kalloc  = { path = "../crates/shared/kalloc" }
+pmm     = { path = "../crates/kernel/pmm" }
+procfs  = { path = "../crates/kernel/procfs" }
+sched   = { path = "../crates/kernel/sched" }
+sync    = { path = "../crates/shared/sync" }
+syscall = { path = "../crates/kernel/syscall" }
+tty     = { path = "../crates/kernel/tty" }
+vfs     = { path = "../crates/kernel/vfs" }
+vmm     = { path = "../crates/kernel/vmm" }
+power    = { path = "../crates/kernel/power" }
+firmware = { path = "../crates/kernel/firmware" }
+nscg     = { path = "../crates/kernel/nscg" }
+security = { path = "../crates/kernel/security" }
+drv             = { path = "../crates/drivers/drv" }
+drv-virtio-gpu    = { path = "../crates/drivers/drv-virtio-gpu" }
+drv-virtio-input  = { path = "../crates/drivers/drv-virtio-input" }
+drm               = { path = "../crates/drivers/drm" }
+fbdev             = { path = "../crates/drivers/fbdev" }
+fbcon             = { path = "../crates/drivers/fbcon" }
+vt                = { path = "../crates/drivers/vt" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-hal-x86_64 = { path = "../crates/hal-x86_64" }
+hal-x86_64 = { path = "../crates/arch/hal-x86_64" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-hal-aarch64 = { path = "../crates/hal-aarch64" }
+hal-aarch64 = { path = "../crates/arch/hal-aarch64" }
 
 [features]
 default = []
