@@ -712,22 +712,26 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             as_.try_grow_stack(uva);
         }
     }
-    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally).
+    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault_cow::<hal_x86_64::mmu_ops::X86Mmu, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _>(
             uva, fault, hhdm,
             || crate::pmm_setup::alloc_one_frame(),
             |pa| crate::pmm_setup::frame_refcount(pa),
-            // SAFETY: dec_ref of a previously-mapped shared frame after COW split.
-            |pa| crate::pmm_setup::dec_and_maybe_free_frame(pa));
+            // SAFETY: dec_ref of a previously-mapped shared frame after COW split; rmap_aware_dec_and_maybe_free clears page->mapping before the frame returns to PMM.
+            |pa| crate::pmm_setup::rmap_aware_dec_and_maybe_free(pa),
+            // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
+            |pa, av, idx| crate::pmm_setup::set_anon_rmap_for_pa(pa, av, idx));
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault_cow::<hal_aarch64::mmu_ops::ArmMmu, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _>(
             uva, fault, hhdm,
             || crate::pmm_setup::alloc_one_frame(),
             |pa| crate::pmm_setup::frame_refcount(pa),
-            // SAFETY: dec_ref of a previously-mapped shared frame after COW split.
-            |pa| crate::pmm_setup::dec_and_maybe_free_frame(pa));
+            // SAFETY: dec_ref + rmap clear; same shape as x86.
+            |pa| crate::pmm_setup::rmap_aware_dec_and_maybe_free(pa),
+            // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
+            |pa, av, idx| crate::pmm_setup::set_anon_rmap_for_pa(pa, av, idx));
         r
     }
 }

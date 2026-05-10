@@ -366,6 +366,98 @@ pub fn init_page_meta(pfn_max: u64) {
     PAGE_META_PTR.store(raw, Ordering::Release);
 }
 
+/// F156-rmap: install the AnonVma reference for a frame. Mirrors
+/// Linux `page_add_anon_rmap` shape — the page now belongs to that
+/// anon-VMA family, with `page_index` as the page offset within the
+/// originating VMA. Bumps the AnonVma's strong count via
+/// `Arc::into_raw` and stashes the raw pointer in `PageMeta.mapping`.
+/// If a previous AnonVma was bound it gets dropped (rare path:
+/// re-bind on a recycled frame; the dec_and_maybe_free path normally
+/// clears mapping before the frame is reused).
+///
+/// # SAFETY: `pa` is a live PMM-allocated frame whose PageMeta slot
+/// belongs to the caller's mapping; `av` is alive at call time.
+/// # C: O(1)
+pub unsafe fn set_anon_rmap_for_pa(
+    pa: u64,
+    av: &alloc::sync::Arc<vmm::AnonVma>,
+    page_index: u32,
+) {
+    let meta = match page_meta() { Some(m) => m, None => return };
+    let pfn = hal::Pfn(pa / 4096);
+    let raw = alloc::sync::Arc::into_raw(alloc::sync::Arc::clone(av)) as *mut ();
+    if let Some(prev) = meta.swap_mapping(pfn, raw) {
+        if !prev.is_null() {
+            // SAFETY: previous slot was set via set_anon_rmap_for_pa's
+            // Arc::into_raw; reclaiming and dropping it balances that
+            // strong-count bump.
+            unsafe { drop(alloc::sync::Arc::from_raw(prev as *const vmm::AnonVma)); }
+        }
+    }
+    let _ = meta.set_page_index(pfn, page_index);
+}
+
+/// Inverse of `set_anon_rmap_for_pa`. Loads the stored raw pointer,
+/// stores null, drops the Arc. Idempotent on null. Called from
+/// `dec_and_maybe_free_frame` when the refcount hits zero — the
+/// frame is about to return to PMM, so we must drop our chain
+/// reference first or leak the AnonVma.
+///
+/// # SAFETY: `pa` is a frame whose mapping slot is owned by the
+/// caller's flow (no concurrent reader of the slot's pointee).
+/// # C: O(1)
+pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
+    let meta = match page_meta() { Some(m) => m, None => return };
+    let pfn = hal::Pfn(pa / 4096);
+    if let Some(prev) = meta.swap_mapping(pfn, core::ptr::null_mut()) {
+        if !prev.is_null() {
+            // SAFETY: prev was installed via set_anon_rmap_for_pa's
+            // Arc::into_raw; we now reclaim ownership and drop.
+            unsafe { drop(alloc::sync::Arc::from_raw(prev as *const vmm::AnonVma)); }
+        }
+    }
+    let _ = meta.set_page_index(pfn, 0);
+}
+
+/// Snapshot the AnonVma stored at `pa`. Bumps the strong count so
+/// the caller's clone is independent. `None` if no anon_vma is
+/// bound or pre-init.
+/// # C: O(1)
+pub fn anon_vma_for_pa(pa: u64) -> Option<alloc::sync::Arc<vmm::AnonVma>> {
+    let meta = page_meta()?;
+    let pfn = hal::Pfn(pa / 4096);
+    let raw = meta.mapping(pfn)?;
+    if raw.is_null() { return None; }
+    // SAFETY: raw was installed via set_anon_rmap_for_pa's into_raw;
+    // increment the strong count and reconstruct an owned Arc.
+    unsafe {
+        alloc::sync::Arc::increment_strong_count(raw as *const vmm::AnonVma);
+        Some(alloc::sync::Arc::from_raw(raw as *const vmm::AnonVma))
+    }
+}
+
+/// Snapshot the page_index stored at `pa`. 0 pre-init or out-of-range.
+/// # C: O(1)
+pub fn page_index_for_pa(pa: u64) -> u32 {
+    page_meta()
+        .and_then(|m| m.page_index(hal::Pfn(pa / 4096)))
+        .unwrap_or(0)
+}
+
+/// F156-rmap: drop the rmap edge before the frame returns to PMM.
+/// Wraps `dec_and_maybe_free_frame` so callers that don't carry an
+/// AnonVma reference still keep the chain consistent. Intended for
+/// the COW split + munmap leaf-walk paths.
+/// # SAFETY: same as `dec_and_maybe_free_frame`.
+/// # C: O(1)
+pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
+    // SAFETY: clear_anon_rmap_for_pa drops the Arc bound to this
+    // frame's PageMeta.mapping; subsequent dec_ref handles refcount.
+    unsafe { clear_anon_rmap_for_pa(pa); }
+    // SAFETY: caller asserts the frame's leaf PTE has been removed.
+    unsafe { dec_and_maybe_free_frame(pa); }
+}
+
 /// F157: compute pfn_max from a `BootInfo`. Used by `kernel_main` to
 /// size the per-page metadata array. Same walk as
 /// `init_from_boot_info`; lifted here so callers don't have to
