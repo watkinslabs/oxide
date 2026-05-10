@@ -12,7 +12,6 @@
 // init's fd 0/1/2 install a vt=0 (foreground-alias) ConsoleInode
 // — backwards-compatible with the pre-B07 single-VT behavior.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::ToString;
 use alloc::sync::Arc;

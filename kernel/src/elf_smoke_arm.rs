@@ -421,7 +421,7 @@ fn spawn_init_from_rootfs_arm() {
     // mirrors elf_smoke::spawn_user_blob_smoke on x86. Without this
     // a forked child running real-libc /bin/sh hits EBADF on its
     // first write to stderr and exits without printing anything.
-    let fdt = crate::dev_console::init_console_fd_table();
+    let fdt = crate::dev::console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled; we are sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;

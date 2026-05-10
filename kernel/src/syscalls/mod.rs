@@ -688,10 +688,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PAUSE     => crate::syscalls::proc::kernel_sys_pause(&args),
         syscall::nrs::NR_GETITIMER => crate::syscalls::proc::kernel_sys_getitimer(&args),
         syscall::nrs::NR_SETITIMER => crate::syscalls::proc::kernel_sys_setitimer(&args),
-        syscall::nrs::NR_PIDFD_OPEN  => crate::dev_pidfd::kernel_sys_pidfd_open(&args),
-        syscall::nrs::NR_PIDFD_GETFD => crate::dev_pidfd::kernel_sys_pidfd_getfd(&args),
+        syscall::nrs::NR_PIDFD_OPEN  => crate::dev::pidfd::kernel_sys_pidfd_open(&args),
+        syscall::nrs::NR_PIDFD_GETFD => crate::dev::pidfd::kernel_sys_pidfd_getfd(&args),
         syscall::nrs::NR_PIDFD_SEND_SIGNAL
-                                 => crate::dev_pidfd::kernel_sys_pidfd_send_signal(&args),
+                                 => crate::dev::pidfd::kernel_sys_pidfd_send_signal(&args),
         syscall::nrs::NR_INOTIFY_INIT | syscall::nrs::NR_INOTIFY_INIT1
                                  => ::fs::inotify::kernel_sys_inotify_init1(&args),
         syscall::nrs::NR_INOTIFY_ADD_WATCH

@@ -58,7 +58,7 @@ pub fn kernel_sys_select(args: &SyscallArgs) -> i64 {
             let ino = file.inode().ino();
             if (ino & 0xFFFF_0000) == 0x6000_0000 {
                 let is_master = (ino & 0x8000) == 0;
-                if let Some(pair) = crate::dev_pty::pair_for((ino & 0x7FFF) as u32) {
+                if let Some(pair) = crate::dev::pty::pair_for((ino & 0x7FFF) as u32) {
                     let r = pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() });
                     got_read  = r;
                     got_write = true;

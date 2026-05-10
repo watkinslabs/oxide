@@ -2,7 +2,6 @@
 // PidfdInode with the target tid encoded in the low 24 bits of the
 // inode number; pidfd_send_signal extracts the tid by inode marker.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 
@@ -64,7 +63,7 @@ pub fn kernel_sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = crate::dev_pidfd::new_pidfd_inode(pid);
+    let inode = crate::dev::pidfd::new_pidfd_inode(pid);
     let dentry = Dentry::new(None, "pidfd".to_string(), Arc::clone(&inode));
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     match fdt.alloc(file) {
@@ -93,7 +92,7 @@ pub fn kernel_sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let tid = match crate::dev_pidfd::tid_from_ino(file.inode().ino()) {
+    let tid = match crate::dev::pidfd::tid_from_ino(file.inode().ino()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
     let task = match crate::sched::registry::lookup(tid) {
@@ -135,7 +134,7 @@ pub fn kernel_sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let pidfd_file = match cur_fdt.get(pidfd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let tid = match crate::dev_pidfd::tid_from_ino(pidfd_file.inode().ino()) {
+    let tid = match crate::dev::pidfd::tid_from_ino(pidfd_file.inode().ino()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
     let target = match crate::sched::registry::lookup(tid) {
