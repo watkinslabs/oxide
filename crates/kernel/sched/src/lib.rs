@@ -109,3 +109,6 @@ mod stub_tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod live;
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod syscalls;
