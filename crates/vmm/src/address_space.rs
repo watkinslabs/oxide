@@ -631,15 +631,53 @@ impl AddressSpace {
         va: UserVirtAddr,
         fault: FaultKind,
         hhdm_offset: u64,
-        mut alloc_frame: A,
-        mut frame_refcount: RC,
-        mut dec_ref: DR,
+        alloc_frame: A,
+        frame_refcount: RC,
+        dec_ref: DR,
     ) -> KResult<()>
     where
         M:  MmuOps,
         A:  FnMut() -> Option<u64>,
         RC: FnMut(u64) -> u32,
         DR: FnMut(u64),
+    {
+        // Forward to the rmap-aware variant with no-op rmap hooks.
+        // Hosted tests + boot-only callers that don't need page->mapping
+        // bookkeeping go through this thin wrapper; the kernel's
+        // user-fault dispatcher uses `handle_page_fault_cow_rmap`.
+        // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
+        unsafe {
+            self.handle_page_fault_cow_rmap::<M, _, _, _, _>(
+                va, fault, hhdm_offset,
+                alloc_frame, frame_refcount, dec_ref,
+                |_pa, _av, _idx| {},
+            )
+        }
+    }
+
+    /// rmap-aware COW + demand-page handler. Identical to
+    /// `handle_page_fault_cow` but invokes `set_rmap` after every
+    /// successful frame install so the kernel side can record the
+    /// new (page → AnonVma, page_index) edge per Linux
+    /// `page_add_anon_rmap`. Hosted tests pin no-op `set_rmap`.
+    /// # SAFETY: per `handle_page_fault_cow`.
+    /// # C: O(N_vmas) on lookup + O(walk) on install.
+    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR>(
+        &self,
+        va: UserVirtAddr,
+        fault: FaultKind,
+        hhdm_offset: u64,
+        mut alloc_frame: A,
+        mut frame_refcount: RC,
+        mut dec_ref: DR,
+        mut set_rmap: SR,
+    ) -> KResult<()>
+    where
+        M:  MmuOps,
+        A:  FnMut() -> Option<u64>,
+        RC: FnMut(u64) -> u32,
+        DR: FnMut(u64),
+        SR: FnMut(u64, &Arc<crate::AnonVma>, u32),
     {
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
@@ -705,6 +743,14 @@ impl AddressSpace {
                 M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
                 M::flush_va(Va(va_page));
             }
+            // F156-rmap: bind new private page to the VMA's anon_vma
+            // family with the page-offset index per Linux
+            // `page_add_anon_rmap`. Caller's `set_rmap` is the kernel
+            // adapter that bumps the Arc and stashes it in PageMeta.
+            if let Some(av) = vma.anon_vma.as_ref() {
+                let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
+                set_rmap(new_pa, av, idx);
+            }
             // F157: drop our reference to the shared frame. If its
             // refcount hits zero (other AS already unmapped), the
             // dec_ref callback chains into pmm_setup::dec_and_maybe_free
@@ -745,6 +791,12 @@ impl AddressSpace {
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
                 unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                // F156-rmap: bind the freshly-allocated anonymous
+                // page to its VMA family per `page_add_anon_rmap`.
+                if let Some(av) = vma.anon_vma.as_ref() {
+                    let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
+                    set_rmap(pa, av, idx);
+                }
                 Ok(())
             }
             VmaBacking::KernelBytes { data, off: backing_off } => {
