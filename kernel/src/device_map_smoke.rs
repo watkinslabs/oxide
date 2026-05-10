@@ -55,7 +55,7 @@ fn device_flags() -> PageFlags {
 /// # Ctx: pre-init, IRQ-off (entry), single-CPU
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub fn smoke_device_map_x86(_hhdm: u64) {
-    use crate::lapic;
+    use arch_irq::lapic;
     use hal_x86_64::mmu_ops::X86Mmu;
     // SAFETY: single-CPU, IRQs off, PMM owns its frames; we splice
     // a 4 KiB Device-attr leaf into the kernel-half of the live
@@ -127,12 +127,12 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
 /// Gated to `debug-irq` so the klog call sites stay zero-cost in
 /// stripped builds.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-irq"))]
-fn log_cmd_status(s: crate::its::CmdStatus) {
+fn log_cmd_status(s: arch_irq::its::CmdStatus) {
     match s {
-        crate::its::CmdStatus::NotReady => {
+        arch_irq::its::CmdStatus::NotReady => {
             klog::write_raw(b"NotReady\n");
         }
-        crate::its::CmdStatus::Posted { cwriter, creadr, polls } => {
+        arch_irq::its::CmdStatus::Posted { cwriter, creadr, polls } => {
             klog::write_raw(b"Posted cwriter=");
             klog::write_hex_u64(cwriter);
             klog::write_raw(b" creadr=");
@@ -141,7 +141,7 @@ fn log_cmd_status(s: crate::its::CmdStatus) {
             klog::write_dec_u64(polls as u64);
             klog::write_raw(b"\n");
         }
-        crate::its::CmdStatus::Timeout { cwriter, creadr } => {
+        arch_irq::its::CmdStatus::Timeout { cwriter, creadr } => {
             klog::write_raw(b"Timeout cwriter=");
             klog::write_hex_u64(cwriter);
             klog::write_raw(b" creadr=");
@@ -151,7 +151,7 @@ fn log_cmd_status(s: crate::its::CmdStatus) {
     }
 }
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", not(feature = "debug-irq")))]
-fn log_cmd_status(_s: crate::its::CmdStatus) {}
+fn log_cmd_status(_s: arch_irq::its::CmdStatus) {}
 
 /// GIC distributor base on QEMU virt (matches MADT log; same address
 /// for v2 and v3).
@@ -183,7 +183,7 @@ const PL011_VA: u64 = KERNEL_DEVICE_BASE | (PL011_PHYS & 0xFFFF_FFFF);
 /// # Ctx: pre-init, IRQ-off (entry), single-CPU
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 pub fn smoke_device_map_arm(_hhdm: u64) {
-    use crate::gic;
+    use arch_irq::gic;
 use hal_aarch64::{timer as arm_timer, pl011};
     use hal_aarch64::mmu_ops::ArmMmu;
     // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active,
@@ -298,16 +298,16 @@ use hal_aarch64::{timer as arm_timer, pl011};
                 }
             }
             // SAFETY: ITS control frame freshly Device-attr mapped; single-CPU pre-init.
-            let _s = unsafe { crate::its::enable(its_va) };
+            let _s = unsafe { arch_irq::its::enable(its_va) };
             debug_irq! {
                 match _s {
-                    crate::its::ItsStatus::Absent => {
+                    arch_irq::its::ItsStatus::Absent => {
                         klog::write_raw(b"[INFO]  its: absent\n");
                     }
-                    crate::its::ItsStatus::AlreadyOn => {
+                    arch_irq::its::ItsStatus::AlreadyOn => {
                         klog::write_raw(b"[INFO]  its: already on\n");
                     }
-                    crate::its::ItsStatus::Discovered { typer, ctlr, iidr, baser0 } => {
+                    arch_irq::its::ItsStatus::Discovered { typer, ctlr, iidr, baser0 } => {
                         klog::write_raw(b"[INFO]  its: discovered typer=");
                         klog::write_hex_u64(typer);
                         klog::write_raw(b" ctlr=");
@@ -318,15 +318,15 @@ use hal_aarch64::{timer as arm_timer, pl011};
                         klog::write_hex_u64(baser0);
                         klog::write_raw(b"\n");
                         klog::write_raw(b"[INFO]  its: dev_id_bits=");
-                        klog::write_dec_u64(crate::its::typer_devbits(typer) as u64);
+                        klog::write_dec_u64(arch_irq::its::typer_devbits(typer) as u64);
                         klog::write_raw(b" event_id_bits=");
-                        klog::write_dec_u64(crate::its::typer_id_bits(typer) as u64);
+                        klog::write_dec_u64(arch_irq::its::typer_id_bits(typer) as u64);
                         klog::write_raw(b" itt_entry_size=");
-                        klog::write_dec_u64(crate::its::typer_itt_entry_size(typer) as u64);
+                        klog::write_dec_u64(arch_irq::its::typer_itt_entry_size(typer) as u64);
                         klog::write_raw(b" phys_lpi=");
-                        klog::write_dec_u64(crate::its::typer_phys_lpi(typer) as u64);
+                        klog::write_dec_u64(arch_irq::its::typer_phys_lpi(typer) as u64);
                         klog::write_raw(b" translater_pa=");
-                        klog::write_hex_u64(crate::its::translater_pa());
+                        klog::write_hex_u64(arch_irq::its::translater_pa());
                         klog::write_raw(b"\n");
                     }
                 }
@@ -338,16 +338,16 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // + LPI prop/pend + GITS_CTLR.Enabled + MAPD/MAPC/MAPTI.
             let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
             // SAFETY: ITS control frame Device-attr mapped above; PMM up; HHDM covers PMM frames; single-CPU pre-init.
-            let _q = unsafe { crate::its::cmdq_setup(hhdm) };
+            let _q = unsafe { arch_irq::its::cmdq_setup(hhdm) };
             debug_irq! {
                 match _q {
-                    crate::its::CmdqStatus::NoIts =>
+                    arch_irq::its::CmdqStatus::NoIts =>
                         klog::write_raw(b"[INFO]  its-cmdq: no its\n"),
-                    crate::its::CmdqStatus::AllocFailed =>
+                    arch_irq::its::CmdqStatus::AllocFailed =>
                         klog::write_raw(b"[ERROR] its-cmdq: pmm alloc failed\n"),
-                    crate::its::CmdqStatus::AlreadyOn =>
+                    arch_irq::its::CmdqStatus::AlreadyOn =>
                         klog::write_raw(b"[INFO]  its-cmdq: already on\n"),
-                    crate::its::CmdqStatus::Ready { cmdq_pa, cbaser_wr, cbaser_rd, creadr } => {
+                    arch_irq::its::CmdqStatus::Ready { cmdq_pa, cbaser_wr, cbaser_rd, creadr } => {
                         klog::write_raw(b"[INFO]  its-cmdq: pa=");
                         klog::write_hex_u64(cmdq_pa);
                         klog::write_raw(b" cbaser_wr=");
@@ -365,15 +365,15 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // — enough for low-DeviceID PCI devices and small
             // collection counts; Indirect tables come later when SMP
             // CPU counts or wide DeviceIDs need them.
-            let mut slots = [crate::its::BaserSlot {
+            let mut slots = [arch_irq::its::BaserSlot {
                 idx: 0,
-                ty: crate::its::BaserType::Unimplemented,
+                ty: arch_irq::its::BaserType::Unimplemented,
                 raw_pre: 0,
                 raw_post: 0,
                 table_pa: 0,
-            }; crate::its::GITS_BASER_COUNT];
+            }; arch_irq::its::GITS_BASER_COUNT];
             // SAFETY: cmdq_setup completed; PMM up; ITS control frame mapped; single-CPU pre-init.
-            let _n = unsafe { crate::its::baser_setup(hhdm, &mut slots) };
+            let _n = unsafe { arch_irq::its::baser_setup(hhdm, &mut slots) };
             debug_irq! {
                 klog::write_raw(b"[INFO]  its-baser: programmed=");
                 klog::write_dec_u64(_n as u64);
@@ -395,7 +395,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
             }
             // F56-05: flip GITS_CTLR.Enabled.
             // SAFETY: cmdq + BASERs programmed above; LPIs enabled at the RD; single-CPU pre-init.
-            let _ctlr = unsafe { crate::its::ctlr_enable() };
+            let _ctlr = unsafe { arch_irq::its::ctlr_enable() };
             debug_irq! {
                 klog::write_raw(b"[INFO]  its-ctlr: post=");
                 klog::write_hex_u64(_ctlr as u64);
@@ -409,10 +409,10 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // catches up to CWRITER without ITS errors.
             for (label, cmd) in [
                 (b"mapc-icid0" as &[u8],
-                 crate::its::cmd_mapc(0, 0)),
+                 arch_irq::its::cmd_mapc(0, 0)),
             ] {
                 // SAFETY: ITS enabled; HHDM live; single-CPU pre-init; pre-issue barrier inside cmd_post.
-                let s = unsafe { crate::its::cmd_post(hhdm, cmd) };
+                let s = unsafe { arch_irq::its::cmd_post(hhdm, cmd) };
                 debug_irq! {
                     klog::write_raw(b"[INFO]  its-cmd ");
                     klog::write_raw(label);
@@ -437,9 +437,9 @@ use hal_aarch64::{timer as arm_timer, pl011};
                         }
                     }
                     // Size=4 → 32 EventIDs supported by this device.
-                    let cmd = crate::its::cmd_mapd(did, itt_pa, 4);
+                    let cmd = arch_irq::its::cmd_mapd(did, itt_pa, 4);
                     // SAFETY: ITS enabled; ITT freshly zeroed and 4 KiB-aligned.
-                    let s = unsafe { crate::its::cmd_post(hhdm, cmd) };
+                    let s = unsafe { arch_irq::its::cmd_post(hhdm, cmd) };
                     debug_irq! {
                         klog::write_raw(b"[INFO]  its-cmd ");
                         klog::write_raw(label);
@@ -459,24 +459,24 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // BETWEEN MAPTI and INV so the ITS re-reads it on INV.
             // SAFETY: ITS enabled; MAPC + MAPD posted above.
             let s_mapti = unsafe {
-                crate::its::cmd_post(hhdm, crate::its::cmd_mapti(0x10, 0, 8192, 0))
+                arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_mapti(0x10, 0, 8192, 0))
             };
             // SAFETY: lpis_enable published LPI_PROP_PA; HHDM live; LPI 8192 within table bounds.
             let lpi_set = unsafe {
-                crate::gic::lpi_set_config(hhdm, 8192, crate::gic::LPI_PROP_DEFAULT)
+                arch_irq::gic::lpi_set_config(hhdm, 8192, arch_irq::gic::LPI_PROP_DEFAULT)
             };
             // SAFETY: MAPTI just posted; cmd queue protocol per F56-06.
             let s_inv = unsafe {
-                crate::its::cmd_post(hhdm, crate::its::cmd_inv(0x10, 0))
+                arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_inv(0x10, 0))
             };
             // SAFETY: ITS enabled and queue protocol per F56-06; SYNC barriers against the boot RD's processor number.
             let s_sync = unsafe {
-                crate::its::cmd_post(hhdm, crate::its::cmd_sync(0))
+                arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(0))
             };
             debug_irq! {
                 klog::write_raw(b"[INFO]  its-cmd mapti-blk "); log_cmd_status(s_mapti);
                 klog::write_raw(b"[INFO]  lpi-prop[8192]=");
-                klog::write_hex_u64(crate::gic::LPI_PROP_DEFAULT as u64);
+                klog::write_hex_u64(arch_irq::gic::LPI_PROP_DEFAULT as u64);
                 klog::write_raw(b" set=");
                 klog::write_dec_u64(lpi_set as u64);
                 klog::write_raw(b"\n");
@@ -491,10 +491,10 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // and bump MSI_FIRES. If this counter increments, the
             // ITS-side plumbing is correct and any later silent-
             // MSI is the device's fault, not ours.
-            let pre = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            let pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
             // SAFETY: ITS enabled, MAPD+MAPC+MAPTI posted above, LPI 8192 enabled in PROPBASER; cmd_post follows the F56-06 protocol.
             let s_int = unsafe {
-                crate::its::cmd_post(hhdm, crate::its::cmd_int(0x10, 0))
+                arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_int(0x10, 0))
             };
             // SAFETY: clear DAIF.I momentarily so a pending LPI
             // can deliver; we re-mask before returning. Single
@@ -504,7 +504,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
                 for _ in 0..2_000_000 { core::hint::spin_loop(); }
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
             }
-            let post = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            let post = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
             debug_irq! {
                 klog::write_raw(b"[INFO]  its-cmd int-self ");  log_cmd_status(s_int);
                 klog::write_raw(b"[INFO]  its-self-fire pre=");
@@ -514,7 +514,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
                 klog::write_raw(b" delta=");
                 klog::write_dec_u64(post.saturating_sub(pre) as u64);
                 klog::write_raw(b" last_intid=");
-                klog::write_hex_u64(crate::gic::LAST_INTID
+                klog::write_hex_u64(arch_irq::gic::LAST_INTID
                     .load(core::sync::atomic::Ordering::Relaxed) as u64);
                 klog::write_raw(b"\n");
             }
@@ -544,7 +544,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
     // SAFETY: pl011::enable just ran; gic::enable_intid is idempotent and the GIC was enabled earlier in this fn; single-CPU pre-init.
     unsafe {
         hal_aarch64::pl011::enable_rx_irq();
-        crate::gic::enable_intid(33);
+        arch_irq::gic::enable_intid(33);
     }
 
     // ARM virtual generic-timer IRQ smoke. Pure diagnostic — gated.
@@ -645,19 +645,19 @@ use hal_aarch64::{timer as arm_timer, pl011};
         // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BUS0_VA.
         unsafe { <ArmMmu as MmuOps>::map(Va(V2M_VA), Pa(v2m_pa), device_flags(), PageSize::P4K); }
         // F45: publish VA so pci_boot self-fire diagnostic can write SETSPI_NS directly.
-        msi::GICV2M_VA.store(V2M_VA, core::sync::atomic::Ordering::Release);
+        arch_irq::GICV2M_VA.store(V2M_VA, core::sync::atomic::Ordering::Release);
         // SAFETY: V2M_VA is freshly Device-attr mapped above; aligned u32 read of the MSI_TYPER register at offset 0x008.
         let typer = unsafe {
             core::ptr::read_volatile((V2M_VA + 0x008) as *const u32)
         };
         let spi_first = (typer >> 16) & 0x3FF;
         let spi_count = typer & 0x3FF;
-        // F37: publish the SPI range so `msi::alloc_arm_spi`
+        // F37: publish the SPI range so `arch_irq::alloc_arm_spi`
         // can hand out vectors. Side effect runs unconditionally;
         // klog stays gated under R06.
-        msi::GICV2M_SPI_FIRST
+        arch_irq::GICV2M_SPI_FIRST
             .store(spi_first, core::sync::atomic::Ordering::Release);
-        msi::GICV2M_SPI_COUNT
+        arch_irq::GICV2M_SPI_COUNT
             .store(spi_count, core::sync::atomic::Ordering::Release);
         debug_boot! {
             klog::write_raw(b"[INFO]  gicv2m typer=");
@@ -670,9 +670,9 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // F37 demo: allocate one SPI + enable it at the GIC
             // distributor. No MSI-X table write yet (F38), so nothing
             // will fire — this just proves the alloc + GIC enable path.
-            if let Some(spi) = msi::alloc_arm_spi() {
+            if let Some(spi) = arch_irq::alloc_arm_spi() {
                 // SAFETY: gic::enable was called earlier in this same fn (smoke_device_map_arm); SPI is freshly allocated and owned by F37; single-CPU pre-init.
-                unsafe { crate::gic::enable_intid(spi); }
+                unsafe { arch_irq::gic::enable_intid(spi); }
                 klog::write_raw(b"[INFO]  msi-spi alloc=");
                 klog::write_dec_u64(spi as u64);
                 klog::write_raw(b" enabled\n");

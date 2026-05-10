@@ -446,8 +446,8 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         TICK_COUNT.fetch_add(1, Ordering::Relaxed);
         // F39 + F56-08: count MSI deliveries via either the legacy
         // GICv2m SPI range or the GICv3 LPI range (≥ 8192).
-        if msi::intid_is_v2m(intid) || intid >= LPI_BASE {
-            msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+        if crate::intid_is_v2m(intid) || intid >= LPI_BASE {
+            crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
         // so the level-triggered line drops and re-arms for the next
@@ -474,7 +474,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         // F54: PL011 RX FIFO drain is SPI-33-only.
         if intid == 33 {
             // SAFETY: SPI 33 dispatch context, IRQs masked; tty path is single-CPU UP.
-            unsafe { crate::tty::tick_poll_uart(); }
+            unsafe { crate::tick_poll(); }
         }
         sched::live::preempt::set_need_resched();
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked; per-CPU SCHED state is single-CPU at this point in v1.
