@@ -463,3 +463,58 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     *new_sock.peer.lock() = Some((peer_ip, peer_port));
     Ok(Accepted { new_sock, peer: Some((peer_ip, peer_port)) })
 }
+
+
+/// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller (Tier-3
+/// shim) fetches from `sched::current()` and passes here.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SenderCreds {
+    pub pid: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// `sendto`/`send` per `sendto(2)`. Tier-2 work fn — Tier-3 shim
+/// supplies the payload as a slice, the optional destination as a
+/// typed RemoteAddr, and the sender's creds for AF_UNIX SCM.
+///
+/// Behaviour by socket kind:
+///   UnixDgram  → push to peer's queue (dest required)
+///   TcpConn    → tcp_send + drain
+///   Udp/other  → socket_sendto with dest or stored peer
+/// # C: O(payload bytes)
+pub fn sendto(
+    sock: &alloc::sync::Arc<InetSocket>,
+    payload: &[u8],
+    dest: Option<RemoteAddr>,
+    creds: SenderCreds,
+) -> Result<usize, NetError> {
+    // AF_UNIX SOCK_DGRAM: dest path required, push to peer queue.
+    if let SockKind::UnixDgram(_) = &*sock.kind.lock() {
+        let path = match dest {
+            Some(RemoteAddr::UnixPath(p)) => p,
+            _ => return Err(NetError::Einval),
+        };
+        let q = UNIX_REGISTRY.dgram_lookup(&path).ok_or(NetError::Enobufs)?;
+        q.push(crate::UnixDgram {
+            payload: payload.to_vec(),
+            creds: (creds.pid, creds.uid, creds.gid),
+            fds: alloc::vec::Vec::new(),
+        });
+        return Ok(payload.len());
+    }
+    // TCP: send into the existing connection.
+    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        let entry = entry.clone();
+        let n = stack().tcp_send(&entry, payload)?;
+        drain_loopback();
+        return Ok(n);
+    }
+    // UDP/other: dest or stored peer.
+    let (dst_ip, dst_port) = match dest {
+        Some(RemoteAddr::Inet { ip, port }) => (ip, port),
+        Some(RemoteAddr::UnixPath(_))       => return Err(NetError::Einval),
+        None => sock.peer.lock().ok_or(NetError::Eaddrnotavail)?,
+    };
+    socket_sendto(sock, dst_ip, dst_port, payload)
+}
