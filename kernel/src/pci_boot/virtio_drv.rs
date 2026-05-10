@@ -939,7 +939,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
     {
         // SAFETY: caller is boot path; PMM up; q0 + notify VAs valid; single-CPU.
         let _ = unsafe {
-            dev_virtio_gpu_modern::get_display_info(
+            drv_virtio_gpu::post_init::get_display_info(
                 bdf.bus, bdf.device, bdf.function,
                 p.drv_features,
                 p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,

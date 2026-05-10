@@ -741,3 +741,7 @@ mod tests {
         assert_eq!(b, a + 1);
     }
 }
+
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod post_init;

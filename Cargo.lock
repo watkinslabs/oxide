@@ -107,20 +107,6 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
-name = "dev-virtio-gpu-modern"
-version = "0.1.0"
-dependencies = [
- "drv-virtio-gpu",
- "fbcon",
- "hal-aarch64",
- "hal-x86_64",
- "klog",
- "pmm",
- "pmm-setup",
- "virtio",
-]
-
-[[package]]
 name = "devfs"
 version = "0.1.0"
 dependencies = [
@@ -163,8 +149,13 @@ version = "0.1.0"
 dependencies = [
  "drm",
  "drv",
+ "fbcon",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
+ "pmm",
+ "pmm-setup",
  "sync",
  "virtio",
 ]
@@ -469,7 +460,6 @@ dependencies = [
  "boot-info",
  "coredump",
  "cpu",
- "dev-virtio-gpu-modern",
  "devfs",
  "drm",
  "drv",
