@@ -107,18 +107,6 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
-name = "dev-fbdev"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "fbdev",
- "hal",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "dev-input"
 version = "0.1.0"
 dependencies = [
@@ -288,10 +276,13 @@ dependencies = [
 name = "fbdev"
 version = "0.1.0"
 dependencies = [
+ "devfs",
  "drm",
  "hal",
  "klog",
  "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
@@ -486,7 +477,6 @@ dependencies = [
  "boot-info",
  "coredump",
  "cpu",
- "dev-fbdev",
  "dev-input",
  "dev-virtio-gpu-modern",
  "devfs",
