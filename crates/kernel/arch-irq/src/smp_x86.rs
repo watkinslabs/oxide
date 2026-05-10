@@ -22,7 +22,7 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::BootInfo;
+use boot_info::BootInfo;
 
 /// Kernel-side mirror of `limine_proto::SmpInfoX86`. Layout matches
 /// Limine v6+ verbatim (`#[repr(C)]`); kept here to avoid a cyclic
@@ -96,7 +96,7 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
     // SAFETY: BSP ran lapic::enable() so LAPIC_BASE_VA is non-zero;
     // CPU is at CPL=0 IRQs masked; sole writer for this CPU's
     // SVR + IA32_APIC_BASE MSR.
-    let _ = unsafe { arch_irq::lapic::enable_for_ap() };
+    let _ = unsafe { crate::lapic::enable_for_ap() };
 
     // Install this AP's per-CPU runqueue + idle task per `13§6`.
     // The AP's `this_cpu()` (gs:0) now returns lapic_id; the per-CPU

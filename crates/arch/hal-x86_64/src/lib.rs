@@ -400,3 +400,4 @@ mod tests {
         set_tsc_khz(0);
     }
 }
+
