@@ -203,9 +203,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut q1_notify_off_local: u16 = 0;
     let q0_size = if queues_len > 0 { queues[0].1 } else { 0 };
     let (q0_desc_pa, q0_driver_pa, q0_device_pa, final_status) = if q0_size != 0 && features_ok {
-        let pa_desc   = pmm_setup::alloc_one_frame().unwrap_or(0);
-        let pa_driver = pmm_setup::alloc_one_frame().unwrap_or(0);
-        let pa_device = pmm_setup::alloc_one_frame().unwrap_or(0);
+        let pa_desc   = pmm::setup::alloc_one_frame().unwrap_or(0);
+        let pa_driver = pmm::setup::alloc_one_frame().unwrap_or(0);
+        let pa_device = pmm::setup::alloc_one_frame().unwrap_or(0);
         if pa_desc != 0 && pa_driver != 0 && pa_device != 0 {
             //: zero the 3 ring frames via HHDM BEFORE programming
             // queue_enable so the device sees deterministic ring state.
@@ -254,9 +254,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             // by spec §5.1.6 Device Operation.
             if is_virtio_net_early {
                 if let (Some(q1d), Some(q1v), Some(q1u)) = (
-                    pmm_setup::alloc_one_frame(),
-                    pmm_setup::alloc_one_frame(),
-                    pmm_setup::alloc_one_frame(),
+                    pmm::setup::alloc_one_frame(),
+                    pmm::setup::alloc_one_frame(),
+                    pmm::setup::alloc_one_frame(),
                 ) {
                     let hhdm = {
                         #[cfg(target_arch = "x86_64")]
@@ -386,7 +386,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             #[cfg(target_arch = "aarch64")]
             { hal_aarch64::mmu_ops::hhdm_offset() }
         };
-        if let Some(buf_pa) = pmm_setup::alloc_one_frame() {
+        if let Some(buf_pa) = pmm::setup::alloc_one_frame() {
             if hhdm != 0 {
                 let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
                 // SAFETY: HHDM-mapped frame; aligned writes within 4 KiB.
@@ -452,7 +452,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             #[cfg(target_arch = "aarch64")]
             { hal_aarch64::mmu_ops::hhdm_offset() }
         };
-        if let Some(rx_pa) = pmm_setup::alloc_one_frame() {
+        if let Some(rx_pa) = pmm::setup::alloc_one_frame() {
             if hhdm != 0 {
                 // F59-02: capture rx_pa for runtime rx_poll re-publish.
                 rx0_buf_pa_local = rx_pa;
@@ -546,7 +546,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             #[cfg(target_arch = "aarch64")]
             { hal_aarch64::mmu_ops::hhdm_offset() }
         };
-        if let Some(tx_pa) = pmm_setup::alloc_one_frame() {
+        if let Some(tx_pa) = pmm::setup::alloc_one_frame() {
             tx0_buf_pa_local = tx_pa;
             if hhdm != 0 {
                 let tx_va = hhdm.wrapping_add(tx_pa) as *mut u8;

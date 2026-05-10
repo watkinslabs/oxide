@@ -85,7 +85,7 @@ pub unsafe fn run() {
     HANDLER_FIRED.store(false, Ordering::Release);
     HANDLED_ONCE.store(false, Ordering::Release);
 
-    let pa = match pmm_setup::alloc_one_frame() {
+    let pa = match pmm::setup::alloc_one_frame() {
         Some(p) => p,
         None => {
             debug_irq! { klog::kerror!("pf-recover: PMM alloc failed"); }
