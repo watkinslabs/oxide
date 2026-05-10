@@ -11,13 +11,12 @@
 // v1 single-CPU UP. SMP would partition this per-CPU + add lock
 // hierarchy; out of scope for v1.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use sched::{Task, TaskState};
+use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// Registry of Zombie tasks awaiting `wait4`. Pushed to by
@@ -39,7 +38,7 @@ static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
 
 /// Move `task` to the Zombie registry. Caller (sys_exit handler)
 /// has already set the task's state to Zombie via
-/// `sched::mark_done` and wants the Arc kept alive until the
+/// `crate::mark_done` and wants the Arc kept alive until the
 /// parent reaps it. P3-67: also posts SIGCHLD (sig 17) into the
 /// parent's sigpending bitmap — bash's job-control SIGCHLD handler
 /// triggers off this.
@@ -96,7 +95,7 @@ pub fn enqueue_zombie(task: Arc<Task>) {
 /// # C: O(1)
 /// # Lk: WAITERS (TaskList class)
 pub unsafe fn park_for_wait4() {
-    let rq = match crate::sched::global() { Some(r) => r, None => return };
+    let rq = match super::runqueue::global() { Some(r) => r, None => return };
     let raw = rq.current.load(Ordering::Acquire);
     if raw.is_null() { return; }
     // SAFETY: rq.current is non-null after install_global; bump strong count to materialise an Arc the WAITERS list can hold across schedule.
@@ -117,7 +116,7 @@ pub unsafe fn park_for_wait4() {
 fn wake_wait4_parent(parent_tid: u32) {
     let mut waiters = WAITERS.lock();
     if waiters.is_empty() { return; }
-    let rq = match crate::sched::global() {
+    let rq = match super::runqueue::global() {
         Some(r) => r,
         None    => { waiters.clear(); return; }
     };

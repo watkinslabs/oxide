@@ -30,7 +30,7 @@ fn resolve_path_inode(path_ptr: u64) -> Result<InodeRef, i64> {
 }
 
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return Err(-(Errno::Ebadf.as_i32() as i64)),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

@@ -44,7 +44,7 @@ pub fn kernel_sys_clone_dispatch(
     const CLONE_CHILD_CLEARTID: u64 = 0x200000;
     const CLONE_CHILD_SETTID:   u64 = 0x1000000;
     let _ = CLONE_FS; // accepted but not yet differentiated from cwd-inherit
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
@@ -100,7 +100,7 @@ pub fn kernel_sys_clone_dispatch(
         }
     };
 
-    let child_tid = crate::sched::next_tid();
+    let child_tid = sched::live::next_tid();
     let spawn = clone_spawn_arch(child_tid, child_stack, child_mm);
     let child = match spawn {
         Ok(t)  => t,
@@ -132,7 +132,7 @@ pub fn kernel_sys_clone_dispatch(
     // strong count (the runqueue's `current` AtomicPtr already
     // holds one), then downgrade to Weak<Task>. Drops the bumped
     // Arc immediately — Weak alone keeps the slot live.
-    if let Some(rq) = crate::sched::global() {
+    if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: rq.current was installed via Arc::into_raw in `Runqueue::new` / `swap_current`; bumping the strong count is sound because the conceptual Arc held by current is alive while we run on it.
@@ -240,7 +240,7 @@ pub fn kernel_sys_clone_dispatch(
         // setsid + close + exec, then sets the flag = false.
         while watch.vfork_pending.load(Ordering::Acquire) {
             // SAFETY: process ctx; preempt-off; runqueue installed.
-            unsafe { crate::sched::schedule(); }
+            unsafe { sched::live::schedule(); }
         }
         drop(watch);
     } else {
@@ -259,7 +259,7 @@ fn clone_spawn_arch(
     child_tid: u32,
     child_stack: u64,
     child_mm: alloc::sync::Arc<vmm::AddressSpace>,
-) -> Result<alloc::sync::Arc<sched::Task>, crate::sched::spawn::SpawnError> {
+) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
     // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
     let frame = unsafe { &*hal_x86_64::current_user_frame() };
     let user_rip = frame[0];
@@ -294,7 +294,7 @@ fn clone_spawn_arch(
     };
     // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
     unsafe {
-        crate::sched::spawn_user_thread_for_fork(
+        sched::live::spawn_user_thread_for_fork(
             child_tid, "fork-child", user_rip, user_rsp, user_rflags,
             &pregs, child_mm,
         )
@@ -309,7 +309,7 @@ fn clone_spawn_arch(
     child_tid: u32,
     child_stack: u64,
     child_mm: alloc::sync::Arc<vmm::AddressSpace>,
-) -> Result<alloc::sync::Arc<sched::Task>, crate::sched::spawn::SpawnError> {
+) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
     // SAFETY: caller is `oxide_syscall_dispatch` running on the parent's per-task kernel stack; current_svc_frame() points at the saved 208-byte frame whose layout matches `hal_aarch64::SvcFrame`; we read but do not write here.
     let svc = unsafe { &*hal_aarch64::current_svc_frame() };
     let mut pregs = hal_aarch64::ForkRegs::default();
@@ -338,7 +338,7 @@ fn clone_spawn_arch(
 
     // SAFETY: runqueue installed; child_mm freshly forked from parent AS via fork_copy_pages w/ kernel-half cloned at new_user_l0; pregs captured from parent's SVC frame.
     unsafe {
-        crate::sched::spawn_user_thread_for_fork(
+        sched::live::spawn_user_thread_for_fork(
             child_tid, "fork-child", user_ip, user_sp, &pregs, child_mm,
         )
     }

@@ -559,7 +559,7 @@ pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
 fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
-    let cur = match crate::sched::current() { Some(c) => c, None => return false };
+    let cur = match sched::live::current() { Some(c) => c, None => return false };
     // SAFETY: sigactions slot single-mutator per `13§5`.
     let sa = unsafe { (*cur.sigactions.get())[10] };  // SIGSEGV = 11, idx 10
     if sa.handler == 0 || sa.handler == 1 { return false; }
@@ -627,7 +627,7 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     use core::sync::atomic::Ordering;
     debug_irq! {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
-        if let Some(c) = crate::sched::current() { klog::write_dec_u64(c.tid as u64); }
+        if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
         klog::write_raw(b" vec=");      klog::write_hex_u64(vec);
         klog::write_raw(b" err=");      klog::write_hex_u64(err);
         klog::write_raw(b" rip=");      klog::write_hex_u64(rip);
@@ -636,7 +636,7 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     }
     // Coredump before parking the zombie. Best-effort.
     fs::coredump::write_for_current(11);
-    if let Some(rq) = crate::sched::global() {
+    if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: rq.current non-null after install; the AtomicPtr's
@@ -646,15 +646,15 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             // exit_status low 8 = signal num, bit 8 = "killed by
             // signal" flag (per the wait4 encoder in syscall_glue).
             task.exit_status.store(11 | 0x100, Ordering::Release);
-            crate::sched::mark_done(task);
-            crate::sched::signal_child_exit(task);
+            sched::live::mark_done(task);
+            sched::live::signal_child_exit(task);
         }
     }
     // SAFETY: kernel ctx (fault dispatcher), preempt-off, runqueue installed.
     // schedule() detects the Zombie state and pushes the prev_arc
     // returned by swap_current into ZOMBIES — no leak via the dead
     // task's stack frame.
-    unsafe { crate::sched::schedule(); }
+    unsafe { sched::live::schedule(); }
     loop {
         // SAFETY: cli+hlt at CPL=0; final terminal halt if schedule returns.
         unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags)); }
@@ -667,26 +667,26 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
     use core::sync::atomic::Ordering;
     debug_irq! {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
-        if let Some(c) = crate::sched::current() { klog::write_dec_u64(c.tid as u64); }
+        if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
         klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
         klog::write_raw(b" far=");      klog::write_hex_u64(far);
         klog::write_raw(b" elr=");      klog::write_hex_u64(elr);
         klog::write_raw(b"\n");
     }
-    if let Some(rq) = crate::sched::global() {
+    if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: rq.current non-null after install; AtomicPtr's
             // strong-ref-via-raw keeps pointee alive across this borrow.
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(11 | 0x100, Ordering::Release);
-            crate::sched::mark_done(task);
-            crate::sched::signal_child_exit(task);
+            sched::live::mark_done(task);
+            sched::live::signal_child_exit(task);
         }
     }
     // SAFETY: kernel ctx, preempt-off, runqueue installed; schedule()
     // detects Zombie prev and transfers the prev_arc into ZOMBIES.
-    unsafe { crate::sched::schedule(); }
+    unsafe { sched::live::schedule(); }
     loop {
         // SAFETY: msr daifset+wfi at EL1; final halt path.
         unsafe { core::arch::asm!("msr daifset, #2; wfi", options(nomem, nostack, preserves_flags)); }
@@ -752,7 +752,7 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
     // new AS, not the boot global). With `Task.mm` wrapped in
     // UnsafeCell we read via `mm_ref` under the single-mutator
     // invariant (preempt-off, single-CPU UP).
-    let r = if let Some(cur) = crate::sched::current() {
+    let r = if let Some(cur) = sched::live::current() {
         // SAFETY: caller is the fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
         if let Some(mm) = unsafe { cur.mm_ref() } {
             Some(do_handle(mm, uva, fault, hhdm))
@@ -848,7 +848,7 @@ pub fn glue_mmap(
     // engines that want to verify no clobber. Detect overlap by
     // probing the AS before the insert.
     if want_no_replace {
-        if let Some(cur) = crate::sched::current() {
+        if let Some(cur) = sched::live::current() {
             // SAFETY: mm slot single-mutator per `13§5`.
             if let Some(mm) = unsafe { cur.mm_ref() } {
                 let probe = match UserVirtAddr::new(addr) {
@@ -909,7 +909,7 @@ pub fn glue_mmap(
     // inserted into the global which the running CR3 doesn't target
     // — every demand-fault then missed the VMA + terminated the task
     // (busybox / static-musl bins blocked here).
-    let r = if let Some(cur) = crate::sched::current() {
+    let r = if let Some(cur) = sched::live::current() {
         // SAFETY: caller is the syscall dispatcher; preempt-off; running task on this CPU is the sole writer of mm slot.
         if let Some(mm) = unsafe { cur.mm_ref() } {
             mm.mmap(

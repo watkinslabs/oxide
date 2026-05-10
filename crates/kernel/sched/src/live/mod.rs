@@ -24,7 +24,6 @@
 // Replaces the `kernel/src/ksched.rs` Vec-shim per the P2-13b
 // branch in state.md.
 
-#![cfg(target_os = "oxide-kernel")]
 
 pub mod balance;
 pub mod registry;
@@ -42,3 +41,29 @@ pub use schedule::{
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};
 pub use wait_list::WaitList;
 pub use zombies::{enqueue_zombie, park_for_wait4, park_zombie, reap_one, signal_child_exit};
+
+pub mod preempt;
+
+/// Hook for "send resched IPI to CPU N". Kernel installs this at boot
+/// from `kernel/src/lapic.rs` (x86) or `kernel/src/gic.rs` (arm).
+/// `balance::reschedule_cpu` calls through here instead of hard-
+/// linking to lapic — keeps the sched crate arch-glue-free.
+pub type SendReschedIpiFn = unsafe fn(u32) -> bool;
+static SEND_IPI_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1) — atomic store.
+pub fn set_send_resched_ipi_hook(f: SendReschedIpiFn) {
+    SEND_IPI_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// # C: O(1) — atomic load + indirect call.
+pub unsafe fn send_resched_ipi(cpu: u32) -> bool {
+    let p = SEND_IPI_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return false; }
+    // SAFETY: caller holds ABI contract; hook installed at boot from kernel.
+    unsafe {
+        let f: SendReschedIpiFn = core::mem::transmute(p);
+        f(cpu)
+    }
+}

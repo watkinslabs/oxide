@@ -11,12 +11,11 @@
 // boot-time smoke that exercises the migration path; the structure
 // is what the periodic balancer will reuse verbatim.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use sched::Task;
+use crate::Task;
 
 use super::runqueue::{global_for, Runqueue};
 
@@ -62,7 +61,7 @@ fn push_to(rq: &Runqueue, task: Arc<Task>) {
 /// to avoid the trivial deadlock between a pair.
 /// # C: O(N_cpus + log N_tasks)
 pub unsafe fn balance_once() -> u32 {
-    let online = crate::smp::online_count();
+    let online = cpu::smp::online_count();
     if online < 2 { return 0; }
 
     // Snapshot loads.
@@ -115,7 +114,7 @@ pub unsafe fn balance_once() -> u32 {
     // Wake the destination so its idle loop picks up the new task.
     #[cfg(target_arch = "x86_64")]
     // SAFETY: LAPIC enabled on BSP; ICR write is non-blocking; idle_cpu APIC ID is from cpu_topology.
-    unsafe { let _ = crate::lapic::send_resched_ipi(idle_cpu); }
+    unsafe { let _ = super::send_resched_ipi(idle_cpu); }
 
     1
 }

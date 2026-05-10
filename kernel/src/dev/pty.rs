@@ -58,7 +58,7 @@ impl Inode for PtyMasterInode {
             };
             if n > 0 { return Ok(n); }
             // SAFETY: process ctx; runqueue installed; preempt-off.
-            unsafe { crate::sched::tick_yield(); }
+            unsafe { sched::live::tick_yield(); }
         }
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
@@ -92,7 +92,7 @@ impl Inode for PtySlaveInode {
             };
             if n > 0 { return Ok(n); }
             // SAFETY: process ctx; runqueue installed; preempt-off.
-            unsafe { crate::sched::tick_yield(); }
+            unsafe { sched::live::tick_yield(); }
         }
     }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
@@ -108,7 +108,7 @@ impl Inode for PtySlaveInode {
 /// # C: O(N_tasks)
 fn post_signal_pgrp(pgid: u32, bits: u64) -> usize {
     use core::sync::atomic::Ordering;
-    let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
+    let tasks = sched::live::registry::tasks_in_pgrp(pgid);
     let n = tasks.len();
     for t in tasks {
         t.sigpending.fetch_or(bits, Ordering::Release);
@@ -237,7 +237,7 @@ fn sigint_chain_smoke() {
         fake_tid, "pty-smoke-target", SchedClass::Normal { weight: 1024 },
     ));
     fake.pgid.store(fake_tid, Ordering::Release);
-    crate::sched::registry::insert(&fake);
+    sched::live::registry::insert(&fake);
 
     let (master, n) = allocate_pair();
     let pair = pair_for(n).expect("pair_for");

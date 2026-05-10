@@ -16,7 +16,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
@@ -321,7 +321,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };

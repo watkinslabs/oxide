@@ -105,7 +105,7 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
     // SAFETY: AP runs single-threaded for its own slot; GS_BASE just
     // installed; allocator has been brought up by the BSP and is
     // safely shared across CPUs (kalloc uses internal locking).
-    unsafe { crate::sched::install_default_runqueue(); }
+    unsafe { sched::live::install_default_runqueue(); }
 
     // Mark ourselves online.
     let _ = ::cpu::smp::ap_arrived();

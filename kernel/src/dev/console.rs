@@ -65,7 +65,7 @@ impl Inode for ConsoleInode {
             // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
             unsafe { crate::tty::park_current_for_tty_vt(self.vt); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` (or future kbd→VT route) will.
-            unsafe { crate::sched::schedule(); }
+            unsafe { sched::live::schedule(); }
         }
     }
 

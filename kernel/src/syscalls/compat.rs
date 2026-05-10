@@ -172,7 +172,7 @@ pub fn kernel_sys_fadvise_validate(args: &SyscallArgs) -> Option<i64> {
     if len < 0 {
         return Some(-(Errno::Einval.as_i32() as i64));
     }
-    let cur = match crate::sched::current() { Some(c) => c, None => return Some(0) };
+    let cur = match sched::live::current() { Some(c) => c, None => return Some(0) };
     // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; Arc clone.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Some(0) };
     if fdt.get(fd).is_err() {

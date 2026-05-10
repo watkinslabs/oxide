@@ -48,13 +48,12 @@ pub use ::sched::kthread;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod preempt_smoke;
 #[cfg(target_os = "oxide-kernel")]
-pub mod preempt;
 /// Real per-CPU runqueue + `schedule()` per `13§6`/§8 (P2-13b).
 /// Replaces the prior `kernel/src/ksched.rs` Vec-shim. Always-on
 /// (not gated on `debug-sched`) so the runqueue is available to
 /// production paths (preempt-on-IRQ-exit, future user-task switch).
 #[cfg(target_os = "oxide-kernel")]
-pub mod sched;
+// kernel-side sched runtime now lives in `crates/kernel/sched/src/live`
 
 /// ELF loader glue per docs/31. PT_LOADs → KernelBytes (P2-17).
 
@@ -530,13 +529,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             }
             // SAFETY: BSP at boot post-init; allocator up; runqueue idempotent install brings up BSP slot; spawn enqueues into BSP's slot; smp_smoke_thread loops in pause/hlt forever, no shared state; balance_once is reentrant under per-rq locks.
             let migrated = unsafe {
-                crate::sched::install_default_runqueue();
-                let _ = crate::sched::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
-                let _ = crate::sched::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
-                let _ = crate::sched::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
-                let m1 = crate::sched::balance::balance_once();
-                let m2 = crate::sched::balance::balance_once();
-                let m3 = crate::sched::balance::balance_once();
+                sched::live::install_default_runqueue();
+                #[cfg(target_arch = "x86_64")]
+                sched::live::set_send_resched_ipi_hook(crate::lapic::send_resched_ipi);
+                let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
+                let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
+                let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
+                let m1 = sched::live::balance::balance_once();
+                let m2 = sched::live::balance::balance_once();
+                let m3 = sched::live::balance::balance_once();
                 m1 + m2 + m3
             };
             debug_boot! {
@@ -565,7 +566,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // workspace crates (security, nscg) can ask without importing
     // kernel-internal sched module.
     #[cfg(target_os = "oxide-kernel")]
-    ::sched::set_current_hook(|| crate::sched::current());
+    ::sched::set_current_hook(|| sched::live::current());
     // SAFETY: kernel_main runs single-CPU pre-init; nscg::init reports ready (per-task ns slots set up by sched).
     let _ = unsafe { nscg::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; security::init reports ready (per-task seccomp slot is None until prctl/seccomp installs).
