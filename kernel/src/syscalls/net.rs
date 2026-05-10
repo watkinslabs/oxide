@@ -280,6 +280,11 @@ fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 
 /// `bind(fd, addr, addrlen)` slot 49.
 /// # C: O(1)
+/// `sys_bind(fd, addr, addrlen)` slot 49. Tier-3 shim per
+/// `docs/53§4`. Parses the user sockaddr into `net::sock::BoundAddr`
+/// then calls `net::sock::bind`. ABI translation (sockaddr layout,
+/// AF_UNIX vs AF_INET dispatch) is the shim's job; the actual
+/// bind work lives in net.
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
     let fd     = args.a0;
@@ -290,46 +295,30 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     let family = match read_sa_family(addr_p) {
         Some(f) => f, None => return -(Errno::Efault.as_i32() as i64),
     };
-    if family == AF_UNIX as u16 {
+    // Parse the user sockaddr into the typed BoundAddr enum.
+    let addr = if family == AF_UNIX as u16 {
         let path = match read_sockaddr_un_path(addr_p) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        // F121: if the socket is already a SOCK_DGRAM (kind set by
-        // socket(AF_UNIX, SOCK_DGRAM)), bind its queue under path
-        // in the dgram registry instead of allocating a listener.
-        let kind_clone = match &*sock.kind.lock() {
-            net::sock::SockKind::UnixDgram(q) => Some(q.clone()),
-            _ => None,
-        };
-        if let Some(q) = kind_clone {
-            return match net::sock::UNIX_REGISTRY.dgram_bind(path, q) {
-                Ok(()) => 0,
-                Err(()) => -(Errno::Eaddrinuse.as_i32() as i64),
-            };
+        // If the socket is already SOCK_DGRAM, pass its queue along.
+        match &*sock.kind.lock() {
+            net::sock::SockKind::UnixDgram(q) =>
+                net::sock::BoundAddr::UnixDgram { path, queue: q.clone() },
+            _ => net::sock::BoundAddr::UnixListener(path),
         }
-        let listener = match net::sock::UNIX_REGISTRY.bind(path) {
-            Ok(l) => l, Err(_) => return -(Errno::Eaddrinuse.as_i32() as i64),
+    } else if family == AF_INET as u16 || family == AF_INET6 as u16 {
+        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+        if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+        let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
+            Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        *sock.kind.lock() = net::sock::SockKind::UnixListener(listener);
-        return 0;
-    }
-    if family != AF_INET as u16 && family != AF_INET6 as u16 {
+        net::sock::BoundAddr::Inet { ip, port }
+    } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
-    }
-    // Reject family-mismatch: AF_INET6 socket should not bind a
-    // sockaddr_in (and vice-versa). musl/glibc don't issue such
-    // mismatches; explicit reject catches buggy callers cleanly.
-    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
-    let (_family, ip, port) = match read_sockaddr_any(addr_p) {
-        Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
     };
-    match net::sock::stack().bind_udp(ip, port) {
-        Ok(())   => {
-            *sock.local_port.lock() = Some(port);
-            *sock.local_ip.lock()   = ip;
-            0
-        }
+    // Tier-2 call: typed bind, typed result.
+    match net::sock::bind(&sock, addr) {
+        Ok(()) => 0,
         Err(e) => errno_from_neterr(e),
     }
 }
