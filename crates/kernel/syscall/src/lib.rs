@@ -72,3 +72,7 @@ mod stub_tests {
         assert_eq!(r, Err(Error::NotImplemented));
     }
 }
+
+
+#[cfg(target_os = "oxide-kernel")] pub mod numa;
+#[cfg(target_os = "oxide-kernel")] pub mod dmesg;
