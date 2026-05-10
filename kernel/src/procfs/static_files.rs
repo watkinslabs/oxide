@@ -3,7 +3,6 @@
 // defined in `procfs.rs`; this module only carries the boot-time
 // `register()` walk.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use vfs::InodeRef;
@@ -63,7 +62,7 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
     crate::devfs::register("/proc/self/environ", Arc::new(ProcSelfEnvironInode) as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
     crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
-    crate::devfs::register("/proc/self/smaps",   Arc::new(crate::procfs_smaps::ProcSelfSmapsInode) as InodeRef);
+    crate::devfs::register("/proc/self/smaps",   Arc::new(crate::procfs::smaps::ProcSelfSmapsInode) as InodeRef);
     crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
