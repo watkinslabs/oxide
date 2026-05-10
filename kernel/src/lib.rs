@@ -481,7 +481,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         tmpfs::init(); dev_tracefs::init(); dev_input::init();
         dev_fbdev::init(); dev_pty::init();
         // boot smokes:
-        dev_misc::smoke_test();
+        ::devfs::misc::smoke_test();
         procfs::smoke_test();
         pipe::smoke_test();
         tmpfs::smoke_test();
