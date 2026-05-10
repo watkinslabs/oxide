@@ -348,6 +348,8 @@ dependencies = [
  "klog",
  "sched",
  "sync",
+ "syscall",
+ "vmm",
 ]
 
 [[package]]
@@ -390,6 +392,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "ipc",
  "kalloc",
  "klog",
  "modules",
