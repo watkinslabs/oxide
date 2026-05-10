@@ -9,7 +9,6 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 // ============================================================
