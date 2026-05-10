@@ -38,7 +38,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // for /proc/self/exe even when path_ptr != 0.
     let mut path_buf = [0u8; 64];
     let mut path_len = 0usize;
-    let blob: &[u8] = if path_ptr == 0 {
+    let mut blob: &[u8] = if path_ptr == 0 {
         crate::elf_smoke::EXEC_BLOB
     } else {
         if path_ptr >= USER_VA_END {
@@ -114,6 +114,23 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) {
         return -(Errno::E2big.as_i32() as i64);
     }
+
+    // Shebang resolution. Only ext4-loaded files can be scripts —
+    // the static `elf_smoke` blobs are all real ELFs. When the chain
+    // fires, `argv_vec` is rewritten in place and `path_buf`/`blob`
+    // are repointed at the final interpreter.
+    if ext4_blob.is_some() && blob.starts_with(b"#!") {
+        let mut owned = ext4_blob.take().expect("ext4_blob.is_some()");
+        if let Err(e) = resolve_shebang_chain(
+            &mut owned, &mut path_buf, &mut path_len, &mut argv_vec,
+        ) {
+            return -(e.as_i32() as i64);
+        }
+        ext4_blob = Some(owned);
+        // SAFETY: ext4_blob just set; outlives the load_static_blob call.
+        blob = ext4_blob.as_deref().expect("just set");
+    }
+
     let argc = argv_vec.len();
     let envc = envp_vec.len();
 
@@ -326,14 +343,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         path_len = (i + 1) as usize;
     }
     let path = &path_buf[..path_len];
-    let blob_vec = match crate::dev_ext4::read_file(path) {
+    let mut blob_vec = match crate::dev_ext4::read_file(path) {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
-    // Borrow the owned Vec for `load_static_blob` — no Box::leak.
-    // The Vec drops at end of fn after place_image has copied the
-    // segment bytes into AS-owned `staged_bytes` per B22.
-    let blob: &[u8] = &blob_vec;
 
     // 1a. Snapshot argv / envp from the OLD AS (still active TTBR0).
     // Linux ARG_MAX = 128 KiB total; per-string PATH_MAX = 4 KiB.
@@ -373,6 +386,21 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) {
         return -(Errno::E2big.as_i32() as i64);
     }
+
+    // Shebang resolution per Linux fs/binfmt_script.c. Mirrors the
+    // x86 path above; on success blob_vec/path_buf/argv_vec are
+    // updated to the resolved interpreter chain.
+    if blob_vec.starts_with(b"#!") {
+        if let Err(e) = resolve_shebang_chain(
+            &mut blob_vec, &mut path_buf, &mut path_len, &mut argv_vec,
+        ) {
+            return -(e.as_i32() as i64);
+        }
+    }
+    // Borrow the owned Vec for `load_static_blob` — no Box::leak.
+    // The Vec drops at end of fn after place_image has copied the
+    // segment bytes into AS-owned `staged_bytes` per B22.
+    let blob: &[u8] = &blob_vec;
     let argc = argv_vec.len();
     let envc = envp_vec.len();
 
@@ -568,4 +596,75 @@ fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
     let new_eff  = if magic_etc & VFS_CAP_FLAGS_EFFECTIVE != 0 { new_perm } else { 0 };
     cur.creds.cap_permitted.store(new_perm, Ordering::Release);
     cur.creds.cap_effective.store(new_eff,  Ordering::Release);
+}
+
+/// Resolve a `#!`-script chain per Linux `fs/binfmt_script.c`.
+///
+/// On entry:
+///   * `blob_owned` holds the file content the user asked execve to load
+///   * `path_buf[..*path_len]` holds the path the user named
+///   * `argv_vec` holds the original argv (argv[0] is the user's choice)
+///
+/// On every iteration where `blob_owned` begins with `#!`:
+///   1. Parse `#!<interp>[ <opt-arg>]\n` from the first line (max 128 bytes).
+///   2. Splice argv: new argv = [interp, opt-arg?, original_path] ++ argv[1..].
+///      argv[0] of the original program is dropped, exactly as Linux does.
+///   3. Update `path_buf`/`*path_len` to `interp`, re-read it from ext4
+///      into `blob_owned`, and loop. Bail with ENOENT if interp missing.
+///
+/// Recursion cap = 4 (matches Linux `BINPRM_MAX_RECURSION`).
+/// Returns `Ok(())` when the chain terminates on a non-script blob.
+/// # C: O(N_chain × file_size)
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn resolve_shebang_chain(
+    blob_owned: &mut alloc::vec::Vec<u8>,
+    path_buf: &mut [u8; 64],
+    path_len: &mut usize,
+    argv_vec: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+) -> Result<(), Errno> {
+    for _ in 0..4 {
+        if blob_owned.len() < 2 || &blob_owned[..2] != b"#!" {
+            return Ok(());
+        }
+        let head_end = blob_owned.iter().take(128).position(|&b| b == b'\n')
+            .unwrap_or_else(|| blob_owned.len().min(128));
+        let line = &blob_owned[2..head_end];
+        let mut i = 0usize;
+        while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
+        let interp_start = i;
+        while i < line.len() && line[i] != b' ' && line[i] != b'\t' { i += 1; }
+        let interp_end = i;
+        if interp_end == interp_start { return Err(Errno::Enoexec); }
+        let interp: alloc::vec::Vec<u8> = line[interp_start..interp_end].to_vec();
+        while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
+        let mut j = line.len();
+        while j > i && (line[j-1] == b' ' || line[j-1] == b'\t' || line[j-1] == b'\r') { j -= 1; }
+        let opt_arg: Option<alloc::vec::Vec<u8>> =
+            if j > i { Some(line[i..j].to_vec()) } else { None };
+        let cur_path: alloc::vec::Vec<u8> = path_buf[..*path_len].to_vec();
+        // Splice argv per Linux: drop original argv[0] (if any), prepend
+        // [interp, opt-arg?, original_path] in front of argv[1..].
+        let original_tail: alloc::vec::Vec<alloc::vec::Vec<u8>> =
+            if argv_vec.is_empty() {
+                alloc::vec::Vec::new()
+            } else {
+                argv_vec.drain(..).skip(1).collect()
+            };
+        argv_vec.push(interp.clone());
+        if let Some(a) = opt_arg { argv_vec.push(a); }
+        argv_vec.push(cur_path);
+        argv_vec.extend(original_tail);
+        // Update path → interp, refresh blob from ext4.
+        if interp.len() > 64 { return Err(Errno::Enametoolong); }
+        *path_buf = [0u8; 64];
+        path_buf[..interp.len()].copy_from_slice(&interp);
+        *path_len = interp.len();
+        match crate::dev_ext4::read_file(&interp) {
+            Some(v) => *blob_owned = v,
+            None    => return Err(Errno::Enoent),
+        }
+    }
+    // Recursion cap exceeded: Linux returns ELOOP; we lack ELOOP in
+    // our errno table so map to ENOEXEC (closest valid v1 code).
+    Err(Errno::Enoexec)
 }

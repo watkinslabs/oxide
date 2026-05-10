@@ -55,7 +55,20 @@ pub(crate) fn cmd_qemu(rest: &[String]) -> Result<(), u8> {
     // matching arm/x86 image. cmd_rootfs takes --arch; cmd_qemu's
     // `rest` already carries it.
     crate::cmd_rootfs(rest)?;
-    cmd_kernel(rest)?;
+    // Interactive boot tool: default to debug-all so the kernel
+    // actually emits klog output to serial. Production / CI builds
+    // pin --features explicitly per `04` R06; only the bare `xtask
+    // qemu --arch X` invocation gets the debug envelope.
+    let mut kernel_rest: Vec<String>;
+    let kernel_args: &[String] = if parse_arg(rest, "--features").is_none() {
+        kernel_rest = rest.to_vec();
+        kernel_rest.push("--features".into());
+        kernel_rest.push("debug-all".into());
+        &kernel_rest[..]
+    } else {
+        rest
+    };
+    cmd_kernel(kernel_args)?;
     let repo = repo_root();
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
     check_vendor(&repo)?;
