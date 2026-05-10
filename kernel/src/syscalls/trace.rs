@@ -13,7 +13,7 @@
 /// # C: O(1) per call (write_raw is a UART byte-emit)
 pub fn entry(nr: u64, a0: u64, a1: u64, a2: u64) {
     debug_syscall! {
-        let pid = crate::sched::current().map(|t| t.tid).unwrap_or(0);
+        let pid = sched::live::current().map(|t| t.tid).unwrap_or(0);
         klog::write_raw(b"[SYS] pid=");
         klog::write_dec_u64(pid as u64);
         klog::write_raw(b" nr=");

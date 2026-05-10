@@ -22,13 +22,12 @@
 // the resource lock to mutate, which the waiter already holds
 // when pushing to the list).
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use sched::{Task, TaskState};
+use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as WaitClass};
 
 /// FIFO wait list. Holds strong refs to parked tasks; drops them
@@ -44,7 +43,7 @@ impl WaitList {
     }
 
     /// Park the running task on this list, marking it Sleeping.
-    /// Caller MUST call `crate::sched::schedule()` immediately
+    /// Caller MUST call `crate::schedule()` immediately
     /// after to yield. Caller MUST NOT hold any lock that a waker
     /// also needs to take (otherwise the waker deadlocks while
     /// we sleep).
@@ -55,7 +54,7 @@ impl WaitList {
     /// # C: O(1)
     /// # Lk: WaitList.waiters (TaskList class)
     pub unsafe fn park(&self) {
-        let rq = match crate::sched::global() { Some(r) => r, None => return };
+        let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let raw = rq.current.load(Ordering::Acquire);
         if raw.is_null() { return; }
         // SAFETY: rq.current is non-null after install_global; bump strong count to materialise an Arc the wait list can hold across schedule.
@@ -103,7 +102,7 @@ impl WaitList {
     /// Internal helper: transition a popped task to Runnable and
     /// enqueue on the global runqueue.
     fn enqueue_runnable(t: Arc<Task>) {
-        let rq = match crate::sched::global() { Some(r) => r, None => return };
+        let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let mut inner = rq.inner.lock();
         t.set_state(TaskState::Runnable);
         t.lift_vruntime(inner.cfs.min_vruntime());

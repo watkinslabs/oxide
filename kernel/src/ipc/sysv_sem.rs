@@ -61,12 +61,12 @@ pub struct SemSet {
     /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
     pub ns:     u64,
     pub vals:   Spinlock<Vec<i32>, SemLockClass>,
-    pub wait:   crate::sched::WaitList,
+    pub wait:   sched::live::WaitList,
 }
 
 fn current_ipc_ns() -> u64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 struct SemRegistry {
@@ -114,7 +114,7 @@ pub fn kernel_sys_semget(args: &syscall::SyscallArgs) -> i64 {
     let set = Arc::new(SemSet {
         id, key, ns: current_ipc_ns(),
         vals: Spinlock::new(vals),
-        wait: crate::sched::WaitList::new(),
+        wait: sched::live::WaitList::new(),
     });
     REG.sets.lock().push(set);
     id as i64
@@ -234,7 +234,7 @@ pub fn kernel_sys_semop(args: &syscall::SyscallArgs) -> i64 {
                 unsafe { set.wait.park(); }
                 drop(g);
                 // SAFETY: process ctx; runqueue installed; preempt-off.
-                unsafe { crate::sched::schedule(); }
+                unsafe { sched::live::schedule(); }
                 // After resume, retry. If the set was IPC_RMID'd
                 // while we slept, the next lookup_by_id at the
                 // top of the loop would still hit because we hold

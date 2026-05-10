@@ -14,7 +14,7 @@ pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     if let Err(rv) = validate_user_buf(buf, 144, 8) { return rv; }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -69,7 +69,7 @@ pub use crate::syscalls::ioctl::kernel_sys_ioctl;
 pub fn kernel_sys_getcwd(args: &SyscallArgs) -> i64 {
     let buf  = args.a0;
     let size = args.a1;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
     // SAFETY: cwd slot single-mutator per `13§5`; we are the running task on this CPU and the sole writer.
@@ -110,7 +110,7 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
         || ::fs::tmpfs::lookup(s).is_some()
         || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
     if !resolves { return -(Errno::Enoent.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
@@ -135,7 +135,7 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let cmd = args.a1;
     let arg = args.a2;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -217,7 +217,7 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
             else { return -(Errno::Enoent.as_i32() as i64); }
         }
         _ if (flags & AT_EMPTY_PATH) != 0 => {
-            let cur = match crate::sched::current() {
+            let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
             };
             // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -378,7 +378,7 @@ pub fn kernel_sys_pread64(args: &SyscallArgs) -> i64 {
     let off = args.a3;
     if cnt == 0 { return 0; }
     if let Err(rv) = validate_user_buf(buf, cnt, 1) { return rv; }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -407,7 +407,7 @@ pub fn kernel_sys_pwrite64(args: &SyscallArgs) -> i64 {
     let off = args.a3;
     if cnt == 0 { return 0; }
     if let Err(rv) = validate_user_buf(buf, cnt, 1) { return rv; }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -437,7 +437,7 @@ pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let dirp = args.a1;
     let count = args.a2 as usize;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -491,7 +491,7 @@ pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
 /// # C: O(N_fds)
 pub fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -510,7 +510,7 @@ pub fn kernel_sys_dup(args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_dup2(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -530,7 +530,7 @@ pub fn kernel_sys_dup3(args: &SyscallArgs) -> i64 {
     let oldfd = args.a0 as i32;
     let newfd = args.a1 as i32;
     if oldfd == newfd { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -556,7 +556,7 @@ pub fn kernel_sys_close_range(args: &SyscallArgs) -> i64 {
     if first < 0 || last < 0 || first > last {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -680,7 +680,7 @@ pub fn kernel_sys_poll(args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Efault.as_i32() as i64),
     };
     if let Err(rv) = validate_user_buf(fds_ptr, bytes, 4) { return rv; }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -737,7 +737,7 @@ pub fn kernel_sys_lseek(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let _off = args.a1 as i64;
     let _whence = args.a2 as i32;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -785,7 +785,7 @@ pub fn kernel_sys_writev(args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Efault.as_i32() as i64),
     };
     if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -835,7 +835,7 @@ pub fn kernel_sys_readv(args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Efault.as_i32() as i64),
     };
     if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -878,7 +878,7 @@ pub fn kernel_sys_readv(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_fchdir(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -920,7 +920,7 @@ pub fn kernel_sys_truncate(args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_ftruncate(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let len = args.a1;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

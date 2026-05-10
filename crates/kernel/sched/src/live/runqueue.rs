@@ -16,7 +16,7 @@ use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
-use sched::{RunqueueInner, Task};
+use crate::{RunqueueInner, Task};
 use sync::{Runqueue as RunqueueClass, Spinlock};
 
 /// Per-CPU runqueue. One instance per CPU once SMP lands; v1 is
@@ -183,11 +183,11 @@ pub unsafe fn global_for(cpu: u32) -> Option<&'static Runqueue> {
 /// # C: O(1)
 pub unsafe fn install_global(rq: Runqueue) {
     let cpu = this_cpu();
-    assert!(cpu < MAX_CPUS, "sched::install_global cpu out of range");
+    assert!(cpu < MAX_CPUS, "crate::install_global cpu out of range");
     // SAFETY: see static-level comment; this CPU is the sole writer for its slot.
     unsafe {
         let slot = GLOBALS[cpu].0.get();
-        assert!((*slot).is_none(), "sched::install_global double-init");
+        assert!((*slot).is_none(), "crate::install_global double-init");
         *slot = Some(rq);
     }
 }
