@@ -210,10 +210,11 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
             let s = match core::str::from_utf8(p) {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
-            match crate::devfs::lookup(s) {
-                Some(i) => i,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
+            if let Some(i) = crate::devfs::lookup(s) { i }
+            else if let Some(i) = crate::procfs::lookup_dynamic(s) { i }
+            else if let Some(i) = crate::tmpfs::lookup(s) { i }
+            else if let Some(i) = crate::dev_ext4::lookup_inode_any(s.as_bytes()) { i }
+            else { return -(Errno::Enoent.as_i32() as i64); }
         }
         _ if (flags & AT_EMPTY_PATH) != 0 => {
             let cur = match crate::sched::current() {
@@ -306,17 +307,21 @@ pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = match crate::devfs::lookup(s) {
-        Some(i) => i,
-        None => match crate::procfs::lookup_dynamic(s) {
-            Some(i) => i,
-            None => match crate::tmpfs::lookup(s) {
-                Some(i) => i,
-                None => return -(Errno::Enoent.as_i32() as i64),
-            },
-        },
+    // Resolve through pseudo-fs first (devfs/procfs/tmpfs) for shadow
+    // mounts, fall back to ext4 stat_path which handles any file type
+    // (dirs, symlinks, regular). lookup_inode would reject dirs.
+    let (ino_num, file_type, size): (u64, vfs::FileType, u64) = if let Some(i) = crate::devfs::lookup(s) {
+        (i.ino(), i.file_type(), i.size())
+    } else if let Some(i) = crate::procfs::lookup_dynamic(s) {
+        (i.ino(), i.file_type(), i.size())
+    } else if let Some(i) = crate::tmpfs::lookup(s) {
+        (i.ino(), i.file_type(), i.size())
+    } else if let Some((ino, ft, sz)) = crate::dev_ext4::stat_path(s.as_bytes()) {
+        ((0x6E54_0000u64 | ino as u64), ft, sz)
+    } else {
+        return -(Errno::Enoent.as_i32() as i64);
     };
-    let (mode_type, rdev): (u32, u64) = match inode.file_type() {
+    let (mode_type, rdev): (u32, u64) = match file_type {
         vfs::FileType::CharDev   => (0o020000, 0x0103),
         vfs::FileType::BlockDev  => (0o060000, 0),
         vfs::FileType::Directory => (0o040000, 0),
@@ -325,17 +330,17 @@ pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
         vfs::FileType::Fifo      => (0o010000, 0),
         vfs::FileType::Socket    => (0o140000, 0),
     };
-    let mode = mode_type | 0o600;
+    let mode = mode_type | 0o755;
     // SAFETY: buf validated 144-byte 8-aligned range below USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
         for off in (0..144u64).step_by(8) {
             core::ptr::write_volatile((buf + off) as *mut u64, 0);
         }
-        core::ptr::write_volatile((buf +   8)     as *mut u64, inode.ino());
+        core::ptr::write_volatile((buf +   8)     as *mut u64, ino_num);
         core::ptr::write_volatile((buf +  16)     as *mut u64, 1);
         core::ptr::write_volatile((buf +  24)     as *mut u32, mode);
         core::ptr::write_volatile((buf +  40)     as *mut u64, rdev);
-        core::ptr::write_volatile((buf +  48)     as *mut i64, inode.size() as i64);
+        core::ptr::write_volatile((buf +  48)     as *mut i64, size as i64);
         core::ptr::write_volatile((buf +  56)     as *mut i64, 4096);
     }
     0
@@ -589,7 +594,11 @@ pub fn kernel_sys_access(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    if crate::devfs::lookup(s).is_some() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
+    let resolves = crate::devfs::lookup(s).is_some()
+        || crate::procfs::lookup_dynamic(s).is_some()
+        || crate::tmpfs::lookup(s).is_some()
+        || crate::dev_ext4::lookup_path(s.as_bytes()).is_some();
+    if resolves { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
 /// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1
