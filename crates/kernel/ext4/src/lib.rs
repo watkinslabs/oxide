@@ -12,6 +12,8 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
@@ -42,5 +44,8 @@ pub use extent_rw::EXTENT_LEN_MAX;
 pub mod ialloc;
 
 pub mod journal;
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod rootfs;
 pub use journal::ExtentLogReader;
 pub use jbd2::StagedBlock;
