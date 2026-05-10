@@ -95,30 +95,15 @@ pub use security::seccomp;
 #[cfg(target_os = "oxide-kernel")]
 pub use security::bpf as dev_bpf;
 pub mod dev_drm;
-pub mod syscall_glue_signal;
-pub mod syscall_glue_select;
-pub mod syscall_glue_anonfd;
 #[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_cred;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_falloc;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_timers;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_prctl;
-
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_utime;
-
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
 
 
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_clone;
+
+
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs_net;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_execve;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs_static;
 
@@ -798,28 +783,17 @@ pub mod pf_recover_smoke;
 // `syscall::dispatch`. arch-specific interceptions live behind cfg
 // gates inside the module.
 #[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue;
+pub mod syscalls;
+#[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscall"))] pub mod syscall_trace;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
-// site in `syscall_glue::oxide_syscall_dispatch`.
+// site in `syscalls::oxide_syscall_dispatch`.
 pub mod syscall_arm_abi;
 
-// P3-03 fs-shaped syscalls split out of `syscall_glue` to keep that
+// P3-03 fs-shaped syscalls split out of `syscalls` to keep that
 // file under the 1000-line cap per `08§7`.
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_fs;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_ioctl;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_xfer;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_open;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_namei;
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_net;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
 #[cfg(target_os = "oxide-kernel")]
@@ -827,19 +801,16 @@ pub mod hostname;
 
 // P3-08 process-shaped syscalls (sched_yield, gettid, set_tid_address).
 #[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_proc;
 
 // Linux x86_64 syscall number table per `15§5`. One canonical
-// place — `syscall_glue` references `syscall_nrs::NR_*`.
+// place — `syscalls` references `syscall_nrs::NR_*`.
 
 // P3-46 compat-stub dispatch table — pulls the broad
-// accept-and-no-op + ENOSYS + EPERM tail out of `syscall_glue`.
+// accept-and-no-op + ENOSYS + EPERM tail out of `syscalls`.
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_compat;
 
 // P3-30 time-shaped syscalls (clock_gettime + family).
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscall_glue_time;
 
 // P3a futex — process-private FUTEX_WAIT/WAKE per docs/24.
 pub mod futex;

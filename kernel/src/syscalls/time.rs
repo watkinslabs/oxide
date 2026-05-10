@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use syscall::SyscallArgs;
 use hal::TimerOps;
 
-use crate::syscall_glue::validate_user_buf;
+use crate::syscalls::validate_user_buf;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 
