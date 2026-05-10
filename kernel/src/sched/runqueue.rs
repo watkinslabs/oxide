@@ -118,7 +118,7 @@ impl Drop for Runqueue {
 
 /// Per-CPU runqueue array per `13§6`. v1 lookup uses
 /// `hal::current_cpu()` as the index; single-CPU boots stay at
-/// index 0. Same `MAX_CPUS` cap as `crate::cpu_topology` so the
+/// index 0. Same `MAX_CPUS` cap as `cpu` so the
 /// arrays stay 1:1 with the topology table.
 struct GlobalCell(UnsafeCell<Option<Runqueue>>);
 // SAFETY: each cell has a single writer (the CPU that owns the
@@ -128,7 +128,7 @@ struct GlobalCell(UnsafeCell<Option<Runqueue>>);
 // paths (P4-13+) which take the inner spinlock per `13§11`.
 unsafe impl Sync for GlobalCell {}
 
-const MAX_CPUS: usize = crate::cpu_topology::MAX_CPUS;
+const MAX_CPUS: usize = cpu::MAX_CPUS;
 const EMPTY_CELL: GlobalCell = GlobalCell(UnsafeCell::new(None));
 static GLOBALS: [GlobalCell; MAX_CPUS] = [EMPTY_CELL; MAX_CPUS];
 

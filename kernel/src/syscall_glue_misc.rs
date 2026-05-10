@@ -30,7 +30,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// process_madvise/mrelease).
 /// # C: O(1)
 pub fn dispatch(nr: u64, args: &SyscallArgs) -> i64 {
-    use crate::syscall_nrs::*;
+    use syscall::nrs::*;
     match nr {
         NR_PKEY_ALLOC                => kernel_sys_pkey_alloc(args),
         NR_PKEY_FREE                 => kernel_sys_pkey_free(args),

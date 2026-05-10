@@ -236,7 +236,7 @@ pub fn kernel_sys_timer_delete(args: &SyscallArgs) -> i64 {
 /// if `nr` is not a timer slot so the caller can fall through.
 /// # C: O(1)
 pub fn timer_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
-    use crate::syscall_nrs::*;
+    use syscall::nrs::*;
     let rv = match nr {
         NR_TIMER_CREATE     => kernel_sys_timer_create(args),
         NR_TIMER_SETTIME    => kernel_sys_timer_settime(args),

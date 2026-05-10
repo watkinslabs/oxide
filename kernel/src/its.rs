@@ -159,7 +159,7 @@ pub unsafe fn cmdq_setup(hhdm: u64) -> CmdqStatus {
     if CMDQ_PA.load(Ordering::Acquire) != 0 {
         return CmdqStatus::AlreadyOn;
     }
-    let pa = match crate::pmm_setup::alloc_one_frame() {
+    let pa = match pmm_setup::alloc_one_frame() {
         Some(p) => p,
         None    => return CmdqStatus::AllocFailed,
     };
@@ -485,7 +485,7 @@ pub unsafe fn baser_setup(hhdm: u64, slots_out: &mut [BaserSlot; GITS_BASER_COUN
             slots_out[i] = slot;
             continue;
         }
-        let pa = match crate::pmm_setup::alloc_one_frame() {
+        let pa = match pmm_setup::alloc_one_frame() {
             Some(p) => p,
             None    => { slots_out[i] = slot; continue; }
         };
