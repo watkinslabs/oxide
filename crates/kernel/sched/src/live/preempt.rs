@@ -16,19 +16,19 @@
 
 use core::sync::atomic::AtomicPtr;
 
-// `NEED_RESCHED` lives in `sched::preempt` per `13§9` so the
+// `NEED_RESCHED` lives in `crate::preempt` per `13§9` so the
 // preempt-enable check and IRQ-tail check share one flag. The
 // kernel-side `set_need_resched` / `take_need_resched` shims just
 // forward to that crate.
 
 /// Set need-resched. Called from timer tick + wakeup paths.
 /// # C: O(1)
-pub fn set_need_resched() { sched::preempt::set_need_resched() }
+pub fn set_need_resched() { crate::preempt::set_need_resched() }
 
 /// Clear need-resched + report prior. Used by the cooperative
 /// `tick_yield()` and IRQ-tail dispatcher.
 /// # C: O(1)
-pub fn clear_need_resched() -> bool { sched::preempt::take_need_resched() }
+pub fn clear_need_resched() -> bool { crate::preempt::take_need_resched() }
 
 /// Currently-running task's `Context` record. The IRQ epilogue
 /// passes this as `prev` to `oxide_context_switch` when a switch
@@ -50,7 +50,7 @@ pub static oxide_preempt_next_ctx: AtomicPtr<u8> = AtomicPtr::new(core::ptr::nul
 
 /// IRQ-exit hook: dispatcher calls this after EOI to ask the
 /// scheduler to pick the next task and stage it in
-/// `oxide_preempt_next_ctx`. Bridges to `sched::schedule_from_irq`
+/// `oxide_preempt_next_ctx`. Bridges to `crate::schedule_from_irq`
 /// per `14§R07`. No-op when no runqueue is installed (boot phase
 /// pre-`install_default_runqueue`).
 /// # SAFETY: caller is in IRQ context with IRQs masked.
@@ -62,15 +62,15 @@ pub unsafe fn tick_pick_next() {
     // a switch) AND preempt_count == 0 (no kernel critical section
     // is on this CPU's stack). Otherwise we'd thrash on every tick
     // even when the runnable set hasn't changed.
-    if !sched::preempt::take_need_resched() { return; }
-    if sched::preempt::preempt_count() != 0 {
+    if !crate::preempt::take_need_resched() { return; }
+    if crate::preempt::preempt_count() != 0 {
         // Re-arm — a preempt-enable will retry once the stack is
         // safe to switch on.
-        sched::preempt::set_need_resched();
+        crate::preempt::set_need_resched();
         return;
     }
     // SAFETY: caller asserts IRQ context, IRQs masked, single-CPU; resched gate above ensured this is the right moment to switch.
-    unsafe { crate::sched::schedule_from_irq(); }
+    unsafe { crate::live::schedule_from_irq(); }
 }
 
 /// IRQ-exit hook stub for non-kernel builds (host tests of the
@@ -81,6 +81,6 @@ pub unsafe fn tick_pick_next() {
 pub unsafe fn tick_pick_next() {}
 
 /// Reads + clears the shared `NEED_RESCHED` flag. Forwards to
-/// `sched::preempt::take_need_resched`.
+/// `crate::preempt::take_need_resched`.
 /// # C: O(1)
-pub fn need_resched() -> bool { sched::preempt::take_need_resched() }
+pub fn need_resched() -> bool { crate::preempt::take_need_resched() }

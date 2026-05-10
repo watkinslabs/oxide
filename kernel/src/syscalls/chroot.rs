@@ -12,7 +12,7 @@ use syscall::errno::Errno;
 pub fn kernel_sys_chroot(args: &SyscallArgs) -> i64 {
     let p = args.a0;
     if p == 0 || p >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !cur.has_cap(sched::cap::SYS_CHROOT) {

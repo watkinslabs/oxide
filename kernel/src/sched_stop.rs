@@ -23,11 +23,11 @@ use sched::TaskState;
 /// running task is the live one on this CPU.
 /// # C: O(N_schedule) until cont
 pub fn stop_until_cont() {
-    let cur = match crate::sched::current() { Some(c) => c, None => return };
+    let cur = match sched::live::current() { Some(c) => c, None => return };
     cur.set_state(TaskState::Stopped);
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
         if cur.state() == TaskState::Runnable { return; }
         // The pick may return us only if no other Runnable task
         // exists (Stopped tasks aren't re-enqueued by schedule).

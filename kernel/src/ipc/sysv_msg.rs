@@ -60,13 +60,13 @@ pub struct MsgQueue {
     /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
     pub ns:        u64,
     pub q:         Spinlock<VecDeque<Msg>, MsgLockClass>,
-    pub wait_send: crate::sched::WaitList,
-    pub wait_recv: crate::sched::WaitList,
+    pub wait_send: sched::live::WaitList,
+    pub wait_recv: sched::live::WaitList,
 }
 
 fn current_ipc_ns() -> u64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 struct MsgRegistry {
@@ -104,8 +104,8 @@ pub fn kernel_sys_msgget(args: &syscall::SyscallArgs) -> i64 {
     let q = Arc::new(MsgQueue {
         id, key, ns: current_ipc_ns(),
         q: Spinlock::new(VecDeque::new()),
-        wait_send: crate::sched::WaitList::new(),
-        wait_recv: crate::sched::WaitList::new(),
+        wait_send: sched::live::WaitList::new(),
+        wait_recv: sched::live::WaitList::new(),
     });
     REG.queues.lock().push(q);
     id as i64
@@ -176,7 +176,7 @@ pub fn kernel_sys_msgsnd(args: &syscall::SyscallArgs) -> i64 {
         unsafe { mq.wait_send.park(); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
         if lookup_by_id(msqid).is_none() {
             return -(Errno::Eidrm.as_i32() as i64);
         }
@@ -253,7 +253,7 @@ pub fn kernel_sys_msgrcv(args: &syscall::SyscallArgs) -> i64 {
                 unsafe { mq.wait_recv.park(); }
                 drop(g);
                 // SAFETY: process ctx; runqueue installed; preempt-off.
-                unsafe { crate::sched::schedule(); }
+                unsafe { sched::live::schedule(); }
                 if lookup_by_id(msqid).is_none() {
                     return -(Errno::Eidrm.as_i32() as i64);
                 }
