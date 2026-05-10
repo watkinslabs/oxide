@@ -62,10 +62,7 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
         Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
     };
     let _ = dirfd; // v1: AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
-    match crate::devfs::lookup(s) {
-        Some(i) => Ok(i),
-        None    => Err(-(Errno::Enoent.as_i32() as i64)),
-    }
+    vfs::mount::lookup(s).map_err(|_| -(Errno::Enoent.as_i32() as i64))
 }
 
 /// `sys_utimensat(dirfd, path, times[2], flags)` — slot 280.

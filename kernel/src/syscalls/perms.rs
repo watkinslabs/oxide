@@ -26,7 +26,7 @@ fn resolve_path_inode(path_ptr: u64) -> Result<InodeRef, i64> {
     let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
     let s = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
         .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    crate::devfs::lookup(s).ok_or(-(Errno::Enoent.as_i32() as i64))
+    vfs::mount::lookup(s).map_err(|_| -(Errno::Enoent.as_i32() as i64))
 }
 
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
