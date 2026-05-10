@@ -9,7 +9,6 @@
 // (notify_cap window) + HHDM (ring frames). `pci_boot::virtio_drv`
 // already speaks both arches, so the runtime side does too.
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
