@@ -26,6 +26,7 @@ pub enum Errno {
     Ebusy   = 16,
     Eexist  = 17,
     Enodev  = 19,
+    Exdev   = 18,
     Enotdir = 20,
     Eisdir  = 21,
     Einval  = 22,
