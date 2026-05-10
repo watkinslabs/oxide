@@ -27,6 +27,7 @@ pub mod file;
 pub mod inode;
 pub mod inode_times;
 pub mod path;
+pub mod fs;
 pub mod types;
 
 pub use dentry::Dentry;
