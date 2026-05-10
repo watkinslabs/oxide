@@ -559,7 +559,7 @@ pub fn enumerate_and_log() {
         // ioctl/netlink (TODO) and runs DHCP from there.
         if crate::dev_virtio_net_modern::is_modern_present() {
             if let Some(dev) = crate::dev_virtio_net_modern::VirtioNetDev::new() {
-                let stack = dev_net::stack();
+                let stack = net::sock::stack();
                 let id = stack.ifaces.register(
                     dev as alloc::sync::Arc<dyn net::NetDev>,
                 );
