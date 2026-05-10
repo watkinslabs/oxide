@@ -6,6 +6,10 @@
 
 extern crate alloc;
 
+// Anchor crates whose `#[no_mangle]` symbols the linker needs even
+// without an explicit `use`. Per `52§8`.
+#[cfg(target_os = "oxide-kernel")] extern crate ptrace;
+
 // Compile-time check: per-arch Context must fit in Task.arch_ctx.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const _: () = assert!(
@@ -28,21 +32,13 @@ mod debug_macros;
 pub use firmware::acpi;
 #[cfg(target_os = "oxide-kernel")]
 pub use nscg::proc_ns as dev_proc_ns;
-pub use ::cpu as cpu_topology;
 pub mod smp;
-#[cfg(target_arch = "aarch64")]
-pub use ::hal_aarch64::psci;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-pub use ::hal_aarch64::smp as smp_arm;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod smp_x86;
-#[cfg(target_arch = "aarch64")]
-pub use ::hal_aarch64::timer as arm_timer;
 #[cfg(target_arch = "aarch64")]
 pub mod gic;
 #[cfg(target_arch = "aarch64")]
 pub mod its;
-pub use ::msi;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod canary;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
@@ -61,13 +57,13 @@ pub mod preempt;
 pub mod sched;
 
 /// ELF loader glue per docs/31. PT_LOADs → KernelBytes (P2-17).
-#[cfg(target_os = "oxide-kernel")] pub use ::elf_load;
+
 /// TTY input per docs/28. timer-poll + ringbuffer + waitqueue.
 #[cfg(target_os = "oxide-kernel")] pub mod tty;
 /// `/dev/console` char-device per docs/16 + docs/28.
 #[cfg(target_os = "oxide-kernel")] pub mod dev_console;
 /// F158: /proc/meminfo body builder (split out of procfs.rs).
-#[cfg(target_os = "oxide-kernel")] pub use ::procfs_meminfo;
+
 /// F158: /proc/<pid>/smaps detailed per-VMA memory stats.
 #[cfg(target_os = "oxide-kernel")] pub mod procfs_smaps;
 /// F158: /proc/<pid>/status body builder (Linux-conformant fields).
@@ -80,29 +76,16 @@ pub mod devfs;
 
 /// Anonymous pipe per docs/16 + docs/24. PipeInode + sys_pipe2
 /// glue for the canonical `cmd1 | cmd2` shell IPC pattern.
-#[cfg(target_os = "oxide-kernel")]
-pub use ::pipe as dev_pipe;
 /// ext4 RO root fs: real driver from `crates/ext4` mounted at
 /// boot from a kernel-embedded image. Linux's CONFIG_EXT4_FS=y
 /// equivalent (built-in, not a module).
 #[cfg(target_os = "oxide-kernel")]
-pub use ::dev_ext4;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::dev_misc;
-#[cfg(target_os = "oxide-kernel")]
 pub mod dev_pty;
 #[cfg(target_os = "oxide-kernel")]
 pub mod dev_pidfd;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::inotify as dev_inotify;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::signalfd as dev_signalfd;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::timerfd as dev_timerfd;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod dev_virtio_net;
 pub mod dev_virtio_net_modern;
-pub use ::ipc::sysv_shm;
 pub mod sysv_sem;
 pub mod sysv_msg;
 pub mod posix_mq;
@@ -111,35 +94,25 @@ pub mod io_uring;
 pub use security::seccomp;
 #[cfg(target_os = "oxide-kernel")]
 pub use security::bpf as dev_bpf;
-pub use ::userfaultfd;
-pub use ::perf;
-pub use ::coredump;
 pub mod dev_drm;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::dev_fbdev;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::dev_virtio_gpu_modern;
 pub mod syscall_glue_signal;
-pub use ::ptrace as ptrace_singlestep;
 pub mod syscall_glue_select;
 pub mod syscall_glue_anonfd;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_cred;
-#[cfg(target_os = "oxide-kernel")] pub use ::syscall_glue_dmesg;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_falloc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_falloc;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_timers;
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_prctl;
-#[cfg(target_os = "oxide-kernel")] pub use ::vfs::inode_times;
+
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_utime;
-#[cfg(target_os = "oxide-kernel")] pub use ::flock;
+
 #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_pvmrw;
-#[cfg(target_os = "oxide-kernel")] pub use ::keyring;
-#[cfg(target_os = "oxide-kernel")] pub use ::syscall_glue_numa;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub use ::syscall_glue_unix_cmsg;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub use ::dev_input;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
-#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  #[cfg(target_os = "oxide-kernel")] pub use ::xattr as xattr_overlay;
+
+
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_perms;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_chroot;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_uname;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_mount;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_proclink;  #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;  #[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_misc;
+#[cfg(target_os = "oxide-kernel")] pub mod syscall_glue_rseq;  
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_clone;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::epoll as dev_epoll;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
@@ -149,8 +122,6 @@ pub mod syscall_glue_execve;
 #[cfg(target_os = "oxide-kernel")]
 pub mod procfs_static;
 
-#[cfg(target_os = "oxide-kernel")]
-pub use ::tmpfs;
 
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
 /// ELF64 and drops to ring 3 / EL0 via the demand-page path.
@@ -160,9 +131,6 @@ pub mod elf_smoke;
 pub mod elf_smoke_arm;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
-#[cfg(target_arch = "aarch64")]
-pub use ::hal_aarch64::pl011;
-pub use ::pmm_setup;
 
 /// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
 /// replaced by PMM-backed slab routing once a binary stage exists.
@@ -234,7 +202,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 
     // vfs hooks: flock release-on-close + inotify IN_MODIFY-on-write.
     #[cfg(target_os = "oxide-kernel")]
-    { crate::flock::install_drop_hook(); crate::dev_inotify::install_write_hook(); }
+    { flock::install_drop_hook(); inotify::install_write_hook(); }
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
@@ -260,7 +228,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // walk ACPI tables. Walk runs unconditionally so SMP gets
         // populated without `debug-acpi`; the alog_* helpers inside
         // firmware::acpi gate the trace lines.
-        firmware::set_add_cpu_hook(crate::cpu_topology::add_cpu);
+        firmware::set_add_cpu_hook(cpu::add_cpu);
         // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
@@ -272,7 +240,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // GS_BASE is set up later by per-CPU init, and an early
         // `current_cpu()` would null-deref the boot CPU's missing
         // per-CPU page (B14).
-        if let Some((id, _flags)) = crate::cpu_topology::get(0) {
+        if let Some((id, _flags)) = cpu::get(0) {
             // SAFETY: kernel_main runs single-CPU pre-init per fn contract; sole writer for BOOT_CPU_ID before any AP observes it.
             unsafe { crate::smp::set_boot_cpu_id(id); }
         }
@@ -515,7 +483,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // boot smokes:
         dev_misc::smoke_test();
         procfs::smoke_test();
-        dev_pipe::smoke_test();
+        pipe::smoke_test();
         tmpfs::smoke_test();
         dev_pty::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
@@ -558,10 +526,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             }
             // SAFETY: BSP holds boot context; LAPIC enabled; cpu_topology populated by ACPI walk.
             unsafe {
-                let n = crate::cpu_topology::count() as usize;
+                let n = cpu::count() as usize;
                 let bsp = crate::smp::boot_cpu_id();
                 for i in 0..n {
-                    if let Some((id, _)) = crate::cpu_topology::get(i) {
+                    if let Some((id, _)) = cpu::get(i) {
                         if id != bsp {
                             let _ = crate::lapic::send_resched_ipi(id);
                         }
@@ -611,7 +579,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
         // SAFETY: kernel_main post-init; PSCI conduit on QEMU virt is SMC #0; cpu_topology populated by ACPI; boot CPU is sole writer.
-        let started = unsafe { crate::smp_arm::bring_up_aps_arm() };
+        let started = unsafe { hal_aarch64::smp::bring_up_aps_arm() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
             klog::write_dec_u64(started as u64);
@@ -652,18 +620,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: post-PMM/allocator init; no other CPU has yet observed MOUNT_PTR.
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
-        crate::dev_ext4::init();
-        crate::dev_net::init();
-        crate::dev_modules::init_exports();
+        dev_ext4::init();
+        dev_net::init();
+        dev_modules::init_exports();
     }
     #[cfg(target_os = "oxide-kernel")]
     {
         debug_boot! {
             klog::write_raw(b"[INFO]  ext4: mounted=");
-            klog::write_dec_u64(crate::dev_ext4::mounted() as u64);
+            klog::write_dec_u64(dev_ext4::mounted() as u64);
             klog::write_raw(b"\n");
             for path in [&b"/hello.txt"[..], &b"/etc/issue"[..]] {
-                if let Some(bytes) = crate::dev_ext4::read_file(path) {
+                if let Some(bytes) = dev_ext4::read_file(path) {
                     klog::write_raw(b"[INFO]  ext4 ");
                     klog::write_raw(path);
                     klog::write_raw(b" = ");
@@ -674,8 +642,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // P7b-01 RW smoke: overwrite the start of /hello.txt,
             // read it back, verify the write hit the disk through
             // ext4's extent walker + the writable ImageDisk backing.
-            if crate::dev_ext4::write_file(b"/hello.txt", b"WRITTEN-BY-OXIDE\n").is_some() {
-                if let Some(bytes) = crate::dev_ext4::read_file(b"/hello.txt") {
+            if dev_ext4::write_file(b"/hello.txt", b"WRITTEN-BY-OXIDE\n").is_some() {
+                if let Some(bytes) = dev_ext4::read_file(b"/hello.txt") {
                     klog::write_raw(b"[INFO]  ext4 RW smoke /hello.txt = ");
                     klog::write_raw(&bytes);
                     if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
@@ -683,17 +651,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             }
             // Read /bin/sh twice to prove the page cache: first
             // call is all misses; second is all hits.
-            if let Some(bytes) = crate::dev_ext4::read_file(b"/bin/sh") {
+            if let Some(bytes) = dev_ext4::read_file(b"/bin/sh") {
                 klog::write_raw(b"[INFO]  ext4 /bin/sh size=");
                 klog::write_dec_u64(bytes.len() as u64);
-                let (h1, m1) = crate::dev_ext4::cache_stats();
+                let (h1, m1) = dev_ext4::cache_stats();
                 klog::write_raw(b" cache after pass1: hits=");
                 klog::write_dec_u64(h1);
                 klog::write_raw(b" misses=");
                 klog::write_dec_u64(m1);
                 klog::write_raw(b"\n");
-                let _ = crate::dev_ext4::read_file(b"/bin/sh");
-                let (h2, m2) = crate::dev_ext4::cache_stats();
+                let _ = dev_ext4::read_file(b"/bin/sh");
+                let (h2, m2) = dev_ext4::cache_stats();
                 klog::write_raw(b"[INFO]  ext4 /bin/sh cache after pass2: hits=");
                 klog::write_dec_u64(h2);
                 klog::write_raw(b" misses=");
@@ -703,14 +671,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // P8 boot smoke: loopback UDP send-then-recv +
             // ICMP echo round-trip via the in-kernel net stack.
             {
-                let s = crate::dev_net::stack();
+                let s = dev_net::stack();
                 let _ = s.bind_udp(net::Ipv4Addr::LOOPBACK, 7777);
                 let _ = s.send_udp_to(
                     net::Ipv4Addr::LOOPBACK, 5555,
                     net::Ipv4Addr::LOOPBACK, 7777,
                     b"oxide-boot-smoke",
                 );
-                crate::dev_net::drain_loopback();
+                dev_net::drain_loopback();
                 if let Some((_, _, payload)) = s.recv_udp(7777) {
                     klog::write_raw(b"[INFO]  net udp lo round-trip: ");
                     klog::write_raw(&payload);
@@ -737,7 +705,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // runs so PTRACE_SINGLESTEP #DB delivers SIGTRAP instead of
         // halting the kernel via the default fault path.
         // SAFETY: pre-init single-CPU; ptrace_singlestep::install is idempotent and only swaps a 'static fn pointer.
-        unsafe { crate::ptrace_singlestep::install(); }
+        unsafe { ptrace::install(); }
         // SAFETY: every prerequisite established above — kernel-owned
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
         // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)
@@ -853,10 +821,6 @@ pub mod syscall_glue_namei;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscall_glue_net;
 #[cfg(target_os = "oxide-kernel")]
-pub use ::dev_net;
-#[cfg(target_os = "oxide-kernel")]
-pub use ::dev_modules;
-#[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
 #[cfg(target_os = "oxide-kernel")]
 pub mod hostname;
@@ -867,8 +831,6 @@ pub mod syscall_glue_proc;
 
 // Linux x86_64 syscall number table per `15§5`. One canonical
 // place — `syscall_glue` references `syscall_nrs::NR_*`.
-#[cfg(target_os = "oxide-kernel")]
-pub use ::syscall::nrs as syscall_nrs;
 
 // P3-46 compat-stub dispatch table — pulls the broad
 // accept-and-no-op + ENOSYS + EPERM tail out of `syscall_glue`.

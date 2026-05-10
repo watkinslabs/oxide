@@ -91,7 +91,7 @@ pub fn kernel_sys_utimensat(args: &SyscallArgs) -> i64 {
         (a, m)
     };
     if inode.set_times(atime, mtime, now).is_err() {
-        crate::inode_times::set(&inode, atime, mtime, now);
+        vfs::inode_times::set(&inode, atime, mtime, now);
     }
     0
 }
@@ -100,7 +100,7 @@ pub fn kernel_sys_utimensat(args: &SyscallArgs) -> i64 {
 /// one match arm.
 /// # C: O(1)
 pub fn kernel_sys_utime_dispatch(nr: u64, args: &SyscallArgs) -> i64 {
-    if nr == crate::syscall_nrs::NR_UTIMES { kernel_sys_utimes(args) }
+    if nr == syscall::nrs::NR_UTIMES { kernel_sys_utimes(args) }
     else                                   { kernel_sys_utime(args) }
 }
 
@@ -137,7 +137,7 @@ pub fn kernel_sys_utimes(args: &SyscallArgs) -> i64 {
         (Some(atime_ns), Some(mtime_ns))
     };
     if inode.set_times(atime, mtime, now).is_err() {
-        crate::inode_times::set(&inode, atime, mtime, now);
+        vfs::inode_times::set(&inode, atime, mtime, now);
     }
     0
 }
@@ -170,7 +170,7 @@ pub fn kernel_sys_utime(args: &SyscallArgs) -> i64 {
         (Some((asec as u64) * 1_000_000_000), Some((msec as u64) * 1_000_000_000))
     };
     if inode.set_times(atime, mtime, now).is_err() {
-        crate::inode_times::set(&inode, atime, mtime, now);
+        vfs::inode_times::set(&inode, atime, mtime, now);
     }
     0
 }

@@ -85,7 +85,7 @@ pub unsafe fn smoke_preempt_arm(n: usize, period: u32) {
     // SAFETY: GIC mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
     unsafe { crate::gic::enable_intid(27); }
     // SAFETY: timer sysregs are unprivileged at EL1; INTID 27 enabled.
-    unsafe { crate::arm_timer::timer_periodic(period); }
+    unsafe { hal_aarch64::timer::timer_periodic(period); }
     // SAFETY: opening DAIF.I lets the GIC deliver the CNTV line.
     unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
     // SAFETY: process ctx, single-CPU; IRQs unmasked above.

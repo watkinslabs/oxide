@@ -283,7 +283,7 @@ pub fn tx_frame(body: &[u8]) -> Result<TxOutcome, TxErr> {
 /// # C: O(rx_drain)
 pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     let our_mac = match mac() { Some(m) => m, None => return 0 };
-    let stack = crate::dev_net::stack();
+    let stack = dev_net::stack();
     rx_poll(|f: &[u8]| {
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);

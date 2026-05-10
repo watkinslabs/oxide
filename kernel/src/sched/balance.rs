@@ -67,8 +67,8 @@ pub unsafe fn balance_once() -> u32 {
 
     // Snapshot loads.
     let mut loads: alloc::vec::Vec<CpuLoad> = alloc::vec::Vec::new();
-    for i in 0..crate::cpu_topology::count() {
-        if let Some((id, _)) = crate::cpu_topology::get(i as usize) {
+    for i in 0..cpu::count() {
+        if let Some((id, _)) = cpu::get(i as usize) {
             // SAFETY: per fn contract; CPU id is one ACPI MADT enumerated and is bounded by MAX_CPUS.
             let rq_opt = unsafe { global_for(id) };
             if let Some(rq) = rq_opt {

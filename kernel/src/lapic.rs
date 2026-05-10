@@ -123,7 +123,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // the diagnostic counter so msi-fires-post-enum picks it up.
             // No scheduler interaction — completion-callback dispatch
             // arrives with F58.
-            crate::msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+            msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         _ => { /* unknown vector -- EOI'd, fall through */ }
     }
