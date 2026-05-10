@@ -398,7 +398,11 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // the same shape Linux's sysctl-default rlim_cur hands out for
     // small static binaries.
     const EXEC_USER_STACK_LEN:  usize = 0x10000;
-    const EXEC_USER_STACK_VA:   u64   = 0x4F1_000;
+    // F156: place stack near top of user-half VA so it stays disjoint
+    // from any reasonable ELF text. Prior 0x4F1_000 collided with
+    // busybox's .text (ends 0x50e000), chopping a hole in code via
+    // MAP_FIXED. Mirrors the x86_64 path above.
+    const EXEC_USER_STACK_VA:   u64   = hal::USER_VA_END - 0x20000;
     const EXEC_USER_STACK_TOP:  u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
