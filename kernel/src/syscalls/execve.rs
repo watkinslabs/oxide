@@ -258,7 +258,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
-        crate::exec_stack::build_user_stack(
+        elf_load::stack::build_user_stack(
             EXEC_USER_STACK_TOP,
             &argv_slices[..argc],
             &envp_slices[..envc],
@@ -512,7 +512,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
-        crate::exec_stack::build_user_stack(
+        elf_load::stack::build_user_stack(
             EXEC_USER_STACK_TOP,
             &argv_slices[..argc],
             &envp_slices[..envc],
