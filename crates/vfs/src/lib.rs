@@ -25,6 +25,7 @@ pub mod dirent;
 pub mod fdtable;
 pub mod file;
 pub mod inode;
+pub mod inode_times;
 pub mod path;
 pub mod types;
 
