@@ -532,7 +532,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     // (driver-side only).
     let mut q1_notify_va_local: u64 = 0;
     let mut tx_used_idx_local: u16 = 0;
-    // F59-05: persist TX scratch buffer PA so crate::dev::virtio_net_modern::
+    // F59-05: persist TX scratch buffer PA so drv_virtio_net::modern::
     // tx_frame can rewrite + repost it after boot. 0 if no virtio-net
     // or DRIVER_OK didn't land or the q1 setup bailed before alloc.
     let mut tx0_buf_pa_local: u64 = 0;
@@ -959,8 +959,8 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
         && p.q0_notify_va != 0
         && p.q1_notify_va != 0
     {
-        crate::dev::virtio_net_modern::init_modern(
-            crate::dev::virtio_net_modern::ModernNetState {
+        drv_virtio_net::modern::init_modern(
+            drv_virtio_net::modern::ModernNetState {
                 bus:      bdf.bus,
                 device:   bdf.device,
                 function: bdf.function,

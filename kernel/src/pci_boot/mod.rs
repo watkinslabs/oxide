@@ -557,8 +557,8 @@ pub fn enumerate_and_log() {
         // kernel only provides the iface + protocol stack via the
         // AF_INET socket API. Userspace gets the iface up via
         // ioctl/netlink (TODO) and runs DHCP from there.
-        if crate::dev::virtio_net_modern::is_modern_present() {
-            if let Some(dev) = crate::dev::virtio_net_modern::VirtioNetDev::new() {
+        if drv_virtio_net::modern::is_modern_present() {
+            if let Some(dev) = drv_virtio_net::modern::VirtioNetDev::new() {
                 let stack = net::sock::stack();
                 let id = stack.ifaces.register(
                     dev as alloc::sync::Arc<dyn net::NetDev>,
