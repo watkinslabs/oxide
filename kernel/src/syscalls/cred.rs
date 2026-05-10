@@ -1,3 +1,4 @@
+#![cfg(target_os = "oxide-kernel")]
 // Real POSIX credentials syscalls per `13§5` and docs/14 cred-ABI.
 //
 // Single-arm dispatch helper for `syscall_glue.rs` to keep that file
@@ -16,7 +17,6 @@
 //     Linux; same for setresgid / setreuid / setregid.
 //   * setfsuid/setfsgid return the previous fsuid/fsgid; never fail.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
