@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone; pub mod cred; pub mod execve; pub mod falloc; pub mod fs; pub mod ioctl; pub mod misc; pub mod mount; pub mod namei; pub mod net; pub mod open; pub mod perms; pub mod prctl; pub mod proc; pub mod proclink; pub mod pvmrw; pub mod rseq; pub mod select; pub mod signal; pub mod time; pub mod timers; pub mod uname; pub mod utime; pub mod xfer;
+pub mod anonfd; pub mod chroot; pub mod clone; pub mod cred; pub mod execve; pub mod falloc; pub mod fs; pub mod ioctl; pub mod misc; pub mod mount; pub mod namei; pub mod net; pub mod open; pub mod perms; pub mod prctl; pub mod proc; pub mod proclink; pub mod pvmrw; pub mod rseq; pub mod select; pub mod signal; pub mod time; pub mod timers; pub mod uname; pub mod utime; pub mod xfer; pub mod hostname; pub mod trace; pub mod compat;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -549,7 +549,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
 
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
-    debug_syscall! { crate::syscall_trace::entry(nr, a0, a1, a2); }
+    debug_syscall! { crate::syscalls::trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
     // F108: PTRACE_SYSCALL — if a tracer armed us, self-stop at entry.
@@ -567,7 +567,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_TIME          => crate::syscalls::time::kernel_time(&args),
         syscall::nrs::NR_UNAME         => crate::syscalls::uname::kernel_uname(&args),
         syscall::nrs::NR_SETHOSTNAME   => crate::syscalls::proc::kernel_sys_sethostname(&args),
-        syscall::nrs::NR_SETDOMAINNAME => crate::hostname::kernel_sys_setdomainname(&args),
+        syscall::nrs::NR_SETDOMAINNAME => crate::syscalls::hostname::kernel_sys_setdomainname(&args),
         syscall::nrs::NR_MMAP          => kernel_mmap(&args),
         syscall::nrs::NR_MUNMAP        => kernel_munmap(&args),
         syscall::nrs::NR_EXIT          => kernel_sys_exit(&args),
@@ -899,7 +899,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             } else if let Some(rv) = ::fs::xattr::xattr_dispatch(nr, &args) { rv }
             else if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = crate::syscall_compat::try_compat(nr, &args) {
+            } else if let Some(rv) = crate::syscalls::compat::try_compat(nr, &args) {
                 rv
             } else {
                 dispatch(nr as u32, &args)
