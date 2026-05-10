@@ -14,7 +14,6 @@
 // the pipeline is serialised (cmd1 runs to completion before
 // cmd2 starts) — full overlapped pipes need blocking.
 
-#![cfg(target_os = "oxide-kernel")]
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
