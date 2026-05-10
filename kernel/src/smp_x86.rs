@@ -12,7 +12,7 @@
 //   2. Enable CR4.FSGSBASE (Limine leaves it off per-AP).
 //   3. Stamp cpu_id (lapic_id) at offset 0 of the AP's per-CPU
 //      page, then set GS_BASE to it via wrgsbase.
-//   4. Increment smp::ONLINE via ap_arrived().
+//   4. Increment cpu::smp::ONLINE via ap_arrived().
 //   5. Halt on hlt — real workflows (per-CPU runqueue install,
 //      IDT, IRQ unmask) ride alongside the load balancer in
 //      P4-17+.
@@ -108,7 +108,7 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
     unsafe { crate::sched::install_default_runqueue(); }
 
     // Mark ourselves online.
-    let _ = crate::smp::ap_arrived();
+    let _ = ::cpu::smp::ap_arrived();
 
     // Unmask IRQs so this AP can take resched IPIs (and any future
     // per-AP timer ticks). Idle loop is `sti; hlt`: the hlt halts

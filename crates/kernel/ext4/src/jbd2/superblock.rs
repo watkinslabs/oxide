@@ -36,7 +36,7 @@ impl JournalSuperblock {
         if buf.len() < 0x100 { return Err(JournalSuperblockError::Short); }
         // Header at offset 0..12.
         let magic = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        if magic != crate::JBD2_MAGIC { return Err(JournalSuperblockError::BadMagic); }
+        if magic != super::JBD2_MAGIC { return Err(JournalSuperblockError::BadMagic); }
         let bt = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         if bt != 3 && bt != 4 { return Err(JournalSuperblockError::BadType); }
         // Body at offset 12 onward.
@@ -71,7 +71,7 @@ mod tests {
 
     fn build_sb(block_size: u32, maxlen: u32, first: u32, seq: u32, start: u32) -> std::vec::Vec<u8> {
         let mut v = std::vec![0u8; 1024];
-        v[0..4].copy_from_slice(&crate::JBD2_MAGIC.to_be_bytes());
+        v[0..4].copy_from_slice(&super::super::JBD2_MAGIC.to_be_bytes());
         v[4..8].copy_from_slice(&3u32.to_be_bytes());  // v1 type
         v[0x0C..0x10].copy_from_slice(&block_size.to_be_bytes());
         v[0x10..0x14].copy_from_slice(&maxlen.to_be_bytes());

@@ -11,7 +11,7 @@ path = "src/lib.rs"
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 pci      = { path = "../../drivers/pci" }
-smp      = { path = "../../kernel/smp" }
+cpu      = { path = "../../kernel/cpu" }
 sync     = { path = "../../shared/sync" }
 syscall  = { path = "../../kernel/syscall" }
 bitflags = { version = "2", default-features = false }

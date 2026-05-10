@@ -16,9 +16,9 @@ use alloc::vec::Vec;
 
 use block::{BlockDevice, BlockRequest, types::BlockError};
 
-use crate::block_header::{BlockHeader, BlockType, JBD2_MAGIC};
-use crate::descriptor::{DescriptorIter, TAG_FLAG_ESCAPE, TAG_FLAG_LAST};
-use crate::superblock::{JournalSuperblock, JBD2_INCOMPAT_64BIT, JBD2_INCOMPAT_REVOKE};
+use super::block_header::{BlockHeader, BlockType, JBD2_MAGIC};
+use super::descriptor::{DescriptorIter, TAG_FLAG_ESCAPE, TAG_FLAG_LAST};
+use super::superblock::{JournalSuperblock, JBD2_INCOMPAT_64BIT, JBD2_INCOMPAT_REVOKE};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ReplayError {
@@ -196,8 +196,8 @@ fn write_target(target: &dyn BlockDevice, byte_off: u64, data: &[u8]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block_header::{BlockHeader, BlockType};
-    use crate::descriptor::{TAG_FLAG_LAST, TAG_FLAG_SAME_UUID};
+    use super::super::block_header::{BlockHeader, BlockType};
+    use super::super::descriptor::{TAG_FLAG_LAST, TAG_FLAG_SAME_UUID};
 
     /// Hosted JournalLogReader backed by a Vec<Vec<u8>> (one
     /// entry per journal block index).
