@@ -107,17 +107,6 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
-name = "dev-input"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "hal",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "dev-virtio-gpu-modern"
 version = "0.1.0"
 dependencies = [
@@ -184,10 +173,13 @@ dependencies = [
 name = "drv-virtio-input"
 version = "0.1.0"
 dependencies = [
+ "devfs",
  "drv",
  "hal",
  "klog",
  "sync",
+ "syscall",
+ "vfs",
  "virtio",
 ]
 
@@ -477,7 +469,6 @@ dependencies = [
  "boot-info",
  "coredump",
  "cpu",
- "dev-input",
  "dev-virtio-gpu-modern",
  "devfs",
  "drm",

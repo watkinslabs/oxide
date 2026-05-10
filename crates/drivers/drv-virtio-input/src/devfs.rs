@@ -3,9 +3,7 @@
 // ioctls. Real key / abs / rel event delivery rides v2.x once the
 // virtio-input PCI driver lands.
 
-#![no_std]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};

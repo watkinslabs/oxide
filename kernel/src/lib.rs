@@ -478,7 +478,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { user_as::init(info.hhdm_offset); }
         devfs::init(); procfs::init();
         crate::dev_drm::register();
-        tmpfs::init(); dev_tracefs::init(); dev_input::init();
+        tmpfs::init(); dev_tracefs::init(); drv_virtio_input::devfs::init();
         fbdev::devfs::init(); dev_pty::init();
         // boot smokes:
         ::devfs::misc::smoke_test();

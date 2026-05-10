@@ -269,3 +269,7 @@ mod tests {
         assert!(matches!(dispatch_ioctl(0, req, 0), Some(_)));
     }
 }
+
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod devfs;
