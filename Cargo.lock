@@ -144,7 +144,6 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "pmm",
- "pmm-setup",
  "sync",
  "virtio",
 ]
@@ -454,7 +453,6 @@ dependencies = [
  "nscg",
  "pci",
  "pmm",
- "pmm-setup",
  "power",
  "procfs",
  "sched",
@@ -621,20 +619,10 @@ name = "pmm"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "hal",
- "klog",
- "proptest",
- "sync",
-]
-
-[[package]]
-name = "pmm-setup"
-version = "0.1.0"
-dependencies = [
  "boot-info",
  "hal",
  "klog",
- "pmm",
+ "proptest",
  "sync",
  "vmm",
 ]
@@ -681,7 +669,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
- "pmm-setup",
+ "pmm",
  "sync",
 ]
 

@@ -25,7 +25,7 @@ use crate::address_space::AddressSpace;
 use crate::anon_vma::AnonVma;
 
 /// Per-frame rmap descriptor. One instance lives next to each
-/// `pmm_setup::PageMeta` slot in the kernel (the kernel injects
+/// `pmm::setup::PageMeta` slot in the kernel (the kernel injects
 /// it via `set_rmap_for_pa` at frame construction). VMM keeps
 /// these out-of-band so it doesn't depend on PMM internals.
 /// # C: O(1)

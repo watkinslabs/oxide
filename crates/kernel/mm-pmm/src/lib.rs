@@ -24,6 +24,8 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 #[cfg(test)]
 extern crate std;
 
@@ -624,3 +626,5 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
 
 #[cfg(test)]
 mod tests;
+
+pub mod setup;

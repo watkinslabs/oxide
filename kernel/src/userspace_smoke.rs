@@ -111,7 +111,7 @@ fn user_sysret_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
 /// # SAFETY: caller asserts `va` is unmapped on entry; PMM + MmuOps
 /// state initialised; single-CPU pre-init.
 unsafe fn map_user_page<M: MmuOps>(va: u64, flags: PageFlags) -> Option<u64> {
-    let pa = pmm_setup::alloc_one_frame()?;
+    let pa = pmm::setup::alloc_one_frame()?;
     // SAFETY: per fn contract; flags carry USER for the leaf U bit.
     unsafe { M::map(Va(va), Pa(pa), flags, PageSize::P4K); }
     Some(pa)
@@ -193,7 +193,7 @@ pub unsafe fn drop_to_ring3(
     hhdm_offset: u64,
     fault_handler: hal_x86_64::FaultHandler,
 ) -> ! {
-    let kstack_pa = match pmm_setup::alloc_one_frame() {
+    let kstack_pa = match pmm::setup::alloc_one_frame() {
         Some(p) => p,
         None => {
             debug_irq! { klog::kerror!("drop_to_ring3: kstack alloc failed"); }

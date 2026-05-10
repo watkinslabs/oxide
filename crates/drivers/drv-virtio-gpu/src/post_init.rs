@@ -28,7 +28,7 @@ pub unsafe fn get_display_info(
         { hal_aarch64::mmu_ops::hhdm_offset() }
     };
     if hhdm == 0 { return false; }
-    let buf_pa = match pmm_setup::alloc_one_frame() {
+    let buf_pa = match pmm::setup::alloc_one_frame() {
         Some(pa) => pa, None => return false,
     };
     let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
@@ -137,7 +137,7 @@ unsafe fn setup_scanout(
     // → order 9 (512 pages = 2 MiB).
     let mut order: u32 = 0;
     while (1usize << order) < pages_req { order += 1; }
-    let base_pa = match pmm_setup::alloc_contig(pmm::Order(order as u8)) {
+    let base_pa = match pmm::setup::alloc_contig(pmm::Order(order as u8)) {
         Some(pa) => pa, None => return false,
     };
     let _ = 1usize << order; // pages_alloc — informational only
