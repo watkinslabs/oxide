@@ -273,17 +273,17 @@ fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
     };
     match opcode {
         IORING_OP_NOP    => 0,
-        IORING_OP_READ   => crate::syscall_glue_fs::kernel_sys_pread64(&sa),
-        IORING_OP_WRITE  => crate::syscall_glue_fs::kernel_sys_pwrite64(&sa),
-        IORING_OP_READV  => crate::syscall_glue_fs::kernel_sys_readv(&sa),
-        IORING_OP_WRITEV => crate::syscall_glue_fs::kernel_sys_writev(&sa),
+        IORING_OP_READ   => crate::syscalls::fs::kernel_sys_pread64(&sa),
+        IORING_OP_WRITE  => crate::syscalls::fs::kernel_sys_pwrite64(&sa),
+        IORING_OP_READV  => crate::syscalls::fs::kernel_sys_readv(&sa),
+        IORING_OP_WRITEV => crate::syscalls::fs::kernel_sys_writev(&sa),
         IORING_OP_FSYNC  => 0,
-        IORING_OP_CLOSE  => crate::syscall_glue::kernel_sys_close(&sa),
-        IORING_OP_OPENAT => crate::syscall_glue_open::kernel_sys_openat(&sa),
-        IORING_OP_SEND   => crate::syscall_glue_net::kernel_sys_sendto(&sa),
-        IORING_OP_RECV   => crate::syscall_glue_net::kernel_sys_recvfrom(&sa),
-        IORING_OP_ACCEPT => crate::syscall_glue_net::kernel_sys_accept(&sa),
-        IORING_OP_CONNECT => crate::syscall_glue_net::kernel_sys_connect(&sa),
+        IORING_OP_CLOSE  => crate::syscalls::kernel_sys_close(&sa),
+        IORING_OP_OPENAT => crate::syscalls::open::kernel_sys_openat(&sa),
+        IORING_OP_SEND   => crate::syscalls::net::kernel_sys_sendto(&sa),
+        IORING_OP_RECV   => crate::syscalls::net::kernel_sys_recvfrom(&sa),
+        IORING_OP_ACCEPT => crate::syscalls::net::kernel_sys_accept(&sa),
+        IORING_OP_CONNECT => crate::syscalls::net::kernel_sys_connect(&sa),
         _ => -(syscall::errno::Errno::Einval.as_i32() as i64),
     }
 }

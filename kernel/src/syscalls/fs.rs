@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-use crate::syscall_glue::{validate_user_buf, validate_user_buf_writable};
+use crate::syscalls::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)
@@ -60,7 +60,7 @@ pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
     0
 }
 
-pub use crate::syscall_glue_ioctl::kernel_sys_ioctl;
+pub use crate::syscalls::ioctl::kernel_sys_ioctl;
 
 /// `sys_getcwd(buf, size)` — slot 79. Reads `current.cwd` slot.
 /// Returns the path length including the trailing NUL per
@@ -632,7 +632,7 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
     let path_s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let target: alloc::vec::Vec<u8> = match crate::syscall_glue_proclink::resolve_proc_link(path_s) {
+    let target: alloc::vec::Vec<u8> = match crate::syscalls::proclink::resolve_proc_link(path_s) {
         Some(t) => t,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
