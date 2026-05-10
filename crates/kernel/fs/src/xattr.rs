@@ -16,10 +16,7 @@
 //     buflen=0.
 //   * removexattr returns ENODATA if name absent.
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

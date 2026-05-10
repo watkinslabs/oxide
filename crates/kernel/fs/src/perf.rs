@@ -20,11 +20,8 @@
 
 
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};

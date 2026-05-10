@@ -6,10 +6,7 @@
 // in place; v1 keeps libuv / tokio happy past the create+ctl boundary.
 
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 
 
 use alloc::sync::Arc;
