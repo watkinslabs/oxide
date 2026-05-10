@@ -13,3 +13,6 @@ klog    = { path = "../../shared/klog" }
 drv     = { path = "../../drivers/drv" }
 virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
+devfs   = { path = "../../kernel/devfs" }
+syscall = { path = "../../kernel/syscall" }
+vfs     = { path = "../../kernel/vfs" }
