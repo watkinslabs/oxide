@@ -758,6 +758,8 @@ name = "sched"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
  "sync",
  "vfs",
