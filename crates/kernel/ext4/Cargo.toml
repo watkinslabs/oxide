@@ -10,7 +10,6 @@ path = "src/lib.rs"
 [dependencies]
 block = { path = "../../kernel/block" }
 sync  = { path = "../../shared/sync" }
-jbd2  = { path = "../../kernel/jbd2" }
 crc   = { path = "../../shared/crc" }
 vfs   = { path = "../vfs" }
 

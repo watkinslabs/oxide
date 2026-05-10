@@ -13,15 +13,12 @@
 // calls after ACPI is parsed. Today it logs intent only — the
 // real INIT-IPI lands in P4-08+.
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use cpu as cpu_topology;
+use crate as cpu_topology;
 
 /// Boot-CPU id snapshot — captured at boot via `set_boot_cpu_id`.
 /// Used by `enumerate_aps` to filter the boot CPU out of the

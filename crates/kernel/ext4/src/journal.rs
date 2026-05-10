@@ -10,7 +10,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use jbd2::{
+use crate::jbd2::{
     JournalSuperblock,
     JournalLogReader, ReplayError, ReplayStats,
     replay,

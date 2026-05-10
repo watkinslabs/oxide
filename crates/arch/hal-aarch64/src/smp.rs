@@ -71,8 +71,8 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
         core::arch::asm!("mrs {x}, MPIDR_EL1", x = out(reg) mpidr, options(nomem, nostack));
         core::ptr::write_volatile(pc, mpidr as u32);
         crate::ArmCpuOps::set_percpu_base(c.percpu_base as *mut u8);
-        // Mark ourselves online via the boot CPU's smp::ap_arrived.
-        let _ = smp::ap_arrived();
+        // Mark ourselves online via the boot CPU's cpu::smp::ap_arrived.
+        let _ = cpu::smp::ap_arrived();
     }
     loop {
         // SAFETY: WFE is always legal at any EL; idle hint only.
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     }
 }
 
-/// Boot-CPU AP startup entry. Iterates `smp::enumerate_aps()`,
+/// Boot-CPU AP startup entry. Iterates `cpu::smp::enumerate_aps()`,
 /// allocates each AP's context + stack + per-CPU page, and
 /// calls PSCI CPU_ON.
 ///
@@ -88,7 +88,7 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
 /// conduit is configured (EDK2 / QEMU virt expose SMC).
 /// # C: O(N_aps)
 pub unsafe fn bring_up_aps_arm() -> usize {
-    let aps = smp::enumerate_aps();
+    let aps = cpu::smp::enumerate_aps();
     let mut started = 0;
     for &mpidr in aps.iter() {
         // Allocate stack + per-CPU page + context.

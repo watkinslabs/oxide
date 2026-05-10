@@ -17,8 +17,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::block_header::{BlockHeader, BlockType, JBD2_MAGIC};
-use crate::descriptor::{TAG_FLAG_ESCAPE, TAG_FLAG_LAST, TAG_FLAG_SAME_UUID};
+use super::block_header::{BlockHeader, BlockType, JBD2_MAGIC};
+use super::descriptor::{TAG_FLAG_ESCAPE, TAG_FLAG_LAST, TAG_FLAG_SAME_UUID};
 
 /// One staged metadata write awaiting commit.
 #[derive(Clone, Debug)]
@@ -121,7 +121,7 @@ impl LogCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::DescriptorIter;
+    use super::super::descriptor::DescriptorIter;
 
     fn s(target_lba: u64, byte: u8, bs: usize) -> StagedBlock {
         StagedBlock { target_lba, data: alloc::vec![byte; bs] }
@@ -178,7 +178,7 @@ mod tests {
         // End-to-end: build descriptor + commit + data, hand them
         // to replay::replay against a memory-backed disk, observe
         // the target writes apply.
-        use crate::replay::{replay, JournalLogReader, ReplayError};
+        use super::super::replay::{replay, JournalLogReader, ReplayError};
         use sync::TaskList;
         use block::MemDisk;
         use alloc::sync::Arc;
@@ -200,7 +200,7 @@ mod tests {
         blocks.push(commit);
         let j = VecJournal(blocks);
         let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 32);
-        let sb = crate::JournalSuperblock {
+        let sb = super::super::JournalSuperblock {
             block_size: bs as u32, maxlen: 32, first: 1, sequence: 7, start: 1,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0,
         };

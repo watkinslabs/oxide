@@ -48,4 +48,5 @@ pub mod journal;
 #[cfg(target_os = "oxide-kernel")]
 pub mod rootfs;
 pub use journal::ExtentLogReader;
-pub use jbd2::StagedBlock;
+pub mod jbd2;
+pub use crate::jbd2::StagedBlock;
