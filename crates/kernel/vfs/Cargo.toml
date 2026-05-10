@@ -11,7 +11,6 @@ path = "src/lib.rs"
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
-syscall  = { path = "../../kernel/syscall" }
 bitflags = { version = "2", default-features = false }
 
 [features]

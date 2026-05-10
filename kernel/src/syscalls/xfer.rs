@@ -1,7 +1,7 @@
+#![cfg(target_os = "oxide-kernel")]
 // Bulk fd→fd byte transfer syscalls per `15§5`. Split from
 // syscall_glue_fs.rs to keep that file under the 1000-line cap.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
