@@ -11,7 +11,7 @@ use hal::USER_VA_END;
 
 /// `sys_eventfd2(initval, flags)` — slot 290.
 /// # C: O(1)
-pub fn kernel_sys_eventfd2(args: &SyscallArgs) -> i64 {
+pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     let initval = args.a0;
     let _flags  = args.a1;
@@ -33,7 +33,7 @@ pub fn kernel_sys_eventfd2(args: &SyscallArgs) -> i64 {
 
 /// `sys_memfd_create(name, flags)` — slot 319.
 /// # C: O(N_fds) for the fd-table alloc
-pub fn kernel_sys_memfd_create(args: &SyscallArgs) -> i64 {
+pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     const MFD_CLOEXEC:       u64 = 0x0001;
     const MFD_ALLOW_SEALING: u64 = 0x0002;
     const MFD_HUGETLB:       u64 = 0x0004;

@@ -31,7 +31,7 @@ const PR_GET_CHILD_SUBREAPER: u64 = 37;
 /// and (when `persona != 0xFFFFFFFF`) sets the new one. Per-task slot
 /// added in F78. Stored opaquely; v1 doesn't act on the bits.
 /// # C: O(1)
-pub fn kernel_sys_personality(args: &SyscallArgs) -> i64 {
+pub fn sys_personality(args: &SyscallArgs) -> i64 {
     let new = args.a0 as u32;
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let prev = cur.personality.load(Ordering::Acquire);
@@ -46,7 +46,7 @@ pub fn kernel_sys_personality(args: &SyscallArgs) -> i64 {
 /// matching PR_GET_*. PR_CAPBSET_READ / PR_CAPBSET_DROP read from
 /// the cap_bounding mask added in F66.
 /// # C: O(1)
-pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
+pub fn sys_prctl(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     match args.a0 {
         PR_SET_NAME | PR_SET_DUMPABLE | PR_SET_TSC | PR_SET_THP_DISABLE => 0,

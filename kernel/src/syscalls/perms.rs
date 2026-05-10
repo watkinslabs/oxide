@@ -45,7 +45,7 @@ fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
 
 /// `sys_chmod(path, mode)` — slot 90.
 /// # C: O(N_path)
-pub fn kernel_sys_chmod(args: &SyscallArgs) -> i64 {
+pub fn sys_chmod(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a1 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
@@ -54,7 +54,7 @@ pub fn kernel_sys_chmod(args: &SyscallArgs) -> i64 {
 
 /// `sys_fchmod(fd, mode)` — slot 91.
 /// # C: O(1)
-pub fn kernel_sys_fchmod(args: &SyscallArgs) -> i64 {
+pub fn sys_fchmod(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a1 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
@@ -64,7 +64,7 @@ pub fn kernel_sys_fchmod(args: &SyscallArgs) -> i64 {
 /// `sys_fchmodat(dirfd, path, mode, flags)` — slot 268. v1 ignores
 /// dirfd and resolves `path` against the global devfs.
 /// # C: O(N_path)
-pub fn kernel_sys_fchmodat(args: &SyscallArgs) -> i64 {
+pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a1) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a2 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
@@ -73,7 +73,7 @@ pub fn kernel_sys_fchmodat(args: &SyscallArgs) -> i64 {
 
 /// `sys_chown(path, uid, gid)` / `sys_lchown(path, uid, gid)` — slots 92/94.
 /// # C: O(N_path)
-pub fn kernel_sys_chown(args: &SyscallArgs) -> i64 {
+pub fn sys_chown(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a1 as u32; let g = args.a2 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
@@ -82,7 +82,7 @@ pub fn kernel_sys_chown(args: &SyscallArgs) -> i64 {
 
 /// `sys_fchown(fd, uid, gid)` — slot 93.
 /// # C: O(1)
-pub fn kernel_sys_fchown(args: &SyscallArgs) -> i64 {
+pub fn sys_fchown(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a1 as u32; let g = args.a2 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
@@ -91,7 +91,7 @@ pub fn kernel_sys_fchown(args: &SyscallArgs) -> i64 {
 
 /// `sys_fchownat(dirfd, path, uid, gid, flags)` — slot 260.
 /// # C: O(N_path)
-pub fn kernel_sys_fchownat(args: &SyscallArgs) -> i64 {
+pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a1) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a2 as u32; let g = args.a3 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
@@ -103,12 +103,12 @@ pub fn kernel_sys_fchownat(args: &SyscallArgs) -> i64 {
 pub fn perms_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
     let rv = match nr {
-        NR_CHMOD     => kernel_sys_chmod(args),
-        NR_FCHMOD    => kernel_sys_fchmod(args),
-        NR_FCHMODAT  => kernel_sys_fchmodat(args),
-        NR_CHOWN | NR_LCHOWN => kernel_sys_chown(args),
-        NR_FCHOWN    => kernel_sys_fchown(args),
-        NR_FCHOWNAT  => kernel_sys_fchownat(args),
+        NR_CHMOD     => sys_chmod(args),
+        NR_FCHMOD    => sys_fchmod(args),
+        NR_FCHMODAT  => sys_fchmodat(args),
+        NR_CHOWN | NR_LCHOWN => sys_chown(args),
+        NR_FCHOWN    => sys_fchown(args),
+        NR_FCHOWNAT  => sys_fchownat(args),
         _ => return None,
     };
     Some(rv)

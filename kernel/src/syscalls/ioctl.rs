@@ -10,7 +10,7 @@ use crate::syscalls::validate_user_buf;
 
 /// `sys_ioctl(fd, request, arg)` — slot 16.
 /// # C: O(1)
-pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
+pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TCGETS:     u64 = 0x5401;
     const TCSETS:     u64 = 0x5402;
     const TCSETSW:    u64 = 0x5403; // TCSETS after pending output drains; v1 == TCSETS

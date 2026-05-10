@@ -53,7 +53,7 @@ impl Inode for SignalfdInode {
 /// `sys_signalfd(fd, mask, mask_size)` / `sys_signalfd4(fd, mask, sz, flags)`.
 /// fd == -1 → allocate new fd; fd >= 0 → update existing inode's mask.
 /// # C: O(N_fds) for new; O(1) update
-pub fn kernel_sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;

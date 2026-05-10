@@ -339,7 +339,7 @@ impl ContextAArch64 {
 }
 
 /// Parent-side SVC-frame snapshot used by `new_user_for_fork`.
-/// Populated by `kernel_sys_clone_dispatch` from the saved frame
+/// Populated by `sys_clone_dispatch` from the saved frame
 /// at `current_svc_frame()`. v1 captures x0..x30 + the post-svc
 /// ELR_EL1 + SPSR_EL1 + SP_EL0.
 #[derive(Copy, Clone, Default)]

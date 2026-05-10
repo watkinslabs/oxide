@@ -366,7 +366,7 @@ impl ContextX86_64 {
 }
 
 /// Parent-side syscall-frame snapshot used by `new_user_for_fork`.
-/// Populated by `kernel_sys_fork` from the saved-syscall block.
+/// Populated by `sys_fork` from the saved-syscall block.
 #[derive(Copy, Clone, Default)]
 pub struct ForkRegs {
     pub rdi: u64, pub rsi: u64, pub rdx: u64,

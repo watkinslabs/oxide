@@ -178,7 +178,7 @@ pub fn query_into(inode: &InodeRef, name: &str, buf: &mut [u8]) -> bool {
 
 /// `sys_setxattr / lsetxattr` (slots 188/189). path / name / value / size / flags.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_setxattr(args: &SyscallArgs) -> i64 {
+pub fn sys_setxattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     let value = match read_user_bytes(args.a2, args.a3 as usize) { Ok(v) => v, Err(rv) => return rv };
@@ -187,7 +187,7 @@ pub fn kernel_sys_setxattr(args: &SyscallArgs) -> i64 {
 
 /// `sys_fsetxattr` (slot 190). fd / name / value / size / flags. 
 /// # C: O(N_xattrs)
-pub fn kernel_sys_fsetxattr(args: &SyscallArgs) -> i64 {
+pub fn sys_fsetxattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     let value = match read_user_bytes(args.a2, args.a3 as usize) { Ok(v) => v, Err(rv) => return rv };
@@ -196,7 +196,7 @@ pub fn kernel_sys_fsetxattr(args: &SyscallArgs) -> i64 {
 
 /// `sys_getxattr / lgetxattr` (slots 191/192). path / name / value / size.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_getxattr(args: &SyscallArgs) -> i64 {
+pub fn sys_getxattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     do_get(&inode, &name, args.a2, args.a3 as usize)
@@ -204,7 +204,7 @@ pub fn kernel_sys_getxattr(args: &SyscallArgs) -> i64 {
 
 /// `sys_fgetxattr` (slot 193). fd / name / value / size.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_fgetxattr(args: &SyscallArgs) -> i64 {
+pub fn sys_fgetxattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     do_get(&inode, &name, args.a2, args.a3 as usize)
@@ -212,21 +212,21 @@ pub fn kernel_sys_fgetxattr(args: &SyscallArgs) -> i64 {
 
 /// `sys_listxattr / llistxattr` (slots 194/195). path / list / size.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_listxattr(args: &SyscallArgs) -> i64 {
+pub fn sys_listxattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     do_list(&inode, args.a1, args.a2 as usize)
 }
 
 /// `sys_flistxattr` (slot 196). fd / list / size.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_flistxattr(args: &SyscallArgs) -> i64 {
+pub fn sys_flistxattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
     do_list(&inode, args.a1, args.a2 as usize)
 }
 
 /// `sys_removexattr / lremovexattr` (slots 197/198). path / name.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_removexattr(args: &SyscallArgs) -> i64 {
+pub fn sys_removexattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     do_remove(&inode, &name)
@@ -234,7 +234,7 @@ pub fn kernel_sys_removexattr(args: &SyscallArgs) -> i64 {
 
 /// `sys_fremovexattr` (slot 199). fd / name.
 /// # C: O(N_xattrs)
-pub fn kernel_sys_fremovexattr(args: &SyscallArgs) -> i64 {
+pub fn sys_fremovexattr(args: &SyscallArgs) -> i64 {
     let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
     let name  = match read_user_cstr_owned(args.a1, 256) { Ok(s) => s, Err(rv) => return rv };
     do_remove(&inode, &name)
@@ -246,14 +246,14 @@ pub fn kernel_sys_fremovexattr(args: &SyscallArgs) -> i64 {
 pub fn xattr_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
     let rv = match nr {
-        NR_SETXATTR | NR_LSETXATTR  => kernel_sys_setxattr(args),
-        NR_FSETXATTR                => kernel_sys_fsetxattr(args),
-        NR_GETXATTR | NR_LGETXATTR  => kernel_sys_getxattr(args),
-        NR_FGETXATTR                => kernel_sys_fgetxattr(args),
-        NR_LISTXATTR | NR_LLISTXATTR => kernel_sys_listxattr(args),
-        NR_FLISTXATTR               => kernel_sys_flistxattr(args),
-        NR_REMOVEXATTR | NR_LREMOVEXATTR => kernel_sys_removexattr(args),
-        NR_FREMOVEXATTR             => kernel_sys_fremovexattr(args),
+        NR_SETXATTR | NR_LSETXATTR  => sys_setxattr(args),
+        NR_FSETXATTR                => sys_fsetxattr(args),
+        NR_GETXATTR | NR_LGETXATTR  => sys_getxattr(args),
+        NR_FGETXATTR                => sys_fgetxattr(args),
+        NR_LISTXATTR | NR_LLISTXATTR => sys_listxattr(args),
+        NR_FLISTXATTR               => sys_flistxattr(args),
+        NR_REMOVEXATTR | NR_LREMOVEXATTR => sys_removexattr(args),
+        NR_FREMOVEXATTR             => sys_fremovexattr(args),
         _ => return None,
     };
     Some(rv)
