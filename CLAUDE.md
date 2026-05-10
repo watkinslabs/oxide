@@ -13,7 +13,8 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 3. **No deferrals — there is no v2**: every spec describes the full Linux-equivalent surface. No "rides v2.x", no "deferred to v2", no "subset" framing. If a feature is part of the Linux contract for that subsystem, it is in scope for v1 and gets implemented before the spec freezes. Old `v2-arch-plan.md` and `docs/v2/` directory are dead history.
 4. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
-6. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
+6. **Structure contract** (`docs/52`): new layout and ownership changes must follow `52` and update it in the same PR when boundaries change.
+7. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
    - PR-time CI green on both `build kernel x86_64` AND `build kernel aarch64`
    - `make qemu-x86` boots through the phase's smoke target (init prints, fork+exec works, etc.)
    - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
@@ -90,6 +91,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 | ELF loader, power, firmware, PCI, drivers | `31`–`35` |
 | Bootloader handoff, observability, error handling | `36`–`38` |
 | Build+image, CI, debug catalog, tests, acceptance | `39`–`43` |
+| Repo layout + crate ownership boundaries | `52` |
 | Boot flow Mermaid | `boot-flow.md` |
 
 When user asks about a concept: check this table → read that spec → answer. Don't guess; read.
@@ -177,6 +179,21 @@ Examples:
 **Reverting.** Always `git revert <sha>` to undo merged work. Never delete history on `main`.
 
 **Branch retention.** Do NOT delete merged branches. Keep feature branches around even after merge for recoverable history. `git branch -d`/`-D` only when user explicitly says delete. Default = preserve.
+
+## state.md is short-lived session memory, not history
+
+`state.md` is the hand-off note from the previous session — what
+was worked on, what's open, what to pick up next. It is NOT a
+running log, NOT a session journal, NOT a place to accumulate
+session-by-session reports.
+
+Rules:
+- **Hard cap 200 lines.** If it grows past that, you're doing it wrong.
+- **Overwrite, don't append.** Each session replaces the file with a fresh hand-off — no "Below this line is session N-1" appendix.
+- **Headline + open work + first task.** Branch + PR, what got done, what's still open, the literal first command for next session. Nothing else.
+- **No "session 53/54/55" archaeology.** Git log is the archaeology.
+- **No commit-message duplication.** Cite SHAs, don't restate.
+- Persistent project knowledge (architecture decisions, conventions, gotchas that survive across sessions) goes in CLAUDE.md or auto-memory, not state.md.
 
 ## When in doubt
 

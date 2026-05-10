@@ -158,7 +158,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     w32(0x00, 1); let dev_feat_hi = r32(0x04);
     let dev_features: u64 = ((dev_feat_hi as u64) << 32) | (dev_feat_lo as u64);
     let mut want = virtio::VIRTIO_F_VERSION_1;
-    if d.vendor_id == 0x1A&& (d.device_id == 0x1000 || d.device_id == 0x1041) {
+    if d.vendor_id == 0x1AF4 && (d.device_id == 0x1000 || d.device_id == 0x1041) {
         want |= virtio::VIRTIO_NET_F_MAC | virtio::VIRTIO_NET_F_STATUS;
     }
     let drv_features: u64 = dev_features & want;
@@ -346,8 +346,8 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let mut rx0_buf_len_local: u16 = 0;
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
-    let is_virtio_gpu = d.vendor_id == 0x1A&& d.device_id == 0x1050;
-    let is_virtio_input = d.vendor_id == 0x1A&& d.device_id == 0x1052;
+    let is_virtio_gpu = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
+    let is_virtio_input = d.vendor_id == 0x1AF4 && d.device_id == 0x1052;
     let bdf_word = (d.bdf.bus as u32) << 16
                  | (d.bdf.device as u32) << 8
                  | (d.bdf.function as u32);
@@ -931,7 +931,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
     // device to dev_virtio_net so later phases (RX poll, TX, ARP) can
     // drive the queues post-boot. Only register if the device reached
     // virtio-gpu post-init: submit CMD_GET_DISPLAY_INFO over CTRLQ.
-    let is_virtio_gpu_post = d.vendor_id == 0x1A&& d.device_id == 0x1050;
+    let is_virtio_gpu_post = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
     if is_virtio_gpu_post
         && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         && p.q0_desc_pa != 0

@@ -36,7 +36,7 @@ pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 /// generous for early-boot subsystems (vmm VMA tree, sched runqueues,
 /// vfs dentry cache); replaced by PMM-backed slab routing per `12§2`
 /// once a binary stage exists.
-pub const STATIC_HEAP_SIZE: usize = 16 * 1024 * 1024;
+pub const STATIC_HEAP_SIZE: usize = 32 * 1024 * 1024;
 
 /// Bump-aligned BSS storage. `align(4096)` keeps the heap page-aligned
 /// so future mappings can be relaxed at page granularity.

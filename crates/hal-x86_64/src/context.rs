@@ -27,7 +27,6 @@ pub struct ContextX86_64 {
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_context_switch",
     ".type  oxide_context_switch, @function",
@@ -52,7 +51,6 @@ core::arch::global_asm!(
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_trampoline_kernel",
     ".type  oxide_trampoline_kernel, @function",
@@ -327,6 +325,7 @@ impl ContextX86_64 {
         user_sp: u64,
         user_rflags: u64,
         regs: &ForkRegs,
+        parent_fs_base: u64,
     ) -> Self {
         // SAFETY: same as `new_user_with_irq_frame`.
         let sp = unsafe {
@@ -361,7 +360,7 @@ impl ContextX86_64 {
             r13: regs.r13,
             r14: regs.r14,
             r15: regs.r15,
-            fs_base: 0,
+            fs_base: parent_fs_base,
         }
     }
 }

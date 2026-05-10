@@ -284,6 +284,19 @@ pub struct Task {
     /// per-thread cleanup in the single-thread model.
     pub clear_child_tid: AtomicU64,
 
+    /// CLONE_VFORK rendezvous flag. When parent calls clone(2) with
+    /// CLONE_VFORK, the kernel sets this on the *child* and the
+    /// parent yields in a loop until the child clears it via either
+    /// execve(2) or exit(2)/exit_group(2). Mirrors Linux
+    /// `mm_struct::vfork_done`: parent is suspended until child is
+    /// done with the shared mm. Without this, parent and child race
+    /// on the shared address space (CLONE_VM) and parent may modify
+    /// heap before child reads its argv. v1 uses busy-yield rather
+    /// than a wait-list; correct for UP and acceptable until SMP.
+    /// 0 = not vfork-tracked or already-cleared (default);
+    /// 1 = parent waiting on this child.
+    pub vfork_pending: AtomicBool,
+
     /// Per-task namespace membership bitmap. Bit i set ⇔ this task
     /// has its own slot for namespace i (rather than inheriting the
     /// init-namespace). Bit assignments mirror Linux CLONE_NEW*:
@@ -767,6 +780,7 @@ impl Task {
             alarm_interval_ns: AtomicU64::new(0),
             umask:      AtomicU32::new(0o022),
             clear_child_tid: AtomicU64::new(0),
+            vfork_pending: AtomicBool::new(false),
             ns_membership: AtomicU64::new(0),
             uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
             traced_by:     AtomicU32::new(0),

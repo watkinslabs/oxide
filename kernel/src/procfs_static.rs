@@ -63,6 +63,7 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
     crate::devfs::register("/proc/self/environ", Arc::new(ProcSelfEnvironInode) as InodeRef);
     crate::devfs::register("/proc/self/stat",    Arc::new(ProcSelfStatInode)    as InodeRef);
     crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
+    crate::devfs::register("/proc/self/smaps",   Arc::new(crate::procfs_smaps::ProcSelfSmapsInode) as InodeRef);
     crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
@@ -226,5 +227,131 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
         StaticFileInode::new(b"60\n") as InodeRef);
     crate::devfs::register("/proc/sys/net/core/somaxconn",
         StaticFileInode::new(b"4096\n") as InodeRef);
+
+    // F158: /proc/net/* — Linux networking surface. v1 has loopback
+    // only, no real protocol stack tables; we emit the headers + a
+    // single 'lo' row so iproute2 / netstat / ifconfig / ss find
+    // something parseable.
+    crate::devfs::register("/proc/net/dev", StaticFileInode::new(b"\
+Inter-|   Receive                                                |  Transmit\n\
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+    lo:       0       0    0    0    0     0          0         0       0       0    0    0    0     0       0          0\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/route", StaticFileInode::new(b"\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+lo\t0000007F\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/tcp", StaticFileInode::new(b"\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/tcp6", StaticFileInode::new(b"\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/udp", StaticFileInode::new(b"\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/udp6", StaticFileInode::new(b"\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/unix", StaticFileInode::new(b"\
+Num       RefCount Protocol Flags    Type St Inode Path\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/raw", StaticFileInode::new(b"\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/raw6", StaticFileInode::new(b"\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/netlink", StaticFileInode::new(b"\
+sk               Eth Pid        Groups   Rmem     Wmem     Dump  Locks    Drops    Inode\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/packet", StaticFileInode::new(b"\
+sk       RefCnt Type Proto  Iface R Rmem   User   Inode\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/snmp", StaticFileInode::new(b"\
+Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates\n\
+Ip: 1 64 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
+Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\n\
+Icmp: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
+Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n\
+Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\n\
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti\n\
+Udp: 0 0 0 0 0 0 0 0\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/snmp6", StaticFileInode::new(b"") as InodeRef);
+    crate::devfs::register("/proc/net/netstat", StaticFileInode::new(b"\
+TcpExt: SyncookiesSent SyncookiesRecv SyncookiesFailed\n\
+TcpExt: 0 0 0\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/protocols", StaticFileInode::new(b"\
+protocol  size sockets  memory press maxhdr  slab module     cl co di ac io in de sh ss gs se re sp bi br ha uh gp em\n\
+PACKET   1024      0     0   no       0   no  kernel       n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n\n\
+TCP      2128      0     0   no     320   no  kernel       y  y  y  y  y  y  y  y  y  y  y  y  y  n  y  y  y  y  n\n\
+UDP      1024      0     0   no       0   no  kernel       y  y  y  y  y  y  y  n  n  n  n  n  n  n  n  y  y  y  n\n\
+RAW       912      0     0   no       0   no  kernel       y  y  y  y  y  y  y  n  y  n  n  n  n  n  n  y  y  n  n\n\
+UNIX      640      0     0   no       0   no  kernel       n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/sockstat", StaticFileInode::new(b"\
+sockets: used 0\n\
+TCP: inuse 0 orphan 0 tw 0 alloc 0 mem 0\n\
+UDP: inuse 0 mem 0\n\
+UDPLITE: inuse 0\n\
+RAW: inuse 0\n\
+FRAG: inuse 0 memory 0\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/sockstat6", StaticFileInode::new(b"\
+TCP6: inuse 0\nUDP6: inuse 0\nUDPLITE6: inuse 0\nRAW6: inuse 0\nFRAG6: inuse 0 memory 0\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/arp", StaticFileInode::new(b"\
+IP address       HW type     Flags       HW address            Mask     Device\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/if_inet6", StaticFileInode::new(b"\
+00000000000000000000000000000001 01 80 10 80       lo\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/igmp", StaticFileInode::new(b"\
+Idx\tDevice    : Count Querier\tGroup    Users Timer\tReporter\n\
+") as InodeRef);
+    crate::devfs::register("/proc/net/wireless", StaticFileInode::new(b"\
+Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n\
+ face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n\
+") as InodeRef);
+
+    // F158: more /proc/sys entries — sysctl knobs Linux exposes that
+    // glibc/systemd/networking tools probe at startup.
+    crate::devfs::register("/proc/sys/net/ipv4/ip_forward", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/tcp_syncookies", StaticFileInode::new(b"1\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/tcp_tw_reuse", StaticFileInode::new(b"2\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/tcp_fin_timeout", StaticFileInode::new(b"60\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/tcp_keepalive_time", StaticFileInode::new(b"7200\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/ip_local_port_range", StaticFileInode::new(b"32768\t60999\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/icmp_echo_ignore_all", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv6/conf/all/disable_ipv6", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv6/conf/default/disable_ipv6", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/core/rmem_default", StaticFileInode::new(b"212992\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/core/rmem_max", StaticFileInode::new(b"212992\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/core/wmem_default", StaticFileInode::new(b"212992\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/core/wmem_max", StaticFileInode::new(b"212992\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/core/netdev_max_backlog", StaticFileInode::new(b"1000\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/min_free_kbytes", StaticFileInode::new(b"4096\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/overcommit_ratio", StaticFileInode::new(b"50\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/dirty_ratio", StaticFileInode::new(b"20\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/dirty_background_ratio", StaticFileInode::new(b"10\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/page-cluster", StaticFileInode::new(b"3\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/max_map_count", StaticFileInode::new(b"65530\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/nr_hugepages", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/mmap_min_addr", StaticFileInode::new(b"65536\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/sched_rr_timeslice_ms", StaticFileInode::new(b"100\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/randomize_va_space", StaticFileInode::new(b"2\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/yama/ptrace_scope", StaticFileInode::new(b"1\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/perf_event_paranoid", StaticFileInode::new(b"2\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/dmesg_restrict", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/kptr_restrict", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/threads-max", StaticFileInode::new(b"32768\n") as InodeRef);
+    crate::devfs::register("/proc/sys/kernel/io_uring_disabled", StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/file-max", StaticFileInode::new(b"4096\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/nr_open", StaticFileInode::new(b"1048576\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/protected_hardlinks", StaticFileInode::new(b"1\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/protected_symlinks", StaticFileInode::new(b"1\n") as InodeRef);
+    crate::devfs::register("/proc/sys/fs/suid_dumpable", StaticFileInode::new(b"0\n") as InodeRef);
 }
 

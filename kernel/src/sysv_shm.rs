@@ -126,24 +126,22 @@ pub fn kernel_sys_shmat(args: &syscall::SyscallArgs) -> i64 {
         Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64),
     };
     // Map at a kernel-picked hole. Bytes referenced by KernelBytes
-    // must outlive the VMA; the Arc<ShmSegment> in REG keeps the
-    // backing store live until shmctl IPC_RMID. To bridge the
-    // 'static lifetime requirement of KernelBytes, we leak the
-    // bytes into a 'static slice once via Box::leak. The leak is
-    // bounded — segments outlive the kernel by design (no shm
-    // unmount path), and IPC_RMID just removes the registry entry
-    // (the kernel keeps the leaked memory; v1 acceptable).
-    // SAFETY: seg.bytes Vec is never mutated after registration; extending its borrow to 'static is sound because the Arc<ShmSegment> in REG keeps the backing alive for the kernel's lifetime (IPC_RMID drops the registry entry but not the buffer).
-    let static_bytes: &'static [u8] = unsafe {
-        let s: *const [u8] = seg.bytes.as_slice();
-        &*s
-    };
+    // are wrapped in Arc<[u8]> so the buffer lives until the last
+    // VMA referencing it drops (Linux page-cache analogue). The
+    // Arc<ShmSegment> in REG keeps an additional strong ref alive
+    // until shmctl IPC_RMID; until then, attaches share the same
+    // Arc bytes.
     let len_aligned = (seg.bytes.len() as u64 + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    // Convert seg.bytes (Vec<u8>) into Arc<[u8]>. We only do this on
+    // attach — segment storage on the registry side stays the Vec.
+    // For v1 the simplicity outweighs the per-attach realloc.
+    let data: alloc::sync::Arc<[u8]> =
+        alloc::sync::Arc::from(seg.bytes.clone().into_boxed_slice());
     let res = mm.mmap(
         None, len_aligned as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::SHARED | VmaFlags::ANONYMOUS,
-        VmaBacking::KernelBytes { data: static_bytes },
+        VmaBacking::KernelBytes { data, off: 0 },
         false,
     );
     match res {

@@ -101,7 +101,6 @@ unsafe fn rdmsr(msr: u32) -> u64 {
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_syscall_entry",
     ".type  oxide_syscall_entry, @function",

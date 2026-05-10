@@ -13,7 +13,6 @@ use hal::{USER_VA_END, TimerOps};
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "x86_64")]
 pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 
@@ -38,7 +37,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // for /proc/self/exe even when path_ptr != 0.
     let mut path_buf = [0u8; 64];
     let mut path_len = 0usize;
-    let blob: &[u8] = if path_ptr == 0 {
+    let mut blob: &[u8] = if path_ptr == 0 {
         crate::elf_smoke::EXEC_BLOB
     } else {
         if path_ptr >= USER_VA_END {
@@ -74,54 +73,65 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // 1a. Snapshot argv + envp from the OLD user AS into kernel
     //     storage. After we activate the new AS, the old user
     //     pages are unmapped and the user-side argv/envp pointers
-    //     would resolve to nothing. v1 caps: 8 entries each, 64
-    //     bytes per string.
-    const MAX_VEC: usize = 8;
-    const MAX_STR: usize = 64;
-    let mut argv_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut argv_len = [0usize; MAX_VEC];
-    let mut argc: usize = 0;
-    let mut envp_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut envp_len = [0usize; MAX_VEC];
-    let mut envc: usize = 0;
-    if args.a1 != 0 && args.a1 < USER_VA_END {
-        let argv_uva = args.a1;
-        for i in 0..MAX_VEC {
-            let p = argv_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: argv array entries are 8-byte aligned per Linux ABI; we bound at MAX_VEC; CPL=0 reads through user mapping pre-activate.
+    //     would resolve to nothing. Linux ARG_MAX = 128 KiB total
+    //     across both vectors; per-string limit is 32 pages. We
+    //     enforce a generous total budget; per-string we cap at
+    //     PATH_MAX-equivalent (4 KiB).
+    const ARG_MAX_BYTES: usize  = 128 * 1024;   // Linux ARG_MAX
+    const ARG_MAX_ENTRIES: usize = 1024;        // generous; Linux unlimited
+    const ARG_MAX_STR: usize    = 4096;
+    let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut envp_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut total_bytes: usize = 0;
+    let read_vec = |uva: u64,
+                    out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+                    total: &mut usize| -> bool {
+        if uva == 0 || uva >= USER_VA_END { return true; }
+        for i in 0..ARG_MAX_ENTRIES {
+            let p = uva + (i as u64) * 8;
+            if p >= USER_VA_END { return false; }
+            // SAFETY: argv/envp entries are 8-byte aligned per Linux ABI; bounded ARG_MAX_ENTRIES; CPL=0 reads through caller's active AS.
             let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 { break; }
-            if s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read of user string up to MAX_STR; CPL=0 reads through caller's AS.
+            if s == 0 { return true; }
+            if s >= USER_VA_END { return false; }
+            let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            for j in 0..ARG_MAX_STR {
+                // SAFETY: bounded read up to ARG_MAX_STR from user pointer < USER_VA_END; CPL=0 reads through caller's AS.
                 let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { argv_len[i] = j; break; }
-                argv_buf[i][j] = b;
-                argv_len[i] = j + 1;
+                if b == 0 { break; }
+                buf.push(b);
+                *total += 1;
+                if *total > ARG_MAX_BYTES { return false; }
             }
-            argc += 1;
+            out.push(buf);
         }
+        true
+    };
+    if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
     }
-    if args.a2 != 0 && args.a2 < USER_VA_END {
-        let envp_uva = args.a2;
-        for i in 0..MAX_VEC {
-            let p = envp_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: envp array entries 8-byte aligned per Linux ABI; bounded MAX_VEC; CPL=0 reads through user mapping pre-activate.
-            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 { break; }
-            if s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read of user string up to MAX_STR; CPL=0 reads through caller's AS.
-                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { envp_len[i] = j; break; }
-                envp_buf[i][j] = b;
-                envp_len[i] = j + 1;
-            }
-            envc += 1;
+    if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
+    }
+
+    // Shebang resolution. Only ext4-loaded files can be scripts —
+    // the static `elf_smoke` blobs are all real ELFs. When the chain
+    // fires, `argv_vec` is rewritten in place and `path_buf`/`blob`
+    // are repointed at the final interpreter.
+    if ext4_blob.is_some() && blob.starts_with(b"#!") {
+        let mut owned = ext4_blob.take().expect("ext4_blob.is_some()");
+        if let Err(e) = resolve_shebang_chain(
+            &mut owned, &mut path_buf, &mut path_len, &mut argv_vec,
+        ) {
+            return -(e.as_i32() as i64);
         }
+        ext4_blob = Some(owned);
+        // SAFETY: ext4_blob just set; outlives the load_static_blob call.
+        blob = ext4_blob.as_deref().expect("just set");
     }
+
+    let argc = argv_vec.len();
+    let envc = envp_vec.len();
 
     // 1. Allocate new PT root for the post-execve AS.
     // SAFETY: master PML4 captured at user_as::init; PMM up.
@@ -199,6 +209,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     if let Some(fdt) = unsafe { cur.fd_table_ref() } {
         fdt.close_on_exec();
     }
+    // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
+    // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
+    // exec time so the parent stops sharing the now-replaced mm.
+    cur.vfork_pending.store(false, core::sync::atomic::Ordering::Release);
 
     // 4. Build the SysV initial stack (argc/argv/envp/auxv) per
     //    docs/31§4 step 5. v1 passes empty argv/envp; auxv carries
@@ -210,11 +224,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    // Materialise stack-allocated &[&[u8]] slices for the OLD-AS snapshot.
-    let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
-    let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
+    // Materialise &[&[u8]] slices for the OLD-AS snapshot from the
+    // heap-allocated argv/envp Vecs.
+    let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+    let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
     let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
@@ -329,60 +342,66 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         path_len = (i + 1) as usize;
     }
     let path = &path_buf[..path_len];
-    let blob_vec = match crate::dev_ext4::read_file(path) {
+    let mut blob_vec = match crate::dev_ext4::read_file(path) {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
+
+    // 1a. Snapshot argv / envp from the OLD AS (still active TTBR0).
+    // Linux ARG_MAX = 128 KiB total; per-string PATH_MAX = 4 KiB.
+    const ARG_MAX_BYTES: usize  = 128 * 1024;
+    const ARG_MAX_ENTRIES: usize = 1024;
+    const ARG_MAX_STR: usize    = 4096;
+    let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut envp_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut total_bytes: usize = 0;
+    let read_vec = |uva: u64,
+                    out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+                    total: &mut usize| -> bool {
+        if uva == 0 || uva >= USER_VA_END { return true; }
+        for i in 0..ARG_MAX_ENTRIES {
+            let p = uva + (i as u64) * 8;
+            if p >= USER_VA_END { return false; }
+            // SAFETY: 8-byte aligned argv/envp entry per Linux ABI; bounded ARG_MAX_ENTRIES; EL1 read through caller's TTBR0 pre-activate.
+            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
+            if s == 0 { return true; }
+            if s >= USER_VA_END { return false; }
+            let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            for j in 0..ARG_MAX_STR {
+                // SAFETY: bounded read up to ARG_MAX_STR; user pointer < USER_VA_END; pre-activate TTBR0 resolves caller's user mapping.
+                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
+                if b == 0 { break; }
+                buf.push(b);
+                *total += 1;
+                if *total > ARG_MAX_BYTES { return false; }
+            }
+            out.push(buf);
+        }
+        true
+    };
+    if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
+    }
+    if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) {
+        return -(Errno::E2big.as_i32() as i64);
+    }
+
+    // Shebang resolution per Linux fs/binfmt_script.c. Mirrors the
+    // x86 path above; on success blob_vec/path_buf/argv_vec are
+    // updated to the resolved interpreter chain.
+    if blob_vec.starts_with(b"#!") {
+        if let Err(e) = resolve_shebang_chain(
+            &mut blob_vec, &mut path_buf, &mut path_len, &mut argv_vec,
+        ) {
+            return -(e.as_i32() as i64);
+        }
+    }
     // Borrow the owned Vec for `load_static_blob` — no Box::leak.
     // The Vec drops at end of fn after place_image has copied the
     // segment bytes into AS-owned `staged_bytes` per B22.
     let blob: &[u8] = &blob_vec;
-
-    // 1a. Snapshot argv / envp from the OLD AS (still active TTBR0).
-    const MAX_VEC: usize = 8;
-    const MAX_STR: usize = 64;
-    let mut argv_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut argv_len = [0usize; MAX_VEC];
-    let mut argc: usize = 0;
-    let mut envp_buf = [[0u8; MAX_STR]; MAX_VEC];
-    let mut envp_len = [0usize; MAX_VEC];
-    let mut envc: usize = 0;
-    if args.a1 != 0 && args.a1 < USER_VA_END {
-        let argv_uva = args.a1;
-        for i in 0..MAX_VEC {
-            let p = argv_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: 8-byte aligned argv array entry per Linux ABI; bound at MAX_VEC; CPL=EL1 read through caller's TTBR0 pre-activate.
-            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 || s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read up to MAX_STR bytes of user string; same CR3/TTBR0 precondition as the array read above.
-                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { argv_len[i] = j; break; }
-                argv_buf[i][j] = b;
-                argv_len[i] = j + 1;
-            }
-            argc += 1;
-        }
-    }
-    if args.a2 != 0 && args.a2 < USER_VA_END {
-        let envp_uva = args.a2;
-        for i in 0..MAX_VEC {
-            let p = envp_uva + (i as u64) * 8;
-            if p >= USER_VA_END { break; }
-            // SAFETY: 8-byte aligned envp array entry; bounded MAX_VEC; same TTBR0 precondition.
-            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 || s >= USER_VA_END { break; }
-            for j in 0..MAX_STR {
-                // SAFETY: bounded read up to MAX_STR bytes; pre-activate so caller's user mapping resolves.
-                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { envp_len[i] = j; break; }
-                envp_buf[i][j] = b;
-                envp_len[i] = j + 1;
-            }
-            envc += 1;
-        }
-    }
+    let argc = argv_vec.len();
+    let envc = envp_vec.len();
 
     // 2. Allocate new PT root + build the post-execve AS.
     // SAFETY: master L0 captured at user_as::init; PMM up; new_user_l0 returns a fresh frame zeroed and populated with the kernel half.
@@ -406,7 +425,11 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     // the same shape Linux's sysctl-default rlim_cur hands out for
     // small static binaries.
     const EXEC_USER_STACK_LEN:  usize = 0x10000;
-    const EXEC_USER_STACK_VA:   u64   = 0x4F1_000;
+    // F156: place stack near top of user-half VA so it stays disjoint
+    // from any reasonable ELF text. Prior 0x4F1_000 collided with
+    // busybox's .text (ends 0x50e000), chopping a hole in code via
+    // MAP_FIXED. Mirrors the x86_64 path above.
+    const EXEC_USER_STACK_VA:   u64   = hal::USER_VA_END - 0x20000;
     const EXEC_USER_STACK_TOP:  u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
@@ -431,6 +454,10 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     if let Some(fdt) = unsafe { cur.fd_table_ref() } {
         fdt.close_on_exec();
     }
+    // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
+    // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
+    // exec time so the parent stops sharing the now-replaced mm.
+    cur.vfork_pending.store(false, core::sync::atomic::Ordering::Release);
 
     // F152-2: Linux execve resets TPIDR_EL0 = 0; user crt1 calls
     // PR_SET_TLS / writes TPIDR_EL0 directly (EL0-writable on
@@ -455,10 +482,8 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    let mut argv_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..argc { argv_slices[i] = &argv_buf[i][..argv_len[i]]; }
-    let mut envp_slices: [&[u8]; MAX_VEC] = [b""; MAX_VEC];
-    for i in 0..envc { envp_slices[i] = &envp_buf[i][..envp_len[i]]; }
+    let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+    let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     // SAFETY: single-mutator per `13§5` for cmdline + environ + exe_path.
     let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
@@ -570,4 +595,75 @@ fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
     let new_eff  = if magic_etc & VFS_CAP_FLAGS_EFFECTIVE != 0 { new_perm } else { 0 };
     cur.creds.cap_permitted.store(new_perm, Ordering::Release);
     cur.creds.cap_effective.store(new_eff,  Ordering::Release);
+}
+
+/// Resolve a `#!`-script chain per Linux `fs/binfmt_script.c`.
+///
+/// On entry:
+///   * `blob_owned` holds the file content the user asked execve to load
+///   * `path_buf[..*path_len]` holds the path the user named
+///   * `argv_vec` holds the original argv (argv[0] is the user's choice)
+///
+/// On every iteration where `blob_owned` begins with `#!`:
+///   1. Parse `#!<interp>[ <opt-arg>]\n` from the first line (max 128 bytes).
+///   2. Splice argv: new argv = [interp, opt-arg?, original_path] ++ argv[1..].
+///      argv[0] of the original program is dropped, exactly as Linux does.
+///   3. Update `path_buf`/`*path_len` to `interp`, re-read it from ext4
+///      into `blob_owned`, and loop. Bail with ENOENT if interp missing.
+///
+/// Recursion cap = 4 (matches Linux `BINPRM_MAX_RECURSION`).
+/// Returns `Ok(())` when the chain terminates on a non-script blob.
+/// # C: O(N_chain × file_size)
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) fn resolve_shebang_chain(
+    blob_owned: &mut alloc::vec::Vec<u8>,
+    path_buf: &mut [u8; 64],
+    path_len: &mut usize,
+    argv_vec: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+) -> Result<(), Errno> {
+    for _ in 0..4 {
+        if blob_owned.len() < 2 || &blob_owned[..2] != b"#!" {
+            return Ok(());
+        }
+        let head_end = blob_owned.iter().take(128).position(|&b| b == b'\n')
+            .unwrap_or_else(|| blob_owned.len().min(128));
+        let line = &blob_owned[2..head_end];
+        let mut i = 0usize;
+        while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
+        let interp_start = i;
+        while i < line.len() && line[i] != b' ' && line[i] != b'\t' { i += 1; }
+        let interp_end = i;
+        if interp_end == interp_start { return Err(Errno::Enoexec); }
+        let interp: alloc::vec::Vec<u8> = line[interp_start..interp_end].to_vec();
+        while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
+        let mut j = line.len();
+        while j > i && (line[j-1] == b' ' || line[j-1] == b'\t' || line[j-1] == b'\r') { j -= 1; }
+        let opt_arg: Option<alloc::vec::Vec<u8>> =
+            if j > i { Some(line[i..j].to_vec()) } else { None };
+        let cur_path: alloc::vec::Vec<u8> = path_buf[..*path_len].to_vec();
+        // Splice argv per Linux: drop original argv[0] (if any), prepend
+        // [interp, opt-arg?, original_path] in front of argv[1..].
+        let original_tail: alloc::vec::Vec<alloc::vec::Vec<u8>> =
+            if argv_vec.is_empty() {
+                alloc::vec::Vec::new()
+            } else {
+                argv_vec.drain(..).skip(1).collect()
+            };
+        argv_vec.push(interp.clone());
+        if let Some(a) = opt_arg { argv_vec.push(a); }
+        argv_vec.push(cur_path);
+        argv_vec.extend(original_tail);
+        // Update path → interp, refresh blob from ext4.
+        if interp.len() > 64 { return Err(Errno::Enametoolong); }
+        *path_buf = [0u8; 64];
+        path_buf[..interp.len()].copy_from_slice(&interp);
+        *path_len = interp.len();
+        match crate::dev_ext4::read_file(&interp) {
+            Some(v) => *blob_owned = v,
+            None    => return Err(Errno::Enoent),
+        }
+    }
+    // Recursion cap exceeded: Linux returns ELOOP; we lack ELOOP in
+    // our errno table so map to ENOEXEC (closest valid v1 code).
+    Err(Errno::Enoexec)
 }

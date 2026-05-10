@@ -55,7 +55,20 @@ pub(crate) fn cmd_qemu(rest: &[String]) -> Result<(), u8> {
     // matching arm/x86 image. cmd_rootfs takes --arch; cmd_qemu's
     // `rest` already carries it.
     crate::cmd_rootfs(rest)?;
-    cmd_kernel(rest)?;
+    // Interactive boot tool: default to debug-all so the kernel
+    // actually emits klog output to serial. Production / CI builds
+    // pin --features explicitly per `04` R06; only the bare `xtask
+    // qemu --arch X` invocation gets the debug envelope.
+    let mut kernel_rest: Vec<String>;
+    let kernel_args: &[String] = if parse_arg(rest, "--features").is_none() {
+        kernel_rest = rest.to_vec();
+        kernel_rest.push("--features".into());
+        kernel_rest.push("debug-all".into());
+        &kernel_rest[..]
+    } else {
+        rest
+    };
+    cmd_kernel(kernel_args)?;
     let repo = repo_root();
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
     check_vendor(&repo)?;
@@ -329,11 +342,19 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // VIRTIO_BLK_T_GET_ID return a recognizable string (F31).
         "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
-        // virtio-gpu modern PCI for `45` graphical-terminal arc.
+        // virtio-gpu is the kernel's primary display target — our
+        // dev_virtio_gpu_modern paints `oxide kernel ready` to its
+        // scanout at boot. `-vga none` disables QEMU's q35 default
+        // stdvga (bochs-display, vendor 1234:1111) — without this,
+        // GTK shows that empty stdvga framebuffer and our virtio-gpu
+        // scanout (which the host accepts with RESP_OK_NODATA) goes
+        // to a second head GTK never selects.
+        "-vga",    "none",
         "-device", "virtio-gpu-pci,bus=pcie.0",
-        // virtio-input keyboard + mouse for `46`.
+        // virtio keyboard for `46` (input). Mouse removed — kernel
+        // doesn't process pointer events yet and the wheel-input
+        // events were just spamming the serial log.
         "-device", "virtio-keyboard-pci,bus=pcie.0",
-        "-device", "virtio-mouse-pci,bus=pcie.0",
         // Serial: dedicated chardev with `mux=on,signal=off` so Ctrl-A
         // is QEMU's monitor escape and Ctrl-C reaches the guest.
         // Plain `-serial stdio` puts host stdin in line-buffered cooked
@@ -343,14 +364,17 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
-        // GTK window so virtio-gpu's scanout becomes visible. Falls
-        // back to env-controlled "headless" via OXIDE_QEMU_HEADLESS=1.
+        // GTK on by default so virtio-gpu scanout is visible.
+        // OXIDE_QEMU_HEADLESS=1 suppresses for CI / soak runs.
+        // -no-shutdown was REMOVED — that flag plus GTK was the
+        // wedge: kernel halt → QEMU stays alive → unkillable
+        // window. Without it, halt exits cleanly and the GTK
+        // window closes on its own.
         "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
         "-no-reboot",
-        "-no-shutdown",
     ]);
     eprintln!("xtask qemu: launching qemu-system-x86_64 (q35 + Haswell-v4 + stdio chardev), smp={}", smp);
-    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest.");
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit; Ctrl-C reaches guest. OXIDE_QEMU_HEADLESS=1 for headless.");
     run(c)
 }
 
@@ -376,14 +400,18 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         // synthetic PCIe root is the path edk2 reliably discovers.
         "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
-        // virtio-gpu modern PCI for `45` graphical-terminal arc.
+        // virtio-gpu only — same reasoning as x86. Kernel's
+        // dev_virtio_gpu_modern paints to this scanout.
         "-device", "virtio-gpu-pci,bus=pcie.0",
-        // virtio-input keyboard + mouse for `46`.
+        // virtio keyboard for `46`. Mouse removed; same reason.
         "-device", "virtio-keyboard-pci,bus=pcie.0",
-        "-device", "virtio-mouse-pci,bus=pcie.0",
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
+        // GTK on by default for ARM too — `virt` machine wires
+        // virtio-gpu-pci to the synthetic PCIe root, OVMF aarch64
+        // exposes a UEFI GOP and the kernel scanout driver paints
+        // pixels there. Headless toggle for soak/CI runs.
         "-display", if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() { "none" } else { "gtk" },
         "-no-reboot",
         // Semihosting target=native lets the boot crate emit debug
@@ -391,7 +419,7 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-semihosting-config", "enable=on,target=native",
     ]);
     eprintln!("xtask qemu: launching qemu-system-aarch64 (virt + cortex-a72 + stdio chardev), smp={}", smp);
-    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit.");
+    eprintln!("xtask qemu: Ctrl-A C → QEMU monitor; Ctrl-A X → quit. OXIDE_QEMU_HEADLESS=1 for headless.");
     run(c)
 }
 

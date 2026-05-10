@@ -24,7 +24,9 @@ fn file(start: u64, end: u64, off: u64, prot: VmaProt) -> Vma {
 }
 
 fn kbytes(start: u64, end: u64, data: &'static [u8], prot: VmaProt) -> Vma {
-    Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE, VmaBacking::KernelBytes { data })
+    let arc: alloc::sync::Arc<[u8]> = alloc::sync::Arc::from(data.to_vec().into_boxed_slice());
+    Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data: arc, off: 0 })
 }
 
 #[test]
@@ -343,14 +345,19 @@ fn fork_inherits_vma_tree() {
 fn fork_inherits_kernel_bytes_slice() {
     let parent = AddressSpace::new(0).unwrap();
     let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let arc: alloc::sync::Arc<[u8]> =
+        alloc::sync::Arc::from(ELF_BLOB.to_vec().into_boxed_slice());
     parent.mmap(Some(h), PAGE, VmaProt::READ | VmaProt::EXEC,
-        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data: &ELF_BLOB },
+        VmaFlags::PRIVATE, VmaBacking::KernelBytes { data: alloc::sync::Arc::clone(&arc), off: 0 },
         false).unwrap();
     let child = parent.fork(0xdead_b000).unwrap();
     assert_eq!(child.root_pa(), 0xdead_b000);
     let v = child.find_vma(h).expect("inherited");
     match v.backing {
-        VmaBacking::KernelBytes { data } => assert_eq!(data, &ELF_BLOB),
+        VmaBacking::KernelBytes { data, off } => {
+            assert_eq!(&data[..], &ELF_BLOB[..]);
+            assert_eq!(off, 0);
+        }
         _ => panic!("expected KernelBytes inherited from parent"),
     }
 }
@@ -389,21 +396,85 @@ fn kernel_bytes_clone_subrange_advances_slice() {
     // `data.len()` is preserved as an empty slice).
     let parent = kbytes(0x1000, 0x3000, &ELF_BLOB[0..4], VmaProt::READ);
     let sub = parent.clone_subrange(uva(0x1800), uva(0x2000));
-    match sub.backing {
-        VmaBacking::KernelBytes { data } => {
-            // off_delta = 0x800 > data.len()=4 → slice is fully
-            // advanced past the file-backed extent.
-            assert_eq!(data.len(), 0);
+    match &sub.backing {
+        VmaBacking::KernelBytes { data, off } => {
+            // off_delta = 0x800. Same Arc shared, off bumped.
+            assert_eq!(data.len(), 4);
+            assert_eq!(*off, 0x800);
         }
         _ => panic!("expected KernelBytes"),
     }
     let sub2 = parent.clone_subrange(uva(0x1002), uva(0x2000));
-    match sub2.backing {
-        VmaBacking::KernelBytes { data } => {
-            assert_eq!(data, &ELF_BLOB[2..4]);
+    match &sub2.backing {
+        VmaBacking::KernelBytes { data, off } => {
+            // Bytes available at the sub-range = data[off..] (clamped).
+            let available = &data[(*off).min(data.len())..];
+            assert_eq!(available, &ELF_BLOB[2..4]);
         }
         _ => panic!("expected KernelBytes"),
     }
+}
+
+// F156: KernelBytes Arc lifetime — child VMAs must remain valid
+// even if parent AS drops first. Pre-Arc design dangled `&'static [u8]`
+// when parent's `staged_bytes` Vec dropped.
+#[test]
+fn fork_kernel_bytes_outlives_parent() {
+    let parent = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let bytes: alloc::vec::Vec<u8> = (0..16u8).collect();
+    let arc: alloc::sync::Arc<[u8]> =
+        alloc::sync::Arc::from(bytes.into_boxed_slice());
+    parent.mmap(Some(h), PAGE, VmaProt::READ,
+        VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data: alloc::sync::Arc::clone(&arc), off: 0 },
+        false).unwrap();
+    let child = parent.fork(0).unwrap();
+    // Strong count: parent-VMA + child-VMA + outer arc handle = 3
+    assert_eq!(alloc::sync::Arc::strong_count(&arc), 3);
+    drop(parent);
+    // After parent drop, child VMA + outer handle remain.
+    assert_eq!(alloc::sync::Arc::strong_count(&arc), 2);
+    // Child's KernelBytes is still readable (no UAF).
+    let v = child.find_vma(h).expect("child still has VMA");
+    if let VmaBacking::KernelBytes { data, .. } = &v.backing {
+        assert_eq!(&data[..16], &(0..16u8).collect::<alloc::vec::Vec<u8>>()[..]);
+    } else {
+        panic!("expected KernelBytes");
+    }
+}
+
+// F156: topdown mmap places anon mappings in high-address arena.
+#[test]
+fn anon_mmap_uses_high_address_topdown() {
+    use crate::address_space::MMAP_TOP;
+    let a = AddressSpace::new(0).unwrap();
+    let r = a.mmap(None, PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    // First mmap should land at the highest aligned slot below MMAP_TOP.
+    assert_eq!(r.as_u64(), MMAP_TOP - PAGE as u64);
+    let r2 = a.mmap(None, PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    // Second goes immediately below the first.
+    assert_eq!(r2.as_u64(), MMAP_TOP - 2 * PAGE as u64);
+}
+
+// F156: topdown allocator descends past mid-VA fixed mappings (e.g.
+// PT_LOADs at 0x400000) without colliding.
+#[test]
+fn topdown_skips_low_fixed_mappings() {
+    use crate::address_space::MMAP_TOP;
+    let a = AddressSpace::new(0).unwrap();
+    // Simulate ELF .text at 0x400000.
+    let text = UserVirtAddr::new(0x400000).unwrap();
+    a.mmap(Some(text), 0x10000, VmaProt::READ | VmaProt::EXEC,
+        VmaFlags::PRIVATE, VmaBacking::Anonymous, true).unwrap();
+    // Anon mmap with no hint goes to the high arena, NOT just above
+    // .text.
+    let r = a.mmap(None, PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+    assert!(r.as_u64() >= MMAP_TOP - PAGE as u64);
+    assert!(r.as_u64() > 0x500000, "should not land near .text");
 }
 
 #[test]
@@ -414,10 +485,11 @@ fn address_space_new_is_empty() {
 }
 
 #[test]
-fn mmap_no_hint_returns_min_user_va() {
+fn mmap_no_hint_uses_topdown() {
+    use crate::address_space::MMAP_TOP;
     let a = AddressSpace::new(0).unwrap();
     let va = a.mmap(None, PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, false).unwrap();
-    assert_eq!(va.as_u64(), MIN_USER_VA);
+    assert_eq!(va.as_u64(), MMAP_TOP - PAGE as u64);
     assert_eq!(a.vma_count(), 1);
     a.audit().unwrap();
 }

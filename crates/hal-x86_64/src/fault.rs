@@ -19,7 +19,6 @@
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
 
     // ----- per-vector stubs --------------------------------------------------
@@ -304,11 +303,40 @@ fn current_handler() -> FaultHandler {
     unsafe { core::mem::transmute::<*mut (), FaultHandler>(p) }
 }
 
+/// F158: stash for the live FaultFrame pointer while
+/// `oxide_fault_print_rust` is on the stack. Lets the kernel-side
+/// FaultHandler (which doesn't get the frame as an arg) reach over
+/// and rewrite RIP/RSP/etc. to deliver a Linux-style catchable
+/// SIGSEGV via a user-installed signal handler. Cleared on exit
+/// from the rust-side print fn.
+static CUR_FAULT_FRAME: core::sync::atomic::AtomicPtr<FaultFrame>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Snapshot of the live `*mut FaultFrame` while in fault context.
+/// Returns null if no fault is active (i.e., not called from a
+/// FaultHandler invocation). Used by the kernel SIGSEGV path to
+/// rewrite the iretq frame for catchable signal delivery.
+/// # SAFETY: caller is in fault dispatch context with IRQs masked.
+/// # C: O(1)
+pub fn current_fault_frame() -> *mut FaultFrame {
+    CUR_FAULT_FRAME.load(core::sync::atomic::Ordering::Acquire)
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame) -> bool {
     // SAFETY: stub-built frame on the kernel stack, valid for read+write.
     let f = unsafe { &mut *frame_ptr };
+    // F158: publish the live FaultFrame so the kernel SIGSEGV
+    // delivery path can rewrite it for catchable user signals.
+    CUR_FAULT_FRAME.store(frame_ptr, core::sync::atomic::Ordering::Release);
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            CUR_FAULT_FRAME.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+        }
+    }
+    let _guard = ClearOnDrop;
     // Early-handle user-mode software-debug traps (#DB, #BP) via the
     // installed UserTrapHook. The hook consumes the trap (returns true)
     // and may mutate the frame (clear RFLAGS.TF) before iretq resumes
