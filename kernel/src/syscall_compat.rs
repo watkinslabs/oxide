@@ -10,7 +10,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::syscall_nrs::*;
+use syscall::nrs::*;
 
 /// Match `nr` against the broad set of syscalls we compat-stub.
 /// Real implementations override these via earlier match arms in

@@ -183,7 +183,8 @@ const PL011_VA: u64 = KERNEL_DEVICE_BASE | (PL011_PHYS & 0xFFFF_FFFF);
 /// # Ctx: pre-init, IRQ-off (entry), single-CPU
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 pub fn smoke_device_map_arm(_hhdm: u64) {
-    use crate::{arm_timer, gic, pl011};
+    use crate::gic;
+use hal_aarch64::{timer as arm_timer, pl011};
     use hal_aarch64::mmu_ops::ArmMmu;
     // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active,
     // single-CPU, IRQs off; mmu_ops state initialised.
@@ -425,7 +426,7 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                 (b"mapd-net" as &[u8], 0x08u32),
                 (b"mapd-blk" as &[u8], 0x10u32),
             ] {
-                if let Some(itt_pa) = crate::pmm_setup::alloc_one_frame() {
+                if let Some(itt_pa) = pmm_setup::alloc_one_frame() {
                     if hhdm != 0 {
                         // SAFETY: HHDM-mapped freshly-allocated PMM frame; aligned u64 stores.
                         unsafe {
@@ -490,7 +491,7 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
             // and bump MSI_FIRES. If this counter increments, the
             // ITS-side plumbing is correct and any later silent-
             // MSI is the device's fault, not ours.
-            let pre = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            let pre = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
             // SAFETY: ITS enabled, MAPD+MAPC+MAPTI posted above, LPI 8192 enabled in PROPBASER; cmd_post follows the F56-06 protocol.
             let s_int = unsafe {
                 crate::its::cmd_post(hhdm, crate::its::cmd_int(0x10, 0))
@@ -503,7 +504,7 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
                 for _ in 0..2_000_000 { core::hint::spin_loop(); }
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
             }
-            let post = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            let post = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
             debug_irq! {
                 klog::write_raw(b"[INFO]  its-cmd int-self ");  log_cmd_status(s_int);
                 klog::write_raw(b"[INFO]  its-self-fire pre=");
@@ -542,7 +543,7 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
     // timer-poll fallback for stdin wakeup.
     // SAFETY: pl011::enable just ran; gic::enable_intid is idempotent and the GIC was enabled earlier in this fn; single-CPU pre-init.
     unsafe {
-        crate::pl011::enable_rx_irq();
+        hal_aarch64::pl011::enable_rx_irq();
         crate::gic::enable_intid(33);
     }
 
@@ -644,19 +645,19 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         // SAFETY: GICv2m frame map: single-CPU pre-init, MmuOps state initialised, v2m_pa came from MADT type-13 entry, V2M_VA disjoint from KERNEL_DEVICE_BASE and ECAM_BUS0_VA.
         unsafe { <ArmMmu as MmuOps>::map(Va(V2M_VA), Pa(v2m_pa), device_flags(), PageSize::P4K); }
         // F45: publish VA so pci_boot self-fire diagnostic can write SETSPI_NS directly.
-        crate::msi::GICV2M_VA.store(V2M_VA, core::sync::atomic::Ordering::Release);
+        msi::GICV2M_VA.store(V2M_VA, core::sync::atomic::Ordering::Release);
         // SAFETY: V2M_VA is freshly Device-attr mapped above; aligned u32 read of the MSI_TYPER register at offset 0x008.
         let typer = unsafe {
             core::ptr::read_volatile((V2M_VA + 0x008) as *const u32)
         };
         let spi_first = (typer >> 16) & 0x3FF;
         let spi_count = typer & 0x3FF;
-        // F37: publish the SPI range so `crate::msi::alloc_arm_spi`
+        // F37: publish the SPI range so `msi::alloc_arm_spi`
         // can hand out vectors. Side effect runs unconditionally;
         // klog stays gated under R06.
-        crate::msi::GICV2M_SPI_FIRST
+        msi::GICV2M_SPI_FIRST
             .store(spi_first, core::sync::atomic::Ordering::Release);
-        crate::msi::GICV2M_SPI_COUNT
+        msi::GICV2M_SPI_COUNT
             .store(spi_count, core::sync::atomic::Ordering::Release);
         debug_boot! {
             klog::write_raw(b"[INFO]  gicv2m typer=");
@@ -669,7 +670,7 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
             // F37 demo: allocate one SPI + enable it at the GIC
             // distributor. No MSI-X table write yet (F38), so nothing
             // will fire — this just proves the alloc + GIC enable path.
-            if let Some(spi) = crate::msi::alloc_arm_spi() {
+            if let Some(spi) = msi::alloc_arm_spi() {
                 // SAFETY: gic::enable was called earlier in this same fn (smoke_device_map_arm); SPI is freshly allocated and owned by F37; single-CPU pre-init.
                 unsafe { crate::gic::enable_intid(spi); }
                 klog::write_raw(b"[INFO]  msi-spi alloc=");

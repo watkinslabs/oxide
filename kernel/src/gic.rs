@@ -314,11 +314,11 @@ pub unsafe fn lpis_enable(hhdm: u64) -> LpisStatus {
     // LPI configuration table size = (1 << ID_BITS) bytes, one
     // priority+enable byte per LPI. ID_BITS=14 → 16 KiB → Order 2.
     // Pending table architecturally requires ≥ 64 KiB → Order 4.
-    let prop_pa = match crate::pmm_setup::alloc_contig(pmm::Order(2)) {
+    let prop_pa = match pmm_setup::alloc_contig(pmm::Order(2)) {
         Some(p) => p,
         None    => return LpisStatus::AllocFailed,
     };
-    let pend_pa = match crate::pmm_setup::alloc_contig(pmm::Order(4)) {
+    let pend_pa = match pmm_setup::alloc_contig(pmm::Order(4)) {
         Some(p) => p,
         None    => return LpisStatus::AllocFailed,
     };
@@ -446,15 +446,15 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         TICK_COUNT.fetch_add(1, Ordering::Relaxed);
         // F39 + F56-08: count MSI deliveries via either the legacy
         // GICv2m SPI range or the GICv3 LPI range (≥ 8192).
-        if crate::msi::intid_is_v2m(intid) || intid >= LPI_BASE {
-            crate::msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+        if msi::intid_is_v2m(intid) || intid >= LPI_BASE {
+            msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
         // so the level-triggered line drops and re-arms for the next
         // period; otherwise the IRQ would re-fire immediately on
         // eret. Period is published by `arm_timer::timer_periodic`.
         if intid == 27 {
-            let p = crate::arm_timer::PERIOD.load(Ordering::Relaxed) as u64;
+            let p = hal_aarch64::timer::PERIOD.load(Ordering::Relaxed) as u64;
             // SAFETY: CNTV_TVAL_EL0 is an unprivileged sysreg; writing it advances CVAL past the current count, deasserting the line.
             unsafe {
                 core::arch::asm!("msr cntv_tval_el0, {v:x}", v = in(reg) p, options(nomem, nostack, preserves_flags));
@@ -466,7 +466,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // UARTICR so the line drops and re-arms for the next
             // batch of input.
             // SAFETY: dispatcher context, IRQs masked; pl011 was enabled in smoke_device_map_arm; single-CPU.
-            unsafe { crate::pl011::ack_rx_irq(); }
+            unsafe { hal_aarch64::pl011::ack_rx_irq(); }
             UART_IRQ_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: mirrors the IAR read above; same INTID; CPU interface state via system regs.

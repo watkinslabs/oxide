@@ -442,7 +442,7 @@ impl Inode for ProcMeminfoInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = crate::procfs_meminfo::build();
+        let body = procfs_meminfo::build();
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
         let n = (body.len() - off).min(buf.len());
@@ -453,7 +453,7 @@ impl Inode for ProcMeminfoInode {
 }
 
 fn pmm_kb_stats() -> (u64, u64) {
-    match crate::pmm_setup::pmm_static() {
+    match pmm_setup::pmm_static() {
         Some(p) => {
             let free  = p.free_pages() * 4; // 4 KiB pages
             let alloc = p.allocated_pages() * 4;
