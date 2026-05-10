@@ -130,7 +130,6 @@ static GDT: Gdt = Gdt(UnsafeCell::new([0u64; GDT_LEN]));
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_gdt_load_and_reload",
     ".type  oxide_gdt_load_and_reload, @function",
