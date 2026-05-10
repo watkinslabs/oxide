@@ -269,6 +269,12 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 # F59-09: dump every frame on/off net0 to pcap so we can
                 # see whether the guest's TX kicks reach SLIRP at all.
                 "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
+                # `-vga none` disables QEMU's default stdvga
+                # (bochs-display, vendor 1234:1111). Without it,
+                # QMP screendump captures that empty stdvga frame
+                # instead of virtio-gpu's scanout — and the GTK
+                # window in the xtask path renders the wrong head.
+                "-vga", "none",
                 # virtio-gpu modern PCI for `45` graphical-terminal arc.
                 "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
                 # virtio-input keyboard + mouse for `46`.
@@ -302,6 +308,12 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 # F59-09: dump every frame on/off net0 to pcap so we can
                 # see whether the guest's TX kicks reach SLIRP at all.
                 "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
+                # `-vga none` disables QEMU's default stdvga
+                # (bochs-display, vendor 1234:1111). Without it,
+                # QMP screendump captures that empty stdvga frame
+                # instead of virtio-gpu's scanout — and the GTK
+                # window in the xtask path renders the wrong head.
+                "-vga", "none",
                 # virtio-gpu modern PCI for `45` graphical-terminal arc.
                 "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
                 # virtio-input keyboard + mouse for `46`.
