@@ -17,3 +17,20 @@ vmm       = { path = "../mm-vmm" }
 
 [dev-dependencies]
 proptest = "1"
+
+[dependencies.sched]
+path = "../sched"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[dependencies.syscall]
+path = "../syscall"
+
+[features]
+default = []
+debug-vmm = []
+debug-irq = []

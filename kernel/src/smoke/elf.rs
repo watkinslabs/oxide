@@ -444,7 +444,7 @@ const USER_RIP_UD2_ECHO:     u64 = 0x400080 + 0x2B;
 /// demand-page faults; on the deliberate ud2 from sys_exit's
 /// sysretq landing, logs the success line.
 fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
-    if crate::user_as::user_fault_handler(vec, err, rip, cr2) {
+    if pmm::user_as::user_fault_handler(vec, err, rip, cr2) {
         return true;
     }
     if vec == 6 && (rip == USER_RIP_UD2_ITER1_FS
@@ -475,7 +475,7 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
 ///
 /// Installs a fresh runqueue if one isn't already present.
 ///
-/// # SAFETY: caller is the boot path; user_as::init has run; PMM
+/// # SAFETY: caller is the boot path; pmm::user_as::init has run; PMM
 /// + GDT + TSS + IDT + syscall MSRs initialised; single-CPU;
 /// IRQs masked.
 /// # C: O(phdrs) parse + O(log N) enqueue
@@ -494,7 +494,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // SAFETY: handler fn is 'static; pre-init single-CPU swap.
     unsafe { hal_x86_64::install_fault_handler(elf_smoke_fault_handler); }
 
-    let img = match crate::user_as::with(|as_| {
+    let img = match pmm::user_as::with(|as_| {
         let img = load_static_blob(ELF_BLOB, as_)?;
         // Stack VMA — anonymous, demand-paged on first push.
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
@@ -553,7 +553,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         )
     }.unwrap_or(USER_STACK_TOP);
 
-    let mm = match crate::user_as::clone_global_arc() {
+    let mm = match pmm::user_as::clone_global_arc() {
         Some(a) => a,
         None    => { debug_irq! { klog::kerror!("elf-smoke: AS clone failed"); } halt_forever(); }
     };
@@ -840,7 +840,7 @@ unsafe fn spawn_user_blob_with_vpid(
 /// Diverges. Retained for the boot path that hasn't yet
 /// installed a runqueue (or for debugging).
 ///
-/// # SAFETY: caller is the boot path; user_as::init has run; PMM
+/// # SAFETY: caller is the boot path; pmm::user_as::init has run; PMM
 /// + MmuOps + GDT + TSS + IDT + syscall MSRs all initialised;
 /// single-CPU; IRQs masked.
 /// # C: O(phdrs) parse + O(1) drop
@@ -850,7 +850,7 @@ pub unsafe fn run(hhdm_offset: u64) -> ! {
     use hal::UserVirtAddr;
 
     // 1. Load the ELF into the global AS.
-    let img = match crate::user_as::with(|as_| load_static_blob(ELF_BLOB, as_)) {
+    let img = match pmm::user_as::with(|as_| load_static_blob(ELF_BLOB, as_)) {
         Some(Ok(i))  => i,
         Some(Err(e)) => {
             debug_irq! {
@@ -881,7 +881,7 @@ pub unsafe fn run(hhdm_offset: u64) -> ! {
         Some(u) => u,
         None    => { debug_irq! { klog::kerror!("elf-smoke: bad stack VA"); } halt_forever(); }
     };
-    let stack_r = crate::user_as::with(|as_| {
+    let stack_r = pmm::user_as::with(|as_| {
         as_.mmap(
             Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,

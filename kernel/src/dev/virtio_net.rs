@@ -68,7 +68,7 @@ const VRING_DESC_F_NEXT:  u16 = 1;
 const VRING_DESC_F_WRITE: u16 = 2;
 
 const PAGE_SIZE: u64 = 4096;
-const HHDM_FALLBACK: u64 = 0xFFFF_8000_0000_0000; // matches user_as::hhdm_offset() default
+const HHDM_FALLBACK: u64 = 0xFFFF_8000_0000_0000; // matches pmm::user_as::hhdm_offset() default
 
 /// One installed virtio-net device's runtime state.
 pub struct VirtioNetDevice {
@@ -225,7 +225,7 @@ fn alloc_queue_region(size: u16) -> Option<VirtQueueRuntime> {
     if total > PAGE_SIZE { return None; }
 
     let pa = pmm::setup::alloc_one_frame()?;
-    let va = pa + crate::user_as::hhdm_offset();
+    let va = pa + pmm::user_as::hhdm_offset();
     // SAFETY: HHDM-mapped page; zero a single 4KiB region we just allocated.
     unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize); }
     Some(VirtQueueRuntime {
@@ -340,7 +340,7 @@ pub fn init_legacy() {
             return;
         }
     };
-    let tx_buf_va = tx_buf_pa + crate::user_as::hhdm_offset();
+    let tx_buf_va = tx_buf_pa + pmm::user_as::hhdm_offset();
     // SAFETY: HHDM-mapped scratch page; zero a single 4KiB region we just allocated.
     unsafe { core::ptr::write_bytes(tx_buf_va as *mut u8, 0, PAGE_SIZE as usize); }
 
@@ -355,7 +355,7 @@ pub fn init_legacy() {
     for i in 0..target_rx {
         match pmm::setup::alloc_one_frame() {
             Some(pa) => {
-                let va = pa + crate::user_as::hhdm_offset();
+                let va = pa + pmm::user_as::hhdm_offset();
                 // SAFETY: HHDM-mapped page just allocated; zero before publishing.
                 unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize); }
                 rx_bufs[i] = RxBuf { pa, va };

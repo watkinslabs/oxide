@@ -62,7 +62,7 @@ pub fn kernel_sys_clone_dispatch(
     } else {
         #[cfg(target_arch = "x86_64")]
         let new_root = {
-            // SAFETY: capture_kernel_master ran at user_as::init; PMM up.
+            // SAFETY: capture_kernel_master ran at pmm::user_as::init; PMM up.
             match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
                 Some(r) => r,
                 None    => return -(Errno::Enomem.as_i32() as i64),
@@ -70,13 +70,13 @@ pub fn kernel_sys_clone_dispatch(
         };
         #[cfg(target_arch = "aarch64")]
         let new_root = {
-            // SAFETY: master L0 captured at user_as::init; PMM up; new_user_l0 zeroes + populates kernel half.
+            // SAFETY: master L0 captured at pmm::user_as::init; PMM up; new_user_l0 zeroes + populates kernel half.
             match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
                 Some(r) => r,
                 None    => return -(Errno::Enomem.as_i32() as i64),
             }
         };
-        let hhdm = crate::user_as::hhdm_offset();
+        let hhdm = pmm::user_as::hhdm_offset();
         // F157: COW fork (Linux mm/memory.c semantic). Walks parent
         // PT, bumps struct-page refcount via inc_ref, maps same PA
         // RO in child + remaps parent RO. First write on either
@@ -93,7 +93,7 @@ pub fn kernel_sys_clone_dispatch(
             |pa| unsafe { pmm::setup::inc_ref(pa); });
         match res {
             Ok(m) => {
-                crate::user_as::install_teardown(&m);
+                pmm::user_as::install_teardown(&m);
                 m
             }
             Err(_) => return -(Errno::Enomem.as_i32() as i64),

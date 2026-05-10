@@ -67,7 +67,7 @@ pub fn kernel_sys_process_vm_readv(args: &SyscallArgs) -> i64 {
         if chunk == 0 { break; }
         let mut tmp = alloc::vec![0u8; chunk];
         // SAFETY: target_root is the foreign task's AS root_pa snapshot held by Arc; rbase + chunk is the remote iov range; reads only via HHDM-mapped frames.
-        let n = unsafe { crate::user_as::read_foreign_user(target_root, rbase + ro, &mut tmp[..]) };
+        let n = unsafe { pmm::user_as::read_foreign_user(target_root, rbase + ro, &mut tmp[..]) };
         if n == 0 { break; }
         // Copy n bytes into local AS at lbase + lo.
         let dst = lbase + lo;
@@ -126,7 +126,7 @@ pub fn kernel_sys_process_vm_writev(args: &SyscallArgs) -> i64 {
             }
         }
         // SAFETY: target_root is the foreign task's root_pa snapshot held by Arc; rbase+ro+chunk is the remote iov range; writes via HHDM, only on writable leaves per foreign-PT walk.
-        let n = unsafe { crate::user_as::write_foreign_user(target_root, rbase + ro, &tmp[..]) };
+        let n = unsafe { pmm::user_as::write_foreign_user(target_root, rbase + ro, &tmp[..]) };
         if n == 0 { break; }
         total += n;
         lo += n as u64; if lo >= llen { li += 1; lo = 0; }

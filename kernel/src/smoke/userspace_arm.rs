@@ -49,7 +49,7 @@ fn user_brk_handler(esr: u64, far: u64, elr: u64) -> bool {
     // EL0 abort whose FAR is in a registered VMA through the AS
     // page-fault path; if it resolves the fault we retry. Only
     // unhandled aborts fall through to the smoke landmark.
-    if crate::user_as::user_fault_handler(esr, far, elr) {
+    if pmm::user_as::user_fault_handler(esr, far, elr) {
         return true;
     }
     let ec = (esr >> 26) & 0x3F;
