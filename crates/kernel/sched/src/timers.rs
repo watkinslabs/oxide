@@ -66,7 +66,7 @@ fn write_timespec(p: u64, ns: u64) -> Result<(), i64> {
 
 /// `sys_timer_create(clockid, sigevent, timerid_out)` — slot 222.
 /// # C: O(SLOTS)
-pub fn kernel_sys_timer_create(args: &SyscallArgs) -> i64 {
+pub fn sys_timer_create(args: &SyscallArgs) -> i64 {
     let clockid = args.a0 as u32;
     let sigev_p = args.a1;
     let id_out  = args.a2;
@@ -131,7 +131,7 @@ pub fn kernel_sys_timer_create(args: &SyscallArgs) -> i64 {
 
 /// `sys_timer_settime(timerid, flags, new, old)` — slot 223.
 /// # C: O(1)
-pub fn kernel_sys_timer_settime(args: &SyscallArgs) -> i64 {
+pub fn sys_timer_settime(args: &SyscallArgs) -> i64 {
     let id    = args.a0 as i32;
     let flags = args.a1;
     let new_p = args.a2;
@@ -174,7 +174,7 @@ pub fn kernel_sys_timer_settime(args: &SyscallArgs) -> i64 {
 
 /// `sys_timer_gettime(timerid, cur)` — slot 224.
 /// # C: O(1)
-pub fn kernel_sys_timer_gettime(args: &SyscallArgs) -> i64 {
+pub fn sys_timer_gettime(args: &SyscallArgs) -> i64 {
     let id = args.a0 as i32;
     let p  = args.a1;
     if !(0..PosixTimer::SLOTS as i32).contains(&id) {
@@ -197,7 +197,7 @@ pub fn kernel_sys_timer_gettime(args: &SyscallArgs) -> i64 {
 /// `sys_timer_getoverrun(timerid)` — slot 225. Returns and resets the
 /// overrun count for the timer.
 /// # C: O(1)
-pub fn kernel_sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
+pub fn sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
     let id = args.a0 as i32;
     if !(0..PosixTimer::SLOTS as i32).contains(&id) {
         return -(Errno::Einval.as_i32() as i64);
@@ -216,7 +216,7 @@ pub fn kernel_sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
 
 /// `sys_timer_delete(timerid)` — slot 226.
 /// # C: O(1)
-pub fn kernel_sys_timer_delete(args: &SyscallArgs) -> i64 {
+pub fn sys_timer_delete(args: &SyscallArgs) -> i64 {
     let id = args.a0 as i32;
     if !(0..PosixTimer::SLOTS as i32).contains(&id) {
         return -(Errno::Einval.as_i32() as i64);
@@ -237,11 +237,11 @@ pub fn kernel_sys_timer_delete(args: &SyscallArgs) -> i64 {
 pub fn timer_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
     let rv = match nr {
-        NR_TIMER_CREATE     => kernel_sys_timer_create(args),
-        NR_TIMER_SETTIME    => kernel_sys_timer_settime(args),
-        NR_TIMER_GETTIME    => kernel_sys_timer_gettime(args),
-        NR_TIMER_GETOVERRUN => kernel_sys_timer_getoverrun(args),
-        NR_TIMER_DELETE     => kernel_sys_timer_delete(args),
+        NR_TIMER_CREATE     => sys_timer_create(args),
+        NR_TIMER_SETTIME    => sys_timer_settime(args),
+        NR_TIMER_GETTIME    => sys_timer_gettime(args),
+        NR_TIMER_GETOVERRUN => sys_timer_getoverrun(args),
+        NR_TIMER_DELETE     => sys_timer_delete(args),
         _ => return None,
     };
     Some(rv)

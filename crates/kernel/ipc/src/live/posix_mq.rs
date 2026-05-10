@@ -138,7 +138,7 @@ fn read_user_string(uptr: u64, max: usize) -> Option<String> {
 
 /// `sys_mq_open(name, oflag, mode, attr)` — slot NR_MQ_OPEN.
 /// # C: O(N_queues) lookup
-pub fn kernel_sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let name_ptr = args.a0;
     let oflag    = args.a1;
@@ -197,7 +197,7 @@ pub fn kernel_sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
 
 /// `sys_mq_unlink(name)` — slot NR_MQ_UNLINK.
 /// # C: O(N_queues)
-pub fn kernel_sys_mq_unlink(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_mq_unlink(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let name = match read_user_string(args.a0, 256) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
@@ -222,7 +222,7 @@ fn fd_to_mq(fd: i32) -> Option<(Arc<MqQueue>, bool)> {
 /// integration); blocks indefinitely if full unless O_NONBLOCK
 /// was set on the fd at open time.
 /// # C: O(msg_len + N_queue) (insertion sort by priority)
-pub fn kernel_sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let mqdes    = args.a0 as i32;
     let uptr     = args.a1;
@@ -295,7 +295,7 @@ pub fn kernel_sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
 /// `sys_mq_timedreceive(mqdes, msg_ptr, msg_len, msg_prio_p, abs_timeout)`
 /// — slot NR_MQ_TIMEDRECEIVE. Returns bytes received.
 /// # C: O(msg_len)
-pub fn kernel_sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let mqdes    = args.a0 as i32;
     let uptr     = args.a1;
@@ -354,7 +354,7 @@ pub fn kernel_sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
 /// per-queue notifier. Linux semantics: at most one notifier per
 /// queue; sevp == NULL clears.
 /// # C: O(1)
-pub fn kernel_sys_mq_notify(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_mq_notify(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let mqdes = args.a0 as i32;
     let sevp  = args.a1;
@@ -398,7 +398,7 @@ pub fn kernel_sys_mq_notify(args: &syscall::SyscallArgs) -> i64 {
 /// Linux only honours O_NONBLOCK in `flags` on set. Other fields are
 /// read-only (queue creation parameters) and are ignored on set.
 /// # C: O(1)
-pub fn kernel_sys_mq_getsetattr(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_mq_getsetattr(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let mqdes = args.a0 as i32;
     let new_p = args.a1;

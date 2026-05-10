@@ -110,7 +110,7 @@ core::arch::global_asm!(
     "    mov  [rip + OXIDE_SYSCALL_USER_RSP_SAVE], rsp",
     "    mov  rsp, [rip + OXIDE_SYSCALL_KSTACK]",     // switch to kernel scratch stack
     // Save user callee-saved regs first (rbx/rbp/r13/r14/r15) so
-    // kernel_sys_fork can read them out of the saved frame to
+    // sys_fork can read them out of the saved frame to
     // build the child's iretq state. Pushed BEFORE the existing
     // 10 saves so the existing [rsp+0x00..0x48] offsets stay
     // valid; the new 6 sit at [rsp+0x50..0x78] after all 16
@@ -208,8 +208,8 @@ extern "C" {
 /// `oxide_syscall_entry` after its 7 pops, before the call to
 /// dispatch). Layout: indices [0]=rip, [1]=rflags, [2]=rsp.
 ///
-/// Used by `kernel_sys_fork` (read user RIP/RSP/RFLAGS to build
-/// the child's iretq frame) and `kernel_sys_execve` (write to
+/// Used by `sys_fork` (read user RIP/RSP/RFLAGS to build
+/// the child's iretq frame) and `sys_execve` (write to
 /// redirect sysretq into the new program's entry without
 /// returning to the caller). The asm sysretq pops from these
 /// same slots -- modifying them in-place is equivalent to "return
@@ -240,7 +240,7 @@ pub fn current_user_frame() -> *mut [u64; 3] {
 ///   [+0x48] r12 (user RSP, NOT user's r12 — see entry asm)
 ///   [+0x50] rbx   [+0x58] rbp
 ///   [+0x60] r13   [+0x68] r14   [+0x70] r15
-/// Used by `kernel_sys_fork` to capture parent reg state for the
+/// Used by `sys_fork` to capture parent reg state for the
 /// child's iretq frame. Pre-P5-10 only the RIP/RFLAGS/RSP tail
 /// was reliable; now the full 15-quadword block is.
 /// # SAFETY: same as `current_user_frame` — caller is dispatch ctx.

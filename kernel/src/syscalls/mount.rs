@@ -27,7 +27,7 @@ fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
 
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
-pub fn kernel_sys_mount(args: &SyscallArgs) -> i64 {
+pub fn sys_mount(args: &SyscallArgs) -> i64 {
     let _source = args.a0;
     let target_p = args.a1;
     let fstype_p = args.a2;
@@ -75,7 +75,7 @@ pub fn kernel_sys_mount(args: &SyscallArgs) -> i64 {
 /// (8) syntactically; v1 detaches in all cases since we don't track
 /// open-fd refcounts on registry entries (see `26§3.1` follow-up).
 /// # C: O(N) over devfs registry.
-pub fn kernel_sys_umount2(args: &SyscallArgs) -> i64 {
+pub fn sys_umount2(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),

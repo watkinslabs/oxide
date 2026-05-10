@@ -39,7 +39,7 @@ fn errno_from_neterr(e: net::NetError) -> i64 {
 
 /// `socket(domain, type, protocol)` slot 41.
 /// # C: O(1)
-pub fn kernel_sys_socket(args: &SyscallArgs) -> i64 {
+pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let domain = args.a0 as u32;
     let typ    = args.a1 as u32 & 0xFF;  // strip SOCK_NONBLOCK / SOCK_CLOEXEC
     const AF_UNIX_DOM: u32 = 1;
@@ -280,7 +280,7 @@ fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 
 /// `bind(fd, addr, addrlen)` slot 49.
 /// # C: O(1)
-pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
+pub fn sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
     let fd     = args.a0;
     let addr_p = args.a1;
@@ -336,7 +336,7 @@ pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
 
 /// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
 /// # C: O(1)
-pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
+pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let bufp   = args.a1;
     let len    = args.a2 as usize;
@@ -399,7 +399,7 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
 /// `socketpair(domain, type, protocol, sv)` slot 53. v1 supports
 /// AF_UNIX SOCK_STREAM only (the common shell-IPC case).
 /// # C: O(1)
-pub fn kernel_sys_socketpair(args: &SyscallArgs) -> i64 {
+pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u32 = 1;
     let domain = args.a0 as u32;
     let typ    = args.a1 as u32 & 0xFF;
@@ -449,7 +449,7 @@ pub fn kernel_sys_socketpair(args: &SyscallArgs) -> i64 {
 
 /// `listen(fd, backlog)` slot 50.
 /// # C: O(1)
-pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
+pub fn sys_listen(args: &SyscallArgs) -> i64 {
     let fd = args.a0;
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
@@ -474,7 +474,7 @@ pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
 /// Non-blocking: returns Eagain when no connection is ready.
 /// # C: O(1)
-pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
+pub fn sys_accept(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let sock = match socket_from_fd(fd) {
@@ -541,7 +541,7 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
 
 /// `connect(fd, sockaddr, addrlen)` slot 42.
 /// # C: O(1)
-pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
+pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let sock = match socket_from_fd(fd) {
@@ -612,7 +612,7 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
 /// `msg_name` as destaddr (else NULL). SCM_RIGHTS / SCM_CREDS in
 /// msg_control are not yet honored (controllen treated as 0).
 /// # C: O(1)
-pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
+pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
     let _flags = args.a2;
@@ -637,7 +637,7 @@ pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
         if len == 0 { continue; }
         let mut sa = *args;
         sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
-        let r = kernel_sys_sendto(&sa);
+        let r = sys_sendto(&sa);
         if r < 0 { return if total > 0 { total } else { r }; }
         total += r;
     }
@@ -647,7 +647,7 @@ pub fn kernel_sys_sendmsg(args: &SyscallArgs) -> i64 {
 /// `recvmsg(fd, msghdr, flags)` slot 47. Walks iovec, calls
 /// recvfrom into each buffer until one returns Eagain or 0.
 /// # C: O(1)
-pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
+pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
     let _flags = args.a2;
@@ -683,7 +683,7 @@ pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
         if len == 0 { continue; }
         let mut sa = *args;
         sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
-        let r = kernel_sys_recvfrom(&sa);
+        let r = sys_recvfrom(&sa);
         if r < 0 { return if total > 0 { total } else { r }; }
         if r == 0 { break; }
         total += r;
@@ -699,7 +699,7 @@ pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
 /// successfully-sent messages (Linux semantics: error is reported
 /// only if zero messages succeeded).
 /// # C: O(vlen)
-pub fn kernel_sys_sendmmsg(args: &SyscallArgs) -> i64 {
+pub fn sys_sendmmsg(args: &SyscallArgs) -> i64 {
     let fd       = args.a0;
     let mmsg_ptr = args.a1;
     let vlen     = args.a2;
@@ -713,7 +713,7 @@ pub fn kernel_sys_sendmmsg(args: &SyscallArgs) -> i64 {
         if entry >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         let mut sa = *args;
         sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
-        let r = kernel_sys_sendmsg(&sa);
+        let r = sys_sendmsg(&sa);
         if r < 0 {
             return if sent > 0 { sent } else { r };
         }
@@ -730,7 +730,7 @@ pub fn kernel_sys_sendmmsg(args: &SyscallArgs) -> i64 {
 /// Timeout is currently ignored (recvfrom path already polls via
 /// internal yield-loop on blocking sockets).
 /// # C: O(vlen)
-pub fn kernel_sys_recvmmsg(args: &SyscallArgs) -> i64 {
+pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     let fd       = args.a0;
     let mmsg_ptr = args.a1;
     let vlen     = args.a2;
@@ -744,7 +744,7 @@ pub fn kernel_sys_recvmmsg(args: &SyscallArgs) -> i64 {
         if entry >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
         let mut sa = *args;
         sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
-        let r = kernel_sys_recvmsg(&sa);
+        let r = sys_recvmsg(&sa);
         if r < 0 {
             return if got > 0 { got } else { r };
         }
@@ -758,7 +758,7 @@ pub fn kernel_sys_recvmmsg(args: &SyscallArgs) -> i64 {
 
 /// `getsockname(fd, addr, addrlen)` slot 51 — write local addr.
 /// # C: O(1)
-pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
+pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let sock = match socket_from_fd(fd) {
@@ -773,7 +773,7 @@ pub fn kernel_sys_getsockname(args: &SyscallArgs) -> i64 {
 
 /// `getpeername(fd, addr, addrlen)` slot 52.
 /// # C: O(1)
-pub fn kernel_sys_getpeername(args: &SyscallArgs) -> i64 {
+pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let sock = match socket_from_fd(fd) {
@@ -791,7 +791,7 @@ pub fn kernel_sys_getpeername(args: &SyscallArgs) -> i64 {
 /// for AF_UNIX) by calling close_writer. SHUT_RD / SHUT_RDWR are
 /// accepted silently (TCP shutdown ride alongside graceful close).
 /// # C: O(1)
-pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
+pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
     let fd  = args.a0;
     let how = args.a1 as u32;
     let sock = match socket_from_fd(fd) {
@@ -815,7 +815,7 @@ pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
 /// don't change wire behavior (linger, sndbuf, rcvbuf) likewise
 /// accepted to keep userspace tooling unblocked.
 /// # C: O(1)
-pub fn kernel_sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 ///
@@ -827,7 +827,7 @@ pub fn kernel_sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
 ///   SOL_SOCKET / SO_TYPE (3): writes back the SOCK_* shape.
 ///   Everything else: zero-length opt + return 0.
 /// # C: O(1)
-pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
+pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SOL_SOCKET:   u64 = 1;
     const SO_TYPE:      u64 = 3;
     const SO_PEERCRED:  u64 = 17;
@@ -870,7 +870,7 @@ pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
 
 /// `recvfrom(fd, buf, len, flags, src, src_len)` slot 45.
 /// # C: O(1)
-pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
+pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let fd       = args.a0;
     let bufp     = args.a1;
     let len      = args.a2 as usize;

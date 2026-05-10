@@ -15,7 +15,7 @@ use syscall::errno::Errno;
 ///   FALLOC_FL_ZERO_RANGE (16) [+KEEP_SIZE] — write zeros across range.
 ///   Anything else (PUNCH_HOLE / COLLAPSE_RANGE / INSERT_RANGE) — ENOSYS.
 /// # C: O(len) for ZERO_RANGE; O(1) otherwise.
-pub fn kernel_sys_fallocate(args: &SyscallArgs) -> i64 {
+pub fn sys_fallocate(args: &SyscallArgs) -> i64 {
     const FALLOC_FL_KEEP_SIZE:    u32 = 0x01;
     const FALLOC_FL_PUNCH_HOLE:   u32 = 0x02;
     const FALLOC_FL_COLLAPSE_RANGE: u32 = 0x08;

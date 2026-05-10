@@ -1,4 +1,4 @@
-// Unified clone dispatch (kernel_sys_clone_dispatch) extracted from
+// Unified clone dispatch (sys_clone_dispatch) extracted from
 // syscall_glue.rs to keep that file under the 1000-line cap. Drives
 // fork/vfork/clone/clone3 — see body for honored CLONE_* flag bits.
 
@@ -7,7 +7,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-/// `kernel_sys_clone_dispatch` — unified clone path for fork/vfork/
+/// `sys_clone_dispatch` — unified clone path for fork/vfork/
 /// clone/clone3. `flags` carries the Linux CLONE_* bitmap; the lowest
 /// 8 bits are the exit_signal (SIGCHLD = 17 for fork). `child_stack`
 /// is non-zero for thread spawns (libc-allocated user stack); `ptid`
@@ -25,7 +25,7 @@ use syscall::errno::Errno;
 ///   CLONE_CHILD_CLEARTID 0x200000 — store ctid in clear_child_tid
 ///   CLONE_SETTLS         0x80000 — write tls to child's FS_BASE
 /// # C: O(parent VMAs) for COW; O(1) for CLONE_VM
-pub fn kernel_sys_clone_dispatch(
+pub fn sys_clone_dispatch(
     _args: &SyscallArgs,
     flags: u64,
     child_stack: u64,

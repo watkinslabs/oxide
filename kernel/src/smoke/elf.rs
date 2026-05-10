@@ -605,7 +605,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     unsafe { sched::live::schedule(); }
 
     // Boot resumes here when the user task exits via `sys_exit`
-    // (P2-13d): kernel_sys_exit marks the task Zombie + reschedules,
+    // (P2-13d): sys_exit marks the task Zombie + reschedules,
     // picker returns to idle (boot anchor), Context::switch lands
     // back here on boot's saved regs.
     debug_irq! {

@@ -32,18 +32,18 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 pub fn dispatch(nr: u64, args: &SyscallArgs) -> i64 {
     use syscall::nrs::*;
     match nr {
-        NR_PKEY_ALLOC                => kernel_sys_pkey_alloc(args),
-        NR_PKEY_FREE                 => kernel_sys_pkey_free(args),
-        NR_PKEY_MPROTECT             => kernel_sys_pkey_mprotect(args),
-        NR_KCMP                      => kernel_sys_kcmp(args),
-        NR_SET_MEMPOLICY             => kernel_sys_set_mempolicy(args),
-        NR_GET_MEMPOLICY             => kernel_sys_get_mempolicy(args),
-        NR_MBIND                     => kernel_sys_mbind(args),
-        NR_SET_MEMPOLICY_HOME_NODE   => kernel_sys_set_mempolicy_home_node(args),
-        NR_MIGRATE_PAGES             => kernel_sys_migrate_pages(args),
-        NR_MOVE_PAGES                => kernel_sys_move_pages(args),
-        NR_PROCESS_MADVISE           => kernel_sys_process_madvise(args),
-        NR_PROCESS_MRELEASE          => kernel_sys_process_mrelease(args),
+        NR_PKEY_ALLOC                => sys_pkey_alloc(args),
+        NR_PKEY_FREE                 => sys_pkey_free(args),
+        NR_PKEY_MPROTECT             => sys_pkey_mprotect(args),
+        NR_KCMP                      => sys_kcmp(args),
+        NR_SET_MEMPOLICY             => sys_set_mempolicy(args),
+        NR_GET_MEMPOLICY             => sys_get_mempolicy(args),
+        NR_MBIND                     => sys_mbind(args),
+        NR_SET_MEMPOLICY_HOME_NODE   => sys_set_mempolicy_home_node(args),
+        NR_MIGRATE_PAGES             => sys_migrate_pages(args),
+        NR_MOVE_PAGES                => sys_move_pages(args),
+        NR_PROCESS_MADVISE           => sys_process_madvise(args),
+        NR_PROCESS_MRELEASE          => sys_process_mrelease(args),
         _                            => -(Errno::Enosys.as_i32() as i64),
     }
 }
@@ -56,7 +56,7 @@ static PKEY_BITMAP: core::sync::atomic::AtomicU16
     = core::sync::atomic::AtomicU16::new(1);
 
 /// # C: O(1)
-pub fn kernel_sys_pkey_alloc(_args: &SyscallArgs) -> i64 {
+pub fn sys_pkey_alloc(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let mut cur = PKEY_BITMAP.load(Ordering::Acquire);
     loop {
@@ -71,7 +71,7 @@ pub fn kernel_sys_pkey_alloc(_args: &SyscallArgs) -> i64 {
     }
 }
 /// # C: O(1)
-pub fn kernel_sys_pkey_free(args: &SyscallArgs) -> i64 {
+pub fn sys_pkey_free(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let key = args.a0 as i32;
     if !(1..16).contains(&key) { return errno(Errno::Einval); }
@@ -86,20 +86,20 @@ pub fn kernel_sys_pkey_free(args: &SyscallArgs) -> i64 {
     }
 }
 /// # C: O(1) + mprotect cost
-pub fn kernel_sys_pkey_mprotect(args: &SyscallArgs) -> i64 {
+pub fn sys_pkey_mprotect(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let key = args.a3 as i32;
     if key < 0 || key >= 16 { return errno(Errno::Einval); }
     if PKEY_BITMAP.load(Ordering::Acquire) & (1u16 << key) == 0 {
         return errno(Errno::Einval);
     }
-    crate::syscalls::proc::kernel_sys_mprotect(args)
+    crate::syscalls::proc::sys_mprotect(args)
 }
 
 /// fsync / fdatasync / syncfs / sync_file_range — validate fd then
 /// no-op (RAM-backed v1 fs is always sync; phase 7b adds JBD2).
 /// # C: O(1)
-pub fn kernel_sys_fsync(args: &SyscallArgs) -> i64 {
+pub fn sys_fsync(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
     // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
@@ -112,7 +112,7 @@ pub fn kernel_sys_fsync(args: &SyscallArgs) -> i64 {
 /// Returns 0/1/-1 (equal/greater/less); ESRCH for missing pids;
 /// EINVAL for unknown type.
 /// # C: O(1)
-pub fn kernel_sys_kcmp(args: &SyscallArgs) -> i64 {
+pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
     let pid1 = args.a0 as u32;
     let pid2 = args.a1 as u32;
     let ty   = args.a2 as u32;
@@ -175,7 +175,7 @@ fn ptr_cmp(a: Option<usize>, b: Option<usize>) -> i64 {
 
 /// set_mempolicy(mode, nodemask, maxnode).
 /// # C: O(1)
-pub fn kernel_sys_set_mempolicy(args: &SyscallArgs) -> i64 {
+pub fn sys_set_mempolicy(args: &SyscallArgs) -> i64 {
     let mode = args.a0 as u32;
     if mode > MPOL_LOCAL { return errno(Errno::Einval); }
     0
@@ -183,7 +183,7 @@ pub fn kernel_sys_set_mempolicy(args: &SyscallArgs) -> i64 {
 
 /// get_mempolicy(mode_out, nodemask_out, maxnode, addr, flags).
 /// # C: O(1)
-pub fn kernel_sys_get_mempolicy(args: &SyscallArgs) -> i64 {
+pub fn sys_get_mempolicy(args: &SyscallArgs) -> i64 {
     let mode_out = args.a0;
     if mode_out != 0 {
         if mode_out >= hal::USER_VA_END { return errno(Errno::Efault); }
@@ -195,7 +195,7 @@ pub fn kernel_sys_get_mempolicy(args: &SyscallArgs) -> i64 {
 
 /// mbind(addr, len, mode, nodemask, maxnode, flags).
 /// # C: O(1)
-pub fn kernel_sys_mbind(args: &SyscallArgs) -> i64 {
+pub fn sys_mbind(args: &SyscallArgs) -> i64 {
     let mode = args.a2 as u32;
     if mode > MPOL_LOCAL { return errno(Errno::Einval); }
     0
@@ -203,7 +203,7 @@ pub fn kernel_sys_mbind(args: &SyscallArgs) -> i64 {
 
 /// set_mempolicy_home_node(start, len, home_node, flags).
 /// # C: O(1)
-pub fn kernel_sys_set_mempolicy_home_node(args: &SyscallArgs) -> i64 {
+pub fn sys_set_mempolicy_home_node(args: &SyscallArgs) -> i64 {
     let home = args.a2 as i32;
     if home != 0 && home != -1 { return errno(Errno::Einval); }
     0
@@ -211,7 +211,7 @@ pub fn kernel_sys_set_mempolicy_home_node(args: &SyscallArgs) -> i64 {
 
 /// migrate_pages(pid, maxnode, old, new).
 /// # C: O(1)
-pub fn kernel_sys_migrate_pages(args: &SyscallArgs) -> i64 {
+pub fn sys_migrate_pages(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as u32;
     if pid != 0 && sched::live::registry::lookup(pid).is_none() {
         return errno(Errno::Esrch);
@@ -221,7 +221,7 @@ pub fn kernel_sys_migrate_pages(args: &SyscallArgs) -> i64 {
 
 /// move_pages(pid, count, pages, nodes, status, flags).
 /// # C: O(N=count, capped 4096)
-pub fn kernel_sys_move_pages(args: &SyscallArgs) -> i64 {
+pub fn sys_move_pages(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as u32;
     if pid != 0 && sched::live::registry::lookup(pid).is_none() {
         return errno(Errno::Esrch);
@@ -243,7 +243,7 @@ pub fn kernel_sys_move_pages(args: &SyscallArgs) -> i64 {
 
 /// process_madvise(pidfd, iov, iovcnt, advice, flags).
 /// # C: O(N=iovcnt, capped 64)
-pub fn kernel_sys_process_madvise(args: &SyscallArgs) -> i64 {
+pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
     let iov = args.a1;
     let cnt = args.a2 as usize;
     if cnt == 0 { return 0; }
@@ -265,7 +265,7 @@ pub fn kernel_sys_process_madvise(args: &SyscallArgs) -> i64 {
 /// through the `power` crate. RESTART/POWER_OFF/HALT are irreversible
 /// and never return; CAD_ON/CAD_OFF return 0; KEXEC returns EINVAL.
 /// # C: O(1)
-pub fn kernel_sys_reboot(args: &SyscallArgs) -> i64 {
+pub fn sys_reboot(args: &SyscallArgs) -> i64 {
     let magic1 = args.a0 as u32;
     let magic2 = args.a1 as u32;
     let c      = args.a2 as u32;
@@ -286,7 +286,7 @@ pub fn kernel_sys_reboot(args: &SyscallArgs) -> i64 {
 
 /// process_mrelease(pidfd, flags).
 /// # C: O(1)
-pub fn kernel_sys_process_mrelease(args: &SyscallArgs) -> i64 {
+pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
     // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };

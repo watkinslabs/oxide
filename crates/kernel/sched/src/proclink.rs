@@ -1,6 +1,6 @@
 // `/proc/<pid>/{exe,cwd,root,fd/<n>,ns/<type>}` symlink resolver.
 // Split out of `syscall_glue_fs.rs` to keep that file under the
-// 1000-line cap. Used by `kernel_sys_readlink` for proc-link paths.
+// 1000-line cap. Used by `sys_readlink` for proc-link paths.
 
 
 extern crate alloc;
