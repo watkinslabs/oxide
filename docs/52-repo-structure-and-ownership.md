@@ -105,7 +105,10 @@ Constraints:
 ## 9 Migration plan from current tree
 
 1. Stage A: classify each `kernel/src/*.rs` file by owning crate.
-2. Stage B: move real subsystem behavior out of `kernel/src`.
+   Artifact: `52a-stage-a-ownership-classification.md` (per-file map
+   + B-sub-phase ordering).
+2. Stage B: move real subsystem behavior out of `kernel/src` per the
+   B-0..B-8 sub-phases pinned in `52a§11`.
 3. Stage C: rename legacy `syscall_glue_*` and `dev_*` paths to domain
    module trees.
 4. Stage D: add CI checks that block new boundary violations.
