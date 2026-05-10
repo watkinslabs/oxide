@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod net; pub mod compat; pub mod cred; pub mod falloc; pub mod prctl; pub mod proclink; pub mod rseq; pub mod timers; pub mod trace; pub mod xfer; pub mod mount; pub mod namei;  pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;  
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod net; pub mod mount; pub mod namei;  pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;  
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -549,7 +549,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
 
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
-    debug_syscall! { crate::syscalls::trace::entry(nr, a0, a1, a2); }
+    debug_syscall! { sched::syscalls::trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
     // F108: PTRACE_SYSCALL — if a tracer armed us, self-stop at entry.
@@ -749,12 +749,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_RENAMEAT2 => crate::syscalls::namei::kernel_sys_renameat2(&args),
         syscall::nrs::NR_TRUNCATE  => crate::syscalls::fs::kernel_sys_truncate(&args),
         syscall::nrs::NR_FTRUNCATE => crate::syscalls::fs::kernel_sys_ftruncate(&args),
-        syscall::nrs::NR_FALLOCATE => crate::syscalls::falloc::kernel_sys_fallocate(&args),
-        syscall::nrs::NR_SENDFILE  => crate::syscalls::xfer::kernel_sys_sendfile(&args),
-        syscall::nrs::NR_COPY_FILE_RANGE => crate::syscalls::xfer::kernel_sys_copy_file_range(&args),
-        syscall::nrs::NR_SPLICE     => crate::syscalls::xfer::kernel_sys_splice(&args),
-        syscall::nrs::NR_TEE        => crate::syscalls::xfer::kernel_sys_tee(&args),
-        syscall::nrs::NR_VMSPLICE   => crate::syscalls::xfer::kernel_sys_vmsplice(&args),
+        syscall::nrs::NR_FALLOCATE => sched::syscalls::falloc::kernel_sys_fallocate(&args),
+        syscall::nrs::NR_SENDFILE  => sched::syscalls::xfer::kernel_sys_sendfile(&args),
+        syscall::nrs::NR_COPY_FILE_RANGE => sched::syscalls::xfer::kernel_sys_copy_file_range(&args),
+        syscall::nrs::NR_SPLICE     => sched::syscalls::xfer::kernel_sys_splice(&args),
+        syscall::nrs::NR_TEE        => sched::syscalls::xfer::kernel_sys_tee(&args),
+        syscall::nrs::NR_VMSPLICE   => sched::syscalls::xfer::kernel_sys_vmsplice(&args),
         syscall::nrs::NR_OPENAT        => crate::syscalls::open::kernel_sys_openat(&args),
         // openat2: read flags+mode from open_how, route through openat.
         syscall::nrs::NR_OPENAT2       => {
@@ -803,7 +803,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SENDMMSG => crate::syscalls::net::kernel_sys_sendmmsg(&args),
         syscall::nrs::NR_RECVMMSG => crate::syscalls::net::kernel_sys_recvmmsg(&args),
         syscall::nrs::NR_FLOCK         => ::fs::flock::kernel_sys_flock(&args),
-        syscall::nrs::NR_PERSONALITY   => crate::syscalls::prctl::kernel_sys_personality(&args),
+        syscall::nrs::NR_PERSONALITY   => sched::syscalls::prctl::kernel_sys_personality(&args),
         syscall::nrs::NR_CHROOT  => crate::syscalls::chroot::kernel_sys_chroot(&args),
         syscall::nrs::NR_MOUNT   => crate::syscalls::mount::kernel_sys_mount(&args),
         syscall::nrs::NR_UMOUNT2 => crate::syscalls::mount::kernel_sys_umount2(&args),
@@ -835,7 +835,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => crate::syscalls::proc::kernel_sys_sched_getaffinity(&args),
         syscall::nrs::NR_SCHED_SETAFFINITY
                                  => crate::syscalls::proc::kernel_sys_sched_setaffinity(&args),
-        syscall::nrs::NR_PRCTL         => crate::syscalls::prctl::kernel_sys_prctl(&args),
+        syscall::nrs::NR_PRCTL         => sched::syscalls::prctl::kernel_sys_prctl(&args),
         syscall::nrs::NR_FUTEX         => crate::syscalls::proc::kernel_sys_futex(&args),
         syscall::nrs::NR_CLONE3        => crate::syscalls::proc::kernel_sys_clone3(&args),
         syscall::nrs::NR_MPROTECT      => crate::syscalls::proc::kernel_sys_mprotect(&args),
@@ -881,7 +881,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_NEWFSTATAT    => crate::syscalls::fs::kernel_sys_statx(&args),
         syscall::nrs::NR_STAT
             | syscall::nrs::NR_LSTAT   => crate::syscalls::fs::kernel_sys_stat(&args),
-        // Cred family: dispatched via super::cred::cred_dispatch.
+        // Cred family: dispatched via sched::syscalls::cred::cred_dispatch.
         // Handled in the fallthrough below to keep this match arm small.
         syscall::nrs::NR_SET_ROBUST_LIST => crate::syscalls::proc::kernel_sys_set_robust_list(&args),
         syscall::nrs::NR_GET_ROBUST_LIST => crate::syscalls::proc::kernel_sys_get_robust_list(&args),
@@ -890,16 +890,16 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_RT_SIGRETURN  => unsafe { ::fs::sig_dispatch::rt_sigreturn() },
         // Compat-stub fall-through table per P3-46.
         _ => {
-            if let Some(rv) = crate::syscalls::cred::cred_dispatch(nr, &args) {
+            if let Some(rv) = sched::syscalls::cred::cred_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = crate::syscalls::timers::timer_dispatch(nr, &args) {
+            } else if let Some(rv) = sched::syscalls::timers::timer_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::syscalls::perms::perms_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = ::fs::xattr::xattr_dispatch(nr, &args) { rv }
             else if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = crate::syscalls::compat::try_compat(nr, &args) {
+            } else if let Some(rv) = sched::syscalls::compat::try_compat(nr, &args) {
                 rv
             } else {
                 dispatch(nr as u32, &args)
@@ -914,7 +914,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_raw(b"\n");
     }
     // POSIX timers + rseq cpu_id writeback at syscall-return tail.
-    crate::syscalls::timers::fire_due_timers();
+    sched::syscalls::timers::fire_due_timers();
     crate::syscalls::proc::rseq_writeback();
     // F108: PTRACE_SYSCALL exit-stop, symmetric with the entry-stop above.
     ptrace_syscall_stop_if_armed();

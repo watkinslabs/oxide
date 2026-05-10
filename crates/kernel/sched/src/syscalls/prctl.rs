@@ -1,4 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
 // `sys_prctl` (slot 157) real impl. Split out of
 // `syscall_glue_proc.rs` to keep that file under the 1000-line cap.
 
@@ -34,7 +33,7 @@ const PR_GET_CHILD_SUBREAPER: u64 = 37;
 /// # C: O(1)
 pub fn kernel_sys_personality(args: &SyscallArgs) -> i64 {
     let new = args.a0 as u32;
-    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let prev = cur.personality.load(Ordering::Acquire);
     if new != u32::MAX { cur.personality.store(new, Ordering::Release); }
     prev as i64
@@ -48,7 +47,7 @@ pub fn kernel_sys_personality(args: &SyscallArgs) -> i64 {
 /// the cap_bounding mask added in F66.
 /// # C: O(1)
 pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
-    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     match args.a0 {
         PR_SET_NAME | PR_SET_DUMPABLE | PR_SET_TSC | PR_SET_THP_DISABLE => 0,
         PR_GET_DUMPABLE => 1,
@@ -117,7 +116,7 @@ pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
         PR_CAPBSET_DROP => {
             let cap = args.a1;
             if cap >= 64 { return -(Errno::Einval.as_i32() as i64); }
-            if !cur.has_cap(sched::cap::SETPCAP) { return -(Errno::Eperm.as_i32() as i64); }
+            if !cur.has_cap(crate::cap::SETPCAP) { return -(Errno::Eperm.as_i32() as i64); }
             let mask = !(1u64 << cap);
             cur.creds.cap_bounding.fetch_and(mask, Ordering::AcqRel);
             0
