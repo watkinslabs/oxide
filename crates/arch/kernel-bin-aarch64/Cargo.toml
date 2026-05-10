@@ -1,0 +1,13 @@
+[package]
+name = "kernel-bin-aarch64"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "oxide-aarch64"
+path = "src/main.rs"
+
+[dependencies]
+boot-aarch64 = { path = "../../arch/boot-aarch64" }

@@ -1,0 +1,31 @@
+[package]
+name = "sched"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+hal  = { path = "../../arch/hal" }
+klog = { path = "../../shared/klog" }
+sync = { path = "../../shared/sync" }
+vfs  = { path = "../../kernel/vfs" }
+vmm  = { path = "../../kernel/vmm" }
+
+# kthread coroutine smoke needs the per-arch Context concrete type
+# (52a B-0 staging — once the schedule() wiring also moves into
+# this crate, the rest of kernel/src/sched/ folds in alongside).
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+hosted  = []
+# Per `04§3` R06 — gates the kthread coroutine boot smoke. Kernel
+# forwards via `--features debug-sched`.
+debug-sched = []

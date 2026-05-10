@@ -1,0 +1,18 @@
+[package]
+name = "xattr"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# Per-inode extended-attribute overlay (setxattr/getxattr/listxattr/
+# removexattr) per `52§3` domain layer. In-memory BTreeMap keyed by
+# Arc inode pointer identity.
+
+[dependencies]
+devfs   = { path = "../../kernel/devfs" }
+hal     = { path = "../../arch/hal" }
+sched   = { path = "../../kernel/sched" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../../kernel/syscall" }
+vfs     = { path = "../../kernel/vfs" }
