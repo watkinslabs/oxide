@@ -1,0 +1,13 @@
+[package]
+name = "cpu"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# CPU-topology table per `52§3` domain layer. Pure constants +
+# AtomicU32 storage; no arch deps, no runtime singletons. The
+# firmware crate's `add_cpu_hook` wires entries; sched + smp
+# read them.
+
+[dependencies]
