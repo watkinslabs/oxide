@@ -10,3 +10,9 @@ path = "src/lib.rs"
 [dependencies]
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
+sched = { path = "../sched" }
+sync  = { path = "../../shared/sync" }
+vfs   = { path = "../vfs" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }

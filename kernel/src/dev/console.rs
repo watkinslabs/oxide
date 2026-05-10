@@ -58,12 +58,12 @@ impl Inode for ConsoleInode {
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
         loop {
-            if let Some(b) = crate::tty::try_read_vt(self.vt) {
+            if let Some(b) = tty::live::try_read_vt(self.vt) {
                 buf[0] = b;
                 return Ok(1);
             }
             // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
-            unsafe { crate::tty::park_current_for_tty_vt(self.vt); }
+            unsafe { tty::live::park_current_for_tty_vt(self.vt); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` (or future kbd→VT route) will.
             unsafe { sched::live::schedule(); }
         }
@@ -82,7 +82,7 @@ impl Inode for ConsoleInode {
     /// the termios image but not honoured yet — they need column
     /// tracking which v1 doesn't keep.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
-        let oflag = crate::tty::output_oflag(self.vt);
+        let oflag = tty::live::output_oflag(self.vt);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
         let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
         if !onlcr {
