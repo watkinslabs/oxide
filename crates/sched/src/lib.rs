@@ -15,6 +15,8 @@ extern crate std;
 pub mod cfs;
 pub mod clock;
 pub mod cmdline;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
+pub mod kthread;
 pub mod preempt;
 pub mod registry;
 pub mod rlimit;
