@@ -3,15 +3,13 @@
 // dispatch inside procfs::lookup_dynamic remains there; only the
 // per-file Inode impls live here.
 
-#![cfg(target_os = "oxide-kernel")]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
-pub(crate) struct ProcNetDevInode;
+pub struct ProcNetDevInode;
 impl vfs::Inode for ProcNetDevInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0001 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -49,7 +47,7 @@ impl ProcNetDevInode {
 }
 
 /// `/proc/net/tcp` — Linux fixed-width per-connection table.
-pub(crate) struct ProcNetTcpInode;
+pub struct ProcNetTcpInode;
 impl vfs::Inode for ProcNetTcpInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0002 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -77,7 +75,7 @@ impl ProcNetTcpInode {
 }
 
 /// `/proc/net/udp` — UDP equivalent.
-pub(crate) struct ProcNetUdpInode;
+pub struct ProcNetUdpInode;
 impl vfs::Inode for ProcNetUdpInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0003 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -104,7 +102,7 @@ impl ProcNetUdpInode {
 /// `/proc/modules` — Linux text format: "<name> <size> <refcnt> <holders> <state> <addr>\n".
 /// v1 uses synthetic name "module_<idx>" since .modinfo parsing
 /// hasn't landed.
-pub(crate) struct ProcModulesInode;
+pub struct ProcModulesInode;
 impl vfs::Inode for ProcModulesInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0004 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -135,7 +133,7 @@ impl ProcModulesInode {
 
 /// `/proc/net/route` — IPv4 routing table. Linux text format:
 ///   Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
-pub(crate) struct ProcNetRouteInode;
+pub struct ProcNetRouteInode;
 impl vfs::Inode for ProcNetRouteInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0005 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -177,7 +175,7 @@ impl ProcNetRouteInode {
 }
 
 /// `/proc/net/arp` — ARP cache table.
-pub(crate) struct ProcNetArpInode;
+pub struct ProcNetArpInode;
 impl vfs::Inode for ProcNetArpInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0006 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -205,7 +203,7 @@ impl ProcNetArpInode {
 
 /// `/proc/net/unix` — AF_UNIX socket table. netstat/ss/lsof
 /// probe this. v1 returns header + zero rows.
-pub(crate) struct ProcNetUnixInode;
+pub struct ProcNetUnixInode;
 impl vfs::Inode for ProcNetUnixInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0007 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -233,7 +231,7 @@ impl ProcNetUnixInode {
 /// glibc + ifconfig probe this for V6 status. Format:
 ///   addr-hex(32) iface-idx(02) prefix(02) scope(02) flags(02) name
 /// Loopback ::1 only for v1.
-pub(crate) struct ProcNetIfInet6Inode;
+pub struct ProcNetIfInet6Inode;
 impl vfs::Inode for ProcNetIfInet6Inode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0008 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
@@ -260,7 +258,7 @@ impl ProcNetIfInet6Inode {
 
 /// `/proc/net/snmp` — protocol-level counters. netstat -s probes
 /// this. v1 returns just the header rows; counters all zero.
-pub(crate) struct ProcNetSnmpInode;
+pub struct ProcNetSnmpInode;
 impl vfs::Inode for ProcNetSnmpInode {
     fn ino(&self) -> vfs::Ino { 0xFEED_0009 }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }

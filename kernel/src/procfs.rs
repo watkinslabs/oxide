@@ -916,15 +916,15 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
         }
         ProcPath::NotProc => {
             match path {
-                "/proc/net/dev"  => Some(Arc::new(crate::procfs_net::ProcNetDevInode)  as InodeRef),
-                "/proc/net/tcp"  => Some(Arc::new(crate::procfs_net::ProcNetTcpInode)  as InodeRef),
-                "/proc/net/udp"  => Some(Arc::new(crate::procfs_net::ProcNetUdpInode)  as InodeRef),
-                "/proc/modules"  => Some(Arc::new(crate::procfs_net::ProcModulesInode) as InodeRef),
-                "/proc/net/route" => Some(Arc::new(crate::procfs_net::ProcNetRouteInode) as InodeRef),
-                "/proc/net/arp"   => Some(Arc::new(crate::procfs_net::ProcNetArpInode)   as InodeRef),
-                "/proc/net/unix"  => Some(Arc::new(crate::procfs_net::ProcNetUnixInode)  as InodeRef),
-                "/proc/net/if_inet6" => Some(Arc::new(crate::procfs_net::ProcNetIfInet6Inode) as InodeRef),
-                "/proc/net/snmp"  => Some(Arc::new(crate::procfs_net::ProcNetSnmpInode)  as InodeRef),
+                "/proc/net/dev"  => Some(Arc::new(procfs::net::ProcNetDevInode)  as InodeRef),
+                "/proc/net/tcp"  => Some(Arc::new(procfs::net::ProcNetTcpInode)  as InodeRef),
+                "/proc/net/udp"  => Some(Arc::new(procfs::net::ProcNetUdpInode)  as InodeRef),
+                "/proc/modules"  => Some(Arc::new(procfs::net::ProcModulesInode) as InodeRef),
+                "/proc/net/route" => Some(Arc::new(procfs::net::ProcNetRouteInode) as InodeRef),
+                "/proc/net/arp"   => Some(Arc::new(procfs::net::ProcNetArpInode)   as InodeRef),
+                "/proc/net/unix"  => Some(Arc::new(procfs::net::ProcNetUnixInode)  as InodeRef),
+                "/proc/net/if_inet6" => Some(Arc::new(procfs::net::ProcNetIfInet6Inode) as InodeRef),
+                "/proc/net/snmp"  => Some(Arc::new(procfs::net::ProcNetSnmpInode)  as InodeRef),
                 _ => None,
             }
         }
