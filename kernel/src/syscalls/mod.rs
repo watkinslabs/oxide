@@ -13,14 +13,14 @@ use hal::TimerOps;
 
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
-    match crate::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
+    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
         Ok(va)  => va as i64,
         Err(rv) => rv,
     }
 }
 
 fn kernel_munmap(args: &SyscallArgs) -> i64 {
-    crate::user_as::glue_munmap(args.a0, args.a1)
+    pmm::user_as::glue_munmap(args.a0, args.a1)
 }
 
 /// sys_read via fd_table.

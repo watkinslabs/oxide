@@ -1,29 +1,4 @@
-// Global user `AddressSpace` integration per `11§3`/`11§5`.
-//
-// v1 single-task: one process-wide `AddressSpace` referenced by every
-// fault and every `mmap`/`munmap` syscall. Per-task lifecycle (Task
-// carries `Arc<AddressSpace>`; switch swaps CR3/TTBR0) lands with
-// P2-13 alongside the runqueue wire-up.
-//
-// This module owns:
-//   - `GLOBAL_AS_PTR`: a raw pointer to the leak'd global AS Arc;
-//     reads are wait-free for fault context.
-//   - `HHDM_OFFSET`: cached for AS demand-paging zero-fill (page is
-//     written via `hhdm + pa` kernel mirror before the user PTE is
-//     installed).
-//   - `init`: boot-path constructor, called from `kernel_main` after
-//     PMM is up.
-//   - `user_fault_handler`: registered via `install_fault_handler`
-//     before `crate::smoke::userspace::run`. Routes `#PF`/data-aborts in the
-//     user range through `AddressSpace::handle_page_fault`. Other
-//     faults (and known smoke landmarks) fall through to halt with
-//     a log line.
-//
-// Spec references: `11§3` (public API), `11§5` (page-fault algorithm),
-// `11§4` (VMA + flags). The Linux compat surface for protection bits
 // + flags is in `15§6.2` (mmap).
-
-#![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
@@ -31,6 +6,16 @@ use alloc::sync::Arc;
 
 use vmm::{AddressSpace, FaultAccess, FaultKind, VmaBacking, VmaFlags, VmaProt};
 use hal::{UserVirtAddr, USER_VA_END};
+
+/// Hook installed at boot from `fs::coredump::write_for_current`.
+/// Avoids vmm→fs cycle.
+pub type CoredumpFn = fn(i32);
+static COREDUMP_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+/// # C: O(1) — atomic store.
+pub fn set_coredump_hook(f: CoredumpFn) {
+    COREDUMP_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
 
 /// Leaked Arc<AddressSpace>; written once by `init`, read by any
 /// number of fault handlers. Null until `init` succeeds.
@@ -80,7 +65,9 @@ pub unsafe fn init(hhdm_offset: u64) {
         match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
             Some(pa) => pa,
             None => {
-                debug_vmm! { klog::kerror!("user-as: new_user_pml4 failed"); }
+                #[cfg(feature = "debug-vmm")]
+
+                { klog::kerror!("user-as: new_user_pml4 failed"); }
                 return;
             }
         }
@@ -93,7 +80,9 @@ pub unsafe fn init(hhdm_offset: u64) {
         match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
             Some(pa) => pa,
             None => {
-                debug_vmm! { klog::kerror!("user-as: new_user_l0 failed"); }
+                #[cfg(feature = "debug-vmm")]
+
+                { klog::kerror!("user-as: new_user_l0 failed"); }
                 return;
             }
         }
@@ -103,13 +92,13 @@ pub unsafe fn init(hhdm_offset: u64) {
     let arc = match AddressSpace::new(root_pa) {
         Ok(a) => a,
         Err(_) => {
-            debug_vmm! { klog::kerror!("user-as: AddressSpace::new failed"); }
+            #[cfg(feature = "debug-vmm")]
+
+            { klog::kerror!("user-as: AddressSpace::new failed"); }
             return;
         }
     };
 
-    // Step 4: activate the AS as the live address space. After this
-    // point, every MmuOps walk for a user-half VA targets this AS's
     // private root; kernel-half mappings ride the master via shared
     // L3 sub-trees (x86) or TTBR1_EL1 (arm).
     use hal::MmuOps;
@@ -123,7 +112,8 @@ pub unsafe fn init(hhdm_offset: u64) {
     let raw = Arc::into_raw(arc) as *mut AddressSpace;
     GLOBAL_AS_PTR.store(raw, Ordering::Release);
 
-    debug_vmm! {
+    #[cfg(feature = "debug-vmm")]
+    {
         klog::write_raw(b"[INFO]  user-as: root_pa=");
         klog::write_hex_u64(root_pa);
         klog::write_raw(b" activated\n");
@@ -365,13 +355,13 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // Tables (intermediate PT levels) are always per-AS — direct free.
     let mut free_leaf = |pa: u64| {
         // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
-        // quiesced per fn contract; pmm::setup::dec_and_maybe_free drops
+        // quiesced per fn contract; crate::setup::dec_and_maybe_free drops
         // refcount and frees on zero.
-        unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+        unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
     };
     let mut free_table = |pa: u64| {
         // SAFETY: PT tables are always private to this AS; free directly.
-        unsafe { pmm::setup::free_one_frame(pa); }
+        unsafe { crate::setup::free_one_frame(pa); }
     };
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
@@ -381,7 +371,7 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     }
     // Free the root frame itself.
     // SAFETY: root_pa is the AS-private root; no longer reachable.
-    unsafe { pmm::setup::free_one_frame(root_pa); }
+    unsafe { crate::setup::free_one_frame(root_pa); }
 }
 
 /// aarch64 mirror of `as_teardown`.
@@ -391,11 +381,11 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     let mut free_leaf = |pa: u64| {
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
-        unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
+        unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
     };
     let mut free_table = |pa: u64| {
         // SAFETY: PT tables are always per-AS; direct free.
-        unsafe { pmm::setup::free_one_frame(pa); }
+        unsafe { crate::setup::free_one_frame(pa); }
     };
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
@@ -404,7 +394,7 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
         );
     }
     // SAFETY: root_pa is the AS-private root; no longer reachable.
-    unsafe { pmm::setup::free_one_frame(root_pa); }
+    unsafe { crate::setup::free_one_frame(root_pa); }
 }
 
 /// Convenience wrapper: install `as_teardown` on a freshly-built AS.
@@ -625,7 +615,8 @@ pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
 #[cfg(target_arch = "x86_64")]
 fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     use core::sync::atomic::Ordering;
-    debug_irq! {
+    #[cfg(feature = "debug-irq")]
+    {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
         klog::write_raw(b" vec=");      klog::write_hex_u64(vec);
@@ -635,7 +626,13 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
         klog::write_raw(b"\n");
     }
     // Coredump before parking the zombie. Best-effort.
-    fs::coredump::write_for_current(11);
+    // Hook installed at boot from `fs::coredump::write_for_current`.
+    let p = COREDUMP_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if !p.is_null() {
+        // SAFETY: hook ptr installed at boot from a fn matching CoredumpFn ABI; load Acquire-paired with Release store in set_coredump_hook.
+        let f: CoredumpFn = unsafe { core::mem::transmute(p) };
+        f(11);
+    }
     if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
@@ -665,7 +662,8 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
 #[cfg(target_arch = "aarch64")]
 fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
     use core::sync::atomic::Ordering;
-    debug_irq! {
+    #[cfg(feature = "debug-irq")]
+    {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
         klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
@@ -717,21 +715,21 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
         #[cfg(target_arch = "x86_64")]
         let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _>(
             uva, fault, hhdm,
-            || pmm::setup::alloc_one_frame(),
-            |pa| pmm::setup::frame_refcount(pa),
+            || crate::setup::alloc_one_frame(),
+            |pa| crate::setup::frame_refcount(pa),
             // SAFETY: dec_ref of a previously-mapped shared frame after COW split; rmap_aware_dec_and_maybe_free clears page->mapping before the frame returns to PMM.
-            |pa| pmm::setup::rmap_aware_dec_and_maybe_free(pa),
+            |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| pmm::setup::set_anon_rmap_for_pa(pa, av, idx));
+            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx));
         #[cfg(target_arch = "aarch64")]
         let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _>(
             uva, fault, hhdm,
-            || pmm::setup::alloc_one_frame(),
-            |pa| pmm::setup::frame_refcount(pa),
+            || crate::setup::alloc_one_frame(),
+            |pa| crate::setup::frame_refcount(pa),
             // SAFETY: dec_ref + rmap clear; same shape as x86.
-            |pa| pmm::setup::rmap_aware_dec_and_maybe_free(pa),
+            |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| pmm::setup::set_anon_rmap_for_pa(pa, av, idx));
+            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx));
         r
     }
 }
@@ -873,12 +871,12 @@ pub fn glue_mmap(
     // an AS with the loader. The fix: call glue_munmap on the overlap
     // range FIRST so PTEs + frames + TLB are all properly torn down,
     // then proceed with a non-fixed VMA insertion (the range is now
-    // hole, so the hint-first path in vmm::mmap lands on the requested
+    // hole, so the hint-first path in crate::mmap lands on the requested
     // addr without conflicting with stale state).
     if want_fixed && !want_no_replace {
         let _ = glue_munmap(addr, len_aligned as u64);
     }
-    // We pass fixed=false to vmm::mmap regardless: after the munmap
+    // We pass fixed=false to crate::mmap regardless: after the munmap
     // above, the hint range is clear and the non-fixed path's
     // hint-first placement will pick it.
     let is_fixed = false;
@@ -977,7 +975,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             }
             // Free the PA back to PMM.
             // SAFETY: pa was reachable via the live PT entry just unmapped above; we're now the sole owner since the unmap completed and the TLB flush below makes the old translation unobservable.
-            unsafe { pmm::setup::free_one_frame(pa.0); }
+            unsafe { crate::setup::free_one_frame(pa.0); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
