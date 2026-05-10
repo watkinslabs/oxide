@@ -13,7 +13,7 @@ klog    = { path = "../../shared/klog" }
 sync    = { path = "../../shared/sync" }
 sched   = { path = "../../kernel/sched" }
 syscall = { path = "../../kernel/syscall" }
-vmm     = { path = "../../kernel/vmm" }
+vmm     = { path = "../../kernel/mm-vmm" }
 
 [features]
 default = []

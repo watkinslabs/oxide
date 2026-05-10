@@ -10,7 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
-pmm  = { path = "../../kernel/pmm" }
+pmm  = { path = "../../kernel/mm-pmm" }
 sync = { path = "../../shared/sync" }
 
 [dev-dependencies]

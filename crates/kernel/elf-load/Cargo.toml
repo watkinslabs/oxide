@@ -9,4 +9,4 @@ license = "MPL-2.0"
 ext4 = { path = "../ext4" }
 elf      = { path = "../../shared/elf" }
 hal      = { path = "../../arch/hal" }
-vmm      = { path = "../vmm" }
+vmm      = { path = "../mm-vmm" }
