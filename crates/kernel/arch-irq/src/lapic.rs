@@ -104,7 +104,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // pre-empt-on-IRQ-exit picker runs. Boot CPU only -- APs
             // don't own the UART.
             // SAFETY: timer ISR ctx with IRQs masked.
-            unsafe { crate::tty::tick_poll_uart(); }
+            unsafe { crate::tick_poll(); }
             // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
@@ -123,7 +123,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // the diagnostic counter so msi-fires-post-enum picks it up.
             // No scheduler interaction — completion-callback dispatch
             // arrives with F58.
-            msi::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+            crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         _ => { /* unknown vector -- EOI'd, fall through */ }
     }

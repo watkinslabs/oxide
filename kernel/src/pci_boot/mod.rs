@@ -289,14 +289,14 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                         let bind: Option<(u32, u64, u32)> = {
                             #[cfg(target_arch = "aarch64")]
                             {
-                                let its_translater = crate::its::translater_pa();
+                                let its_translater = arch_irq::its::translater_pa();
                                 let is_blk_bdf = bdf.bus == 0 && bdf.device == 2 && bdf.function == 0;
                                 let use_its = its_translater != 0 && is_blk_bdf;
                                 if use_its {
                                     Some((0u32, its_translater, 0u32))
-                                } else if let Some(spi) = msi::alloc_arm_spi() {
+                                } else if let Some(spi) = arch_irq::alloc_arm_spi() {
                                     // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
-                                    unsafe { crate::gic::enable_intid(spi); }
+                                    unsafe { arch_irq::gic::enable_intid(spi); }
                                     let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
                                         .load(core::sync::atomic::Ordering::Acquire);
                                     Some((spi, v2m_pa + 0x40, spi))
@@ -306,7 +306,7 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             }
                             #[cfg(target_arch = "x86_64")]
                             {
-                                if let Some(vec) = msi::alloc_x86_vector() {
+                                if let Some(vec) = arch_irq::alloc_x86_vector() {
                                     Some((vec as u32, 0xFEE0_0000u64, vec as u32))
                                 } else { None }
                             }
@@ -524,17 +524,17 @@ pub fn enumerate_and_log() {
             // entry for 0x50 + dispatcher arm + LAPIC EOI path are
             // all correct end-to-end and any device-driven MSI gap
             // is in the PCI MSI write path, not kernel.
-            let pre = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+            let pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: LAPIC mapped+enabled; ICR write is well-defined; self-shorthand targets this CPU; IF=1 from the sti above.
             unsafe {
-                let va = crate::lapic::LAPIC_BASE_VA.load(core::sync::atomic::Ordering::Acquire);
+                let va = arch_irq::lapic::LAPIC_BASE_VA.load(core::sync::atomic::Ordering::Acquire);
                 if va != 0 {
                     let icr_lo = (1u32 << 18) | (1u32 << 14) | 0x50;
                     core::ptr::write_volatile((va + 0x300) as *mut u32, icr_lo);
                 }
             }
             for _ in 0..1_000_000 { core::hint::spin_loop(); }
-            let post = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+            let post = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
             klog::write_raw(b"[INFO]  lapic-self-fire pre=");
             klog::write_dec_u64(pre as u64);
             klog::write_raw(b" post=");
@@ -545,7 +545,7 @@ pub fn enumerate_and_log() {
             // SAFETY: pairs with sti above; restores canary's boot-mask state.
             unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
         }
-        let fires = msi::MSI_FIRES
+        let fires = arch_irq::MSI_FIRES
             .load(core::sync::atomic::Ordering::Acquire);
         klog::write_raw(b"[INFO]  msi-fires-post-enum=");
         klog::write_dec_u64(fires as u64);
@@ -577,7 +577,7 @@ pub fn enumerate_and_log() {
         #[cfg(target_arch = "aarch64")]
         {
             // SAFETY: GIC was mapped+enabled by smoke_device_map_arm; diagnostic read of ISPENDR via the published GICD_VA.
-            let ispendr2 = unsafe { crate::gic::ispendr_word(81) };
+            let ispendr2 = unsafe { arch_irq::gic::ispendr_word(81) };
             klog::write_raw(b"[INFO]  gicd-ispendr2=");
             klog::write_hex_u64(ispendr2 as u64);
             klog::write_raw(b" spi81_bit=");
@@ -598,13 +598,13 @@ pub fn enumerate_and_log() {
         // delivery path (e.g. GICv3 + ITS).
         #[cfg(target_arch = "aarch64")]
         {
-            let v2m_va = msi::GICV2M_VA
+            let v2m_va = arch_irq::GICV2M_VA
                 .load(core::sync::atomic::Ordering::Acquire);
             if v2m_va != 0 {
-                if let Some(spi) = msi::alloc_arm_spi() {
+                if let Some(spi) = arch_irq::alloc_arm_spi() {
                     // SAFETY: gic::enable was called before any IRQ unmask; SPI is freshly allocated, owned by this diagnostic; single-CPU pre-init.
-                    unsafe { crate::gic::enable_intid(spi); }
-                    let before = msi::MSI_FIRES
+                    unsafe { arch_irq::gic::enable_intid(spi); }
+                    let before = arch_irq::MSI_FIRES
                         .load(core::sync::atomic::Ordering::Acquire);
                     let setspi_ns = (v2m_va + 0x040) as *mut u32;
                     // SAFETY: boot phase, single-CPU; brief unmask
@@ -617,7 +617,7 @@ pub fn enumerate_and_log() {
                     for _ in 0..2_000_000 { core::hint::spin_loop(); }
                     // SAFETY: pairs with the daifclr above; restores the boot-mask state on this CPU.
                     unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
-                    let after = msi::MSI_FIRES
+                    let after = arch_irq::MSI_FIRES
                         .load(core::sync::atomic::Ordering::Acquire);
                     klog::write_raw(b"[INFO]  gicv2m-self-fire spi=");
                     klog::write_dec_u64(spi as u64);
@@ -635,14 +635,14 @@ pub fn enumerate_and_log() {
             // during boot get a chance to fire SPI 33. Logs the
             // UART IRQ counter delta — nonzero proves the
             // IRQ-driven RX path replaces the timer-poll fallback.
-            let uart_before = crate::gic::UART_IRQ_FIRES
+            let uart_before = arch_irq::gic::UART_IRQ_FIRES
                 .load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: brief unmask window, mirrors F40 pattern; gic+pl011 already up.
             unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
             for _ in 0..200_000_000 { core::hint::spin_loop(); }
             // SAFETY: pairs with the daifclr above; restores boot-mask state on this CPU.
             unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
-            let uart_after = crate::gic::UART_IRQ_FIRES
+            let uart_after = arch_irq::gic::UART_IRQ_FIRES
                 .load(core::sync::atomic::Ordering::Acquire);
             klog::write_raw(b"[INFO]  uart-irq-fires before=");
             klog::write_dec_u64(uart_before as u64);
