@@ -51,7 +51,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = fbdev::devfs::handle_fbdev_ioctl(file.inode(), req, arg) {
         return rv;
     }
-    if let Some(rv) = crate::dev_drm::handle_drm_ioctl(file.inode(), req, arg) {
+    if let Some(rv) = crate::dev::drm::handle_drm_ioctl(file.inode(), req, arg) {
         return rv;
     }
     if file.inode().file_type() != vfs::FileType::CharDev {
@@ -64,7 +64,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     }
     let ino = file.inode().ino();
     let pty_pair = if (ino & 0xFFFF_0000) == 0x6000_0000 {
-        crate::dev_pty::pair_for((ino & 0x7FFF) as u32)
+        crate::dev::pty::pair_for((ino & 0x7FFF) as u32)
     } else { None };
 
     match req {

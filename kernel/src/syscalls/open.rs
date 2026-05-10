@@ -67,7 +67,7 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
                    || path_str == "/init"
                    || path_str == "/hello.txt";
     let inode = if path_str == "/dev/ptmx" {
-        let (master, _n) = crate::dev_pty::allocate_pair();
+        let (master, _n) = crate::dev::pty::allocate_pair();
         master
     } else if prefer_ext4 {
         if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
@@ -145,7 +145,7 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
                    || path_str == "/init"
                    || path_str == "/hello.txt";
     let inode = if path_str == "/dev/ptmx" {
-        let (master, _n) = crate::dev_pty::allocate_pair();
+        let (master, _n) = crate::dev::pty::allocate_pair();
         master
     } else if prefer_ext4 {
         if let Some(i) = ext4::rootfs::lookup_inode(path_str.as_bytes()) { i }
