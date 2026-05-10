@@ -500,9 +500,6 @@ dependencies = [
  "smp",
  "sync",
  "syscall",
- "syscall-glue-dmesg",
- "syscall-glue-numa",
- "syscall-glue-unix-cmsg",
  "timerfd",
  "tmpfs",
  "tty",
@@ -605,6 +602,7 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+ "syscall",
  "vfs",
 ]
 
@@ -1034,33 +1032,6 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
-]
-
-[[package]]
-name = "syscall-glue-dmesg"
-version = "0.1.0"
-dependencies = [
- "hal",
- "klog",
- "syscall",
-]
-
-[[package]]
-name = "syscall-glue-numa"
-version = "0.1.0"
-dependencies = [
- "hal",
- "syscall",
-]
-
-[[package]]
-name = "syscall-glue-unix-cmsg"
-version = "0.1.0"
-dependencies = [
- "hal",
- "net",
- "sync",
- "syscall",
 ]
 
 [[package]]
