@@ -66,6 +66,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `51-userspace-handoff.md` | DRAFT | — | `16`,`19`,`28`,`29`,`29a`,`31` |
 | `52-repo-structure-and-ownership.md` | DRAFT | — | `02`,`07`,`08`,`39` |
 | `52a-stage-a-ownership-classification.md` | DRAFT | — | `52` |
+| `53-syscall-layering.md` | DRAFT | — | `02`,`08`,`13`,`15`,`52` |
 
 ## Cross-cutting
 
