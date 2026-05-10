@@ -38,7 +38,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     let mut path_buf = [0u8; 64];
     let mut path_len = 0usize;
     let mut blob: &[u8] = if path_ptr == 0 {
-        crate::elf_smoke::EXEC_BLOB
+        crate::smoke::elf::EXEC_BLOB
     } else {
         if path_ptr >= USER_VA_END {
             return -(Errno::Efault.as_i32() as i64);
@@ -61,7 +61,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
             // outlives the load_static_blob call below.
             ext4_blob.as_deref().expect("just set")
         } else if path_len >= 1 {
-            match crate::elf_smoke::lookup_blob(path[0]) {
+            match crate::smoke::elf::lookup_blob(path[0]) {
                 Some(b) => b,
                 None    => return -(Errno::Enoent.as_i32() as i64),
             }
