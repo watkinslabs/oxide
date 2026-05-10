@@ -128,7 +128,7 @@ const USER_RIP_BRK: u64 = 0x400080 + 36;
 /// hit a registered VMA); on the deliberate `brk` from sys_exit's
 /// eret landing, logs the success line.
 fn elf_smoke_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
-    if crate::user_as::user_fault_handler(esr, far, elr) {
+    if pmm::user_as::user_fault_handler(esr, far, elr) {
         return true;
     }
     let ec = (esr >> 26) & 0x3F;
@@ -147,7 +147,7 @@ fn elf_smoke_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
 /// Parse + load + drop to EL0. Diverges. Replaces
 /// `crate::smoke::userspace_arm::run` for the aarch64 boot path.
 ///
-/// # SAFETY: caller is the boot path; user_as::init has run; PMM
+/// # SAFETY: caller is the boot path; pmm::user_as::init has run; PMM
 /// + MmuOps + VBAR_EL1 + SVC dispatch all initialised; single-
 /// CPU; DAIF.I masked.
 /// # C: O(phdrs) parse + O(1) drop
@@ -156,7 +156,7 @@ pub unsafe fn run() -> ! {
     use vmm::{VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 
-    let img = match crate::user_as::with(|as_| load_static_blob(ELF_BLOB, as_)) {
+    let img = match pmm::user_as::with(|as_| load_static_blob(ELF_BLOB, as_)) {
         Some(Ok(i))  => i,
         Some(Err(e)) => {
             debug_irq! {
@@ -187,7 +187,7 @@ pub unsafe fn run() -> ! {
         Some(u) => u,
         None    => { debug_irq! { klog::kerror!("elf-smoke-arm: bad stack VA"); } halt_forever(); }
     };
-    let stack_r = crate::user_as::with(|as_| {
+    let stack_r = pmm::user_as::with(|as_| {
         as_.mmap(
             Some(stack_hint), 0x1000,
             VmaProt::READ | VmaProt::WRITE,
@@ -212,7 +212,7 @@ pub unsafe fn run() -> ! {
     // SAFETY: handler 'static; pre-init swap.
     unsafe { hal_aarch64::install_fault_handler(elf_smoke_fault_handler); }
 
-    let mm = match crate::user_as::clone_global_arc() {
+    let mm = match pmm::user_as::clone_global_arc() {
         Some(a) => a,
         None    => { debug_irq! { klog::kerror!("elf-smoke-arm: AS clone failed"); } halt_forever(); }
     };
@@ -334,7 +334,7 @@ fn spawn_init_from_rootfs_arm() {
 
     // Pre-fault every stack page so kernel-side `build_user_stack`
     // writes don't take EL1 same-EL data aborts. The boot fault
-    // handler routes through `user_as::with(|as_| …)` which serves
+    // handler routes through `pmm::user_as::with(|as_| …)` which serves
     // the GLOBAL boot AS, not the per-task `mm` we just activated;
     // a faulting kernel write here therefore can't be demand-paged.
     // Mirrors the x86 path (which sidesteps the issue by mapping the
@@ -355,7 +355,7 @@ fn spawn_init_from_rootfs_arm() {
             // Zero through HHDM mirror.
             // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror is mapped writable in the kernel L0 captured at boot; 4 KiB owned exclusively until the M::map below.
             unsafe {
-                let dst = (crate::user_as::hhdm_offset() + pa) as *mut u8;
+                let dst = (pmm::user_as::hhdm_offset() + pa) as *mut u8;
                 core::ptr::write_bytes(dst, 0, hal::PAGE_SIZE_BYTES as usize);
                 <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(
                     Va(va), Pa(pa), prot, PageSize::P4K,
