@@ -2,7 +2,7 @@
 // module returns MPOL_DEFAULT and a one-node mask honestly instead
 // of leaving caller buffers uninitialised (which silent-0 would do).
 
-#![cfg(target_os = "oxide-kernel")]
+#![no_std]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;

@@ -30,6 +30,9 @@ dev-modules = { path = "../crates/kernel/dev-modules" }
 dev-fbdev = { path = "../crates/kernel/dev-fbdev" }
 dev-input = { path = "../crates/kernel/dev-input" }
 dev-virtio-gpu-modern = { path = "../crates/kernel/dev-virtio-gpu-modern", default-features = false }
+syscall-glue-numa = { path = "../crates/kernel/syscall-glue-numa" }
+syscall-glue-dmesg = { path = "../crates/kernel/syscall-glue-dmesg" }
+procfs-meminfo = { path = "../crates/kernel/procfs-meminfo" }
 ipc       = { path = "../crates/kernel/ipc" }
 pipe      = { path = "../crates/kernel/pipe", default-features = false }
 pmm-setup = { path = "../crates/kernel/pmm-setup" }

@@ -2,7 +2,9 @@
 // ring as a dmesg backend. Split out of `syscall_glue_proc.rs` to keep
 // that file under the 1000-line cap (08§7).
 
-#![cfg(target_os = "oxide-kernel")]
+#![no_std]
+
+extern crate alloc;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
