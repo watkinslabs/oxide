@@ -187,7 +187,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 
     // vfs hooks: flock release-on-close + inotify IN_MODIFY-on-write.
     #[cfg(target_os = "oxide-kernel")]
-    { flock::install_drop_hook(); inotify::install_write_hook(); }
+    { fs::flock::install_drop_hook(); fs::inotify::install_write_hook(); }
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
@@ -468,7 +468,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // boot smokes:
         ::devfs::misc::smoke_test();
         procfs::smoke_test();
-        pipe::smoke_test();
+        fs::pipe::smoke_test();
         tmpfs::smoke_test();
         dev_pty::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
