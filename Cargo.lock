@@ -937,7 +937,11 @@ name = "tty"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hal-aarch64",
  "klog",
+ "sched",
+ "sync",
+ "vfs",
 ]
 
 [[package]]

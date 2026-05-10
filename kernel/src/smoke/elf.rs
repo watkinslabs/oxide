@@ -590,7 +590,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // iteration's ECHO program (P3-02) can read+write a byte
     // non-interactively. Real interactive use rides on UART RX
     // bytes pushed via `tty::tick_poll_uart` from the timer ISR.
-    crate::tty::inject_for_smoke(b"A");
+    tty::live::inject_for_smoke(b"A");
 
     // STI so timer IRQs can drive preempt-on-IRQ-exit if the
     // task ever yields back to kernel; our smoke task runs IF=0
