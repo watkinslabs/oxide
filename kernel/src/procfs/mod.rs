@@ -4,8 +4,8 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+pub mod fs_impl;
 pub mod static_files;
-
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
