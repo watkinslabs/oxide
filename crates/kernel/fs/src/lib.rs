@@ -19,3 +19,6 @@ pub mod flock;
 pub mod xattr;
 pub mod keyring;
 pub mod perf;
+pub mod tmpfs;
+pub mod coredump;
+pub mod ptrace;
