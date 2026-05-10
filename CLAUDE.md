@@ -178,6 +178,21 @@ Examples:
 
 **Branch retention.** Do NOT delete merged branches. Keep feature branches around even after merge for recoverable history. `git branch -d`/`-D` only when user explicitly says delete. Default = preserve.
 
+## state.md is short-lived session memory, not history
+
+`state.md` is the hand-off note from the previous session — what
+was worked on, what's open, what to pick up next. It is NOT a
+running log, NOT a session journal, NOT a place to accumulate
+session-by-session reports.
+
+Rules:
+- **Hard cap 200 lines.** If it grows past that, you're doing it wrong.
+- **Overwrite, don't append.** Each session replaces the file with a fresh hand-off — no "Below this line is session N-1" appendix.
+- **Headline + open work + first task.** Branch + PR, what got done, what's still open, the literal first command for next session. Nothing else.
+- **No "session 53/54/55" archaeology.** Git log is the archaeology.
+- **No commit-message duplication.** Cite SHAs, don't restate.
+- Persistent project knowledge (architecture decisions, conventions, gotchas that survive across sessions) goes in CLAUDE.md or auto-memory, not state.md.
+
 ## When in doubt
 
 - Read `docs/MANIFEST.md` first.
