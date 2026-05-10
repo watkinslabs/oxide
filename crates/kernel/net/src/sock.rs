@@ -310,3 +310,50 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     drain_loopback();
     Ok(payload.len())
 }
+
+
+// ─── Tier-2 work fns per `docs/53§3` ───
+// Typed bind/connect/sendto/recv operating on already-parsed
+// `BoundAddr` / `RemoteAddr` enums. ABI shims in
+// `kernel/src/syscalls/net.rs` translate user sockaddr buffers
+// into these enums.
+
+extern crate alloc;
+use alloc::string::String;
+
+/// Already-validated bind target. Per `25§5` socket address
+/// taxonomy. Variant tags reflect the socket family the caller
+/// expects to be bound to.
+pub enum BoundAddr {
+    /// `bind` on an AF_UNIX SOCK_STREAM/SOCK_SEQPACKET socket —
+    /// register a listener at `path`.
+    UnixListener(String),
+    /// `bind` on an AF_UNIX SOCK_DGRAM socket — register the
+    /// already-allocated queue at `path`.
+    UnixDgram { path: String, queue: alloc::sync::Arc<crate::UnixDgramQueue> },
+    /// `bind` on an AF_INET / AF_INET6 socket — UDP-style port
+    /// reservation. v1 inet stack is IPv4 only.
+    Inet { ip: Ipv4Addr, port: u16 },
+}
+
+/// Bind a socket to an address per `bind(2)`. Tier-2 work fn:
+/// takes typed args, returns typed result, no `&SyscallArgs`.
+/// # C: O(1) for inet, O(N_unix_listeners) for unix
+pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
+    match addr {
+        BoundAddr::UnixListener(path) => {
+            let listener = UNIX_REGISTRY.bind(path).map_err(|_| NetError::Eaddrinuse)?;
+            *sock.kind.lock() = SockKind::UnixListener(listener);
+            Ok(())
+        }
+        BoundAddr::UnixDgram { path, queue } => {
+            UNIX_REGISTRY.dgram_bind(path, queue).map_err(|_| NetError::Eaddrinuse)
+        }
+        BoundAddr::Inet { ip, port } => {
+            stack().bind_udp(ip, port)?;
+            *sock.local_port.lock() = Some(port);
+            *sock.local_ip.lock() = ip;
+            Ok(())
+        }
+    }
+}
