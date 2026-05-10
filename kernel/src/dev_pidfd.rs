@@ -99,7 +99,7 @@ pub fn kernel_sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let task = match crate::sched::registry::lookup(tid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    if !crate::syscall_glue_signal::sig_perm_check(cur, &task, sig) {
+    if !crate::syscalls::signal::sig_perm_check(cur, &task, sig) {
         return -(Errno::Eperm.as_i32() as i64);
     }
     task.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
