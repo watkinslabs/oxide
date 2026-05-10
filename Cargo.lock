@@ -492,7 +492,6 @@ dependencies = [
  "pmm-setup",
  "power",
  "procfs",
- "procfs-meminfo",
  "ptrace",
  "sched",
  "security",
@@ -759,14 +758,8 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
- "sync",
-]
-
-[[package]]
-name = "procfs-meminfo"
-version = "0.1.0"
-dependencies = [
  "pmm-setup",
+ "sync",
 ]
 
 [[package]]
