@@ -1,11 +1,11 @@
-// Minimal /proc skeleton per docs/19. v1: each registered file is
-// backed by a static `&[u8]` body. `read(off, buf)` copies a window
-// of the body into the user buffer; subsequent reads at advancing
-// offsets stream the file out. Files are registered into the same
-// `devfs` registry under their full path, so `sys_open("/proc/...")`
-// resolves through the existing path-lookup.
+//! Kernel-side procfs integration. Body builders live in
+//! crates/kernel/procfs (target-clean); the kernel-side mounting
+//! and per-pid wiring stays here.
 
 #![cfg(target_os = "oxide-kernel")]
+
+pub mod pid_status; pub mod smaps; pub mod static_files;
+
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -644,7 +644,7 @@ impl Inode for ProcPidDirInode {
             "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
-            "smaps"   => Ok(Arc::new(crate::procfs_smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
+            "smaps"   => Ok(Arc::new(crate::procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
             "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
@@ -677,7 +677,7 @@ impl Inode for ProcPidDirInode {
             "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
-            "smaps_rollup" => Ok(Arc::new(crate::procfs_smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
+            "smaps_rollup" => Ok(Arc::new(crate::procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
             "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid: self.tid }) as InodeRef),
             "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map"
               | "pagemap" | "kpagecount" | "kpageflags" | "attr"
@@ -716,7 +716,7 @@ pub struct ProcPidLimitsInode { pub tid: u32 }
 pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
-    crate::procfs_pid_status::body(tid)
+    crate::procfs::pid_status::body(tid)
 }
 
 fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -934,7 +934,7 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
 /// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
-pub fn init() { crate::procfs_static::register_static_files(); }
+pub fn init() { crate::procfs::static_files::register_static_files(); }
 
 /// Boot-time smoke for the registered files.
 /// # SAFETY: caller is the boot path; pre-init.
