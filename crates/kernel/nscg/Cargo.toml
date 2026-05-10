@@ -1,0 +1,16 @@
+[package]
+name = "nscg"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+hal     = { path = "../../arch/hal" }
+klog    = { path = "../../shared/klog" }
+sched   = { path = "../../kernel/sched" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../../kernel/syscall" }
+vfs     = { path = "../../kernel/vfs" }
