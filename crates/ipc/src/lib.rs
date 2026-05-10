@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod signal;
+pub mod sysv_shm;
 pub mod waitqueue;
 pub use signal::{
     SigAction, SigInfo, Signal, SignalSet, SignalState, SIG_DFL, SIG_IGN,
