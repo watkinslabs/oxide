@@ -1,0 +1,20 @@
+[package]
+name = "tmpfs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# tmpfs(5) — in-memory filesystem inode types per `52§3` domain
+# layer. Pure VFS-inode producer; no kernel-runtime singletons.
+
+[dependencies]
+hal    = { path = "../../arch/hal" }
+klog   = { path = "../../shared/klog" }
+procfs = { path = "../procfs" }
+sync   = { path = "../../shared/sync" }
+vfs    = { path = "../vfs" }
+
+[features]
+default = []
+debug-boot = []
