@@ -84,6 +84,10 @@ name = "cpio"
 version = "0.1.0"
 
 [[package]]
+name = "cpu"
+version = "0.1.0"
+
+[[package]]
 name = "crc"
 version = "0.1.0"
 
@@ -373,6 +377,7 @@ version = "0.1.0"
 dependencies = [
  "block",
  "boot-info",
+ "cpu",
  "drm",
  "drv",
  "drv-virtio-gpu",
@@ -391,6 +396,7 @@ dependencies = [
  "net",
  "nscg",
  "pci",
+ "pipe",
  "pmm",
  "pmm-setup",
  "power",
@@ -536,6 +542,16 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+]
+
+[[package]]
+name = "pipe"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
