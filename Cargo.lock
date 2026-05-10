@@ -662,8 +662,11 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+ "modules",
+ "net",
  "pmm",
  "sync",
+ "vfs",
 ]
 
 [[package]]
