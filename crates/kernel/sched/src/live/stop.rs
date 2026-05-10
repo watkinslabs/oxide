@@ -7,7 +7,6 @@
 // flips the target back to Runnable + re-enqueues, so the next
 // schedule() round picks it up and we resume.
 
-#![cfg(target_os = "oxide-kernel")]
 // Arch-neutral now: only uses sched + state primitives that exist on
 // both arches. Pre-F16 was gated x86-only by oversight, blocking the
 // SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU default-stop disposition on
@@ -15,7 +14,7 @@
 
 use core::sync::atomic::Ordering;
 
-use sched::TaskState;
+use crate::TaskState;
 
 /// Flip current to Stopped + schedule away. Loops until SIGCONT
 /// (or any signal flipping state back to Runnable) wakes us.
@@ -23,11 +22,11 @@ use sched::TaskState;
 /// running task is the live one on this CPU.
 /// # C: O(N_schedule) until cont
 pub fn stop_until_cont() {
-    let cur = match sched::live::current() { Some(c) => c, None => return };
+    let cur = match crate::live::current() { Some(c) => c, None => return };
     cur.set_state(TaskState::Stopped);
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
-        unsafe { sched::live::schedule(); }
+        unsafe { crate::live::schedule(); }
         if cur.state() == TaskState::Runnable { return; }
         // The pick may return us only if no other Runnable task
         // exists (Stopped tasks aren't re-enqueued by schedule).
