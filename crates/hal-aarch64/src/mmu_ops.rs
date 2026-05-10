@@ -128,7 +128,24 @@ impl MmuOps for ArmMmu {
         let r = unsafe {
             pt_walker::map_at_level::<PtWalkerArm, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
         };
-        kassert!(r.is_ok(), "MmuOps::map walker failure");
+        match r {
+            Ok(()) => {}
+            // COW split: caller wants to overwrite an existing leaf
+            // with a new PA. Tear down + reinstall. Mirrors x86 path.
+            Err(pt_walker::WalkErr::AlreadyMapped) => {
+                // SAFETY: same-VA unmap-then-map; PT lock per outer caller.
+                unsafe {
+                    pt_walker::unmap_at_va::<PtWalkerArm>(va.0, hhdm);
+                    let r2 = pt_walker::map_at_level::<PtWalkerArm, _>(
+                        va.0, leaf_level, leaf, hhdm, alloc_frame,
+                    );
+                    kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
+                }
+            }
+            Err(_) => {
+                kassert!(false, "MmuOps::map walker failure");
+            }
+        }
     }
 
     /// Tear down a 4 KiB leaf at `va`. v1 only supports
