@@ -273,6 +273,7 @@ dependencies = [
  "hal",
  "klog",
  "pci",
+ "smp",
  "sync",
  "syscall",
 ]
@@ -406,6 +407,7 @@ dependencies = [
  "procfs",
  "sched",
  "security",
+ "smp",
  "sync",
  "syscall",
  "tty",
@@ -835,6 +837,14 @@ dependencies = [
  "pmm",
  "proptest",
  "sync",
+]
+
+[[package]]
+name = "smp"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "klog",
 ]
 
 [[package]]

@@ -13,6 +13,8 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use hal::{CpuOps, Nanos, TimerOps};
@@ -27,6 +29,7 @@ pub mod mmu_ops;
 pub mod pci;
 pub mod pl011;
 pub mod psci;
+pub mod smp;
 mod pt_regs;
 mod regs;
 pub mod timer;

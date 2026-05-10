@@ -1,0 +1,15 @@
+[package]
+name = "smp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# Cross-arch SMP orchestration per `13§11`/`20§7`/`21§7`. Owns the
+# `enumerate_aps` walk over the cpu_topology table + `ap_arrived`
+# barrier counter. Per-arch trampoline allocation + INIT-IPI/PSCI
+# CPU_ON + AP entry live in hal-x86_64 / hal-aarch64.
+
+[dependencies]
+cpu  = { path = "../cpu" }
+klog = { path = "../klog" }
