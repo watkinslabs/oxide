@@ -545,7 +545,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     };
     // SAFETY: global user AS is the active CR3 per init; build_user_stack writes via that mapping; user_fault_handler resolves the demand-faulted stack page.
     let new_sp = unsafe {
-        crate::exec_stack::build_user_stack(
+        elf_load::stack::build_user_stack(
             USER_STACK_TOP,
             &[b"/init"], &[],
             &img,
@@ -790,7 +790,7 @@ unsafe fn spawn_user_blob_with_vpid(
     let argv_ref: &[&[u8]] = if argv.is_empty() { default_argv } else { argv };
     // SAFETY: per-task AS just activated; build_user_stack writes through it; demand-fault resolves the new stack page.
     let new_sp = unsafe {
-        crate::exec_stack::build_user_stack(
+        elf_load::stack::build_user_stack(
             USER_STACK_TOP,
             argv_ref, &[],
             &img,

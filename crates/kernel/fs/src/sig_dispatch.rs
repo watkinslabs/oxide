@@ -100,7 +100,8 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
     // the handler is `void(int sig)`; place sig in rdi.
     let new_rsp = sp + 32;
 
-    debug_sched! {
+    #[cfg(feature = "debug-sched")]
+    {
         klog::write_raw(b"[INFO]  sig: deliver sig=");
         klog::write_dec_u64(sig as u64);
         klog::write_raw(b" handler=");
@@ -162,7 +163,8 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
     frame[0] = saved_rip;
     frame[1] = saved_rflags;
     frame[2] = saved_rsp;
-    debug_sched! {
+    #[cfg(feature = "debug-sched")]
+    {
         klog::write_raw(b"[INFO]  sig: rt_sigreturn rip=");
         klog::write_hex_u64(saved_rip);
         klog::write_raw(b" rsp=");
@@ -209,7 +211,8 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
     // at restorer slot). Per AAPCS64, sig goes in x0.
     let new_sp = sp + 32;
 
-    debug_sched! {
+    #[cfg(feature = "debug-sched")]
+    {
         klog::write_raw(b"[INFO]  sig: deliver_arm sig=");
         klog::write_dec_u64(sig as u64);
         klog::write_raw(b" handler=");
@@ -261,7 +264,8 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     frame.elr_el1  = saved_pc;
     frame.spsr_el1 = saved_pstate;
     frame.sp_el0   = saved_sp;
-    debug_sched! {
+    #[cfg(feature = "debug-sched")]
+    {
         klog::write_raw(b"[INFO]  sig: rt_sigreturn_arm pc=");
         klog::write_hex_u64(saved_pc);
         klog::write_raw(b" sp=");

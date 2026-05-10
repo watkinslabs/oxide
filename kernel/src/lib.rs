@@ -790,7 +790,6 @@ pub mod syscalls;
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
 // site in `syscalls::oxide_syscall_dispatch`.
-pub mod syscall_arm_abi;
 
 // P3-03 fs-shaped syscalls split out of `syscalls` to keep that
 // file under the 1000-line cap per `08§7`.
@@ -819,7 +818,6 @@ pub mod futex;
 // Arch-portable since F16 — x86 + aarch64 paths share the wire frame
 // shape; only the saved-state register set differs.
 #[cfg(target_os = "oxide-kernel")]
-pub mod sig_dispatch;
 
 // PCI bus enumeration boot helper (per-arch ConfigSpaceReader
 // dispatch). Split out of lib.rs to keep that file under cap.
@@ -829,7 +827,6 @@ pub mod pci_boot;
 // P2-21c initial user-stack builder per docs/31§4 step 5.
 // SysV argc/argv/envp/auxv layout written at execve time.
 #[cfg(target_os = "oxide-kernel")]
-pub mod exec_stack;
 
 // Global user `AddressSpace` per `11§3` + demand-paging fault hook
 // per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
