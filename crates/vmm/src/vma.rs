@@ -8,7 +8,10 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use alloc::sync::Arc;
 use hal::UserVirtAddr;
+
+use crate::anon_vma::AnonVma;
 
 bitflags::bitflags! {
     /// VMA protection bits per `11§4`. R/W/X only at the VMA layer;
@@ -126,7 +129,14 @@ impl Eq for VmaBacking {}
 
 /// Single virtual memory area. `start` ≤ `va` < `end` covers this VMA.
 /// Per `11§4`. `rss` is the per-VMA resident-page count.
-#[derive(Debug)]
+///
+/// `anon_vma` is the rmap reverse-link for `VmaBacking::Anonymous` —
+/// every anonymous VMA in a fork family shares one `Arc<AnonVma>`,
+/// which carries the chain of (mm, vma_range) edges so that a page
+/// fault handler / migration / KSM pass can enumerate every PTE
+/// referencing a frame. `None` for non-anonymous backings; rmap for
+/// file-backed lives in the future `address_space::i_mmap` interval
+/// tree (see `anon_vma.rs` header).
 pub struct Vma {
     pub start: UserVirtAddr,
     pub end:   UserVirtAddr,
@@ -134,6 +144,21 @@ pub struct Vma {
     pub flags: VmaFlags,
     pub backing: VmaBacking,
     pub rss: AtomicU64,
+    pub anon_vma: Option<Arc<AnonVma>>,
+}
+
+impl core::fmt::Debug for Vma {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Vma")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("prot", &self.prot)
+            .field("flags", &self.flags)
+            .field("backing", &self.backing)
+            .field("rss", &self.rss.load(Ordering::Relaxed))
+            .field("anon_vma_id", &self.anon_vma.as_ref().map(|a| a.id))
+            .finish()
+    }
 }
 
 impl Vma {
@@ -147,7 +172,21 @@ impl Vma {
         flags: VmaFlags,
         backing: VmaBacking,
     ) -> Self {
-        Self { start, end, prot, flags, backing, rss: AtomicU64::new(0) }
+        // Anonymous VMAs: allocate a fresh anon_vma family. The
+        // chain edge for *this* VMA gets attached by the caller
+        // (`AddressSpace::mmap`) once the VMA is in the tree and
+        // we have the AS Arc to weak-ref. Non-anonymous backings
+        // get None — file rmap lives elsewhere.
+        let anon_vma = if matches!(backing, VmaBacking::Anonymous) {
+            Some(AnonVma::new())
+        } else {
+            None
+        };
+        Self {
+            start, end, prot, flags, backing,
+            rss: AtomicU64::new(0),
+            anon_vma,
+        }
     }
 
     /// # C: O(1)
@@ -221,6 +260,10 @@ impl Vma {
             flags: self.flags,
             backing,
             rss: AtomicU64::new(0),
+            // Sub-range stays in the same anon_vma family — Linux
+            // `__split_vma` keeps both halves on the parent's anon_vma
+            // (and adds a chain entry for the new half).
+            anon_vma: self.anon_vma.as_ref().map(Arc::clone),
         }
     }
 }
@@ -234,6 +277,10 @@ impl Clone for Vma {
             flags: self.flags,
             backing: self.backing.clone(),
             rss: AtomicU64::new(self.rss.load(Ordering::Relaxed)),
+            // VmaTree::insert clones VMAs into the destination tree
+            // at fork; we keep the SAME anon_vma so all forked
+            // descendants share the chain.
+            anon_vma: self.anon_vma.as_ref().map(Arc::clone),
         }
     }
 }

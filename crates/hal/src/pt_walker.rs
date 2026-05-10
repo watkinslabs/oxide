@@ -762,6 +762,52 @@ mod tests {
         assert_eq!(r2, Err(WalkErr::AlreadyMapped));
     }
 
+    /// F156: when callers want to overwrite an existing leaf with a
+    /// new PA (COW split, mremap, MAP_FIXED-over-existing), the
+    /// canonical sequence is `unmap_at_va` then `map_at_level`. This
+    /// test pins that sequence in place — the fix in
+    /// `hal-x86_64::mmu_ops::map` and `hal-aarch64::mmu_ops::map`
+    /// routes through it on `WalkErr::AlreadyMapped`.
+    #[test]
+    fn unmap_then_remap_at_same_va_overwrites_with_new_pa() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let pages_cell = core::cell::RefCell::new(reset());
+        let mut alloc = || -> Option<u64> {
+            let p = alloc::boxed::Box::new(AlignedTable([0u64; ENTRIES_PER_TABLE]));
+            let pa = p.0.as_ptr() as u64;
+            pages_cell.borrow_mut().push(p);
+            Some(pa)
+        };
+        let va = 0x0000_1234_0005_6000_u64;
+        let pa1: u64 = 0xaaaa_b000;
+        let pa2: u64 = 0xbbbb_b000;
+        // First install — populates intermediate tables and leaf.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let r1 = unsafe { map_device_4k::<HostWalker, _>(va, pa1, 0, &mut alloc) };
+        assert_eq!(r1, Ok(()));
+
+        // Direct second install with a different PA → AlreadyMapped.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let r2 = unsafe { map_device_4k::<HostWalker, _>(va, pa2, 0, &mut alloc) };
+        assert_eq!(r2, Err(WalkErr::AlreadyMapped));
+
+        // Unmap, then remap — the production fix path. New PA wins.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        unsafe {
+            let cleared = unmap_at_va::<HostWalker>(va, 0);
+            assert!(cleared.is_some(), "unmap reports the cleared leaf");
+        }
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let r3 = unsafe { map_device_4k::<HostWalker, _>(va, pa2, 0, &mut alloc) };
+        assert_eq!(r3, Ok(()), "remap after unmap succeeds with new PA");
+
+        // Verify the leaf now points at pa2.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let resolved = unsafe { translate_4k::<HostWalker>(va, 0) };
+        let (rpa, _) = resolved.expect("leaf present");
+        assert_eq!(rpa & HostWalker::PHYS_MASK, pa2 & HostWalker::PHYS_MASK);
+    }
+
     #[test]
     fn map_at_level_2m_writes_at_l2_index() {
         // 2 MiB block leaf: walker descends L0 → L1 → L2, then

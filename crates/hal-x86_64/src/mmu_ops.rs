@@ -170,10 +170,32 @@ impl MmuOps for X86Mmu {
         // covers page-table memory; frame allocator returns kernel-
         // owned frames; the leaf packer encodes a leaf bit pattern
         // appropriate to `size`.
+        // SAFETY: caller asserts MmuOps::map preconditions.
         let r = unsafe {
             pt_walker::map_at_level::<PtWalkerX86, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
         };
-        kassert!(r.is_ok(), "MmuOps::map walker failure");
+        match r {
+            Ok(()) => {}
+            // Linux-equivalent COW split: caller installs a new PA at
+            // a VA that already has a different PA. Tear down the old
+            // leaf, flush, then install the new one. Without this the
+            // COW fault handler (`vmm::handle_page_fault_cow`) panics
+            // on the second-and-later fault per VA.
+            Err(pt_walker::WalkErr::AlreadyMapped) => {
+                // SAFETY: same-VA unmap-then-map sequence; PT lock per the
+                // outer caller; no concurrent reader on UP single-CPU.
+                unsafe {
+                    pt_walker::unmap_at_va::<PtWalkerX86>(va.0, hhdm);
+                    let r2 = pt_walker::map_at_level::<PtWalkerX86, _>(
+                        va.0, leaf_level, leaf, hhdm, alloc_frame,
+                    );
+                    kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
+                }
+            }
+            Err(_) => {
+                kassert!(false, "MmuOps::map walker failure");
+            }
+        }
     }
 
     /// Tear down a 4 KiB leaf at `va`. v1 only supports
