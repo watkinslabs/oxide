@@ -645,7 +645,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // virtio-net legacy driver detect + init. No-op if no device.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
-        crate::dev::virtio_net::init_legacy();
+        drv_virtio_net::legacy::init_legacy();
     }
 
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
