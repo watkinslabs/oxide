@@ -1,0 +1,20 @@
+[package]
+name = "pmm-setup"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# PMM bring-up adapter per `10§6.3` boot rule + `52§3` domain layer.
+# Bridges `boot-info` (memmap walk) → `pmm` (allocator init,
+# bitmap pool carving, per-PFN PageMeta install) → `vmm`
+# (set_anon_rmap_for_pa typed adapter for AnonVma slot ownership).
+# F156 rmap glue lives here so the PMM crate stays pure data.
+
+[dependencies]
+boot-info = { path = "../../shared/boot-info" }
+hal       = { path = "../../arch/hal" }
+pmm       = { path = "../../kernel/pmm" }
+vmm       = { path = "../../kernel/vmm" }
+klog      = { path = "../../shared/klog" }
+sync      = { path = "../../shared/sync" }
