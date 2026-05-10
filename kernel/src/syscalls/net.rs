@@ -325,6 +325,10 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
 
 /// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
 /// # C: O(1)
+/// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
+/// Tier-3 shim per `docs/53§4`. Parses optional dest into
+/// `RemoteAddr`, fetches sender creds, calls `net::sock::sendto`.
+/// # C: O(payload bytes)
 pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let bufp   = args.a1;
@@ -339,47 +343,30 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let payload: alloc::vec::Vec<u8> = unsafe {
         core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
     };
-    // F121: AF_UNIX SOCK_DGRAM — read sockaddr_un dst path, find
-    // the bound peer queue, push payload + sender creds.
-    if let SockKind::UnixDgram(_) = &*sock.kind.lock() {
-        if dest_p == 0 { return -(Errno::Edestaddrreq.as_i32() as i64); }
-        let dst_path = match read_sockaddr_un_path(dest_p) {
-            Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
-        };
-        let q = match net::sock::UNIX_REGISTRY.dgram_lookup(&dst_path) {
-            Some(q) => q, None => return -(Errno::Enoent.as_i32() as i64),
-        };
-        let cur = sched::live::current();
-        let creds = match cur {
-            Some(t) => (
-                t.tgid.load(core::sync::atomic::Ordering::Acquire),
-                t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
-                t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
-            ),
-            None => (0, 0, 0),
-        };
-        q.push(net::UnixDgram { payload, creds, fds: alloc::vec::Vec::new() });
-        return len as i64;
-    }
-    // TCP path: send into the existing TcpConn (no destaddr needed).
-    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        let entry = entry.clone();
-        return match net::sock::stack().tcp_send(&entry, &payload) {
-            Ok(n)  => { drain_loopback(); n as i64 }
-            Err(e) => errno_from_neterr(e),
-        };
-    }
-    let (dst_ip, dst_port) = if dest_p != 0 {
-        match read_sockaddr_any(dest_p) {
-            Some((_fam, ip, p)) => (ip, p),
-            None => return -(Errno::Eafnosupport.as_i32() as i64),
+    // Parse optional destination based on socket family.
+    let dest = if dest_p == 0 {
+        None
+    } else if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
+        match read_sockaddr_un_path(dest_p) {
+            Some(p) => Some(net::sock::RemoteAddr::UnixPath(p)),
+            None    => return -(Errno::Einval.as_i32() as i64),
         }
     } else {
-        match *sock.peer.lock() {
-            Some(t) => t, None => return -(Errno::Edestaddrreq.as_i32() as i64),
+        match read_sockaddr_any(dest_p) {
+            Some((_fam, ip, port)) => Some(net::sock::RemoteAddr::Inet { ip, port }),
+            None => return -(Errno::Eafnosupport.as_i32() as i64),
         }
     };
-    match socket_sendto(&sock, dst_ip, dst_port, &payload) {
+    // Fetch sender creds for AF_UNIX SCM.
+    let creds = match sched::live::current() {
+        Some(t) => net::sock::SenderCreds {
+            pid: t.tgid.load(core::sync::atomic::Ordering::Acquire),
+            uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
+            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
+        },
+        None => net::sock::SenderCreds::default(),
+    };
+    match net::sock::sendto(&sock, &payload, dest, creds) {
         Ok(n)  => n as i64,
         Err(e) => errno_from_neterr(e),
     }
