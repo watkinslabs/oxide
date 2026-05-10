@@ -33,7 +33,7 @@ pub use ::devfs::{
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    let fg: InodeRef = Arc::new(crate::dev_console::ConsoleInode::new(0));
+    let fg: InodeRef = Arc::new(crate::dev::console::ConsoleInode::new(0));
     register("/dev/console", Arc::clone(&fg));
     register("/dev/tty",     Arc::clone(&fg));
     register("/dev/tty0",    Arc::clone(&fg));
@@ -44,7 +44,7 @@ pub fn init() {
         path.push_str("/dev/tty");
         if vt >= 10 { path.push((b'0' + (vt / 10)) as char); }
         path.push((b'0' + (vt % 10)) as char);
-        let inode: InodeRef = Arc::new(crate::dev_console::ConsoleInode::new(vt));
+        let inode: InodeRef = Arc::new(crate::dev::console::ConsoleInode::new(vt));
         register_owned(path, inode);
     }
 

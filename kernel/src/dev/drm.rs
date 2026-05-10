@@ -4,7 +4,6 @@
 // drv_virtio_gpu::install_with_drm; real per-card responses
 // flow from there.
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use alloc::sync::Arc;

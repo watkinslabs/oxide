@@ -574,7 +574,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     };
 
     // Install init's fd table — fd 0/1/2 → /dev/console (P2-30a).
-    let fdt = crate::dev_console::init_console_fd_table();
+    let fdt = crate::dev::console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled (we just spawned it); we are sole writer.
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;
@@ -809,7 +809,7 @@ unsafe fn spawn_user_blob_with_vpid(
         Err(_) => { debug_irq! { klog::kerror!("user-blob: spawn failed"); } return; }
     };
 
-    let fdt = crate::dev_console::init_console_fd_table();
+    let fdt = crate::dev::console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled; we are sole writer.
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;
