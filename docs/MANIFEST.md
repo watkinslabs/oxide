@@ -64,6 +64,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `49-fbcon.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50` |
 | `50-vt.md` | FROZEN | 2026-05-09 | `01`,`02`,`07`,`13`,`15`,`16`,`19`,`28`,`46`,`47`,`49` |
 | `51-userspace-handoff.md` | DRAFT | — | `16`,`19`,`28`,`29`,`29a`,`31` |
+| `52-repo-structure-and-ownership.md` | DRAFT | — | `02`,`07`,`08`,`39` |
 
 ## Cross-cutting
 
@@ -76,7 +77,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 
 ## Freeze order
 
-Charter docs first (no inter-charter cycles): `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Then subsystem leaves: `14`,`23`,`22`,`33`,`36` (HAL/firmware leaves). Then HAL: `20`,`21`. Then mid: `10`,`12`,`11`,`13`,`15`. Then upper: `16`,`17`,`18`,`19`,`24`,`27`,`26`,`25`,`28`,`30`,`31`,`32`,`34`,`35`,`37`,`29`,`39`. Then `40`,`41`,`42`. Then `43` and `00`,`05` (kept DRAFT-as-living-docs).
+Charter docs first (no inter-charter cycles): `02` → `08` → `09` → `01` → `06` → `07` → `04` → `03` → `38`. Then subsystem leaves: `14`,`23`,`22`,`33`,`36` (HAL/firmware leaves). Then HAL: `20`,`21`. Then mid: `10`,`12`,`11`,`13`,`15`. Then upper: `16`,`17`,`18`,`19`,`24`,`27`,`26`,`25`,`28`,`30`,`31`,`32`,`34`,`35`,`37`,`29`,`39`. Then `40`,`41`,`42`,`44`,`51`,`52`. Then `43` and `00`,`05` (kept DRAFT-as-living-docs).
 
 Charter docs `00` and `05` deliberately stay DRAFT permanently — they are living docs (master plan and pre-mortem) that should evolve as facts change.
 
