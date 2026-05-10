@@ -184,7 +184,11 @@ unsafe fn setup_scanout(
                 core::ptr::write_volatile(cmd_buf_va.add(k), 0);
             }
             // hdr + resource_id + nr_entries
-            let buf = core::slice::from_raw_parts_mut(cmd_buf_va, 32);
+            // encode_resource_attach_backing_one writes 48 bytes
+            // (32-byte hdr + 16-byte mem-entry). Hand it the full
+            // span — we then overwrite nr_entries + per-page mem-entries
+            // below to plumb the multi-page list.
+            let buf = core::slice::from_raw_parts_mut(cmd_buf_va, 48);
             let _ = drv_virtio_gpu::encode_resource_attach_backing_one(buf, res_id, frames[0], 0);
             // Overwrite nr_entries with `pages`.
             let nr_bytes = (pages as u32).to_le_bytes();
