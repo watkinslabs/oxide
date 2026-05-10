@@ -4,7 +4,6 @@
 // bitmaps, signal masks, namespaces (NStgid/NSpid/NSpgid/NSsid),
 // CPU/memory affinity, ctxt-switch counts, speculation status.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
 
