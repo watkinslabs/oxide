@@ -1,0 +1,17 @@
+[package]
+name = "ptrace"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# ptrace single-stepping helpers per `52§3` domain layer. x86 only
+# today (TF flag in eflags); arm SS support rides PTRACE_SINGLESTEP
+# follow-up.
+
+[dependencies]
+sched = { path = "../sched" }
+sync  = { path = "../sync" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../hal-x86_64" }
