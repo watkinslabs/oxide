@@ -621,7 +621,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
         ext4::rootfs::init();
-        dev_net::init();
+        net::sock::init();
         dev_modules::init_exports();
     }
     #[cfg(target_os = "oxide-kernel")]
@@ -671,14 +671,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // P8 boot smoke: loopback UDP send-then-recv +
             // ICMP echo round-trip via the in-kernel net stack.
             {
-                let s = dev_net::stack();
+                let s = net::sock::stack();
                 let _ = s.bind_udp(net::Ipv4Addr::LOOPBACK, 7777);
                 let _ = s.send_udp_to(
                     net::Ipv4Addr::LOOPBACK, 5555,
                     net::Ipv4Addr::LOOPBACK, 7777,
                     b"oxide-boot-smoke",
                 );
-                dev_net::drain_loopback();
+                net::sock::drain_loopback();
                 if let Some((_, _, payload)) = s.recv_udp(7777) {
                     klog::write_raw(b"[INFO]  net udp lo round-trip: ");
                     klog::write_raw(&payload);

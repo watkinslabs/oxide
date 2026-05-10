@@ -16,12 +16,13 @@
 //   +48 msg_flags       i32 + pad
 
 #![no_std]
+#![cfg(target_os = "oxide-kernel")]
 
 extern crate alloc;
 
 use syscall::errno::Errno;
 use hal::USER_VA_END;
-use dev_net::{InetSocket, SockKind};
+use net::sock::{InetSocket, SockKind};
 
 /// # C: O(iov)
 pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64 {

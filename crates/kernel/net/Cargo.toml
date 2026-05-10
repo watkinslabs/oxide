@@ -12,6 +12,7 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
+vfs      = { path = "../vfs" }
 
 [features]
 default = []

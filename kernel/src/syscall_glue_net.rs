@@ -15,7 +15,7 @@ use hal::USER_VA_END;
 
 use vfs::{Dentry, File, OpenFlags};
 
-use dev_net::{InetSocket, SockKind, socket_sendto, socket_recv, drain_loopback};
+use net::sock::{InetSocket, SockKind, socket_sendto, socket_recv, drain_loopback};
 
 const AF_INET:     u32 = 2;
 const AF_INET6:    u32 = 10;
@@ -206,7 +206,7 @@ fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
 /// loopback → ::1, V4 ANY → ::).
 fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    if fam == dev_net::AF_INET6 {
+    if fam == net::sock::AF_INET6 {
         let mut b = [0u8; 16];
         if ip == net::Ipv4Addr::LOOPBACK {
             b[15] = 1; // ::1
@@ -299,19 +299,19 @@ pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
         // socket(AF_UNIX, SOCK_DGRAM)), bind its queue under path
         // in the dgram registry instead of allocating a listener.
         let kind_clone = match &*sock.kind.lock() {
-            dev_net::SockKind::UnixDgram(q) => Some(q.clone()),
+            net::sock::SockKind::UnixDgram(q) => Some(q.clone()),
             _ => None,
         };
         if let Some(q) = kind_clone {
-            return match dev_net::UNIX_REGISTRY.dgram_bind(path, q) {
+            return match net::sock::UNIX_REGISTRY.dgram_bind(path, q) {
                 Ok(()) => 0,
                 Err(()) => -(Errno::Eaddrinuse.as_i32() as i64),
             };
         }
-        let listener = match dev_net::UNIX_REGISTRY.bind(path) {
+        let listener = match net::sock::UNIX_REGISTRY.bind(path) {
             Ok(l) => l, Err(_) => return -(Errno::Eaddrinuse.as_i32() as i64),
         };
-        *sock.kind.lock() = dev_net::SockKind::UnixListener(listener);
+        *sock.kind.lock() = net::sock::SockKind::UnixListener(listener);
         return 0;
     }
     if family != AF_INET as u16 && family != AF_INET6 as u16 {
@@ -325,7 +325,7 @@ pub fn kernel_sys_bind(args: &SyscallArgs) -> i64 {
     let (_family, ip, port) = match read_sockaddr_any(addr_p) {
         Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
     };
-    match dev_net::stack().bind_udp(ip, port) {
+    match net::sock::stack().bind_udp(ip, port) {
         Ok(())   => {
             *sock.local_port.lock() = Some(port);
             *sock.local_ip.lock()   = ip;
@@ -358,7 +358,7 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
         let dst_path = match read_sockaddr_un_path(dest_p) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        let q = match dev_net::UNIX_REGISTRY.dgram_lookup(&dst_path) {
+        let q = match net::sock::UNIX_REGISTRY.dgram_lookup(&dst_path) {
             Some(q) => q, None => return -(Errno::Enoent.as_i32() as i64),
         };
         let cur = crate::sched::current();
@@ -376,7 +376,7 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
     // TCP path: send into the existing TcpConn (no destaddr needed).
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();
-        return match dev_net::stack().tcp_send(&entry, &payload) {
+        return match net::sock::stack().tcp_send(&entry, &payload) {
             Ok(n)  => { drain_loopback(); n as i64 }
             Err(e) => errno_from_neterr(e),
         };
@@ -463,7 +463,7 @@ pub fn kernel_sys_listen(args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Einval.as_i32() as i64),
     };
     let ip = *sock.local_ip.lock();
-    match dev_net::stack().tcp_listen(ip, port) {
+    match net::sock::stack().tcp_listen(ip, port) {
         Ok(le) => {
             *sock.kind.lock() = SockKind::TcpListener(le);
             0
@@ -506,7 +506,7 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
         SockKind::TcpListener(l) => l.clone(),
         _ => return -(Errno::Einval.as_i32() as i64),
     };
-    let entry = match dev_net::stack().tcp_accept(&listener_arc) {
+    let entry = match net::sock::stack().tcp_accept(&listener_arc) {
         Some(e) => e,
         None    => return -(Errno::Eagain.as_i32() as i64),
     };
@@ -515,7 +515,7 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
         (c.remote.ip, c.remote.port)
     };
     let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = if listener_fam == dev_net::AF_INET6 {
+    let new_sock = if listener_fam == net::sock::AF_INET6 {
         InetSocket::new_tcp6()
     } else {
         InetSocket::new_tcp()
@@ -556,12 +556,12 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
         let path = match read_sockaddr_un_path(addr_p) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        let pair = match dev_net::UNIX_REGISTRY.connect(&path) {
+        let pair = match net::sock::UNIX_REGISTRY.connect(&path) {
             Some(p) => p, None => return -(Errno::Enoent.as_i32() as i64),
         };
         // Client gets the B end of the pair; the server's accept
         // pulls the A end out via the listener's accept_q.
-        *sock.kind.lock() = dev_net::SockKind::Unix(pair, net::UnixEnd::B);
+        *sock.kind.lock() = net::sock::SockKind::Unix(pair, net::UnixEnd::B);
         return 0;
     }
     if family != AF_INET && family != AF_INET6 {
@@ -584,7 +584,7 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
     // TCP active open.
     let local_port = match *sock.local_port.lock() {
         Some(p) => p,
-        None    => match dev_net::alloc_ephemeral_port() {
+        None    => match net::sock::alloc_ephemeral_port() {
             Ok(p) => { *sock.local_port.lock() = Some(p); p }
             Err(e) => return errno_from_neterr(e),
         },
@@ -593,7 +593,7 @@ pub fn kernel_sys_connect(args: &SyscallArgs) -> i64 {
         ip if ip == net::Ipv4Addr::ANY => net::Ipv4Addr::LOOPBACK,
         ip => ip,
     };
-    let entry = match dev_net::stack().tcp_connect(local_ip, local_port, dst_ip, port) {
+    let entry = match net::sock::stack().tcp_connect(local_ip, local_port, dst_ip, port) {
         Ok(e)  => e,
         Err(e) => return errno_from_neterr(e),
     };
@@ -804,7 +804,7 @@ pub fn kernel_sys_shutdown(args: &SyscallArgs) -> i64 {
         if how == SHUT_WR || how == SHUT_RDWR { pair.close_writer(*end); }
     }
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        let _ = dev_net::stack().tcp_close(entry);
+        let _ = net::sock::stack().tcp_close(entry);
         drain_loopback();
     }
     0
@@ -899,7 +899,7 @@ pub fn kernel_sys_recvfrom(args: &SyscallArgs) -> i64 {
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();
         drain_loopback();
-        let payload = dev_net::stack().tcp_recv(&entry, len);
+        let payload = net::sock::stack().tcp_recv(&entry, len);
         if payload.is_empty() { return -(Errno::Eagain.as_i32() as i64); }
         let take = payload.len();
         // SAFETY: ptr+take validated < USER_VA_END; user page mapped.

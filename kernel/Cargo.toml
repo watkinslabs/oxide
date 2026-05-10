@@ -22,7 +22,6 @@ ptrace    = { path = "../crates/kernel/ptrace" }
 perf      = { path = "../crates/kernel/perf" }
 tmpfs     = { path = "../crates/kernel/tmpfs", default-features = false }
 coredump  = { path = "../crates/kernel/coredump" }
-dev-net   = { path = "../crates/kernel/dev/net" }
 elf-load  = { path = "../crates/kernel/elf-load" }
 msi       = { path = "../crates/kernel/msi" }
 dev-modules = { path = "../crates/kernel/dev/modules" }
