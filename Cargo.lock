@@ -80,17 +80,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "coredump"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "sched",
- "sync",
- "tmpfs",
- "vfs",
-]
-
-[[package]]
 name = "cpio"
 version = "0.1.0"
 
@@ -286,6 +275,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "procfs",
  "sched",
  "sync",
  "syscall",
@@ -439,7 +429,6 @@ version = "0.1.0"
 dependencies = [
  "block",
  "boot-info",
- "coredump",
  "cpu",
  "devfs",
  "drm",
@@ -468,13 +457,11 @@ dependencies = [
  "pmm-setup",
  "power",
  "procfs",
- "ptrace",
  "sched",
  "security",
  "smp",
  "sync",
  "syscall",
- "tmpfs",
  "tty",
  "vfs",
  "virtio",
@@ -718,15 +705,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptrace"
-version = "0.1.0"
-dependencies = [
- "hal-x86_64",
- "sched",
- "sync",
-]
-
-[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -963,17 +941,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "tmpfs"
-version = "0.1.0"
-dependencies = [
- "hal",
- "klog",
- "procfs",
- "sync",
- "vfs",
 ]
 
 [[package]]

@@ -46,7 +46,7 @@ pub fn kernel_sys_mount(args: &SyscallArgs) -> i64 {
     }
     match fstype.as_str() {
         "tmpfs" => {
-            let inode: InodeRef = Arc::new(tmpfs::TmpfsRootInode::new(target.clone()));
+            let inode: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.clone()));
             // F119: register in caller's mount_ns so unshared tasks
             // see only their own mounts.
             let ns = cur.mount_ns.load(core::sync::atomic::Ordering::Acquire);
