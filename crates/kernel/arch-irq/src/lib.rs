@@ -66,3 +66,33 @@ pub fn alloc_arm_spi() -> Option<u32> {
     if cur >= first + count { return None; }
     Some(cur)
 }
+
+
+#[cfg(target_os = "oxide-kernel")] pub mod gic;
+#[cfg(target_os = "oxide-kernel")] pub mod its;
+#[cfg(target_os = "oxide-kernel")] pub mod lapic;
+
+/// Hook for "poll the UART for input on each timer tick". Kernel
+/// installs this from `kernel/src/tty.rs::tick_poll_uart` at boot.
+/// gic / lapic call through here instead of hard-linking to tty —
+/// keeps arch-irq free of kernel-side tty integration.
+pub type TickPollFn = unsafe fn();
+static TICK_POLL_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1) — atomic store.
+pub fn set_tick_poll_hook(f: TickPollFn) {
+    TICK_POLL_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// # SAFETY: caller is timer-ISR ctx; hook installed by kernel boot.
+/// # C: O(1) — atomic load + indirect call.
+pub unsafe fn tick_poll() {
+    let p = TICK_POLL_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook ptr installed at boot from a fn matching TickPollFn ABI; load Acquire-paired with Release store in set_tick_poll_hook.
+    unsafe {
+        let f: TickPollFn = core::mem::transmute(p);
+        f()
+    }
+}

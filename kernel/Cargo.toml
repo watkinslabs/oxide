@@ -14,7 +14,7 @@ boot-info = { path = "../crates/shared/boot-info" }
 cpu       = { path = "../crates/kernel/cpu" }
 devfs     = { path = "../crates/kernel/devfs" }
 elf-load  = { path = "../crates/kernel/exec" }
-msi       = { path = "../crates/kernel/arch-irq" }
+arch-irq  = { path = "../crates/kernel/arch-irq" }
 ipc       = { path = "../crates/kernel/ipc" }
 elf     = { path = "../crates/shared/elf" }
 net     = { path = "../crates/kernel/net" }
