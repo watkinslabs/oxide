@@ -141,7 +141,7 @@ pub fn sys_close(args: &SyscallArgs) -> i64 {
     }
 }
 
-fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
+fn sys_getpid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     sched::live::current()
         .map(|c| {
@@ -153,7 +153,7 @@ fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
         .unwrap_or(1)
 }
 
-fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
+fn sys_getppid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let ppid = cur.parent_tid.load(Ordering::Acquire);
@@ -540,8 +540,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_MMAP          => kernel_mmap(&args),
         syscall::nrs::NR_MUNMAP        => kernel_munmap(&args),
         syscall::nrs::NR_EXIT          => kernel_sys_exit(&args),
-        syscall::nrs::NR_GETPID        => kernel_sys_getpid(&args),
-        syscall::nrs::NR_GETPPID       => kernel_sys_getppid(&args),
+        syscall::nrs::NR_GETPID        => sys_getpid(&args),
+        syscall::nrs::NR_GETPPID       => sys_getppid(&args),
         syscall::nrs::NR_READ          => sys_read(&args),
         syscall::nrs::NR_WRITE         => sys_write(&args),
         syscall::nrs::NR_OPEN          => crate::syscalls::open::kernel_sys_open(&args),
@@ -556,7 +556,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_TGKILL        => kernel_sys_tgkill(&args),
         syscall::nrs::NR_GETRANDOM     => kernel_sys_getrandom(&args),
         syscall::nrs::NR_SCHED_YIELD   => crate::syscalls::proc::kernel_sys_sched_yield(&args),
-        syscall::nrs::NR_GETTID        => crate::syscalls::proc::kernel_sys_gettid(&args),
+        syscall::nrs::NR_GETTID        => crate::syscalls::proc::sys_gettid(&args),
         syscall::nrs::NR_SET_TID_ADDRESS => crate::syscalls::proc::kernel_sys_set_tid_address(&args),
         syscall::nrs::NR_WRITEV        => crate::syscalls::fs::kernel_sys_writev(&args),
         syscall::nrs::NR_READV         => crate::syscalls::fs::kernel_sys_readv(&args),

@@ -21,7 +21,7 @@ pub fn kernel_sys_sched_yield(_args: &SyscallArgs) -> i64 {
 /// `sys_gettid()` — slot 186. Returns the current task's `tid`.
 /// PID-NS-virtualized; tasks in init NS see real tid.
 /// # C: O(1)
-pub fn kernel_sys_gettid(_args: &SyscallArgs) -> i64 {
+pub fn sys_gettid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     sched::live::current().map(|c| {
         let v = c.vtid.load(Ordering::Acquire);
