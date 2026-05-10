@@ -5,7 +5,6 @@
 // one of the compat-stubbed slots, `None` to let the caller
 // fall through to its real-impl arms or the in-table dispatch.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
