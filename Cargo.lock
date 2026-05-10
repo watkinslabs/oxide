@@ -130,14 +130,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dev-modules"
-version = "0.1.0"
-dependencies = [
- "modules",
- "sync",
-]
-
-[[package]]
 name = "dev-virtio-gpu-modern"
 version = "0.1.0"
 dependencies = [
@@ -496,7 +488,6 @@ dependencies = [
  "cpu",
  "dev-fbdev",
  "dev-input",
- "dev-modules",
  "dev-virtio-gpu-modern",
  "devfs",
  "drm",

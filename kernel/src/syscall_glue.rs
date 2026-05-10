@@ -316,7 +316,7 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
 /// .modinfo names): pass the index in the low 16 bits.
 fn kernel_sys_delete_module(args: &SyscallArgs) -> i64 {
     let idx = args.a0 as usize & 0xFFFF;
-    if dev_modules::unload(idx) { 0 } else { -(Errno::Einval.as_i32() as i64) }
+    if modules::registry::unload(idx) { 0 } else { -(Errno::Einval.as_i32() as i64) }
 }
 
 /// `init_module(image, len, params)` slot 175.
@@ -335,7 +335,7 @@ fn kernel_sys_init_module(args: &SyscallArgs) -> i64 {
     let bytes: alloc::vec::Vec<u8> = unsafe {
         core::slice::from_raw_parts(img as *const u8, len).to_vec()
     };
-    match dev_modules::load_blob(&bytes) {
+    match modules::registry::load_blob(&bytes) {
         Some(_) => 0,
         None    => -(Errno::Einval.as_i32() as i64),
     }
@@ -367,7 +367,7 @@ fn kernel_sys_finit_module(args: &SyscallArgs) -> i64 {
         }
         if buf.len() > 16 * 1024 * 1024 { return -(Errno::E2big.as_i32() as i64); }
     }
-    match dev_modules::load_blob(&buf) {
+    match modules::registry::load_blob(&buf) {
         Some(_) => 0,
         None    => -(Errno::Einval.as_i32() as i64),
     }
