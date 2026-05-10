@@ -5,9 +5,7 @@
 // fields stub to 0 (v1 has no swap, no pagecache, no slab
 // accounting, no huge-tlb pool).
 
-#![no_std]
 
-extern crate alloc;
 
 use alloc::vec::Vec;
 
