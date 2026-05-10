@@ -76,7 +76,7 @@ fn epoll_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<EpollInode>>
 
 /// `sys_epoll_create(size)` / `sys_epoll_create1(flags)`.
 /// # C: O(N_fds)
-pub fn kernel_sys_epoll_create1(_args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_epoll_create1(_args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
@@ -98,7 +98,7 @@ pub fn kernel_sys_epoll_create1(_args: &syscall::SyscallArgs) -> i64 {
 
 /// `sys_epoll_ctl(epfd, op, fd, event*)`.
 /// # C: O(N_entries)
-pub fn kernel_sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let epfd = args.a0 as i32;
     let op   = args.a1 as i32;
@@ -159,7 +159,7 @@ pub fn kernel_sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
 /// v1: reports each interest entry whose fd is still open as
 /// level-triggered ready, up to maxevents. timeout ignored.
 /// # C: O(N_entries)
-pub fn kernel_sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let epfd = args.a0 as i32;
     let evp  = args.a1;

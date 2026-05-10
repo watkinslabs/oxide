@@ -149,7 +149,7 @@ impl vfs::Inode for IoUringInode {
 
 /// `sys_io_uring_setup(entries, *params)` — slot 425.
 /// # C: O(1)
-pub fn kernel_sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
@@ -200,7 +200,7 @@ pub fn kernel_sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
 /// `sys_io_uring_enter(fd, to_submit, min_complete, flags, sig, sigsz)`
 /// — slot 426.
 /// # C: O(to_submit)
-pub fn kernel_sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd        = args.a0 as i32;
     let to_submit = args.a1 as u32;
@@ -273,17 +273,17 @@ fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
     };
     match opcode {
         IORING_OP_NOP    => 0,
-        IORING_OP_READ   => crate::syscalls::fs::kernel_sys_pread64(&sa),
-        IORING_OP_WRITE  => crate::syscalls::fs::kernel_sys_pwrite64(&sa),
-        IORING_OP_READV  => crate::syscalls::fs::kernel_sys_readv(&sa),
-        IORING_OP_WRITEV => crate::syscalls::fs::kernel_sys_writev(&sa),
+        IORING_OP_READ   => crate::syscalls::fs::sys_pread64(&sa),
+        IORING_OP_WRITE  => crate::syscalls::fs::sys_pwrite64(&sa),
+        IORING_OP_READV  => crate::syscalls::fs::sys_readv(&sa),
+        IORING_OP_WRITEV => crate::syscalls::fs::sys_writev(&sa),
         IORING_OP_FSYNC  => 0,
         IORING_OP_CLOSE  => crate::syscalls::sys_close(&sa),
-        IORING_OP_OPENAT => crate::syscalls::open::kernel_sys_openat(&sa),
-        IORING_OP_SEND   => crate::syscalls::net::kernel_sys_sendto(&sa),
-        IORING_OP_RECV   => crate::syscalls::net::kernel_sys_recvfrom(&sa),
-        IORING_OP_ACCEPT => crate::syscalls::net::kernel_sys_accept(&sa),
-        IORING_OP_CONNECT => crate::syscalls::net::kernel_sys_connect(&sa),
+        IORING_OP_OPENAT => crate::syscalls::open::sys_openat(&sa),
+        IORING_OP_SEND   => crate::syscalls::net::sys_sendto(&sa),
+        IORING_OP_RECV   => crate::syscalls::net::sys_recvfrom(&sa),
+        IORING_OP_ACCEPT => crate::syscalls::net::sys_accept(&sa),
+        IORING_OP_CONNECT => crate::syscalls::net::sys_connect(&sa),
         _ => -(syscall::errno::Errno::Einval.as_i32() as i64),
     }
 }
@@ -291,4 +291,4 @@ fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
 /// `sys_io_uring_register(fd, op, arg, nr_args)` — slot 427.
 /// v1: silent 0 (no fixed-buffer / file registration).
 /// # C: O(1)
-pub fn kernel_sys_io_uring_register(_args: &syscall::SyscallArgs) -> i64 { 0 }
+pub fn sys_io_uring_register(_args: &syscall::SyscallArgs) -> i64 { 0 }

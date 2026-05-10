@@ -19,7 +19,7 @@ const RSEQ_FLAG_UNREGISTER: u32 = 1;
 /// `flags & RSEQ_FLAG_UNREGISTER` (1) clears the slot. The signature
 /// is stored but not enforced (glibc/musl treat it as a cookie).
 /// # C: O(1)
-pub fn kernel_sys_rseq(args: &SyscallArgs) -> i64 {
+pub fn sys_rseq(args: &SyscallArgs) -> i64 {
     let ptr   = args.a0;
     let len   = args.a1 as u32;
     let flags = args.a2 as u32;

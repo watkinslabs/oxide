@@ -43,7 +43,7 @@ pub fn new_pidfd_inode(tid: u32) -> InodeRef {
 
 /// `sys_pidfd_open(pid, flags)` — allocates a pidfd bound to `pid`.
 /// # C: O(N_fds)
-pub fn kernel_sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use alloc::sync::Arc;
     use vfs::{Dentry, File, OpenFlags};
@@ -76,7 +76,7 @@ pub fn kernel_sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
 /// Resolves the pidfd's bound tid via the inode marker and posts
 /// the signal bit into that task's sigpending.
 /// # C: O(N_tasks)
-pub fn kernel_sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let fd  = args.a0 as i32;
@@ -118,7 +118,7 @@ pub fn kernel_sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
 ///     file description, so cursor + flock state are shared with the
 ///     target task — exactly what callers expect for fd-passing).
 /// # C: O(N_fds)
-pub fn kernel_sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let pidfd     = args.a0 as i32;
     let target_fd = args.a1 as i32;

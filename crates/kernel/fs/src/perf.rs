@@ -98,7 +98,7 @@ impl vfs::Inode for PerfEventInode {
 
 /// `perf_event_open(attr, pid, cpu, group_fd, flags)` — slot 298.
 /// # C: O(1)
-pub fn kernel_sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_perf_event_open(_args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;

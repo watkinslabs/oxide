@@ -34,7 +34,7 @@ fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
 /// current global hostname into a per-task UTS slot. Other CLONE_NEW*
 /// bits set the membership bit but per-NS isolation isn't enforced.
 /// # C: O(1)
-pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
+pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let flags = args.a0;
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
@@ -106,7 +106,7 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
 /// inode to NsInode (per `26§R01`); validates kind, writes the
 /// captured ns id into the calling task's matching slot.
 /// # C: O(1)
-pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
+pub fn sys_setns(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd     = args.a0 as i32;
     let nstype = args.a1;
@@ -148,7 +148,7 @@ pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
 /// PTRACE_GETREGS/SETREGS/GETREGSET/SETREGSET/GETSIGINFO — silent 0.
 /// Anything else → -EINVAL (per Linux for unknown ptrace request).
 /// # C: O(N_tasks) on PTRACE_ATTACH lookup; O(1) otherwise.
-pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
+pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     const PTRACE_TRACEME:    u64 = 0;
@@ -415,7 +415,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
 ///   pid <  -1 — fan to pgrp `(-pid)`.
 /// `sig == 0` is a permission probe.
 /// # C: O(N_tasks) on pgrp fan; O(N_tasks) lookup for non-self pid
-pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
+pub fn sys_kill(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid = args.a0 as i32;
     let sig = args.a1 as i32;
@@ -507,7 +507,7 @@ pub fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool
 /// array; writes the prior to `oldact` if non-NULL. Layout:
 ///   { sa_handler: u64, sa_flags: u64, sa_restorer: u64, sa_mask: u64 }
 /// # C: O(1)
-pub fn kernel_sys_rt_sigaction(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
     use sched::SaHandler;
     use syscall::errno::Errno;
     let sig = args.a0 as usize;
@@ -551,7 +551,7 @@ pub fn kernel_sys_rt_sigaction(args: &SyscallArgs) -> i64 {
 
 /// `sys_rt_sigprocmask(how, set, oldset, sz)` — slot 14.
 /// # C: O(1)
-pub fn kernel_sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     const SIG_BLOCK:   u64 = 0;
@@ -587,7 +587,7 @@ pub fn kernel_sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
 
 /// `sys_sigaltstack(ss, oldss)` — slot 131.
 /// # C: O(1)
-pub fn kernel_sys_sigaltstack(args: &SyscallArgs) -> i64 {
+pub fn sys_sigaltstack(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let ss    = args.a0;
@@ -624,7 +624,7 @@ pub fn kernel_sys_sigaltstack(args: &SyscallArgs) -> i64 {
 
 /// `sys_rt_sigpending(set, sz)` — slot 127.
 /// # C: O(1)
-pub fn kernel_sys_rt_sigpending(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let set = args.a0;
@@ -642,7 +642,7 @@ pub fn kernel_sys_rt_sigpending(args: &SyscallArgs) -> i64 {
 
 /// `sys_rt_sigsuspend(mask, sz)` — slot 130.
 /// # C: O(yields until signal)
-pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let mask = args.a0;
@@ -673,7 +673,7 @@ pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
 
 /// `sys_rt_sigtimedwait(set, info, timeout, sz)` — slot 128.
 /// # C: O(yields until signal or timeout)
-pub fn kernel_sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     use syscall::errno::Errno;
@@ -739,20 +739,20 @@ pub fn kernel_sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
 
 /// `sys_rt_sigqueueinfo(pid, sig, info)` — slot 129.
 /// # C: O(N_tasks)
-pub fn kernel_sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
     let kill_args = SyscallArgs {
         a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0,
     };
-    kernel_sys_kill(&kill_args)
+    sys_kill(&kill_args)
 }
 
 /// `sys_rt_tgsigqueueinfo(tgid, tid, sig, info)` — slot 297.
 /// # C: O(1)
-pub fn kernel_sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
+pub fn sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
     let tgkill_args = SyscallArgs {
         a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0,
     };
-    kernel_sys_tgkill(&tgkill_args)
+    sys_tgkill(&tgkill_args)
 }
 
 /// One signal ready for delivery.
@@ -785,7 +785,7 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
 /// `sys_tgkill(tgid, tid, sig)` — slot 234. Validates that the
 /// target tid belongs to the named tgid before delivering.
 /// # C: O(N_tasks) lookup
-pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
+pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let tgid = args.a0 as i32;

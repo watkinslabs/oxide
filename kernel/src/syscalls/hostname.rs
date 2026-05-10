@@ -79,7 +79,7 @@ pub fn domain_set(new: &[u8]) {
 /// `sys_setdomainname(name, len)` — slot 171. Mirror of sethostname
 /// for the NIS/YP domain name slot.
 /// # C: O(N)
-pub fn kernel_sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let ptr = args.a0;
     let len = args.a1 as usize;

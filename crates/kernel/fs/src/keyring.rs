@@ -84,7 +84,7 @@ fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
 /// `sys_add_key(type, description, payload, plen, keyring)` — slot 217.
 /// Stores a new key, returns its serial.
 /// # C: O(N_keys)
-pub fn kernel_sys_add_key(args: &SyscallArgs) -> i64 {
+pub fn sys_add_key(args: &SyscallArgs) -> i64 {
     let type_p = args.a0;
     let desc_p = args.a1;
     let payload_p = args.a2;
@@ -113,7 +113,7 @@ pub fn kernel_sys_add_key(args: &SyscallArgs) -> i64 {
 /// Searches the global key store by (type, description). v1 has no
 /// callout helper, so missing keys return ENOKEY immediately.
 /// # C: O(N_keys)
-pub fn kernel_sys_request_key(args: &SyscallArgs) -> i64 {
+pub fn sys_request_key(args: &SyscallArgs) -> i64 {
     const ENOKEY: i32 = 126;
     let type_p = args.a0;
     let desc_p = args.a1;
@@ -146,9 +146,9 @@ const KEYCTL_SET_REQKEY_KEYRING: u64 = 14;
 pub fn keyring_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
     let rv = match nr {
-        NR_ADD_KEY     => kernel_sys_add_key(args),
-        NR_REQUEST_KEY => kernel_sys_request_key(args),
-        NR_KEYCTL      => kernel_sys_keyctl(args),
+        NR_ADD_KEY     => sys_add_key(args),
+        NR_REQUEST_KEY => sys_request_key(args),
+        NR_KEYCTL      => sys_keyctl(args),
         _ => return None,
     };
     Some(rv)
@@ -156,7 +156,7 @@ pub fn keyring_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
 
 /// `sys_keyctl(op, arg2, arg3, arg4, arg5)` — slot 219.
 /// # C: depends on op
-pub fn kernel_sys_keyctl(args: &SyscallArgs) -> i64 {
+pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
     const EKEYREVOKED: i32 = 128;
     const ENOKEY:      i32 = 126;
     match args.a0 {

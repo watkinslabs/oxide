@@ -94,7 +94,7 @@ fn lookup_by_key(key: i32) -> Option<Arc<SemSet>> {
 
 /// `semget(key, nsems, semflg)` — slot NR_SEMGET.
 /// # C: O(N_sets) on lookup
-pub fn kernel_sys_semget(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_semget(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let key   = args.a0 as i32;
     let nsems = args.a1 as usize;
@@ -188,7 +188,7 @@ fn trial_apply(buf: &[Sembuf], n: usize, vals: &[i32]) -> Trial {
 /// # C: O(nsops × N_retries) — bounded by IPC progress
 /// # Lk: SemSet.vals → WaitList.waiters (publisher releases vals
 ///       BEFORE wake; waiter holds vals while pushing to wait list)
-pub fn kernel_sys_semop(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_semop(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let semid = args.a0 as i32;
     let sops  = args.a1;
@@ -252,7 +252,7 @@ pub fn kernel_sys_semop(args: &syscall::SyscallArgs) -> i64 {
 
 /// `semctl(semid, semnum, cmd, arg)` — slot NR_SEMCTL.
 /// # C: O(N_sets) lookup + O(nsems) for GETALL/SETALL
-pub fn kernel_sys_semctl(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_semctl(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let semid  = args.a0 as i32;
     let semnum = args.a1 as usize;
@@ -323,6 +323,6 @@ pub fn kernel_sys_semctl(args: &syscall::SyscallArgs) -> i64 {
 /// `semtimedop(semid, sops, nsops, timeout)` — slot NR_SEMTIMEDOP.
 /// Timeout ignored; aliases semop for v1.
 /// # C: O(nsops)
-pub fn kernel_sys_semtimedop(args: &syscall::SyscallArgs) -> i64 {
-    kernel_sys_semop(args)
+pub fn sys_semtimedop(args: &syscall::SyscallArgs) -> i64 {
+    sys_semop(args)
 }

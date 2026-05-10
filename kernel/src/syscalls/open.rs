@@ -34,7 +34,7 @@ fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
 
 /// `sys_open(path, flags, mode)` — slot 2.
 /// # C: O(N_path)
-pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
+pub fn sys_open(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let flags    = args.a1 as u32;
     let _mode    = args.a2;
@@ -114,7 +114,7 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
 
 /// `sys_openat(dirfd, path, flags, mode)` — slot 257.
 /// # C: O(N_path)
-pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
+pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a1;
     let flags    = args.a2 as u32;
     if path_ptr == 0 || path_ptr >= USER_VA_END {

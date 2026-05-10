@@ -23,7 +23,7 @@ use core::sync::atomic::Ordering;
 
 /// `sys_getuid` — slot 102. Returns the real uid.
 /// # C: O(1)
-pub fn kernel_sys_getuid(_args: &SyscallArgs) -> i64 {
+pub fn sys_getuid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
         Some(t) => t.creds.ruid.load(Ordering::Acquire) as i64,
         None    => 0,
@@ -32,7 +32,7 @@ pub fn kernel_sys_getuid(_args: &SyscallArgs) -> i64 {
 
 /// `sys_geteuid` — slot 107. Returns the effective uid.
 /// # C: O(1)
-pub fn kernel_sys_geteuid(_args: &SyscallArgs) -> i64 {
+pub fn sys_geteuid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
         Some(t) => t.creds.euid.load(Ordering::Acquire) as i64,
         None    => 0,
@@ -41,7 +41,7 @@ pub fn kernel_sys_geteuid(_args: &SyscallArgs) -> i64 {
 
 /// `sys_getgid` — slot 104. Returns the real gid.
 /// # C: O(1)
-pub fn kernel_sys_getgid(_args: &SyscallArgs) -> i64 {
+pub fn sys_getgid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
         Some(t) => t.creds.rgid.load(Ordering::Acquire) as i64,
         None    => 0,
@@ -50,7 +50,7 @@ pub fn kernel_sys_getgid(_args: &SyscallArgs) -> i64 {
 
 /// `sys_getegid` — slot 108. Returns the effective gid.
 /// # C: O(1)
-pub fn kernel_sys_getegid(_args: &SyscallArgs) -> i64 {
+pub fn sys_getegid(_args: &SyscallArgs) -> i64 {
     match crate::live::current() {
         Some(t) => t.creds.egid.load(Ordering::Acquire) as i64,
         None    => 0,
@@ -71,7 +71,7 @@ fn writeback3(p_a: u64, va: u32, p_b: u64, vb: u32, p_c: u64, vc: u32) -> Result
 
 /// `sys_getresuid(ruid_out, euid_out, suid_out)` — slot 118.
 /// # C: O(1)
-pub fn kernel_sys_getresuid(args: &SyscallArgs) -> i64 {
+pub fn sys_getresuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let r = cur.creds.ruid.load(Ordering::Acquire);
     let e = cur.creds.euid.load(Ordering::Acquire);
@@ -83,7 +83,7 @@ pub fn kernel_sys_getresuid(args: &SyscallArgs) -> i64 {
 
 /// `sys_getresgid(rgid_out, egid_out, sgid_out)` — slot 120.
 /// # C: O(1)
-pub fn kernel_sys_getresgid(args: &SyscallArgs) -> i64 {
+pub fn sys_getresgid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let r = cur.creds.rgid.load(Ordering::Acquire);
     let e = cur.creds.egid.load(Ordering::Acquire);
@@ -105,7 +105,7 @@ fn uid_allowed(target: u32, r: u32, e: u32, s: u32) -> bool {
 /// Free-transition allowed when the task holds CAP_SETUID (F92).
 /// Without the cap, transitions are confined to the existing triple.
 /// # C: O(1)
-pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
+pub fn sys_setresuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
@@ -129,7 +129,7 @@ pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
 
 /// `sys_setresgid(rgid, egid, sgid)` — slot 119. Cap = SETGID.
 /// # C: O(1)
-pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
+pub fn sys_setresgid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
@@ -153,7 +153,7 @@ pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
 
 /// `sys_setuid(uid)` — slot 105.
 /// # C: O(1)
-pub fn kernel_sys_setuid(args: &SyscallArgs) -> i64 {
+pub fn sys_setuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let uid = args.a0 as u32;
     if cur.has_cap(crate::cap::SETUID) {
@@ -174,7 +174,7 @@ pub fn kernel_sys_setuid(args: &SyscallArgs) -> i64 {
 
 /// `sys_setgid(gid)` — slot 106.
 /// # C: O(1)
-pub fn kernel_sys_setgid(args: &SyscallArgs) -> i64 {
+pub fn sys_setgid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let gid = args.a0 as u32;
     if cur.has_cap(crate::cap::SETGID) {
@@ -198,7 +198,7 @@ pub fn kernel_sys_setgid(args: &SyscallArgs) -> i64 {
 /// existing {ruid, euid, suid}. If euid is changed and ruid was
 /// either set explicitly or != euid, suid follows the new euid.
 /// # C: O(1)
-pub fn kernel_sys_setreuid(args: &SyscallArgs) -> i64 {
+pub fn sys_setreuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
@@ -223,7 +223,7 @@ pub fn kernel_sys_setreuid(args: &SyscallArgs) -> i64 {
 
 /// `sys_setregid(rgid, egid)` — slot 114.
 /// # C: O(1)
-pub fn kernel_sys_setregid(args: &SyscallArgs) -> i64 {
+pub fn sys_setregid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
@@ -250,7 +250,7 @@ pub fn kernel_sys_setregid(args: &SyscallArgs) -> i64 {
 /// {ruid, euid, suid, current fsuid}; otherwise change is silently
 /// dropped and the previous value still returned.
 /// # C: O(1)
-pub fn kernel_sys_setfsuid(args: &SyscallArgs) -> i64 {
+pub fn sys_setfsuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let uid = args.a0 as u32;
     let prev = cur.creds.fsuid.load(Ordering::Acquire);
@@ -267,7 +267,7 @@ pub fn kernel_sys_setfsuid(args: &SyscallArgs) -> i64 {
 /// `sys_setfsgid(gid)` — slot 123. Same semantics as setfsuid for the
 /// gid triple.
 /// # C: O(1)
-pub fn kernel_sys_setfsgid(args: &SyscallArgs) -> i64 {
+pub fn sys_setfsgid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let gid = args.a0 as u32;
     let prev = cur.creds.fsgid.load(Ordering::Acquire);
@@ -285,7 +285,7 @@ pub fn kernel_sys_setfsgid(args: &SyscallArgs) -> i64 {
 /// size > 0 writes the supplementary group list to `list`. size==0
 /// is a query (returns ngroups without writing).
 /// # C: O(NGROUPS_V1)
-pub fn kernel_sys_getgroups(args: &SyscallArgs) -> i64 {
+pub fn sys_getgroups(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let size = args.a0 as usize;
     let list = args.a1;
@@ -310,7 +310,7 @@ pub fn kernel_sys_getgroups(args: &SyscallArgs) -> i64 {
 /// `sys_setgroups(size, list)` — slot 116. Replaces the supplementary
 /// group list. Linux requires CAP_SETGID (root for v1).
 /// # C: O(NGROUPS_V1)
-pub fn kernel_sys_setgroups(args: &SyscallArgs) -> i64 {
+pub fn sys_setgroups(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(crate::cap::SETGID) { return -(Errno::Eperm.as_i32() as i64); }
     let size = args.a0 as usize;
@@ -393,7 +393,7 @@ fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
 /// returned per Linux when ver was unknown — used by libcap as a
 /// version-probe pattern.
 /// # C: O(1)
-pub fn kernel_sys_capget(args: &SyscallArgs) -> i64 {
+pub fn sys_capget(args: &SyscallArgs) -> i64 {
     let hp = args.a0;
     let dp = args.a1;
     // SAFETY: read_caphdr validates the pointer range itself.
@@ -436,7 +436,7 @@ pub fn kernel_sys_capget(args: &SyscallArgs) -> i64 {
 ///   * new inheritable ⊆ old inheritable ∪ old permitted (intersected with bounding)
 /// Root may freely shrink; raising bits beyond old_permitted is EPERM.
 /// # C: O(1)
-pub fn kernel_sys_capset(args: &SyscallArgs) -> i64 {
+pub fn sys_capset(args: &SyscallArgs) -> i64 {
     let hp = args.a0;
     let dp = args.a1;
     // SAFETY: read_caphdr validates hp range and reads u32 ver + i32 pid from caller AS at CPL=0; this call site only consumes the returned pair.
@@ -496,24 +496,24 @@ pub fn kernel_sys_capset(args: &SyscallArgs) -> i64 {
 pub fn cred_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
     let rv = match nr {
-        NR_GETUID    => kernel_sys_getuid(args),
-        NR_GETEUID   => kernel_sys_geteuid(args),
-        NR_GETGID    => kernel_sys_getgid(args),
-        NR_GETEGID   => kernel_sys_getegid(args),
-        NR_GETRESUID => kernel_sys_getresuid(args),
-        NR_GETRESGID => kernel_sys_getresgid(args),
-        NR_SETUID    => kernel_sys_setuid(args),
-        NR_SETGID    => kernel_sys_setgid(args),
-        NR_SETREUID  => kernel_sys_setreuid(args),
-        NR_SETREGID  => kernel_sys_setregid(args),
-        NR_SETRESUID => kernel_sys_setresuid(args),
-        NR_SETRESGID => kernel_sys_setresgid(args),
-        NR_SETFSUID  => kernel_sys_setfsuid(args),
-        NR_SETFSGID  => kernel_sys_setfsgid(args),
-        NR_GETGROUPS => kernel_sys_getgroups(args),
-        NR_SETGROUPS => kernel_sys_setgroups(args),
-        NR_CAPGET    => kernel_sys_capget(args),
-        NR_CAPSET    => kernel_sys_capset(args),
+        NR_GETUID    => sys_getuid(args),
+        NR_GETEUID   => sys_geteuid(args),
+        NR_GETGID    => sys_getgid(args),
+        NR_GETEGID   => sys_getegid(args),
+        NR_GETRESUID => sys_getresuid(args),
+        NR_GETRESGID => sys_getresgid(args),
+        NR_SETUID    => sys_setuid(args),
+        NR_SETGID    => sys_setgid(args),
+        NR_SETREUID  => sys_setreuid(args),
+        NR_SETREGID  => sys_setregid(args),
+        NR_SETRESUID => sys_setresuid(args),
+        NR_SETRESGID => sys_setresgid(args),
+        NR_SETFSUID  => sys_setfsuid(args),
+        NR_SETFSGID  => sys_setfsgid(args),
+        NR_GETGROUPS => sys_getgroups(args),
+        NR_SETGROUPS => sys_setgroups(args),
+        NR_CAPGET    => sys_capget(args),
+        NR_CAPSET    => sys_capset(args),
         _ => return None,
     };
     Some(rv)

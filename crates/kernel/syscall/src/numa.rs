@@ -8,7 +8,7 @@ use crate::errno::Errno;
 
 /// `sys_get_mempolicy(mode_p, nodemask_p, maxnode, addr, flags)` — slot 239.
 /// # C: O(maxnode/8)
-pub fn kernel_sys_get_mempolicy(args: &SyscallArgs) -> i64 {
+pub fn sys_get_mempolicy(args: &SyscallArgs) -> i64 {
     let mode_p  = args.a0;
     let mask_p  = args.a1;
     let maxnode = args.a2 as usize;
