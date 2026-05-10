@@ -108,7 +108,7 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
         || crate::devfs::lookup(s).is_some()
         || crate::procfs::lookup_dynamic(s).is_some()
         || tmpfs::lookup(s).is_some()
-        || dev_ext4::lookup_path(s.as_bytes()).is_some();
+        || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
     if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     let cur = match crate::sched::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
@@ -213,7 +213,7 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
             if let Some(i) = crate::devfs::lookup(s) { i }
             else if let Some(i) = crate::procfs::lookup_dynamic(s) { i }
             else if let Some(i) = tmpfs::lookup(s) { i }
-            else if let Some(i) = dev_ext4::lookup_inode_any(s.as_bytes()) { i }
+            else if let Some(i) = ext4::rootfs::lookup_inode_any(s.as_bytes()) { i }
             else { return -(Errno::Enoent.as_i32() as i64); }
         }
         _ if (flags & AT_EMPTY_PATH) != 0 => {
@@ -316,7 +316,7 @@ pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
         (i.ino(), i.file_type(), i.size())
     } else if let Some(i) = tmpfs::lookup(s) {
         (i.ino(), i.file_type(), i.size())
-    } else if let Some((ino, ft, sz)) = dev_ext4::stat_path(s.as_bytes()) {
+    } else if let Some((ino, ft, sz)) = ext4::rootfs::stat_path(s.as_bytes()) {
         ((0x6E54_0000u64 | ino as u64), ft, sz)
     } else {
         return -(Errno::Enoent.as_i32() as i64);
@@ -597,7 +597,7 @@ pub fn kernel_sys_access(args: &SyscallArgs) -> i64 {
     let resolves = crate::devfs::lookup(s).is_some()
         || crate::procfs::lookup_dynamic(s).is_some()
         || tmpfs::lookup(s).is_some()
-        || dev_ext4::lookup_path(s.as_bytes()).is_some();
+        || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
     if resolves { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
 
