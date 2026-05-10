@@ -357,3 +357,57 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
         }
     }
 }
+
+
+/// Already-validated remote-address target for connect/sendto.
+pub enum RemoteAddr {
+    /// `connect`/`sendto` on AF_UNIX — registry lookup by path.
+    UnixPath(String),
+    /// `connect`/`sendto` on AF_INET — IPv4 destination.
+    Inet { ip: Ipv4Addr, port: u16 },
+}
+
+/// Connect a socket to a remote per `connect(2)`. Tier-2 work fn.
+/// Handles AF_UNIX path-lookup, AF_INET UDP peer-stash, AF_INET TCP
+/// active open + 3WHS drain.
+/// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
+pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<(), NetError> {
+    match addr {
+        RemoteAddr::UnixPath(path) => {
+            let pair = UNIX_REGISTRY.connect(&path).ok_or(NetError::Enobufs)?;
+            *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
+            Ok(())
+        }
+        RemoteAddr::Inet { ip: dst_ip, port } => {
+            let is_dgram = matches!(*sock.kind.lock(), SockKind::Udp);
+            if is_dgram {
+                *sock.peer.lock() = Some((dst_ip, port));
+                return Ok(());
+            }
+            // TCP active open: allocate local port if unbound, default
+            // local IP to loopback if ANY, kick stack, drain a few
+            // times, fail with Etimedout (mapped at the ABI layer)
+            // if we don't reach Established.
+            let local_port = match *sock.local_port.lock() {
+                Some(p) => p,
+                None    => {
+                    let p = alloc_ephemeral_port()?;
+                    *sock.local_port.lock() = Some(p);
+                    p
+                }
+            };
+            let local_ip = match *sock.local_ip.lock() {
+                ip if ip == Ipv4Addr::ANY => Ipv4Addr::LOOPBACK,
+                ip => ip,
+            };
+            let entry = stack().tcp_connect(local_ip, local_port, dst_ip, port)?;
+            *sock.kind.lock() = SockKind::TcpConn(entry.clone());
+            *sock.peer.lock() = Some((dst_ip, port));
+            for _ in 0..4 { drain_loopback(); }
+            if !entry.conn.lock().state.is_established() {
+                return Err(NetError::Eio); // ABI maps to Etimedout
+            }
+            Ok(())
+        }
+    }
+}
