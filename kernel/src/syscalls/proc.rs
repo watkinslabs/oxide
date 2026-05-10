@@ -267,7 +267,7 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 }
 
 // `sys_rseq` + rseq_writeback live in `syscall_glue_rseq.rs` (F86).
-pub use sched::syscalls::rseq::{kernel_sys_rseq, rseq_writeback};
+pub use sched::rseq::{kernel_sys_rseq, rseq_writeback};
 
 // `sys_chroot` real impl moved to `syscall_glue_chroot.rs` (F95).
 
