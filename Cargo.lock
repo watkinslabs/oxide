@@ -561,6 +561,7 @@ dependencies = [
  "pmm-setup",
  "power",
  "procfs",
+ "procfs-meminfo",
  "ptrace",
  "sched",
  "security",
@@ -568,6 +569,8 @@ dependencies = [
  "smp",
  "sync",
  "syscall",
+ "syscall-glue-dmesg",
+ "syscall-glue-numa",
  "timerfd",
  "tmpfs",
  "tty",
@@ -826,6 +829,13 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+]
+
+[[package]]
+name = "procfs-meminfo"
+version = "0.1.0"
+dependencies = [
+ "pmm-setup",
 ]
 
 [[package]]
@@ -1091,6 +1101,23 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+]
+
+[[package]]
+name = "syscall-glue-dmesg"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "syscall",
+]
+
+[[package]]
+name = "syscall-glue-numa"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "syscall",
 ]
 
 [[package]]

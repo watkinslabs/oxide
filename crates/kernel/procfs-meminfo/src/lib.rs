@@ -5,7 +5,9 @@
 // fields stub to 0 (v1 has no swap, no pagecache, no slab
 // accounting, no huge-tlb pool).
 
-#![cfg(target_os = "oxide-kernel")]
+#![no_std]
+
+extern crate alloc;
 
 use alloc::vec::Vec;
 
@@ -45,7 +47,7 @@ pub fn build() -> Vec<u8> {
 }
 
 fn pmm_kb_stats() -> (u64, u64) {
-    match crate::pmm_setup::pmm_static() {
+    match pmm_setup::pmm_static() {
         Some(p) => (p.free_pages() * 4, p.allocated_pages() * 4),
         None    => (0, 0),
     }
