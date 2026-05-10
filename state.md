@@ -1,67 +1,69 @@
-# State 2026-05-10 (session 3)
+# State 2026-05-10 (session 4)
 
 ## Branch
 
-`F156-mm-linux-conformance` — PR #920 against `main`. HEAD = `1bde732`.
+`F156-mm-linux-conformance` — PR #920 against `main`. HEAD = `216fa7f`.
 
 ## What's working end-to-end (x86_64)
 
-- `cargo run -p xtask -- qemu --arch x86_64` → `oxide login: root` → `~ #` shell prompt with cwd = `/root`.
-- Shebang chain in execve runs `/etc/init.d/rcS` via `/bin/sh`.
-- `access`/`stat`/`statx`/`chdir` resolve ext4 paths (was devfs-only).
-- `/etc/login.defs` + `/root/.profile` → busybox login sets PATH so `ls`, `cat`, … work at first prompt.
-- Single getty on tty1 (was tty1+tty2 fighting for the muxed serial).
+- `cargo run -p xtask -- qemu --arch x86_64` → login → fork+exec cycles hit
+  COW remap on stack, **no kernel panic** (was `MmuOps::map walker failure`
+  pre-216fa7f).
+- 1034 hosted tests passing, 0 failing, spec-lint clean.
 
-## arm64 status — partial progress, fork now fires
+## What's new in this session (216fa7f)
 
-`cargo run -p xtask -- qemu --arch aarch64` reaches `init-arm: spawned`,
-busybox init reads `/etc/inittab` (`sys_read` returns 173 bytes), parses,
-calls `sys_clone` (returns child pid 0x1000). After fork the syscall
-trace stops — child likely faults during execve(`/etc/init.d/rcS`) or
-the scheduler doesn't pick up the new task. Last syscall observed:
-`pid=0xC0DE0002 nr=56 (clone) flags=0x11 a0=0x11`.
+1. **COW remap fix** in `hal-x86_64::mmu_ops::map` and
+   `hal-aarch64::mmu_ops::map`: when the walker reports
+   `WalkErr::AlreadyMapped`, route through `unmap_at_va` then re-call
+   `map_at_level`. Linux-equivalent for the `wp_page_copy` shape that
+   installs a freshly-allocated private PA over a previously-shared one.
 
-## Last-session fixes (HEAD..c4a5ff2)
+2. **Full anon_vma + PageRmap subsystem** under `crates/vmm/`:
+   - `anon_vma.rs` — `AnonVma` family with `RmapTarget` chain,
+     attach/detach/walk/gc_dangling, `Weak<AddressSpace>` for
+     auto-pruning of dropped AS edges.
+   - `rmap.rs` — `PageRmap { mapping, page_index, mapcount }`
+     per-page descriptor + `rmap_walk_anon` per Linux
+     `mm/rmap.c::rmap_walk_anon`.
+   - `Vma::anon_vma: Option<Arc<AnonVma>>` auto-allocated for
+     `VmaBacking::Anonymous`; cloned through `clone` +
+     `clone_subrange` so fork + mprotect-split keep family membership.
+   - `AddressSpace::fork_cow_pages` attaches child mm-weak per
+     anon VMA (Linux `anon_vma_fork`).
+   - `sync::AnonVma` lock class at rank 25 (between PageTable=20 and
+     AddressSpace=30).
 
-- `1bde732` — **ungate NR_READ on arm**. The dispatch arm was
-  `#[cfg(target_arch = "x86_64")]`, so every arm userspace read fell
-  through to the legacy `dispatch::sys_read` stub returning
-  `Err(Ebadf)` unconditionally. Init's `/etc/inittab` read now succeeds
-  and the fork cascade proceeds. Plus warning sweep (intel_syntax
-  redundant directives + unused imports).
-- `e34d60d` — ext4 fallback in `sys_access`/`sys_stat`/`sys_statx`,
-  `/etc/login.defs`, `/root/.profile`, drop tty2 from inittab.
-- `e0ad8d3` — execve shebang chain (Linux fs/binfmt_script.c shape,
-  `BINPRM_MAX_RECURSION=4`), `sys_chdir` ext4 fallback, `xtask qemu`
-  defaults to `--features debug-all`.
+3. **Tests** — 18 new hosted tests covering: pt_walker
+   unmap-then-remap; anon_vma chain attach / walk / Weak filter / gc;
+   PageRmap set/replace/clear/mapcount; rmap_walk_anon target
+   enumeration; HostMmu-backed COW chain regression that pins the
+   F156 fix in place.
 
-## Open / next session
+## Open / next session — arm64 fork-ABI segfault
 
-1. **arm64 post-clone silence** — find why the child task after
-   `sys_clone` doesn't surface in the syscall trace. Check whether
-   the cloned task is enqueued on the runqueue, whether
-   `spawn_user_thread_with_vpid`'s arm path has a parity gap with
-   x86, and whether the child's first syscall is actually entering
-   `oxide_syscall_dispatch`. Add klog at child task's first scheduler
-   pickup to confirm progress vs scheduler stall.
-2. **Other arm-only dispatcher gates** — `NR_READ` was the obvious
-   one; audit `kernel/src/syscall_glue.rs` for any remaining
-   `#[cfg(target_arch = "x86_64")]` arms that should apply to both
-   arches (only `NR_ARCH_PRCTL` is legitimately x86-only).
-3. **Build warnings** — down from ~50 to ~38 distinct ones. Remaining
-   are mostly cfg-gated unused imports in hal-aarch64/hal-x86_64
-   under `#[cfg(target_os = "oxide-kernel")]` — fixes need to keep
-   the imports under the same cfg as their use, not blanket remove.
-4. **klog UART character drops under heavy syscall trace** — single
-   bytes lost from contiguous `[INFO]/[SYS]` output when debug-all
-   floods. Per-CPU spinlock or atomic ringbuf around klog::write_raw
-   would fix it.
+`cargo run -p xtask -- qemu --arch aarch64`: init reads inittab,
+forks (`sys_clone child_tid=4096`), child runs ~10 syscalls then
+SIGSEGVs at `far=0x500f70 elr=0x100f0e60` (busybox userspace code).
+Three children spawn and die the same way; eventually init itself
+segfaults. Fault address sits in busybox's stack region, suggesting
+the post-fork user register save/restore on arm doesn't faithfully
+hand the child's SVC-resume frame. Likely candidates:
+- `hal_aarch64::ContextAArch64::new_user_for_fork` register slots
+  off-by-one vs `oxide_irq_resume_user` asm
+- `clone_spawn_arch` SVC-frame snapshot missing x18/x29/x30 sources
+- TPIDR_EL0 / SP_EL0 wiring mismatch on first eret
 
-## First task next session
+First task next session: gdb-stub at child's first eret, dump x0..x30
++ ELR + SP, compare against parent's saved frame at sys_clone entry.
 
-```
-cargo run -p xtask -- qemu --arch aarch64
-# observe: init forks at sys_clone (nr=56), trace goes silent.
-# add klog in sched::spawn_user_thread_with_vpid + first scheduler
-# pickup of cloned task to see whether the runqueue is processing it.
-```
+## Other gaps (not this commit)
+
+- File-backed rmap via `address_space->i_mmap` interval tree.
+- Hierarchical `anon_vma->root` (Linux trick to avoid walking
+  child-only pages).
+- Kernel `pmm_setup` injection of `PageRmap` into `PageMeta` so
+  `set_anon_vma` / `clear_anon_vma` get called from demand-fault
+  and munmap. Currently the data structures + tests live in vmm;
+  the kernel-side wiring is the next layer.
+- Swap, KSM, NUMA — out of v1 scope.
