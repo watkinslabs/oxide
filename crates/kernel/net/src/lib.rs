@@ -42,6 +42,9 @@ pub use route::{RouteEntry, RouteTable};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStats};
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod sock;
 pub use loopback::LoopbackDev;
 
 pub use addr::{

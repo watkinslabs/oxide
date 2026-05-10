@@ -6,7 +6,7 @@ publish = false
 license = "MPL-2.0"
 
 [dependencies]
-dev-net = { path = "../../dev/net" }
+net = { path = "../../net" }
 hal     = { path = "../../../arch/hal" }
 sync    = { path = "../../../shared/sync" }
 syscall = { path = "../../syscall" }
