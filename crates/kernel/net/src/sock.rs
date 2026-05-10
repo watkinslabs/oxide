@@ -1,18 +1,16 @@
-// Kernel-side wrapper around `net::NetStack`. One global stack
+// Kernel-side wrapper around `crate::NetStack`. One global stack
 // owns the iface registry + UDP port map; boot calls `init()` to
 // register the loopback netdev. AF_INET socket fds are VFS Inodes
 // that hold an ephemeral src port + a destination address (set by
 // connect / overridden per-sendto).
 
-#![no_std]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use net::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
-use net::stack::{TcpEntry, TcpListenEntry};
+use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
+use crate::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
 
 /// Process-global stack. Initialised by `init()`; subsequent
@@ -82,17 +80,17 @@ pub enum SockKind {
     TcpConn(Arc<TcpEntry>),
     /// AF_UNIX SOCK_STREAM — both ends share an `UnixPair`; the
     /// `UnixEnd` tags this fd as the A or B side.
-    Unix(Arc<net::UnixPair>, net::UnixEnd),
+    Unix(Arc<crate::UnixPair>, crate::UnixEnd),
     /// AF_UNIX path-bound listener. `accept` pops a queued pair.
-    UnixListener(Arc<net::UnixListener>),
+    UnixListener(Arc<crate::UnixListener>),
     /// AF_UNIX SOCK_DGRAM (F120 / `24§R01`). Per-socket message
     /// queue; sendto/recvfrom push/pop here. Real per-message SCM
     /// metadata (sender creds, fd array) rides F121.
-    UnixDgram(Arc<net::UnixDgramQueue>),
+    UnixDgram(Arc<crate::UnixDgramQueue>),
 }
 
 /// Process-global AF_UNIX path registry.
-pub static UNIX_REGISTRY: net::UnixRegistry = net::UnixRegistry::new();
+pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
 /// Per-AF_INET / AF_INET6 socket VFS state — one Inode per socket fd.
 ///
@@ -177,7 +175,7 @@ impl InetSocket {
     pub fn new_unix_dgram() -> Self {
         let s = Self::new_tcp();
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        *s.kind.lock() = SockKind::UnixDgram(net::UnixDgramQueue::new());
+        *s.kind.lock() = SockKind::UnixDgram(crate::UnixDgramQueue::new());
         s
     }
 
@@ -261,15 +259,15 @@ impl vfs::Inode for InetSocket {
                 let c = entry.conn.lock();
                 let mut mask = POLL_OUT;
                 if !c.recv_buf.is_empty() { mask |= POLL_IN; }
-                if c.state == net::tcp_state::TcpState::Closed
+                if c.state == crate::tcp_state::TcpState::Closed
                     || c.state.is_closing() { mask |= POLL_HUP; }
                 mask
             }
             SockKind::Unix(pair, end) => {
                 let mut mask = POLL_OUT;
                 let read_q = match end {
-                    net::UnixEnd::A => &pair.b_to_a,
-                    net::UnixEnd::B => &pair.a_to_b,
+                    crate::UnixEnd::A => &pair.b_to_a,
+                    crate::UnixEnd::B => &pair.a_to_b,
                 };
                 if !read_q.lock().buf.is_empty() { mask |= POLL_IN; }
                 if pair.is_eof(*end) { mask |= POLL_HUP; }

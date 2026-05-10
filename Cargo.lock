@@ -149,15 +149,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dev-net"
-version = "0.1.0"
-dependencies = [
- "net",
- "sync",
- "vfs",
-]
-
-[[package]]
 name = "dev-virtio-gpu-modern"
 version = "0.1.0"
 dependencies = [
@@ -517,7 +508,6 @@ dependencies = [
  "dev-input",
  "dev-misc",
  "dev-modules",
- "dev-net",
  "dev-virtio-gpu-modern",
  "devfs",
  "drm",
@@ -664,6 +654,7 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -1115,8 +1106,8 @@ dependencies = [
 name = "syscall-glue-unix-cmsg"
 version = "0.1.0"
 dependencies = [
- "dev-net",
  "hal",
+ "net",
  "sync",
  "syscall",
 ]
