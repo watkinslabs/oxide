@@ -482,9 +482,9 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
 /// # C: O(phdrs) parse + O(log N) enqueue
 /// # Ctx: pre-init, IRQ-off, single-CPU; diverges
 pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
-    if !crate::sched::runqueue_active() {
+    if !sched::live::runqueue_active() {
         // SAFETY: boot path; allocator up; no concurrent runqueue users.
-        unsafe { crate::sched::install_default_runqueue(); }
+        unsafe { sched::live::install_default_runqueue(); }
     }
     use vmm::{VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
@@ -562,7 +562,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // Spawn the user task on the runqueue.
     // SAFETY: runqueue installed by kernel_main earlier; mm matches active CR3.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(
+        sched::live::spawn_user_thread(
             0xC0DE_0001, "elf-user",
             img.entry.as_u64(),
             new_sp,
@@ -603,7 +603,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // iretq frame → drop to ring 3 at e_entry. User runs to ud2
     // landmark; #UD halts in the smoke fault handler.
     // SAFETY: process ctx; runqueue installed; preempt-off.
-    unsafe { crate::sched::schedule(); }
+    unsafe { sched::live::schedule(); }
 
     // Boot resumes here when the user task exits via `sys_exit`
     // (P2-13d): kernel_sys_exit marks the task Zombie + reschedules,
@@ -674,7 +674,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // any spawn path masked IRQs on its way out.
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
         // SAFETY: ctxsw may return with IF in any state (kernel-mode
         // syscall paths run IF=0 via FMASK; we may be resuming on the
         // back of a syscall return). Re-arm IF before the hlt so the
@@ -801,7 +801,7 @@ unsafe fn spawn_user_blob_with_vpid(
 
     // SAFETY: runqueue installed; mm matches active CR3; entry/sp in user range; vpid stamped pre-enqueue so musl's __init_main_thread sees PID 1 on its very first syscall.
     let task = match unsafe {
-        crate::sched::spawn_user_thread_with_vpid(
+        sched::live::spawn_user_thread_with_vpid(
             tid, vpid_tgid, vpid_tid, name, img.user_ip(), new_sp, mm,
         )
     } {
@@ -834,7 +834,7 @@ unsafe fn spawn_user_blob_with_vpid(
     // `halt_forever()` (sti+hlt loop) keeps timer IRQs firing,
     // which drains UART RX + wakes the parked task next round.
     // SAFETY: process ctx; runqueue installed; preempt-off.
-    unsafe { crate::sched::schedule(); }
+    unsafe { sched::live::schedule(); }
 }
 
 /// Parse + load + drop to ring 3 directly (no Task wrapper).

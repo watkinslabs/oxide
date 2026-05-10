@@ -41,7 +41,7 @@ fn read_user_ns_pair(p: u64, idx: usize, now: u64) -> Result<Option<u64>, i64> {
 fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     if path_ptr == 0 {
         // utimensat with NULL path = update by fd.
-        let cur = match crate::sched::current() {
+        let cur = match sched::live::current() {
             Some(c) => c, None => return Err(-(Errno::Ebadf.as_i32() as i64)),
         };
         // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

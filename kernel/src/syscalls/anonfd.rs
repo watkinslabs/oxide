@@ -15,7 +15,7 @@ pub fn kernel_sys_eventfd2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     let initval = args.a0;
     let _flags  = args.a1;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -53,7 +53,7 @@ pub fn kernel_sys_memfd_create(args: &SyscallArgs) -> i64 {
         out.push_str(s);
         out
     };
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

@@ -11,9 +11,9 @@ use syscall::SyscallArgs;
 /// `sys_sched_yield()` — slot 24. tick_yield + 0.
 /// # C: O(log N)
 pub fn kernel_sys_sched_yield(_args: &SyscallArgs) -> i64 {
-    if crate::sched::global().is_some() {
+    if sched::live::global().is_some() {
         // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
-        unsafe { crate::sched::tick_yield(); }
+        unsafe { sched::live::tick_yield(); }
     }
     0
 }
@@ -23,7 +23,7 @@ pub fn kernel_sys_sched_yield(_args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_gettid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current().map(|c| {
+    sched::live::current().map(|c| {
         let v = c.vtid.load(Ordering::Acquire);
         if v != 0 { v as i64 } else { c.tid as i64 }
     }).unwrap_or(1)
@@ -36,7 +36,7 @@ pub fn kernel_sys_gettid(_args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 1 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 1 };
     cur.clear_child_tid.store(args.a0, Ordering::Release);
     match cur.vtid.load(Ordering::Acquire) { 0 => cur.tid as i64, v => v as i64 }
 }
@@ -126,7 +126,7 @@ pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
     let addr = args.a0;
     let len  = args.a1 as usize;
     let prot = args.a2 as u32;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
     let mut vp = VmaProt::empty();
@@ -162,7 +162,7 @@ pub fn kernel_sys_madvise(args: &SyscallArgs) -> i64 {
     let advice = args.a2;
     if addr == 0 || (addr & 0xFFF) != 0 { return -(Errno::Einval.as_i32() as i64); }
     if len == 0 { return 0; }
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
     let ua = match UserVirtAddr::new(addr) {
@@ -197,9 +197,9 @@ pub fn kernel_sys_prlimit64(args: &SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let task = if pid == 0 {
-        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        crate::sched::registry::lookup(pid)
+        sched::live::registry::lookup(pid)
     };
     let task = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
 
@@ -256,9 +256,9 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
     let start = now();
     let deadline = start.saturating_add(total);
     while now() < deadline {
-        if crate::sched::global().is_some() {
+        if sched::live::global().is_some() {
             // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
-            unsafe { crate::sched::tick_yield(); }
+            unsafe { sched::live::tick_yield(); }
         } else {
             core::hint::spin_loop();
         }
@@ -278,11 +278,11 @@ pub use crate::syscalls::rseq::{kernel_sys_rseq, rseq_writeback};
 pub fn kernel_sys_vhangup(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(sched::cap::SYS_TTY_CONFIG) { return -(Errno::Eperm.as_i32() as i64); }
     let sid = cur.sid.load(Ordering::Acquire);
-    for tid in crate::sched::registry::live_tids() {
-        if let Some(t) = crate::sched::registry::lookup(tid) {
+    for tid in sched::live::registry::live_tids() {
+        if let Some(t) = sched::live::registry::lookup(tid) {
             if t.sid.load(Ordering::Acquire) == sid {
                 t.sigpending.fetch_or(1u64 /* SIGHUP bit 0 */, Ordering::Release);
             }
@@ -307,7 +307,7 @@ pub fn kernel_sys_set_robust_list(args: &SyscallArgs) -> i64 {
     if head != 0 && head >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     cur.robust_list_head.store(head, Ordering::Release);
     cur.robust_list_len.store(len, Ordering::Release);
     0
@@ -329,13 +329,13 @@ pub fn kernel_sys_get_robust_list(args: &SyscallArgs) -> i64 {
         return -(Errno::Efault.as_i32() as i64);
     }
     let (head, len) = if pid == 0 {
-        let cur = match crate::sched::current() {
+        let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
         };
         (cur.robust_list_head.load(Ordering::Acquire),
          cur.robust_list_len.load(Ordering::Acquire))
     } else {
-        let task = match crate::sched::registry::lookup(pid) {
+        let task = match sched::live::registry::lookup(pid) {
             Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
         };
         (task.robust_list_head.load(Ordering::Acquire),
@@ -365,7 +365,7 @@ pub fn kernel_sys_getrlimit(args: &SyscallArgs) -> i64 {
     if resource >= sched::rlimit::rlim::COUNT {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: rlimits slot single-mutator per `13§5`; current task is the running task on this CPU.
@@ -400,7 +400,7 @@ pub fn kernel_sys_setrlimit(args: &SyscallArgs) -> i64 {
     let pair = match sched::rlimit::clamp_pair(new_cur, new_max) {
         Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: same single-mutator invariant as the getrlimit reader.
@@ -421,7 +421,7 @@ pub fn kernel_sys_getrusage(args: &SyscallArgs) -> i64 {
     if buf == 0 || buf >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let now = {
@@ -457,7 +457,7 @@ pub fn kernel_sys_times(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
-    let elapsed = match crate::sched::current() {
+    let elapsed = match sched::live::current() {
         Some(c) => now.saturating_sub(c.spawn_ns.load(Ordering::Acquire)),
         None    => 0,
     };
@@ -527,7 +527,7 @@ pub fn kernel_sys_mremap(args: &SyscallArgs) -> i64 {
     if new_size == 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
     // SAFETY: mm slot single-mutator per `13§5`.
@@ -613,7 +613,7 @@ pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
     if vec == 0 || vec.checked_add(pages).map_or(true, |e| e >= hal::USER_VA_END) {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64) };
     for i in 0..pages {
@@ -637,7 +637,7 @@ pub fn kernel_sys_mlock_family(_args: &SyscallArgs) -> i64 { 0 }
 /// # C: O(1)
 pub fn kernel_sys_getpgrp(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current().map(|c| c.pgid.load(Ordering::Acquire) as i64).unwrap_or(1)
+    sched::live::current().map(|c| c.pgid.load(Ordering::Acquire) as i64).unwrap_or(1)
 }
 
 /// `sys_getpgid(pid)` — slot 121. `pid==0` means the current task.
@@ -646,9 +646,9 @@ pub fn kernel_sys_getpgid(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid = args.a0 as u32;
     let task = if pid == 0 {
-        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        crate::sched::registry::lookup(pid)
+        sched::live::registry::lookup(pid)
     };
     match task {
         Some(t) => t.pgid.load(Ordering::Acquire) as i64,
@@ -662,9 +662,9 @@ pub fn kernel_sys_getsid(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid = args.a0 as u32;
     let task = if pid == 0 {
-        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        crate::sched::registry::lookup(pid)
+        sched::live::registry::lookup(pid)
     };
     match task {
         Some(t) => t.sid.load(Ordering::Acquire) as i64,
@@ -681,9 +681,9 @@ pub fn kernel_sys_setpgid(args: &SyscallArgs) -> i64 {
     let pid  = args.a0 as u32;
     let pgid = args.a1 as u32;
     let task = if pid == 0 {
-        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        crate::sched::registry::lookup(pid)
+        sched::live::registry::lookup(pid)
     };
     let t = match task { Some(t) => t, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64) };
     let new_pgid = if pgid == 0 { t.tid } else { pgid };
@@ -696,7 +696,7 @@ pub fn kernel_sys_setpgid(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 1 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 1 };
     cur.sid.store(cur.tid, Ordering::Release);
     cur.pgid.store(cur.tid, Ordering::Release);
     cur.tid as i64
@@ -708,7 +708,7 @@ pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_umask(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let new_mask = (args.a0 as u32) & 0o777;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0o022 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0o022 };
     cur.umask.swap(new_mask, Ordering::AcqRel) as i64
 }
 
@@ -811,7 +811,7 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
     let len = args.a1 as usize;
     if len > crate::syscalls::hostname::HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
     if let Err(rv) = crate::syscalls::validate_user_buf(ptr, len as u64, 1) { return rv; }
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(sched::cap::SYS_ADMIN) { return -(Errno::Eperm.as_i32() as i64); }
     let mut buf = [0u8; crate::syscalls::hostname::HOST_NAME_MAX];
     // SAFETY: ptr range validated < USER_VA_END; CPL=0 reads through caller's AS.
@@ -844,9 +844,9 @@ pub fn kernel_sys_getpriority(args: &SyscallArgs) -> i64 {
     let who   = args.a1 as u32;
     if which != PRIO_PROCESS { return 20; } // PRIO_PGRP/USER → return default 0 nice
     let task = if who == 0 {
-        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        crate::sched::registry::lookup(who)
+        sched::live::registry::lookup(who)
     };
     match task {
         Some(t) => 20 - t.nice.load(Ordering::Acquire) as i64,
@@ -865,9 +865,9 @@ pub fn kernel_sys_setpriority(args: &SyscallArgs) -> i64 {
     let prio  = args.a2 as i32;
     if which != PRIO_PROCESS { return 0; }
     let task = if who == 0 {
-        crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        crate::sched::registry::lookup(who)
+        sched::live::registry::lookup(who)
     };
     match task {
         Some(t) => {
@@ -892,7 +892,7 @@ pub fn kernel_sys_alarm(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let prev = cur.alarm_ns.load(Ordering::Acquire);
     let prev_remaining = if prev > now { (prev - now) / 1_000_000_000 } else { 0 };
     let new = if secs == 0 { 0 } else { now.saturating_add(secs.saturating_mul(1_000_000_000)) };
@@ -906,7 +906,7 @@ pub fn kernel_sys_alarm(args: &SyscallArgs) -> i64 {
 pub fn kernel_sys_pause(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
     };
     loop {
@@ -914,7 +914,7 @@ pub fn kernel_sys_pause(_args: &SyscallArgs) -> i64 {
         let masked  = cur.sigmask.load(Ordering::Acquire);
         if (pending & !masked) != 0 { return -(Errno::Eintr.as_i32() as i64); }
         // SAFETY: process ctx; runqueue installed.
-        unsafe { crate::sched::tick_yield(); }
+        unsafe { sched::live::tick_yield(); }
     }
 }
 
@@ -929,7 +929,7 @@ pub fn kernel_sys_setitimer(args: &SyscallArgs) -> i64 {
     let new = args.a1;
     let old = args.a2;
     if which != ITIMER_REAL { return 0; } // VIRTUAL/PROF accept-and-ignore
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let now = {
         #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
         #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
@@ -976,7 +976,7 @@ pub fn kernel_sys_getitimer(args: &SyscallArgs) -> i64 {
     let which = args.a0;
     let curr = args.a1;
     if curr == 0 || curr >= hal::USER_VA_END { return 0; }
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let now = {
         #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
         #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }

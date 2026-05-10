@@ -22,7 +22,7 @@ fn read_path(ptr: u64) -> Option<String> {
 
 fn resolve(path_raw: &str) -> Option<String> {
     if path_raw.starts_with('/') { return Some(path_raw.into()); }
-    let cur = crate::sched::current()?;
+    let cur = sched::live::current()?;
     // SAFETY: cwd slot single-mutator per `13§5`; current task is sole writer.
     let cwd = unsafe { (*cur.cwd.get()).clone() };
     vfs::path::resolve_against_cwd(&cwd, path_raw)

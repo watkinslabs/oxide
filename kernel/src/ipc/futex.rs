@@ -43,7 +43,7 @@ struct Waiter {
 static WAITERS: Spinlock<Vec<Waiter>, TtyClass> = Spinlock::new(Vec::new());
 
 fn current_key(uaddr: u64) -> Option<Key> {
-    let cur = crate::sched::current()?;
+    let cur = sched::live::current()?;
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = unsafe { cur.mm_ref() }?;
     Some(Key { mm_root: mm.root_pa(), va: uaddr })
@@ -76,7 +76,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
             let key = match current_key(uaddr) {
                 Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
             };
-            let cur = match crate::sched::current() {
+            let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
             };
             // Bump strong count to materialise an Arc the WAITERS list
@@ -89,7 +89,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
             arc.set_state(TaskState::Sleeping);
             WAITERS.lock().push(Waiter { key, task: arc });
             // SAFETY: process ctx; runqueue installed; preempt-off.
-            unsafe { crate::sched::schedule(); }
+            unsafe { sched::live::schedule(); }
             // Resume — woken by FUTEX_WAKE (or spurious; caller rechecks).
             0
         }
@@ -111,7 +111,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
                 }
             }
             if woken.is_empty() { return 0; }
-            let rq = match crate::sched::global() {
+            let rq = match sched::live::global() {
                 Some(r) => r, None => return woken.len() as i64,
             };
             let mut inner = rq.inner.lock();
@@ -121,7 +121,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
                 inner.enqueue(t.clone());
             }
             rq.nr_running.store(inner.nr_running(), Ordering::Release);
-            crate::preempt::set_need_resched();
+            sched::live::preempt::set_need_resched();
             woken.len() as i64
         }
         _ => 0, // Unsupported ops: accept-and-no-op; musl tolerates.

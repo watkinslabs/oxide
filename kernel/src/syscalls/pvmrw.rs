@@ -30,7 +30,7 @@ fn read_iovs(p: u64, n: usize) -> Result<alloc::vec::Vec<(u64, u64)>, i64> {
 }
 
 fn target_root_pa(pid: u32) -> Result<u64, i64> {
-    let task = match crate::sched::registry::lookup(pid) {
+    let task = match sched::live::registry::lookup(pid) {
         Some(t) => t, None => return Err(-(Errno::Esrch.as_i32() as i64)),
     };
     // SAFETY: target task may be on another CPU; mm slot is single-mutator per task per `13§5`. The Arc<AddressSpace> snapshot is OK.

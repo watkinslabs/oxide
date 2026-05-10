@@ -55,7 +55,7 @@ pub struct ProcSelfMapsInode;
 impl ProcSelfMapsInode {
     fn body() -> alloc::vec::Vec<u8> {
         let mut out = alloc::vec::Vec::with_capacity(1024);
-        let cur = match crate::sched::current() { Some(c) => c, None => return out };
+        let cur = match sched::live::current() { Some(c) => c, None => return out };
         // SAFETY: running task on this CPU; preempt-off; sole reader of the mm slot per the single-mutator invariant in `13§5`.
         let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return out };
         let brk_lo = mm.brk_max().saturating_sub(0);
@@ -131,7 +131,7 @@ impl Inode for ProcSelfCmdlineInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = alloc::vec::Vec::with_capacity(64);
-        let cur = crate::sched::current();
+        let cur = sched::live::current();
         // SAFETY: single-mutator per `13§5`; current task is the sole
         // writer to its own cmdline slot, and we are it on this CPU.
         let snapshot = cur.and_then(|c| unsafe { (*c.cmdline.get()).clone() });
@@ -165,7 +165,7 @@ impl Inode for ProcSelfStatInode {
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         use core::sync::atomic::Ordering;
         let mut body = alloc::vec::Vec::with_capacity(192);
-        let cur = crate::sched::current();
+        let cur = sched::live::current();
         let tid  = cur.map(|c| c.tid as u64).unwrap_or(1);
         let ppid = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
         let name = cur.map(|c| c.name).unwrap_or("init");
@@ -196,7 +196,7 @@ impl ProcSelfStatusInode {
     fn body() -> alloc::vec::Vec<u8> {
         use core::sync::atomic::Ordering;
         let mut out = alloc::vec::Vec::with_capacity(256);
-        let cur = crate::sched::current();
+        let cur = sched::live::current();
         let tid    = cur.map(|c| c.tid as u64).unwrap_or(1);
         let ppid   = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
         let name   = cur.map(|c| c.name).unwrap_or("oxide");
@@ -366,7 +366,7 @@ impl Inode for ProcSelfEnvironInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let cur = crate::sched::current();
+        let cur = sched::live::current();
         // SAFETY: environ slot single-mutator per `13§5`.
         let snap = cur.and_then(|c| unsafe { (*c.environ.get()).clone() });
         let body: &[u8] = match snap.as_ref() { Some(s) => s.as_bytes(), None => &[] };
@@ -416,7 +416,7 @@ impl Inode for ProcLoadavgInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = alloc::vec::Vec::with_capacity(64);
-        let tids = crate::sched::registry::live_tids();
+        let tids = sched::live::registry::live_tids();
         let total = tids.len() as u64;
         let last = tids.last().copied().unwrap_or(1) as u64;
         push(&mut body, b"0.00 0.00 0.00 ");
@@ -520,7 +520,7 @@ impl Inode for ProcSelfCommInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = alloc::vec::Vec::with_capacity(32);
-        let name = crate::sched::current().map(|c| c.name).unwrap_or("oxide");
+        let name = sched::live::current().map(|c| c.name).unwrap_or("oxide");
         push(&mut body, name.as_bytes());
         body.push(b'\n');
         let off = off as usize;
@@ -543,7 +543,7 @@ impl Inode for ProcSelfFdInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
         let fd: i32 = name.parse().map_err(|_| VfsError::Enoent)?;
-        let cur = crate::sched::current().ok_or(VfsError::Enoent)?;
+        let cur = sched::live::current().ok_or(VfsError::Enoent)?;
         // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
         let fdt = unsafe { cur.fd_table_ref() }.ok_or(VfsError::Enoent)?.clone();
         fdt.get(fd).map(|f| f.inode().clone()).map_err(|_| VfsError::Enoent)
@@ -553,7 +553,7 @@ impl Inode for ProcSelfFdInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        let cur = match crate::sched::current() { Some(c) => c, None => return Ok(off) };
+        let cur = match sched::live::current() { Some(c) => c, None => return Ok(off) };
         // SAFETY: sole reader; single-mutator per `13§5`.
         let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Ok(off) };
         let fds = fdt.live_fds();
@@ -591,7 +591,7 @@ impl Inode for ProcRootInode {
             return Ok(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef);
         }
         match name.parse::<u32>() {
-            Ok(tid) if crate::sched::registry::lookup(tid).is_some() =>
+            Ok(tid) if sched::live::registry::lookup(tid).is_some() =>
                 Ok(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef),
             _ => Err(VfsError::Enoent),
         }
@@ -602,7 +602,7 @@ impl Inode for ProcRootInode {
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let mut idx = off as usize;
-        let tids = crate::sched::registry::live_tids();
+        let tids = sched::live::registry::live_tids();
         let total = tids.len() + 1; // +1 for "self"
         while idx < total {
             let next = idx as u64 + 1;
@@ -721,7 +721,7 @@ fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
 
 fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(64);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     // SAFETY: snapshot of cmdline slot; written only by the task itself per `13§5`.
     let snap = unsafe { (*task.cmdline.get()).clone() };
     if let Some(s) = snap { push(&mut out, s.as_bytes()); }
@@ -732,7 +732,7 @@ fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
 fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut out = alloc::vec::Vec::with_capacity(192);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
     push_u64(&mut out, tid as u64);
     push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") ");
@@ -745,7 +745,7 @@ fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
 
 fn pid_maps_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(1024);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     // SAFETY: mm slot read-only borrow; single-mutator per `13§5`.
     let mm = match unsafe { (*task.mm.get()).as_ref() } { Some(m) => m.clone(), None => return out };
     for vma in mm.snapshot_vmas() {
@@ -796,7 +796,7 @@ pid_inode_impl!(ProcPidLimitsInode,  pid_limits_body,  0x3000_2800);
 fn pid_limits_body(tid: u32) -> alloc::vec::Vec<u8> {
     use sched::rlimit::{rlim, format_rlim};
     let mut out = alloc::vec::Vec::with_capacity(2048);
-    let task = match crate::sched::registry::lookup(tid) {
+    let task = match sched::live::registry::lookup(tid) {
         Some(t) => t, None => return out,
     };
     push(&mut out, b"Limit                     Soft Limit           Hard Limit           Units\n");
@@ -838,7 +838,7 @@ pid_inode_impl!(ProcPidSchedInode,   pid_sched_body,   0x3000_2700);
 
 fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(128);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     push(&mut out, task.name.as_bytes());
     push(&mut out, b" (");
     push_u64(&mut out, tid as u64);
@@ -857,7 +857,7 @@ fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
     // statm fields (in pages of 4 KiB): size resident shared text lib data dt
     // v1: report total VMA range as size + resident; others 0.
     let mut out = alloc::vec::Vec::with_capacity(48);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     // SAFETY: mm slot single-mutator per `13§5`.
     let pages = match unsafe { (*task.mm.get()).as_ref() } {
         Some(mm) => mm.snapshot_vmas().iter()
@@ -873,14 +873,14 @@ fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
 
 fn pid_comm_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(32);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     push(&mut out, task.name.as_bytes());
     out.push(b'\n');
     out
 }
 
 fn pid_environ_body(tid: u32) -> alloc::vec::Vec<u8> {
-    let task = match crate::sched::registry::lookup(tid) {
+    let task = match sched::live::registry::lookup(tid) {
         Some(t) => t, None => return alloc::vec::Vec::new(),
     };
     // SAFETY: environ slot single-mutator per `13§5`.
@@ -901,11 +901,11 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
             Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
         ProcPath::SelfChild(_) => None, // /proc/self/<file> served by devfs
         ProcPath::PidDir(tid) => {
-            if crate::sched::registry::lookup(tid).is_none() { return None; }
+            if sched::live::registry::lookup(tid).is_none() { return None; }
             Some(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef)
         }
         ProcPath::PidChild(tid, leaf) => {
-            if crate::sched::registry::lookup(tid).is_none() { return None; }
+            if sched::live::registry::lookup(tid).is_none() { return None; }
             match leaf {
                 "status"  => Some(Arc::new(ProcPidStatusInode  { tid }) as InodeRef),
                 "cmdline" => Some(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
@@ -975,7 +975,7 @@ impl Inode for ProcPidNsDirInode {
         let kind = match crate::dev_proc_ns::NsKind::from_leaf(name) {
             Some(k) => k, None => return Err(VfsError::Enoent),
         };
-        let task = match crate::sched::registry::lookup(self.tid) {
+        let task = match sched::live::registry::lookup(self.tid) {
             Some(t) => t, None => return Err(VfsError::Enoent),
         };
         Ok(crate::dev_proc_ns::ns_inode_for(&task, kind))

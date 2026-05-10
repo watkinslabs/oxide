@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 pub fn body(tid: u32) -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut out = Vec::with_capacity(1024);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
     let umask = task.umask.load(Ordering::Acquire) as u64;
     let pgid = task.pgid.load(Ordering::Acquire) as u64;
