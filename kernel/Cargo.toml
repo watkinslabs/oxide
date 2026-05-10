@@ -26,7 +26,7 @@ msi       = { path = "../crates/kernel/msi" }
 procfs-meminfo = { path = "../crates/kernel/procfs-meminfo" }
 ipc       = { path = "../crates/kernel/ipc" }
 pipe      = { path = "../crates/kernel/pipe", default-features = false }
-pmm-setup = { path = "../crates/kernel/pmm-setup" }
+pmm-setup = { path = "../crates/kernel/mm-pmm-setup" }
 smp       = { path = "../crates/kernel/smp" }
 epoll     = { path = "../crates/kernel/epoll" }
 flock     = { path = "../crates/kernel/flock" }
@@ -41,14 +41,14 @@ ext4    = { path = "../crates/kernel/ext4" }
 hal     = { path = "../crates/arch/hal" }
 klog    = { path = "../crates/shared/klog" }
 kalloc  = { path = "../crates/shared/kalloc" }
-pmm     = { path = "../crates/kernel/pmm" }
+pmm     = { path = "../crates/kernel/mm-pmm" }
 procfs  = { path = "../crates/kernel/procfs" }
 sched   = { path = "../crates/kernel/sched" }
 sync    = { path = "../crates/shared/sync" }
 syscall = { path = "../crates/kernel/syscall" }
 tty     = { path = "../crates/kernel/tty" }
 vfs     = { path = "../crates/kernel/vfs" }
-vmm     = { path = "../crates/kernel/vmm" }
+vmm     = { path = "../crates/kernel/mm-vmm" }
 power    = { path = "../crates/kernel/power" }
 firmware = { path = "../crates/kernel/firmware" }
 nscg     = { path = "../crates/kernel/nscg" }
