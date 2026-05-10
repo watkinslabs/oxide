@@ -55,7 +55,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         // Box::leak (B23-followup: the blob only lives for the
         // duration of `load_static_blob`; segment bytes get copied
         // into AS-owned staging via `stash_bytes` per B22).
-        if let Some(v) = crate::dev_ext4::read_file(path) {
+        if let Some(v) = dev_ext4::read_file(path) {
             ext4_blob = Some(v);
             // SAFETY: ext4_blob is rooted in this stack frame and
             // outlives the load_static_blob call below.
@@ -146,7 +146,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
     crate::user_as::install_teardown(&new_as);
-    let img = match crate::elf_load::load_static_blob(blob, &new_as) {
+    let img = match elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
@@ -342,7 +342,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         path_len = (i + 1) as usize;
     }
     let path = &path_buf[..path_len];
-    let mut blob_vec = match crate::dev_ext4::read_file(path) {
+    let mut blob_vec = match dev_ext4::read_file(path) {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
@@ -414,7 +414,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
     crate::user_as::install_teardown(&new_as);
-    let img = match crate::elf_load::load_static_blob(blob, &new_as) {
+    let img = match elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
@@ -576,10 +576,10 @@ fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
     const VFS_CAP_FLAGS_EFFECTIVE: u32 = 0x01;
     // First probe the value length via getxattr-len (buf=0).
     let s = "security.capability";
-    let want = crate::xattr_overlay::query_len(inode, s);
+    let want = xattr::query_len(inode, s);
     if want < 12 { return; }
     let mut buf = alloc::vec![0u8; want.min(24)];
-    if !crate::xattr_overlay::query_into(inode, s, &mut buf) { return; }
+    if !xattr::query_into(inode, s, &mut buf) { return; }
     if buf.len() < 12 { return; }
     let read_u32 = |off: usize| -> u32 {
         u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
@@ -658,7 +658,7 @@ pub(crate) fn resolve_shebang_chain(
         *path_buf = [0u8; 64];
         path_buf[..interp.len()].copy_from_slice(&interp);
         *path_len = interp.len();
-        match crate::dev_ext4::read_file(&interp) {
+        match dev_ext4::read_file(&interp) {
             Some(v) => *blob_owned = v,
             None    => return Err(Errno::Enoent),
         }

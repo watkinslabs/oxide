@@ -224,7 +224,7 @@ fn alloc_queue_region(size: u16) -> Option<VirtQueueRuntime> {
     let total       = used_off + used_bytes;
     if total > PAGE_SIZE { return None; }
 
-    let pa = crate::pmm_setup::alloc_one_frame()?;
+    let pa = pmm_setup::alloc_one_frame()?;
     let va = pa + crate::user_as::hhdm_offset();
     // SAFETY: HHDM-mapped page; zero a single 4KiB region we just allocated.
     unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize); }
@@ -332,7 +332,7 @@ pub fn init_legacy() {
              STATUS_ACK | STATUS_DRIVER | STATUS_DRIVER_OK);
     }
 
-    let tx_buf_pa = match crate::pmm_setup::alloc_one_frame() {
+    let tx_buf_pa = match pmm_setup::alloc_one_frame() {
         Some(p) => p,
         None => {
             // SAFETY: signal device-failed status when we can't get a tx scratch page.
@@ -353,7 +353,7 @@ pub fn init_legacy() {
     let mut rx_bufs = [RxBuf::default(); RX_BUF_COUNT];
     let mut rx_count: u16 = 0;
     for i in 0..target_rx {
-        match crate::pmm_setup::alloc_one_frame() {
+        match pmm_setup::alloc_one_frame() {
             Some(pa) => {
                 let va = pa + crate::user_as::hhdm_offset();
                 // SAFETY: HHDM-mapped page just allocated; zero before publishing.

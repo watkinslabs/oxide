@@ -203,7 +203,7 @@ pub unsafe fn tick_poll_uart() {
     const PL011_DR: u64 = 0x00;
     const PL011_FR: u64 = 0x18;
     const FR_RXFE:  u32 = 1 << 4;
-    let va = crate::pl011::base_va();
+    let va = hal_aarch64::pl011::base_va();
     if va == 0 { return; }
     // Drain up to 16 bytes per tick (one full PL011 RX FIFO).
     let mut n = 0;

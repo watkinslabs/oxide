@@ -34,7 +34,7 @@ impl ProcNetDevInode {
         let mut s = String::new();
         let _ = writeln!(s, "Inter-|   Receive                                                |  Transmit");
         let _ = writeln!(s, " face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed");
-        let stack = crate::dev_net::stack();
+        let stack = dev_net::stack();
         let snap = stack.ifaces.snapshot();
         for (id, name, mtu) in snap {
             let stats = stack.ifaces.lookup(id).map(|d| d.stats()).unwrap_or_default();
@@ -125,7 +125,7 @@ impl ProcModulesInode {
         use alloc::string::String;
         use core::fmt::Write as _;
         let mut s = String::new();
-        for (idx, n_secs, n_syms) in crate::dev_modules::snapshot() {
+        for (idx, n_secs, n_syms) in dev_modules::snapshot() {
             let _ = writeln!(s, "module_{} {} {} - Live 0x0 sec={} sym={}",
                 idx, n_secs * 4096, 0, n_secs, n_syms);
         }
@@ -158,7 +158,7 @@ impl ProcNetRouteInode {
         let mut s = String::from(
             "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
         );
-        let stack = crate::dev_net::stack();
+        let stack = dev_net::stack();
         for re in stack.routes.snapshot() {
             let dev = stack.ifaces.lookup(re.iface);
             let iface_name = dev.as_ref().map(|d| d.name()).unwrap_or("lo");
