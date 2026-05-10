@@ -10,7 +10,7 @@ use crate::syscalls::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)
-pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
+pub fn sys_fstat(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     if let Err(rv) = validate_user_buf(buf, 144, 8) { return rv; }
@@ -60,13 +60,13 @@ pub fn kernel_sys_fstat(args: &SyscallArgs) -> i64 {
     0
 }
 
-pub use crate::syscalls::ioctl::kernel_sys_ioctl;
+pub use crate::syscalls::ioctl::sys_ioctl;
 
 /// `sys_getcwd(buf, size)` — slot 79. Reads `current.cwd` slot.
 /// Returns the path length including the trailing NUL per
 /// `man 2 getcwd`; -ERANGE if `size` is too small.
 /// # C: O(N_cwd)
-pub fn kernel_sys_getcwd(args: &SyscallArgs) -> i64 {
+pub fn sys_getcwd(args: &SyscallArgs) -> i64 {
     let buf  = args.a0;
     let size = args.a1;
     let cur = match sched::live::current() {
@@ -90,7 +90,7 @@ pub fn kernel_sys_getcwd(args: &SyscallArgs) -> i64 {
 
 /// `sys_chdir(path)` — slot 80.
 /// # C: O(N_devfs_entries)
-pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
+pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
@@ -121,7 +121,7 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
 /// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_GETFD / F_SETFD /
 /// F_GETFL / F_SETFL / F_GETPIPE_SZ / F_SETPIPE_SZ / F_GETOWN / F_SETOWN.
 /// # C: O(N_fds) for F_DUPFD; O(1) otherwise.
-pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
+pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_DUPFD:         u64 = 0;
     const F_GETFD:         u64 = 1;
     const F_SETFD:         u64 = 2;
@@ -190,7 +190,7 @@ pub fn kernel_sys_fcntl(args: &SyscallArgs) -> i64 {
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
 /// # C: O(1)
-pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
+pub fn sys_statx(args: &SyscallArgs) -> i64 {
     use vfs::FileType;
     const AT_EMPTY_PATH: u32 = 0x1000;
     let dirfd     = args.a0 as i32;
@@ -290,9 +290,9 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
 
 /// `sys_stat(path, statbuf)` / `sys_lstat(path, statbuf)` —
 /// slots 4/6. Resolves `path` via devfs, writes a 144-byte
-/// stat struct (same shape as kernel_sys_fstat).
+/// stat struct (same shape as sys_fstat).
 /// # C: O(N_devfs_entries)
-pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
+pub fn sys_stat(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf      = args.a1;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
@@ -351,7 +351,7 @@ pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
 /// devfs root: f_type=0x57AC6E9D (TMPFS_MAGIC stand-in),
 /// 4096 block size, no usage tracking.
 /// # C: O(1)
-pub fn kernel_sys_statfs(args: &SyscallArgs) -> i64 {
+pub fn sys_statfs(args: &SyscallArgs) -> i64 {
     // Slot 137 takes (path, buf); slot 138 takes (fd, buf). The
     // user-buf is the second arg in both cases.
     let buf = args.a1;
@@ -371,7 +371,7 @@ pub fn kernel_sys_statfs(args: &SyscallArgs) -> i64 {
 
 /// `sys_pread64(fd, buf, cnt, off)` — slot 17.
 /// # C: O(cnt)
-pub fn kernel_sys_pread64(args: &SyscallArgs) -> i64 {
+pub fn sys_pread64(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let cnt = args.a2;
@@ -400,7 +400,7 @@ pub fn kernel_sys_pread64(args: &SyscallArgs) -> i64 {
 
 /// `sys_pwrite64(fd, buf, cnt, off)` — slot 18. Mirrors pread64.
 /// # C: O(cnt)
-pub fn kernel_sys_pwrite64(args: &SyscallArgs) -> i64 {
+pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
     let cnt = args.a2;
@@ -432,7 +432,7 @@ pub fn kernel_sys_pwrite64(args: &SyscallArgs) -> i64 {
 /// Returns bytes written, or 0 at end-of-dir. ENOTDIR for non-dirs.
 /// File offset is the readdir cookie — incremented across calls.
 /// # C: O(N_dirents)
-pub fn kernel_sys_getdents64(args: &SyscallArgs) -> i64 {
+pub fn sys_getdents64(args: &SyscallArgs) -> i64 {
     use vfs::FileType;
     let fd = args.a0 as i32;
     let dirp = args.a1;
@@ -537,7 +537,7 @@ pub fn sys_dup3(args: &SyscallArgs) -> i64 {
 /// marks fds cloexec instead of closing. CLOSE_RANGE_UNSHARE (bit 1)
 /// is accepted as a no-op (single-process v1 has nothing to unshare).
 /// # C: O(last - first)
-pub fn kernel_sys_close_range(args: &SyscallArgs) -> i64 {
+pub fn sys_close_range(args: &SyscallArgs) -> i64 {
     let first = args.a0 as i32;
     let last  = args.a1 as i32;
     let flags = args.a2 as u32;
@@ -569,7 +569,7 @@ pub fn kernel_sys_close_range(args: &SyscallArgs) -> i64 {
 /// resolves in devfs, -ENOENT otherwise. No actual permission
 /// check (mode ignored).
 /// # C: O(N_devfs_entries)
-pub fn kernel_sys_access(args: &SyscallArgs) -> i64 {
+pub fn sys_access(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
@@ -593,9 +593,9 @@ pub fn kernel_sys_access(args: &SyscallArgs) -> i64 {
 /// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1
 /// ignores `dirfd` + `flags`; same semantics as `sys_access`.
 /// # C: O(N_devfs_entries)
-pub fn kernel_sys_faccessat(args: &SyscallArgs) -> i64 {
+pub fn sys_faccessat(args: &SyscallArgs) -> i64 {
     let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
-    kernel_sys_access(&inner)
+    sys_access(&inner)
 }
 
 /// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
@@ -604,7 +604,7 @@ pub fn kernel_sys_faccessat(args: &SyscallArgs) -> i64 {
 /// task's cmdline snapshot (`/init` when unset). All other paths
 /// return -EINVAL.
 /// # C: O(1) + O(N_tasks) for per-pid lookup
-pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
+pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf_ptr  = args.a1;
     let bufsize  = args.a2;
@@ -639,11 +639,11 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
 
 /// `sys_readlinkat(dirfd, path, buf, bufsize)` — slot 267.
 /// v1 ignores `dirfd` (no real cwd resolution) and routes
-/// through `kernel_sys_readlink`.
+/// through `sys_readlink`.
 /// # C: O(1)
-pub fn kernel_sys_readlinkat(args: &SyscallArgs) -> i64 {
+pub fn sys_readlinkat(args: &SyscallArgs) -> i64 {
     let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: args.a3, a3: 0, a4: 0, a5: 0 };
-    kernel_sys_readlink(&inner)
+    sys_readlink(&inner)
 }
 
 /// `sys_poll(fds, nfds, timeout)` — slot 7. v1 non-blocking:
@@ -655,7 +655,7 @@ pub fn kernel_sys_readlinkat(args: &SyscallArgs) -> i64 {
 /// `pollfd { fd: i32, events: i16, revents: i16 }` = 8 bytes
 /// each on Linux x86_64.
 /// # C: O(nfds)
-pub fn kernel_sys_poll(args: &SyscallArgs) -> i64 {
+pub fn sys_poll(args: &SyscallArgs) -> i64 {
     const POLLIN:  i16 = 0x0001;
     const POLLOUT: i16 = 0x0004;
     const NFDS_MAX: u64 = 4096;
@@ -714,9 +714,9 @@ pub fn kernel_sys_poll(args: &SyscallArgs) -> i64 {
 /// non-blocking shape as poll; signal mask + timespec ignored
 /// (real pselect/ppoll wait support rides P3 follow-up).
 /// # C: O(nfds)
-pub fn kernel_sys_ppoll(args: &SyscallArgs) -> i64 {
+pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
     let pf = SyscallArgs { a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0 };
-    kernel_sys_poll(&pf)
+    sys_poll(&pf)
 }
 
 
@@ -743,19 +743,19 @@ pub fn sys_lseek(args: &SyscallArgs) -> i64 {
 /// regular files this yields posix-correct results when the file
 /// position equals `off` (the common stdio case post-fseek).
 /// # C: O(iovcnt × iov[i].len)
-pub fn kernel_sys_pwritev(args: &SyscallArgs) -> i64 { kernel_sys_writev(args) }
+pub fn sys_pwritev(args: &SyscallArgs) -> i64 { sys_writev(args) }
 
 /// `sys_preadv(fd, iov, iovcnt, off)` — slot 295. Same offset
 /// caveat as pwritev.
 /// # C: O(1)
-pub fn kernel_sys_preadv(args: &SyscallArgs) -> i64 { kernel_sys_readv(args) }
+pub fn sys_preadv(args: &SyscallArgs) -> i64 { sys_readv(args) }
 
 /// `sys_writev(fd, iov, iovcnt)` — slot 20. fd_table-routed
 /// version: looks up the open `File`, walks the iovec array,
 /// calls `File::write` for each non-empty buffer. Returns total
 /// bytes written or the first negative errno encountered.
 /// # C: O(iovcnt × iov[i].len)
-pub fn kernel_sys_writev(args: &SyscallArgs) -> i64 {
+pub fn sys_writev(args: &SyscallArgs) -> i64 {
     const IOV_MAX: u64 = 1024;
     let fd     = args.a0 as i32;
     let iov    = args.a1;
@@ -805,7 +805,7 @@ pub fn kernel_sys_writev(args: &SyscallArgs) -> i64 {
 /// reads. Each iov buffer gets one call into `File::read`; a
 /// short read terminates the loop early per Linux semantics.
 /// # C: O(iovcnt × iov[i].len)
-pub fn kernel_sys_readv(args: &SyscallArgs) -> i64 {
+pub fn sys_readv(args: &SyscallArgs) -> i64 {
     const IOV_MAX: u64 = 1024;
     let fd     = args.a0 as i32;
     let iov    = args.a1;
@@ -858,7 +858,7 @@ pub fn kernel_sys_readv(args: &SyscallArgs) -> i64 {
 /// `sys_fchdir(fd)` — slot 81. v1 validates `fd` is open in the
 /// current task's fd_table; no actual cwd state.
 /// # C: O(1)
-pub fn kernel_sys_fchdir(args: &SyscallArgs) -> i64 {
+pub fn sys_fchdir(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
     let cur = match sched::live::current() {
         Some(c) => c,
@@ -877,7 +877,7 @@ pub fn kernel_sys_fchdir(args: &SyscallArgs) -> i64 {
 
 /// `sys_truncate(path, length)` — slot 76.
 /// # C: O(N_devfs_entries)
-pub fn kernel_sys_truncate(args: &SyscallArgs) -> i64 {
+pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let len      = args.a1;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
@@ -899,7 +899,7 @@ pub fn kernel_sys_truncate(args: &SyscallArgs) -> i64 {
 
 /// `sys_ftruncate(fd, length)` — slot 77.
 /// # C: O(1)
-pub fn kernel_sys_ftruncate(args: &SyscallArgs) -> i64 {
+pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let len = args.a1;
     let cur = match sched::live::current() {

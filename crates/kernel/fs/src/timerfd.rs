@@ -100,7 +100,7 @@ fn timerfd_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<TimerfdIno
 
 /// `sys_timerfd_create(clockid, flags)`. Allocates a fresh TimerfdInode fd.
 /// # C: O(N_fds)
-pub fn kernel_sys_timerfd_create(_args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_timerfd_create(_args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
@@ -125,7 +125,7 @@ pub fn kernel_sys_timerfd_create(_args: &syscall::SyscallArgs) -> i64 {
 /// expiry_ns + interval_ns from new->{it_value, it_interval}.
 /// `old` (if non-NULL) gets the previous remaining + interval.
 /// # C: O(1)
-pub fn kernel_sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd = args.a0 as i32;
     let _flags = args.a1;
@@ -178,7 +178,7 @@ pub fn kernel_sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
 
 /// `sys_timerfd_gettime(fd, value)`. Reports remaining + interval.
 /// # C: O(1)
-pub fn kernel_sys_timerfd_gettime(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_timerfd_gettime(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd = args.a0 as i32;
     let value = args.a1;

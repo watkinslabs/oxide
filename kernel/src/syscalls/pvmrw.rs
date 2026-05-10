@@ -43,7 +43,7 @@ fn target_root_pa(pid: u32) -> Result<u64, i64> {
 /// `sys_process_vm_readv(pid, local_iov, liovcnt, remote_iov, riovcnt, flags)`
 /// — slot 310. Reads from the target's memory into our own.
 /// # C: O(sum(remote iov lens))
-pub fn kernel_sys_process_vm_readv(args: &SyscallArgs) -> i64 {
+pub fn sys_process_vm_readv(args: &SyscallArgs) -> i64 {
     let pid    = args.a0 as u32;
     let liov_p = args.a1;
     let liovcnt = args.a2 as usize;
@@ -92,7 +92,7 @@ pub fn kernel_sys_process_vm_readv(args: &SyscallArgs) -> i64 {
 /// `sys_process_vm_writev(pid, local_iov, liovcnt, remote_iov, riovcnt, flags)`
 /// — slot 311. Writes from our memory into the target's.
 /// # C: O(sum(remote iov lens))
-pub fn kernel_sys_process_vm_writev(args: &SyscallArgs) -> i64 {
+pub fn sys_process_vm_writev(args: &SyscallArgs) -> i64 {
     let pid    = args.a0 as u32;
     let liov_p = args.a1;
     let liovcnt = args.a2 as usize;

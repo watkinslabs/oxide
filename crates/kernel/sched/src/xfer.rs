@@ -10,7 +10,7 @@ use syscall::errno::Errno;
 /// kernel staging buffer. `offset` is currently ignored — reads
 /// from the File's current position.
 /// # C: O(count)
-pub fn kernel_sys_sendfile(args: &SyscallArgs) -> i64 {
+pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
     let out_fd = args.a0 as i32;
     let in_fd  = args.a1 as i32;
     let _off   = args.a2;
@@ -54,7 +54,7 @@ pub fn kernel_sys_sendfile(args: &SyscallArgs) -> i64 {
 /// pointers are honored when non-NULL and not pipe-backed; for
 /// pipes Linux requires NULL and we silently ignore.
 /// # C: O(len)
-pub fn kernel_sys_splice(args: &SyscallArgs) -> i64 {
+pub fn sys_splice(args: &SyscallArgs) -> i64 {
     let in_fd   = args.a0 as i32;
     let in_off  = args.a1;
     let out_fd  = args.a2 as i32;
@@ -109,7 +109,7 @@ pub fn kernel_sys_splice(args: &SyscallArgs) -> i64 {
 /// of the pipe are still open + the caller intended to consume
 /// elsewhere, which v1 callers (busybox tee, dd) tolerate.
 /// # C: O(len)
-pub fn kernel_sys_tee(args: &SyscallArgs) -> i64 {
+pub fn sys_tee(args: &SyscallArgs) -> i64 {
     let mut sa = *args;
     sa.a0 = args.a0; // in_fd
     sa.a1 = 0;
@@ -117,7 +117,7 @@ pub fn kernel_sys_tee(args: &SyscallArgs) -> i64 {
     sa.a3 = 0;
     sa.a4 = args.a2; // len
     sa.a5 = args.a3; // flags
-    kernel_sys_splice(&sa)
+    sys_splice(&sa)
 }
 
 /// `sys_vmsplice(fd, iov, nr_segs, flags)` — slot 278. Walks the
@@ -126,7 +126,7 @@ pub fn kernel_sys_tee(args: &SyscallArgs) -> i64 {
 /// always copy. Reading from a pipe via vmsplice (the inverse
 /// direction) similarly falls back to read.
 /// # C: O(total iovec bytes)
-pub fn kernel_sys_vmsplice(args: &SyscallArgs) -> i64 {
+pub fn sys_vmsplice(args: &SyscallArgs) -> i64 {
     let fd     = args.a0 as i32;
     let iov    = args.a1;
     let nr     = args.a2;
@@ -181,7 +181,7 @@ pub fn kernel_sys_vmsplice(args: &SyscallArgs) -> i64 {
 /// in/out offsets honored when non-NULL. Linux semantics: on success
 /// the offsets are advanced by the byte count copied.
 /// # C: O(len)
-pub fn kernel_sys_copy_file_range(args: &SyscallArgs) -> i64 {
+pub fn sys_copy_file_range(args: &SyscallArgs) -> i64 {
     let in_fd   = args.a0 as i32;
     let in_off  = args.a1;
     let out_fd  = args.a2 as i32;

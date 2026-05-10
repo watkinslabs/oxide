@@ -185,7 +185,7 @@ pub fn smoke_test() {
     use hal::kassert;
     let (master, n) = allocate_pair();
     // Master inode must carry the 0x6000_0000 marker + low-15-bit pts_num
-    // — kernel_sys_ioctl(TIOCGPTN) decodes by exactly this scheme.
+    // — sys_ioctl(TIOCGPTN) decodes by exactly this scheme.
     let ino = master.ino();
     kassert!((ino & 0xFFFF_8000) == 0x6000_0000, "master ino marker");
     kassert!((ino & 0x7FFF) as u32 == n, "master ino encodes pts_num");

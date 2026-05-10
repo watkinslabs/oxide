@@ -10,7 +10,7 @@ use syscall::SyscallArgs;
 
 /// `sys_sched_yield()` — slot 24. tick_yield + 0.
 /// # C: O(log N)
-pub fn kernel_sys_sched_yield(_args: &SyscallArgs) -> i64 {
+pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
     if sched::live::global().is_some() {
         // SAFETY: process ctx; runqueue installed; preempt-off through the syscall handler; tick_yield saves into current.arch_ctx + Context::switch's away.
         unsafe { sched::live::tick_yield(); }
@@ -34,7 +34,7 @@ pub fn sys_gettid(_args: &SyscallArgs) -> i64 {
 /// semantics. v1 single-thread doesn't yet wake-on-exit; the
 /// storage is for musl + glibc visibility.
 /// # C: O(1)
-pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
+pub fn sys_set_tid_address(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() { Some(c) => c, None => return 1 };
     cur.clear_child_tid.store(args.a0, Ordering::Release);
@@ -51,7 +51,7 @@ pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
 /// FUTEX_CLOCK_REALTIME (256)` masks (treated as no-ops since v1
 /// process-private-only with monotonic clock).
 /// # C: O(W) waiters per WAKE, O(1) WAIT
-pub fn kernel_sys_futex(args: &SyscallArgs) -> i64 {
+pub fn sys_futex(args: &SyscallArgs) -> i64 {
     ::ipc::live::futex::dispatch(args.a0, args.a1 as u32, args.a2 as u32)
 }
 
@@ -79,7 +79,7 @@ pub fn kernel_sys_futex(args: &SyscallArgs) -> i64 {
 ///   u64 cgroup         — cgroup fd (ignored v1).
 ///
 /// # C: O(parent VMAs) | O(1) for CLONE_VM
-pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
+pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let cl_args = args.a0;
     let size    = args.a1 as usize;
@@ -109,7 +109,7 @@ pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
         let merged_flags = flags | (exit_signal & 0xff);
         // Direct call into the dispatch helper — same path as
         // clone/fork/vfork.
-        crate::syscalls::clone::kernel_sys_clone_dispatch(
+        crate::syscalls::clone::sys_clone_dispatch(
             args, merged_flags, user_sp, parent_tid, child_tid, tls,
         )
     }
@@ -119,7 +119,7 @@ pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
 /// no-op. Real per-page PTE prot bits + W^X enforcement rides
 /// the VMA permission rewrite per docs/11§6.
 /// # C: O(1)
-pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
+pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
     use vmm::VmaProt;
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
@@ -150,7 +150,7 @@ pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
 /// drop pages (refault as zero); hints (NORMAL/RANDOM/SEQUENTIAL/etc)
 /// no-op; HWPOISON needs CAP_SYS_ADMIN → EPERM; unknown → EINVAL.
 /// # C: O(len/4096)
-pub fn kernel_sys_madvise(args: &SyscallArgs) -> i64 {
+pub fn sys_madvise(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     // Drop-pages set: DONTNEED=4, FREE=8, REMOVE=9 — all observably
@@ -187,7 +187,7 @@ pub fn kernel_sys_madvise(args: &SyscallArgs) -> i64 {
 /// `sys_prlimit64(pid, resource, new, old)` — slot 302. v1
 /// returns 0 — no rlimit enforcement yet.
 /// # C: O(1)
-pub fn kernel_sys_prlimit64(args: &SyscallArgs) -> i64 {
+pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let pid      = args.a0 as u32;
     let resource = args.a1 as usize;
@@ -236,7 +236,7 @@ pub fn kernel_sys_prlimit64(args: &SyscallArgs) -> i64 {
 
 /// `sys_nanosleep(req, rem)` — slot 35. yield-loop on monotonic clock.
 /// # C: O(req_ns / yield_quantum)
-pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
+pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
     use syscall::errno::Errno;
     let req = args.a0;
@@ -267,7 +267,7 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 }
 
 // `sys_rseq` + rseq_writeback live in `syscall_glue_rseq.rs` (F86).
-pub use sched::rseq::{kernel_sys_rseq, rseq_writeback};
+pub use sched::rseq::{sys_rseq, rseq_writeback};
 
 // `sys_chroot` real impl moved to `syscall_glue_chroot.rs` (F95).
 
@@ -275,7 +275,7 @@ pub use sched::rseq::{kernel_sys_rseq, rseq_writeback};
 /// controlling terminal by posting SIGHUP to every task in the same
 /// session. Privileged (CAP_SYS_TTY_CONFIG / root).
 /// # C: O(N_tasks)
-pub fn kernel_sys_vhangup(_args: &SyscallArgs) -> i64 {
+pub fn sys_vhangup(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
@@ -299,7 +299,7 @@ pub fn kernel_sys_vhangup(_args: &SyscallArgs) -> i64 {
 /// (future) thread-exit walk to wake contending futexes. Validates
 /// `head` ∈ user range; `head==0` clears.
 /// # C: O(1)
-pub fn kernel_sys_set_robust_list(args: &SyscallArgs) -> i64 {
+pub fn sys_set_robust_list(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let head = args.a0;
@@ -318,7 +318,7 @@ pub fn kernel_sys_set_robust_list(args: &SyscallArgs) -> i64 {
 /// scheduler registry. Writes the stored head+len through the two
 /// user pointers.
 /// # C: O(1) | O(N_tasks) when pid != 0 (registry walk)
-pub fn kernel_sys_get_robust_list(args: &SyscallArgs) -> i64 {
+pub fn sys_get_robust_list(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let pid      = args.a0 as u32;
@@ -355,7 +355,7 @@ pub fn kernel_sys_get_robust_list(args: &SyscallArgs) -> i64 {
 /// `sys_getrlimit(res, rlim)` — slot 97. Reads the per-task
 /// rlimit slot for `res` and writes `(cur, max)` to user `rlim`.
 /// # C: O(1)
-pub fn kernel_sys_getrlimit(args: &SyscallArgs) -> i64 {
+pub fn sys_getrlimit(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let resource = args.a0 as usize;
     let rlim = args.a1;
@@ -381,7 +381,7 @@ pub fn kernel_sys_getrlimit(args: &SyscallArgs) -> i64 {
 /// `sys_setrlimit(res, rlim)` — slot 160. Reads `(cur, max)` from
 /// user `rlim`, validates `cur <= max`, writes to per-task slot.
 /// # C: O(1)
-pub fn kernel_sys_setrlimit(args: &SyscallArgs) -> i64 {
+pub fn sys_setrlimit(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let resource = args.a0 as usize;
     let rlim = args.a1;
@@ -412,7 +412,7 @@ pub fn kernel_sys_setrlimit(args: &SyscallArgs) -> i64 {
 /// `monotonic_ns - spawn_ns` for the calling task; ru_stime + the
 /// 14 trailing counters all zero.
 /// # C: O(1)
-pub fn kernel_sys_getrusage(args: &SyscallArgs) -> i64 {
+pub fn sys_getrusage(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     use syscall::errno::Errno;
@@ -447,7 +447,7 @@ pub fn kernel_sys_getrusage(args: &SyscallArgs) -> i64 {
 /// `(monotonic_ns - spawn_ns)` in CLK_TCK (100 Hz) ticks; the rest
 /// of the struct stays zero. Return value: monotonic ticks total.
 /// # C: O(1)
-pub fn kernel_sys_times(args: &SyscallArgs) -> i64 {
+pub fn sys_times(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     let buf = args.a0;
@@ -478,7 +478,7 @@ pub fn kernel_sys_times(args: &SyscallArgs) -> i64 {
 /// sysinfo (112 B) — uptime, loads, totalram, freeram, etc.
 /// v1 fills uptime + zero everything else.
 /// # C: O(1)
-pub fn kernel_sys_sysinfo(args: &SyscallArgs) -> i64 {
+pub fn sys_sysinfo(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
     use syscall::errno::Errno;
     let buf = args.a0;
@@ -510,7 +510,7 @@ pub fn kernel_sys_sysinfo(args: &SyscallArgs) -> i64 {
 ///
 /// MREMAP_MAYMOVE = 1; MREMAP_FIXED = 2; MREMAP_DONTUNMAP = 4 (unsup).
 /// # C: O(K + log N) per VMA-tree op
-pub fn kernel_sys_mremap(args: &SyscallArgs) -> i64 {
+pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     use vmm::{VmaProt, VmaFlags, VmaBacking};
@@ -596,13 +596,13 @@ pub fn kernel_sys_mremap(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_msync(addr, len, flags)` — slot 26. # C: O(1)
-pub fn kernel_sys_msync(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_msync(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_mincore(addr, len, vec)` — slot 27. Reports residency
 /// of pages in [addr, addr+len) into `vec`. v1 conservatively
 /// reports every page resident (bit 0 set per byte).
 /// # C: O(len/4096)
-pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
+pub fn sys_mincore(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     let addr  = args.a0;
@@ -631,18 +631,18 @@ pub fn kernel_sys_mincore(args: &SyscallArgs) -> i64 {
 /// — slots 149/150/151/152. v1 has no swap; every page is
 /// effectively locked. Accept and return 0.
 /// # C: O(1)
-pub fn kernel_sys_mlock_family(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_mlock_family(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_getpgrp` — slot 111. Returns the current task's pgid.
 /// # C: O(1)
-pub fn kernel_sys_getpgrp(_args: &SyscallArgs) -> i64 {
+pub fn sys_getpgrp(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     sched::live::current().map(|c| c.pgid.load(Ordering::Acquire) as i64).unwrap_or(1)
 }
 
 /// `sys_getpgid(pid)` — slot 121. `pid==0` means the current task.
 /// # C: O(N_tasks) for non-self lookup
-pub fn kernel_sys_getpgid(args: &SyscallArgs) -> i64 {
+pub fn sys_getpgid(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid = args.a0 as u32;
     let task = if pid == 0 {
@@ -658,7 +658,7 @@ pub fn kernel_sys_getpgid(args: &SyscallArgs) -> i64 {
 
 /// `sys_getsid(pid)` — slot 124. `pid==0` means the current task.
 /// # C: O(N_tasks) for non-self lookup
-pub fn kernel_sys_getsid(args: &SyscallArgs) -> i64 {
+pub fn sys_getsid(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid = args.a0 as u32;
     let task = if pid == 0 {
@@ -676,7 +676,7 @@ pub fn kernel_sys_getsid(args: &SyscallArgs) -> i64 {
 /// `pid==0` means current; `pgid==0` means use the target's tid.
 /// Returns -ESRCH if the target task isn't live.
 /// # C: O(N_tasks)
-pub fn kernel_sys_setpgid(args: &SyscallArgs) -> i64 {
+pub fn sys_setpgid(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let pid  = args.a0 as u32;
     let pgid = args.a1 as u32;
@@ -694,7 +694,7 @@ pub fn kernel_sys_setpgid(args: &SyscallArgs) -> i64 {
 /// `sys_setsid()` — slot 112. Makes the caller a session leader:
 /// new sid = new pgid = tid. Returns the new sid.
 /// # C: O(1)
-pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
+pub fn sys_setsid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() { Some(c) => c, None => return 1 };
     cur.sid.store(cur.tid, Ordering::Release);
@@ -705,7 +705,7 @@ pub fn kernel_sys_setsid(_args: &SyscallArgs) -> i64 {
 /// `sys_umask(mask)` — slot 95. v1 returns 0o022 as the prior
 /// mask and forgets the new one.
 /// # C: O(1)
-pub fn kernel_sys_umask(args: &SyscallArgs) -> i64 {
+pub fn sys_umask(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let new_mask = (args.a0 as u32) & 0o777;
     let cur = match sched::live::current() { Some(c) => c, None => return 0o022 };
@@ -715,7 +715,7 @@ pub fn kernel_sys_umask(args: &SyscallArgs) -> i64 {
 /// `sys_getcpu(cpu, node, tcache)` — slot 309. v1 single-CPU UP →
 /// always returns CPU 0, NUMA node 0.
 /// # C: O(1)
-pub fn kernel_sys_getcpu(args: &SyscallArgs) -> i64 {
+pub fn sys_getcpu(args: &SyscallArgs) -> i64 {
     let cpu  = args.a0;
     let node = args.a1;
     if cpu  != 0 && cpu  < hal::USER_VA_END {
@@ -732,7 +732,7 @@ pub fn kernel_sys_getcpu(args: &SyscallArgs) -> i64 {
 /// `sys_sched_getparam(pid, param)` — slot 143. v1: writes
 /// sched_priority=0 (only meaningful for RT classes).
 /// # C: O(1)
-pub fn kernel_sys_sched_getparam(args: &SyscallArgs) -> i64 {
+pub fn sys_sched_getparam(args: &SyscallArgs) -> i64 {
     let p = args.a1;
     if p != 0 && p < hal::USER_VA_END {
         // SAFETY: p validated < USER_VA_END; CPL=0 writes through caller's AS.
@@ -744,12 +744,12 @@ pub fn kernel_sys_sched_getparam(args: &SyscallArgs) -> i64 {
 /// `sys_sched_setscheduler` / `sys_sched_getscheduler` —
 /// slots 144/145. v1 always reports SCHED_OTHER (0); set is no-op.
 /// # C: O(1)
-pub fn kernel_sys_sched_getscheduler(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_sched_getscheduler(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_sched_get_priority_max(policy)` — slot 146. v1: 99 for
 /// SCHED_FIFO/RR, 0 otherwise.
 /// # C: O(1)
-pub fn kernel_sys_sched_get_priority_max(args: &SyscallArgs) -> i64 {
+pub fn sys_sched_get_priority_max(args: &SyscallArgs) -> i64 {
     let policy = args.a0 as i32;
     match policy { 1 | 2 => 99, _ => 0 }
 }
@@ -757,7 +757,7 @@ pub fn kernel_sys_sched_get_priority_max(args: &SyscallArgs) -> i64 {
 /// `sys_sched_get_priority_min(policy)` — slot 147. v1: 1 for
 /// SCHED_FIFO/RR, 0 otherwise.
 /// # C: O(1)
-pub fn kernel_sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
+pub fn sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
     let policy = args.a0 as i32;
     match policy { 1 | 2 => 1, _ => 0 }
 }
@@ -765,7 +765,7 @@ pub fn kernel_sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
 /// `sys_sched_getaffinity(pid, cpusetsize, mask)` — slot 204.
 /// v1: writes a single-bit mask covering CPU 0; returns 8.
 /// # C: O(1)
-pub fn kernel_sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
+pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
     let cpusetsize = args.a1;
     let mask = args.a2;
     if mask == 0 || mask >= hal::USER_VA_END || cpusetsize < 8 {
@@ -778,7 +778,7 @@ pub fn kernel_sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
 
 /// `sys_sched_setaffinity` — slot 203. v1 single-CPU → no-op.
 /// # C: O(1)
-pub fn kernel_sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
 
 // `sys_prctl` real impl moved to `syscall_glue_prctl.rs` (F72).
 
@@ -786,16 +786,16 @@ pub fn kernel_sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
 /// CPU UP: every memory op is already globally ordered, so any
 /// MEMBARRIER_CMD_* request succeeds vacuously.
 /// # C: O(1)
-pub fn kernel_sys_membarrier(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_membarrier(_args: &SyscallArgs) -> i64 { 0 }
 
 /// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
-/// v1: ignores clk_id + flags, reuses `kernel_sys_nanosleep` on
+/// v1: ignores clk_id + flags, reuses `sys_nanosleep` on
 /// the req timespec. TIMER_ABSTIME would compute deadline from
 /// the timespec directly; v1 treats all values as relative.
 /// # C: same as nanosleep
-pub fn kernel_sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
+pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     let inner = SyscallArgs { a0: args.a2, a1: args.a3, a2: 0, a3: 0, a4: 0, a5: 0 };
-    kernel_sys_nanosleep(&inner)
+    sys_nanosleep(&inner)
 }
 
 /// `sys_sethostname(name, len)` — slot 170. Updates the hostname
@@ -804,7 +804,7 @@ pub fn kernel_sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
 /// (private to the namespace); else they update the global.
 /// Requires CAP_SYS_ADMIN.
 /// # C: O(N)
-pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
+pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let ptr = args.a0;
@@ -837,7 +837,7 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
 /// PRIO_PROCESS (which=0): returns 20 - nice for matching tid
 /// (Linux convention; positive == lower priority).
 /// # C: O(N_tasks)
-pub fn kernel_sys_getpriority(args: &SyscallArgs) -> i64 {
+pub fn sys_getpriority(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const PRIO_PROCESS: u64 = 0;
     let which = args.a0;
@@ -857,7 +857,7 @@ pub fn kernel_sys_getpriority(args: &SyscallArgs) -> i64 {
 /// `sys_setpriority(which, who, prio)` — slot 141. PRIO_PROCESS only;
 /// clamps to `[-20, 19]` per `sched::rlimit::clamp_nice`.
 /// # C: O(N_tasks)
-pub fn kernel_sys_setpriority(args: &SyscallArgs) -> i64 {
+pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const PRIO_PROCESS: u64 = 0;
     let which = args.a0;
@@ -882,7 +882,7 @@ pub fn kernel_sys_setpriority(args: &SyscallArgs) -> i64 {
 /// deadline at monotonic_ns + seconds*1e9. Returns the seconds
 /// remaining on the previous alarm, or 0 if none.
 /// # C: O(1)
-pub fn kernel_sys_alarm(args: &SyscallArgs) -> i64 {
+pub fn sys_alarm(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     let secs = args.a0;
@@ -903,7 +903,7 @@ pub fn kernel_sys_alarm(args: &SyscallArgs) -> i64 {
 /// `sys_pause()` — slot 34. Yield-loops until the calling task has
 /// a non-masked signal pending, then returns -EINTR.
 /// # C: O(yields)
-pub fn kernel_sys_pause(_args: &SyscallArgs) -> i64 {
+pub fn sys_pause(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let cur = match sched::live::current() {
@@ -921,7 +921,7 @@ pub fn kernel_sys_pause(_args: &SyscallArgs) -> i64 {
 /// `sys_setitimer(which, new, old)` — slot 38. ITIMER_REAL only.
 /// new = `struct itimerval { it_interval: timeval, it_value: timeval }`.
 /// # C: O(1)
-pub fn kernel_sys_setitimer(args: &SyscallArgs) -> i64 {
+pub fn sys_setitimer(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     const ITIMER_REAL: u64 = 0;
@@ -969,7 +969,7 @@ pub fn kernel_sys_setitimer(args: &SyscallArgs) -> i64 {
 /// `sys_getitimer(which, curr)` — slot 36. Reports remaining +
 /// interval for ITIMER_REAL.
 /// # C: O(1)
-pub fn kernel_sys_getitimer(args: &SyscallArgs) -> i64 {
+pub fn sys_getitimer(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     const ITIMER_REAL: u64 = 0;

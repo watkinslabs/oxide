@@ -20,7 +20,7 @@ use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// Registry of Zombie tasks awaiting `wait4`. Pushed to by
-/// `kernel_sys_exit`; popped by `kernel_sys_wait4`. v1 single-CPU
+/// `sys_exit`; popped by `sys_wait4`. v1 single-CPU
 /// — single global Vec under a spinlock at lock class `TaskList`
 /// (`06§3.6`); the registry is the moral equivalent of Linux's
 /// global task list for v1's reaping path.
@@ -88,7 +88,7 @@ pub fn enqueue_zombie(task: Arc<Task>) {
 }
 
 /// Park the current task in WAITERS, marking it Sleeping. Caller
-/// (kernel_sys_wait4) must call `schedule()` immediately after; the
+/// (sys_wait4) must call `schedule()` immediately after; the
 /// task only resumes when `wake_wait4_parent` re-enqueues it.
 /// # SAFETY: caller is the running task on this CPU; preempt-off;
 /// runqueue installed.

@@ -158,7 +158,7 @@ const UFFDIO_WAKE:       u64 = 0x8010_aa02;
 
 /// `userfaultfd(flags)` — slot 323. Returns a fresh fd.
 /// # C: O(1)
-pub fn kernel_sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;

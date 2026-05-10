@@ -94,7 +94,7 @@ fn lookup_by_key(key: i32) -> Option<Arc<MsgQueue>> {
 
 /// `msgget(key, msgflg)` — slot NR_MSGGET.
 /// # C: O(N_queues)
-pub fn kernel_sys_msgget(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_msgget(args: &syscall::SyscallArgs) -> i64 {
     let key  = args.a0 as i32;
     let _flg = args.a1;
     if let Some(q) = lookup_by_key(key) {
@@ -121,7 +121,7 @@ pub fn kernel_sys_msgget(args: &syscall::SyscallArgs) -> i64 {
 /// receiver under the lock to close the lost-wakeup race.
 /// # C: O(msgsz) on copy + O(N_retries) on contention
 /// # Lk: MsgQueue.q → WaitList.waiters → runqueue.inner
-pub fn kernel_sys_msgsnd(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_msgsnd(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let msqid = args.a0 as i32;
     let uptr  = args.a1;
@@ -220,7 +220,7 @@ fn pick_index(q: &VecDeque<Msg>, msgtyp: i64) -> Option<usize> {
 /// header).
 /// # C: O(N_msgs_in_queue + msgsz)
 /// # Lk: MsgQueue.q → WaitList.waiters → runqueue.inner
-pub fn kernel_sys_msgrcv(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_msgrcv(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let msqid  = args.a0 as i32;
     let uptr   = args.a1;
@@ -278,7 +278,7 @@ pub fn kernel_sys_msgrcv(args: &syscall::SyscallArgs) -> i64 {
 
 /// `msgctl(msqid, cmd, buf)` — slot NR_MSGCTL.
 /// # C: O(N_queues) lookup
-pub fn kernel_sys_msgctl(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_msgctl(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let msqid = args.a0 as i32;
     let cmd   = args.a1;
