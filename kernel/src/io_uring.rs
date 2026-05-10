@@ -278,7 +278,7 @@ fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
         IORING_OP_READV  => crate::syscalls::fs::kernel_sys_readv(&sa),
         IORING_OP_WRITEV => crate::syscalls::fs::kernel_sys_writev(&sa),
         IORING_OP_FSYNC  => 0,
-        IORING_OP_CLOSE  => crate::syscalls::kernel_sys_close(&sa),
+        IORING_OP_CLOSE  => crate::syscalls::sys_close(&sa),
         IORING_OP_OPENAT => crate::syscalls::open::kernel_sys_openat(&sa),
         IORING_OP_SEND   => crate::syscalls::net::kernel_sys_sendto(&sa),
         IORING_OP_RECV   => crate::syscalls::net::kernel_sys_recvfrom(&sa),
