@@ -23,7 +23,6 @@ tmpfs     = { path = "../crates/kernel/tmpfs", default-features = false }
 coredump  = { path = "../crates/kernel/coredump" }
 elf-load  = { path = "../crates/kernel/elf-load" }
 msi       = { path = "../crates/kernel/msi" }
-dev-virtio-gpu-modern = { path = "../crates/kernel/dev/virtio-gpu-modern", default-features = false }
 syscall-glue-numa = { path = "../crates/kernel/syscall-glue/numa" }
 syscall-glue-unix-cmsg = { path = "../crates/kernel/syscall-glue/unix-cmsg" }
 syscall-glue-dmesg = { path = "../crates/kernel/syscall-glue/dmesg" }
@@ -81,7 +80,7 @@ debug-vmm  = []  # device-map MMIO sanity reads (HPET cap, GICD typer)
 debug-irq  = []  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = ["sched/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
-debug-boot = ["pipe/debug-boot", "tmpfs/debug-boot", "dev-virtio-gpu-modern/debug-boot", "devfs/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["pipe/debug-boot", "tmpfs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = []  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules","debug-syscall"]
