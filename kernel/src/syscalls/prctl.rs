@@ -34,7 +34,7 @@ const PR_GET_CHILD_SUBREAPER: u64 = 37;
 /// # C: O(1)
 pub fn kernel_sys_personality(args: &SyscallArgs) -> i64 {
     let new = args.a0 as u32;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let prev = cur.personality.load(Ordering::Acquire);
     if new != u32::MAX { cur.personality.store(new, Ordering::Release); }
     prev as i64
@@ -48,7 +48,7 @@ pub fn kernel_sys_personality(args: &SyscallArgs) -> i64 {
 /// the cap_bounding mask added in F66.
 /// # C: O(1)
 pub fn kernel_sys_prctl(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     match args.a0 {
         PR_SET_NAME | PR_SET_DUMPABLE | PR_SET_TSC | PR_SET_THP_DISABLE => 0,
         PR_GET_DUMPABLE => 1,

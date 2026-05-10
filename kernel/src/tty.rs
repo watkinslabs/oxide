@@ -397,7 +397,7 @@ fn deliver_signal_to_waiters(idx: usize, sig: u32) {
     let bit = 1u64 << (sig - 1);
     let fg = VT_FG_PGID[idx].load(Ordering::Acquire);
     if fg != 0 {
-        for t in crate::sched::registry::tasks_in_pgrp(fg) {
+        for t in sched::live::registry::tasks_in_pgrp(fg) {
             t.sigpending.fetch_or(bit, Ordering::Release);
         }
     } else {
@@ -454,7 +454,7 @@ pub fn output_oflag(vt: u8) -> u32 {
 fn wake_waiters(idx: usize) {
     let mut waiters = VT_WAITERS[idx].lock();
     if waiters.is_empty() { return; }
-    let rq = match crate::sched::global() {
+    let rq = match sched::live::global() {
         Some(r) => r,
         None    => { waiters.clear(); return; }
     };
@@ -465,7 +465,7 @@ fn wake_waiters(idx: usize) {
         inner.enqueue(task);
     }
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    crate::preempt::set_need_resched();
+    sched::live::preempt::set_need_resched();
 }
 
 /// Pop one byte from `vt`'s RX ringbuffer. `vt == 0` reads from
@@ -504,7 +504,7 @@ pub fn inject_for_smoke(bytes: &[u8]) { inject_for_smoke_vt(0, bytes); }
 /// # SAFETY: caller is the running task on this CPU; preempt-off.
 /// # C: O(1)
 pub unsafe fn park_current_for_tty_vt(vt: u8) {
-    let rq = match crate::sched::global() { Some(r) => r, None => return };
+    let rq = match sched::live::global() { Some(r) => r, None => return };
     let raw = rq.current.load(Ordering::Acquire);
     if raw.is_null() { return; }
     // SAFETY: rq.current is non-null after install_global; bump strong count to materialise an Arc that the WAITERS list can hold across the schedule.

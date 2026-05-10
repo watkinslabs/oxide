@@ -37,7 +37,7 @@ fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
 pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let flags = args.a0;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let mut bits: u64 = 0;
     for clone_flag in [
         CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
@@ -110,7 +110,7 @@ pub fn kernel_sys_setns(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd     = args.a0 as i32;
     let nstype = args.a1;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
@@ -181,7 +181,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
     let request = args.a0;
     let pid     = args.a1 as u32;
 
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     match request {
@@ -191,7 +191,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             0
         }
         PTRACE_ATTACH | PTRACE_SEIZE => {
-            match crate::sched::registry::lookup(pid) {
+            match sched::live::registry::lookup(pid) {
                 Some(t) => {
                     t.traced_by.store(cur.tid, Ordering::Release);
                     // F104: ATTACH posts SIGSTOP so the target stops at
@@ -209,18 +209,18 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             }
         }
         PTRACE_DETACH => {
-            if let Some(t) = crate::sched::registry::lookup(pid) {
+            if let Some(t) = sched::live::registry::lookup(pid) {
                 t.traced_by.store(0, Ordering::Release);
                 // F104: clear any pending SIGSTOP from a prior ATTACH
                 // and wake the target if it parked in stop_until_cont.
                 t.sigpending.fetch_and(!(1u64 << 18), Ordering::Release);
-                crate::sched::registry::wake_if_stopped(&t);
+                sched::live::registry::wake_if_stopped(&t);
             }
             0
         }
         PTRACE_KILL => {
             // Set SIGKILL pending on target.
-            if let Some(t) = crate::sched::registry::lookup(pid) {
+            if let Some(t) = sched::live::registry::lookup(pid) {
                 t.sigpending.fetch_or(1u64 << 8, Ordering::Release); // SIGKILL = 9 → bit 8
             }
             0
@@ -239,7 +239,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // -EFAULT on unmapped target page.
             let addr = args.a2;
             let data = args.a3;
-            let target = match crate::sched::registry::lookup(pid) {
+            let target = match sched::live::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             // SAFETY: target task; we hold an Arc<Task> from the registry; mm slot is single-mutator per `13§5` and target is either running or parked — fork/exec don't mutate the slot under us.
@@ -270,7 +270,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // path follows when the kernel grows one).
             let addr = args.a2;
             let data = args.a3;
-            let target = match crate::sched::registry::lookup(pid) {
+            let target = match sched::live::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             // SAFETY: same as PEEKTEXT — we hold Arc<Task>; mm slot stable per `13§5`.
@@ -298,7 +298,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // RFLAGS.TF / MDSCR_EL1.SS on the next entry. Until those
             // arches land, behaviour matches CONT — flag is set but
             // no trap fires; first-cut wake semantics preserved.
-            let target = match crate::sched::registry::lookup(pid) {
+            let target = match sched::live::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let sig = args.a3 as i32;
@@ -315,7 +315,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             } else {
                 target.ptrace_syscall_armed.store(false, Ordering::Release);
             }
-            crate::sched::registry::wake_if_stopped(&target);
+            sched::live::registry::wake_if_stopped(&target);
             0
         }
         PTRACE_GETREGS | PTRACE_GETREGSET => {
@@ -323,7 +323,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // Target must be stopped or attached; we read its
             // kernel_stack top and copy the 15-u64 user-reg block at
             // offset -0x80 (x86) / SVC frame (aarch64) into `data`.
-            let target = match crate::sched::registry::lookup(pid) {
+            let target = match sched::live::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let top = target.kernel_stack.load(Ordering::Acquire);
@@ -367,7 +367,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             // frame, symmetric with F115 GETREGS. Target must be
             // stopped; the frame at kstack_top - 0x80 (x86) /
             // -0xD0 (aarch64) is stable while the tracee is parked.
-            let target = match crate::sched::registry::lookup(pid) {
+            let target = match sched::live::registry::lookup(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let top = target.kernel_stack.load(Ordering::Acquire);
@@ -420,7 +420,7 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as i32;
     let sig = args.a1 as i32;
     if !(0..=64).contains(&sig) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
     };
     let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
@@ -432,14 +432,14 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
         // F109: cross-NS pid translation. Caller in non-init pid_ns
         // means `pid` is a vpid in their NS, not a global tid.
         let cur_ns = cur.pid_ns.load(Ordering::Acquire);
-        match crate::sched::registry::lookup_in_ns(cur_ns, pid as u32) {
+        match sched::live::registry::lookup_in_ns(cur_ns, pid as u32) {
             Some(t) => {
                 if !sig_perm_check(cur, &t, sig) {
                     return -(syscall::errno::Errno::Eperm.as_i32() as i64);
                 }
                 if sig != 0 {
                     t.sigpending.fetch_or(bit, Ordering::Release);
-                    if sig == 18 { crate::sched::registry::wake_if_stopped(&t); }
+                    if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
                 }
                 0
             }
@@ -459,9 +459,9 @@ pub fn kernel_sys_kill(args: &SyscallArgs) -> i64 {
 
 fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
     use core::sync::atomic::Ordering;
-    let tasks = crate::sched::registry::tasks_in_pgrp(pgid);
+    let tasks = sched::live::registry::tasks_in_pgrp(pgid);
     let mut n = 0usize;
-    let cur = crate::sched::current();
+    let cur = sched::live::current();
     for t in &tasks {
         let allowed = match cur {
             Some(c) => sig_perm_check(c, t, sig),
@@ -470,7 +470,7 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
         if !allowed { continue; }
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            if sig == 18 { crate::sched::registry::wake_if_stopped(t); }
+            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
         }
         n += 1;
     }
@@ -517,7 +517,7 @@ pub fn kernel_sys_rt_sigaction(args: &SyscallArgs) -> i64 {
     if sig == 0 || sig > 64 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return 0,
     };
     let idx = sig - 1;
@@ -562,7 +562,7 @@ pub fn kernel_sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     let oldset = args.a2;
     let sz     = args.a3;
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return 0,
     };
     let prior = cur.sigmask.load(Ordering::Acquire);
@@ -592,7 +592,7 @@ pub fn kernel_sys_sigaltstack(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let ss    = args.a0;
     let oldss = args.a1;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
     };
     if oldss != 0 {
@@ -633,7 +633,7 @@ pub fn kernel_sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     if set == 0 || set >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let p = cur.sigpending.load(Ordering::Acquire);
     // SAFETY: set validated < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe { core::ptr::write_volatile(set as *mut u64, p); }
@@ -651,7 +651,7 @@ pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     if mask == 0 || mask >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
     };
     // SAFETY: mask validated < USER_VA_END; CPL=0 reads through caller's AS.
@@ -665,7 +665,7 @@ pub fn kernel_sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "x86_64")]
         unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
         // SAFETY: process ctx; runqueue installed; preempt-off until tick_yield's Context::switch.
-        unsafe { crate::sched::tick_yield(); }
+        unsafe { sched::live::tick_yield(); }
     }
     cur.sigmask.store(old_mask, Ordering::Release);
     -(Errno::Eintr.as_i32() as i64)
@@ -687,7 +687,7 @@ pub fn kernel_sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: set validated < USER_VA_END; CPL=0 reads via active CR3.
     let wanted = unsafe { core::ptr::read_volatile(set as *const u64) };
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
     };
     let deadline = if timeout != 0 && timeout < hal::USER_VA_END {
@@ -733,7 +733,7 @@ pub fn kernel_sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "x86_64")]
         unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
         // SAFETY: process ctx; runqueue installed; preempt-off until tick_yield's Context::switch.
-        unsafe { crate::sched::tick_yield(); }
+        unsafe { sched::live::tick_yield(); }
     }
 }
 
@@ -769,7 +769,7 @@ pub struct PendingSignal {
 /// # C: O(1)
 pub fn take_lowest_pending() -> Option<PendingSignal> {
     use core::sync::atomic::Ordering;
-    let cur = crate::sched::current()?;
+    let cur = sched::live::current()?;
     let pending = cur.sigpending.load(Ordering::Acquire);
     let masked  = cur.sigmask.load(Ordering::Acquire);
     let deliver = pending & !masked;
@@ -793,12 +793,12 @@ pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
     let sig  = args.a2 as i32;
     if tgid <= 0 || tid <= 0 { return -(Errno::Esrch.as_i32() as i64); }
     if !(0..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let cur_ns = cur.pid_ns.load(Ordering::Acquire);
     // F109: in non-init pid_ns, `tid` is a vtid in caller's NS.
-    match crate::sched::registry::lookup_in_ns(cur_ns, tid as u32) {
+    match sched::live::registry::lookup_in_ns(cur_ns, tid as u32) {
         Some(t) => {
             // Validate the tgid matches as well (vtgid in NS, real otherwise).
             let want_tgid = tgid as u32;
@@ -812,7 +812,7 @@ pub fn kernel_sys_tgkill(args: &SyscallArgs) -> i64 {
             }
             if sig != 0 {
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-                if sig == 18 { crate::sched::registry::wake_if_stopped(&t); }
+                if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
             }
             0
         }

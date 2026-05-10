@@ -205,9 +205,9 @@ pub unsafe fn run() -> ! {
     // Spawn the loaded ELF as a user `Task` (mirrors x86 P2-13c).
     // schedule() switches into it via the IRQ-tail eret epilogue
     // using the synthetic frame from `new_user_with_irq_frame`.
-    if !crate::sched::runqueue_active() {
+    if !sched::live::runqueue_active() {
         // SAFETY: boot path; allocator up; no concurrent runqueue users.
-        unsafe { crate::sched::install_default_runqueue(); }
+        unsafe { sched::live::install_default_runqueue(); }
     }
 
     // SAFETY: handler 'static; pre-init swap.
@@ -219,7 +219,7 @@ pub unsafe fn run() -> ! {
     };
     // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off.
     let task = match unsafe {
-        crate::sched::spawn_user_thread(
+        sched::live::spawn_user_thread(
             0xC0DE_0001, "elf-user-arm",
             img.entry.as_u64(),
             USER_STACK_TOP,
@@ -247,7 +247,7 @@ pub unsafe fn run() -> ! {
     // SAFETY: opening DAIF.I lets GIC deliver IRQs.
     unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
     // SAFETY: process ctx, runqueue installed, preempt-off; idle is the boot anchor.
-    unsafe { crate::sched::schedule(); }
+    unsafe { sched::live::schedule(); }
     // SAFETY: msr daifset re-masks DAIF.I after schedule returns to boot — matches the post-smoke discipline used elsewhere in the boot path.
     unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags)); }
 
@@ -267,7 +267,7 @@ pub unsafe fn run() -> ! {
     // keeps draining bytes into the tty rx ringbuffer.
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
         // SAFETY: msr daifclr opens DAIF.I to allow the timer / UART
         // IRQ to wake us; wfi parks until next IRQ; both privileged at EL1.
         unsafe { core::arch::asm!("msr daifclr, #2; wfi; msr daifset, #2",
@@ -402,7 +402,7 @@ fn spawn_init_from_rootfs_arm() {
 
     // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off; vpid stamped pre-enqueue so busybox-init's first syscall sees PID 1.
     let task = match unsafe {
-        crate::sched::spawn_user_thread_with_vpid(
+        sched::live::spawn_user_thread_with_vpid(
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1, "init",
             img.entry.as_u64(),
             new_sp,

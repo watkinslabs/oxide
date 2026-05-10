@@ -184,7 +184,7 @@ pub fn kernel_sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
             core::ptr::write_volatile((params + 72 + 20) as *mut u32, OFF_CQ_RING);
         }
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -206,7 +206,7 @@ pub fn kernel_sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
     let to_submit = args.a1 as u32;
     let _min_cmpl = args.a2;
     let _flags    = args.a3;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

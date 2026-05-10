@@ -29,7 +29,7 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
 /// # C: O(1)
 pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
     use core::sync::atomic::Ordering;
-    if let Some(t) = crate::sched::current() {
+    if let Some(t) = sched::live::current() {
         if (t.ns_membership.load(Ordering::Acquire) & (1u64 << 1)) != 0 {
             // SAFETY: per-task uts_hostname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
             let s = unsafe { (*t.uts_hostname.get()).clone() };

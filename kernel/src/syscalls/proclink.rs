@@ -17,7 +17,7 @@ pub fn resolve_proc_link(path: &str) -> Option<Vec<u8>> {
     let tid_opt: Option<u32> = if head == "self" { None } else { head.parse().ok() };
     if head != "self" && tid_opt.is_none() { return None; }
     if let Some(tid) = tid_opt {
-        if crate::sched::registry::lookup(tid).is_none() { return None; }
+        if sched::live::registry::lookup(tid).is_none() { return None; }
     }
     match leaf {
         "exe"  => Some(task_exe_path(tid_opt)),
@@ -31,8 +31,8 @@ pub fn resolve_proc_link(path: &str) -> Option<Vec<u8>> {
 
 fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
     let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid),
-        None      => crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid)),
+        Some(tid) => sched::live::registry::lookup(tid),
+        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
         // Linux: /proc/<pid>/exe is rooted on mm_struct::exe_file
@@ -62,8 +62,8 @@ fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
 
 fn task_cwd_path(tid_opt: Option<u32>) -> Vec<u8> {
     let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid),
-        None      => crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid)),
+        Some(tid) => sched::live::registry::lookup(tid),
+        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
         // SAFETY: cwd slot single-mutator per `13§5`.
@@ -75,8 +75,8 @@ fn task_cwd_path(tid_opt: Option<u32>) -> Vec<u8> {
 
 fn task_root_path(tid_opt: Option<u32>) -> Vec<u8> {
     let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid),
-        None      => crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid)),
+        Some(tid) => sched::live::registry::lookup(tid),
+        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
         // SAFETY: task.root single-mutator per `13§5`.
@@ -89,8 +89,8 @@ fn task_root_path(tid_opt: Option<u32>) -> Vec<u8> {
 fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
     use core::sync::atomic::Ordering;
     let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid)?,
-        None      => crate::sched::current().and_then(|c| crate::sched::registry::lookup(c.tid))?,
+        Some(tid) => sched::live::registry::lookup(tid)?,
+        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))?,
     };
     let id = match leaf {
         "ipc"    => task.ipc_ns.load(Ordering::Acquire),
@@ -123,8 +123,8 @@ fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
 fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<Vec<u8>> {
     let fd: i32 = fd_str.parse().ok()?;
     let task = match tid_opt {
-        Some(tid) => crate::sched::registry::lookup(tid)?,
-        None      => crate::sched::registry::lookup(crate::sched::current()?.tid)?,
+        Some(tid) => sched::live::registry::lookup(tid)?,
+        None      => sched::live::registry::lookup(sched::live::current()?.tid)?,
     };
     // SAFETY: fd_table slot single-mutator per `13§5`.
     let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };

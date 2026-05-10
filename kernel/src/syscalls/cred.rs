@@ -25,7 +25,7 @@ use core::sync::atomic::Ordering;
 /// `sys_getuid` — slot 102. Returns the real uid.
 /// # C: O(1)
 pub fn kernel_sys_getuid(_args: &SyscallArgs) -> i64 {
-    match crate::sched::current() {
+    match sched::live::current() {
         Some(t) => t.creds.ruid.load(Ordering::Acquire) as i64,
         None    => 0,
     }
@@ -34,7 +34,7 @@ pub fn kernel_sys_getuid(_args: &SyscallArgs) -> i64 {
 /// `sys_geteuid` — slot 107. Returns the effective uid.
 /// # C: O(1)
 pub fn kernel_sys_geteuid(_args: &SyscallArgs) -> i64 {
-    match crate::sched::current() {
+    match sched::live::current() {
         Some(t) => t.creds.euid.load(Ordering::Acquire) as i64,
         None    => 0,
     }
@@ -43,7 +43,7 @@ pub fn kernel_sys_geteuid(_args: &SyscallArgs) -> i64 {
 /// `sys_getgid` — slot 104. Returns the real gid.
 /// # C: O(1)
 pub fn kernel_sys_getgid(_args: &SyscallArgs) -> i64 {
-    match crate::sched::current() {
+    match sched::live::current() {
         Some(t) => t.creds.rgid.load(Ordering::Acquire) as i64,
         None    => 0,
     }
@@ -52,7 +52,7 @@ pub fn kernel_sys_getgid(_args: &SyscallArgs) -> i64 {
 /// `sys_getegid` — slot 108. Returns the effective gid.
 /// # C: O(1)
 pub fn kernel_sys_getegid(_args: &SyscallArgs) -> i64 {
-    match crate::sched::current() {
+    match sched::live::current() {
         Some(t) => t.creds.egid.load(Ordering::Acquire) as i64,
         None    => 0,
     }
@@ -73,7 +73,7 @@ fn writeback3(p_a: u64, va: u32, p_b: u64, vb: u32, p_c: u64, vc: u32) -> Result
 /// `sys_getresuid(ruid_out, euid_out, suid_out)` — slot 118.
 /// # C: O(1)
 pub fn kernel_sys_getresuid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let r = cur.creds.ruid.load(Ordering::Acquire);
     let e = cur.creds.euid.load(Ordering::Acquire);
     let s = cur.creds.suid.load(Ordering::Acquire);
@@ -85,7 +85,7 @@ pub fn kernel_sys_getresuid(args: &SyscallArgs) -> i64 {
 /// `sys_getresgid(rgid_out, egid_out, sgid_out)` — slot 120.
 /// # C: O(1)
 pub fn kernel_sys_getresgid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let r = cur.creds.rgid.load(Ordering::Acquire);
     let e = cur.creds.egid.load(Ordering::Acquire);
     let s = cur.creds.sgid.load(Ordering::Acquire);
@@ -107,7 +107,7 @@ fn uid_allowed(target: u32, r: u32, e: u32, s: u32) -> bool {
 /// Without the cap, transitions are confined to the existing triple.
 /// # C: O(1)
 pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
     let s = args.a2 as u32;
@@ -131,7 +131,7 @@ pub fn kernel_sys_setresuid(args: &SyscallArgs) -> i64 {
 /// `sys_setresgid(rgid, egid, sgid)` — slot 119. Cap = SETGID.
 /// # C: O(1)
 pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
     let s = args.a2 as u32;
@@ -155,7 +155,7 @@ pub fn kernel_sys_setresgid(args: &SyscallArgs) -> i64 {
 /// `sys_setuid(uid)` — slot 105.
 /// # C: O(1)
 pub fn kernel_sys_setuid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let uid = args.a0 as u32;
     if cur.has_cap(sched::cap::SETUID) {
         cur.creds.ruid.store(uid,  Ordering::Release);
@@ -176,7 +176,7 @@ pub fn kernel_sys_setuid(args: &SyscallArgs) -> i64 {
 /// `sys_setgid(gid)` — slot 106.
 /// # C: O(1)
 pub fn kernel_sys_setgid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let gid = args.a0 as u32;
     if cur.has_cap(sched::cap::SETGID) {
         cur.creds.rgid.store(gid,  Ordering::Release);
@@ -200,7 +200,7 @@ pub fn kernel_sys_setgid(args: &SyscallArgs) -> i64 {
 /// either set explicitly or != euid, suid follows the new euid.
 /// # C: O(1)
 pub fn kernel_sys_setreuid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
     let cr = cur.creds.ruid.load(Ordering::Acquire);
@@ -225,7 +225,7 @@ pub fn kernel_sys_setreuid(args: &SyscallArgs) -> i64 {
 /// `sys_setregid(rgid, egid)` — slot 114.
 /// # C: O(1)
 pub fn kernel_sys_setregid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let r = args.a0 as u32;
     let e = args.a1 as u32;
     let cr = cur.creds.rgid.load(Ordering::Acquire);
@@ -252,7 +252,7 @@ pub fn kernel_sys_setregid(args: &SyscallArgs) -> i64 {
 /// dropped and the previous value still returned.
 /// # C: O(1)
 pub fn kernel_sys_setfsuid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let uid = args.a0 as u32;
     let prev = cur.creds.fsuid.load(Ordering::Acquire);
     if uid == NOCHANGE { return prev as i64; }
@@ -269,7 +269,7 @@ pub fn kernel_sys_setfsuid(args: &SyscallArgs) -> i64 {
 /// gid triple.
 /// # C: O(1)
 pub fn kernel_sys_setfsgid(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let gid = args.a0 as u32;
     let prev = cur.creds.fsgid.load(Ordering::Acquire);
     if gid == NOCHANGE { return prev as i64; }
@@ -287,7 +287,7 @@ pub fn kernel_sys_setfsgid(args: &SyscallArgs) -> i64 {
 /// is a query (returns ngroups without writing).
 /// # C: O(NGROUPS_V1)
 pub fn kernel_sys_getgroups(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let size = args.a0 as usize;
     let list = args.a1;
     let n = cur.creds.ngroups.load(Ordering::Acquire) as usize;
@@ -312,7 +312,7 @@ pub fn kernel_sys_getgroups(args: &SyscallArgs) -> i64 {
 /// group list. Linux requires CAP_SETGID (root for v1).
 /// # C: O(NGROUPS_V1)
 pub fn kernel_sys_setgroups(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(sched::cap::SETGID) { return -(Errno::Eperm.as_i32() as i64); }
     let size = args.a0 as usize;
     let list = args.a1;
@@ -368,14 +368,14 @@ unsafe fn read_caphdr(hp: u64) -> Result<(u32, i32), i64> {
 /// task's creds. Returns the loaded triple `(eff, perm, inh)`.
 fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
     if pid == 0 {
-        let cur = match crate::sched::current() {
+        let cur = match sched::live::current() {
             Some(c) => c, None => return Err(-(Errno::Esrch.as_i32() as i64)),
         };
         Ok((cur.creds.cap_effective.load(Ordering::Acquire),
             cur.creds.cap_permitted.load(Ordering::Acquire),
             cur.creds.cap_inheritable.load(Ordering::Acquire)))
     } else if pid > 0 {
-        let task = match crate::sched::registry::lookup(pid as u32) {
+        let task = match sched::live::registry::lookup(pid as u32) {
             Some(t) => t, None => return Err(-(Errno::Esrch.as_i32() as i64)),
         };
         Ok((task.creds.cap_effective.load(Ordering::Acquire),
@@ -450,7 +450,7 @@ pub fn kernel_sys_capset(args: &SyscallArgs) -> i64 {
             return -(Errno::Einval.as_i32() as i64);
         }
     };
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if pid != 0 && pid as u32 != cur.tid {
