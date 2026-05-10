@@ -628,3 +628,6 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
 mod tests;
 
 pub mod setup;
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod user_as;

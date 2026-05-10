@@ -139,7 +139,7 @@ pub fn kernel_sys_mprotect(args: &SyscallArgs) -> i64 {
     match mm.mprotect(ua, len, vp) {
         Ok(()) => {
             // SAFETY: caller is the running task; mm matches active AS; per-AS UP + preempt-off serialises with fault path; mprotect_pages walks PT + flushes TLB so hardware enforces the new permissions.
-            unsafe { crate::user_as::mprotect_pages(mm.root_pa(), addr, len, vp); }
+            unsafe { pmm::user_as::mprotect_pages(mm.root_pa(), addr, len, vp); }
             0
         }
         Err(_) => -(Errno::Einval.as_i32() as i64),

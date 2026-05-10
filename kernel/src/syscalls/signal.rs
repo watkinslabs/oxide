@@ -249,7 +249,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             let root_pa = mm.root_pa();
             let mut buf = [0u8; 8];
             // SAFETY: mm Arc keeps root_pa alive; HHDM init done before any user task runs; target page tables are stable while mm Arc is held.
-            let n = unsafe { crate::user_as::read_foreign_user(root_pa, addr, &mut buf[..]) };
+            let n = unsafe { pmm::user_as::read_foreign_user(root_pa, addr, &mut buf[..]) };
             if n != 8 { return -(Errno::Efault.as_i32() as i64); }
             let word = i64::from_le_bytes(buf);
             if data != 0 && data < ::hal::USER_VA_END {
@@ -280,7 +280,7 @@ pub fn kernel_sys_ptrace(args: &SyscallArgs) -> i64 {
             let root_pa = mm.root_pa();
             let buf = data.to_le_bytes();
             // SAFETY: mm Arc keeps root_pa alive; write_foreign_user verifies leaf writability per chunk before writing.
-            let n = unsafe { crate::user_as::write_foreign_user(root_pa, addr, &buf[..]) };
+            let n = unsafe { pmm::user_as::write_foreign_user(root_pa, addr, &buf[..]) };
             if n != 8 { return -(Errno::Efault.as_i32() as i64); }
             0
         }
