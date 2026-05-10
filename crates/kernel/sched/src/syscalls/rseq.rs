@@ -1,4 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
 // `sys_rseq(2)` real impl + syscall-return-tail cpu_id writeback.
 // Split out of `syscall_glue_proc.rs` to keep that file under the
 // 1000-line cap.
@@ -25,7 +24,7 @@ pub fn kernel_sys_rseq(args: &SyscallArgs) -> i64 {
     let len   = args.a1 as u32;
     let flags = args.a2 as u32;
     let sig   = args.a3 as u32;
-    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     if flags & RSEQ_FLAG_UNREGISTER != 0 {
         cur.rseq_ptr.store(0, Ordering::Release);
         cur.rseq_len.store(0, Ordering::Release);
@@ -48,7 +47,7 @@ pub fn kernel_sys_rseq(args: &SyscallArgs) -> i64 {
 /// Called from the syscall-return tail.
 /// # C: O(1)
 pub fn rseq_writeback() {
-    let cur = match sched::live::current() { Some(c) => c, None => return };
+    let cur = match crate::live::current() { Some(c) => c, None => return };
     let ptr = cur.rseq_ptr.load(Ordering::Acquire);
     if ptr == 0 { return; }
     // SAFETY: ptr was validated < USER_VA_END at registration; len ≥ 32 so the cpu_id_start (offset 0) and cpu_id (offset 4) u32 writes lie within the registered range; CPL=0 writes through caller's AS.
