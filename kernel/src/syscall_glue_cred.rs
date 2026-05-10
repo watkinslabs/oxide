@@ -495,7 +495,7 @@ pub fn kernel_sys_capset(args: &SyscallArgs) -> i64 {
 /// is not a cred slot so the caller can fall through.
 /// # C: O(1)
 pub fn cred_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
-    use crate::syscall_nrs::*;
+    use syscall::nrs::*;
     let rv = match nr {
         NR_GETUID    => kernel_sys_getuid(args),
         NR_GETEUID   => kernel_sys_geteuid(args),

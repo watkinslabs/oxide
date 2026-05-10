@@ -294,7 +294,7 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                                 let use_its = its_translater != 0 && is_blk_bdf;
                                 if use_its {
                                     Some((0u32, its_translater, 0u32))
-                                } else if let Some(spi) = crate::msi::alloc_arm_spi() {
+                                } else if let Some(spi) = msi::alloc_arm_spi() {
                                     // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
                                     unsafe { crate::gic::enable_intid(spi); }
                                     let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
@@ -306,7 +306,7 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             }
                             #[cfg(target_arch = "x86_64")]
                             {
-                                if let Some(vec) = crate::msi::alloc_x86_vector() {
+                                if let Some(vec) = msi::alloc_x86_vector() {
                                     Some((vec as u32, 0xFEE0_0000u64, vec as u32))
                                 } else { None }
                             }
@@ -524,7 +524,7 @@ pub fn enumerate_and_log() {
             // entry for 0x50 + dispatcher arm + LAPIC EOI path are
             // all correct end-to-end and any device-driven MSI gap
             // is in the PCI MSI write path, not kernel.
-            let pre = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+            let pre = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: LAPIC mapped+enabled; ICR write is well-defined; self-shorthand targets this CPU; IF=1 from the sti above.
             unsafe {
                 let va = crate::lapic::LAPIC_BASE_VA.load(core::sync::atomic::Ordering::Acquire);
@@ -534,7 +534,7 @@ pub fn enumerate_and_log() {
                 }
             }
             for _ in 0..1_000_000 { core::hint::spin_loop(); }
-            let post = crate::msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+            let post = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
             klog::write_raw(b"[INFO]  lapic-self-fire pre=");
             klog::write_dec_u64(pre as u64);
             klog::write_raw(b" post=");
@@ -545,7 +545,7 @@ pub fn enumerate_and_log() {
             // SAFETY: pairs with sti above; restores canary's boot-mask state.
             unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
         }
-        let fires = crate::msi::MSI_FIRES
+        let fires = msi::MSI_FIRES
             .load(core::sync::atomic::Ordering::Acquire);
         klog::write_raw(b"[INFO]  msi-fires-post-enum=");
         klog::write_dec_u64(fires as u64);
@@ -559,7 +559,7 @@ pub fn enumerate_and_log() {
         // ioctl/netlink (TODO) and runs DHCP from there.
         if crate::dev_virtio_net_modern::is_modern_present() {
             if let Some(dev) = crate::dev_virtio_net_modern::VirtioNetDev::new() {
-                let stack = crate::dev_net::stack();
+                let stack = dev_net::stack();
                 let id = stack.ifaces.register(
                     dev as alloc::sync::Arc<dyn net::NetDev>,
                 );
@@ -598,13 +598,13 @@ pub fn enumerate_and_log() {
         // delivery path (e.g. GICv3 + ITS).
         #[cfg(target_arch = "aarch64")]
         {
-            let v2m_va = crate::msi::GICV2M_VA
+            let v2m_va = msi::GICV2M_VA
                 .load(core::sync::atomic::Ordering::Acquire);
             if v2m_va != 0 {
-                if let Some(spi) = crate::msi::alloc_arm_spi() {
+                if let Some(spi) = msi::alloc_arm_spi() {
                     // SAFETY: gic::enable was called before any IRQ unmask; SPI is freshly allocated, owned by this diagnostic; single-CPU pre-init.
                     unsafe { crate::gic::enable_intid(spi); }
-                    let before = crate::msi::MSI_FIRES
+                    let before = msi::MSI_FIRES
                         .load(core::sync::atomic::Ordering::Acquire);
                     let setspi_ns = (v2m_va + 0x040) as *mut u32;
                     // SAFETY: boot phase, single-CPU; brief unmask
@@ -617,7 +617,7 @@ pub fn enumerate_and_log() {
                     for _ in 0..2_000_000 { core::hint::spin_loop(); }
                     // SAFETY: pairs with the daifclr above; restores the boot-mask state on this CPU.
                     unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
-                    let after = crate::msi::MSI_FIRES
+                    let after = msi::MSI_FIRES
                         .load(core::sync::atomic::Ordering::Acquire);
                     klog::write_raw(b"[INFO]  gicv2m-self-fire spi=");
                     klog::write_dec_u64(spi as u64);

@@ -13,7 +13,7 @@
 #![cfg(target_os = "oxide-kernel")]
 #![cfg(target_arch = "x86_64")]
 
-use crate::elf_load::load_static_blob;
+use elf_load::load_static_blob;
 
 /// Build an init-like fork+wait4+execve loop ELF64 at compile
 /// time. Three iterations: parent forks → child execs YO
@@ -348,7 +348,7 @@ pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
 pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
     #[cfg(target_os = "oxide-kernel")]
     {
-        if let Some(bytes) = crate::dev_ext4::read_file(path) {
+        if let Some(bytes) = dev_ext4::read_file(path) {
             // Leak to 'static: kernel-lifetime stable storage.
             let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
             return Some(leaked);
@@ -499,15 +499,15 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         let img = load_static_blob(ELF_BLOB, as_)?;
         // Stack VMA — anonymous, demand-paged on first push.
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
-            .ok_or(crate::elf_load::LoadError::Einval)?;
+            .ok_or(elf_load::LoadError::Einval)?;
         as_.mmap(
             Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
             VmaBacking::Anonymous,
             true,
-        ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
-        Ok::<_, crate::elf_load::LoadError>(img)
+        ).map_err(|_| elf_load::LoadError::Enomem)?;
+        Ok::<_, elf_load::LoadError>(img)
     }) {
         Some(Ok(i))  => i,
         Some(Err(e)) => {
@@ -756,17 +756,17 @@ unsafe fn spawn_user_blob_with_vpid(
     // SAFETY: per-AS PML4 was constructed with kernel-half shared from master so kernel mappings remain valid; CR3 swap legal at CPL=0 IRQ-off.
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(root_pa); }
 
-    let img = match (|| -> Result<_, crate::elf_load::LoadError> {
+    let img = match (|| -> Result<_, elf_load::LoadError> {
         let img = load_static_blob(blob, &mm)?;
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
-            .ok_or(crate::elf_load::LoadError::Einval)?;
+            .ok_or(elf_load::LoadError::Einval)?;
         mm.mmap(
             Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
             VmaBacking::Anonymous,
             true,
-        ).map_err(|_| crate::elf_load::LoadError::Enomem)?;
+        ).map_err(|_| elf_load::LoadError::Enomem)?;
         // F152-2: no kernel-side TLS region — user crt1 mmaps its
         // own TCB and installs FS_BASE via arch_prctl(ARCH_SET_FS).
         Ok(img)
