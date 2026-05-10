@@ -1,0 +1,17 @@
+[package]
+name = "devfs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+# Devfs registry per `52§3` domain layer. Owns the namespace-aware
+# (ns, path) → InodeRef table; the boot-time bootstrap that fills
+# it with kernel-side device implementations stays in
+# `kernel/src/devfs.rs` per `52§5` (integration in kernel).
+
+[dependencies]
+hal   = { path = "../hal" }
+sched = { path = "../sched" }
+sync  = { path = "../sync" }
+vfs   = { path = "../vfs" }
