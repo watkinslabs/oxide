@@ -329,19 +329,16 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // VIRTIO_BLK_T_GET_ID return a recognizable string (F31).
         "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
-        // Standard VGA so OVMF's GOP driver actually paints UEFI
-        // + Limine + early-kernel framebuffer output that you can
-        // see in the GTK window. Without -vga std, OVMF has no
-        // display device it knows how to drive (virtio-gpu needs
-        // a separate UEFI driver) and the GTK window stays blank
-        // through boot.
-        "-vga", "std",
-        // virtio-gpu modern PCI for `45` graphical-terminal arc
-        // — kernel-side scanout once that lands.
+        // virtio-gpu is the kernel's primary display target — our
+        // dev_virtio_gpu_modern paints `oxide kernel ready` to its
+        // scanout at boot. No -vga / -device ramfb fallback because
+        // the kernel doesn't paint to legacy VGA, and OVMF picking
+        // a different device leaves the GTK window blank.
         "-device", "virtio-gpu-pci,bus=pcie.0",
-        // virtio-input keyboard + mouse for `46`.
+        // virtio keyboard for `46` (input). Mouse removed — kernel
+        // doesn't process pointer events yet and the wheel-input
+        // events were just spamming the serial log.
         "-device", "virtio-keyboard-pci,bus=pcie.0",
-        "-device", "virtio-mouse-pci,bus=pcie.0",
         // Serial: dedicated chardev with `mux=on,signal=off` so Ctrl-A
         // is QEMU's monitor escape and Ctrl-C reaches the guest.
         // Plain `-serial stdio` puts host stdin in line-buffered cooked
@@ -387,17 +384,11 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         // synthetic PCIe root is the path edk2 reliably discovers.
         "-drive",  &format!("if=none,id=hd0,format=raw,file={}", img.display()),
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
-        // ramfb: a tiny framebuffer device OVMF aarch64 has a built-in
-        // driver for. virt-machine doesn't have legacy VGA; without
-        // ramfb the GTK window stays blank through firmware + Limine
-        // (no display device the firmware can drive).
-        "-device", "ramfb",
-        // virtio-gpu modern PCI for `45` graphical-terminal arc
-        // — kernel-side scanout lands later.
+        // virtio-gpu only — same reasoning as x86. Kernel's
+        // dev_virtio_gpu_modern paints to this scanout.
         "-device", "virtio-gpu-pci,bus=pcie.0",
-        // virtio-input keyboard + mouse for `46`.
+        // virtio keyboard for `46`. Mouse removed; same reason.
         "-device", "virtio-keyboard-pci,bus=pcie.0",
-        "-device", "virtio-mouse-pci,bus=pcie.0",
         "-chardev", "stdio,id=ser0,mux=on,signal=off",
         "-serial", "chardev:ser0",
         "-mon",     "chardev=ser0",
