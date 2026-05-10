@@ -109,7 +109,7 @@ impl IoUringInode {
     pub fn new(entries: u32) -> Option<Arc<Self>> {
         let n = entries.next_power_of_two().max(1).min(MAX_ENTRIES);
         let pa = pmm::setup::alloc_one_frame()?;
-        let va = pa + crate::user_as::hhdm_offset();
+        let va = pa + pmm::user_as::hhdm_offset();
         // SAFETY: HHDM-mapped page just allocated; zero a single 4 KiB region; sole writer until we publish.
         unsafe { core::ptr::write_bytes(va as *mut u8, 0, PAGE as usize); }
         // SAFETY: page just allocated and zeroed; no aliasing; ring_mask + ring_entries fields written through HHDM mapping.
