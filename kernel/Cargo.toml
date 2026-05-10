@@ -13,8 +13,8 @@ block   = { path = "../crates/kernel/block" }
 boot-info = { path = "../crates/shared/boot-info" }
 cpu       = { path = "../crates/kernel/cpu" }
 devfs     = { path = "../crates/kernel/devfs" }
-elf-load  = { path = "../crates/kernel/elf-load" }
-msi       = { path = "../crates/kernel/msi" }
+elf-load  = { path = "../crates/kernel/exec" }
+msi       = { path = "../crates/kernel/arch-irq" }
 ipc       = { path = "../crates/kernel/ipc" }
 pmm-setup = { path = "../crates/kernel/mm-pmm-setup" }
 smp       = { path = "../crates/kernel/smp" }
