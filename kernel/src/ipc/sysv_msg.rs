@@ -18,7 +18,6 @@
 //   * msgctl: IPC_RMID (wakes both wait lists; sleepers return
 //     -EIDRM on retry), IPC_STAT, IPC_INFO.
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;

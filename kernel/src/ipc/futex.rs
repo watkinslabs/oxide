@@ -13,7 +13,6 @@
 // addr → bucket. Bucketed table rides a follow-up if the linear
 // scan shows up in profiles.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
