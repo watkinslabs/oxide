@@ -373,7 +373,6 @@ b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
 tty1::respawn:/sbin/getty -L 38400 tty1 vt100
-tty2::respawn:/sbin/getty -L 38400 tty2 vt100
 ")?,
         "/etc/inittab")?;
 
@@ -417,6 +416,25 @@ export PS1='\\h:\\w\\$ '
 export TERM=linux
 ")?,
         "/etc/profile")?;
+
+    // /etc/login.defs — busybox login reads ENV_PATH / ENV_SUPATH
+    // and sets them as PATH in the child env before exec'ing the
+    // shell, regardless of whether /etc/profile gets sourced. Keeps
+    // `ls`, `cat`, etc. usable from the very first prompt.
+    put(&stage("login.defs",
+b"ENV_PATH        PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ENV_SUPATH      PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+")?,
+        "/etc/login.defs")?;
+
+    // /root/.profile — sourced by login shells after /etc/profile.
+    // Belt-and-suspenders: if /etc/profile fails to source for any
+    // reason, this still seeds PATH for root's interactive sessions.
+    put(&stage("root.profile",
+b"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PS1='\\h:\\w# '
+")?,
+        "/root/.profile")?;
 
     // /etc/fstab (informational; for `mount -a`).
     put(&stage("fstab",
