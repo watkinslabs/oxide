@@ -45,7 +45,7 @@ pub fn build() -> Vec<u8> {
 }
 
 fn pmm_kb_stats() -> (u64, u64) {
-    match pmm_setup::pmm_static() {
+    match pmm::setup::pmm_static() {
         Some(p) => (p.free_pages() * 4, p.allocated_pages() * 4),
         None    => (0, 0),
     }
