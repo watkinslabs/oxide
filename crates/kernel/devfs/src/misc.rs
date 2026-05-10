@@ -1,9 +1,7 @@
 // Misc char devices per docs/16 + docs/19: /dev/null, /dev/zero,
 // /dev/full, /dev/random, /dev/urandom. v1 minimal Inode impls;
-// register at boot via `devfs::register`.
+// register at boot via `crate::register`.
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,7 +10,7 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 /// Boot-time smoke test: each Inode read fills the right bytes.
 /// `/dev/zero` returns NUL, `/dev/null` returns 0 (EOF), `/dev/random`
 /// fills with non-deterministic bytes (we just check len). Run from
-/// `kernel_main` after `devfs::init()`.
+/// `kernel_main` after `crate::init()`.
 /// # SAFETY: caller is the boot path; PMM up; single-CPU pre-init.
 /// # C: O(1) per inode
 pub fn smoke_test() {
