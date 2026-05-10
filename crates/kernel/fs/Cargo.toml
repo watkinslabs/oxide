@@ -18,6 +18,7 @@ sched    = { path = "../sched" }
 syscall  = { path = "../syscall" }
 vfs      = { path = "../vfs" }
 devfs    = { path = "../devfs" }
+procfs   = { path = "../procfs" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
