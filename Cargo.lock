@@ -376,6 +376,19 @@ name = "inflate"
 version = "0.1.0"
 
 [[package]]
+name = "inotify"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "pipe",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "iouring"
 version = "0.1.0"
 dependencies = [
@@ -439,6 +452,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "inotify",
  "ipc",
  "kalloc",
  "keyring",
@@ -447,17 +461,20 @@ dependencies = [
  "net",
  "nscg",
  "pci",
+ "perf",
  "pipe",
  "pmm",
  "pmm-setup",
  "power",
  "procfs",
+ "ptrace",
  "sched",
  "security",
  "signalfd",
  "smp",
  "sync",
  "syscall",
+ "timerfd",
  "tty",
  "userfaultfd",
  "vfs",
@@ -613,6 +630,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "perf"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "pipe"
 version = "0.1.0"
 dependencies = [
@@ -716,6 +746,15 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "ptrace"
+version = "0.1.0"
+dependencies = [
+ "hal-x86_64",
+ "sched",
+ "sync",
 ]
 
 [[package]]
@@ -966,6 +1005,19 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "timerfd"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
