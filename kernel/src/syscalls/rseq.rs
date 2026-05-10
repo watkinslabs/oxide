@@ -1,8 +1,8 @@
+#![cfg(target_os = "oxide-kernel")]
 // `sys_rseq(2)` real impl + syscall-return-tail cpu_id writeback.
 // Split out of `syscall_glue_proc.rs` to keep that file under the
 // 1000-line cap.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;

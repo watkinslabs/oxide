@@ -1,3 +1,4 @@
+#![cfg(target_os = "oxide-kernel")]
 // P3-46 compat-stub dispatch helper. Pulls the "accept and
 // return constant" + "ENOSYS" + "EPERM" tail of `oxide_syscall_dispatch`
 // out of `syscall_glue.rs` to keep that file under the 1000-line
