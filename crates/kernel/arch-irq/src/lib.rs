@@ -9,6 +9,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Kernel VA the GICv2m frame is device-mapped at. Published by
@@ -96,3 +98,6 @@ pub unsafe fn tick_poll() {
         f()
     }
 }
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod smp_x86;

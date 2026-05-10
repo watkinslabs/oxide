@@ -32,14 +32,8 @@ mod debug_macros;
 pub use firmware::acpi;
 #[cfg(target_os = "oxide-kernel")]
 pub use nscg::proc_ns as dev_proc_ns;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-pub mod smp_x86;
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub use ::sched::kthread;
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
-#[cfg(target_os = "oxide-kernel")]
 /// Real per-CPU runqueue + `schedule()` per `13§6`/§8 (P2-13b).
 /// Replaces the prior `kernel/src/ksched.rs` Vec-shim. Always-on
 /// (not gated on `debug-sched`) so the runqueue is available to
@@ -455,7 +449,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
         // SAFETY: kernel_main post-init; Limine SMP response in info is bootloader-owned; boot CPU is sole writer for goto_address slots.
-        let started = unsafe { crate::smp_x86::bring_up_aps_x86(info) };
+        let started = unsafe { arch_irq::smp_x86::bring_up_aps_x86(info) };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: cpus=");
             klog::write_dec_u64(info.smp_count);

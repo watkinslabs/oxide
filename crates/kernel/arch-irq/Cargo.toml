@@ -16,6 +16,8 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 pmm      = { path = "../mm-pmm" }
 sched    = { path = "../sched" }
+boot-info = { path = "../../shared/boot-info" }
+cpu      = { path = "../cpu" }
 sync     = { path = "../../shared/sync" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
