@@ -812,7 +812,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_CHROOT  => crate::syscall_glue_chroot::kernel_sys_chroot(&args),
         syscall::nrs::NR_MOUNT   => crate::syscall_glue_mount::kernel_sys_mount(&args),
         syscall::nrs::NR_UMOUNT2 => crate::syscall_glue_mount::kernel_sys_umount2(&args),
-        syscall::nrs::NR_GET_MEMPOLICY => syscall_glue_numa::kernel_sys_get_mempolicy(&args),
+        syscall::nrs::NR_GET_MEMPOLICY => syscall::numa::kernel_sys_get_mempolicy(&args),
         syscall::nrs::NR_VHANGUP       => crate::syscall_glue_proc::kernel_sys_vhangup(&args),
         syscall::nrs::NR_FUTIMESAT | syscall::nrs::NR_UTIMENSAT => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
         syscall::nrs::NR_MQ_NOTIFY     => crate::posix_mq::kernel_sys_mq_notify(&args),
@@ -890,7 +890,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // Handled in the fallthrough below to keep this match arm small.
         syscall::nrs::NR_SET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_set_robust_list(&args),
         syscall::nrs::NR_GET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_get_robust_list(&args),
-        syscall::nrs::NR_SYSLOG          => syscall_glue_dmesg::kernel_sys_syslog(&args),
+        syscall::nrs::NR_SYSLOG          => syscall::dmesg::kernel_sys_syslog(&args),
         // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
         syscall::nrs::NR_RT_SIGRETURN  => unsafe { crate::sig_dispatch::rt_sigreturn() },
         // Compat-stub fall-through table per P3-46.

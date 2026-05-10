@@ -2,10 +2,9 @@
 // module returns MPOL_DEFAULT and a one-node mask honestly instead
 // of leaving caller buffers uninitialised (which silent-0 would do).
 
-#![no_std]
 
-use syscall::SyscallArgs;
-use syscall::errno::Errno;
+use crate::SyscallArgs;
+use crate::errno::Errno;
 
 /// `sys_get_mempolicy(mode_p, nodemask_p, maxnode, addr, flags)` — slot 239.
 /// # C: O(maxnode/8)
