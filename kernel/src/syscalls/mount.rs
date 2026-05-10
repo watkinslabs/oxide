@@ -33,7 +33,7 @@ pub fn kernel_sys_mount(args: &SyscallArgs) -> i64 {
     let fstype_p = args.a2;
     let _flags   = args.a3;
     let _data    = args.a4;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !cur.has_cap(sched::cap::SYS_ADMIN) {
@@ -77,7 +77,7 @@ pub fn kernel_sys_mount(args: &SyscallArgs) -> i64 {
 /// # C: O(N) over devfs registry.
 pub fn kernel_sys_umount2(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !cur.has_cap(sched::cap::SYS_ADMIN) {

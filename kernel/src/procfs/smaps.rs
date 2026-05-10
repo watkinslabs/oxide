@@ -63,7 +63,7 @@ impl Inode for ProcPidSmapsInode {
 /// Build the body for the current task.
 /// # C: O(N_vmas)
 pub fn build_for_current() -> Vec<u8> {
-    let cur = match crate::sched::current() { Some(c) => c, None => return Vec::new() };
+    let cur = match sched::live::current() { Some(c) => c, None => return Vec::new() };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return Vec::new() };
     build_from_mm(&mm)
@@ -72,7 +72,7 @@ pub fn build_for_current() -> Vec<u8> {
 /// Build the body for a specific pid (looked up via registry).
 /// # C: O(N_vmas)
 pub fn build_for_pid(tid: u32) -> Vec<u8> {
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return Vec::new() };
+    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return Vec::new() };
     // SAFETY: mm slot single-mutator per `13§5`; we read a snapshot.
     let mm = match unsafe { (*task.mm.get()).as_ref() } { Some(m) => m.clone(), None => return Vec::new() };
     build_from_mm(&mm)

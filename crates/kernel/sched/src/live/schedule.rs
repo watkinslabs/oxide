@@ -27,7 +27,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use hal::{Context, MmuOps};
-use sched::{RunqueueInner, SchedClass, Task, TaskState};
+use crate::{RunqueueInner, SchedClass, Task, TaskState};
 
 use super::runqueue::{global, install_global, uninstall_global, Runqueue};
 
@@ -109,10 +109,10 @@ pub unsafe fn install_default_runqueue() {
     // SAFETY: install_default_runqueue is the per-CPU bring-up path;
     // preempt_enable hook is read at every decrement-to-zero with
     // appropriate barriers via the count atomic.
-    unsafe { sched::preempt::set_schedule_hook(schedule_hook_trampoline); }
+    unsafe { crate::preempt::set_schedule_hook(schedule_hook_trampoline); }
 }
 
-/// Trampoline matching the `unsafe fn()` shape `sched::preempt`
+/// Trampoline matching the `unsafe fn()` shape `crate::preempt`
 /// expects. Forwards to `schedule()` proper.
 ///
 /// # SAFETY: caller (`preempt_enable`) asserts a safe schedule
@@ -166,7 +166,7 @@ pub unsafe fn schedule() {
     // wakeup path called from the picker). The guard pairs at
     // function exit; the spec's `kassert!(preempt_count > 0)` at
     // `13§8` is satisfied by-construction once inside this scope.
-    let _pg = sched::preempt::PreemptGuard::new();
+    let _pg = crate::preempt::PreemptGuard::new();
 
     let rq = match global() { Some(r) => r, None => return };
 
@@ -238,7 +238,7 @@ pub unsafe fn schedule() {
     // skip the trailing drop without touching dead memory.
     let mut prev_arc_opt = Some(prev_arc);
     if matches!(prev_arc_opt.as_ref().expect("just set").state(), TaskState::Zombie) {
-        crate::sched::enqueue_zombie(prev_arc_opt.take().expect("just set"));
+        super::zombies::enqueue_zombie(prev_arc_opt.take().expect("just set"));
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
 
@@ -354,8 +354,8 @@ pub unsafe fn schedule_from_irq() {
     }
 
     // Stage the pointer pair for the asm IRQ epilogue.
-    crate::preempt::oxide_preempt_cur_ctx.store(prev_ctx_ptr, Ordering::Release);
-    crate::preempt::oxide_preempt_next_ctx.store(next_ctx_ptr, Ordering::Release);
+    super::preempt::oxide_preempt_cur_ctx.store(prev_ctx_ptr, Ordering::Release);
+    super::preempt::oxide_preempt_next_ctx.store(next_ctx_ptr, Ordering::Release);
 }
 
 /// Cooperative voluntary yield. Bumps a counter, calls

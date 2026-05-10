@@ -53,15 +53,15 @@ pub struct MqQueue {
     pub max_msgs:    usize,
     pub max_msgsize: usize,
     pub msgs:        Spinlock<Vec<MqMsg>, MqLockClass>,
-    pub wait_send:   crate::sched::WaitList,
-    pub wait_recv:   crate::sched::WaitList,
+    pub wait_send:   sched::live::WaitList,
+    pub wait_recv:   sched::live::WaitList,
     pub notifier_tid:   core::sync::atomic::AtomicU32,
     pub notifier_signo: core::sync::atomic::AtomicI32,
 }
 
 fn current_ipc_ns() -> u64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 impl MqQueue {
@@ -72,8 +72,8 @@ impl MqQueue {
             max_msgs,
             max_msgsize,
             msgs: Spinlock::new(Vec::new()),
-            wait_send: crate::sched::WaitList::new(),
-            wait_recv: crate::sched::WaitList::new(),
+            wait_send: sched::live::WaitList::new(),
+            wait_recv: sched::live::WaitList::new(),
             notifier_tid:   core::sync::atomic::AtomicU32::new(0),
             notifier_signo: core::sync::atomic::AtomicI32::new(0),
         })
@@ -180,7 +180,7 @@ pub fn kernel_sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
         queue: q,
         nonblock: core::sync::atomic::AtomicBool::new((oflag & O_NONBLOCK_BIT) != 0),
     });
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -207,7 +207,7 @@ pub fn kernel_sys_mq_unlink(args: &syscall::SyscallArgs) -> i64 {
 }
 
 fn fd_to_mq(fd: i32) -> Option<(Arc<MqQueue>, bool)> {
-    let cur = crate::sched::current()?;
+    let cur = sched::live::current()?;
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
     let file = fdt.get(fd).ok()?;
@@ -273,7 +273,7 @@ pub fn kernel_sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
                 let tid = q.notifier_tid.swap(0, Ordering::AcqRel);
                 let signo = q.notifier_signo.swap(0, Ordering::AcqRel);
                 if tid != 0 && (1..=64).contains(&signo) {
-                    if let Some(t) = crate::sched::registry::lookup(tid) {
+                    if let Some(t) = sched::live::registry::lookup(tid) {
                         t.sigpending.fetch_or(1u64 << (signo - 1), Ordering::Release);
                     }
                 }
@@ -288,7 +288,7 @@ pub fn kernel_sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
         unsafe { q.wait_send.park(); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
     }
 }
 
@@ -326,7 +326,7 @@ pub fn kernel_sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
         unsafe { q.wait_recv.park(); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
     };
 
     let n = m.bytes.len();
@@ -382,7 +382,7 @@ pub fn kernel_sys_mq_notify(args: &syscall::SyscallArgs) -> i64 {
     if !(1..=64).contains(&signo) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // BUSY if already armed (Linux EBUSY).
@@ -403,7 +403,7 @@ pub fn kernel_sys_mq_getsetattr(args: &syscall::SyscallArgs) -> i64 {
     let mqdes = args.a0 as i32;
     let new_p = args.a1;
     let old_p = args.a2;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

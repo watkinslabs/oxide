@@ -98,7 +98,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
     match vec_tag {
         hal_x86_64::VEC_TIMER => {
             TICK_COUNT.fetch_add(1, Ordering::Relaxed);
-            crate::preempt::set_need_resched();
+            sched::live::preempt::set_need_resched();
             // TTY input poll per docs/28: scrape any pending UART RX
             // byte into the ringbuffer + wake stdin waiters before the
             // pre-empt-on-IRQ-exit picker runs. Boot CPU only -- APs
@@ -106,7 +106,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // SAFETY: timer ISR ctx with IRQs masked.
             unsafe { crate::tty::tick_poll_uart(); }
             // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
-            unsafe { crate::preempt::tick_pick_next(); }
+            unsafe { sched::live::preempt::tick_pick_next(); }
         }
         hal_x86_64::VEC_RESCHED => {
             RESCHED_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -114,9 +114,9 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // a new task. Set need_resched + run the picker; the
             // IRQ-tail asm stages oxide_preempt_next_ctx for switch
             // on iretq.
-            crate::preempt::set_need_resched();
+            sched::live::preempt::set_need_resched();
             // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
-            unsafe { crate::preempt::tick_pick_next(); }
+            unsafe { sched::live::preempt::tick_pick_next(); }
         }
         hal_x86_64::VEC_MSI => {
             // F57: virtio MSI delivery. EOI already issued above; bump

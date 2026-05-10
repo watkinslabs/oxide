@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sched::Task;
 
-use crate::sched as ksched;
+use sched::live as ksched;
 
 /// Voluntary-yields per kthread.
 const RR_BUDGET: u32 = 3;

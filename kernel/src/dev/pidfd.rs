@@ -50,13 +50,13 @@ pub fn kernel_sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let pid = args.a0 as u32;
     // F109: pidfd_open with pid arg interpreted in caller's pid_ns.
-    let cur_ns = crate::sched::current()
+    let cur_ns = sched::live::current()
         .map(|c| c.pid_ns.load(core::sync::atomic::Ordering::Acquire))
         .unwrap_or(0);
-    if crate::sched::registry::lookup_in_ns(cur_ns, pid).is_none() {
+    if sched::live::registry::lookup_in_ns(cur_ns, pid).is_none() {
         return -(Errno::Esrch.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -82,7 +82,7 @@ pub fn kernel_sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let sig = args.a1 as i32;
     if !(1..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -95,7 +95,7 @@ pub fn kernel_sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let tid = match crate::dev::pidfd::tid_from_ino(file.inode().ino()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let task = match crate::sched::registry::lookup(tid) {
+    let task = match sched::live::registry::lookup(tid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !crate::syscalls::signal::sig_perm_check(cur, &task, sig) {
@@ -124,7 +124,7 @@ pub fn kernel_sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let target_fd = args.a1 as i32;
     let flags     = args.a2 as u32;
     if flags != 0 { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot for cur.
@@ -137,7 +137,7 @@ pub fn kernel_sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let tid = match crate::dev::pidfd::tid_from_ino(pidfd_file.inode().ino()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let target = match crate::sched::registry::lookup(tid) {
+    let target = match sched::live::registry::lookup(tid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: target task may be running on another CPU but fd_table

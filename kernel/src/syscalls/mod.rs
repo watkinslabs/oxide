@@ -33,7 +33,7 @@ pub fn kernel_sys_read(args: &SyscallArgs) -> i64 {
     if buf == 0 || buf >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -72,7 +72,7 @@ pub fn kernel_sys_write(args: &SyscallArgs) -> i64 {
     if buf == 0 || buf.checked_add(cnt).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return dispatch(1, args),
     };
@@ -106,7 +106,7 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     if pipefd == 0 || pipefd >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let cur = match crate::sched::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let inode = ::fs::pipe::PipeInode::new();
@@ -139,7 +139,7 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
 /// RLIMIT_DATA per Linux semantic.
 fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     let req = args.a0;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     // SAFETY: running task, no concurrent mm writer per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
     if req == 0 { return mm.brk() as i64; }
@@ -157,7 +157,7 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -174,7 +174,7 @@ pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
 
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    crate::sched::current()
+    sched::live::current()
         .map(|c| {
             // F105: PID NS — return virtualized vtgid if non-zero,
             // else real tgid. Init NS tasks have vtgid=0 → real tgid.
@@ -186,13 +186,13 @@ fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
 
 fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
-    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let ppid = cur.parent_tid.load(Ordering::Acquire);
     // F105: in a non-init pid_ns, parent visible only if it's in the
     // same NS. Tasks in init NS see real ppid as before.
     let cur_ns = cur.pid_ns.load(Ordering::Acquire);
     if cur_ns == 0 { return ppid as i64; }
-    match crate::sched::registry::lookup(ppid) {
+    match sched::live::registry::lookup(ppid) {
         Some(p) if p.pid_ns.load(Ordering::Acquire) == cur_ns => {
             let v = p.vtgid.load(Ordering::Acquire);
             if v != 0 { v as i64 } else { p.tgid.load(Ordering::Acquire) as i64 }
@@ -258,7 +258,7 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     let options = args.a2;
     let _rusage  = args.a3;
 
-    let parent_tid = match crate::sched::current() {
+    let parent_tid = match sched::live::current() {
         Some(c) => c.tid,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
@@ -267,7 +267,7 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
     // because schedule() picks runnable children which eventually
     // exit + park.
     loop {
-        if let Some((tid, code)) = crate::sched::reap_one(parent_tid, pid) {
+        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid) {
             // POSIX wstatus encoding:
             //   WIFEXITED:    low 7 bits = 0,  bits 8..16 = exit code
             //   WIFSIGNALED:  low 7 bits = signal number, bit 7 = core
@@ -297,9 +297,9 @@ fn kernel_sys_wait4(args: &SyscallArgs) -> i64 {
         // SAFETY: process ctx; runqueue installed; preempt-off; we
         // yield via schedule() immediately after parking so the
         // Sleeping state is observed by the picker.
-        unsafe { crate::sched::park_for_wait4(); }
+        unsafe { sched::live::park_for_wait4(); }
         // SAFETY: process ctx; runqueue installed; preempt-off.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
         // After resume, ZOMBIES likely contains a new entry.
         // Loop body re-tries.
         let _ = Ordering::Acquire; // touch to keep ordering import live
@@ -344,7 +344,7 @@ fn kernel_sys_init_module(args: &SyscallArgs) -> i64 {
 /// size at 16 MiB.
 fn kernel_sys_finit_module(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; sole reader of fd_table slot.
@@ -376,10 +376,10 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     let _ = args;
     // No runqueue (arm direct drop_to_el0 pre-P2-13e): nothing
     // to Zombie. Pre-P2-22 fallthrough behavior.
-    if crate::sched::global().is_none() {
+    if sched::live::global().is_none() {
         return 0;
     }
-    if let Some(rq) = crate::sched::global() {
+    if let Some(rq) = sched::live::global() {
         // Mark prev Zombie + post SIGCHLD without bumping the
         // rq.current strong count. `schedule()` below detects
         // the Zombie state on prev and transfers the swap_current-
@@ -392,7 +392,7 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(args.a0 as i32, Ordering::Release);
             task.vfork_pending.store(false, Ordering::Release); // F156 vfork
-            crate::sched::mark_done(task);
+            sched::live::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
                 klog::write_dec_u64(task.tid as u64);
@@ -400,11 +400,11 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(args.a0);
                 klog::write_raw(b"\n");
             }
-            crate::sched::signal_child_exit(task);
+            sched::live::signal_child_exit(task);
         }
     }
     // SAFETY: process ctx; preempt-off; Zombie state means no re-enqueue.
-    unsafe { crate::sched::schedule(); }
+    unsafe { sched::live::schedule(); }
     // Unreachable — Zombie task isn't re-scheduled.
     loop { core::hint::spin_loop(); }
 }
@@ -440,7 +440,7 @@ use crate::syscalls::signal::{kernel_sys_kill, kernel_sys_tgkill};
 /// # C: O(1)
 fn ptrace_syscall_stop_if_armed() {
     use core::sync::atomic::Ordering;
-    let cur = match crate::sched::current() { Some(c) => c, None => return };
+    let cur = match sched::live::current() { Some(c) => c, None => return };
     if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
     if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return; }
     // SIGTRAP = 5 → bit 4. Tracer's wait4 picks up the stop.
@@ -484,7 +484,7 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
     use vmm::VmaProt;
     validate_user_buf(ptr, len, align)?;
     if len == 0 { return Ok(()); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return Err(-(Errno::Efault.as_i32() as i64)),
     };
     // SAFETY: mm slot single-mutator per `13§5`; we are the running task on this CPU and the sole reader during the syscall.
@@ -919,7 +919,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     // F108: PTRACE_SYSCALL exit-stop, symmetric with the entry-stop above.
     ptrace_syscall_stop_if_armed();
     // alarm(2) deadline check: post SIGALRM (bit 13) if the alarm_ns has passed.
-    if let Some(cur) = crate::sched::current() {
+    if let Some(cur) = sched::live::current() {
         use core::sync::atomic::Ordering;
         let deadline = cur.alarm_ns.load(Ordering::Acquire);
         if deadline != 0 {
@@ -946,7 +946,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // SAFETY: we are at syscall-return tail, IRQs unmasked, no
         // spinlocks held; matches schedule()'s `# Ctx: process|kthread`
         // requirement per `13§8`.
-        unsafe { crate::sched::schedule(); }
+        unsafe { sched::live::schedule(); }
     }
     // P3-65: deliver pending signals at syscall return.
     if let Some(p) = crate::syscalls::signal::take_lowest_pending() {
