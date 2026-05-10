@@ -379,7 +379,7 @@ fn spawn_init_from_rootfs_arm() {
     let argv0: &[&[u8]] = &[b"/sbin/init"];
     // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
     let new_sp = unsafe {
-        crate::exec_stack::build_user_stack(
+        elf_load::stack::build_user_stack(
             INIT_STACK_TOP,
             argv0, &[],
             &img,
