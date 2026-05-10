@@ -134,7 +134,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     let envc = envp_vec.len();
 
     // 1. Allocate new PT root for the post-execve AS.
-    // SAFETY: master PML4 captured at user_as::init; PMM up.
+    // SAFETY: master PML4 captured at pmm::user_as::init; PMM up.
     let new_root = match unsafe { hal_x86_64::mmu_ops::new_user_pml4() } {
         Some(r) => r,
         None    => return -(Errno::Enomem.as_i32() as i64),
@@ -145,7 +145,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Ok(a)  => a,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
-    crate::user_as::install_teardown(&new_as);
+    pmm::user_as::install_teardown(&new_as);
     let img = match elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
@@ -404,7 +404,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
     let envc = envp_vec.len();
 
     // 2. Allocate new PT root + build the post-execve AS.
-    // SAFETY: master L0 captured at user_as::init; PMM up; new_user_l0 returns a fresh frame zeroed and populated with the kernel half.
+    // SAFETY: master L0 captured at pmm::user_as::init; PMM up; new_user_l0 returns a fresh frame zeroed and populated with the kernel half.
     let new_root = match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
         Some(r) => r,
         None    => return -(Errno::Enomem.as_i32() as i64),
@@ -413,7 +413,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         Ok(a)  => a,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
-    crate::user_as::install_teardown(&new_as);
+    pmm::user_as::install_teardown(&new_as);
     let img = match elf_load::load_static_blob(blob, &new_as) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),

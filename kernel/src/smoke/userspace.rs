@@ -94,7 +94,7 @@ fn user_sysret_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     // retries the faulting instruction and we never see the smoke
     // landmark. Only faults user_as didn't recognize fall through
     // to the smoke's #UD landmark check below.
-    if crate::user_as::user_fault_handler(vec, err, rip, cr2) {
+    if pmm::user_as::user_fault_handler(vec, err, rip, cr2) {
         return true;
     }
     if vec == 6 && rip == USER_RIP_POST_SYSRET {

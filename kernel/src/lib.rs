@@ -420,7 +420,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
-        unsafe { user_as::init(info.hhdm_offset); }
+        unsafe { pmm::user_as::init(info.hhdm_offset); }
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
@@ -508,6 +508,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 sched::live::install_default_runqueue();
                 #[cfg(target_arch = "x86_64")]
                 sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
+                pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
                 arch_irq::set_tick_poll_hook(tty::live::tick_poll_uart);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
@@ -781,7 +782,6 @@ pub mod pci_boot;
 // Global user `AddressSpace` per `11§3` + demand-paging fault hook
 // per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
 #[cfg(target_os = "oxide-kernel")]
-pub mod user_as;
 
 // First userspace `iretq` smoke (P1-82). x86_64-only.
 /// Park the CPU forever. On the kernel target, uses the per-arch
@@ -790,10 +790,15 @@ pub mod user_as;
 /// hosted unit-test compatibility.
 ///
 /// # C: O(∞)
+#[cfg(target_os = "oxide-kernel")]
 pub fn halt_forever() -> ! {
     // SAFETY: park-only operation; the per-arch hlt/wfi requires CPL=0/EL1 which the kernel always holds.
     unsafe { power::halt() }
 }
+
+/// # C: O(∞) — hosted-test fallback (never hit in tests).
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn halt_forever() -> ! { core::hint::spin_loop(); loop {} }
 
 #[cfg(test)]
 mod tests {
