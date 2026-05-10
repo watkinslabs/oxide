@@ -348,7 +348,7 @@ pub fn lookup_blob(selector: u8) -> Option<&'static [u8]> {
 pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
     #[cfg(target_os = "oxide-kernel")]
     {
-        if let Some(bytes) = dev_ext4::read_file(path) {
+        if let Some(bytes) = ext4::rootfs::read_file(path) {
             // Leak to 'static: kernel-lifetime stable storage.
             let leaked: &'static [u8] = alloc::boxed::Box::leak(bytes.into_boxed_slice());
             return Some(leaked);

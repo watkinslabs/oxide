@@ -289,8 +289,8 @@ fn spawn_init_from_rootfs_arm() {
     // PID 1: load /sbin/init from the mounted rootfs (busybox
     // hardlinked to /sbin/init via /bin/busybox).
     let init_blob: &'static [u8] = {
-        let bytes_opt = dev_ext4::read_file(b"/sbin/init")
-            .or_else(|| dev_ext4::read_file(b"/init"));
+        let bytes_opt = ext4::rootfs::read_file(b"/sbin/init")
+            .or_else(|| ext4::rootfs::read_file(b"/init"));
         match bytes_opt {
             Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
             None => {
