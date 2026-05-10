@@ -661,7 +661,7 @@ pub fn kernel_sys_recvmsg(args: &SyscallArgs) -> i64 {
     if let Some(s) = &sock {
         let is_dgram = matches!(*s.kind.lock(), SockKind::UnixDgram(_));
         if is_dgram {
-            return syscall_glue_unix_cmsg::recvmsg_unix_dgram(s, msgp);
+            return net::unix_cmsg::recvmsg_unix_dgram(s, msgp);
         }
     }
     // SAFETY: msgp range validated; user page mapped under caller's AS.
