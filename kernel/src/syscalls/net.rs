@@ -55,7 +55,7 @@ pub fn kernel_sys_socket(args: &SyscallArgs) -> i64 {
         _ => return -(Errno::Eafnosupport.as_i32() as i64),
     };
     let inode: vfs::InodeRef = Arc::new(inet) as _;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; sole reader of fd_table slot.
@@ -228,7 +228,7 @@ fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, por
 }
 
 fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
-    let cur = crate::sched::current()?;
+    let cur = sched::live::current()?;
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?;
     let file = fdt.get(fd as i32).ok()?;
@@ -361,7 +361,7 @@ pub fn kernel_sys_sendto(args: &SyscallArgs) -> i64 {
         let q = match net::sock::UNIX_REGISTRY.dgram_lookup(&dst_path) {
             Some(q) => q, None => return -(Errno::Enoent.as_i32() as i64),
         };
-        let cur = crate::sched::current();
+        let cur = sched::live::current();
         let creds = match cur {
             Some(t) => (
                 t.tgid.load(core::sync::atomic::Ordering::Acquire),
@@ -420,7 +420,7 @@ pub fn kernel_sys_socketpair(args: &SyscallArgs) -> i64 {
         *s.kind.lock() = SockKind::Unix(pair.clone(), end);
         Arc::new(s) as _
     };
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task; sole reader of fd_table slot.
@@ -491,7 +491,7 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
         let new_sock = InetSocket::new_tcp();
         *new_sock.kind.lock() = SockKind::Unix(pair, net::UnixEnd::A);
         let inode: vfs::InodeRef = Arc::new(new_sock) as _;
-        let cur = match crate::sched::current() {
+        let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         // SAFETY: running task; sole reader of fd_table slot.
@@ -528,7 +528,7 @@ pub fn kernel_sys_accept(args: &SyscallArgs) -> i64 {
         write_sockaddr_for_socket(addr_p, &new_sock, peer_ip, peer_port);
     }
     let inode: vfs::InodeRef = Arc::new(new_sock) as _;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task; sole reader of fd_table slot.
@@ -841,7 +841,7 @@ pub fn kernel_sys_getsockopt(args: &SyscallArgs) -> i64 {
        && optval != 0 && optval < USER_VA_END
        && optlen_p != 0 && optlen_p < USER_VA_END
     {
-        let pid = crate::sched::current().map(|c| c.tid as u32).unwrap_or(0);
+        let pid = sched::live::current().map(|c| c.tid as u32).unwrap_or(0);
         // SAFETY: optval+optlen_p validated < USER_VA_END; struct ucred is 12 bytes; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( optval        as *mut u32, pid);

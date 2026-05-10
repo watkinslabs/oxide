@@ -101,7 +101,7 @@ pub fn kernel_sys_pkey_mprotect(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_fsync(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
-    let cur = match crate::sched::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
+    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
     // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
     if fdt.get(fd).is_err() { return errno(Errno::Ebadf); }
@@ -119,10 +119,10 @@ pub fn kernel_sys_kcmp(args: &SyscallArgs) -> i64 {
     let idx1 = args.a3 as u64;
     let idx2 = args.a4 as u64;
     if ty > 7 { return errno(Errno::Einval); }
-    let t1 = match crate::sched::registry::lookup(pid1) {
+    let t1 = match sched::live::registry::lookup(pid1) {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
-    let t2 = match crate::sched::registry::lookup(pid2) {
+    let t2 = match sched::live::registry::lookup(pid2) {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
     // KCMP_FILE = 0: compare File at fd idx1 in t1 vs fd idx2 in t2.
@@ -213,7 +213,7 @@ pub fn kernel_sys_set_mempolicy_home_node(args: &SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn kernel_sys_migrate_pages(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as u32;
-    if pid != 0 && crate::sched::registry::lookup(pid).is_none() {
+    if pid != 0 && sched::live::registry::lookup(pid).is_none() {
         return errno(Errno::Esrch);
     }
     0
@@ -223,7 +223,7 @@ pub fn kernel_sys_migrate_pages(args: &SyscallArgs) -> i64 {
 /// # C: O(N=count, capped 4096)
 pub fn kernel_sys_move_pages(args: &SyscallArgs) -> i64 {
     let pid = args.a0 as u32;
-    if pid != 0 && crate::sched::registry::lookup(pid).is_none() {
+    if pid != 0 && sched::live::registry::lookup(pid).is_none() {
         return errno(Errno::Esrch);
     }
     let count = args.a1 as usize;
@@ -270,7 +270,7 @@ pub fn kernel_sys_reboot(args: &SyscallArgs) -> i64 {
     let magic2 = args.a1 as u32;
     let c      = args.a2 as u32;
     if !power::check_magic(magic1, magic2) { return errno(Errno::Einval); }
-    let cur = match crate::sched::current() { Some(c) => c, None => return errno(Errno::Eperm) };
+    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Eperm) };
     use core::sync::atomic::Ordering;
     if (cur.creds.cap_effective.load(Ordering::Acquire) >> sched::cap::SYS_BOOT) & 1 == 0 {
         return errno(Errno::Eperm);
@@ -287,7 +287,7 @@ pub fn kernel_sys_reboot(args: &SyscallArgs) -> i64 {
 /// process_mrelease(pidfd, flags).
 /// # C: O(1)
 pub fn kernel_sys_process_mrelease(args: &SyscallArgs) -> i64 {
-    let cur = match crate::sched::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
+    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
     // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
     if fdt.get(args.a0 as i32).is_err() { return errno(Errno::Ebadf); }

@@ -75,7 +75,8 @@ pub fn try_wake_stopped(task: &Task) -> bool {
     // current; flag a reschedule so the next preempt-enable or
     // syscall-return point picks it up. Cheaper than calling
     // schedule() directly here (registry holds no runqueue lock).
-    crate::preempt::set_need_resched();
+    #[cfg(target_os = "oxide-kernel")]
+    crate::live::preempt::set_need_resched();
     true
 }
 

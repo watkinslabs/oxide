@@ -25,7 +25,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let req = args.a1;
     let arg = args.a2;
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -108,7 +108,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             if changed && fg != 0 {
                 // SIGWINCH = 28; bit (28-1) = 27.
                 use core::sync::atomic::Ordering;
-                for t in crate::sched::registry::tasks_in_pgrp(fg) {
+                for t in sched::live::registry::tasks_in_pgrp(fg) {
                     t.sigpending.fetch_or(1u64 << 27, Ordering::Release);
                 }
             }
@@ -203,7 +203,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
                 return 0;
             }
             let vt = (ino & 0xff) as u8;
-            let cur = match crate::sched::current() {
+            let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
             };
             use core::sync::atomic::Ordering;

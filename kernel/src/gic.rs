@@ -476,9 +476,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // SAFETY: SPI 33 dispatch context, IRQs masked; tty path is single-CPU UP.
             unsafe { crate::tty::tick_poll_uart(); }
         }
-        crate::preempt::set_need_resched();
+        sched::live::preempt::set_need_resched();
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked; per-CPU SCHED state is single-CPU at this point in v1.
-        unsafe { crate::preempt::tick_pick_next(); }
+        unsafe { sched::live::preempt::tick_pick_next(); }
     }
 }
 

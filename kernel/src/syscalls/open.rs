@@ -26,7 +26,7 @@ const O_DIRECTORY: u32 = 0o200000;
 /// # C: O(N)
 fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
     if path_raw.starts_with('/') { return None; }
-    let cur = crate::sched::current()?;
+    let cur = sched::live::current()?;
     // SAFETY: cwd slot single-mutator per `13§5`.
     let cwd = unsafe { (*cur.cwd.get()).clone() };
     vfs::path::resolve_against_cwd(&cwd, path_raw)
@@ -94,7 +94,7 @@ pub fn kernel_sys_open(args: &SyscallArgs) -> i64 {
         return -(Errno::Enotdir.as_i32() as i64);
     }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -172,7 +172,7 @@ pub fn kernel_sys_openat(args: &SyscallArgs) -> i64 {
         return -(Errno::Enotdir.as_i32() as i64);
     }
     if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
-    let cur = match crate::sched::current() {
+    let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
