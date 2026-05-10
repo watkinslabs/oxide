@@ -5,7 +5,7 @@
 // can't move: the boot bootstrap that calls register() for
 // /dev/console + tty + dev_misc + dirent inodes, and
 // PrefixDirInode whose readdir overlays ext4 entries via
-// `crate::dev_ext4::read_dir`.
+// `dev_ext4::read_dir`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -49,12 +49,12 @@ pub fn init() {
     }
 
     // P3-04 misc char devices.
-    register("/dev/null",    Arc::new(crate::dev_misc::NullInode)   as InodeRef);
-    register("/dev/kmsg",    Arc::new(crate::dev_misc::KmsgInode)   as InodeRef);
-    register("/dev/log",     Arc::new(crate::dev_misc::NullInode)   as InodeRef);
-    register("/dev/zero",    Arc::new(crate::dev_misc::ZeroInode)   as InodeRef);
-    register("/dev/full",    Arc::new(crate::dev_misc::FullInode)   as InodeRef);
-    let rand: InodeRef = Arc::new(crate::dev_misc::RandomInode);
+    register("/dev/null",    Arc::new(dev_misc::NullInode)   as InodeRef);
+    register("/dev/kmsg",    Arc::new(dev_misc::KmsgInode)   as InodeRef);
+    register("/dev/log",     Arc::new(dev_misc::NullInode)   as InodeRef);
+    register("/dev/zero",    Arc::new(dev_misc::ZeroInode)   as InodeRef);
+    register("/dev/full",    Arc::new(dev_misc::FullInode)   as InodeRef);
+    let rand: InodeRef = Arc::new(dev_misc::RandomInode);
     register("/dev/random",  Arc::clone(&rand));
     register("/dev/urandom", rand);
 
@@ -129,7 +129,7 @@ impl Inode for PrefixDirInode {
         let mut ext4_seen: u64 = 0;
         let mut stopped = false;
         let mut stop_off: u64 = (idx as u64).max(r_len);
-        let _ = crate::dev_ext4::read_dir(self.prefix.as_bytes(), |name_bytes, dt| {
+        let _ = dev_ext4::read_dir(self.prefix.as_bytes(), |name_bytes, dt| {
             if stopped { return; }
             ext4_seen += 1;
             if r_len + ext4_seen <= off { return; }

@@ -14,7 +14,7 @@
 #![cfg(target_os = "oxide-kernel")]
 #![cfg(target_arch = "aarch64")]
 
-use crate::elf_load::load_static_blob;
+use elf_load::load_static_blob;
 
 /// Build a tiny aarch64 ELF64 image at compile time.
 ///   [0..64)    ehdr
@@ -289,8 +289,8 @@ fn spawn_init_from_rootfs_arm() {
     // PID 1: load /sbin/init from the mounted rootfs (busybox
     // hardlinked to /sbin/init via /bin/busybox).
     let init_blob: &'static [u8] = {
-        let bytes_opt = crate::dev_ext4::read_file(b"/sbin/init")
-            .or_else(|| crate::dev_ext4::read_file(b"/init"));
+        let bytes_opt = dev_ext4::read_file(b"/sbin/init")
+            .or_else(|| dev_ext4::read_file(b"/init"));
         match bytes_opt {
             Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
             None => {
@@ -313,7 +313,7 @@ fn spawn_init_from_rootfs_arm() {
     // SAFETY: per-AS L0 was constructed with kernel-half shared from master so kernel mappings remain valid; TTBR0 swap legal at EL1 IRQ-off.
     unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(root_pa); }
 
-    let img = match crate::elf_load::load_static_blob(init_blob, &mm) {
+    let img = match elf_load::load_static_blob(init_blob, &mm) {
         Ok(i)  => i,
         Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
     };
@@ -346,7 +346,7 @@ fn spawn_init_from_rootfs_arm() {
         let prot = (VmaProt::READ | VmaProt::WRITE).to_page_flags();
         let mut va = INIT_STACK_VA;
         while va < INIT_STACK_TOP {
-            let pa = match crate::pmm_setup::alloc_one_frame() {
+            let pa = match pmm_setup::alloc_one_frame() {
                 Some(p) => p,
                 None    => {
                     debug_irq! { klog::kerror!("init-arm: stack page alloc failed"); }

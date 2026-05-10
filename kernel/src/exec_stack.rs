@@ -11,7 +11,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use crate::elf_load::LoadedImage;
+use elf_load::LoadedImage;
 
 /// SysV auxv keys (subset). Full set in `linux/auxvec.h`.
 const AT_NULL:    u64 = 0;
