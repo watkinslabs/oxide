@@ -105,9 +105,20 @@ const fn build_elf() -> [u8; 171] {
 const ELF_BLOB_BYTES: [u8; 171] = build_elf();
 const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 
-/// User stack VMA disjoint from the ELF image. 4 KiB v1 stand-in.
+/// 4 KiB stack for the in-tree el-blob smoke (entry 0x400080 hand-
+/// coded ELF). Sufficient for the no-fn-call hello+exit binary.
 const USER_STACK_VA:  u64 = 0x501_000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
+
+/// 64 KiB stack for the busybox /sbin/init spawn — identical layout
+/// to the x86 init path (`elf_smoke::EXEC_USER_STACK_VA/_LEN`).
+/// busybox + child fork+exec chains overrun a 4 KiB stack on the
+/// first wide musl frame; with the prior 0x501000/4 KiB layout the
+/// fork child SIGSEGV'd at far=0x500f70 (one page below the stack
+/// base) when init walked deeper than the page boundary.
+const INIT_STACK_LEN: u64 = 0x10000;
+const INIT_STACK_VA:  u64 = hal::USER_VA_END - 0x20000;
+const INIT_STACK_TOP: u64 = INIT_STACK_VA + INIT_STACK_LEN;
 
 /// File-side address of the brk landmark — entry (0x400080) +
 /// 36 (offset of the `brk #0` instruction within the code block).
@@ -307,12 +318,12 @@ fn spawn_init_from_rootfs_arm() {
         Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
     };
 
-    let stack_hint = match UserVirtAddr::new(USER_STACK_VA) {
+    let stack_hint = match UserVirtAddr::new(INIT_STACK_VA) {
         Some(u) => u,
         None    => { debug_irq! { klog::kerror!("init-arm: bad stack VA"); } return; }
     };
     if mm.mmap(
-        Some(stack_hint), 0x1000,
+        Some(stack_hint), INIT_STACK_LEN as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
         VmaBacking::Anonymous,
@@ -320,6 +331,39 @@ fn spawn_init_from_rootfs_arm() {
     ).is_err() {
         debug_irq! { klog::kerror!("init-arm: stack mmap failed"); }
         return;
+    }
+
+    // Pre-fault every stack page so kernel-side `build_user_stack`
+    // writes don't take EL1 same-EL data aborts. The boot fault
+    // handler routes through `user_as::with(|as_| …)` which serves
+    // the GLOBAL boot AS, not the per-task `mm` we just activated;
+    // a faulting kernel write here therefore can't be demand-paged.
+    // Mirrors the x86 path (which sidesteps the issue by mapping the
+    // stack into the global AS); arm uses a fresh per-task L0 so we
+    // walk + install leaves explicitly.
+    {
+        use hal::{Pa, PageFlags, PageSize, Va};
+        let prot = (VmaProt::READ | VmaProt::WRITE).to_page_flags();
+        let mut va = INIT_STACK_VA;
+        while va < INIT_STACK_TOP {
+            let pa = match crate::pmm_setup::alloc_one_frame() {
+                Some(p) => p,
+                None    => {
+                    debug_irq! { klog::kerror!("init-arm: stack page alloc failed"); }
+                    return;
+                }
+            };
+            // Zero through HHDM mirror.
+            // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror is mapped writable in the kernel L0 captured at boot; 4 KiB owned exclusively until the M::map below.
+            unsafe {
+                let dst = (crate::user_as::hhdm_offset() + pa) as *mut u8;
+                core::ptr::write_bytes(dst, 0, hal::PAGE_SIZE_BYTES as usize);
+                <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(
+                    Va(va), Pa(pa), prot, PageSize::P4K,
+                );
+            }
+            va += hal::PAGE_SIZE_BYTES;
+        }
     }
 
     // F153-1: build a real SysV initial stack with argv[0]=/sbin/init
@@ -336,13 +380,13 @@ fn spawn_init_from_rootfs_arm() {
     // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
     let new_sp = unsafe {
         crate::exec_stack::build_user_stack(
-            USER_STACK_TOP,
+            INIT_STACK_TOP,
             argv0, &[],
             &img,
             &random16,
             b"/sbin/init",
         )
-    }.unwrap_or(USER_STACK_TOP);
+    }.unwrap_or(INIT_STACK_TOP);
 
     // F152-2: leave TPIDR_EL0 = 0 on first user entry. musl crt1's
     // __init_tls mmaps a TCB and writes TPIDR_EL0 directly (EL0
