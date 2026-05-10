@@ -549,3 +549,36 @@ pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
         Ok(())
     }).map_err(|_| vfs::VfsError::Eio)
 }
+
+
+/// FileSystem trait impl per `vfs::fs::FileSystem`. Read+write
+/// path: lookup_inode, create_at, unlink_at, rename_at.
+pub struct Ext4RootfsFs;
+
+impl vfs::fs::FileSystem for Ext4RootfsFs {
+    /// # C: O(1)
+    fn name(&self) -> &str { "ext4" }
+    /// # C: O(N_path_components)
+    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> {
+        lookup_inode(path.as_bytes())
+    }
+    /// # C: O(N_path_components) + alloc
+    fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        match create_at(path.as_bytes(), mode as u16) {
+            Some(i) => Ok(i),
+            None    => Err(vfs::VfsError::Enoent),
+        }
+    }
+    /// # C: O(N_path_components)
+    fn unlink(&self, path: &str) -> vfs::fs::KResult<()> {
+        unlink_at(path.as_bytes())
+    }
+    /// # C: O(N_path_components)
+    fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
+        rename_at(from.as_bytes(), to.as_bytes())
+    }
+}
+
+/// Singleton accessor.
+/// # C: O(1)
+pub fn instance() -> &'static dyn vfs::fs::FileSystem { &Ext4RootfsFs }

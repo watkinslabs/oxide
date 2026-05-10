@@ -201,3 +201,22 @@ pub fn smoke_test() {
         klog::write_raw(b"[INFO]  tmpfs-smoke: ok\n");
     }
 }
+
+
+/// FileSystem trait impl per `vfs::fs::FileSystem`.
+pub struct TmpfsFs;
+
+impl vfs::fs::FileSystem for TmpfsFs {
+    /// # C: O(1)
+    fn name(&self) -> &str { "tmpfs" }
+    /// # C: O(N_tmpfs_entries)
+    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup(path) }
+    /// # C: O(N_tmpfs_entries) — auto-creates regular files.
+    fn create(&self, path: &str, _mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
+        Ok(lookup_or_create(path))
+    }
+}
+
+/// Singleton accessor.
+/// # C: O(1)
+pub fn instance() -> &'static dyn vfs::fs::FileSystem { &TmpfsFs }
