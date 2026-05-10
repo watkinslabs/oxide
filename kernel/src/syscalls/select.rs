@@ -12,7 +12,7 @@ use hal::USER_VA_END;
 
 /// `sys_select(nfds, readfds, writefds, exceptfds, timeout)` — slot 23.
 /// # C: O(nfds)
-pub fn kernel_sys_select(args: &SyscallArgs) -> i64 {
+pub fn sys_select(args: &SyscallArgs) -> i64 {
     const NFDS_MAX: u64 = 4096;
     let nfds        = args.a0;
     let readfds_p   = args.a1;
@@ -97,6 +97,6 @@ fn set_bit(p: u64, i: u64) {
 
 /// `sys_pselect6(nfds, r, w, e, timeout, sigmask_pair)` — slot 270.
 /// # C: O(nfds)
-pub fn kernel_sys_pselect6(args: &SyscallArgs) -> i64 {
-    kernel_sys_select(args)
+pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
+    sys_select(args)
 }

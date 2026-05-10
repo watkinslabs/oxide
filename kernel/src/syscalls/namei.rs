@@ -49,7 +49,7 @@ fn errno_from_vfs(e: vfs::VfsError) -> i64 {
 /// `link(target, link)` slot 86. Hardlink only — both must
 /// resolve to ext4 paths.
 /// # C: O(1)
-pub fn kernel_sys_link(args: &SyscallArgs) -> i64 {
+pub fn sys_link(args: &SyscallArgs) -> i64 {
     let target = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -69,7 +69,7 @@ pub fn kernel_sys_link(args: &SyscallArgs) -> i64 {
 
 /// `linkat(odir, target, ndir, link, flags)` slot 265.
 /// # C: O(1)
-pub fn kernel_sys_linkat(args: &SyscallArgs) -> i64 {
+pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     let target_p = args.a1;
     let link_p   = args.a3;
     let target = match read_path(target_p) {
@@ -91,7 +91,7 @@ pub fn kernel_sys_linkat(args: &SyscallArgs) -> i64 {
 
 /// `unlink(path)` slot 87.
 /// # C: O(N parent entries)
-pub fn kernel_sys_unlink(args: &SyscallArgs) -> i64 {
+pub fn sys_unlink(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -107,7 +107,7 @@ pub fn kernel_sys_unlink(args: &SyscallArgs) -> i64 {
 /// the `AT_REMOVEDIR` flag → rmdir; ignore dirfd (no per-fd
 /// directory state yet — paths are absolute or cwd-relative).
 /// # C: O(N parent entries)
-pub fn kernel_sys_unlinkat(args: &SyscallArgs) -> i64 {
+pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -124,7 +124,7 @@ pub fn kernel_sys_unlinkat(args: &SyscallArgs) -> i64 {
 
 /// `mkdir(path, mode)` slot 83.
 /// # C: O(N parent entries)
-pub fn kernel_sys_mkdir(args: &SyscallArgs) -> i64 {
+pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -140,7 +140,7 @@ pub fn kernel_sys_mkdir(args: &SyscallArgs) -> i64 {
 /// `mkdirat(dirfd, path, mode)` slot 258. Ignores dirfd (paths
 /// resolved absolute or cwd-relative).
 /// # C: O(1)
-pub fn kernel_sys_mkdirat(args: &SyscallArgs) -> i64 {
+pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -155,7 +155,7 @@ pub fn kernel_sys_mkdirat(args: &SyscallArgs) -> i64 {
 
 /// `rmdir(path)` slot 84.
 /// # C: O(1)
-pub fn kernel_sys_rmdir(args: &SyscallArgs) -> i64 {
+pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
@@ -171,17 +171,17 @@ pub fn kernel_sys_rmdir(args: &SyscallArgs) -> i64 {
 /// slot 264 / `renameat2` slot 316. We collapse all three into
 /// link-then-unlink against the ext4 mount.
 /// # C: O(1)
-pub fn kernel_sys_rename(args: &SyscallArgs) -> i64 {
+pub fn sys_rename(args: &SyscallArgs) -> i64 {
     rename_impl(args.a0, args.a1)
 }
 
 /// # C: O(1)
-pub fn kernel_sys_renameat(args: &SyscallArgs) -> i64 {
+pub fn sys_renameat(args: &SyscallArgs) -> i64 {
     rename_impl(args.a1, args.a3)
 }
 
 /// # C: O(1)
-pub fn kernel_sys_renameat2(args: &SyscallArgs) -> i64 {
+pub fn sys_renameat2(args: &SyscallArgs) -> i64 {
     rename_impl(args.a1, args.a3)
 }
 

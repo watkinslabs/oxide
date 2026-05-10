@@ -292,7 +292,7 @@ pub fn check(nr: u64, args: &[u64; 6]) -> Result<(), i64> {
             // Mark task to terminate — caller treats `Err(LONG_MIN)`
             // as KILL via a sentinel. v1 picks -EPERM as the
             // user-visible side; a real KILL handler would invoke
-            // `kernel_sys_exit(-1)` in dispatch tail.
+            // `sys_exit(-1)` in dispatch tail.
             cur.sigpending.fetch_or(1u64 << (9 - 1) /* SIGKILL */, Ordering::Release);
             Err(-(Errno::Eperm.as_i32() as i64))
         }
@@ -313,7 +313,7 @@ pub fn check(nr: u64, args: &[u64; 6]) -> Result<(), i64> {
 /// SECCOMP_SET_MODE_FILTER (1): install a cBPF filter from user.
 /// SECCOMP_GET_ACTION_AVAIL (2): silent 0 — every action is "available".
 /// # C: O(filter_len)
-pub fn kernel_sys_seccomp(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_seccomp(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     const SECCOMP_SET_MODE_STRICT: u64 = 0;
     const SECCOMP_SET_MODE_FILTER: u64 = 1;

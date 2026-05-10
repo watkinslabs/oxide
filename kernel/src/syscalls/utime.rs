@@ -73,7 +73,7 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
 /// Each slot may be UTIME_NOW (use now_ns), UTIME_OMIT (don't change),
 /// or a real timespec.
 /// # C: O(N_path)
-pub fn kernel_sys_utimensat(args: &SyscallArgs) -> i64 {
+pub fn sys_utimensat(args: &SyscallArgs) -> i64 {
     let dirfd    = args.a0 as i32;
     let path_ptr = args.a1;
     let times_ptr = args.a2;
@@ -99,16 +99,16 @@ pub fn kernel_sys_utimensat(args: &SyscallArgs) -> i64 {
 /// Dispatch helper for utimes/utime so syscall_glue.rs only carries
 /// one match arm.
 /// # C: O(1)
-pub fn kernel_sys_utime_dispatch(nr: u64, args: &SyscallArgs) -> i64 {
-    if nr == syscall::nrs::NR_UTIMES { kernel_sys_utimes(args) }
-    else                                   { kernel_sys_utime(args) }
+pub fn sys_utime_dispatch(nr: u64, args: &SyscallArgs) -> i64 {
+    if nr == syscall::nrs::NR_UTIMES { sys_utimes(args) }
+    else                                   { sys_utime(args) }
 }
 
 /// `sys_utimes(path, times[2])` — slot 235. Same as utimensat but
 /// the times are 16-byte timeval (sec, usec) pairs and there is no
 /// dirfd / flags. NULL ⇒ both = now.
 /// # C: O(N_path)
-pub fn kernel_sys_utimes(args: &SyscallArgs) -> i64 {
+pub fn sys_utimes(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let times_ptr = args.a1;
     let inode = match resolve_inode(AT_FDCWD, path_ptr) {
@@ -146,7 +146,7 @@ pub fn kernel_sys_utimes(args: &SyscallArgs) -> i64 {
 /// `struct utimbuf { time_t actime; time_t modtime; }` (16 bytes).
 /// NULL ⇒ both = now.
 /// # C: O(N_path)
-pub fn kernel_sys_utime(args: &SyscallArgs) -> i64 {
+pub fn sys_utime(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let times_ptr = args.a1;
     let inode = match resolve_inode(AT_FDCWD, path_ptr) {

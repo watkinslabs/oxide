@@ -61,7 +61,7 @@ const BPF_MAP_DELETE_ELEM: u64 = 3;
 
 /// `sys_bpf(cmd, attr, size)` — slot 321.
 /// # C: O(1) for admit; O(log N) for map ops
-pub fn kernel_sys_bpf(args: &SyscallArgs) -> i64 {
+pub fn sys_bpf(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     let cmd = args.a0;

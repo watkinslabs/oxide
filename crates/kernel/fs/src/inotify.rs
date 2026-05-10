@@ -211,7 +211,7 @@ fn inode_key(inode: &InodeRef) -> usize {
 /// `sys_inotify_init(flags=0)` / `sys_inotify_init1(flags)`.
 /// Allocates a fresh InotifyInode at the lowest free fd.
 /// # C: O(N_fds)
-pub fn kernel_sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
     let flags = args.a0 as u32;
@@ -260,7 +260,7 @@ fn fd_to_inotify(fd: i32) -> Option<Arc<InotifyInode>> {
 /// via devfs (v1's only namespace), records a Watch on the fd's
 /// InotifyInode, returns the wd.
 /// # C: O(N_path)
-pub fn kernel_sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd = args.a0 as i32;
     let path_p = args.a1;
@@ -296,7 +296,7 @@ pub fn kernel_sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
 /// `sys_inotify_rm_watch(fd, wd)`. Removes the watch from the fd's
 /// InotifyInode. EINVAL if no such wd.
 /// # C: O(N_watches)
-pub fn kernel_sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd = args.a0 as i32;
     let wd = args.a1 as i32;
@@ -331,7 +331,7 @@ const FAN_MARK_FLUSH:      u32 = 0x80;
 
 /// `sys_fanotify_mark(fd, flags, mask, dirfd, pathname)` — slot 301.
 /// # C: O(N_watches)
-pub fn kernel_sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd      = args.a0 as i32;
     let flags   = args.a1 as u32;

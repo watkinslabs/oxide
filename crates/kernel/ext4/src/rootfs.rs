@@ -403,7 +403,7 @@ pub fn stat_path(path: &[u8]) -> Option<(u32, vfs::FileType, u64)> {
 
 /// Look up `path` and return a VFS Inode wrapping the file
 /// contents. Returns `None` for not-found / not-regular /
-/// not-mounted. Used by `kernel_sys_open` to extend the open
+/// not-mounted. Used by `sys_open` to extend the open
 /// path lookup chain to the real ext4 fs.
 /// # C: O(file size) on first call (read), O(log N) on cache hit
 pub fn lookup_inode(path: &[u8]) -> Option<vfs::InodeRef> {
