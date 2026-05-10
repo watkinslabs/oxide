@@ -5,7 +5,7 @@
 // can't move: the boot bootstrap that calls register() for
 // /dev/console + tty + dev_misc + dirent inodes, and
 // PrefixDirInode whose readdir overlays ext4 entries via
-// `dev_ext4::read_dir`.
+// `ext4::rootfs::read_dir`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -129,7 +129,7 @@ impl Inode for PrefixDirInode {
         let mut ext4_seen: u64 = 0;
         let mut stopped = false;
         let mut stop_off: u64 = (idx as u64).max(r_len);
-        let _ = dev_ext4::read_dir(self.prefix.as_bytes(), |name_bytes, dt| {
+        let _ = ext4::rootfs::read_dir(self.prefix.as_bytes(), |name_bytes, dt| {
             if stopped { return; }
             ext4_seen += 1;
             if r_len + ext4_seen <= off { return; }

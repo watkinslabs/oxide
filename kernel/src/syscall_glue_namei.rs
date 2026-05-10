@@ -61,7 +61,7 @@ pub fn kernel_sys_link(args: &SyscallArgs) -> i64 {
     if !is_ext4_path(&t) || !is_ext4_path(&l) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    match dev_ext4::link_at(t.as_bytes(), l.as_bytes()) {
+    match ext4::rootfs::link_at(t.as_bytes(), l.as_bytes()) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -83,7 +83,7 @@ pub fn kernel_sys_linkat(args: &SyscallArgs) -> i64 {
     if !is_ext4_path(&t) || !is_ext4_path(&l) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    match dev_ext4::link_at(t.as_bytes(), l.as_bytes()) {
+    match ext4::rootfs::link_at(t.as_bytes(), l.as_bytes()) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -97,7 +97,7 @@ pub fn kernel_sys_unlink(args: &SyscallArgs) -> i64 {
     };
     let p = resolve(&raw).unwrap_or(raw);
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
-    match dev_ext4::unlink_at(p.as_bytes()) {
+    match ext4::rootfs::unlink_at(p.as_bytes()) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -115,9 +115,9 @@ pub fn kernel_sys_unlinkat(args: &SyscallArgs) -> i64 {
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let flags = args.a2 as u32;
     let r = if (flags & AT_REMOVEDIR) != 0 {
-        dev_ext4::rmdir_at(p.as_bytes())
+        ext4::rootfs::rmdir_at(p.as_bytes())
     } else {
-        dev_ext4::unlink_at(p.as_bytes())
+        ext4::rootfs::unlink_at(p.as_bytes())
     };
     match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
@@ -131,7 +131,7 @@ pub fn kernel_sys_mkdir(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let mode = args.a1 as u16;
-    match dev_ext4::mkdir_at(p.as_bytes(), mode) {
+    match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -147,7 +147,7 @@ pub fn kernel_sys_mkdirat(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let mode = args.a2 as u16;
-    match dev_ext4::mkdir_at(p.as_bytes(), mode) {
+    match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -161,7 +161,7 @@ pub fn kernel_sys_rmdir(args: &SyscallArgs) -> i64 {
     };
     let p = resolve(&raw).unwrap_or(raw);
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
-    match dev_ext4::rmdir_at(p.as_bytes()) {
+    match ext4::rootfs::rmdir_at(p.as_bytes()) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -197,7 +197,7 @@ fn rename_impl(from_ptr: u64, to_ptr: u64) -> i64 {
     if !is_ext4_path(&f) || !is_ext4_path(&t) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    match dev_ext4::rename_at(f.as_bytes(), t.as_bytes()) {
+    match ext4::rootfs::rename_at(f.as_bytes(), t.as_bytes()) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }

@@ -620,7 +620,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: post-PMM/allocator init; no other CPU has yet observed MOUNT_PTR.
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
-        dev_ext4::init();
+        ext4::rootfs::init();
         dev_net::init();
         dev_modules::init_exports();
     }
@@ -628,10 +628,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         debug_boot! {
             klog::write_raw(b"[INFO]  ext4: mounted=");
-            klog::write_dec_u64(dev_ext4::mounted() as u64);
+            klog::write_dec_u64(ext4::rootfs::mounted() as u64);
             klog::write_raw(b"\n");
             for path in [&b"/hello.txt"[..], &b"/etc/issue"[..]] {
-                if let Some(bytes) = dev_ext4::read_file(path) {
+                if let Some(bytes) = ext4::rootfs::read_file(path) {
                     klog::write_raw(b"[INFO]  ext4 ");
                     klog::write_raw(path);
                     klog::write_raw(b" = ");
@@ -642,8 +642,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // P7b-01 RW smoke: overwrite the start of /hello.txt,
             // read it back, verify the write hit the disk through
             // ext4's extent walker + the writable ImageDisk backing.
-            if dev_ext4::write_file(b"/hello.txt", b"WRITTEN-BY-OXIDE\n").is_some() {
-                if let Some(bytes) = dev_ext4::read_file(b"/hello.txt") {
+            if ext4::rootfs::write_file(b"/hello.txt", b"WRITTEN-BY-OXIDE\n").is_some() {
+                if let Some(bytes) = ext4::rootfs::read_file(b"/hello.txt") {
                     klog::write_raw(b"[INFO]  ext4 RW smoke /hello.txt = ");
                     klog::write_raw(&bytes);
                     if !bytes.ends_with(b"\n") { klog::write_raw(b"\n"); }
@@ -651,17 +651,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             }
             // Read /bin/sh twice to prove the page cache: first
             // call is all misses; second is all hits.
-            if let Some(bytes) = dev_ext4::read_file(b"/bin/sh") {
+            if let Some(bytes) = ext4::rootfs::read_file(b"/bin/sh") {
                 klog::write_raw(b"[INFO]  ext4 /bin/sh size=");
                 klog::write_dec_u64(bytes.len() as u64);
-                let (h1, m1) = dev_ext4::cache_stats();
+                let (h1, m1) = ext4::rootfs::cache_stats();
                 klog::write_raw(b" cache after pass1: hits=");
                 klog::write_dec_u64(h1);
                 klog::write_raw(b" misses=");
                 klog::write_dec_u64(m1);
                 klog::write_raw(b"\n");
-                let _ = dev_ext4::read_file(b"/bin/sh");
-                let (h2, m2) = dev_ext4::cache_stats();
+                let _ = ext4::rootfs::read_file(b"/bin/sh");
+                let (h2, m2) = ext4::rootfs::cache_stats();
                 klog::write_raw(b"[INFO]  ext4 /bin/sh cache after pass2: hits=");
                 klog::write_dec_u64(h2);
                 klog::write_raw(b" misses=");

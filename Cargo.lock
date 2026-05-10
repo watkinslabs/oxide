@@ -107,16 +107,6 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
-name = "dev-ext4"
-version = "0.1.0"
-dependencies = [
- "block",
- "ext4",
- "sync",
- "vfs",
-]
-
-[[package]]
 name = "dev-fbdev"
 version = "0.1.0"
 dependencies = [
@@ -253,8 +243,8 @@ dependencies = [
 name = "elf-load"
 version = "0.1.0"
 dependencies = [
- "dev-ext4",
  "elf",
+ "ext4",
  "hal",
  "vmm",
 ]
@@ -302,6 +292,7 @@ dependencies = [
  "crc",
  "jbd2",
  "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -522,7 +513,6 @@ dependencies = [
  "boot-info",
  "coredump",
  "cpu",
- "dev-ext4",
  "dev-fbdev",
  "dev-input",
  "dev-misc",
