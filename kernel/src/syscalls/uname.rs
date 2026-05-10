@@ -36,7 +36,7 @@ pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
             if !s.is_empty() { return s.into_bytes(); }
         }
     }
-    crate::hostname::snapshot()
+    crate::syscalls::hostname::snapshot()
 }
 
 /// `sys_uname(buf)` — slot 63. Writes the 6-field utsname struct
@@ -48,7 +48,7 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
         return rv;
     }
     let host = uts_hostname_for_current();
-    let dom = crate::hostname::domain_snapshot();
+    let dom = crate::syscalls::hostname::domain_snapshot();
     let dom_bytes: &[u8] = if dom.is_empty() { b"(none)" } else { &dom };
     // SAFETY: range validated; user half mapped writable; byte writes need no alignment.
     unsafe {

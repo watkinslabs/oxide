@@ -7,7 +7,6 @@
 // Three args is enough to identify the syscall; later args fall
 // out of the entry log to keep line lengths bounded.
 
-#![cfg(target_os = "oxide-kernel")]
 #![cfg(feature = "debug-syscall")]
 
 /// Print one entry line for the syscall about to be dispatched.
