@@ -28,11 +28,11 @@ use ext4::Mount;
 /// because load_static_blob rejects on ELF e_machine mismatch.
 /// xtask rootfs writes per-arch images at kernel/blobs/rootfs-<arch>.img.
 #[cfg(target_arch = "x86_64")]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs-x86_64.img");
+const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs-x86_64.img");
 #[cfg(target_arch = "aarch64")]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs-aarch64.img");
+const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs-aarch64.img");
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs.img");
+const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs.img");
 
 /// Backing block size for the in-kernel virtual disk.
 const BLOCK_SIZE: u32 = 512;

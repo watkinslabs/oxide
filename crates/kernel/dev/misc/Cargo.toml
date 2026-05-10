@@ -9,11 +9,11 @@ license = "MPL-2.0"
 # pseudo-devices per `52§3` domain layer. Pure VFS-inode producers.
 
 [dependencies]
-devfs = { path = "../../kernel/devfs" }
-hal   = { path = "../../arch/hal" }
-klog  = { path = "../../shared/klog" }
-sync  = { path = "../../shared/sync" }
-vfs   = { path = "../../kernel/vfs" }
+devfs = { path = "../../devfs" }
+hal   = { path = "../../../arch/hal" }
+klog  = { path = "../../../shared/klog" }
+sync  = { path = "../../../shared/sync" }
+vfs   = { path = "../../vfs" }
 
 [features]
 default = []

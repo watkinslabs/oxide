@@ -6,5 +6,5 @@ publish = false
 license = "MPL-2.0"
 
 [dependencies]
-hal     = { path = "../../arch/hal" }
-syscall = { path = "../syscall" }
+hal     = { path = "../../../arch/hal" }
+syscall = { path = "../../syscall" }
