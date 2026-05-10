@@ -233,6 +233,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flock"
+version = "0.1.0"
+dependencies = [
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -402,6 +412,7 @@ dependencies = [
  "fbcon",
  "fbdev",
  "firmware",
+ "flock",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

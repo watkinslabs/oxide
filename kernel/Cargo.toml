@@ -17,6 +17,7 @@ pipe      = { path = "../crates/pipe", default-features = false }
 pmm-setup = { path = "../crates/pmm-setup" }
 smp       = { path = "../crates/smp" }
 epoll     = { path = "../crates/epoll" }
+flock     = { path = "../crates/flock" }
 signalfd  = { path = "../crates/signalfd" }
 userfaultfd = { path = "../crates/userfaultfd" }
 elf     = { path = "../crates/elf" }
