@@ -64,6 +64,7 @@ decl_lock_class! {
     Runqueue     = 110,
     Tty          = 120,
     SocketTable  = 130,
+    Devices      = 135,
     Socket       = 140,
     // Heap allocator leaf — independent of PMM/Slab, any subsystem may
     // call `KAlloc` with its own lock held; kalloc never calls back into
