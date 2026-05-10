@@ -390,7 +390,7 @@ impl Inode for ProcHostnameInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = crate::hostname::snapshot();
+        let mut body = crate::syscalls::hostname::snapshot();
         body.push(b'\n');
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
@@ -399,7 +399,7 @@ impl Inode for ProcHostnameInode {
         Ok(n)
     }
     fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
-        crate::hostname::set(src);
+        crate::syscalls::hostname::set(src);
         Ok(src.len())
     }
 }

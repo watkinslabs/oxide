@@ -2,7 +2,6 @@
 // guarded byte buffer; uname.nodename + /proc/sys/kernel/hostname
 // + sys_sethostname / sys_gethostname read+write it.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use sync::{Spinlock, TaskList as TaskListClass};
 

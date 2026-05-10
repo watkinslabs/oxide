@@ -52,7 +52,7 @@ pub fn kernel_sys_unshare(args: &SyscallArgs) -> i64 {
     if bits == 0 { return 0; }
     cur.ns_membership.fetch_or(bits, Ordering::Release);
     if (bits & (1u64 << 1)) != 0 {
-        let snap_bytes = crate::hostname::snapshot();
+        let snap_bytes = crate::syscalls::hostname::snapshot();
         let snap = alloc::string::String::from_utf8(snap_bytes).unwrap_or_default();
         // SAFETY: per-task slot single-mutator per `13§5`; running task on this CPU is the sole writer of uts_hostname.
         unsafe { *cur.uts_hostname.get() = snap; }
