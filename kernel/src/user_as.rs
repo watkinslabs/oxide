@@ -14,7 +14,7 @@
 //   - `init`: boot-path constructor, called from `kernel_main` after
 //     PMM is up.
 //   - `user_fault_handler`: registered via `install_fault_handler`
-//     before `userspace_smoke::run`. Routes `#PF`/data-aborts in the
+//     before `crate::smoke::userspace::run`. Routes `#PF`/data-aborts in the
 //     user range through `AddressSpace::handle_page_fault`. Other
 //     faults (and known smoke landmarks) fall through to halt with
 //     a log line.

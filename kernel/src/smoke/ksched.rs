@@ -6,7 +6,6 @@
 // driver returns. This is the cooperative companion to
 // `preempt_smoke` (which exercises the IRQ-exit picker).
 
-#![cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
