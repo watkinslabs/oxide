@@ -81,6 +81,9 @@ class Session:
     gdb_reader: threading.Thread
     serial_sock: socket.socket | None = None
     serial_sock_path: str | None = None
+    qmp_sock: socket.socket | None = None
+    qmp_sock_path: str | None = None
+    qmp_lock: threading.Lock = None  # type: ignore[assignment]
 
 
 _SESSION: Session | None = None
@@ -266,6 +269,12 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 # F59-09: dump every frame on/off net0 to pcap so we can
                 # see whether the guest's TX kicks reach SLIRP at all.
                 "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
+                # `-vga none` disables QEMU's default stdvga
+                # (bochs-display, vendor 1234:1111). Without it,
+                # QMP screendump captures that empty stdvga frame
+                # instead of virtio-gpu's scanout — and the GTK
+                # window in the xtask path renders the wrong head.
+                "-vga", "none",
                 # virtio-gpu modern PCI for `45` graphical-terminal arc.
                 "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
                 # virtio-input keyboard + mouse for `46`.
@@ -273,6 +282,9 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 "-device", "virtio-mouse-pci,bus=pcie.0,disable-legacy=on",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
+                # QMP socket so qemu_screen() can issue `screendump`
+                # to capture the framebuffer (VGA / virtio-gpu).
+                "-qmp", f"unix:{sock_dir}/qmp.sock,server=on,wait=off",
                 "-display", "none",
                 "-no-reboot",
                 "-no-shutdown",
@@ -296,6 +308,12 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 # F59-09: dump every frame on/off net0 to pcap so we can
                 # see whether the guest's TX kicks reach SLIRP at all.
                 "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
+                # `-vga none` disables QEMU's default stdvga
+                # (bochs-display, vendor 1234:1111). Without it,
+                # QMP screendump captures that empty stdvga frame
+                # instead of virtio-gpu's scanout — and the GTK
+                # window in the xtask path renders the wrong head.
+                "-vga", "none",
                 # virtio-gpu modern PCI for `45` graphical-terminal arc.
                 "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
                 # virtio-input keyboard + mouse for `46`.
@@ -303,6 +321,7 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 "-device", "virtio-mouse-pci,bus=pcie.0,disable-legacy=on",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
+                "-qmp", f"unix:{sock_dir}/qmp.sock,server=on,wait=off",
                 "-display", "none",
                 "-no-reboot",
                 "-semihosting-config", "enable=on,target=native",
@@ -333,6 +352,25 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
         serial_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         serial_sock.connect(sock_path)
 
+        # QMP — wait for QEMU to bind, then connect + handshake.
+        qmp_path = os.path.join(sock_dir, "qmp.sock")
+        qmp_deadline = time.monotonic() + 5.0
+        while time.monotonic() < qmp_deadline and not os.path.exists(qmp_path):
+            time.sleep(0.05)
+        qmp_sock = None
+        if os.path.exists(qmp_path):
+            try:
+                qmp_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                qmp_sock.connect(qmp_path)
+                # QMP greeting (capabilities) + qmp_capabilities handshake.
+                qmp_sock.settimeout(2.0)
+                _ = qmp_sock.recv(4096)  # eat greeting
+                qmp_sock.sendall(b'{"execute":"qmp_capabilities"}\n')
+                _ = qmp_sock.recv(4096)  # eat ack
+                qmp_sock.settimeout(None)
+            except Exception:
+                qmp_sock = None
+
         gdb_proc = subprocess.Popen(
             ["gdb", "--quiet", "--interpreter=mi3", str(elf)],
             stdin=subprocess.PIPE,
@@ -342,8 +380,8 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
             bufsize=1,
         )
 
-        serial: deque[str] = deque(maxlen=4096)
-        gdb_lines: deque[str] = deque(maxlen=4096)
+        serial: deque[str] = deque(maxlen=65536)
+        gdb_lines: deque[str] = deque(maxlen=8192)
         serial_lock = threading.Lock()
         gdb_lock = threading.Lock()
         # QEMU stdout still carries TCG/firmware warnings; capture it so
@@ -373,6 +411,9 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
             gdb_reader=gdb_reader,
             serial_sock=serial_sock,
             serial_sock_path=sock_path,
+            qmp_sock=qmp_sock,
+            qmp_sock_path=qmp_path if qmp_sock else None,
+            qmp_lock=threading.Lock(),
         )
         _SESSION = s
 
@@ -551,6 +592,137 @@ def qemu_info(what: str = "registers") -> str:
     return "\n".join(out)
 
 
+def _qmp_send(s: Session, cmd: dict, timeout: float = 5.0) -> dict:
+    """Send a single QMP command, return the parsed JSON response.
+    Drains async events that arrive ahead of the response."""
+    import json as _json
+    if s.qmp_sock is None:
+        raise RuntimeError("QMP not connected (this session was started before QMP support landed)")
+    with s.qmp_lock:
+        s.qmp_sock.settimeout(timeout)
+        try:
+            s.qmp_sock.sendall((_json.dumps(cmd) + "\n").encode("utf-8"))
+            buf = bytearray()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    chunk = s.qmp_sock.recv(8192)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                # QMP frames are newline-terminated JSON objects.
+                # Walk forward through complete lines until we see a
+                # 'return' or 'error' (skip 'event' lines).
+                while b"\n" in buf:
+                    idx = buf.index(b"\n")
+                    line = bytes(buf[:idx])
+                    del buf[: idx + 1]
+                    if not line.strip():
+                        continue
+                    try:
+                        obj = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    if "event" in obj:
+                        continue
+                    return obj
+            raise TimeoutError(f"QMP did not respond within {timeout}s")
+        finally:
+            s.qmp_sock.settimeout(None)
+
+
+@mcp.tool()
+def qemu_screen(as_text: bool = True, width: int = 120, height: int = 40) -> str:
+    """Capture the QEMU framebuffer (VGA / virtio-gpu / ramfb scanout).
+
+    Issues QMP `screendump` to write a PPM file under /tmp, then:
+      - if `as_text=True` (default), down-samples to a `width`×`height`
+        ASCII brightness grid and returns it inline. Useful for
+        seeing 'is the boot banner painted', 'is there a cursor',
+        'is the screen all-zero', without leaving the chat.
+      - if `as_text=False`, returns the PPM file path so the caller
+        can open it externally.
+
+    Linux 'no display' bug pattern: if the brightness grid is all
+    spaces, the kernel never set up a scanout; if it's a wall of
+    one character, the framebuffer is all-one-color (likely the
+    OVMF clear-screen background); otherwise look for recognizable
+    text shapes (banner, cursor blink).
+    """
+    s = _require()
+    ppm_path = f"/tmp/oxide-screen-{os.getpid()}.ppm"
+    try: os.unlink(ppm_path)
+    except FileNotFoundError: pass
+    resp = _qmp_send(s, {"execute": "screendump", "arguments": {"filename": ppm_path}})
+    if "error" in resp:
+        return f"qemu-mcp: screendump failed: {resp['error']}"
+    # Wait briefly for QEMU to finish writing (screendump is async).
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if os.path.exists(ppm_path) and os.path.getsize(ppm_path) > 16:
+            break
+        time.sleep(0.05)
+    if not os.path.exists(ppm_path):
+        return f"qemu-mcp: screendump file did not appear at {ppm_path}"
+    if not as_text:
+        return f"qemu-mcp: screen dumped to {ppm_path} ({os.path.getsize(ppm_path)} bytes)"
+    # Render PPM (P6, binary, 24bpp) → ASCII grid.
+    return _ppm_to_ascii(ppm_path, width, height)
+
+
+def _ppm_to_ascii(path: str, w: int, h: int) -> str:
+    """Read a P6 PPM, downsample to `w`x`h`, map brightness to chars."""
+    with open(path, "rb") as f:
+        # Magic.
+        magic = f.readline().strip()
+        if magic != b"P6":
+            return f"qemu-mcp: unsupported PPM magic {magic!r}"
+        # Skip comments + width/height/maxval.
+        def _hdr_token() -> int:
+            while True:
+                tok = b""
+                while True:
+                    c = f.read(1)
+                    if not c: raise ValueError("EOF in PPM header")
+                    if c == b'#':
+                        f.readline()
+                        continue
+                    if c.isspace():
+                        if tok: return int(tok)
+                        else: continue
+                    tok += c
+        src_w = _hdr_token(); src_h = _hdr_token(); _maxv = _hdr_token()
+        # binary pixel data follows
+        data = f.read()
+    if len(data) < src_w * src_h * 3:
+        return f"qemu-mcp: PPM truncated: have {len(data)} bytes, expected {src_w*src_h*3}"
+    # Step sizes (integer downsample).
+    sx = max(1, src_w // w)
+    sy = max(1, src_h // h)
+    out_w = (src_w + sx - 1) // sx
+    out_h = (src_h + sy - 1) // sy
+    # Brightness ramp (dark → light).
+    ramp = b" .:-=+*#%@"
+    rows: list[str] = []
+    rows.append(f"qemu-mcp: framebuffer {src_w}x{src_h}, sampled to {out_w}x{out_h}")
+    for ry in range(out_h):
+        line = bytearray()
+        for rx in range(out_w):
+            sy0 = ry * sy
+            sx0 = rx * sx
+            # Sample a single pixel for speed.
+            off = (sy0 * src_w + sx0) * 3
+            if off + 3 > len(data): break
+            r, g, b = data[off], data[off+1], data[off+2]
+            lum = (30*r + 59*g + 11*b) // 100
+            ch = ramp[min(lum * (len(ramp) - 1) // 255, len(ramp) - 1)]
+            line.append(ch)
+        rows.append(line.decode("ascii"))
+    return "\n".join(rows)
+
+
 @mcp.tool()
 def qemu_serial(clear: bool = False) -> str:
     """Accumulated serial output (kernel stdout). Returns everything
@@ -619,6 +791,15 @@ def qemu_stop() -> str:
                 pass
             try:
                 s.serial_sock.close()
+            except Exception:
+                pass
+        if s.qmp_sock is not None:
+            try:
+                s.qmp_sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                s.qmp_sock.close()
             except Exception:
                 pass
         # Reap.

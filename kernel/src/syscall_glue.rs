@@ -134,20 +134,20 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// sys_brk — adjust brk within ELF heap VMA.
+/// sys_brk — adjust brk within ELF heap VMA. F158: enforces
+/// RLIMIT_DATA per Linux semantic.
 fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     let req = args.a0;
-    let cur = match crate::sched::current() {
-        Some(c) => c,
-        None    => return 0,
-    };
-    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent mm writer.
-    let mm = match unsafe { cur.mm_ref() } {
-        Some(m) => m.clone(),
-        None    => return 0,
-    };
-    if req == 0 {
-        return mm.brk() as i64;
+    let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
+    // SAFETY: running task, no concurrent mm writer per `13§5`.
+    let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
+    if req == 0 { return mm.brk() as i64; }
+    // SAFETY: rlimits single-mutator per `13§5`.
+    let rlim_data = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::DATA].0 };
+    let cur_brk = mm.brk();
+    if rlim_data != sched::rlimit::INFINITY
+        && req > cur_brk && req - cur_brk > rlim_data {
+        return cur_brk as i64;
     }
     mm.try_set_brk(req) as i64
 }
@@ -393,6 +393,7 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
             // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(args.a0 as i32, Ordering::Release);
+            task.vfork_pending.store(false, Ordering::Release); // F156 vfork
             crate::sched::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
@@ -577,7 +578,6 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_EXIT          => kernel_sys_exit(&args),
         crate::syscall_nrs::NR_GETPID        => kernel_sys_getpid(&args),
         crate::syscall_nrs::NR_GETPPID       => kernel_sys_getppid(&args),
-        #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_READ          => kernel_sys_read(&args),
         crate::syscall_nrs::NR_WRITE         => kernel_sys_write(&args),
         crate::syscall_nrs::NR_OPEN          => crate::syscall_glue_open::kernel_sys_open(&args),

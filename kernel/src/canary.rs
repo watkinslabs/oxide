@@ -15,7 +15,6 @@
 // timer) / ~50ms on arm (50 us timer). The 1h soak is filed as a
 // background-CI follow-up per `40§3`.
 
-use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

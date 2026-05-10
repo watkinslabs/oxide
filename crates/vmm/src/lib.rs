@@ -13,10 +13,13 @@ extern crate alloc;
 extern crate std;
 
 pub mod address_space;
+pub mod anon_vma;
+pub mod rmap;
 pub mod vma;
 pub mod tree;
 
 pub use address_space::{AddressSpace, MIN_USER_VA};
+pub use anon_vma::{AnonVma, RmapTarget};
 pub use vma::{FaultAccess, FaultKind, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
 
@@ -58,3 +61,15 @@ mod stub_tests {
 
 #[cfg(test)]
 mod tests;
+
+// F157: comprehensive memory torture test suite — boundary
+// conditions, fragmentation, fork chains, churn stress, brk
+// underflow/overflow, ARG_MAX, alignment edge cases.
+#[cfg(test)]
+mod torture_tests;
+
+// F156: rmap + COW chain regression tests against a HostMmu that
+// enforces the same defensive AlreadyMapped semantics as the real
+// PT walker. Pins the F156 boot fix in place.
+#[cfg(test)]
+mod tests_rmap_cow;

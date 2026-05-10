@@ -77,12 +77,20 @@ pub fn kernel_sys_clone_dispatch(
             }
         };
         let hhdm = crate::user_as::hhdm_offset();
+        // F157: COW fork (Linux mm/memory.c semantic). Walks parent
+        // PT, bumps struct-page refcount via inc_ref, maps same PA
+        // RO in child + remaps parent RO. First write on either
+        // side triggers handle_page_fault_cow which copies+splits.
         #[cfg(target_arch = "x86_64")]
-        let res = parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let res = parent_mm.fork_cow_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
+            new_root, hhdm,
+            // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
+            |pa| unsafe { crate::pmm_setup::inc_ref(pa); });
         #[cfg(target_arch = "aarch64")]
-        let res = parent_mm.fork_copy_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
-            new_root, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let res = parent_mm.fork_cow_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
+            new_root, hhdm,
+            // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
+            |pa| unsafe { crate::pmm_setup::inc_ref(pa); });
         match res {
             Ok(m) => {
                 crate::user_as::install_teardown(&m);
@@ -210,9 +218,36 @@ pub fn kernel_sys_clone_dispatch(
         klog::write_raw(b"\n");
     }
 
-    // Drop our local Arc; the runqueue's enqueue clone keeps the
-    // child alive until it Zombies + parks to the zombie registry.
-    drop(child);
+    // F156: CLONE_VFORK suspension. Linux semantic — parent blocks
+    // until child execve(2)s or _exit(2)s. With CLONE_VM the two
+    // share the address space, so without this the parent races on
+    // shared heap/stack and may modify state the child is reading.
+    // We arm the child's `vfork_pending` flag (atomic) and busy-
+    // yield in the parent until it clears. Wake sites:
+    //   - sys_execve: after CLOEXEC drop, before SP setup.
+    //   - sys_exit / sys_exit_group: alongside mark_done.
+    const CLONE_VFORK: u64 = 0x4000;
+    if (flags & CLONE_VFORK) != 0 {
+        child.vfork_pending.store(true, Ordering::Release);
+        // Hold the Arc<child> across the yield loop so the child's
+        // task struct stays alive even if it Zombies + parks before
+        // we re-acquire CPU. Zombies-park doesn't free; just releases
+        // the runqueue Arc.
+        let watch = alloc::sync::Arc::clone(&child);
+        drop(child);
+        // Yield until child clears vfork_pending. On UP single-CPU
+        // each yield gives child the CPU; child runs sigaction*N +
+        // setsid + close + exec, then sets the flag = false.
+        while watch.vfork_pending.load(Ordering::Acquire) {
+            // SAFETY: process ctx; preempt-off; runqueue installed.
+            unsafe { crate::sched::schedule(); }
+        }
+        drop(watch);
+    } else {
+        // Drop our local Arc; runqueue's enqueue clone keeps the
+        // child alive until it Zombies + parks.
+        drop(child);
+    }
 
     child_tid as i64
 }

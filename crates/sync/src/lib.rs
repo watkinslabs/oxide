@@ -51,6 +51,7 @@ decl_lock_class! {
     Buddy        =  0,
     Slab         = 10,
     PageTable    = 20,
+    AnonVma      = 25,
     AddressSpace = 30,
     Inode        = 40,
     Dentry       = 50,

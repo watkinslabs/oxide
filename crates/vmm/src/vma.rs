@@ -8,7 +8,10 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use alloc::sync::Arc;
 use hal::UserVirtAddr;
+
+use crate::anon_vma::AnonVma;
 
 bitflags::bitflags! {
     /// VMA protection bits per `11§4`. R/W/X only at the VMA layer;
@@ -85,25 +88,55 @@ bitflags::bitflags! {
 /// `Special` covers vDSO / vvar / hugetlb regions which never merge.
 ///
 /// `KernelBytes` is a v1-only bridge until VFS lands per `16`:
-/// kernel-side static data (`&'static [u8]`) backs the VMA. Used
-/// by the ELF loader (`31`) to map PT_LOAD segments from a
+/// kernel-side data backs the VMA via a refcounted `Arc<[u8]>`.
+/// Used by the ELF loader (`31`) to map PT_LOAD segments from a
 /// boot-embedded blob; the demand-page handler copies bytes from
 /// `data` into the freshly-allocated user page on each fault.
 /// `data.len()` may be smaller than the VMA's byte length — bytes
 /// past the slice length zero-fill (PT_LOAD's `p_memsz > p_filesz`
-/// = BSS tail). Slices are zero-sized + 'static so this stays
-/// Copy + Hash.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+/// = BSS tail).
+///
+/// `Arc<[u8]>` (not `&'static [u8]`): on fork(2) the child VMA tree
+/// clones each VMA, bumping the Arc refcount, so child KernelBytes
+/// remain valid even when the parent AS drops. The pre-Arc design
+/// stashed boxes in the parent AS's `staged_bytes` Vec and handed
+/// out `&'static [u8]` views; child VMAs cloned the slice ref and
+/// dangled when the parent dropped first (use-after-free latent
+/// bug). Arc gives correct refcount-based lifetime.
+#[derive(Clone, Debug)]
 pub enum VmaBacking {
     Anonymous,
     File { off: u64 },
-    KernelBytes { data: &'static [u8] },
+    KernelBytes { data: alloc::sync::Arc<[u8]>, off: usize },
     Special,
 }
 
+impl PartialEq for VmaBacking {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (VmaBacking::Anonymous, VmaBacking::Anonymous) => true,
+            (VmaBacking::File { off: a }, VmaBacking::File { off: b }) => a == b,
+            (VmaBacking::Special, VmaBacking::Special) => true,
+            (VmaBacking::KernelBytes { data: a, off: ao },
+             VmaBacking::KernelBytes { data: b, off: bo }) => {
+                alloc::sync::Arc::ptr_eq(a, b) && ao == bo
+            }
+            _ => false,
+        }
+    }
+}
+impl Eq for VmaBacking {}
+
 /// Single virtual memory area. `start` ≤ `va` < `end` covers this VMA.
 /// Per `11§4`. `rss` is the per-VMA resident-page count.
-#[derive(Debug)]
+///
+/// `anon_vma` is the rmap reverse-link for `VmaBacking::Anonymous` —
+/// every anonymous VMA in a fork family shares one `Arc<AnonVma>`,
+/// which carries the chain of (mm, vma_range) edges so that a page
+/// fault handler / migration / KSM pass can enumerate every PTE
+/// referencing a frame. `None` for non-anonymous backings; rmap for
+/// file-backed lives in the future `address_space::i_mmap` interval
+/// tree (see `anon_vma.rs` header).
 pub struct Vma {
     pub start: UserVirtAddr,
     pub end:   UserVirtAddr,
@@ -111,6 +144,21 @@ pub struct Vma {
     pub flags: VmaFlags,
     pub backing: VmaBacking,
     pub rss: AtomicU64,
+    pub anon_vma: Option<Arc<AnonVma>>,
+}
+
+impl core::fmt::Debug for Vma {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Vma")
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("prot", &self.prot)
+            .field("flags", &self.flags)
+            .field("backing", &self.backing)
+            .field("rss", &self.rss.load(Ordering::Relaxed))
+            .field("anon_vma_id", &self.anon_vma.as_ref().map(|a| a.id))
+            .finish()
+    }
 }
 
 impl Vma {
@@ -124,7 +172,21 @@ impl Vma {
         flags: VmaFlags,
         backing: VmaBacking,
     ) -> Self {
-        Self { start, end, prot, flags, backing, rss: AtomicU64::new(0) }
+        // Anonymous VMAs: allocate a fresh anon_vma family. The
+        // chain edge for *this* VMA gets attached by the caller
+        // (`AddressSpace::mmap`) once the VMA is in the tree and
+        // we have the AS Arc to weak-ref. Non-anonymous backings
+        // get None — file rmap lives elsewhere.
+        let anon_vma = if matches!(backing, VmaBacking::Anonymous) {
+            Some(AnonVma::new())
+        } else {
+            None
+        };
+        Self {
+            start, end, prot, flags, backing,
+            rss: AtomicU64::new(0),
+            anon_vma,
+        }
     }
 
     /// # C: O(1)
@@ -155,16 +217,16 @@ impl Vma {
         if self.end != next.start { return false; }
         if self.prot != next.prot { return false; }
         if self.flags != next.flags { return false; }
-        match (self.backing, next.backing) {
+        match (&self.backing, &next.backing) {
             (VmaBacking::Anonymous, VmaBacking::Anonymous) => true,
             (VmaBacking::File { off: a }, VmaBacking::File { off: b }) => {
-                a.checked_add(self.len_bytes()).map_or(false, |aend| aend == b)
+                a.checked_add(self.len_bytes()).map_or(false, |aend| aend == *b)
             }
             // KernelBytes-backed segments don't merge: each PT_LOAD
             // is a distinct slice; merging would require carrying the
             // join in the backing variant. Match Special's behaviour.
-            (VmaBacking::KernelBytes { .. }, _)
-            | (_, VmaBacking::KernelBytes { .. }) => false,
+            (VmaBacking::KernelBytes { .. }, VmaBacking::KernelBytes { .. }) => false,
+            (VmaBacking::KernelBytes { .. }, _) | (_, VmaBacking::KernelBytes { .. }) => false,
             (VmaBacking::Special, _) | (_, VmaBacking::Special) => false,
             _ => false,
         }
@@ -179,17 +241,17 @@ impl Vma {
     /// # C: O(1)
     pub fn clone_subrange(&self, new_start: UserVirtAddr, new_end: UserVirtAddr) -> Vma {
         let off_delta = new_start.as_u64() - self.start.as_u64();
-        let backing = match self.backing {
+        let backing = match &self.backing {
             VmaBacking::File { off } => VmaBacking::File { off: off + off_delta },
-            VmaBacking::KernelBytes { data } => {
+            VmaBacking::KernelBytes { data, off } => {
                 // Sub-range starts `off_delta` bytes into the parent
-                // VMA → the new backing slice starts that far into
-                // `data` (clamped at `data.len()` so a sub-range
-                // inside the BSS tail is left empty).
-                let skip = (off_delta as usize).min(data.len());
-                VmaBacking::KernelBytes { data: &data[skip..] }
+                // VMA → bump the byte offset into the shared Arc.
+                VmaBacking::KernelBytes {
+                    data: alloc::sync::Arc::clone(data),
+                    off: off + off_delta as usize,
+                }
             }
-            other => other,
+            other => other.clone(),
         };
         Vma {
             start: new_start,
@@ -198,6 +260,10 @@ impl Vma {
             flags: self.flags,
             backing,
             rss: AtomicU64::new(0),
+            // Sub-range stays in the same anon_vma family — Linux
+            // `__split_vma` keeps both halves on the parent's anon_vma
+            // (and adds a chain entry for the new half).
+            anon_vma: self.anon_vma.as_ref().map(Arc::clone),
         }
     }
 }
@@ -209,8 +275,12 @@ impl Clone for Vma {
             end:   self.end,
             prot:  self.prot,
             flags: self.flags,
-            backing: self.backing,
+            backing: self.backing.clone(),
             rss: AtomicU64::new(self.rss.load(Ordering::Relaxed)),
+            // VmaTree::insert clones VMAs into the destination tree
+            // at fork; we keep the SAME anon_vma so all forked
+            // descendants share the chain.
+            anon_vma: self.anon_vma.as_ref().map(Arc::clone),
         }
     }
 }

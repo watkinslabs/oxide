@@ -360,18 +360,27 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
+    // F157: leaves go through dec_and_maybe_free so COW-shared frames
+    // (multiple AS map them) only release once the last AS drops.
+    // Tables (intermediate PT levels) are always per-AS — direct free.
+    let mut free_leaf = |pa: u64| {
+        // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
+        // quiesced per fn contract; pmm_setup::dec_and_maybe_free drops
+        // refcount and frees on zero.
+        unsafe { crate::pmm_setup::dec_and_maybe_free_frame(pa); }
+    };
+    let mut free_table = |pa: u64| {
+        // SAFETY: PT tables are always private to this AS; free directly.
+        unsafe { crate::pmm_setup::free_one_frame(pa); }
+    };
+    // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
-        hal::pt_walker::free_user_tree::<hal_x86_64::vmm::PtWalkerX86, _>(
-            root_pa, hhdm,
-            // SAFETY: `pa` was previously returned by `alloc_one_frame`
-            // for this AS's tables/leaves; the AS root is quiesced per
-            // fn contract so the page is no longer reachable.
-            |pa| unsafe { crate::pmm_setup::free_one_frame(pa); },
+        hal::pt_walker::free_user_tree_leafmap::<hal_x86_64::vmm::PtWalkerX86, _, _>(
+            root_pa, hhdm, &mut free_leaf, &mut free_table,
         );
     }
     // Free the root frame itself.
-    // SAFETY: root_pa is the AS-private root from the per-arch
-    // `new_user_*` allocator; no longer reachable per fn contract.
+    // SAFETY: root_pa is the AS-private root; no longer reachable.
     unsafe { crate::pmm_setup::free_one_frame(root_pa); }
 }
 
@@ -380,17 +389,21 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
+    let mut free_leaf = |pa: u64| {
+        // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
+        unsafe { crate::pmm_setup::dec_and_maybe_free_frame(pa); }
+    };
+    let mut free_table = |pa: u64| {
+        // SAFETY: PT tables are always per-AS; direct free.
+        unsafe { crate::pmm_setup::free_one_frame(pa); }
+    };
+    // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
-        hal::pt_walker::free_user_tree::<hal_aarch64::vmm::PtWalkerArm, _>(
-            root_pa, hhdm,
-            // SAFETY: `pa` was previously returned by `alloc_one_frame`
-            // for this AS's tables/leaves; the AS root is quiesced per
-            // fn contract so the page is no longer reachable.
-            |pa| unsafe { crate::pmm_setup::free_one_frame(pa); },
+        hal::pt_walker::free_user_tree_leafmap::<hal_aarch64::vmm::PtWalkerArm, _, _>(
+            root_pa, hhdm, &mut free_leaf, &mut free_table,
         );
     }
-    // SAFETY: root_pa is the AS-private root from the per-arch
-    // `new_user_*` allocator; no longer reachable per fn contract.
+    // SAFETY: root_pa is the AS-private root; no longer reachable.
     unsafe { crate::pmm_setup::free_one_frame(root_pa); }
 }
 
@@ -491,13 +504,14 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     if handle(cr2, kind) {
         return true;
     }
-    // Unhandled fault. If user-mode (CPL=3, err bit 2 set),
-    // terminate the task with SIGSEGV instead of halting the
-    // whole system — the fault is the task's bug (e.g. write
-    // to its own .rodata or stack underflow), not a kernel
-    // bug. Init's wait4 will reap. Kernel-mode unhandled
-    // faults still halt for diagnosis.
+    // Unhandled fault from user mode. F158: try Linux-style
+    // catchable SIGSEGV — rewrite the live FaultFrame to call
+    // the user-installed handler. If no handler is installed
+    // (SIG_DFL), fall back to terminate via deliver_sigsegv.
     if err & 0x4 != 0 {
+        if try_deliver_sigsegv_via_handler_x86(cr2) {
+            return true;   // asm iretqs to user handler with rewritten frame
+        }
         deliver_sigsegv_x86(vec, err, _rip, cr2);
     }
     false
@@ -524,15 +538,74 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     false
 }
 
-/// Public wrapper around `sigsegv_terminate_x86` so other modules
-/// (e.g. smoke fault handlers, syscall handlers) can deliver
-/// SIGSEGV without re-importing the helper visibility surface.
+/// Public wrapper for SIGSEGV delivery. F158: tries Linux-style
+/// catchable signal first — if the user task has installed a
+/// SIGSEGV handler via rt_sigaction, rewrite the live FaultFrame
+/// so iretq lands at the handler with `sig=11` in rdi and a
+/// minimal siginfo on the user stack. Falls back to terminate
+/// when SIG_DFL or no live frame.
 /// # SAFETY: caller is in fault / IRQ-off context with the
 /// runqueue installed (else no current task to terminate).
-/// # C: O(1) — diverges
+/// # C: O(1) — diverges OR returns through dispatch
 #[cfg(target_arch = "x86_64")]
 pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     sigsegv_terminate_x86(vec, err, rip, cr2);
+}
+
+/// F158: rewrite the live FaultFrame so iretq lands at the user's
+/// SIGSEGV handler with `sig=11` in rdi (passed via fault asm
+/// scratch slot). siginfo + ucontext stub pushed on user stack.
+/// # SAFETY: caller is in fault dispatch, IRQs off.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
+    let cur = match crate::sched::current() { Some(c) => c, None => return false };
+    // SAFETY: sigactions slot single-mutator per `13§5`.
+    let sa = unsafe { (*cur.sigactions.get())[10] };  // SIGSEGV = 11, idx 10
+    if sa.handler == 0 || sa.handler == 1 { return false; }
+    let frame_ptr = hal_x86_64::current_fault_frame();
+    if frame_ptr.is_null() { return false; }
+    // SAFETY: frame_ptr is the live FaultFrame for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
+    let frame = unsafe { &mut *frame_ptr };
+    // User stack layout (top → bottom):
+    //   [old_rsp - 0x10]  restorer    ← ret addr from handler
+    //   [old_rsp - 0x88]  ucontext stub (zeroed, 128 B)
+    //   [old_rsp - 0x108] siginfo_t   (128 B; si_signo/si_addr/si_code)
+    let new_sp = frame.rsp.saturating_sub(0x108);
+    if new_sp == 0 || new_sp >= hal::USER_VA_END { return false; }
+    let si  = new_sp;                   // siginfo at base
+    let uc  = new_sp + 0x80;            // ucontext above
+    let ret = new_sp + 0x100;           // restorer addr above ucontext
+    // SAFETY: user stack pages faulted in by user code; CPL=0 writes through active CR3.
+    unsafe {
+        core::ptr::write_volatile( si        as *mut i32, 11);
+        core::ptr::write_volatile((si +  4)  as *mut i32, 0);
+        core::ptr::write_volatile((si +  8)  as *mut i32, 1);    // SEGV_MAPERR
+        core::ptr::write_volatile((si + 16)  as *mut u64, cr2);
+        core::ptr::write_bytes((si + 24) as *mut u8, 0, 0x80 - 24);
+        core::ptr::write_bytes(uc as *mut u8, 0, 0x80);
+        core::ptr::write_volatile(ret as *mut u64, sa.restorer);
+    }
+    frame.rip    = sa.handler;
+    frame.rsp    = ret;
+    frame.rflags = 0x202;
+    // F158: rewrite the saved-scratch slots that oxide_fault_common
+    // pops back into rdi/rsi/rdx before iretq, so the user handler
+    // sees Linux ABI args:
+    //   rdi = sig num (11)
+    //   rsi = ptr to siginfo_t (only meaningful with SA_SIGINFO)
+    //   rdx = ptr to ucontext_t (only meaningful with SA_SIGINFO)
+    // Per fault.rs stack diagram, the slots are at frame_ptr -
+    // 0x30 (rdi), -0x28 (rsi), -0x20 (rdx).
+    let frame_addr = frame_ptr as u64;
+    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x30/-0x28/-0x20 are within the per-task syscall/fault stack and only oxide_fault_common (which runs after we return) reads them.
+    unsafe {
+        core::ptr::write_volatile((frame_addr - 0x30) as *mut u64, 11);
+        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, si);
+        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, uc);
+    }
+    let _ = sa.flags;
+    true
 }
 
 /// arm wrapper for SIGSEGV delivery. Same shape as the x86 form.
@@ -620,18 +693,45 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
     }
 }
 
-/// Run the demand-page resolver against a specific AS.
+/// Run the demand-page resolver against a specific AS. F157: uses
+/// the COW-aware variant — passes refcount + dec_ref callbacks so
+/// Protection-write faults short-circuit to a same-PA W-flip when
+/// we're the sole owner, and copy + dec_ref the shared frame
+/// otherwise.
+/// F158: NotPresent faults try MAP_GROWSDOWN stack auto-extension
+/// before falling through to the normal demand-page path.
 fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     -> Result<(), vmm::Error>
 {
-    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally).
+    // F158: stack auto-grow. If the fault lands just below a
+    // GROWSDOWN VMA's start (within Linux's 64 KiB guard distance),
+    // extend the VMA to cover the faulting address. Subsequent
+    // demand-page resolves it normally.
+    if matches!(fault, FaultKind::NotPresent { .. }) {
+        if as_.find_vma(uva).is_none() {
+            as_.try_grow_stack(uva);
+        }
+    }
+    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            uva, fault, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _>(
+            uva, fault, hhdm,
+            || crate::pmm_setup::alloc_one_frame(),
+            |pa| crate::pmm_setup::frame_refcount(pa),
+            // SAFETY: dec_ref of a previously-mapped shared frame after COW split; rmap_aware_dec_and_maybe_free clears page->mapping before the frame returns to PMM.
+            |pa| crate::pmm_setup::rmap_aware_dec_and_maybe_free(pa),
+            // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
+            |pa, av, idx| crate::pmm_setup::set_anon_rmap_for_pa(pa, av, idx));
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault::<hal_aarch64::mmu_ops::ArmMmu, _>(
-            uva, fault, hhdm, || crate::pmm_setup::alloc_one_frame());
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _>(
+            uva, fault, hhdm,
+            || crate::pmm_setup::alloc_one_frame(),
+            |pa| crate::pmm_setup::frame_refcount(pa),
+            // SAFETY: dec_ref + rmap clear; same shape as x86.
+            |pa| crate::pmm_setup::rmap_aware_dec_and_maybe_free(pa),
+            // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
+            |pa, av, idx| crate::pmm_setup::set_anon_rmap_for_pa(pa, av, idx));
         r
     }
 }
@@ -701,6 +801,27 @@ pub fn glue_mmap(
     const MAP_PRIVATE: u64 = 0x02;
     const MAP_FIXED:   u64 = 0x10;
     const MAP_ANON:    u64 = 0x20;
+    const MAP_GROWSDOWN: u64       = 0x100;
+    const MAP_DENYWRITE: u64       = 0x800;     // no-op since 2.6
+    const MAP_EXECUTABLE: u64      = 0x1000;    // no-op since 2.6
+    const MAP_LOCKED:    u64       = 0x2000;    // accept as no-op (no swap)
+    const MAP_NORESERVE: u64       = 0x4000;    // accept; we don't overcommit
+    const MAP_POPULATE:  u64       = 0x8000;    // accept; demand-fault still works
+    const MAP_NONBLOCK:  u64       = 0x10000;   // accept; no readahead anyway
+    const MAP_STACK:     u64       = 0x20000;   // alias for GROWSDOWN per Linux
+    const MAP_HUGETLB:   u64       = 0x40000;   // reject (no huge-tlb yet)
+    const MAP_SYNC:      u64       = 0x80000;   // DAX; accept as no-op
+    const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+    const MAP_UNINITIALIZED: u64   = 0x4000000; // CONFIG_MMAP_ALLOW_UNINITIALIZED
+    // Bit-field of all flags we tolerate without semantic effect.
+    const MAP_KNOWN: u64 = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANON
+        | MAP_GROWSDOWN | MAP_DENYWRITE | MAP_EXECUTABLE | MAP_LOCKED
+        | MAP_NORESERVE | MAP_POPULATE | MAP_NONBLOCK | MAP_STACK
+        | MAP_HUGETLB | MAP_SYNC | MAP_FIXED_NOREPLACE | MAP_UNINITIALIZED;
+    // Linux: unknown flags → EINVAL (kernel rejects future bits).
+    if (flags & !MAP_KNOWN) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    // MAP_HUGETLB: huge-page backing; v1 has no huge-tlb pool. Reject.
+    if (flags & MAP_HUGETLB) != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
 
     // F60: file-backed mmap stays out of v1 (needs VFS+pagecache
     // wiring per `17§5`). Anonymous mmap now honours MAP_FIXED, the
@@ -714,9 +835,37 @@ pub fn glue_mmap(
     let is_private = flags & MAP_PRIVATE != 0;
     if is_shared == is_private { return Err(-(Errno::Einval.as_i32() as i64)); }
     let want_fixed = flags & MAP_FIXED != 0;
+    let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
+    // F158: MAP_STACK is documented as an alias for MAP_GROWSDOWN
+    // (sets up a stack VMA the kernel can auto-extend on PF).
+    let want_grows_down = flags & (MAP_GROWSDOWN | MAP_STACK) != 0;
     let len_aligned = ((len + 0xfff) & !0xfff) as usize;
-    if want_fixed && (addr == 0 || (addr & 0xfff) != 0) {
+    if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    // F158: MAP_FIXED_NOREPLACE — Linux 4.17+. Like MAP_FIXED but
+    // returns EEXIST instead of clearing overlap. Used by JIT
+    // engines that want to verify no clobber. Detect overlap by
+    // probing the AS before the insert.
+    if want_no_replace {
+        if let Some(cur) = crate::sched::current() {
+            // SAFETY: mm slot single-mutator per `13§5`.
+            if let Some(mm) = unsafe { cur.mm_ref() } {
+                let probe = match UserVirtAddr::new(addr) {
+                    Some(u) => u, None => return Err(-(Errno::Einval.as_i32() as i64)),
+                };
+                let probe_end = addr.saturating_add(len_aligned as u64);
+                let mut p = probe.as_u64();
+                while p < probe_end {
+                    if let Some(u) = UserVirtAddr::new(p) {
+                        if mm.find_vma(u).is_some() {
+                            return Err(-(Errno::Eexist.as_i32() as i64));
+                        }
+                    }
+                    p = p.saturating_add(0x1000);
+                }
+            }
+        }
     }
     // F89: MAP_FIXED is destructive (overlaps unmapped per 11§6).
     // F60 enabled it via `tree.remove_range` but the page-table side
@@ -726,18 +875,23 @@ pub fn glue_mmap(
     // then proceed with a non-fixed VMA insertion (the range is now
     // hole, so the hint-first path in vmm::mmap lands on the requested
     // addr without conflicting with stale state).
-    if want_fixed {
+    if want_fixed && !want_no_replace {
         let _ = glue_munmap(addr, len_aligned as u64);
     }
     // We pass fixed=false to vmm::mmap regardless: after the munmap
     // above, the hint range is clear and the non-fixed path's
     // hint-first placement will pick it.
     let is_fixed = false;
-    let vma_flags = if is_shared {
+    let mut vma_flags = if is_shared {
         VmaFlags::SHARED | VmaFlags::ANONYMOUS
     } else {
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS
     };
+    // F158: MAP_GROWSDOWN — stack-style auto-grow VMA. Linux extends
+    // the VMA downward when a PF lands within the GROWSDOWN guard
+    // distance below vma.start. Glibc threading uses this for
+    // pthread stacks; ld.so uses it for the main process stack.
+    if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
     let hint = if addr != 0 {
         match UserVirtAddr::new(addr) {
             Some(uva) => Some(uva),

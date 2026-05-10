@@ -35,8 +35,28 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             klog::write_dec_u64(loc.line() as u64);
             klog::write_raw(b": ");
         }
-        let msg = info.message().as_str().unwrap_or("(no message)");
-        klog::write_raw(msg.as_bytes());
+        if let Some(s) = info.message().as_str() {
+            klog::write_raw(s.as_bytes());
+        } else {
+            // Format args carry interpolation (e.g. alloc OOM emits
+            // "memory allocation of {size} bytes failed"). Render
+            // into a stack buffer via core::fmt::Write so the actual
+            // size shows up at the UART.
+            use core::fmt::Write as _;
+            struct Sink { buf: [u8; 192], len: usize }
+            impl core::fmt::Write for Sink {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    let b = s.as_bytes();
+                    let n = b.len().min(self.buf.len() - self.len);
+                    self.buf[self.len .. self.len + n].copy_from_slice(&b[..n]);
+                    self.len += n;
+                    Ok(())
+                }
+            }
+            let mut sink = Sink { buf: [0; 192], len: 0 };
+            let _ = core::write!(&mut sink, "{}", info.message());
+            klog::write_raw(&sink.buf[..sink.len]);
+        }
         klog::write_raw(b"\n[PANIC] halted\n");
     }
     #[cfg(not(feature = "debug-panic"))] { let _ = info; }

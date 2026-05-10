@@ -421,9 +421,6 @@ pub unsafe fn free_user_tree<W: PtWalker, F: FnMut(u64)>(
     // SAFETY: per-fn contract — HHDM maps the root + child tables read/write.
     unsafe {
         let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
-        // Only iterate the user half: L0 indices 0..256. The kernel
-        // half (256..512) is shared from the master template and
-        // must not be freed.
         for i_l0 in 0..(ENTRIES_PER_TABLE / 2) {
             let e0 = ptr::read_volatile(l0.add(i_l0));
             if !W::is_valid(e0) || W::is_huge_or_block(e0) { continue; }
@@ -449,6 +446,59 @@ pub unsafe fn free_user_tree<W: PtWalker, F: FnMut(u64)>(
                 free_pa(l2_pa);
             }
             free_pa(l1_pa);
+        }
+    }
+}
+
+/// Like `free_user_tree` but with separate callbacks for **leaves**
+/// (4 KiB pages mapped to user) and **tables** (intermediate PT
+/// frames). F157: lets the kernel call `dec_and_maybe_free_frame`
+/// for leaves (COW-aware refcount) while always-freeing the
+/// intermediate tables (always private to one AS).
+/// # SAFETY: same as `free_user_tree`.
+/// # C: same as `free_user_tree`.
+pub unsafe fn free_user_tree_leafmap<W, FL, FT>(
+    root_pa: u64,
+    hhdm_offset: u64,
+    free_leaf: &mut FL,
+    free_table: &mut FT,
+)
+where
+    W: PtWalker,
+    FL: FnMut(u64),
+    FT: FnMut(u64),
+{
+    // SAFETY: per-fn contract — HHDM maps the root + child tables read/write.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
+        // Only iterate the user half: L0 indices 0..256. The kernel
+        // half (256..512) is shared from the master template and
+        // must not be freed.
+        for i_l0 in 0..(ENTRIES_PER_TABLE / 2) {
+            let e0 = ptr::read_volatile(l0.add(i_l0));
+            if !W::is_valid(e0) || W::is_huge_or_block(e0) { continue; }
+            let l1_pa = e0 & W::PHYS_MASK;
+            let l1 = (hhdm_offset.wrapping_add(l1_pa)) as *const u64;
+            for i_l1 in 0..ENTRIES_PER_TABLE {
+                let e1 = ptr::read_volatile(l1.add(i_l1));
+                if !W::is_valid(e1) || W::is_huge_or_block(e1) { continue; }
+                let l2_pa = e1 & W::PHYS_MASK;
+                let l2 = (hhdm_offset.wrapping_add(l2_pa)) as *const u64;
+                for i_l2 in 0..ENTRIES_PER_TABLE {
+                    let e2 = ptr::read_volatile(l2.add(i_l2));
+                    if !W::is_valid(e2) || W::is_huge_or_block(e2) { continue; }
+                    let l3_pa = e2 & W::PHYS_MASK;
+                    let l3 = (hhdm_offset.wrapping_add(l3_pa)) as *const u64;
+                    for i_l3 in 0..ENTRIES_PER_TABLE {
+                        let leaf = ptr::read_volatile(l3.add(i_l3));
+                        if !W::is_valid(leaf) { continue; }
+                        free_leaf(leaf & W::PHYS_MASK);
+                    }
+                    free_table(l3_pa);
+                }
+                free_table(l2_pa);
+            }
+            free_table(l1_pa);
         }
     }
 }
@@ -710,6 +760,52 @@ mod tests {
         // SAFETY: hosted test; same VA, different PA → AlreadyMapped.
         let r2 = unsafe { map_device_4k::<HostWalker, _>(va, 0xbbbb_b000, 0, &mut alloc) };
         assert_eq!(r2, Err(WalkErr::AlreadyMapped));
+    }
+
+    /// F156: when callers want to overwrite an existing leaf with a
+    /// new PA (COW split, mremap, MAP_FIXED-over-existing), the
+    /// canonical sequence is `unmap_at_va` then `map_at_level`. This
+    /// test pins that sequence in place — the fix in
+    /// `hal-x86_64::mmu_ops::map` and `hal-aarch64::mmu_ops::map`
+    /// routes through it on `WalkErr::AlreadyMapped`.
+    #[test]
+    fn unmap_then_remap_at_same_va_overwrites_with_new_pa() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let pages_cell = core::cell::RefCell::new(reset());
+        let mut alloc = || -> Option<u64> {
+            let p = alloc::boxed::Box::new(AlignedTable([0u64; ENTRIES_PER_TABLE]));
+            let pa = p.0.as_ptr() as u64;
+            pages_cell.borrow_mut().push(p);
+            Some(pa)
+        };
+        let va = 0x0000_1234_0005_6000_u64;
+        let pa1: u64 = 0xaaaa_b000;
+        let pa2: u64 = 0xbbbb_b000;
+        // First install — populates intermediate tables and leaf.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let r1 = unsafe { map_device_4k::<HostWalker, _>(va, pa1, 0, &mut alloc) };
+        assert_eq!(r1, Ok(()));
+
+        // Direct second install with a different PA → AlreadyMapped.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let r2 = unsafe { map_device_4k::<HostWalker, _>(va, pa2, 0, &mut alloc) };
+        assert_eq!(r2, Err(WalkErr::AlreadyMapped));
+
+        // Unmap, then remap — the production fix path. New PA wins.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        unsafe {
+            let cleared = unmap_at_va::<HostWalker>(va, 0);
+            assert!(cleared.is_some(), "unmap reports the cleared leaf");
+        }
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let r3 = unsafe { map_device_4k::<HostWalker, _>(va, pa2, 0, &mut alloc) };
+        assert_eq!(r3, Ok(()), "remap after unmap succeeds with new PA");
+
+        // Verify the leaf now points at pa2.
+        // SAFETY: hosted test under SERIAL mutex; FAKE_ROOT static is single-threaded for the test duration.
+        let resolved = unsafe { translate_4k::<HostWalker>(va, 0) };
+        let (rpa, _) = resolved.expect("leaf present");
+        assert_eq!(rpa & HostWalker::PHYS_MASK, pa2 & HostWalker::PHYS_MASK);
     }
 
     #[test]
