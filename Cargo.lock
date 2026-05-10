@@ -834,6 +834,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "sync",
+ "syscall",
  "vfs",
  "vmm",
 ]

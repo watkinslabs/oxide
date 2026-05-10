@@ -632,7 +632,7 @@ pub fn kernel_sys_readlink(args: &SyscallArgs) -> i64 {
     let path_s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let target: alloc::vec::Vec<u8> = match crate::syscalls::proclink::resolve_proc_link(path_s) {
+    let target: alloc::vec::Vec<u8> = match sched::syscalls::proclink::resolve_proc_link(path_s) {
         Some(t) => t,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
