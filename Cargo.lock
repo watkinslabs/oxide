@@ -58,6 +58,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot-info"
+version = "0.1.0"
+
+[[package]]
 name = "boot-x86_64"
 version = "0.1.0"
 dependencies = [
@@ -368,6 +372,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "block",
+ "boot-info",
  "drm",
  "drv",
  "drv-virtio-gpu",
@@ -387,6 +392,7 @@ dependencies = [
  "nscg",
  "pci",
  "pmm",
+ "pmm-setup",
  "power",
  "procfs",
  "sched",
@@ -550,6 +556,18 @@ dependencies = [
  "klog",
  "proptest",
  "sync",
+]
+
+[[package]]
+name = "pmm-setup"
+version = "0.1.0"
+dependencies = [
+ "boot-info",
+ "hal",
+ "klog",
+ "pmm",
+ "sync",
+ "vmm",
 ]
 
 [[package]]
