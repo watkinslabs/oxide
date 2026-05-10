@@ -69,7 +69,8 @@ pub fn init_modern(state: ModernNetState) {
     if MODERN_PRESENT.load(Ordering::Acquire) { return; }
     *MODERN_DEV.lock() = Some(state);
     MODERN_PRESENT.store(true, Ordering::Release);
-    debug_boot! {
+    #[cfg(feature = "debug-boot")]
+    {
         klog::write_raw(b"[INFO]  virtio-net-modern ");
         klog::write_dec_u64(state.bus as u64);
         klog::write_raw(b":");
