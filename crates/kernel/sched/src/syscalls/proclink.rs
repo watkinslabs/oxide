@@ -1,4 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
 // `/proc/<pid>/{exe,cwd,root,fd/<n>,ns/<type>}` symlink resolver.
 // Split out of `syscall_glue_fs.rs` to keep that file under the
 // 1000-line cap. Used by `kernel_sys_readlink` for proc-link paths.
@@ -17,7 +16,7 @@ pub fn resolve_proc_link(path: &str) -> Option<Vec<u8>> {
     let tid_opt: Option<u32> = if head == "self" { None } else { head.parse().ok() };
     if head != "self" && tid_opt.is_none() { return None; }
     if let Some(tid) = tid_opt {
-        if sched::live::registry::lookup(tid).is_none() { return None; }
+        if crate::live::registry::lookup(tid).is_none() { return None; }
     }
     match leaf {
         "exe"  => Some(task_exe_path(tid_opt)),
@@ -31,8 +30,8 @@ pub fn resolve_proc_link(path: &str) -> Option<Vec<u8>> {
 
 fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
     let task = match tid_opt {
-        Some(tid) => sched::live::registry::lookup(tid),
-        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid)),
+        Some(tid) => crate::live::registry::lookup(tid),
+        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
         // Linux: /proc/<pid>/exe is rooted on mm_struct::exe_file
@@ -62,8 +61,8 @@ fn task_exe_path(tid_opt: Option<u32>) -> Vec<u8> {
 
 fn task_cwd_path(tid_opt: Option<u32>) -> Vec<u8> {
     let task = match tid_opt {
-        Some(tid) => sched::live::registry::lookup(tid),
-        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid)),
+        Some(tid) => crate::live::registry::lookup(tid),
+        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
         // SAFETY: cwd slot single-mutator per `13§5`.
@@ -75,8 +74,8 @@ fn task_cwd_path(tid_opt: Option<u32>) -> Vec<u8> {
 
 fn task_root_path(tid_opt: Option<u32>) -> Vec<u8> {
     let task = match tid_opt {
-        Some(tid) => sched::live::registry::lookup(tid),
-        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid)),
+        Some(tid) => crate::live::registry::lookup(tid),
+        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
     };
     if let Some(t) = task {
         // SAFETY: task.root single-mutator per `13§5`.
@@ -89,8 +88,8 @@ fn task_root_path(tid_opt: Option<u32>) -> Vec<u8> {
 fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
     use core::sync::atomic::Ordering;
     let task = match tid_opt {
-        Some(tid) => sched::live::registry::lookup(tid)?,
-        None      => sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))?,
+        Some(tid) => crate::live::registry::lookup(tid)?,
+        None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid))?,
     };
     let id = match leaf {
         "ipc"    => task.ipc_ns.load(Ordering::Acquire),
@@ -123,8 +122,8 @@ fn task_ns_link(tid_opt: Option<u32>, leaf: &str) -> Option<Vec<u8>> {
 fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<Vec<u8>> {
     let fd: i32 = fd_str.parse().ok()?;
     let task = match tid_opt {
-        Some(tid) => sched::live::registry::lookup(tid)?,
-        None      => sched::live::registry::lookup(sched::live::current()?.tid)?,
+        Some(tid) => crate::live::registry::lookup(tid)?,
+        None      => crate::live::registry::lookup(crate::live::current()?.tid)?,
     };
     // SAFETY: fd_table slot single-mutator per `13§5`.
     let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };

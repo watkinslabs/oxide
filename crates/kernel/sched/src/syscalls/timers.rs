@@ -1,4 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
 // POSIX timers (`timer_create` family). Real impl backed by a
 // fixed-size per-task slot array on `Task::posix_timers`. Firing
 // happens in the syscall-return tail of the owning task.
@@ -17,7 +16,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use sched::PosixTimer;
+use crate::PosixTimer;
 
 const SIGEV_SIGNAL:    i32 = 0;
 const SIGEV_NONE:      i32 = 1;
@@ -111,7 +110,7 @@ pub fn kernel_sys_timer_create(args: &SyscallArgs) -> i64 {
             value = val;
         }
     }
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole writer of posix_timers per `13§5`.
@@ -146,7 +145,7 @@ pub fn kernel_sys_timer_settime(args: &SyscallArgs) -> i64 {
     }
     let interval_ns = match read_timespec(new_p)        { Ok(v) => v, Err(rv) => return rv };
     let value_ns    = match read_timespec(new_p + 16)   { Ok(v) => v, Err(rv) => return rv };
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole writer of posix_timers per `13§5`.
@@ -181,7 +180,7 @@ pub fn kernel_sys_timer_gettime(args: &SyscallArgs) -> i64 {
     if !(0..PosixTimer::SLOTS as i32).contains(&id) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader/writer of posix_timers per `13§5`.
@@ -203,7 +202,7 @@ pub fn kernel_sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
     if !(0..PosixTimer::SLOTS as i32).contains(&id) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole writer of posix_timers per `13§5`.
@@ -222,7 +221,7 @@ pub fn kernel_sys_timer_delete(args: &SyscallArgs) -> i64 {
     if !(0..PosixTimer::SLOTS as i32).contains(&id) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole writer of posix_timers per `13§5`.
@@ -254,7 +253,7 @@ pub fn timer_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
 /// # C: O(SLOTS)
 pub fn fire_due_timers() {
     use core::sync::atomic::Ordering;
-    let cur = match sched::live::current() { Some(c) => c, None => return };
+    let cur = match crate::live::current() { Some(c) => c, None => return };
     let now = now_ns();
     // SAFETY: running task on this CPU; preempt-off; sole writer of posix_timers per `13§5`.
     let slots = unsafe { &mut *cur.posix_timers.get() };

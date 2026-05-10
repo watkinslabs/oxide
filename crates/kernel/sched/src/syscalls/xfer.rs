@@ -1,4 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
 // Bulk fd→fd byte transfer syscalls per `15§5`. Split from
 // syscall_glue_fs.rs to keep that file under the 1000-line cap.
 
@@ -16,7 +15,7 @@ pub fn kernel_sys_sendfile(args: &SyscallArgs) -> i64 {
     let in_fd  = args.a1 as i32;
     let _off   = args.a2;
     let count  = args.a3 as usize;
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
@@ -62,7 +61,7 @@ pub fn kernel_sys_splice(args: &SyscallArgs) -> i64 {
     let out_off = args.a3;
     let len     = args.a4 as usize;
     let _flags  = args.a5;
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off.
@@ -133,7 +132,7 @@ pub fn kernel_sys_vmsplice(args: &SyscallArgs) -> i64 {
     let nr     = args.a2;
     let _flags = args.a3;
     if nr > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off.
@@ -189,7 +188,7 @@ pub fn kernel_sys_copy_file_range(args: &SyscallArgs) -> i64 {
     let out_off = args.a3;
     let len     = args.a4 as usize;
     let _flags  = args.a5;
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off.
