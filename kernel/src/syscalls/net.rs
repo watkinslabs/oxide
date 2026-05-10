@@ -438,30 +438,26 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
 
 /// `listen(fd, backlog)` slot 50.
 /// # C: O(1)
+/// `listen(fd, backlog)` slot 50. Tier-3 shim per `docs/53§4`.
+/// # C: O(1)
 pub fn sys_listen(args: &SyscallArgs) -> i64 {
-    let fd = args.a0;
+    let fd      = args.a0;
+    let backlog = args.a1 as i32;
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    // AF_UNIX path-bound sockets are listeners after bind(2);
-    // listen(2) is a no-op (no kernel state-change required).
-    if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return 0; }
-    let port = match *sock.local_port.lock() {
-        Some(p) => p,
-        None    => return -(Errno::Einval.as_i32() as i64),
-    };
-    let ip = *sock.local_ip.lock();
-    match net::sock::stack().tcp_listen(ip, port) {
-        Ok(le) => {
-            *sock.kind.lock() = SockKind::TcpListener(le);
-            0
-        }
-        Err(e) => errno_from_neterr(e),
+    match net::sock::listen(&sock, backlog) {
+        Ok(())  => 0,
+        Err(e)  => errno_from_neterr(e),
     }
 }
 
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
 /// Non-blocking: returns Eagain when no connection is ready.
+/// # C: O(1)
+/// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
+/// Non-blocking: returns Eagain when no connection is ready.
+/// Tier-3 shim per `docs/53§4`.
 /// # C: O(1)
 pub fn sys_accept(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
@@ -469,61 +465,19 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    drain_loopback();
-    // AF_UNIX listener: pop one queued UnixPair and wrap as A end.
-    if let SockKind::UnixListener(l) = &*sock.kind.lock() {
-        let l = l.clone();
-        let pair = match l.accept_q.lock().pop_front() {
-            Some(p) => p, None => return -(Errno::Eagain.as_i32() as i64),
-        };
-        let new_sock = InetSocket::new_tcp();
-        *new_sock.kind.lock() = SockKind::Unix(pair, net::UnixEnd::A);
-        let inode: vfs::InodeRef = Arc::new(new_sock) as _;
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        // SAFETY: running task; sole reader of fd_table slot.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
-        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
-        return match fdt.alloc(f) { Ok(fd) => fd as i64, Err(e) => -(e as i64) };
+    let accepted = match net::sock::accept(&sock) {
+        Ok(a)  => a,
+        Err(e) => return errno_from_neterr(e),
+    };
+    if let (Some((ip, port)), true) = (accepted.peer, addr_p != 0) {
+        write_sockaddr_for_socket(addr_p, &accepted.new_sock, ip, port);
     }
-    let listener_arc = match &*sock.kind.lock() {
-        SockKind::TcpListener(l) => l.clone(),
-        _ => return -(Errno::Einval.as_i32() as i64),
-    };
-    let entry = match net::sock::stack().tcp_accept(&listener_arc) {
-        Some(e) => e,
-        None    => return -(Errno::Eagain.as_i32() as i64),
-    };
-    let (peer_ip, peer_port) = {
-        let c = entry.conn.lock();
-        (c.remote.ip, c.remote.port)
-    };
-    let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = if listener_fam == net::sock::AF_INET6 {
-        InetSocket::new_tcp6()
-    } else {
-        InetSocket::new_tcp()
-    };
-    *new_sock.kind.lock() = SockKind::TcpConn(entry);
-    *new_sock.peer.lock() = Some((peer_ip, peer_port));
-    if addr_p != 0 {
-        // Inherit family from the listening socket so accept() returns
-        // the right sockaddr shape on AF_INET6 listeners.
-        write_sockaddr_for_socket(addr_p, &new_sock, peer_ip, peer_port);
-    }
-    let inode: vfs::InodeRef = Arc::new(new_sock) as _;
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let label = if accepted.peer.is_some() { "[socket]" } else { "[unix]" };
+    let inode: vfs::InodeRef = accepted.new_sock as _;
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let dentry = vfs::Dentry::new(None, alloc::string::String::from("[socket]"), Arc::clone(&inode));
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from(label), Arc::clone(&inode));
     let file = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
     match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
 }
