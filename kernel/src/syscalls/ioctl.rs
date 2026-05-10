@@ -38,10 +38,10 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
     // userfaultfd / perf ioctls: route through the dedicated handlers
     // before the CharDev gate (those inodes are tagged Regular).
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5546_4644_0000_0000 {
-        return userfaultfd::handle_uffd_ioctl(file.inode(), req, arg);
+        return ::fs::userfaultfd::handle_uffd_ioctl(file.inode(), req, arg);
     }
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5045_5246_0000_0000 {
-        return perf::handle_perf_ioctl(file.inode(), req, arg);
+        return ::fs::perf::handle_perf_ioctl(file.inode(), req, arg);
     }
     // evdev ioctls.
     if let Some(rv) = drv_virtio_input::devfs::handle_evdev_ioctl(file.inode(), req, arg) {

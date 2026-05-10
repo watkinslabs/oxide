@@ -17,10 +17,7 @@
 
 
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
@@ -151,7 +148,7 @@ fn vfs_close_notify(inode: &InodeRef, was_writable: bool) {
     // matching half-side count.
     if inode.file_type() == vfs::FileType::Fifo {
         if let Some(any) = inode.as_any() {
-            if let Some(p) = any.downcast_ref::<pipe::PipeInode>() {
+            if let Some(p) = any.downcast_ref::<crate::pipe::PipeInode>() {
                 use core::sync::atomic::Ordering;
                 if was_writable {
                     let _ = p.writers.fetch_update(
