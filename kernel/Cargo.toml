@@ -41,6 +41,7 @@ security = { path = "../crates/kernel/security" }
 drv             = { path = "../crates/drivers/drv" }
 drv-virtio-gpu    = { path = "../crates/drivers/drv-virtio-gpu" }
 drv-virtio-input  = { path = "../crates/drivers/drv-virtio-input" }
+drv-virtio-net    = { path = "../crates/drivers/drv-virtio-net" }
 drm               = { path = "../crates/drivers/drm" }
 fbdev             = { path = "../crates/drivers/fbdev" }
 fbcon             = { path = "../crates/drivers/fbcon" }
