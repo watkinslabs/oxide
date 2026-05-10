@@ -13,7 +13,7 @@ block   = { path = "../crates/kernel/block" }
 boot-info = { path = "../crates/shared/boot-info" }
 cpu       = { path = "../crates/kernel/cpu" }
 devfs     = { path = "../crates/kernel/devfs" }
-dev-misc  = { path = "../crates/kernel/dev-misc", default-features = false }
+dev-misc  = { path = "../crates/kernel/dev/misc", default-features = false }
 keyring   = { path = "../crates/kernel/keyring" }
 xattr     = { path = "../crates/kernel/xattr" }
 inotify   = { path = "../crates/kernel/inotify" }
@@ -22,16 +22,17 @@ ptrace    = { path = "../crates/kernel/ptrace" }
 perf      = { path = "../crates/kernel/perf" }
 tmpfs     = { path = "../crates/kernel/tmpfs", default-features = false }
 coredump  = { path = "../crates/kernel/coredump" }
-dev-net   = { path = "../crates/kernel/dev-net" }
-dev-ext4  = { path = "../crates/kernel/dev-ext4" }
+dev-net   = { path = "../crates/kernel/dev/net" }
+dev-ext4  = { path = "../crates/kernel/dev/ext4" }
 elf-load  = { path = "../crates/kernel/elf-load" }
 msi       = { path = "../crates/kernel/msi" }
-dev-modules = { path = "../crates/kernel/dev-modules" }
-dev-fbdev = { path = "../crates/kernel/dev-fbdev" }
-dev-input = { path = "../crates/kernel/dev-input" }
-dev-virtio-gpu-modern = { path = "../crates/kernel/dev-virtio-gpu-modern", default-features = false }
-syscall-glue-numa = { path = "../crates/kernel/syscall-glue-numa" }
-syscall-glue-dmesg = { path = "../crates/kernel/syscall-glue-dmesg" }
+dev-modules = { path = "../crates/kernel/dev/modules" }
+dev-fbdev = { path = "../crates/kernel/dev/fbdev" }
+dev-input = { path = "../crates/kernel/dev/input" }
+dev-virtio-gpu-modern = { path = "../crates/kernel/dev/virtio-gpu-modern", default-features = false }
+syscall-glue-numa = { path = "../crates/kernel/syscall-glue/numa" }
+syscall-glue-unix-cmsg = { path = "../crates/kernel/syscall-glue/unix-cmsg" }
+syscall-glue-dmesg = { path = "../crates/kernel/syscall-glue/dmesg" }
 procfs-meminfo = { path = "../crates/kernel/procfs-meminfo" }
 ipc       = { path = "../crates/kernel/ipc" }
 pipe      = { path = "../crates/kernel/pipe", default-features = false }
