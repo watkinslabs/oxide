@@ -770,55 +770,32 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
 
 /// `recvfrom(fd, buf, len, flags, src, src_len)` slot 45.
 /// # C: O(1)
+/// `recvfrom(fd, buf, len, flags, src, srclen)` slot 45. Tier-3
+/// shim per `docs/53§4`.
+/// # C: O(payload bytes)
 pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
-    let fd       = args.a0;
-    let bufp     = args.a1;
-    let len      = args.a2 as usize;
-    let src_p    = args.a4;
-    let sock     = match socket_from_fd(fd) {
+    let fd     = args.a0;
+    let bufp   = args.a1;
+    let len    = args.a2 as usize;
+    let src_p  = args.a4;
+    let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // F121: AF_UNIX SOCK_DGRAM — pop one message from the per-socket
-    // queue. Source address (sockaddr_un) is left empty since
-    // sendto's path was the receiver's bound path, not the sender's.
-    if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-        let q = q.clone();
-        let msg = match q.pop() {
-            Some(m) => m, None => return -(Errno::Eagain.as_i32() as i64),
-        };
-        let take = core::cmp::min(len, msg.payload.len());
-        // SAFETY: bufp+take validated < USER_VA_END; user page mapped under caller's AS.
-        unsafe {
-            core::ptr::copy_nonoverlapping(msg.payload.as_ptr(), bufp as *mut u8, take);
-        }
-        return take as i64;
-    }
-    // TCP path: drain bytes from the conn's recv_buf.
-    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        let entry = entry.clone();
-        drain_loopback();
-        let payload = net::sock::stack().tcp_recv(&entry, len);
-        if payload.is_empty() { return -(Errno::Eagain.as_i32() as i64); }
-        let take = payload.len();
-        // SAFETY: ptr+take validated < USER_VA_END; user page mapped.
-        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), bufp as *mut u8, take); }
-        if src_p != 0 {
-            let (peer_ip, peer_port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-            write_sockaddr_for_socket(src_p, &sock, peer_ip, peer_port);
-        }
-        return take as i64;
-    }
-    let (src_ip, src_port, payload) = match socket_recv(&sock) {
-        Some(t) => t, None => return -(Errno::Eagain.as_i32() as i64),
+    let rcv = match net::sock::recvfrom(&sock, len) {
+        Ok(r)  => r,
+        Err(e) => return errno_from_neterr(e),
     };
-    let take = core::cmp::min(len, payload.len());
-    // SAFETY: ptr+take validated < USER_VA_END; user page mapped under caller's AS.
-    unsafe {
-        core::ptr::copy_nonoverlapping(payload.as_ptr(), bufp as *mut u8, take);
-    }
+    let take = rcv.payload.len();
+    // SAFETY: bufp+take validated < USER_VA_END; user page mapped under caller's AS.
+    unsafe { core::ptr::copy_nonoverlapping(rcv.payload.as_ptr(), bufp as *mut u8, take); }
     if src_p != 0 {
-        write_sockaddr_for_socket(src_p, &sock, src_ip, src_port);
+        if let Some((ip, port)) = rcv.peer {
+            write_sockaddr_for_socket(src_p, &sock, ip, port);
+        } else if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
+            let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
+            write_sockaddr_for_socket(src_p, &sock, ip, port);
+        }
     }
     take as i64
 }
