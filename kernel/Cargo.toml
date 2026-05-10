@@ -16,6 +16,10 @@ devfs     = { path = "../crates/devfs" }
 dev-misc  = { path = "../crates/dev-misc", default-features = false }
 keyring   = { path = "../crates/keyring" }
 xattr     = { path = "../crates/xattr" }
+inotify   = { path = "../crates/inotify" }
+timerfd   = { path = "../crates/timerfd" }
+ptrace    = { path = "../crates/ptrace" }
+perf      = { path = "../crates/perf" }
 ipc       = { path = "../crates/ipc" }
 pipe      = { path = "../crates/pipe", default-features = false }
 pmm-setup = { path = "../crates/pmm-setup" }
