@@ -55,7 +55,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         // Box::leak (B23-followup: the blob only lives for the
         // duration of `load_static_blob`; segment bytes get copied
         // into AS-owned staging via `stash_bytes` per B22).
-        if let Some(v) = dev_ext4::read_file(path) {
+        if let Some(v) = ext4::rootfs::read_file(path) {
             ext4_blob = Some(v);
             // SAFETY: ext4_blob is rooted in this stack frame and
             // outlives the load_static_blob call below.
@@ -300,7 +300,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
 }
 
 /// aarch64 sys_execve — mirror of the x86 path. Differences vs x86:
-///   1. Path lookup goes through `dev_ext4::read_file` (the ext4 root
+///   1. Path lookup goes through `ext4::rootfs::read_file` (the ext4 root
 ///      mounted at boot) instead of x86's `elf_smoke` blob registry.
 ///   2. PT root allocator is `mmu_ops::new_user_l0` (aarch64 4-level
 ///      48-bit VA layout) instead of `new_user_pml4`.
@@ -342,7 +342,7 @@ pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
         path_len = (i + 1) as usize;
     }
     let path = &path_buf[..path_len];
-    let mut blob_vec = match dev_ext4::read_file(path) {
+    let mut blob_vec = match ext4::rootfs::read_file(path) {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
@@ -658,7 +658,7 @@ pub(crate) fn resolve_shebang_chain(
         *path_buf = [0u8; 64];
         path_buf[..interp.len()].copy_from_slice(&interp);
         *path_len = interp.len();
-        match dev_ext4::read_file(&interp) {
+        match ext4::rootfs::read_file(&interp) {
             Some(v) => *blob_owned = v,
             None    => return Err(Errno::Enoent),
         }

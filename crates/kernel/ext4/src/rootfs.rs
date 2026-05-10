@@ -3,7 +3,7 @@
 // `kernel/blobs/rootfs.img` is a real `mke2fs`-built ext4 image
 // (1 MiB, no_journal, default features = extents on). We
 // `include_bytes!` it, wrap in a read-only static-backed
-// `BlockDevice`, and mount via `ext4::Mount`. Once the boot
+// `BlockDevice`, and mount via `crate::Mount`. Once the boot
 // path calls `init()`, `lookup_path("/<name>")` and
 // `read_file("/<name>")` resolve through the real driver.
 //
@@ -11,9 +11,7 @@
 // embedded image with a bootloader-loaded one without touching
 // the public surface here.
 
-#![no_std]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -21,18 +19,18 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use block::{BlockDevice, BlockOp, BlockRequest, PageCache};
 use block::types::{BlockError, InodeId, KResult, PAGE_BYTES};
-use ext4::Mount;
+use crate::Mount;
 
 /// Embedded ext4 image. Per-arch rootfs blob: aarch64 init/sh/etc.
 /// are aarch64 ELFs; x86_64 are x86_64 ELFs. The two can't share
 /// because load_static_blob rejects on ELF e_machine mismatch.
 /// xtask rootfs writes per-arch images at kernel/blobs/rootfs-<arch>.img.
 #[cfg(target_arch = "x86_64")]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs-x86_64.img");
+const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs-x86_64.img");
 #[cfg(target_arch = "aarch64")]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs-aarch64.img");
+const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs-aarch64.img");
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs.img");
+const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs.img");
 
 /// Backing block size for the in-kernel virtual disk.
 const BLOCK_SIZE: u32 = 512;
@@ -142,7 +140,7 @@ pub fn lookup_path(path: &[u8]) -> Option<u32> {
 }
 
 /// Iterate the directory entries of `path`, calling `f(name,
-/// file_type)` for each. `file_type` is one of `ext4::dir::DT_*`.
+/// file_type)` for each. `file_type` is one of `crate::dir::DT_*`.
 /// Skips "." and ".." silently — readdir-overlay callers want
 /// just the leaf names. Returns `Some(())` on success, `None` if
 /// the path is not a mounted ext4 directory. v1 reads only the
@@ -158,7 +156,7 @@ pub fn read_dir<F: FnMut(&[u8], u8)>(path: &[u8], mut f: F) -> Option<()> {
     let inode = mount.read_inode(ino).ok()?;
     if !inode.is_dir() { return None; }
     let blk = mount.read_file_block(&inode, 0).ok()?;
-    let _ = ext4::iter_active(&blk, |e| {
+    let _ = crate::iter_active(&blk, |e| {
         if e.name == b"." || e.name == b".." { return true; }
         f(e.name, e.file_type);
         true
@@ -201,7 +199,7 @@ pub fn read_file(path: &[u8]) -> Option<Vec<u8>> {
             for i in 0..blocks_per_page {
                 let blk = match mount.read_file_block(&inode, first_blk + i) {
                     Ok(b)  => b,
-                    Err(ext4::MountError::NotFound) => alloc::vec![0u8; bs as usize],
+                    Err(crate::MountError::NotFound) => alloc::vec![0u8; bs as usize],
                     Err(_) => return Err(BlockError::Eio),
                 };
                 buf.extend_from_slice(&blk);
@@ -325,7 +323,7 @@ fn read_full_file_by_ino(ino: u32) -> Option<Vec<u8>> {
     for k in 0..n_blocks {
         let blk = match mount.read_file_block(&inode, k as u32) {
             Ok(b)  => b,
-            Err(ext4::MountError::NotFound) => alloc::vec![0u8; bs],
+            Err(crate::MountError::NotFound) => alloc::vec![0u8; bs],
             Err(_) => return None,
         };
         let take = core::cmp::min(bs, total - out.len());
@@ -518,7 +516,7 @@ pub fn link_at(target_path: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError
     if inode.is_dir() { return Err(vfs::VfsError::Eperm); }  // no dir hardlinks
     let (parent_ino, name_owned) = parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
     let name: alloc::vec::Vec<u8> = name_owned.to_vec();
-    let ftype = if inode.is_link() { ext4::DT_LNK } else { ext4::DT_REG };
+    let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
     mount.run_journaled(|m| {
         m.dir_link(parent_ino, &name, target, ftype)?;
         m.adjust_nlink(target, 1)?;
@@ -538,7 +536,7 @@ pub fn rename_at(from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
     let from_name: alloc::vec::Vec<u8> = from_name_owned.to_vec();
     let (to_p, to_name_owned)     = parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
     let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
-    let ftype = if inode.is_dir() { ext4::DT_DIR } else if inode.is_link() { ext4::DT_LNK } else { ext4::DT_REG };
+    let ftype = if inode.is_dir() { crate::DT_DIR } else if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
     let dest_exists = mount.lookup_path(to).is_ok();
     // Run the entire rename inside one journal transaction so
     // dest-unlink (if any) + dir_link + source-unlink commit

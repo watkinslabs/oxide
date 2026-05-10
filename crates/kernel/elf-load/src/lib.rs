@@ -98,7 +98,7 @@ impl LoadedImage {
 /// # C: O(file size) — one ext4 read.
 #[cfg(target_os = "oxide-kernel")]
 fn read_interp_blob(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
-    dev_ext4::read_file(path)
+    ext4::rootfs::read_file(path)
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
