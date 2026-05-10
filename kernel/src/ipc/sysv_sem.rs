@@ -16,7 +16,6 @@
 //     is unbounded; real timeout integration follows in a sched-
 //     timer pass).
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use alloc::sync::Arc;
