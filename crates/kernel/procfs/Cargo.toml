@@ -11,6 +11,7 @@ path = "src/lib.rs"
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
+pmm-setup = { path = "../mm-pmm-setup" }
 
 [features]
 default = []
