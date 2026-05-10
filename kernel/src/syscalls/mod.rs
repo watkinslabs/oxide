@@ -447,7 +447,7 @@ fn ptrace_syscall_stop_if_armed() {
     cur.sigpending.fetch_or(1u64 << 4, Ordering::Release);
     // SAFETY: process ctx; runqueue installed; preempt-off; immediate
     // self-park via stop_until_cont matches the SIGSTOP path.
-    unsafe { crate::sched_stop::stop_until_cont(); }
+    unsafe { sched::live::stop::stop_until_cont(); }
 }
 
 /// Validate that a user buffer `[ptr, ptr + len)` lies entirely
@@ -955,7 +955,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP
         // 20, TTIN 21, TTOU 22) honour a user handler.
         if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
-            crate::sched_stop::stop_until_cont();
+            sched::live::stop::stop_until_cont();
             return rv as u64;
         }
         if p.sig == 18 {
