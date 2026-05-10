@@ -32,7 +32,6 @@ mod debug_macros;
 pub use firmware::acpi;
 #[cfg(target_os = "oxide-kernel")]
 pub use nscg::proc_ns as dev_proc_ns;
-pub mod smp;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod smp_x86;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
@@ -195,7 +194,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // per-CPU page (B14).
         if let Some((id, _flags)) = cpu::get(0) {
             // SAFETY: kernel_main runs single-CPU pre-init per fn contract; sole writer for BOOT_CPU_ID before any AP observes it.
-            unsafe { crate::smp::set_boot_cpu_id(id); }
+            unsafe { cpu::smp::set_boot_cpu_id(id); }
         }
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
@@ -473,14 +472,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // Wait up to ~100ms for APs to flip online.
             let target = info.smp_count as u32;
             let mut spins = 0u32;
-            while crate::smp::online_count() < target && spins < 1_000_000 {
+            while cpu::smp::online_count() < target && spins < 1_000_000 {
                 core::hint::spin_loop();
                 spins += 1;
             }
             // SAFETY: BSP holds boot context; LAPIC enabled; cpu_topology populated by ACPI walk.
             unsafe {
                 let n = cpu::count() as usize;
-                let bsp = crate::smp::boot_cpu_id();
+                let bsp = cpu::smp::boot_cpu_id();
                 for i in 0..n {
                     if let Some((id, _)) = cpu::get(i) {
                         if id != bsp {
@@ -494,7 +493,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             debug_boot! {
                 use core::sync::atomic::Ordering;
                 klog::write_raw(b"[INFO]  smp: ipi_smoke: online=");
-                klog::write_dec_u64(crate::smp::online_count() as u64);
+                klog::write_dec_u64(cpu::smp::online_count() as u64);
                 klog::write_raw(b" resched_ipis_received=");
                 klog::write_dec_u64(arch_irq::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
                 klog::write_raw(b"\n");
