@@ -12,3 +12,6 @@ hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
 sync    = { path = "../../shared/sync" }
 drm     = { path = "../../drivers/drm" }
+devfs   = { path = "../../kernel/devfs" }
+syscall = { path = "../../kernel/syscall" }
+vfs     = { path = "../../kernel/vfs" }
