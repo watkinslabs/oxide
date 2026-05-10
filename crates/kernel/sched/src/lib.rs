@@ -110,5 +110,12 @@ mod stub_tests {
 #[cfg(target_os = "oxide-kernel")]
 pub mod live;
 
-#[cfg(target_os = "oxide-kernel")]
-pub mod syscalls;
+#[cfg(target_os = "oxide-kernel")] pub mod compat;
+#[cfg(target_os = "oxide-kernel")] pub mod cred;
+#[cfg(target_os = "oxide-kernel")] pub mod falloc;
+#[cfg(target_os = "oxide-kernel")] pub mod prctl;
+#[cfg(target_os = "oxide-kernel")] pub mod proclink;
+#[cfg(target_os = "oxide-kernel")] pub mod rseq;
+#[cfg(target_os = "oxide-kernel")] pub mod timers;
+#[cfg(target_os = "oxide-kernel")] pub mod trace;
+#[cfg(target_os = "oxide-kernel")] pub mod xfer;
