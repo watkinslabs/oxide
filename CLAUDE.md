@@ -13,7 +13,8 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 3. **No deferrals — there is no v2**: every spec describes the full Linux-equivalent surface. No "rides v2.x", no "deferred to v2", no "subset" framing. If a feature is part of the Linux contract for that subsystem, it is in scope for v1 and gets implemented before the spec freezes. Old `v2-arch-plan.md` and `docs/v2/` directory are dead history.
 4. **AI-density** (`docs/08`): docs and code optimized for AI re-reading. Drop articles, prose intros, restated section titles, redundant doc-comments. Keep frozen invariants, ABI tables, test contracts, OQ at full fidelity.
 5. **MANIFEST authoritative** (`docs/MANIFEST.md`): every spec listed; status matches file's status line.
-6. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
+6. **Structure contract** (`docs/52`): new layout and ownership changes must follow `52` and update it in the same PR when boundaries change.
+7. **ARM/x86 lockstep** (HARD RULE — phase-exit gate): every phase ships on **both** arches, not just compiles. A phase is not done until `make qemu-arm` AND `make qemu-x86` both reach the same user-visible milestone. **Per-phase exit checklist (mandatory, every phase):**
    - PR-time CI green on both `build kernel x86_64` AND `build kernel aarch64`
    - `make qemu-x86` boots through the phase's smoke target (init prints, fork+exec works, etc.)
    - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
@@ -90,6 +91,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 | ELF loader, power, firmware, PCI, drivers | `31`–`35` |
 | Bootloader handoff, observability, error handling | `36`–`38` |
 | Build+image, CI, debug catalog, tests, acceptance | `39`–`43` |
+| Repo layout + crate ownership boundaries | `52` |
 | Boot flow Mermaid | `boot-flow.md` |
 
 When user asks about a concept: check this table → read that spec → answer. Don't guess; read.

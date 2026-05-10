@@ -1,69 +1,84 @@
-# State 2026-05-10 (session 4)
+# State 2026-05-10 (session 5)
 
 ## Branch
 
-`F156-mm-linux-conformance` — PR #920 against `main`. HEAD = `216fa7f`.
+`F156-mm-linux-conformance` — PR #920 against `main`. HEAD = `59a8265`.
 
-## What's working end-to-end (x86_64)
+## Now working end-to-end on BOTH arches
 
-- `cargo run -p xtask -- qemu --arch x86_64` → login → fork+exec cycles hit
-  COW remap on stack, **no kernel panic** (was `MmuOps::map walker failure`
-  pre-216fa7f).
-- 1034 hosted tests passing, 0 failing, spec-lint clean.
+- **x86_64**: login → `/bin/echo HELLO_RMAP` round-trips through fork
+  + COW + execve with rmap wired into PageMeta. No panics.
+- **aarch64**: init forks (sys_clone child_tid=4096), child reaches
+  post-fork execve cleanly. No SIGSEGVs in the cascade.
 
-## What's new in this session (216fa7f)
+1034 hosted tests passing, spec-lint clean.
 
-1. **COW remap fix** in `hal-x86_64::mmu_ops::map` and
-   `hal-aarch64::mmu_ops::map`: when the walker reports
-   `WalkErr::AlreadyMapped`, route through `unmap_at_va` then re-call
-   `map_at_level`. Linux-equivalent for the `wp_page_copy` shape that
-   installs a freshly-allocated private PA over a previously-shared one.
+## What landed (59a8265)
 
-2. **Full anon_vma + PageRmap subsystem** under `crates/vmm/`:
-   - `anon_vma.rs` — `AnonVma` family with `RmapTarget` chain,
-     attach/detach/walk/gc_dangling, `Weak<AddressSpace>` for
-     auto-pruning of dropped AS edges.
-   - `rmap.rs` — `PageRmap { mapping, page_index, mapcount }`
-     per-page descriptor + `rmap_walk_anon` per Linux
-     `mm/rmap.c::rmap_walk_anon`.
-   - `Vma::anon_vma: Option<Arc<AnonVma>>` auto-allocated for
-     `VmaBacking::Anonymous`; cloned through `clone` +
-     `clone_subrange` so fork + mprotect-split keep family membership.
-   - `AddressSpace::fork_cow_pages` attaches child mm-weak per
-     anon VMA (Linux `anon_vma_fork`).
-   - `sync::AnonVma` lock class at rank 25 (between PageTable=20 and
-     AddressSpace=30).
+### arm boot fix
 
-3. **Tests** — 18 new hosted tests covering: pt_walker
-   unmap-then-remap; anon_vma chain attach / walk / Weak filter / gc;
-   PageRmap set/replace/clear/mapcount; rmap_walk_anon target
-   enumeration; HostMmu-backed COW chain regression that pins the
-   F156 fix in place.
+`elf_smoke_arm::spawn_init_from_rootfs_arm` was using a 4 KiB stack
+at low VA 0x501000. busybox+musl's fork frame walked off the bottom
+into 0x500f70 → SIGSEGV. Fixed by:
+- new `INIT_STACK_LEN=0x10000`, `INIT_STACK_VA=USER_VA_END-0x20000`
+  (matches x86 layout)
+- pre-fault every stack page from the boot path so kernel-side
+  `build_user_stack` writes don't take EL1 same-EL data aborts
+  (boot fault handler routes to GLOBAL AS, not the per-task mm we
+  just activated)
 
-## Open / next session — arm64 fork-ABI segfault
+### kernel-side rmap wiring
 
-`cargo run -p xtask -- qemu --arch aarch64`: init reads inittab,
-forks (`sys_clone child_tid=4096`), child runs ~10 syscalls then
-SIGSEGVs at `far=0x500f70 elr=0x100f0e60` (busybox userspace code).
-Three children spawn and die the same way; eventually init itself
-segfaults. Fault address sits in busybox's stack region, suggesting
-the post-fork user register save/restore on arm doesn't faithfully
-hand the child's SVC-resume frame. Likely candidates:
-- `hal_aarch64::ContextAArch64::new_user_for_fork` register slots
-  off-by-one vs `oxide_irq_resume_user` asm
-- `clone_spawn_arch` SVC-frame snapshot missing x18/x29/x30 sources
-- TPIDR_EL0 / SP_EL0 wiring mismatch on first eret
+`vmm::AnonVma` is now reachable from a frame's `PageMeta.mapping`:
 
-First task next session: gdb-stub at child's first eret, dump x0..x30
-+ ELR + SP, compare against parent's saved frame at sys_clone entry.
+- **`pmm::PageMeta`** — gained `page_index: AtomicU32` + helpers.
+  Slot size 16→24 B (within the <1% RAM overhead budget).
+- **`pmm_setup`** — Linux-shape adapters that own the
+  `Arc<AnonVma>` ↔ raw-pointer dance:
+  - `set_anon_rmap_for_pa` (≡ `page_add_anon_rmap`)
+  - `clear_anon_rmap_for_pa` (pre-`__free_pages`)
+  - `anon_vma_for_pa` / `page_index_for_pa`
+  - `rmap_aware_dec_and_maybe_free` (clear-then-dec wrapper)
+- **`vmm::AddressSpace::handle_page_fault_cow_rmap`** — the
+  rmap-aware COW + demand-page handler. Calls
+  `set_rmap(pa, &Arc<AnonVma>, page_index)` on every successful
+  frame install (wp_page_copy split + Anonymous demand-page).
+  Plain `handle_page_fault_cow` is now a thin no-op-rmap wrapper
+  so hosted tests don't change.
+- **`kernel::user_as::do_handle`** routes through the rmap variant,
+  passing the kernel adapters. Every demand-faulted anonymous
+  page now records which AnonVma family it belongs to.
 
-## Other gaps (not this commit)
+`rmap_walk_anon` is now a real working API end-to-end: given a PA,
+walk the AnonVma chain to enumerate every (mm, va) pair the page
+COULD be at. Linux migration / KSM / OOM-pageout machinery has
+the foundation it needs; the consumers themselves are out of
+F156 scope.
 
-- File-backed rmap via `address_space->i_mmap` interval tree.
-- Hierarchical `anon_vma->root` (Linux trick to avoid walking
-  child-only pages).
-- Kernel `pmm_setup` injection of `PageRmap` into `PageMeta` so
-  `set_anon_vma` / `clear_anon_vma` get called from demand-fault
-  and munmap. Currently the data structures + tests live in vmm;
-  the kernel-side wiring is the next layer.
-- Swap, KSM, NUMA — out of v1 scope.
+## Open / next session
+
+1. **arm interactivity** — boot reaches login + child execve, but
+   keystrokes after the prompt aren't reaching busybox (looks like
+   an arm tty/getty wiring issue, not memory). Test with the
+   /bin/echo round-trip path that works on x86.
+2. **rmap consumers** — `rmap_walk_anon` exists; nothing yet
+   walks it. Candidates: page-out scaffolding, KSM probe, or the
+   `/proc/<pid>/smaps` "shared/private" accounting columns.
+3. **File-backed rmap** — `address_space->i_mmap` interval tree
+   for shared file mmaps. Currently every VMA with KernelBytes
+   backing has `anon_vma=None`; that's fine for v1 (we don't
+   share file pages across AS yet) but Linux uses a separate
+   data structure for file rmap.
+4. **Hierarchical anon_vma** — Linux's child anon_vma rooted at
+   parent. Saves walks on child-only pages. Pure optimization.
+5. **Swap, KSM, NUMA** — out of v1 scope.
+
+## First task next session
+
+```
+cargo run -p xtask -- qemu --arch aarch64
+# observe: arm reaches `oxide login:` and forks, but typing root
+# doesn't progress past the prompt. Likely a getty / tty / line-
+# discipline mismatch — child is alive (clones, opens, execs) but
+# stdin doesn't bind to the serial chardev.
+```
