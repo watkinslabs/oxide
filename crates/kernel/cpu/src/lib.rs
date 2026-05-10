@@ -10,6 +10,8 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Hard cap. Linux x86 default is 8192 (NR_CPUS); v1 picks 64
@@ -155,3 +157,6 @@ mod tests {
         assert_eq!(enabled_count(), 2);
     }
 }
+
+
+pub mod smp;

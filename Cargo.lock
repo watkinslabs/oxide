@@ -86,6 +86,9 @@ version = "0.1.0"
 [[package]]
 name = "cpu"
 version = "0.1.0"
+dependencies = [
+ "klog",
+]
 
 [[package]]
 name = "crc"
@@ -211,7 +214,6 @@ version = "0.1.0"
 dependencies = [
  "block",
  "crc",
- "jbd2",
  "sync",
  "vfs",
 ]
@@ -318,10 +320,10 @@ name = "hal-aarch64"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "cpu",
  "hal",
  "klog",
  "pci",
- "smp",
  "sync",
  "syscall",
 ]
@@ -408,14 +410,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "jbd2"
-version = "0.1.0"
-dependencies = [
- "block",
- "sync",
-]
-
-[[package]]
 name = "kalloc"
 version = "0.1.0"
 dependencies = [
@@ -457,7 +451,6 @@ dependencies = [
  "procfs",
  "sched",
  "security",
- "smp",
  "sync",
  "syscall",
  "tty",
@@ -874,14 +867,6 @@ dependencies = [
  "pmm",
  "proptest",
  "sync",
-]
-
-[[package]]
-name = "smp"
-version = "0.1.0"
-dependencies = [
- "cpu",
- "klog",
 ]
 
 [[package]]

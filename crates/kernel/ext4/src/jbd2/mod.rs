@@ -14,13 +14,10 @@
 // v1 scope: parse + replay. Transaction emit (write side) lives
 // alongside this crate's `Transaction` type for callers (Mount).
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
-extern crate alloc;
 
 pub mod block_header;
 pub use block_header::{BlockHeader, BlockType, JBD2_MAGIC};
