@@ -576,10 +576,10 @@ fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
     const VFS_CAP_FLAGS_EFFECTIVE: u32 = 0x01;
     // First probe the value length via getxattr-len (buf=0).
     let s = "security.capability";
-    let want = xattr::query_len(inode, s);
+    let want = ::fs::xattr::query_len(inode, s);
     if want < 12 { return; }
     let mut buf = alloc::vec![0u8; want.min(24)];
-    if !xattr::query_into(inode, s, &mut buf) { return; }
+    if !::fs::xattr::query_into(inode, s, &mut buf) { return; }
     if buf.len() < 12 { return; }
     let read_u32 = |off: usize| -> u32 {
         u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])

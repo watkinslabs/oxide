@@ -7,10 +7,7 @@
 // returns EWOULDBLOCK, same as Linux LOCK_NB. Real wait+wake rides
 // a follow-up once `inode_times`-style hooks land for sleep+wake.
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as TaskListClass};

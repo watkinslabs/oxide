@@ -194,17 +194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "epoll"
-version = "0.1.0"
-dependencies = [
- "hal",
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -277,16 +266,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "flock"
-version = "0.1.0"
-dependencies = [
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -297,6 +276,21 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "fs"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
+]
 
 [[package]]
 name = "getrandom"
@@ -399,19 +393,6 @@ name = "inflate"
 version = "0.1.0"
 
 [[package]]
-name = "inotify"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "hal",
- "pipe",
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "iouring"
 version = "0.1.0"
 dependencies = [
@@ -467,27 +448,22 @@ dependencies = [
  "drv-virtio-input",
  "elf",
  "elf-load",
- "epoll",
  "ext4",
  "fbcon",
  "fbdev",
  "firmware",
- "flock",
+ "fs",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
- "inotify",
  "ipc",
  "kalloc",
- "keyring",
  "klog",
  "modules",
  "msi",
  "net",
  "nscg",
  "pci",
- "perf",
- "pipe",
  "pmm",
  "pmm-setup",
  "power",
@@ -495,19 +471,15 @@ dependencies = [
  "ptrace",
  "sched",
  "security",
- "signalfd",
  "smp",
  "sync",
  "syscall",
- "timerfd",
  "tmpfs",
  "tty",
- "userfaultfd",
  "vfs",
  "virtio",
  "vmm",
  "vt",
- "xattr",
 ]
 
 [[package]]
@@ -523,19 +495,6 @@ version = "0.1.0"
 dependencies = [
  "boot-x86_64",
  "klog",
-]
-
-[[package]]
-name = "keyring"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "hal",
- "hal-aarch64",
- "hal-x86_64",
- "sched",
- "sync",
- "syscall",
 ]
 
 [[package]]
@@ -659,29 +618,6 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
-]
-
-[[package]]
-name = "perf"
-version = "0.1.0"
-dependencies = [
- "hal",
- "hal-aarch64",
- "hal-x86_64",
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
-name = "pipe"
-version = "0.1.0"
-dependencies = [
- "hal",
- "klog",
- "sync",
- "vfs",
 ]
 
 [[package]]
@@ -964,17 +900,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signalfd"
-version = "0.1.0"
-dependencies = [
- "hal",
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "slab"
 version = "0.1.0"
 dependencies = [
@@ -1041,19 +966,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "timerfd"
-version = "0.1.0"
-dependencies = [
- "hal",
- "hal-aarch64",
- "hal-x86_64",
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
-
-[[package]]
 name = "tmpfs"
 version = "0.1.0"
 dependencies = [
@@ -1089,17 +1001,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "userfaultfd"
-version = "0.1.0"
-dependencies = [
- "hal",
- "sched",
- "sync",
- "syscall",
- "vfs",
-]
 
 [[package]]
 name = "vfs"
@@ -1307,18 +1208,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
-]
-
-[[package]]
-name = "xattr"
-version = "0.1.0"
-dependencies = [
- "devfs",
- "hal",
- "sched",
- "sync",
- "syscall",
- "vfs",
 ]
 
 [[package]]

@@ -109,7 +109,7 @@ fn kernel_sys_pipe2(args: &SyscallArgs) -> i64 {
     let cur = match crate::sched::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    let inode = pipe::PipeInode::new();
+    let inode = ::fs::pipe::PipeInode::new();
     inode.writers.store(1, core::sync::atomic::Ordering::Release);
     inode.readers.store(1, core::sync::atomic::Ordering::Release);
     let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
@@ -605,8 +605,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_UNSHARE       => crate::syscalls::signal::kernel_sys_unshare(&args),
         syscall::nrs::NR_SETNS         => crate::syscalls::signal::kernel_sys_setns(&args),
         syscall::nrs::NR_PTRACE        => crate::syscalls::signal::kernel_sys_ptrace(&args),
-        syscall::nrs::NR_FANOTIFY_INIT => inotify::kernel_sys_inotify_init1(&args),
-        syscall::nrs::NR_FANOTIFY_MARK => inotify::kernel_sys_fanotify_mark(&args),
+        syscall::nrs::NR_FANOTIFY_INIT => ::fs::inotify::kernel_sys_inotify_init1(&args),
+        syscall::nrs::NR_FANOTIFY_MARK => ::fs::inotify::kernel_sys_fanotify_mark(&args),
         syscall::nrs::NR_SHMGET        => ipc::sysv_shm::kernel_sys_shmget(&args),
         syscall::nrs::NR_SHMAT         => ipc::sysv_shm::kernel_sys_shmat(&args),
         syscall::nrs::NR_SHMDT         => ipc::sysv_shm::kernel_sys_shmdt(&args),
@@ -646,8 +646,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // monotonic-ns sample since open; ioctl handles ENABLE/DISABLE/
         // RESET/REFRESH. PMU hardware sampling + ring-buffer mmap
         // ride follow-ups.
-        syscall::nrs::NR_PERF_EVENT_OPEN => perf::kernel_sys_perf_event_open(&args),
-        syscall::nrs::NR_USERFAULTFD => userfaultfd::kernel_sys_userfaultfd(&args),
+        syscall::nrs::NR_PERF_EVENT_OPEN => ::fs::perf::kernel_sys_perf_event_open(&args),
+        syscall::nrs::NR_USERFAULTFD => ::fs::userfaultfd::kernel_sys_userfaultfd(&args),
         // Modern mount API (P29a). fsopen/fsmount/fspick/open_tree return
         // memfd-backed fds tagged with the call's identity for future
         // mount-table integration; fsconfig/move_mount/mount_setattr admit
@@ -693,26 +693,26 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PIDFD_SEND_SIGNAL
                                  => crate::dev_pidfd::kernel_sys_pidfd_send_signal(&args),
         syscall::nrs::NR_INOTIFY_INIT | syscall::nrs::NR_INOTIFY_INIT1
-                                 => inotify::kernel_sys_inotify_init1(&args),
+                                 => ::fs::inotify::kernel_sys_inotify_init1(&args),
         syscall::nrs::NR_INOTIFY_ADD_WATCH
-                                 => inotify::kernel_sys_inotify_add_watch(&args),
+                                 => ::fs::inotify::kernel_sys_inotify_add_watch(&args),
         syscall::nrs::NR_INOTIFY_RM_WATCH
-                                 => inotify::kernel_sys_inotify_rm_watch(&args),
+                                 => ::fs::inotify::kernel_sys_inotify_rm_watch(&args),
         syscall::nrs::NR_SIGNALFD | syscall::nrs::NR_SIGNALFD4
-                                 => signalfd::kernel_sys_signalfd4(&args),
+                                 => ::fs::signalfd::kernel_sys_signalfd4(&args),
         syscall::nrs::NR_TIMERFD_CREATE
-                                 => timerfd::kernel_sys_timerfd_create(&args),
+                                 => ::fs::timerfd::kernel_sys_timerfd_create(&args),
         syscall::nrs::NR_TIMERFD_SETTIME
-                                 => timerfd::kernel_sys_timerfd_settime(&args),
+                                 => ::fs::timerfd::kernel_sys_timerfd_settime(&args),
         syscall::nrs::NR_TIMERFD_GETTIME
-                                 => timerfd::kernel_sys_timerfd_gettime(&args),
+                                 => ::fs::timerfd::kernel_sys_timerfd_gettime(&args),
         syscall::nrs::NR_EPOLL_CREATE | syscall::nrs::NR_EPOLL_CREATE1
-                                 => epoll::kernel_sys_epoll_create1(&args),
+                                 => ::fs::epoll::kernel_sys_epoll_create1(&args),
         syscall::nrs::NR_EPOLL_CTL
-                                 => epoll::kernel_sys_epoll_ctl(&args),
+                                 => ::fs::epoll::kernel_sys_epoll_ctl(&args),
         syscall::nrs::NR_EPOLL_WAIT | syscall::nrs::NR_EPOLL_PWAIT
             | syscall::nrs::NR_EPOLL_PWAIT2
-                                 => epoll::kernel_sys_epoll_wait(&args),
+                                 => ::fs::epoll::kernel_sys_epoll_wait(&args),
         syscall::nrs::NR_GETPGID   => crate::syscalls::proc::kernel_sys_getpgid(&args),
         syscall::nrs::NR_GETSID    => crate::syscalls::proc::kernel_sys_getsid(&args),
         syscall::nrs::NR_SETPGID       => crate::syscalls::proc::kernel_sys_setpgid(&args),
@@ -802,7 +802,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_RECVMSG => crate::syscalls::net::kernel_sys_recvmsg(&args),
         syscall::nrs::NR_SENDMMSG => crate::syscalls::net::kernel_sys_sendmmsg(&args),
         syscall::nrs::NR_RECVMMSG => crate::syscalls::net::kernel_sys_recvmmsg(&args),
-        syscall::nrs::NR_FLOCK         => flock::kernel_sys_flock(&args),
+        syscall::nrs::NR_FLOCK         => ::fs::flock::kernel_sys_flock(&args),
         syscall::nrs::NR_PERSONALITY   => crate::syscalls::prctl::kernel_sys_personality(&args),
         syscall::nrs::NR_CHROOT  => crate::syscalls::chroot::kernel_sys_chroot(&args),
         syscall::nrs::NR_MOUNT   => crate::syscalls::mount::kernel_sys_mount(&args),
@@ -896,8 +896,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                 rv
             } else if let Some(rv) = crate::syscalls::perms::perms_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = xattr::xattr_dispatch(nr, &args) { rv }
-            else if let Some(rv) = keyring::keyring_dispatch(nr, &args) {
+            } else if let Some(rv) = ::fs::xattr::xattr_dispatch(nr, &args) { rv }
+            else if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = crate::syscall_compat::try_compat(nr, &args) {
                 rv
