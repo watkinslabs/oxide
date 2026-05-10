@@ -1,0 +1,12 @@
+[package]
+name = "elf-load"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[dependencies]
+dev-ext4 = { path = "../dev-ext4" }
+elf      = { path = "../../shared/elf" }
+hal      = { path = "../../arch/hal" }
+vmm      = { path = "../vmm" }
