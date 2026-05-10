@@ -11,6 +11,8 @@ path = "src/lib.rs"
 [dependencies]
 block   = { path = "../crates/block" }
 boot-info = { path = "../crates/boot-info" }
+cpu       = { path = "../crates/cpu" }
+pipe      = { path = "../crates/pipe", default-features = false }
 pmm-setup = { path = "../crates/pmm-setup" }
 elf     = { path = "../crates/elf" }
 net     = { path = "../crates/net" }
@@ -57,7 +59,7 @@ debug-vmm  = []  # device-map MMIO sanity reads (HPET cap, GICD typer)
 debug-irq  = []  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = []  # first-kthread coroutine smoke + Context::switch trace
-debug-boot = []  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["pipe/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = []  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules","debug-syscall"]
