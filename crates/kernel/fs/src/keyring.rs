@@ -17,10 +17,7 @@
 // Real per-task keyring trees + expiry sweep + DH key derivation ride
 // a follow-up.
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

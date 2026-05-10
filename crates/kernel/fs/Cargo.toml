@@ -1,0 +1,30 @@
+[package]
+name = "fs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Umbrella for VFS-related subsystems that need both vfs (Inode trait)
+# and sched (current() / WaitList) — folded from per-subsystem sibling
+# crates per `52§4` proposed layout. Submodules: pipe, epoll, signalfd,
+# timerfd, inotify, userfaultfd, flock, xattr, keyring, perf.
+
+[dependencies]
+hal      = { path = "../../arch/hal" }
+klog     = { path = "../../shared/klog" }
+sync     = { path = "../../shared/sync" }
+sched    = { path = "../sched" }
+syscall  = { path = "../syscall" }
+vfs      = { path = "../vfs" }
+devfs    = { path = "../devfs" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+debug-boot = []
