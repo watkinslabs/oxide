@@ -116,7 +116,6 @@ pub unsafe fn set_rsp0(rsp0: u64) {
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_load_tr",
     ".type  oxide_load_tr, @function",

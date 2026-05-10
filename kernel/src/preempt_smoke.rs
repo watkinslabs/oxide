@@ -7,7 +7,6 @@
 // done so, the picker returns idle (boot anchor) and `schedule()`
 // resumes in the smoke driver.
 
-use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

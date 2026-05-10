@@ -13,7 +13,6 @@ use hal::{USER_VA_END, TimerOps};
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "x86_64")]
 pub fn kernel_sys_execve(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 

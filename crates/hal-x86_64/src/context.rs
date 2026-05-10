@@ -27,7 +27,6 @@ pub struct ContextX86_64 {
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_context_switch",
     ".type  oxide_context_switch, @function",
@@ -52,7 +51,6 @@ core::arch::global_asm!(
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_trampoline_kernel",
     ".type  oxide_trampoline_kernel, @function",

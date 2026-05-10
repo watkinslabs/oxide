@@ -578,7 +578,6 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         crate::syscall_nrs::NR_EXIT          => kernel_sys_exit(&args),
         crate::syscall_nrs::NR_GETPID        => kernel_sys_getpid(&args),
         crate::syscall_nrs::NR_GETPPID       => kernel_sys_getppid(&args),
-        #[cfg(target_arch = "x86_64")]
         crate::syscall_nrs::NR_READ          => kernel_sys_read(&args),
         crate::syscall_nrs::NR_WRITE         => kernel_sys_write(&args),
         crate::syscall_nrs::NR_OPEN          => crate::syscall_glue_open::kernel_sys_open(&args),

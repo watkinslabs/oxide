@@ -102,7 +102,6 @@ static IDT: Idt = Idt(UnsafeCell::new([IdtEntry::empty(); IDT_LEN]));
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
-    ".intel_syntax noprefix",
     ".section .text",
     ".globl oxide_idt_default_handler",
     ".type  oxide_idt_default_handler, @function",
