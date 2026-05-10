@@ -1,28 +1,26 @@
-// Kernel modules surface — wraps `modules::loader` with a global
-// registry + a resolver backed by `modules::symtab`. NR_INIT_MODULE
+// Kernel modules surface — wraps `crate::loader` with a global
+// registry + a resolver backed by `crate::symtab`. NR_INIT_MODULE
 // / NR_FINIT_MODULE / NR_DELETE_MODULE dispatch into this.
 //
 // v1: no signature verification; no per-module W^X (the loader's
 // section bytes live in the heap, so they're RW; future P10-05+
 // work allocates with `mmap(EXEC)`).
 
-#![no_std]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use modules::{load_module, LoadedModule, SymResolver};
+use crate::{load_module, LoadedModule, SymResolver};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
-/// Kernel-wide resolver: forward to `modules::symtab::resolve`
+/// Kernel-wide resolver: forward to `crate::symtab::resolve`
 /// (the EXPORT_SYMBOL surface).
 struct KernelSymResolver;
 impl SymResolver for KernelSymResolver {
     fn resolve(&self, name: &str) -> Option<u64> {
-        modules::symtab::resolve(name, false).ok().map(|e| e.addr as u64)
+        crate::symtab::resolve(name, false).ok().map(|e| e.addr as u64)
     }
 }
 
@@ -90,7 +88,7 @@ pub fn module_name(_idx: usize) -> Option<String> { Some(String::from("module"))
 /// the symtab entries.
 /// # C: O(1)
 pub unsafe fn init_exports() {
-    use modules::symtab::export;
+    use crate::symtab::export;
     export("klog_write_raw",     klog_write_raw_thunk     as usize, false);
     export("klog_write_dec_u64", klog_write_dec_u64_thunk as usize, false);
     export("kassert_thunk",      kassert_thunk            as usize, false);

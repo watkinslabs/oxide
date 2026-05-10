@@ -125,7 +125,7 @@ impl ProcModulesInode {
         use alloc::string::String;
         use core::fmt::Write as _;
         let mut s = String::new();
-        for (idx, n_secs, n_syms) in dev_modules::snapshot() {
+        for (idx, n_secs, n_syms) in modules::registry::snapshot() {
             let _ = writeln!(s, "module_{} {} {} - Live 0x0 sec={} sym={}",
                 idx, n_secs * 4096, 0, n_secs, n_syms);
         }
