@@ -70,7 +70,7 @@ fn user_brk_handler(esr: u64, far: u64, elr: u64) -> bool {
 }
 
 unsafe fn map_user_page<M: MmuOps>(va: u64, flags: PageFlags) -> Option<u64> {
-    let pa = pmm_setup::alloc_one_frame()?;
+    let pa = pmm::setup::alloc_one_frame()?;
     // SAFETY: caller asserts va unmapped on entry; pa fresh PMM frame.
     unsafe { M::map(Va(va), Pa(pa), flags, PageSize::P4K); }
     Some(pa)

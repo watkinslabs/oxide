@@ -249,18 +249,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Bring up the physical memory manager.
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
-    let pmm = unsafe { pmm_setup::init_from_boot_info(info) };
-    if pmm.is_ok() { pmm_setup::init_page_meta(pmm_setup::pfn_max_from_boot_info(info)); }
+    let pmm = unsafe { pmm::setup::init_from_boot_info(info) };
+    if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
     debug_boot! {
         match &pmm {
             Ok(_)                                       => klog::kinfo!("pmm: ready"),
-            Err(pmm_setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
-            Err(pmm_setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
-            Err(pmm_setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
-            Err(pmm_setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
-            Err(pmm_setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
-            Err(pmm_setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
-            Err(pmm_setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
+            Err(pmm::setup::SetupError::NoMemmap)        => klog::kinfo!("pmm: skip (no memmap)"),
+            Err(pmm::setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
+            Err(pmm::setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
+            Err(pmm::setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
+            Err(pmm::setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
+            Err(pmm::setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
+            Err(pmm::setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
         }
     }
     // Runtime smoke: alloc/free at order 0 to prove the buddy
@@ -358,13 +358,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_one_frame is a bare fn that wraps the just-initialised global PMM.
         unsafe {
             hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
-            hal_x86_64::mmu_ops::set_frame_alloc(pmm_setup::alloc_one_frame);
+            hal_x86_64::mmu_ops::set_frame_alloc(pmm::setup::alloc_one_frame);
         }
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
         // SAFETY: single-CPU pre-init; PMM initialised above; HHDM offset comes from BootInfo and matches the live tables; alloc_one_frame is a bare fn that wraps the just-initialised global PMM.
         unsafe {
             hal_aarch64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
-            hal_aarch64::mmu_ops::set_frame_alloc(pmm_setup::alloc_one_frame);
+            hal_aarch64::mmu_ops::set_frame_alloc(pmm::setup::alloc_one_frame);
         }
         let _ = p;
 

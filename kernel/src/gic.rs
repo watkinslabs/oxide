@@ -314,11 +314,11 @@ pub unsafe fn lpis_enable(hhdm: u64) -> LpisStatus {
     // LPI configuration table size = (1 << ID_BITS) bytes, one
     // priority+enable byte per LPI. ID_BITS=14 → 16 KiB → Order 2.
     // Pending table architecturally requires ≥ 64 KiB → Order 4.
-    let prop_pa = match pmm_setup::alloc_contig(pmm::Order(2)) {
+    let prop_pa = match pmm::setup::alloc_contig(pmm::Order(2)) {
         Some(p) => p,
         None    => return LpisStatus::AllocFailed,
     };
-    let pend_pa = match pmm_setup::alloc_contig(pmm::Order(4)) {
+    let pend_pa = match pmm::setup::alloc_contig(pmm::Order(4)) {
         Some(p) => p,
         None    => return LpisStatus::AllocFailed,
     };
