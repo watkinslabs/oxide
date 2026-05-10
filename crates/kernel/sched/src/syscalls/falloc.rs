@@ -1,4 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
 // `sys_fallocate` (slot 285) real impl. Split out of
 // `syscall_glue_fs.rs` to keep that file under the 1000-line cap.
 
@@ -32,7 +31,7 @@ pub fn kernel_sys_fallocate(args: &SyscallArgs) -> i64 {
     if mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0 {
         return -(Errno::Enosys.as_i32() as i64);
     }
-    let cur = match sched::live::current() {
+    let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

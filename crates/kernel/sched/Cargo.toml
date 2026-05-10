@@ -13,6 +13,7 @@ klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 vfs  = { path = "../../kernel/vfs" }
 vmm  = { path = "../../kernel/mm-vmm" }
+syscall = { path = "../syscall" }
 
 # kthread coroutine smoke needs the per-arch Context concrete type
 # (52a B-0 staging — once the schedule() wiring also moves into
@@ -32,3 +33,4 @@ hosted  = []
 # Per `04§3` R06 — gates the kthread coroutine boot smoke. Kernel
 # forwards via `--features debug-sched`.
 debug-sched = []
+debug-syscall = []
