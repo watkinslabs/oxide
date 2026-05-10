@@ -107,7 +107,8 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     let resolves = s == "/"
         || crate::devfs::lookup(s).is_some()
         || crate::procfs::lookup_dynamic(s).is_some()
-        || crate::tmpfs::lookup(s).is_some();
+        || crate::tmpfs::lookup(s).is_some()
+        || crate::dev_ext4::lookup_path(s.as_bytes()).is_some();
     if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     let cur = match crate::sched::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
