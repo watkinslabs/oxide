@@ -331,9 +331,12 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         // virtio-gpu is the kernel's primary display target — our
         // dev_virtio_gpu_modern paints `oxide kernel ready` to its
-        // scanout at boot. No -vga / -device ramfb fallback because
-        // the kernel doesn't paint to legacy VGA, and OVMF picking
-        // a different device leaves the GTK window blank.
+        // scanout at boot. `-vga none` disables QEMU's q35 default
+        // stdvga (bochs-display, vendor 1234:1111) — without this,
+        // GTK shows that empty stdvga framebuffer and our virtio-gpu
+        // scanout (which the host accepts with RESP_OK_NODATA) goes
+        // to a second head GTK never selects.
+        "-vga",    "none",
         "-device", "virtio-gpu-pci,bus=pcie.0",
         // virtio keyboard for `46` (input). Mouse removed — kernel
         // doesn't process pointer events yet and the wheel-input

@@ -141,11 +141,7 @@ unsafe fn setup_scanout(
     let base_pa = match crate::pmm_setup::alloc_contig(pmm::Order(order as u8)) {
         Some(pa) => pa, None => return false,
     };
-    let pages_alloc = 1usize << order;
-    // Build the per-page mem-entry list (each at +0x1000 offset).
-    let mut frames: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(pages_req);
-    for i in 0..pages_req { frames.push(base_pa + (i as u64) * 0x1000); }
-    let _ = pages_alloc;
+    let _ = 1usize << order; // pages_alloc — informational only
     // Render a boot banner through fbcon and copy the result into
     // the virtio-gpu backing FB. Userspace sees rendered text on
     // the QEMU display immediately at boot.
@@ -168,6 +164,21 @@ unsafe fn setup_scanout(
         }
     }
     let res_id: u32 = 1;
+    // Helper: emit the 24-byte response type so failed commands are
+    // visible. virtio-gpu acks with VIRTIO_GPU_RESP_OK_NODATA (0x1100);
+    // anything else means the host rejected the request.
+    let log_resp = |tag: &[u8]| {
+        // SAFETY: cmd_buf_va is HHDM-mapped 4 KiB; response sits at
+        // cmd_buf_va + 0x200 per submit_raw's descriptor layout.
+        let resp = unsafe { core::ptr::read_volatile(cmd_buf_va.add(0x200) as *const u32) };
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-gpu resp ");
+            klog::write_raw(tag);
+            klog::write_raw(b"=");
+            klog::write_hex_u64(resp as u64);
+            klog::write_raw(b"\n");
+        }
+    };
     // ---- 1. CMD_RESOURCE_CREATE_2D (40 B request, 24 B response) ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
@@ -175,70 +186,53 @@ unsafe fn setup_scanout(
             drv_virtio_gpu::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
-    // ---- 2. CMD_RESOURCE_ATTACH_BACKING with N entries ----
-    {
-        let pages = frames.len();
-        // SAFETY: HHDM-mapped 4 KiB cmd buffer; bounded write of a 32+16*pages-byte struct.
-        unsafe {
-            for k in 0..0x1000usize {
-                core::ptr::write_volatile(cmd_buf_va.add(k), 0);
-            }
-            // hdr + resource_id + nr_entries
-            // encode_resource_attach_backing_one writes 48 bytes
-            // (32-byte hdr + 16-byte mem-entry). Hand it the full
-            // span — we then overwrite nr_entries + per-page mem-entries
-            // below to plumb the multi-page list.
-            let buf = core::slice::from_raw_parts_mut(cmd_buf_va, 48);
-            let _ = drv_virtio_gpu::encode_resource_attach_backing_one(buf, res_id, frames[0], 0);
-            // Overwrite nr_entries with `pages`.
-            let nr_bytes = (pages as u32).to_le_bytes();
-            for i in 0..4 {
-                core::ptr::write_volatile(cmd_buf_va.add(28 + i), nr_bytes[i]);
-            }
-            // Append page entries (16 B each) starting at +32.
-            for i in 0..pages {
-                let off = 32 + i * 16;
-                let addr_b = frames[i].to_le_bytes();
-                for j in 0..8 { core::ptr::write_volatile(cmd_buf_va.add(off + j), addr_b[j]); }
-                let len = if i + 1 == pages {
-                    (fb_bytes - (i as u64) * 0x1000) as u32
-                } else { 0x1000 };
-                let len_b = len.to_le_bytes();
-                for j in 0..4 { core::ptr::write_volatile(cmd_buf_va.add(off + 8 + j), len_b[j]); }
-                // padding 4 B = already zero.
-            }
-        }
-        let req_len = 32 + pages * 16;
-        // SAFETY: cmd buffer + queue VAs valid; caller's boot-path preconditions hold.
-        if unsafe { !submit_raw(cmd_buf_pa, req_len, q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm) } {
-            return false;
-        }
-    }
+    log_resp(b"create");
+    // ---- 2. CMD_RESOURCE_ATTACH_BACKING with ONE mem-entry ----
+    // The FB lives in a SINGLE contiguous PMM run (alloc_contig
+    // above), so we attach it as one mem-entry covering the full
+    // fb_bytes span. The previous N-entries-per-page path wrote
+    // 32 + N*16 bytes into a 4 KiB cmd_buf (~16 KiB at 1280×800,
+    // ~7.5 KiB at 800×600) — overflowed the buffer and the device
+    // read garbage mem-entry tables from whatever frame followed
+    // cmd_buf in physmem, so the attach silently bound the wrong
+    // backing pages and the host saw an all-zero scanout.
+    // SAFETY: caller's preconditions inherited; encode writes 48 B
+    // into the per-call slice we hand it; submit_raw advertises the
+    // request as 48 bytes.
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+        |buf| drv_virtio_gpu::encode_resource_attach_backing_one(
+            buf, res_id, base_pa, fb_bytes as u32),
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
+    ) } { return false; }
+    log_resp(b"attach");
     // ---- 3. CMD_SET_SCANOUT ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| drv_virtio_gpu::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
+    log_resp(b"setscanout");
     // ---- 4. CMD_TRANSFER_TO_HOST_2D ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| drv_virtio_gpu::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
+    log_resp(b"transfer");
     // ---- 5. CMD_RESOURCE_FLUSH ----
     // SAFETY: caller's preconditions inherited; we hold the boot-path single-CPU invariants.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| drv_virtio_gpu::encode_resource_flush(buf, res_id, 0, 0, w, h),
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
+    log_resp(b"flush");
     debug_boot! {
         klog::write_raw(b"[INFO]  virtio-gpu scanout: ");
         klog::write_dec_u64(w as u64);
         klog::write_raw(b"x");
         klog::write_dec_u64(h as u64);
         klog::write_raw(b" pages=");
-        klog::write_dec_u64(frames.len() as u64);
+        klog::write_dec_u64(pages_req as u64);
         klog::write_raw(b" painted\n");
     }
     true
