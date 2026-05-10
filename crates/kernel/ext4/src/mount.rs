@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use block::{BlockDevice, BlockRequest};
 use sync::{Guard, Spinlock, Superblock as SuperblockLockClass};
-use jbd2::StagedBlock;
+use crate::jbd2::StagedBlock;
 
 use crate::dir;
 use crate::gdt::{self, GdtError, GroupDesc};
