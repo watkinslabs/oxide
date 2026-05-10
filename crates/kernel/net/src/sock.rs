@@ -411,3 +411,55 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
         }
     }
 }
+
+
+/// `listen` per `listen(2)`. Returns Ok(()) on success. For AF_UNIX
+/// listeners bind(2) already did the work — listen is a no-op.
+/// # C: O(1)
+pub fn listen(sock: &alloc::sync::Arc<InetSocket>, _backlog: i32) -> Result<(), NetError> {
+    if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return Ok(()); }
+    let port = sock.local_port.lock().ok_or(NetError::Einval)?;
+    let ip = *sock.local_ip.lock();
+    let le = stack().tcp_listen(ip, port)?;
+    *sock.kind.lock() = SockKind::TcpListener(le);
+    Ok(())
+}
+
+/// Result of `accept` — a new socket plus optionally the peer
+/// address for the ABI layer to write back to the user `sockaddr`.
+pub struct Accepted {
+    pub new_sock: alloc::sync::Arc<InetSocket>,
+    pub peer: Option<(Ipv4Addr, u16)>,
+}
+
+/// `accept` per `accept(2)`. Non-blocking: returns Err(Eagain) when
+/// no connection is ready. Tier-2 work fn — caller (Tier-3 shim)
+/// wraps the returned `InetSocket` in a vfs::File and allocates a fd.
+/// # C: O(1) + drain
+pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError> {
+    drain_loopback();
+    // AF_UNIX listener: pop one queued UnixPair.
+    if let SockKind::UnixListener(l) = &*sock.kind.lock() {
+        let l = l.clone();
+        let pair = l.accept_q.lock().pop_front().ok_or(NetError::Eagain)?;
+        let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp());
+        *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
+        return Ok(Accepted { new_sock, peer: None });
+    }
+    let listener_arc = match &*sock.kind.lock() {
+        SockKind::TcpListener(l) => l.clone(),
+        _ => return Err(NetError::Einval),
+    };
+    let entry = stack().tcp_accept(&listener_arc).ok_or(NetError::Eagain)?;
+    let (peer_ip, peer_port) = {
+        let c = entry.conn.lock();
+        (c.remote.ip, c.remote.port)
+    };
+    let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    let new_sock = alloc::sync::Arc::new(
+        if listener_fam == AF_INET6 { InetSocket::new_tcp6() } else { InetSocket::new_tcp() }
+    );
+    *new_sock.kind.lock() = SockKind::TcpConn(entry);
+    *new_sock.peer.lock() = Some((peer_ip, peer_port));
+    Ok(Accepted { new_sock, peer: Some((peer_ip, peer_port)) })
+}
