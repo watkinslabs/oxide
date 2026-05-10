@@ -23,7 +23,6 @@ tmpfs     = { path = "../crates/kernel/tmpfs", default-features = false }
 coredump  = { path = "../crates/kernel/coredump" }
 elf-load  = { path = "../crates/kernel/elf-load" }
 msi       = { path = "../crates/kernel/msi" }
-procfs-meminfo = { path = "../crates/kernel/procfs-meminfo" }
 ipc       = { path = "../crates/kernel/ipc" }
 pipe      = { path = "../crates/kernel/pipe", default-features = false }
 pmm-setup = { path = "../crates/kernel/mm-pmm-setup" }
