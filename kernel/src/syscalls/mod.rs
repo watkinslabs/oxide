@@ -2,13 +2,14 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+pub mod anonfd; pub mod chroot; pub mod clone; pub mod cred; pub mod execve; pub mod falloc; pub mod fs; pub mod ioctl; pub mod misc; pub mod mount; pub mod namei; pub mod net; pub mod open; pub mod perms; pub mod prctl; pub mod proc; pub mod proclink; pub mod pvmrw; pub mod rseq; pub mod select; pub mod signal; pub mod time; pub mod timers; pub mod uname; pub mod utime; pub mod xfer;
+
+
 use syscall::{dispatch, SyscallArgs};
 use syscall::errno::Errno;
 use hal::{USER_VA_END};
 #[cfg(target_arch = "x86_64")]
 use hal::TimerOps;
-
-// utsname-related constants + write_utsname_field + uts_hostname_for_current + kernel_uname moved to syscall_glue_uname.rs (F97).
 
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd = args.a4 as i64;
@@ -152,7 +153,6 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-
 /// `sys_close(fd)` — slot 3.
 /// # C: O(1)
 pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
@@ -171,7 +171,6 @@ pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
         Err(e)  => -(e as i64),
     }
 }
-
 
 fn kernel_sys_getpid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -201,7 +200,6 @@ fn kernel_sys_getppid(_args: &SyscallArgs) -> i64 {
         _ => 0, // parent not visible from our NS — Linux reports 0 (no parent).
     }
 }
-
 
 /// `sys_waitid(idtype, id, infop, options, rusage)` — slot 247.
 /// Linux idtype: P_ALL=0, P_PID=1, P_PGID=2, P_PIDFD=3.
@@ -411,7 +409,6 @@ fn kernel_sys_exit(args: &SyscallArgs) -> i64 {
     loop { core::hint::spin_loop(); }
 }
 
-
 /// `sys_getrandom(buf, len, flags)` — slot 318. NOT cryptographic.
 fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     let buf  = args.a0;
@@ -434,7 +431,7 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     written as i64
 }
 
-use crate::syscall_glue_signal::{kernel_sys_kill, kernel_sys_tgkill};
+use crate::syscalls::signal::{kernel_sys_kill, kernel_sys_tgkill};
 
 /// PTRACE_SYSCALL self-stop helper. If the calling task is being
 /// traced and the tracer armed PTRACE_SYSCALL on it, post SIGTRAP
@@ -452,7 +449,6 @@ fn ptrace_syscall_stop_if_armed() {
     // self-park via stop_until_cont matches the SIGSTOP path.
     unsafe { crate::sched_stop::stop_until_cont(); }
 }
-
 
 /// Validate that a user buffer `[ptr, ptr + len)` lies entirely
 /// below `USER_VA_END` and is `align`-byte aligned at `ptr`.
@@ -507,7 +503,6 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
     }
     Ok(())
 }
-
 
 /// arch_prctl: ARCH_SET_FS=wrmsr, ARCH_GET_FS=rdmsr+writeback,
 /// else EINVAL. GS-base rides v2.x.
@@ -564,14 +559,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let rv = match nr {
         #[cfg(target_arch = "x86_64")]
         syscall::nrs::NR_ARCH_PRCTL    => kernel_arch_prctl(&args),
-        syscall::nrs::NR_CLOCK_GETTIME => crate::syscall_glue_time::kernel_clock_gettime(&args),
-        syscall::nrs::NR_CLOCK_GETRES  => crate::syscall_glue_time::kernel_clock_getres(&args),
-        syscall::nrs::NR_CLOCK_SETTIME => crate::syscall_glue_time::kernel_clock_settime(&args),
-        syscall::nrs::NR_GETTIMEOFDAY  => crate::syscall_glue_time::kernel_gettimeofday(&args),
-        syscall::nrs::NR_SETTIMEOFDAY  => crate::syscall_glue_time::kernel_settimeofday(&args),
-        syscall::nrs::NR_TIME          => crate::syscall_glue_time::kernel_time(&args),
-        syscall::nrs::NR_UNAME         => crate::syscall_glue_uname::kernel_uname(&args),
-        syscall::nrs::NR_SETHOSTNAME   => crate::syscall_glue_proc::kernel_sys_sethostname(&args),
+        syscall::nrs::NR_CLOCK_GETTIME => crate::syscalls::time::kernel_clock_gettime(&args),
+        syscall::nrs::NR_CLOCK_GETRES  => crate::syscalls::time::kernel_clock_getres(&args),
+        syscall::nrs::NR_CLOCK_SETTIME => crate::syscalls::time::kernel_clock_settime(&args),
+        syscall::nrs::NR_GETTIMEOFDAY  => crate::syscalls::time::kernel_gettimeofday(&args),
+        syscall::nrs::NR_SETTIMEOFDAY  => crate::syscalls::time::kernel_settimeofday(&args),
+        syscall::nrs::NR_TIME          => crate::syscalls::time::kernel_time(&args),
+        syscall::nrs::NR_UNAME         => crate::syscalls::uname::kernel_uname(&args),
+        syscall::nrs::NR_SETHOSTNAME   => crate::syscalls::proc::kernel_sys_sethostname(&args),
         syscall::nrs::NR_SETDOMAINNAME => crate::hostname::kernel_sys_setdomainname(&args),
         syscall::nrs::NR_MMAP          => kernel_mmap(&args),
         syscall::nrs::NR_MUNMAP        => kernel_munmap(&args),
@@ -580,36 +575,36 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_GETPPID       => kernel_sys_getppid(&args),
         syscall::nrs::NR_READ          => kernel_sys_read(&args),
         syscall::nrs::NR_WRITE         => kernel_sys_write(&args),
-        syscall::nrs::NR_OPEN          => crate::syscall_glue_open::kernel_sys_open(&args),
+        syscall::nrs::NR_OPEN          => crate::syscalls::open::kernel_sys_open(&args),
         syscall::nrs::NR_BRK           => kernel_sys_brk(&args),
         syscall::nrs::NR_PIPE2         => kernel_sys_pipe2(&args),
-        syscall::nrs::NR_FSTAT         => crate::syscall_glue_fs::kernel_sys_fstat(&args),
-        syscall::nrs::NR_IOCTL         => crate::syscall_glue_fs::kernel_sys_ioctl(&args),
-        syscall::nrs::NR_GETCWD        => crate::syscall_glue_fs::kernel_sys_getcwd(&args),
-        syscall::nrs::NR_CHDIR         => crate::syscall_glue_fs::kernel_sys_chdir(&args),
-        syscall::nrs::NR_FCHDIR        => crate::syscall_glue_fs::kernel_sys_fchdir(&args),
+        syscall::nrs::NR_FSTAT         => crate::syscalls::fs::kernel_sys_fstat(&args),
+        syscall::nrs::NR_IOCTL         => crate::syscalls::fs::kernel_sys_ioctl(&args),
+        syscall::nrs::NR_GETCWD        => crate::syscalls::fs::kernel_sys_getcwd(&args),
+        syscall::nrs::NR_CHDIR         => crate::syscalls::fs::kernel_sys_chdir(&args),
+        syscall::nrs::NR_FCHDIR        => crate::syscalls::fs::kernel_sys_fchdir(&args),
         syscall::nrs::NR_KILL          => kernel_sys_kill(&args),
         syscall::nrs::NR_TGKILL        => kernel_sys_tgkill(&args),
         syscall::nrs::NR_GETRANDOM     => kernel_sys_getrandom(&args),
-        syscall::nrs::NR_SCHED_YIELD   => crate::syscall_glue_proc::kernel_sys_sched_yield(&args),
-        syscall::nrs::NR_GETTID        => crate::syscall_glue_proc::kernel_sys_gettid(&args),
-        syscall::nrs::NR_SET_TID_ADDRESS => crate::syscall_glue_proc::kernel_sys_set_tid_address(&args),
-        syscall::nrs::NR_WRITEV        => crate::syscall_glue_fs::kernel_sys_writev(&args),
-        syscall::nrs::NR_READV         => crate::syscall_glue_fs::kernel_sys_readv(&args),
-        syscall::nrs::NR_POLL          => crate::syscall_glue_fs::kernel_sys_poll(&args),
-        syscall::nrs::NR_PPOLL         => crate::syscall_glue_fs::kernel_sys_ppoll(&args),
-        syscall::nrs::NR_SELECT        => crate::syscall_glue_select::kernel_sys_select(&args),
-        syscall::nrs::NR_PSELECT6      => crate::syscall_glue_select::kernel_sys_pselect6(&args),
-        syscall::nrs::NR_LSEEK         => crate::syscall_glue_fs::kernel_sys_lseek(&args),
-        syscall::nrs::NR_READLINK      => crate::syscall_glue_fs::kernel_sys_readlink(&args),
-        syscall::nrs::NR_READLINKAT    => crate::syscall_glue_fs::kernel_sys_readlinkat(&args),
-        syscall::nrs::NR_STATX         => crate::syscall_glue_fs::kernel_sys_statx(&args),
-        syscall::nrs::NR_FCNTL         => crate::syscall_glue_fs::kernel_sys_fcntl(&args),
-        syscall::nrs::NR_RSEQ          => crate::syscall_glue_proc::kernel_sys_rseq(&args),
-        syscall::nrs::NR_MEMBARRIER    => crate::syscall_glue_proc::kernel_sys_membarrier(&args),
-        syscall::nrs::NR_UNSHARE       => crate::syscall_glue_signal::kernel_sys_unshare(&args),
-        syscall::nrs::NR_SETNS         => crate::syscall_glue_signal::kernel_sys_setns(&args),
-        syscall::nrs::NR_PTRACE        => crate::syscall_glue_signal::kernel_sys_ptrace(&args),
+        syscall::nrs::NR_SCHED_YIELD   => crate::syscalls::proc::kernel_sys_sched_yield(&args),
+        syscall::nrs::NR_GETTID        => crate::syscalls::proc::kernel_sys_gettid(&args),
+        syscall::nrs::NR_SET_TID_ADDRESS => crate::syscalls::proc::kernel_sys_set_tid_address(&args),
+        syscall::nrs::NR_WRITEV        => crate::syscalls::fs::kernel_sys_writev(&args),
+        syscall::nrs::NR_READV         => crate::syscalls::fs::kernel_sys_readv(&args),
+        syscall::nrs::NR_POLL          => crate::syscalls::fs::kernel_sys_poll(&args),
+        syscall::nrs::NR_PPOLL         => crate::syscalls::fs::kernel_sys_ppoll(&args),
+        syscall::nrs::NR_SELECT        => crate::syscalls::select::kernel_sys_select(&args),
+        syscall::nrs::NR_PSELECT6      => crate::syscalls::select::kernel_sys_pselect6(&args),
+        syscall::nrs::NR_LSEEK         => crate::syscalls::fs::kernel_sys_lseek(&args),
+        syscall::nrs::NR_READLINK      => crate::syscalls::fs::kernel_sys_readlink(&args),
+        syscall::nrs::NR_READLINKAT    => crate::syscalls::fs::kernel_sys_readlinkat(&args),
+        syscall::nrs::NR_STATX         => crate::syscalls::fs::kernel_sys_statx(&args),
+        syscall::nrs::NR_FCNTL         => crate::syscalls::fs::kernel_sys_fcntl(&args),
+        syscall::nrs::NR_RSEQ          => crate::syscalls::proc::kernel_sys_rseq(&args),
+        syscall::nrs::NR_MEMBARRIER    => crate::syscalls::proc::kernel_sys_membarrier(&args),
+        syscall::nrs::NR_UNSHARE       => crate::syscalls::signal::kernel_sys_unshare(&args),
+        syscall::nrs::NR_SETNS         => crate::syscalls::signal::kernel_sys_setns(&args),
+        syscall::nrs::NR_PTRACE        => crate::syscalls::signal::kernel_sys_ptrace(&args),
         syscall::nrs::NR_FANOTIFY_INIT => inotify::kernel_sys_inotify_init1(&args),
         syscall::nrs::NR_FANOTIFY_MARK => inotify::kernel_sys_fanotify_mark(&args),
         syscall::nrs::NR_SHMGET        => ipc::sysv_shm::kernel_sys_shmget(&args),
@@ -641,7 +636,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // landlock_create_ruleset: returns a memfd-shaped placeholder.
         syscall::nrs::NR_LANDLOCK_CREATE_RULESET => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            crate::syscalls::anonfd::kernel_sys_memfd_create(&sa)
         }
         // add_rule / restrict_self → EOPNOTSUPP (silent-0 would let
         // programs think they sandboxed themselves when they didn't).
@@ -659,40 +654,40 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // (real per-NS mount-table machinery rides a follow-up).
         syscall::nrs::NR_FSOPEN     => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            crate::syscalls::anonfd::kernel_sys_memfd_create(&sa)
         }
         syscall::nrs::NR_FSMOUNT    => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            crate::syscalls::anonfd::kernel_sys_memfd_create(&sa)
         }
         syscall::nrs::NR_FSPICK     => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            crate::syscalls::anonfd::kernel_sys_memfd_create(&sa)
         }
         syscall::nrs::NR_OPEN_TREE  => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            crate::syscalls::anonfd::kernel_sys_memfd_create(&sa)
         }
         // fsconfig/move_mount/mount_setattr → EOPNOTSUPP (silent-0 lied).
         syscall::nrs::NR_FSCONFIG | syscall::nrs::NR_MOVE_MOUNT
             | syscall::nrs::NR_MOUNT_SETATTR => -(Errno::Eopnotsupp.as_i32() as i64),
-        syscall::nrs::NR_GETRLIMIT     => crate::syscall_glue_proc::kernel_sys_getrlimit(&args),
-        syscall::nrs::NR_SETRLIMIT     => crate::syscall_glue_proc::kernel_sys_setrlimit(&args),
-        syscall::nrs::NR_GETRUSAGE     => crate::syscall_glue_proc::kernel_sys_getrusage(&args),
-        syscall::nrs::NR_TIMES         => crate::syscall_glue_proc::kernel_sys_times(&args),
-        syscall::nrs::NR_SYSINFO       => crate::syscall_glue_proc::kernel_sys_sysinfo(&args),
-        syscall::nrs::NR_MREMAP        => crate::syscall_glue_proc::kernel_sys_mremap(&args),
-        syscall::nrs::NR_MSYNC         => crate::syscall_glue_proc::kernel_sys_msync(&args),
-        syscall::nrs::NR_MINCORE       => crate::syscall_glue_proc::kernel_sys_mincore(&args),
+        syscall::nrs::NR_GETRLIMIT     => crate::syscalls::proc::kernel_sys_getrlimit(&args),
+        syscall::nrs::NR_SETRLIMIT     => crate::syscalls::proc::kernel_sys_setrlimit(&args),
+        syscall::nrs::NR_GETRUSAGE     => crate::syscalls::proc::kernel_sys_getrusage(&args),
+        syscall::nrs::NR_TIMES         => crate::syscalls::proc::kernel_sys_times(&args),
+        syscall::nrs::NR_SYSINFO       => crate::syscalls::proc::kernel_sys_sysinfo(&args),
+        syscall::nrs::NR_MREMAP        => crate::syscalls::proc::kernel_sys_mremap(&args),
+        syscall::nrs::NR_MSYNC         => crate::syscalls::proc::kernel_sys_msync(&args),
+        syscall::nrs::NR_MINCORE       => crate::syscalls::proc::kernel_sys_mincore(&args),
         syscall::nrs::NR_MLOCK | syscall::nrs::NR_MUNLOCK | syscall::nrs::NR_MLOCKALL | syscall::nrs::NR_MUNLOCKALL
-                                 => crate::syscall_glue_proc::kernel_sys_mlock_family(&args),
-        syscall::nrs::NR_GETPGRP   => crate::syscall_glue_proc::kernel_sys_getpgrp(&args),
-        syscall::nrs::NR_GETPRIORITY => crate::syscall_glue_proc::kernel_sys_getpriority(&args),
-        syscall::nrs::NR_SETPRIORITY => crate::syscall_glue_proc::kernel_sys_setpriority(&args),
-        syscall::nrs::NR_ALARM     => crate::syscall_glue_proc::kernel_sys_alarm(&args),
-        syscall::nrs::NR_PAUSE     => crate::syscall_glue_proc::kernel_sys_pause(&args),
-        syscall::nrs::NR_GETITIMER => crate::syscall_glue_proc::kernel_sys_getitimer(&args),
-        syscall::nrs::NR_SETITIMER => crate::syscall_glue_proc::kernel_sys_setitimer(&args),
+                                 => crate::syscalls::proc::kernel_sys_mlock_family(&args),
+        syscall::nrs::NR_GETPGRP   => crate::syscalls::proc::kernel_sys_getpgrp(&args),
+        syscall::nrs::NR_GETPRIORITY => crate::syscalls::proc::kernel_sys_getpriority(&args),
+        syscall::nrs::NR_SETPRIORITY => crate::syscalls::proc::kernel_sys_setpriority(&args),
+        syscall::nrs::NR_ALARM     => crate::syscalls::proc::kernel_sys_alarm(&args),
+        syscall::nrs::NR_PAUSE     => crate::syscalls::proc::kernel_sys_pause(&args),
+        syscall::nrs::NR_GETITIMER => crate::syscalls::proc::kernel_sys_getitimer(&args),
+        syscall::nrs::NR_SETITIMER => crate::syscalls::proc::kernel_sys_setitimer(&args),
         syscall::nrs::NR_PIDFD_OPEN  => crate::dev_pidfd::kernel_sys_pidfd_open(&args),
         syscall::nrs::NR_PIDFD_GETFD => crate::dev_pidfd::kernel_sys_pidfd_getfd(&args),
         syscall::nrs::NR_PIDFD_SEND_SIGNAL
@@ -718,49 +713,49 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_EPOLL_WAIT | syscall::nrs::NR_EPOLL_PWAIT
             | syscall::nrs::NR_EPOLL_PWAIT2
                                  => epoll::kernel_sys_epoll_wait(&args),
-        syscall::nrs::NR_GETPGID   => crate::syscall_glue_proc::kernel_sys_getpgid(&args),
-        syscall::nrs::NR_GETSID    => crate::syscall_glue_proc::kernel_sys_getsid(&args),
-        syscall::nrs::NR_SETPGID       => crate::syscall_glue_proc::kernel_sys_setpgid(&args),
-        syscall::nrs::NR_SETSID        => crate::syscall_glue_proc::kernel_sys_setsid(&args),
-        syscall::nrs::NR_UMASK         => crate::syscall_glue_proc::kernel_sys_umask(&args),
-        syscall::nrs::NR_ACCESS        => crate::syscall_glue_fs::kernel_sys_access(&args),
-        syscall::nrs::NR_FACCESSAT     => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
+        syscall::nrs::NR_GETPGID   => crate::syscalls::proc::kernel_sys_getpgid(&args),
+        syscall::nrs::NR_GETSID    => crate::syscalls::proc::kernel_sys_getsid(&args),
+        syscall::nrs::NR_SETPGID       => crate::syscalls::proc::kernel_sys_setpgid(&args),
+        syscall::nrs::NR_SETSID        => crate::syscalls::proc::kernel_sys_setsid(&args),
+        syscall::nrs::NR_UMASK         => crate::syscalls::proc::kernel_sys_umask(&args),
+        syscall::nrs::NR_ACCESS        => crate::syscalls::fs::kernel_sys_access(&args),
+        syscall::nrs::NR_FACCESSAT     => crate::syscalls::fs::kernel_sys_faccessat(&args),
         syscall::nrs::NR_EVENTFD | syscall::nrs::NR_EVENTFD2
-                                 => crate::syscall_glue_anonfd::kernel_sys_eventfd2(&args),
+                                 => crate::syscalls::anonfd::kernel_sys_eventfd2(&args),
         syscall::nrs::NR_GETDENTS | syscall::nrs::NR_GETDENTS64
-                                 => crate::syscall_glue_fs::kernel_sys_getdents64(&args),
-        syscall::nrs::NR_PREAD64       => crate::syscall_glue_fs::kernel_sys_pread64(&args),
-        syscall::nrs::NR_PWRITE64      => crate::syscall_glue_fs::kernel_sys_pwrite64(&args),
-        syscall::nrs::NR_PREADV  => crate::syscall_glue_fs::kernel_sys_preadv(&args),
-        syscall::nrs::NR_PWRITEV => crate::syscall_glue_fs::kernel_sys_pwritev(&args),
-        syscall::nrs::NR_PREADV2 => crate::syscall_glue_fs::kernel_sys_preadv(&args),
-        syscall::nrs::NR_PWRITEV2 => crate::syscall_glue_fs::kernel_sys_pwritev(&args),
-        syscall::nrs::NR_MEMFD_CREATE => crate::syscall_glue_anonfd::kernel_sys_memfd_create(&args),
+                                 => crate::syscalls::fs::kernel_sys_getdents64(&args),
+        syscall::nrs::NR_PREAD64       => crate::syscalls::fs::kernel_sys_pread64(&args),
+        syscall::nrs::NR_PWRITE64      => crate::syscalls::fs::kernel_sys_pwrite64(&args),
+        syscall::nrs::NR_PREADV  => crate::syscalls::fs::kernel_sys_preadv(&args),
+        syscall::nrs::NR_PWRITEV => crate::syscalls::fs::kernel_sys_pwritev(&args),
+        syscall::nrs::NR_PREADV2 => crate::syscalls::fs::kernel_sys_preadv(&args),
+        syscall::nrs::NR_PWRITEV2 => crate::syscalls::fs::kernel_sys_pwritev(&args),
+        syscall::nrs::NR_MEMFD_CREATE => crate::syscalls::anonfd::kernel_sys_memfd_create(&args),
         // memfd_secret(flags) — Linux's "hide from other tasks via
         // page-table partitioning" variant. v1 single-AS scheduler
         // doesn't enforce that hide; we route through memfd_create
         // so the fd is at least functional.
         syscall::nrs::NR_MEMFD_SECRET => {
             let mut sa = args; sa.a0 = 0; sa.a1 = args.a0;
-            crate::syscall_glue_anonfd::kernel_sys_memfd_create(&sa)
+            crate::syscalls::anonfd::kernel_sys_memfd_create(&sa)
         }
-        syscall::nrs::NR_MKDIR    => crate::syscall_glue_namei::kernel_sys_mkdir(&args),
-        syscall::nrs::NR_MKDIRAT  => crate::syscall_glue_namei::kernel_sys_mkdirat(&args),
-        syscall::nrs::NR_RMDIR    => crate::syscall_glue_namei::kernel_sys_rmdir(&args),
-        syscall::nrs::NR_UNLINK   => crate::syscall_glue_namei::kernel_sys_unlink(&args),
-        syscall::nrs::NR_UNLINKAT => crate::syscall_glue_namei::kernel_sys_unlinkat(&args),
-        syscall::nrs::NR_RENAME   => crate::syscall_glue_namei::kernel_sys_rename(&args),
-        syscall::nrs::NR_RENAMEAT => crate::syscall_glue_namei::kernel_sys_renameat(&args),
-        syscall::nrs::NR_RENAMEAT2 => crate::syscall_glue_namei::kernel_sys_renameat2(&args),
-        syscall::nrs::NR_TRUNCATE  => crate::syscall_glue_fs::kernel_sys_truncate(&args),
-        syscall::nrs::NR_FTRUNCATE => crate::syscall_glue_fs::kernel_sys_ftruncate(&args),
-        syscall::nrs::NR_FALLOCATE => crate::syscall_glue_falloc::kernel_sys_fallocate(&args),
-        syscall::nrs::NR_SENDFILE  => crate::syscall_glue_xfer::kernel_sys_sendfile(&args),
-        syscall::nrs::NR_COPY_FILE_RANGE => crate::syscall_glue_xfer::kernel_sys_copy_file_range(&args),
-        syscall::nrs::NR_SPLICE     => crate::syscall_glue_xfer::kernel_sys_splice(&args),
-        syscall::nrs::NR_TEE        => crate::syscall_glue_xfer::kernel_sys_tee(&args),
-        syscall::nrs::NR_VMSPLICE   => crate::syscall_glue_xfer::kernel_sys_vmsplice(&args),
-        syscall::nrs::NR_OPENAT        => crate::syscall_glue_open::kernel_sys_openat(&args),
+        syscall::nrs::NR_MKDIR    => crate::syscalls::namei::kernel_sys_mkdir(&args),
+        syscall::nrs::NR_MKDIRAT  => crate::syscalls::namei::kernel_sys_mkdirat(&args),
+        syscall::nrs::NR_RMDIR    => crate::syscalls::namei::kernel_sys_rmdir(&args),
+        syscall::nrs::NR_UNLINK   => crate::syscalls::namei::kernel_sys_unlink(&args),
+        syscall::nrs::NR_UNLINKAT => crate::syscalls::namei::kernel_sys_unlinkat(&args),
+        syscall::nrs::NR_RENAME   => crate::syscalls::namei::kernel_sys_rename(&args),
+        syscall::nrs::NR_RENAMEAT => crate::syscalls::namei::kernel_sys_renameat(&args),
+        syscall::nrs::NR_RENAMEAT2 => crate::syscalls::namei::kernel_sys_renameat2(&args),
+        syscall::nrs::NR_TRUNCATE  => crate::syscalls::fs::kernel_sys_truncate(&args),
+        syscall::nrs::NR_FTRUNCATE => crate::syscalls::fs::kernel_sys_ftruncate(&args),
+        syscall::nrs::NR_FALLOCATE => crate::syscalls::falloc::kernel_sys_fallocate(&args),
+        syscall::nrs::NR_SENDFILE  => crate::syscalls::xfer::kernel_sys_sendfile(&args),
+        syscall::nrs::NR_COPY_FILE_RANGE => crate::syscalls::xfer::kernel_sys_copy_file_range(&args),
+        syscall::nrs::NR_SPLICE     => crate::syscalls::xfer::kernel_sys_splice(&args),
+        syscall::nrs::NR_TEE        => crate::syscalls::xfer::kernel_sys_tee(&args),
+        syscall::nrs::NR_VMSPLICE   => crate::syscalls::xfer::kernel_sys_vmsplice(&args),
+        syscall::nrs::NR_OPENAT        => crate::syscalls::open::kernel_sys_openat(&args),
         // openat2: read flags+mode from open_how, route through openat.
         syscall::nrs::NR_OPENAT2       => {
             let how = args.a2;
@@ -773,133 +768,133 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                     sa.a3 = core::ptr::read_volatile((how + 8) as *const u64);
                 }
             }
-            crate::syscall_glue_open::kernel_sys_openat(&sa)
+            crate::syscalls::open::kernel_sys_openat(&sa)
         }
-        syscall::nrs::NR_FACCESSAT2    => crate::syscall_glue_fs::kernel_sys_faccessat(&args),
+        syscall::nrs::NR_FACCESSAT2    => crate::syscalls::fs::kernel_sys_faccessat(&args),
         syscall::nrs::NR_SYNC => 0,
-        syscall::nrs::NR_REBOOT => crate::syscall_glue_misc::kernel_sys_reboot(&args),
+        syscall::nrs::NR_REBOOT => crate::syscalls::misc::kernel_sys_reboot(&args),
         nr if matches!(nr, syscall::nrs::NR_FSYNC | syscall::nrs::NR_FDATASYNC
                        | syscall::nrs::NR_SYNCFS | syscall::nrs::NR_SYNC_FILE_RANGE)
-                                 => crate::syscall_glue_misc::kernel_sys_fsync(&args),
+                                 => crate::syscalls::misc::kernel_sys_fsync(&args),
         nr if matches!(nr, syscall::nrs::NR_PKEY_ALLOC | syscall::nrs::NR_PKEY_FREE
                        | syscall::nrs::NR_PKEY_MPROTECT | syscall::nrs::NR_KCMP
                        | syscall::nrs::NR_SET_MEMPOLICY | syscall::nrs::NR_GET_MEMPOLICY
                        | syscall::nrs::NR_MBIND | syscall::nrs::NR_SET_MEMPOLICY_HOME_NODE
                        | syscall::nrs::NR_MIGRATE_PAGES | syscall::nrs::NR_MOVE_PAGES
                        | syscall::nrs::NR_PROCESS_MADVISE | syscall::nrs::NR_PROCESS_MRELEASE)
-                                 => crate::syscall_glue_misc::dispatch(nr, &args),
+                                 => crate::syscalls::misc::dispatch(nr, &args),
         // AF_INET dgram (UDP) per `25§3`.
-        syscall::nrs::NR_SOCKET   => crate::syscall_glue_net::kernel_sys_socket(&args),
-        syscall::nrs::NR_BIND     => crate::syscall_glue_net::kernel_sys_bind(&args),
-        syscall::nrs::NR_SENDTO   => crate::syscall_glue_net::kernel_sys_sendto(&args),
-        syscall::nrs::NR_RECVFROM => crate::syscall_glue_net::kernel_sys_recvfrom(&args),
-        syscall::nrs::NR_LISTEN  => crate::syscall_glue_net::kernel_sys_listen(&args),
+        syscall::nrs::NR_SOCKET   => crate::syscalls::net::kernel_sys_socket(&args),
+        syscall::nrs::NR_BIND     => crate::syscalls::net::kernel_sys_bind(&args),
+        syscall::nrs::NR_SENDTO   => crate::syscalls::net::kernel_sys_sendto(&args),
+        syscall::nrs::NR_RECVFROM => crate::syscalls::net::kernel_sys_recvfrom(&args),
+        syscall::nrs::NR_LISTEN  => crate::syscalls::net::kernel_sys_listen(&args),
         syscall::nrs::NR_ACCEPT | syscall::nrs::NR_ACCEPT4
-                                       => crate::syscall_glue_net::kernel_sys_accept(&args),
-        syscall::nrs::NR_CONNECT => crate::syscall_glue_net::kernel_sys_connect(&args),
-        syscall::nrs::NR_SOCKETPAIR => crate::syscall_glue_net::kernel_sys_socketpair(&args),
-        syscall::nrs::NR_GETSOCKNAME => crate::syscall_glue_net::kernel_sys_getsockname(&args),
-        syscall::nrs::NR_GETPEERNAME => crate::syscall_glue_net::kernel_sys_getpeername(&args),
-        syscall::nrs::NR_SHUTDOWN    => crate::syscall_glue_net::kernel_sys_shutdown(&args),
-        syscall::nrs::NR_SETSOCKOPT  => crate::syscall_glue_net::kernel_sys_setsockopt(&args),
-        syscall::nrs::NR_GETSOCKOPT  => crate::syscall_glue_net::kernel_sys_getsockopt(&args),
-        syscall::nrs::NR_SENDMSG => crate::syscall_glue_net::kernel_sys_sendmsg(&args),
-        syscall::nrs::NR_RECVMSG => crate::syscall_glue_net::kernel_sys_recvmsg(&args),
-        syscall::nrs::NR_SENDMMSG => crate::syscall_glue_net::kernel_sys_sendmmsg(&args),
-        syscall::nrs::NR_RECVMMSG => crate::syscall_glue_net::kernel_sys_recvmmsg(&args),
+                                       => crate::syscalls::net::kernel_sys_accept(&args),
+        syscall::nrs::NR_CONNECT => crate::syscalls::net::kernel_sys_connect(&args),
+        syscall::nrs::NR_SOCKETPAIR => crate::syscalls::net::kernel_sys_socketpair(&args),
+        syscall::nrs::NR_GETSOCKNAME => crate::syscalls::net::kernel_sys_getsockname(&args),
+        syscall::nrs::NR_GETPEERNAME => crate::syscalls::net::kernel_sys_getpeername(&args),
+        syscall::nrs::NR_SHUTDOWN    => crate::syscalls::net::kernel_sys_shutdown(&args),
+        syscall::nrs::NR_SETSOCKOPT  => crate::syscalls::net::kernel_sys_setsockopt(&args),
+        syscall::nrs::NR_GETSOCKOPT  => crate::syscalls::net::kernel_sys_getsockopt(&args),
+        syscall::nrs::NR_SENDMSG => crate::syscalls::net::kernel_sys_sendmsg(&args),
+        syscall::nrs::NR_RECVMSG => crate::syscalls::net::kernel_sys_recvmsg(&args),
+        syscall::nrs::NR_SENDMMSG => crate::syscalls::net::kernel_sys_sendmmsg(&args),
+        syscall::nrs::NR_RECVMMSG => crate::syscalls::net::kernel_sys_recvmmsg(&args),
         syscall::nrs::NR_FLOCK         => flock::kernel_sys_flock(&args),
-        syscall::nrs::NR_PERSONALITY   => crate::syscall_glue_prctl::kernel_sys_personality(&args),
-        syscall::nrs::NR_CHROOT  => crate::syscall_glue_chroot::kernel_sys_chroot(&args),
-        syscall::nrs::NR_MOUNT   => crate::syscall_glue_mount::kernel_sys_mount(&args),
-        syscall::nrs::NR_UMOUNT2 => crate::syscall_glue_mount::kernel_sys_umount2(&args),
+        syscall::nrs::NR_PERSONALITY   => crate::syscalls::prctl::kernel_sys_personality(&args),
+        syscall::nrs::NR_CHROOT  => crate::syscalls::chroot::kernel_sys_chroot(&args),
+        syscall::nrs::NR_MOUNT   => crate::syscalls::mount::kernel_sys_mount(&args),
+        syscall::nrs::NR_UMOUNT2 => crate::syscalls::mount::kernel_sys_umount2(&args),
         syscall::nrs::NR_GET_MEMPOLICY => syscall::numa::kernel_sys_get_mempolicy(&args),
-        syscall::nrs::NR_VHANGUP       => crate::syscall_glue_proc::kernel_sys_vhangup(&args),
-        syscall::nrs::NR_FUTIMESAT | syscall::nrs::NR_UTIMENSAT => crate::syscall_glue_utime::kernel_sys_utimensat(&args),
+        syscall::nrs::NR_VHANGUP       => crate::syscalls::proc::kernel_sys_vhangup(&args),
+        syscall::nrs::NR_FUTIMESAT | syscall::nrs::NR_UTIMENSAT => crate::syscalls::utime::kernel_sys_utimensat(&args),
         syscall::nrs::NR_MQ_NOTIFY     => crate::posix_mq::kernel_sys_mq_notify(&args),
         syscall::nrs::NR_MQ_GETSETATTR => crate::posix_mq::kernel_sys_mq_getsetattr(&args),
-        syscall::nrs::NR_PROCESS_VM_READV  => crate::syscall_glue_pvmrw::kernel_sys_process_vm_readv(&args), syscall::nrs::NR_PROCESS_VM_WRITEV => crate::syscall_glue_pvmrw::kernel_sys_process_vm_writev(&args),
+        syscall::nrs::NR_PROCESS_VM_READV  => crate::syscalls::pvmrw::kernel_sys_process_vm_readv(&args), syscall::nrs::NR_PROCESS_VM_WRITEV => crate::syscalls::pvmrw::kernel_sys_process_vm_writev(&args),
         syscall::nrs::NR_UTIMES | syscall::nrs::NR_UTIME
-            => crate::syscall_glue_utime::kernel_sys_utime_dispatch(nr, &args),
+            => crate::syscalls::utime::kernel_sys_utime_dispatch(nr, &args),
         // link/symlink/mknod family — devfs is read-only, refuse.
-        syscall::nrs::NR_LINK   => crate::syscall_glue_namei::kernel_sys_link(&args),
-        syscall::nrs::NR_LINKAT => crate::syscall_glue_namei::kernel_sys_linkat(&args),
+        syscall::nrs::NR_LINK   => crate::syscalls::namei::kernel_sys_link(&args),
+        syscall::nrs::NR_LINKAT => crate::syscalls::namei::kernel_sys_linkat(&args),
         syscall::nrs::NR_SYMLINK | syscall::nrs::NR_SYMLINKAT
             | syscall::nrs::NR_MKNOD | syscall::nrs::NR_MKNODAT
                                  => -(Errno::Erofs.as_i32() as i64),
         syscall::nrs::NR_FSTATFS | syscall::nrs::NR_STATFS
-                                 => crate::syscall_glue_fs::kernel_sys_statfs(&args),
-        syscall::nrs::NR_GETCPU        => crate::syscall_glue_proc::kernel_sys_getcpu(&args),
-        syscall::nrs::NR_SCHED_GETPARAM => crate::syscall_glue_proc::kernel_sys_sched_getparam(&args),
+                                 => crate::syscalls::fs::kernel_sys_statfs(&args),
+        syscall::nrs::NR_GETCPU        => crate::syscalls::proc::kernel_sys_getcpu(&args),
+        syscall::nrs::NR_SCHED_GETPARAM => crate::syscalls::proc::kernel_sys_sched_getparam(&args),
         syscall::nrs::NR_SCHED_SETSCHEDULER | syscall::nrs::NR_SCHED_GETSCHEDULER
-                                 => crate::syscall_glue_proc::kernel_sys_sched_getscheduler(&args),
+                                 => crate::syscalls::proc::kernel_sys_sched_getscheduler(&args),
         syscall::nrs::NR_SCHED_GET_PRIORITY_MAX
-                                 => crate::syscall_glue_proc::kernel_sys_sched_get_priority_max(&args),
+                                 => crate::syscalls::proc::kernel_sys_sched_get_priority_max(&args),
         syscall::nrs::NR_SCHED_GET_PRIORITY_MIN
-                                 => crate::syscall_glue_proc::kernel_sys_sched_get_priority_min(&args),
+                                 => crate::syscalls::proc::kernel_sys_sched_get_priority_min(&args),
         syscall::nrs::NR_SCHED_GETAFFINITY
-                                 => crate::syscall_glue_proc::kernel_sys_sched_getaffinity(&args),
+                                 => crate::syscalls::proc::kernel_sys_sched_getaffinity(&args),
         syscall::nrs::NR_SCHED_SETAFFINITY
-                                 => crate::syscall_glue_proc::kernel_sys_sched_setaffinity(&args),
-        syscall::nrs::NR_PRCTL         => crate::syscall_glue_prctl::kernel_sys_prctl(&args),
-        syscall::nrs::NR_FUTEX         => crate::syscall_glue_proc::kernel_sys_futex(&args),
-        syscall::nrs::NR_CLONE3        => crate::syscall_glue_proc::kernel_sys_clone3(&args),
-        syscall::nrs::NR_MPROTECT      => crate::syscall_glue_proc::kernel_sys_mprotect(&args),
-        syscall::nrs::NR_MADVISE       => crate::syscall_glue_proc::kernel_sys_madvise(&args),
-        syscall::nrs::NR_PRLIMIT64     => crate::syscall_glue_proc::kernel_sys_prlimit64(&args),
-        syscall::nrs::NR_RT_SIGACTION  => crate::syscall_glue_signal::kernel_sys_rt_sigaction(&args),
-        syscall::nrs::NR_RT_SIGPROCMASK => crate::syscall_glue_signal::kernel_sys_rt_sigprocmask(&args),
-        syscall::nrs::NR_SIGALTSTACK   => crate::syscall_glue_signal::kernel_sys_sigaltstack(&args),
-        syscall::nrs::NR_NANOSLEEP     => crate::syscall_glue_proc::kernel_sys_nanosleep(&args),
-        syscall::nrs::NR_CLOCK_NANOSLEEP => crate::syscall_glue_proc::kernel_sys_clock_nanosleep(&args),
+                                 => crate::syscalls::proc::kernel_sys_sched_setaffinity(&args),
+        syscall::nrs::NR_PRCTL         => crate::syscalls::prctl::kernel_sys_prctl(&args),
+        syscall::nrs::NR_FUTEX         => crate::syscalls::proc::kernel_sys_futex(&args),
+        syscall::nrs::NR_CLONE3        => crate::syscalls::proc::kernel_sys_clone3(&args),
+        syscall::nrs::NR_MPROTECT      => crate::syscalls::proc::kernel_sys_mprotect(&args),
+        syscall::nrs::NR_MADVISE       => crate::syscalls::proc::kernel_sys_madvise(&args),
+        syscall::nrs::NR_PRLIMIT64     => crate::syscalls::proc::kernel_sys_prlimit64(&args),
+        syscall::nrs::NR_RT_SIGACTION  => crate::syscalls::signal::kernel_sys_rt_sigaction(&args),
+        syscall::nrs::NR_RT_SIGPROCMASK => crate::syscalls::signal::kernel_sys_rt_sigprocmask(&args),
+        syscall::nrs::NR_SIGALTSTACK   => crate::syscalls::signal::kernel_sys_sigaltstack(&args),
+        syscall::nrs::NR_NANOSLEEP     => crate::syscalls::proc::kernel_sys_nanosleep(&args),
+        syscall::nrs::NR_CLOCK_NANOSLEEP => crate::syscalls::proc::kernel_sys_clock_nanosleep(&args),
         syscall::nrs::NR_CLOSE         => kernel_sys_close(&args),
-        syscall::nrs::NR_CLOSE_RANGE   => crate::syscall_glue_fs::kernel_sys_close_range(&args),
-        syscall::nrs::NR_DUP           => crate::syscall_glue_fs::kernel_sys_dup(&args),
-        syscall::nrs::NR_DUP2          => crate::syscall_glue_fs::kernel_sys_dup2(&args),
-        syscall::nrs::NR_DUP3          => crate::syscall_glue_fs::kernel_sys_dup3(&args),
-        syscall::nrs::NR_FORK          => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
-        syscall::nrs::NR_VFORK         => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
+        syscall::nrs::NR_CLOSE_RANGE   => crate::syscalls::fs::kernel_sys_close_range(&args),
+        syscall::nrs::NR_DUP           => crate::syscalls::fs::kernel_sys_dup(&args),
+        syscall::nrs::NR_DUP2          => crate::syscalls::fs::kernel_sys_dup2(&args),
+        syscall::nrs::NR_DUP3          => crate::syscalls::fs::kernel_sys_dup3(&args),
+        syscall::nrs::NR_FORK          => crate::syscalls::clone::kernel_sys_clone_dispatch(&args, 0x11 /* SIGCHLD */, 0, 0, 0, 0),
+        syscall::nrs::NR_VFORK         => crate::syscalls::clone::kernel_sys_clone_dispatch(&args, 0x4111 /* CLONE_VM|CLONE_VFORK|SIGCHLD */, 0, 0, 0, 0),
         // Linux x86_64 clone(flags, child_stack, ptid, ctid, tls).
-        syscall::nrs::NR_CLONE         => crate::syscall_glue_clone::kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
-        syscall::nrs::NR_EXECVE        => crate::syscall_glue_execve::kernel_sys_execve(&args),
+        syscall::nrs::NR_CLONE         => crate::syscalls::clone::kernel_sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
+        syscall::nrs::NR_EXECVE        => crate::syscalls::execve::kernel_sys_execve(&args),
         // execveat(dirfd, path, argv, envp, flags). v1 ignores dirfd
         // + flags and routes through execve with the absolute path
         // resolution it already does.
         syscall::nrs::NR_EXECVEAT      => {
             let mut sa = args; sa.a0 = args.a1; sa.a1 = args.a2; sa.a2 = args.a3; sa.a3 = 0;
-            crate::syscall_glue_execve::kernel_sys_execve(&sa)
+            crate::syscalls::execve::kernel_sys_execve(&sa)
         }
         syscall::nrs::NR_WAIT4         => kernel_sys_wait4(&args),
         syscall::nrs::NR_WAITID        => kernel_sys_waitid(&args),
         syscall::nrs::NR_TKILL         => kernel_sys_kill(&args),
-        syscall::nrs::NR_RT_SIGPENDING => crate::syscall_glue_signal::kernel_sys_rt_sigpending(&args),
-        syscall::nrs::NR_RT_SIGSUSPEND => crate::syscall_glue_signal::kernel_sys_rt_sigsuspend(&args),
-        syscall::nrs::NR_RT_SIGTIMEDWAIT  => crate::syscall_glue_signal::kernel_sys_rt_sigtimedwait(&args),
-        syscall::nrs::NR_RT_SIGQUEUEINFO  => crate::syscall_glue_signal::kernel_sys_rt_sigqueueinfo(&args),
-        syscall::nrs::NR_RT_TGSIGQUEUEINFO => crate::syscall_glue_signal::kernel_sys_rt_tgsigqueueinfo(&args),
+        syscall::nrs::NR_RT_SIGPENDING => crate::syscalls::signal::kernel_sys_rt_sigpending(&args),
+        syscall::nrs::NR_RT_SIGSUSPEND => crate::syscalls::signal::kernel_sys_rt_sigsuspend(&args),
+        syscall::nrs::NR_RT_SIGTIMEDWAIT  => crate::syscalls::signal::kernel_sys_rt_sigtimedwait(&args),
+        syscall::nrs::NR_RT_SIGQUEUEINFO  => crate::syscalls::signal::kernel_sys_rt_sigqueueinfo(&args),
+        syscall::nrs::NR_RT_TGSIGQUEUEINFO => crate::syscalls::signal::kernel_sys_rt_tgsigqueueinfo(&args),
         // Real-impl arms that overlap with compat-stub categories.
         syscall::nrs::NR_PIPE          => kernel_sys_pipe2(&args),
-        syscall::nrs::NR_CREAT         => crate::syscall_glue_open::kernel_sys_open(&args),
+        syscall::nrs::NR_CREAT         => crate::syscalls::open::kernel_sys_open(&args),
         syscall::nrs::NR_EXIT_GROUP    => kernel_sys_exit(&args),
         syscall::nrs::NR_INIT_MODULE   => kernel_sys_init_module(&args),
         syscall::nrs::NR_FINIT_MODULE  => kernel_sys_finit_module(&args),
         syscall::nrs::NR_DELETE_MODULE => kernel_sys_delete_module(&args),
-        syscall::nrs::NR_NEWFSTATAT    => crate::syscall_glue_fs::kernel_sys_statx(&args),
+        syscall::nrs::NR_NEWFSTATAT    => crate::syscalls::fs::kernel_sys_statx(&args),
         syscall::nrs::NR_STAT
-            | syscall::nrs::NR_LSTAT   => crate::syscall_glue_fs::kernel_sys_stat(&args),
-        // Cred family: dispatched via syscall_glue_cred::cred_dispatch.
+            | syscall::nrs::NR_LSTAT   => crate::syscalls::fs::kernel_sys_stat(&args),
+        // Cred family: dispatched via super::cred::cred_dispatch.
         // Handled in the fallthrough below to keep this match arm small.
-        syscall::nrs::NR_SET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_set_robust_list(&args),
-        syscall::nrs::NR_GET_ROBUST_LIST => crate::syscall_glue_proc::kernel_sys_get_robust_list(&args),
+        syscall::nrs::NR_SET_ROBUST_LIST => crate::syscalls::proc::kernel_sys_set_robust_list(&args),
+        syscall::nrs::NR_GET_ROBUST_LIST => crate::syscalls::proc::kernel_sys_get_robust_list(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::kernel_sys_syslog(&args),
         // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
         syscall::nrs::NR_RT_SIGRETURN  => unsafe { crate::sig_dispatch::rt_sigreturn() },
         // Compat-stub fall-through table per P3-46.
         _ => {
-            if let Some(rv) = crate::syscall_glue_cred::cred_dispatch(nr, &args) {
+            if let Some(rv) = crate::syscalls::cred::cred_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = crate::syscall_glue_timers::timer_dispatch(nr, &args) {
+            } else if let Some(rv) = crate::syscalls::timers::timer_dispatch(nr, &args) {
                 rv
-            } else if let Some(rv) = crate::syscall_glue_perms::perms_dispatch(nr, &args) {
+            } else if let Some(rv) = crate::syscalls::perms::perms_dispatch(nr, &args) {
                 rv
             } else if let Some(rv) = xattr::xattr_dispatch(nr, &args) { rv }
             else if let Some(rv) = keyring::keyring_dispatch(nr, &args) {
@@ -919,8 +914,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_raw(b"\n");
     }
     // POSIX timers + rseq cpu_id writeback at syscall-return tail.
-    crate::syscall_glue_timers::fire_due_timers();
-    crate::syscall_glue_proc::rseq_writeback();
+    crate::syscalls::timers::fire_due_timers();
+    crate::syscalls::proc::rseq_writeback();
     // F108: PTRACE_SYSCALL exit-stop, symmetric with the entry-stop above.
     ptrace_syscall_stop_if_armed();
     // alarm(2) deadline check: post SIGALRM (bit 13) if the alarm_ns has passed.
@@ -954,7 +949,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         unsafe { crate::sched::schedule(); }
     }
     // P3-65: deliver pending signals at syscall return.
-    if let Some(p) = crate::syscall_glue_signal::take_lowest_pending() {
+    if let Some(p) = crate::syscalls::signal::take_lowest_pending() {
         // Job-control signals come first — their default action is
         // stop / continue, not terminate, regardless of handler.
         // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP
