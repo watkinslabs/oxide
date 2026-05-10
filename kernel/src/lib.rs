@@ -64,9 +64,7 @@ pub mod sched;
 /// F158: /proc/meminfo body builder (split out of procfs.rs).
 
 /// F158: /proc/<pid>/smaps detailed per-VMA memory stats.
-#[cfg(target_os = "oxide-kernel")] pub mod procfs_smaps;
 /// F158: /proc/<pid>/status body builder (Linux-conformant fields).
-#[cfg(target_os = "oxide-kernel")] pub mod procfs_pid_status;
 
 /// Minimal devfs registry per docs/16 + docs/19. Path → InodeRef
 /// table for `/dev/console` + `/dev/tty*`. Resolved by `sys_open`.
@@ -92,10 +90,7 @@ pub use security::bpf as dev_bpf;
 
 
 #[cfg(target_os = "oxide-kernel")]
-pub mod procfs;
 #[cfg(target_os = "oxide-kernel")]
-#[cfg(target_os = "oxide-kernel")]
-pub mod procfs_static;
 
 
 /// Per-arch ELF execution smoke. Parses a hand-synthesised
@@ -776,6 +771,7 @@ pub mod pf_recover_smoke;
 pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
 #[cfg(target_os = "oxide-kernel")] pub mod ipc;
+#[cfg(target_os = "oxide-kernel")] pub mod procfs;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
