@@ -10,7 +10,6 @@
 // v2.x once the kernel grows static tracepoint anchors at
 // sched_switch / sys_enter / sys_exit per `37§6`.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use vfs::InodeRef;

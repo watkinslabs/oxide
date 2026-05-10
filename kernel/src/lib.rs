@@ -61,7 +61,6 @@ pub mod sched;
 /// TTY input per docs/28. timer-poll + ringbuffer + waitqueue.
 #[cfg(target_os = "oxide-kernel")] pub mod tty;
 /// `/dev/console` char-device per docs/16 + docs/28.
-#[cfg(target_os = "oxide-kernel")] pub mod dev_console;
 /// F158: /proc/meminfo body builder (split out of procfs.rs).
 
 /// F158: /proc/<pid>/smaps detailed per-VMA memory stats.
@@ -80,12 +79,8 @@ pub mod devfs;
 /// boot from a kernel-embedded image. Linux's CONFIG_EXT4_FS=y
 /// equivalent (built-in, not a module).
 #[cfg(target_os = "oxide-kernel")]
-pub mod dev_pty;
 #[cfg(target_os = "oxide-kernel")]
-pub mod dev_pidfd;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-pub mod dev_virtio_net;
-pub mod dev_virtio_net_modern;
+#[cfg(target_os = "oxide-kernel")]
 pub mod sysv_sem;
 pub mod sysv_msg;
 pub mod posix_mq;
@@ -94,7 +89,6 @@ pub mod io_uring;
 pub use security::seccomp;
 #[cfg(target_os = "oxide-kernel")]
 pub use security::bpf as dev_bpf;
-pub mod dev_drm;
 #[cfg(target_os = "oxide-kernel")]
 
 
@@ -461,15 +455,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { user_as::init(info.hhdm_offset); }
         devfs::init(); procfs::init();
-        crate::dev_drm::register();
-        fs::tmpfs::init(); dev_tracefs::init(); drv_virtio_input::devfs::init();
-        fbdev::devfs::init(); dev_pty::init();
+        crate::dev::drm::register();
+        fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
+        fbdev::devfs::init(); crate::dev::pty::init();
         // boot smokes:
         ::devfs::misc::smoke_test();
         procfs::smoke_test();
         fs::pipe::smoke_test();
         fs::tmpfs::smoke_test();
-        dev_pty::smoke_test();
+        crate::dev::pty::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
         // bumped whenever a new arm or compat-table entry lands.
         debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
@@ -680,7 +674,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // virtio-net legacy driver detect + init. No-op if no device.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
-        crate::dev_virtio_net::init_legacy();
+        crate::dev::virtio_net::init_legacy();
     }
 
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -783,7 +777,7 @@ pub mod pf_recover_smoke;
 // gates inside the module.
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscalls;
-#[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;
+#[cfg(target_os = "oxide-kernel")] pub mod dev;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
