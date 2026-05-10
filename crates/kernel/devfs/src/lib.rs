@@ -159,3 +159,20 @@ pub unsafe fn read_user_cstr<'a>(ptr: u64, max: usize) -> Option<&'a [u8]> {
 
 
 pub mod misc;
+
+
+/// FileSystem trait impl per `vfs::fs::FileSystem`. devfs is a
+/// register-only namespace (no create/unlink); other ops default
+/// to Erofs from the trait. Per `52§3` integration layer.
+pub struct DevfsFs;
+
+impl vfs::fs::FileSystem for DevfsFs {
+    /// # C: O(1)
+    fn name(&self) -> &str { "devfs" }
+    /// # C: O(N_devfs_entries)
+    fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup(path) }
+}
+
+/// Singleton accessor for the mount-table to register.
+/// # C: O(1)
+pub fn instance() -> &'static dyn vfs::fs::FileSystem { &DevfsFs }
