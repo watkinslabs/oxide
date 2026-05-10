@@ -109,7 +109,7 @@ pub fn kernel_sys_clone3(args: &SyscallArgs) -> i64 {
         let merged_flags = flags | (exit_signal & 0xff);
         // Direct call into the dispatch helper — same path as
         // clone/fork/vfork.
-        crate::syscall_glue_clone::kernel_sys_clone_dispatch(
+        crate::syscalls::clone::kernel_sys_clone_dispatch(
             args, merged_flags, user_sp, parent_tid, child_tid, tls,
         )
     }
@@ -267,7 +267,7 @@ pub fn kernel_sys_nanosleep(args: &SyscallArgs) -> i64 {
 }
 
 // `sys_rseq` + rseq_writeback live in `syscall_glue_rseq.rs` (F86).
-pub use crate::syscall_glue_rseq::{kernel_sys_rseq, rseq_writeback};
+pub use crate::syscalls::rseq::{kernel_sys_rseq, rseq_writeback};
 
 // `sys_chroot` real impl moved to `syscall_glue_chroot.rs` (F95).
 
@@ -810,7 +810,7 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
     let ptr = args.a0;
     let len = args.a1 as usize;
     if len > crate::hostname::HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = crate::syscall_glue::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    if let Err(rv) = crate::syscalls::validate_user_buf(ptr, len as u64, 1) { return rv; }
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(sched::cap::SYS_ADMIN) { return -(Errno::Eperm.as_i32() as i64); }
     let mut buf = [0u8; crate::hostname::HOST_NAME_MAX];

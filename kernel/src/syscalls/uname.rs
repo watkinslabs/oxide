@@ -44,7 +44,7 @@ pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
 /// # C: O(1)
 pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     let tp = args.a0;
-    if let Err(rv) = crate::syscall_glue::validate_user_buf(tp, UTSNAME_TOTAL_LEN as u64, 1) {
+    if let Err(rv) = crate::syscalls::validate_user_buf(tp, UTSNAME_TOTAL_LEN as u64, 1) {
         return rv;
     }
     let host = uts_hostname_for_current();
