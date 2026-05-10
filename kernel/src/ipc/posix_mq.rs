@@ -19,7 +19,6 @@
 // the dedicated mq_timedsend/mq_timedreceive syscalls, NOT byte
 // stream.
 
-#![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
 use alloc::string::String;
