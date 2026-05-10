@@ -156,3 +156,6 @@ pub unsafe fn read_user_cstr<'a>(ptr: u64, max: usize) -> Option<&'a [u8]> {
     // SAFETY: same range; we've just probed every byte.
     Some(unsafe { core::slice::from_raw_parts(ptr as *const u8, len) })
 }
+
+
+pub mod misc;

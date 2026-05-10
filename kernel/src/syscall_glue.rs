@@ -421,7 +421,7 @@ fn kernel_sys_getrandom(args: &SyscallArgs) -> i64 {
     if let Err(rv) = validate_user_buf(buf, len, 1) { return rv; }
     let mut written: u64 = 0;
     while written < len {
-        let v = dev_misc::lcg_next().to_le_bytes();
+        let v = devfs::misc::lcg_next().to_le_bytes();
         let n = (len - written).min(8);
         // SAFETY: validated [buf, buf+len) below USER_VA_END; CPL=0 writes through caller's AS.
         unsafe {
