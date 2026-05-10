@@ -39,7 +39,7 @@ const MAGIC: u64 = 0xCAFE_F00D_DEAD_BEEF;
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn run<M: MmuOps>() {
-    let pa = match pmm_setup::alloc_one_frame() {
+    let pa = match pmm::setup::alloc_one_frame() {
         Some(p) => p,
         None => {
             debug_vmm! { klog::kerror!("mmuops-smoke: PMM alloc failed"); }
@@ -134,7 +134,7 @@ const SCRATCH_VA_2M: u64 = 0xffff_fd00_0020_0000;
 /// state; PMM ready; single-CPU; IRQs off.
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn run_2m<M: MmuOps>() {
-    let pa = match pmm_setup::alloc_contig(pmm::Order(9)) {
+    let pa = match pmm::setup::alloc_contig(pmm::Order(9)) {
         Some(p) => p,
         None => {
             debug_vmm! { klog::kinfo!("mmuops-smoke 2m: PMM order-9 alloc unavailable, skipping"); }

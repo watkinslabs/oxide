@@ -365,13 +365,13 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // Tables (intermediate PT levels) are always per-AS — direct free.
     let mut free_leaf = |pa: u64| {
         // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
-        // quiesced per fn contract; pmm_setup::dec_and_maybe_free drops
+        // quiesced per fn contract; pmm::setup::dec_and_maybe_free drops
         // refcount and frees on zero.
-        unsafe { pmm_setup::dec_and_maybe_free_frame(pa); }
+        unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
     };
     let mut free_table = |pa: u64| {
         // SAFETY: PT tables are always private to this AS; free directly.
-        unsafe { pmm_setup::free_one_frame(pa); }
+        unsafe { pmm::setup::free_one_frame(pa); }
     };
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
@@ -381,7 +381,7 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     }
     // Free the root frame itself.
     // SAFETY: root_pa is the AS-private root; no longer reachable.
-    unsafe { pmm_setup::free_one_frame(root_pa); }
+    unsafe { pmm::setup::free_one_frame(root_pa); }
 }
 
 /// aarch64 mirror of `as_teardown`.
@@ -391,11 +391,11 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     let mut free_leaf = |pa: u64| {
         // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
-        unsafe { pmm_setup::dec_and_maybe_free_frame(pa); }
+        unsafe { pmm::setup::dec_and_maybe_free_frame(pa); }
     };
     let mut free_table = |pa: u64| {
         // SAFETY: PT tables are always per-AS; direct free.
-        unsafe { pmm_setup::free_one_frame(pa); }
+        unsafe { pmm::setup::free_one_frame(pa); }
     };
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
@@ -404,7 +404,7 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
         );
     }
     // SAFETY: root_pa is the AS-private root; no longer reachable.
-    unsafe { pmm_setup::free_one_frame(root_pa); }
+    unsafe { pmm::setup::free_one_frame(root_pa); }
 }
 
 /// Convenience wrapper: install `as_teardown` on a freshly-built AS.
@@ -717,21 +717,21 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
         #[cfg(target_arch = "x86_64")]
         let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _>(
             uva, fault, hhdm,
-            || pmm_setup::alloc_one_frame(),
-            |pa| pmm_setup::frame_refcount(pa),
+            || pmm::setup::alloc_one_frame(),
+            |pa| pmm::setup::frame_refcount(pa),
             // SAFETY: dec_ref of a previously-mapped shared frame after COW split; rmap_aware_dec_and_maybe_free clears page->mapping before the frame returns to PMM.
-            |pa| pmm_setup::rmap_aware_dec_and_maybe_free(pa),
+            |pa| pmm::setup::rmap_aware_dec_and_maybe_free(pa),
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| pmm_setup::set_anon_rmap_for_pa(pa, av, idx));
+            |pa, av, idx| pmm::setup::set_anon_rmap_for_pa(pa, av, idx));
         #[cfg(target_arch = "aarch64")]
         let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _>(
             uva, fault, hhdm,
-            || pmm_setup::alloc_one_frame(),
-            |pa| pmm_setup::frame_refcount(pa),
+            || pmm::setup::alloc_one_frame(),
+            |pa| pmm::setup::frame_refcount(pa),
             // SAFETY: dec_ref + rmap clear; same shape as x86.
-            |pa| pmm_setup::rmap_aware_dec_and_maybe_free(pa),
+            |pa| pmm::setup::rmap_aware_dec_and_maybe_free(pa),
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| pmm_setup::set_anon_rmap_for_pa(pa, av, idx));
+            |pa, av, idx| pmm::setup::set_anon_rmap_for_pa(pa, av, idx));
         r
     }
 }
@@ -977,7 +977,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             }
             // Free the PA back to PMM.
             // SAFETY: pa was reachable via the live PT entry just unmapped above; we're now the sole owner since the unmap completed and the TLB flush below makes the old translation unobservable.
-            unsafe { pmm_setup::free_one_frame(pa.0); }
+            unsafe { pmm::setup::free_one_frame(pa.0); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }

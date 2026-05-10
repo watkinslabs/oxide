@@ -37,7 +37,7 @@ const USER_FLAGS_REQUEST: PageFlags =
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn run<M: MmuOps>() {
-    let pa = match pmm_setup::alloc_one_frame() {
+    let pa = match pmm::setup::alloc_one_frame() {
         Some(p) => p,
         None => {
             debug_vmm! { klog::kerror!("user-map-smoke: PMM alloc failed"); }
