@@ -347,13 +347,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     let is_virtio_net = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1000 || d.device_id == 0x1041);
     let is_virtio_gpu = d.vendor_id == 0x1AF4 && d.device_id == 0x1050;
-    // F156: keep is_virtio_input gated off until the input post-init
-    // path is cleaned up — enabling it (correct vendor 0x1AF4) hangs
-    // boot before pci-cmd 0:5.0 prints. Input plumbing isn't on the
-    // login critical path, so leave the prior 0x1A typo's effect
-    // (always-false) here intentionally until the install path is
-    // fixed in a follow-up.
-    let is_virtio_input = false;
+    let is_virtio_input = d.vendor_id == 0x1AF4 && d.device_id == 0x1052;
     let bdf_word = (d.bdf.bus as u32) << 16
                  | (d.bdf.device as u32) << 8
                  | (d.bdf.function as u32);
