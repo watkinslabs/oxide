@@ -891,9 +891,10 @@ pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = if let Some(i) = crate::devfs::lookup(s) { i }
-        else if let Some(i) = ::fs::tmpfs::lookup(s) { i }
-        else { return -(Errno::Enoent.as_i32() as i64); };
+    let inode = match vfs::mount::lookup(s) {
+        Ok(i)  => i,
+        Err(_) => return -(Errno::Enoent.as_i32() as i64),
+    };
     match inode.truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
 }
 

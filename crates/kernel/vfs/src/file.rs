@@ -260,3 +260,31 @@ pub enum SeekFrom {
     Current,
     End,
 }
+
+
+/// Create a `File` from an inode + path, install into the supplied
+/// `FdTable`. Per `docs/53§3` Tier-2 work fn. Handles the common
+/// post-lookup sequence: O_DIRECTORY check, O_TRUNC, Dentry wrap,
+/// File construction, fd allocation.
+/// # C: O(1) + fd_table alloc
+pub fn install_open(
+    fdt: &crate::fdtable::FdTable,
+    inode: InodeRef,
+    path: &str,
+    flags: OpenFlags,
+) -> Result<i32, VfsError> {
+    use alloc::sync::Arc;
+    use alloc::string::ToString;
+    use crate::dentry::Dentry;
+    if flags.contains(OpenFlags::O_DIRECTORY)
+        && !matches!(inode.file_type(), crate::types::FileType::Directory)
+    {
+        return Err(VfsError::Enotdir);
+    }
+    if flags.contains(OpenFlags::O_TRUNC) {
+        let _ = inode.truncate(0);
+    }
+    let dentry = Dentry::new(None, path.to_string(), Arc::clone(&inode));
+    let file = File::new(inode, dentry, flags);
+    fdt.alloc(file).map_err(|_| VfsError::Emfile)
+}
