@@ -96,11 +96,8 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::unlink_at(p.as_bytes()) {
-        Ok(())  => 0,
-        Err(e)  => errno_from_vfs(e),
-    }
+    let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
+    match mnt.fs.unlink(&rel) { Ok(()) => 0, Err(e) => errno_from_vfs(e) }
 }
 
 /// `unlinkat(dirfd, path, flags)` slot 263. We currently honour
@@ -112,12 +109,14 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
+    let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
     let flags = args.a2 as u32;
-    let r = if (flags & AT_REMOVEDIR) != 0 {
+    // AT_REMOVEDIR currently only supported on ext4 path. Other FSes
+    // get the unified unlink which they may reject as Erofs/Eisdir.
+    let r = if (flags & AT_REMOVEDIR) != 0 && is_ext4_path(&p) {
         ext4::rootfs::rmdir_at(p.as_bytes())
     } else {
-        ext4::rootfs::unlink_at(p.as_bytes())
+        mnt.fs.unlink(&rel)
     };
     match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
@@ -185,6 +184,15 @@ pub fn sys_renameat2(args: &SyscallArgs) -> i64 {
     rename_impl(args.a1, args.a3)
 }
 
+
+/// Route a path-write operation through the mount table per
+/// `docs/16`. Replaces the `is_ext4_path` gate + `ext4::rootfs::*`
+/// hardcoded chain. Returns the resolved (mount, relative_path) or
+/// EROFS-like errno if no mount matches.
+fn mount_for_write(path: &str) -> Result<(alloc::sync::Arc<vfs::mount::Mount>, alloc::string::String), i64> {
+    vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))
+}
+
 fn rename_impl(from_ptr: u64, to_ptr: u64) -> i64 {
     let from_raw = match read_path(from_ptr) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
@@ -194,10 +202,13 @@ fn rename_impl(from_ptr: u64, to_ptr: u64) -> i64 {
     };
     let f = resolve(&from_raw).unwrap_or(from_raw);
     let t = resolve(&to_raw).unwrap_or(to_raw);
-    if !is_ext4_path(&f) || !is_ext4_path(&t) {
-        return -(Errno::Erofs.as_i32() as i64);
+    // rename must be within a single mount (Linux EXDEV otherwise).
+    let (mnt_f, rel_f) = match mount_for_write(&f) { Ok(x) => x, Err(rv) => return rv };
+    let (mnt_t, rel_t) = match mount_for_write(&t) { Ok(x) => x, Err(rv) => return rv };
+    if !alloc::sync::Arc::ptr_eq(&mnt_f, &mnt_t) {
+        return -(Errno::Exdev.as_i32() as i64);
     }
-    match ext4::rootfs::rename_at(f.as_bytes(), t.as_bytes()) {
+    match mnt_f.fs.rename(&rel_f, &rel_t) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
