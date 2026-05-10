@@ -1,0 +1,22 @@
+[package]
+name = "perf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# perf_event_open(2) per-task counters per `52§3` domain layer.
+# v1 reads HW PMC (x86 PERF_GLOBAL_*; arm PMU regs).
+
+[dependencies]
+hal     = { path = "../../arch/hal" }
+sched   = { path = "../../kernel/sched" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../../kernel/syscall" }
+vfs     = { path = "../../kernel/vfs" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
