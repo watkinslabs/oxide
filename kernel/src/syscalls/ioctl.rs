@@ -125,7 +125,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
                 Some(pair) => pair.with_pair(|p| p.termios),
                 None       => {
                     let vt = (ino & 0xff) as u8;
-                    crate::tty::termios_get(vt)
+                    tty::live::termios_get(vt)
                 }
             };
             // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
@@ -149,7 +149,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
                 pair.with_pair(|p| p.termios = buf);
             } else {
                 let vt = (ino & 0xff) as u8;
-                crate::tty::termios_set(vt, &buf);
+                tty::live::termios_set(vt, &buf);
             }
             0
         }
@@ -181,13 +181,13 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
             } else {
                 let vt = (ino & 0xff) as u8;
                 if req == TIOCGPGRP {
-                    let pgid = crate::tty::foreground_pgid(vt);
+                    let pgid = tty::live::foreground_pgid(vt);
                     // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
                     unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
                 } else {
                     // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
                     let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
-                    crate::tty::set_foreground_pgid(vt, pgid);
+                    tty::live::set_foreground_pgid(vt, pgid);
                 }
             }
             0
@@ -207,7 +207,7 @@ pub fn kernel_sys_ioctl(args: &SyscallArgs) -> i64 {
                 Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
             };
             use core::sync::atomic::Ordering;
-            crate::tty::set_session(vt, cur.sid.load(Ordering::Acquire));
+            tty::live::set_session(vt, cur.sid.load(Ordering::Acquire));
             0
         }
         _ => -(Errno::Enotty.as_i32() as i64),

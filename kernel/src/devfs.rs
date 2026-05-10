@@ -39,7 +39,7 @@ pub fn init() {
     register("/dev/tty0",    Arc::clone(&fg));
     register("/dev/ttyS0",   fg);
     // /dev/tty1..tty63 per Linux MAX_NR_CONSOLES (vt::MAX_NR_CONSOLES).
-    for vt in 1..=crate::tty::N_VT as u8 {
+    for vt in 1..=tty::live::N_VT as u8 {
         let mut path = alloc::string::String::with_capacity(10);
         path.push_str("/dev/tty");
         if vt >= 10 { path.push((b'0' + (vt / 10)) as char); }

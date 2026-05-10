@@ -44,7 +44,6 @@ pub use ::sched::kthread;
 /// ELF loader glue per docs/31. PT_LOADs → KernelBytes (P2-17).
 
 /// TTY input per docs/28. timer-poll + ringbuffer + waitqueue.
-#[cfg(target_os = "oxide-kernel")] pub mod tty;
 /// `/dev/console` char-device per docs/16 + docs/28.
 /// F158: /proc/meminfo body builder (split out of procfs.rs).
 
@@ -509,7 +508,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 sched::live::install_default_runqueue();
                 #[cfg(target_arch = "x86_64")]
                 sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
-                arch_irq::set_tick_poll_hook(crate::tty::tick_poll_uart);
+                arch_irq::set_tick_poll_hook(tty::live::tick_poll_uart);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);

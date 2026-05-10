@@ -50,3 +50,6 @@ mod tests {
         assert_eq!(r, Err(Error::NotImplemented));
     }
 }
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod live;
