@@ -186,12 +186,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=8"]);
+                "bs=1M", "count=16"]);
         run(c)?;
     }
     {
+        // Force 4 KiB blocks. The default mkfs.ext4 heuristic picks
+        // 1 KiB blocks for small images; with ~80 hardlinks under
+        // /bin and 1 KiB dir blocks, debugfs `ln` hits "No free
+        // space in the directory" partway through the applet list
+        // and silently drops /bin/{login,getty,init,...} (debugfs
+        // exits 0 on the link error). 4 KiB blocks give /bin enough
+        // room for the full applet set.
         let mut c = Command::new("mkfs.ext4");
-        c.args(["-F", "-O", "^has_journal", "-L", "oxide", img.to_str().unwrap()]);
+        c.args(["-F", "-b", "4096",
+                "-O", "^has_journal", "-L", "oxide", img.to_str().unwrap()]);
         run(c)?;
     }
 
@@ -253,7 +261,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             let mut c = Command::new("debugfs");
             c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
             c.stdout(std::process::Stdio::null());
-            c.stderr(std::process::Stdio::null());
+            // Don't mute stderr — debugfs's `ln` exits 0 even when
+            // it prints `make_link: Ext2 inode is not a directory`.
+            // Without seeing the stderr we silently drop applets and
+            // ship a busted rootfs (e.g. /bin/login missing → getty
+            // can't exec it). Pipe stderr through so failures show.
             run(c)
         };
         // /bin applets — every user-facing tool dispatched via argv[0].
