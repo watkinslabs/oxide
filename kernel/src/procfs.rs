@@ -58,18 +58,34 @@ impl ProcSelfMapsInode {
         let cur = match crate::sched::current() { Some(c) => c, None => return out };
         // SAFETY: running task on this CPU; preempt-off; sole reader of the mm slot per the single-mutator invariant in `13§5`.
         let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return out };
+        let brk_lo = mm.brk_max().saturating_sub(0);
+        let brk_hi = mm.brk();
+        let _ = brk_lo;
         for vma in mm.snapshot_vmas() {
             push_hex(&mut out, vma.start.as_u64());
             out.push(b'-');
             push_hex(&mut out, vma.end.as_u64());
             out.push(b' ');
-            // perms: rwxp / rwxs (we only support PRIVATE backing today)
+            // perms: rwx + p/s (private/shared) per Linux man page.
             let p = vma.prot;
             out.push(if p.contains(vmm::VmaProt::READ)  { b'r' } else { b'-' });
             out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
             out.push(if p.contains(vmm::VmaProt::EXEC)  { b'x' } else { b'-' });
-            out.push(b'p');
-            push(&mut out, b" 00000000 00:00 0 \n");
+            out.push(if vma.flags.contains(vmm::VmaFlags::SHARED) { b's' } else { b'p' });
+            push(&mut out, b" 00000000 00:00 0 ");
+            // F158: synthesise pathname pseudo-tags Linux emits for
+            // unnamed VMAs. [stack] for GROWSDOWN; [heap] for the
+            // anon VMA covering the current brk range.
+            if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
+                push(&mut out, b"[stack]");
+            } else if vma.start.as_u64() <= brk_hi
+                   && vma.end.as_u64()   >  0
+                   && brk_hi > 0
+                   && vma.end.as_u64()   >  brk_hi.saturating_sub(0x10000)
+                   && matches!(vma.backing, vmm::VmaBacking::Anonymous) {
+                push(&mut out, b"[heap]");
+            }
+            out.push(b'\n');
         }
         out
     }
@@ -184,35 +200,38 @@ impl ProcSelfStatusInode {
         let tid    = cur.map(|c| c.tid as u64).unwrap_or(1);
         let ppid   = cur.map(|c| c.parent_tid.load(Ordering::Acquire) as u64).unwrap_or(0);
         let name   = cur.map(|c| c.name).unwrap_or("oxide");
-        push(&mut out, b"Name:\t");        push(&mut out, name.as_bytes()); push(&mut out, b"\n");
+        push(&mut out, b"Name:\t"); push(&mut out, name.as_bytes()); push(&mut out, b"\n");
         let state_label = cur.map(|c| c.state().linux_status_label()).unwrap_or("R (running)");
         push(&mut out, b"State:\t"); push(&mut out, state_label.as_bytes()); push(&mut out, b"\n");
-        push(&mut out, b"Tgid:\t");        push_u64(&mut out, tid); push(&mut out, b"\n");
-        push(&mut out, b"Pid:\t");         push_u64(&mut out, tid); push(&mut out, b"\n");
-        push(&mut out, b"PPid:\t");        push_u64(&mut out, ppid); push(&mut out, b"\n");
-        push(&mut out, b"Uid:\t0\t0\t0\t0\n");
-        push(&mut out, b"Gid:\t0\t0\t0\t0\n");
+        push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid); push(&mut out, b"\nPid:\t"); push_u64(&mut out, tid);
+        push(&mut out, b"\nPPid:\t"); push_u64(&mut out, ppid); push(&mut out, b"\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n");
         push(&mut out, b"FDSize:\t");
         // SAFETY: fd_table slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
         let fds = cur.and_then(|c| unsafe { (*c.fd_table.get()).as_ref().cloned() })
             .map(|t| t.count() as u64).unwrap_or(0);
         push_u64(&mut out, fds); push(&mut out, b"\n");
         push(&mut out, b"Groups:\t\n");
-        // SAFETY: mm slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
-        let vm_kb = cur.and_then(|c| unsafe { (*c.mm.get()).as_ref().map(|m| {
-            m.snapshot_vmas().iter()
-                .map(|v| (v.end.as_u64() - v.start.as_u64()) / 1024).sum::<u64>()
-        })}).unwrap_or(0);
-        push(&mut out, b"VmPeak:\t"); push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
-        push(&mut out, b"VmSize:\t"); push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
-        push(&mut out, b"VmRSS:\t");  push_u64(&mut out, vm_kb); push(&mut out, b" kB\n");
+        // SAFETY: mm slot single-mutator per `13§5`.
+        let (vm, d, s, e, l) = cur.and_then(|c| unsafe {
+            (*c.mm.get()).as_ref().map(|m| {
+                let (mut v, mut d, mut s, mut e, mut l) = (0u64,0u64,0u64,0u64,0u64);
+                for x in m.snapshot_vmas() {
+                    let kb = (x.end.as_u64() - x.start.as_u64()) / 1024;
+                    v += kb;
+                    if x.flags.contains(vmm::VmaFlags::GROWSDOWN)    { s += kb; }
+                    else if x.prot.contains(vmm::VmaProt::EXEC)      { e += kb; }
+                    else if x.prot.contains(vmm::VmaProt::WRITE)     { d += kb; }
+                    else                                             { l += kb; }
+                } (v, d, s, e, l) })
+        }).unwrap_or((0, 0, 0, 0, 0));
+        let row = |out: &mut alloc::vec::Vec<u8>, k: &[u8], v: u64| { push(out, k); push_u64(out, v); push(out, b" kB\n"); };
+        for &(k, v) in &[(b"VmPeak:\t" as &[u8], vm), (b"VmSize:\t", vm), (b"VmHWM:\t", vm), (b"VmRSS:\t", vm), (b"VmData:\t", d), (b"VmStk:\t", s), (b"VmExe:\t", e), (b"VmLib:\t", l)] { row(&mut out, k, v); }
         push(&mut out, STATUS_TAIL);
         out
     }
 }
 
 const STATUS_TAIL: &[u8] = b"\
-VmData:\t0 kB\nVmStk:\t8 kB\nVmExe:\t4 kB\nVmLib:\t0 kB\n\
 Threads:\t1\n\
 SigQ:\t0/0\n\
 SigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n\
@@ -306,13 +325,16 @@ processes 1\n\
 procs_running 1\n\
 procs_blocked 0\n\
 softirq 0 0 0 0 0 0 0 0 0 0\n";
-pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tdevtmpfs\nnodev\tprocfs\n";
+pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
 pub(crate) const MOUNTS_BODY:  &[u8] = b"\
-devtmpfs /dev devtmpfs rw,nosuid,relatime 0 0\n\
-procfs /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
+/dev/oxide0 / ext4 rw,relatime 0 0\n\
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
 sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n\
+devtmpfs /dev devtmpfs rw,nosuid,relatime,size=4096k,nr_inodes=1048576,mode=755 0 0\n\
+devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=666 0 0\n\
+tmpfs /run tmpfs rw,nosuid,nodev 0 0\n\
 tmpfs /tmp tmpfs rw,nosuid,nodev,relatime 0 0\n\
-ext4 / ext4 rw,relatime 0 0\n";
+tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n";
 pub(crate) const MOUNTINFO_BODY: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n2 1 0:2 / /dev rw - devtmpfs devtmpfs rw\n3 1 0:3 / /proc rw - proc proc rw\n4 1 0:4 / /tmp rw - tmpfs tmpfs rw\n";
 pub(crate) const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
 pub(crate) const LIMITS_BODY:  &[u8] = b"\
@@ -420,12 +442,7 @@ impl Inode for ProcMeminfoInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = alloc::vec::Vec::with_capacity(192);
-        let (free_kb, alloc_kb) = pmm_kb_stats();
-        let total_kb = free_kb + alloc_kb;
-        push(&mut body, b"MemTotal:        "); push_u64(&mut body, total_kb); push(&mut body, b" kB\n");
-        push(&mut body, b"MemFree:         "); push_u64(&mut body, free_kb);  push(&mut body, b" kB\n");
-        push(&mut body, b"MemAvailable:    "); push_u64(&mut body, free_kb);  push(&mut body, b" kB\n");
+        let body = crate::procfs_meminfo::build();
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
         let n = (body.len() - off).min(buf.len());
@@ -627,6 +644,7 @@ impl Inode for ProcPidDirInode {
             "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
+            "smaps"   => Ok(Arc::new(crate::procfs_smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
             "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
@@ -650,6 +668,22 @@ impl Inode for ProcPidDirInode {
             // translation. Format: "<inside_id> <outside_id> <range>".
             "uid_map" | "gid_map" => Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef),
             "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
+            // F158: Linux per-pid files. Most stub to plausible values;
+            // tools that probe these (systemd, glibc, gdb) accept them.
+            "syscall"  => Ok(StaticFileInode::new(b"running\n") as InodeRef),
+            "mounts"   => Ok(StaticFileInode::new(MOUNTS_BODY) as InodeRef),
+            "mountinfo" => Ok(StaticFileInode::new(MOUNTINFO_BODY) as InodeRef),
+            "cgroup"   => Ok(StaticFileInode::new(b"0::/\n") as InodeRef),
+            "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
+            "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
+            "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
+            "smaps_rollup" => Ok(Arc::new(crate::procfs_smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
+            "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid: self.tid }) as InodeRef),
+            "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map"
+              | "pagemap" | "kpagecount" | "kpageflags" | "attr"
+              => Ok(StaticFileInode::new(b"") as InodeRef),
+            "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
+            "exe" | "cwd" | "root" => Ok(StaticFileInode::new(b"/") as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -658,12 +692,7 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &[
-            "status", "cmdline", "stat", "maps", "comm", "environ", "statm",
-            "wchan", "oom_score", "oom_score_adj", "loginuid", "sessionid",
-            "io", "limits", "personality", "sched", "schedstat", "autogroup",
-            "uid_map", "gid_map", "setgroups",
-        ];
+        const ENTRIES: &[&str] = &["status","cmdline","stat","maps","smaps","smaps_rollup","numa_maps","comm","environ","statm","wchan","oom_score","oom_score_adj","loginuid","sessionid","io","limits","personality","sched","schedstat","autogroup","uid_map","gid_map","setgroups","syscall","stack","mounts","mountinfo","mountstats","cgroup","auxv","timerslack_ns","coredump_filter","exe","cwd","root"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
@@ -687,17 +716,7 @@ pub struct ProcPidLimitsInode { pub tid: u32 }
 pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
-    use core::sync::atomic::Ordering;
-    let mut out = alloc::vec::Vec::with_capacity(256);
-    let task = match crate::sched::registry::lookup(tid) { Some(t) => t, None => return out };
-    let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
-    push(&mut out, b"Name:\t"); push(&mut out, task.name.as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"State:\t"); push(&mut out, task.state().linux_status_label().as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid as u64); push(&mut out, b"\n");
-    push(&mut out, b"Pid:\t");  push_u64(&mut out, tid as u64); push(&mut out, b"\n");
-    push(&mut out, b"PPid:\t"); push_u64(&mut out, ppid); push(&mut out, b"\n");
-    push(&mut out, b"Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nThreads:\t1\n");
-    out
+    crate::procfs_pid_status::body(tid)
 }
 
 fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -911,7 +930,6 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
         }
     }
 }
-
 
 /// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.

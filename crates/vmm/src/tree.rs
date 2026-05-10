@@ -46,6 +46,50 @@ impl VmaTree {
         if v.contains(va) { Some(v) } else { None }
     }
 
+    /// F158: find a `MAP_GROWSDOWN` VMA whose `start` lies in
+    /// `(va, va + max_gap]` — used by the page-fault handler to
+    /// auto-extend a stack VMA when access lands just below it.
+    /// Linux uses a 64 KiB stack guard gap by default. Returns the
+    /// VMA reference for the kernel-side caller to extend.
+    /// # C: O(log N)
+    pub fn find_growsdown_above(&self, va: UserVirtAddr, max_gap: u64) -> Option<&Vma> {
+        // The next-key-up entry from va.
+        let (_, v) = self.map.range(va..).next()?;
+        if !v.flags.contains(crate::vma::VmaFlags::GROWSDOWN) { return None; }
+        let gap = v.start.as_u64().checked_sub(va.as_u64())?;
+        if gap > max_gap { return None; }
+        Some(v)
+    }
+
+    /// F158: extend the `start` of a `MAP_GROWSDOWN` VMA at
+    /// `current_start` downward to `new_start` (page-aligned, less
+    /// than `current_start`). Returns `Err(Inval)` if the VMA isn't
+    /// present, isn't GROWSDOWN, or `new_start` overlaps a lower
+    /// neighbor. Used by the stack-grow page-fault path.
+    /// # C: O(log N)
+    pub fn extend_growsdown_start(
+        &mut self,
+        current_start: UserVirtAddr,
+        new_start: UserVirtAddr,
+    ) -> Result<(), Error> {
+        if new_start.as_u64() >= current_start.as_u64() { return Err(Error::Inval); }
+        if (new_start.as_u64() & 0xfff) != 0 { return Err(Error::Inval); }
+        // Lower neighbor must not overlap the new range.
+        if let Some((_, lower)) = self.map.range(..current_start).next_back() {
+            if lower.end.as_u64() > new_start.as_u64() { return Err(Error::Inval); }
+        }
+        // Take the VMA out, mutate, re-insert under the new key.
+        let mut v = self.map.remove(&current_start).ok_or(Error::Inval)?;
+        if !v.flags.contains(crate::vma::VmaFlags::GROWSDOWN) {
+            // Re-insert unchanged on misuse.
+            self.map.insert(current_start, v);
+            return Err(Error::Inval);
+        }
+        v.start = new_start;
+        self.map.insert(new_start, v);
+        Ok(())
+    }
+
     /// Iterator over VMAs in ascending address order.
     /// # C: O(N) total
     pub fn iter(&self) -> impl Iterator<Item = &Vma> {

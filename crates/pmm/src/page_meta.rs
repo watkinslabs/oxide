@@ -30,22 +30,33 @@ bitflags::bitflags! {
     }
 }
 
-/// One metadata slot per PFN. Layout per `11§8`: 16 bytes total
-/// (refcount 4 + flags 4 + mapping 8 on 64-bit).
+/// One metadata slot per PFN. Layout per `11§8`: 24 bytes
+/// (refcount 4 + flags 4 + mapping 8 + page_index 4 + pad 4).
+///
+/// `mapping` is a type-erased pointer per Linux `struct page->mapping`:
+/// for anonymous pages it's an `Arc<vmm::AnonVma>` raw pointer with
+/// `Arc::into_raw` semantics (pmm doesn't depend on vmm; the kernel
+/// adapter — `pmm_setup::set_anon_rmap_for_pfn` — owns the typed
+/// dance). `page_index` is the page-aligned offset within the
+/// originating VMA, used by `rmap_walk_anon` to compute the VA.
 #[repr(C)]
 pub struct PageMeta {
-    pub refcount: AtomicU32,
-    pub flags:    AtomicU32,
-    pub mapping:  AtomicPtr<()>,
+    pub refcount:   AtomicU32,
+    pub flags:      AtomicU32,
+    pub mapping:    AtomicPtr<()>,
+    pub page_index: AtomicU32,
+    _pad:           u32,
 }
 
 impl PageMeta {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self {
-            refcount: AtomicU32::new(0),
-            flags:    AtomicU32::new(0),
-            mapping:  AtomicPtr::new(core::ptr::null_mut()),
+            refcount:   AtomicU32::new(0),
+            flags:      AtomicU32::new(0),
+            mapping:    AtomicPtr::new(core::ptr::null_mut()),
+            page_index: AtomicU32::new(0),
+            _pad:       0,
         }
     }
 }
@@ -139,6 +150,28 @@ impl PageMetaArr {
     /// # C: O(1)
     pub fn mapping(&self, pfn: Pfn) -> Option<*mut ()> {
         Some(self.get(pfn)?.mapping.load(Ordering::Acquire))
+    }
+
+    /// Atomic swap on the mapping pointer. Returns the previous
+    /// value so the caller can decrement an Arc strong count when
+    /// the slot was non-null. Linux `struct page->mapping` swap.
+    /// # C: O(1)
+    pub fn swap_mapping(&self, pfn: Pfn, ptr: *mut ()) -> Option<*mut ()> {
+        Some(self.get(pfn)?.mapping.swap(ptr, Ordering::AcqRel))
+    }
+
+    /// Set the page_index — the page-aligned VA offset within the
+    /// originating VMA. Per Linux `struct page->index`.
+    /// # C: O(1)
+    pub fn set_page_index(&self, pfn: Pfn, idx: u32) -> Option<()> {
+        self.get(pfn)?.page_index.store(idx, Ordering::Release);
+        Some(())
+    }
+
+    /// Snapshot of `page_index`.
+    /// # C: O(1)
+    pub fn page_index(&self, pfn: Pfn) -> Option<u32> {
+        Some(self.get(pfn)?.page_index.load(Ordering::Acquire))
     }
 }
 
@@ -246,7 +279,11 @@ mod tests {
 
     #[test]
     fn meta_size_matches_spec() {
-        // `11§8`: ~16 B/page ⇒ 0.4% RAM. Verify the layout.
-        assert_eq!(core::mem::size_of::<PageMeta>(), 16);
+        // `11§8`: per-page metadata. 24 B = refcount(4) + flags(4) +
+        // mapping(8) + page_index(4) + pad(4). Bumped from 16 to 24
+        // when F156-rmap added page_index for `rmap_walk_anon`.
+        // 24 B/page ≈ 0.6% RAM overhead — still well under the
+        // 1%-of-RAM budget per `04§*`.
+        assert_eq!(core::mem::size_of::<PageMeta>(), 24);
     }
 }

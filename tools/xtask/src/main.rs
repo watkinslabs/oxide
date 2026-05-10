@@ -186,12 +186,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=8"]);
+                "bs=1M", "count=16"]);
         run(c)?;
     }
     {
+        // Force 4 KiB blocks. The default mkfs.ext4 heuristic picks
+        // 1 KiB blocks for small images; with ~80 hardlinks under
+        // /bin and 1 KiB dir blocks, debugfs `ln` hits "No free
+        // space in the directory" partway through the applet list
+        // and silently drops /bin/{login,getty,init,...} (debugfs
+        // exits 0 on the link error). 4 KiB blocks give /bin enough
+        // room for the full applet set.
         let mut c = Command::new("mkfs.ext4");
-        c.args(["-F", "-O", "^has_journal", "-L", "oxide", img.to_str().unwrap()]);
+        c.args(["-F", "-b", "4096",
+                "-O", "^has_journal", "-L", "oxide", img.to_str().unwrap()]);
         run(c)?;
     }
 
@@ -253,7 +261,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             let mut c = Command::new("debugfs");
             c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
             c.stdout(std::process::Stdio::null());
-            c.stderr(std::process::Stdio::null());
+            // Don't mute stderr — debugfs's `ln` exits 0 even when
+            // it prints `make_link: Ext2 inode is not a directory`.
+            // Without seeing the stderr we silently drop applets and
+            // ship a busted rootfs (e.g. /bin/login missing → getty
+            // can't exec it). Pipe stderr through so failures show.
             run(c)
         };
         // /bin applets — every user-facing tool dispatched via argv[0].
@@ -361,7 +373,6 @@ b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
 tty1::respawn:/sbin/getty -L 38400 tty1 vt100
-tty2::respawn:/sbin/getty -L 38400 tty2 vt100
 ")?,
         "/etc/inittab")?;
 
@@ -405,6 +416,25 @@ export PS1='\\h:\\w\\$ '
 export TERM=linux
 ")?,
         "/etc/profile")?;
+
+    // /etc/login.defs — busybox login reads ENV_PATH / ENV_SUPATH
+    // and sets them as PATH in the child env before exec'ing the
+    // shell, regardless of whether /etc/profile gets sourced. Keeps
+    // `ls`, `cat`, etc. usable from the very first prompt.
+    put(&stage("login.defs",
+b"ENV_PATH        PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ENV_SUPATH      PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+")?,
+        "/etc/login.defs")?;
+
+    // /root/.profile — sourced by login shells after /etc/profile.
+    // Belt-and-suspenders: if /etc/profile fails to source for any
+    // reason, this still seeds PATH for root's interactive sessions.
+    put(&stage("root.profile",
+b"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PS1='\\h:\\w# '
+")?,
+        "/root/.profile")?;
 
     // /etc/fstab (informational; for `mount -a`).
     put(&stage("fstab",

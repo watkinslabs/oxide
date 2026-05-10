@@ -415,16 +415,19 @@ pub fn lookup_smoke() {
 /// Retained so older test paths keep working.
 pub const EXEC_BLOB: &'static [u8] = HI_BLOB;
 
-/// Stack VA for an execve'd program. v1: same per-process VA as
-/// the original ELF's stack (different AS, so no clash).
-pub const EXEC_USER_STACK_VA:  u64 = 0x501_000;
-pub const EXEC_USER_STACK_TOP: u64 = EXEC_USER_STACK_VA + 0x1000;
+/// User stack length for boot-spawned user blobs. 64 KiB matches
+/// the execve path; the prior 4 KiB underflowed in the first wide
+/// musl init frame and the prior VA (0x501_000) collided with
+/// busybox's 1 MiB .text segment, chopping a hole in code while
+/// giving init no room. Place near the top of user-half VA so we
+/// stay disjoint from any reasonable ELF text.
+pub const EXEC_USER_STACK_LEN: u64 = 0x10000;
+pub const EXEC_USER_STACK_VA:  u64 = hal::USER_VA_END - 0x20000;
+pub const EXEC_USER_STACK_TOP: u64 = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN;
 
-/// User stack VMA placed disjoint from the ELF image. 4 KiB; v1
-/// stand-in for the docs/31§4 8 MiB MAP_GROWSDOWN stack, which
-/// rides P2-18 alongside SIGSEGV delivery.
-const USER_STACK_VA:  u64 = 0x501_000;
-const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
+const USER_STACK_LEN: u64 = EXEC_USER_STACK_LEN;
+const USER_STACK_VA:  u64 = EXEC_USER_STACK_VA;
+const USER_STACK_TOP: u64 = EXEC_USER_STACK_TOP;
 
 /// ud2 landmark addresses for the init-like ELF. Each iteration
 /// has a child failsafe ud2 at `entry+iter_off+0x27`; the final
@@ -498,7 +501,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
             .ok_or(crate::elf_load::LoadError::Einval)?;
         as_.mmap(
-            Some(stack_hint), 0x1000,
+            Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
             VmaBacking::Anonymous,
@@ -758,7 +761,7 @@ unsafe fn spawn_user_blob_with_vpid(
         let stack_hint = UserVirtAddr::new(USER_STACK_VA)
             .ok_or(crate::elf_load::LoadError::Einval)?;
         mm.mmap(
-            Some(stack_hint), 0x1000,
+            Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
             VmaBacking::Anonymous,
@@ -881,7 +884,7 @@ pub unsafe fn run(hhdm_offset: u64) -> ! {
     };
     let stack_r = crate::user_as::with(|as_| {
         as_.mmap(
-            Some(stack_hint), 0x1000,
+            Some(stack_hint), USER_STACK_LEN as usize,
             VmaProt::READ | VmaProt::WRITE,
             VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
             VmaBacking::Anonymous,
