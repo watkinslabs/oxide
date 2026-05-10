@@ -22,3 +22,4 @@ pub mod perf;
 pub mod tmpfs;
 pub mod coredump;
 pub mod ptrace;
+pub mod sig_dispatch;

@@ -476,3 +476,6 @@ fn apply_relative_relocs(
     }
     Ok(())
 }
+
+
+#[cfg(target_os = "oxide-kernel")] pub mod stack;
