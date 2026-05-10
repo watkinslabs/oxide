@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone; pub mod cred; pub mod execve; pub mod falloc; pub mod fs; pub mod ioctl; pub mod misc; pub mod mount; pub mod namei; pub mod net; pub mod open; pub mod perms; pub mod prctl; pub mod proc; pub mod proclink; pub mod pvmrw; pub mod rseq; pub mod select; pub mod signal; pub mod time; pub mod timers; pub mod uname; pub mod utime; pub mod xfer; pub mod hostname; pub mod trace; pub mod compat;
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod net; pub mod compat; pub mod cred; pub mod falloc; pub mod prctl; pub mod proclink; pub mod rseq; pub mod timers; pub mod trace; pub mod xfer; pub mod mount; pub mod namei;  pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;  
 
 
 use syscall::{dispatch, SyscallArgs};
