@@ -392,7 +392,8 @@ pub fn init_legacy() {
     });
     INITIALIZED.store(true, Ordering::Release);
 
-    debug_boot! {
+    #[cfg(feature = "debug-boot")]
+    {
         klog::write_raw(b"[INFO]  virtio-net: ready iobase=");
         klog::write_hex_u64(iobase as u64);
         klog::write_raw(b" mac=");

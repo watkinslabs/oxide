@@ -11,5 +11,3 @@ pub mod drm;
 pub mod pidfd;
 pub mod pty;
 pub mod tracefs;
-pub mod virtio_net;
-pub mod virtio_net_modern;

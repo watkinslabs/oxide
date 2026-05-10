@@ -1,0 +1,29 @@
+[package]
+name = "drv-virtio-net"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Modern-transport virtio-net driver per `34§*`. Boot-time PCI probe
+# (in drivers/pci::boot) populates ModernNetState; this crate owns
+# the live RX/TX paths + net stack integration.
+
+[dependencies]
+hal      = { path = "../../arch/hal" }
+klog     = { path = "../../shared/klog" }
+net      = { path = "../../kernel/net" }
+pmm      = { path = "../../kernel/mm-pmm" }
+pci      = { path = "../pci" }
+sync     = { path = "../../shared/sync" }
+virtio   = { path = "../virtio" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+debug-boot = []
