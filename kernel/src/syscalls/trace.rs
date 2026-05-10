@@ -1,3 +1,4 @@
+#![cfg(target_os = "oxide-kernel")]
 // F151 per-syscall entry trace. Gated by the `debug-syscall` cargo
 // feature so call sites are absent in production builds (per
 // `04§3 R05`). Used to bisect Linux-compat gaps when bringing up

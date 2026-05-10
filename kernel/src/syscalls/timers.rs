@@ -1,3 +1,4 @@
+#![cfg(target_os = "oxide-kernel")]
 // POSIX timers (`timer_create` family). Real impl backed by a
 // fixed-size per-task slot array on `Task::posix_timers`. Firing
 // happens in the syscall-return tail of the owning task.
@@ -13,7 +14,6 @@
 // SIGEV_NONE (1) creates a timer that never delivers — useful as a
 // pure expirations-counter via `timer_getoverrun`.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;

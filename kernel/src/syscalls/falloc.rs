@@ -1,7 +1,7 @@
+#![cfg(target_os = "oxide-kernel")]
 // `sys_fallocate` (slot 285) real impl. Split out of
 // `syscall_glue_fs.rs` to keep that file under the 1000-line cap.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;

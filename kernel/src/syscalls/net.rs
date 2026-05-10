@@ -4,7 +4,6 @@
 //
 // v1 supports SOCK_DGRAM/UDP only over AF_INET (IPv4).
 
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
 use alloc::sync::Arc;
