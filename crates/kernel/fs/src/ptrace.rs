@@ -21,10 +21,7 @@
 
 
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 
-extern crate alloc;
 
 use core::sync::atomic::Ordering;
 

@@ -14,11 +14,8 @@
 // Deferred follow-up.
 
 
-#![no_std]
-#![forbid(unsafe_op_in_unsafe_fn)]
 #![allow(dead_code)]
 
-extern crate alloc;
 
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -161,7 +158,7 @@ pub fn write_for_current(signo: i32) {
     let body = build_coredump(signo, name);
     let path: String = format!("/core.{}", cur.tid);
     // Write through the tmpfs lookup-or-create path.
-    let inode = tmpfs::TmpfsFileInode::new();
+    let inode = crate::tmpfs::TmpfsFileInode::new();
     use vfs::Inode;
     let _ = inode.write(0, &body);
     let inode_ref: vfs::InodeRef = inode as vfs::InodeRef;

@@ -107,7 +107,7 @@ pub fn kernel_sys_chdir(args: &SyscallArgs) -> i64 {
     let resolves = s == "/"
         || crate::devfs::lookup(s).is_some()
         || crate::procfs::lookup_dynamic(s).is_some()
-        || tmpfs::lookup(s).is_some()
+        || ::fs::tmpfs::lookup(s).is_some()
         || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
     if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     let cur = match crate::sched::current() {
@@ -212,7 +212,7 @@ pub fn kernel_sys_statx(args: &SyscallArgs) -> i64 {
             };
             if let Some(i) = crate::devfs::lookup(s) { i }
             else if let Some(i) = crate::procfs::lookup_dynamic(s) { i }
-            else if let Some(i) = tmpfs::lookup(s) { i }
+            else if let Some(i) = ::fs::tmpfs::lookup(s) { i }
             else if let Some(i) = ext4::rootfs::lookup_inode_any(s.as_bytes()) { i }
             else { return -(Errno::Enoent.as_i32() as i64); }
         }
@@ -314,7 +314,7 @@ pub fn kernel_sys_stat(args: &SyscallArgs) -> i64 {
         (i.ino(), i.file_type(), i.size())
     } else if let Some(i) = crate::procfs::lookup_dynamic(s) {
         (i.ino(), i.file_type(), i.size())
-    } else if let Some(i) = tmpfs::lookup(s) {
+    } else if let Some(i) = ::fs::tmpfs::lookup(s) {
         (i.ino(), i.file_type(), i.size())
     } else if let Some((ino, ft, sz)) = ext4::rootfs::stat_path(s.as_bytes()) {
         ((0x6E54_0000u64 | ino as u64), ft, sz)
@@ -596,7 +596,7 @@ pub fn kernel_sys_access(args: &SyscallArgs) -> i64 {
     };
     let resolves = crate::devfs::lookup(s).is_some()
         || crate::procfs::lookup_dynamic(s).is_some()
-        || tmpfs::lookup(s).is_some()
+        || ::fs::tmpfs::lookup(s).is_some()
         || ext4::rootfs::lookup_path(s.as_bytes()).is_some();
     if resolves { 0 } else { -(Errno::Enoent.as_i32() as i64) }
 }
@@ -910,7 +910,7 @@ pub fn kernel_sys_truncate(args: &SyscallArgs) -> i64 {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     let inode = if let Some(i) = crate::devfs::lookup(s) { i }
-        else if let Some(i) = tmpfs::lookup(s) { i }
+        else if let Some(i) = ::fs::tmpfs::lookup(s) { i }
         else { return -(Errno::Enoent.as_i32() as i64); };
     match inode.truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
 }

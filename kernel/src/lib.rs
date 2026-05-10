@@ -8,7 +8,7 @@ extern crate alloc;
 
 // Anchor crates whose `#[no_mangle]` symbols the linker needs even
 // without an explicit `use`. Per `52§8`.
-#[cfg(target_os = "oxide-kernel")] extern crate ptrace;
+#[cfg(target_os = "oxide-kernel")] extern crate fs;
 
 // Compile-time check: per-arch Context must fit in Task.arch_ctx.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -463,13 +463,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { user_as::init(info.hhdm_offset); }
         devfs::init(); procfs::init();
         crate::dev_drm::register();
-        tmpfs::init(); dev_tracefs::init(); drv_virtio_input::devfs::init();
+        fs::tmpfs::init(); dev_tracefs::init(); drv_virtio_input::devfs::init();
         fbdev::devfs::init(); dev_pty::init();
         // boot smokes:
         ::devfs::misc::smoke_test();
         procfs::smoke_test();
         fs::pipe::smoke_test();
-        tmpfs::smoke_test();
+        fs::tmpfs::smoke_test();
         dev_pty::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
         // bumped whenever a new arm or compat-table entry lands.
@@ -690,7 +690,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // runs so PTRACE_SINGLESTEP #DB delivers SIGTRAP instead of
         // halting the kernel via the default fault path.
         // SAFETY: pre-init single-CPU; ptrace_singlestep::install is idempotent and only swaps a 'static fn pointer.
-        unsafe { ptrace::install(); }
+        unsafe { fs::ptrace::install(); }
         // SAFETY: every prerequisite established above — kernel-owned
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
         // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)
