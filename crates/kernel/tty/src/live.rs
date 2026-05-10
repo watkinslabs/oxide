@@ -147,7 +147,7 @@ fn vt_index(vt: u8) -> usize {
 }
 
 /// Read one COM1 byte non-blocking via I/O ports. Used by
-/// `tick_poll_uart` (timer ISR ctx) and `kernel_sys_read`
+/// `tick_poll_uart` (timer ISR ctx) and `sys_read`
 /// (process ctx).
 /// # SAFETY: privileged port I/O legal at CPL=0.
 #[cfg(target_arch = "x86_64")]

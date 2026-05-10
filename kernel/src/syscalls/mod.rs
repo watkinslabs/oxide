@@ -49,35 +49,22 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// sys_write via fd_table.
-/// # C: O(cnt) on the underlying inode write
-pub fn kernel_sys_write(args: &SyscallArgs) -> i64 {
+/// `sys_write(fd, buf, cnt)` — slot 1. Tier-3 shim per `docs/53§4`.
+/// Work fn: `vfs::File::write` (Tier 2).
+/// # C: O(cnt) on the underlying inode write.
+pub fn sys_write(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let buf = args.a1;
-    let cnt = args.a2;
+    let cnt = args.a2 as usize;
     if cnt == 0 { return 0; }
-    if buf == 0 || buf.checked_add(cnt).map_or(true, |e| e > USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let cur = match sched::live::current() {
-        Some(c) => c,
-        None    => return dispatch(1, args),
-    };
-    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return dispatch(1, args),
-    };
-    let file = match fdt.get(fd) {
-        Ok(f)  => f,
-        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let len = cnt as usize;
-    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END above; user pages mapped via active CR3 (caller's AS); CPL=0 reads through user mapping.
-    let user_buf: &[u8] = unsafe {
-        core::slice::from_raw_parts(buf as *const u8, len)
-    };
-    match file.write(user_buf) {
+    if let Err(rv) = validate_user_buf(buf, cnt as u64, 1) { return rv; }
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
+    let slice: &[u8] = unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) };
+    match file.write(slice) {
         Ok(n)  => n as i64,
         Err(e) => -(e as i64),
     }
@@ -140,19 +127,14 @@ fn kernel_sys_brk(args: &SyscallArgs) -> i64 {
     mm.try_set_brk(req) as i64
 }
 
-/// `sys_close(fd)` — slot 3.
+/// `sys_close(fd)` — slot 3. Tier-3 shim per `docs/53§4`.
+/// Work fn: `vfs::FdTable::close` (Tier 2).
 /// # C: O(1)
-pub fn kernel_sys_close(args: &SyscallArgs) -> i64 {
+pub fn sys_close(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
-    let cur = match sched::live::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     match fdt.close(fd) {
         Ok(())  => 0,
         Err(e)  => -(e as i64),
@@ -561,7 +543,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_GETPID        => kernel_sys_getpid(&args),
         syscall::nrs::NR_GETPPID       => kernel_sys_getppid(&args),
         syscall::nrs::NR_READ          => sys_read(&args),
-        syscall::nrs::NR_WRITE         => kernel_sys_write(&args),
+        syscall::nrs::NR_WRITE         => sys_write(&args),
         syscall::nrs::NR_OPEN          => crate::syscalls::open::kernel_sys_open(&args),
         syscall::nrs::NR_BRK           => kernel_sys_brk(&args),
         syscall::nrs::NR_PIPE2         => kernel_sys_pipe2(&args),
@@ -833,7 +815,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SIGALTSTACK   => crate::syscalls::signal::kernel_sys_sigaltstack(&args),
         syscall::nrs::NR_NANOSLEEP     => crate::syscalls::proc::kernel_sys_nanosleep(&args),
         syscall::nrs::NR_CLOCK_NANOSLEEP => crate::syscalls::proc::kernel_sys_clock_nanosleep(&args),
-        syscall::nrs::NR_CLOSE         => kernel_sys_close(&args),
+        syscall::nrs::NR_CLOSE         => sys_close(&args),
         syscall::nrs::NR_CLOSE_RANGE   => crate::syscalls::fs::kernel_sys_close_range(&args),
         syscall::nrs::NR_DUP           => crate::syscalls::fs::kernel_sys_dup(&args),
         syscall::nrs::NR_DUP2          => crate::syscalls::fs::kernel_sys_dup2(&args),
