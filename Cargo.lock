@@ -117,6 +117,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dev-fbdev"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "fbdev",
+ "hal",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
+name = "dev-input"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "dev-misc"
 version = "0.1.0"
 dependencies = [
@@ -142,6 +165,20 @@ dependencies = [
  "net",
  "sync",
  "vfs",
+]
+
+[[package]]
+name = "dev-virtio-gpu-modern"
+version = "0.1.0"
+dependencies = [
+ "drv-virtio-gpu",
+ "fbcon",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "pmm-setup",
+ "virtio",
 ]
 
 [[package]]
@@ -486,9 +523,12 @@ dependencies = [
  "coredump",
  "cpu",
  "dev-ext4",
+ "dev-fbdev",
+ "dev-input",
  "dev-misc",
  "dev-modules",
  "dev-net",
+ "dev-virtio-gpu-modern",
  "devfs",
  "drm",
  "drv",
