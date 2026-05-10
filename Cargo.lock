@@ -205,6 +205,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elf-load"
+version = "0.1.0"
+dependencies = [
+ "dev-ext4",
+ "elf",
+ "hal",
+ "vmm",
+]
+
+[[package]]
 name = "epoll"
 version = "0.1.0"
 dependencies = [
@@ -476,6 +486,7 @@ dependencies = [
  "drv-virtio-gpu",
  "drv-virtio-input",
  "elf",
+ "elf-load",
  "epoll",
  "ext4",
  "fbcon",
