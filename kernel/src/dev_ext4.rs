@@ -332,6 +332,46 @@ fn read_full_file_by_ino(ino: u32) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Stat-only VFS Inode that reports a fixed file_type/size/perm
+/// for any ext4 inode (regular, dir, symlink, …). Used by stat/
+/// statx/etc. when the path resolves to a non-regular ext4 entry.
+struct Ext4StatInode {
+    ino:  u32,
+    ft:   vfs::FileType,
+    size: u64,
+    perm: u16,
+}
+
+impl vfs::Inode for Ext4StatInode {
+    fn ino(&self) -> vfs::Ino { (0x6E54_0000u64 | self.ino as u64) as vfs::Ino }
+    fn file_type(&self) -> vfs::FileType { self.ft }
+    fn size(&self) -> u64 { self.size }
+    fn perm(&self) -> Option<u16> { Some(self.perm) }
+    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
+    fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
+}
+
+/// Wrap any-type ext4 inode for stat-only consumers.
+/// # C: O(path components)
+pub fn lookup_inode_any(path: &[u8]) -> Option<vfs::InodeRef> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let ino = mount.lookup_path(path).ok()?;
+    let inode = mount.read_inode(ino).ok()?;
+    if inode.is_reg() {
+        return wrap_file(ino);
+    }
+    let ft = if inode.is_dir() { vfs::FileType::Directory }
+             else if inode.is_link() { vfs::FileType::Symlink }
+             else { vfs::FileType::Regular };
+    Some(alloc::sync::Arc::new(Ext4StatInode {
+        ino, ft, size: inode.size as u64, perm: 0o755,
+    }) as vfs::InodeRef)
+}
+
 /// Wrap `ino` (regular-file ext4 inode) in a writeable VFS Inode.
 fn wrap_file(ino: u32) -> Option<vfs::InodeRef> {
     let bytes = read_full_file_by_ino(ino)?;
@@ -339,6 +379,26 @@ fn wrap_file(ino: u32) -> Option<vfs::InodeRef> {
         ino,
         bytes: sync::Spinlock::new(bytes),
     }) as vfs::InodeRef)
+}
+
+/// Stat-style probe: resolve `path` and return `(ino, file_type,
+/// size)` for ANY file type (regular, dir, symlink, etc.). Used
+/// by `sys_stat`/`sys_lstat`/`sys_newfstatat` so userspace can
+/// stat directories like `/etc/init.d` (which `lookup_inode`
+/// rejects because it only wraps regular files).
+/// # C: O(path components × dir size)
+pub fn stat_path(path: &[u8]) -> Option<(u32, vfs::FileType, u64)> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let ino = mount.lookup_path(path).ok()?;
+    let inode = mount.read_inode(ino).ok()?;
+    let ft = if inode.is_dir() { vfs::FileType::Directory }
+             else if inode.is_reg() { vfs::FileType::Regular }
+             else if inode.is_link() { vfs::FileType::Symlink }
+             else { vfs::FileType::Regular };
+    Some((ino, ft, inode.size as u64))
 }
 
 /// Look up `path` and return a VFS Inode wrapping the file
