@@ -23,7 +23,7 @@ use crate::errno::Errno;
 ///   9 (SIZE_UNREAD)  — total bytes ever written, capped at ring size.
 ///   10 (SIZE_BUFFER) — ring-buffer capacity in bytes.
 /// # C: O(len)
-pub fn kernel_sys_syslog(args: &SyscallArgs) -> i64 {
+pub fn sys_syslog(args: &SyscallArgs) -> i64 {
     let kind = args.a0 as u32;
     let bufp = args.a1;
     let len  = args.a2 as usize;

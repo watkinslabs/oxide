@@ -114,7 +114,7 @@ impl Inode for FullInode {
 static PRNG_STATE: AtomicU64 = AtomicU64::new(0x9E37_79B9_7F4A_7C15);
 
 /// Pull one 64-bit pseudo-random value from the shared LCG.
-/// Used by `RandomInode` and `kernel_sys_getrandom`.
+/// Used by `RandomInode` and `sys_getrandom`.
 /// SECURITY: NOT cryptographic — placeholder until docs/26.
 /// # C: O(1)
 pub fn lcg_next() -> u64 {

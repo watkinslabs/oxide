@@ -102,7 +102,7 @@ pub fn install_drop_hook() {
 
 /// `sys_flock(fd, op)` — slot 73.
 /// # C: O(holders)
-pub fn kernel_sys_flock(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_flock(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let fd = args.a0 as i32;
     let op = args.a1 as u32;

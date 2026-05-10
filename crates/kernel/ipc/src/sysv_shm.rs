@@ -69,7 +69,7 @@ static REG: ShmRegistry = ShmRegistry {
 
 /// `shmget(key, size, shmflg)` — slot 29.
 /// # C: O(N_segments) on lookup
-pub fn kernel_sys_shmget(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_shmget(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let key  = args.a0 as i32;
     let size = args.a1 as usize;
@@ -107,7 +107,7 @@ fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
 
 /// `shmat(shmid, shmaddr, shmflg)` — slot 30.
 /// # C: O(N_segments) lookup
-pub fn kernel_sys_shmat(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     use vmm::{VmaProt, VmaFlags, VmaBacking};
@@ -154,7 +154,7 @@ pub fn kernel_sys_shmat(args: &syscall::SyscallArgs) -> i64 {
 /// uses the VMA's known end. For Linux semantics shmdt only takes
 /// an address; the kernel finds the matching VMA and unmaps it.
 /// # C: O(N_VMAs)
-pub fn kernel_sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     let addr = args.a0;
@@ -182,7 +182,7 @@ pub fn kernel_sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
 /// (frees the segment) and accepts IPC_STAT / IPC_INFO with a
 /// zero-fill writeback so callers don't bail.
 /// # C: O(N_segments)
-pub fn kernel_sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let shmid = args.a0 as i32;
     let cmd   = args.a1;

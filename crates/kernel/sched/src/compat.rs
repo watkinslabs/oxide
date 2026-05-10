@@ -30,11 +30,11 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // CAPGET/CAPSET moved to real impl in F66 (Creds carries cap masks).
         // SYSLOG moved to real impl (F67) — exposes klog ring as dmesg.
         // PERSONALITY (F78), FUTIMESAT (F78), VHANGUP (F87) moved to real impls.
-        // NR_SYNCFS / NR_SYNC_FILE_RANGE moved to kernel_sys_fsync
+        // NR_SYNCFS / NR_SYNC_FILE_RANGE moved to sys_fsync
         // (real fd validation; v1 RAM-only fs is always sync, so the
         // syscall is a true no-op for valid fds and EBADF for bad).
         NR_READAHEAD | NR_FADVISE64 | NR_MLOCK2
-                                       => kernel_sys_fadvise_validate(_args),
+                                       => sys_fadvise_validate(_args),
 
         // ---- POSIX shape: pause/sigsuspend behaviour ----
         NR_RESTART_SYSCALL  => Some(eintr),
@@ -74,7 +74,7 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // substrate-landing PRs (v2 phases 29 mount, etc.) will check
         // the relevant CAP_* in the real handler.
         // MOUNT / UMOUNT2 moved to real impl in F110 (tmpfs backend).
-        // NR_REBOOT moved to real impl (kernel_sys_reboot via power crate).
+        // NR_REBOOT moved to real impl (sys_reboot via power crate).
         NR_PIVOT_ROOT
         | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
@@ -166,7 +166,7 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
 /// negative lengths. v1 has no page cache so the hint itself is a
 /// true no-op once validation passes.
 /// # C: O(1)
-pub fn kernel_sys_fadvise_validate(args: &SyscallArgs) -> Option<i64> {
+pub fn sys_fadvise_validate(args: &SyscallArgs) -> Option<i64> {
     let fd  = args.a0 as i32;
     let len = args.a2 as i64;
     if len < 0 {
