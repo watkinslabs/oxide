@@ -22,6 +22,8 @@ ptrace    = { path = "../crates/kernel/ptrace" }
 perf      = { path = "../crates/kernel/perf" }
 tmpfs     = { path = "../crates/kernel/tmpfs", default-features = false }
 coredump  = { path = "../crates/kernel/coredump" }
+dev-net   = { path = "../crates/kernel/dev-net" }
+dev-ext4  = { path = "../crates/kernel/dev-ext4" }
 ipc       = { path = "../crates/kernel/ipc" }
 pipe      = { path = "../crates/kernel/pipe", default-features = false }
 pmm-setup = { path = "../crates/kernel/pmm-setup" }

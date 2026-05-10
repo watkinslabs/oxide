@@ -107,12 +107,31 @@ name = "crypt"
 version = "0.1.0"
 
 [[package]]
+name = "dev-ext4"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "ext4",
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "dev-misc"
 version = "0.1.0"
 dependencies = [
  "devfs",
  "hal",
  "klog",
+ "sync",
+ "vfs",
+]
+
+[[package]]
+name = "dev-net"
+version = "0.1.0"
+dependencies = [
+ "net",
  "sync",
  "vfs",
 ]
@@ -448,7 +467,9 @@ dependencies = [
  "boot-info",
  "coredump",
  "cpu",
+ "dev-ext4",
  "dev-misc",
+ "dev-net",
  "devfs",
  "drm",
  "drv",
