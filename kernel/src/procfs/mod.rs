@@ -4,7 +4,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod pid_status; pub mod smaps; pub mod static_files;
+pub mod static_files;
 
 
 use alloc::sync::Arc;
@@ -644,7 +644,7 @@ impl Inode for ProcPidDirInode {
             "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
-            "smaps"   => Ok(Arc::new(crate::procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
+            "smaps"   => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
             "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
@@ -677,7 +677,7 @@ impl Inode for ProcPidDirInode {
             "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
-            "smaps_rollup" => Ok(Arc::new(crate::procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
+            "smaps_rollup" => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
             "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid: self.tid }) as InodeRef),
             "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map"
               | "pagemap" | "kpagecount" | "kpageflags" | "attr"
@@ -716,7 +716,7 @@ pub struct ProcPidLimitsInode { pub tid: u32 }
 pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
-    crate::procfs::pid_status::body(tid)
+    procfs::pid_status::body(tid)
 }
 
 fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
