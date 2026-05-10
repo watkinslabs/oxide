@@ -530,6 +530,10 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
 
 /// `connect(fd, sockaddr, addrlen)` slot 42.
 /// # C: O(1)
+/// `connect(fd, sockaddr, addrlen)` slot 42. Tier-3 shim per
+/// `docs/53§4`. Parses user sockaddr → `net::sock::RemoteAddr`
+/// then calls `net::sock::connect`.
+/// # C: O(1) for UDP/UNIX, O(drain) for TCP 3WHS.
 pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
@@ -540,60 +544,26 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let family = match read_sa_family(addr_p) {
         Some(f) => f as u32, None => return -(Errno::Efault.as_i32() as i64),
     };
-    if family == AF_UNIX {
+    let addr = if family == AF_UNIX {
         let path = match read_sockaddr_un_path(addr_p) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        let pair = match net::sock::UNIX_REGISTRY.connect(&path) {
-            Some(p) => p, None => return -(Errno::Enoent.as_i32() as i64),
+        net::sock::RemoteAddr::UnixPath(path)
+    } else if family == AF_INET || family == AF_INET6 {
+        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
+        if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+        let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
+            Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        // Client gets the B end of the pair; the server's accept
-        // pulls the A end out via the listener's accept_q.
-        *sock.kind.lock() = net::sock::SockKind::Unix(pair, net::UnixEnd::B);
-        return 0;
-    }
-    if family != AF_INET && family != AF_INET6 {
+        net::sock::RemoteAddr::Inet { ip, port }
+    } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
+    };
+    match net::sock::connect(&sock, addr) {
+        Ok(()) => 0,
+        Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
+        Err(e) => errno_from_neterr(e),
     }
-    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
-    if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
-    let (_family, dst_ip, port) = match read_sockaddr_any(addr_p) {
-        Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
-    };
-    // For TCP: tcp_connect emits SYN. For UDP: just store the peer.
-    let kind_is_tcp = matches!(*sock.kind.lock(), SockKind::Udp) == false
-        || matches!(*sock.kind.lock(), SockKind::TcpListener(_));
-    let _ = kind_is_tcp;  // noop; fall-through below
-    let is_dgram = matches!(*sock.kind.lock(), SockKind::Udp);
-    if is_dgram {
-        *sock.peer.lock() = Some((dst_ip, port));
-        return 0;
-    }
-    // TCP active open.
-    let local_port = match *sock.local_port.lock() {
-        Some(p) => p,
-        None    => match net::sock::alloc_ephemeral_port() {
-            Ok(p) => { *sock.local_port.lock() = Some(p); p }
-            Err(e) => return errno_from_neterr(e),
-        },
-    };
-    let local_ip = match *sock.local_ip.lock() {
-        ip if ip == net::Ipv4Addr::ANY => net::Ipv4Addr::LOOPBACK,
-        ip => ip,
-    };
-    let entry = match net::sock::stack().tcp_connect(local_ip, local_port, dst_ip, port) {
-        Ok(e)  => e,
-        Err(e) => return errno_from_neterr(e),
-    };
-    *sock.kind.lock() = SockKind::TcpConn(entry.clone());
-    *sock.peer.lock() = Some((dst_ip, port));
-    // Drive 3WHS via loopback drain. v1 connect is "blocking-ish":
-    // we drain a few times and check state.
-    for _ in 0..4 { drain_loopback(); }
-    if !entry.conn.lock().state.is_established() {
-        return -(Errno::Etimedout.as_i32() as i64);
-    }
-    0
 }
 
 /// `sendmsg(fd, msghdr, flags)` slot 46. v1 walks the iovec array
