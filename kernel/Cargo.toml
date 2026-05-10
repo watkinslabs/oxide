@@ -23,7 +23,6 @@ tmpfs     = { path = "../crates/kernel/tmpfs", default-features = false }
 coredump  = { path = "../crates/kernel/coredump" }
 elf-load  = { path = "../crates/kernel/elf-load" }
 msi       = { path = "../crates/kernel/msi" }
-dev-modules = { path = "../crates/kernel/dev/modules" }
 dev-fbdev = { path = "../crates/kernel/dev/fbdev" }
 dev-input = { path = "../crates/kernel/dev/input" }
 dev-virtio-gpu-modern = { path = "../crates/kernel/dev/virtio-gpu-modern", default-features = false }
