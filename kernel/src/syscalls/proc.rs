@@ -809,11 +809,11 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let ptr = args.a0;
     let len = args.a1 as usize;
-    if len > crate::hostname::HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
+    if len > crate::syscalls::hostname::HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
     if let Err(rv) = crate::syscalls::validate_user_buf(ptr, len as u64, 1) { return rv; }
     let cur = match crate::sched::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(sched::cap::SYS_ADMIN) { return -(Errno::Eperm.as_i32() as i64); }
-    let mut buf = [0u8; crate::hostname::HOST_NAME_MAX];
+    let mut buf = [0u8; crate::syscalls::hostname::HOST_NAME_MAX];
     // SAFETY: ptr range validated < USER_VA_END; CPL=0 reads through caller's AS.
     unsafe {
         for i in 0..len { buf[i] = core::ptr::read_volatile((ptr + i as u64) as *const u8); }
@@ -826,7 +826,7 @@ pub fn kernel_sys_sethostname(args: &SyscallArgs) -> i64 {
         // SAFETY: per-task uts_hostname slot single-mutator per `13§5`; running task on this CPU is the sole writer.
         unsafe { *cur.uts_hostname.get() = s; }
     } else {
-        crate::hostname::set(&buf[..len]);
+        crate::syscalls::hostname::set(&buf[..len]);
     }
     0
 }
