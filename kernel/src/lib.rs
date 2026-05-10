@@ -784,7 +784,6 @@ pub mod pf_recover_smoke;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev_tracefs;
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-syscall"))] pub mod syscall_trace;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
@@ -795,7 +794,6 @@ pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sched_stop;
 #[cfg(target_os = "oxide-kernel")]
-pub mod hostname;
 
 // P3-08 process-shaped syscalls (sched_yield, gettid, set_tid_address).
 #[cfg(target_os = "oxide-kernel")]
@@ -806,7 +804,6 @@ pub mod hostname;
 // P3-46 compat-stub dispatch table — pulls the broad
 // accept-and-no-op + ENOSYS + EPERM tail out of `syscalls`.
 #[cfg(target_os = "oxide-kernel")]
-pub mod syscall_compat;
 
 // P3-30 time-shaped syscalls (clock_gettime + family).
 
