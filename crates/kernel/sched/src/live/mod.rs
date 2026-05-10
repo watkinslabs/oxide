@@ -67,3 +67,5 @@ pub unsafe fn send_resched_ipi(cpu: u32) -> bool {
         f(cpu)
     }
 }
+
+pub mod stop;
