@@ -622,7 +622,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // SAFETY: LAPIC was previously enabled by smoke_device_map_x86;
     // re-arming the periodic timer at the same period the smokes used.
     #[cfg(target_arch = "x86_64")]
-    unsafe { let _ = crate::lapic::timer_periodic(1_000_000); }
+    unsafe { let _ = arch_irq::lapic::timer_periodic(1_000_000); }
     // SAFETY: STI legal at CPL=0; spawn_user_blob_smoke's first
     // schedule() drops to ring 3 with IF=1 in the iretq frame, so
     // both kernel idle (between user task slices) and user mode

@@ -897,7 +897,7 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             core::ptr::read_volatile((p.cfg_va + 0x18) as *const u32)
         };
         let qmv = (qmv_word >> 16) as u16;
-        let fires = msi::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
+        let fires = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
         klog::write_raw(b"[INFO]  virtio-msix ");
         klog::write_dec_u64(bdf.bus as u64);
         klog::write_raw(b":");

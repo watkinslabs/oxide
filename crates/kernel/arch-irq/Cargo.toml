@@ -1,8 +1,25 @@
 [package]
-name = "msi"
+name = "arch-irq"
 version = "0.1.0"
 edition = "2021"
 publish = false
 license = "MPL-2.0"
 
+# Architecture interrupt controller drivers (GICv3 + ITS for aarch64,
+# Local APIC for x86_64) + MSI vector allocator. Per `52§3` arch
+# layer; binds to `firmware::acpi` for MMIO base discovery and
+# exposes a `tick_poll` hook for kernel-side UART polling.
+
 [dependencies]
+firmware = { path = "../firmware" }
+hal      = { path = "../../arch/hal" }
+klog     = { path = "../../shared/klog" }
+pmm      = { path = "../mm-pmm" }
+sched    = { path = "../sched" }
+sync     = { path = "../../shared/sync" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
