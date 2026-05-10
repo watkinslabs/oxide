@@ -81,9 +81,6 @@ pub mod devfs;
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
-pub mod sysv_sem;
-pub mod sysv_msg;
-pub mod posix_mq;
 pub mod io_uring;
 // seccomp + bpf moved to `crates/security` per `27§R03`.
 pub use security::seccomp;
@@ -778,6 +775,7 @@ pub mod pf_recover_smoke;
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
+#[cfg(target_os = "oxide-kernel")] pub mod ipc;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
@@ -802,7 +800,6 @@ pub mod sched_stop;
 // P3-30 time-shaped syscalls (clock_gettime + family).
 
 // P3a futex — process-private FUTEX_WAIT/WAKE per docs/24.
-pub mod futex;
 
 // P3-65 signal dispatch (build user-stack frame + jump to sa_handler).
 // Arch-portable since F16 — x86 + aarch64 paths share the wire frame

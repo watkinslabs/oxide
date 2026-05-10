@@ -42,7 +42,7 @@ pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_futex(uaddr, op, val, ts, uaddr2, val3)` — slot 202.
-/// Delegates to `crate::futex` which keeps a per-(mm_root_pa, va)
+/// Delegates to `crate::ipc::futex` which keeps a per-(mm_root_pa, va)
 /// in-kernel wait queue. Supported ops:
 ///   FUTEX_WAIT (0) — atomically check `*uaddr == val`; if so park
 ///                    self until FUTEX_WAKE on the same key.
@@ -52,7 +52,7 @@ pub fn kernel_sys_set_tid_address(args: &SyscallArgs) -> i64 {
 /// process-private-only with monotonic clock).
 /// # C: O(W) waiters per WAKE, O(1) WAIT
 pub fn kernel_sys_futex(args: &SyscallArgs) -> i64 {
-    crate::futex::dispatch(args.a0, args.a1 as u32, args.a2 as u32)
+    crate::ipc::futex::dispatch(args.a0, args.a1 as u32, args.a2 as u32)
 }
 
 /// `sys_clone3(cl_args, size)` — slot 435. Reads the user
