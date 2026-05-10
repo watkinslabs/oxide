@@ -35,10 +35,6 @@ pub use nscg::proc_ns as dev_proc_ns;
 pub mod smp;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod smp_x86;
-#[cfg(target_arch = "aarch64")]
-pub mod gic;
-#[cfg(target_arch = "aarch64")]
-pub mod its;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod canary;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
@@ -98,8 +94,6 @@ pub use security::bpf as dev_bpf;
 pub mod elf_smoke;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 pub mod elf_smoke_arm;
-#[cfg(target_arch = "x86_64")]
-pub mod lapic;
 
 /// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
 /// replaced by PMM-backed slab routing once a binary stage exists.
@@ -500,7 +494,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 for i in 0..n {
                     if let Some((id, _)) = cpu::get(i) {
                         if id != bsp {
-                            let _ = crate::lapic::send_resched_ipi(id);
+                            let _ = arch_irq::lapic::send_resched_ipi(id);
                         }
                     }
                 }
@@ -512,7 +506,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_raw(b"[INFO]  smp: ipi_smoke: online=");
                 klog::write_dec_u64(crate::smp::online_count() as u64);
                 klog::write_raw(b" resched_ipis_received=");
-                klog::write_dec_u64(crate::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
+                klog::write_dec_u64(arch_irq::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
                 klog::write_raw(b"\n");
             }
             // Migration smoke per `13§11`: spawn a few CFS kthreads
@@ -531,7 +525,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             let migrated = unsafe {
                 sched::live::install_default_runqueue();
                 #[cfg(target_arch = "x86_64")]
-                sched::live::set_send_resched_ipi_hook(crate::lapic::send_resched_ipi);
+                sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
+                arch_irq::set_tick_poll_hook(crate::tty::tick_poll_uart);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);

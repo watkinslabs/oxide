@@ -36,7 +36,7 @@ pub unsafe fn smoke_preempt_x86(n: usize, period: u32) {
     let _kts = spawn_set(n);
     let _ = sched::live::preempt::clear_need_resched();
     // SAFETY: LAPIC was enabled by smoke_device_map_x86; legal at CPL=0.
-    let armed = unsafe { crate::lapic::timer_periodic(period) };
+    let armed = unsafe { arch_irq::lapic::timer_periodic(period) };
     if !armed {
         klog::kerror!("preempt: lapic timer not armed");
         // SAFETY: runqueue installed but no kthread is current.
@@ -53,7 +53,7 @@ pub unsafe fn smoke_preempt_x86(n: usize, period: u32) {
     // SAFETY: CLI restores IF=0; matches the boot-path discipline.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
     // SAFETY: LAPIC enabled; timer_disarm halts the periodic timer.
-    unsafe { crate::lapic::timer_disarm(); }
+    unsafe { arch_irq::lapic::timer_disarm(); }
     // SAFETY: schedule() returned via boot-anchor restore; no kthread is current.
     let stats = unsafe { ksched::schedule::uninstall_global_with_stats() }
         .unwrap_or(ksched::RunStats::default());
@@ -83,7 +83,7 @@ pub unsafe fn smoke_preempt_arm(n: usize, period: u32) {
     let _kts = spawn_set(n);
     let _ = sched::live::preempt::clear_need_resched();
     // SAFETY: GIC mapped + enabled; INTID 27 is the QEMU-virt CNTV PPI.
-    unsafe { crate::gic::enable_intid(27); }
+    unsafe { arch_irq::gic::enable_intid(27); }
     // SAFETY: timer sysregs are unprivileged at EL1; INTID 27 enabled.
     unsafe { hal_aarch64::timer::timer_periodic(period); }
     // SAFETY: opening DAIF.I lets the GIC deliver the CNTV line.
