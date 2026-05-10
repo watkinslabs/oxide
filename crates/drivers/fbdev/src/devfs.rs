@@ -1,11 +1,9 @@
 // /dev/fb0 — Linux fbdev shim per docs/48. Routes FBIO* ioctls
-// through the fbdev crate's per-CRTC registry. fbdev::register
+// through the fbdev crate's per-CRTC registry. crate::register
 // gets called when 47 (DRM/KMS) binds an FB to a CRTC; until then
 // /dev/fb0's ioctls return Eagain.
 
-#![no_std]
 
-extern crate alloc;
 
 use alloc::sync::Arc;
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
@@ -38,27 +36,27 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
         return Some(-(Errno::Efault.as_i32() as i64));
     }
     match req {
-        fbdev::FBIOGET_VSCREENINFO => {
-            let v = match fbdev::var_of(idx) {
+        crate::FBIOGET_VSCREENINFO => {
+            let v = match crate::var_of(idx) {
                 Some(v) => v,
                 None    => return Some(-(Errno::Eagain.as_i32() as i64)),
             };
             // SAFETY: arg validated < USER_VA_END; FbVarScreeninfo is 160 B; aligned write into caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut fbdev::FbVarScreeninfo, v); }
+            unsafe { core::ptr::write_volatile(arg as *mut crate::FbVarScreeninfo, v); }
             Some(0)
         }
-        fbdev::FBIOGET_FSCREENINFO => {
-            let f = match fbdev::fix_of(idx) {
+        crate::FBIOGET_FSCREENINFO => {
+            let f = match crate::fix_of(idx) {
                 Some(f) => f,
                 None    => return Some(-(Errno::Eagain.as_i32() as i64)),
             };
             // SAFETY: arg validated; FbFixScreeninfo is 80 B; aligned write into caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut fbdev::FbFixScreeninfo, f); }
+            unsafe { core::ptr::write_volatile(arg as *mut crate::FbFixScreeninfo, f); }
             Some(0)
         }
-        fbdev::FBIOPUT_VSCREENINFO => Some(0),     // accept, no-op until DRM modeset wires
-        fbdev::FBIOPAN_DISPLAY    => Some(0),
-        fbdev::FBIOBLANK          => {
+        crate::FBIOPUT_VSCREENINFO => Some(0),     // accept, no-op until DRM modeset wires
+        crate::FBIOPAN_DISPLAY    => Some(0),
+        crate::FBIOBLANK          => {
             // arg is a small integer (FB_BLANK_*) passed by value, not a pointer.
             let _level = arg as u32;
             Some(0)
@@ -69,7 +67,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 
 /// Boot-time registration. Called from kernel_main once devfs +
 /// drm core are up. Currently registers a single /dev/fb0 inode;
-/// the fbdev::register() per-CRTC setup happens once 47's modeset
+/// the crate::register() per-CRTC setup happens once 47's modeset
 /// path lands.
 /// # SAFETY: caller is the boot path; pre-init.
 /// # C: O(1)
