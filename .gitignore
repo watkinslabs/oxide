@@ -53,6 +53,8 @@ debug-symbols/
 !/userspace/shared/**
 !/userspace/libc/
 !/userspace/libc/**
+!/userspace/keymaps/
+!/userspace/keymaps/**
 
 # QEMU runtime
 /qemu-*.log

@@ -27,99 +27,42 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+use crate::keymap::{self, Mods, Side, Out};
 use crate::{VirtioInputEvent, EV_KEY};
 
-// Linux input-event-codes.h subset. KEY_* codes used by QEMU's
-// virtio-keyboard for ASCII-mapped keys; everything else is 0 in
-// the translation table.
-const KEY_RESERVED:    u16 = 0;
-const KEY_ESC:         u16 = 1;
-const KEY_1:           u16 = 2;
-const KEY_MINUS:       u16 = 12;
-const KEY_EQUAL:       u16 = 13;
-const KEY_BACKSPACE:   u16 = 14;
-const KEY_TAB:         u16 = 15;
-const KEY_Q:           u16 = 16;
-const KEY_ENTER:       u16 = 28;
+// Linux KEY_* identifiers for modifier keys. The keymap text file
+// owns *printable* keycodes; modifiers stay hard-wired here so a
+// broken keymap can never lock the user out of layout switching.
 const KEY_LEFTCTRL:    u16 = 29;
-const KEY_A:           u16 = 30;
-const KEY_SEMICOLON:   u16 = 39;
-const KEY_APOSTROPHE:  u16 = 40;
-const KEY_GRAVE:       u16 = 41;
 const KEY_LEFTSHIFT:   u16 = 42;
-const KEY_BACKSLASH:   u16 = 43;
-const KEY_Z:           u16 = 44;
-const KEY_M:           u16 = 50;
-const KEY_COMMA:       u16 = 51;
-const KEY_DOT:         u16 = 52;
-const KEY_SLASH:       u16 = 53;
 const KEY_RIGHTSHIFT:  u16 = 54;
-const KEY_SPACE:       u16 = 57;
-const KEY_LEFTBRACE:   u16 = 26;
-const KEY_RIGHTBRACE:  u16 = 27;
 const KEY_LEFTALT:     u16 = 56;
 const KEY_CAPSLOCK:    u16 = 58;
+const KEY_NUMLOCK:     u16 = 69;
+const KEY_SCROLLLOCK:  u16 = 70;
+const KEY_RIGHTCTRL:   u16 = 97;
+const KEY_RIGHTALT:    u16 = 100;     // a.k.a. AltGr
+const KEY_LEFTMETA:    u16 = 125;     // Super / Win
+const KEY_RIGHTMETA:   u16 = 126;
 
-/// US-QWERTY scancode → ASCII (unshifted). Indexed by Linux KEY_*.
-/// Zero = no translation (function keys, modifiers, etc.).
-const KEY_TO_ASCII_LOWER: [u8; 128] = {
-    let mut t = [0u8; 128];
-    t[KEY_1 as usize]          = b'1';
-    t[(KEY_1 + 1) as usize]    = b'2';
-    t[(KEY_1 + 2) as usize]    = b'3';
-    t[(KEY_1 + 3) as usize]    = b'4';
-    t[(KEY_1 + 4) as usize]    = b'5';
-    t[(KEY_1 + 5) as usize]    = b'6';
-    t[(KEY_1 + 6) as usize]    = b'7';
-    t[(KEY_1 + 7) as usize]    = b'8';
-    t[(KEY_1 + 8) as usize]    = b'9';
-    t[(KEY_1 + 9) as usize]    = b'0';
-    t[KEY_MINUS as usize]      = b'-';
-    t[KEY_EQUAL as usize]      = b'=';
-    t[KEY_BACKSPACE as usize]  = 0x7f;
-    t[KEY_TAB as usize]        = b'\t';
-    t[KEY_Q as usize]          = b'q';
-    t[(KEY_Q + 1) as usize]    = b'w';
-    t[(KEY_Q + 2) as usize]    = b'e';
-    t[(KEY_Q + 3) as usize]    = b'r';
-    t[(KEY_Q + 4) as usize]    = b't';
-    t[(KEY_Q + 5) as usize]    = b'y';
-    t[(KEY_Q + 6) as usize]    = b'u';
-    t[(KEY_Q + 7) as usize]    = b'i';
-    t[(KEY_Q + 8) as usize]    = b'o';
-    t[(KEY_Q + 9) as usize]    = b'p';
-    t[KEY_LEFTBRACE as usize]  = b'[';
-    t[KEY_RIGHTBRACE as usize] = b']';
-    t[KEY_ENTER as usize]      = b'\n';
-    t[KEY_A as usize]          = b'a';
-    t[(KEY_A + 1) as usize]    = b's';
-    t[(KEY_A + 2) as usize]    = b'd';
-    t[(KEY_A + 3) as usize]    = b'f';
-    t[(KEY_A + 4) as usize]    = b'g';
-    t[(KEY_A + 5) as usize]    = b'h';
-    t[(KEY_A + 6) as usize]    = b'j';
-    t[(KEY_A + 7) as usize]    = b'k';
-    t[(KEY_A + 8) as usize]    = b'l';
-    t[KEY_SEMICOLON as usize]  = b';';
-    t[KEY_APOSTROPHE as usize] = b'\'';
-    t[KEY_GRAVE as usize]      = b'`';
-    t[KEY_BACKSLASH as usize]  = b'\\';
-    t[KEY_Z as usize]          = b'z';
-    t[(KEY_Z + 1) as usize]    = b'x';
-    t[(KEY_Z + 2) as usize]    = b'c';
-    t[(KEY_Z + 3) as usize]    = b'v';
-    t[(KEY_Z + 4) as usize]    = b'b';
-    t[(KEY_Z + 5) as usize]    = b'n';
-    t[KEY_M as usize]          = b'm';
-    t[KEY_COMMA as usize]      = b',';
-    t[KEY_DOT as usize]        = b'.';
-    t[KEY_SLASH as usize]      = b'/';
-    t[KEY_SPACE as usize]      = b' ';
-    t[KEY_ESC as usize]        = 0x1b;
-    let _ = KEY_RESERVED; let _ = KEY_LEFTCTRL; let _ = KEY_LEFTSHIFT;
-    let _ = KEY_RIGHTSHIFT; let _ = KEY_LEFTALT; let _ = KEY_CAPSLOCK;
-    t
-};
+/// Update the keymap modifier state for `keycode`. Returns `true`
+/// iff the keycode was a modifier and should not be translated as
+/// a printable key.
+fn handle_modifier(keycode: u16, pressed: bool) -> bool {
+    match keycode {
+        KEY_LEFTSHIFT   => { keymap::set_side(Side::ShiftLeft,  pressed); true }
+        KEY_RIGHTSHIFT  => { keymap::set_side(Side::ShiftRight, pressed); true }
+        KEY_LEFTCTRL    => { keymap::set_side(Side::CtrlLeft,   pressed); true }
+        KEY_RIGHTCTRL   => { keymap::set_side(Side::CtrlRight,  pressed); true }
+        KEY_LEFTALT     => { keymap::set_side(Side::AltLeft,    pressed); true }
+        KEY_RIGHTALT    => { keymap::set_side(Side::AltRight,   pressed); true }
+        KEY_LEFTMETA | KEY_RIGHTMETA => { keymap::set_mod(Mods::META, pressed); true }
+        KEY_CAPSLOCK    => { if pressed { keymap::toggle_lock(Mods::CAPS); }   true }
+        KEY_NUMLOCK     => { if pressed { keymap::toggle_lock(Mods::NUM); }    true }
+        KEY_SCROLLLOCK  => { if pressed { keymap::toggle_lock(Mods::SCROLL); } true }
+        _ => false,
+    }
+}
 
 /// Per-virtio-input-device runtime state. Captured at boot via
 /// `install_q0`; consumed by the softirq drain.
@@ -265,15 +208,17 @@ fn drain_one(ctx: &mut QueueCtx) {
         let evt = unsafe { core::ptr::read_volatile(evt_va) };
         DRAINED_EVENTS.fetch_add(1, Ordering::Relaxed);
 
-        // Map EV_KEY press → ASCII → foreground VT.
-        if evt.ty == EV_KEY && evt.value == 1 {
-            let kc = evt.code as usize;
-            if kc < KEY_TO_ASCII_LOWER.len() {
-                let ascii = KEY_TO_ASCII_LOWER[kc];
-                if ascii != 0 {
-                    tty::live::input_push_byte(ascii);
+        // EV_KEY: value=1 press, value=2 autorepeat, value=0 release.
+        if evt.ty == EV_KEY {
+            let pressed = evt.value == 1 || evt.value == 2;
+            // Modifier keys feed the keymap state machine and never
+            // produce input bytes themselves.
+            if !handle_modifier(evt.code, pressed) && pressed {
+                let out = keymap::translate(evt.code);
+                out.for_each(|b| {
+                    tty::live::input_push_byte(b);
                     DRAINED_KEYS.fetch_add(1, Ordering::Relaxed);
-                }
+                });
             }
         }
 
