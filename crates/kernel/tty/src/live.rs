@@ -497,6 +497,13 @@ pub fn inject_for_smoke_vt(vt: u8, bytes: &[u8]) {
 /// # C: O(N)
 pub fn inject_for_smoke(bytes: &[u8]) { inject_for_smoke_vt(0, bytes); }
 
+/// Public input entry point. Used by virtio-input (keyboard) — the
+/// device's softirq handler translates each EV_KEY press into an
+/// ASCII byte and calls here so it lands on the foreground VT's
+/// line discipline the same as a UART RX byte.
+/// # C: O(W) waiter wake — bounded by the small set of stdin readers
+pub fn input_push_byte(b: u8) { push_and_wake_fg(b); }
+
 /// Park the current task on `vt`'s TTY input wait queue.
 /// Caller is responsible for marking state=Sleeping + invoking
 /// `schedule()` after; this just registers the wakeup target.

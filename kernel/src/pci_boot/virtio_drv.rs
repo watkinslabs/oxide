@@ -364,18 +364,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
             klog::write_dec_u64(card_id as u64); klog::write_raw(b"\n"); }
     }
     if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        let evdev_id = drv_virtio_input::count() as u32;
-        drv_virtio_input::install(drv_virtio_input::VirtioInputDev {
-            bdf: bdf_word, evdev_id,
-            name: [0; 128], name_len: 0, serial: [0; 128], serial_len: 0,
-            ids: drv_virtio_input::VirtioInputDevIds::default(),
-            ev_bits: [0; 32],
-            key_bits: drv_virtio_input::CapBitmap::default(),
-            rel_bits: drv_virtio_input::CapBitmap::default(),
-            abs_bits: drv_virtio_input::CapBitmap::default(),
-            led_bits: drv_virtio_input::CapBitmap::default(),
-            abs_info: [None; 64],
-        });
+        let evdev_id = drv_virtio_input::install_default(bdf_word);
         debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
             klog::write_dec_u64(evdev_id as u64); klog::write_raw(b"\n"); }
     }
@@ -982,5 +971,24 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 tx0_buf_pa:    p.tx0_buf_pa,
             },
         );
+    }
+
+    // F01: virtio-input event-queue drain. Pre-fill q0 + install softirq.
+    if d.vendor_id == 0x1AF4 && d.device_id == 0x1052
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0 && p.q0_notify_va != 0 && p.q0_size != 0
+    {
+        let hhdm = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::mmu_ops::hhdm_offset() }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::mmu_ops::hhdm_offset() }
+        };
+        let bdf_word = (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32);
+        // SAFETY: boot path; PMM up; q0 PAs + notify VA valid; single-CPU.
+        let _ = unsafe {
+            drv_virtio_input::drain::install_q0(bdf_word, p.q0_size,
+                p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa, p.q0_notify_va, hhdm)
+        };
     }
 }

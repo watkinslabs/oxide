@@ -135,9 +135,20 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
         hal_x86_64::VEC_MSI => {
             // F57: virtio MSI delivery. EOI already issued above; bump
             // the diagnostic counter so msi-fires-post-enum picks it up.
-            // No scheduler interaction — completion-callback dispatch
-            // arrives with F58.
+            // F01: vector is shared across virtio devices — raise the
+            // input-drain softirq unconditionally; the handler is a
+            // no-op when no events are pending in the used ring.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
+            softirq::raise(softirq::Slot::InputDrain);
+            // Drain immediately on the same tail as the timer-arm.
+            if softirq::pending() {
+                // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — softirq::run_pending guards re-entry via IN_PROGRESS.
+                unsafe {
+                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+                    softirq::run_pending();
+                    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+                }
+            }
         }
         _ => { /* unknown vector -- EOI'd, fall through */ }
     }
