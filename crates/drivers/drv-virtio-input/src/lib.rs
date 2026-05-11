@@ -173,6 +173,25 @@ pub fn install(dev: VirtioInputDev) {
 /// # C: O(1)
 pub fn count() -> usize { DEVICES.lock().len() }
 
+/// Register a probed device with default capability bitmaps.
+/// Convenience wrapper for `pci_boot` to keep its install-site terse.
+/// # C: O(1) amortised; allocator-bounded vec push.
+pub fn install_default(bdf: u32) -> u32 {
+    let evdev_id = count() as u32;
+    install(VirtioInputDev {
+        bdf, evdev_id,
+        name: [0; 128], name_len: 0, serial: [0; 128], serial_len: 0,
+        ids: VirtioInputDevIds::default(),
+        ev_bits: [0; 32],
+        key_bits: CapBitmap::default(),
+        rel_bits: CapBitmap::default(),
+        abs_bits: CapBitmap::default(),
+        led_bits: CapBitmap::default(),
+        abs_info: [None; 64],
+    });
+    evdev_id
+}
+
 /// Snapshot the friendly name for `evdev_id` if installed.
 /// # C: O(N)
 pub fn name_of(evdev_id: u32) -> Option<[u8; 128]> {
@@ -273,3 +292,6 @@ mod tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod devfs;
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod drain;
