@@ -19,6 +19,7 @@ sched    = { path = "../sched" }
 boot-info = { path = "../../shared/boot-info" }
 cpu      = { path = "../cpu" }
 sync     = { path = "../../shared/sync" }
+softirq  = { path = "../softirq" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
