@@ -1,67 +1,77 @@
 # State 2026-05-11
 
 ## Branch
-`F04-serial-getty` — PR #1010 open. Stacks on PR #1009 (B13 asm fix, already merged via this branch's base).
+`F04-serial-getty` — PR #1010 open. Latest local commit `bf8e5a5` (LAPIC ungate); push'd to origin.
 
 ## What shipped this run
 
-Three layered fixes that together unblock the B12 rcS-to-getty wedge:
+`bf8e5a5` **fix(irq): ungate LAPIC/GIC bring-up (was hidden by debug-acpi)** —
+`smoke_device_map_{x86,arm}` was gated `feature = "debug-acpi"`, so in
+default builds it never ran. That left `LAPIC_BASE_VA = 0` →
+`lapic::timer_periodic()` silently no-op'd → no timer IRQs ever fired
+→ cooperative-only scheduling. Removed the gate on the module decl in
+`kernel/src/smoke/mod.rs` and on the call sites in `kernel/src/lib.rs`.
+The smoke's internal klog probes stay `debug_irq!` / `debug_vmm!`
+gated; the device map + LAPIC enable itself is always-on.
 
-1. **#1009 (B13)** `oxide_syscall_entry` asm bug: user-ABI args (rdi/rsi/rdx/r10/r8/r9) were restored from the saved frame, then clobbered by the SysV C call to `oxide_x86_arm_singlestep`. musl `open()` returned -1 with garbage errno → busybox printed `"can't open '/etc/init.d/rcS': %m"`. Fix: save the 6 arg regs across the singlestep C call.
-
-2. **#1010 (F04)** `sys_wait4(-1)` now returns `-ECHILD` via new `registry::has_children(parent)` when caller has zero live children. Every shell's drain loop `do { pid = waitpid(-1); ... } while (pid >= 0)` needs ECHILD to exit. Without it, hush blocked forever after reaping its first child and rcS never advanced past the first mount command.
-
-3. **#1010** inittab now spawns `/sbin/getty -L 115200 ttyS0 vt100` (instead of tty1 getty) so the login banner is observable on the qemu-mcp serial path.
-
-4. **#1010** rcS smoke list drops `ptrace_smoke` + `ptrace_singlestep_smoke` — the SIGSTOP/SIGTRAP race wedges the script. Real PTRACE_SINGLESTEP TF/SS arming is a follow-up.
-
-## Verified at boot (x86_64)
-
-- `cargo run -p xtask -- spec-lint` clean.
-- `make x86` + `make arm` green.
-- x86 qemu boot reaches rcS execution end-to-end: 4 mounts (proc/sysfs/tmpfs/devpts) + hostname + ifconfig + oxide-smokes (bare3, sem/msg/mq smoke, mprotect, hello_dyn) all run.
-- hush exits; init reaps via `wait4 reap=4100`; init fork+execs `/sbin/getty`.
-- Issue banner `oxide Linux on /dev/ttyS0` writes to serial via writev.
-- `oxide login: ` writev IS called (verified with sys_writev probes) — bytes reach klog::write_raw → UART sink. The prompt arrives **with timing-sensitivity**: with kernel-side debug probes present the bytes appear promptly; without them the prompt-writev fires after a longer delay (likely scheduling/tty-output queueing).
+Audit of the other 35 `cfg(feature = "debug-*")` gates: all klog-only
+or smoke-only (no hidden functionality). Only this one gated real init.
 
 ## Open work
 
-### Login prompt timing (NEXT)
-`/sbin/getty` calls 4 writev() to print the issue, then a 5th writev for `"oxide login: "`. The 5th is delayed by scheduling — appears immediately when klog::write_raw probes add per-syscall delay, not without. Suspect either:
-  - console_emit buffers through fbcon softirq queue that drains only on yield
-  - getty schedules between writevs in a way that doesn't wake quickly without artificial work
+### CAT-smoke iteration wedges mid-write of /proc/version (NEW root cause for login hang)
 
-Repro: `make x86 && qemu_start && qemu_run_until login:` → timeout. Adding any klog probe in sys_writev makes the prompt appear within a few seconds.
+Traced the "boot hangs before `oxide login:`" to the kernel-spawned
+ELF smoke in `kernel/src/smoke/elf.rs::build_elf()`. It runs 4
+iterations of fork+exec+wait4: YO ("yo\n"), HI ("hi\n"), ECHO
+(read+write 1 byte), CAT (open `/proc/version` + read 64 + write).
 
-### Real PTRACE_SINGLESTEP
-F49+F50+F51 framework exists (singlestep flag, TF arming, SIGTRAP delivery) but the SIGSTOP/SIGTRAP signal-delivery race makes ptrace_singlestep_smoke hang. Skipping the test in rcS for now; real fix needs to coordinate the ATTACH-induced SIGSTOP with the post-SINGLESTEP wake so SIGTRAP fires correctly.
+The boot trace consistently ends at:
+```
+yo\r\nhi\r\nALinux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\r
+```
+The trailing `\r` (no `\n`) is `VERSION_BODY` (`procfs/mod.rs:269`,
+56 bytes ending in `\n`) part-way through ONLCR. CAT's `write(1,buf,56)`
+emits 55 bytes then stalls; init never gets to fork the busybox-init
+that would print `oxide login:`. Pre-LAPIC-fix behaviour was the
+**same** — `bf8e5a5` doesn't regress, the smoke hang is pre-existing.
 
-### Display visibility on GTK / Serial input echo (still parked)
-Unchanged from prior state.
+Hypothesis to test next: write is blocking inside the tty layer
+during the final `\n`→`\r\n` ONLCR step, possibly waiting on a
+softirq drain that never runs because nothing yields. The fact
+that adding any klog probe in sys_writev unblocks it (see prior
+state) supports a yield-point gap.
 
-## Followups ready to stack
+Probe candidates (don't ship gated — instrument and remove):
+- count bytes actually written to UART vs requested length;
+- log every entry to `console_emit` / `tty::output` ONLCR path;
+- check whether the CAT child reaches `sys_close` / `sys_exit` (it
+  shouldn't if write hangs — confirm).
 
-- aarch64 SVC entry: audited in #1009 and structurally safe (retval stored to memory before singlestep C call; all regs restored from frame after). No fix needed.
-- F03+ keymap follow-ups (mouse drain, loadkeys helper).
-- D-spec for keymap text format (formalize grammar in docs/46).
+### Display + input on GTK (still parked)
+User reported: `make qemu-x86` opens GTK, fbcon shows block-glyphs,
+keyboard input doesn't propagate. Separate from the serial path;
+`OXIDE_QEMU_HEADLESS=1 make qemu-x86` avoids GTK entirely.
+
+### Real PTRACE_SINGLESTEP (parked)
+F49–F51 framework exists; SIGSTOP/SIGTRAP race wedges
+`ptrace_singlestep_smoke`. rcS still skips it.
 
 ## First task next session
 
 ```sh
-# Investigate the writev-without-probes timing issue.
-# Hypothesis: kernel needs a yield point between back-to-back syscalls
-# so userspace can re-enter the next syscall. Probe sched::live::schedule
-# to see if it's called between getty's writevs.
-make x86 && cargo run -p xtask -- spec-lint  # baseline clean
+# Confirm CAT child reaches close+exit, or is stuck mid-write.
+# Add a one-shot klog::write_raw probe at the head of sys_close and
+# sys_exit_group emitting the tid; rebuild; boot; observe whether
+# either fires after the truncated VERSION_BODY line.
+make x86 && OXIDE_QEMU_HEADLESS=1 make qemu-x86  # serial-only
 ```
-
-Alt pivots:
-- Real PTRACE_SINGLESTEP work (then re-enable the ptrace smokes).
-- F05+ network features once the boot chain is solid.
 
 ## Useful pointers
 
-- wait4 ECHILD: `kernel/src/syscalls/mod.rs:235-250` (`has_children` gate).
-- sys_writev path: `kernel/src/syscalls/fs.rs:718`.
-- ConsoleInode::write → console_emit alias for klog::write_raw at `kernel/src/dev/console.rs:24`.
-- Syscall asm: `crates/arch/hal-x86_64/src/syscall.rs:175-205` (singlestep save/restore block).
+- LAPIC ungate diff: commit `bf8e5a5`; `kernel/src/lib.rs:333` + `kernel/src/smoke/mod.rs:8`.
+- CAT smoke: `kernel/src/smoke/elf.rs::build_cat_blob()` lines 254–316.
+- VERSION_BODY (56 bytes): `kernel/src/procfs/mod.rs:269`.
+- sys_writev: `kernel/src/syscalls/fs.rs:718`.
+- ConsoleInode::write → klog::write_raw: `kernel/src/dev/console.rs:24`.
+- qemu invocation flags: `tools/xtask/src/image_qemu.rs:328`; `OXIDE_QEMU_HEADLESS` env toggles `-display none` vs `gtk`.
