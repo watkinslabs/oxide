@@ -87,14 +87,18 @@ impl Mods {
 
 const TABLE_SIZE: usize = 256;
 
-/// Runtime keymap. Loaded from `/etc/keymap` via [`load_text`];
-/// callers must own it for as long as it is the active map.
+/// Runtime keymap. Each slot stores a Unicode codepoint (0 = no
+/// mapping); `translate()` UTF-8-encodes on output. This lets
+/// non-ASCII locales (DE umlauts, ES ñ, FR accents, …) ride the
+/// same loader without a separate "multibyte" path.
+/// Loaded from `/etc/keymap` via [`load_text`]; callers must own
+/// it for as long as it is the active map.
 pub struct Keymap {
     pub name:        String,
-    pub plain:       [u8; TABLE_SIZE],
-    pub shift:       [u8; TABLE_SIZE],
-    pub altgr:       [u8; TABLE_SIZE],
-    pub shift_altgr: [u8; TABLE_SIZE],
+    pub plain:       [u32; TABLE_SIZE],
+    pub shift:       [u32; TABLE_SIZE],
+    pub altgr:       [u32; TABLE_SIZE],
+    pub shift_altgr: [u32; TABLE_SIZE],
 }
 
 impl Keymap {
@@ -244,56 +248,118 @@ pub fn set_side(side: Side, pressed: bool) {
     set_mod(group, any);
 }
 
-/// Translation output. `One` = the single byte we map to; `Two` =
-/// ESC-prefixed Meta sequence (Alt held); `None` = no mapping.
+/// Translation output. Holds up to 5 bytes (1 ESC prefix + up to
+/// 4 UTF-8 bytes for any Unicode codepoint). `len == 0` ⇒ no mapping.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Out {
-    None,
-    One(u8),
-    Two(u8, u8),
+pub struct Out {
+    pub buf: [u8; 5],
+    pub len: u8,
 }
 
 impl Out {
-    /// Iterate produced bytes. Empty for `None`.
-    /// # C: O(1) — bounded by 2 bytes.
+    /// Empty sentinel — no bytes produced.
+    pub const NONE: Self = Self { buf: [0; 5], len: 0 };
+
+    /// Single-byte ASCII shortcut.
+    /// # C: O(1)
+    pub const fn one(b: u8) -> Self {
+        let mut buf = [0u8; 5];
+        buf[0] = b;
+        Self { buf, len: 1 }
+    }
+
+    /// Build from a Unicode codepoint. Encodes to UTF-8 (1..4 bytes).
+    /// Returns NONE for codepoint 0.
+    /// # C: O(1)
+    pub fn from_codepoint(cp: u32) -> Self {
+        if cp == 0 { return Self::NONE; }
+        let mut buf = [0u8; 5];
+        let n = encode_utf8(cp, &mut buf[..4]);
+        Self { buf, len: n as u8 }
+    }
+
+    /// Prepend ESC (0x1b) for the xterm Meta convention. Caller
+    /// ensures `len + 1 <= 5`.
+    /// # C: O(1)
+    pub fn with_meta(self) -> Self {
+        if self.len == 0 || self.len >= 5 { return self; }
+        let mut buf = [0u8; 5];
+        buf[0] = 0x1b;
+        let mut i = 0;
+        while i < self.len as usize { buf[i + 1] = self.buf[i]; i += 1; }
+        Self { buf, len: self.len + 1 }
+    }
+
+    /// Slice of valid bytes — empty for NONE.
+    /// # C: O(1)
+    pub fn as_bytes(&self) -> &[u8] { &self.buf[..self.len as usize] }
+
+    /// Iterate produced bytes. Empty for NONE.
+    /// # C: O(len)
     pub fn for_each<F: FnMut(u8)>(self, mut f: F) {
-        match self {
-            Out::None        => {},
-            Out::One(a)      => f(a),
-            Out::Two(a, b)   => { f(a); f(b); }
-        }
+        for &b in self.as_bytes() { f(b); }
+    }
+}
+
+/// UTF-8-encode `cp` into `out`. Returns the number of bytes written.
+/// Replaces invalid codepoints with U+FFFD (3 bytes). `out` must have
+/// at least 4 bytes of room.
+fn encode_utf8(cp: u32, out: &mut [u8]) -> usize {
+    let cp = if cp > 0x10_FFFF || (0xD800..=0xDFFF).contains(&cp) { 0xFFFD } else { cp };
+    if cp < 0x80 {
+        out[0] = cp as u8;
+        1
+    } else if cp < 0x800 {
+        out[0] = 0xC0 | (cp >> 6) as u8;
+        out[1] = 0x80 | (cp & 0x3F) as u8;
+        2
+    } else if cp < 0x1_0000 {
+        out[0] = 0xE0 | (cp >> 12) as u8;
+        out[1] = 0x80 | ((cp >> 6) & 0x3F) as u8;
+        out[2] = 0x80 | (cp & 0x3F) as u8;
+        3
+    } else {
+        out[0] = 0xF0 | (cp >> 18) as u8;
+        out[1] = 0x80 | ((cp >> 12) & 0x3F) as u8;
+        out[2] = 0x80 | ((cp >> 6) & 0x3F) as u8;
+        out[3] = 0x80 | (cp & 0x3F) as u8;
+        4
     }
 }
 
 /// Translate `keycode` under the active layout and modifier state.
-/// Returns `Out::None` if no map is loaded or the key has no entry
+/// Returns `Out::NONE` if no map is loaded or the key has no entry
 /// for the current modifier combination.
-/// # C: O(1) — table lookups + a handful of conditionals.
+/// # C: O(1) — table lookups + UTF-8 encode + meta prefix.
 pub fn translate(keycode: u16) -> Out {
-    if !is_loaded() { return Out::None; }
+    if !is_loaded() { return Out::NONE; }
     let g = ACTIVE.lock();
-    let km = match g.as_ref() { Some(k) => k, None => return Out::None };
+    let km = match g.as_ref() { Some(k) => k, None => return Out::NONE };
     let m = mods();
     let kc = keycode as usize;
-    if kc >= TABLE_SIZE { return Out::None; }
+    if kc >= TABLE_SIZE { return Out::NONE; }
 
     if m.contains(Mods::CTRL) {
         let plain = km.plain[kc];
-        if (b'a'..=b'z').contains(&plain) { return wrap_meta(m, plain - b'a' + 1); }
-        if (b'A'..=b'Z').contains(&plain) { return wrap_meta(m, plain - b'A' + 1); }
-        match plain {
-            b'[' | b'{' => return wrap_meta(m, 0x1b),
-            b'\\'| b'|' => return wrap_meta(m, 0x1c),
-            b']' | b'}' => return wrap_meta(m, 0x1d),
-            b' '        => return wrap_meta(m, 0x00),
-            _ => {}
+        // Ctrl + letter (ASCII letters only — non-ASCII letters
+        // don't map to control codes).
+        if let Some(p) = u8::try_from(plain).ok() {
+            if (b'a'..=b'z').contains(&p) { return wrap_meta(m, Out::one(p - b'a' + 1)); }
+            if (b'A'..=b'Z').contains(&p) { return wrap_meta(m, Out::one(p - b'A' + 1)); }
+            match p {
+                b'[' | b'{' => return wrap_meta(m, Out::one(0x1b)),
+                b'\\'| b'|' => return wrap_meta(m, Out::one(0x1c)),
+                b']' | b'}' => return wrap_meta(m, Out::one(0x1d)),
+                b' '        => return wrap_meta(m, Out::one(0x00)),
+                _ => {}
+            }
         }
     }
 
     if m.contains(Mods::ALTGR) {
         let tbl = if m.contains(Mods::SHIFT) { &km.shift_altgr } else { &km.altgr };
-        let b = tbl[kc];
-        if b != 0 { return wrap_meta(m, b); }
+        let cp = tbl[kc];
+        if cp != 0 { return wrap_meta(m, Out::from_codepoint(cp)); }
     }
 
     let shifted = if is_letter_kc(km, kc) {
@@ -301,18 +367,24 @@ pub fn translate(keycode: u16) -> Out {
     } else {
         m.contains(Mods::SHIFT)
     };
-    let b = if shifted { km.shift[kc] } else { km.plain[kc] };
-    if b == 0 { return Out::None; }
-    wrap_meta(m, b)
+    let cp = if shifted { km.shift[kc] } else { km.plain[kc] };
+    if cp == 0 { return Out::NONE; }
+    wrap_meta(m, Out::from_codepoint(cp))
 }
 
 #[inline]
-fn wrap_meta(m: Mods, b: u8) -> Out {
-    if m.contains(Mods::ALT) { Out::Two(0x1b, b) } else { Out::One(b) }
+fn wrap_meta(m: Mods, o: Out) -> Out {
+    if m.contains(Mods::ALT) { o.with_meta() } else { o }
 }
 
 fn is_letter_kc(km: &Keymap, kc: usize) -> bool {
-    let b = km.plain[kc];
+    let cp = km.plain[kc];
+    // ASCII letters fold under Caps; non-ASCII letters (umlauts,
+    // accents, ñ, ü, …) above U+007F also fold under Caps when
+    // they're alphabetic — covered by Unicode property tables that
+    // we don't ship in-kernel. v1: only ASCII folds.
+    if cp > 0x7F { return false; }
+    let b = cp as u8;
     (b'a'..=b'z').contains(&b) || (b'A'..=b'Z').contains(&b)
 }
 
@@ -354,9 +426,33 @@ fn parse_name(s: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(body).into_owned())
 }
 
-fn parse_value(v: &[u8]) -> Option<u8> {
+/// Parse a keymap value into a Unicode codepoint. Returns 0 for
+/// `''` (explicit no-mapping), `Some(cp)` for a codepoint, or
+/// `None` for unparseable input. Accepted forms:
+///   - single ASCII printable char  →  `'a'`, `';'`, `'/'`, …
+///   - escape                        →  `\n` `\t` `\b` `\r` `\e` `\\` `\0`
+///   - `\sp`                         →  space
+///   - hex byte                      →  `0xHH`  (8-bit; for raw bytes)
+///   - Unicode codepoint             →  `U+XXXX` (1–6 hex digits, ≤ 0x10FFFF)
+///   - multibyte UTF-8               →  the character itself (e.g. `ä`, `ñ`)
+fn parse_value(v: &[u8]) -> Option<u32> {
     let v = trim(v);
     if v == b"''" { return Some(0); }
+    if v.starts_with(b"U+") || v.starts_with(b"u+") {
+        let mut n: u32 = 0;
+        if v.len() <= 2 || v.len() > 2 + 6 { return None; }
+        for &c in &v[2..] {
+            let d = match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => 10 + (c - b'a'),
+                b'A'..=b'F' => 10 + (c - b'A'),
+                _ => return None,
+            };
+            n = n.checked_shl(4)?.checked_add(d as u32)?;
+            if n > 0x10_FFFF { return None; }
+        }
+        return Some(n);
+    }
     if v.starts_with(b"0x") || v.starts_with(b"0X") {
         let mut n: u32 = 0;
         for &c in &v[2..] {
@@ -369,19 +465,51 @@ fn parse_value(v: &[u8]) -> Option<u8> {
             n = n.checked_shl(4)?.checked_add(d as u32)?;
             if n > 0xFF { return None; }
         }
-        return Some(n as u8);
+        return Some(n);
     }
     if v.starts_with(b"\\") && v.len() == 2 {
         return Some(match v[1] {
-            b'n' => b'\n', b't' => b'\t', b'b' => 0x08,
-            b'r' => b'\r', b'e' => 0x1b,  b'\\' => b'\\',
+            b'n' => b'\n' as u32, b't' => b'\t' as u32, b'b' => 0x08,
+            b'r' => b'\r' as u32, b'e' => 0x1b,        b'\\' => b'\\' as u32,
             b'0' => 0x00,
             _ => return None,
         });
     }
-    if v == b"\\sp" { return Some(b' '); }
-    if v.len() == 1 && v[0].is_ascii() { return Some(v[0]); }
-    None
+    if v == b"\\sp" { return Some(b' ' as u32); }
+    if v.len() == 1 && v[0].is_ascii() { return Some(v[0] as u32); }
+    // Multibyte UTF-8 character (e.g. `ä`, `ñ`, `€`). Decode the
+    // leading codepoint and require it to span the entire value —
+    // we don't store strings, only single codepoints per slot.
+    decode_utf8(v)
+}
+
+/// Decode a single UTF-8 codepoint from `v`. Returns Some(cp) iff
+/// `v` is exactly one well-formed codepoint; None otherwise.
+fn decode_utf8(v: &[u8]) -> Option<u32> {
+    if v.is_empty() { return None; }
+    let b0 = v[0];
+    let (n, cp): (usize, u32) = if b0 < 0x80 {
+        (1, b0 as u32)
+    } else if b0 & 0xE0 == 0xC0 {
+        if v.len() < 2 || v[1] & 0xC0 != 0x80 { return None; }
+        (2, (((b0 & 0x1F) as u32) << 6) | ((v[1] & 0x3F) as u32))
+    } else if b0 & 0xF0 == 0xE0 {
+        if v.len() < 3 || v[1] & 0xC0 != 0x80 || v[2] & 0xC0 != 0x80 { return None; }
+        (3, (((b0 & 0x0F) as u32) << 12)
+           | (((v[1] & 0x3F) as u32) << 6)
+           | ((v[2] & 0x3F) as u32))
+    } else if b0 & 0xF8 == 0xF0 {
+        if v.len() < 4 || v[1] & 0xC0 != 0x80 || v[2] & 0xC0 != 0x80 || v[3] & 0xC0 != 0x80 { return None; }
+        (4, (((b0 & 0x07) as u32) << 18)
+           | (((v[1] & 0x3F) as u32) << 12)
+           | (((v[2] & 0x3F) as u32) << 6)
+           | ((v[3] & 0x3F) as u32))
+    } else {
+        return None;
+    };
+    if v.len() != n { return None; }
+    if cp > 0x10_FFFF || (0xD800..=0xDFFF).contains(&cp) { return None; }
+    Some(cp)
 }
 
 // ----------------------------------------------------------------
@@ -411,53 +539,91 @@ keycode 28 plain=\n
     fn plain_letter() {
         install();
         MODS_RAW.store(0, Ordering::Relaxed);
-        assert_eq!(translate(30), Out::One(b'a'));
+        assert_eq!(translate(30).as_bytes(), b"a");
     }
 
     #[test]
     fn shift_letter() {
         install();
         MODS_RAW.store(Mods::SHIFT.bits(), Ordering::Relaxed);
-        assert_eq!(translate(30), Out::One(b'A'));
+        assert_eq!(translate(30).as_bytes(), b"A");
     }
 
     #[test]
     fn caps_folds_on_letter_only() {
         install();
         MODS_RAW.store(Mods::CAPS.bits(), Ordering::Relaxed);
-        assert_eq!(translate(30), Out::One(b'A'));
-        assert_eq!(translate(2),  Out::One(b'1'));
+        assert_eq!(translate(30).as_bytes(), b"A");
+        assert_eq!(translate(2).as_bytes(),  b"1");
     }
 
     #[test]
     fn ctrl_letter_is_control_code() {
         install();
         MODS_RAW.store(Mods::CTRL.bits(), Ordering::Relaxed);
-        assert_eq!(translate(30), Out::One(0x01));
-        assert_eq!(translate(46), Out::One(0x03));
+        assert_eq!(translate(30).as_bytes(), &[0x01]);
+        assert_eq!(translate(46).as_bytes(), &[0x03]);
     }
 
     #[test]
     fn alt_prefixes_with_esc() {
         install();
         MODS_RAW.store(Mods::ALT.bits(), Ordering::Relaxed);
-        assert_eq!(translate(30), Out::Two(0x1b, b'a'));
+        assert_eq!(translate(30).as_bytes(), &[0x1b, b'a']);
     }
 
     #[test]
     fn rejects_unloaded() {
-        // Force unload — write directly.
         LOADED.store(false, Ordering::Relaxed);
-        assert_eq!(translate(30), Out::None);
+        assert_eq!(translate(30), Out::NONE);
     }
 
     #[test]
     fn parses_escapes_and_hex() {
-        assert_eq!(parse_value(b"\\n"), Some(b'\n'));
-        assert_eq!(parse_value(b"\\sp"), Some(b' '));
+        assert_eq!(parse_value(b"\\n"), Some(b'\n' as u32));
+        assert_eq!(parse_value(b"\\sp"), Some(b' ' as u32));
         assert_eq!(parse_value(b"0x1b"), Some(0x1b));
-        assert_eq!(parse_value(b"A"), Some(b'A'));
+        assert_eq!(parse_value(b"A"), Some(b'A' as u32));
         assert_eq!(parse_value(b"''"), Some(0));
         assert_eq!(parse_value(b"??"), None);
+    }
+
+    #[test]
+    fn parses_unicode_codepoint() {
+        // U+00E4 = ä (LATIN SMALL LETTER A WITH DIAERESIS)
+        assert_eq!(parse_value(b"U+00E4"), Some(0x00E4));
+        // U+1F600 = 😀
+        assert_eq!(parse_value(b"U+1F600"), Some(0x1F600));
+        assert_eq!(parse_value(b"U+110000"), None); // out of range
+    }
+
+    #[test]
+    fn parses_multibyte_utf8_direct() {
+        // ä is C3 A4 in UTF-8
+        assert_eq!(parse_value(&[0xC3, 0xA4]), Some(0x00E4));
+        // ñ is C3 B1
+        assert_eq!(parse_value(&[0xC3, 0xB1]), Some(0x00F1));
+    }
+
+    #[test]
+    fn out_encodes_utf8_for_unicode() {
+        let o = Out::from_codepoint(0x00E4); // ä
+        assert_eq!(o.as_bytes(), &[0xC3, 0xA4]);
+        let o = Out::from_codepoint(0x20AC); // €
+        assert_eq!(o.as_bytes(), &[0xE2, 0x82, 0xAC]);
+    }
+
+    #[test]
+    fn locale_de_umlaut_via_keymap() {
+        let blob: &[u8] = br#"
+keymap "Test DE"
+keycode 39 plain=U+00F6 shift=U+00D6
+"#;
+        load_text(blob).unwrap();
+        MODS_RAW.store(0, Ordering::Relaxed);
+        // KEY_SEMICOLON (39) on DE layout = ö
+        assert_eq!(translate(39).as_bytes(), "ö".as_bytes());
+        MODS_RAW.store(Mods::SHIFT.bits(), Ordering::Relaxed);
+        assert_eq!(translate(39).as_bytes(), "Ö".as_bytes());
     }
 }
