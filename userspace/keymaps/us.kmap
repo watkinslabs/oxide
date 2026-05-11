@@ -1,0 +1,66 @@
+# US-QWERTY keymap. Linux KEY_* keycode → ASCII per modifier table.
+# Drop a similar file at /etc/keymap to switch layouts at boot; or
+# run `loadkeys <name>` once we ship that helper.
+keymap "US QWERTY"
+
+# Row 1: ESC + digits + minus/equals
+keycode 1  plain=\e        shift=\e
+keycode 2  plain=1         shift=!
+keycode 3  plain=2         shift=@
+keycode 4  plain=3         shift=#
+keycode 5  plain=4         shift=$
+keycode 6  plain=5         shift=%
+keycode 7  plain=6         shift=^
+keycode 8  plain=7         shift=&
+keycode 9  plain=8         shift=*
+keycode 10 plain=9         shift=(
+keycode 11 plain=0         shift=)
+keycode 12 plain=-         shift=_
+keycode 13 plain==         shift=+
+keycode 14 plain=\b        shift=\b
+
+# Row 2: tab + qwerty + brackets
+keycode 15 plain=\t        shift=\t
+keycode 16 plain=q         shift=Q
+keycode 17 plain=w         shift=W
+keycode 18 plain=e         shift=E
+keycode 19 plain=r         shift=R
+keycode 20 plain=t         shift=T
+keycode 21 plain=y         shift=Y
+keycode 22 plain=u         shift=U
+keycode 23 plain=i         shift=I
+keycode 24 plain=o         shift=O
+keycode 25 plain=p         shift=P
+keycode 26 plain=[         shift={
+keycode 27 plain=]         shift=}
+keycode 28 plain=\n        shift=\n
+
+# Row 3: a..l + semicolon + apostrophe + grave + backslash
+keycode 30 plain=a         shift=A
+keycode 31 plain=s         shift=S
+keycode 32 plain=d         shift=D
+keycode 33 plain=f         shift=F
+keycode 34 plain=g         shift=G
+keycode 35 plain=h         shift=H
+keycode 36 plain=j         shift=J
+keycode 37 plain=k         shift=K
+keycode 38 plain=l         shift=L
+keycode 39 plain=;         shift=:
+keycode 40 plain=0x27      shift=0x22
+keycode 41 plain=0x60      shift=~
+keycode 43 plain=\\        shift=|
+
+# Row 4: z..m + comma + dot + slash
+keycode 44 plain=z         shift=Z
+keycode 45 plain=x         shift=X
+keycode 46 plain=c         shift=C
+keycode 47 plain=v         shift=V
+keycode 48 plain=b         shift=B
+keycode 49 plain=n         shift=N
+keycode 50 plain=m         shift=M
+keycode 51 plain=,         shift=<
+keycode 52 plain=.         shift=>
+keycode 53 plain=/         shift=?
+
+# Space + Enter (Enter also on keypad later)
+keycode 57 plain=\sp       shift=\sp
