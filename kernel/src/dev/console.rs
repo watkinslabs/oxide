@@ -89,12 +89,21 @@ impl Inode for ConsoleInode {
             console_emit(buf);
             return Ok(buf.len());
         }
-        // Emit byte-by-byte applying NL → CRLF. Buffered batching
-        // would be faster but interactive output is at human pace.
-        for &b in buf {
-            if b == b'\n' { console_emit(b"\r\n"); }
-            else          { console_emit(core::slice::from_ref(&b)); }
+        // ONLCR: emit each maximal NL-free run in one console_emit
+        // call, with b"\r\n" between runs. Single lock_irqsave per
+        // run + one per NL pair, so the BOOT_UART lock isn't taken
+        // 56 separate times for a 56-byte write — the per-byte
+        // loop variant tripped a wedge on the last NL of the CAT
+        // smoke's /proc/version write (see project_login_hang_cat_smoke.md).
+        let mut start = 0;
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' {
+                if i > start { console_emit(&buf[start..i]); }
+                console_emit(b"\r\n");
+                start = i + 1;
+            }
         }
+        if start < buf.len() { console_emit(&buf[start..]); }
         Ok(buf.len())
     }
 }
