@@ -1,77 +1,90 @@
 # State 2026-05-11
 
 ## Branch
-`F04-serial-getty` — PR #1010 open. Latest local commit `bf8e5a5` (LAPIC ungate); push'd to origin.
+`F04-serial-getty` — PR #1010 open. HEAD `94ced16`.
 
 ## What shipped this run
 
-`bf8e5a5` **fix(irq): ungate LAPIC/GIC bring-up (was hidden by debug-acpi)** —
-`smoke_device_map_{x86,arm}` was gated `feature = "debug-acpi"`, so in
-default builds it never ran. That left `LAPIC_BASE_VA = 0` →
-`lapic::timer_periodic()` silently no-op'd → no timer IRQs ever fired
-→ cooperative-only scheduling. Removed the gate on the module decl in
-`kernel/src/smoke/mod.rs` and on the call sites in `kernel/src/lib.rs`.
-The smoke's internal klog probes stay `debug_irq!` / `debug_vmm!`
-gated; the device map + LAPIC enable itself is always-on.
+1. **`bf8e5a5`** `fix(irq): ungate LAPIC/GIC bring-up (was hidden by debug-acpi)` —
+   `smoke_device_map_{x86,arm}` was gated `feature = "debug-acpi"` so
+   default builds never set `LAPIC_BASE_VA`; `timer_periodic()` silently
+   no-op'd. Removed the gate. Audited the other 35 `cfg(feature =
+   "debug-*")` gates — all klog/smoke only, none hid functionality.
 
-Audit of the other 35 `cfg(feature = "debug-*")` gates: all klog-only
-or smoke-only (no hidden functionality). Only this one gated real init.
+2. **`94ced16`** `fix(irq): drop schedule_from_irq from timer ISR
+   (cooperative-only)` — with the LAPIC now firing, the timer ISR was
+   exercising the known iretq-frame protocol gap. Cooperative-only
+   for now; `tick_poll()` still runs inline so UART RX wakes stdin.
 
 ## Open work
 
-### CAT-smoke iteration wedges mid-write of /proc/version (NEW root cause for login hang)
+### The CAT-smoke wedge is the real login blocker (NOT YET FIXED)
 
-Traced the "boot hangs before `oxide login:`" to the kernel-spawned
-ELF smoke in `kernel/src/smoke/elf.rs::build_elf()`. It runs 4
-iterations of fork+exec+wait4: YO ("yo\n"), HI ("hi\n"), ECHO
-(read+write 1 byte), CAT (open `/proc/version` + read 64 + write).
-
-The boot trace consistently ends at:
+Trace consistently stops at:
 ```
 yo\r\nhi\r\nALinux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\r
 ```
-The trailing `\r` (no `\n`) is `VERSION_BODY` (`procfs/mod.rs:269`,
-56 bytes ending in `\n`) part-way through ONLCR. CAT's `write(1,buf,56)`
-emits 55 bytes then stalls; init never gets to fork the busybox-init
-that would print `oxide login:`. Pre-LAPIC-fix behaviour was the
-**same** — `bf8e5a5` doesn't regress, the smoke hang is pre-existing.
+This is the kernel-spawned smoke ELF in `kernel/src/smoke/elf.rs::
+build_elf()` running iteration 4 (CAT: open `/proc/version` + read +
+write). `VERSION_BODY` (`procfs/mod.rs:269`) is 56 bytes ending in
+`\n`; `ConsoleInode::write` (`kernel/src/dev/console.rs:84`) does the
+ONLCR `\n → \r\n` byte-by-byte via `console_emit`. We emit 55 body
+bytes + the `\r` of the final NL expansion, then hang.
 
-Hypothesis to test next: write is blocking inside the tty layer
-during the final `\n`→`\r\n` ONLCR step, possibly waiting on a
-softirq drain that never runs because nothing yields. The fact
-that adding any klog probe in sys_writev unblocks it (see prior
-state) supports a yield-point gap.
+Not a regression from `bf8e5a5` / `94ced16`: same byte-exact stop
+point both before and after the LAPIC fix. The wedge sits somewhere
+in the LAST `console_emit(b"\r\n")` call (or returning from it
+into `sys_write`'s tail / `sys_close` / `sys_exit`).
 
-Probe candidates (don't ship gated — instrument and remove):
-- count bytes actually written to UART vs requested length;
-- log every entry to `console_emit` / `tty::output` ONLCR path;
-- check whether the CAT child reaches `sys_close` / `sys_exit` (it
-  shouldn't if write hangs — confirm).
+Adding any klog probe inside `sys_writev` unwedges it — strong
+yield-point gap somewhere on the return path.
 
-### Display + input on GTK (still parked)
-User reported: `make qemu-x86` opens GTK, fbcon shows block-glyphs,
-keyboard input doesn't propagate. Separate from the serial path;
-`OXIDE_QEMU_HEADLESS=1 make qemu-x86` avoids GTK entirely.
+**Approach for next session:**
+1. Instrument `sys_close`+`sys_exit_group` with a one-line
+   `klog::write_raw(b"[CLOSE]\\n")` / `b"[EXIT]\\n"` probe at fn
+   head. Boot once. Does CAT reach close or exit?
+   - If yes → wedge is in parent's `wait4` or the return-to-boot
+     path in `smoke/elf.rs::run_as_task`.
+   - If no → wedge is in `ConsoleInode::write` final-byte path
+     OR in the UART driver for the very last `\n`.
+2. If wedge is in `ConsoleInode::write`: check whether
+   `lock_irqsave` ever yields on the BOOT_UART spinlock contention;
+   check whether the 16550 LSR THRE bit ever clears when the FIFO
+   is full (115200 baud × 14-byte FIFO).
+3. If wedge is in close/exit: parent wait4 likely sleeping on a
+   parked child whose Zombie state never publishes.
+
+### Display + input on GTK (parked)
+`make qemu-x86` opens GTK by default (`tools/xtask/src/image_qemu.rs:373`).
+Set `OXIDE_QEMU_HEADLESS=1` to suppress. Block-glyphs (fbcon font
+in virtio-gpu fb) and dead keyboard (virtio-input not delivered to
+userspace) are separate from the serial-path login work.
 
 ### Real PTRACE_SINGLESTEP (parked)
-F49–F51 framework exists; SIGSTOP/SIGTRAP race wedges
+F49-F51 framework exists; SIGSTOP/SIGTRAP race wedges
 `ptrace_singlestep_smoke`. rcS still skips it.
 
 ## First task next session
 
 ```sh
-# Confirm CAT child reaches close+exit, or is stuck mid-write.
-# Add a one-shot klog::write_raw probe at the head of sys_close and
-# sys_exit_group emitting the tid; rebuild; boot; observe whether
-# either fires after the truncated VERSION_BODY line.
-make x86 && OXIDE_QEMU_HEADLESS=1 make qemu-x86  # serial-only
+# 1) Add the close/exit probes (kernel/src/syscalls/mod.rs, sys_close
+#    + sys_exit_group, or wherever they dispatch) — single
+#    klog::write_raw line each, ungated.
+# 2) Build + boot headless:
+make x86 && cargo run -p xtask -- image --arch x86_64 --features debug-boot
+qemu-mcp qemu_start arch=x86_64
+qemu_run_until pattern="[EXIT]|[CLOSE]|oxide login:" timeout=60
+# 3) Use the result to pick branch above.
 ```
 
 ## Useful pointers
 
-- LAPIC ungate diff: commit `bf8e5a5`; `kernel/src/lib.rs:333` + `kernel/src/smoke/mod.rs:8`.
-- CAT smoke: `kernel/src/smoke/elf.rs::build_cat_blob()` lines 254–316.
+- Smoke ELF + CAT iter: `kernel/src/smoke/elf.rs:32` (build_elf),
+  `kernel/src/smoke/elf.rs:254` (build_cat_blob).
 - VERSION_BODY (56 bytes): `kernel/src/procfs/mod.rs:269`.
+- ConsoleInode::write ONLCR loop: `kernel/src/dev/console.rs:84`.
+- klog write_raw → boot_emit → BOOT_UART: `crates/shared/klog/src/lib.rs:289`
+  → `crates/arch/boot-x86_64/src/lib.rs:72` →
+  `crates/arch/boot-x86_64/src/uart.rs:124`.
 - sys_writev: `kernel/src/syscalls/fs.rs:718`.
-- ConsoleInode::write → klog::write_raw: `kernel/src/dev/console.rs:24`.
-- qemu invocation flags: `tools/xtask/src/image_qemu.rs:328`; `OXIDE_QEMU_HEADLESS` env toggles `-display none` vs `gtk`.
+- Headless boot: set `OXIDE_QEMU_HEADLESS=1`.
