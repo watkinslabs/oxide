@@ -661,11 +661,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
         fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
-        // FIXME: fbcon klog sink temporarily disabled — fbcon_flush_pixels
-        // wedges the boot during the CAT smoke (see state.md). Re-enable
-        // once the softirq virtio-gpu submit path is debugged.
+        // fbcon klog sink disabled — fbcon_flush_pixels wedges in the
+        // virtio-gpu submit path (see state.md / project_login_hang_cat_smoke memory).
         let _ = w; let _ = h;
-        // klog::set_aux_sink(fbcon::kernel::klog_sink);
     }
     // Load the rootfs-resident keyboard layout. Linux pattern:
     // /etc/keymap is the active map; /usr/share/keymaps/*.kmap is

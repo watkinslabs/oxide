@@ -119,14 +119,8 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
                 }
             }
-            // Cooperative-only: the iretq-frame protocol that resumes
-            // user state via oxide_preempt_next_ctx is not yet closed
-            // (see project_scheduling_state.md). An IRQ-driven context
-            // switch in the middle of a ConsoleInode::write \r\n loop
-            // (timer fires between byte-writes) corrupts user regs and
-            // wedges the next userspace slice. need_resched is set
-            // above; next syscall-return preempt_dec → 0 picks it up.
-            // tick_poll already ran so UART RX still wakes stdin.
+            // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
+            unsafe { sched::live::preempt::tick_pick_next(); }
         }
         hal_x86_64::VEC_RESCHED => {
             RESCHED_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
