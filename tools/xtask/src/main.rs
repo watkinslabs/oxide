@@ -458,13 +458,19 @@ hosts:  files
     put(&stage("hello.txt", b"hello-from-ext4-mini\n")?, "/hello.txt")?;
 
     // /etc/keymap — runtime-loadable keyboard layout. Drop another
-    // text file at this path to switch layouts at boot. See
-    // `userspace/keymaps/` for the source maps.
+    // text file at this path (or `loadkeys <name>` once we ship it)
+    // to switch layouts. See `userspace/keymaps/` for the source maps.
     let km_us = include_bytes!("../../../userspace/keymaps/us.kmap");
+    let km_uk = include_bytes!("../../../userspace/keymaps/uk.kmap");
+    let km_de = include_bytes!("../../../userspace/keymaps/de.kmap");
+    let km_fr = include_bytes!("../../../userspace/keymaps/fr.kmap");
+    let km_es = include_bytes!("../../../userspace/keymaps/es.kmap");
     put(&stage("keymap", km_us)?, "/etc/keymap")?;
-    // Ship the full library at /usr/share/keymaps/ so a future
-    // `loadkeys` can pick by name.
     put(&stage("us.kmap", km_us)?, "/usr/share/keymaps/us.kmap")?;
+    put(&stage("uk.kmap", km_uk)?, "/usr/share/keymaps/uk.kmap")?;
+    put(&stage("de.kmap", km_de)?, "/usr/share/keymaps/de.kmap")?;
+    put(&stage("fr.kmap", km_fr)?, "/usr/share/keymaps/fr.kmap")?;
+    put(&stage("es.kmap", km_es)?, "/usr/share/keymaps/es.kmap")?;
 
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
