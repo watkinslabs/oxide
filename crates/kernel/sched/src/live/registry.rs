@@ -4,7 +4,7 @@
 // `crate::registry::*` stable for existing call sites.
 
 
-pub use crate::registry::{insert, live_tids, lookup, lookup_in_ns, tasks_in_pgrp, try_wake_stopped};
+pub use crate::registry::{has_children, insert, live_tids, lookup, lookup_in_ns, tasks_in_pgrp, try_wake_stopped};
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
