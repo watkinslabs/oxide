@@ -9,6 +9,7 @@ extern crate alloc;
 // Anchor crates whose `#[no_mangle]` symbols the linker needs even
 // without an explicit `use`. Per `52§8`.
 #[cfg(target_os = "oxide-kernel")] extern crate fs;
+#[cfg(target_os = "oxide-kernel")] extern crate arch_irq;
 
 // Compile-time check: per-arch Context must fit in Task.arch_ctx.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -332,18 +333,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // via the PMM-backed mapper, enable LAPIC/GIC/UART. The
         // bring-up is always-on; per-step diagnostic logs are gated
         // by per-subsystem `debug-vmm`/`debug-irq` features inside.
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-acpi"))]
         crate::smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-acpi"))]
         crate::smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
 
         // MmuOps end-to-end smoke: map/write/translate/unmap a fresh
         // PMM frame at a scratch VA. Per-arch wrapper picks the
         // marker type implementing `MmuOps`.
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
         unsafe { crate::smoke::mmuops::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
         unsafe { crate::smoke::mmuops::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
 
@@ -351,10 +352,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // user VA with USER|EXEC|READ, verify translate round-trips
         // the USER+EXEC flags through real CR3 walk + interior U=1
         // propagation. CPL=3 access lands with P1-82.
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; USER_VA disjoint from kernel-half mappings; single-CPU pre-init.
         unsafe { crate::smoke::user_map::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; USER_VA disjoint from kernel-half mappings; single-CPU pre-init.
         unsafe { crate::smoke::user_map::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
     }
@@ -408,7 +409,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Recoverable page-fault smoke (P1-86c). Validates the fault
     // dispatcher's `bool` retry path on a real demand-paged write.
     // Runs at CPL=0 so it doesn't depend on the userspace smoke.
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-vmm"))]
     {
         // SAFETY: PMM + MmuOps initialised; FAULT_VA in the smoke's
         // private kernel-half slot; single-CPU; IRQs masked.
@@ -745,7 +746,7 @@ fn log_memmap(regions: &[BootMemRegion]) {
 #[cfg(target_os = "oxide-kernel")]
 pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))] pub mod smoke;
+#[cfg(target_os = "oxide-kernel")] pub mod smoke;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
