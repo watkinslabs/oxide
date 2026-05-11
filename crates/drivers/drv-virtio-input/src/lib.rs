@@ -295,3 +295,5 @@ pub mod devfs;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod drain;
+
+pub mod keymap;
