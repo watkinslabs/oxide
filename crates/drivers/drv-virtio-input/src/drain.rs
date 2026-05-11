@@ -27,7 +27,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::keymap::{self, Mods, Side, Out};
+use crate::keymap::{self, Mods, Side};
 use crate::{VirtioInputEvent, EV_KEY};
 
 // Linux KEY_* identifiers for modifier keys. The keymap text file

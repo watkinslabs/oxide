@@ -1,0 +1,68 @@
+# FR-AZERTY keymap. Major letter swaps from US:
+#   q ↔ a    w ↔ z    ; ↔ m   (m moves to row 3, after l)
+# Digit row is shifted:
+#   plain row: &  é  "  '  (  -  è  _  ç  à
+#   shift row: 1  2  3  4  5  6  7  8  9  0
+# AltGr layer publishes the printer brackets / braces / pipe / tilde / etc.
+keymap "FR AZERTY"
+
+# Row 1 — plain produces letters/accents, shift produces digits.
+keycode 1  plain=\e        shift=\e
+keycode 2  plain=&         shift=1
+keycode 3  plain=U+00E9    shift=2          altgr=~
+keycode 4  plain=0x22      shift=3          altgr=#
+keycode 5  plain=0x27      shift=4          altgr={
+keycode 6  plain=(         shift=5          altgr=[
+keycode 7  plain=-         shift=6          altgr=|
+keycode 8  plain=U+00E8    shift=7          altgr=`
+keycode 9  plain=_         shift=8          altgr=\\
+keycode 10 plain=U+00E7    shift=9          altgr=^
+keycode 11 plain=U+00E0    shift=0          altgr=@
+keycode 12 plain=)         shift=U+00B0     altgr=]
+keycode 13 plain==         shift=+          altgr=}
+keycode 14 plain=\b        shift=\b
+
+# Row 2 — AZERTY: a/z swapped with q/w
+keycode 15 plain=\t        shift=\t
+keycode 16 plain=a         shift=A          altgr=U+00E6
+keycode 17 plain=z         shift=Z
+keycode 18 plain=e         shift=E          altgr=U+20AC
+keycode 19 plain=r         shift=R
+keycode 20 plain=t         shift=T
+keycode 21 plain=y         shift=Y
+keycode 22 plain=u         shift=U
+keycode 23 plain=i         shift=I
+keycode 24 plain=o         shift=O          altgr=U+0153
+keycode 25 plain=p         shift=P
+keycode 26 plain=U+02C6    shift=U+00A8
+keycode 27 plain=$         shift=U+00A3     altgr=U+00A4
+keycode 28 plain=\n        shift=\n
+
+# Row 3 — q/m where US has a/;
+keycode 30 plain=q         shift=Q
+keycode 31 plain=s         shift=S
+keycode 32 plain=d         shift=D
+keycode 33 plain=f         shift=F
+keycode 34 plain=g         shift=G
+keycode 35 plain=h         shift=H
+keycode 36 plain=j         shift=J
+keycode 37 plain=k         shift=K
+keycode 38 plain=l         shift=L
+keycode 39 plain=m         shift=M
+keycode 40 plain=U+00F9    shift=%
+keycode 41 plain=U+00B2    shift=~
+keycode 43 plain=*         shift=U+00B5
+
+# Row 4 — w in row 4, m moved away
+keycode 44 plain=w         shift=W
+keycode 45 plain=x         shift=X
+keycode 46 plain=c         shift=C
+keycode 47 plain=v         shift=V
+keycode 48 plain=b         shift=B
+keycode 49 plain=n         shift=N
+keycode 50 plain=,         shift=?
+keycode 51 plain=;         shift=.
+keycode 52 plain=:         shift=/
+keycode 53 plain=!         shift=U+00A7
+
+keycode 57 plain=\sp       shift=\sp
