@@ -333,9 +333,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // via the PMM-backed mapper, enable LAPIC/GIC/UART. The
         // bring-up is always-on; per-step diagnostic logs are gated
         // by per-subsystem `debug-vmm`/`debug-irq` features inside.
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-acpi"))]
+        // Map + enable LAPIC/HPET (x86) or GIC (arm) unconditionally:
+        // the LAPIC-enable path inside owns LAPIC_BASE_VA, without which
+        // `timer_periodic` (called from spawn-init below) silently no-
+        // ops, no timer IRQs fire, and any CPU-bound user task hangs
+        // forever (B14: login prompt wedge — getty spun in user mode
+        // between stdio writevs because the scheduler never preempted).
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
         crate::smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-acpi"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
         crate::smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
 
         // MmuOps end-to-end smoke: map/write/translate/unmap a fresh
