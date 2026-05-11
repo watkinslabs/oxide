@@ -510,10 +510,12 @@ pub fn sys_sysinfo(args: &SyscallArgs) -> i64 {
 ///
 /// MREMAP_MAYMOVE = 1; MREMAP_FIXED = 2; MREMAP_DONTUNMAP = 4 (unsup).
 /// # C: O(K + log N) per VMA-tree op
+/// `sys_mremap(old, old_size, new_size, flags, new_addr)` slot 25.
+/// Tier-3 shim per `docs/53§4`. Work fn: `vmm::AddressSpace::mremap`.
+/// # C: O(min(old,new))
 pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
-    use vmm::{VmaProt, VmaFlags, VmaBacking};
     const MREMAP_MAYMOVE: u64 = 1;
     const MREMAP_FIXED:   u64 = 2;
     let old      = args.a0;
@@ -521,78 +523,19 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     let new_size = args.a2 as usize;
     let flags    = args.a3;
     let new_addr = args.a4;
-    if old == 0 || (old & 0xFFF) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    if new_size == 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-    };
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Einval.as_i32() as i64) };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64) };
-    let old_ua = match UserVirtAddr::new(old) {
-        Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
-    };
-
-    // Shrink: drop the tail.
-    if new_size < old_size {
-        let drop_va = old + new_size as u64;
-        if let Some(da) = UserVirtAddr::new(drop_va) {
-            let _ = mm.munmap(da, old_size - new_size);
-        }
-        return old as i64;
+    let old_ua = match UserVirtAddr::new(old) { Some(u) => u, None => return -(Errno::Einval.as_i32() as i64) };
+    let new_ua = if new_addr != 0 { UserVirtAddr::new(new_addr) } else { None };
+    match mm.mremap(old_ua, old_size, new_size,
+                    (flags & MREMAP_MAYMOVE) != 0,
+                    (flags & MREMAP_FIXED) != 0,
+                    new_ua)
+    {
+        Ok(va) => va.as_u64() as i64,
+        Err(_) => -(Errno::Enomem.as_i32() as i64),
     }
-    // Same size: no-op.
-    if new_size == old_size && (flags & MREMAP_FIXED) == 0 {
-        return old as i64;
-    }
-
-    // Grow path. v1 always copies via mmap+munmap when MAYMOVE allowed
-    // (in-place grow needs VMA-tree extension which would require
-    // tree.extend_end semantics not yet exposed). MREMAP_FIXED forces
-    // the caller-supplied address; otherwise pick a hole.
-    if (flags & MREMAP_MAYMOVE) == 0 && (flags & MREMAP_FIXED) == 0 {
-        return -(Errno::Enomem.as_i32() as i64);
-    }
-    let hint = if (flags & MREMAP_FIXED) != 0 {
-        match UserVirtAddr::new(new_addr) {
-            Some(u) => Some(u), None => return -(Errno::Einval.as_i32() as i64),
-        }
-    } else { None };
-
-    let new_va = match mm.mmap(
-        hint, new_size,
-        VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::ANONYMOUS | VmaFlags::PRIVATE,
-        VmaBacking::Anonymous,
-        (flags & MREMAP_FIXED) != 0,
-    ) {
-        Ok(v)  => v,
-        Err(_) => return -(Errno::Enomem.as_i32() as i64),
-    };
-
-    // Best-effort byte copy from old to new. Both regions are user
-    // mappings under the caller's AS so plain volatile reads/writes
-    // suffice. Page-fault during copy aborts (caller gets the
-    // partially-populated new region; matches Linux's "best-effort"
-    // for the rare error case).
-    let copy_len = core::cmp::min(old_size, new_size);
-    let dst = new_va.as_u64();
-    // SAFETY: both regions live in the caller's AS, validated by
-    // mmap/lookup; CPL=0 reads/writes through caller's PT.
-    unsafe {
-        for i in 0..copy_len {
-            let v = core::ptr::read_volatile((old + i as u64) as *const u8);
-            core::ptr::write_volatile((dst + i as u64) as *mut u8, v);
-        }
-    }
-
-    // Unmap the old region.
-    let _ = mm.munmap(old_ua, old_size);
-
-    new_va.as_u64() as i64
 }
 
 /// `sys_msync(addr, len, flags)` — slot 26. # C: O(1)
