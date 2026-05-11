@@ -657,6 +657,24 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
         klog::set_aux_sink(fbcon::kernel::klog_sink);
     }
+    // Load the rootfs-resident keyboard layout. Linux pattern:
+    // /etc/keymap is the active map; /usr/share/keymaps/*.kmap is
+    // the library. Falls through silently if the file is missing —
+    // virtio-input drops EV_KEY events on the floor until a map is
+    // loaded, which is the right failure mode (no garbage input).
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(blob) = ext4::rootfs::read_file(b"/etc/keymap") {
+        match drv_virtio_input::keymap::load_text(&blob) {
+            Ok(name) => { debug_boot! {
+                klog::write_raw(b"[INFO]  keymap loaded: ");
+                klog::write_raw(name.as_bytes());
+                klog::write_raw(b"\n");
+            } }
+            Err(_) => { debug_boot! {
+                klog::write_raw(b"[WARN]  /etc/keymap: parse error\n");
+            } }
+        }
+    }
 
     // virtio-net legacy driver detect + init. No-op if no device.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
