@@ -510,7 +510,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 #[cfg(target_arch = "x86_64")]
                 sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
                 pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
-                arch_irq::set_tick_poll_hook(tty::live::tick_poll_uart);
+                arch_irq::set_tick_poll_hook(tick_poll_combined);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
@@ -648,6 +648,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // `ConfigSpaceReader` differs (x86 CF8/CFC, aarch64 ECAM MMIO).
     #[cfg(target_os = "oxide-kernel")]
     { crate::pci_boot::enumerate_and_log(); }
+
+    // virtio-gpu scanout is up after pci enumerate. Wire the
+    // kernel-side fbcon driver so every klog event also lands on
+    // the GPU display via the aux sink hook.
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
+        fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
+        klog::set_aux_sink(fbcon::kernel::klog_sink);
+    }
 
     // virtio-net legacy driver detect + init. No-op if no device.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -796,6 +805,18 @@ pub mod pci_boot;
 /// CPU cycling on a spin loop. Host fallback keeps `spin_loop` for
 /// hosted unit-test compatibility.
 ///
+
+/// Combined timer-tick hook: poll UART for input + drain any
+/// pending fbcon writes onto the GPU display.
+/// # SAFETY: timer-ISR context per the hook contract.
+/// # C: O(1) typical; O(xres*yres) on dirty fbcon repaint.
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn tick_poll_combined() {
+    // SAFETY: deferred to the underlying hooks; tty::live::tick_poll_uart owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
+    unsafe { tty::live::tick_poll_uart(); }
+    fbcon::kernel::tick_drain();
+}
+
 /// # C: O(∞)
 #[cfg(target_os = "oxide-kernel")]
 pub fn halt_forever() -> ! {
