@@ -1,67 +1,79 @@
 # State 2026-05-11
 
 ## Branch
-`main`. Last merged: PR #1007 (F02: runtime-loadable keymap).
-`make ci` green; `cargo run -p xtask -- spec-lint` clean.
+`B13-execve-trace` — PR pending. Fixes the long-running rcS wedge (B12).
 
 ## What shipped this run
 
-Linux-style input + display foundation:
+**Syscall asm bug fix.** `oxide_syscall_entry` restored user-ABI arg
+regs (rdi/rsi/rdx/r10/r8/r9) from the saved frame, then immediately
+called `oxide_x86_arm_singlestep` as a SysV C function. AMD64 SysV
+allows the callee to clobber those registers — so after sysretq,
+userspace saw garbage `rdi` (and friends) on every syscall.
 
-- **#1003 B07** — klog multi-sink + virtio-gpu scanout ctx + fbcon Console wiring (mechanism in place).
-- **#1004 B08** — fbcon bg-fill + try_lock guards (kernel_init sanity test wrote 6816 white pixels via GPU, proving Console→fb_va→virtio-gpu path is functional).
-- **#1005 F00** — `crates/kernel/softirq` Linux-style deferred-work primitive: 32-slot bitmask, `raise()` / `run_pending()`, IN_PROGRESS re-entry guard. Wired into x86 LAPIC + aarch64 GIC timer ISR tails (`sti`/`run_pending`/`cli` envelope; daifclr/daifset on arm). fbcon converted: `klog_sink` raises `Slot::FbconFlush`; handler does the GPU submit from IRQs-on context, no more "submit polls device IRQ while masked" deadlock.
-- **#1006 F01** — first softirq consumer. `drv-virtio-input::drain`: pre-fills q0 with `qsize` write-only event-buffer descriptors, installs the softirq handler, kicks notify. Drain walks used ring, parses 8-byte `VirtioInputEvent`, recycles descriptors. `tty::live::input_push_byte` exposes the foreground-VT push. LAPIC VEC_MSI raises `Slot::InputDrain` and drains immediately.
-- **#1007 F02** — runtime-loadable keymap. `crates/drivers/drv-virtio-input/src/keymap.rs` parses `/etc/keymap` text at boot, four tables (plain/shift/altgr/shift_altgr), full modifier tracking (SHIFT/CTRL/ALT/ALTGR/META/CAPS/NUM/SCROLL), per-side flags, Linux semantics: Ctrl+letter→ctrl code, AltGr layers, Alt→ESC-prefix Meta. `userspace/keymaps/us.kmap` ships in rootfs as `/etc/keymap` + `/usr/share/keymaps/us.kmap`. 7 hosted parser+translate tests pass. Boot logs `[INFO] keymap loaded: US QWERTY`.
+Most code didn't notice because the user side rarely uses `rdi` as
+state after a syscall. But musl's `open()` wrapper sign-extends the
+returned fd into `rdi`, optionally syscalls `fcntl(F_SETFD,
+CLOEXEC)`, then calls `__syscall_ret(rdi)`. After the F_SETFD path,
+`rdi` returned as a kernel-pointer-like value > -4096, so
+`__syscall_ret` interpreted it as a negative errno, returned -1, and
+set errno to garbage. The busybox `xopen` wrapper then printed
+`"can't open '%s': %m"` — exactly the rcS error.
+
+Fix (`crates/arch/hal-x86_64/src/syscall.rs`): save the 6 user-arg
+regs across the singlestep C call by pushing them onto the kernel
+stack before, popping after. Layout for the rflags pointer adjusted
+accordingly (`+0x40` instead of `+0x10`).
+
+After the fix the trace shows hush successfully opening rcS,
+F_DUPFD_CLOEXEC dup'ing fd=3→10, reading the 308-byte script, and
+fork+exec'ing the mount/hostname/ifconfig commands inside rcS.
 
 ## Verified at boot
 
-- `make ci` green both arches.
-- x86 qemu boot reaches `oxide Linux on /dev/tty1` cleanly.
-- `[INFO] keymap loaded: US QWERTY` appears post-ext4 mount.
-- softirq foundation runs from timer ISR tail and MSI VEC_MSI arm.
+- `cargo run -p xtask -- spec-lint` clean.
+- x86_64 build green.
+- aarch64 build green.
+- x86 qemu boot reaches rcS execution past the prior `"can't open"`
+  hang; hush runs the script line-by-line.
 
 ## Open work
 
-### rcS pre-existing wedge (B12, parked)
-busybox sh emits `can't open '/etc/init.d/rcS': No error information` despite:
-- ext4 image *has* `/etc/init.d/rcS` (verified via `debugfs -R "ls /etc/init.d"`)
-- Kernel `ext4::rootfs::read_file(b"/etc/init.d/rcS")` returns Some(308 bytes)
-- Probes on sys_open / sys_openat / sys_stat / sys_access / sys_faccessat **none** fire with that path
-
-Conclusion: the error path is *inside* busybox sh and never reaches the kernel — likely a libc/stdio routing bug or a path check that fails before the syscall. Next session: probe sys_execve's shebang chain or run busybox sh under ptrace to identify the offending step.
+### Login prompt visibility
+After rcS, getty should print `oxide login:`. Wall-clock to that
+point under qemu-mcp can exceed 90s — not investigated yet whether
+that's slow boot or a downstream stall. Try a longer pattern wait or
+add a kernel breadcrumb after rcS completes.
 
 ### Display visibility on GTK (parked)
-B07/B08 confirmed Console→fb_va→virtio-gpu writes work end-to-end. The boot-time bg paint + sanity glyphs show in QMP screendumps. Live klog stream into fbcon depends on the softirq draining, which now works architecturally — verifying the *rendered* output through a GTK window requires interactive QEMU which the headless qemu-mcp can't drive.
+B07/B08 path proven; rendered output through interactive QEMU still
+requires GTK driver which qemu-mcp can't drive.
 
 ### Serial input doesn't echo (parked)
-`qemu_send_serial("echo HELLO")` produces no echo on serial output. tick_poll_uart reads 0x3F8 every timer tick → push_and_wake_fg. Likely a getty-side issue downstream of rcS — addressed when rcS is unblocked.
+Likely getty-side; revisit after the login-prompt check.
 
 ## Followups ready to stack
 
-- Ship UK/DE/FR/ES keymap files under `userspace/keymaps/`.
-- `loadkeys <name>` userspace helper: read `/usr/share/keymaps/<name>.kmap`, install via a `KDSKBENT`-equivalent ioctl on `/dev/console`.
-- Mouse pointer: virtio-input EV_REL / EV_ABS handling (drain currently consumes EV_KEY only); GPU cursor sprite.
-- B12 deep-trace: instrument sys_execve's shebang resolver to log the exact step that fails for `/etc/init.d/rcS`.
+- Same asm-clobber audit on aarch64 SVC entry (`crates/arch/hal-aarch64/src/svc.rs`):
+  the SVC dispatch pattern may have the same issue if any C call
+  happens between arg-reg restore and `eret`. Read the entry asm and
+  add the same save/restore if needed.
+- F03+ keymap follow-ups (mouse drain, `loadkeys` helper).
 
 ## First task next session
 
 ```sh
-git checkout -b F03-keymap-locales
-# Ship userspace/keymaps/{uk,de,fr,es}.kmap text files. Each is a
-# straight rewrite of us.kmap with the locale-specific shift +
-# altgr columns filled in. Mechanism is identical — only the table
-# bytes change.
-```
+# Push B13 to origin and open PR.
+git push -u origin B13-execve-trace
+gh pr create --title "fix(syscall-x86): preserve user-ABI args across singlestep C call" \
+  --body "..."
 
-Alt pivots:
-- B12 sys_execve trace (resolves rcS wedge, unblocks getty input testing).
-- F03 mouse drain layer (extends virtio-input beyond EV_KEY).
-- D-spec for the keymap text format (formalize the `keymap "..."` / `keycode N plain=… shift=…` grammar in `docs/46`).
+# After merge: audit aarch64 SVC entry for the same clobber pattern.
+```
 
 ## Useful pointers
 
-- Softirq API: `crates/kernel/softirq/src/lib.rs` (`Slot`, `raise`, `run_pending`, `set_handler`).
-- virtio-input drain: `crates/drivers/drv-virtio-input/src/drain.rs`.
-- Keymap: `crates/drivers/drv-virtio-input/src/keymap.rs`; text source `userspace/keymaps/us.kmap`.
-- Timer ISR tail (where softirq runs): `crates/kernel/arch-irq/src/lapic.rs` (x86), `src/gic.rs` (arm).
+- Bug: `crates/arch/hal-x86_64/src/syscall.rs:175-205` (the
+  `add rsp, 0x38` → `push rax` → singlestep call block).
+- musl open() reproducer: any `open(path, O_RDONLY|O_CLOEXEC)`.
+- busybox source path: `vendor/busybox/busybox` (statically linked).
