@@ -117,70 +117,39 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
 /// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_GETFD / F_SETFD /
 /// F_GETFL / F_SETFL / F_GETPIPE_SZ / F_SETPIPE_SZ / F_GETOWN / F_SETOWN.
 /// # C: O(N_fds) for F_DUPFD; O(1) otherwise.
+/// `sys_fcntl(fd, cmd, arg)` — slot 72. Tier-3 shim per `docs/53§4`.
+/// Multi-command dispatch over vfs::FdTable / vfs::File methods
+/// (Tier-2). F_GETPIPE_SZ/F_SETPIPE_SZ return the v1 fixed cap.
+/// # C: O(1) per command; O(N_fds) for F_DUPFD.
 pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
-    const F_DUPFD:         u64 = 0;
-    const F_GETFD:         u64 = 1;
-    const F_SETFD:         u64 = 2;
-    const F_GETFL:         u64 = 3;
-    const F_SETFL:         u64 = 4;
+    const F_DUPFD: u64 = 0; const F_GETFD: u64 = 1; const F_SETFD: u64 = 2;
+    const F_GETFL: u64 = 3; const F_SETFL: u64 = 4;
     const F_DUPFD_CLOEXEC: u64 = 1030;
-    const F_GETPIPE_SZ:    u64 = 1032;
-    const F_SETPIPE_SZ:    u64 = 1031;
-    const F_GETOWN:        u64 = 9;
-    const F_SETOWN:        u64 = 8;
-    let fd  = args.a0 as i32;
-    let cmd = args.a1;
-    let arg = args.a2;
-    let cur = match sched::live::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
+    const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
+    const SETTABLE_FL: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
+    let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
+    let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    let cur = match sched::live::current() { Some(c) => c, None => return ebadf };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    if fdt.get(fd).is_err() {
-        return -(Errno::Ebadf.as_i32() as i64);
-    }
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return ebadf };
+    let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return ebadf };
     match cmd {
-        F_DUPFD | F_DUPFD_CLOEXEC => {
-            match fdt.dup_min(fd, arg as i32) {
-                Ok(new) => {
-                    if cmd == F_DUPFD_CLOEXEC {
-                        let _ = fdt.set_cloexec(new, true);
-                    }
-                    new as i64
-                }
-                Err(e)  => -(e as i64),
-            }
-        }
+        F_DUPFD | F_DUPFD_CLOEXEC => match fdt.dup_min(fd, arg as i32) {
+            Ok(n) => { if cmd == F_DUPFD_CLOEXEC { let _ = fdt.set_cloexec(n, true); } n as i64 }
+            Err(e) => -(e as i64),
+        },
         F_GETFD => match fdt.cloexec(fd) { Ok(true) => 1, Ok(false) => 0, Err(_) => 0 },
-        F_SETFD => {
-            let _ = fdt.set_cloexec(fd, (arg & 1) != 0);
-            0
-        }
-        F_GETFL => {
-            let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-            file.flags().bits() as i64
-        }
+        F_SETFD => { let _ = fdt.set_cloexec(fd, (arg & 1) != 0); 0 }
+        F_GETFL => file.flags().bits() as i64,
         F_SETFL => {
-            // POSIX: only O_APPEND/O_NONBLOCK/O_DIRECT/O_NOATIME may
-            // be modified. Mask the user value to the settable bits
-            // and OR-merge over the existing access mode + creation
-            // flags to preserve them.
-            const SETTABLE: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
-            let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-            let cur_bits = file.flags().bits();
-            let new_bits = (cur_bits & !SETTABLE) | ((arg as u32) & SETTABLE);
-            file.set_flags(vfs::OpenFlags::from_bits_retain(new_bits));
+            let nb = (file.flags().bits() & !SETTABLE_FL) | ((arg as u32) & SETTABLE_FL);
+            file.set_flags(vfs::OpenFlags::from_bits_retain(nb));
             0
         }
-        F_GETPIPE_SZ => 4096, // matches PipeBuf::PIPE_CAP
-        F_SETPIPE_SZ => 4096, // accept but cap at the v1 fixed size
-        F_GETOWN     => 0,
-        F_SETOWN     => 0,
-        _       => -(Errno::Einval.as_i32() as i64),
+        F_GETPIPE_SZ | F_SETPIPE_SZ => 4096,
+        F_GETOWN | F_SETOWN => 0,
+        _ => -(Errno::Einval.as_i32() as i64),
     }
 }
 
