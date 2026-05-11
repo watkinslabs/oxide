@@ -716,6 +716,7 @@ pub fn sys_preadv(args: &SyscallArgs) -> i64 { sys_readv(args) }
 /// bytes written or the first negative errno encountered.
 /// # C: O(iovcnt × iov[i].len)
 pub fn sys_writev(args: &SyscallArgs) -> i64 {
+    dtrace!(b"WV_IN", args.a2);
     const IOV_MAX: u64 = 1024;
     let fd     = args.a0 as i32;
     let iov    = args.a1;
@@ -747,17 +748,20 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
         // SAFETY: same range as the read above; iov_len at +8 is 8-byte aligned.
         let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+        dtrace!(b"WV_IOV", len);
         if len == 0 { continue; }
         if let Err(rv) = validate_user_buf(base, len, 1) { return rv; }
         // SAFETY: range validated < USER_VA_END; CPL=0 reads through caller's user pages.
         let bytes: &[u8] = unsafe {
             core::slice::from_raw_parts(base as *const u8, len as usize)
         };
+        dtrace!(b"WV_PRE_W");
         match file.write(bytes) {
-            Ok(n)  => total = total.saturating_add(n as u64),
-            Err(e) => return -(e as i64),
+            Ok(n)  => { dtrace!(b"WV_OK", n as u64); total = total.saturating_add(n as u64); }
+            Err(e) => { dtrace!(b"WV_ERR", e as u64); return -(e as i64); }
         }
     }
+    dtrace!(b"WV_OUT", total);
     total as i64
 }
 

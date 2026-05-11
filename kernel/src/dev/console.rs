@@ -82,11 +82,14 @@ impl Inode for ConsoleInode {
     /// the termios image but not honoured yet — they need column
     /// tracking which v1 doesn't keep.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        dtrace!(b"CW_IN", buf.len() as u64);
         let oflag = tty::live::output_oflag(self.vt);
+        dtrace!(b"CW_OFL", oflag as u64);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
         let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
         if !onlcr {
             console_emit(buf);
+            dtrace!(b"CW_OUT_RAW", buf.len() as u64);
             return Ok(buf.len());
         }
         // ONLCR: emit each maximal NL-free run in one console_emit
@@ -98,12 +101,20 @@ impl Inode for ConsoleInode {
         let mut start = 0;
         for (i, &b) in buf.iter().enumerate() {
             if b == b'\n' {
-                if i > start { console_emit(&buf[start..i]); }
+                if i > start {
+                    dtrace!(b"CW_RUN", (i - start) as u64);
+                    console_emit(&buf[start..i]);
+                }
+                dtrace!(b"CW_NL");
                 console_emit(b"\r\n");
                 start = i + 1;
             }
         }
-        if start < buf.len() { console_emit(&buf[start..]); }
+        if start < buf.len() {
+            dtrace!(b"CW_TAIL", (buf.len() - start) as u64);
+            console_emit(&buf[start..]);
+        }
+        dtrace!(b"CW_OUT", buf.len() as u64);
         Ok(buf.len())
     }
 }

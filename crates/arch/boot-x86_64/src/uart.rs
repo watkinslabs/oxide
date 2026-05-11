@@ -130,11 +130,12 @@ impl Uart for Uart16550 {
     /// truncated dmesg lines on the host (better than a wedge).
     /// # C: O(spin up to cap)
     fn write_byte(&mut self, b: u8) {
-        const SPIN_CAP: u32 = 100_000_000;
+        const SPIN_CAP: u32 = 100_000;
         let mut spins: u32 = 0;
         // SAFETY: same contract as `init`; the `inb`/`outb` wrappers
         // own the asm safety. Polling LSR until THRE is the documented
-        // 16550 send protocol.
+        // 16550 send protocol. Bounded to drop bytes rather than
+        // deadlock under host pty back-pressure.
         unsafe {
             while (inb(self.base + reg::LSR) & LSR_THRE) == 0 {
                 spins = spins.wrapping_add(1);
