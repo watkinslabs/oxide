@@ -39,14 +39,18 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
 }
 
 /// Find the mount whose mount_point is the longest prefix of
-/// `path`. Returns `(mount, relative_path)` where relative_path
-/// is `path` with the mount_point stripped.
+/// `path`. Returns `(mount, path)` — the second element is the
+/// original `path` unchanged. v1 backends key their internal
+/// tables by full absolute paths (devfs registers `/dev/console`,
+/// ext4 mounts at `/`), so callers pass the unmodified path to
+/// `mnt.fs.lookup/create/unlink/rename`. Once dentries land, the
+/// mount-relative split becomes meaningful and this returns a
+/// stripped path.
 /// # C: O(N_mounts × max_mount_point_len)
 pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
     let t = TABLE.lock();
     let mut best: Option<&Arc<Mount>> = None;
     for m in t.iter() {
-        // Match if path == mount_point OR path starts with "<mount_point>/".
         let mp = m.mount_point.as_str();
         let match_full = path == mp;
         let match_pref = mp.len() == 1 && mp == "/" /* root: always */
@@ -58,25 +62,19 @@ pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
             _ => {}
         }
     }
-    best.map(|m| {
-        let rel = if m.mount_point == "/" {
-            path.to_string()
-        } else if path == m.mount_point {
-            "/".to_string()
-        } else {
-            path[m.mount_point.len()..].to_string()
-        };
-        (m.clone(), rel)
-    })
+    best.map(|m| (m.clone(), path.to_string()))
 }
 
 /// Unified path lookup. Walks the mount table by longest-prefix
-/// match, then calls the matching FS's `lookup`. Replaces the
-/// per-syscall hardcoded chains.
+/// match, then calls the matching FS's `lookup`. v1 backends key
+/// their internal tables by full absolute paths (devfs registers
+/// `/dev/console`, ext4 mounts at `/`), so we pass the unmodified
+/// `path` after we've identified the owning mount. Once dentries
+/// land, the mount-relative split becomes meaningful again.
 /// # C: O(N_mounts) for mount routing + O(FS-impl).
 pub fn lookup(path: &str) -> KResult<InodeRef> {
-    let (mnt, rel) = resolve_mount(path).ok_or(VfsError::Enoent)?;
-    mnt.fs.lookup(&rel).ok_or(VfsError::Enoent)
+    let (mnt, _rel) = resolve_mount(path).ok_or(VfsError::Enoent)?;
+    mnt.fs.lookup(path).ok_or(VfsError::Enoent)
 }
 
 /// Snapshot the mount table for `/proc/mounts`.
