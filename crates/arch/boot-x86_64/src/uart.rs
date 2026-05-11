@@ -138,13 +138,22 @@ impl Uart for Uart16550 {
         unsafe {
             while (inb(self.base + reg::LSR) & LSR_THRE) == 0 {
                 spins = spins.wrapping_add(1);
-                if spins >= SPIN_CAP { return; }
+                if spins >= SPIN_CAP {
+                    UART_DROPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
                 core::hint::spin_loop();
             }
             outb(self.base + reg::DATA, b);
         }
     }
 }
+
+/// Diagnostic: count of bytes dropped by `write_byte`'s bounded spin
+/// when QEMU back-pressures THRE. Inspect via `qemu_mem`. Static so it
+/// survives any number of write_byte invocations.
+pub static UART_DROPS: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Host-side recorder: lets tests observe the byte stream `outb` would
