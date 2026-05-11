@@ -82,6 +82,22 @@ into dispatch differently across builds, changing where the actual
 syscall body executes. Need to disassemble `oxide_syscall_dispatch`
 in both probe-on and probe-off builds to compare.
 
+### Dispatch disasm checked (this session, post-handoff)
+
+Disassembled the clean (no-probe) `oxide_syscall_dispatch`. Prologue
+runs heavy seccomp setup unconditionally (builds SeccompData on
+stack), then calls through `sched::CURRENT_HOOK` (= seccomp::check).
+For tasks with empty filter list (default), seccomp::check returns
+Ok(()) at the filter-list-empty check (`crates/kernel/security/src/
+seccomp.rs:269`). Not a wedge cause.
+
+After seccomp, dispatch falls through to `ptrace_syscall_stop_if_armed`
+(`kernel/src/syscalls/mod.rs:417`). Default task isn't traced, fast
+early return. Not a wedge cause.
+
+So the dispatch path itself is clean for CAT. The wedge remains
+unexplained.
+
 ## First task next session
 
 Two cheap probes that should bisect the remaining ambiguity:
