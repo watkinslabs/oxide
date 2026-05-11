@@ -21,6 +21,7 @@ dependencies = [
  "klog",
  "pmm",
  "sched",
+ "softirq",
  "sync",
 ]
 
@@ -262,6 +263,7 @@ dependencies = [
  "fbdev",
  "hal",
  "klog",
+ "softirq",
  "sync",
 ]
 
@@ -909,6 +911,10 @@ dependencies = [
  "proptest",
  "sync",
 ]
+
+[[package]]
+name = "softirq"
+version = "0.1.0"
 
 [[package]]
 name = "spec-lint"

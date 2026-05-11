@@ -105,6 +105,20 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // don't own the UART.
             // SAFETY: timer ISR ctx with IRQs masked.
             unsafe { crate::tick_poll(); }
+            // Linux-style softirq bottom-half: drain any pending
+            // deferred work (fbcon flush, virtio-input drain, ...)
+            // with IRQs LOCALLY ENABLED so handlers that wait on
+            // device-IRQ acks (virtio used-idx) can make progress.
+            // softirq::run_pending guards re-entry; a nested timer
+            // ISR observing IN_PROGRESS=true will bail.
+            if softirq::pending() {
+                // SAFETY: EOI was issued above; the local APIC accepts the next IRQ. softirq::run_pending guards re-entry. cli on tail restores ISR-context IRQ masking before tick_pick_next.
+                unsafe {
+                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+                    softirq::run_pending();
+                    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+                }
+            }
             // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
