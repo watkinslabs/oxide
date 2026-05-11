@@ -373,7 +373,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
 b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
-tty1::respawn:/sbin/getty -L 38400 tty1 vt100
+ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
 ")?,
         "/etc/inittab")?;
 
