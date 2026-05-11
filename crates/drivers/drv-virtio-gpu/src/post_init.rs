@@ -141,15 +141,23 @@ unsafe fn setup_scanout(
         Some(pa) => pa, None => return false,
     };
     let _ = 1usize << order; // pages_alloc — informational only
-    // Render a boot banner through fbcon and copy the result into
-    // the virtio-gpu backing FB. Userspace sees rendered text on
-    // the QEMU display immediately at boot.
+    // Render boot text. Paint the entire FB with the bg color
+    // first (not all-zero) so glyphs aren't drowning on solid
+    // black; Console's EraseDisplay would zero the buffer.
     {
         let mut console = fbcon::Console::new(w, h);
         console.fg = [0xff, 0xff, 0xff];
-        console.bg = [0x00, 0x10, 0x40];
-        // EraseDisplay first to fill background.
-        console.put(b"\x1b[2J\x1b[H");
+        console.bg = [0x10, 0x30, 0x80]; // brighter navy so display is visibly populated
+        let pitch = (w * 4) as usize;
+        for y in 0..(h as usize) {
+            let off = y * pitch;
+            for x in 0..(w as usize) {
+                console.fb[off + x*4]     = console.bg[2]; // B
+                console.fb[off + x*4 + 1] = console.bg[1]; // G
+                console.fb[off + x*4 + 2] = console.bg[0]; // R
+                console.fb[off + x*4 + 3] = 0xff;          // A
+            }
+        }
         console.put(b"oxide kernel ready\n");
         console.put(b"virtio-gpu scanout active\n");
         let va = hhdm.wrapping_add(base_pa) as *mut u8;

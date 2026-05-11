@@ -383,9 +383,19 @@ impl Console {
         let pitch = self.pitch as usize;
         let total = (self.yres * self.pitch) as usize;
         let shift = (n_px * self.pitch) as usize;
-        if shift >= total { for b in self.fb.iter_mut() { *b = 0; } return; }
+        // Fill scrolled-in (or whole-frame) area with the current bg
+        // color, not zero — otherwise rows scroll into solid black.
+        let bg_b = self.bg[2]; let bg_g = self.bg[1]; let bg_r = self.bg[0];
+        let fill_bg = |slice: &mut [u8]| {
+            let mut k = 0;
+            while k + 3 < slice.len() {
+                slice[k] = bg_b; slice[k+1] = bg_g; slice[k+2] = bg_r; slice[k+3] = 0xff;
+                k += 4;
+            }
+        };
+        if shift >= total { fill_bg(&mut self.fb[..]); return; }
         self.fb.copy_within(shift..total, 0);
-        for b in self.fb[total - shift..].iter_mut() { *b = 0; }
+        fill_bg(&mut self.fb[total - shift..]);
         let _ = pitch;
     }
 
@@ -684,12 +694,23 @@ pub mod kernel {
     pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
         let mut c = Console::new(xres, yres);
         c.fg = [0xff, 0xff, 0xff];
-        c.bg = [0x00, 0x10, 0x40];
-        c.put(b"\x1b[2J\x1b[H");
+        c.bg = [0x10, 0x30, 0x80];
+        // EraseDisplay zeros the backing — we want the bg color
+        // covering the whole frame instead so glyphs read against
+        // a visible navy field rather than solid black.
+        let pitch = (xres * 4) as usize;
+        for y in 0..(yres as usize) {
+            let off = y * pitch;
+            for x in 0..(xres as usize) {
+                c.fb[off + x*4]     = c.bg[2];
+                c.fb[off + x*4 + 1] = c.bg[1];
+                c.fb[off + x*4 + 2] = c.bg[0];
+                c.fb[off + x*4 + 3] = 0xff;
+            }
+        }
         *CONSOLE.lock() = Some(c);
         FLUSH_FN.store(flush as *mut (), Ordering::Release);
         READY.store(true, Ordering::Release);
-        // Initial repaint with the cleared backing.
         repaint();
     }
 
@@ -700,10 +721,14 @@ pub mod kernel {
     /// # C: O(N_bytes * cell_blit)
     pub fn klog_sink(bytes: &[u8]) {
         if !READY.load(Ordering::Acquire) { return; }
-        if let Some(c) = CONSOLE.lock().as_mut() {
-            c.put(bytes);
+        // try_lock: klog may fire from IRQ context; CONSOLE is a
+        // plain Spinlock and the bottom half (this same sink + tick
+        // drain) holds it un-IRQ-disabled. Dropping the FB mirror
+        // for one event is fine — serial is the primary record.
+        if let Some(mut g) = CONSOLE.try_lock() {
+            if let Some(c) = g.as_mut() { c.put(bytes); }
+            DIRTY.store(true, Ordering::Release);
         }
-        DIRTY.store(true, Ordering::Release);
     }
 
     /// Drain any pending console writes onto the GPU display. Called
@@ -711,8 +736,19 @@ pub mod kernel {
     /// ~timer-Hz rather than per-klog-event rate.
     /// # C: O(xres*yres) if dirty, O(1) otherwise.
     pub fn tick_drain() {
-        if !DIRTY.swap(false, Ordering::AcqRel) { return; }
-        repaint();
+        if !DIRTY.load(Ordering::Acquire) { return; }
+        // try_lock so IRQ ctx never spins waiting for a klog_sink
+        // that's mid-Console-update — re-arm DIRTY and let the next
+        // tick retry once the bottom half has released the lock.
+        let raw = FLUSH_FN.load(Ordering::Acquire);
+        if raw.is_null() { return; }
+        // SAFETY: FLUSH_FN populated via kernel_init with a non-null FlushFn cast through *mut (); reverse-cast restores the original.
+        let f: FlushFn = unsafe { core::mem::transmute(raw) };
+        let guard = match CONSOLE.try_lock() { Some(g) => g, None => return };
+        if let Some(c) = guard.as_ref() {
+            DIRTY.store(false, Ordering::Release);
+            f(&c.fb);
+        }
     }
 
     /// Push the current fbcon backing to the GPU via the installed
