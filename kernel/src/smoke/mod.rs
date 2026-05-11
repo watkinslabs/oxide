@@ -1,9 +1,5 @@
-//! Boot-time integration smoke tests per `42`.
-//!
-//! Each submodule's `pub mod` decl carries the appropriate
-//! `feature = "debug-…"` gate so spec-lint sees the file as
-//! externally-gated (R06) and klog calls inside don't need
-//! per-call-site `#[cfg]`.
+//! Boot-time integration smoke tests per `42`. Per-submodule
+//! debug-* feature gates externalize R06 klog gating.
 
 #![cfg(target_os = "oxide-kernel")]
 
