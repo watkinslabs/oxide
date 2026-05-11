@@ -642,3 +642,90 @@ mod tests {
         assert_eq!(c.fb[off + 2], 0xff);      // R
     }
 }
+
+
+// ---- Kernel-side klog → framebuffer driver (B07) -----------------
+//
+// `kernel_init` is called once after virtio-gpu sets up its scanout.
+// Caller passes the framebuffer base VA (HHDM-mapped), dimensions,
+// and a flush thunk that copies fbcon's Vec<u8> backing into the
+// HHDM-mapped fb + triggers virtio-gpu transfer+flush.
+//
+// After `kernel_init`, every klog event also lands on the GPU display
+// via the `klog::set_aux_sink(fbcon::klog_sink)` hookup.
+
+#[cfg(target_os = "oxide-kernel")]
+pub mod kernel {
+    extern crate alloc;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
+    use sync::{Spinlock, Tty as TtyClass};
+    use super::Console;
+
+    static CONSOLE: Spinlock<Option<Console>, TtyClass> = Spinlock::new(None);
+
+    /// Flush thunk: copies fbcon's pixel buffer to the live FB and
+    /// pokes the GPU to repaint. Provided by drv-virtio-gpu at boot.
+    pub type FlushFn = fn(pixels: &[u8]);
+    static FLUSH_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+    /// True once `kernel_init` has finished. Klog sink no-ops before.
+    static READY: AtomicBool = AtomicBool::new(false);
+
+    /// Set by `klog_sink` when the console backing has changed. Drained
+    /// by `tick_drain()` which the kernel calls from the timer ISR.
+    /// Deferring the GPU flush off the klog hot path is essential — a
+    /// full 4 MiB transfer + virtio flush per klog line is too slow.
+    static DIRTY: AtomicBool = AtomicBool::new(false);
+
+    /// Initialize the kernel-side fbcon driver. Called once by the
+    /// virtio-gpu boot probe after the scanout is active.
+    /// # C: O(xres * yres) — Console::new zero-fills its backing.
+    pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
+        let mut c = Console::new(xres, yres);
+        c.fg = [0xff, 0xff, 0xff];
+        c.bg = [0x00, 0x10, 0x40];
+        c.put(b"\x1b[2J\x1b[H");
+        *CONSOLE.lock() = Some(c);
+        FLUSH_FN.store(flush as *mut (), Ordering::Release);
+        READY.store(true, Ordering::Release);
+        // Initial repaint with the cleared backing.
+        repaint();
+    }
+
+    /// `klog::LogSink` impl. Routes klog bytes through the ANSI
+    /// parser and marks the backing dirty. The actual GPU flush is
+    /// deferred to `tick_drain`, called from the timer ISR — a
+    /// synchronous flush per klog line is too slow (4 MiB transfer).
+    /// # C: O(N_bytes * cell_blit)
+    pub fn klog_sink(bytes: &[u8]) {
+        if !READY.load(Ordering::Acquire) { return; }
+        if let Some(c) = CONSOLE.lock().as_mut() {
+            c.put(bytes);
+        }
+        DIRTY.store(true, Ordering::Release);
+    }
+
+    /// Drain any pending console writes onto the GPU display. Called
+    /// from the kernel's timer-tick hook so the display updates at
+    /// ~timer-Hz rather than per-klog-event rate.
+    /// # C: O(xres*yres) if dirty, O(1) otherwise.
+    pub fn tick_drain() {
+        if !DIRTY.swap(false, Ordering::AcqRel) { return; }
+        repaint();
+    }
+
+    /// Push the current fbcon backing to the GPU via the installed
+    /// flush thunk. No-op if the thunk isn't installed.
+    /// # C: O(xres * yres) — full-frame transfer.
+    fn repaint() {
+        let raw = FLUSH_FN.load(Ordering::Acquire);
+        if raw.is_null() { return; }
+        // SAFETY: FLUSH_FN is only populated via kernel_init with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the original.
+        let f: FlushFn = unsafe { core::mem::transmute(raw) };
+        let guard = CONSOLE.lock();
+        if let Some(c) = guard.as_ref() {
+            f(&c.fb);
+        }
+    }
+}

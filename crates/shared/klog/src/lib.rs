@@ -64,6 +64,24 @@ pub fn set_byte_sink(f: LogSink) {
     BYTE_SINK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }
 
+/// Install a secondary byte sink (in addition to the UART). Used to
+/// route klog text to a framebuffer console, network log target, or
+/// any other downstream consumer. `f` is called after the primary
+/// sink for every emitted record.
+/// # C: O(1)
+pub fn set_aux_sink(f: LogSink) {
+    AUX_SINK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Detach the aux sink.
+/// # C: O(1)
+pub fn clear_aux_sink() {
+    AUX_SINK.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+}
+
+static AUX_SINK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
 /// Detach the sink. Subsequent `__klog_emit` calls become no-ops
 /// until `set_byte_sink` is called again.
 /// # C: O(1)
@@ -160,10 +178,17 @@ fn emit_timestamp(ns: u64) {
 fn invoke_sink(bytes: &[u8]) {
     ring_push(bytes);
     let raw = BYTE_SINK.load(core::sync::atomic::Ordering::Acquire);
-    if raw.is_null() { return; }
-    // SAFETY: BYTE_SINK is only ever populated via set_byte_sink, which casts a non-null LogSink fn-pointer into the *mut () slot; reverse-cast restores the original; LogSink has no unsafe contract beyond &[u8] validity, which we hold.
-    let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw) };
-    f(bytes);
+    if !raw.is_null() {
+        // SAFETY: BYTE_SINK is only ever populated via set_byte_sink, which casts a non-null LogSink fn-pointer into the *mut () slot; reverse-cast restores the original; LogSink has no unsafe contract beyond &[u8] validity, which we hold.
+        let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw) };
+        f(bytes);
+    }
+    let raw2 = AUX_SINK.load(core::sync::atomic::Ordering::Acquire);
+    if !raw2.is_null() {
+        // SAFETY: same ABI contract as BYTE_SINK; populated only via set_aux_sink with a LogSink fn-pointer.
+        let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw2) };
+        f(bytes);
+    }
 }
 
 // ---------------------------------------------------------------
