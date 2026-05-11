@@ -1,7 +1,8 @@
 # State 2026-05-10
 
 ## Branch
-`main`. Last merged: PR #998 (R78: sys_fcntl compress).
+`main`. Last merged: PR #1000 (B05: build fix — smoke gating + arch_irq anchor).
+`make ci` green: both arches, default + debug-all, hosted tests, spec-lint clean.
 
 ## What just shipped (this session)
 
