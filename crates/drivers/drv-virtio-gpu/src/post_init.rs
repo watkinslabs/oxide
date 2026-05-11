@@ -226,6 +226,15 @@ unsafe fn setup_scanout(
         q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va, hhdm,
     ) } { return false; }
     log_resp(b"flush");
+    // Stash scanout context so the kernel-side fbcon klog sink can
+    // repaint after boot. base_pa is the contig PMM run; HHDM-map
+    // it to a kernel VA for byte-copy access.
+    install_scanout_ctx(
+        w, h,
+        hhdm.wrapping_add(base_pa), fb_bytes, res_id,
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
+        cmd_buf_va as u64, cmd_buf_pa, hhdm,
+    );
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu scanout: ");
@@ -304,4 +313,88 @@ unsafe fn submit_raw(
         core::hint::spin_loop();
     }
     polls <= 1_000_000
+}
+
+
+// ---- Persistent scanout state for ongoing fbcon flush (B07) ------
+// After setup_scanout succeeds, save the context so the kernel-side
+// fbcon driver can push klog text to the FB via transfer + flush
+// after boot. Single scanout; single resource (res_id=1); single CPU
+// caller at boot installs it, repeated callers from klog stream
+// share via the Spinlock.
+
+use sync::{TaskList as DriverLockClass, Spinlock};
+
+struct ScanoutCtx {
+    w: u32,
+    h: u32,
+    fb_va: u64,          // HHDM-mapped backing FB
+    fb_bytes: u64,
+    res_id: u32,
+    q0_desc_pa: u64,
+    q0_driver_pa: u64,
+    q0_device_pa: u64,
+    q0_notify_va: u64,
+    cmd_buf_va: u64,
+    cmd_buf_pa: u64,
+    hhdm: u64,
+}
+
+static CTX: Spinlock<Option<ScanoutCtx>, DriverLockClass> = Spinlock::new(None);
+
+/// Copy `pixels` into the live framebuffer, then issue
+/// transfer_to_host_2d + resource_flush so the host repaints the
+/// display. Called from the fbcon kernel klog sink for every
+/// emitted record. Drops silently if scanout state isn't installed.
+/// # C: O(fb_bytes) copy + O(1) per submit.
+pub fn fbcon_flush_pixels(pixels: &[u8]) {
+    let g = CTX.lock();
+    let ctx = match g.as_ref() { Some(c) => c, None => return };
+    let n = (ctx.fb_bytes as usize).min(pixels.len());
+    // SAFETY: ctx.fb_va is HHDM-mapped for fb_bytes; bounded copy of n ≤ fb_bytes; CPL=0 writes through HHDM mapping.
+    unsafe {
+        let dst = ctx.fb_va as *mut u8;
+        for i in 0..n {
+            core::ptr::write_volatile(dst.add(i), pixels[i]);
+        }
+    }
+    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
+    let res_id = ctx.res_id;
+    let w = ctx.w; let h = ctx.h;
+    // SAFETY: cmd_buf_va_p is HHDM-mapped 4 KiB scratch; q0 descriptors and notify_va are the same VAs setup_scanout used; we are the sole writer for the duration of the lock.
+    unsafe {
+        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm);
+        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
+            ctx.q0_desc_pa, ctx.q0_driver_pa, ctx.q0_device_pa,
+            ctx.q0_notify_va, ctx.hhdm);
+    }
+}
+
+/// Install the scanout context for later flushes. Called once from
+/// `setup_scanout` after the resource is created and attached.
+fn install_scanout_ctx(
+    w: u32, h: u32, fb_va: u64, fb_bytes: u64, res_id: u32,
+    q0_desc_pa: u64, q0_driver_pa: u64, q0_device_pa: u64, q0_notify_va: u64,
+    cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
+) {
+    *CTX.lock() = Some(ScanoutCtx {
+        w, h, fb_va, fb_bytes, res_id,
+        q0_desc_pa, q0_driver_pa, q0_device_pa, q0_notify_va,
+        cmd_buf_va, cmd_buf_pa, hhdm,
+    });
+}
+
+/// True iff the scanout context is installed (post-`setup_scanout`).
+/// # C: O(1)
+pub fn scanout_ready() -> bool { CTX.lock().is_some() }
+
+/// Read back the scanout dimensions. Used by the kernel's fbcon
+/// klog wiring to size its Console.
+/// # C: O(1)
+pub fn dimensions() -> Option<(u32, u32)> {
+    CTX.lock().as_ref().map(|c| (c.w, c.h))
 }
