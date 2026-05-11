@@ -477,6 +477,17 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             unsafe { crate::tick_poll(); }
         }
         sched::live::preempt::set_need_resched();
+        // Linux-style softirq bottom-half: see lapic.rs comment.
+        // EOI'd above; unmask IRQs for the drain so virtio-gpu /
+        // virtio-input handlers that wait on device acks can run.
+        if softirq::pending() {
+            // SAFETY: EOI was issued above; softirq::run_pending guards re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
+            unsafe {
+                core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
+                softirq::run_pending();
+                core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
+            }
+        }
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked; per-CPU SCHED state is single-CPU at this point in v1.
         unsafe { sched::live::preempt::tick_pick_next(); }
     }

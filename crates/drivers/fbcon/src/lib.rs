@@ -691,7 +691,21 @@ pub mod kernel {
     /// Initialize the kernel-side fbcon driver. Called once by the
     /// virtio-gpu boot probe after the scanout is active.
     /// # C: O(xres * yres) — Console::new zero-fills its backing.
+    /// Softirq handler installed at `kernel_init`. Runs in
+    /// process-level context with IRQs unmasked (per softirq runner
+    /// contract), so virtio-gpu submit_one can wait on the device's
+    /// MSI-X used-idx ack without deadlocking the way it would in
+    /// a raw ISR context.
+    fn flush_softirq() {
+        if !DIRTY.swap(false, Ordering::AcqRel) { return; }
+        repaint();
+    }
+
+    /// Initialize the kernel-side fbcon driver. Called once by the
+    /// virtio-gpu boot probe after the scanout is active.
+    /// # C: O(xres * yres) — Console::new + bg-fill backing.
     pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
+        softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
         let mut c = Console::new(xres, yres);
         c.fg = [0xff, 0xff, 0xff];
         c.bg = [0x10, 0x30, 0x80];
@@ -721,35 +735,20 @@ pub mod kernel {
     /// # C: O(N_bytes * cell_blit)
     pub fn klog_sink(bytes: &[u8]) {
         if !READY.load(Ordering::Acquire) { return; }
-        // try_lock: klog may fire from IRQ context; CONSOLE is a
-        // plain Spinlock and the bottom half (this same sink + tick
-        // drain) holds it un-IRQ-disabled. Dropping the FB mirror
-        // for one event is fine — serial is the primary record.
         if let Some(mut g) = CONSOLE.try_lock() {
             if let Some(c) = g.as_mut() { c.put(bytes); }
             DIRTY.store(true, Ordering::Release);
         }
+        // Always raise — even if we dropped the byte: the next
+        // klog will mark dirty and this slot dedupes naturally.
+        softirq::raise(softirq::Slot::FbconFlush);
     }
 
-    /// Drain any pending console writes onto the GPU display. Called
-    /// from the kernel's timer-tick hook so the display updates at
-    /// ~timer-Hz rather than per-klog-event rate.
-    /// # C: O(xres*yres) if dirty, O(1) otherwise.
-    pub fn tick_drain() {
-        if !DIRTY.load(Ordering::Acquire) { return; }
-        // try_lock so IRQ ctx never spins waiting for a klog_sink
-        // that's mid-Console-update — re-arm DIRTY and let the next
-        // tick retry once the bottom half has released the lock.
-        let raw = FLUSH_FN.load(Ordering::Acquire);
-        if raw.is_null() { return; }
-        // SAFETY: FLUSH_FN populated via kernel_init with a non-null FlushFn cast through *mut (); reverse-cast restores the original.
-        let f: FlushFn = unsafe { core::mem::transmute(raw) };
-        let guard = match CONSOLE.try_lock() { Some(g) => g, None => return };
-        if let Some(c) = guard.as_ref() {
-            DIRTY.store(false, Ordering::Release);
-            f(&c.fb);
-        }
-    }
+    /// Legacy no-op kept for API stability — the softirq mechanism
+    /// in `flush_softirq` is now the only drain path. Will be
+    /// removed once no callers remain.
+    /// # C: O(1)
+    pub fn tick_drain() { /* superseded by softirq::Slot::FbconFlush */ }
 
     /// Push the current fbcon backing to the GPU via the installed
     /// flush thunk. No-op if the thunk isn't installed.

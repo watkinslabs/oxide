@@ -1,0 +1,16 @@
+[package]
+name = "softirq"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Linux-style deferred-work primitive per docs/45 (DRAFT). Per-CPU
+# bitmask of pending softirqs raised from ISR / process context;
+# `run_pending()` walks the bits and calls each handler with IRQs
+# locally enabled. Wired into the timer-ISR tail (after EOI) so
+# device drivers that need IRQs-on (virtio-gpu submit waits for
+# device MSI; virtio-input drain reads device-completed events)
+# have a context they can run in.
+
+[dependencies]
