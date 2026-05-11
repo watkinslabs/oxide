@@ -33,4 +33,9 @@ debug-boot = []
 # `hal-x86_64::fault` were silently disabled in production
 # (latent since P1-86a / #160).
 debug-irq  = ["hal-x86_64/debug-irq"]
-debug-all  = ["debug-boot", "debug-irq"]
+# dtrace probes (direct-UART structured trace, bypassing klog/lock).
+# Forwarded to `kernel` where the macros live; xtask --features
+# debug-trace lights up kernel/debug-trace via this chain (same
+# pattern as debug-irq).
+debug-trace = ["kernel/debug-trace"]
+debug-all  = ["debug-boot", "debug-irq", "debug-trace"]
