@@ -63,13 +63,6 @@ SECTIONS {
         __data_end = .;
     }
 
-    .bss ALIGN(4K) : {
-        __bss_start = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        __bss_end = .;
-    }
-
     /* Per-CPU; runtime replicates per MAX_CPUS; TPIDR_EL1 selects.  */
     .percpu ALIGN(4K) : {
         __percpu_start = .;
@@ -87,6 +80,16 @@ SECTIONS {
         __init_array_start = .;
         KEEP(*(.init_array .init_array.*))
         __init_array_end = .;
+    }
+
+    /* .bss LAST so the on-disk PT_LOAD's file_sz stops before .bss's
+     * mem_sz — otherwise lld pads file space across the NOBITS hole.
+     * See x86_64-kernel.ld for the diagnosis. */
+    .bss ALIGN(4K) : {
+        __bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        __bss_end = .;
     }
 
     __kernel_end = .;

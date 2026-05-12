@@ -5,7 +5,6 @@
 
 #[cfg(feature = "debug-sched")]
 pub mod canary;
-#[cfg(feature = "debug-acpi")]
 pub mod device_map;
 pub mod elf;
 #[cfg(target_arch = "aarch64")]

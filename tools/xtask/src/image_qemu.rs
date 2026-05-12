@@ -325,6 +325,22 @@ fn build_iso(
 fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32) -> Result<(), u8> {
     let ovmf = repo.join("vendor/firmware/ovmf-x64.fd");
     let smp_str = smp.to_string();
+    // OXIDE_QEMU_UART_SOCK=<path>: use unix-socket chardev for the
+    // guest UART instead of stdio. With piped stdin QEMU's stdio
+    // chardev doesn't reliably forward bytes to the guest RX register;
+    // a unix socket plus an external socat bridge is the canonical
+    // automated-input path.
+    let uart_chardev: String = match std::env::var("OXIDE_QEMU_UART_SOCK") {
+        Ok(p) if !p.is_empty() => {
+            let _ = std::fs::remove_file(&p);
+            format!("socket,id=ser0,path={},server=on,wait=off", p)
+        }
+        _ => if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() {
+            "stdio,id=ser0,signal=off".to_string()
+        } else {
+            "stdio,id=ser0,mux=on,signal=off".to_string()
+        }
+    };
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
@@ -361,9 +377,14 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // mode and drops single keystrokes — the kernel's tty line-
         // discipline then sees malformed input ("the sh fucking up").
         // `-nographic` would do the same but also kill `-display none`.
-        "-chardev", "stdio,id=ser0,mux=on,signal=off",
+        // Interactive: stdio with mux=on (Ctrl-A C → monitor).
+        // Headless (OXIDE_QEMU_HEADLESS=1): plain stdio without mux so
+        // piped stdin reaches the guest UART RX. stdio chardev in QEMU
+        // forwards stdin → guest RBR when stdin is not a TTY too;
+        // mux=on routes those bytes to the multiplexer instead. The
+        // log goes to stdout either way; redirect via shell as usual.
+        "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
-        "-mon",     "chardev=ser0",
         // GTK on by default so virtio-gpu scanout is visible.
         // OXIDE_QEMU_HEADLESS=1 suppresses for CI / soak runs.
         // -no-shutdown was REMOVED — that flag plus GTK was the
@@ -385,12 +406,28 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
     }
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
     let smp_str = smp.to_string();
+    // Same OXIDE_QEMU_UART_SOCK plumbing as x86 — see qemu_run_x86_64_disk.
+    let uart_chardev: String = match std::env::var("OXIDE_QEMU_UART_SOCK") {
+        Ok(p) if !p.is_empty() => {
+            let _ = std::fs::remove_file(&p);
+            format!("socket,id=ser0,path={},server=on,wait=off", p)
+        }
+        _ => if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() {
+            "stdio,id=ser0,signal=off".to_string()
+        } else {
+            "stdio,id=ser0,mux=on,signal=off".to_string()
+        }
+    };
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
-        "-m", "256M",
+        // 512 MiB so Limine's high-memory allocator can fit the 64 MiB
+        // BSS reservation alongside UEFI/edk2 overhead on aarch64. With
+        // 256 MiB Limine OOMed during kernel load. x86 with 256 MiB
+        // works because OVMF x64 leaves more headroom.
+        "-m", "512M",
         "-bios", ovmf.to_str().unwrap(),
         // Drive on the `virt` machine: explicit virtio-blk-pci so
         // OVMF aarch64 sees it as a UEFI block device and walks the
@@ -405,9 +442,8 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-device", "virtio-gpu-pci,bus=pcie.0",
         // virtio keyboard for `46`. Mouse removed; same reason.
         "-device", "virtio-keyboard-pci,bus=pcie.0",
-        "-chardev", "stdio,id=ser0,mux=on,signal=off",
+        "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
-        "-mon",     "chardev=ser0",
         // GTK on by default for ARM too — `virt` machine wires
         // virtio-gpu-pci to the synthetic PCIe root, OVMF aarch64
         // exposes a UEFI GOP and the kernel scanout driver paints

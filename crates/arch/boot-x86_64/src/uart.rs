@@ -119,20 +119,42 @@ impl Uart16550 {
 }
 
 impl Uart for Uart16550 {
-    /// Poll-wait for THRE then write a single byte.
-    /// # C: O(spin until ready)
+    /// Poll-wait for THRE then write a single byte, with a bounded
+    /// spin cap. On QEMU the emulated 16550 back-pressures when the
+    /// host pty consumer is slow — THRE never sets and an unbounded
+    /// spin holds the BOOT_UART lock with IRQs disabled (via
+    /// `lock_irqsave`), permanently deadlocking the boot CPU. With
+    /// the cap, we drop the byte after ~100M iterations (~tens of
+    /// ms wall-clock) and let the caller proceed; the kernel keeps
+    /// making forward progress and the dropped bytes are visible as
+    /// truncated dmesg lines on the host (better than a wedge).
+    /// # C: O(spin up to cap)
     fn write_byte(&mut self, b: u8) {
+        const SPIN_CAP: u32 = 100_000;
+        let mut spins: u32 = 0;
         // SAFETY: same contract as `init`; the `inb`/`outb` wrappers
         // own the asm safety. Polling LSR until THRE is the documented
-        // 16550 send protocol.
+        // 16550 send protocol. Bounded to drop bytes rather than
+        // deadlock under host pty back-pressure.
         unsafe {
             while (inb(self.base + reg::LSR) & LSR_THRE) == 0 {
+                spins = spins.wrapping_add(1);
+                if spins >= SPIN_CAP {
+                    UART_DROPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
                 core::hint::spin_loop();
             }
             outb(self.base + reg::DATA, b);
         }
     }
 }
+
+/// Diagnostic: count of bytes dropped by `write_byte`'s bounded spin
+/// when QEMU back-pressures THRE. Inspect via `qemu_mem`. Static so it
+/// survives any number of write_byte invocations.
+pub static UART_DROPS: core::sync::atomic::AtomicU64
+    = core::sync::atomic::AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Host-side recorder: lets tests observe the byte stream `outb` would
