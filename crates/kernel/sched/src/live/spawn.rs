@@ -280,7 +280,8 @@ pub unsafe fn spawn_user_thread_for_fork(
         // F105: PID NS inheritance. If parent's unshare_pid_pending
         // is set, allocate a fresh pid_ns for the child + give it
         // vtgid=1 (it becomes the NS's "init"). Else inherit parent's
-        // pid_ns + assign next vtgid in that NS (or 0 if init NS).
+        // pid_ns + assign the next vtgid (Linux PID) in that NS — the
+        // init NS gets one too, starting at 2 since init itself is 1.
         let pending = parent.unshare_pid_pending.swap(false, Ordering::AcqRel);
         if pending {
             static NEXT_PID_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
@@ -291,15 +292,13 @@ pub unsafe fn spawn_user_thread_for_fork(
         } else {
             let parent_ns = parent.pid_ns.load(Ordering::Acquire);
             task.pid_ns.store(parent_ns, Ordering::Release);
-            if parent_ns != 0 {
-                // Per-NS vpid allocator. v1 uses a single global counter
-                // keyed by ns; collisions don't matter for the bounded
-                // task set we run.
-                static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
-                let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
-                task.vtgid.store(v, Ordering::Release);
-                task.vtid.store(v, Ordering::Release);
-            }
+            // Per-NS vpid allocator. v1 uses a single global counter
+            // keyed across all NSes — collisions don't matter for the
+            // bounded task set we run, and ps reads vtgid only.
+            static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
+            let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
+            task.vtgid.store(v, Ordering::Release);
+            task.vtid.store(v, Ordering::Release);
         }
     }
 
