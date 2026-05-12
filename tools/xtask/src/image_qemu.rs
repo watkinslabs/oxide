@@ -143,11 +143,13 @@ fn build_disk_image(
         other => { eprintln!("xtask image: unsupported arch `{other}`"); return Err(2); }
     };
 
-    // 64 MiB image. Anything smaller and parted complains about
-    // backup-GPT placement on aarch64.
+    // 256 MiB image. Kernel BSS gets baked into the on-disk ELF by the
+    // current linker script (file_sz = mem_sz on the RW PT_LOAD), so
+    // bumping STATIC_HEAP_SIZE pushes the binary toward 100 MB. 256 MiB
+    // leaves headroom for the kernel + rootfs + limine + EFI overhead.
     {
         let mut c = Command::new("dd");
-        c.args(["if=/dev/zero", "bs=1M", "count=64",
+        c.args(["if=/dev/zero", "bs=1M", "count=256",
                 &format!("of={}", img.display()), "status=none"]);
         run(c)?;
     }
@@ -349,7 +351,7 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // CPU models (qemu64) trap #UD on those.
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "512M",
         "-bios", ovmf.to_str().unwrap(),
         // Boot drive attached as virtio-blk-pci (not legacy IDE) so the
         // F19-F30 modern virtio-pci transport bring-up runs on x86 the
@@ -411,7 +413,7 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "512M",
         "-bios", ovmf.to_str().unwrap(),
         // Drive on the `virt` machine: explicit virtio-blk-pci so
         // OVMF aarch64 sees it as a UEFI block device and walks the
@@ -474,7 +476,7 @@ fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> 
         // so the kernel runs on plain qemu64 too.
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "512M",
         "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
         "-display", "none",
@@ -497,7 +499,7 @@ fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> 
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "512M",
         "-bios", ovmf.to_str().unwrap(),
         "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
