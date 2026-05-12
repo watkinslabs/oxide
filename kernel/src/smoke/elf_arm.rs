@@ -262,13 +262,16 @@ pub unsafe fn run() -> ! {
     // log with no way to interact (`make qemu-arm` was useless).
     spawn_init_from_rootfs_arm();
 
-    // Schedule loop with IRQs unmasked so the timer-tick UART poll
-    // keeps draining bytes into the tty rx ringbuffer.
+    // Schedule loop with IRQs unmasked so the PL011 RX IRQ (SPI 33)
+    // wakes us when stdin bytes arrive — the dispatcher's INTID-33
+    // path acks the IRQ and calls tick_poll_uart to drain into the
+    // foreground VT's ring. No CNTV re-arm needed: PL011 is the input
+    // path on ARM (timer-tick poll is a fallback only).
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
-        // SAFETY: msr daifclr opens DAIF.I to allow the timer / UART
-        // IRQ to wake us; wfi parks until next IRQ; both privileged at EL1.
+        // SAFETY: daifclr opens DAIF.I so PL011 RX (INTID 33) can wake
+        // wfi; both privileged at EL1.
         unsafe { core::arch::asm!("msr daifclr, #2; wfi; msr daifset, #2",
             options(nomem, nostack, preserves_flags)); }
     }
