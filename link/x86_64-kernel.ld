@@ -58,13 +58,6 @@ SECTIONS {
         __data_end = .;
     }
 
-    .bss ALIGN(4K) : {
-        __bss_start = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        __bss_end = .;
-    }
-
     /* PerCpu: linker emits 1 copy; runtime allocates MAX_CPUS slots
      * and per-CPU GS_BASE points into its own slot. Vars use
      * #[link_section=".percpu"]. */
@@ -86,6 +79,18 @@ SECTIONS {
         __init_array_start = .;
         KEEP(*(.init_array .init_array.*))
         __init_array_end = .;
+    }
+
+    /* .bss LAST in the RW segment so the on-disk PT_LOAD's
+     * file_sz can stop before .bss's mem_sz. Otherwise lld pads
+     * file space across the NOBITS hole because the segment has
+     * non-NOBITS sections after it. With STATIC_HEAP_SIZE=64 MiB
+     * the misordering bloated oxide-x86_64 from ~18 MB to ~85 MB. */
+    .bss ALIGN(4K) : {
+        __bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        __bss_end = .;
     }
 
     __kernel_end = .;
