@@ -25,7 +25,7 @@ const _: () = assert!(
 
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
-mod debug_macros;
+pub mod debug_macros;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
@@ -333,9 +333,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // via the PMM-backed mapper, enable LAPIC/GIC/UART. The
         // bring-up is always-on; per-step diagnostic logs are gated
         // by per-subsystem `debug-vmm`/`debug-irq` features inside.
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-acpi"))]
+        // Map + enable LAPIC/HPET (x86) or GIC (arm) unconditionally:
+        // the LAPIC-enable path inside owns LAPIC_BASE_VA, without which
+        // `timer_periodic` (called from spawn-init below) silently no-
+        // ops, no timer IRQs fire, and any CPU-bound user task hangs
+        // forever (B14: login prompt wedge — getty spun in user mode
+        // between stdio writevs because the scheduler never preempted).
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
         crate::smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
-        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-acpi"))]
+        #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
         crate::smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
 
         // MmuOps end-to-end smoke: map/write/translate/unmap a fresh
@@ -441,6 +447,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
 
+    // Install the per-tick UART RX poll hook unconditionally. This was
+    // previously buried inside the SMP `if started > 0` block, so with
+    // `-smp 1` the hook stayed null and every timer IRQ skipped
+    // `tick_poll_uart`. Result: bytes sat in COM1 RBR with LSR.DR=1
+    // forever — login could print but never read input.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    arch_irq::set_tick_poll_hook(tick_poll_combined);
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    arch_irq::set_tick_poll_hook(tick_poll_combined);
+
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
     // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
     //   x86_64: Limine SMP request — store our entry into each
@@ -510,7 +526,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 #[cfg(target_arch = "x86_64")]
                 sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
                 pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
-                arch_irq::set_tick_poll_hook(tick_poll_combined);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
@@ -655,7 +670,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
         fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
-        klog::set_aux_sink(fbcon::kernel::klog_sink);
+        // fbcon klog sink disabled — fbcon_flush_pixels wedges in the
+        // virtio-gpu submit path (see state.md / project_login_hang_cat_smoke memory).
+        let _ = w; let _ = h;
     }
     // Load the rootfs-resident keyboard layout. Linux pattern:
     // /etc/keymap is the active map; /usr/share/keymaps/*.kmap is

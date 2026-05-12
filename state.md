@@ -1,67 +1,76 @@
-# State 2026-05-11
+# State 2026-05-12
 
 ## Branch
-`main`. Last merged: PR #1007 (F02: runtime-loadable keymap).
-`make ci` green; `cargo run -p xtask -- spec-lint` clean.
+`F04-serial-getty` — PR #1010 open. HEAD `e3360a5`.
 
-## What shipped this run
+## Headline
 
-Linux-style input + display foundation:
+**Fully interactive Linux shell.** Real-libc busybox, real fork+exec, real ext4-backed readdir, real pipes, real `$PATH` expansion. Tested headless via socat-over-unix-socket:
 
-- **#1003 B07** — klog multi-sink + virtio-gpu scanout ctx + fbcon Console wiring (mechanism in place).
-- **#1004 B08** — fbcon bg-fill + try_lock guards (kernel_init sanity test wrote 6816 white pixels via GPU, proving Console→fb_va→virtio-gpu path is functional).
-- **#1005 F00** — `crates/kernel/softirq` Linux-style deferred-work primitive: 32-slot bitmask, `raise()` / `run_pending()`, IN_PROGRESS re-entry guard. Wired into x86 LAPIC + aarch64 GIC timer ISR tails (`sti`/`run_pending`/`cli` envelope; daifclr/daifset on arm). fbcon converted: `klog_sink` raises `Slot::FbconFlush`; handler does the GPU submit from IRQs-on context, no more "submit polls device IRQ while masked" deadlock.
-- **#1006 F01** — first softirq consumer. `drv-virtio-input::drain`: pre-fills q0 with `qsize` write-only event-buffer descriptors, installs the softirq handler, kicks notify. Drain walks used ring, parses 8-byte `VirtioInputEvent`, recycles descriptors. `tty::live::input_push_byte` exposes the foreground-VT push. LAPIC VEC_MSI raises `Slot::InputDrain` and drains immediately.
-- **#1007 F02** — runtime-loadable keymap. `crates/drivers/drv-virtio-input/src/keymap.rs` parses `/etc/keymap` text at boot, four tables (plain/shift/altgr/shift_altgr), full modifier tracking (SHIFT/CTRL/ALT/ALTGR/META/CAPS/NUM/SCROLL), per-side flags, Linux semantics: Ctrl+letter→ctrl code, AltGr layers, Alt→ESC-prefix Meta. `userspace/keymaps/us.kmap` ships in rootfs as `/etc/keymap` + `/usr/share/keymaps/us.kmap`. 7 hosted parser+translate tests pass. Boot logs `[INFO] keymap loaded: US QWERTY`.
-
-## Verified at boot
-
-- `make ci` green both arches.
-- x86 qemu boot reaches `oxide Linux on /dev/tty1` cleanly.
-- `[INFO] keymap loaded: US QWERTY` appears post-ext4 mount.
-- softirq foundation runs from timer ISR tail and MSI VEC_MSI arm.
-
-## Open work
-
-### rcS pre-existing wedge (B12, parked)
-busybox sh emits `can't open '/etc/init.d/rcS': No error information` despite:
-- ext4 image *has* `/etc/init.d/rcS` (verified via `debugfs -R "ls /etc/init.d"`)
-- Kernel `ext4::rootfs::read_file(b"/etc/init.d/rcS")` returns Some(308 bytes)
-- Probes on sys_open / sys_openat / sys_stat / sys_access / sys_faccessat **none** fire with that path
-
-Conclusion: the error path is *inside* busybox sh and never reaches the kernel — likely a libc/stdio routing bug or a path check that fails before the syscall. Next session: probe sys_execve's shebang chain or run busybox sh under ptrace to identify the offending step.
-
-### Display visibility on GTK (parked)
-B07/B08 confirmed Console→fb_va→virtio-gpu writes work end-to-end. The boot-time bg paint + sanity glyphs show in QMP screendumps. Live klog stream into fbcon depends on the softirq draining, which now works architecturally — verifying the *rendered* output through a GTK window requires interactive QEMU which the headless qemu-mcp can't drive.
-
-### Serial input doesn't echo (parked)
-`qemu_send_serial("echo HELLO")` produces no echo on serial output. tick_poll_uart reads 0x3F8 every timer tick → push_and_wake_fg. Likely a getty-side issue downstream of rcS — addressed when rcS is unblocked.
-
-## Followups ready to stack
-
-- Ship UK/DE/FR/ES keymap files under `userspace/keymaps/`.
-- `loadkeys <name>` userspace helper: read `/usr/share/keymaps/<name>.kmap`, install via a `KDSKBENT`-equivalent ioctl on `/dev/console`.
-- Mouse pointer: virtio-input EV_REL / EV_ABS handling (drain currently consumes EV_KEY only); GPU cursor sprite.
-- B12 deep-trace: instrument sys_execve's shebang resolver to log the exact step that fails for `/etc/init.d/rcS`.
-
-## First task next session
-
-```sh
-git checkout -b F03-keymap-locales
-# Ship userspace/keymaps/{uk,de,fr,es}.kmap text files. Each is a
-# straight rewrite of us.kmap with the locale-specific shift +
-# altgr columns filled in. Mechanism is identical — only the table
-# bytes change.
+```
+oxide login: root
+oxide:~# uname -a
+Linux oxide 5.15.0-oxide #1 SMP PREEMPT oxide v0.1.0 x86_64 GNU/Linux
+oxide:~# cat /etc/issue
+oxide \s on \l
+oxide:~# ls /bin | head
+ash
+awk
+bare3
+basename
+busybox
+cat
+chmod
+chown
+clear
+cp
+oxide:~# id
+uid=0(root) gid=0(root) groups=0(root)
+oxide:~# echo $PATH
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+oxide:~# ps
+PID  USER  TIME COMMAND
+...
+4118 root  0:00 {fork-child} -sh
+4124 root  0:00 {fork-child} ps
 ```
 
-Alt pivots:
-- B12 sys_execve trace (resolves rcS wedge, unblocks getty input testing).
-- F03 mouse drain layer (extends virtio-input beyond EV_KEY).
-- D-spec for the keymap text format (formalize the `keymap "..."` / `keycode N plain=… shift=…` grammar in `docs/46`).
+## Bug chain closed this session
 
-## Useful pointers
+1. **fbcon klog aux sink wedge** — earlier session, disabled at `kernel/src/lib.rs:662`.
+2. **qemu-mcp pty consumer** — bypass via `OXIDE_QEMU_HEADLESS=1`.
+3. **stdio chardev w/ piped stdin doesn't reach guest RBR** — use `OXIDE_QEMU_UART_SOCK=/tmp/oxide-uart.sock` + socat bridge (`tools/xtask/src/image_qemu.rs`).
+4. **`set_tick_poll_hook` was inside `if started > 0`** — moved to unconditional `kernel_main` init so `tick_poll_uart` runs with `-smp 1` (`b44c54c`).
+5. **Linker baked BSS into on-disk ELF** — moved `.bss` to be the last section in the RW PT_LOAD so `file_sz < mem_sz` again (`f5db8b4`). Kernel binary 91 MB → 23 MB.
+6. **Stack builder argv/envp cap = 8** — bumped on-kernel-stack `Heapless256` cap to 256 + grew sp-fit check to 64 KiB (`75159cc`).
+7. **Ext4 lookup of directories returned ENOENT** — `Ext4RootfsFs::lookup` now uses `lookup_inode_any`, and `Ext4StatInode` got a real `readdir` impl wired through `mount.read_file_block` + `iter_active` (`e3360a5`).
 
-- Softirq API: `crates/kernel/softirq/src/lib.rs` (`Slot`, `raise`, `run_pending`, `set_handler`).
-- virtio-input drain: `crates/drivers/drv-virtio-input/src/drain.rs`.
-- Keymap: `crates/drivers/drv-virtio-input/src/keymap.rs`; text source `userspace/keymaps/us.kmap`.
-- Timer ISR tail (where softirq runs): `crates/kernel/arch-irq/src/lapic.rs` (x86), `src/gic.rs` (arm).
+## Open work (next session)
+
+- **`ps` displays kernel-issued TIDs (0xC0DE0001…) as huge u32 PIDs.** Cosmetic; the kernel should hand out small monotonic vpids for kernel tasks too, or `/proc/N/status` should fold the kernel-private TID. Easy fix.
+- **`-mon chardev=ser0` regressed in interactive mode** when chardev string became conditional. Add `-monitor none` for headless and keep `-mon chardev=ser0` for interactive — verify by hand. Low priority; headless works.
+- **Re-enable fbcon klog aux sink** after debugging `fbcon_flush_pixels` virtio-gpu submit wedge (currently disabled at `kernel/src/lib.rs:662`). Wanted for GTK-mode display.
+- **ARM lockstep — login input still broken.** `make qemu-arm` reaches `oxide login:` but typed bytes don't echo. gic.rs already calls `tick_poll` for INTID 27 (`58ad285`). Bisect across 7 ARM iterations (kernel/src/smoke/elf_arm.rs::run, post-`spawn_init_from_rootfs_arm`):
+  - `enable_intid(27)` ALONE — login: appears (no input drain since timer is still disarmed).
+  - `timer_periodic(5_000_000)` ALONE — login: appears (probable IRQ delivery already via the still-enabled ICENABLER from canary).
+  - **`enable_intid(27)` + `timer_periodic(...)` TOGETHER — silently wedges before busybox prints anything.** Both probes (`pre-enable`, `post-enable`, `post-arm`) execute; then control falls into the schedule loop and nothing follows. Either the timer fires immediately (CNTV ISTATUS persists across the disable/enable sequence?) and the dispatcher re-enters a half-set-up state, or the second `tick_poll` call into `tty::live::tick_poll_uart` on ARM touches state that isn't ready.
+  - Next concrete probe: emit a marker INSIDE `oxide_arm_irq_dispatch` to confirm whether timer IRQ 27 actually fires after the combined-arm path. If yes, the wedge is downstream (tick_poll or sched picker). If no, it's a GIC/CNTV state machine issue.
+  - Per `00§14` ARM lockstep is mandatory before phase exit. PR #1010 is the *x86* milestone — net-new functionality. ARM regression is a known gap (it always was — pre-this-PR ARM also couldn't accept input), so PR can ship as "x86 milestone + ARM unchanged from baseline."
+- **`docs/v2/` cleanup of stale state.md history** — git log has the trail; state.md is short.
+
+## Test harness
+
+`/tmp/runtest6.sh` reproduces the interactive session above. Pattern:
+
+```
+OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK=/tmp/oxide-uart.sock make qemu-x86 &
+(sleep 15; printf 'root\n'; sleep 3; printf 'ls /\n'; ...) | socat - UNIX-CONNECT:/tmp/oxide-uart.sock
+```
+
+## Commits on this branch
+
+- `b44c54c` fix(tty): install tick_poll_uart hook unconditionally — login RX works.
+- `3d91393` fix(boot): heap/disk/RAM bumps — reverted by f5db8b4 after linker fix.
+- `f5db8b4` fix(link): move .bss last so on-disk ELF doesn't include BSS bytes.
+- `75159cc` fix(exec): bump argv/envp on-kernel-stack vec 8→256, stack check 4K→64K.
+- `e3360a5` fix(ext4): open + readdir on directories — `ls /` now lists rootfs.

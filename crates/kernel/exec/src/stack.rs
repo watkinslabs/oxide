@@ -91,13 +91,13 @@ pub unsafe fn build_user_stack(
     // SAFETY: same as above; bytes len is bounded by caller-supplied argv slice.
     let execfn_va = unsafe { push_cstr(&mut cursor, execfn_bytes) }?;
 
-    let mut argv_vas: heapless8 = heapless8::new();
+    let mut argv_vas: Heapless256 = Heapless256::new();
     for s in argv {
         // SAFETY: same as above; argv element pushed onto stack.
         let va = unsafe { push_cstr(&mut cursor, s) }?;
         argv_vas.push(va)?;
     }
-    let mut envp_vas: heapless8 = heapless8::new();
+    let mut envp_vas: Heapless256 = Heapless256::new();
     for s in envp {
         // SAFETY: same as above; envp element pushed onto stack.
         let va = unsafe { push_cstr(&mut cursor, s) }?;
@@ -137,9 +137,9 @@ pub unsafe fn build_user_stack(
     let raw_sp = cursor.checked_sub(bytes as u64)?;
     let sp = raw_sp & !0xfu64;
 
-    if sp < stack_top.saturating_sub(0x1000) {
-        // Single 4 KiB stack page is not enough; v1 caller
-        // pre-mmaps exactly one page.
+    if sp < stack_top.saturating_sub(0x10000) {
+        // Caller pre-mmaps EXEC_USER_STACK_LEN (64 KiB) below stack_top
+        // in execve.rs. Stay within that region.
         return None;
     }
 
@@ -195,16 +195,17 @@ unsafe fn write_u64(w: &mut u64, val: u64) {
     *w += 8;
 }
 
-/// Tiny stack-allocated Vec<u64, 8>. Avoids alloc::Vec inside the
+/// Stack-allocated Vec<u64, CAP>. Avoids alloc::Vec inside the
 /// no_std stack builder (we run pre-`activate` and want zero
-/// alloc-side faults).
-struct heapless8 { items: [u64; 8], len: usize }
+/// alloc-side faults). CAP=256 covers normal-process argv+envp;
+/// 8 was a stub that broke real busybox sessions whose env is
+/// PATH/HOME/USER/LOGNAME/SHELL/PWD/TERM/MAIL/PS1/... > 8.
+struct Heapless256 { items: [u64; 256], len: usize }
 
-#[allow(non_camel_case_types)]
-impl heapless8 {
-    const fn new() -> Self { Self { items: [0; 8], len: 0 } }
+impl Heapless256 {
+    const fn new() -> Self { Self { items: [0; 256], len: 0 } }
     fn push(&mut self, v: u64) -> Option<()> {
-        if self.len == 8 { None } else { self.items[self.len] = v; self.len += 1; Some(()) }
+        if self.len == 256 { None } else { self.items[self.len] = v; self.len += 1; Some(()) }
     }
     fn as_slice(&self) -> &[u64] { &self.items[..self.len] }
 }

@@ -231,7 +231,6 @@ fn sys_wait4(args: &SyscallArgs) -> i64 {
         Some(c) => c.tid,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
-
     // Loop: try to reap; if no match, yield + retry. Bounded
     // because schedule() picks runnable children which eventually
     // exit + park.
@@ -255,6 +254,14 @@ fn sys_wait4(args: &SyscallArgs) -> i64 {
             }
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
             return tid as i64;
+        }
+        // POSIX: wait4 returns -ECHILD if the calling task has no
+        // unwaited-for children at all. Without this check the
+        // do-while-pid>=0 drain loops in busybox hush + every other
+        // userspace shell block forever once the last child exits.
+        // Linux returns ECHILD before checking WNOHANG.
+        if !sched::live::registry::has_children(parent_tid) {
+            return -(Errno::Echild.as_i32() as i64);
         }
         if (options & WNOHANG) != 0 { return 0; }
         // No zombie ready — sleep until a child exits. `park_for_wait4`
