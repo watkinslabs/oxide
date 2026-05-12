@@ -61,6 +61,37 @@ pub fn live_tids() -> Vec<u32> {
     g.iter().map(|(t, _)| *t).collect()
 }
 
+/// Snapshot live process vtgids (Linux "PIDs") for procfs readdir.
+/// Tasks without a vtgid (kernel threads pre-fork, smokes) are
+/// skipped — they don't have a `/proc/N` directory in Linux either.
+/// Sorted ascending for stable ordering.
+/// # C: O(N_tasks log N_tasks)
+pub fn live_vpids() -> Vec<u32> {
+    use core::sync::atomic::Ordering;
+    let mut g = REG.lock();
+    g.retain(|(_, w)| w.strong_count() > 0);
+    let mut out: Vec<u32> = g.iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .map(|t| t.vtgid.load(Ordering::Acquire))
+        .filter(|&v| v != 0)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Resolve a userspace PID (vtgid) to a Task. Different from
+/// `lookup` which keys on the kernel-internal TID. Used by procfs's
+/// `/proc/<PID>` lookup so `cat /proc/1/status` sees init.
+/// # C: O(N_tasks)
+pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    g.iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .find(|t| t.vtgid.load(Ordering::Acquire) == vpid)
+}
+
 /// Flip `task.state` Stopped → Runnable. Returns `true` if the
 /// transition actually happened (caller is then responsible for
 /// re-enqueueing into the runqueue); `false` if the task wasn't
