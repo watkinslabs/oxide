@@ -279,6 +279,20 @@ impl vfs::Inode for Ext4FileInode {
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
     fn size(&self) -> u64 { self.bytes.lock().len() as u64 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    fn perm(&self) -> Option<u16> {
+        // Read i_mode (low 12 bits = perms) from the ext4 inode. Falls
+        // back to 0o755 if the lookup fails so executables stay
+        // executable — sys_statx defaults to 0o600 (no x bit) when
+        // perm() returns None, breaking ARM busybox's PATH search.
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Some(0o755); }
+        // SAFETY: MOUNT_PTR published once at boot; reads stable for kernel lifetime.
+        let mount = unsafe { &*p };
+        match mount.read_inode(self.ino) {
+            Ok(i) => Some(i.mode & 0o7777),
+            Err(_) => Some(0o755),
+        }
+    }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         let g = self.bytes.lock();
         let off = off as usize;
