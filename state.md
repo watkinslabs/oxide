@@ -50,10 +50,12 @@ PID  USER  TIME COMMAND
 - **`ps` displays kernel-issued TIDs (0xC0DE0001…) as huge u32 PIDs.** Cosmetic; the kernel should hand out small monotonic vpids for kernel tasks too, or `/proc/N/status` should fold the kernel-private TID. Easy fix.
 - **`-mon chardev=ser0` regressed in interactive mode** when chardev string became conditional. Add `-monitor none` for headless and keep `-mon chardev=ser0` for interactive — verify by hand. Low priority; headless works.
 - **Re-enable fbcon klog aux sink** after debugging `fbcon_flush_pixels` virtio-gpu submit wedge (currently disabled at `kernel/src/lib.rs:662`). Wanted for GTK-mode display.
-- **ARM lockstep — login input still broken.** `make qemu-arm` reaches `oxide login:` but typed bytes don't echo. Empirical IRQ-probe (reverted) showed *no IRQs fire on the dispatcher post-PL011-setup* — neither CNTV (INTID 27) nor PL011 (INTID 33). gic.rs already calls `tick_poll` for INTID 27 (`58ad285`). What still needs to happen, in order:
-  1. Verify CNTV timer is actually re-armed post-smoke. Adding `arch_irq::gic::enable_intid(27)` + `hal_aarch64::timer::timer_periodic(50_000)` from `spawn_init_from_rootfs_arm()` (kernel/src/smoke/elf_arm.rs) BROKE boot in trial — kernel froze at "pmm: ready". Suggests one of those calls panics or wedges in that context. Try guarded under `pmm::user_as` lock release or move to caller of `spawn_init_from_rootfs_arm` after schedule unwinds.
-  2. If timer ticks fire but RX still empty, check `tty::live::tick_poll_uart` ARM PL011 read path: `PL011_BASE_VA` may have been clobbered post-AS-activation.
-  3. PR #1010 should still merge — x86 work is the headline. ARM lockstep closes in a follow-up PR.
+- **ARM lockstep — login input still broken.** `make qemu-arm` reaches `oxide login:` but typed bytes don't echo. gic.rs already calls `tick_poll` for INTID 27 (`58ad285`). Bisect across 7 ARM iterations (kernel/src/smoke/elf_arm.rs::run, post-`spawn_init_from_rootfs_arm`):
+  - `enable_intid(27)` ALONE — login: appears (no input drain since timer is still disarmed).
+  - `timer_periodic(5_000_000)` ALONE — login: appears (probable IRQ delivery already via the still-enabled ICENABLER from canary).
+  - **`enable_intid(27)` + `timer_periodic(...)` TOGETHER — silently wedges before busybox prints anything.** Both probes (`pre-enable`, `post-enable`, `post-arm`) execute; then control falls into the schedule loop and nothing follows. Either the timer fires immediately (CNTV ISTATUS persists across the disable/enable sequence?) and the dispatcher re-enters a half-set-up state, or the second `tick_poll` call into `tty::live::tick_poll_uart` on ARM touches state that isn't ready.
+  - Next concrete probe: emit a marker INSIDE `oxide_arm_irq_dispatch` to confirm whether timer IRQ 27 actually fires after the combined-arm path. If yes, the wedge is downstream (tick_poll or sched picker). If no, it's a GIC/CNTV state machine issue.
+  - Per `00§14` ARM lockstep is mandatory before phase exit. PR #1010 is the *x86* milestone — net-new functionality. ARM regression is a known gap (it always was — pre-this-PR ARM also couldn't accept input), so PR can ship as "x86 milestone + ARM unchanged from baseline."
 - **`docs/v2/` cleanup of stale state.md history** — git log has the trail; state.md is short.
 
 ## Test harness
