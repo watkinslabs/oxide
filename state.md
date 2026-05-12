@@ -1,56 +1,71 @@
 # State 2026-05-12
 
 ## Branch
-`F04-serial-getty` — PR #1010 open. HEAD `3d91393`.
+`F04-serial-getty` — PR #1010 open. HEAD `e3360a5`.
 
 ## Headline
 
-**Interactive shell reached.** `oxide login: root` accepts, busybox login spawns `/bin/sh`, the prompt `oxide:/#` appears, and shell builtins respond to typed input:
+**Fully interactive Linux shell.** Real-libc busybox, real fork+exec, real ext4-backed readdir, real pipes, real `$PATH` expansion. Tested headless via socat-over-unix-socket:
 
 ```
 oxide login: root
-login[4118]: root login on 'ttyS0'
-oxide:/# echo HELLO_FROM_OXIDE
-HELLO_FROM_OXIDE
-oxide:/#
+oxide:~# uname -a
+Linux oxide 5.15.0-oxide #1 SMP PREEMPT oxide v0.1.0 x86_64 GNU/Linux
+oxide:~# cat /etc/issue
+oxide \s on \l
+oxide:~# ls /bin | head
+ash
+awk
+bare3
+basename
+busybox
+cat
+chmod
+chown
+clear
+cp
+oxide:~# id
+uid=0(root) gid=0(root) groups=0(root)
+oxide:~# echo $PATH
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+oxide:~# ps
+PID  USER  TIME COMMAND
+...
+4118 root  0:00 {fork-child} -sh
+4124 root  0:00 {fork-child} ps
 ```
 
-## Bug chain just closed
+## Bug chain closed this session
 
-1. **fbcon klog aux sink wedge** — `25fa9a3` (earlier session): `fbcon_flush_pixels` was looping forever in the virtio-gpu submit path on every klog call. Disabled the aux sink at `kernel/src/lib.rs:662`.
-2. **qemu-mcp pty consumer** masked apparent kernel hangs late in boot. Bypass with `OXIDE_QEMU_HEADLESS=1` (no GTK, no GDB attach).
-3. **stdio chardev w/ piped stdin** — QEMU's `-chardev stdio` doesn't reliably forward bytes from a pipe into the guest UART RBR. Solved by `OXIDE_QEMU_UART_SOCK=/tmp/oxide-uart.sock` + socat bridge (in `tools/xtask/src/image_qemu.rs`).
-4. **`set_tick_poll_hook` was inside `if started > 0`** in `kernel/src/lib.rs` — with `-smp 1` (default headless config) the hook stayed null, so `tick_poll_uart` never ran, so COM1 RBR bytes piled up with LSR.DR=1 forever. Moved the install to unconditional `kernel_main` init (`b44c54c`).
-5. **Heap too small for ELF segment staging.** `crates/kernel/exec/src/lib.rs:230` allocates `vec![0u8; mem_sz]` per LOAD segment (file + BSS). For busybox the RW segment ran 1.05 MB and `STATIC_HEAP_SIZE=32 MiB` couldn't satisfy it (fragmented). Bumped to 64 MiB (`3d91393`).
-6. **Linker bakes BSS into on-disk ELF** with `file_sz = mem_sz` on the RW PT_LOAD, so 64 MiB heap pushed `oxide-x86_64` to ~85 MB. Bumped disk image 64→256 MiB and QEMU `-m` 256→512 MiB so Limine's high-memory loader doesn't OOM. **Proper fix: linker script — make BSS `file_sz=0`. Followup.**
+1. **fbcon klog aux sink wedge** — earlier session, disabled at `kernel/src/lib.rs:662`.
+2. **qemu-mcp pty consumer** — bypass via `OXIDE_QEMU_HEADLESS=1`.
+3. **stdio chardev w/ piped stdin doesn't reach guest RBR** — use `OXIDE_QEMU_UART_SOCK=/tmp/oxide-uart.sock` + socat bridge (`tools/xtask/src/image_qemu.rs`).
+4. **`set_tick_poll_hook` was inside `if started > 0`** — moved to unconditional `kernel_main` init so `tick_poll_uart` runs with `-smp 1` (`b44c54c`).
+5. **Linker baked BSS into on-disk ELF** — moved `.bss` to be the last section in the RW PT_LOAD so `file_sz < mem_sz` again (`f5db8b4`). Kernel binary 91 MB → 23 MB.
+6. **Stack builder argv/envp cap = 8** — bumped on-kernel-stack `Heapless256` cap to 256 + grew sp-fit check to 64 KiB (`75159cc`).
+7. **Ext4 lookup of directories returned ENOENT** — `Ext4RootfsFs::lookup` now uses `lookup_inode_any`, and `Ext4StatInode` got a real `readdir` impl wired through `mount.read_file_block` + `iter_active` (`e3360a5`).
 
-## Test harness for shell-level interaction
+## Open work (next session)
 
-`/tmp/runtest2.sh` — launches QEMU headless with unix-socket chardev, drives shell via socat with timed `printf` lines. Verified:
-- `echo` (builtin) returns immediately and prints the expected output.
-- `uname -a`, `ls /` (need fork+exec) currently produce no visible output — separate followup (fork-exec of /bin/busybox from running shell).
+- **`ps` displays kernel-issued TIDs (0xC0DE0001…) as huge u32 PIDs.** Cosmetic; the kernel should hand out small monotonic vpids for kernel tasks too, or `/proc/N/status` should fold the kernel-private TID. Easy fix.
+- **`-mon chardev=ser0` regressed in interactive mode** when chardev string became conditional. Add `-monitor none` for headless and keep `-mon chardev=ser0` for interactive — verify by hand. Low priority; headless works.
+- **Re-enable fbcon klog aux sink** after debugging `fbcon_flush_pixels` virtio-gpu submit wedge (currently disabled at `kernel/src/lib.rs:662`). Wanted for GTK-mode display.
+- **ARM lockstep.** `make qemu-arm` should reach the same `oxide:/#` prompt with these fixes (hook install is arch-neutral; ext4 readdir is shared). Verify via `make qemu-arm` + the socat harness once we wire `OXIDE_QEMU_UART_SOCK` into the aarch64 launcher too.
+- **`docs/v2/` cleanup of stale state.md history** — git log has the trail; state.md is short.
 
-## Open work
+## Test harness
 
-- **Strip BSS from on-disk ELF.** Edit linker script (`link/x86_64-unknown-oxide-kernel.ld` and aarch64 sibling) so the RW PT_LOAD has `file_sz < mem_sz`. Then we can revert disk/RAM bumps.
-- **fork+exec from shell.** `uname`, `ls`, etc. run `/bin/busybox <applet>` via fork+exec; output goes silently somewhere. Trace from `sys_execve` for the second forked child.
-- **/root home dir missing.** Trivial: add `/root` directory to rootfs build at `tools/xtask/src/main.rs`.
-- **`fbcon` klog aux sink** still disabled at `kernel/src/lib.rs:662`. Re-enable after debugging the virtio-gpu submit path.
-- **ARM lockstep.** Confirm `make qemu-arm` reaches `oxide:/#` on aarch64 with the same fixes; should — the hook install path covers both arches, and the socket chardev applies to x86 only.
+`/tmp/runtest6.sh` reproduces the interactive session above. Pattern:
 
-## Useful pointers
+```
+OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK=/tmp/oxide-uart.sock make qemu-x86 &
+(sleep 15; printf 'root\n'; sleep 3; printf 'ls /\n'; ...) | socat - UNIX-CONNECT:/tmp/oxide-uart.sock
+```
 
-- Headless test loop: `/tmp/runtest2.sh` (see above).
-- UART RX poll hook: `kernel/src/lib.rs:~451` (unconditional install just before SMP bring-up).
-- ELF segment staging alloc: `crates/kernel/exec/src/lib.rs:230`.
-- Heap size: `crates/shared/kalloc/src/lib.rs:39` `STATIC_HEAP_SIZE`.
-- Disk image size: `tools/xtask/src/image_qemu.rs:148`.
-- QEMU RAM: `tools/xtask/src/image_qemu.rs` `-m` flag.
+## Commits on this branch
 
-## Commits this branch
-
-- `bf8e5a5`..`c3c6e90` — earlier session (CAT wedge fix, dtrace, etc.).
-- `4fe6ba0` — doc(state).
-- `607cfa5` — fix(qemu): drop mux=on under HEADLESS.
-- `b44c54c` — **fix(tty): install tick_poll_uart hook unconditionally — login RX works**.
-- `3d91393` — **fix(boot): heap/disk/RAM bumps — interactive shell reached**.
+- `b44c54c` fix(tty): install tick_poll_uart hook unconditionally — login RX works.
+- `3d91393` fix(boot): heap/disk/RAM bumps — reverted by f5db8b4 after linker fix.
+- `f5db8b4` fix(link): move .bss last so on-disk ELF doesn't include BSS bytes.
+- `75159cc` fix(exec): bump argv/envp on-kernel-stack vec 8→256, stack check 4K→64K.
+- `e3360a5` fix(ext4): open + readdir on directories — `ls /` now lists rootfs.
