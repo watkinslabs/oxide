@@ -82,19 +82,39 @@ impl Inode for ConsoleInode {
     /// the termios image but not honoured yet — they need column
     /// tracking which v1 doesn't keep.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        dtrace!(b"CW_IN", buf.len() as u64);
         let oflag = tty::live::output_oflag(self.vt);
+        dtrace!(b"CW_OFL", oflag as u64);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
         let onlcr = post && (oflag & tty::pty::oflag::ONLCR) != 0;
         if !onlcr {
             console_emit(buf);
+            dtrace!(b"CW_OUT_RAW", buf.len() as u64);
             return Ok(buf.len());
         }
-        // Emit byte-by-byte applying NL → CRLF. Buffered batching
-        // would be faster but interactive output is at human pace.
-        for &b in buf {
-            if b == b'\n' { console_emit(b"\r\n"); }
-            else          { console_emit(core::slice::from_ref(&b)); }
+        // ONLCR: emit each maximal NL-free run in one console_emit
+        // call, with b"\r\n" between runs. Single lock_irqsave per
+        // run + one per NL pair, so the BOOT_UART lock isn't taken
+        // 56 separate times for a 56-byte write — the per-byte
+        // loop variant tripped a wedge on the last NL of the CAT
+        // smoke's /proc/version write (see project_login_hang_cat_smoke.md).
+        let mut start = 0;
+        for (i, &b) in buf.iter().enumerate() {
+            if b == b'\n' {
+                if i > start {
+                    dtrace!(b"CW_RUN", (i - start) as u64);
+                    console_emit(&buf[start..i]);
+                }
+                dtrace!(b"CW_NL");
+                console_emit(b"\r\n");
+                start = i + 1;
+            }
         }
+        if start < buf.len() {
+            dtrace!(b"CW_TAIL", (buf.len() - start) as u64);
+            console_emit(&buf[start..]);
+        }
+        dtrace!(b"CW_OUT", buf.len() as u64);
         Ok(buf.len())
     }
 }

@@ -80,6 +80,23 @@ pub fn try_wake_stopped(task: &Task) -> bool {
     true
 }
 
+/// Returns `true` if any live task in the registry has
+/// `parent_tid == parent` (still-running or zombie child). Used by
+/// `wait4` to distinguish "no children at all" (return -ECHILD) from
+/// "children exist but none ready to reap yet" (block + reschedule).
+/// Without this, `wait4(-1)` blocks forever once the last child is
+/// reaped, even though Linux returns -ECHILD immediately — busybox
+/// `hush` runs an inner `do { pid = waitpid(-1); ... } while (pid >= 0)`
+/// drain loop after each command and hangs if -ECHILD never comes.
+/// # C: O(N_tasks)
+pub fn has_children(parent: u32) -> bool {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    g.iter()
+        .filter_map(|(_, w)| w.upgrade())
+        .any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
+}
+
 /// Snapshot every live task whose pgid matches. Used by tty
 /// line discipline + `kill(-pgid)` to fan signals to a process
 /// group per `28§4`.

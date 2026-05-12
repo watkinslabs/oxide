@@ -471,9 +471,12 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         }
         // SAFETY: mirrors the IAR read above; same INTID; CPU interface state via system regs.
         unsafe { eoi(raw); }
-        // F54: PL011 RX FIFO drain is SPI-33-only.
-        if intid == 33 {
-            // SAFETY: SPI 33 dispatch context, IRQs masked; tty path is single-CPU UP.
+        // PL011 RX FIFO drain: SPI-33 (UART IRQ) when wired AND the
+        // virtual timer (INTID 27) tick. The timer-poll path mirrors
+        // x86's per-tick `tick_poll_uart` so headless boots without
+        // the PL011 IRQ unmasked still receive keystrokes.
+        if intid == 33 || intid == 27 {
+            // SAFETY: IRQ dispatcher context, IRQs masked; tty path is single-CPU UP.
             unsafe { crate::tick_poll(); }
         }
         sched::live::preempt::set_need_resched();

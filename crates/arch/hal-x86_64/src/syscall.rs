@@ -179,10 +179,28 @@ core::arch::global_asm!(
     //   [rsp+0x00] user RIP   (rcx)
     //   [rsp+0x08] user RFLAGS (r11)
     //   [rsp+0x10] user RSP
-    // Preserve rax (syscall return value) across the SysV call.
-    "    push rax",
-    "    lea  rdi, [rsp + 0x10]",                      // &user RFLAGS
+    // The SysV call to oxide_x86_arm_singlestep is allowed to clobber
+    // rax/rcx/rdx/rsi/rdi/r8-r11 per AMD64 ABI -- save the user-ABI
+    // args we already restored from the saved frame so sysretq lands
+    // user code with intact rdi/rsi/rdx/r10/r8/r9. Linux x86_64
+    // syscall ABI guarantees the kernel preserves those across the
+    // syscall; without these saves user libc paths (e.g. musl/uclibc
+    // open() that re-uses rdi as fd for __syscall_ret) read garbage.
+    "    push rax",                                     // dispatch retval
+    "    push rdi",
+    "    push rsi",
+    "    push rdx",
+    "    push r10",
+    "    push r8",
+    "    push r9",
+    "    lea  rdi, [rsp + 0x40]",                      // &user RFLAGS (shifted past 7 pushes + 1 dispatch-rax)
     "    call oxide_x86_arm_singlestep",
+    "    pop  r9",
+    "    pop  r8",
+    "    pop  r10",
+    "    pop  rdx",
+    "    pop  rsi",
+    "    pop  rdi",
     "    pop  rax",
     // Restore user state from the per-task syscall-stack tail.
     // `execve` (P2-21) modifies these in-place via
