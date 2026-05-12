@@ -361,9 +361,19 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // mode and drops single keystrokes — the kernel's tty line-
         // discipline then sees malformed input ("the sh fucking up").
         // `-nographic` would do the same but also kill `-display none`.
-        "-chardev", "stdio,id=ser0,mux=on,signal=off",
+        // Interactive: stdio with mux=on (Ctrl-A C → monitor).
+        // Headless (OXIDE_QEMU_HEADLESS=1): plain stdio without mux so
+        // piped stdin reaches the guest UART RX. stdio chardev in QEMU
+        // forwards stdin → guest RBR when stdin is not a TTY too;
+        // mux=on routes those bytes to the multiplexer instead. The
+        // log goes to stdout either way; redirect via shell as usual.
+        "-chardev",
+        if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() {
+            "stdio,id=ser0,signal=off"
+        } else {
+            "stdio,id=ser0,mux=on,signal=off"
+        },
         "-serial", "chardev:ser0",
-        "-mon",     "chardev=ser0",
         // GTK on by default so virtio-gpu scanout is visible.
         // OXIDE_QEMU_HEADLESS=1 suppresses for CI / soak runs.
         // -no-shutdown was REMOVED — that flag plus GTK was the
@@ -405,9 +415,19 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-device", "virtio-gpu-pci,bus=pcie.0",
         // virtio keyboard for `46`. Mouse removed; same reason.
         "-device", "virtio-keyboard-pci,bus=pcie.0",
-        "-chardev", "stdio,id=ser0,mux=on,signal=off",
+        // Interactive: stdio with mux=on (Ctrl-A C → monitor).
+        // Headless (OXIDE_QEMU_HEADLESS=1): plain stdio without mux so
+        // piped stdin reaches the guest UART RX. stdio chardev in QEMU
+        // forwards stdin → guest RBR when stdin is not a TTY too;
+        // mux=on routes those bytes to the multiplexer instead. The
+        // log goes to stdout either way; redirect via shell as usual.
+        "-chardev",
+        if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() {
+            "stdio,id=ser0,signal=off"
+        } else {
+            "stdio,id=ser0,mux=on,signal=off"
+        },
         "-serial", "chardev:ser0",
-        "-mon",     "chardev=ser0",
         // GTK on by default for ARM too — `virt` machine wires
         // virtio-gpu-pci to the synthetic PCIe root, OVMF aarch64
         // exposes a UEFI GOP and the kernel scanout driver paints
