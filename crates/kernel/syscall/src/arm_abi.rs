@@ -34,7 +34,15 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (40,  165),  // mount
         (45,  179),  // statfs
         (46,  138),  // fstatfs
-        (48,  90),   // faccessat → access (close)
+        (48,  269),  // faccessat → faccessat (x86 nr 269). The prior
+                     // mapping (90 = chmod) silently corrupted file
+                     // modes on every PATH-search probe — ARM busybox's
+                     // \`access(X_OK)\` ended up running sys_chmod, then the
+                     // failure masqueraded as EACCES so every
+                     // \`uname\`/\`ls\` came back "Permission denied"
+                     // before fork+execve was attempted. faccessat
+                     // (not bare access) is the right target — sys_faccessat
+                     // shifts args so dirfd/path/mode line up.
         (49,  80),   // chdir
         (50,  81),   // fchdir
         (51,  92),   // chown (fchownat)

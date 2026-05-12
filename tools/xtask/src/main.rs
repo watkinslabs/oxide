@@ -228,7 +228,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
-        dbg(&cmd)
+        dbg(&cmd)?;
+        // debugfs `write` lands at mode 0o100644 (regular, no x bit) by
+        // default. The kernel's sys_statx reads the ext4 i_mode, and
+        // ARM busybox refuses to exec without x bits. Stamp 0o100755 so
+        // every staged binary (busybox + smoke ELFs) is executable.
+        dbg(&format!("sif {target} mode 0100755"))
     };
     // Helper to resolve a userspace binary by name from the per-arch
     // build output dir. Replaces the older `repo.join("userspace/<x>/<x>")`
