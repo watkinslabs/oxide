@@ -68,8 +68,14 @@ core::arch::global_asm!(
     // 0x400: Sync from lower EL, AArch64 — SVC syscall + EL0 faults.
     "    b oxide_lower_el_sync_handler",
     "    .balign 0x80",
-    // 0x480: IRQ from lower EL, AArch64
-    "    b oxide_default_vector_handler",
+    // 0x480: IRQ from lower EL, AArch64 — EL0 → EL1 IRQ delivery.
+    // Same handler as the kernel-side IRQ slot; the asm vector enters
+    // with sp_el0 holding the user stack and the IRQ dispatcher saves
+    // it as part of the 208-byte frame. Without this, PL011 RX (SPI
+    // 33) and the CNTV timer (INTID 27) silently never deliver while
+    // userspace is running — the wedge masquerades as "GIC isn't
+    // routing" but is actually our own vector table dropping the IRQ.
+    "    b oxide_irq_vector_handler",
     "    .balign 0x80",
     // 0x500: FIQ from lower EL, AArch64
     "    b oxide_default_vector_handler",
