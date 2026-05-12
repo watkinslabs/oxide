@@ -447,6 +447,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
 
 
+    // Install the per-tick UART RX poll hook unconditionally. This was
+    // previously buried inside the SMP `if started > 0` block, so with
+    // `-smp 1` the hook stayed null and every timer IRQ skipped
+    // `tick_poll_uart`. Result: bytes sat in COM1 RBR with LSR.DR=1
+    // forever — login could print but never read input.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    arch_irq::set_tick_poll_hook(tick_poll_combined);
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    arch_irq::set_tick_poll_hook(tick_poll_combined);
+
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
     // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
     //   x86_64: Limine SMP request — store our entry into each
@@ -516,7 +526,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 #[cfg(target_arch = "x86_64")]
                 sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
                 pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
-                arch_irq::set_tick_poll_hook(tick_poll_combined);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
                 let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
