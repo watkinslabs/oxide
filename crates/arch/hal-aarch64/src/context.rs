@@ -213,8 +213,11 @@ impl ContextAArch64 {
             let base = stack_top.cast::<u8>().sub(208) as *mut u64;
             for i in 0..22 { base.add(i).write(0); }
             base.add(22).write(user_ip);          // ELR_EL1 = user entry
-            // SPSR_EL1 = 0x3C0: M=EL0t (0b0000), DAIF=0xF (all masked).
-            base.add(23).write(0x3C0);
+            // SPSR_EL1 = 0: M=EL0t (0b0000), DAIF all clear so EL0
+            // accepts IRQ delivery — without this PL011 RX (SPI 33)
+            // never wakes the kernel while busybox is blocked on
+            // read(stdin), and the login prompt accepts no input.
+            base.add(23).write(0);
             base.add(24).write(user_sp);          // sp_el0
             base.add(25).write(0);                // pad
             base

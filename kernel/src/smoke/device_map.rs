@@ -544,7 +544,12 @@ use hal_aarch64::{timer as arm_timer, pl011};
     // SAFETY: pl011::enable just ran; gic::enable_intid is idempotent and the GIC was enabled earlier in this fn; single-CPU pre-init.
     unsafe {
         hal_aarch64::pl011::enable_rx_irq();
-        arch_irq::gic::enable_intid(33);
+        // PL011 is level-sensitive on QEMU virt — the line stays
+        // asserted while RBR holds data. Edge-trigger (the
+        // `enable_intid` default for SPIs) would fire once on the
+        // first byte and silently miss every subsequent assertion
+        // because the line never drops to re-arm the edge detector.
+        arch_irq::gic::enable_intid_level(33);
     }
 
     // ARM virtual generic-timer IRQ smoke. Pure diagnostic — gated.
