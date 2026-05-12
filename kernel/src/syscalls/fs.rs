@@ -223,14 +223,15 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         for off in (0..256u64).step_by(8) {
             core::ptr::write_volatile((buf + off) as *mut u64, 0);
         }
-        const STATX_TYPE:  u32 = 1;
-        const STATX_MODE:  u32 = 2;
-        const STATX_INO:   u32 = 0x100;
-        const STATX_ATIME: u32 = 0x20;
-        const STATX_MTIME: u32 = 0x40;
-        const STATX_CTIME: u32 = 0x80;
-        core::ptr::write_volatile( buf            as *mut u32,
-            STATX_TYPE | STATX_MODE | STATX_INO | STATX_ATIME | STATX_MTIME | STATX_CTIME);
+        // stx_mask = STATX_BASIC_STATS — tell the caller all base
+        // fields (type/mode/nlink/uid/gid/atime/mtime/ctime/ino/size/
+        // blocks) are valid. Pre-fix mask omitted NLINK/UID/GID/SIZE,
+        // which broke ARM musl's stat() wrapper: it returned a struct
+        // stat with st_uid/st_gid/st_size synthesised from the
+        // unmasked fields, and busybox-ash's perm check rejected the
+        // file as \"not executable for caller\" → \"Permission denied\".
+        const STATX_BASIC_STATS: u32 = 0x7ff;
+        core::ptr::write_volatile(buf as *mut u32, STATX_BASIC_STATS);
         core::ptr::write_volatile((buf +   4)     as *mut u32, 4096);                                // stx_blksize
         core::ptr::write_volatile((buf +  16)     as *mut u32, 1);                                   // stx_nlink
         core::ptr::write_volatile((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
@@ -238,6 +239,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         core::ptr::write_volatile((buf +  28)     as *mut u16, mode);                                // stx_mode
         core::ptr::write_volatile((buf +  32)     as *mut u64, inode.ino());                         // stx_ino
         core::ptr::write_volatile((buf +  40)     as *mut u64, inode.size());                        // stx_size
+        core::ptr::write_volatile((buf +  48)     as *mut u64, (inode.size() + 511) / 512);          // stx_blocks (512-byte units)
         // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
         // Linux statx layout: atime@72, btime@88, ctime@104, mtime@120.
         let write_ts = |off: u64, ns: u64| {
