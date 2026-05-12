@@ -620,25 +620,12 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // parks on read(0) forever.
     // SAFETY: LAPIC was previously enabled by smoke_device_map_x86;
     // re-arming the periodic timer at the same period the smokes used.
-    #[cfg(target_arch = "x86_64")]
     unsafe { let _ = arch_irq::lapic::timer_periodic(1_000_000); }
-    // ARM mirror: canary/preempt smokes call timer_disarm + leave the
-    // GICR PPI for INTID 27 in whatever state. Re-enable + re-arm here
-    // so timer-IRQ-driven `tick_poll_uart` drains PL011 RX during busybox.
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        arch_irq::gic::enable_intid(27);
-        hal_aarch64::timer::timer_periodic(50_000);
-    }
     // SAFETY: STI legal at CPL=0; spawn_user_blob_smoke's first
     // schedule() drops to ring 3 with IF=1 in the iretq frame, so
     // both kernel idle (between user task slices) and user mode
     // see timer IRQs.
-    #[cfg(target_arch = "x86_64")]
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: DAIFclr legal at EL1; clears the I bit only.
-    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
 
     // PID 1: load /sbin/init from the mounted rootfs ext4. /sbin/init
     // is a hardlink to /bin/busybox; busybox's `init` applet reads
