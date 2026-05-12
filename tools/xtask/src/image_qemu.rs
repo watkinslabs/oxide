@@ -325,6 +325,22 @@ fn build_iso(
 fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32) -> Result<(), u8> {
     let ovmf = repo.join("vendor/firmware/ovmf-x64.fd");
     let smp_str = smp.to_string();
+    // OXIDE_QEMU_UART_SOCK=<path>: use unix-socket chardev for the
+    // guest UART instead of stdio. With piped stdin QEMU's stdio
+    // chardev doesn't reliably forward bytes to the guest RX register;
+    // a unix socket plus an external socat bridge is the canonical
+    // automated-input path.
+    let uart_chardev: String = match std::env::var("OXIDE_QEMU_UART_SOCK") {
+        Ok(p) if !p.is_empty() => {
+            let _ = std::fs::remove_file(&p);
+            format!("socket,id=ser0,path={},server=on,wait=off", p)
+        }
+        _ => if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() {
+            "stdio,id=ser0,signal=off".to_string()
+        } else {
+            "stdio,id=ser0,mux=on,signal=off".to_string()
+        }
+    };
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
@@ -367,12 +383,7 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // forwards stdin → guest RBR when stdin is not a TTY too;
         // mux=on routes those bytes to the multiplexer instead. The
         // log goes to stdout either way; redirect via shell as usual.
-        "-chardev",
-        if std::env::var("OXIDE_QEMU_HEADLESS").is_ok() {
-            "stdio,id=ser0,signal=off"
-        } else {
-            "stdio,id=ser0,mux=on,signal=off"
-        },
+        "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         // GTK on by default so virtio-gpu scanout is visible.
         // OXIDE_QEMU_HEADLESS=1 suppresses for CI / soak runs.
