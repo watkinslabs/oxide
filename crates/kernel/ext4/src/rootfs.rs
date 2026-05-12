@@ -354,6 +354,45 @@ impl vfs::Inode for Ext4StatInode {
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
     fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, vfs::FileType) -> bool,
+    ) -> vfs::KResult<u64> {
+        if !matches!(self.ft, vfs::FileType::Directory) {
+            return Err(vfs::VfsError::Enotdir);
+        }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+        let mount = unsafe { &*p };
+        let dir_inode = mount.read_inode(self.ino).map_err(|_| vfs::VfsError::Eio)?;
+        let blk = mount.read_file_block(&dir_inode, 0).map_err(|_| vfs::VfsError::Eio)?;
+        let mut next = off;
+        let mut idx: u64 = 0;
+        let _ = crate::iter_active(&blk, |e| {
+            let name = match core::str::from_utf8(e.name) {
+                Ok(s) => s, Err(_) => return true,
+            };
+            if name.is_empty() { return true; }
+            idx += 1;
+            if idx <= off { return true; }
+            let ft = match e.file_type {
+                1 => vfs::FileType::Regular,
+                2 => vfs::FileType::Directory,
+                3 => vfs::FileType::CharDev,
+                4 => vfs::FileType::BlockDev,
+                5 => vfs::FileType::Fifo,
+                6 => vfs::FileType::Socket,
+                7 => vfs::FileType::Symlink,
+                _ => vfs::FileType::Regular,
+            };
+            let keep = f(idx, name, ft);
+            if keep { next = idx; }
+            keep
+        });
+        Ok(next)
+    }
 }
 
 /// Wrap any-type ext4 inode for stat-only consumers.
@@ -564,7 +603,10 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn name(&self) -> &str { "ext4" }
     /// # C: O(N_path_components)
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> {
-        lookup_inode(path.as_bytes())
+        // `_any` so opendir on `/`, `/etc`, etc. succeeds — was
+        // returning ENOENT because `lookup_inode` only wraps regular
+        // files, breaking `ls /` and any directory traversal.
+        lookup_inode_any(path.as_bytes())
     }
     /// # C: O(N_path_components) + alloc
     fn create(&self, path: &str, mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
