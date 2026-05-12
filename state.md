@@ -1,60 +1,61 @@
 # State 2026-05-11
 
 ## Branch
-`F04-serial-getty` — PR #1010 open. HEAD `c3c6e90`.
+`F04-serial-getty` — PR #1010 open. HEAD `4fe6ba0`.
 
 ## Headline
 
-**`oxide login:` reaches the user.** Wedge was qemu-mcp's pty consumer, not the kernel. Confirmed by running `OXIDE_QEMU_HEADLESS=1 make qemu-x86` direct: login prompt prints reliably (line 171 of `/tmp/qemu-direct.log`). Earlier "wedge after issue banner" was an artifact of qemu-mcp interfering with chardev draining; nothing in the kernel UART TX path is broken.
+**`oxide login:` reaches the user.** The earlier "wedge after issue banner" was qemu-mcp's pty consumer interfering with chardev draining, not the kernel. Run `OXIDE_QEMU_HEADLESS=1 make qemu-x86` direct to verify — prompt prints reliably (line 171 of /tmp/qemu-h.log).
 
-## Next concrete problem: no UART RX
+## Next concrete problem: timer ticks not firing post-handoff
 
-Piped `root\n` into stdin → no echo, no `Password:`. COM1 is TX-only — `crates/arch/boot-x86_64/src/uart.rs` has no IER setup, no IRQ4 handler, no path from chardev → console tty input ring. Nothing wires keyboard/serial bytes into the getty's `read()`.
+Typed input (`root\n` via piped stdin) is not getting echoed/processed. Investigation:
 
-To get past login, need:
-1. Enable IER bit 0 (RX-data-available) on COM1 init.
-2. Wire IRQ4 (or LAPIC equivalent) into the kernel IRQ dispatcher — handler that drains RBR while LSR.DR=1.
-3. Push each byte into the console VT input ring (the path `vt_input_push` or equivalent already exists for virtio-input; reuse it).
-4. Make sure `ConsoleInode::read()` blocks/wakes on that ring.
+- LAPIC timer is re-armed in `kernel/src/smoke/elf.rs:624` (`timer_periodic(1_000_000)`) before PID 1 starts.
+- Hook is installed via `arch_irq::set_tick_poll_hook(tick_poll_combined)` in `kernel/src/lib.rs:519`.
+- Hook chain: timer IRQ vec 0x40 in `crates/kernel/arch-irq/src/lapic.rs:107` → `crate::tick_poll()` → `tick_poll_combined` → `tty::live::tick_poll_uart` (`crates/kernel/tty/src/live.rs:181`).
+- Empirical test (heartbeat emit every 16384 calls inside `tick_poll_uart`): **zero** beats observed in a 40s run after `oxide login:` printed. → `tick_poll_uart` is never called after userspace starts.
 
-## What shipped this session
+This means timer IRQs stop firing after the boot smokes (or fire only the 1–2 times seen in `lapic-self-fire pre=1 post=2 delta=1` log). The re-arm at `smoke/elf.rs:624` may not stick — likely culprits:
+
+1. LVT timer write-volatile at `lapic.rs:293` (`0x40 | (1 << 17)`) needs the LAPIC SVR enabled bit; verify `enable()` ran and didn't get reset.
+2. IDT entry for vec 0x40 may be missing after late-boot reinstall of GDT/IDT (CR-saving paths in `crates/arch/hal-x86_64/src/regs.rs`).
+3. iretq frame may have IF=0 in userspace mode — though `sti` is called and we see one tick.
+4. Periodic mode but ICR=0 after first fire — the initial count register needs to be written *after* LVT_TIMER per Intel SDM; ours writes it after, which is correct, but a single zero-write would stop it.
+
+### First task next session
+
+Re-add a heartbeat probe (kernel/src/dev/console.rs or a tiny dedicated dbg call in lapic.rs at vec=0x40) that fires per IRQ entry **before** any hook runs. That isolates "no IRQs at all" vs "IRQs fire but hook is null/wrong". Once isolated:
+
+- If IRQs aren't firing: check IDT entry for 0x40 in `crates/arch/hal-x86_64/src/idt.rs` after busybox starts; check LAPIC LVT_TIMER register read-back from a controlled probe; check timer_periodic return value at `smoke/elf.rs:624` (currently `let _ =`).
+- If IRQs fire but tick_poll_combined isn't reached: check `TICK_POLL_HOOK` atomic load.
+- Once tick_poll_uart fires, RX should follow (LSR.DR test is straightforward).
+
+## Commits this session
 
 1. `bf8e5a5` `fix(irq): ungate LAPIC/GIC bring-up (was hidden by debug-acpi)`.
-2. `94ced16` `fix(irq): drop schedule_from_irq from timer ISR` — reverted in `c3c6e90`.
+2. `94ced16` reverted in `c3c6e90`.
 3. `6ac5a90` `refactor(console): batch ONLCR writes`.
 4. `32d9a59` `fix(uart): bounded spin in Uart16550::write_byte`.
 5. `25fa9a3` `fix(fbcon): disable klog aux sink` — **CAT WEDGE FIX**.
 6. `c6a26d0` `diag(uart): UART_DROPS counter`.
-7. `9f2fa00` `diag: dtrace framework — structured probes via direct COM1`.
-8. `c3c6e90` `fix(irq): restore timer-driven schedule_from_irq in VEC_TIMER`.
-
-## Where boot gets to
-
-```
-yo / hi / A / Linux version (CAT smoke)
-init-fork-exec works
-BARE3-START argv0=/bin/bare3
-dl: hello / hello-from-dyn
-oxide Linux on /dev/ttyS0
-oxide login:                ← prompt visible, kernel waiting on read()
-```
-
-## First task next session
-
-Implement UART RX (sequence in §"Next concrete problem"). Pointers:
-- Console VT input ring: `grep vt_input_push crates/kernel/tty/src/live.rs`.
-- IRQ dispatcher: `crates/arch/hal-x86_64/src/fault.rs` + `crates/kernel/arch-irq/src/lapic.rs`.
-- COM1 base: `crates/arch/boot-x86_64/src/uart.rs:19` `COM1: u16 = 0x3f8`.
-
-## Open work (carried)
-
-- Re-enable `fbcon` klog aux sink after debugging `fbcon_flush_pixels` virtio-gpu submit wedge (currently disabled at `kernel/src/lib.rs:662`).
-- qemu-mcp pty consumer wedges late writes — separate fix; for now use `OXIDE_QEMU_HEADLESS=1`.
-- Real PTRACE_SINGLESTEP — F49-F51 framework.
+7. `9f2fa00` `diag: dtrace framework`.
+8. `c3c6e90` `fix(irq): restore timer-driven schedule_from_irq`.
+9. `4fe6ba0` `doc(state): oxide login: reaches user`.
+10. (uncommitted) `tools/xtask/src/image_qemu.rs` chardev fix: drop `mux=on` under `OXIDE_QEMU_HEADLESS=1` (mux multiplexer was swallowing piped stdin).
 
 ## Useful pointers
 
 - dtrace framework: `kernel/src/debug_macros.rs:42-94`. Build with `--features debug-boot,debug-trace`. `dtrace!(b"TAG")` / `dtrace!(b"TAG", val)`.
-- Probes already in tree: `kernel/src/syscalls/fs.rs:718` (sys_writev), `kernel/src/dev/console.rs:84` (ConsoleInode::write).
-- UART bounded spin + drop counter: `crates/arch/boot-x86_64/src/uart.rs:124-150`.
-- Headless boot: `OXIDE_QEMU_HEADLESS=1 make qemu-x86` (bypasses qemu-mcp).
+- LAPIC timer setup: `crates/kernel/arch-irq/src/lapic.rs:287` `timer_periodic`.
+- Timer ISR vec 0x40: `crates/kernel/arch-irq/src/lapic.rs:107`.
+- Userspace timer re-arm (post-smoke): `kernel/src/smoke/elf.rs:624`.
+- tick_poll_uart: `crates/kernel/tty/src/live.rs:181`.
+- TICK_POLL_HOOK install: `kernel/src/lib.rs:519` → `tick_poll_combined` at 840.
+- Headless boot: `OXIDE_QEMU_HEADLESS=1 make qemu-x86`. Feed stdin via `printf 'root\n' | OXIDE_QEMU_HEADLESS=1 make qemu-x86`.
+
+## Open work (carried)
+
+- Re-enable `fbcon` klog aux sink after debugging `fbcon_flush_pixels` virtio-gpu submit wedge (currently disabled at `kernel/src/lib.rs:662`).
+- qemu-mcp pty consumer wedges late writes — separate fix; use `OXIDE_QEMU_HEADLESS=1` to bypass.
+- Real PTRACE_SINGLESTEP — F49-F51 framework.
