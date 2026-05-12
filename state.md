@@ -1,61 +1,56 @@
-# State 2026-05-11
+# State 2026-05-12
 
 ## Branch
-`F04-serial-getty` — PR #1010 open. HEAD `4fe6ba0`.
+`F04-serial-getty` — PR #1010 open. HEAD `3d91393`.
 
 ## Headline
 
-**`oxide login:` reaches the user.** The earlier "wedge after issue banner" was qemu-mcp's pty consumer interfering with chardev draining, not the kernel. Run `OXIDE_QEMU_HEADLESS=1 make qemu-x86` direct to verify — prompt prints reliably (line 171 of /tmp/qemu-h.log).
+**Interactive shell reached.** `oxide login: root` accepts, busybox login spawns `/bin/sh`, the prompt `oxide:/#` appears, and shell builtins respond to typed input:
 
-## Next concrete problem: timer ticks not firing post-handoff
+```
+oxide login: root
+login[4118]: root login on 'ttyS0'
+oxide:/# echo HELLO_FROM_OXIDE
+HELLO_FROM_OXIDE
+oxide:/#
+```
 
-Typed input (`root\n` via piped stdin) is not getting echoed/processed. Investigation:
+## Bug chain just closed
 
-- LAPIC timer is re-armed in `kernel/src/smoke/elf.rs:624` (`timer_periodic(1_000_000)`) before PID 1 starts.
-- Hook is installed via `arch_irq::set_tick_poll_hook(tick_poll_combined)` in `kernel/src/lib.rs:519`.
-- Hook chain: timer IRQ vec 0x40 in `crates/kernel/arch-irq/src/lapic.rs:107` → `crate::tick_poll()` → `tick_poll_combined` → `tty::live::tick_poll_uart` (`crates/kernel/tty/src/live.rs:181`).
-- Empirical test (heartbeat emit every 16384 calls inside `tick_poll_uart`): **zero** beats observed in a 40s run after `oxide login:` printed. → `tick_poll_uart` is never called after userspace starts.
+1. **fbcon klog aux sink wedge** — `25fa9a3` (earlier session): `fbcon_flush_pixels` was looping forever in the virtio-gpu submit path on every klog call. Disabled the aux sink at `kernel/src/lib.rs:662`.
+2. **qemu-mcp pty consumer** masked apparent kernel hangs late in boot. Bypass with `OXIDE_QEMU_HEADLESS=1` (no GTK, no GDB attach).
+3. **stdio chardev w/ piped stdin** — QEMU's `-chardev stdio` doesn't reliably forward bytes from a pipe into the guest UART RBR. Solved by `OXIDE_QEMU_UART_SOCK=/tmp/oxide-uart.sock` + socat bridge (in `tools/xtask/src/image_qemu.rs`).
+4. **`set_tick_poll_hook` was inside `if started > 0`** in `kernel/src/lib.rs` — with `-smp 1` (default headless config) the hook stayed null, so `tick_poll_uart` never ran, so COM1 RBR bytes piled up with LSR.DR=1 forever. Moved the install to unconditional `kernel_main` init (`b44c54c`).
+5. **Heap too small for ELF segment staging.** `crates/kernel/exec/src/lib.rs:230` allocates `vec![0u8; mem_sz]` per LOAD segment (file + BSS). For busybox the RW segment ran 1.05 MB and `STATIC_HEAP_SIZE=32 MiB` couldn't satisfy it (fragmented). Bumped to 64 MiB (`3d91393`).
+6. **Linker bakes BSS into on-disk ELF** with `file_sz = mem_sz` on the RW PT_LOAD, so 64 MiB heap pushed `oxide-x86_64` to ~85 MB. Bumped disk image 64→256 MiB and QEMU `-m` 256→512 MiB so Limine's high-memory loader doesn't OOM. **Proper fix: linker script — make BSS `file_sz=0`. Followup.**
 
-This means timer IRQs stop firing after the boot smokes (or fire only the 1–2 times seen in `lapic-self-fire pre=1 post=2 delta=1` log). The re-arm at `smoke/elf.rs:624` may not stick — likely culprits:
+## Test harness for shell-level interaction
 
-1. LVT timer write-volatile at `lapic.rs:293` (`0x40 | (1 << 17)`) needs the LAPIC SVR enabled bit; verify `enable()` ran and didn't get reset.
-2. IDT entry for vec 0x40 may be missing after late-boot reinstall of GDT/IDT (CR-saving paths in `crates/arch/hal-x86_64/src/regs.rs`).
-3. iretq frame may have IF=0 in userspace mode — though `sti` is called and we see one tick.
-4. Periodic mode but ICR=0 after first fire — the initial count register needs to be written *after* LVT_TIMER per Intel SDM; ours writes it after, which is correct, but a single zero-write would stop it.
+`/tmp/runtest2.sh` — launches QEMU headless with unix-socket chardev, drives shell via socat with timed `printf` lines. Verified:
+- `echo` (builtin) returns immediately and prints the expected output.
+- `uname -a`, `ls /` (need fork+exec) currently produce no visible output — separate followup (fork-exec of /bin/busybox from running shell).
 
-### First task next session
+## Open work
 
-Re-add a heartbeat probe (kernel/src/dev/console.rs or a tiny dedicated dbg call in lapic.rs at vec=0x40) that fires per IRQ entry **before** any hook runs. That isolates "no IRQs at all" vs "IRQs fire but hook is null/wrong". Once isolated:
-
-- If IRQs aren't firing: check IDT entry for 0x40 in `crates/arch/hal-x86_64/src/idt.rs` after busybox starts; check LAPIC LVT_TIMER register read-back from a controlled probe; check timer_periodic return value at `smoke/elf.rs:624` (currently `let _ =`).
-- If IRQs fire but tick_poll_combined isn't reached: check `TICK_POLL_HOOK` atomic load.
-- Once tick_poll_uart fires, RX should follow (LSR.DR test is straightforward).
-
-## Commits this session
-
-1. `bf8e5a5` `fix(irq): ungate LAPIC/GIC bring-up (was hidden by debug-acpi)`.
-2. `94ced16` reverted in `c3c6e90`.
-3. `6ac5a90` `refactor(console): batch ONLCR writes`.
-4. `32d9a59` `fix(uart): bounded spin in Uart16550::write_byte`.
-5. `25fa9a3` `fix(fbcon): disable klog aux sink` — **CAT WEDGE FIX**.
-6. `c6a26d0` `diag(uart): UART_DROPS counter`.
-7. `9f2fa00` `diag: dtrace framework`.
-8. `c3c6e90` `fix(irq): restore timer-driven schedule_from_irq`.
-9. `4fe6ba0` `doc(state): oxide login: reaches user`.
-10. (uncommitted) `tools/xtask/src/image_qemu.rs` chardev fix: drop `mux=on` under `OXIDE_QEMU_HEADLESS=1` (mux multiplexer was swallowing piped stdin).
+- **Strip BSS from on-disk ELF.** Edit linker script (`link/x86_64-unknown-oxide-kernel.ld` and aarch64 sibling) so the RW PT_LOAD has `file_sz < mem_sz`. Then we can revert disk/RAM bumps.
+- **fork+exec from shell.** `uname`, `ls`, etc. run `/bin/busybox <applet>` via fork+exec; output goes silently somewhere. Trace from `sys_execve` for the second forked child.
+- **/root home dir missing.** Trivial: add `/root` directory to rootfs build at `tools/xtask/src/main.rs`.
+- **`fbcon` klog aux sink** still disabled at `kernel/src/lib.rs:662`. Re-enable after debugging the virtio-gpu submit path.
+- **ARM lockstep.** Confirm `make qemu-arm` reaches `oxide:/#` on aarch64 with the same fixes; should — the hook install path covers both arches, and the socket chardev applies to x86 only.
 
 ## Useful pointers
 
-- dtrace framework: `kernel/src/debug_macros.rs:42-94`. Build with `--features debug-boot,debug-trace`. `dtrace!(b"TAG")` / `dtrace!(b"TAG", val)`.
-- LAPIC timer setup: `crates/kernel/arch-irq/src/lapic.rs:287` `timer_periodic`.
-- Timer ISR vec 0x40: `crates/kernel/arch-irq/src/lapic.rs:107`.
-- Userspace timer re-arm (post-smoke): `kernel/src/smoke/elf.rs:624`.
-- tick_poll_uart: `crates/kernel/tty/src/live.rs:181`.
-- TICK_POLL_HOOK install: `kernel/src/lib.rs:519` → `tick_poll_combined` at 840.
-- Headless boot: `OXIDE_QEMU_HEADLESS=1 make qemu-x86`. Feed stdin via `printf 'root\n' | OXIDE_QEMU_HEADLESS=1 make qemu-x86`.
+- Headless test loop: `/tmp/runtest2.sh` (see above).
+- UART RX poll hook: `kernel/src/lib.rs:~451` (unconditional install just before SMP bring-up).
+- ELF segment staging alloc: `crates/kernel/exec/src/lib.rs:230`.
+- Heap size: `crates/shared/kalloc/src/lib.rs:39` `STATIC_HEAP_SIZE`.
+- Disk image size: `tools/xtask/src/image_qemu.rs:148`.
+- QEMU RAM: `tools/xtask/src/image_qemu.rs` `-m` flag.
 
-## Open work (carried)
+## Commits this branch
 
-- Re-enable `fbcon` klog aux sink after debugging `fbcon_flush_pixels` virtio-gpu submit wedge (currently disabled at `kernel/src/lib.rs:662`).
-- qemu-mcp pty consumer wedges late writes — separate fix; use `OXIDE_QEMU_HEADLESS=1` to bypass.
-- Real PTRACE_SINGLESTEP — F49-F51 framework.
+- `bf8e5a5`..`c3c6e90` — earlier session (CAT wedge fix, dtrace, etc.).
+- `4fe6ba0` — doc(state).
+- `607cfa5` — fix(qemu): drop mux=on under HEADLESS.
+- `b44c54c` — **fix(tty): install tick_poll_uart hook unconditionally — login RX works**.
+- `3d91393` — **fix(boot): heap/disk/RAM bumps — interactive shell reached**.
