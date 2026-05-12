@@ -586,15 +586,12 @@ impl Inode for ProcRootInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
         if name == "self" {
-            // /proc/self resolves via existing devfs entries; the dir
-            // marker itself is synthetic — return a directory inode.
             return Ok(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef);
         }
-        match name.parse::<u32>() {
-            Ok(tid) if sched::live::registry::lookup(tid).is_some() =>
-                Ok(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef),
-            _ => Err(VfsError::Enoent),
-        }
+        // `name` is a Linux PID (vtgid); translate via pid_to_kernel_tid.
+        let vpid: u32 = name.parse().map_err(|_| VfsError::Enoent)?;
+        let tid = pid_to_kernel_tid(vpid).ok_or(VfsError::Enoent)?;
+        Ok(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef)
     }
     fn readdir(
         &self,
@@ -602,22 +599,19 @@ impl Inode for ProcRootInode {
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
         let mut idx = off as usize;
-        let tids = sched::live::registry::live_tids();
-        let total = tids.len() + 1; // +1 for "self"
+        let vpids = sched::live::registry::live_vpids();
+        let total = vpids.len() + 1; // +1 for "self"
         while idx < total {
             let next = idx as u64 + 1;
-            if idx == 0 {
-                if !f(next, "self", FileType::Directory) { return Ok(next); }
-            } else {
-                let tid = tids[idx - 1];
-                let mut buf = [0u8; 11];
-                let mut n = 0; let mut t = tid;
+            let mut buf = [0u8; 11];
+            let s: &str = if idx == 0 { "self" } else {
+                let mut t = vpids[idx - 1]; let mut n = 0;
                 if t == 0 { buf[0] = b'0'; n = 1; }
                 else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
                 buf[..n].reverse();
-                let s = core::str::from_utf8(&buf[..n]).unwrap_or("0");
-                if !f(next, s, FileType::Directory) { return Ok(next); }
-            }
+                core::str::from_utf8(&buf[..n]).unwrap_or("0")
+            };
+            if !f(next, s, FileType::Directory) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
@@ -893,6 +887,12 @@ fn pid_environ_body(tid: u32) -> alloc::vec::Vec<u8> {
 /// Resolve dynamic `/proc/<tid>[/<file>]` paths. Returns `None` for
 /// non-procfs paths; callers fall back to the static devfs registry.
 /// Path-shape parsing lives in `crates/procfs::paths` (hosted-tested).
+/// Linux-visible PID (vtgid) → kernel TID; falls back to raw-tid.
+fn pid_to_kernel_tid(p: u32) -> Option<u32> {
+    use sched::live::registry::{lookup, lookup_by_vpid};
+    lookup_by_vpid(p).or_else(|| lookup(p)).map(|t| t.tid)
+}
+
 /// # C: O(N_tasks)
 pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
     use procfs::paths::{parse_proc_path, ProcPath};
@@ -900,12 +900,12 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
         ProcPath::SelfDir =>
             Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
         ProcPath::SelfChild(_) => None, // /proc/self/<file> served by devfs
-        ProcPath::PidDir(tid) => {
-            if sched::live::registry::lookup(tid).is_none() { return None; }
+        ProcPath::PidDir(name_pid) => {
+            let tid = pid_to_kernel_tid(name_pid)?;
             Some(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef)
         }
-        ProcPath::PidChild(tid, leaf) => {
-            if sched::live::registry::lookup(tid).is_none() { return None; }
+        ProcPath::PidChild(name_pid, leaf) => {
+            let tid = pid_to_kernel_tid(name_pid)?;
             match leaf {
                 "status"  => Some(Arc::new(ProcPidStatusInode  { tid }) as InodeRef),
                 "cmdline" => Some(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
