@@ -171,7 +171,12 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (268, 224),  // timer_gettime
         (269, 226),  // timer_delete
         (278, 318),  // getrandom
-        (291, 257),  // statx → newfstatat fallback
+        (291, 332),  // statx → statx (same ABI on both arches).
+                     // Pre-fix value was (291, 257) — routing userspace
+                     // statx to sys_openat with statx-shaped args. wild
+                     // writes followed; the kernel then \"succeeded\"
+                     // with garbage data and busybox-ash's PATH search
+                     // came back \"Permission denied\".
     ];
     // Linear search; <150 entries, called per-syscall on arm — a
     // 150-cmp scan is cheaper than a thousand-element jump table.
