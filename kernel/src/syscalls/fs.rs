@@ -212,7 +212,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let overlay = vfs::inode_times::get(&inode).unwrap_or_default();
     let mode_perm = inode.perm()
         .or_else(|| if overlay.owner_set && overlay.mode_bits != 0 { Some(overlay.mode_bits) } else { None })
-        .unwrap_or(0o600);
+        .unwrap_or(0o755);
     let mode = mode_type | mode_perm;
     let stx_uid = inode.uid().unwrap_or(if overlay.owner_set { overlay.uid } else { 0 });
     let stx_gid = inode.gid().unwrap_or(if overlay.owner_set { overlay.gid } else { 0 });
@@ -547,7 +547,21 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    if vfs::mount::lookup(s).is_ok() { 0 } else { -(Errno::Enoent.as_i32() as i64) }
+    // Try the unified mount-table first (devfs/procfs/tmpfs/ext4), then
+    // fall back to the raw-ext4 stat path which handles directories,
+    // hardlinks, and symlinks that the mount-table's FileSystem::lookup
+    // wrapper rejects. Mirrors sys_statx's resolver chain — without
+    // this, ARM busybox's `access(X_OK)` returns ENOENT for /bin/<applet>
+    // (a hardlink to /bin/busybox), every PATH-search probe falsely
+    // fails, and the shell prints "Permission denied" without ever
+    // attempting fork+execve.
+    if vfs::mount::lookup(s).is_ok()
+        || ext4::rootfs::stat_path(s.as_bytes()).is_some()
+    {
+        0
+    } else {
+        -(Errno::Enoent.as_i32() as i64)
+    }
 }
 
 /// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1
