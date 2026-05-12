@@ -197,24 +197,57 @@ pub unsafe fn enable_intid(intid: u32) {
             core::ptr::write_volatile(prio, 0x80);
             // PPIs typically default to level-sensitive; leave ICFGR alone.
         } else {
-            // SPI: distributor.
-            let word = (intid / 32) as u64 * 4;
-            let isenabler = (gicd + GICD_ISENABLER as u64 + word) as *mut u32;
-            core::ptr::write_volatile(isenabler, 1u32 << (intid & 31));
-            let prio = (gicd + GICD_IPRIORITYR as u64 + intid as u64) as *mut u8;
-            core::ptr::write_volatile(prio, 0x80);
-            // ICFGR: 2 bits per INTID, edge-triggered (0b10) for MSI-class lines.
-            let icfgr_off = (intid / 16) as u64 * 4;
-            let shift     = ((intid % 16) * 2) as u32;
-            let icfgr     = (gicd + GICD_ICFGR as u64 + icfgr_off) as *mut u32;
-            let cur       = core::ptr::read_volatile(icfgr);
-            let cleared   = cur & !(0b11u32 << shift);
-            core::ptr::write_volatile(icfgr, cleared | (0b10u32 << shift));
-            // IROUTER: route to CPU 0 (MPIDR.Aff{3,2,1,0} = 0). v1 is
-            // single-CPU UP; widen to per-CPU when SMP lands.
-            let irouter = (gicd + GICD_IROUTER as u64 + (intid as u64) * 8) as *mut u64;
-            core::ptr::write_volatile(irouter, 0u64);
+            spi_enable_common(gicd, intid, /*level=*/false);
         }
+    }
+}
+
+/// Same as `enable_intid` for SPIs but marks the line as
+/// level-sensitive (ICFGR=0b00) instead of edge-triggered. Use for
+/// device lines that hold the line asserted while a condition is
+/// true (PL011 RX, virtio-net-mmio legacy) — edge-trigger only fires
+/// on the rising transition and so misses subsequent assertions
+/// when the device-side line stays high through the IRQ ack.
+///
+/// # SAFETY: caller asserts `enable` has run; runs single-CPU,
+/// IRQ-off; the chosen SPI is owned by the caller.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn enable_intid_level(intid: u32) {
+    let gicd = GICD_VA.load(Ordering::Acquire);
+    let gicr = GICR_VA.load(Ordering::Acquire);
+    if gicd == 0 || gicr == 0 { return; }
+    // SAFETY: same Device-mapped GIC bases; per-CPU PPI branch.
+    if intid < 32 { unsafe { enable_intid(intid); } return; }
+    // SAFETY: GICD region is Device-attr-mapped; offset stays inside.
+    unsafe { spi_enable_common(gicd, intid, /*level=*/true); }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+unsafe fn spi_enable_common(gicd: u64, intid: u32, level: bool) {
+    // SAFETY: caller asserted Device-mapped GICD; offsets stay inside.
+    unsafe {
+        let word = (intid / 32) as u64 * 4;
+        let isenabler = (gicd + GICD_ISENABLER as u64 + word) as *mut u32;
+        core::ptr::write_volatile(isenabler, 1u32 << (intid & 31));
+        let prio = (gicd + GICD_IPRIORITYR as u64 + intid as u64) as *mut u8;
+        core::ptr::write_volatile(prio, 0x80);
+        // ICFGR field: 0b00 = level (hold while line high),
+        //              0b10 = edge (rising transition only).
+        // Device pin behaviour dictates which: PL011 holds the line
+        // through RX-FIFO drain (level); virtio MSI-class lines pulse
+        // and clear (edge).
+        let icfgr_off = (intid / 16) as u64 * 4;
+        let shift     = ((intid % 16) * 2) as u32;
+        let icfgr     = (gicd + GICD_ICFGR as u64 + icfgr_off) as *mut u32;
+        let cur       = core::ptr::read_volatile(icfgr);
+        let cleared   = cur & !(0b11u32 << shift);
+        let val = if level { 0b00u32 } else { 0b10u32 };
+        core::ptr::write_volatile(icfgr, cleared | (val << shift));
+        // IROUTER: route to CPU 0. v1 is single-CPU UP.
+        let irouter = (gicd + GICD_IROUTER as u64 + (intid as u64) * 8) as *mut u64;
+        core::ptr::write_volatile(irouter, 0u64);
     }
 }
 
