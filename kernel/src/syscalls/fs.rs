@@ -257,6 +257,8 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     0
 }
 
+pub use crate::syscalls::newfstatat::sys_newfstatat;
+
 /// `sys_stat(path, statbuf)` / `sys_lstat(path, statbuf)` —
 /// slots 4/6. Resolves `path` via devfs, writes a 144-byte
 /// stat struct (same shape as sys_fstat).
