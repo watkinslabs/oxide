@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod net; pub mod mount; pub mod namei;  pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;  
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;  
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -854,7 +854,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_INIT_MODULE   => sys_init_module(&args),
         syscall::nrs::NR_FINIT_MODULE  => sys_finit_module(&args),
         syscall::nrs::NR_DELETE_MODULE => sys_delete_module(&args),
-        syscall::nrs::NR_NEWFSTATAT    => crate::syscalls::fs::sys_statx(&args),
+        syscall::nrs::NR_NEWFSTATAT    => crate::syscalls::fs::sys_newfstatat(&args),
         syscall::nrs::NR_STAT
             | syscall::nrs::NR_LSTAT   => crate::syscalls::fs::sys_stat(&args),
         // Cred family: dispatched via sched::cred::cred_dispatch.
