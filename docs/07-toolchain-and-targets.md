@@ -37,7 +37,7 @@ Bump cadence is whatever the project's stability needs. PR title `toolchain: bum
 
 ### 1.2 Stable migration
 
-When all `-Z` flags stable + targets upstreamed (Redox precedent) + `-Zbuild-std` replaced. v2+. v1 nightly.
+When all `-Z` flags stable + targets upstreamed (Redox precedent) + `-Zbuild-std` replaced. Until then, nightly.
 
 ## 2 Build profiles
 
@@ -115,7 +115,7 @@ Userspace targets are upstream Rust targets. No custom JSON. Per `29a§2`:
 
 These are stock Rust targets. `std` works. Tokio/hyper/serde/etc. build unchanged. Cross-compile via `cargo build --target x86_64-unknown-linux-musl`.
 
-Custom `*-unknown-oxide` userspace targets considered + rejected for v1: would require porting `std` (~1yr Redox-style work) for no v1-visible benefit. Migration path to `os=oxide` deferred to v2 when distinct userspace ABI surface emerges.
+Custom `*-unknown-oxide` userspace targets considered + rejected: would require porting `std` (Redox-style work) for no user-visible benefit while the Linux-compat surface is the target. Migration to `os=oxide` becomes a phase once a distinct userspace ABI surface emerges.
 
 Userspace dynamic linker still `/lib/ld-oxide.so.1` (our musl-fork ld.so) per `29a§4`. Cross-compile from any Linux/Mac dev box.
 
