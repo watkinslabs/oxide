@@ -37,6 +37,8 @@ v1 substrate.
   * F96 fanotify_mark forwarded to inotify substrate.
   * F97 real UTS namespace (per-task hostname via CLONE_NEWUTS).
 
+**2026-05-14 refresh (B14..B24):** ARM completeness sweep — `faccessat` ABI mapping fix (B15), `statx` mask STATX_BASIC_STATS + stx_blocks (B16), `statx`/`newfstatat` ARM ABI routing (B17, B21 real `sys_newfstatat`), ARM EL0 IRQ delivery (B14), ext4 `Ext4FileInode` lazy reads (B21), ARM signal-dispatch: mask delivered signal + `rt_sigreturn_arm` SP offset 40→32 + SIG_FRAME_BYTES 40→48 for AAPCS64 alignment (B22). No new syscall surface added; existing surface now correct on aarch64. Makefile `FEATURES=` extras fix (B24). See `## Rollout plan 2026-05-14` at file end for prioritized open work.
+
 **2026-05-09 syscall stub-sweep (F63..F84):** at user direction, a
 wholesale pass across `syscall_compat.rs` + `syscall_glue.rs` removed
 ~20 silent-0 / synthetic-success lies and replaced them with real
@@ -374,3 +376,112 @@ follow-up (gated on VFS+pagecache).
 - glibc compatibility (FSGSBASE, set_thread_area i386, IFUNC)
 - ptrace
 - vDSO
+
+## Rollout plan 2026-05-14
+
+Goal: every busybox applet and every statically-musl-linked Linux
+binary in `43§2` runs end-to-end without hitting ENOSYS / EPERM /
+silent-no-op. Ordered by impact (how many target binaries each
+batch unblocks) not by syscall count. Each batch is a single
+branch/PR with a named exit gate.
+
+### Batch K1 — /dev/console real termios (gates: bash, login cooked-mode, password echo)
+
+Affected: every interactive program that reads from `/dev/console`
+without going through a PTY pair. Currently the console fakes a
+zero-filled `struct termios` (`syscall_glue_ioctl.rs:90`), ignores
+TCSETS, hardcodes ECHO and CR→NL on input, never emits ONLCR on
+write, and has no ISIG path.
+
+- Per-device `struct termios` slot in the console driver.
+- Honor TCGETS / TCSETS / TCSETSW / TCSETSF on the console fd.
+- Wire ICANON line-accumulation buffer (commit on `\n` or VEOF).
+- Wire ECHO toggle (and ECHONL, ECHOE, ECHOK).
+- Wire ONLCR on `write(fd, "\n", …)` — output side, not just echo.
+- Wire ISIG: VINTR/VQUIT/VSUSP → signal delivery to fg pgrp on the
+  controlling tty (already wired for PTY pair; reuse path).
+- Test: `stty -echo` then `read pw` shows no echo; Ctrl-C aborts a
+  `sleep 30`; `printf "a\nb\n"` produces `a\r\nb\r\n` on a serial
+  console with ONLCR set (default).
+
+### Batch K2 — mm completeness for non-toy programs (gates: realloc-heavy + JIT + cp/sendfile)
+
+- `mremap` real: MREMAP_MAYMOVE shrink + grow with copy; MREMAP_FIXED
+  via munmap-then-insert pattern (mirror F89's MAP_FIXED handling).
+- `mprotect` per-PTE: walk the range and flip W/X bits in the live
+  page tables; TLB shootdown per-CPU (already plumbed for SMP-coop).
+- `sendfile` real: copy via pagecache (read-then-write under VFS),
+  not ENOSYS. cp, nginx, scp, busybox httpd all use it.
+- File-backed `mmap` real: KernelBytes path already wires ELF; extend
+  to any vfs::File via demand-fault → pagecache (depends on K6).
+- Test: `mprotect_smoke` extended to grow + shrink + page split;
+  `cp -a /bin /tmp/bin` byte-identical via sendfile path.
+
+### Batch K3 — fcntl + fd flag honesty (gates: server programs + non-blocking I/O)
+
+- `fcntl F_SETFL` toggling O_NONBLOCK takes effect on subsequent
+  read/write on pipes, sockets, ptys, ttys (currently no-op).
+- `fcntl F_GETFL` returns the live flag set (currently stale).
+- `fcntl F_DUPFD_CLOEXEC` (the modern variant).
+- `fcntl F_SETLK / F_GETLK / F_OFD_*` advisory locks via per-inode
+  range list (musl's `flock_chk` + tar/dpkg use these).
+- Test: socat / busybox httpd accepts a connection in non-blocking
+  mode and EAGAIN's correctly.
+
+### Batch K4 — /proc/self surface (gates: ldd, gdb stubs, glibc init)
+
+- `/proc/self/exe` symlink → resolve current task's binary path.
+- `/proc/self/fd/<n>` symlinks → resolve open vfs::File path.
+- `/proc/self/environ` from saved exec envp.
+- `/proc/self/mountinfo` from per-NS mount table.
+- `/proc/partitions` from registered block devs.
+- `/proc/filesystems` from registered fs types.
+- `/proc/devices` from registered char/block major numbers.
+- Test: `ls -l /proc/self/exe` resolves; `readlink /proc/self/fd/0`
+  returns `/dev/console` or `/dev/pts/N`.
+
+### Batch K5 — signal completeness round 2 (gates: bash signal traps, pkill, daemons)
+
+- `rt_sigsuspend` real (was ENOSYS) — atomic block-mask-and-wait.
+- `rt_sigtimedwait` real — bash uses for SIGCHLD timeouts.
+- Default-action coverage: SIGSTOP/SIGCONT already; add core dump
+  for SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS once K6 lands.
+- Real-time signals 32..64 — extend per-task sigpending from u64
+  to a 64-entry queue.
+- Test: `bash -c 'trap : USR1; kill -USR1 $$; echo ok'` prints `ok`.
+
+### Batch K6 — VFS+pagecache wiring real (gates: file-backed mmap, core dumps, sendfile)
+
+Substrate for K2 (file-backed mmap) and K5 (core dump SIGSEGV→ELF).
+Already partial (block layer + page cache + ext4 RW done per
+`00§3.1`); missing is the read-side page-fault handler that maps a
+file's pagecache page into the faulting task's AS.
+
+- Hook page fault → vfs::File backing → pagecache lookup → install
+  the page in the task's AS as read-only-shared (writable on COW).
+- TLB shootdown on page eviction.
+- Test: `mmap /bin/sh PROT_READ MAP_PRIVATE` of size 4 KiB returns a
+  va that reads the binary's first page byte-identical to
+  `head -c 4096 /bin/sh`.
+
+### Batch K7 — empirical acceptance harness (gates: v1.0 tag)
+
+Per `43§5`: build a harness that drives `tests/acceptance/<bin>/
+scenario.sh` under QEMU on both arches, asserts expected `<` lines
+in the serial stream, fails on `[FAULT]` / `panic:` substrings.
+Land the busybox scenario first; add per-applet scenarios as
+batches K1..K6 unblock them. Exit gate: every entry in `43§2`
+passes on both arches.
+
+### Sequencing
+
+K1 is the unblock-everything-interactive batch — start there. K2-K3
+are independent and can land in parallel branches. K4 piggybacks on
+existing procfs scaffolding (small lift). K5 depends on K2/K3 for
+the core-dump path but rt_sigsuspend is independent. K6 is the
+substrate item — separate spec touch — and gates K2/K5 completion.
+K7 is the v1.0-tag gate and lands incrementally.
+
+Out of scope for v1 (parked under "Do-not-touch v1" above): bpf,
+seccomp, landlock, io_uring, ptrace full machinery, vDSO. These
+ride v2 phases 22-24 per `00§3.2`.
