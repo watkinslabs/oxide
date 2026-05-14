@@ -30,7 +30,7 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`
     - **CLONE_NEWCGROUP** PARTIAL — sets a fresh `cgroup_ns` id but
       cgroup tree v2 (controllers, hierarchy walk, scope membership)
       isn't wired; the id alone has no enforcement effect. Real
-      cgroup v2 rides v2.x.
+      cgroup v2 hierarchy walker tracked as later phase.
 - Why: g.md flagged "namespace partial enforcement under unshare"
   as a Linux-conformance hazard. Userspace runtimes (systemd,
   unshare(1), bwrap, runc) check membership ids AND expect the
@@ -48,11 +48,11 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`
 - Wiring: `kernel::dev_proc_ns` is a `pub use nscg::proc_ns`
   re-export so existing call sites stay stable. `kernel_main`
   calls `nscg::init()` at boot ready.
-- cgroup v2 hierarchy walker rides v2.x.
+- cgroup v2 hierarchy walker tracked as later phase.
 
 ## Revision 2026-05-09 (R01)
 
-- Changed: pinned the v1 setns/NsInode contract. `/proc/<pid>/ns/<type>`
+- Changed: pinned the setns/NsInode contract. `/proc/<pid>/ns/<type>`
   lookup returns a real `NsInode { kind: NsKind, id: u64 }` whose
   open(2) yields a fd. setns(fd, nstype) downcasts the fd's inode via
   `Inode::as_any` (per `16§5`), validates `kind` matches `nstype` (or
@@ -94,7 +94,7 @@ Per-ns pid allocator. PID 1 within a pidns is special: signal-default-ignore for
 
 ### 3.3 net
 
-Per-ns: routing tables, neigh caches, sockets-bound list, ifaces (added via `ip link set netns <ns>`), conntrack (when v2 adds).
+Per-ns: routing tables, neigh caches, sockets-bound list, ifaces (added via `ip link set netns <ns>`), conntrack (when phase 39 adds).
 
 ### 3.4 uts
 
@@ -135,9 +135,9 @@ Single tree. Each node is a directory in `/sys/fs/cgroup/`. Files per node:
 | `io.{stat,max,weight,latency}` | io controller |
 | `pids.{current,max,events}` | pids controller |
 | `cpuset.{cpus,mems}` | cpu/numa pinning |
-| `hugetlb.<size>.{current,max}` | hugetlb (v2) |
+| `hugetlb.<size>.{current,max}` | hugetlb (later phase) |
 
-Controllers in v1: cpu, memory, io, pids, cpuset. (hugetlb v2; rdma/misc v2.)
+Controllers now: cpu, memory, io, pids, cpuset. (hugetlb, rdma, misc tracked as later phases.)
 
 ## 5 Public ifc
 
@@ -176,7 +176,7 @@ pub fn cg_get(path:&str, file:&str) -> KR<String>;
 - user-ns mapping: rootless task in user-ns sees uid 0 internally, mapped to nonzero outside.
 - Cgroup: create cgroup, set `memory.max=1MB`, run a task, verify OOM-kill at limit.
 - Cgroup `cpu.weight` proportional sharing: 2 cgroups @100, @200; verify ~1:2 CPU split under contention.
-- runc-equivalent shape: spawn a container with all namespaces + cgroup limits + seccomp filter (when BPF v2); verify process runs and exits cleanly.
+- runc-equivalent shape: spawn a container with all namespaces + cgroup limits + seccomp filter (once BPF lands in phase 23); verify process runs and exits cleanly.
 - Coverage ≥85%.
 
 ## 9 Failure modes

@@ -163,7 +163,7 @@ All eight formats above are honoured; the driver picks the host-preferred format
 ## 8 Concurrency
 
 - CTRLQ + CURSORQ each guarded by per-driver-instance `Spinlock<Class=Driver>` ordered above PMM, below VFS. Concurrent DRM ioctl threads serialise on this lock.
-- Used-ring drain runs on the calling-thread context (synchronous DMA). MSI-X completion-vector path lands v1.x.
+- Used-ring drain runs on the calling-thread context (synchronous DMA). MSI-X completion-vector path tracked as later phase.
 - DMA buffers (resource backings) come from `pmm::alloc_contig` and live for the resource's lifetime; resource_unref must drain pending TRANSFER_TO_HOST_2D before unmap.
 
 ## 9 Failure modes

@@ -1,22 +1,22 @@
 # 30 io_uring
 
-FROZEN 2026-05-02 (v2; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
+FROZEN 2026-05-02 (tracked as phase 22 per `00§3`; full ring substrate ships then). Dep:`01`,`02`,`06`,`11`,`13`,`15`,`16`,`17`,`23`,`25`. Provides:`15` syscalls 425/426/427.
 
 ## Revision 2026-05-09 (R01)
 
-- Changed: pinned the precise v1 io_uring subset that `io_uring.rs`
-  implements vs the v2 invariants in §2. Previously the
-  status line said "v1.0 ships stubs returning ENOSYS" but the
+- Changed: pinned the precise current io_uring subset that `io_uring.rs`
+  implements vs the full invariants in §2. Previously the
+  status line said "ships stubs returning ENOSYS" but the
   code has shipped a real synchronous-execution subset since P23a;
   the spec needed to catch up.
-- v1 implemented surface:
+- Current implemented surface:
     - **`io_uring_setup(entries, *params)`**  REAL. Allocates a
       per-ring kernel state struct with SQ + CQ; returns an fd.
       The user-space ring `mmap` (Linux IORING_OFF_SQ_RING /
-      IORING_OFF_CQES / IORING_OFF_SQES) is **NOT** wired — v1
+      IORING_OFF_CQES / IORING_OFF_SQES) is **NOT** wired yet —
       callers stash the ring in kernel memory and submit via
       `io_uring_enter` directly. Linux compat for shared-mmap
-      rings rides v2.x.
+      rings lands in phase 22.
     - **`io_uring_enter(fd, to_submit, min_complete, ...)`** REAL.
       Drains SQ head→tail, executes each SQE **synchronously** in
       the calling task's context (no kernel worker), posts CQEs.
@@ -40,7 +40,7 @@ FROZEN 2026-05-02 (v2; v1.0 ships stubs returning ENOSYS). Dep:`01`,`02`,`06`,`1
   real subset; userspace consumers (modern liburing-using daemons)
   could not predict which features work. R01 pins the exact
   subset so users know to use the synchronous-only path until
-  v2.x lands the worker / SQPOLL / mmap-ring substrate.
+  phase 22 lands the worker / SQPOLL / mmap-ring substrate.
 - Affected code: `kernel/src/io_uring.rs` (`kernel_sys_io_uring_setup`,
   `kernel_sys_io_uring_enter`, `kernel_sys_io_uring_register`).
 
@@ -67,7 +67,7 @@ sys_io_uring_register(fd:RawFd, opcode:u32, arg:UVA<&u8>, nr_args:u32) -> KR<u32
 
 `IoUringParams`,`io_uring_sqe`,`io_uring_cqe`: layout per Linux `include/uapi/linux/io_uring.h`.
 
-## 4 Opcodes (subset for v2)
+## 4 Opcodes (full phase 22 target)
 
 | Op | Notes |
 |---|---|
@@ -93,7 +93,7 @@ sys_io_uring_register(fd:RawFd, opcode:u32, arg:UVA<&u8>, nr_args:u32) -> KR<u32
 | MKDIRAT/SYMLINKAT/LINKAT/UNLINKAT/RENAMEAT | fs ops |
 | SHUTDOWN | socket shutdown |
 
-Deferred to later v2: BIND, LISTEN, PROVIDE_BUFFERS, REMOVE_BUFFERS, multishot variants, MSG_RING, SOCKET, FUTEX_WAIT/WAKE.
+Deferred within phase 22: BIND, LISTEN, PROVIDE_BUFFERS, REMOVE_BUFFERS, multishot variants, MSG_RING, SOCKET, FUTEX_WAIT/WAKE.
 
 ## 5 Architecture
 
