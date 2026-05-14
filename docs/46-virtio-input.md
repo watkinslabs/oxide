@@ -15,7 +15,7 @@ Driver crate `drv-virtio-input` for virtio device class 18 ("input device") per 
 3. Negotiated features (v1): `VIRTIO_F_VERSION_1` (32) only. No device-class-specific feature bits.
 4. Each virtio-input PCI function corresponds to ONE evdev `/dev/input/event<N>`. Multiple devices (kbd + mouse + tablet) = multiple PCI functions = multiple eventfds.
 5. The host keeps EVENTQ filled with empty `virtio_input_event` descriptors; on input the host writes one event per descriptor and signals via the queue's `used` ring. The driver re-supplies drained descriptors.
-6. `virtio_input_event` is 8 bytes (`type:le16, code:le16, value:le32`) — exactly matches Linux's `struct input_event` payload (without the timestamp; v1 stamps locally on dequeue).
+6. `virtio_input_event` is 8 bytes (`type:le16, code:le16, value:le32`) — exactly matches Linux's `struct input_event` payload (without the timestamp; the driver stamps locally on dequeue).
 7. The driver bridges to Linux's evdev `input_event` ABI per `linux/include/uapi/linux/input.h`; userspace reads of `/dev/input/event<N>` return `input_event` records with kernel-supplied timestamps.
 8. Configuration space (`virtio_input_config`) is 256 bytes; the driver reads device identity (`select=ID_NAME`, `ID_SERIAL`, `ID_DEVIDS`) and capability bitmaps (`select=PROP_BITS`, `EV_BITS`, `ABS_INFO`) at probe.
 
@@ -110,8 +110,8 @@ EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group
 | `EVIOCGABS(axis)` | `_IOR('E', 0x40+axis, struct input_absinfo)` | ABS_INFO |
 | `EVIOCGKEY(len)` | `_IOR('E', 0x18, len)` | snapshot of currently-pressed keys |
 | `EVIOCGLED(len)` | `_IOR('E', 0x19, len)` | LED state bitmap |
-| `EVIOCSREP` | `_IOW('E', 0x03, int[2])` | autorepeat delay+rate (v1: stored, no enforcement) |
-| `EVIOCGRAB` | `_IOW('E', 0x90, int)` | exclusive grab; v1: tracks owner fd, returns EBUSY if already grabbed |
+| `EVIOCSREP` | `_IOW('E', 0x03, int[2])` | autorepeat delay+rate (stored, no enforcement yet) |
+| `EVIOCGRAB` | `_IOW('E', 0x90, int)` | exclusive grab; tracks owner fd, returns EBUSY if already grabbed |
 
 ## 8 Probe + bring-up
 
