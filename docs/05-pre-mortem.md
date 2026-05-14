@@ -36,7 +36,7 @@ v1 split (per `43§2-4`):
 Old plan listed per-phase week ranges + multi-month total. Removed 2026-05-07 — AI-driven solo work doesn't follow team-of-50 calendars; gate on per-spec §Test contract green, not duration. See `feedback_no_time_estimates`.
 
 ### B2 io_uring scope
-Needs: SQ/CQ ring shared mmap, sqpoll worker(s), 80+ opcodes, polled completion, buffer registration, fixed files, multishot, chained SQEs, timeouts, cancels, IOPOLL. Standalone subsystem. Promoted to v2 phase 23 per `00-v2§3`. v1 epoll covers most use.
+Needs: SQ/CQ ring shared mmap, sqpoll worker(s), 80+ opcodes, polled completion, buffer registration, fixed files, multishot, chained SQEs, timeouts, cancels, IOPOLL. Standalone subsystem. Tracked as phase 22 per `00§3`. epoll covers most use until then.
 
 ### B3 TCP scope vs Linux-app compatibility
 smoltcp = single-thread, embedded. Linux-compat TCP needs MP-CPU lock-free socket tables; BBR/CUBIC/DCTCP; TCP_NODELAY/CORK/FASTOPEN/SO_REUSEPORT (hash-LB); window-scale, SACK, TLP, RACK, PRR; conntrack for any iptables-userspace.
