@@ -63,9 +63,9 @@ ci: lint test build build-debug
 # can tell the kernel is alive while waiting for the login prompt.
 # `debug-sched` is intentionally excluded — that's the per-syscall
 # trace flood. FEATURES=... appends extras (e.g. FEATURES=debug-irq).
+comma := ,
 QEMU_FEATURES_X86 := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
-comma := ,
 
 qemu-x86:
 	$(XTASK) qemu --arch x86_64  --features "$(QEMU_FEATURES_X86)"

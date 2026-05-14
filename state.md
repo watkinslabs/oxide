@@ -1,15 +1,28 @@
 # state — hand-off
 
-Branch: B22-sig-deliver-mask-and-arm-offset (PR #1018)
-Status: merged origin/main into B22; conflict resolved in state.md; signal-dispatch fixes remain on branch.
+Branch: B24-makefile-comma-order (PR pending)
+Previous: B22-sig-deliver-mask-and-arm-offset → PR #1018 merged
 
-## What is done
-- Pulled latest `origin/main` into B22.
-- Resolved merge conflict in `state.md`.
-- Kept B22 signal-dispatch fixes intact (`5a1410b`).
+## Closed in this stretch
 
-## Open work
-- Ensure PR #1018 CI is green after merge-update.
+- B21 (PR #1017) — `Ext4FileInode` lazy reads + real `sys_newfstatat`.
+- B22 (PR #1018) — ARM signal-dispatch: mask delivered signal on
+  handler entry, fix `rt_sigreturn_arm` SP offset (40→32) since
+  AArch64 `ret` doesn't pop, grow `SIG_FRAME_BYTES` 40→48 to keep
+  handler entry SP 16-aligned.
+
+## B24 contents
+
+1. `Makefile`: `comma := ,` was declared *after* `QEMU_FEATURES_*`
+   so `:=` expansion produced literal `debug-bootdebug-irq` when
+   `FEATURES=debug-irq` was passed. Move `comma :=` above the
+   feature vars.
+2. Strike the "stray SIGSEGV at tid≈4112, far≈0x7ffffffbf000"
+   open item from the previous hand-off — it's `mprotect_smoke`
+   deliberately writing to a `PROT_READ` page, and the test
+   reports PASS on the next line. Not a bug.
 
 ## First task next session
-`cd /home/runner/work/oxide/oxide && git --no-pager status --short --branch`
+
+Pick up the next phase per `docs/00§3` master plan. ARM and x86
+both reach `oxide login:` and run `uname`/`ls`/`ps` post-login.
