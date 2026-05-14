@@ -62,11 +62,12 @@ pub trait Context  {
 
 ## 3 Phases
 
-Phase exit = PR-time gates green (build both arches + property tests + miri + loom + QEMU smoke + coverage + bench) + per-spec §Test-contract acceptance. Sequential within a release; v2 and v2 are bookmarked as their own ladders below.
+Phase exit = PR-time gates green (build both arches + property tests + miri + loom + QEMU smoke + coverage + bench) + per-spec §Test-contract acceptance.
 
-### 3.1 v1 — kernel substrate + minimum userspace (DONE except phase 12 net polish)
-
-Goal: kernel boots both arches, broad syscall surface, ext4 RW, IPv4 net, login shell, static-musl userspace runs. Tag `v1.0` once `43§2` minimum acceptance binaries pass + PR-time CI green.
+Single ladder. Every Linux subsystem is in scope — there is no
+"deferred to v2", no parking lot, no subset framing. The contract
+is full Linux parity. Phases are ordered roughly by dependency, but
+non-overlapping phases land in parallel once their deps are green.
 
 | # | Subsystem | State | Spec |
 |---|---|---|---|
@@ -75,60 +76,51 @@ Goal: kernel boots both arches, broad syscall surface, ext4 RW, IPv4 net, login 
 | 2 | VMM + MMU bring-up + per-CPU areas + TLB shootdown | done | `11`,`20`,`21` |
 | 3 | Slab + GlobalAlloc | done | `12` |
 | 4 | Sched + ctxsw + preempt + SMP | done (UP; SMP cooperative-with-timer-wake) | `13`,`14` |
-| 5 | Syscalls + ELF loader + init + busybox-sh | done — 134 syscall handlers, kernel-completeness sweep landed sessions 38 (PR-A..U) | `15`,`31`,`29` |
+| 5 | Syscalls + ELF loader + init + busybox-sh | done — 134 syscall handlers, kernel-completeness sweep PR-A..U | `15`,`31`,`29` |
 | 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | done | `16`,`19` |
 | 7a | Block layer + page cache | done | `17` |
 | 7b | ext4 RW + JBD2 (depth ≤2; small files) | done | `17` |
-| 8 | Net (loopback + AF_INET TCP/UDP + AF_UNIX); virtio-net types only — DHCP/DNS NOT v1 | partial; promote remainder to v2 phase 18 | `25` |
+| 8 | Net loopback + AF_INET TCP/UDP + AF_UNIX | done (IPv4 half) | `25` |
 | 9 | Hardening, observability, klog cfg-gating | ongoing | `27`,`37`,`18` |
-| 10 | Modules loader (ELF ET_REL parse + relocator + section placement + symbol resolution + `init_module`/`finit_module`/`delete_module`/`/proc/modules`) | done | `18`,`31` |
+| 10 | Modules loader (ELF ET_REL parse + relocator + symbol resolution + `init_module`/`finit_module`/`delete_module`/`/proc/modules`) | done | `18`,`31` |
 | 11 | PCI / PCIe enumeration | done | `34` |
 | 12 | virtio shared infrastructure (split virtqueue, status bits, feature negotiation) | done | `34`,`35` |
+| 13 | Real virtio-net live driver (tx/rx ring service, link-state, feature negotiation) | done | `25`,`35` |
+| 14 | mremap real (MREMAP_MAYMOVE) + per-PTE mprotect with TLB shootdown + MADV_DONTNEED zero-fill + file-backed mmap | open | `11`,`20§7` |
+| 15 | AF_INET6 socket layer + DHCP client + DNS resolver + sendmmsg/recvmmsg + AF_UNIX SCM_CREDS | open | `25` |
+| 16 | Namespaces: unshare/setns/pivot_root + per-NS mount/uts/pid/user/net | open | `13`,`16`,`26` |
+| 17 | Modern mount API (fsopen/fsconfig/fsmount/fspick + mount_setattr) + real mount/umount/chroot | open | `16` |
+| 18 | xattr family ext4-backed + ACLs + capability bits on files | open | `16`,`27` |
+| 19 | fanotify_init + fanotify_mark + inotify completeness | open | `16` |
+| 20 | userfaultfd + memfd_secret enforced isolation | open | `11` |
+| 21 | ptrace family (ATTACH/SEIZE/DETACH/CONT/SYSCALL/SINGLESTEP/GETREGS/SETREGS/PEEK/POKE/GETSIGINFO/SETOPTIONS + signal-stop integration) | open | `27`,`13` |
+| 22 | io_uring (setup/enter/register, SQE/CQE rings, fixed-buffer registration, IORING_OP_*) | open | `30` |
+| 23 | bpf + seccomp + landlock (verifier + JIT both arches + hook points) | open | `27` |
+| 24 | SysV IPC (shm/sem/msg) + POSIX MQ + keyring | open | `24` |
+| 25 | perf_event_open + tracefs/ftrace + ebpf programs running tracepoints | open | `27`,`37` |
+| 26 | Core dump generation (sigaction SIGSEGV → ELF coredump in fs) | open | `27`,`16` |
+| 27 | Dynamic linker (real ld-musl: PT_INTERP, DT_NEEDED, GOT/PLT, RELA/JMPREL, ld.so.cache, LD_LIBRARY_PATH, dlopen/dlsym) | open | `31`,`29a` |
+| 28 | Standard userspace libc + NSS + PAM (musl-with-nss, /etc/{passwd,group,shadow}, pam_unix) | open | `29a`,`43` |
+| 29 | System manager (real PID 1 — service supervision, dep order, journalctl on klog ring) | open | `29a` |
+| 30 | Package manager (rpmbuild against our libc, dnf/microdnf, /var/lib/rpm) | open | `43`,`29a` |
+| 31 | TTY + login flow (agetty per /dev/tty[0-N], terminfo/ncurses, motd/issue, real /dev/console termios) | open | `28`,`29a` |
+| 32 | DRM/KMS framebuffer + virtio-gpu + input subsystem (evdev) | open | `35` |
+| 33 | vDSO per-arch + glibc compat surface (FSGSBASE, set_thread_area i386, IFUNC) | open | `15` |
+| 34 | USB stack | open | new spec |
+| 35 | ACPI runtime + AML interpreter | open | new spec |
+| 36 | KVM / hypervisor backend | open | new spec |
+| 37 | NFS / CIFS / FUSE | open | new spec |
+| 38 | SELinux / AppArmor / IMA — full LSM impls | open | `27` |
+| 39 | DT overlays + full netfilter | open | new spec |
+| 40 | Wayland + GNOME (graphical stack) | open | `35`, new spec |
+| 41 | NUMA + hibernate/S3 + Memory Protection Keys | open | `10`,`11` |
 
-**v1 exit:** §15.
+### 3.1 Status snapshot
 
-### 3.2 v2 — kernel parity + userspace platform (Fedora-class endgame)
-
-Single ladder for everything downstream of `v1.0`. Phases are **independent** — no global ordering — gated only by per-spec deps. v2 covers two tracks bundled in one release window:
-
-- **Kernel parity** (phases 18-32, 38): de-stub the deferred subsystems flagged in `docs/kernel-audit.md` + the v1 non-goals from §9.
-- **Userspace platform** (phases 33-37): real ld.so, libc/NSS/PAM, system manager, RPM, agetty/login — turns "kernel boots, sh runs" into "Fedora binaries install + run."
-
-Detailed plan in `docs/00-v2.md`; this is the index.
-
-| # | Subsystem | Spec hook |
-|---|---|---|
-| 18 | AF_INET6 socket layer + DHCP client + DNS resolver | `25` |
-| 19 | Real virtio-net live driver (tx/rx ring service, link-state, feature negotiation) | `25`,`35` |
-| 20 | mremap (real, MREMAP_MAYMOVE), per-PTE mprotect with TLB shootdown, MAP_SHARED, MADV_DONTNEED zero-fill | `11`,`20§7` |
-| 21 | Namespaces: unshare/setns/pivot_root + per-NS mount/uts/pid/user | `13`,`16`,`26` |
-| 22 | ptrace family (PTRACE_ATTACH/SINGLESTEP/PEEK/POKE/SYSCALL + signal-stop integration) | `27`,`13` |
-| 23 | io_uring (setup/enter/register, SQE/CQE rings, fixed-buffer registration, IORING_OP_*) | `30` |
-| 24 | bpf + seccomp + landlock | `27` |
-| 25 | SysV IPC (shm/sem/msg) + POSIX MQ + keyring | `24` |
-| 26 | xattr family (real, ext4-backed) + ACLs + capability bits on files | `16`,`27` |
-| 27 | fanotify_init + fanotify_mark + finish inotify gaps | `16` |
-| 28 | userfaultfd + memfd_secret enforced isolation | `11` |
-| 29 | Modern mount API (fsopen/fsconfig/fsmount/fspick + mount_setattr) + real mount/umount/chroot | `16` |
-| 30 | perf_event_open + tracefs/ftrace + ebpf programs running tracepoints | `27`,`37` |
-| 31 | Core dump generation (sigaction SIGSEGV → ELF coredump in fs) | `27`,`16` |
-| 32 | DRM/KMS framebuffer + virtio-gpu + input subsystem (evdev) | new spec |
-| 33 | Dynamic linker (real ld-musl: PT_INTERP, DT_NEEDED, GOT/PLT, RELA/JMPREL, ld.so.cache, LD_LIBRARY_PATH, dlopen/dlsym) | `31`,`29a` |
-| 34 | Standard userspace libc + NSS + PAM (musl-with-nss, /etc/{passwd,group,shadow}, pam_unix for login/su/sudo) | `29a`,`43` |
-| 35 | System manager (real PID 1 — service supervision, dependency order, journalctl-equivalent on klog ring) | `29a` |
-| 36 | Package manager (rpmbuild against our libc, dnf/microdnf install, /var/lib/rpm) | `43`,`29a` |
-| 37 | TTY + login flow (agetty per /dev/tty[0-N], terminfo/ncurses, motd/issue) | `28`,`29a` |
-| 38 | AF_INET6 + sendmmsg/recvmmsg + AF_UNIX SCM_CREDS — net completion not in 18-19 | `25` |
-
-### 3.3 v2.x — desktop / hardware-rich (open scope)
-
-Wayland, GNOME, USB stack, real ACPI runtime / AML interp, NUMA, hibernate/S3, KVM/hypervisor, NFS/CIFS, FUSE, SELinux/AppArmor/IMA full LSM impls, DT overlays, full netfilter, vDSO, FSGSBASE, glibc compat surface (set_thread_area i386, IFUNC). Each is its own subsystem; promotion to a numbered v2.x phase happens when scope is firm.
-
-### 3.4 Status snapshot (this revision)
-
-**Done:** v1 phases 0-7b + 10-12 fully landed; phase 5 syscall surface saturated by sweep PR-A..U; phase 8 IPv4-half done.
-**Open in v1:** phase 8 net polish (only; remainder promoted to v2/18-19), phase 9 hardening (ongoing).
-**v1 exit blocker:** `43§2` minimum acceptance binary list — once those run + PR-time CI green, tag `v1.0`.
+**Done:** phases 0-13 fully landed. Boot + login + interactive
+busybox green on both arches.
+**Open:** phases 14-41. No phase is "deferred"; ordering is
+dependency-driven only.
 
 ## 4 Verification stack (`42` for patterns)
 
@@ -143,7 +135,7 @@ Wayland, GNOME, USB stack, real ACPI runtime / AML interp, NUMA, hibernate/S3, K
 ## 5 Memory mgmt detailed design
 
 ### 5.1 PMM (buddy)
-- Orders 0..=20 (4KiB..4GiB). 1 zone v1 (NUMA later).
+- Orders 0..=20 (4KiB..4GiB). 1 zone now; NUMA per phase 41.
 - Per-order intrusive free lists (16-byte node in freed page; magic poison).
 - Split: pop order N+1, push upper half to order N, return lower. Always lower (deterministic).
 - Merge: XOR-buddy, check **bitmap is-free-at-this-order = source of truth** (not free-list walk; that was the v0 bug). Bitmap O(1) atomic. Overhead ~0.05% RAM.
@@ -169,7 +161,7 @@ Detail: `11`.
 
 ### 5.4 Kernel allocator
 - One `GlobalAlloc` (`kalloc`); ≤8K → slab, >8K → direct PMM order alloc.
-- No vmalloc-equivalent v1; added when drivers need >slab discontig-phys contig-virt.
+- No vmalloc-equivalent yet; added when drivers need >slab discontig-phys contig-virt.
 
 ## 6 Scheduler detailed design
 
@@ -209,44 +201,21 @@ Full table + bit-flag tables: `15`.
 
 - Each driver own crate `drv-*`. Core kernel depends on no driver.
 - Registration via `linkme::distributed_slice!(DRIVERS)`; kernel iterates at boot.
-- v1 first-class: uart-{16550,pl011}, virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2-keyboard (x86 console fallback). Detail: `35`.
+- First-class: uart-{16550,pl011}, virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2-keyboard (x86 console fallback). USB stack per phase 34. Detail: `35`.
 
-## 9 Explicit non-goals v1
+## 9 Absolute exclusions
 
-Things v1 doesn't ship — explicitly to keep `v1.0` reachable. Most of these are now v2 phases (see §3.2), not absolute exclusions.
+The only things this kernel will never ship:
 
-| Item | Disposition |
+| Item | Why |
 |---|---|
-| 32-bit anything; PAE / x86 segment tricks beyond long mode | absolute exclusion — never |
-| hibernate / S3 | v2.x |
-| KVM/hypervisor | v2.x |
-| swap to disk | v2.x |
-| quotas | v2 phase 26 (with xattr/ACL bundle) |
-| NFS/CIFS | v2.x |
-| FUSE | v2.x |
-| SELinux/AppArmor/IMA | v2 phase 24 (LSM hooks) — surface only |
-| DRM/KMS/GPU graphics | v2 phase 32 |
-| USB stack | v2.x (HID-only via virtio in v1; full stack v2.x) |
-| ACPI runtime / AML interp | v2.x |
-| DT overlays | v2.x |
-| iptables/netfilter | v2.x (BPF hooks via phase 24) |
-| vDSO | v2.x |
-| io_uring | v2 phase 23 |
-| ptrace | v2 phase 22 |
-| bpf/seccomp/landlock | v2 phase 24 |
-| namespaces (real) | v2 phase 21 |
-| AF_INET6 socket layer + DHCP + DNS | v2 phase 18 |
-| real virtio-net | v2 phase 19 |
-| mremap proper + per-PTE mprotect | v2 phase 20 |
-| SysV IPC + POSIX MQ + keyring | v2 phase 25 |
-| fanotify | v2 phase 27 |
-| userfaultfd | v2 phase 28 |
-| modern mount API + real mount/chroot | v2 phase 29 |
-| perf/ftrace/ebpf-trace | v2 phase 30 |
-| core dumps | v2 phase 31 |
-| pkey (Memory Protection Keys) hardware | v2.x |
+| 32-bit anything; PAE / x86 segment tricks beyond long mode | architectural — long-mode only, 64-bit only |
+| Big-endian | both target arches are little-endian; saves a register-shuffling tax |
 
-Tempted to slip something into v1? Add to v2 ladder instead.
+Everything else listed in any prior "non-goals" table is in scope.
+The ordering across phases (§3) is dependency-driven, not a priority
+filter. Tempted to call something out of scope? It isn't — it's a
+later phase.
 
 ## 10 CI
 
@@ -279,20 +248,20 @@ Per `02`. MANIFEST authoritative. Every spec has §Cross-spec. Boot flow Mermaid
 
 1. No subsystem merge until PR-time gates green (build, oracle proptest 10M ops, loom, miri, QEMU smoke, coverage, bench).
 2. No `unsafe` ships without SAFETY naming invariant.
-3. Phases sequential within a release ladder (v1 sequential; v2 phases independent).
+3. Phases ordered by dependency; non-overlapping phases land in parallel.
 4. Bug >2d to localize ⇒ stop, build the missing test infra that would have localized it. Don't just fix.
-5. Out-of-release-scope feature ⇒ promote to next ladder, don't smuggle.
+5. Every feature is in scope — there is no "next release" parking lot. Out-of-current-phase work goes into a later phase; it does not become "deferred indefinitely."
 
-## 15 v1 exit criterion
+## 15 Release criterion
 
-`v1.0` ships when:
+A release tag (`v1.0`, then `v1.1`, `v1.2`, …) ships when:
 1. PR-time CI green on the tagged commit, both arches, both profiles.
-2. All `43§2` minimum acceptance binaries (busybox-only per R05) run end-to-end on QEMU (boots → login → busybox sh → run util → exit clean). Distro-class binaries (Go, Rust+tokio, redis, nginx, openssh, chrony) moved to `43§3` v2.
-3. Kernel-completeness audit `docs/kernel-audit.md` shows no remaining stub regressions vs the sweep landed sessions 38.
+2. Every `43§2` acceptance binary the phases-done-so-far cover runs end-to-end on QEMU (boot → login → run binary → exit clean).
+3. Kernel-completeness audit `docs/kernel-audit.md` shows no stub regressions vs the previous tag.
 
 That's it. No 168h soak, no duration-based wait — PR-time green + acceptance is the wall. AI-driven oracle proptests + miri + loom + QEMU differential are how bugs get found, not duration runs.
 
-Artifact = `(commit, arch, sha256s of kernel + rootfs, acceptance-binary list with exit codes)`. When in repo → tag `v1.0`.
+Artifact = `(commit, arch, sha256s of kernel + rootfs, acceptance-binary list with exit codes)`. When in repo → tag the next version.
 
 ## 16 Appendix A — spec list
 
@@ -300,9 +269,8 @@ See `MANIFEST.md`.
 
 ## 17 Changelog
 
-- 2026-05-08: `43§2` v1 acceptance shrunk to busybox-only (R05). Go/Rust/redis/nginx/openssh/chrony promoted to `43§3` v2 — those binaries need real ld.so + libc/NSS/PAM + system manager (v2 phases 33-35). v1 contract now matches `00§3.1` scope ("kernel substrate + minimum userspace"); v1 exit gates only on busybox sh + utils running end-to-end.
-- 2026-05-07b: folded v1.x into v2. There's no real dependency between userspace-platform work (real ld.so, libc/NSS/PAM, system manager, RPM, agetty/login) and kernel-parity work (AF_INET6, namespaces, io_uring, etc.) — they're parallel. Single v2 ladder (§3.2), single endgame tag. Old v1.x phases 13-17 renumbered as v2 phases 33-37. New phase 38 = AF_INET6 + sendmmsg/recvmmsg + AF_UNIX SCM_CREDS net completion. All `v1.x` references in the doc tree bulk-renamed to `v2`.
-- 2026-05-07: v1 tightened to "kernel substrate + minimum userspace" (phases 0-12 + minimal acceptance). Old phases 13-17 initially placed in a "v1.x" bridge; superseded by 2026-05-07b fold. NEW v2 phase ladder (§3.2) covers kernel parity + userspace platform + de-stubbed subsystems. v2.x covers desktop/hardware-rich. **All soak gating removed** — duration-based runs are not a v1 exit criterion or phase gate; PR-time CI + `43§2` acceptance is the wall.
+- 2026-05-14: v1/v2/v2.x framing deleted wholesale. Single phase ladder; every Linux subsystem in scope. `docs/00-v2.md` and `docs/v2/` deleted. `§9 non-goals` collapsed to two architectural exclusions (32-bit, big-endian). `§15` re-framed as a generic release criterion that fires per tag, not a one-shot `v1.0` gate.
+- 2026-05-08: `43§2` acceptance shrunk to busybox-only (R05).
 - 2026-05-06: phase ladder gains explicit rows 10/11/12 for modules loader, PCI enumeration, virtio common infra. Spun out from "phase 9 + driver work backing phase 8" because each turned out to be a multi-PR slug deserving its own gate.
 - 2026-05-06: phases 13–17 added covering the Linux-userspace integration arc — dynamic linker, libc/NSS/PAM, system manager, RPM toolchain, agetty/login flow. Each phase is a usable milestone (e.g. phase 13 alone unlocks running unmodified Fedora binaries with a small set of .so files staged).
 

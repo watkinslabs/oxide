@@ -7,7 +7,6 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | File | Status | Frozen | Depends |
 |---|---|---|---|
 | `00-master-plan.md` | DRAFT | — | — |
-| `00-v2.md` | DRAFT | — | `00`,`02` |
 | `01-glossary-and-types.md` | FROZEN | 2026-05-02 | `02`,`08`,`09` |
 | `02-spec-discipline.md` | FROZEN | 2026-05-02 | — |
 | `03-modernity.md` | FROZEN | 2026-05-02 | `02`,`08` |
@@ -74,7 +73,6 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 |---|---|---|---|
 | `boot-flow.md` | FROZEN | 2026-05-02 | `20`,`21`,`33`,`36`,`29` |
 | `kernel-audit.md` | DRAFT | — | `00`,`15` |
-| `v2-arch-plan.md` | DRAFT | — | `00`,`02`,`MANIFEST` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 
 ## Freeze order

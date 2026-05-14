@@ -21,21 +21,21 @@ hint, file-backed mmap).
 
 **2026-05-09 refresh:** F89 closed PR-G's MAP_FIXED via the munmap-
 then-insert pattern; MAP_SHARED + addr hint had landed in F60. All
-v1 sweep PRs A..I are now closed. File-backed mmap is the only
-remaining sub-item, gated on VFS+pagecache (v2 phase 23).
+sweep PRs A..I are now closed. File-backed mmap is the only
+remaining sub-item, gated on VFS+pagecache wiring.
 
-**2026-05-09 v2-rollin pass (F89..F97):** at user direction
-("roll in v2 things now"), nine PRs landed taking deferred items
-from the v2 phase ladder (`docs/00-v2.md§3.1`) and folding them into
-v1 substrate.
+**2026-05-09 rollin pass (F89..F97):** nine PRs landed closing
+audit items wholesale.
   * F89 closes audit PR-G (MAP_FIXED real via munmap-then-insert).
-  * F90 lands xattr family real per-inode overlay (v2 phase 26 substrate).
+  * F90 lands xattr family real per-inode overlay.
   * F92 cap-gates setuid/setgid family + capbset (replaces is_root() lies).
   * F93 cap-aware kill/tgkill/pidfd_send_signal (CAP_KILL + uid match).
   * F94 real inotify watch storage + IN_MODIFY firing via vfs::File hook.
   * F95 real chroot via per-task root prefix in devfs::lookup.
   * F96 fanotify_mark forwarded to inotify substrate.
   * F97 real UTS namespace (per-task hostname via CLONE_NEWUTS).
+
+**2026-05-14 refresh (B14..B24):** ARM completeness sweep — `faccessat` ABI mapping fix (B15), `statx` mask STATX_BASIC_STATS + stx_blocks (B16), `statx`/`newfstatat` ARM ABI routing (B17, B21 real `sys_newfstatat`), ARM EL0 IRQ delivery (B14), ext4 `Ext4FileInode` lazy reads (B21), ARM signal-dispatch: mask delivered signal + `rt_sigreturn_arm` SP offset 40→32 + SIG_FRAME_BYTES 40→48 for AAPCS64 alignment (B22). No new syscall surface added; existing surface now correct on aarch64. Makefile `FEATURES=` extras fix (B24). See `## Rollout plan 2026-05-14` at file end for prioritized open work.
 
 **2026-05-09 syscall stub-sweep (F63..F84):** at user direction, a
 wholesale pass across `syscall_compat.rs` + `syscall_glue.rs` removed
@@ -55,7 +55,7 @@ The kernel's syscall surface is now substantially less mendacious —
 remaining silent-0 entries (NR_VHANGUP, NR_READAHEAD, NR_FADVISE64,
 NR_SYNC_FILE_RANGE, NR_SYNCFS, NR_MLOCK2, NR_CACHESTAT, NR_PKEY_*,
 NR_PROCESS_MADVISE, NR_PROCESS_MRELEASE, NR_KCMP, NUMA family) are
-honest no-ops on the v1 substrate (no swap, no MPU/MPK, single UMA
+honest no-ops on the current substrate (no swap, no MPU/MPK, single UMA
 node, no pagecache).
 
 ## Status legend
@@ -63,16 +63,16 @@ node, no pagecache).
 | code | meaning |
 |---|---|
 | ✅  | real impl, complete enough for distro programs |
-| 🟡  | partial — works for v1 path but missing edge cases |
+| 🟡  | partial — works for the common path but missing edge cases |
 | 🟥  | stub (returns 0 / ENOSYS / no-op) |
 | ❌  | missing — no impl at all |
 
 ## TL;DR — what blocks bash + login + util-linux right now
 
-All v1 sweep PRs A..I are closed as of F89 (2026-05-09). MAP_SHARED
+All sweep PRs A..I are closed as of F89 (2026-05-09). MAP_SHARED
 + addr hint landed in F60; MAP_FIXED via munmap-then-insert in F89.
-File-backed mmap is the last sub-item; gated on VFS+pagecache wiring
-(`17§5`) and tracked as v2 phase 23.
+File-backed mmap is the last sub-item; gated on VFS+pagecache
+wiring (`17§5`).
 
 PR-B (termios + line discipline on /dev/console), PR-C (job
 control), PR-D (signal completeness), PR-E (real threading),
@@ -310,9 +310,9 @@ references.
 
 | feature | state | notes |
 |---|---|---|
-| reboot | 🟥 | EPERM (correct for v1) |
+| reboot | 🟥 | EPERM (kernel-only path) |
 | mount/umount/chroot | 🟥 | EPERM |
-| init_module/finit_module/delete_module | 🟥 | EPERM (kernel modules disabled in v1 userspace) |
+| init_module/finit_module/delete_module | 🟥 | EPERM (kernel modules disabled in current userspace) |
 | kexec_load | 🟥 | EPERM |
 | iopl/ioperm | 🟥 | EPERM |
 | adjtimex / clock_adjtime | 🟥 | EPERM |
@@ -343,15 +343,15 @@ references.
 | D  | Signal completeness (rt_sigsuspend / sigaltstack / rt_sigtimedwait / rt_sigqueueinfo) | ✅ done | `kernel/src/syscall_glue_signal.rs:407-561` |
 | E  | Real threading (clone CLONE_VM\|CLONE_THREAD, clone3, gettid distinct) | ✅ done | `kernel/src/syscall_glue_clone.rs`, `kernel/src/syscall_glue_proc.rs:25-118` |
 | F  | /proc completion (`/proc/self/{maps,status,cmdline,exe,fd,environ,stat}`, `/proc/{cpuinfo,meminfo,uptime,loadavg}`) | ✅ done | `kernel/src/procfs.rs`, `kernel/src/procfs_static.rs` |
-| G  | mmap completeness — MAP_SHARED, MAP_FIXED, addr hint, MADV_DONTNEED, mlockall | ✅ done | `kernel/src/user_as.rs` — F60 (MAP_SHARED + addr hint), F89 (MAP_FIXED via munmap-then-insert). File-backed mmap still ENOSYS pending VFS+pagecache wiring (`17§5`); listed as v2 phase 23 in `00§3.2`. |
+| G  | mmap completeness — MAP_SHARED, MAP_FIXED, addr hint, MADV_DONTNEED, mlockall | ✅ done | `kernel/src/user_as.rs` — F60 (MAP_SHARED + addr hint), F89 (MAP_FIXED via munmap-then-insert). File-backed mmap still ENOSYS pending VFS+pagecache wiring (`17§5`). |
 | H  | Modern fd-creating syscalls (pidfd_open, eventfd2, signalfd, timerfd, dup3, close_range, pipe2) | ✅ done | `kernel/src/syscall_glue_anonfd.rs`, `kernel/src/syscall_glue_fs.rs:499-540`, `kernel/src/dev_pidfd.rs`, `kernel/src/syscall_glue.rs:117` |
-| I  | Real virtio-net live driver | ✅ done | this session — F59-01..15. DHCP/DNS deferred to v2 phase 18 (userspace). |
-| J  | AF_INET6 + sendmmsg/recvmmsg / real getsockopt | v2 phase 18/38 | not v1 |
-| K  | xattr + chroot + mount + namespaces | partial v1 + v2 carryover | F90 xattr overlay (real per-inode storage; ext4-on-disk rides v2). F95 chroot (per-task root + devfs::lookup prefix; CAP_SYS_CHROOT-gated). F97 UTS namespace (per-task hostname via CLONE_NEWUTS). Mount/umount + per-NS mount table still v2 phase 29. CLONE_NEWPID/NEWUSER/NEWNET still v2 phase 21. |
+| I  | Real virtio-net live driver | ✅ done | F59-01..15. DHCP/DNS userspace plumbing still open. |
+| J  | AF_INET6 + sendmmsg/recvmmsg / real getsockopt | open | tracked in `## Rollout plan` below |
+| K  | xattr + chroot + mount + namespaces | partial | F90 xattr overlay (per-inode storage); F95 chroot (per-task root + devfs::lookup prefix; CAP_SYS_CHROOT-gated); F97 UTS namespace (per-task hostname via CLONE_NEWUTS). Real mount/umount + per-NS mount table + CLONE_NEWPID/NEWUSER/NEWNET still open. |
 
-All v1 sweep PRs A..I closed as of F89 (2026-05-09). The `J`/`K`
-entries are v2 work per `00§3.2`. File-backed mmap remains a v2
-follow-up (gated on VFS+pagecache).
+All sweep PRs A..I closed as of F89 (2026-05-09). `J`/`K` are
+open; tracked in the rollout plan at file end. File-backed mmap
+remains gated on VFS+pagecache wiring (`17§5`).
 
 ## Notes on the bigger gaps that DON'T sit under "syscall stubs"
 
@@ -364,13 +364,159 @@ follow-up (gated on VFS+pagecache).
 - **input subsystem (evdev)**: zero.
 - **GPU drivers**: zero.
 
-## Do-not-touch v1 (deferred)
+## Rollout plan 2026-05-14
 
-- core dump generation (sigaction SIGSEGV → coredump)
-- POSIX MQ
-- SysV IPC
-- io_uring
-- bpf / seccomp / landlock
-- glibc compatibility (FSGSBASE, set_thread_area i386, IFUNC)
-- ptrace
-- vDSO
+Goal: every Linux binary in `43§2` runs end-to-end without
+hitting ENOSYS / EPERM / silent-no-op. Ordered by impact (how many
+target binaries each batch unblocks) not by syscall count. Each
+batch is a single branch/PR with a named exit gate. No deferrals,
+no parking lot — every Linux subsystem on the contract is in
+scope; the only question is sequence.
+
+### Batch K1 — /dev/console real termios (gates: bash, login cooked-mode, password echo)
+
+Affected: every interactive program that reads from `/dev/console`
+without going through a PTY pair. Currently the console fakes a
+zero-filled `struct termios` (`syscall_glue_ioctl.rs:90`), ignores
+TCSETS, hardcodes ECHO and CR→NL on input, never emits ONLCR on
+write, and has no ISIG path.
+
+- Per-device `struct termios` slot in the console driver.
+- Honor TCGETS / TCSETS / TCSETSW / TCSETSF on the console fd.
+- Wire ICANON line-accumulation buffer (commit on `\n` or VEOF).
+- Wire ECHO toggle (and ECHONL, ECHOE, ECHOK).
+- Wire ONLCR on `write(fd, "\n", …)` — output side, not just echo.
+- Wire ISIG: VINTR/VQUIT/VSUSP → signal delivery to fg pgrp on the
+  controlling tty (already wired for PTY pair; reuse path).
+- Test: `stty -echo` then `read pw` shows no echo; Ctrl-C aborts a
+  `sleep 30`; `printf "a\nb\n"` produces `a\r\nb\r\n` on a serial
+  console with ONLCR set (default).
+
+### Batch K2 — mm completeness for non-toy programs (gates: realloc-heavy + JIT + cp/sendfile)
+
+- `mremap` real: MREMAP_MAYMOVE shrink + grow with copy; MREMAP_FIXED
+  via munmap-then-insert pattern (mirror F89's MAP_FIXED handling).
+- `mprotect` per-PTE: walk the range and flip W/X bits in the live
+  page tables; TLB shootdown per-CPU (already plumbed for SMP-coop).
+- `sendfile` real: copy via pagecache (read-then-write under VFS),
+  not ENOSYS. cp, nginx, scp, busybox httpd all use it.
+- File-backed `mmap` real: KernelBytes path already wires ELF; extend
+  to any vfs::File via demand-fault → pagecache (depends on K6).
+- Test: `mprotect_smoke` extended to grow + shrink + page split;
+  `cp -a /bin /tmp/bin` byte-identical via sendfile path.
+
+### Batch K3 — fcntl + fd flag honesty (gates: server programs + non-blocking I/O)
+
+- `fcntl F_SETFL` toggling O_NONBLOCK takes effect on subsequent
+  read/write on pipes, sockets, ptys, ttys (currently no-op).
+- `fcntl F_GETFL` returns the live flag set (currently stale).
+- `fcntl F_DUPFD_CLOEXEC` (the modern variant).
+- `fcntl F_SETLK / F_GETLK / F_OFD_*` advisory locks via per-inode
+  range list (musl's `flock_chk` + tar/dpkg use these).
+- Test: socat / busybox httpd accepts a connection in non-blocking
+  mode and EAGAIN's correctly.
+
+### Batch K4 — /proc/self surface (gates: ldd, gdb stubs, glibc init)
+
+- `/proc/self/exe` symlink → resolve current task's binary path.
+- `/proc/self/fd/<n>` symlinks → resolve open vfs::File path.
+- `/proc/self/environ` from saved exec envp.
+- `/proc/self/mountinfo` from per-NS mount table.
+- `/proc/partitions` from registered block devs.
+- `/proc/filesystems` from registered fs types.
+- `/proc/devices` from registered char/block major numbers.
+- Test: `ls -l /proc/self/exe` resolves; `readlink /proc/self/fd/0`
+  returns `/dev/console` or `/dev/pts/N`.
+
+### Batch K5 — signal completeness round 2 (gates: bash signal traps, pkill, daemons)
+
+- `rt_sigsuspend` real (was ENOSYS) — atomic block-mask-and-wait.
+- `rt_sigtimedwait` real — bash uses for SIGCHLD timeouts.
+- Default-action coverage: SIGSTOP/SIGCONT already; add core dump
+  for SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS once K6 lands.
+- Real-time signals 32..64 — extend per-task sigpending from u64
+  to a 64-entry queue.
+- Test: `bash -c 'trap : USR1; kill -USR1 $$; echo ok'` prints `ok`.
+
+### Batch K6 — VFS+pagecache wiring real (gates: file-backed mmap, core dumps, sendfile)
+
+Substrate for K2 (file-backed mmap) and K5 (core dump SIGSEGV→ELF).
+Already partial (block layer + page cache + ext4 RW done per
+`00§3.1`); missing is the read-side page-fault handler that maps a
+file's pagecache page into the faulting task's AS.
+
+- Hook page fault → vfs::File backing → pagecache lookup → install
+  the page in the task's AS as read-only-shared (writable on COW).
+- TLB shootdown on page eviction.
+- Test: `mmap /bin/sh PROT_READ MAP_PRIVATE` of size 4 KiB returns a
+  va that reads the binary's first page byte-identical to
+  `head -c 4096 /bin/sh`.
+
+### Batch K7 — empirical acceptance harness (gates: release tag)
+
+Per `43§5`: build a harness that drives `tests/acceptance/<bin>/
+scenario.sh` under QEMU on both arches, asserts expected `<` lines
+in the serial stream, fails on `[FAULT]` / `panic:` substrings.
+Land the busybox scenario first; add per-applet scenarios as
+batches K1..K6 unblock them. Exit gate: every entry in `43§2`
+passes on both arches.
+
+### Batch K8 — core dump on fatal signal
+
+SIGSEGV / SIGABRT / SIGFPE / SIGILL / SIGBUS → ELF coredump
+written to fs per `27`. Depends on K6 (pagecache for backing-file
+reads) and K5 (default-action wiring).
+
+### Batch K9 — ptrace full machinery
+
+`PTRACE_ATTACH/SEIZE/DETACH/CONT/SYSCALL/SINGLESTEP/GETREGS/
+SETREGS/PEEKTEXT/POKETEXT/PEEKDATA/POKEDATA/GETSIGINFO/SETOPTIONS`
+real, integrating with the scheduler's stop-state machine and
+the signal delivery path. Per-arch register slab (x86-64 user
+regs + AArch64 user regs).
+
+### Batch K10 — bpf + seccomp + landlock
+
+bpf verifier (cBPF + eBPF subsets), JIT for x86-64 and AArch64,
+hook points (XDP, socket-filter, tracepoint, syscall-entry).
+seccomp_unotify, BPF_PROG_TYPE_SECCOMP. landlock ruleset
+syscalls + per-task ruleset chain. Per `27`.
+
+### Batch K11 — io_uring
+
+`io_uring_setup` / `io_uring_enter` / `io_uring_register` real,
+SQE/CQE rings backed by shared mmap, IORING_OP_* covering
+read/write/openat/close/accept/connect/send/recv/timeout/poll
+at minimum. Per `30`.
+
+### Batch K12 — SysV IPC + POSIX MQ
+
+`shmget/shmat/shmdt/shmctl`, `semget/semop/semctl`,
+`msgget/msgsnd/msgrcv/msgctl`. `mq_open/mq_timedsend/
+mq_timedreceive/mq_notify` real (storage already partial). Per `24`.
+
+### Batch K13 — DRM/KMS + input subsystem
+
+DRM ioctls (DRM_IOCTL_MODE_*), virtio-gpu KMS bring-up, evdev
+char devs (`/dev/input/event*`) backed by virtio-input. Per a
+new spec (TBD section in `35`).
+
+### Batch K14 — vDSO
+
+Per-arch vDSO ELF mapped into every user AS; clock_gettime /
+getcpu / time / rt_sigreturn fast paths in user mode. Per `15`.
+
+### Batch K15 — glibc compatibility surface
+
+`set_thread_area` (i386 path), FSGSBASE instructions enabled in
+the user CR4 mask, IFUNC resolver wiring in the ELF loader.
+
+### Sequencing
+
+K1 is the unblock-everything-interactive batch — start there. K2-K3
+are independent and can land in parallel branches. K4 piggybacks on
+existing procfs scaffolding. K5 depends on K2/K3 for the core-dump
+path but rt_sigsuspend is independent. K6 is the substrate item —
+separate spec touch — and gates K2/K5 completion. K7 lands
+incrementally as K1..K6 unblock entries. K8..K15 are independent
+of one another and pick up after K6 (pagecache) is in.
