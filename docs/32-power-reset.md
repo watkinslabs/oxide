@@ -13,7 +13,7 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall,
 - Wiring: `kernel_sys_reboot` validates magic1/magic2 + CAP_SYS_BOOT
   then dispatches through `power::cmd`. `halt_forever` in
   `kernel/src/lib.rs` now delegates to `power::halt`.
-- ACPI _S5 walk + PCI cf9 + 8042 reset port stay v2.x.
+- ACPI _S5 walk + PCI cf9 + 8042 reset port land with phase 35 (ACPI runtime + AML interpreter).
 
 ## 1 Purpose
 
@@ -23,7 +23,7 @@ Halt, reboot, poweroff. Cpu idle. Frequency scaling stub.
 
 1. `reboot()` syscall requires `CAP_SYS_BOOT`.
 2. Shutdown sequence quiesces every CPU before invoking firmware reset path.
-3. No AML interpreter in v1; power mgmt limited to halt + reset via UEFI Runtime Services or platform reset register.
+3. No AML interpreter yet (phase 35); power mgmt limited to halt + reset via UEFI Runtime Services or platform reset register.
 
 ## 3 Public ifc
 
@@ -44,7 +44,7 @@ pub fn cpu_poweroff_secondary();// shut down secondary CPUs at shutdown
 - x86: `sti; hlt; cli` if interrupts pending (loop until IRQ wakes us).
 - arm: `wfi`.
 
-C-states: not used in v1 (no AML). v2 with simple ACPI _CST table reading.
+C-states: not used yet (no AML). Phase 35 enables simple ACPI _CST table reading.
 
 ## 5 Reset / poweroff
 
@@ -63,8 +63,8 @@ After all userspace dies (init exit triggers panic; or `reboot(_HALT)`):
 
 ## 7 Frequency scaling
 
-v1.0: nothing. CPU runs at firmware-set frequency.
-v2: simple cpufreq stub via MSR (x86) / SCMI (arm); userspace `cpufreq` daemon manages governors.
+Now: nothing. CPU runs at firmware-set frequency.
+Later phase: simple cpufreq stub via MSR (x86) / SCMI (arm); userspace `cpufreq` daemon manages governors.
 
 ## 8 Concurrency
 

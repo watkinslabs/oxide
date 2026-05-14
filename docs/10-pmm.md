@@ -6,7 +6,7 @@ Buddy allocator owning all phys frames. **Bitmap = source of truth for free stat
 
 ## 1 Purpose
 
-Alloc/free phys frames orders 0..=`MAX_ORDER`=20 (4KiB..4GiB). 1 zone v1 (NUMA later). Doesn't know about VM, caches.
+Alloc/free phys frames orders 0..=`MAX_ORDER`=20 (4KiB..4GiB). 1 zone (NUMA per phase 41). Doesn't know about VM, caches.
 
 ## 2 Inputs/outputs
 
@@ -118,7 +118,7 @@ Boot path is sole exception to alloc/free symmetry; single audited fn.
 
 Single global `Spinlock<PmmInner>` class `Buddy` (leaf). `lock_irqsave`. Lock-held duration O(MAX_ORDER) ≈ few hundred cy uncontended. Stats also take lock (not hot path).
 
-v2: per-CPU magazine cache layer (lean: defer; v1 ships bare buddy).
+Per-CPU magazine cache layer tracked as later phase; bare buddy ships now.
 
 ## 8 Perf budget
 
@@ -161,7 +161,7 @@ Bench: `bench/pmm_bench.rs` vs hosted oracle; `bench-history/`.
 
 ## 13 Cross-spec
 
-`11`,`12` (consumers). DMA drivers (`35`). Memory hotplug not v1; revising invariants 1,4,6 needed.
+`11`,`12` (consumers). DMA drivers (`35`). Memory hotplug tracked as later phase; revising invariants 1,4,6 needed.
 
 ## 14 Changelog
 

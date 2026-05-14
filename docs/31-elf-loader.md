@@ -29,7 +29,7 @@ pub struct LoadedExe { entry: UVA<u8>, sp: UVA<u8>, brk: UVA<u8>, interp: Option
    - PT_LOAD → mmap into AS at `p_vaddr` (or `+ load_bias` for PIE).
    - PT_INTERP → read string.
    - PT_DYNAMIC → noted for ld.so.
-   - PT_GNU_STACK → set stack exec bit (must be off in v1; W^X).
+   - PT_GNU_STACK → set stack exec bit (must be off; W^X).
    - PT_TLS → record `image_size`,`mem_size`,`p_align` for TLS template.
 4. If PT_INTERP set:
    - Load interp ELF (recurse).
@@ -56,7 +56,7 @@ Not in kernel scope; userspace implementation. Only relevance to kernel: `PT_INT
 
 ## 6 Hardening
 
-- ASLR: randomize stack base, mmap base, brk base, ld.so load base. PIE-required for full randomization. v2; v1 ships without ASLR.
+- ASLR: randomize stack base, mmap base, brk base, ld.so load base. PIE-required for full randomization. Tracked as later phase; ships without ASLR for now.
 - VDSO mapped at randomized va per process.
 - `noexec` stack enforced.
 

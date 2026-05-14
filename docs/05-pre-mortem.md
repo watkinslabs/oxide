@@ -14,21 +14,21 @@ Fix: budgets rewritten in `04§1` (800 x86 KPTI+PCID, 600 arm; vDSO covers `cloc
 
 ### A2 systemd vs no-BPF
 systemd≥254 uses BPF: `IPAccounting=`, `IPAddressDeny=`, `RestrictNetworkInterfaces=`, parts of `ExecPaths=`/`NoExecPaths=`, cgroup-attached BPF for per-unit net counters. Without BPF, unit files silently no-op or fail.
-Fix: full systemd PID 1 → v2.x (`43§4`). v2 phase 24 adds the BPF subset systemd needs. Don't quietly miss.
+Fix: full systemd PID 1 sits at `43§4`. Phase 23 adds the BPF subset systemd needs. Don't quietly miss.
 
 ### A3 runc OCI vs no-FUSE
 Rootless containers need fuse-overlayfs (real overlayfs needs CAP_SYS_ADMIN in init userns until recent kernels). Privileged runc fine without FUSE.
-Fix: v2 ships privileged runc only. Rootless runc → v2.x (`43§3`).
+Fix: privileged runc lands first at `43§3`; rootless runc gates on overlayfs in userns (later phase, same `43§3` row when ready).
 
 ### A4 ext4+journal scope
 JBD2 is its own substrate — crash-safe, ordered-writeback, power-cut-survival; Linux JBD2 ~15KLOC and still gets bugs. Bundling it with block+pagecache+ext4 RW into a single phase under-scopes the work.
 Fix: split phases — block+pagecache (own); ext4 RO (own); JBD2+ext4 RW (own). Each phase advances on its §Test contract green, not on calendar.
 
 ### A5 Acceptance binary list mis-sorted
-v1 split (per `43§2-4`):
-- v1: busybox, bash 5, coreutils 9, redis 7 (epoll/eventfd/signalfd/accept4/SO_REUSEPORT), Go≥1.22 + Rust≥1.75 statically-linked, openssh 9 (PTYs+modern crypto), nginx (without io_uring), sqlite 3.45.
-- v2: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
-- v2: systemd≥254 PID1 (~150 syscalls + BPF + cgroup subtree + sd_notify + journald + 100s of unit-file edges); rootless runc; Wayland GUI.
+Tiered per `43§2-4`:
+- Smoke: busybox, bash 5, coreutils 9, redis 7 (epoll/eventfd/signalfd/accept4/SO_REUSEPORT), Go≥1.22 + Rust≥1.75 statically-linked, openssh 9 (PTYs+modern crypto), nginx (without io_uring), sqlite 3.45.
+- Dynamic-userspace: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
+- Distro: systemd≥254 PID1 (~150 syscalls + BPF + cgroup subtree + sd_notify + journald + 100s of unit-file edges); rootless runc; Wayland GUI.
 
 ## B Scope
 
@@ -41,7 +41,7 @@ Needs: SQ/CQ ring shared mmap, sqpoll worker(s), 80+ opcodes, polled completion,
 ### B3 TCP scope vs Linux-app compatibility
 smoltcp = single-thread, embedded. Linux-compat TCP needs MP-CPU lock-free socket tables; BBR/CUBIC/DCTCP; TCP_NODELAY/CORK/FASTOPEN/SO_REUSEPORT (hash-LB); window-scale, SACK, TLP, RACK, PRR; conntrack for any iptables-userspace.
 Real-app compat is "every TCP_* opt has documented Linux semantic", not "iperf3 100Mb/s." Its own sub-phase.
-Fix: scope phase 8 honestly. v1 = "loopback + AF_INET TCP/UDP + AF_UNIX passes must-run binary list"; not NIC-tuned line-rate. Real virtio-net + DHCP/DNS = v2 phases 18-19.
+Fix: scope phase 8 honestly. Phase 8 gate = "loopback + AF_INET TCP/UDP + AF_UNIX passes must-run binary list"; not NIC-tuned line-rate. Real virtio-net live driver is phase 13 (done); AF_INET6 + DHCP/DNS land in phase 15.
 
 ## C Rust-as-kernel risks
 
@@ -59,7 +59,7 @@ Fix: `kassert!(cond, "literal")` only (`07§5`). `panic!(fmt)` build-fail (CI gr
 
 ### C4 `-Zbuild-std` + toolchain
 `*-unknown-none` w/ custom CPU features needs custom rustc OR `-Zbuild-std`. Plan doesn't pick.
-Fix: nightly + `-Zbuild-std`, `rust-toolchain.toml` pin (`07§1`). Stable v2+.
+Fix: nightly + `-Zbuild-std`, `rust-toolchain.toml` pin (`07§1`). Stable Rust support gates on inline-asm + naked-fn + ABI-pin stabilization upstream.
 
 ### C5 Atomic model on weak arches
 Rust uses C++11; Linux LKMM has address-dependency / control-dependency tricks not exact-match on aarch64.
@@ -84,10 +84,10 @@ proptest vs buddy oracle proves no overlapping memory. Doesn't prove no contenti
 Fix: liveness watchdog (no-progress-N-sec); bench harness hooked to oracle (`04§5`); long-running counters (slab obj, PT pages, refcounts) tracked across QEMU-acceptance runs.
 
 ### D2 (retired) Soak gating
-Original concern: per-phase soak gate stalls a solo project. Resolved 2026-05-07 by removing soak gating entirely per `00§17`. PR-time CI is the only wall; v1 exit per `00§15` is acceptance-binary pass.
+Original concern: per-phase soak gate stalls a solo project. Resolved 2026-05-07 by removing soak gating entirely per `00§17`. PR-time CI is the only wall; release exit per `00§15` is acceptance-binary pass.
 
 ### D3 (retired) Two-machine reproduction
-v1 exit no longer requires multi-machine reproduction. PR-time CI on GHA hosted runners + `43§2` acceptance suffices.
+Release exit no longer requires multi-machine reproduction. PR-time CI on GHA hosted runners + `43§2` acceptance suffices.
 
 ## E Hardware reality
 
@@ -97,11 +97,11 @@ Fix: explicit support matrix. Pi 4 not supported, Pi 5 yes. Don't be vague.
 
 ### E2 No AML cripples bare-metal laptop power
 Most laptop power (thermal, sleep, lid, fan) flows through AML methods. UEFI Runtime Services + `_S5` reset reg = enough for halt+reboot, not "doesn't melt".
-Fix: explicit. v1 supports cloud + headless server bare-metal. Power = halt+reboot+CPU-temp-via-MSR. Laptops v2+.
+Fix: explicit. First ladder rungs target cloud + headless server bare-metal. Power = halt+reboot+CPU-temp-via-MSR. Laptops gate on hibernate/S3 (phase 41).
 
 ### E3 virtio-only first deployment
-`03§7` lists igc/ice/mlx5 as if v1. Each is its own driver-grade subsystem. v1 = QEMU/KVM + virtio + serial. Real NICs v2.
-Fix: driver list amended (`35§4`). v1: virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2 kbd. Real NIC drivers (igc/ice/mlx5) → v2.x.
+`03§7` once listed igc/ice/mlx5 as if first-rung. Each is its own driver-grade subsystem. First-rung target = QEMU/KVM + virtio + serial; real NICs land per phase 35.
+Fix: driver list amended (`35§4`). First-rung: virtio-{blk,net,console,rng,vsock,input,gpu}, AHCI, NVMe, PS/2 kbd. Real NIC drivers (igc/ice/mlx5) per phase 35.
 
 ## F Missing entirely
 
@@ -152,7 +152,7 @@ Solo "sign-off" = self-loop. Discipline still has value (pre-commit forcing) but
 Fix: time-delayed self-review (`02§7`). 48h cool-off on text; re-read fresh.
 
 ### G2 (retired) Two-machine repro
-Cf D3. Resolved 2026-05-07 — v1 exit now PR-time CI + `43§2` acceptance per `00§15`.
+Cf D3. Resolved 2026-05-07 — release exit now PR-time CI + `43§2` acceptance per `00§15`.
 
 ### G3 (retired 2026-05-07) Timeline-as-risk framing
 Old concern was "long calendar kills morale." AI-driven solo cadence makes that framing obsolete; risk is now scope creep and substrate gaps, not duration. Each phase ships a usable artifact (PMM smoke, kernel boots, login works, etc.) — the visible-artifact mitigation already applies regardless of calendar.
@@ -160,14 +160,14 @@ Old concern was "long calendar kills morale." AI-driven solo cadence makes that 
 ## H Summary fixes (priority)
 
 1. Realign cycle budgets w/ KPTI on (`04§1`). ✓
-2. Split must-run binary list v1/v2/v2.x (`03§11`,`43§2-4`). ✓
+2. Tier must-run binary list smoke/dynamic-userspace/distro (`03§11`,`43§2-4`). ✓
 3. Phases for io_uring, JBD2/ext4-RW, TCP-real-app (`00§3`). pending master-plan compress
 4. Toolchain strategy `-Zbuild-std` on pinned nightly (`07`). ✓
 5. `panic=abort`, `kassert!`-only, no-`dyn`-HAL rules (`07§5`). ✓
 6. `06` memory model exists. ✓
 7. `01` w/ frozen Errno. ✓
 8. Userspace+init+image-pipeline phase 5 sub-tasks (`29`,`39`). ✓
-9. Cut runc/systemd from v1 (`43§4`). ✓
+9. Move runc/systemd off the smoke tier into distro tier (`43§4`). ✓
 10. Solo-dev calendar realism (`00§3`). pending master-plan compress
 
 ## I Changelog
