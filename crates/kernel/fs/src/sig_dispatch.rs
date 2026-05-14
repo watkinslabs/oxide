@@ -34,7 +34,16 @@
 #![cfg(target_os = "oxide-kernel")]
 
 const SIG_FRAME_MAGIC: u64 = 0x5A55_5A55_DEAD_BEEF;
-const SIG_FRAME_BYTES: u64 = 40;
+// 48 B so sp = saved_sp - 48 stays 16-aligned (handler-entry SP must be
+// 16-aligned on AArch64) and so we have room for the saved sigmask
+// slot at offset 40. Layout:
+//   [sp +  0]  magic
+//   [sp +  8]  saved_pstate / rflags
+//   [sp + 16]  saved_sp / rsp
+//   [sp + 24]  saved_pc / rip
+//   [sp + 32]  restorer  (x86 ret target; ARM also writes for symmetry, but LR=restorer)
+//   [sp + 40]  saved sigmask — restored by rt_sigreturn
+const SIG_FRAME_BYTES: u64 = 48;
 
 /// Arch-neutral entry: route to deliver_x86 / deliver_arm.
 /// # SAFETY: caller is the syscall dispatch tail on the running
@@ -85,6 +94,19 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
     let mut sp = saved_rsp;
     sp = sp.saturating_sub(SIG_FRAME_BYTES);
 
+    // Block the delivered signal during its handler (POSIX
+    // SA_NODEFER-off). Without this, the syscall-return path
+    // re-delivers SIGCHLD nested inside the SIGCHLD handler;
+    // each nested frame writes 48 B over the outer handler's
+    // saved x19/x20 area on AArch64 and lands `SIG_FRAME_MAGIC`
+    // in a callee-saved reg. rt_sigreturn restores this old mask.
+    use core::sync::atomic::Ordering;
+    let cur = sched::live::current();
+    let old_sigmask = match cur.as_ref() {
+        Some(c) => c.sigmask.fetch_or(1u64 << (sig - 1), Ordering::AcqRel),
+        None    => 0,
+    };
+
     // SAFETY: sp validated < USER_VA_END (saved_rsp came from user, was < USER_VA_END); CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted).
     unsafe {
         core::ptr::write_volatile((sp +  0) as *mut u64, SIG_FRAME_MAGIC);
@@ -92,6 +114,7 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
         core::ptr::write_volatile((sp + 16) as *mut u64, saved_rsp);
         core::ptr::write_volatile((sp + 24) as *mut u64, saved_rip);
         core::ptr::write_volatile((sp + 32) as *mut u64, restorer);
+        core::ptr::write_volatile((sp + 40) as *mut u64, old_sigmask);
     }
 
     // The handler will be entered with the restorer addr as if it
@@ -143,8 +166,7 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
     // Handler entered with rsp=sp+32 (pointing at restorer addr).
     // Handler `ret` popped restorer (rsp=sp+40, jumped to restorer).
     // sa_restorer issues `mov rax, 15; syscall` — at syscall the
-    // user rsp is sp+40. Our magic is at sp+0, so frame_base =
-    // cur_rsp - 40.
+    // user rsp is sp+40. Magic is at sp+0; frame_base = cur_rsp - 40.
     let frame_base = cur_rsp.saturating_sub(40);
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
@@ -154,15 +176,19 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
     if magic != SIG_FRAME_MAGIC {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: same validated range as the magic read; saved fields at +8/+16/+24 are 8-byte aligned per the layout we wrote in deliver_x86; CPL=0 reads through caller's AS.
-    let (saved_rflags, saved_rsp, saved_rip) = unsafe { (
+    // SAFETY: same validated range as the magic read; saved fields at +8/+16/+24/+40 are 8-byte aligned per the layout we wrote in deliver_x86; CPL=0 reads through caller's AS.
+    let (saved_rflags, saved_rsp, saved_rip, saved_sigmask) = unsafe { (
         core::ptr::read_volatile((frame_base +  8) as *const u64),
         core::ptr::read_volatile((frame_base + 16) as *const u64),
         core::ptr::read_volatile((frame_base + 24) as *const u64),
+        core::ptr::read_volatile((frame_base + 40) as *const u64),
     ) };
     frame[0] = saved_rip;
     frame[1] = saved_rflags;
     frame[2] = saved_rsp;
+    if let Some(c) = sched::live::current() {
+        c.sigmask.store(saved_sigmask, core::sync::atomic::Ordering::Release);
+    }
     #[cfg(feature = "debug-sched")]
     {
         klog::write_raw(b"[INFO]  sig: rt_sigreturn rip=");
@@ -193,10 +219,22 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
     let saved_pstate = frame.spsr_el1;
     let saved_sp    = frame.sp_el0;
 
-    // Carve a 40-byte signal frame on the user stack: same wire
-    // shape as x86 so the per-arch sa_restorer thunks differ only
-    // in the syscall-instruction tail.
+    // Carve a 48-byte signal frame on the user stack: same wire
+    // shape as x86 plus a saved-sigmask slot at +40. sp = saved_sp
+    // - 48 keeps the new SP 16-byte aligned (AAPCS64 requires
+    // 16-aligned SP at any public function entry).
     let mut sp = saved_sp.saturating_sub(SIG_FRAME_BYTES);
+    // Block the delivered signal during its handler (POSIX
+    // SA_NODEFER-off). Prevents the syscall-return path from
+    // re-entering deliver_arm for SIGCHLD while busybox-init is
+    // still inside its SIGCHLD handler; each nested frame would
+    // otherwise stomp on the outer handler's saved-callee area.
+    use core::sync::atomic::Ordering;
+    let cur = sched::live::current();
+    let old_sigmask = match cur.as_ref() {
+        Some(c) => c.sigmask.fetch_or(1u64 << (sig - 1), Ordering::AcqRel),
+        None    => 0,
+    };
     // SAFETY: sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
     unsafe {
         core::ptr::write_volatile((sp +  0) as *mut u64, SIG_FRAME_MAGIC);
@@ -204,6 +242,7 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
         core::ptr::write_volatile((sp + 16) as *mut u64, saved_sp);
         core::ptr::write_volatile((sp + 24) as *mut u64, saved_pc);
         core::ptr::write_volatile((sp + 32) as *mut u64, restorer);
+        core::ptr::write_volatile((sp + 40) as *mut u64, old_sigmask);
     }
 
     // The handler enters with x30 = restorer (so a final `ret`
@@ -244,9 +283,16 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     // SAFETY: per fn contract — live saved SVC frame, sole writer per dispatch.
     let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
     let cur_sp = frame.sp_el0;
-    // sa_restorer's `svc #0` happens with sp at frame_base+40 (handler
-    // entered at sp+32 = restorer slot, then ret popped 8 → +40).
-    let frame_base = cur_sp.saturating_sub(40);
+    // ARM `ret` is a register-indirect branch — does NOT pop the
+    // stack (unlike x86 `ret` which does). Handler entered with
+    // SP=frame_base+32 and LR=restorer; epilogue restores SP to
+    // frame_base+32 before `ret` to restorer; sa_restorer's `svc
+    // #0` fires with SP unchanged → cur_sp = frame_base + 32, so
+    // frame_base = cur_sp - 32. Pre-B22 code used cur_sp - 40 (copy
+    // of x86 path where the 8-byte pop adds an extra slot); magic
+    // check read at frame_base - 8 failed, and init faulted with
+    // FAR = SIG_FRAME_MAGIC.
+    let frame_base = cur_sp.saturating_sub(32);
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -255,15 +301,19 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     if magic != SIG_FRAME_MAGIC {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: same validated range; saved fields at +8/+16/+24 are 8-byte aligned per layout in deliver_arm.
-    let (saved_pstate, saved_sp, saved_pc) = unsafe { (
+    // SAFETY: same validated range; saved fields at +8/+16/+24/+40 are 8-byte aligned per layout in deliver_arm.
+    let (saved_pstate, saved_sp, saved_pc, saved_sigmask) = unsafe { (
         core::ptr::read_volatile((frame_base +  8) as *const u64),
         core::ptr::read_volatile((frame_base + 16) as *const u64),
         core::ptr::read_volatile((frame_base + 24) as *const u64),
+        core::ptr::read_volatile((frame_base + 40) as *const u64),
     ) };
     frame.elr_el1  = saved_pc;
     frame.spsr_el1 = saved_pstate;
     frame.sp_el0   = saved_sp;
+    if let Some(c) = sched::live::current() {
+        c.sigmask.store(saved_sigmask, core::sync::atomic::Ordering::Release);
+    }
     #[cfg(feature = "debug-sched")]
     {
         klog::write_raw(b"[INFO]  sig: rt_sigreturn_arm pc=");
