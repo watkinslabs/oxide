@@ -53,12 +53,12 @@ Linux numbers reserved for dropped → `ENOSYS` (not `EINVAL`, not silent succes
 
 ## 4 Memory
 
-- 48-bit canonical VA both arches; 5-level (57-bit) v2 flag.
+- 48-bit canonical VA both arches; 5-level (57-bit) tracked as a later phase.
 - `MAP_FIXED_NOREPLACE` default placement; `MAP_FIXED` opt-in overwrite.
 - THP: madvise-only, never "always".
 - userfaultfd: yes (Go, CRIU need).
 - memfd_secret: yes (no kernel direct map).
-- No swap to disk in v1. zram-style v2.
+- No swap to disk; zram-style tracked as later phase.
 
 ## 5 Filesystems
 
@@ -74,7 +74,7 @@ Linux numbers reserved for dropped → `ENOSYS` (not `EINVAL`, not silent succes
 | OverlayFS | containers |
 | 9p / virtiofs | virtiofs preferred; 9p only for QEMU host shares dev-time |
 
-Dropped: ext2/ext3 (use ext4), ISO9660/UDF (no optical), NFSv2/v3 (NFSv4.2 maybe v2), ReiserFS/JFS/HFS+/NTFS/exFAT, autofs (use new mount API), FUSE in v1.
+Dropped: ext2/ext3 (use ext4), ISO9660/UDF (no optical), NFSv2/v3 (NFSv4.2 tracked as phase 37), ReiserFS/JFS/HFS+/NTFS/exFAT, autofs (use new mount API). FUSE tracked as phase 37.
 
 ### 5.1 `/dev` (devtmpfs, kernel-populated)
 
@@ -92,7 +92,7 @@ Dropped: ext2/ext3 (use ext4), ISO9660/UDF (no optical), NFSv2/v3 (NFSv4.2 maybe
 | `/dev/fd` → `/proc/self/fd` | symlink | — |
 | `/dev/std{in,out,err}` → `/proc/self/fd/{0,1,2}` | symlink | — |
 | `/dev/disk/by-{uuid,label,partuuid,id}/*` | symlinks to `sd?`/`nvme?` | — |
-| `/dev/mapper/*` | dm (v2) | — |
+| `/dev/mapper/*` | dm (later phase) | — |
 | `/dev/loop-control`,`/dev/loop*` | loop | — |
 | `/dev/input/event*` | evdev | — |
 | `/dev/fb0` | EFI framebuffer | — |
@@ -100,7 +100,7 @@ Dropped: ext2/ext3 (use ext4), ISO9660/UDF (no optical), NFSv2/v3 (NFSv4.2 maybe
 
 Denied (`EPERM`): `/dev/mem`,`/dev/kmem`,`/dev/port`. Ever.
 
-Not v1: `/dev/snd/*`,`/dev/dri/*`,`/dev/video*` (v2); `/dev/tpm*` (v2).
+Tracked as later phases: `/dev/snd/*`,`/dev/dri/*` (phase 32),`/dev/video*`,`/dev/tpm*`.
 
 ### 5.2 `/proc`
 
@@ -124,11 +124,11 @@ Linux fmt compat verified by busybox `ps`,`top`,`free`,`uptime`.
 - AF_NETLINK: ROUTE+GENERIC.
 - AF_VSOCK: yes.
 - AF_XDP: yes (modern).
-- eBPF/XDP: socket filters v1, XDP v2.
+- eBPF/XDP: socket filters first, XDP per phase 23.
 
 Dropped AF: IPX, X25, DECnet, APPLETALK, NETROM, BRIDGE, AX25, ROSE, ECONET, RDS, LLC, TIPC, PHONET, IEEE802154, CAIF, ALG (use direct API), NFC, KCM, QIPCRTR, SMC.
 
-Dropped protos: DCCP, SCTP (v2 maybe), L2TP, RDS, TIPC.
+Dropped protos: DCCP, SCTP, L2TP, RDS, TIPC.
 
 ## 7 Boot / firmware / hardware
 
@@ -141,9 +141,9 @@ Dropped protos: DCCP, SCTP (v2 maybe), L2TP, RDS, TIPC.
 - Storage: NVMe + virtio-blk first-class; AHCI supported; IDE/PATA never.
 - Net: virtio-net, igc/ice, mlx5; r8169 if contrib. No 10/100Mb-only chips.
 - Input: USB HID primary; PS/2 keyboard x86 only (firmware fallback); PS/2 mouse dropped.
-- Graphics: serial + EFI framebuffer v1; real GPU v2.
-- Audio: not v1.
-- Power: ACPI 6.4+ static tables (MADT,FADT,MCFG,SRAT,SLIT,HMAT,PPTT). No AML interp v1 — power = halt+reboot via UEFI Runtime Services / platform reset reg.
+- Graphics: serial + EFI framebuffer now; real GPU per phase 32.
+- Audio: tracked as later phase.
+- Power: ACPI 6.4+ static tables (MADT,FADT,MCFG,SRAT,SLIT,HMAT,PPTT). AML interpreter per phase 35; power currently = halt+reboot via UEFI Runtime Services / platform reset reg.
 
 ## 8 Security baseline (mandatory)
 
@@ -177,22 +177,22 @@ Crypto deny: MD2/4/5, SHA-1, RIPEMD, RC2/4/5, DES, 3DES, Blowfish, CAST, Skipjac
 - Namespaces d1: pid, mount, net, uts, ipc, user, cgroup, time.
 - cgroup v2 controllers: cpu, memory, io, pids, cpuset, hugetlb.
 - Sandbox primitives: seccomp + Landlock + capabilities.
-- No SELinux/AppArmor v1 (Landlock covers; LSM stacking v2).
+- SELinux/AppArmor per phase 38 (Landlock covers the sandbox primitive; LSM stacking lands then).
 
 ## 10 Observability
 
 - eBPF = introspection mechanism (no kprobes-as-text-files).
 - tracefs: tracepoints, function tracer, uprobe/kprobe via BPF.
 - `perf_event_open` + hardware PMU.
-- No oprofile, kdb, kgdb v1 (QEMU gdb-stub suffices).
+- No oprofile, kdb, kgdb (QEMU gdb-stub suffices).
 
 ## 11 Acceptance binaries (split per `43`)
 
-v1: busybox, bash 5, coreutils 9, redis 7, sqlite 3.45, openssh 9, statically-linked Go≥1.22 + Rust≥1.75 binaries, nginx 1.25 (without io_uring).
-v2: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
-v2: systemd≥254 PID1; rootless runc; Wayland GUI app.
+Now: busybox, bash 5, coreutils 9, redis 7, sqlite 3.45, openssh 9, statically-linked Go≥1.22 + Rust≥1.75 binaries, nginx 1.25 (without io_uring).
+Per phase 22+: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
+Per phase 29+: systemd≥254 PID1; rootless runc; Wayland GUI app.
 
-Failure to run a v1 binary = charter break = bug.
+Failure to run a listed binary = charter break = bug.
 
 ## 12 The single rule
 

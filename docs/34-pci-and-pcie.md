@@ -8,9 +8,9 @@ Enumerate PCIe devices via ECAM. Allocate BARs (or read pre-assigned). Configure
 ## 2 Invariants (frozen)
 
 1. Only ECAM access (PCIe). Per `03§7`.
-2. MSI-X mandatory for any v1-shipped driver; INTx as fallback only when device doesn't support MSI-X.
-3. BARs respected at boot if firmware (UEFI) assigned them; we never reassign in v1.
-4. IOMMU: pass-through in v1 (no protection). v2: enable Intel VT-d / arm SMMU isolation.
+2. MSI-X mandatory for every shipped driver; INTx as fallback only when device doesn't support MSI-X.
+3. BARs respected at boot if firmware (UEFI) assigned them; never reassigned.
+4. IOMMU: pass-through (no protection). Intel VT-d / arm SMMU isolation tracked as later phase.
 
 ## 3 Public ifc
 
@@ -39,7 +39,7 @@ For each bridge in `pci_host_bridges()`:
 
 Each BAR: 32-bit or 64-bit, mem or I/O, prefetch flag. Decoded from BAR register. Mapped via VMM `vmalloc`-like into kernel space with attributes per type (UC for MMIO, WC for prefetchable).
 
-I/O BARs (x86 only): not mapped; accessed via `inb`/`outb`. Discouraged; v1 drivers shouldn't need.
+I/O BARs (x86 only): not mapped; accessed via `inb`/`outb`. Discouraged; current drivers shouldn't need.
 
 ## 6 MSI-X
 
@@ -52,16 +52,16 @@ Allocate vectors via IrqOps (`alloc_msi`); program table entries with addr/data 
 |---|---|
 | MSI | not used (we prefer MSI-X) |
 | MSI-X | int routing |
-| PM | power state (D0 only in v1) |
+| PM | power state (D0 only) |
 | PCIe (cap 0x10) | link speed, max payload |
-| AER | error reporting (v2) |
-| ATS / PRI | IOMMU advanced (v2) |
-| SR-IOV | virtualization (v2) |
+| AER | error reporting (later phase) |
+| ATS / PRI | IOMMU advanced (later phase) |
+| SR-IOV | virtualization (later phase) |
 
 ## 8 IOMMU
 
-v1: identity-map all DMA (passthrough). DMA targets must be physical addresses our PMM allocated.
-v2: enable Intel VT-d / SMMU. Per-device DMA domains. `dma_map_*` API.
+Now: identity-map all DMA (passthrough). DMA targets must be physical addresses our PMM allocated.
+Later phase: enable Intel VT-d / SMMU. Per-device DMA domains. `dma_map_*` API.
 
 ## 9 Concurrency
 

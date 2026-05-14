@@ -54,14 +54,14 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 |---|---|---|
 | `DRM_IOCTL_VERSION` | `0xc0406400` | returns name=v[0..32], date=v[32..64], desc=v[64..128] strings + version triple |
 | `DRM_IOCTL_GET_UNIQUE` | `0xc0106401` | unique bus-id string (e.g. `pci:0000:00:01.0`) |
-| `DRM_IOCTL_GET_MAGIC` | `0x80046402` | returns per-fd magic for legacy AUTH; v1 returns `1` (always-authed master) |
+| `DRM_IOCTL_GET_MAGIC` | `0x80046402` | returns per-fd magic for legacy AUTH; returns `1` (always-authed master) |
 | `DRM_IOCTL_GET_CLIENT` | `0xc01c6405` | client info (idx, auth, pid, uid, magic, iocs) |
 | `DRM_IOCTL_GET_CAP` | `0xc010640c` | DRM_CAP_* capability flags |
 | `DRM_IOCTL_SET_CLIENT_CAP` | `0x4010640d` | DRM_CLIENT_CAP_* opt-ins |
 | `DRM_IOCTL_SET_VERSION` | `0xc0106407` | client requests core/driver version; returns negotiated |
 | `DRM_IOCTL_AUTH_MAGIC` | `0x40046411` | master grants client auth |
-| `DRM_IOCTL_SET_MASTER` | `0x0000641e` | become master (v1: noop ok, single-master) |
-| `DRM_IOCTL_DROP_MASTER` | `0x0000641f` | drop master (v1: noop) |
+| `DRM_IOCTL_SET_MASTER` | `0x0000641e` | become master (noop ok, single-master) |
+| `DRM_IOCTL_DROP_MASTER` | `0x0000641f` | drop master (noop) |
 
 ## 6 Mode ioctls (per `drm_mode.h`)
 
@@ -99,7 +99,7 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 
 ## 7 Capability flags (`DRM_CAP_*`)
 
-| Cap | Value | v1 |
+| Cap | Value | Now |
 |---|---|---|
 | `DRM_CAP_DUMB_BUFFER` | `1` | `1` |
 | `DRM_CAP_VBLANK_HIGH_CRTC` | `2` | `1` |
@@ -118,7 +118,7 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 
 ## 8 Client capabilities (`DRM_CLIENT_CAP_*`)
 
-| Cap | Value | v1 |
+| Cap | Value | Now |
 |---|---|---|
 | `DRM_CLIENT_CAP_STEREO_3D` | `1` | accept (no-op) |
 | `DRM_CLIENT_CAP_UNIVERSAL_PLANES` | `2` | accept; primary+cursor planes exposed |
@@ -140,7 +140,7 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 | `DRM_MODE_OBJECT_BLOB` | `0xbbbbbbbb` | blob (mode, gamma, etc.) |
 | `DRM_MODE_OBJECT_PLANE` | `0xeeeeeeee` | plane props: CRTC_ID, FB_ID, IN_FENCE_FD, src_x/y/w/h, crtc_x/y/w/h, ZPOS, rotation |
 
-## 10 GEM dumb-buffer (v1 buffer surface)
+## 10 GEM dumb-buffer (universal buffer surface)
 
 `MODE_CREATE_DUMB(w, h, bpp)`:
 1. Allocate `pmm::alloc_contig(pages = round_up(w * (bpp/8) * h, PAGE_SIZE) / PAGE_SIZE)`
@@ -154,7 +154,7 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 
 ## 11 Page-flip + vblank events
 
-`MODE_PAGE_FLIP(crtc_id, fb_id, flags, user_data)` queues a flip. v1 implementation:
+`MODE_PAGE_FLIP(crtc_id, fb_id, flags, user_data)` queues a flip. Implementation:
 1. Validate fb is bound to a connector that drives crtc_id.
 2. Issue `45` virtio-gpu `SET_SCANOUT(scanout=0, res_id=fb→virtio_gpu_res_id, full rect)` then `RESOURCE_FLUSH`.
 3. On flip complete, post a `drm_event_vblank` to the fd's event queue:
@@ -171,7 +171,7 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 
 ## 12 EDID + connector properties
 
-Connector exports the EDID block as a blob property. v1:
+Connector exports the EDID block as a blob property:
 - `45` returns an EDID via `CMD_GET_EDID` on probe.
 - DRM stores the blob, allocates a `BLOB_ID`, sets connector's `EDID` property to that id.
 - Userspace queries: `GETCONNECTOR` returns prop_ids[] including `EDID`; `GETPROPBLOB(EDID_blob_id)` returns the bytes.
@@ -187,7 +187,7 @@ Connector exports the EDID block as a blob property. v1:
 
 ## 14 PRIME (DMA-BUF cross-driver export)
 
-`PRIME_HANDLE_TO_FD(handle, flags)` → fd that other DRM drivers (or v4l, etc.) can `PRIME_FD_TO_HANDLE` to import. v1 implementation:
+`PRIME_HANDLE_TO_FD(handle, flags)` → fd that other DRM drivers (or v4l, etc.) can `PRIME_FD_TO_HANDLE` to import. Implementation:
 - Wrap the `DumbBuffer.pa + len` in a `dmabuf::Inode` and return an fd.
 - Importer's `PRIME_FD_TO_HANDLE` reads back pa+len and creates a fresh handle in its own table.
 - Cross-driver mmap works because both sides see the same physical pages.
@@ -205,7 +205,7 @@ Connector exports the EDID block as a blob property. v1:
 - `EBUSY`: master held by another fd.
 - `ENOMEM`: dumb-buffer alloc failed.
 - `ENOSPC`: handle id table exhausted (24-bit).
-- `EOPNOTSUPP`: ioctl recognised but feature is v2.x.
+- `EOPNOTSUPP`: ioctl recognised but feature lands in a later phase.
 
 ## 17 Test contract (frozen)
 
@@ -255,7 +255,7 @@ Atomic commits accept `OUT_FENCE_PTR` per-CRTC: kernel returns a fence fd that s
 | `NVIDIA_BLOCK_LINEAR_2D` | `(NVIDIA,*)` | NV block-linear |
 | `LINEAR_DRMTILED_*` | `(BROADCOM/SAMSUNG/etc,*)` | per-vendor tilings |
 
-`MODE_GETPLANE` exposes per-plane `format_modifier_count` + array. Real driver crates (i915, amdgpu, nouveau, virtio-gpu) advertise their supported modifier set; v1 virtio-gpu advertises `LINEAR` only.
+`MODE_GETPLANE` exposes per-plane `format_modifier_count` + array. Real driver crates (i915, amdgpu, nouveau, virtio-gpu) advertise their supported modifier set; the virtio-gpu driver advertises `LINEAR` only.
 
 ## 21 Hot-plug events
 
