@@ -257,27 +257,46 @@ pub fn write_file(path: &[u8], data: &[u8]) -> Option<()> {
     Some(())
 }
 
-/// VFS Inode wrapping a regular ext4 file. Reads served from a
-/// per-inode byte cache (refreshed after every successful write
-/// or truncate). Writes round-trip through `Mount::write_at` and
-/// invalidate the kernel page cache for this inode.
+/// VFS Inode wrapping a regular ext4 file. Bytes are lazy: stat
+/// (size/perm/etc) doesn't pull file contents. The first read or
+/// write that actually needs bytes loads them; later writes refresh
+/// the cache. Without this, every stat() on /bin/<applet> (a hardlink
+/// to the 1.2 MiB busybox) read 1.2 MiB end-to-end — busybox-init's
+/// PATH search hits dozens of these per command, and ARM boot tipped
+/// over a timing edge that looked like a kernel hang at "keymap loaded".
 struct Ext4FileInode {
     ino:   u32,
-    bytes: sync::Spinlock<Vec<u8>, sync::Inode>,
+    size_hint: core::sync::atomic::AtomicU64,
+    bytes: sync::Spinlock<Option<Vec<u8>>, sync::Inode>,
 }
 
 impl Ext4FileInode {
+    /// Reload bytes + size_hint after a writethrough.
     fn refresh(&self) {
         if let Some(b) = read_full_file_by_ino(self.ino) {
-            *self.bytes.lock() = b;
+            self.size_hint.store(b.len() as u64, Ordering::Release);
+            *self.bytes.lock() = Some(b);
         }
+    }
+    /// Lazy-load bytes on first read access. Returns a clone for
+    /// the caller to slice; cached for subsequent reads.
+    fn ensure_bytes(&self) -> Option<Vec<u8>> {
+        {
+            let g = self.bytes.lock();
+            if let Some(b) = g.as_ref() { return Some(b.clone()); }
+        }
+        let b = read_full_file_by_ino(self.ino)?;
+        self.size_hint.store(b.len() as u64, Ordering::Release);
+        let out = b.clone();
+        *self.bytes.lock() = Some(b);
+        Some(out)
     }
 }
 
 impl vfs::Inode for Ext4FileInode {
     fn ino(&self) -> vfs::Ino { (0x6E54_0000u64 | (self.ino as u64)) as vfs::Ino }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
-    fn size(&self) -> u64 { self.bytes.lock().len() as u64 }
+    fn size(&self) -> u64 { self.size_hint.load(Ordering::Acquire) }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn perm(&self) -> Option<u16> {
         // Read i_mode (low 12 bits = perms) from the ext4 inode. Falls
@@ -294,11 +313,19 @@ impl vfs::Inode for Ext4FileInode {
         }
     }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        // Load on first access. Without this, every stat() of a
+        // hardlinked busybox applet under /bin would not pay the
+        // 1.2 MiB scan, but every real read still does.
+        let bytes_owned = self.ensure_bytes();
         let g = self.bytes.lock();
+        let slice: &[u8] = match g.as_ref() {
+            Some(b) => b.as_slice(),
+            None    => match bytes_owned.as_deref() { Some(b) => b, None => return Err(vfs::VfsError::Eio) },
+        };
         let off = off as usize;
-        if off >= g.len() { return Ok(0); }
-        let n = (g.len() - off).min(buf.len());
-        buf[..n].copy_from_slice(&g[off..off+n]);
+        if off >= slice.len() { return Ok(0); }
+        let n = (slice.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&slice[off..off+n]);
         Ok(n)
     }
     fn write(&self, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
@@ -430,11 +457,19 @@ pub fn lookup_inode_any(path: &[u8]) -> Option<vfs::InodeRef> {
 }
 
 /// Wrap `ino` (regular-file ext4 inode) in a writeable VFS Inode.
+/// Bytes are deferred — only the on-disk inode is read here, so
+/// `lookup`/stat doesn't pull file contents.
 fn wrap_file(ino: u32) -> Option<vfs::InodeRef> {
-    let bytes = read_full_file_by_ino(ino)?;
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let inode = mount.read_inode(ino).ok()?;
+    if !inode.is_reg() { return None; }
     Some(alloc::sync::Arc::new(Ext4FileInode {
         ino,
-        bytes: sync::Spinlock::new(bytes),
+        size_hint: core::sync::atomic::AtomicU64::new(inode.size),
+        bytes: sync::Spinlock::new(None),
     }) as vfs::InodeRef)
 }
 
