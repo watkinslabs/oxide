@@ -9,11 +9,11 @@ FROZEN 2026-05-02. Dep:`02`,`03`,`07`,`08`,`09`,`15`,`29`,`31`,`39`,`43`.
 - Affected code: `xtask user` step 3 (musl build) gets `--with-headers=$OXIDE_UAPI` once `xtask uapi-export` produces it (`29§4.1`).
 - Test contract change: none.
 
-End-to-end userspace runtime story. Resolves the Rust-std question. Names target triples, libc, language runtimes, dev workflow, distribution. v1 boundary frozen here.
+End-to-end userspace runtime story. Resolves the Rust-std question. Names target triples, libc, language runtimes, dev workflow, distribution. Substrate frozen here.
 
 ## 1 Filter
 
-v1 = kernel + minimal userspace (init, libc, ld, busybox) that runs unmodified Linux/musl binaries. Everything else (pkg mgr, GUI, distro identity, system updater) → `docs/v2/`.
+Substrate = kernel + minimal userspace (init, libc, ld, busybox) that runs unmodified Linux/musl binaries. Pkg mgr, GUI, distro identity, system updater land in their own phases per `00§3` (phases 28–32).
 
 ## 2 Target triples (RESOLVED — supersedes `07§3.3-3.4` `os=oxide`)
 
@@ -32,9 +32,9 @@ What this gives us:
 - Cross-compile from any Linux/Mac dev box w/ `cargo build --target x86_64-unknown-linux-musl`.
 - C apps via `clang --target=x86_64-unknown-linux-musl --sysroot=<ours>`.
 
-What we give up: `#[cfg(target_os="oxide")]` from userspace. Acceptable; we have no userspace-visible feature that needs it in v1.
+What we give up: `#[cfg(target_os="oxide")]` from userspace. Acceptable; no userspace-visible feature needs it now.
 
-Migration path (v2): when we add a unique-to-oxide userspace ABI surface, port std to `*-unknown-oxide`, switch user binaries. Until then, Linux-compat is the win.
+Migration path: when a unique-to-oxide userspace ABI surface emerges, port std to `*-unknown-oxide`, switch user binaries. Until then, Linux-compat is the win.
 
 ## 3 libc
 
@@ -95,27 +95,23 @@ No oxide-specific SDK. The dev environment is "Linux cross-compile target." This
 
 ## 6 Language runtime matrix
 
-| Runtime | v1 | v2 | v2 |
-|---|---|---|---|
-| C (musl-static / -dynamic) | ✓ | — | — |
-| Rust (musl-static / -dynamic) | ✓ | — | — |
-| Go (static) | ✓ (per `43§2`) | — | — |
-| C++ (libstdc++ / libc++) | ✗ | ✓ | — |
-| Python 3 (CPython) | ✗ | ✓ | — |
-| Node.js | ✗ | ✗ | ✓ |
-| Java (OpenJDK) | ✗ | ✗ | ✓ |
+| Runtime | Phase |
+|---|---|
+| C (musl-static / -dynamic) | now |
+| Rust (musl-static / -dynamic) | now |
+| Go (static) | now (per `43§2`) |
+| C++ (libstdc++ / libc++) | 28 (libc+NSS+PAM) |
+| Python 3 (CPython) | 28 |
+| Node.js | 30 (pkg mgr lands first) |
+| Java (OpenJDK) | 30 |
 
-C++ ships v2 because no v1 acceptance binary needs it (busybox, redis, nginx, openssh, sqlite are all C). Python via stock CPython musl-static build; needs v2 because Python ships in modern distros.
+C++ waits because no current acceptance binary needs it (busybox, redis, nginx, openssh, sqlite are all C). Python via stock CPython musl-static build; lands with the libc+NSS+PAM phase since modern distros ship it.
 
 ## 7 Package distribution
 
-v1: **none**. Apps shipped as static binaries built into the kernel image (per `39§5` initramfs layout).
+Now: **none**. Apps shipped as static binaries built into the kernel image (per `39§5` initramfs layout).
 
-v2 options (TBD; not blocking):
-- **tarball + extract**: simplest; per-app `<name>.tar.zst` extracted to `/usr/`.
-- **APK** (Alpine): musl-native, simple format, mature tooling. Lean if we add one.
-
-v2: real package manager + repo infrastructure. Out of scope.
+Phase 30 (package manager — rpmbuild + dnf): real package manager + repo infrastructure per `00§3`. Until then, tarball-extract works for ad-hoc installs.
 
 ## 8 /usr filesystem layout (frozen)
 
@@ -138,19 +134,19 @@ Standard FHS subset:
 
 Merged-`/usr` (`/bin`→`/usr/bin`, `/lib`→`/usr/lib`): yes, modern Linux convention.
 
-## 9 PAM / NSS / locale (v1 minimal)
+## 9 PAM / NSS / locale (minimal substrate)
 
-- PAM: not implemented v1. login reads `/etc/passwd`+`/etc/shadow` directly using musl's crypt (Argon2id only).
-- NSS: musl's built-in `files dns` only. No nsswitch.conf modules in v1.
+- PAM: not yet wired. login reads `/etc/passwd`+`/etc/shadow` directly using musl's crypt (Argon2id only).
+- NSS: musl's built-in `files dns` only. No nsswitch.conf modules yet.
 - Locale: `C.UTF-8` and `en_US.UTF-8` only. musl handles UTF-8 natively; no glibc-locale-archive needed.
 
-v2: PAM stub allowing third-party modules; full nsswitch; more locales as `.charmaps/`.
+Phase 28 (libc+NSS+PAM): PAM stub allowing third-party modules; full nsswitch; more locales as `.charmaps/`.
 
-## 10 Service management (v1 minimal)
+## 10 Service management (minimal substrate)
 
 `init` per `29§3`. Spawns services from `/etc/init.conf`. Restart policy `on-failure|always|never`. Reaps zombies.
 
-No socket activation, no per-service cgroup, no dependency graph. v2: maybe minimal s6/runit-class supervisor. v2: systemd if anyone needs it.
+No socket activation, no per-service cgroup, no dependency graph here. Phase 29 (system manager) replaces this with real PID 1 — service supervision, dep order, journalctl on klog ring.
 
 ## 11 Compatibility surface (what apps can rely on)
 
@@ -163,19 +159,19 @@ App can depend on:
 - File modes / permissions / ACLs (xattr; ACL via xattr; no full POSIX ACL syscall).
 - TCP/UDP/IPv6/AF_UNIX with Linux socket-option semantics (per `25`).
 
-App cannot rely on (v1):
-- io_uring (v2).
-- BPF (v2).
-- systemd interfaces (v2).
+App cannot yet rely on:
+- io_uring (phase 22).
+- BPF (phase 23).
+- systemd interfaces (phase 29).
 - Real TTY ECHO line discipline beyond modern bash interactive (covered) — no SLIP/PPP.
-- `/proc/sys/net/...` runtime-tuned via sysctl; many entries return ENOENT in v1.
+- `/proc/sys/net/...` runtime-tuned via sysctl; many entries currently return ENOENT.
 
 ## 12 Test contract (frozen)
 
 - `cargo build --target x86_64-unknown-linux-musl --release` of a Tokio hello-world TCP echo server produces a binary; binary runs on QEMU image; `curl localhost:8080` succeeds.
 - `clang --target=x86_64-unknown-linux-musl --sysroot=...` builds redis 7 from upstream source; runs on image.
 - Stock musl-static Go binary that uses goroutines + channels + http.Server: builds, runs, serves.
-- `/lib/ld-oxide.so.1` resolves dependencies of a dynlinked binary; at least one v1 binary is dynlinked end-to-end (the rest static).
+- `/lib/ld-oxide.so.1` resolves dependencies of a dynlinked binary; at least one acceptance binary is dynlinked end-to-end (the rest static).
 - `getpid`,`getuid`,`getgid` return ABI-shaped values; `uname()` returns "oxide" sysname (or "Linux" — see OQ).
 
 ## 13 Failure modes
@@ -190,5 +186,5 @@ App cannot rely on (v1):
 
 ## 15 Changelog
 
-(none)
+- 2026-05-14: v1/v2 framing stripped per `02§9` rule 8. Deferred-feature cells now point at `00§3` phase numbers.
 

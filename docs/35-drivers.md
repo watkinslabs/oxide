@@ -5,7 +5,7 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver
 ## Revision 2026-05-09 (R03)
 
 - Changed: graphical-terminal arc spec ladder lands. The probe-only
-  v1 framing in R01 (DRM/evdev as identification-only inodes) is
+  framing in R01 (DRM/evdev as identification-only inodes) is
   superseded for the case of QEMU virt: the arc now has its own
   spec docs covering each layer:
     - `45` virtio-gpu — wire protocol + `drv-virtio-gpu` crate
@@ -29,33 +29,33 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`16`,`18`,`19`,`22`,`34`. Provides:every driver
 ## Revision 2026-05-09 (R02)
 
 - Changed: `crates/drv` is now the real owner of the driver-model
-  dispatch substrate. v1 surface:
+  dispatch substrate. Current surface:
     - `drv::DriverEntry { name, probe }`
     - `drv::register(DriverEntry)` — boot-time registration
     - `drv::probe_all(bdf)` — first-match probe walker
     - `drv::registered_count()` — diagnostics
 - Per-driver hardware crates (`drv-virtio-net`, `drv-virtio-blk`,
   `drv-nvme`, etc.) ride phase 11 onward per `35§3` invariant 1.
-  v1 hardware drivers stay in `kernel/src/dev_virtio_*` +
+  Current hardware drivers stay in `kernel/src/dev_virtio_*` +
   `kernel/src/pci_boot/*` because they need direct access to PMM
   / HHDM mapping / IRQ controller; per-crate split is per-driver
   work that lands as each driver gets its own `drv-*` crate.
 - `drv::init()` reports ready at boot. `linkme`-style distributed
-  slice rides v2.x.
+  slice tracked as later phase.
 
 ## Revision 2026-05-09 (R01)
 
-- Changed: pinned the v1 virtio-gpu + virtio-input + DRM/evdev
+- Changed: pinned the initial virtio-gpu + virtio-input + DRM/evdev
   surface. /dev/dri/card0 is a real DRM inode admitting
   DRM_IOCTL_VERSION + DRM_IOCTL_MODE_GETRESOURCES (zero CRTCs +
-  zero connectors at v1; framebuffer + modeset + virtio-gpu PCI
-  driver ride v2.x). /dev/input/event0 is a real evdev inode
+  zero connectors initially; framebuffer + modeset + virtio-gpu PCI
+  driver land in phase 32). /dev/input/event0 is a real evdev inode
   admitting EVIOCGNAME / EVIOCGID returning "oxide-input"
-  identification (real key/abs/rel events ride v2.x once virtio-
-  input PCI driver lands).
+  identification (real key/abs/rel events arrive once virtio-input
+  PCI driver lands in phase 32).
 - Why: phase 32 (DRM/KMS+virtio-gpu+evdev) starts with the userspace-
   visible inode shape so libdrm + libevdev feature probes complete
-  cleanly. Real driver bring-up is the v2.x deliverable.
+  cleanly. Real driver bring-up is phase 32 deliverable.
 - Affected code: `kernel/src/dev_drm.rs` (extend DRM_IOCTL set);
   `kernel/src/dev_input.rs` (new — evdev inode + EVIOC* ioctl);
   boot registers `/dev/input/event0`.
@@ -98,7 +98,7 @@ pub static DRIVERS: [&dyn Driver] = [..];
 
 Kernel boot: iterate DRIVERS × discovered devices; first matching driver wins.
 
-## 4 v1 driver list
+## 4 Driver list
 
 Mandatory (must run):
 - `drv-uart-16550` (x86 console)
@@ -114,9 +114,9 @@ Mandatory (must run):
 - `drv-ahci`
 - `drv-ps2-keyboard` (x86 only; legacy fallback)
 
-Deferred to v2:
+Tracked as later phases:
 - `drv-igc`,`drv-ice` (Intel NIC), `drv-mlx5` (Mellanox).
-- `drv-xhci` (USB host) + USB stack.
+- `drv-xhci` (USB host) + USB stack (phase 34).
 - `drv-hda` (Intel audio).
 
 ## 5 Driver lifecycle
@@ -143,11 +143,11 @@ pub fn dma_sync_for_device(buf: &DmaBuf);
 pub fn dma_sync_for_cpu(buf: &DmaBuf);
 ```
 
-v1 (no IOMMU): coherent uses uncached mapping (x86) / non-cacheable attr (arm). Streaming uses cacheable + explicit sync (`dma_wmb`/`dma_rmb` per `06§7`).
+No IOMMU yet: coherent uses uncached mapping (x86) / non-cacheable attr (arm). Streaming uses cacheable + explicit sync (`dma_wmb`/`dma_rmb` per `06§7`).
 
 ## 8 Test contract (frozen)
 
-- All v1-mandatory drivers probe successfully under QEMU.
+- All mandatory drivers probe successfully under QEMU.
 - `lspci` (busybox or our impl reading `/sys/bus/pci/`) shows expected devices.
 - virtio-blk: read+write 1 GiB; verify SHA-256.
 - virtio-net: ping loopback through L3.
