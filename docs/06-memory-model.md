@@ -43,7 +43,7 @@ Rules: any context. Lock shared with IRQ ⇒ `lock_irqsave` everywhere. Shared w
 `RwLock<T>` — used sparingly. Writers can starve. Prefer RCU for read-mostly.
 
 ### 3.3 Mutex
-No sleeping mutex in v1. Wait via wait-queue (§6).
+No sleeping mutex. Wait via wait-queue (§6).
 
 ### 3.4 SeqLock
 ```rust

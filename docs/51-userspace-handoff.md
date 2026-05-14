@@ -5,7 +5,7 @@ DRAFT (living). Dep:`16`,`19`,`28`,`29`,`29a`,`31`. Provides:concrete kernel→s
 ## 1 Purpose
 
 `29` defines the abstract init/userspace contract. This doc nails the
-concrete v1 path from kernel exit to a `~ #` prompt using **upstream
+concrete path from kernel exit to a `~ #` prompt using **upstream
 binaries only** — busybox 1.37 today, GNU coreutils + bash later.
 
 Distilled rule: the kernel and image are ours; every program that
@@ -16,11 +16,11 @@ filesystem skeleton) is ours but is plain text, not C.
 
 1. PID 1 binary on disk is `/sbin/init` — a hardlink to
    `/bin/busybox`. The kernel does not embed any compiled-in init
-   blob in v1 once the rootfs path is mandatory.
+   blob once the rootfs path is mandatory.
 2. Kernel spawns PID 1 with `argv[0]="/sbin/init"`, `envp=[]`,
    `fd 0/1/2 = /dev/console`, FS_BASE/TPIDR_EL0 = 0. Linux exec
    semantics — user crt1 sets up TLS.
-3. busybox `init` reads `/etc/inittab`. v1 inittab format:
+3. busybox `init` reads `/etc/inittab`. Inittab format:
    `<id>:<runlevels>:<action>:<process>` per Linux sysvinit(5).
 4. `/etc/init.d/rcS` is the sysinit shell script. Owned by us
    (text in `tools/xtask/etc/init.d/rcS`). It mounts proc/sys/tmp
@@ -31,8 +31,8 @@ filesystem skeleton) is ours but is plain text, not C.
    presence of `/etc/oxide-init-smokes`.
 6. getty is busybox `getty` (hardlink at `/sbin/getty`). Per
    inittab, respawned per VT.
-7. Shell-of-record from `/etc/passwd` field 7. v1 = `/bin/sh`
-   (busybox-ash); v1.x = `/bin/bash` (F154).
+7. Shell-of-record from `/etc/passwd` field 7. Current = `/bin/sh`
+   (busybox-ash); later phase = `/bin/bash` (F154).
 8. Every program in `/bin` and `/sbin` is either a hardlink to
    `/bin/busybox` or a kernel-acceptance smoke binary built from
    `userspace/<smoke>/`.
@@ -170,13 +170,13 @@ hosts:   files
 | `lo` interface for `ifconfig lo 127.0.0.1` | partial | rcS line tolerates `\|\| true` |
 | `getrandom`/`/dev/urandom` for login PRNG | works | — |
 
-## 7 What v1 does NOT do (deferred, named here so they don't surprise)
+## 7 What the current substrate does NOT do (deferred, named here so they don't surprise)
 
 1. systemd, runit, s6 — only busybox-init.
 2. PAM — busybox-login does its own crypt match; no PAM stack.
 3. /etc/securetty enforcement — accepted-as-noop on busybox-login.
-4. udev — busybox `mdev` only if rcS calls it. v1 has all needed
-   nodes wired statically by the kernel at boot, so mdev is
+4. udev — busybox `mdev` only if rcS calls it. All needed
+   nodes are wired statically by the kernel at boot, so mdev is
    optional polish.
 5. systemd-networkd, NetworkManager — `ifconfig lo` from rcS.
 6. dbus, sd-bus — not started.
