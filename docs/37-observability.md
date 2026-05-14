@@ -1,18 +1,18 @@
 # 37 Observability
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` v2).
+FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` per phase 25).
 
 ## Revision 2026-05-09 (R01)
 
-- Changed: pinned the v1 tracefs root + control-file shape. Boot
+- Changed: pinned the initial tracefs root + control-file shape. Boot
   registers a synthetic `/sys/kernel/tracing` directory whose
   lookup yields static read-only inodes for `available_events`,
-  `tracing_on`, `trace`, `trace_pipe`, `current_tracer`. v1 ships
-  bodies that match Linux's empty-trace defaults so userspace
-  tools (`bpftrace`, `perf record`, `trace-cmd`) probe the surface
+  `tracing_on`, `trace`, `trace_pipe`, `current_tracer`. Bodies
+  match Linux's empty-trace defaults so userspace tools
+  (`bpftrace`, `perf record`, `trace-cmd`) probe the surface
   without panicking. Real per-CPU ring buffers + tracepoint
-  registration ride v2.x.
-- Why: phase 30 (perf_event_open + tracefs/ftrace + ebpf
+  registration land in phase 25.
+- Why: phase 25 (perf_event_open + tracefs/ftrace + ebpf
   tracepoints) needs the tracefs root before any tracepoint
   framework lands. The static-files-only first slice unblocks
   feature-probe paths.
@@ -75,7 +75,7 @@ Userspace `tracefs` (mounted at `/sys/kernel/tracing`) controls per-tracepoint e
 
 ## 7 Function tracer (`ftrace`-like)
 
-Defer to v2 (mcount/fentry hooks; recompile cost). Initial v1: tracepoints only.
+Tracked as phase 25 (mcount/fentry hooks; recompile cost). Initial substrate: tracepoints only.
 
 ## 8 PMU + perf
 
@@ -85,17 +85,17 @@ Defer to v2 (mcount/fentry hooks; recompile cost). Initial v1: tracepoints only.
 
 `perf` userspace from Linux works against `perf_event_open` ABI.
 
-v1.0: subset (cycles, instructions, cache events). v2: full.
+Now: subset (cycles, instructions, cache events). Phase 25: full.
 
 ## 9 eBPF
 
-Deferred to v2. Spec landing later in `30+`-ish range. v1.0: bpf() returns ENOSYS.
+Tracked as phase 23 per `00§3`. Currently `bpf()` returns ENOSYS.
 
-When v2: verifier, BPF subset (sockets, kprobes, tracepoint progs, cgroup hooks). Maps: HASH, ARRAY, PERCPU_HASH, RINGBUF, LPM_TRIE.
+Once landed: verifier, BPF subset (sockets, kprobes, tracepoint progs, cgroup hooks). Maps: HASH, ARRAY, PERCPU_HASH, RINGBUF, LPM_TRIE.
 
 ## 10 Crash dump (kdump)
 
-Defer. v2. Requires functional disk in panic path; complicates kernel.
+Tracked as later phase. Requires functional disk in panic path; complicates kernel.
 
 ## 11 Concurrency
 

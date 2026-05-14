@@ -10,21 +10,21 @@ FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
   rows; userspace consumers (musl, busybox, distro programs)
   could not predict whether a return code reflected real work.
 - Disposition labels and where each slot lives:
-    - **REAL (v1 Linux semantics)** — most slots; see syscall_glue.rs
+    - **REAL (Linux semantics)** — most slots; see syscall_glue.rs
       direct dispatch.
     - **REAL (validate-then-noop)** — `fsync`/`fdatasync`/`syncfs`/
       `sync_file_range` / `fadvise64` / `readahead` / `mlock2`:
       validate fd + length, return 0. RAM-fs is always sync; no
-      page-cache to advise. Real disk-backed fsync rides phase 7b.
+      page-cache to advise. Real disk-backed fsync per phase 7b.
     - **REAL subset** — `ptrace` per R04 disposition table.
     - **silent-0 admit** — `cachestat` (no page cache), `mq_notify`/
       `mq_getsetattr` (no per-task signal-on-arrival yet),
       `io_uring_register` (no fixed-buffer/file table — see `30`
-      R01), `fanotify_mark` (records nothing v1).
+      R01), `fanotify_mark` (records nothing yet).
     - **EPERM (privileged refuse)** — `pivot_root`, `init_module`/
       `delete_module`/`finit_module`, `kexec_load`/`kexec_file_load`,
-      `iopl`/`ioperm`, `adjtimex`/`clock_adjtime`. v1 has no
-      substrate; cap-gating identical for now.
+      `iopl`/`ioperm`, `adjtimex`/`clock_adjtime`. No substrate yet;
+      cap-gating identical for now.
     - **ENOSYS** — `swapon`/`swapoff`, `lookup_dcookie`,
       `remap_file_pages`, `uselib`, `ustat`, `sysfs`, `modify_ldt`,
       `quotactl[_fd]`, `acct`, `name_to_handle_at`/
@@ -43,7 +43,7 @@ FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 
 ## Revision 2026-05-09 (R04)
 
-- Changed: pinned the v1 `ptrace(2)` op disposition. Slot 101 still
+- Changed: pinned the `ptrace(2)` op disposition. Slot 101 still
   V1 (Linux subset) but the disposition table now says explicitly:
   TRACEME / ATTACH / SEIZE / DETACH / CONT / SYSCALL / SINGLESTEP /
   KILL / PEEKTEXT / PEEKDATA / POKETEXT / POKEDATA / GETREGS /
@@ -89,9 +89,8 @@ User ptr args wrapped in `UserPtr<T>` at dispatch:
 ## 2 Full table
 
 Legend:
-- **V1**: implemented v1, on must-run-binary path.
-- **V2**: v1 point release; v1.0 returns `ENOSYS`; number reserved.
-- **V2**: deferred to v2.
+- **V1**: implemented now, on must-run-binary path.
+- **V2**: tracked as a later phase per `00§3`; currently returns `ENOSYS`; number reserved.
 - **STUB**: number reserved, always returns `ENOSYS` (we will never implement, but the number is ABI).
 - **NEVER**: same as STUB but explicitly because the syscall is legacy. Linux still exposes some of these; we never will.
 
@@ -262,11 +261,11 @@ Where a syscall has a "modern replacement," we point to it.
 | 160 | setrlimit | V1 | |
 | 161 | chroot | V1 | |
 | 162 | sync | V1 | |
-| 163 | acct | V2 | Process accounting; not a v1 priority. |
+| 163 | acct | V2 | Process accounting; tracked as later phase. |
 | 164 | settimeofday | V2 | Prefer `clock_settime`. |
 | 165 | mount | V2 | Implemented as compat shim over the new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`). |
 | 166 | umount2 | V1 | |
-| 167 | swapon | NEVER | No swap in v1. |
+| 167 | swapon | NEVER | No swap to disk. |
 | 168 | swapoff | NEVER | |
 | 169 | reboot | V1 | UEFI Runtime Services / platform reset. |
 | 170 | sethostname | V1 | |
@@ -278,7 +277,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 176 | delete_module | V1 | |
 | 177 | get_kernel_syms | NEVER | Use `/proc/kallsyms` (gated). |
 | 178 | query_module | NEVER | Removed in Linux 2.6. |
-| 179 | quotactl | V2 | Use `quotactl_fd` if needed in v2. |
+| 179 | quotactl | V2 | Use `quotactl_fd` when xattr/quota work lands (phase 18). |
 | 180 | nfsservctl | NEVER | Removed in Linux 3.1. |
 | 181 | getpmsg | NEVER | STREAMS, never implemented in mainline Linux. |
 | 182 | putpmsg | NEVER | |
@@ -339,7 +338,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 237 | mbind | V2 | NUMA memory policy. |
 | 238 | set_mempolicy | V2 | |
 | 239 | get_mempolicy | V2 | |
-| 240 | mq_open | V2 | POSIX mqueue. Not v1. |
+| 240 | mq_open | V2 | POSIX mqueue; tracked as phase 24. |
 | 241 | mq_unlink | V2 | |
 | 242 | mq_timedsend | V2 | |
 | 243 | mq_timedreceive | V2 | |
@@ -397,7 +396,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 295 | preadv | V1 | |
 | 296 | pwritev | V1 | |
 | 297 | rt_tgsigqueueinfo | V1 | |
-| 298 | perf_event_open | V2 | Hardware PMU access for `perf`. Subset in v2. |
+| 298 | perf_event_open | V2 | Hardware PMU access for `perf`; tracked as phase 25. |
 | 299 | recvmmsg | V1 | |
 | 300 | fanotify_init | V2 | |
 | 301 | fanotify_mark | V2 | |
@@ -411,16 +410,16 @@ Where a syscall has a "modern replacement," we point to it.
 | 309 | getcpu | V1 | vDSO-served. |
 | 310 | process_vm_readv | V1 | |
 | 311 | process_vm_writev | V1 | |
-| 312 | kcmp | V2 | Used by CRIU; v2. |
+| 312 | kcmp | V2 | Used by CRIU; tracked as later phase. |
 | 313 | finit_module | V1 | Modular kernel: load `.ko` from fd, signature-checked. |
 | 314 | sched_setattr | V1 | |
 | 315 | sched_getattr | V1 | |
 | 316 | renameat2 | V1 | Adds `RENAME_NOREPLACE`, `RENAME_EXCHANGE`, `RENAME_WHITEOUT`. |
-| 317 | seccomp | V1 | `SECCOMP_SET_MODE_STRICT` and `SECCOMP_SET_MODE_FILTER`. Filter requires the BPF verifier (V2). v1.0 ships with strict mode only; filter mode returns `ENOSYS` until BPF lands. |
+| 317 | seccomp | V1 | `SECCOMP_SET_MODE_STRICT` and `SECCOMP_SET_MODE_FILTER`. Filter requires the BPF verifier (phase 23). Strict mode ships now; filter mode returns `ENOSYS` until BPF lands. |
 | 318 | getrandom | V1 | |
 | 319 | memfd_create | V1 | |
 | 320 | kexec_file_load | V2 | |
-| 321 | bpf | V2 | BPF deferred to v2; a substantial subsystem. |
+| 321 | bpf | V2 | Tracked as phase 23 (bpf + seccomp + landlock). |
 | 322 | execveat | V1 | |
 | 323 | userfaultfd | V1 | Required by Go runtime, CRIU. |
 | 324 | membarrier | V1 | |
@@ -435,7 +434,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 333 | io_pgetevents | NEVER | POSIX AIO. |
 | 334 | rseq | V1 | Restartable sequences; required by glibc/musl. |
 | 424 | pidfd_send_signal | V1 | |
-| 425 | io_uring_setup | V2 | v2 phase 23; v1.0 stubs. |
+| 425 | io_uring_setup | V2 | Tracked as phase 22; currently stubs. |
 | 426 | io_uring_enter | V2 | |
 | 427 | io_uring_register | V2 | |
 | 428 | open_tree | V1 | New mount API. |
@@ -454,7 +453,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 441 | epoll_pwait2 | V1 | |
 | 442 | mount_setattr | V1 | New mount API. |
 | 443 | quotactl_fd | V2 | |
-| 444 | landlock_create_ruleset | V2 | Landlock; the v1 sandboxing primitive. v1.0 may stub. |
+| 444 | landlock_create_ruleset | V2 | Landlock sandboxing primitive; tracked as phase 23. May stub until then. |
 | 445 | landlock_add_rule | V2 | |
 | 446 | landlock_restrict_self | V2 | |
 | 447 | memfd_secret | V1 | |
@@ -469,7 +468,7 @@ Where a syscall has a "modern replacement," we point to it.
 | 456 | futex_requeue | V1 | |
 | 457 | statmount | V1 | |
 | 458 | listmount | V1 | |
-| 459 | lsm_get_self_attr | V2 | LSM stacking is v2. |
+| 459 | lsm_get_self_attr | V2 | LSM stacking tracked as phase 38. |
 | 460 | lsm_set_self_attr | V2 | |
 | 461 | lsm_list_modules | V2 | |
 
@@ -512,7 +511,7 @@ Per-arch trampoline ≤200 lines `.S`; reviewed line-by-line. See `20`,`21`.
 
 ## 5 ABI-shaped types (in `userspace-abi` crate)
 
-`iovec`,`timespec`(time_t=i64),`timeval`,`sockaddr*` (`_in`,`_in6`,`_un`),`stat` (legacy; `fstat` only),`statx`+`statx_timestamp`,`epoll_event`+`epoll_data`,`sigaction`+`siginfo_t`+`ucontext_t`+`mcontext_t` (per-arch),`rusage`,`rlimit64`,`dirent64`,`cmsghdr`+`msghdr`+`mmsghdr`,`clone_args` (clone3),`open_how` (openat2),`io_uring_*` (v2).
+`iovec`,`timespec`(time_t=i64),`timeval`,`sockaddr*` (`_in`,`_in6`,`_un`),`stat` (legacy; `fstat` only),`statx`+`statx_timestamp`,`epoll_event`+`epoll_data`,`sigaction`+`siginfo_t`+`ucontext_t`+`mcontext_t` (per-arch),`rusage`,`rlimit64`,`dirent64`,`cmsghdr`+`msghdr`+`mmsghdr`,`clone_args` (clone3),`open_how` (openat2),`io_uring_*` (phase 22).
 
 Each `#[repr(C)]` + `static_assertions::assert_eq_size!` vs Linux struct layout per arch.
 
@@ -793,9 +792,9 @@ Per-arch impls in `crates/vdso-x86_64/`,`crates/vdso-aarch64/`. Time data in per
 ## 10 Cross-spec
 
 Touched by every subsystem spec (user-facing surface):
-`16` (read/write/open/close/...), `13` (sched_*, clone3, exit), `11` (mmap/mprotect/munmap/mremap), `17` (pread/pwrite/fsync), `25` (socket/...), `23` (clock_*, vDSO), `27` (seccomp/landlock_*/capset), `26` (unshare/setns/clone3 ns flags), `30` v2 (io_uring_*), `18` (finit_module/delete_module).
+`16` (read/write/open/close/...), `13` (sched_*, clone3, exit), `11` (mmap/mprotect/munmap/mremap), `17` (pread/pwrite/fsync), `25` (socket/...), `23` (clock_*, vDSO), `27` (seccomp/landlock_*/capset), `26` (unshare/setns/clone3 ns flags), `30` (io_uring_*), `18` (finit_module/delete_module).
 
 ## 11 Changelog
 
-(none)
+- 2026-05-14: v1/v2 framing stripped per `02§9` rule 8. Legend simplified, deferral cells point at `00§3` phase numbers.
 

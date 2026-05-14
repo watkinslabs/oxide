@@ -13,9 +13,9 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`19`,`20`,`21`,`34`. Provides:PMM (mem map), `1
   `set_add_cpu_hook(kernel::cpu_topology::add_cpu)` then invokes
   `firmware::try_log_acpi`. `firmware::init` reports ready (no
   static state).
-- DT (device-tree) parsing rides v2.x. arm64 still uses Limine
+- DT (device-tree) parsing tracked as phase 39. arm64 still uses Limine
   HHDM + ACPI (QEMU virt + EDK2 ships ACPI tables); pure DT-only
-  embedded boards land later.
+  embedded boards land with that phase.
 - `debug-acpi` feature now lives on `crates/firmware`; the kernel
   forwards via `kernel/debug-acpi = ["firmware/debug-acpi"]`.
 
@@ -53,7 +53,7 @@ pub fn dtb() -> Option<&'static Fdt>;
 | MCFG | PCIe ECAM regions |
 | SRAT | NUMA: cpu→node, mem→node |
 | SLIT | NUMA distance matrix |
-| HMAT | NUMA bandwidth/latency (v2) |
+| HMAT | NUMA bandwidth/latency (phase 41) |
 | PPTT | CPU topology (cache hierarchy) |
 | HPET | sanity check; not used |
 
