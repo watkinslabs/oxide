@@ -21,12 +21,12 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:ev
 
 ## Revision 2026-05-09 (R02)
 
-- Changed: pinned the v1 BPF subset shape. `bpf(2)` admits
+- Changed: pinned the current BPF subset shape. `bpf(2)` admits
   BPF_PROG_LOAD with cBPF (32-bit classic-BPF) instructions stored
   in a BpfProgInode; BPF_MAP_CREATE returns a BpfMapInode (hash-map,
   byte-keyed). Helper-fn calls from cBPF land via the existing
   seccomp interpreter (which is cBPF-shaped). All ops require
-  CAP_BPF. eBPF + verifier + JIT ride v2.x.
+  CAP_BPF. eBPF + verifier + JIT tracked as phase 23.
 - Why: phase 24 (bpf+seccomp+landlock) unblocks userspace tools
   (bpftool admit, libbpf feature probes) once `bpf(2)` returns a
   real fd instead of ENOSYS. The cBPF subset is small (no
@@ -81,7 +81,7 @@ pub fn cap_check(cap:u8) -> KR<()>;                // EPERM if missing
 pub fn cap_check_in_userns(cap:u8, userns:&UserNs) -> KR<()>;
 
 pub fn seccomp_set_strict() -> KR<()>;             // only read,write,exit,sigreturn allowed
-pub fn seccomp_set_filter(prog:&BpfProg) -> KR<()>;// v2 once BPF lands
+pub fn seccomp_set_filter(prog:&BpfProg) -> KR<()>;// per phase 23 once BPF lands
 
 pub fn landlock_create_ruleset(attr:&LandlockRulesetAttr) -> KR<RawFd>;
 pub fn landlock_add_rule(ruleset:RawFd, kind:u32, attr:&LandlockAttr, flags:u32) -> KR<()>;
@@ -104,16 +104,16 @@ Only `read`, `write`, `_exit`, `rt_sigreturn` allowed; everything else → SIGKI
 ### 5.2 Filter mode
 BPF prog evaluated on every syscall; returns action (`ALLOW`,`KILL`,`KILL_PROCESS`,`TRAP`,`ERRNO`,`USER_NOTIF`,`LOG`,`TRACE`).
 
-v1.0: returns ENOSYS for filter mode (BPF deferred to v2). Strict mode works.
-v2: ship the BPF subset needed for seccomp filters.
+Now: returns ENOSYS for filter mode (BPF tracked as phase 23). Strict mode works.
+Phase 23: ship the BPF subset needed for seccomp filters.
 
 ## 6 Landlock
 
 Filesystem sandbox: ruleset of allowed filesystem ops (read_file, write_file, read_dir, ...) under named paths. Apply via `landlock_restrict_self`. Inherited; cannot be loosened.
 
-v1.0: implement; this is the modern container sandbox primitive and stand-alone of BPF.
+Implement now; modern container sandbox primitive, stand-alone of BPF.
 
-## 7 Sigverify (modules + kexec when v2)
+## 7 Sigverify (modules + kexec)
 
 Signature trailer: PKCS#7 / detached RSA-PSS-SHA256.
 Trust root: one or more X.509 certs embedded in kernel image at build (env var `OXIDE_TRUSTED_KEYS`).
@@ -141,7 +141,7 @@ Reset only by reboot.
 
 Kernel image base randomized at boot (8-bit entropy, page-aligned within the higher-half image area). Direct map base randomized (16-bit). vDSO mapped at randomized user va per process.
 
-v1.0: kernel base fixed (no relocation logic yet). v2: enable. Spec'd here so layout doesn't break later.
+Now: kernel base fixed (no relocation logic yet). Tracked as later phase. Spec'd here so layout doesn't break later.
 
 ## 10 KPTI
 
@@ -160,7 +160,7 @@ All kernel fns built with `+stack-protector=strong`. `__stack_chk_guard` per-CPU
 
 A sparse tree of `/proc/sys/...` knobs. Each registered via `sysctl_register(path, kind, getter, setter)`. Kinds: bool, i32, u64, string, ipset.
 
-Subset for v1:
+Current subset:
 - `kernel.{tainted,modules_disabled,unprivileged_userns_clone,kexec_load_disabled,perf_event_paranoid,kptr_restrict,randomize_va_space,sysrq,printk}`
 - `vm.{overcommit_memory,overcommit_ratio,oom_kill_allocating_task,swappiness}`
 - `fs.{file-max,nr_open,protected_symlinks,protected_hardlinks,protected_fifos,protected_regular,suid_dumpable}`
@@ -180,7 +180,7 @@ Setting many of these requires CAP_SYS_ADMIN and may set `T_OVERRIDDEN`.
 
 Algos allowed/denied per `03§8`. This section spec'd impl side.
 
-### 14a.1 Crate selection (no scratch crypto v1)
+### 14a.1 Crate selection (no scratch crypto)
 
 | Algo | Crate | Why |
 |---|---|---|
@@ -211,7 +211,7 @@ Per-CPU rapid RNG (for non-cryptographic use): xoshiro256++ seeded from main DRB
 
 - Module-signing trust root: PEM cert(s) embedded at kernel build (env `OXIDE_TRUSTED_KEYS`); never modifiable at runtime.
 - TLS handshake: in userspace; kernel sees only symmetric keys via `kTLS` setsockopt.
-- Disk encryption (dm-crypt v2): keys held in kernel keyring (`add_key`/`request_key` v2); never in pageable memory.
+- Disk encryption (dm-crypt, later phase): keys held in kernel keyring (`add_key`/`request_key`, phase 24); never in pageable memory.
 - Memfd_secret pages: phys never in kernel direct map per `03§4`.
 
 ### 14a.4 Constant-time invariants
@@ -232,7 +232,7 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 | `cap_check` (hit, in current ns) | ≤ 30 |
 | `cap_check_in_userns` (1-deep) | ≤ 80 |
 | Seccomp strict path-check (per syscall) | ≤ 20 |
-| Seccomp filter eval (BPF, v2) | ≤ 200 |
+| Seccomp filter eval (BPF, phase 23) | ≤ 200 |
 | Landlock check on `openat` | ≤ 300 |
 
 ## 16 Test contract (frozen)
@@ -243,7 +243,7 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 - W^X: `mmap(PROT_WRITE|PROT_EXEC)` returns EINVAL.
 - Stack smash: deliberately overflow buffer in test mode; panic with canary message.
 - Taint: load unsigned module with sig_enforce=0; `T_UNSIGNED` set; `/proc/sys/kernel/tainted` reflects.
-- KASLR (when v2): kernel base differs across boots.
+- KASLR (once enabled): kernel base differs across boots.
 - Coverage ≥90% on `crates/security/`.
 
 ## 17 Failure modes

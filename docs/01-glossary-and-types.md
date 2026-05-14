@@ -17,8 +17,8 @@ Common derives `D` = `Copy,Clone,Eq,PartialEq,Ord,PartialOrd,Hash,Debug` (Hash s
 
 | Type | Repr | Notes |
 |---|---|---|
-| `PhysAddr(u64)` | D | high bits zero in v1; sized for 5-level future |
-| `VirtAddr(u64)` | D | 48-bit canonical v1 |
+| `PhysAddr(u64)` | D | high bits zero; sized for 5-level future |
+| `VirtAddr(u64)` | D | 48-bit canonical |
 | `UserVirtAddr(u64)` | D, priv ctor | `new(u64)→KR<Self>` rejects ≥`USER_VA_END` and non-canonical |
 
 Constants:
@@ -42,7 +42,7 @@ Rules: `PhysAddr(0)` valid; absent encoded `Option<PhysAddr>`. No `+usize` op on
 
 | Type | Notes |
 |---|---|
-| `CpuId(u16)` | dense 0..NCPU; `MAX_CPUS=256` v1 |
+| `CpuId(u16)` | dense 0..NCPU; `MAX_CPUS=256` |
 | `NodeId(u8)` | `MAX_NODES=16`; single-node uses `NodeId(0)` |
 
 ## 4 Process / thread

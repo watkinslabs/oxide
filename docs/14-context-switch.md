@@ -219,11 +219,11 @@ Cost saved: XSAVE x86 ~150cy / FPSIMD arm similar, on every switch where target 
 
 Task T on CPU A → migrate to CPU B. CPU A's FPU-owner ptr still T. T faults on FP on B → IPI A to save T's state into `T.fpu_state`, then load on B.
 
-v1 simplification: **don't migrate FPU-owner**. Sched skips FPU-owner during load-balance. Cost: load-balance inefficiency. Gain: no FP-fault IPI. v2 revisit.
+Current simplification: **don't migrate FPU-owner**. Sched skips FPU-owner during load-balance. Cost: load-balance inefficiency. Gain: no FP-fault IPI. Revisit when load-balance becomes hot.
 
 ### 7.2 FPU state size
 
-- x86_64 AVX2: ~832B (XSAVE x87+SSE+AVX). AVX-512 not v1 (~2576B).
+- x86_64 AVX2: ~832B (XSAVE x87+SSE+AVX). AVX-512 tracked as later phase (~2576B).
 - aarch64: 256B (32×16B vec + ctrl).
 
 Allocated lazily in task struct on first FP fault.
