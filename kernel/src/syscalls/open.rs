@@ -26,10 +26,7 @@ const O_DIRECTORY: u32 = 0o200000;
 /// # C: O(N)
 fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
     if path_raw.starts_with('/') { return None; }
-    let cur = sched::live::current()?;
-    // SAFETY: cwd slot single-mutator per `13§5`.
-    let cwd = unsafe { (*cur.cwd.get()).clone() };
-    vfs::path::resolve_against_cwd(&cwd, path_raw)
+    Some(crate::syscalls::pathresolve::resolve_cwd(path_raw))
 }
 
 /// `sys_open(path, flags, mode)` — slot 2.

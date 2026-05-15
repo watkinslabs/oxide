@@ -62,15 +62,7 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
         Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
     };
     let _ = dirfd; //  AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
-    let resolved: alloc::string::String = if raw.starts_with('/') {
-        raw.into()
-    } else if let Some(cur) = sched::live::current() {
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-    } else {
-        raw.into()
-    };
+    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     if let Ok(i) = vfs::mount::lookup(s) { return Ok(i); }
     if let Some(i) = ext4::rootfs::lookup_inode_any(s.as_bytes()) { return Ok(i); }
