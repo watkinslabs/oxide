@@ -425,9 +425,61 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             unsafe { core::ptr::write_volatile(data as *mut u64, msg); }
             0
         }
+        PTRACE_GETSIGINFO => {
+            // Return the last stop's siginfo_t (or a SIGTRAP-shaped
+            // default if no stop has snapshotted). Tracer reads
+            // 128 bytes; we fill the first 32 with the SigInfo
+            // record and leave the rest zero.
+            let target = match sched::live::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let data = args.a3;
+            if data == 0 || data >= hal::USER_VA_END {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            let snap = target.ptrace_siginfo.lock().clone()
+                .unwrap_or(sched::SigInfo { signo: 5, code: 0, pid: 0, uid: 0, value: 0 });
+            // SAFETY: data validated < USER_VA_END; 128-byte siginfo_t slot in caller's AS; we write the leading 32 bytes (signo/errno/code/pid/uid/value) and zero the rest.
+            unsafe {
+                for i in 0..128usize {
+                    core::ptr::write_volatile((data + i as u64) as *mut u8, 0);
+                }
+                core::ptr::write_volatile(data as *mut i32, snap.signo as i32);
+                core::ptr::write_volatile((data +  8) as *mut i32, snap.code);
+                core::ptr::write_volatile((data + 16) as *mut u32, snap.pid);
+                core::ptr::write_volatile((data + 20) as *mut u32, snap.uid);
+                core::ptr::write_volatile((data + 24) as *mut u64, snap.value);
+            }
+            0
+        }
+        PTRACE_SETSIGINFO => {
+            // Replace target's stop siginfo from a user-supplied
+            // siginfo_t (first 32 bytes). On the next ptrace-CONT
+            // with a non-zero signal arg, the kernel would normally
+            // deliver this siginfo (full delivery integration rides
+            // a follow-up; the write itself is now real).
+            let target = match sched::live::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let data = args.a3;
+            if data == 0 || data >= hal::USER_VA_END {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            // SAFETY: data validated < USER_VA_END; siginfo_t leading 32B layout per Linux x86_64; CPL=0 reads through caller's AS.
+            let info = unsafe {
+                sched::SigInfo {
+                    signo: core::ptr::read_volatile(data as *const i32) as u32,
+                    code:  core::ptr::read_volatile((data +  8) as *const i32),
+                    pid:   core::ptr::read_volatile((data + 16) as *const u32),
+                    uid:   core::ptr::read_volatile((data + 20) as *const u32),
+                    value: core::ptr::read_volatile((data + 24) as *const u64),
+                }
+            };
+            *target.ptrace_siginfo.lock() = Some(info);
+            0
+        }
         PTRACE_GETFPREGS | PTRACE_SETFPREGS
-            | PTRACE_INTERRUPT | PTRACE_LISTEN
-            | PTRACE_GETSIGINFO | PTRACE_SETSIGINFO => 0,
+            | PTRACE_INTERRUPT | PTRACE_LISTEN => 0,
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
