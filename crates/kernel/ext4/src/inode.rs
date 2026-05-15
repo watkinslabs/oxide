@@ -88,6 +88,19 @@ impl Inode {
     /// True iff this inode is a symlink.
     /// # C: O(1)
     pub fn is_link(&self) -> bool { self.file_type() == S_IFLNK }
+
+    /// For a fast symlink (target length ≤ 60 bytes) the target text
+    /// lives inline in `i_block`. Returns the target bytes if this is
+    /// a symlink and the size fits in the inline area; `None` for slow
+    /// symlinks (caller must read the first data block via the extent
+    /// tree).
+    /// # C: O(1)
+    pub fn fast_symlink_target(&self) -> Option<&[u8]> {
+        if !self.is_link() { return None; }
+        let n = self.size as usize;
+        if n == 0 || n > I_BLOCK_LEN { return None; }
+        Some(&self.i_block[..n])
+    }
 }
 
 /// 12-byte `ext4_extent_header` at the head of any extent node.
