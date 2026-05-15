@@ -910,6 +910,8 @@ pub fn sys_truncate(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
+    if let Err(rv) = crate::syscalls::landlock::check(s,
+        ::security::landlock::access::TRUNCATE) { return rv; }
     let inode = match vfs::mount::lookup(s) {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoent.as_i32() as i64),
