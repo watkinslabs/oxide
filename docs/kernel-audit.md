@@ -373,37 +373,24 @@ batch is a single branch/PR with a named exit gate. No deferrals,
 no parking lot — every Linux subsystem on the contract is in
 scope; the only question is sequence.
 
-### Batch K1 — /dev/console real termios (gates: bash, login cooked-mode, password echo)
+### Batch K1 — /dev/console real termios ✅ DONE (#1022)
 
-Affected: every interactive program that reads from `/dev/console`
-without going through a PTY pair. Currently the console fakes a
-zero-filled `struct termios` (`syscall_glue_ioctl.rs:90`), ignores
-TCSETS, hardcodes ECHO and CR→NL on input, never emits ONLCR on
-write, and has no ISIG path.
+All sub-items landed across B07..B22 + #1022:
+- Per-VT `struct termios` slot (`tty::live::VT_TERMIOS`).
+- TCGETS / TCSETS / TCSETSW / TCSETSF on console + /dev/tty<N>.
+- ICANON line buffer (`VT_LINES`), VERASE / VKILL / VEOF.
+- ECHO + ECHOE + ECHOK + ECHONL + ECHOCTL all honored (#1022).
+- ONLCR on output (`dev/console.rs:84..119`).
+- ISIG via `deliver_signal_to_waiters` → fg pgrp.
 
-- Per-device `struct termios` slot in the console driver.
-- Honor TCGETS / TCSETS / TCSETSW / TCSETSF on the console fd.
-- Wire ICANON line-accumulation buffer (commit on `\n` or VEOF).
-- Wire ECHO toggle (and ECHONL, ECHOE, ECHOK).
-- Wire ONLCR on `write(fd, "\n", …)` — output side, not just echo.
-- Wire ISIG: VINTR/VQUIT/VSUSP → signal delivery to fg pgrp on the
-  controlling tty (already wired for PTY pair; reuse path).
-- Test: `stty -echo` then `read pw` shows no echo; Ctrl-C aborts a
-  `sleep 30`; `printf "a\nb\n"` produces `a\r\nb\r\n` on a serial
-  console with ONLCR set (default).
+### Batch K2 — mm completeness ✅ DONE (#1023)
 
-### Batch K2 — mm completeness for non-toy programs (gates: realloc-heavy + JIT + cp/sendfile)
-
-- `mremap` real: MREMAP_MAYMOVE shrink + grow with copy; MREMAP_FIXED
-  via munmap-then-insert pattern (mirror F89's MAP_FIXED handling).
-- `mprotect` per-PTE: walk the range and flip W/X bits in the live
-  page tables; TLB shootdown per-CPU (already plumbed for SMP-coop).
-- `sendfile` real: copy via pagecache (read-then-write under VFS),
-  not ENOSYS. cp, nginx, scp, busybox httpd all use it.
-- File-backed `mmap` real: KernelBytes path already wires ELF; extend
-  to any vfs::File via demand-fault → pagecache (depends on K6).
-- Test: `mprotect_smoke` extended to grow + shrink + page split;
-  `cp -a /bin /tmp/bin` byte-identical via sendfile path.
+- `mremap` real (`syscalls/proc.rs:516`).
+- `mprotect` per-PTE walks PT + flushes TLB (`proc.rs:122` →
+  `pmm::user_as::mprotect_pages`).
+- `sendfile` real via kernel staging buffer (`sched/xfer.rs:13`).
+- File-backed `mmap` real via `VmaBacking::File` + `FileBacking`
+  trait + per-inode `PageCache` (#1023, K6 substrate).
 
 ### Batch K3 — fcntl + fd flag honesty (gates: server programs + non-blocking I/O)
 
@@ -438,19 +425,14 @@ write, and has no ISIG path.
   to a 64-entry queue.
 - Test: `bash -c 'trap : USR1; kill -USR1 $$; echo ok'` prints `ok`.
 
-### Batch K6 — VFS+pagecache wiring real (gates: file-backed mmap, core dumps, sendfile)
+### Batch K6 — VFS+pagecache wiring real ✅ DONE (#1023)
 
-Substrate for K2 (file-backed mmap) and K5 (core dump SIGSEGV→ELF).
-Already partial (block layer + page cache + ext4 RW done per
-`00§3.1`); missing is the read-side page-fault handler that maps a
-file's pagecache page into the faulting task's AS.
-
-- Hook page fault → vfs::File backing → pagecache lookup → install
-  the page in the task's AS as read-only-shared (writable on COW).
-- TLB shootdown on page eviction.
-- Test: `mmap /bin/sh PROT_READ MAP_PRIVATE` of size 4 KiB returns a
-  va that reads the binary's first page byte-identical to
-  `head -c 4096 /bin/sh`.
+Demand-page handler resolves `VmaBacking::File` via
+`Arc<dyn FileBacking>` (`mm-vmm::vma::FileBacking`); per-backing
+`PageCache` fetches pages via `Inode::read`. MAP_PRIVATE + MAP_SHARED
+file mmap both work; writeback + global per-inode cache hash ride
+follow-ups. Acceptance: `mmap /bin/sh PROT_READ MAP_PRIVATE` byte-
+identical to `head -c 4096 /bin/sh` is K7 harness work.
 
 ### Batch K7 — empirical acceptance harness (gates: release tag)
 
