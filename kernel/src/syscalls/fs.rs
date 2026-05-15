@@ -148,7 +148,8 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             0
         }
         F_GETPIPE_SZ | F_SETPIPE_SZ => 4096,
-        F_GETOWN | F_SETOWN => 0,
+        F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
+        F_SETOWN => { file.owner.store(arg as i32, core::sync::atomic::Ordering::Release); 0 }
         F_SETLK | F_SETLKW | F_GETLK |
         F_OFD_SETLK | F_OFD_SETLKW | F_OFD_GETLK => {
             handle_record_lock(&cur, &fdt, &file, cmd, arg)
