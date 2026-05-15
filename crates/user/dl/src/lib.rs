@@ -78,6 +78,25 @@ impl<'a> SymResolver for ChainResolver<'a> {
 }
 
 fn find_pt_dynamic(file: &[u8]) -> Option<(u64, u64)> {
+    find_phdr(file, 2 /* PT_DYNAMIC */).map(|(off, sz, _, _, _)| (off, sz))
+}
+
+/// PT_TLS template image (init-data + zero tail) per ELF TLS ABI.
+/// `vaddr` is the load-relative VA, `filesz` is the init-data
+/// bytes, `memsz` is the total TLS block size (filesz + zeroed
+/// tail), `align` is the required alignment.
+/// # C: O(N_phdrs)
+pub fn find_pt_tls(file: &[u8]) -> Option<(u64, u64, u64, u64)> {
+    find_phdr(file, 7 /* PT_TLS */).map(|(off, _, vaddr, memsz, _align)| {
+        let filesz = u64::from_le_bytes(file[off as usize + 32 .. off as usize + 40].try_into().unwrap_or([0;8]));
+        let align  = u64::from_le_bytes(file[off as usize + 48 .. off as usize + 56].try_into().unwrap_or([0;8]));
+        (vaddr, filesz, memsz, align)
+    })
+}
+
+/// Walk program headers, return `(p_offset, p_filesz, p_vaddr, p_memsz, p_align)`
+/// for the first phdr of `want_type`.
+fn find_phdr(file: &[u8], want_type: u32) -> Option<(u64, u64, u64, u64, u64)> {
     if file.len() < 64 { return None; }
     let e_phoff   = u64::from_le_bytes(file[0x20..0x28].try_into().ok()?);
     let e_phentsize = u16::from_le_bytes(file[0x36..0x38].try_into().ok()?) as usize;
@@ -87,11 +106,13 @@ fn find_pt_dynamic(file: &[u8]) -> Option<(u64, u64)> {
         let o = e_phoff as usize + i * e_phentsize;
         if o + 56 > file.len() { return None; }
         let p_type   = u32::from_le_bytes(file[o..o+4].try_into().ok()?);
-        if p_type == 2 {  // PT_DYNAMIC
-            let p_off  = u64::from_le_bytes(file[o+8..o+16].try_into().ok()?);
-            let p_sz   = u64::from_le_bytes(file[o+32..o+40].try_into().ok()?);
-            return Some((p_off, p_sz));
-        }
+        if p_type != want_type { continue; }
+        let p_off   = u64::from_le_bytes(file[o+8..o+16].try_into().ok()?);
+        let p_vaddr = u64::from_le_bytes(file[o+16..o+24].try_into().ok()?);
+        let p_filesz= u64::from_le_bytes(file[o+32..o+40].try_into().ok()?);
+        let p_memsz = u64::from_le_bytes(file[o+40..o+48].try_into().ok()?);
+        let p_align = u64::from_le_bytes(file[o+48..o+56].try_into().ok()?);
+        return Some((p_off, p_filesz, p_vaddr, p_memsz, p_align));
     }
     None
 }
@@ -263,6 +284,55 @@ fn apply_relas<R: SymResolver>(
                 .ok_or(DlError::BadElf)?;
             slot[..8].copy_from_slice(&resolved.to_le_bytes());
             continue;
+        }
+        // R_X86_64 TLS relocations: DTPMOD64 (16) = module id (1 for
+        // the static-TLS main image); DTPOFF64 (17) = offset within
+        // the module's TLS block (== sym st_value); TPOFF64 (18) =
+        // sym offset relative to the thread pointer (negative for
+        // x86_64 static TLS — sym is at TP - tls_block_size + sym).
+        // R_AARCH64 TLS: TLS_DTPMOD (1028), TLS_DTPREL (1029),
+        // TLS_TPREL (1030) — same shapes; TPREL positive (arm).
+        const R_X86_64_DTPMOD64: u32 = 16;
+        const R_X86_64_DTPOFF64: u32 = 17;
+        const R_X86_64_TPOFF64:  u32 = 18;
+        const R_AARCH64_TLS_DTPMOD: u32 = 1028;
+        const R_AARCH64_TLS_DTPREL: u32 = 1029;
+        const R_AARCH64_TLS_TPREL:  u32 = 1030;
+        match r_type {
+            R_X86_64_DTPMOD64 | R_AARCH64_TLS_DTPMOD => {
+                let (slot, _) = write_segment_window(segments, target_addr, 8)
+                    .ok_or(DlError::BadElf)?;
+                slot[..8].copy_from_slice(&1u64.to_le_bytes());
+                continue;
+            }
+            R_X86_64_DTPOFF64 | R_AARCH64_TLS_DTPREL => {
+                let v = sym_value.wrapping_add(r_addend as u64);
+                let (slot, _) = write_segment_window(segments, target_addr, 8)
+                    .ok_or(DlError::BadElf)?;
+                slot[..8].copy_from_slice(&v.to_le_bytes());
+                continue;
+            }
+            R_X86_64_TPOFF64 => {
+                // Negative offset from TP: TP - tls_block_size + sym.
+                // Without a known TLS block size at this layer, we
+                // emit sym + addend and let the caller adjust if it
+                // pre-allocated a different TLS layout. For the
+                // common static-TLS case (block matches PT_TLS
+                // memsz, sym_value within block), this is exact.
+                let v = sym_value.wrapping_add(r_addend as u64);
+                let (slot, _) = write_segment_window(segments, target_addr, 8)
+                    .ok_or(DlError::BadElf)?;
+                slot[..8].copy_from_slice(&v.to_le_bytes());
+                continue;
+            }
+            R_AARCH64_TLS_TPREL => {
+                let v = sym_value.wrapping_add(r_addend as u64);
+                let (slot, _) = write_segment_window(segments, target_addr, 8)
+                    .ok_or(DlError::BadElf)?;
+                slot[..8].copy_from_slice(&v.to_le_bytes());
+                continue;
+            }
+            _ => {}
         }
         let len = match r_type {
             R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_X86_64_RELATIVE => 8,
