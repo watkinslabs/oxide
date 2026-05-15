@@ -100,10 +100,13 @@ fn timerfd_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<TimerfdIno
 
 /// `sys_timerfd_create(clockid, flags)`. Allocates a fresh TimerfdInode fd.
 /// # C: O(N_fds)
-pub fn sys_timerfd_create(_args: &syscall::SyscallArgs) -> i64 {
+pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
+    const TFD_NONBLOCK: u64 = 0o0_004_000;
+    const TFD_CLOEXEC:  u64 = 0o2_000_000;
+    let flags = args.a1;
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -113,9 +116,14 @@ pub fn sys_timerfd_create(_args: &syscall::SyscallArgs) -> i64 {
     };
     let inode = TimerfdInode::new() as InodeRef;
     let dentry = Dentry::new(None, "timerfd".to_string(), Arc::clone(&inode));
-    let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
+    let mut fl = OpenFlags::O_RDONLY;
+    if (flags & TFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => {
+            if (flags & TFD_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
         Err(e) => -(e as i64),
     }
 }
