@@ -48,7 +48,9 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     use alloc::sync::Arc;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
+    const PIDFD_NONBLOCK: u64 = 0o0_004_000;
     let pid = args.a0 as u32;
+    let flags = args.a1;
     // F109: pidfd_open with pid arg interpreted in caller's pid_ns.
     let cur_ns = sched::live::current()
         .map(|c| c.pid_ns.load(core::sync::atomic::Ordering::Acquire))
@@ -65,7 +67,9 @@ pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     };
     let inode = crate::dev::pidfd::new_pidfd_inode(pid);
     let dentry = Dentry::new(None, "pidfd".to_string(), Arc::clone(&inode));
-    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
+    let mut fl = OpenFlags::O_RDWR;
+    if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
         Ok(fd)  => fd as i64,
         Err(e)  => -(e as i64),
