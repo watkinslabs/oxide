@@ -95,11 +95,14 @@ pub fn map_into_current() -> Option<u64> {
     let vvar_va = placeholder.as_u64();
     let base    = vvar_va + 0x1000;
     let _ = mm.munmap(placeholder, reserve);
-    // 1. Map the vvar page (RO from user mode).
-    let vvar_bytes = crate::vvar::snapshot_for_mapping();
+    // 1. Map the vvar page (RO from user mode) backed by the
+    // single shared kernel frame so kernel publisher writes
+    // propagate to every user reader without copy.
+    let vvar_pa = crate::vvar::pa();
+    if vvar_pa == 0 { return None; }
     let vvar_hint = UserVirtAddr::new(vvar_va)?;
     mm.mmap(Some(vvar_hint), 0x1000, VmaProt::READ, VmaFlags::PRIVATE,
-        VmaBacking::KernelBytes { data: vvar_bytes, off: 0 }, true).ok()?;
+        VmaBacking::KernelFrame { pa: vvar_pa }, true).ok()?;
     // 2. Map each PT_LOAD of the vDSO ELF at base + v_addr.
     for (vaddr, filesz, memsz, p_offset, p_flags) in segs {
         let seg_start = base.wrapping_add(vaddr);
