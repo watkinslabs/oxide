@@ -279,36 +279,36 @@ references.
 
 | path | state | notes |
 |---|---|---|
-| /proc/self/maps | 🟡 | Verify — bash + glibc read. |
-| /proc/self/status | 🟡 | |
-| /proc/self/cmdline | 🟡 | |
-| /proc/self/exe (symlink) | 🟥 | |
-| /proc/self/environ | 🟥 | |
-| /proc/self/fd/* | 🟥 | |
-| /proc/self/mountinfo | 🟥 | |
-| /proc/self/stat | 🟡 | |
-| /proc/cpuinfo | 🟡 | |
-| /proc/meminfo | 🟡 | |
-| /proc/uptime | 🟡 | |
-| /proc/loadavg | 🟡 | |
-| /proc/version | 🟡 | "Linux version 5.15.0-oxide" present (verified) |
-| /proc/<pid>/* for live tasks | 🟡 | |
-| /proc/sys/kernel/* | 🟡 | hostname, ostype, osrelease |
-| /proc/net/{dev,tcp,udp,route,arp} | 🟡 | (P9-02/P9-31) |
-| /proc/modules | ✅ | (P10-06) |
-| /proc/mounts | 🟡 | (P9-14) — hardcoded 5-line string |
-| /proc/filesystems | 🟥 | |
-| /proc/devices | 🟥 | |
-| /proc/partitions | 🟥 | |
-| /proc/cgroups | 🟥 | |
+| /proc/self/maps | ✅ | ProcSelfMapsInode. |
+| /proc/self/status | ✅ | ProcSelfStatusInode. |
+| /proc/self/cmdline | ✅ | ProcSelfCmdlineInode. |
+| /proc/self/exe (symlink) | ✅ | ProcSelfExeInode. |
+| /proc/self/environ | ✅ | ProcSelfEnvironInode. |
+| /proc/self/fd/* | ✅ | ProcSelfFdInode. |
+| /proc/self/mountinfo | ✅ | MOUNTINFO_BODY static. |
+| /proc/self/stat | ✅ | ProcSelfStatInode. |
+| /proc/cpuinfo | ✅ | CPUINFO_BODY. |
+| /proc/meminfo | ✅ | ProcMeminfoInode (live). |
+| /proc/uptime | ✅ | ProcUptimeInode (live). |
+| /proc/loadavg | ✅ | ProcLoadavgInode (live). |
+| /proc/version | ✅ | VERSION_BODY. |
+| /proc/<pid>/* for live tasks | ✅ | ProcRootInode enumerates live tids. |
+| /proc/sys/kernel/* | ✅ | hostname/ostype/osrelease/random/uuid. |
+| /proc/net/{dev,tcp,udp,route,arp} | ✅ | P9-02/P9-31. |
+| /proc/modules | ✅ | P10-06. |
+| /proc/mounts | ✅ | MOUNTS_BODY. |
+| /proc/filesystems | ✅ | FILESYSTEMS static. |
+| /proc/devices | ✅ | static (char + block). |
+| /proc/partitions | ✅ | static (header). |
+| /proc/cgroups + /proc/self/cgroup | ✅ | cgroup v2 unified "0::/". |
 
 ### 10. IPC
 
 | feature | state | notes |
 |---|---|---|
-| SysV shm/sem/msg | 🟥 | ENOSYS family. |
-| POSIX MQ | 🟥 | ENOSYS family. |
-| keyring | 🟥 | ENOSYS family. |
+| SysV shm/sem/msg | ✅ | shm P25a; sem P25b non-blocking; msg P25c non-blocking. |
+| POSIX MQ | ✅ | priority-ordered records in posix_mq.rs (B16) + notify/getsetattr (F77). |
+| keyring | ✅ | F76 single global ring + keyctl real. |
 | futex | ✅ | (PR-B before sweep) |
 | eventfd | 🟡 | |
 | Unix-socket SCM_RIGHTS fd-passing | 🟡 | Verify — Wayland + dbus require. |
