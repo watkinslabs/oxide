@@ -713,23 +713,26 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
             // SAFETY: dec_ref of a previously-mapped shared frame after COW split; rmap_aware_dec_and_maybe_free clears page->mapping before the frame returns to PMM.
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx));
+            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
+            // SAFETY: inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference.
+            |pa| unsafe { crate::setup::inc_ref(pa); });
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
-            // SAFETY: dec_ref + rmap clear; same shape as x86.
+            // SAFETY: dec_ref + rmap clear; rmap_aware free path.
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
-            // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx));
+            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
+            // SAFETY: inc_ref for KernelFrame (vvar); balances AS-drop dec.
+            |pa| unsafe { crate::setup::inc_ref(pa); });
         r
     }
 }
