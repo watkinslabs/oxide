@@ -296,4 +296,7 @@ pub mod devfs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod drain;
 
+#[cfg(target_os = "oxide-kernel")]
+pub mod evdev_queue;
+
 pub mod keymap;

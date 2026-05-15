@@ -19,6 +19,7 @@ vfs     = { path = "../../kernel/vfs" }
 softirq = { path = "../../kernel/softirq" }
 tty     = { path = "../../kernel/tty" }
 pmm     = { path = "../../kernel/mm-pmm" }
+sched   = { path = "../../kernel/sched" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
