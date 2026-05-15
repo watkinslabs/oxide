@@ -640,10 +640,11 @@ impl AddressSpace {
         // user-fault dispatcher uses `handle_page_fault_cow_rmap`.
         // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
         unsafe {
-            self.handle_page_fault_cow_rmap::<M, _, _, _, _>(
+            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _>(
                 va, fault, hhdm_offset,
                 alloc_frame, frame_refcount, dec_ref,
                 |_pa, _av, _idx| {},
+                |_pa| {},
             )
         }
     }
@@ -655,7 +656,7 @@ impl AddressSpace {
     /// `page_add_anon_rmap`. Hosted tests pin no-op `set_rmap`.
     /// # SAFETY: per `handle_page_fault_cow`.
     /// # C: O(N_vmas) on lookup + O(walk) on install.
-    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR>(
+    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
@@ -664,6 +665,7 @@ impl AddressSpace {
         mut frame_refcount: RC,
         mut dec_ref: DR,
         mut set_rmap: SR,
+        mut inc_ref: IR,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -671,6 +673,7 @@ impl AddressSpace {
         RC: FnMut(u64) -> u32,
         DR: FnMut(u64),
         SR: FnMut(u64, &Arc<crate::AnonVma>, u32),
+        IR: FnMut(u64),
     {
         // Protection write to a writable VMA — CoW-style
         // upgrade. Three causes hit this:
@@ -854,12 +857,12 @@ impl AddressSpace {
                 Ok(())
             }
             VmaBacking::KernelFrame { pa } => {
-                // Shared kernel-owned frame: install PA directly
-                // into user PT (no copy). Used for vvar.
+                // Shared kernel frame (vvar); inc_ref balances AS-drop dec.
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
                 unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K); }
+                inc_ref(*pa);
                 Ok(())
             }
             VmaBacking::Special => Err(Error::NotImplemented),
