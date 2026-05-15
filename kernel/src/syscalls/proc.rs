@@ -450,9 +450,11 @@ pub fn sys_getrusage(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_times(tms)` — slot 100. tms_utime reports
-/// `(monotonic_ns - spawn_ns)` in CLK_TCK (100 Hz) ticks; the rest
-/// of the struct stays zero. Return value: monotonic ticks total.
+/// `sys_times(tms)` — slot 100. tms_utime = (now - spawn_ns);
+/// tms_cutime = cumulative_child_ns (exited children's elapsed);
+/// tms_stime/cstime stay zero (kernel-time accounting rides a
+/// follow-up). All values in CLK_TCK ticks. Return = monotonic
+/// ticks total.
 /// # C: O(1)
 pub fn sys_times(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
@@ -464,18 +466,22 @@ pub fn sys_times(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
-    let elapsed = match sched::live::current() {
-        Some(c) => now.saturating_sub(c.spawn_ns.load(Ordering::Acquire)),
-        None    => 0,
+    let (elapsed, children) = match sched::live::current() {
+        Some(c) => (
+            now.saturating_sub(c.spawn_ns.load(Ordering::Acquire)),
+            c.cumulative_child_ns.load(Ordering::Acquire),
+        ),
+        None => (0, 0),
     };
-    let utime_ticks = sched::clock::ns_to_clk_tck(elapsed);
+    let utime_ticks  = sched::clock::ns_to_clk_tck(elapsed);
+    let cutime_ticks = sched::clock::ns_to_clk_tck(children);
     if buf != 0 && buf < hal::USER_VA_END {
         // SAFETY: validated 32-byte user buf below USER_VA_END; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( buf       as *mut u64, utime_ticks);
-            core::ptr::write_volatile((buf + 8)  as *mut u64, 0); // stime
-            core::ptr::write_volatile((buf + 16) as *mut u64, 0); // cutime
-            core::ptr::write_volatile((buf + 24) as *mut u64, 0); // cstime
+            core::ptr::write_volatile((buf + 8)  as *mut u64, 0);             // stime
+            core::ptr::write_volatile((buf + 16) as *mut u64, cutime_ticks);
+            core::ptr::write_volatile((buf + 24) as *mut u64, 0);             // cstime
         }
     }
     sched::clock::ns_to_clk_tck(now) as i64
