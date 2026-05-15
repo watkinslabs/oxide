@@ -745,17 +745,13 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
         vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
     };
     let path_s = resolved.as_str();
-    // proc-link family first (/proc/self/exe etc) — those aren't
-    // backed by a real Inode::readlink.
-    let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) {
-        t
-    } else if let Some(inode) = ext4::rootfs::lookup_inode_any(path_s.as_bytes()) {
-        match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
-    } else if let Ok(inode) = vfs::mount::lookup(path_s) {
-        match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
-    } else {
-        return -(Errno::Enoent.as_i32() as i64);
-    };
+    // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
+    let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
+        else if let Some(inode) = ext4::rootfs::lookup_inode_any(path_s.as_bytes()) {
+            match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
+        } else if let Ok(inode) = vfs::mount::lookup(path_s) {
+            match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
+        } else { return -(Errno::Enoent.as_i32() as i64); };
     let n = (target.len() as u64).min(bufsize) as usize;
     // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
