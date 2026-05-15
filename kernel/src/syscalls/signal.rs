@@ -475,7 +475,29 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
         }
         PTRACE_GETFPREGS => crate::syscalls::ptrace_fpu::get_fpregs(pid, args.a3),
         PTRACE_SETFPREGS => crate::syscalls::ptrace_fpu::set_fpregs(pid, args.a3),
-        PTRACE_INTERRUPT | PTRACE_LISTEN => 0,
+        PTRACE_INTERRUPT => {
+            // Force the tracee to enter group-stop at the next safe point.
+            // Real Linux semantics: a SEIZE'd tracee not yet stopped gets a
+            // synthetic SIGSTOP, on delivery a PTRACE_EVENT_STOP fires and
+            // wait4 reports the stop. v1 substrate: mark stop_pending +
+            // raise SIGSTOP. The pending bit drives wait4(WUNTRACED).
+            let target = match sched::live::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            target.sigpending.fetch_or(1u64 << 18, Ordering::Release); // SIGSTOP
+            target.stop_signal.store(19, Ordering::Release);
+            target.stop_pending.store(true, Ordering::Release);
+            0
+        }
+        PTRACE_LISTEN => {
+            // Re-enter listen state without resuming: keep target Stopped,
+            // clear cont_pending so wait4(WCONTINUED) won't fire spuriously.
+            let target = match sched::live::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            target.cont_pending.store(false, Ordering::Release);
+            0
+        }
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
