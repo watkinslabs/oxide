@@ -33,6 +33,7 @@ const AT_CLKTCK:  u64 = 17;
 const AT_SECURE:  u64 = 23;
 const AT_RANDOM:  u64 = 25;
 const AT_EXECFN:  u64 = 31;
+const AT_SYSINFO_EHDR: u64 = 33;
 
 #[cfg(target_arch = "x86_64")]
 const PLATFORM: &[u8] = b"x86_64\0";
@@ -73,6 +74,7 @@ pub unsafe fn build_user_stack(
     img:  &LoadedImage,
     random16: &[u8; 16],
     exec_path: &[u8],
+    vdso_ehdr: u64,
 ) -> Option<u64> {
     let mut cursor = stack_top;
 
@@ -107,7 +109,7 @@ pub unsafe fn build_user_stack(
     // 2. Compute total size of the pointer/auxv vector area, then
     //    align the resulting SP down to 16. The vector area is
     //    written bottom-up (low → high) starting at `vec_base`.
-    let auxv: [(u64, u64); 17] = [
+    let auxv: [(u64, u64); 18] = [
         (AT_PHDR,    img.phdr_va),
         (AT_PHENT,   img.phentsize as u64),
         (AT_PHNUM,   img.phnum as u64),
@@ -125,6 +127,9 @@ pub unsafe fn build_user_stack(
         (AT_RANDOM,  random_va),
         (AT_HWCAP,   0),
         (AT_CLKTCK,  100),
+        // 0 = "no vDSO mapped" — glibc / musl skip the AT_SYSINFO_EHDR
+        // entry under that value. Non-zero = vDSO load VA per K14.
+        (AT_SYSINFO_EHDR, vdso_ehdr),
     ];
     let n_auxv = auxv.len() + 1;          // + AT_NULL terminator
     let n_argv = argv.len() + 1;          // + NULL

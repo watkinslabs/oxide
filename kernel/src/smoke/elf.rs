@@ -550,6 +550,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
             &img,
             &random16,
             b"/init",
+            0, // smoke: no vDSO mapped
         )
     }.unwrap_or(USER_STACK_TOP);
 
@@ -794,6 +795,7 @@ unsafe fn spawn_user_blob_with_vpid(
             &img,
             &random16,
             argv_ref.first().copied().unwrap_or(b""),
+            0, // smoke: no vDSO mapped
         )
     }.unwrap_or(USER_STACK_TOP);
 
