@@ -387,6 +387,7 @@ fn spawn_init_from_rootfs_arm() {
             &img,
             &random16,
             b"/sbin/init",
+            0, // smoke: no vDSO mapped
         )
     }.unwrap_or(INIT_STACK_TOP);
 
