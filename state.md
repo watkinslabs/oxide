@@ -1,49 +1,73 @@
 # state — hand-off
 
-Branch: main (clean). K1..K8 closed (substrate). K9..K15 open.
+Branch: main (clean). K1..K8 closed; K9 mostly already done
+(audit text was stale); K12 already done. K5 RT-signal queue +
+K10 landlock enforcement + K11 io_uring polish + K13 DRM/KMS +
+K14 vDSO + K15 glibc compat all open.
 
 ## Closed in this stretch (PRs landed)
 
-- #1022 (F25) K1 console termios echo flags — ECHOE/ECHOK/
-  ECHONL/ECHOCTL added; DEFAULT_LFLAG matches `stty sane`.
-- #1023 (F26) K6 file-backed mmap substrate — `FileBacking`
-  trait + per-inode `PageCache` + demand-page File arm.
+- #1022 (F25) K1 ECHOE/ECHOK/ECHONL/ECHOCTL.
+- #1023 (F26) K6 file-backed mmap via FileBacking + per-inode
+  PageCache.
 - #1024 (D05) audit refresh post K1/K2/K6.
-- #1025 (F27) K3a O_NONBLOCK plumb — `Inode::read_nonblock`/
-  `write_nonblock`; pipe blocks via WaitList; CLOSE_HOOK
-  multi-slot registry.
-- #1026 (F28) K3b POSIX + OFD record locks — `fs::posix_lock`
-  per-inode range list, F_SETLK/SETLKW/GETLK + F_OFD_*.
-- #1027 (F29) K4 procfs symlinks — `/proc/self/{exe,cwd,root}`
-  + `/proc/self/fd/<n>` real Symlink inodes via
-  `procfs::proc_links`; `Inode::readlink` default-impl.
-- #1028 (F30) K5 default-action coredump — fatal SIG_DFL signals
-  route through `fs::coredump`.
-- #1029 (F31) K7 acceptance harness — `tools/accept.py` drives
-  QEMU + serial against `scenario.sh` files.
-- D06 (next merge) audit refresh post K3/K4/K5/K7/K8.
+- #1025 (F27) K3a O_NONBLOCK plumbing + blocking pipe.
+- #1026 (F28) K3b POSIX + OFD record locks.
+- #1027 (F29) K4 procfs symlinks.
+- #1028 (F30) K5 default-action coredump.
+- #1029 (F31) K7 tools/accept.py scenario harness.
+- #1030 (D06) audit refresh post K3/K4/K5/K7/K8.
+- #1031 (F33) sys_getrandom via RDRAND/RNDR HW RNG.
+- #1032 (D07) sweep 'rides v2' / 'out of scope for v1' comments.
+- #1033 (F34) PTRACE_SETOPTIONS + GETEVENTMSG real storage.
+- D08 (pending) doc sweep: stale ptrace doc-comment fixes.
 
-## K9..K15 open
+## Open work per batch
 
-- K9 ptrace: register slab + scheduler stop-state integration
-  (peek/poke is real, control is stubs).
-- K10 bpf+seccomp+landlock: cBPF/eBPF verifier+JIT; full
-  seccomp_unotify; landlock ruleset chains.
-- K11 io_uring: SQE/CQE rings; IORING_OP_* set.
-- K12 SysV IPC + POSIX MQ: largely done; audit for gaps.
-- K13 DRM/KMS + input subsystem.
-- K14 vDSO per-arch ELF mapped into every user AS.
-- K15 glibc compatibility surface.
+### K5 RT signal queue (32..64)
 
-## RT signal queue (K5 open)
+Per-task `sigpending: AtomicU64` collapses multiplicity. Convert
+to standard bitmap (1..31) + per-RT-signal queue<(siginfo_t,
+sigval_t)> for 32..64. Update every `sigpending.fetch_or` site
+(~25 across the tree) so RT signals are queued, not merged.
 
-Per-task `sigpending: AtomicU64` collapses RT-signal multiplicity.
-Convert to a bitmap + per-RT-signal queue<(siginfo_t, sigval_t)>;
-update every site that does `sigpending.fetch_or(1 << bit)`.
+### K9 ptrace control (partial gap)
+
+GETSIGINFO/SETSIGINFO/INTERRUPT/LISTEN/GETFPREGS/SETFPREGS still
+silent-0. SETSIGINFO needs a per-task last-siginfo slot wired
+into the signal-delivery path; GETSIGINFO reads it. FPREGS needs
+per-arch FP frame access (FXSAVE / NEON V regs).
+
+### K10 landlock enforcement
+
+`landlock_add_rule` / `landlock_restrict_self` return EOPNOTSUPP.
+Real impl needs a per-task ruleset chain checked on every path-
+based syscall (openat, unlinkat, renameat, …).
+
+### K10 eBPF verifier + JIT
+
+`fs::bpf` admits cBPF program loads; eBPF verifier (range/type
+analysis) + per-arch JIT are open.
+
+### K13 DRM/KMS + input
+
+virtio-gpu scanout works; full DRM ioctl set (DRM_IOCTL_MODE_*),
+KMS atomic modesetting, evdev `/dev/input/event*` from
+virtio-input are open.
+
+### K14 vDSO
+
+Per-arch tiny ELF (clock_gettime / getcpu fast paths) mapped
+into every user AS at execve.
+
+### K15 glibc compatibility surface
+
+Beyond musl: anything glibc-specific not yet covered by the
+~200 wired syscalls. Discovered ad-hoc as glibc-linked
+binaries fail.
 
 ## First task next session
 
-K9 ptrace control: add per-task `ptrace_stop_state` to Task;
-park on PTRACE_ATTACH / SYSCALL stop; wake on PTRACE_CONT.
-Per-arch `struct user_regs_struct` materialization from the
-saved syscall/IRQ frame for PTRACE_GETREGS/SETREGS.
+K5 RT signal queue: design `Task.sigpending: SignalState` enum
+with `Standard(AtomicU64)` and `Rt(Spinlock<[VecDeque<SigInfo>;
+32]>)`. Update every fetch_or site to branch on signal number.
