@@ -388,6 +388,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
 
 
 /// Already-validated remote-address target for connect/sendto.
+#[derive(Clone)]
 pub enum RemoteAddr {
     /// `connect`/`sendto` on AF_UNIX — registry lookup by path.
     UnixPath(String),
