@@ -260,11 +260,24 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
     let path_opt = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
+    const AT_FDCWD: i32 = -100;
     let inode = match path_opt {
         Some(p) if !p.is_empty() => {
-            let s = match core::str::from_utf8(p) {
+            let raw = match core::str::from_utf8(p) {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
+            // Resolve relative path against cwd (statx semantics for AT_FDCWD).
+            let resolved: alloc::string::String = if raw.starts_with('/') {
+                raw.into()
+            } else if dirfd == AT_FDCWD {
+                let cur = match sched::live::current() {
+                    Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+                };
+                // SAFETY: cwd slot single-mutator per `13§5`.
+                let cwd = unsafe { (*cur.cwd.get()).clone() };
+                vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+            } else { raw.into() };
+            let s = resolved.as_str();
             match vfs::mount::lookup(s) {
                 Ok(i) => i,
                 Err(_) => match ext4::rootfs::lookup_inode_any(s.as_bytes()) {
@@ -365,12 +378,23 @@ pub fn sys_stat(args: &SyscallArgs) -> i64 {
         Some(p) if !p.is_empty() => p,
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
-    let s = match core::str::from_utf8(path) {
+    let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    // Resolve through pseudo-fs first (devfs/procfs/tmpfs) for shadow
-    // mounts, fall back to ext4 stat_path which handles any file type
-    // (dirs, symlinks, regular). lookup_inode would reject dirs.
+    // Resolve relative paths against the task's cwd so `stat(".")`
+    // and `lstat("foo")` work from shells/utilities that don't carry
+    // an absolute path.
+    let resolved: alloc::string::String = if raw.starts_with('/') {
+        raw.into()
+    } else {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        // SAFETY: cwd slot single-mutator per `13§5`.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+    };
+    let s = resolved.as_str();
     let (ino_num, file_type, size): (u64, vfs::FileType, u64) =
         if let Ok(i) = vfs::mount::lookup(s) {
             (i.ino(), i.file_type(), i.size())
