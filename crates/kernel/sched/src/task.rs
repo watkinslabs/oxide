@@ -356,18 +356,15 @@ pub struct Task {
     /// stub talking over a remote-protocol socket) is a follow-up.
     pub traced_by: AtomicU32,
 
-    /// PTRACE_SETOPTIONS bit-set. PTRACE_O_TRACESYSGOOD (0x1),
-    /// TRACEFORK (0x2), TRACEVFORK (0x4), TRACECLONE (0x8),
-    /// TRACEEXEC (0x10), TRACEVFORKDONE (0x20), TRACEEXIT (0x40),
-    /// TRACESECCOMP (0x80), EXITKILL (0x100000). Consulted by the
-    /// stop-delivery path to set the high bit on SIGTRAP / fan
-    /// stop events on fork-family calls.
+    /// PTRACE_SETOPTIONS bit-set (PTRACE_O_TRACESYSGOOD/FORK/VFORK/
+    /// CLONE/EXEC/VFORKDONE/EXIT/SECCOMP/EXITKILL). Stop-delivery
+    /// path consults to set SIGTRAP|0x80 and fan fork-family events.
     pub ptrace_options: AtomicU32,
-
-    /// PTRACE_GETEVENTMSG payload set by the kernel at each stop
-    /// event (PTRACE_EVENT_FORK msg = child pid; PTRACE_EVENT_EXIT
-    /// msg = exit code, etc.). Tracer reads via PTRACE_GETEVENTMSG.
+    /// PTRACE_GETEVENTMSG payload (e.g. child pid on FORK).
     pub ptrace_eventmsg: AtomicU64,
+    /// siginfo_t snapshot at the most recent ptrace stop. Tracer
+    /// reads via PTRACE_GETSIGINFO; writes via SETSIGINFO.
+    pub ptrace_siginfo: Spinlock<Option<SigInfo>, TaskListClass>,
 
     /// Set by PTRACE_SINGLESTEP, cleared by the trap handler after a
     /// single instruction has retired in user mode. While set, the
@@ -878,6 +875,7 @@ impl Task {
             traced_by:       AtomicU32::new(0),
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
+            ptrace_siginfo:  Spinlock::new(None),
             singlestep:    AtomicU32::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
             robust_list_head: AtomicU64::new(0),
