@@ -426,30 +426,36 @@ impl vfs::Inode for Ext4StatInode {
         // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
         let mount = unsafe { &*p };
         let dir_inode = mount.read_inode(self.ino).map_err(|_| vfs::VfsError::Eio)?;
-        let blk = mount.read_file_block(&dir_inode, 0).map_err(|_| vfs::VfsError::Eio)?;
         let mut next = off;
         let mut idx: u64 = 0;
-        let _ = crate::iter_active(&blk, |e| {
-            let name = match core::str::from_utf8(e.name) {
-                Ok(s) => s, Err(_) => return true,
-            };
-            if name.is_empty() { return true; }
-            idx += 1;
-            if idx <= off { return true; }
-            let ft = match e.file_type {
-                1 => vfs::FileType::Regular,
-                2 => vfs::FileType::Directory,
-                3 => vfs::FileType::CharDev,
-                4 => vfs::FileType::BlockDev,
-                5 => vfs::FileType::Fifo,
-                6 => vfs::FileType::Socket,
-                7 => vfs::FileType::Symlink,
-                _ => vfs::FileType::Regular,
-            };
-            let keep = f(idx, name, ft);
-            if keep { next = idx; }
-            keep
-        });
+        let bs = mount.sb.block_size as u64;
+        let nblocks = ((dir_inode.size + bs - 1) / bs) as u32;
+        let mut keep_going = true;
+        for blk_idx in 0..nblocks {
+            if !keep_going { break; }
+            let Ok(blk) = mount.read_file_block(&dir_inode, blk_idx) else { break };
+            let _ = crate::iter_active(&blk, |e| {
+                let name = match core::str::from_utf8(e.name) {
+                    Ok(s) => s, Err(_) => return true,
+                };
+                if name.is_empty() { return true; }
+                idx += 1;
+                if idx <= off { return true; }
+                let ft = match e.file_type {
+                    1 => vfs::FileType::Regular,
+                    2 => vfs::FileType::Directory,
+                    3 => vfs::FileType::CharDev,
+                    4 => vfs::FileType::BlockDev,
+                    5 => vfs::FileType::Fifo,
+                    6 => vfs::FileType::Socket,
+                    7 => vfs::FileType::Symlink,
+                    _ => vfs::FileType::Regular,
+                };
+                let keep = f(idx, name, ft);
+                if keep { next = idx; } else { keep_going = false; }
+                keep
+            });
+        }
         Ok(next)
     }
 }
