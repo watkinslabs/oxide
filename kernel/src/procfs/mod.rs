@@ -5,6 +5,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 pub mod fs_impl;
+pub mod proc_links;
 pub mod static_files;
 
 use alloc::sync::Arc;
@@ -306,15 +307,8 @@ CPU part\t: 0xd03\n\
 CPU revision\t: 4\n\
 \n";
 
-// Static bodies — kept around as documentation of the canonical
-// pseudo-format even though the live implementations now compute
-// these dynamically.
-#[allow(dead_code)]
-const MEMINFO_BODY: &[u8] = b"MemTotal:        65536 kB\nMemFree:         32768 kB\nMemAvailable:    32768 kB\n";
-#[allow(dead_code)]
-const UPTIME_BODY:  &[u8] = b"0.00 0.00\n";
-#[allow(dead_code)]
-const LOADAVG_BODY: &[u8] = b"0.00 0.00 0.00 1/1 1\n";
+// Canonical static bodies retained for documentation; live impls
+// build dynamic versions above.
 pub(crate) const STAT_BODY:    &[u8] = b"\
 cpu  0 0 0 0 0 0 0 0 0 0\n\
 cpu0 0 0 0 0 0 0 0 0 0 0\n\
@@ -546,7 +540,12 @@ impl Inode for ProcSelfFdInode {
         let cur = sched::live::current().ok_or(VfsError::Enoent)?;
         // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
         let fdt = unsafe { cur.fd_table_ref() }.ok_or(VfsError::Enoent)?.clone();
-        fdt.get(fd).map(|f| f.inode().clone()).map_err(|_| VfsError::Enoent)
+        let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
+        // Per Linux /proc/<pid>/fd/<n>: the entry is a SYMLINK that
+        // resolves to the open file's path. Wrap the dentry name in
+        // a ProcFdLinkInode whose readlink() returns that path.
+        Ok(crate::procfs::proc_links::fd_link_for_path(
+            file.dentry().name().as_bytes(), fd))
     }
     fn readdir(
         &self,
@@ -578,6 +577,8 @@ impl Inode for ProcSelfFdInode {
 
 /// `/proc` root directory inode. readdir emits live tids (decimal
 /// names) plus `self`. lookup parses tids and returns a per-pid dir.
+pub use crate::procfs::proc_links::{ProcFdLinkInode, ProcSelfCwdInode, ProcSelfExeInode, ProcSelfRootInode};
+
 pub struct ProcRootInode;
 
 impl Inode for ProcRootInode {

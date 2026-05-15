@@ -79,6 +79,16 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Eisdir)
     }
 
+    /// Resolve a symbolic link to its target path bytes. Returns
+    /// the literal target without further resolution; the path
+    /// walker handles recursive follow + RESOLVE_NO_SYMLINKS.
+    /// Default impl returns `Err(Einval)` for non-symlink inodes
+    /// (matching Linux readlink(2) error on a non-symlink).
+    /// # C: O(target_len)
+    fn readlink(&self) -> KResult<alloc::vec::Vec<u8>> {
+        Err(VfsError::Einval)
+    }
+
     /// Truncate the file to `len` bytes per `truncate(2)` /
     /// `ftruncate(2)`. Default impl returns `Erofs`. tmpfs honours
     /// it; static / pseudo inodes don't.
