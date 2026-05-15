@@ -64,6 +64,9 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
     crate::devfs::register("/proc/self/maps",    Arc::new(ProcSelfMapsInode)    as InodeRef);
     crate::devfs::register("/proc/self/smaps",   Arc::new(::procfs::smaps::ProcSelfSmapsInode) as InodeRef);
     crate::devfs::register("/proc/self/fd",      Arc::new(ProcSelfFdInode)      as InodeRef);
+    crate::devfs::register("/proc/self/exe",     Arc::new(crate::procfs::ProcSelfExeInode)  as InodeRef);
+    crate::devfs::register("/proc/self/cwd",     Arc::new(crate::procfs::ProcSelfCwdInode)  as InodeRef);
+    crate::devfs::register("/proc/self/root",    Arc::new(crate::procfs::ProcSelfRootInode) as InodeRef);
 
     // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
     // probes look these up before falling back.
