@@ -20,9 +20,13 @@ use alloc::collections::VecDeque;
 
 /// Linux c_lflag bits we honour.
 pub mod lflag {
-    pub const ISIG:   u32 = 0o000001;
-    pub const ICANON: u32 = 0o000002;
-    pub const ECHO:   u32 = 0o000010;
+    pub const ISIG:    u32 = 0o000001;
+    pub const ICANON:  u32 = 0o000002;
+    pub const ECHO:    u32 = 0o000010;
+    pub const ECHOE:   u32 = 0o000020; // VERASE echoes "\b \b"
+    pub const ECHOK:   u32 = 0o000040; // VKILL echoes "\r\n"
+    pub const ECHONL:  u32 = 0o000100; // echo NL even when ECHO off
+    pub const ECHOCTL: u32 = 0o001000; // echo control chars as ^X
 }
 
 /// Linux c_iflag bits — input processing on master_write.
@@ -42,8 +46,10 @@ pub mod oflag {
     pub const ONLRET: u32 = 0o000040; // \n moves to col 0 (ignored)
 }
 
-/// Default c_lflag at pair creation: ICANON | ECHO | ISIG.
-pub const DEFAULT_LFLAG: u32 = lflag::ICANON | lflag::ECHO | lflag::ISIG;
+/// Default c_lflag at pair creation: matches Linux `stty sane`
+/// — ICANON | ECHO | ISIG | ECHOE | ECHOK | ECHOCTL.
+pub const DEFAULT_LFLAG: u32 = lflag::ICANON | lflag::ECHO | lflag::ISIG
+    | lflag::ECHOE | lflag::ECHOK | lflag::ECHOCTL;
 /// Default c_iflag at pair creation: ICRNL (Enter sends \r → \n).
 pub const DEFAULT_IFLAG: u32 = iflag::ICRNL;
 /// Default c_oflag at pair creation: OPOST | ONLCR (\n → \r\n on output).
