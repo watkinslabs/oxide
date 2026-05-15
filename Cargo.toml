@@ -16,6 +16,6 @@ opt-level = 1
 lto = "off"
 codegen-units = 16
 panic = "abort"
-debug = "full"
+debug = "line-tables-only"
 overflow-checks = true
 incremental = true
