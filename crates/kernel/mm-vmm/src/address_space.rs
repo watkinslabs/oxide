@@ -213,14 +213,11 @@ impl AddressSpace {
         self.exe_path.lock().clone()
     }
 
-    /// Clone this AS's VMA tree into a new AS with the supplied
-    /// PT root PA. Mapped pages are NOT copied — child PT entries
-    /// start empty; first user access demand-pages from
-    /// KernelBytes (code/rodata) or zero-fills (Anonymous).
-    /// Hosted tests + the original P2-15a fork path use this.
-    ///
-    /// For full POSIX fork semantics including Anonymous-page copy,
-    /// see [`fork_copy_pages`].
+    /// Clone VMA tree into a new AS with the supplied PT root.
+    /// Mapped pages are NOT copied; child entries demand-page on
+    /// first access (KernelBytes copy, Anonymous zero-fill).
+    /// For full POSIX fork incl. Anonymous-page copy see
+    /// [`fork_copy_pages`].
     /// # C: O(N) over VMA count.
     pub fn fork(&self, new_root_pa: u64) -> KResult<Arc<Self>> {
         let src = self.vmas.read();
@@ -238,15 +235,11 @@ impl AddressSpace {
         }))
     }
 
-    /// Full POSIX fork per docs/11§7: clone the VMA tree AND copy
-    /// every mapped page of every Anonymous VMA into fresh PMM
-    /// frames installed in the child PT at `new_root_pa`. KernelBytes-
-    /// backed VMAs re-fault in the child against the shared
-    /// `&'static [u8]` slice (functionally identical to copy-on-fault
-    /// since the data is read-only).
-    ///
-    /// `new_root_pa` must be an already-allocated PT root with
-    /// kernel-half cloned from master per `11§2` invariant 5.
+    /// Full POSIX fork per docs/11§7: clone VMA tree + copy every
+    /// mapped Anonymous page into fresh frames in `new_root_pa`.
+    /// KernelBytes re-fault in child against the shared slice.
+    /// `new_root_pa` must be a PT root with kernel-half cloned
+    /// from master per `11§2` invariant 5.
     ///
     /// # SAFETY: source AS is the active CR3 / TTBR0 (so
     /// `M::translate` resolves source PTEs); single-CPU UP;
@@ -858,6 +851,15 @@ impl AddressSpace {
                 let pte_flags = vma.prot.to_page_flags();
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                Ok(())
+            }
+            VmaBacking::KernelFrame { pa } => {
+                // Shared kernel-owned frame: install PA directly
+                // into user PT (no copy). Used for vvar.
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                let pte_flags = vma.prot.to_page_flags();
+                // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
+                unsafe { M::map(Va(va_page), Pa(*pa), pte_flags, PageSize::P4K); }
                 Ok(())
             }
             VmaBacking::Special => Err(Error::NotImplemented),

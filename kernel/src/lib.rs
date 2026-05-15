@@ -436,6 +436,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { pmm::user_as::init(info.hhdm_offset); }
+        // SAFETY: PMM up; HHDM offset just published; one-shot.
+        unsafe { crate::vvar::init(); }
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
@@ -858,6 +860,10 @@ unsafe fn tick_poll_combined() {
     // SAFETY: deferred to the underlying hooks; tty::live::tick_poll_uart owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
     unsafe { tty::live::tick_poll_uart(); }
     fbcon::kernel::tick_drain();
+    // Refresh the vDSO vvar page with the live monotonic clock so
+    // userspace __vdso_clock_gettime returns current time without
+    // a syscall. Cheap (one TimerOps read + 4 atomic stores).
+    crate::vvar::publish();
 }
 
 /// # C: O(∞)
