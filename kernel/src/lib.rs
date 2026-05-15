@@ -66,6 +66,7 @@ pub mod devfs;
 #[cfg(target_os = "oxide-kernel")]
 pub mod io_uring;
 pub mod vdso;
+pub mod vvar;
 // seccomp + bpf moved to `crates/security` per `27§R03`.
 pub use security::seccomp;
 #[cfg(target_os = "oxide-kernel")]
