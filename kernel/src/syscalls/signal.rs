@@ -734,7 +734,16 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         let arrived = pending & wanted;
         if arrived != 0 {
             let sig = arrived.trailing_zeros() + 1;
-            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+            let popped: Option<sched::SigInfo> = if sig >= 33 && sig <= 64 {
+                let (rec, empty) = cur.rt_pop(sig);
+                if empty {
+                    cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+                }
+                rec
+            } else {
+                cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+                None
+            };
             if info != 0 && info < hal::USER_VA_END {
                 // SAFETY: info validated < USER_VA_END; siginfo_t is 128 bytes; CPL=0 writes through caller's AS.
                 unsafe {
@@ -742,6 +751,13 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
                         core::ptr::write_volatile((info + i as u64) as *mut u8, 0);
                     }
                     core::ptr::write_volatile(info as *mut i32, sig as i32);
+                    if let Some(rec) = popped {
+                        // si_errno=0; si_code at +8; si_pid at +16; si_uid at +20; si_value at +24.
+                        core::ptr::write_volatile((info +  8) as *mut i32, rec.code);
+                        core::ptr::write_volatile((info + 16) as *mut u32, rec.pid);
+                        core::ptr::write_volatile((info + 20) as *mut u32, rec.uid);
+                        core::ptr::write_volatile((info + 24) as *mut u64, rec.value);
+                    }
                 }
             }
             return sig as i64;
@@ -761,22 +777,67 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_rt_sigqueueinfo(pid, sig, info)` — slot 129.
+/// `sys_rt_sigqueueinfo(pid, sig, info)` — slot 129. RT signals
+/// (33..=64) push the user-supplied siginfo_t onto the target's
+/// per-signal RT queue; standard signals fall through to sys_kill
+/// (which collapses to the bitmap).
 /// # C: O(N_tasks)
 pub fn sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
-    let kill_args = SyscallArgs {
-        a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0,
-    };
-    sys_kill(&kill_args)
+    let pid = args.a0 as u32;
+    let sig = args.a1 as u32;
+    let info_ptr = args.a2;
+    if sig < 33 || sig > 64 {
+        let kill_args = SyscallArgs {
+            a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0,
+        };
+        return sys_kill(&kill_args);
+    }
+    rt_sigqueue_to(pid, sig, info_ptr)
 }
 
 /// `sys_rt_tgsigqueueinfo(tgid, tid, sig, info)` — slot 297.
 /// # C: O(1)
 pub fn sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
-    let tgkill_args = SyscallArgs {
-        a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0,
+    let _tgid = args.a0 as u32;
+    let tid   = args.a1 as u32;
+    let sig   = args.a2 as u32;
+    let info_ptr = args.a3;
+    if sig < 33 || sig > 64 {
+        let tgkill_args = SyscallArgs {
+            a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0,
+        };
+        return sys_tgkill(&tgkill_args);
+    }
+    rt_sigqueue_to(tid, sig, info_ptr)
+}
+
+/// Internal helper: decode the user `siginfo_t` (first 32 bytes
+/// — signo/errno/code/pid/uid/value), enqueue on the target's RT
+/// queue, set the pending bit. Wakes if stopped.
+fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let target = match sched::live::registry::lookup(tid) {
+        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    sys_tgkill(&tgkill_args)
+    let info = if info_ptr != 0 && info_ptr < hal::USER_VA_END {
+        // SAFETY: info_ptr validated < USER_VA_END; siginfo_t leading fields are signo/errno/code/pid/uid/value (lay-of-the-land Linux x86_64); CPL=0 reads through caller's AS.
+        unsafe {
+            let signo_u = core::ptr::read_volatile(info_ptr as *const i32) as u32;
+            let _errno = core::ptr::read_volatile((info_ptr + 4) as *const i32);
+            let code   = core::ptr::read_volatile((info_ptr + 8) as *const i32);
+            let pid    = core::ptr::read_volatile((info_ptr + 16) as *const u32);
+            let uid    = core::ptr::read_volatile((info_ptr + 20) as *const u32);
+            let value  = core::ptr::read_volatile((info_ptr + 24) as *const u64);
+            sched::SigInfo { signo: signo_u, code, pid, uid, value }
+        }
+    } else {
+        sched::SigInfo { signo: sig, code: 0, pid: 0, uid: 0, value: 0 }
+    };
+    target.rt_push(info);
+    target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+    sched::live::registry::wake_if_stopped(&target);
+    0
 }
 
 /// One signal ready for delivery.
@@ -789,7 +850,10 @@ pub struct PendingSignal {
 }
 
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
-/// clear the lowest bit and return the `PendingSignal`.
+/// take the lowest pending. For RT signals (33..=64) also pop one
+/// siginfo from the per-signal queue and only clear the bitmap bit
+/// when the queue drains (POSIX RT semantics — bit stays set while
+/// records remain). Standard signals always clear the bit on take.
 /// # C: O(1)
 pub fn take_lowest_pending() -> Option<PendingSignal> {
     use core::sync::atomic::Ordering;
@@ -799,7 +863,14 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     let deliver = pending & !masked;
     if deliver == 0 { return None; }
     let sig = deliver.trailing_zeros() + 1;
-    cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+    if sig >= 33 && sig <= 64 {
+        let (_info, empty) = cur.rt_pop(sig);
+        if empty {
+            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+        }
+    } else {
+        cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+    }
     // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
     let table = unsafe { &*cur.sigactions.get() };
     let h = table[(sig - 1) as usize];
