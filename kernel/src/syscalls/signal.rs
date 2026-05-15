@@ -263,40 +263,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             }
             word
         }
-        PTRACE_PEEKUSER => {
-            // `addr` = byte offset into `struct user_regs_struct`.
-            // First block aliases the saved syscall frame at
-            // kstack_top - 0x80 (x86) / -0xD0 (arm). Past that we
-            // return 0 (FP/debug regs ride the FPU integration).
-            let addr = args.a2 as usize;
-            let target = match sched::live::registry::lookup(pid) {
-                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
-            };
-            let top = target.kernel_stack.load(Ordering::Acquire);
-            if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
-            // 8-byte alignment per Linux PEEKUSER convention.
-            if addr & 7 != 0 { return -(Errno::Eio.as_i32() as i64); }
-            #[cfg(target_arch = "x86_64")]
-            let (frame_off, n_regs) = (0x80usize, 15usize);
-            #[cfg(target_arch = "aarch64")]
-            let (frame_off, n_regs) = (0xD0usize, 18usize);
-            let reg_idx = addr / 8;
-            let word: u64 = if reg_idx < n_regs {
-                // SAFETY: target is parked (caller arranged ATTACH SIGSTOP); the saved syscall frame at kstack_top - frame_off is stable; aligned u64 read.
-                unsafe {
-                    let frame = (top as u64 - frame_off as u64) as *const u64;
-                    core::ptr::read_volatile(frame.add(reg_idx))
-                }
-            } else {
-                0
-            };
-            let data = args.a3;
-            if data != 0 && data < ::hal::USER_VA_END {
-                // SAFETY: data validated < USER_VA_END; aligned i64 store of peeked word into caller's AS.
-                unsafe { core::ptr::write_volatile(data as *mut u64, word); }
-            }
-            word as i64
-        }
+        PTRACE_PEEKUSER => crate::syscalls::ptrace_fpu::peek_user(pid, args.a2, args.a3),
         PTRACE_POKETEXT | PTRACE_POKEDATA => {
             // Real foreign-mm write of 8 bytes. Refuses if leaf
             // is not user-writable (no silent W^X bypass; CoW
@@ -317,7 +284,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             if n != 8 { return -(Errno::Efault.as_i32() as i64); }
             0
         }
-        PTRACE_POKEUSER => -(Errno::Eopnotsupp.as_i32() as i64),
+        PTRACE_POKEUSER => crate::syscalls::ptrace_fpu::poke_user(pid, args.a2, args.a3),
         PTRACE_CONT | PTRACE_SYSCALL | PTRACE_SINGLESTEP => {
             // Real wake: target was Stopped (via SIGSTOP/TSTP/etc. or
             // ATTACH-induced stop in a future PTRACE_INTERRUPT path).
