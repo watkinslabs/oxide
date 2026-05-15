@@ -93,6 +93,7 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     // SAFETY: cl_args range validated < USER_VA_END; CPL=0 reads
     // through caller's AS; struct fields are u64-aligned per ABI.
     const CLONE_PIDFD: u64 = 0x1000;
+    // SAFETY: cl_args+size validated above; clone_args struct fields are 8-byte aligned per Linux ABI; CPL=0 reads via caller's AS.
     let (rv, flags, pidfd_uptr) = unsafe {
         let p = cl_args as *const u64;
         let flags        = core::ptr::read_volatile(p.add(0));
