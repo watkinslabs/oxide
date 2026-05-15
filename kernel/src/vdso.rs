@@ -70,12 +70,16 @@ fn prot_of(p_flags: u32) -> VmaProt {
 }
 
 /// Map the vDSO into the calling task's AS, honoring per-PT_LOAD
-/// vaddr / memsz / flags. Reserves a single VA range via a
-/// placeholder anonymous mmap (to claim the base), then unmaps and
-/// re-maps each PT_LOAD at base+v_addr with the right backing +
-/// prot. Returns the load VA (== ELF header VA) for AT_SYSINFO_EHDR.
-/// Returns None on parse failure or mmap failure — the caller sets
-/// AT_SYSINFO_EHDR = 0 and userspace falls back to direct syscalls.
+/// vaddr / memsz / flags. Also maps a kernel-published vvar page
+/// at `base - 0x1000` so the linker-script `_vdso_data` symbol
+/// resolves to that VA — the vDSO fast paths read live time
+/// from this page without invoking a syscall.
+///
+/// Layout:
+///   base - 0x1000  RO  vvar page (seq + monotonic_ns + realtime)
+///   base ..      RX/RO vDSO PT_LOAD segments
+///
+/// Returns the load VA (== ELF header VA) for AT_SYSINFO_EHDR.
 /// # C: O(N_pt_loads × N_vmas)
 pub fn map_into_current() -> Option<u64> {
     let cur = sched::live::current()?;
@@ -83,15 +87,20 @@ pub fn map_into_current() -> Option<u64> {
     let mm = unsafe { cur.mm_ref() }?.clone();
     let (total, segs) = parse_segments()?;
     if segs.is_empty() || total == 0 { return None; }
-    // Reserve `total` bytes with an anonymous placeholder so the
-    // base VA is known. We then unmap it and remap each PT_LOAD at
-    // the matching offset.
-    let placeholder = mm.mmap(None, total as usize,
+    // Reserve vvar + total bytes: vvar = 1 page right before vDSO base.
+    let reserve = (0x1000 + total) as usize;
+    let placeholder = mm.mmap(None, reserve,
         VmaProt::READ, VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
         VmaBacking::Anonymous, false).ok()?;
-    let base = placeholder.as_u64();
-    // Tear down the placeholder so per-segment fixed maps succeed.
-    let _ = mm.munmap(placeholder, total as usize);
+    let vvar_va = placeholder.as_u64();
+    let base    = vvar_va + 0x1000;
+    let _ = mm.munmap(placeholder, reserve);
+    // 1. Map the vvar page (RO from user mode).
+    let vvar_bytes = crate::vvar::snapshot_for_mapping();
+    let vvar_hint = UserVirtAddr::new(vvar_va)?;
+    mm.mmap(Some(vvar_hint), 0x1000, VmaProt::READ, VmaFlags::PRIVATE,
+        VmaBacking::KernelBytes { data: vvar_bytes, off: 0 }, true).ok()?;
+    // 2. Map each PT_LOAD of the vDSO ELF at base + v_addr.
     for (vaddr, filesz, memsz, p_offset, p_flags) in segs {
         let seg_start = base.wrapping_add(vaddr);
         let seg_len_pages = ((memsz + 0xfff) & !0xfff) as usize;
