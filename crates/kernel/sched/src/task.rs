@@ -356,19 +356,17 @@ pub struct Task {
     /// reads via PTRACE_GETSIGINFO; writes via SETSIGINFO.
     pub ptrace_siginfo: Spinlock<Option<SigInfo>, TaskListClass>,
 
-    /// Per-arch FPU/SIMD snapshot. Filled by `fpu_save` at ptrace-
-    /// stop; PTRACE_SETFPREGS writes here + sets `ptrace_fpu_dirty`
-    /// so the resume tail calls a matching `fpu_restore`.
+    /// landlock ruleset-id chain. landlock_restrict_self appends;
+    /// path-based syscalls consult; entries can't be removed.
+    pub landlock_chain: Spinlock<alloc::vec::Vec<u64>, TaskListClass>,
+    /// Per-arch FPU/SIMD snapshot for PTRACE_GETFPREGS/SETFPREGS.
     pub fpu_state: UnsafeCell<ArchFpuBuf>,
     /// Set by PTRACE_SETFPREGS; cleared by resume tail.
     pub ptrace_fpu_dirty: AtomicBool,
 
-    /// Set by PTRACE_SINGLESTEP, cleared by the trap handler after a
-    /// single instruction has retired in user mode. While set, the
-    /// kernel-to-user resume path arms the per-arch single-step bit
-    /// (RFLAGS.TF on x86_64, MDSCR_EL1.SS + SPSR.SS on aarch64) so
-    /// the next user instruction traps and the kernel posts SIGTRAP.
-    /// # C: O(1)
+    /// PTRACE_SINGLESTEP arm bit. Resume path sets RFLAGS.TF (x86)
+    /// or MDSCR_EL1.SS+SPSR.SS (arm); trap handler clears after one
+    /// instruction retires.
     pub singlestep: AtomicU32,
 
     /// Per-task seccomp filter chain (cBPF programs). Each entry is
@@ -879,6 +877,7 @@ impl Task {
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
+            landlock_chain:  Spinlock::new(alloc::vec::Vec::new()),
             fpu_state:       UnsafeCell::new(ArchFpuBuf([0u8; ARCH_FPU_SIZE])),
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
