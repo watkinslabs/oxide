@@ -30,6 +30,66 @@ pub fn snapshot_current() {
     }
 }
 
+/// PTRACE_PEEKUSER handler: u64 read from target's saved syscall
+/// frame at byte offset `addr`. Out-of-reg-range returns 0.
+/// # C: O(1)
+pub fn peek_user(pid: u32, addr: u64, data: u64) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let addr = addr as usize;
+    let target = match sched::live::registry::lookup(pid) {
+        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let top = target.kernel_stack.load(Ordering::Acquire);
+    if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
+    if addr & 7 != 0 { return -(Errno::Eio.as_i32() as i64); }
+    #[cfg(target_arch = "x86_64")]
+    let (frame_off, n_regs) = (0x80usize, 15usize);
+    #[cfg(target_arch = "aarch64")]
+    let (frame_off, n_regs) = (0xD0usize, 18usize);
+    let reg_idx = addr / 8;
+    let word: u64 = if reg_idx < n_regs {
+        // SAFETY: target parked; saved frame at kstack_top - frame_off stable while target is parked; aligned u64 read.
+        unsafe {
+            let frame = (top as u64 - frame_off as u64) as *const u64;
+            core::ptr::read_volatile(frame.add(reg_idx))
+        }
+    } else { 0 };
+    if data != 0 && data < ::hal::USER_VA_END {
+        // SAFETY: data validated < USER_VA_END; aligned u64 store of peeked word into caller's AS.
+        unsafe { core::ptr::write_volatile(data as *mut u64, word); }
+    }
+    word as i64
+}
+
+/// PTRACE_POKEUSER handler: u64 write into target's saved syscall
+/// frame at byte offset `addr`. Out-of-reg-range silently drops.
+/// # C: O(1)
+pub fn poke_user(pid: u32, addr: u64, data: u64) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let addr = addr as usize;
+    let target = match sched::live::registry::lookup(pid) {
+        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let top = target.kernel_stack.load(Ordering::Acquire);
+    if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
+    if addr & 7 != 0 { return -(Errno::Eio.as_i32() as i64); }
+    #[cfg(target_arch = "x86_64")]
+    let (frame_off, n_regs) = (0x80usize, 15usize);
+    #[cfg(target_arch = "aarch64")]
+    let (frame_off, n_regs) = (0xD0usize, 18usize);
+    let reg_idx = addr / 8;
+    if reg_idx < n_regs {
+        // SAFETY: target parked; saved frame at kstack_top - frame_off stable while target is parked; aligned u64 store.
+        unsafe {
+            let frame = (top as u64 - frame_off as u64) as *mut u64;
+            core::ptr::write_volatile(frame.add(reg_idx), data);
+        }
+    }
+    0
+}
+
 /// PTRACE_GETFPREGS handler: copy target's FpuState snapshot to
 /// user. Snapshot is populated at every ptrace-stop via
 /// `snapshot_current`. Buffer size matches per-arch FXSAVE / NEON.
