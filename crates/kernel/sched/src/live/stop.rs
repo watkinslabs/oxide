@@ -22,7 +22,16 @@ use crate::TaskState;
 /// running task is the live one on this CPU.
 /// # C: O(N_schedule) until cont
 pub fn stop_until_cont() {
+    stop_until_cont_sig(19) // SIGSTOP
+}
+
+/// Variant of `stop_until_cont` recording the originating stop signal
+/// (SIGSTOP=19/SIGTSTP=20/SIGTTIN=21/SIGTTOU=22) for wait4(WUNTRACED).
+/// # C: O(N_schedule) until cont
+pub fn stop_until_cont_sig(sig: u8) {
     let cur = match crate::live::current() { Some(c) => c, None => return };
+    cur.stop_signal.store(sig, Ordering::Release);
+    cur.stop_pending.store(true, Ordering::Release);
     cur.set_state(TaskState::Stopped);
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
