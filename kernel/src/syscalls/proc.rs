@@ -450,11 +450,8 @@ pub fn sys_getrusage(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_times(tms)` — slot 100. tms_utime = (now - spawn_ns);
-/// tms_cutime = cumulative_child_ns (exited children's elapsed);
-/// tms_stime/cstime stay zero (kernel-time accounting rides a
-/// follow-up). All values in CLK_TCK ticks. Return = monotonic
-/// ticks total.
+/// `sys_times(tms)` — slot 100. utime + cutime real; stime +
+/// cstime stay zero (kernel-time accounting follow-up).
 /// # C: O(1)
 pub fn sys_times(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
