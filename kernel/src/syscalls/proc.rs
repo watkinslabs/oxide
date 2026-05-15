@@ -784,15 +784,7 @@ pub fn sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
 /// # C: O(1)
 pub fn sys_membarrier(_args: &SyscallArgs) -> i64 { 0 }
 
-/// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
-/// v1: ignores clk_id + flags, reuses `sys_nanosleep` on
-/// the req timespec. TIMER_ABSTIME would compute deadline from
-/// the timespec directly; v1 treats all values as relative.
-/// # C: same as nanosleep
-pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
-    let inner = SyscallArgs { a0: args.a2, a1: args.a3, a2: 0, a3: 0, a4: 0, a5: 0 };
-    sys_nanosleep(&inner)
-}
+pub use crate::syscalls::clock_nanosleep::sys_clock_nanosleep;
 
 /// `sys_sethostname(name, len)` — slot 170. Updates the hostname
 /// visible via uname.nodename. Per F97: when the task carries
