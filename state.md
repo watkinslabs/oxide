@@ -1,28 +1,44 @@
 # state — hand-off
 
-Branch: B24-makefile-comma-order (PR pending)
-Previous: B22-sig-deliver-mask-and-arm-offset → PR #1018 merged
+Branch: main (clean). K1 + K2 + K6 closed; K3 (fcntl honesty)
+is the next batch.
 
 ## Closed in this stretch
 
-- B21 (PR #1017) — `Ext4FileInode` lazy reads + real `sys_newfstatat`.
-- B22 (PR #1018) — ARM signal-dispatch: mask delivered signal on
-  handler entry, fix `rt_sigreturn_arm` SP offset (40→32) since
-  AArch64 `ret` doesn't pop, grow `SIG_FRAME_BYTES` 40→48 to keep
-  handler entry SP 16-aligned.
+- #1022 (F25) — K1 finished: ECHOE/ECHOK/ECHONL/ECHOCTL added
+  to `tty::pty::lflag`; DEFAULT_LFLAG matches `stty sane`.
+  Console VERASE / VKILL echo behavior gated correctly.
+- #1023 (F26) — K6 substrate: `pub trait FileBacking` in
+  mm-vmm; `VmaBacking::File` carries `Arc<dyn FileBacking>` + off;
+  demand-page handler implements File arm via per-inode
+  `PageCache` (`kernel/src/syscalls/mmap_file.rs::InodeFileBacking`).
+  Unblocks K2 file-backed mmap and K5 core dumps.
+- #1024 (D05) — audit refresh: K1/K2/K6 marked done.
 
-## B24 contents
+## K3 punch list (fcntl + fd flag honesty)
 
-1. `Makefile`: `comma := ,` was declared *after* `QEMU_FEATURES_*`
-   so `:=` expansion produced literal `debug-bootdebug-irq` when
-   `FEATURES=debug-irq` was passed. Move `comma :=` above the
-   feature vars.
-2. Strike the "stray SIGSEGV at tid≈4112, far≈0x7ffffffbf000"
-   open item from the previous hand-off — it's `mprotect_smoke`
-   deliberately writing to a `PROT_READ` page, and the test
-   reports PASS on the next line. Not a bug.
+`sys_fcntl` already handles F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD,
+F_SETFD, F_GETFL, F_SETFL, F_GETPIPE_SZ, F_SETPIPE_SZ, F_GETOWN,
+F_SETOWN. Open gaps:
+
+1. **O_NONBLOCK plumb-through.** F_SETFL stores the flag on the
+   File but `File::read` doesn't pass it to `Inode::read`, so
+   pipe / pty / tty / socket reads still block.
+   - Add `Inode::read_nonblock(&self, off, buf) -> KResult<usize>`
+     with default `self.read(off, buf)`.
+   - Override in pipe, pty (master + slave), `dev::console::ConsoleInode`,
+     socket impls — return `EAGAIN` when no data + no parking.
+   - `File::read` dispatches based on `self.flags() & O_NONBLOCK`.
+2. **Advisory locks** — F_SETLK / F_GETLK / F_OFD_SETLK / F_OFD_GETLK
+   via per-inode range list. musl + tar + dpkg use these.
+
+Hooks: `crates/kernel/vfs/src/inode.rs`, `vfs/src/file.rs`,
+`crates/kernel/ipc/src/live/pipe.rs`, `tty/src/pty.rs`,
+`kernel/src/dev/console.rs`, `kernel/src/syscalls/net.rs`.
 
 ## First task next session
 
-Pick up the next phase per `docs/00§3` master plan. ARM and x86
-both reach `oxide login:` and run `uname`/`ls`/`ps` post-login.
+`git checkout -b F27-k3a-nonblock-inode-plumb` then add
+`Inode::read_nonblock` default impl in `vfs/src/inode.rs:50` and
+thread the flag through `File::read`. Then override in each
+blocking inode kind.
