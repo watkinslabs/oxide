@@ -3,9 +3,10 @@
 // strtab + symtab + relocation tables, applies RELA + JMPREL
 // using a caller-supplied SymResolver for unresolved DT_NEEDED.
 //
-// v1 scope: place segments + apply RELA/JMPREL/RELATIVE/GLOB_DAT/
-// JUMP_SLOT. Out of scope (P13-06+): TLS init-image, IFUNC,
-// versioned symbols, lazy PLT, copy relocations.
+// Wired relocs: RELATIVE / GLOB_DAT / JUMP_SLOT / 64 / IRELATIVE.
+// Open follow-ups: TLS init-image (PT_TLS + DTPMOD64/DTPOFF64/
+// TPOFF64), versioned symbols (DT_VERNEED/VERSYM), lazy PLT
+// resolution (DT_BIND_NOW currently forced), copy relocations.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
