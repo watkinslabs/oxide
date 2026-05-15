@@ -1,44 +1,49 @@
 # state — hand-off
 
-Branch: main (clean). K1 + K2 + K6 closed; K3 (fcntl honesty)
-is the next batch.
+Branch: main (clean). K1..K8 closed (substrate). K9..K15 open.
 
-## Closed in this stretch
+## Closed in this stretch (PRs landed)
 
-- #1022 (F25) — K1 finished: ECHOE/ECHOK/ECHONL/ECHOCTL added
-  to `tty::pty::lflag`; DEFAULT_LFLAG matches `stty sane`.
-  Console VERASE / VKILL echo behavior gated correctly.
-- #1023 (F26) — K6 substrate: `pub trait FileBacking` in
-  mm-vmm; `VmaBacking::File` carries `Arc<dyn FileBacking>` + off;
-  demand-page handler implements File arm via per-inode
-  `PageCache` (`kernel/src/syscalls/mmap_file.rs::InodeFileBacking`).
-  Unblocks K2 file-backed mmap and K5 core dumps.
-- #1024 (D05) — audit refresh: K1/K2/K6 marked done.
+- #1022 (F25) K1 console termios echo flags — ECHOE/ECHOK/
+  ECHONL/ECHOCTL added; DEFAULT_LFLAG matches `stty sane`.
+- #1023 (F26) K6 file-backed mmap substrate — `FileBacking`
+  trait + per-inode `PageCache` + demand-page File arm.
+- #1024 (D05) audit refresh post K1/K2/K6.
+- #1025 (F27) K3a O_NONBLOCK plumb — `Inode::read_nonblock`/
+  `write_nonblock`; pipe blocks via WaitList; CLOSE_HOOK
+  multi-slot registry.
+- #1026 (F28) K3b POSIX + OFD record locks — `fs::posix_lock`
+  per-inode range list, F_SETLK/SETLKW/GETLK + F_OFD_*.
+- #1027 (F29) K4 procfs symlinks — `/proc/self/{exe,cwd,root}`
+  + `/proc/self/fd/<n>` real Symlink inodes via
+  `procfs::proc_links`; `Inode::readlink` default-impl.
+- #1028 (F30) K5 default-action coredump — fatal SIG_DFL signals
+  route through `fs::coredump`.
+- #1029 (F31) K7 acceptance harness — `tools/accept.py` drives
+  QEMU + serial against `scenario.sh` files.
+- D06 (next merge) audit refresh post K3/K4/K5/K7/K8.
 
-## K3 punch list (fcntl + fd flag honesty)
+## K9..K15 open
 
-`sys_fcntl` already handles F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD,
-F_SETFD, F_GETFL, F_SETFL, F_GETPIPE_SZ, F_SETPIPE_SZ, F_GETOWN,
-F_SETOWN. Open gaps:
+- K9 ptrace: register slab + scheduler stop-state integration
+  (peek/poke is real, control is stubs).
+- K10 bpf+seccomp+landlock: cBPF/eBPF verifier+JIT; full
+  seccomp_unotify; landlock ruleset chains.
+- K11 io_uring: SQE/CQE rings; IORING_OP_* set.
+- K12 SysV IPC + POSIX MQ: largely done; audit for gaps.
+- K13 DRM/KMS + input subsystem.
+- K14 vDSO per-arch ELF mapped into every user AS.
+- K15 glibc compatibility surface.
 
-1. **O_NONBLOCK plumb-through.** F_SETFL stores the flag on the
-   File but `File::read` doesn't pass it to `Inode::read`, so
-   pipe / pty / tty / socket reads still block.
-   - Add `Inode::read_nonblock(&self, off, buf) -> KResult<usize>`
-     with default `self.read(off, buf)`.
-   - Override in pipe, pty (master + slave), `dev::console::ConsoleInode`,
-     socket impls — return `EAGAIN` when no data + no parking.
-   - `File::read` dispatches based on `self.flags() & O_NONBLOCK`.
-2. **Advisory locks** — F_SETLK / F_GETLK / F_OFD_SETLK / F_OFD_GETLK
-   via per-inode range list. musl + tar + dpkg use these.
+## RT signal queue (K5 open)
 
-Hooks: `crates/kernel/vfs/src/inode.rs`, `vfs/src/file.rs`,
-`crates/kernel/ipc/src/live/pipe.rs`, `tty/src/pty.rs`,
-`kernel/src/dev/console.rs`, `kernel/src/syscalls/net.rs`.
+Per-task `sigpending: AtomicU64` collapses RT-signal multiplicity.
+Convert to a bitmap + per-RT-signal queue<(siginfo_t, sigval_t)>;
+update every site that does `sigpending.fetch_or(1 << bit)`.
 
 ## First task next session
 
-`git checkout -b F27-k3a-nonblock-inode-plumb` then add
-`Inode::read_nonblock` default impl in `vfs/src/inode.rs:50` and
-thread the flag through `File::read`. Then override in each
-blocking inode kind.
+K9 ptrace control: add per-task `ptrace_stop_state` to Task;
+park on PTRACE_ATTACH / SYSCALL stop; wake on PTRACE_CONT.
+Per-arch `struct user_regs_struct` materialization from the
+saved syscall/IRQ frame for PTRACE_GETREGS/SETREGS.
