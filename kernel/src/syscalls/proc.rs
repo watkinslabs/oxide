@@ -92,27 +92,38 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: cl_args range validated < USER_VA_END; CPL=0 reads
     // through caller's AS; struct fields are u64-aligned per ABI.
-    unsafe {
+    const CLONE_PIDFD: u64 = 0x1000;
+    let (rv, flags, pidfd_uptr) = unsafe {
         let p = cl_args as *const u64;
         let flags        = core::ptr::read_volatile(p.add(0));
-        let _pidfd       = core::ptr::read_volatile(p.add(1));
+        let pidfd_uptr   = core::ptr::read_volatile(p.add(1));
         let child_tid    = core::ptr::read_volatile(p.add(2));
         let parent_tid   = core::ptr::read_volatile(p.add(3));
         let exit_signal  = core::ptr::read_volatile(p.add(4));
         let stack        = core::ptr::read_volatile(p.add(5));
         let stack_size   = core::ptr::read_volatile(p.add(6));
         let tls          = core::ptr::read_volatile(p.add(7));
-        // Stacks grow down on x86_64: child sees its initial RSP
-        // at `stack + stack_size`. clone(2) takes the top directly;
-        // clone3(2) takes (base, size).
         let user_sp = stack.saturating_add(stack_size);
         let merged_flags = flags | (exit_signal & 0xff);
-        // Direct call into the dispatch helper — same path as
-        // clone/fork/vfork.
-        crate::syscalls::clone::sys_clone_dispatch(
+        let rv = crate::syscalls::clone::sys_clone_dispatch(
             args, merged_flags, user_sp, parent_tid, child_tid, tls,
-        )
+        );
+        (rv, flags, pidfd_uptr)
+    };
+    // CLONE_PIDFD: open a pidfd bound to the child and write the fd
+    // number to *pidfd_uptr in caller's AS.
+    if rv > 0 && (flags & CLONE_PIDFD) != 0
+        && pidfd_uptr != 0 && pidfd_uptr + 4 <= hal::USER_VA_END {
+        let mut sa = *args;
+        sa.a0 = rv as u64;
+        sa.a1 = 0;
+        let pidfd = crate::dev::pidfd::sys_pidfd_open(&sa);
+        if pidfd >= 0 {
+            // SAFETY: pidfd_uptr+4 validated < USER_VA_END; CPL=0 4-byte int write in caller AS.
+            unsafe { core::ptr::write_volatile(pidfd_uptr as *mut i32, pidfd as i32); }
+        }
     }
+    rv
 }
 
 /// `sys_mprotect(addr, len, prot)` — slot 10. Updates the VMA's
