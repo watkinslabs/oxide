@@ -415,16 +415,17 @@ All sub-items landed across B07..B22 + #1022:
 - `/proc/partitions`, `/proc/filesystems`, `/proc/devices` are
   static; dynamic refresh rides a follow-up.
 
-### Batch K5 — signal completeness round 2 (partial)
+### Batch K5 — signal completeness round 2 ✅ DONE (#1028 + #1035)
 
-- `rt_sigsuspend` ✓ (was already real; audit text stale).
-- `rt_sigtimedwait` ✓ (same).
+- `rt_sigsuspend` ✓ (was already real).
+- `rt_sigtimedwait` ✓ (real; #1035 also returns queued si_code/
+  pid/uid/value to caller).
 - Default-action core dump ✓ (#1028 — SIGQUIT/SIGILL/SIGTRAP/
   SIGABRT/SIGBUS/SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ all dump
   on SIG_DFL terminate path).
-- OPEN: real-time signals 32..64 multiplicity queue —
-  per-task sigpending bitmap loses RT signal queue order; needs
-  Task struct rework.
+- RT signals 33..64 multiplicity queue ✓ (#1035 — Task carries
+  `rt_sigqueue: [VecDeque<SigInfo>; 32]`; sigqueue/take_lowest
+  preserve POSIX RT queue order + siginfo payload).
 
 ### Batch K6 — VFS+pagecache wiring real ✅ DONE (#1023)
 
@@ -450,13 +451,21 @@ SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ) now route through
 the `coredump.rs` builder and stages it under /core.<tid>.
 Backing-file region dumps via pagecache rely on K6 (closed).
 
-### Batch K9 — ptrace full machinery
+### Batch K9 — ptrace full machinery ✅ MOSTLY DONE
 
-`PTRACE_ATTACH/SEIZE/DETACH/CONT/SYSCALL/SINGLESTEP/GETREGS/
-SETREGS/PEEKTEXT/POKETEXT/PEEKDATA/POKEDATA/GETSIGINFO/SETOPTIONS`
-real, integrating with the scheduler's stop-state machine and
-the signal delivery path. Per-arch register slab (x86-64 user
-regs + AArch64 user regs).
+- TRACEME/ATTACH/SEIZE/DETACH/CONT/SYSCALL/SINGLESTEP/KILL —
+  real wake via stop-state registry.
+- PEEKTEXT/PEEKDATA — real foreign-mm read via `read_foreign_user`.
+- POKETEXT/POKEDATA — real foreign-mm write via `write_foreign_user`.
+- GETREGS/SETREGS/GETREGSET/SETREGSET — real read/write of target's
+  saved syscall frame at kstack_top - 0x80 (x86) / -0xD0 (arm).
+- SETOPTIONS/GETEVENTMSG — real per-task option bitset + eventmsg
+  slot (#1033).
+- GETSIGINFO/SETSIGINFO — real Spinlock<Option<SigInfo>> snapshot
+  slot (#1036); stop-time snapshot population gating on broader
+  ptrace stop-state restructure.
+- OPEN: GETFPREGS/SETFPREGS (per-arch FP frame access);
+  PTRACE_INTERRUPT / LISTEN beyond silent-0.
 
 ### Batch K10 — bpf + seccomp + landlock
 
@@ -489,10 +498,18 @@ new spec (TBD section in `35`).
 Per-arch vDSO ELF mapped into every user AS; clock_gettime /
 getcpu / time / rt_sigreturn fast paths in user mode. Per `15`.
 
-### Batch K15 — glibc compatibility surface
+### Batch K15 — glibc compatibility surface (partial)
 
-`set_thread_area` (i386 path), FSGSBASE instructions enabled in
-the user CR4 mask, IFUNC resolver wiring in the ELF loader.
+- FSGSBASE ✓ (CR4.FSGSBASE enabled at boot per CPU; wrgsbase/
+  wrfsbase legal at CPL=0).
+- IFUNC ✓ (#1037 — dl handles R_X86_64_IRELATIVE +
+  R_AARCH64_IRELATIVE by invoking the resolver and installing
+  the returned VA).
+- `getrandom` ✓ (#1031 — RDRAND/RNDR HW RNG path).
+- OPEN: TLS init-image (PT_TLS + DTPMOD64/DTPOFF64/TPOFF64),
+  versioned symbols (DT_VERNEED/VERSYM), lazy PLT via GOT trampoline.
+- `set_thread_area` (i386) — not applicable to x86_64 musl/glibc
+  builds (64-bit TCB lives in FS_BASE via arch_prctl).
 
 ### Sequencing
 
