@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -404,7 +404,10 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
     loop { core::hint::spin_loop(); }
 }
 
-/// `sys_getrandom(buf, len, flags)` — slot 318. NOT cryptographic.
+/// `sys_getrandom(buf, len, flags)` — slot 318. Prefers hardware
+/// RNG (RDRAND on x86_64, RNDR on aarch64); falls back to a
+/// per-boot LCG if HW RNG returns failure (CF=0 on RDRAND;
+/// NZCV.V=1 on RNDR).
 fn sys_getrandom(args: &SyscallArgs) -> i64 {
     let buf  = args.a0;
     let len  = args.a1;
@@ -413,7 +416,7 @@ fn sys_getrandom(args: &SyscallArgs) -> i64 {
     if let Err(rv) = validate_user_buf(buf, len, 1) { return rv; }
     let mut written: u64 = 0;
     while written < len {
-        let v = devfs::misc::lcg_next().to_le_bytes();
+        let v = hwrng::hw_random_u64().unwrap_or_else(devfs::misc::lcg_next).to_le_bytes();
         let n = (len - written).min(8);
         // SAFETY: validated [buf, buf+len) below USER_VA_END; CPL=0 writes through caller's AS.
         unsafe {
@@ -425,6 +428,7 @@ fn sys_getrandom(args: &SyscallArgs) -> i64 {
     }
     written as i64
 }
+
 
 use crate::syscalls::signal::{sys_kill, sys_tgkill};
 
