@@ -752,7 +752,7 @@ fn sched_lookup_prio(pid: u32) -> i32 {
     }
 }
 
-/// `sys_sched_get_priority_max(policy)` — slot 146. v1: 99 for
+/// `sys_sched_get_priority_max(policy)` — slot 146.  99 for
 /// SCHED_FIFO/RR, 0 otherwise.
 /// # C: O(1)
 pub fn sys_sched_get_priority_max(args: &SyscallArgs) -> i64 {
@@ -760,7 +760,7 @@ pub fn sys_sched_get_priority_max(args: &SyscallArgs) -> i64 {
     match policy { 1 | 2 => 99, _ => 0 }
 }
 
-/// `sys_sched_get_priority_min(policy)` — slot 147. v1: 1 for
+/// `sys_sched_get_priority_min(policy)` — slot 147.  1 for
 /// SCHED_FIFO/RR, 0 otherwise.
 /// # C: O(1)
 pub fn sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
@@ -769,7 +769,7 @@ pub fn sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_sched_getaffinity(pid, cpusetsize, mask)` — slot 204.
-/// v1: writes a single-bit mask covering CPU 0; returns 8.
+///  writes a single-bit mask covering CPU 0; returns 8.
 /// # C: O(1)
 pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
     let cpusetsize = args.a1;
