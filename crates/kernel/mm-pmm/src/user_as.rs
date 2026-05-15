@@ -784,8 +784,10 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
 }
 
 /// Wrap `AddressSpace::mmap` for `kernel_mmap` syscall glue: takes
-/// the Linux mmap arg shape, returns `(va, errno)`. v1 supports
-/// only `MAP_ANONYMOUS | MAP_PRIVATE` with `addr=NULL`, `fd=-1`.
+/// the Linux mmap arg shape, returns `(va, errno)`. Supports both
+/// `MAP_ANONYMOUS` and file-backed mmap; the caller (syscall glue)
+/// resolves `fd` to a `Arc<dyn FileBacking>` and passes it in.
+/// File offset is honored (page-aligned per Linux EINVAL).
 /// # C: O(N_vmas) hole search + O(1) insert
 pub fn glue_mmap(
     addr: u64,
@@ -793,6 +795,8 @@ pub fn glue_mmap(
     prot: u64,
     flags: u64,
     fd: i64,
+    file_off: u64,
+    backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
     const MAP_SHARED:  u64 = 0x01;
@@ -821,12 +825,17 @@ pub fn glue_mmap(
     // MAP_HUGETLB: huge-page backing; v1 has no huge-tlb pool. Reject.
     if (flags & MAP_HUGETLB) != 0 { return Err(-(Errno::Enosys.as_i32() as i64)); }
 
-    // F60: file-backed mmap stays out of v1 (needs VFS+pagecache
-    // wiring per `17§5`). Anonymous mmap now honours MAP_FIXED, the
-    // addr hint, and MAP_SHARED.
-    if flags & MAP_ANON == 0  { return Err(-(Errno::Enosys.as_i32() as i64)); }
-    if fd != -1               { return Err(-(Errno::Einval.as_i32() as i64)); }
-    if len == 0               { return Err(-(Errno::Einval.as_i32() as i64)); }
+    // File-backed mmap requires a backing from the caller and a
+    // page-aligned offset; anonymous mmap rejects a backing.
+    let is_anon = flags & MAP_ANON != 0;
+    let _ = fd;
+    if is_anon {
+        if backing.is_some() { return Err(-(Errno::Einval.as_i32() as i64)); }
+    } else {
+        if backing.is_none()       { return Err(-(Errno::Ebadf.as_i32() as i64)); }
+        if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    }
+    if len == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
     // SHARED + PRIVATE are mutually exclusive per Linux; require
     // exactly one. Linux returns EINVAL when neither is set.
     let is_shared  = flags & MAP_SHARED  != 0;
@@ -865,31 +874,29 @@ pub fn glue_mmap(
             }
         }
     }
-    // F89: MAP_FIXED is destructive (overlaps unmapped per 11§6).
-    // F60 enabled it via `tree.remove_range` but the page-table side
-    // wasn't cleared, leaving stale PTEs that broke programs sharing
-    // an AS with the loader. The fix: call glue_munmap on the overlap
-    // range FIRST so PTEs + frames + TLB are all properly torn down,
-    // then proceed with a non-fixed VMA insertion (the range is now
-    // hole, so the hint-first path in crate::mmap lands on the requested
-    // addr without conflicting with stale state).
+    // MAP_FIXED is destructive per 11§6: tear down the overlap
+    // (PTEs + frames + TLB) via glue_munmap, then insert into the
+    // now-hole range via the non-fixed path.
     if want_fixed && !want_no_replace {
         let _ = glue_munmap(addr, len_aligned as u64);
     }
-    // We pass fixed=false to crate::mmap regardless: after the munmap
-    // above, the hint range is clear and the non-fixed path's
-    // hint-first placement will pick it.
     let is_fixed = false;
     let mut vma_flags = if is_shared {
-        VmaFlags::SHARED | VmaFlags::ANONYMOUS
-    } else {
+        if is_anon { VmaFlags::SHARED | VmaFlags::ANONYMOUS }
+        else       { VmaFlags::SHARED }
+    } else if is_anon {
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS
+    } else {
+        VmaFlags::PRIVATE
     };
-    // F158: MAP_GROWSDOWN — stack-style auto-grow VMA. Linux extends
-    // the VMA downward when a PF lands within the GROWSDOWN guard
-    // distance below vma.start. Glibc threading uses this for
-    // pthread stacks; ld.so uses it for the main process stack.
+    // MAP_GROWSDOWN: stack-style auto-grow on PF within Linux's
+    // 64 KiB guard distance below vma.start (used by pthread stacks
+    // and ld.so's main stack).
     if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
+    let vma_backing = match backing {
+        Some(b) => VmaBacking::File { backing: b, off: file_off },
+        None    => VmaBacking::Anonymous,
+    };
     let hint = if addr != 0 {
         match UserVirtAddr::new(addr) {
             Some(uva) => Some(uva),
@@ -899,14 +906,8 @@ pub fn glue_mmap(
         None
     };
 
-    // mmap into the *current task's* AS — not the boot global. The
-    // global path was correct only during the boot-anchor smoke that
-    // ran before any user task had its own mm; after execve the
-    // running task has a per-task `mm: Arc<AddressSpace>` and its
-    // mmap'd VMAs need to land there. Routing through `with()`
-    // inserted into the global which the running CR3 doesn't target
-    // — every demand-fault then missed the VMA + terminated the task
-    // (busybox / static-musl bins blocked here).
+    // mmap into the current task's AS, not the boot global —
+    // post-execve the running CR3 targets `cur.mm`, not the global.
     let r = if let Some(cur) = sched::live::current() {
         // SAFETY: caller is the syscall dispatcher; preempt-off; running task on this CPU is the sole writer of mm slot.
         if let Some(mm) = unsafe { cur.mm_ref() } {
@@ -915,13 +916,13 @@ pub fn glue_mmap(
                 len_aligned,
                 prot_from_linux(prot),
                 vma_flags,
-                VmaBacking::Anonymous,
+                vma_backing.clone(),
                 is_fixed,
             )
         } else {
             match with(|as_| as_.mmap(
                 hint, len_aligned, prot_from_linux(prot),
-                vma_flags, VmaBacking::Anonymous, is_fixed,
+                vma_flags, vma_backing.clone(), is_fixed,
             )) {
                 Some(r) => r,
                 None    => return Err(-(Errno::Enosys.as_i32() as i64)),
