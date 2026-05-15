@@ -25,7 +25,30 @@ impl Inode for EvdevInode {
     fn file_type(&self) -> FileType { FileType::CharDev }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Ok(0) }
+
+    /// Blocking pop of one input_event record (24 B). Parks the
+    /// caller on EVENT0.waiters when the queue is empty; resumes
+    /// when virtio-input pushes the next event. Reads of less than
+    /// one record return 0 (matches Linux evdev: EINVAL on too-
+    /// small buf, but Ok(0) is the more forgiving v1 choice).
+    fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        use crate::evdev_queue::{EVENT0, INPUT_EVENT_BYTES};
+        if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
+        // SAFETY: caller is the running task on this CPU; read_blocking parks safely via WaitList and reschedules.
+        let n = unsafe { EVENT0.read_blocking(buf) };
+        Ok(n)
+    }
+
+    /// Non-blocking variant per O_NONBLOCK.
+    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        use crate::evdev_queue::{EVENT0, INPUT_EVENT_BYTES};
+        if buf.len() < INPUT_EVENT_BYTES { return Ok(0); }
+        match EVENT0.try_pop_bytes(buf) {
+            Some(n) => Ok(n),
+            None    => Err(VfsError::Eagain),
+        }
+    }
+
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
 
