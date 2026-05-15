@@ -40,8 +40,13 @@ fn errno_from_neterr(e: net::NetError) -> i64 {
 /// `socket(domain, type, protocol)` slot 41.
 /// # C: O(1)
 pub fn sys_socket(args: &SyscallArgs) -> i64 {
+    const SOCK_CLOEXEC:  u32 = 0o2_000_000;
+    const SOCK_NONBLOCK: u32 = 0o0_004_000;
     let domain = args.a0 as u32;
-    let typ    = args.a1 as u32 & 0xFF;  // strip SOCK_NONBLOCK / SOCK_CLOEXEC
+    let raw    = args.a1 as u32;
+    let typ    = raw & 0xFF;
+    let cloexec  = (raw & SOCK_CLOEXEC)  != 0;
+    let nonblock = (raw & SOCK_NONBLOCK) != 0;
     const AF_UNIX_DOM: u32 = 1;
     let inet = match (domain, typ) {
         (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
@@ -62,8 +67,13 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let dentry = Dentry::new(None, String::from("[socket]"), Arc::clone(&inode));
-    let file = File::new(inode, dentry, OpenFlags::empty());
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    let mut fl = OpenFlags::empty();
+    if nonblock { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
+    match fdt.alloc(file) {
+        Ok(fd) => { if cloexec { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
+        Err(e) => -(e as i64),
+    }
 }
 
 /// Read a `struct sockaddr_in` (16 bytes) at user pointer `ptr`:
