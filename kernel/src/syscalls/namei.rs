@@ -96,6 +96,8 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
+    if let Err(rv) = crate::syscalls::landlock::check(&p,
+        ::security::landlock::access::REMOVE_FILE) { return rv; }
     let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
     match mnt.fs.unlink(&rel) { Ok(()) => 0, Err(e) => errno_from_vfs(e) }
 }
@@ -109,8 +111,14 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
-    let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
     let flags = args.a2 as u32;
+    let op = if (flags & AT_REMOVEDIR) != 0 {
+        ::security::landlock::access::REMOVE_DIR
+    } else {
+        ::security::landlock::access::REMOVE_FILE
+    };
+    if let Err(rv) = crate::syscalls::landlock::check(&p, op) { return rv; }
+    let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
     // AT_REMOVEDIR currently only supported on ext4 path. Other FSes
     // get the unified unlink which they may reject as Erofs/Eisdir.
     let r = if (flags & AT_REMOVEDIR) != 0 && is_ext4_path(&p) {
@@ -128,6 +136,8 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
+    if let Err(rv) = crate::syscalls::landlock::check(&p,
+        ::security::landlock::access::MAKE_DIR) { return rv; }
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let mode = args.a1 as u16;
     match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
@@ -144,6 +154,8 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
+    if let Err(rv) = crate::syscalls::landlock::check(&p,
+        ::security::landlock::access::MAKE_DIR) { return rv; }
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let mode = args.a2 as u16;
     match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
@@ -159,6 +171,8 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
+    if let Err(rv) = crate::syscalls::landlock::check(&p,
+        ::security::landlock::access::REMOVE_DIR) { return rv; }
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::rmdir_at(p.as_bytes()) {
         Ok(())  => 0,
