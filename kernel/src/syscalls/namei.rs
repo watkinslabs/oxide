@@ -58,6 +58,8 @@ pub fn sys_link(args: &SyscallArgs) -> i64 {
     };
     let t = resolve(&target).unwrap_or(target);
     let l = resolve(&link).unwrap_or(link);
+    if let Err(rv) = crate::syscalls::landlock::check(&l,
+        ::security::landlock::access::MAKE_REG) { return rv; }
     if !is_ext4_path(&t) || !is_ext4_path(&l) {
         return -(Errno::Erofs.as_i32() as i64);
     }
@@ -80,6 +82,8 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     };
     let t = resolve(&target).unwrap_or(target);
     let l = resolve(&link).unwrap_or(link);
+    if let Err(rv) = crate::syscalls::landlock::check(&l,
+        ::security::landlock::access::MAKE_REG) { return rv; }
     if !is_ext4_path(&t) || !is_ext4_path(&l) {
         return -(Errno::Erofs.as_i32() as i64);
     }
@@ -216,6 +220,13 @@ fn rename_impl(from_ptr: u64, to_ptr: u64) -> i64 {
     };
     let f = resolve(&from_raw).unwrap_or(from_raw);
     let t = resolve(&to_raw).unwrap_or(to_raw);
+    // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
+    // to-side needs MAKE_REG. Approximate as REMOVE_FILE+MAKE_REG.
+    let la = ::security::landlock::access::REMOVE_FILE
+           | ::security::landlock::access::MAKE_REG
+           | ::security::landlock::access::REFER;
+    if let Err(rv) = crate::syscalls::landlock::check(&f, la) { return rv; }
+    if let Err(rv) = crate::syscalls::landlock::check(&t, la) { return rv; }
     // rename must be within a single mount (Linux EXDEV otherwise).
     let (mnt_f, rel_f) = match mount_for_write(&f) { Ok(x) => x, Err(rv) => return rv };
     let (mnt_t, rel_t) = match mount_for_write(&t) { Ok(x) => x, Err(rv) => return rv };
