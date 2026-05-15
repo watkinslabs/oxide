@@ -318,11 +318,25 @@ pub struct Task {
     /// `13§5`. # C: O(1) read
     pub uts_hostname: UnsafeCell<alloc::string::String>,
 
-    /// Tracer tid for `ptrace(2)` — 0 = no tracer attached. v1 honors
-    /// PTRACE_TRACEME (child sets traced_by=parent_tid). The full
-    /// PTRACE_ATTACH/SINGLESTEP/PEEK/POKE/SYSCALL surface lands with
-    /// debugger-frontend integration in a v2 phase 22 follow-up.
+    /// Tracer tid for `ptrace(2)` — 0 = no tracer attached.
+    /// PTRACE_TRACEME / ATTACH / SEIZE / DETACH / CONT / SYSCALL /
+    /// SINGLESTEP / PEEK / POKE / GETREGS / SETREGS all wired
+    /// against this field; debugger-frontend integration (gdbserver
+    /// stub talking over a remote-protocol socket) is a follow-up.
     pub traced_by: AtomicU32,
+
+    /// PTRACE_SETOPTIONS bit-set. PTRACE_O_TRACESYSGOOD (0x1),
+    /// TRACEFORK (0x2), TRACEVFORK (0x4), TRACECLONE (0x8),
+    /// TRACEEXEC (0x10), TRACEVFORKDONE (0x20), TRACEEXIT (0x40),
+    /// TRACESECCOMP (0x80), EXITKILL (0x100000). Consulted by the
+    /// stop-delivery path to set the high bit on SIGTRAP / fan
+    /// stop events on fork-family calls.
+    pub ptrace_options: AtomicU32,
+
+    /// PTRACE_GETEVENTMSG payload set by the kernel at each stop
+    /// event (PTRACE_EVENT_FORK msg = child pid; PTRACE_EVENT_EXIT
+    /// msg = exit code, etc.). Tracer reads via PTRACE_GETEVENTMSG.
+    pub ptrace_eventmsg: AtomicU64,
 
     /// Set by PTRACE_SINGLESTEP, cleared by the trap handler after a
     /// single instruction has retired in user mode. While set, the
@@ -783,7 +797,9 @@ impl Task {
             vfork_pending: AtomicBool::new(false),
             ns_membership: AtomicU64::new(0),
             uts_hostname:  UnsafeCell::new(alloc::string::String::new()),
-            traced_by:     AtomicU32::new(0),
+            traced_by:       AtomicU32::new(0),
+            ptrace_options:  AtomicU32::new(0),
+            ptrace_eventmsg: AtomicU64::new(0),
             singlestep:    AtomicU32::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
             robust_list_head: AtomicU64::new(0),
