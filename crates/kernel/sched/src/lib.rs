@@ -28,7 +28,7 @@ pub use cfs::CfsRunqueue;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use runqueue::RunqueueInner;
-pub use task::{cap, Creds, PosixTimer, SaHandler, SchedClass, SchedPolicy, Task, TaskState};
+pub use task::{cap, Creds, PosixTimer, SaHandler, SchedClass, SchedPolicy, SigInfo, Task, TaskState, RT_QUEUE_CAP};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer
