@@ -1,27 +1,46 @@
-// Anonymous pipe per docs/16 + docs/24. v1 implementation:
-// fixed-capacity 4 KiB ringbuffer behind a `Spinlock`, with a
-// `vfs::Inode` impl that backs both the read and write ends.
+// Anonymous pipe per docs/16 + docs/24. Fixed-capacity 4 KiB
+// ringbuffer behind a `Spinlock`; one `vfs::Inode` impl backs both
+// read and write ends. `sys_pipe2(pipefd, flags)` creates a
+// `PipeInode`, wraps it in two `File`s (O_RDONLY / O_WRONLY),
+// allocates fds, writes the pair into `pipefd[2]`.
 //
-// `sys_pipe2(pipefd, flags)` creates a `PipeInode`, wraps it in
-// two `File`s with `O_RDONLY` / `O_WRONLY` flags, allocates
-// fds in the current task's fd_table, and writes the two fd
-// numbers to the user `pipefd[2]` array.
+// Blocking semantics (Linux pipe(7)):
+//  - read() on empty pipe + writers>0  → park on read_waiters
+//  - read() on empty pipe + writers==0 → Ok(0) (EOF)
+//  - read_nonblock() on empty          → Eagain
+//  - write() on full + readers>0       → park on write_waiters
+//  - write() on full + readers==0      → Epipe
+//  - write_nonblock() on full          → Eagain
 //
-// v1 minimal: non-blocking on empty/full (returns Eagain).
-// Blocking with a `WaitQueue` rides P3-01b once docs/24 fully
-// freezes the wait-queue contract. For the canonical
-// `cmd1 | cmd2` shell pipeline this is sufficient as long as
-// the pipeline is serialised (cmd1 runs to completion before
-// cmd2 starts) — full overlapped pipes need blocking.
-
-
+// Close tracking: PipeInode registers a vfs close-hook
+// (`vfs::set_close_hook`) once at boot; on every `File::Drop`
+// targeting a pipe inode, the writable/readable count decrements
+// and the opposite wait list is woken so peers see EOF / EPIPE.
 
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
+#[cfg(target_os = "oxide-kernel")]
+use sched::live::wait_list::WaitList;
 use sync::{Spinlock, Tty as TtyClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
+
+/// Hosted-test stand-in: WaitList only exists under the live
+/// scheduler. On hosted unit-test builds the pipe inode still
+/// needs `park`/`wake_all` symbols to compile, but those code
+/// paths are unreachable since the smoke test only exercises
+/// the non-blocking variants.
+#[cfg(not(target_os = "oxide-kernel"))]
+struct WaitList;
+
+#[cfg(not(target_os = "oxide-kernel"))]
+impl WaitList {
+    const fn new() -> Self { Self }
+    fn wake_all(&self) {}
+    /// # SAFETY: never invoked under hosted; see type-level doc.
+    unsafe fn park(&self) { unreachable!("park under hosted"); }
+}
 
 const PIPE_CAP: usize = 4096;
 
@@ -74,8 +93,10 @@ pub fn smoke_test() {
     let n = pipe.read(0, &mut buf).expect("pipe.read");
     kassert!(n == 5, "pipe read len");
     kassert!(&buf[..5] == b"hello", "pipe round-trip body");
-    // Drained pipe with active write-side: Eagain.
-    let r = pipe.read(0, &mut buf);
+    // Drained pipe with active write-side: read_nonblock = EAGAIN.
+    // (Blocking read would park; smoke test exercises the
+    // non-blocking surface for the empty-but-writers-alive case.)
+    let r = pipe.read_nonblock(0, &mut buf);
     kassert!(matches!(r, Err(vfs::VfsError::Eagain)), "pipe drained = EAGAIN");
     // Drop the writer → next read returns Ok(0) (true EOF).
     pipe.writers.store(0, core::sync::atomic::Ordering::Release);
@@ -158,17 +179,19 @@ pub struct PipeInode {
     /// Inode number — globally unique among pipes; allocated from
     /// a monotonic counter per `01§4`.
     ino: Ino,
-    /// Live write-end count. `sys_pipe2` initialises to 1 (one
-    /// write-end File outlives this constructor); each writable
-    /// File's Drop decrements via the vfs close hook. A read on
-    /// an empty pipe returns `0` (EOF) when this hits zero,
-    /// matching Linux pipe(7) — non-zero means writers still
-    /// exist and the read returns `Eagain` (v1 non-blocking).
+    /// Live write-end count; decremented by the vfs close hook on
+    /// every writable File::Drop targeting this inode. A read on
+    /// an empty pipe returns `Ok(0)` (EOF) when this hits zero.
     pub writers: core::sync::atomic::AtomicUsize,
     /// Live read-end count. Symmetric tracking so a write to a
-    /// pipe with zero readers can return `Epipe` (Linux SIGPIPE
-    /// substrate landing alongside).
+    /// pipe with zero readers can return `Epipe`.
     pub readers: core::sync::atomic::AtomicUsize,
+    /// Tasks parked on a read that found the buffer empty. Woken
+    /// when a write deposits bytes or when the last writer closes.
+    read_waiters:  WaitList,
+    /// Tasks parked on a write that found the buffer full. Woken
+    /// when a read drains bytes or when the last reader closes.
+    write_waiters: WaitList,
 }
 
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
@@ -183,7 +206,33 @@ impl PipeInode {
             ino,
             writers: core::sync::atomic::AtomicUsize::new(0),
             readers: core::sync::atomic::AtomicUsize::new(0),
+            read_waiters:  WaitList::new(),
+            write_waiters: WaitList::new(),
         })
+    }
+
+    /// Drain whatever bytes are available without blocking. Returns
+    /// the byte count copied; updates wait-list state on success.
+    fn try_drain(&self, buf: &mut [u8]) -> usize {
+        let mut g = self.buf.lock();
+        if g.len == 0 { return 0; }
+        let mut n = 0;
+        while n < buf.len() {
+            match g.pop() { Some(b) => { buf[n] = b; n += 1; } None => break }
+        }
+        n
+    }
+
+    /// Push as many bytes as fit; returns the byte count written.
+    fn try_fill(&self, buf: &[u8]) -> usize {
+        let mut g = self.buf.lock();
+        if g.len == PIPE_CAP { return 0; }
+        let mut n = 0;
+        while n < buf.len() {
+            if !g.push(buf[n]) { break; }
+            n += 1;
+        }
+        n
     }
 }
 
@@ -197,45 +246,108 @@ impl Inode for PipeInode {
         Err(VfsError::Enotdir)
     }
 
-    /// Pipe read per `24§3` + Linux pipe(7).
-    /// - data available    → return up to `buf.len()` bytes
-    /// - empty + writers>0 → `Eagain` (v1 non-blocking; full
-    ///                       blocking rides the WaitQueue plumbing)
-    /// - empty + writers=0 → `Ok(0)` (true EOF — all write ends closed)
+    /// Blocking pipe read per Linux pipe(7).
+    /// - data available     → up to `buf.len()` bytes copied.
+    /// - empty + writers>0  → park on `read_waiters`, retry on wake.
+    /// - empty + writers==0 → Ok(0) (EOF, all write ends closed).
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut g = self.buf.lock();
-        if g.len == 0 {
+        if buf.is_empty() { return Ok(0); }
+        loop {
+            let n = self.try_drain(buf);
+            if n > 0 {
+                self.write_waiters.wake_all();
+                return Ok(n);
+            }
             if self.writers.load(Ordering::Acquire) == 0 {
                 return Ok(0);
             }
-            return Err(VfsError::Eagain);
+            // SAFETY: caller is the running task; preempt-off; we are about to schedule. WaitList::park bumps Arc and marks Sleeping.
+            unsafe { self.read_waiters.park(); }
+            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the write-side wake or last-writer-close wake will.
+            #[cfg(target_os = "oxide-kernel")]
+            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue until peer wakes us.
+            unsafe { sched::live::schedule::schedule(); }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            unreachable!("blocking pipe under hosted");
         }
-        let mut n = 0;
-        while n < buf.len() {
-            match g.pop() {
-                Some(b) => { buf[n] = b; n += 1; }
-                None    => break,
-            }
-        }
-        Ok(n)
     }
 
-    /// Pipe write per `24§3` + Linux pipe(7).
-    /// - readers==0       → `Epipe` (caller should also receive
-    ///                      SIGPIPE; signal substrate rides v2.x)
-    /// - room available   → push up to `buf.len()` bytes, return n
-    /// - buffer full      → `Eagain` (v1 non-blocking)
+    /// Blocking pipe write per Linux pipe(7).
+    /// - readers==0     → Epipe (caller also gets SIGPIPE via sys_write).
+    /// - space available→ push up to `buf.len()` bytes, return n.
+    /// - buffer full    → park on `write_waiters`, retry on wake.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
+        loop {
+            if self.readers.load(Ordering::Acquire) == 0 {
+                return Err(VfsError::Epipe);
+            }
+            let n = self.try_fill(buf);
+            if n > 0 {
+                self.read_waiters.wake_all();
+                return Ok(n);
+            }
+            // SAFETY: caller is the running task; preempt-off; WaitList::park bumps Arc and marks Sleeping before we schedule.
+            unsafe { self.write_waiters.park(); }
+            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the read-side wake or last-reader-close wake will.
+            #[cfg(target_os = "oxide-kernel")]
+            // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue until peer wakes us.
+            unsafe { sched::live::schedule::schedule(); }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            unreachable!("blocking pipe under hosted");
+        }
+    }
+
+    /// Non-blocking pipe read per Linux O_NONBLOCK semantics:
+    /// - data available     → bytes copied, no wait.
+    /// - empty + writers>0  → Eagain.
+    /// - empty + writers==0 → Ok(0).
+    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
+        let n = self.try_drain(buf);
+        if n > 0 {
+            self.write_waiters.wake_all();
+            return Ok(n);
+        }
+        if self.writers.load(Ordering::Acquire) == 0 { Ok(0) }
+        else { Err(VfsError::Eagain) }
+    }
+
+    /// Non-blocking pipe write per Linux O_NONBLOCK semantics.
+    fn write_nonblock(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
         if self.readers.load(Ordering::Acquire) == 0 {
             return Err(VfsError::Epipe);
         }
-        let mut g = self.buf.lock();
-        if g.len == PIPE_CAP { return Err(VfsError::Eagain); }
-        let mut n = 0;
-        while n < buf.len() {
-            if !g.push(buf[n]) { break; }
-            n += 1;
+        let n = self.try_fill(buf);
+        if n > 0 {
+            self.read_waiters.wake_all();
+            return Ok(n);
         }
-        Ok(n)
+        Err(VfsError::Eagain)
     }
+}
+
+/// Close hook installed at boot via `vfs::set_close_hook`. Tracks
+/// pipe writer/reader counts: every writable File::Drop on a pipe
+/// inode decrements `writers` and wakes the read side so peers see
+/// EOF; symmetric for readable closes and the write side seeing
+/// EPIPE.
+/// # C: O(1) per call
+fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
+    let Some(any) = inode.as_any() else { return };
+    let Some(pipe) = any.downcast_ref::<PipeInode>() else { return };
+    if was_writable {
+        let prev = pipe.writers.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 { pipe.read_waiters.wake_all(); }
+    } else {
+        let prev = pipe.readers.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 { pipe.write_waiters.wake_all(); }
+    }
+}
+
+/// Install the pipe close-tracking hook. Call once at boot.
+/// # C: O(1)
+pub fn install_close_hook() {
+    vfs::set_close_hook(pipe_close_hook);
 }
