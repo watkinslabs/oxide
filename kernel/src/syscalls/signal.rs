@@ -506,8 +506,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             *target.ptrace_siginfo.lock() = Some(info);
             0
         }
-        PTRACE_GETFPREGS | PTRACE_SETFPREGS
-            | PTRACE_INTERRUPT | PTRACE_LISTEN => 0,
+        PTRACE_GETFPREGS => crate::syscalls::ptrace_fpu::get_fpregs(pid, args.a3),
+        PTRACE_SETFPREGS => crate::syscalls::ptrace_fpu::set_fpregs(pid, args.a3),
+        PTRACE_INTERRUPT | PTRACE_LISTEN => 0,
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
