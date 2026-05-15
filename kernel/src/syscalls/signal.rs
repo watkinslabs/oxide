@@ -128,24 +128,29 @@ pub fn sys_setns(args: &SyscallArgs) -> i64 {
     crate::dev_proc_ns::setns_apply(ns, nstype, cur)
 }
 
-/// `sys_ptrace(request, pid, addr, data)` — slot 101. v2 P22b
-/// extension: admits the request set most tracer-class libraries
-/// probe (sandbox-detection, sentry-style runtime checks) so they
-/// pass beyond the ptrace gate. Real cross-AS memory access +
-/// signal-stop integration ride P22c (needs a foreign-mm read/
-/// write helper + sched-side ptrace stop-state).
+/// `sys_ptrace(request, pid, addr, data)` — slot 101. Admits the
+/// request set tracer-class libraries probe (sandbox-detection,
+/// sentry-style runtime checks); real cross-AS memory access and
+/// signal-stop integration are wired against `traced_by` +
+/// foreign-mm read/write + the sched stop-state registry.
 ///
 /// PTRACE_TRACEME — sets caller's traced_by to its parent.
 /// PTRACE_ATTACH/SEIZE — sets target's traced_by to caller.
-/// PTRACE_DETACH/CONT/SYSCALL/SINGLESTEP/SETOPTIONS/KILL/LISTEN —
-///   silent 0 (no scheduler-stop machinery yet).
-/// PTRACE_PEEKTEXT/PEEKDATA/PEEKUSER — returns 0 word (does NOT
-///   read the target's actual memory; honest stub for tracer-
-///   present probes that only need the call to succeed).
-/// PTRACE_POKETEXT/POKEDATA — real foreign-mm write via write_foreign_user
-/// (refuses non-writable leaves; no silent W^X bypass).
+/// PTRACE_DETACH clears the tracer; CONT/SYSCALL/SINGLESTEP wake
+/// the target via the stop-state registry; SETOPTIONS stores the
+/// option bit-set on the target; KILL posts SIGKILL; LISTEN is
+/// silent 0 (full ptrace-stop machinery rides a follow-up).
+/// PTRACE_PEEKTEXT/PEEKDATA — real foreign-mm read of an 8-byte
+/// word from the target's user AS via `read_foreign_user`.
+/// PTRACE_PEEKUSER — returns 0 word (no per-arch user-area
+/// materializer; honest stub for probes that need the call to
+/// succeed but don't depend on register values).
+/// PTRACE_POKETEXT/POKEDATA — real foreign-mm write via
+/// `write_foreign_user` (refuses non-writable leaves).
 /// PTRACE_POKEUSER — EOPNOTSUPP (no per-arch user-area materializer yet).
-/// PTRACE_GETREGS/SETREGS/GETREGSET/SETREGSET/GETSIGINFO — silent 0.
+/// PTRACE_GETREGS/SETREGS/GETREGSET/SETREGSET — real read/write of
+/// the target's saved syscall frame at kstack_top - 0x80 (x86) /
+/// -0xD0 (aarch64). PTRACE_GETSIGINFO/SETSIGINFO — silent 0.
 /// Anything else → -EINVAL (per Linux for unknown ptrace request).
 /// # C: O(N_tasks) on PTRACE_ATTACH lookup; O(1) otherwise.
 pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
