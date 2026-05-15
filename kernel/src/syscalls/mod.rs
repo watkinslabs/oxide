@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -639,15 +639,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // verifier + JIT ride a follow-up. Other cmds → -ENOSYS so
         // userspace doesn't think it has a working bpf() world.
         syscall::nrs::NR_BPF           => crate::dev_bpf::sys_bpf(&args),
-        // landlock_create_ruleset: returns a memfd-shaped placeholder.
-        syscall::nrs::NR_LANDLOCK_CREATE_RULESET => {
-            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscalls::anonfd::sys_memfd_create(&sa)
-        }
-        // add_rule / restrict_self → EOPNOTSUPP (silent-0 would let
-        // programs think they sandboxed themselves when they didn't).
-        syscall::nrs::NR_LANDLOCK_ADD_RULE | syscall::nrs::NR_LANDLOCK_RESTRICT_SELF
-            => -(Errno::Eopnotsupp.as_i32() as i64),
+        syscall::nrs::NR_LANDLOCK_CREATE_RULESET => crate::syscalls::landlock::sys_landlock_create_ruleset(&args),
+        syscall::nrs::NR_LANDLOCK_ADD_RULE       => crate::syscalls::landlock::sys_landlock_add_rule(&args),
+        syscall::nrs::NR_LANDLOCK_RESTRICT_SELF  => crate::syscalls::landlock::sys_landlock_restrict_self(&args),
         // perf_event_open: real PerfEventInode whose read returns the
         // monotonic-ns sample since open; ioctl handles ENABLE/DISABLE/
         // RESET/REFRESH. PMU hardware sampling + ring-buffer mmap
