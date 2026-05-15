@@ -4,7 +4,7 @@
 // `40§3`-controlled CI.
 
 use super::*;
-use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
 
 use hal::{UserVirtAddr, PAGE_SIZE_BYTES};
 use std::sync::Arc;
@@ -15,12 +15,26 @@ fn uva(x: u64) -> UserVirtAddr {
     UserVirtAddr::new(x).expect("test address fits user range")
 }
 
+/// Trivial FileBacking impl for VMA-tree tests: never invoked
+/// (the tree tests don't fault), only used as an Arc identity for
+/// `mergeable_with_next` + `PartialEq`.
+struct FakeFile;
+impl FileBacking for FakeFile {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn size_hint(&self) -> u64 { 0 }
+}
+
+fn fake_backing() -> alloc::sync::Arc<dyn FileBacking> {
+    alloc::sync::Arc::new(FakeFile)
+}
+
 fn anon(start: u64, end: u64, prot: VmaProt) -> Vma {
     Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE | VmaFlags::ANONYMOUS, VmaBacking::Anonymous)
 }
 
 fn file(start: u64, end: u64, off: u64, prot: VmaProt) -> Vma {
-    Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE, VmaBacking::File { off })
+    Vma::new(uva(start), uva(end), prot, VmaFlags::PRIVATE,
+        VmaBacking::File { backing: fake_backing(), off })
 }
 
 fn kbytes(start: u64, end: u64, data: &'static [u8], prot: VmaProt) -> Vma {
@@ -126,13 +140,19 @@ fn insert_merges_both_neighbors() {
 #[test]
 fn file_backed_merge_requires_contig_offset() {
     let mut t = VmaTree::new();
-    t.insert(file(0x1000, 0x2000, 0, VmaProt::READ)).unwrap();
+    let prot = VmaProt::READ;
+    let shared = fake_backing();
+    let mk = |s: u64, e: u64, off: u64| {
+        Vma::new(uva(s), uva(e), prot, VmaFlags::PRIVATE,
+            VmaBacking::File { backing: alloc::sync::Arc::clone(&shared), off })
+    };
+    t.insert(mk(0x1000, 0x2000, 0)).unwrap();
     // Contiguous offset → merges.
-    t.insert(file(0x2000, 0x3000, 0x1000, VmaProt::READ)).unwrap();
+    t.insert(mk(0x2000, 0x3000, 0x1000)).unwrap();
     assert_eq!(t.len(), 1);
 
     // Non-contiguous offset → separate VMA.
-    t.insert(file(0x3000, 0x4000, 0xdead, VmaProt::READ)).unwrap();
+    t.insert(mk(0x3000, 0x4000, 0xdead)).unwrap();
     assert_eq!(t.len(), 2);
 }
 
@@ -207,13 +227,19 @@ fn file_backing_offset_adjusts_on_split() {
     t.insert(file(0x1000, 0x5000, 0, VmaProt::READ)).unwrap();
     let removed = t.remove_range(uva(0x2000), uva(0x4000));
     assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0].backing, VmaBacking::File { off: 0x1000 });
+    match &removed[0].backing {
+        VmaBacking::File { off, .. } => assert_eq!(*off, 0x1000),
+        _ => panic!("expected File backing"),
+    }
 
     // Right-kept fragment offset shifted by full prefix length (0x3000).
     let mut it = t.iter();
     let _left = it.next().unwrap();
     let right = it.next().unwrap();
-    assert_eq!(right.backing, VmaBacking::File { off: 0x3000 });
+    match &right.backing {
+        VmaBacking::File { off, .. } => assert_eq!(*off, 0x3000),
+        _ => panic!("expected File backing"),
+    }
 }
 
 #[test]

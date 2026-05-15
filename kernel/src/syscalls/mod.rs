@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;  
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod ioctl; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -12,8 +12,27 @@ use hal::{USER_VA_END};
 use hal::TimerOps;
 
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
-    let fd = args.a4 as i64;
-    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd) {
+    let fd     = args.a4 as i64;
+    let offset = args.a5;
+    let flags  = args.a3;
+    const MAP_ANON: u64 = 0x20;
+    // File-backed mmap: resolve fd, wrap as FileBacking, pass to
+    // glue_mmap. Anonymous goes through the None path.
+    let backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>> =
+        if (flags & MAP_ANON) == 0 && fd >= 0 {
+            let cur = match sched::live::current() {
+                Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+            };
+            // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+            let fdt = match unsafe { cur.fd_table_ref() } {
+                Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+            };
+            let file = match fdt.get(fd as i32) {
+                Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+            };
+            Some(mmap_file::InodeFileBacking::new(file.inode().clone()))
+        } else { None };
+    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd, offset, backing) {
         Ok(va)  => va as i64,
         Err(rv) => rv,
     }
