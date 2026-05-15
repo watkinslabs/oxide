@@ -1,9 +1,9 @@
-// Real bpf(2) substrate per `27§R02` and v2-arch-plan §1.7.
+// Real bpf(2) substrate per `27§R02`.
 //
-// V1 admits BPF_PROG_LOAD (cBPF only — 32-bit classic-BPF instructions
+// Admits BPF_PROG_LOAD (cBPF — 32-bit classic-BPF instructions
 // stored in a BpfProgInode) and BPF_MAP_CREATE (byte-keyed hash map
 // stored in a BpfMapInode). All ops require CAP_BPF. eBPF + verifier
-// + JIT ride v2.x.
+// + JIT are follow-ups (K10 batch in kernel-audit.md).
 
 
 extern crate alloc;
