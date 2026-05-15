@@ -1,7 +1,7 @@
 // Real `sys_mount(source, target, fstype, flags, data)` — slot 165.
 // V1 honours fstype="tmpfs" by spawning a fresh TmpfsRootInode at
 // `target` in devfs. Other fstypes return EOPNOTSUPP. Requires
-// CAP_SYS_ADMIN. Per-NS mount-table virtualisation rides v2 phase 29
+// CAP_SYS_ADMIN. Per-NS mount-table virtualisation is a follow-up (per-NS mount table)
 // once a real backend (ext4 + block) lands; until then mount(2)
 // affects the global registry shared by all mount_ns ids.
 
