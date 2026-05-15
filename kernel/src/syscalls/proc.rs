@@ -672,22 +672,63 @@ pub fn sys_getcpu(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_sched_getparam(pid, param)` — slot 143. v1: writes
-/// sched_priority=0 (only meaningful for RT classes).
-/// # C: O(1)
+/// `sys_sched_getparam(pid, param)` — slot 143. Writes the
+/// target task's RT priority (1..=99 for FIFO/RR; 0 for Normal/Idle).
+/// `pid==0` means the calling task.
+/// # C: O(N_tasks) on non-self lookup
 pub fn sys_sched_getparam(args: &SyscallArgs) -> i64 {
-    let p = args.a1;
+    let pid = args.a0 as u32;
+    let p   = args.a1;
+    let prio = sched_lookup_prio(pid);
     if p != 0 && p < hal::USER_VA_END {
-        // SAFETY: p validated < USER_VA_END; CPL=0 writes through caller's AS.
-        unsafe { core::ptr::write_volatile(p as *mut i32, 0); }
+        // SAFETY: p validated < USER_VA_END; aligned i32 store of sched_priority into caller's AS.
+        unsafe { core::ptr::write_volatile(p as *mut i32, prio); }
     }
     0
 }
 
-/// `sys_sched_setscheduler` / `sys_sched_getscheduler` —
-/// slots 144/145. v1 always reports SCHED_OTHER (0); set is no-op.
-/// # C: O(1)
-pub fn sys_sched_getscheduler(_args: &SyscallArgs) -> i64 { 0 }
+/// `sys_sched_getscheduler(pid)` — slot 145. Returns the target's
+/// scheduling policy: SCHED_OTHER=0, SCHED_FIFO=1, SCHED_RR=2.
+/// `pid==0` = caller. SCHED_SETSCHEDULER (slot 144) shares this
+/// path as a no-op (move-between-runqueues integration is
+/// follow-up; honest 0 return matches "no-op-but-ok").
+/// # C: O(N_tasks) on non-self lookup
+pub fn sys_sched_getscheduler(args: &SyscallArgs) -> i64 {
+    let pid = args.a0 as u32;
+    sched_lookup_policy(pid) as i64
+}
+
+/// Look up the target task and return its policy code per Linux
+/// constants (0=OTHER, 1=FIFO, 2=RR, 5=IDLE).
+fn sched_lookup_policy(pid: u32) -> i32 {
+    use sched::{SchedClass, SchedPolicy};
+    let task = if pid == 0 {
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
+    } else {
+        sched::live::registry::lookup(pid)
+    };
+    match task.map(|t| t.class) {
+        Some(SchedClass::Rt { policy: SchedPolicy::Fifo, .. }) => 1,
+        Some(SchedClass::Rt { policy: SchedPolicy::Rr,   .. }) => 2,
+        Some(SchedClass::Idle) => 5,
+        _ => 0,
+    }
+}
+
+/// Look up the target task and return its RT priority, or 0 for
+/// Normal/Idle tasks.
+fn sched_lookup_prio(pid: u32) -> i32 {
+    use sched::SchedClass;
+    let task = if pid == 0 {
+        sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
+    } else {
+        sched::live::registry::lookup(pid)
+    };
+    match task.map(|t| t.class) {
+        Some(SchedClass::Rt { prio, .. }) => prio as i32,
+        _ => 0,
+    }
+}
 
 /// `sys_sched_get_priority_max(policy)` — slot 146. v1: 99 for
 /// SCHED_FIFO/RR, 0 otherwise.
