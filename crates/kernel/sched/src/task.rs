@@ -419,12 +419,12 @@ pub struct Task {
     /// the ancestor chain.
     pub parent_user_ns: AtomicU64,
     /// Cgroup namespace id (CLONE_NEWCGROUP). Default 0 (init NS).
-    /// /proc/self/cgroup rebasing rides v2 (v1 has a flat single-
-    /// cgroup hierarchy, so every NS sees the same "0::/" path).
+    /// /proc/self/cgroup rebasing is a follow-up (currently a flat
+    /// single-cgroup hierarchy — every NS sees "0::/" path).
     pub cgroup_ns: AtomicU64,
 
     /// Mount namespace id (CLONE_NEWNS). Default 0 (init NS).
-    /// V1 substrate only: real mount-table virtualisation rides v2
+    /// V1 substrate only: real mount-table virtualisation is a follow-up
     /// phase 29 (needs ext4 + block). Until then unshare(CLONE_NEWNS)
     /// just allocates an id; mount itself remains EPERM.
     pub mount_ns: AtomicU64,

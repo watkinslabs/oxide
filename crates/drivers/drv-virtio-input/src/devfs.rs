@@ -1,6 +1,6 @@
 // /dev/input/event0 evdev substrate per `35§R01` and v2-arch-plan
 // §1.9. V1: admit + answer EVIOCGNAME / EVIOCGID identification
-// ioctls. Real key / abs / rel event delivery rides v2.x once the
+// ioctls. Real key / abs / rel event delivery is a follow-up once the
 // virtio-input PCI driver lands.
 
 
@@ -17,7 +17,7 @@ const EVIOCGID:      u64 = 0x80084502;
 const EVIOCGNAME_NR: u32 = 0x4506;
 
 /// Single evdev device — keyboard-shaped placeholder identified as
-/// "oxide-input". Real input frame delivery rides v2.x.
+/// "oxide-input". Real input frame delivery is a follow-up.
 pub struct EvdevInode;
 
 impl Inode for EvdevInode {
