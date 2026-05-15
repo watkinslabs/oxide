@@ -4,7 +4,7 @@
 // call the exported `__vdso_*` symbols instead of invoking the
 // equivalent syscalls directly.
 //
-// v1 substrate: each exported symbol is a syscall trampoline — no
+// Substrate: each exported symbol is a syscall trampoline — no
 // fast path yet. Provides the AT_SYSINFO_EHDR auxv entry every
 // modern runtime checks at startup, and the symbol-lookup surface
 // glibc's vDSO resolver walks. Fast-path (vvar page + clock-
@@ -14,33 +14,96 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
+use hal::UserVirtAddr;
+use vmm::{VmaBacking, VmaFlags, VmaProt};
 
 #[cfg(target_arch = "x86_64")]
 pub const VDSO_BLOB: &[u8] = include_bytes!("../blobs/vdso-x86_64.so");
 #[cfg(target_arch = "aarch64")]
 pub const VDSO_BLOB: &[u8] = include_bytes!("../blobs/vdso-aarch64.so");
 
-/// vDSO byte length, page-aligned upward.
-/// # C: O(1)
-pub fn vdso_len_pages() -> u64 {
-    let raw = VDSO_BLOB.len() as u64;
-    (raw + 0xfff) & !0xfff
+const PT_LOAD: u32 = 1;
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+const PF_R: u32 = 4;
+const ELF_PHOFF: usize = 32;     // e_phoff
+const ELF_PHENTSIZE: usize = 54; // e_phentsize
+const ELF_PHNUM: usize = 56;     // e_phnum
+
+/// Parse the vDSO ELF and return (max_vaddr_end, Vec<segment>) where
+/// each segment is (vaddr, filesz, memsz, p_offset, p_flags).
+/// Returns None on malformed ELF (kernel boot continues without vDSO).
+fn parse_segments() -> Option<(u64, alloc::vec::Vec<(u64, u64, u64, u64, u32)>)> {
+    let b = VDSO_BLOB;
+    if b.len() < ELF_PHNUM + 2 { return None; }
+    if &b[0..4] != b"\x7fELF" { return None; }
+    let phoff = u64::from_le_bytes(b[ELF_PHOFF..ELF_PHOFF+8].try_into().ok()?);
+    let phentsize = u16::from_le_bytes(b[ELF_PHENTSIZE..ELF_PHENTSIZE+2].try_into().ok()?) as usize;
+    let phnum = u16::from_le_bytes(b[ELF_PHNUM..ELF_PHNUM+2].try_into().ok()?) as usize;
+    if phentsize < 56 { return None; }
+    let mut segs = alloc::vec::Vec::with_capacity(phnum);
+    let mut end: u64 = 0;
+    for i in 0..phnum {
+        let off = phoff as usize + i * phentsize;
+        if off + 56 > b.len() { return None; }
+        let p_type   = u32::from_le_bytes(b[off..off+4].try_into().ok()?);
+        if p_type != PT_LOAD { continue; }
+        let p_flags  = u32::from_le_bytes(b[off+4..off+8].try_into().ok()?);
+        let p_offset = u64::from_le_bytes(b[off+8..off+16].try_into().ok()?);
+        let p_vaddr  = u64::from_le_bytes(b[off+16..off+24].try_into().ok()?);
+        let p_filesz = u64::from_le_bytes(b[off+32..off+40].try_into().ok()?);
+        let p_memsz  = u64::from_le_bytes(b[off+40..off+48].try_into().ok()?);
+        let seg_end  = (p_vaddr + p_memsz + 0xfff) & !0xfff;
+        if seg_end > end { end = seg_end; }
+        segs.push((p_vaddr, p_filesz, p_memsz, p_offset, p_flags));
+    }
+    Some((end, segs))
 }
 
-/// Map the vDSO into the calling task's address space. Returns the
-/// load VA on success; the caller pushes it as AT_SYSINFO_EHDR.
-///
-/// CURRENTLY DISABLED: the host-toolchain-built vDSO has 3 separate
-/// PT_LOADs (text @ vaddr 0, dynsym @ vaddr 0x1000, dynamic @ vaddr
-/// 0x2f20 with file offset 0x1f20) which doesn't lay out under the
-/// naive `KernelBytes` flat mapping — glibc/musl's vDSO parser
-/// follows DT_DYNAMIC to vaddr+0x2f20 and reads garbage. Until the
-/// kernel walks PT_LOADs (or we rebuild the vDSO with a single
-/// packed segment via custom linker script), keep the substrate
-/// wired but return None so AT_SYSINFO_EHDR is 0 and userspace
-/// falls back to direct syscalls.
-/// # C: O(1)
+/// Translate ELF PF_* flags to VmaProt.
+fn prot_of(p_flags: u32) -> VmaProt {
+    let mut p = VmaProt::empty();
+    if (p_flags & PF_R) != 0 { p |= VmaProt::READ; }
+    if (p_flags & PF_W) != 0 { p |= VmaProt::WRITE; }
+    if (p_flags & PF_X) != 0 { p |= VmaProt::EXEC; }
+    p
+}
+
+/// Map the vDSO into the calling task's AS, honoring per-PT_LOAD
+/// vaddr / memsz / flags. Reserves a single VA range via a
+/// placeholder anonymous mmap (to claim the base), then unmaps and
+/// re-maps each PT_LOAD at base+v_addr with the right backing +
+/// prot. Returns the load VA (== ELF header VA) for AT_SYSINFO_EHDR.
+/// Returns None on parse failure or mmap failure — the caller sets
+/// AT_SYSINFO_EHDR = 0 and userspace falls back to direct syscalls.
+/// # C: O(N_pt_loads × N_vmas)
 pub fn map_into_current() -> Option<u64> {
-    let _ = Arc::<[u8]>::from(VDSO_BLOB.to_vec().into_boxed_slice());
-    None
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; preempt-off; sole writer of mm slot.
+    let mm = unsafe { cur.mm_ref() }?.clone();
+    let (total, segs) = parse_segments()?;
+    if segs.is_empty() || total == 0 { return None; }
+    // Reserve `total` bytes with an anonymous placeholder so the
+    // base VA is known. We then unmap it and remap each PT_LOAD at
+    // the matching offset.
+    let placeholder = mm.mmap(None, total as usize,
+        VmaProt::READ, VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous, false).ok()?;
+    let base = placeholder.as_u64();
+    // Tear down the placeholder so per-segment fixed maps succeed.
+    let _ = mm.munmap(placeholder, total as usize);
+    for (vaddr, filesz, memsz, p_offset, p_flags) in segs {
+        let seg_start = base.wrapping_add(vaddr);
+        let seg_len_pages = ((memsz + 0xfff) & !0xfff) as usize;
+        if seg_len_pages == 0 { continue; }
+        let data_start = p_offset as usize;
+        let data_end   = (p_offset + filesz) as usize;
+        if data_end > VDSO_BLOB.len() { return None; }
+        let slice = Arc::<[u8]>::from(VDSO_BLOB[data_start..data_end].to_vec().into_boxed_slice());
+        let prot = prot_of(p_flags);
+        let hint = UserVirtAddr::new(seg_start)?;
+        mm.mmap(Some(hint), seg_len_pages, prot, VmaFlags::PRIVATE,
+            VmaBacking::KernelBytes { data: slice, off: 0 }, true).ok()?;
+    }
+    Some(base)
 }
