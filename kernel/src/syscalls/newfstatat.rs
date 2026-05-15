@@ -40,25 +40,11 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
             let raw = match core::str::from_utf8(p) {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
-            // Resolve relative paths against the task's cwd. Without
-            // this `ls .` (newfstatat with path=".") fails ENOENT in
-            // vfs::mount::lookup which has no concept of cwd.
-            // AT_FDCWD-relative resolution: when dirfd==AT_FDCWD (-100)
-            // or path is absolute, use cwd; an fd-relative dirfd opens
-            // path relative to that fd's inode (best-effort below).
+            // AT_FDCWD: resolve against cwd; fd-relative dirfd best-effort raw.
             const AT_FDCWD: i32 = -100;
-            let resolved: alloc::string::String = if raw.starts_with('/') {
-                raw.into()
-            } else if dirfd == AT_FDCWD {
-                let cur = match sched::live::current() {
-                    Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-                };
-                // SAFETY: cwd slot single-mutator per `13§5`.
-                let cwd = unsafe { (*cur.cwd.get()).clone() };
-                vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-            } else {
-                raw.into()
-            };
+            let resolved = if raw.starts_with('/') || dirfd == AT_FDCWD {
+                crate::syscalls::pathresolve::resolve_cwd(raw)
+            } else { raw.into() };
             let s = resolved.as_str();
             match vfs::mount::lookup(s) {
                 Ok(i) => i,
