@@ -1,5 +1,5 @@
 // Firmware tables per `33`. Owns ACPI RSDP/XSDT/MADT/HPET/MCFG
-// parsing. DT (device-tree) bring-up rides v2.x.
+// parsing. DT (device-tree) bring-up is a follow-up.
 //
 // Public surface:
 //   - try_log_acpi(rsdp_pa, hhdm)   — boot-time table walk + log

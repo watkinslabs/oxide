@@ -9,7 +9,7 @@
 // Task.
 //
 // v1 single-CPU UP. SMP would partition this per-CPU + add lock
-// hierarchy; out of scope for v1.
+// hierarchy; is a follow-up.
 
 
 use alloc::sync::Arc;
