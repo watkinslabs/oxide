@@ -35,6 +35,30 @@ audit items wholesale.
   * F96 fanotify_mark forwarded to inotify substrate.
   * F97 real UTS namespace (per-task hostname via CLONE_NEWUTS).
 
+**2026-05-15 refresh (F59..F70 + B25):** 11 PRs landed closing
+prior 🟥/🟡 entries:
+  * F59 landlock TRUNCATE on sys_truncate/ftruncate.
+  * F60 wait4 WUNTRACED + WCONTINUED real (take_child_stop_event).
+  * F61 originating stop signal recorded at SIGSTOP/TSTP/TTIN/TTOU/SIGTRAP.
+  * F62 setsockopt/getsockopt: per-socket SockOpts cells for SOL_SOCKET
+    ints (REUSEADDR/REUSEPORT/KEEPALIVE/BROADCAST/SND/RCVBUF/PRIORITY/
+    MARK/LINGER/SND/RCVTIMEO) + TCP_NODELAY.
+  * F63 PTRACE_INTERRUPT (synthetic SIGSTOP + stop_pending) + LISTEN real.
+  * F64 mincore real per-page residency via arch MMU translate.
+  * F65 fcntl F_GETOWN/F_SETOWN: per-File owner cell.
+  * F66 priority: PRIO_PGRP + PRIO_USER walks (was PROCESS-only).
+  * B25 hotfix: extract priority syscalls (proc.rs 1010>1000 cap).
+  * F67 recvfrom: block + SO_RCVTIMEO + MSG_DONTWAIT + O_NONBLOCK.
+  * F68 accept: block + SO_RCVTIMEO + O_NONBLOCK.
+  * F69 socket(2): honour SOCK_CLOEXEC + SOCK_NONBLOCK at creation.
+  * F70 accept4 flags arg honoured (SOCK_CLOEXEC / SOCK_NONBLOCK).
+
+Stale 🟥 entries now ✅ (per-subsystem table needs in-place sweep):
+  rt_sigsuspend / rt_sigtimedwait / rt_sigqueueinfo / rt_tgsigqueueinfo
+  (signal.rs), sigaltstack, clone3, mincore, robust_list (F65 era),
+  rseq, ICANON (live::tty), F_GETOWN/F_SETOWN. PRIO_PGRP/PRIO_USER,
+  SO_REUSEADDR/REUSEPORT/etc.
+
 **2026-05-14 refresh (B14..B24):** ARM completeness sweep — `faccessat` ABI mapping fix (B15), `statx` mask STATX_BASIC_STATS + stx_blocks (B16), `statx`/`newfstatat` ARM ABI routing (B17, B21 real `sys_newfstatat`), ARM EL0 IRQ delivery (B14), ext4 `Ext4FileInode` lazy reads (B21), ARM signal-dispatch: mask delivered signal + `rt_sigreturn_arm` SP offset 40→32 + SIG_FRAME_BYTES 40→48 for AAPCS64 alignment (B22). No new syscall surface added; existing surface now correct on aarch64. Makefile `FEATURES=` extras fix (B24). See `## Rollout plan 2026-05-14` at file end for prioritized open work.
 
 **2026-05-09 syscall stub-sweep (F63..F84):** at user direction, a
@@ -88,7 +112,7 @@ references.
 |---|---|---|
 | pty pair termios | ✅ | `crates/tty/src/pty.rs` — c_iflag/c_oflag/c_lflag with ICANON/ECHO/ISIG/ICRNL/ONLCR. Used by `/dev/ptmx`. |
 | /dev/console termios | 🟥 | `kernel/src/syscall_glue_ioctl.rs:90` TCGETS returns zero-filled buf for non-pty char devs. No real termios state. |
-| ICANON (line buffering) | 🟥 | `/dev/console` reads byte-by-byte, no line accumulation. Bash needs raw, login + sh need cooked. |
+| ICANON (line buffering) | ✅ | `crates/tty/src/live.rs` cooked-mode line buffer with VERASE/VKILL/VEOF. |
 | ECHO toggle | 🟥 | `kernel/src/tty.rs:178` echoes unconditionally. login's password-prompt phase echoes too. |
 | ICRNL on input | 🟡 | `tty.rs:194` hardcoded CR→NL. Should be opt-in via per-fd c_iflag. |
 | ONLCR on output | 🟥 | `tty.rs:188` echoes "\r\n" for CR/NL on input echo only. Userspace `write(1, "\n")` does NOT get ONLCR translation. |
@@ -116,14 +140,16 @@ references.
 | rt_sigaction | ✅ | `syscall_glue_proc.rs:142` — per-task sigactions table; sa_handler/sa_flags/sa_restorer/sa_mask. |
 | rt_sigprocmask | ✅ | `syscall_glue_proc.rs:191` |
 | rt_sigreturn | ✅ | `sig_dispatch.rs` — restores frame after handler. |
-| rt_sigsuspend | 🟥 | Likely missing — bash uses for SIGCHLD wait. |
-| rt_sigtimedwait | 🟥 | `syscall_compat.rs` ENOSYS. |
-| rt_sigqueueinfo / rt_tgsigqueueinfo | 🟥 | ENOSYS. |
-| sigaltstack | 🟥 | Probably stub. |
-| signal frame for fault (SIGSEGV/SIGBUS) | 🟡 | Some delivery; full siginfo_t fill incomplete. |
-| Real-time signals (32+) | 🟡 | sigpending uses single u64 → only 64 sigs total. |
+| rt_sigsuspend | ✅ | `signal.rs:739`. |
+| rt_sigtimedwait | ✅ | `signal.rs:770`. |
+| rt_sigqueueinfo / rt_tgsigqueueinfo | ✅ | `signal.rs:855/870` real siginfo enqueue. |
+| sigaltstack | ✅ | `signal.rs:684` real per-task stack. |
+| signal frame for fault (SIGSEGV/SIGBUS) | ✅ | F30 added 10-signal core dump path. |
+| Real-time signals (32+) | ✅ | F35 per-RT-sig VecDeque queue. |
 | restart_syscall (-EINTR loop) | 🟡 | `syscall_compat.rs:43` returns EINTR; not real restart. |
-| Default actions (Term/Core/Ign/Stop/Cont) | 🟡 | Term + Ign + Stop/Cont present (sched_stop.rs); no core dump. |
+| Default actions (Term/Core/Ign/Stop/Cont) | ✅ | F61 records originating stop signal for wait4 WUNTRACED. |
+| wait4 WUNTRACED / WCONTINUED | ✅ | F60 take_child_stop_event. |
+| PTRACE_INTERRUPT / LISTEN | ✅ | F63. |
 
 ### 4. Threading + clone
 
@@ -131,15 +157,15 @@ references.
 |---|---|---|
 | fork (clone with no flags) | ✅ | `syscall_glue.rs:228` — copies AS w/ COW-ish via demand fault. |
 | clone with CLONE_VM/CLONE_THREAD | 🟥 | Falls through to fork — **not a real thread**. Multi-thread same-AS missing. |
-| clone3 | 🟥 | `syscall_glue_proc.rs:60` ENOSYS. |
+| clone3 | ✅ | `proc.rs:82` real struct clone_args parse + dispatch. |
 | pthread_create | 🟥 | musl pthreads issue clone(CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS) — not handled. |
 | set_thread_area | 🟥 | x86_64 uses arch_prctl(ARCH_SET_FS) which works, but `set_thread_area` (i386 path) absent. |
 | gettid | 🟡 | Returns tid — works for single-thread (tid == tgid). Wrong once threading lands. |
 | set_tid_address | ✅ | `syscall_glue_proc.rs:34` stores in `clear_child_tid`. CLONE_CHILD_CLEARTID wakeup-on-exit not done. |
 | futex FUTEX_WAIT/WAKE | ✅ | `kernel/src/futex.rs` (P3a). |
 | futex_waitv | 🟥 | accept-as-no-op. |
-| robust_list | 🟥 | `set_robust_list` returns 0 silently. `get_robust_list` ENOSYS. |
-| rseq (restartable sequences) | 🟥 | ENOSYS — modern glibc/musl uses for fast pthread getpid. |
+| robust_list | ✅ | Real set/get_robust_list against per-Task slot. |
+| rseq (restartable sequences) | ✅ | Real `sys_rseq` + rseq_writeback per F86. |
 
 ### 5. Memory management
 
@@ -153,7 +179,7 @@ references.
 | mremap | 🟥 | `syscall_glue_proc.rs:520` returns ENOMEM unconditionally. |
 | madvise | 🟥 | accept-and-no-op. MADV_DONTNEED zero-fill missing. |
 | mlock / mlockall | 🟥 | accept-and-no-op. |
-| mincore | 🟥 | ENOSYS. |
+| mincore | ✅ | F64 per-page residency via arch MMU translate. |
 | memfd_create / memfd_secret | 🟥 | ENOSYS. systemd + Wayland use heavily. |
 | brk | ✅ | |
 | pkey_alloc/pkey_free/pkey_mprotect | 🟥 | ENOSYS. |
