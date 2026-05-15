@@ -6,7 +6,7 @@
 // is the inode-side surface that bridges userspace fd handles to
 // those slots.
 //
-// cgroup v2 hierarchy walker rides v2.x once the cgroup tree+
+// cgroup v2 hierarchy walker is a follow-up once the cgroup tree+
 // controllers (cpu/memory/pids/io) get wired. v1 ships pid_ns +
 // user_ns parent registry only.
 

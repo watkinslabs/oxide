@@ -7,7 +7,8 @@
 //     every read — they alias whatever VT the user is "looking
 //     at" without holding stale references.
 // Writes still go to the single UART path via `klog::write_raw`;
-// per-VT TX framebuffers are out of scope for v1.
+// per-VT TX framebuffers are a follow-up (gates the K13 DRM/KMS
+// scanout path).
 //
 // init's fd 0/1/2 install a vt=0 (foreground-alias) ConsoleInode
 // — backwards-compatible with the pre-B07 single-VT behavior.

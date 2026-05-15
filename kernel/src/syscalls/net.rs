@@ -555,7 +555,7 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     // F122: AF_UNIX SOCK_DGRAM cmsg writeback. Pop one msg from
     // queue; copy payload into iovs; if msg_control buffer is
     // supplied, write SCM_CREDENTIALS cmsg with sender's
-    // (pid, uid, gid). SCM_RIGHTS rides v2 (Arc<File> capture path).
+    // (pid, uid, gid). SCM_RIGHTS is a follow-up (Arc<File> capture path).
     let sock = socket_from_fd(fd);
     if let Some(s) = &sock {
         let is_dgram = matches!(*s.kind.lock(), SockKind::UnixDgram(_));

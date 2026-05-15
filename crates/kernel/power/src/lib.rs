@@ -120,7 +120,7 @@ pub unsafe fn restart() -> ! {
 
 /// Power off the machine. v1 uses QEMU isa-debug-exit (port 0x604,
 /// value 0x2000) on x86 — production hardware would walk ACPI FADT
-/// PM1A_CNT and write SLP_TYP=_S5 SLP_EN; that rides v2.x. arm64
+/// PM1A_CNT and write SLP_TYP=_S5 SLP_EN; that is a follow-up. arm64
 /// uses PSCI SYSTEM_OFF.
 /// # SAFETY: irreversible; clobbers I/O ports / EL2 state.
 /// # C: O(1)

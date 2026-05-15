@@ -50,7 +50,7 @@ pub struct DriverEntry {
 /// Probe count for diagnostics.
 static REGISTERED: AtomicU32 = AtomicU32::new(0);
 
-/// In-RAM driver list. Distributed slice via `linkme` rides v2.x;
+/// In-RAM driver list. Distributed slice via `linkme` is a follow-up;
 /// v1 uses explicit `register` from each driver's init.
 static DRIVERS: Spinlock<Vec<DriverEntry>, DriverListClass>
     = Spinlock::new(Vec::new());

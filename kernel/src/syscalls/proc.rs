@@ -115,10 +115,10 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_mprotect(addr, len, prot)` — slot 10. v1: accept and
-/// no-op. Real per-page PTE prot bits + W^X enforcement rides
-/// the VMA permission rewrite per docs/11§6.
-/// # C: O(1)
+/// `sys_mprotect(addr, len, prot)` — slot 10. Updates the VMA's
+/// `prot` field and walks the live page tables to flip W/X bits +
+/// flush the TLB per `11§6` via `pmm::user_as::mprotect_pages`.
+/// # C: O(len / PAGE_SIZE)
 pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
     use vmm::VmaProt;
     use hal::UserVirtAddr;
