@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
+pub mod anonfd; pub mod chroot; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -440,20 +440,20 @@ fn ptrace_syscall_stop_if_armed() {
     let cur = match sched::live::current() { Some(c) => c, None => return };
     if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
     if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return; }
-    // Snapshot a SIGTRAP siginfo so GETSIGINFO has a meaningful
-    // record. PTRACE_O_TRACESYSGOOD adds the 0x80 marker to si_code
-    // distinguishing syscall-stop from ordinary SIGTRAP.
+    // SIGTRAP siginfo snapshot; O_TRACESYSGOOD marks code with 0x80.
     let opts = cur.ptrace_options.load(Ordering::Acquire);
     let code = if (opts & 0x1) != 0 { 0x80 } else { 0 };
     let tracer = cur.traced_by.load(Ordering::Acquire);
     *cur.ptrace_siginfo.lock() = Some(sched::SigInfo {
         signo: 5, code, pid: tracer, uid: 0, value: 0,
     });
-    // SIGTRAP = 5 → bit 4. Tracer's wait4 picks up the stop.
-    cur.sigpending.fetch_or(1u64 << 4, Ordering::Release);
-    // SAFETY: process ctx; runqueue installed; preempt-off; immediate
-    // self-park via stop_until_cont matches the SIGSTOP path.
+    crate::syscalls::ptrace_fpu::snapshot_current();
+    cur.sigpending.fetch_or(1u64 << 4, Ordering::Release); // SIGTRAP
+    // SAFETY: process ctx; runqueue installed; preempt-off; immediate self-park via stop_until_cont matches the SIGSTOP path.
     unsafe { sched::live::stop::stop_until_cont(); }
+    // Wake: SETFPREGS-modified snapshot → restore before returning
+    // to user mode so the new state takes effect.
+    crate::syscalls::ptrace_fpu::restore_if_dirty();
 }
 
 /// Validate that a user buffer `[ptr, ptr + len)` lies entirely
