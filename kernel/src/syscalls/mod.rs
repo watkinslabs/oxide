@@ -964,16 +964,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         }
         match p.handler {
             0 => {
-                // SIG_DFL — Linux per signal(7) defaults: SIGCHLD (17),
-                // SIGURG (23), SIGWINCH (28) ignore; others terminate.
-                // Encode the exit_status with bit 8 (0x100) set so
-                // wait4's wstat synthesis picks the WIFSIGNALED path
-                // and reports WTERMSIG == p.sig (parallel to the
-                // sigsegv_terminate paths in user_as.rs that already
-                // use `sig | 0x100`). Without this bit, wait4 would
-                // encode it as a normal `_exit(128+sig)` and waiters
-                // would see WIFEXITED with WEXITSTATUS=128+sig.
+                // SIG_DFL — Linux signal(7) defaults: SIGCHLD/SIGURG/
+                // SIGWINCH ignore; SIGQUIT/SIGILL/SIGTRAP/SIGABRT/
+                // SIGBUS/SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ
+                // terminate with core; rest terminate.
                 if !matches!(p.sig, 17 | 23 | 28) {
+                    if matches!(p.sig, 3 | 4 | 5 | 6 | 7 | 8 | 11 | 24 | 25 | 31) {
+                        ::fs::coredump::write_for_current(p.sig as i32);
+                    }
                     let exit_args = SyscallArgs { a0: (p.sig | 0x100) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
                     let _ = sys_exit(&exit_args);
                 }
