@@ -61,7 +61,7 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
     };
-    let _ = dirfd; // v1: AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
+    let _ = dirfd; //  AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
     vfs::mount::lookup(s).map_err(|_| -(Errno::Enoent.as_i32() as i64))
 }
 
