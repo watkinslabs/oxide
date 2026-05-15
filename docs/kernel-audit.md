@@ -155,11 +155,11 @@ references.
 | feature | state | notes |
 |---|---|---|
 | fork (clone with no flags) | ✅ | `syscall_glue.rs:228` — copies AS w/ COW-ish via demand fault. |
-| clone with CLONE_VM/CLONE_THREAD | 🟥 | Falls through to fork — **not a real thread**. Multi-thread same-AS missing. |
+| clone with CLONE_VM/CLONE_THREAD | ✅ | `clone.rs:57` Arc-shared AS; CLONE_THREAD inherits tgid. |
 | clone3 | ✅ | `proc.rs:82` real struct clone_args parse + dispatch. |
-| pthread_create | 🟥 | musl pthreads issue clone(CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SETTLS) — not handled. |
-| set_thread_area | 🟥 | x86_64 uses arch_prctl(ARCH_SET_FS) which works, but `set_thread_area` (i386 path) absent. |
-| gettid | 🟡 | Returns tid — works for single-thread (tid == tgid). Wrong once threading lands. |
+| pthread_create | ✅ | musl flag set (VM|FS|FILES|SIGHAND|THREAD|SETTLS) all wired; SETTLS via arch_prctl post-clone. |
+| set_thread_area | n/a | i386-only; x86_64 uses arch_prctl(ARCH_SET_FS) — real. |
+| gettid | ✅ | Returns kernel tid. tgid separate (CLONE_THREAD-aware). |
 | set_tid_address | ✅ | `syscall_glue_proc.rs:34` stores in `clear_child_tid`. CLONE_CHILD_CLEARTID wakeup-on-exit not done. |
 | futex FUTEX_WAIT/WAKE | ✅ | `kernel/src/futex.rs` (P3a). |
 | futex_waitv | 🟡 | ENOSYS forces glibc to fall back to per-futex FUTEX_WAIT loop. Real multi-futex wait substrate pending. |
