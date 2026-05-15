@@ -358,16 +358,22 @@ pub unsafe fn schedule_from_irq() {
     super::preempt::oxide_preempt_next_ctx.store(next_ctx_ptr, Ordering::Release);
 }
 
-/// Cooperative voluntary yield. Bumps a counter, calls
-/// `schedule()`. Equivalent to Linux `schedule()` from
-/// process context. Used by kthread "I'm done, give boot back"
-/// paths and by smoke harnesses.
+/// Cooperative voluntary yield. Calls `schedule()` then parks the
+/// CPU on `hlt`/`wfi` until the next IRQ. The hlt is what prevents
+/// polling syscalls (poll/select/recvfrom/sendto/accept/clock_nanosleep/
+/// rt_sigtimedwait/etc) from burning 100% host CPU when they busy-
+/// loop on a not-yet-ready condition: each iteration is one schedule
+/// + one wait-for-IRQ instead of a tight CPU spin.
 /// # SAFETY: per `schedule()`.
-/// # C: O(log N) + O(1) ctxsw
-/// # Ctx: process|kthread; preempt-off
+/// # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
+/// # Ctx: process|kthread; preempt-off; IRQs-on
 pub unsafe fn tick_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract (process / kthread context, preempt-off, single-CPU); delegated wholesale.
     unsafe { schedule(); }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    hal_x86_64::halt();
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    hal_aarch64::halt();
 }
 
 /// Mark a task `done` (Zombie state). Subsequent `schedule()` /
