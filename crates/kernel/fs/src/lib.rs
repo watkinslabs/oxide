@@ -16,6 +16,7 @@ pub mod epoll;
 pub mod inotify;
 pub mod userfaultfd;
 pub mod flock;
+pub mod posix_lock;
 pub mod xattr;
 pub mod keyring;
 pub mod perf;
