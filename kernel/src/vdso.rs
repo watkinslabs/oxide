@@ -29,22 +29,18 @@ pub fn vdso_len_pages() -> u64 {
 
 /// Map the vDSO into the calling task's address space. Returns the
 /// load VA on success; the caller pushes it as AT_SYSINFO_EHDR.
-/// Idempotent: a re-map at execve replaces any prior mapping
-/// (execve munmaps the whole user range first).
-/// # C: O(N_vmas) hole search + O(VDSO_LEN/PAGE_SIZE) page-fault prime.
+///
+/// CURRENTLY DISABLED: the host-toolchain-built vDSO has 3 separate
+/// PT_LOADs (text @ vaddr 0, dynsym @ vaddr 0x1000, dynamic @ vaddr
+/// 0x2f20 with file offset 0x1f20) which doesn't lay out under the
+/// naive `KernelBytes` flat mapping — glibc/musl's vDSO parser
+/// follows DT_DYNAMIC to vaddr+0x2f20 and reads garbage. Until the
+/// kernel walks PT_LOADs (or we rebuild the vDSO with a single
+/// packed segment via custom linker script), keep the substrate
+/// wired but return None so AT_SYSINFO_EHDR is 0 and userspace
+/// falls back to direct syscalls.
+/// # C: O(1)
 pub fn map_into_current() -> Option<u64> {
-    use vmm::{VmaBacking, VmaFlags, VmaProt};
-    let cur = sched::live::current()?;
-    // SAFETY: running task on this CPU; preempt-off; sole writer of mm slot.
-    let mm = unsafe { cur.mm_ref() }?.clone();
-    let len = vdso_len_pages() as usize;
-    let backing = VmaBacking::KernelBytes {
-        data: Arc::<[u8]>::from(VDSO_BLOB.to_vec().into_boxed_slice()),
-        off:  0,
-    };
-    // No hint — let the mmap allocator place us in the high mmap arena
-    // (matches Linux's vDSO placement near the stack but below it).
-    let r = mm.mmap(None, len, VmaProt::READ | VmaProt::EXEC,
-        VmaFlags::PRIVATE, backing, false);
-    r.ok().map(|uva| uva.as_u64())
+    let _ = Arc::<[u8]>::from(VDSO_BLOB.to_vec().into_boxed_slice());
+    None
 }
