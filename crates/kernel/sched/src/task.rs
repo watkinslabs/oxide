@@ -7,14 +7,35 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
+use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::FdTable;
 use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
+
+/// Subset of `siginfo_t` per `15§5` carried in the per-task RT
+/// signal queue. Standard signals (1..=31) don't queue — they
+/// collapse to the pending bitmap and any siginfo at delivery time
+/// is synthesised. RT signals (33..=64) queue distinct records
+/// per `sigqueue(2)` / `pthread_sigqueue(3)` semantics.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SigInfo {
+    pub signo: u32, // signal number 1..=64 (RT: 33..=64)
+    pub code:  i32, // si_code (SI_USER=0, SI_QUEUE=-1, …)
+    pub pid:   u32, // si_pid
+    pub uid:   u32, // si_uid
+    pub value: u64, // sigval_t (sigqueue(2) value.sival_int|sival_ptr)
+}
+
+/// Per-signal RT queue depth cap. Drops new arrivals past this
+/// (Linux drops past `RLIMIT_SIGPENDING`); 64 is generous for v1
+/// where we don't yet enforce per-uid pending limits.
+pub const RT_QUEUE_CAP: usize = 64;
 
 /// POSIX-style scheduling policy per `13§3`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -187,6 +208,16 @@ pub struct Task {
     /// `27§5` ("signals delivered on transition to user mode").
     /// # C: O(1)
     pub sigpending: AtomicU64,
+
+    /// Per-RT-signal (33..=64) siginfo_t queue. RT signals preserve
+    /// multiplicity per POSIX RT semantics: every `sigqueue(SIGRTn,
+    /// val)` enqueues a distinct (signo,val,pid,uid,code) record.
+    /// 32 slots indexed by `sig - 33`. Standard signals 1..=31 use
+    /// only the bitmap (Linux semantic: standard signals collapse).
+    /// Per-signal queue cap is `RT_QUEUE_CAP`; overflow drops the
+    /// new arrival (matches Linux post-RLIMIT_SIGPENDING behavior).
+    /// # C: O(1) push / O(1) pop
+    pub rt_sigqueue: Spinlock<[VecDeque<SigInfo>; 32], TaskListClass>,
 
     /// Per-task signal mask per `27§3`. Bit i set ⇔ signal i+1
     /// blocked. `rt_sigprocmask` writes; signal-delivery checks.
@@ -658,6 +689,43 @@ pub struct SaHandler {
 }
 
 impl Task {
+    /// Enqueue `info` on the per-task RT signal queue for `signo`
+    /// (33..=64). Returns true if accepted, false if dropped due
+    /// to the per-signal cap. Caller is also responsible for
+    /// setting the pending bit on `sigpending`. Standard signals
+    /// (1..=31) MUST NOT use this path — they collapse to the
+    /// bitmap with synthesised siginfo at delivery time.
+    /// # C: O(1)
+    pub fn rt_push(&self, info: SigInfo) -> bool {
+        let idx = match info.signo.checked_sub(33) {
+            Some(i) if (i as usize) < 32 => i as usize,
+            _ => return false,
+        };
+        let mut g = self.rt_sigqueue.lock();
+        if g[idx].len() >= RT_QUEUE_CAP { return false; }
+        g[idx].push_back(info);
+        true
+    }
+
+    /// Pop the longest-waiting siginfo for RT `signo` (33..=64).
+    /// Returns `None` if the queue is empty (i.e. the bitmap had
+    /// the bit set without a queued record — synthesised by a
+    /// non-`sigqueue` source like `kill(2)` — and the caller
+    /// should fall back to a synthesised siginfo).
+    /// `queue_empty_after` lets the caller decide whether to
+    /// clear the bitmap bit (POSIX: bit clears when queue drains).
+    /// # C: O(1)
+    pub fn rt_pop(&self, signo: u32) -> (Option<SigInfo>, bool) {
+        let idx = match signo.checked_sub(33) {
+            Some(i) if (i as usize) < 32 => i as usize,
+            _ => return (None, true),
+        };
+        let mut g = self.rt_sigqueue.lock();
+        let info = g[idx].pop_front();
+        let empty = g[idx].is_empty();
+        (info, empty)
+    }
+
     /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;
     /// callers must observe the single-mutator invariant per the
     /// `mm` field doc.
@@ -777,6 +845,16 @@ impl Task {
             sid:        AtomicU32::new(tid),
             fd_table: UnsafeCell::new(None),
             sigpending: AtomicU64::new(0),
+            rt_sigqueue: Spinlock::new([
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+                VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
+            ]),
             sigmask:    AtomicU64::new(0),
             sigaltstack_sp:    AtomicU64::new(0),
             sigaltstack_size:  AtomicU64::new(0),
