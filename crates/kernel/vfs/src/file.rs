@@ -23,6 +23,9 @@ pub struct File {
     /// when the last reference to this open-file-description goes
     /// away (Drop impl below).
     pub flock_op: AtomicU32,
+    /// F_GETOWN/F_SETOWN target: positive = tid, negative = -pgid, 0 = none.
+    /// SIGIO/SIGURG delivery routes to this id when fasync fires.
+    pub owner: core::sync::atomic::AtomicI32,
 }
 
 /// Kernel-side hook installed at boot. Called from `File::drop` for
@@ -163,6 +166,7 @@ impl File {
             pos:   AtomicU64::new(0),
             flags: AtomicU32::new(flags.bits()),
             flock_op: AtomicU32::new(0),
+            owner: core::sync::atomic::AtomicI32::new(0),
         })
     }
 
