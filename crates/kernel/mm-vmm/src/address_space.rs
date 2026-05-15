@@ -839,11 +839,28 @@ impl AddressSpace {
                 unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
                 Ok(())
             }
-            VmaBacking::File { .. } | VmaBacking::Special => {
-                // File backing requires page cache (`16`); Special
-                // requires per-region wiring (vDSO/vvar/hugetlb).
-                Err(Error::NotImplemented)
+            VmaBacking::File { backing, off: backing_off } => {
+                // File-backed demand-fault per `11§5` + `17§5`. The
+                // backing impl reads through the page cache; bytes
+                // past file end zero-fill.
+                let pa = alloc_frame().ok_or(Error::NoMem)?;
+                let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+                let vma_off = (va_page - vma.start.as_u64()) as u64;
+                let file_off = backing_off.saturating_add(vma_off);
+                let page = PAGE_SIZE_BYTES as usize;
+                // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
+                unsafe {
+                    let dst = (hhdm_offset + pa) as *mut u8;
+                    core::ptr::write_bytes(dst, 0, page);
+                    let slice = core::slice::from_raw_parts_mut(dst, page);
+                    let _ = backing.read_at(file_off, slice);
+                }
+                let pte_flags = vma.prot.to_page_flags();
+                // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
+                unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K); }
+                Ok(())
             }
+            VmaBacking::Special => Err(Error::NotImplemented),
         }
     }
 }
