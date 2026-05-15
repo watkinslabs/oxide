@@ -108,6 +108,32 @@ pub struct InetSocket {
     pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
+    /// SOL_SOCKET integer options stored verbatim from setsockopt and
+    /// echoed back from getsockopt. Enforcement on the data path lands
+    /// alongside per-option logic; the round-trip alone keeps
+    /// userspace (systemd, ssh) from failing setsockopt+getsockopt
+    /// consistency checks.
+    pub opts: SockOpts,
+}
+
+/// Common SOL_SOCKET options held per socket. Each is an `i32` cell
+/// matching Linux `int`-shaped options. SO_LINGER stores `(onoff,linger)`.
+#[derive(Default)]
+pub struct SockOpts {
+    pub reuseaddr: core::sync::atomic::AtomicI32,
+    pub reuseport: core::sync::atomic::AtomicI32,
+    pub keepalive: core::sync::atomic::AtomicI32,
+    pub broadcast: core::sync::atomic::AtomicI32,
+    pub sndbuf:    core::sync::atomic::AtomicI32,
+    pub rcvbuf:    core::sync::atomic::AtomicI32,
+    pub sndtimeo_ns: core::sync::atomic::AtomicI64,
+    pub rcvtimeo_ns: core::sync::atomic::AtomicI64,
+    pub linger_on: core::sync::atomic::AtomicI32,
+    pub linger_s:  core::sync::atomic::AtomicI32,
+    pub priority:  core::sync::atomic::AtomicI32,
+    pub mark:      core::sync::atomic::AtomicI32,
+    /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
+    pub tcp_nodelay: core::sync::atomic::AtomicI32,
 }
 
 /// Linux `AF_INET` numeric value — kept here so dev_net code can tag
@@ -125,6 +151,7 @@ impl InetSocket {
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
             peer:       Spinlock::new(None),
             kind:       Spinlock::new(SockKind::Udp),
+            opts:       SockOpts::default(),
         }
     }
     /// # C: O(1)
@@ -136,6 +163,7 @@ impl InetSocket {
             peer:       Spinlock::new(None),
             // Placeholder — set by listen() / connect() / accept().
             kind:       Spinlock::new(SockKind::Udp),
+            opts:       SockOpts::default(),
         }
     }
     /// `socket(AF_INET6, SOCK_DGRAM, …)` — same V4 transport substrate

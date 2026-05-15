@@ -710,12 +710,73 @@ pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
 }
 
 /// `setsockopt(fd, level, optname, optval, optlen)` slot 54.
-/// v1 accepts every option silently — SO_REUSEADDR / SO_REUSEPORT
-/// are no-ops for our single-listener model; other options that
-/// don't change wire behavior (linger, sndbuf, rcvbuf) likewise
-/// accepted to keep userspace tooling unblocked.
+/// Stores SOL_SOCKET integer options into `InetSocket::opts` so
+/// `getsockopt` reads back the value the caller set.
 /// # C: O(1)
-pub fn sys_setsockopt(_args: &SyscallArgs) -> i64 { 0 }
+pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    const SOL_SOCKET: u64  = 1;
+    const IPPROTO_TCP: u64 = 6;
+    let fd       = args.a0;
+    let level    = args.a1;
+    let optname  = args.a2;
+    let optval   = args.a3;
+    let optlen   = args.a4 as u32;
+    let sock = match socket_from_fd(fd) {
+        Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
+    };
+    if optval == 0 || optval >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    let read_i32 = |o: u64| -> Option<i32> {
+        if optlen < 4 || o + 4 > USER_VA_END { return None; }
+        // SAFETY: o validated user range; 4-byte aligned int read per Linux ABI.
+        Some(unsafe { core::ptr::read_volatile(o as *const i32) })
+    };
+    match (level, optname) {
+        (SOL_SOCKET, 2)  => if let Some(v) = read_i32(optval) { sock.opts.reuseaddr.store(v, Ordering::Release); },
+        (SOL_SOCKET, 15) => if let Some(v) = read_i32(optval) { sock.opts.reuseport.store(v, Ordering::Release); },
+        (SOL_SOCKET, 9)  => if let Some(v) = read_i32(optval) { sock.opts.keepalive.store(v, Ordering::Release); },
+        (SOL_SOCKET, 6)  => if let Some(v) = read_i32(optval) { sock.opts.broadcast.store(v, Ordering::Release); },
+        (SOL_SOCKET, 7)  => if let Some(v) = read_i32(optval) { sock.opts.sndbuf.store(v, Ordering::Release); },
+        (SOL_SOCKET, 8)  => if let Some(v) = read_i32(optval) { sock.opts.rcvbuf.store(v, Ordering::Release); },
+        (SOL_SOCKET, 12) => priority_store(&sock, read_i32(optval)),
+        (SOL_SOCKET, 36) => mark_store(&sock, read_i32(optval)),
+        (SOL_SOCKET, 13) => {
+            // struct linger { int l_onoff; int l_linger; } = 8 bytes
+            if optlen >= 8 && optval + 8 <= USER_VA_END {
+                // SAFETY: optval+8 validated; reading two i32 ints per linger ABI.
+                // SAFETY: optval+8 validated above; struct linger has int l_onoff/l_linger.
+                let on = unsafe { core::ptr::read_volatile(optval as *const i32) };
+                // SAFETY: optval+8 validated above; second linger int at offset +4.
+                let sec = unsafe { core::ptr::read_volatile((optval + 4) as *const i32) };
+                sock.opts.linger_on.store(on, Ordering::Release);
+                sock.opts.linger_s.store(sec, Ordering::Release);
+            }
+        }
+        (SOL_SOCKET, 21) | (SOL_SOCKET, 20) => {
+            // SO_RCVTIMEO_OLD(20) / SO_SNDTIMEO_OLD(21) — struct timeval (16B)
+            if optlen >= 16 && optval + 16 <= USER_VA_END {
+                // SAFETY: optval+16 validated; struct timeval { i64 sec; i64 usec; } read.
+                // SAFETY: optval+16 validated above; struct timeval tv_sec is i64 at +0.
+                let s = unsafe { core::ptr::read_volatile(optval as *const i64) };
+                // SAFETY: optval+16 validated above; struct timeval tv_usec is i64 at +8.
+                let u = unsafe { core::ptr::read_volatile((optval + 8) as *const i64) };
+                let ns = (s.max(0) as i64) * 1_000_000_000 + (u.max(0) as i64) * 1_000;
+                let slot = if optname == 21 { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
+                slot.store(ns, Ordering::Release);
+            }
+        }
+        (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
+        _ => {}
+    }
+    0
+}
+
+fn priority_store(s: &alloc::sync::Arc<net::sock::InetSocket>, v: Option<i32>) {
+    if let Some(v) = v { s.opts.priority.store(v, core::sync::atomic::Ordering::Release); }
+}
+fn mark_store(s: &alloc::sync::Arc<net::sock::InetSocket>, v: Option<i32>) {
+    if let Some(v) = v { s.opts.mark.store(v, core::sync::atomic::Ordering::Release); }
+}
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 ///
@@ -760,6 +821,36 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             core::ptr::write_volatile(optlen_p as *mut u32, 4);
         }
         return 0;
+    }
+    // Read-back of options stored via setsockopt.
+    use core::sync::atomic::Ordering;
+    const IPPROTO_TCP: u64 = 6;
+    let fd = args.a0;
+    let sock = socket_from_fd(fd);
+    let i32_back = |val: i32| -> i64 {
+        if optval == 0 || optval >= USER_VA_END
+            || optlen_p == 0 || optlen_p >= USER_VA_END { return 0; }
+        // SAFETY: optval+4 within user range; optlen_p validated; 4-byte aligned int writeback.
+        unsafe {
+            core::ptr::write_volatile(optval as *mut i32, val);
+            core::ptr::write_volatile(optlen_p as *mut u32, 4);
+        }
+        0
+    };
+    if let Some(s) = sock {
+        match (level, optname) {
+            (SOL_SOCKET, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
+            (SOL_SOCKET, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
+            (SOL_SOCKET, 9)  => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
+            (SOL_SOCKET, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
+            (SOL_SOCKET, 7)  => return i32_back(s.opts.sndbuf.load(Ordering::Acquire)),
+            (SOL_SOCKET, 8)  => return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
+            (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
+            (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
+            (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
+            (SOL_SOCKET, 4)  => return i32_back(0), // SO_ERROR — no async err yet
+            _ => {}
+        }
     }
     if optlen_p != 0 && optlen_p < USER_VA_END {
         // SAFETY: optlen_p validated < USER_VA_END; CPL=0 write through caller's AS.
