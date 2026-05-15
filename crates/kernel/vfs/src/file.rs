@@ -52,7 +52,14 @@ pub fn set_write_hook(f: fn(&InodeRef)) {
 
 static OPEN_HOOK:  AtomicU64 = AtomicU64::new(0);
 static READ_HOOK:  AtomicU64 = AtomicU64::new(0);
-static CLOSE_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Close-hook slot table per `16§R02`. Multiple subsystems register
+/// here (inotify IN_CLOSE_*, pipe writer/reader-count tracking, …);
+/// every slot fires in `File::Drop`. Fixed N=4 covers the in-kernel
+/// subsystems we have; extend if a new consumer arrives.
+const CLOSE_HOOK_SLOTS: usize = 4;
+static CLOSE_HOOKS: [AtomicU64; CLOSE_HOOK_SLOTS] =
+    [const { AtomicU64::new(0) }; CLOSE_HOOK_SLOTS];
 
 /// Install the open hook (fires IN_OPEN at File::new).
 /// # C: O(1)
@@ -62,12 +69,18 @@ pub fn set_open_hook(f: fn(&InodeRef))  { OPEN_HOOK.store(f as u64, Ordering::Re
 /// # C: O(1)
 pub fn set_read_hook(f: fn(&InodeRef))  { READ_HOOK.store(f as u64, Ordering::Release); }
 
-/// Install the close hook (fires IN_CLOSE_WRITE / IN_CLOSE_NOWRITE
-/// at File::Drop). Bool argument is true when the closed File was
-/// opened writable.
-/// # C: O(1)
+/// Install a close hook (fires at `File::Drop`). Bool argument is
+/// true when the closed File was opened writable. Picks the next
+/// free slot in the registry; panics if full so misconfiguration
+/// is loud rather than silent.
+/// # C: O(N) slot scan; N=4 fixed.
 pub fn set_close_hook(f: fn(&InodeRef, bool)) {
-    CLOSE_HOOK.store(f as u64, Ordering::Release);
+    for slot in CLOSE_HOOKS.iter() {
+        if slot.compare_exchange(0, f as u64, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return;
+        }
+    }
+    hal::kassert!(false, "CLOSE_HOOKS table full");
 }
 
 /// Dirent-mutation hooks per `16§R02`. Fired by devfs / tmpfs path-
@@ -118,15 +131,17 @@ impl Drop for File {
                 f(self as *const Self as usize, &self.inode);
             }
         }
-        // inotify IN_CLOSE_WRITE / IN_CLOSE_NOWRITE.
-        let h = CLOSE_HOOK.load(Ordering::Acquire);
-        if h != 0 {
-            let was_writable = {
-                let bits = self.flags.load(Ordering::Acquire);
-                let f = OpenFlags::from_bits_retain(bits);
-                f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
-            };
-            // SAFETY: h was installed by `set_close_hook` with a real fn(&InodeRef, bool) pointer.
+        // Close-hook chain: inotify IN_CLOSE_*, pipe writer/reader
+        // tracking, etc. Every installed slot fires.
+        let was_writable = {
+            let bits = self.flags.load(Ordering::Acquire);
+            let f = OpenFlags::from_bits_retain(bits);
+            f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
+        };
+        for slot in CLOSE_HOOKS.iter() {
+            let h = slot.load(Ordering::Acquire);
+            if h == 0 { continue; }
+            // SAFETY: slot value installed via set_close_hook with the documented fn(&InodeRef, bool) signature; reinterpret round-trips that exact type.
             let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
             f(&self.inode, was_writable);
         }
@@ -177,6 +192,9 @@ impl File {
 
     /// `read(2)` — advances the cursor by the byte count returned by
     /// the inode's `read`. Rejects writes-only opens with `Ebadf`.
+    /// O_NONBLOCK routes through `Inode::read_nonblock`, which the
+    /// blocking inodes (pipe/pty/tty/socket) override to return
+    /// `EAGAIN` instead of parking.
     /// # C: depends on inode impl
     pub fn read(&self, buf: &mut [u8]) -> KResult<usize> {
         let f = self.flags();
@@ -184,7 +202,11 @@ impl File {
             return Err(VfsError::Ebadf);
         }
         let pos = self.pos.load(Ordering::Acquire);
-        let n = self.inode.read(pos, buf)?;
+        let n = if f.contains(OpenFlags::O_NONBLOCK) {
+            self.inode.read_nonblock(pos, buf)?
+        } else {
+            self.inode.read(pos, buf)?
+        };
         self.pos.store(pos + n as u64, Ordering::Release);
         if n > 0 {
             let h = READ_HOOK.load(Ordering::Acquire);
@@ -211,7 +233,11 @@ impl File {
         } else {
             self.pos.load(Ordering::Acquire)
         };
-        let n = self.inode.write(off, buf)?;
+        let n = if f.contains(OpenFlags::O_NONBLOCK) {
+            self.inode.write_nonblock(off, buf)?
+        } else {
+            self.inode.write(off, buf)?
+        };
         self.pos.store(off + n as u64, Ordering::Release);
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
