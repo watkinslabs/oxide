@@ -101,6 +101,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
 /// # C: O(1)
 pub fn try_wake_stopped(task: &Task) -> bool {
     if task.state() != TaskState::Stopped { return false; }
+    task.cont_pending.store(true, core::sync::atomic::Ordering::Release);
     task.set_state(TaskState::Runnable);
     // Per `13§9` wakeup→resched: a newly-runnable task may outrank
     // current; flag a reschedule so the next preempt-enable or
@@ -111,14 +112,35 @@ pub fn try_wake_stopped(task: &Task) -> bool {
     true
 }
 
-/// Returns `true` if any live task in the registry has
-/// `parent_tid == parent` (still-running or zombie child). Used by
-/// `wait4` to distinguish "no children at all" (return -ECHILD) from
-/// "children exist but none ready to reap yet" (block + reschedule).
-/// Without this, `wait4(-1)` blocks forever once the last child is
-/// reaped, even though Linux returns -ECHILD immediately — busybox
-/// `hush` runs an inner `do { pid = waitpid(-1); ... } while (pid >= 0)`
-/// drain loop after each command and hangs if -ECHILD never comes.
+/// wait4(WUNTRACED/WCONTINUED) helper: take first pending stop/cont.
+/// `pid` follows wait4 semantics (-1/0/+pid/-pgid). Returns (tid, kind, sig)
+/// where kind: 1 = stopped, 2 = continued.
+/// # C: O(N_tasks)
+/// # Lk: REG.lock
+pub fn take_child_stop_event(parent: u32, pid: i32, want_stop: bool, want_cont: bool) -> Option<(u32, u8, u32)> {
+    use core::sync::atomic::Ordering;
+    let g = REG.lock();
+    for (_, w) in g.iter() {
+        let Some(t) = w.upgrade() else { continue };
+        if t.parent_tid.load(Ordering::Acquire) != parent { continue }
+        let vpid = t.vtgid.load(Ordering::Acquire) as i32;
+        let pgid = t.pgid.load(Ordering::Acquire) as i32;
+        let matches = if pid == -1 || pid == 0 { true }
+                      else if pid > 0 { vpid == pid }
+                      else { pgid == -pid };
+        if !matches { continue }
+        if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
+            let sig = t.stop_signal.load(Ordering::Acquire);
+            return Some((t.tid, 1, sig as u32));
+        }
+        if want_cont && t.cont_pending.swap(false, Ordering::AcqRel) {
+            return Some((t.tid, 2, 0));
+        }
+    }
+    None
+}
+
+/// Returns true if any live task has `parent_tid == parent`.
 /// # C: O(N_tasks)
 pub fn has_children(parent: u32) -> bool {
     use core::sync::atomic::Ordering;
