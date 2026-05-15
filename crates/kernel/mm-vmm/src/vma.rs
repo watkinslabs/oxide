@@ -137,6 +137,11 @@ pub enum VmaBacking {
     Anonymous,
     File { backing: alloc::sync::Arc<dyn FileBacking>, off: u64 },
     KernelBytes { data: alloc::sync::Arc<[u8]>, off: usize },
+    /// Shared kernel-owned physical frame. The page-fault handler
+    /// installs `pa` directly into the user PT — no copy, no per-
+    /// task frame allocation. Used for the vvar page so a single
+    /// kernel write (via HHDM) propagates to every user mapping.
+    KernelFrame { pa: u64 },
     Special,
 }
 
@@ -148,6 +153,7 @@ impl core::fmt::Debug for VmaBacking {
             VmaBacking::KernelBytes { data, off } => {
                 write!(f, "KernelBytes {{ len: {}, off: {} }}", data.len(), off)
             }
+            VmaBacking::KernelFrame { pa } => write!(f, "KernelFrame {{ pa: {:#x} }}", pa),
             VmaBacking::Special => f.write_str("Special"),
         }
     }
@@ -166,6 +172,7 @@ impl PartialEq for VmaBacking {
              VmaBacking::KernelBytes { data: b, off: bo }) => {
                 alloc::sync::Arc::ptr_eq(a, b) && ao == bo
             }
+            (VmaBacking::KernelFrame { pa: a }, VmaBacking::KernelFrame { pa: b }) => a == b,
             _ => false,
         }
     }
@@ -274,6 +281,7 @@ impl Vma {
             // join in the backing variant. Match Special's behaviour.
             (VmaBacking::KernelBytes { .. }, VmaBacking::KernelBytes { .. }) => false,
             (VmaBacking::KernelBytes { .. }, _) | (_, VmaBacking::KernelBytes { .. }) => false,
+            (VmaBacking::KernelFrame { .. }, _) | (_, VmaBacking::KernelFrame { .. }) => false,
             (VmaBacking::Special, _) | (_, VmaBacking::Special) => false,
             _ => false,
         }
