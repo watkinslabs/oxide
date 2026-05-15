@@ -389,7 +389,7 @@ fn ptrace_syscall_stop_if_armed() {
     crate::syscalls::ptrace_fpu::snapshot_current();
     cur.sigpending.fetch_or(1u64 << 4, Ordering::Release); // SIGTRAP
     // SAFETY: process ctx; runqueue installed; preempt-off; immediate self-park via stop_until_cont matches the SIGSTOP path.
-    unsafe { sched::live::stop::stop_until_cont(); }
+    unsafe { sched::live::stop::stop_until_cont_sig(5); }
     // Wake: SETFPREGS-modified snapshot → restore before returning
     // to user mode so the new state takes effect.
     crate::syscalls::ptrace_fpu::restore_if_dirty();
@@ -894,7 +894,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP
         // 20, TTIN 21, TTOU 22) honour a user handler.
         if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
-            sched::live::stop::stop_until_cont();
+            sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
         if p.sig == 18 {
