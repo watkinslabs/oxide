@@ -493,15 +493,22 @@ Backing-file region dumps via pagecache rely on K6 (closed).
 - GETSIGINFO/SETSIGINFO — real Spinlock<Option<SigInfo>> snapshot
   slot (#1036); stop-time snapshot population gating on broader
   ptrace stop-state restructure.
-- OPEN: GETFPREGS/SETFPREGS (per-arch FP frame access);
-  PTRACE_INTERRUPT / LISTEN beyond silent-0.
+- GETFPREGS/SETFPREGS — real per-arch FP frame access (#1037 era).
+- PTRACE_INTERRUPT / LISTEN — real (#1069, F63: synthetic SIGSTOP +
+  stop_pending; LISTEN clears cont_pending).
+- wait4 WUNTRACED / WCONTINUED — real (#1066, F60); originating stop
+  signal recorded at SIGSTOP/TSTP/TTIN/TTOU/SIGTRAP (#1067, F61).
 
 ### Batch K10 — bpf + seccomp + landlock
 
 bpf verifier (cBPF + eBPF subsets), JIT for x86-64 and AArch64,
 hook points (XDP, socket-filter, tracepoint, syscall-entry).
-seccomp_unotify, BPF_PROG_TYPE_SECCOMP. landlock ruleset
-syscalls + per-task ruleset chain. Per `27`.
+seccomp_unotify, BPF_PROG_TYPE_SECCOMP.
+landlock ruleset syscalls + per-task ruleset chain ✅ DONE — real
+LandlockRulesetInode + access::* + check() wired into openat /
+unlinkat / mkdirat / rmdir / link / linkat / rename* / truncate /
+ftruncate (#1065, F59 closes truncate; earlier PRs wired the rest).
+Per `27`.
 
 ### Batch K11 — io_uring
 
@@ -522,10 +529,13 @@ DRM ioctls (DRM_IOCTL_MODE_*), virtio-gpu KMS bring-up, evdev
 char devs (`/dev/input/event*`) backed by virtio-input. Per a
 new spec (TBD section in `35`).
 
-### Batch K14 — vDSO
+### Batch K14 — vDSO ✅ DONE (vdso/ + #1048..#1052)
 
-Per-arch vDSO ELF mapped into every user AS; clock_gettime /
-getcpu / time / rt_sigreturn fast paths in user mode. Per `15`.
+Per-arch vDSO ELF mapped into every user AS via the linker-script
+single-PT_LOAD packing path; vvar PMM frame (`kernel/src/vvar.rs`)
+shared via VmaBacking::KernelFrame; fast-path
+CLOCK_MONOTONIC/CLOCK_REALTIME seqlock-reads vvar. tick_poll_combined
+publishes monotonic_ns to vvar each timer tick.
 
 ### Batch K15 — glibc compatibility surface (partial)
 
