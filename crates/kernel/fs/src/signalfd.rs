@@ -80,11 +80,19 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
             Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         }
     }
+    const SFD_NONBLOCK: u64 = 0o0_004_000;
+    const SFD_CLOEXEC:  u64 = 0o2_000_000;
+    let flags = args.a3;
     let inode = SignalfdInode::new(mask) as InodeRef;
     let dentry = Dentry::new(None, "signalfd".to_string(), Arc::clone(&inode));
-    let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
+    let mut fl = OpenFlags::O_RDONLY;
+    if (flags & SFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => {
+            if (flags & SFD_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
         Err(e) => -(e as i64),
     }
 }
