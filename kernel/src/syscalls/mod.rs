@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -238,68 +238,7 @@ fn sys_waitid(args: &SyscallArgs) -> i64 {
     if rv < 0 { rv } else { 0 }
 }
 
-fn sys_wait4(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    const WNOHANG: u64 = 1;
-    let pid     = args.a0 as i32;
-    let wstatus = args.a1;
-    let options = args.a2;
-    let _rusage  = args.a3;
-
-    let parent_tid = match sched::live::current() {
-        Some(c) => c.tid,
-        None    => return -(Errno::Einval.as_i32() as i64),
-    };
-    // Loop: try to reap; if no match, yield + retry. Bounded
-    // because schedule() picks runnable children which eventually
-    // exit + park.
-    loop {
-        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid) {
-            // POSIX wstatus encoding:
-            //   WIFEXITED:    low 7 bits = 0,  bits 8..16 = exit code
-            //   WIFSIGNALED:  low 7 bits = signal number, bit 7 = core
-            // We use bit 8 of the kernel-side `exit_status` as a
-            // "killed-by-signal" marker (set by `sigsegv_terminate_*`,
-            // tgkill SIGSEGV/SIGKILL paths). _exit just stores the
-            // user-supplied code in the low 8 bits.
-            let wstat: i32 = if code & 0x100 != 0 {
-                code & 0x7f
-            } else {
-                (code & 0xff) << 8
-            };
-            if wstatus != 0 && wstatus < USER_VA_END {
-                // SAFETY: wstatus validated < USER_VA_END; user page mapped (caller's user code already executed from this AS); CPL=0 reads/writes through the user mapping.
-                unsafe { core::ptr::write_volatile(wstatus as *mut i32, wstat); }
-            }
-            debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
-            return tid as i64;
-        }
-        // POSIX: wait4 returns -ECHILD if the calling task has no
-        // unwaited-for children at all. Without this check the
-        // do-while-pid>=0 drain loops in busybox hush + every other
-        // userspace shell block forever once the last child exits.
-        // Linux returns ECHILD before checking WNOHANG.
-        if !sched::live::registry::has_children(parent_tid) {
-            return -(Errno::Echild.as_i32() as i64);
-        }
-        if (options & WNOHANG) != 0 { return 0; }
-        // No zombie ready — sleep until a child exits. `park_for_wait4`
-        // marks us Sleeping + pushes us to the WAITERS list; the next
-        // `park_zombie` call (from a child's sys_exit handler) sets us
-        // back to Runnable and enqueues us on the runqueue. Until then
-        // schedule() picks idle (or another runnable task), letting
-        // the LAPIC timer + tty input path keep ticking.
-        // SAFETY: process ctx; runqueue installed; preempt-off; we
-        // yield via schedule() immediately after parking so the
-        // Sleeping state is observed by the picker.
-        unsafe { sched::live::park_for_wait4(); }
-        // SAFETY: process ctx; runqueue installed; preempt-off.
-        unsafe { sched::live::schedule(); }
-        // After resume, ZOMBIES likely contains a new entry.
-        // Loop body re-tries.
-        let _ = Ordering::Acquire; // touch to keep ordering import live
-    }
-}
+fn sys_wait4(args: &SyscallArgs) -> i64 { crate::syscalls::wait::sys_wait4(args) }
 
 /// sys_exit: mark Zombie, stash exit_status, schedule away.
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
