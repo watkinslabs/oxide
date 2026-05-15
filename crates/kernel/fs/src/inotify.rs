@@ -222,12 +222,19 @@ pub fn sys_inotify_init1(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    const IN_NONBLOCK: u32 = 0o0_004_000;
+    const IN_CLOEXEC:  u32 = 0o2_000_000;
     let arc = InotifyInode::new(flags);
     let inode: InodeRef = arc as InodeRef;
     let dentry = Dentry::new(None, "inotify".to_string(), Arc::clone(&inode));
-    let file = File::new(inode, dentry, OpenFlags::O_RDONLY);
+    let mut fl = OpenFlags::O_RDONLY;
+    if (flags & IN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => {
+            if (flags & IN_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
         Err(e) => -(e as i64),
     }
 }
