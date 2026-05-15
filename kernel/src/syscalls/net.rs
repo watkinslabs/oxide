@@ -501,8 +501,19 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let dentry = vfs::Dentry::new(None, alloc::string::String::from(label), Arc::clone(&inode));
-    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    const SOCK_CLOEXEC:  u64 = 0o2_000_000;
+    const SOCK_NONBLOCK: u64 = 0o0_004_000;
+    let flags = args.a3;
+    let mut fl = vfs::OpenFlags::empty();
+    if (flags & SOCK_NONBLOCK) != 0 { fl |= vfs::OpenFlags::O_NONBLOCK; }
+    let file = vfs::File::new(inode, dentry, fl);
+    match fdt.alloc(file) {
+        Ok(fd) => {
+            if (flags & SOCK_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
+        Err(e) => -(e as i64),
+    }
 }
 
 /// `connect(fd, sockaddr, addrlen)` slot 42.
