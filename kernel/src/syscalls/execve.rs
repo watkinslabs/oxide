@@ -256,6 +256,12 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
             apply_file_caps_at_execve(&inode, cur);
         }
     }
+    // 4b. Map the vDSO into the new AS so the SysV initial stack
+    //     can publish AT_SYSINFO_EHDR. Failure is non-fatal — the
+    //     auxv just gets 0 and userspace falls back to direct
+    //     syscalls (same as kernels built without CONFIG_COMPAT_VDSO).
+    let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
+
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         elf_load::stack::build_user_stack(
@@ -265,6 +271,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
             &img,
             &random16,
             &path_buf[..path_len],
+            vdso_ehdr,
         )
     } {
         Some(sp) => sp,
@@ -510,6 +517,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
             apply_file_caps_at_execve(&inode, cur);
         }
     }
+    let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         elf_load::stack::build_user_stack(
@@ -519,6 +527,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
             &img,
             &random16,
             &path_buf[..path_len],
+            vdso_ehdr,
         )
     } {
         Some(sp) => sp,
