@@ -245,6 +245,24 @@ fn apply_relas<R: SymResolver>(
             }
         };
         let target_addr = load_bias.wrapping_add(r_offset);
+        // R_X86_64_IRELATIVE (37) / R_AARCH64_IRELATIVE (1032):
+        // resolver fn at load_bias + addend; call it, install the
+        // returned VA at the slot. Used by glibc IFUNC dispatchers
+        // for str* / mem* CPU-feature-aware variants.
+        const R_X86_64_IRELATIVE:  u32 = 37;
+        const R_AARCH64_IRELATIVE: u32 = 1032;
+        if r_type == R_X86_64_IRELATIVE || r_type == R_AARCH64_IRELATIVE {
+            let resolver_va = load_bias.wrapping_add(r_addend as u64);
+            // SAFETY: dl runs in user mode (or hosted tests); resolver_va is the address of a function the .so author declared as an IFUNC resolver. Calling it is the documented IFUNC protocol — the only way to learn which implementation to install.
+            let resolved: u64 = unsafe {
+                let f: extern "C" fn() -> u64 = core::mem::transmute(resolver_va);
+                f()
+            };
+            let (slot, _) = write_segment_window(segments, target_addr, 8)
+                .ok_or(DlError::BadElf)?;
+            slot[..8].copy_from_slice(&resolved.to_le_bytes());
+            continue;
+        }
         let len = match r_type {
             R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_X86_64_RELATIVE => 8,
             _ => 4,
