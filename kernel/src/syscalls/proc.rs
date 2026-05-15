@@ -645,8 +645,8 @@ pub fn sys_setsid(_args: &SyscallArgs) -> i64 {
     cur.tid as i64
 }
 
-/// `sys_umask(mask)` — slot 95. v1 returns 0o022 as the prior
-/// mask and forgets the new one.
+/// `sys_umask(mask)` — slot 95. Swaps per-task `umask` and returns
+/// the previous mask. New mask is clamped to 9 bits per POSIX.
 /// # C: O(1)
 pub fn sys_umask(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
