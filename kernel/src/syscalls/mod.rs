@@ -432,16 +432,23 @@ fn sys_getrandom(args: &SyscallArgs) -> i64 {
 
 use crate::syscalls::signal::{sys_kill, sys_tgkill};
 
-/// PTRACE_SYSCALL self-stop helper. If the calling task is being
-/// traced and the tracer armed PTRACE_SYSCALL on it, post SIGTRAP
-/// and park until the tracer wakes us via PTRACE_SYSCALL/CONT.
-/// Called at syscall entry + return. F108.
+/// PTRACE_SYSCALL self-stop. Snapshots SIGTRAP siginfo (+0x80
+/// when PTRACE_O_TRACESYSGOOD), sets SIGTRAP pending, parks.
 /// # C: O(1)
 fn ptrace_syscall_stop_if_armed() {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() { Some(c) => c, None => return };
     if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
     if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return; }
+    // Snapshot a SIGTRAP siginfo so GETSIGINFO has a meaningful
+    // record. PTRACE_O_TRACESYSGOOD adds the 0x80 marker to si_code
+    // distinguishing syscall-stop from ordinary SIGTRAP.
+    let opts = cur.ptrace_options.load(Ordering::Acquire);
+    let code = if (opts & 0x1) != 0 { 0x80 } else { 0 };
+    let tracer = cur.traced_by.load(Ordering::Acquire);
+    *cur.ptrace_siginfo.lock() = Some(sched::SigInfo {
+        signo: 5, code, pid: tracer, uid: 0, value: 0,
+    });
     // SIGTRAP = 5 → bit 4. Tracer's wait4 picks up the stop.
     cur.sigpending.fetch_or(1u64 << 4, Ordering::Release);
     // SAFETY: process ctx; runqueue installed; preempt-off; immediate
