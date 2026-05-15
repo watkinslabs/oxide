@@ -667,17 +667,20 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
     if path == b"/" { return 0; }
-    let s = match core::str::from_utf8(path) {
+    let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    // Try the unified mount-table first (devfs/procfs/tmpfs/ext4), then
-    // fall back to the raw-ext4 stat path which handles directories,
-    // hardlinks, and symlinks that the mount-table's FileSystem::lookup
-    // wrapper rejects. Mirrors sys_statx's resolver chain — without
-    // this, ARM busybox's `access(X_OK)` returns ENOENT for /bin/<applet>
-    // (a hardlink to /bin/busybox), every PATH-search probe falsely
-    // fails, and the shell prints "Permission denied" without ever
-    // attempting fork+execve.
+    let resolved: alloc::string::String = if raw.starts_with('/') {
+        raw.into()
+    } else {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        // SAFETY: cwd slot single-mutator per `13§5`.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+    };
+    let s = resolved.as_str();
     if vfs::mount::lookup(s).is_ok()
         || ext4::rootfs::stat_path(s.as_bytes()).is_some()
     {
@@ -715,12 +718,30 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
         Some(p) if !p.is_empty() => p,
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
-    let path_s = match core::str::from_utf8(path) {
+    let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let target: alloc::vec::Vec<u8> = match sched::proclink::resolve_proc_link(path_s) {
-        Some(t) => t,
-        None    => return -(Errno::Einval.as_i32() as i64),
+    let resolved: alloc::string::String = if raw.starts_with('/') {
+        raw.into()
+    } else {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        // SAFETY: cwd slot single-mutator per `13§5`.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+    };
+    let path_s = resolved.as_str();
+    // proc-link family first (/proc/self/exe etc) — those aren't
+    // backed by a real Inode::readlink.
+    let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) {
+        t
+    } else if let Some(inode) = ext4::rootfs::lookup_inode_any(path_s.as_bytes()) {
+        match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
+    } else if let Ok(inode) = vfs::mount::lookup(path_s) {
+        match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
+    } else {
+        return -(Errno::Enoent.as_i32() as i64);
     };
     let n = (target.len() as u64).min(bufsize) as usize;
     // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
