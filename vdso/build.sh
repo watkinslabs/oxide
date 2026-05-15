@@ -17,14 +17,15 @@ mkdir -p "$out"
 xcc="${CC:-gcc}"
 acc="$here/../vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
 
-common='-nostdlib -shared -fPIC -fno-stack-protector
+common="-nostdlib -shared -fPIC -fno-stack-protector
         -Wl,--hash-style=sysv
         -Wl,-Bsymbolic
         -Wl,--no-eh-frame-hdr
         -Wl,-z,noexecstack
         -Wl,-z,noseparate-code
         -Wl,-z,max-page-size=0x1000
-        -Wl,-z,common-page-size=0x1000'
+        -Wl,-z,common-page-size=0x1000
+        -Wl,-T,$here/vdso.lds"
 
 echo "vdso: building vdso-x86_64.so"
 $xcc $common \
