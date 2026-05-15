@@ -195,9 +195,9 @@ references.
 | readv / writev | ✅ | |
 | preadv / pwritev | ✅ | (P9-17) |
 | preadv2 / pwritev2 | 🟥 | ENOSYS. |
-| sendfile | 🟥 | ENOSYS — nginx + cp use heavily. |
-| splice / tee / vmsplice | 🟥 | ENOSYS. |
-| copy_file_range | 🟥 | ENOSYS. |
+| sendfile | ✅ | `sched::xfer::sys_sendfile` staging-buffer loop. |
+| splice / tee / vmsplice | ✅ | `sched::xfer::sys_splice/tee/vmsplice`. |
+| copy_file_range | ✅ | `sched::xfer::sys_copy_file_range`. |
 | dup / dup2 / dup3 | 🟡 | dup/dup2 work; dup3 unclear (`syscall_glue_fs.rs:152`). |
 | pipe / pipe2 | 🟡 | `dev_pipe.rs` minimal — non-blocking on empty/full (Eagain). Real blocking with WaitQueue rides P3-01b. |
 | fcntl F_GETFD/F_SETFD | 🟡 | FD_CLOEXEC tracked. |
