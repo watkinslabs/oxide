@@ -20,7 +20,13 @@
 
 use super::*;
 use crate::address_space::{MIN_USER_VA, MMAP_TOP};
-use crate::vma::{VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FileBacking, VmaBacking, VmaFlags, VmaProt};
+
+struct FakeFile;
+impl FileBacking for FakeFile {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn size_hint(&self) -> u64 { 0 }
+}
 
 use hal::{UserVirtAddr, USER_VA_END, PAGE_SIZE_BYTES};
 use std::sync::Arc;
@@ -423,12 +429,19 @@ fn different_prot_no_merge() {
 fn file_offset_merge_requires_contig() {
     use crate::vma::Vma;
     let mut t = VmaTree::new();
+    // a+b share the same backing Arc and have contig offsets ⇒ merge.
+    // c is built from the same Arc but a non-contig offset ⇒ stays
+    // separate.
+    let shared: alloc::sync::Arc<dyn FileBacking> = alloc::sync::Arc::new(FakeFile);
     let a = Vma::new(uva(0x4000_0000), uva(0x4000_1000),
-        r_w(), priv_anon(), VmaBacking::File { off: 0 });
+        r_w(), priv_anon(),
+        VmaBacking::File { backing: alloc::sync::Arc::clone(&shared), off: 0 });
     let b = Vma::new(uva(0x4000_1000), uva(0x4000_2000),
-        r_w(), priv_anon(), VmaBacking::File { off: 0x1000 });
+        r_w(), priv_anon(),
+        VmaBacking::File { backing: alloc::sync::Arc::clone(&shared), off: 0x1000 });
     let c = Vma::new(uva(0x4000_2000), uva(0x4000_3000),
-        r_w(), priv_anon(), VmaBacking::File { off: 0x5000 });
+        r_w(), priv_anon(),
+        VmaBacking::File { backing: shared, off: 0x5000 });
     t.insert(a).unwrap();
     t.insert(b).unwrap();
     t.insert(c).unwrap();
