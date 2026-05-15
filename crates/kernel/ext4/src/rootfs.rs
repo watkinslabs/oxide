@@ -395,6 +395,24 @@ impl vfs::Inode for Ext4StatInode {
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
     fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
     fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
+    fn readlink(&self) -> vfs::KResult<alloc::vec::Vec<u8>> {
+        if !matches!(self.ft, vfs::FileType::Symlink) {
+            return Err(vfs::VfsError::Einval);
+        }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+        let mount = unsafe { &*p };
+        let inode = mount.read_inode(self.ino).map_err(|_| vfs::VfsError::Eio)?;
+        // Fast symlink: target inline in i_block (≤60 bytes).
+        if let Some(b) = inode.fast_symlink_target() {
+            return Ok(b.to_vec());
+        }
+        // Slow symlink: target lives in the first data block.
+        let blk = mount.read_file_block(&inode, 0).map_err(|_| vfs::VfsError::Eio)?;
+        let n = (self.size as usize).min(blk.len());
+        Ok(blk[..n].to_vec())
+    }
     fn readdir(
         &self,
         off: u64,
