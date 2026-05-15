@@ -78,6 +78,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Enoent.as_i32() as i64);
     };
+    if (flags & O_TRUNC) != 0 { let _ = inode.truncate(0); }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
