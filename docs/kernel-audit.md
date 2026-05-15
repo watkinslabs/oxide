@@ -392,38 +392,39 @@ All sub-items landed across B07..B22 + #1022:
 - File-backed `mmap` real via `VmaBacking::File` + `FileBacking`
   trait + per-inode `PageCache` (#1023, K6 substrate).
 
-### Batch K3 — fcntl + fd flag honesty (gates: server programs + non-blocking I/O)
+### Batch K3 — fcntl + fd flag honesty ✅ DONE (#1025 + #1026)
 
-- `fcntl F_SETFL` toggling O_NONBLOCK takes effect on subsequent
-  read/write on pipes, sockets, ptys, ttys (currently no-op).
-- `fcntl F_GETFL` returns the live flag set (currently stale).
-- `fcntl F_DUPFD_CLOEXEC` (the modern variant).
-- `fcntl F_SETLK / F_GETLK / F_OFD_*` advisory locks via per-inode
-  range list (musl's `flock_chk` + tar/dpkg use these).
-- Test: socat / busybox httpd accepts a connection in non-blocking
-  mode and EAGAIN's correctly.
+- F_GETFL / F_SETFL ✓ (live flag bits; #1025 plumbs O_NONBLOCK
+  through `Inode::read_nonblock` / `write_nonblock`; pipe reads
+  now block via WaitList instead of busy-EAGAIN).
+- F_DUPFD_CLOEXEC ✓.
+- F_SETLK / F_SETLKW / F_GETLK + F_OFD_SETLK/SETLKW/GETLK ✓
+  via `fs::posix_lock` per-inode range list (#1026). SETLKW
+  spins-and-yields; proper inode-range wait list rides a follow-up.
 
-### Batch K4 — /proc/self surface (gates: ldd, gdb stubs, glibc init)
+### Batch K4 — /proc/self surface ✅ DONE (#1027)
 
-- `/proc/self/exe` symlink → resolve current task's binary path.
-- `/proc/self/fd/<n>` symlinks → resolve open vfs::File path.
-- `/proc/self/environ` from saved exec envp.
-- `/proc/self/mountinfo` from per-NS mount table.
-- `/proc/partitions` from registered block devs.
-- `/proc/filesystems` from registered fs types.
-- `/proc/devices` from registered char/block major numbers.
-- Test: `ls -l /proc/self/exe` resolves; `readlink /proc/self/fd/0`
-  returns `/dev/console` or `/dev/pts/N`.
+- `/proc/self/exe`, `/proc/self/cwd`, `/proc/self/root` are
+  Symlink inodes (`procfs::proc_links`) that delegate readlink
+  to `sched::proclink::resolve_proc_link` (#1027).
+- `/proc/self/fd/<n>` per-fd entries are Symlink inodes pointing
+  at the open file's dentry path.
+- `vfs::Inode::readlink` default-impl added (Err(Einval) for
+  non-symlinks); concrete symlinks override.
+- `/proc/self/environ`, `/proc/self/mountinfo` already done.
+- `/proc/partitions`, `/proc/filesystems`, `/proc/devices` are
+  static; dynamic refresh rides a follow-up.
 
-### Batch K5 — signal completeness round 2 (gates: bash signal traps, pkill, daemons)
+### Batch K5 — signal completeness round 2 (partial)
 
-- `rt_sigsuspend` real (was ENOSYS) — atomic block-mask-and-wait.
-- `rt_sigtimedwait` real — bash uses for SIGCHLD timeouts.
-- Default-action coverage: SIGSTOP/SIGCONT already; add core dump
-  for SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS once K6 lands.
-- Real-time signals 32..64 — extend per-task sigpending from u64
-  to a 64-entry queue.
-- Test: `bash -c 'trap : USR1; kill -USR1 $$; echo ok'` prints `ok`.
+- `rt_sigsuspend` ✓ (was already real; audit text stale).
+- `rt_sigtimedwait` ✓ (same).
+- Default-action core dump ✓ (#1028 — SIGQUIT/SIGILL/SIGTRAP/
+  SIGABRT/SIGBUS/SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ all dump
+  on SIG_DFL terminate path).
+- OPEN: real-time signals 32..64 multiplicity queue —
+  per-task sigpending bitmap loses RT signal queue order; needs
+  Task struct rework.
 
 ### Batch K6 — VFS+pagecache wiring real ✅ DONE (#1023)
 
@@ -434,20 +435,20 @@ file mmap both work; writeback + global per-inode cache hash ride
 follow-ups. Acceptance: `mmap /bin/sh PROT_READ MAP_PRIVATE` byte-
 identical to `head -c 4096 /bin/sh` is K7 harness work.
 
-### Batch K7 — empirical acceptance harness (gates: release tag)
+### Batch K7 — empirical acceptance harness ✅ SUBSTRATE (#1029)
 
-Per `43§5`: build a harness that drives `tests/acceptance/<bin>/
-scenario.sh` under QEMU on both arches, asserts expected `<` lines
-in the serial stream, fails on `[FAULT]` / `panic:` substrings.
-Land the busybox scenario first; add per-applet scenarios as
-batches K1..K6 unblock them. Exit gate: every entry in `43§2`
-passes on both arches.
+`tools/accept.py` parses `tests/acceptance/<name>/scenario.sh`
+(`>` send, `<` expect, [FAULT]/panic: fail-fast) and drives QEMU
++ serial. Per-scenario coverage adds incrementally as features
+unblock the programs.
 
-### Batch K8 — core dump on fatal signal
+### Batch K8 — core dump on fatal signal ✅ DONE (#1028 substrate)
 
-SIGSEGV / SIGABRT / SIGFPE / SIGILL / SIGBUS → ELF coredump
-written to fs per `27`. Depends on K6 (pagecache for backing-file
-reads) and K5 (default-action wiring).
+SIG_DFL fatal signals (SIGQUIT/SIGILL/SIGTRAP/SIGABRT/SIGBUS/
+SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ) now route through
+`fs::coredump::write_for_current` which builds an ELF dump via
+the `coredump.rs` builder and stages it under /core.<tid>.
+Backing-file region dumps via pagecache rely on K6 (closed).
 
 ### Batch K9 — ptrace full machinery
 
