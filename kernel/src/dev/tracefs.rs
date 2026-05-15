@@ -6,8 +6,8 @@
 // -e probe, trace-cmd start) get sensible read-only data instead
 // of ENOENT.
 //
-// Real per-CPU ring buffers + dynamic tracepoint registration ride
-// v2.x once the kernel grows static tracepoint anchors at
+// Real per-CPU ring buffers + dynamic tracepoint registration are
+// a follow-up once the kernel grows static tracepoint anchors at
 // sched_switch / sys_enter / sys_exit per `37§6`.
 
 
@@ -39,7 +39,7 @@ pub fn init() {
     crate::devfs::register("/sys/kernel/tracing/buffer_size_kb",
         StaticFileInode::new(b"1408\n") as InodeRef);
     // Per-event control directory placeholder. Real per-event
-    // enable rides v2.x.
+    // enable is a follow-up.
     crate::devfs::register("/sys/kernel/tracing/events/header_event",
         StaticFileInode::new(b"") as InodeRef);
 }
