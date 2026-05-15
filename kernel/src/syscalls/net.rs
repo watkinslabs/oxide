@@ -226,6 +226,14 @@ fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, por
     }
 }
 
+fn file_is_nonblock(fd: u64) -> bool {
+    let Some(cur) = sched::live::current() else { return false };
+    // SAFETY: running task; sole reader of fd_table slot per `13§5`.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return false };
+    let Ok(file) = fdt.get(fd as i32) else { return false };
+    file.flags().contains(vfs::OpenFlags::O_NONBLOCK)
+}
+
 fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
     let cur = sched::live::current()?;
     // SAFETY: running task; sole reader of fd_table slot.
@@ -865,17 +873,37 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
 /// shim per `docs/53§4`.
 /// # C: O(payload bytes)
 pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
+    use hal::TimerOps;
+    use core::sync::atomic::Ordering;
     let fd     = args.a0;
     let bufp   = args.a1;
     let len    = args.a2 as usize;
+    let flags  = args.a3;
     let src_p  = args.a4;
+    const MSG_DONTWAIT: u64 = 0x40;
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    let rcv = match net::sock::recvfrom(&sock, len) {
-        Ok(r)  => r,
-        Err(e) => return errno_from_neterr(e),
+    let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
+    let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
+    #[cfg(target_arch = "x86_64")]
+    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
+    let rcv = loop {
+        match net::sock::recvfrom(&sock, len) {
+            Ok(r)  => break r,
+            Err(net::NetError::Eagain) => {
+                if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+                if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
+                // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules and returns.
+                unsafe { sched::live::tick_yield(); }
+                continue;
+            }
+            Err(e) => return errno_from_neterr(e),
+        }
     };
     let take = rcv.payload.len();
     // SAFETY: bufp+take validated < USER_VA_END; user page mapped under caller's AS.
