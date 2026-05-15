@@ -274,15 +274,17 @@ pub struct Task {
     pub rlimits: UnsafeCell<[(u64, u64); 16]>,
 
     /// Per-task nice value per POSIX nice(2)/setpriority(2). Range
-    /// [-20, 19]; 0 default. Fork inherits. The scheduler currently
-    /// ignores it (CFS weight is fixed); v1 stores for visibility
-    /// via getpriority + /proc/<pid>/stat field 19.
+    /// nice [-20, 19]; 0 default; inherited on fork. Scheduler
+    /// ignores (CFS weight fixed); stored for getpriority /
+    /// /proc/<pid>/stat field 19.
     pub nice: AtomicI8,
 
-    /// Monotonic ns at task spawn. getrusage / times / proc stat
-    /// utime are computed as `monotonic_ns() - spawn_ns`. `0` for
-    /// hosted-test tasks where `Task::new` is the constructor.
+    /// Monotonic ns at spawn; getrusage/times/proc-stat utime
+    /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
     pub spawn_ns: AtomicU64,
+    /// Cumulative ns of exited children's CPU; read by
+    /// getrusage(RUSAGE_CHILDREN).
+    pub cumulative_child_ns: AtomicU64,
 
     /// alarm(2)/setitimer ITIMER_REAL deadline in monotonic ns.
     /// `0` = no alarm pending. Dispatch tail compares against
@@ -295,25 +297,19 @@ pub struct Task {
     pub alarm_interval_ns: AtomicU64,
 
     /// Per-task umask per POSIX umask(2). Default 0o022. Fork
-    /// inherits. AND-NOT with creation mode in sys_open(O_CREAT)
-    /// once we honor mode bits; v1 stores for getter visibility.
+    /// inherits. AND-NOT with mode in sys_open/openat(O_CREAT).
     pub umask: AtomicU32,
 
-    /// CLONE_CHILD_CLEARTID address per `set_tid_address(2)`. Linux
+    /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux
     /// stores the user pointer; on thread exit, writes 0 to the
     /// addr + FUTEX_WAKE_PRIVATE. v1 stores for visibility; no
     /// per-thread cleanup in the single-thread model.
     pub clear_child_tid: AtomicU64,
 
-    /// CLONE_VFORK rendezvous flag. When parent calls clone(2) with
-    /// CLONE_VFORK, the kernel sets this on the *child* and the
-    /// parent yields in a loop until the child clears it via either
-    /// execve(2) or exit(2)/exit_group(2). Mirrors Linux
-    /// `mm_struct::vfork_done`: parent is suspended until child is
-    /// done with the shared mm. Without this, parent and child race
-    /// on the shared address space (CLONE_VM) and parent may modify
-    /// heap before child reads its argv. v1 uses busy-yield rather
-    /// than a wait-list; correct for UP and acceptable until SMP.
+    /// CLONE_VFORK rendezvous flag (mirrors Linux mm_struct::
+    /// vfork_done): parent busy-yields until child clears via
+    /// execve/exit. Without this, parent + child race on the
+    /// shared CLONE_VM address space.
     /// 0 = not vfork-tracked or already-cleared (default);
     /// 1 = parent waiting on this child.
     pub vfork_pending: AtomicBool,
@@ -866,6 +862,7 @@ impl Task {
             rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
             nice:       AtomicI8::new(0),
             spawn_ns:   AtomicU64::new(0),
+            cumulative_child_ns: AtomicU64::new(0),
             alarm_ns:   AtomicU64::new(0),
             alarm_interval_ns: AtomicU64::new(0),
             umask:      AtomicU32::new(0o022),

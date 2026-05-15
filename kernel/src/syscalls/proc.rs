@@ -418,7 +418,8 @@ pub fn sys_getrusage(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
     use syscall::errno::Errno;
-    let _who = args.a0;
+    const RUSAGE_CHILDREN: i32 = -1;
+    let who = args.a0 as i32;
     let buf = args.a1;
     if buf == 0 || buf >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
@@ -432,7 +433,11 @@ pub fn sys_getrusage(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
-    let elapsed = now.saturating_sub(cur.spawn_ns.load(Ordering::Acquire));
+    let elapsed = if who == RUSAGE_CHILDREN {
+        cur.cumulative_child_ns.load(Ordering::Acquire)
+    } else {
+        now.saturating_sub(cur.spawn_ns.load(Ordering::Acquire))
+    };
     let (sec, usec) = sched::clock::ns_to_timeval(elapsed);
     // SAFETY: validated 144-byte user buf < USER_VA_END; CPL=0 writes through caller's AS.
     unsafe {
