@@ -866,11 +866,23 @@ unsafe fn tick_poll_combined() {
     crate::vvar::publish();
 }
 
+/// Boot anchor / idle loop. Calls `schedule()` (so a freshly-runnable
+/// task picked up by an IRQ wake hook can run) then `hlt`/`wfi` until
+/// the next IRQ. Without the schedule step the CPU would hlt forever
+/// even when a parked task became runnable.
 /// # C: O(∞)
 #[cfg(target_os = "oxide-kernel")]
 pub fn halt_forever() -> ! {
-    // SAFETY: park-only operation; the per-arch hlt/wfi requires CPL=0/EL1 which the kernel always holds.
-    unsafe { power::halt() }
+    loop {
+        if sched::live::global().is_some() {
+            // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
+            unsafe { sched::live::schedule(); }
+        }
+        #[cfg(target_arch = "x86_64")]
+        hal_x86_64::halt();
+        #[cfg(target_arch = "aarch64")]
+        hal_aarch64::halt();
+    }
 }
 
 /// # C: O(∞) — hosted-test fallback (never hit in tests).
