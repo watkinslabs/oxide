@@ -455,14 +455,32 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
 /// Tier-3 shim per `docs/53§4`.
 /// # C: O(1)
 pub fn sys_accept(args: &SyscallArgs) -> i64 {
+    use hal::TimerOps;
+    use core::sync::atomic::Ordering;
     let fd     = args.a0;
     let addr_p = args.a1;
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    let accepted = match net::sock::accept(&sock) {
-        Ok(a)  => a,
-        Err(e) => return errno_from_neterr(e),
+    let nonblock = file_is_nonblock(fd);
+    let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
+    #[cfg(target_arch = "x86_64")]
+    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
+    let accepted = loop {
+        match net::sock::accept(&sock) {
+            Ok(a)  => break a,
+            Err(net::NetError::Eagain) => {
+                if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+                if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
+                // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules and returns.
+                unsafe { sched::live::tick_yield(); }
+                continue;
+            }
+            Err(e) => return errno_from_neterr(e),
+        }
     };
     if let (Some((ip, port)), true) = (accepted.peer, addr_p != 0) {
         write_sockaddr_for_socket(addr_p, &accepted.new_sock, ip, port);
