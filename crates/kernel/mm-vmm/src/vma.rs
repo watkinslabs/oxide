@@ -83,8 +83,37 @@ bitflags::bitflags! {
     }
 }
 
-/// VMA backing per `11§4`. `File` is a placeholder until `16` (VFS)
-/// freezes; once `Arc<File>` exists this carries the inode ref.
+/// File-backed mmap surface, per `11§4` + `17§5`. The demand-page
+/// handler calls `read_at(off, dst)` to populate a freshly-allocated
+/// user frame; impls are expected to route through the page cache so
+/// repeated faults at the same file offset hit cached bytes rather
+/// than re-reading the block device. `size_hint` lets the handler
+/// zero-fill the tail when a VMA extends past the file's end (Linux
+/// returns zeroed-page-with-SIGBUS-past-end; v1 chooses the
+/// zero-fill leg).
+///
+/// Trait-object behind `Arc<dyn FileBacking>` so `VmaBacking::File`
+/// can be cloned cheaply across fork(2) without per-FS knowledge in
+/// `mm-vmm`. Concrete impls live in `kernel/src/dev/...` (inode
+/// wrapper) and pull `vfs::Inode::read` through the page cache.
+pub trait FileBacking: Send + Sync {
+    /// Fill `dst` with bytes starting at file offset `off`. Short
+    /// reads are allowed; the handler zero-fills the unread tail.
+    /// `Err(())` signals an FS-level read failure — the page-fault
+    /// handler then maps a zero frame (matching Linux's
+    /// SIGBUS-on-EIO leg's "page is observable" invariant for v1;
+    /// real SIGBUS propagation lands with the dirty-writeback path).
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()>;
+
+    /// File size at last stat — used only to decide tail zero-fill.
+    /// Stale values are harmless: the worst case is a non-zero tail
+    /// that gets zero-filled anyway because `read_at` returned short.
+    fn size_hint(&self) -> u64;
+}
+
+/// VMA backing per `11§4`. `File` carries the file/inode ref via
+/// `Arc<dyn FileBacking>` (read-side path through page cache;
+/// writeback rides the dirty-tracking work).
 /// `Special` covers vDSO / vvar / hugetlb regions which never merge.
 ///
 /// `KernelBytes` is a v1-only bridge until VFS lands per `16`:
@@ -103,19 +132,35 @@ bitflags::bitflags! {
 /// out `&'static [u8]` views; child VMAs cloned the slice ref and
 /// dangled when the parent dropped first (use-after-free latent
 /// bug). Arc gives correct refcount-based lifetime.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum VmaBacking {
     Anonymous,
-    File { off: u64 },
+    File { backing: alloc::sync::Arc<dyn FileBacking>, off: u64 },
     KernelBytes { data: alloc::sync::Arc<[u8]>, off: usize },
     Special,
+}
+
+impl core::fmt::Debug for VmaBacking {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VmaBacking::Anonymous => f.write_str("Anonymous"),
+            VmaBacking::File { off, .. } => write!(f, "File {{ off: {} }}", off),
+            VmaBacking::KernelBytes { data, off } => {
+                write!(f, "KernelBytes {{ len: {}, off: {} }}", data.len(), off)
+            }
+            VmaBacking::Special => f.write_str("Special"),
+        }
+    }
 }
 
 impl PartialEq for VmaBacking {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (VmaBacking::Anonymous, VmaBacking::Anonymous) => true,
-            (VmaBacking::File { off: a }, VmaBacking::File { off: b }) => a == b,
+            (VmaBacking::File { backing: ab, off: ao },
+             VmaBacking::File { backing: bb, off: bo }) => {
+                alloc::sync::Arc::ptr_eq(ab, bb) && ao == bo
+            }
             (VmaBacking::Special, VmaBacking::Special) => true,
             (VmaBacking::KernelBytes { data: a, off: ao },
              VmaBacking::KernelBytes { data: b, off: bo }) => {
@@ -219,7 +264,9 @@ impl Vma {
         if self.flags != next.flags { return false; }
         match (&self.backing, &next.backing) {
             (VmaBacking::Anonymous, VmaBacking::Anonymous) => true,
-            (VmaBacking::File { off: a }, VmaBacking::File { off: b }) => {
+            (VmaBacking::File { backing: ab, off: a },
+             VmaBacking::File { backing: bb, off: b }) => {
+                if !alloc::sync::Arc::ptr_eq(ab, bb) { return false; }
                 a.checked_add(self.len_bytes()).map_or(false, |aend| aend == *b)
             }
             // KernelBytes-backed segments don't merge: each PT_LOAD
@@ -242,7 +289,10 @@ impl Vma {
     pub fn clone_subrange(&self, new_start: UserVirtAddr, new_end: UserVirtAddr) -> Vma {
         let off_delta = new_start.as_u64() - self.start.as_u64();
         let backing = match &self.backing {
-            VmaBacking::File { off } => VmaBacking::File { off: off + off_delta },
+            VmaBacking::File { backing, off } => VmaBacking::File {
+                backing: alloc::sync::Arc::clone(backing),
+                off: off + off_delta,
+            },
             VmaBacking::KernelBytes { data, off } => {
                 // Sub-range starts `off_delta` bytes into the parent
                 // VMA → bump the byte offset into the shared Arc.
