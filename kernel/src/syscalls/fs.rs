@@ -124,6 +124,8 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
 pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_DUPFD: u64 = 0; const F_GETFD: u64 = 1; const F_SETFD: u64 = 2;
     const F_GETFL: u64 = 3; const F_SETFL: u64 = 4;
+    const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
+    const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
     const F_DUPFD_CLOEXEC: u64 = 1030;
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
@@ -149,6 +151,98 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         }
         F_GETPIPE_SZ | F_SETPIPE_SZ => 4096,
         F_GETOWN | F_SETOWN => 0,
+        F_SETLK | F_SETLKW | F_GETLK |
+        F_OFD_SETLK | F_OFD_SETLKW | F_OFD_GETLK => {
+            handle_record_lock(&cur, &fdt, &file, cmd, arg)
+        }
+        _ => -(Errno::Einval.as_i32() as i64),
+    }
+}
+
+/// F_SETLK / F_SETLKW / F_GETLK + F_OFD_* dispatch. Reads the
+/// user `struct flock`, computes the absolute byte range, and
+/// applies via `fs::posix_lock`. F_SETLKW with conflict spins on
+/// EAGAIN until success or signal (real wait-list rides a
+/// follow-up); F_GETLK probes and writes the result back.
+fn handle_record_lock(
+    cur: &sched::Task,
+    _fdt: &alloc::sync::Arc<vfs::FdTable>,
+    file: &alloc::sync::Arc<vfs::File>,
+    cmd: u64,
+    arg: u64,
+) -> i64 {
+    use fs::posix_lock::{decode_flock, encode_flock, probe, try_set_lock, Owner, FLOCK_BYTES};
+    const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
+    const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
+    if let Err(rv) = validate_user_buf(arg, FLOCK_BYTES as u64, 8) { return rv; }
+    let mut bytes = [0u8; FLOCK_BYTES];
+    // SAFETY: arg validated FLOCK_BYTES below USER_VA_END; CPL=0 reads through caller's AS.
+    unsafe {
+        for i in 0..FLOCK_BYTES {
+            bytes[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
+        }
+    }
+    let cur_pos  = file.pos();
+    let file_sz  = file.inode().size();
+    let mut req  = match decode_flock(&bytes, cur_pos, file_sz) {
+        Ok(r) => r, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    let is_ofd = matches!(cmd, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
+    let owner = if is_ofd {
+        Owner::Ofd(alloc::sync::Arc::as_ptr(file) as *const u8 as usize)
+    } else {
+        Owner::Pid(cur.tid)
+    };
+    let inode = file.inode();
+    match cmd {
+        F_GETLK | F_OFD_GETLK => {
+            req.pid = match owner { Owner::Pid(p) => p, _ => 0 };
+            match probe(inode, &req, owner) {
+                Some(blk) => {
+                    let mut out = [0u8; FLOCK_BYTES];
+                    encode_flock(&mut out, &blk);
+                    // SAFETY: arg validated above; CPL=0 writes through caller's AS.
+                    unsafe {
+                        for i in 0..FLOCK_BYTES {
+                            core::ptr::write_volatile((arg + i as u64) as *mut u8, out[i]);
+                        }
+                    }
+                }
+                None => {
+                    // No conflict — return F_UNLCK in l_type.
+                    let mut out = bytes;
+                    out[0..2].copy_from_slice(&(fs::posix_lock::F_UNLCK).to_le_bytes());
+                    // SAFETY: arg validated above; CPL=0 writes through caller's AS.
+                    unsafe {
+                        for i in 0..FLOCK_BYTES {
+                            core::ptr::write_volatile((arg + i as u64) as *mut u8, out[i]);
+                        }
+                    }
+                }
+            }
+            0
+        }
+        F_SETLK | F_OFD_SETLK => {
+            match try_set_lock(inode, &req, owner) {
+                Ok(()) => 0,
+                Err(e) => -(e as i64),
+            }
+        }
+        F_SETLKW | F_OFD_SETLKW => {
+            // Spin-retry with yield until success. Real wait list
+            // keyed on inode + range rides a follow-up; v1 yields
+            // the CPU between attempts so a peer can release.
+            loop {
+                match try_set_lock(inode, &req, owner) {
+                    Ok(()) => return 0,
+                    Err(vfs::VfsError::Eagain) => {
+                        // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler picks us back up shortly.
+                        unsafe { sched::live::schedule::schedule(); }
+                    }
+                    Err(e) => return -(e as i64),
+                }
+            }
+        }
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
