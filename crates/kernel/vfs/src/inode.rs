@@ -51,6 +51,27 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Eisdir)
     }
 
+    /// Non-blocking read variant per `15§5` (O_NONBLOCK). Returns
+    /// `Err(Eagain)` if data would not be immediately available
+    /// without parking. Default impl delegates to `read()`, which
+    /// is correct for inodes that never block (regular files,
+    /// tmpfs, procfs/sysfs static files). Inodes whose `read()`
+    /// can park (pipes, ptys, ttys, sockets) override this to
+    /// return EAGAIN instead of sleeping.
+    /// # C: depends on FS impl
+    fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        self.read(off, buf)
+    }
+
+    /// Non-blocking write variant per `15§5` (O_NONBLOCK). Returns
+    /// `Err(Eagain)` if the destination buffer is full and the
+    /// write would have to park. Default impl delegates to
+    /// `write()`. Pipes / sockets / ptys override.
+    /// # C: depends on FS impl
+    fn write_nonblock(&self, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.write(off, buf)
+    }
+
     /// Write `buf` starting at byte offset `off`. Returns the number
     /// of bytes actually written. Default impl returns `Err(Eisdir)`.
     /// # C: depends on FS impl

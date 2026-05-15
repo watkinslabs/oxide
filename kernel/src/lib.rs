@@ -146,9 +146,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
     }
 
-    // vfs hooks: flock release-on-close + inotify IN_MODIFY-on-write.
+    // vfs hooks: flock release-on-close + inotify IN_MODIFY-on-write
+    // + pipe reader/writer close tracking (must register before any
+    // pipe File can be dropped).
     #[cfg(target_os = "oxide-kernel")]
-    { fs::flock::install_drop_hook(); fs::inotify::install_write_hook(); }
+    {
+        fs::flock::install_drop_hook();
+        fs::inotify::install_write_hook();
+        fs::pipe::install_close_hook();
+    }
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
