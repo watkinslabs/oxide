@@ -126,10 +126,10 @@ references.
 
 | feature | state | notes |
 |---|---|---|
-| getpgid/setpgid/getpgrp | 🟥 | Likely stub — `Task` has no pgid field. |
-| setsid (session leader) | 🟥 | No session concept. |
-| getsid | 🟥 | |
-| Foreground process group on tty | 🟥 | TIOCGPGRP/TIOCSPGRP work for pty (per docs/28 P3-pty), missing for /dev/console. |
+| getpgid/setpgid/getpgrp | ✅ | Task.pgid field; setpgid + getpgrp wired. |
+| setsid (session leader) | ✅ | Task.sid + setsid syscall. |
+| getsid | ✅ | |
+| Foreground process group on tty | ✅ | TIOCGPGRP/TIOCSPGRP on pty + console. |
 | tcsetpgrp / tcgetpgrp | 🟡 | Works for pty fds via TIOCGPGRP/TIOCSPGRP arms (`syscall_glue_ioctl.rs:128`). Missing for console. |
 | `cmd &` background jobs | 🟡 | Works in toy sh (P5-12) but no real pgid → bash's `fg`/`bg` won't work. |
 
@@ -172,17 +172,17 @@ references.
 | feature | state | notes |
 |---|---|---|
 | mmap MAP_PRIVATE \| MAP_ANONYMOUS | ✅ | Demand-paged. |
-| mmap MAP_SHARED | 🟥 | Likely treated as PRIVATE. Wayland + dbus + tmpfiles mmap need this. |
-| mmap MAP_FIXED | ✅ | |
-| mmap file-backed (MAP_PRIVATE) | 🟡 | KernelBytes path works for ELF; arbitrary file mmap unclear. |
-| mprotect per-PTE | 🟥 | `syscall_glue_proc.rs:62` updates VMA prot, doesn't walk PTEs. |
-| mremap | 🟥 | `syscall_glue_proc.rs:520` returns ENOMEM unconditionally. |
-| madvise | 🟥 | accept-and-no-op. MADV_DONTNEED zero-fill missing. |
-| mlock / mlockall | 🟥 | accept-and-no-op. |
+| mmap MAP_SHARED | ✅ | F60 era — VmaBacking::File backing. |
+| mmap MAP_FIXED | ✅ | F89 munmap-then-insert. |
+| mmap file-backed (MAP_PRIVATE) | ✅ | K6 file-backed mmap via PageCache (F26). |
+| mprotect per-PTE | ✅ | `pmm::user_as::mprotect_pages` walks live PTs + TLB flush. |
+| mremap | ✅ | `proc.rs:538` MAYMOVE+FIXED via AddressSpace::mremap. |
+| madvise | ✅ | `proc.rs:153` DONTNEED/FREE/REMOVE drop+refault. |
+| mlock / mlockall | ✅ | No-swap substrate → accept-and-no-op semantically correct. |
 | mincore | ✅ | F64 per-page residency via arch MMU translate. |
-| memfd_create / memfd_secret | 🟥 | ENOSYS. systemd + Wayland use heavily. |
+| memfd_create / memfd_secret | ✅ | `anonfd.rs:36`. |
 | brk | ✅ | |
-| pkey_alloc/pkey_free/pkey_mprotect | 🟥 | ENOSYS. |
+| pkey_alloc/pkey_free/pkey_mprotect | ✅ | `misc.rs:59` bitmap + delegate to mprotect. |
 
 ### 6. Filesystem + VFS
 
@@ -201,9 +201,11 @@ references.
 | dup / dup2 / dup3 | 🟡 | dup/dup2 work; dup3 unclear (`syscall_glue_fs.rs:152`). |
 | pipe / pipe2 | 🟡 | `dev_pipe.rs` minimal — non-blocking on empty/full (Eagain). Real blocking with WaitQueue rides P3-01b. |
 | fcntl F_GETFD/F_SETFD | 🟡 | FD_CLOEXEC tracked. |
-| fcntl F_GETFL/F_SETFL | 🟥 | O_NONBLOCK toggle probably no-op. |
-| fcntl F_DUPFD | 🟡 | |
-| fcntl F_SETLK / F_GETLK | 🟥 | No advisory locking. |
+| fcntl F_GETFL/F_SETFL | ✅ | O_APPEND + O_NONBLOCK toggles tracked. |
+| fcntl F_DUPFD | ✅ | F_DUPFD + F_DUPFD_CLOEXEC. |
+| fcntl F_SETLK / F_GETLK | ✅ | F28 POSIX + OFD record locks via fs::posix_lock. |
+| fcntl F_GETOWN / F_SETOWN | ✅ | F65 per-File owner cell. |
+| fcntl F_GETPIPE_SZ / F_SETPIPE_SZ | 🟡 | Returns 4096; no real resize. |
 | getdents64 | ✅ | (overlay fix recent) |
 | stat / fstat / lstat / fstatat | ✅ | |
 | statx | 🟡 | check — modern programs prefer this. |
@@ -215,7 +217,7 @@ references.
 | utimes / utimensat | 🟡 | `futimesat` accept-and-no-op. |
 | chdir / fchdir | ✅ | per-task cwd |
 | getcwd | ✅ | |
-| chroot | 🟥 | EPERM (privileged refuse). |
+| chroot | ✅ | F95 per-task root prefix in devfs::lookup. |
 | mount / umount | 🟥 | EPERM. |
 | pivot_root | 🟥 | ENOSYS. |
 | ext4 RO read | ✅ | |
@@ -224,8 +226,8 @@ references.
 | ext4 extent depth >2 | 🟥 | Depth 1-2 read+write (P9-07). Depth 3+ missing. |
 | ext4 hard links | 🟡 | (P9-24) |
 | ext4 symlinks | 🟥 | Maybe missing. |
-| xattr (get/set/list/remove) | 🟥 | ENOSYS family. systemd uses. |
-| inotify / fanotify | 🟡 | dev_inotify.rs exists; fanotify ENOSYS. |
+| xattr (get/set/list/remove) | ✅ | F90 per-inode xattr overlay. |
+| inotify / fanotify | ✅ | F94 inotify real watch+IN_MODIFY; F96 fanotify_mark→inotify. |
 | O_TMPFILE | 🟥 | Unclear. |
 | /tmp tmpfs | ✅ | (P3-pipe) |
 | /proc | 🟡 | Partial (see /proc table below). |
@@ -236,20 +238,20 @@ references.
 
 | feature | state | notes |
 |---|---|---|
-| eventfd / eventfd2 | 🟡 | Probably wired — verify. |
-| signalfd / signalfd4 | 🟡 | `dev_signalfd.rs` exists. |
-| timerfd_create / settime / gettime | 🟡 | `dev_timerfd.rs` exists. |
+| eventfd / eventfd2 | ✅ | `anonfd.rs:14` real counting eventfd. |
+| signalfd / signalfd4 | ✅ | `signalfd.rs:56`. |
+| timerfd_create / settime / gettime | ✅ | `timerfd.rs:103/128/181`. |
 | epoll_create / epoll_ctl / epoll_wait | ✅ | `dev_epoll.rs` (P9-21 poll readiness) |
 | epoll_pwait | 🟡 | |
 | epoll_pwait2 | 🟥 | ENOSYS. |
 | inotify_init / inotify_add_watch | 🟡 | dev_inotify exists. |
-| pidfd_open | 🟥 | Unclear. |
-| pidfd_send_signal | 🟡 | dev_pidfd.rs exists. |
-| pidfd_getfd | 🟥 | ENOSYS. |
+| pidfd_open | ✅ | dev/pidfd. |
+| pidfd_send_signal | ✅ | F93 cap-aware kill/tgkill/pidfd_send_signal. |
+| pidfd_getfd | ✅ | F63..F84 sweep landed real pidfd_getfd. |
 | close_range | 🟥 | Unclear — probably stub. |
 | userfaultfd | 🟥 | ENOSYS. |
-| io_uring (setup/enter/register) | 🟥 | ENOSYS. |
-| memfd_create | 🟥 | ENOSYS. |
+| io_uring (setup/enter/register) | ✅ | `kernel/src/io_uring.rs` real setup+enter (register stub). |
+| memfd_create | ✅ | `anonfd.rs:36`. |
 
 ### 8. Network
 
@@ -270,7 +272,9 @@ references.
 | sendmmsg / recvmmsg | 🟥 | ENOSYS. |
 | netlink (route/genl) | 🟥 | Missing. |
 | iptables / nftables | 🟥 | No netfilter. |
-| getsockopt / setsockopt | 🟡 | Silent-accept; SO_REUSEADDR honored. |
+| getsockopt / setsockopt | ✅ | F62 per-socket SockOpts cells + TCP_NODELAY. |
+| recvfrom / accept blocking | ✅ | F67/F68 SO_RCVTIMEO + MSG_DONTWAIT + O_NONBLOCK. |
+| socket SOCK_CLOEXEC / SOCK_NONBLOCK | ✅ | F69 + F70 accept4 flags. |
 
 ### 9. /proc completion
 
