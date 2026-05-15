@@ -462,11 +462,10 @@ pub struct Task {
     /// just allocates an id; mount itself remains EPERM.
     pub mount_ns: AtomicU64,
 
-    /// PTRACE_SYSCALL armed: when set, the tracee self-stops at every
-    /// syscall entry + return, posts SIGTRAP, and waits for tracer
-    /// wake via PTRACE_SYSCALL/CONT. Cleared and re-armed by the
-    /// tracer (per-stop). Default false.
+    /// PTRACE_SYSCALL armed: self-stop+SIGTRAP at syscall entry+return.
     pub ptrace_syscall_armed: AtomicBool,
+    /// wait4 WUNTRACED/WCONTINUED flags + stop signal.
+    pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_signal: AtomicU8,
 
     /// `rseq(2)` registration pointer. Per-task user-space pointer to a
     /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
@@ -899,6 +898,9 @@ impl Task {
             cgroup_ns:      AtomicU64::new(0),
             mount_ns:       AtomicU64::new(0),
             ptrace_syscall_armed: AtomicBool::new(false),
+            stop_pending:    AtomicBool::new(false),
+            cont_pending:    AtomicBool::new(false),
+            stop_signal:     AtomicU8::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
