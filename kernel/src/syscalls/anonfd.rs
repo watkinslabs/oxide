@@ -13,8 +13,12 @@ use hal::USER_VA_END;
 /// # C: O(1)
 pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
     use alloc::string::ToString;
+    const EFD_SEMAPHORE: u64 = 1;
+    const EFD_NONBLOCK:  u64 = 0o0_004_000;
+    const EFD_CLOEXEC:   u64 = 0o2_000_000;
     let initval = args.a0;
-    let _flags  = args.a1;
+    let flags   = args.a1;
+    let _ = EFD_SEMAPHORE; // semaphore mode honored at read-side TBD
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -24,9 +28,14 @@ pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
     };
     let inode = ::fs::pipe::EventfdInode::new(initval);
     let dentry = Dentry::new(None, "eventfd".to_string(), inode.clone());
-    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
+    let mut fl = OpenFlags::O_RDWR;
+    if (flags & EFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => {
+            if (flags & EFD_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
         Err(e) => -(e as i64),
     }
 }
