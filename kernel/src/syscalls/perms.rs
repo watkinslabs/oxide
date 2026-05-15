@@ -26,15 +26,7 @@ fn resolve_path_inode(path_ptr: u64) -> Result<InodeRef, i64> {
     let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
     let raw = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
         .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    let resolved: alloc::string::String = if raw.starts_with('/') {
-        raw.into()
-    } else if let Some(cur) = sched::live::current() {
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-    } else {
-        raw.into()
-    };
+    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     if let Ok(i) = vfs::mount::lookup(s) { return Ok(i); }
     // Fall back to ext4 stat_path for paths the mount-table doesn't

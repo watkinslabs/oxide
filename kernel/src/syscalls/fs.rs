@@ -107,15 +107,7 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // Resolve relative + . + .. against current cwd via the lexical
-    // normalizer so `cd ..`, `cd foo`, `cd ./bar` work.
-    let resolved: alloc::string::String = if raw.starts_with('/') {
-        vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
-    } else {
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-    };
+    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     let resolves = s == "/"
         || vfs::mount::lookup(s).is_ok()
@@ -394,19 +386,7 @@ pub fn sys_stat(args: &SyscallArgs) -> i64 {
     let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    // Resolve relative paths against the task's cwd so `stat(".")`
-    // and `lstat("foo")` work from shells/utilities that don't carry
-    // an absolute path.
-    let resolved: alloc::string::String = if raw.starts_with('/') {
-        raw.into()
-    } else {
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-        };
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-    };
+    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     let (ino_num, file_type, size): (u64, vfs::FileType, u64) =
         if let Ok(i) = vfs::mount::lookup(s) {
@@ -683,16 +663,7 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
     let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolved: alloc::string::String = if raw.starts_with('/') {
-        raw.into()
-    } else {
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-        };
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-    };
+    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
     if vfs::mount::lookup(s).is_ok()
         || ext4::rootfs::stat_path(s.as_bytes()).is_some()
@@ -734,16 +705,7 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolved: alloc::string::String = if raw.starts_with('/') {
-        raw.into()
-    } else {
-        let cur = match sched::live::current() {
-            Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-        };
-        // SAFETY: cwd slot single-mutator per `13§5`.
-        let cwd = unsafe { (*cur.cwd.get()).clone() };
-        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-    };
+    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let path_s = resolved.as_str();
     // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
     let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
