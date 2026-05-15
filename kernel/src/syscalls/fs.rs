@@ -100,15 +100,28 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
         Some(p) if !p.is_empty() => p,
         _                        => return -(Errno::Einval.as_i32() as i64),
     };
-    let s = match core::str::from_utf8(path) {
+    let raw = match core::str::from_utf8(path) {
         Ok(s)  => s,
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolves = s == "/" || vfs::mount::lookup(s).is_ok();
-    if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
+    // Resolve relative + . + .. against current cwd via the lexical
+    // normalizer so `cd ..`, `cd foo`, `cd ./bar` work.
+    let resolved: alloc::string::String = if raw.starts_with('/') {
+        vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
+    } else {
+        // SAFETY: cwd slot single-mutator per `13§5`.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+    };
+    let s = resolved.as_str();
+    let resolves = s == "/"
+        || vfs::mount::lookup(s).is_ok()
+        || matches!(ext4::rootfs::stat_path(s.as_bytes()),
+                    Some((_, vfs::FileType::Directory, _)));
+    if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
     unsafe { *cur.cwd.get() = alloc::string::String::from(s); }
     0
