@@ -504,7 +504,7 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
 }
 
 /// arch_prctl: ARCH_SET_FS=wrmsr, ARCH_GET_FS=rdmsr+writeback,
-/// else EINVAL. GS-base rides v2.x.
+/// else EINVAL. GS-base is a follow-up (kernel GS-base reserved).
 #[cfg(target_arch = "x86_64")]
 fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
     let code = args.a0;

@@ -49,9 +49,9 @@ pub fn dispatch(nr: u64, args: &SyscallArgs) -> i64 {
 }
 
 /// Per-process pkey bitmap. Linux MPK has 16 keys; key 0 is the
-/// always-permitted default. v1 tracks allocations as a 16-bit
+/// always-permitted default. Allocation tracked as a 16-bit
 /// bitmap so glibc/musl probes get unique ids; PKRU enforcement
-/// rides v2.x.
+/// is a follow-up.
 static PKEY_BITMAP: core::sync::atomic::AtomicU16
     = core::sync::atomic::AtomicU16::new(1);
 

@@ -289,7 +289,7 @@ impl AddressSpace {
             let writable = vma.prot.contains(VmaProt::WRITE);
             // For COW we share both Anonymous and KernelBytes frames.
             // Only Anonymous + KernelBytes ever get faulted leaves;
-            // File / Special are out of scope for v1.
+            // File / Special are is a follow-up.
             let share_pages = matches!(
                 vma.backing,
                 VmaBacking::Anonymous | VmaBacking::KernelBytes { .. }

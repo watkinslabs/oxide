@@ -322,7 +322,7 @@ const _: AtomicU32 = AtomicU32::new(0);
 // V1: route fanotify_init→inotify_init1 (already wired in F80) and
 // fanotify_mark→add_watch/rm_watch with mask translation. Programs
 // see real watch storage + real IN_MODIFY events. Read-side fanotify
-// event format conversion rides v2 once the substrate's user audience
+// event format conversion is a follow-up once the substrate's user audience
 // is concrete.
 
 const FAN_MARK_ADD:        u32 = 0x01;
