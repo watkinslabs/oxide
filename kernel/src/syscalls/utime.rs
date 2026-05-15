@@ -58,11 +58,23 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     }
     // SAFETY: path_ptr in user range; bounded read via devfs::read_user_cstr.
     let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
-    let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
+    let raw = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
     };
     let _ = dirfd; //  AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
-    vfs::mount::lookup(s).map_err(|_| -(Errno::Enoent.as_i32() as i64))
+    let resolved: alloc::string::String = if raw.starts_with('/') {
+        raw.into()
+    } else if let Some(cur) = sched::live::current() {
+        // SAFETY: cwd slot single-mutator per `13§5`.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
+    } else {
+        raw.into()
+    };
+    let s = resolved.as_str();
+    if let Ok(i) = vfs::mount::lookup(s) { return Ok(i); }
+    if let Some(i) = ext4::rootfs::lookup_inode_any(s.as_bytes()) { return Ok(i); }
+    Err(-(Errno::Enoent.as_i32() as i64))
 }
 
 /// `sys_utimensat(dirfd, path, times[2], flags)` — slot 280.
