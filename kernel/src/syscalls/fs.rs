@@ -722,69 +722,7 @@ pub fn sys_readlinkat(args: &SyscallArgs) -> i64 {
 /// `pollfd { fd: i32, events: i16, revents: i16 }` = 8 bytes
 /// each on Linux x86_64.
 /// # C: O(nfds)
-pub fn sys_poll(args: &SyscallArgs) -> i64 {
-    const POLLIN:  i16 = 0x0001;
-    const POLLOUT: i16 = 0x0004;
-    const NFDS_MAX: u64 = 4096;
-    let fds_ptr = args.a0;
-    let nfds    = args.a1;
-    let _timeout = args.a2 as i32;
-    if nfds == 0 { return 0; }
-    if nfds > NFDS_MAX { return -(Errno::Einval.as_i32() as i64); }
-    let bytes = match nfds.checked_mul(8) {
-        Some(v) => v,
-        None    => return -(Errno::Efault.as_i32() as i64),
-    };
-    if let Err(rv) = validate_user_buf(fds_ptr, bytes, 4) { return rv; }
-    let cur = match sched::live::current() {
-        Some(c) => c,
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(),
-        None    => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let mut ready: i64 = 0;
-    for i in 0..nfds {
-        let p = fds_ptr + i * 8;
-        // SAFETY: pollfd[i] inside the validated nfds*8-byte range; 4-byte aligned per Linux ABI.
-        let fd     = unsafe { core::ptr::read_volatile( p        as *const i32) };
-        // SAFETY: same validated range; events at +4 is 2-byte aligned.
-        let events = unsafe { core::ptr::read_volatile((p + 4)   as *const i16) };
-        let mut revents: i16 = 0;
-        if let Ok(file) = fdt.get(fd) {
-            if file.inode().file_type() == vfs::FileType::CharDev {
-                let ino = file.inode().ino();
-                let pty_readable = if (ino & 0xFFFF_0000) == 0x6000_0000 {
-                    let is_master = (ino & 0x8000) == 0;
-                    crate::dev::pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
-                        pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
-                    })
-                } else { None };
-                let inb = match pty_readable {
-                    Some(true)  => POLLIN,
-                    Some(false) => 0,
-                    None        => POLLIN, // non-pty CharDev — keep prior always-ready
-                };
-                revents = events & (inb | POLLOUT);
-            }
-        }
-        // SAFETY: revents at p+6 inside validated range; 2-byte aligned.
-        unsafe { core::ptr::write_volatile((p + 6) as *mut i16, revents); }
-        if revents != 0 { ready += 1; }
-    }
-    ready
-}
-
-/// `sys_ppoll(fds, nfds, ts, sigmask, sigsz)` — slot 271. Same
-/// non-blocking shape as poll; signal mask + timespec ignored
-/// (real pselect/ppoll wait support rides P3 follow-up).
-/// # C: O(nfds)
-pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
-    let pf = SyscallArgs { a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0 };
-    sys_poll(&pf)
-}
+pub use crate::syscalls::poll::{sys_poll, sys_ppoll};
 
 
 /// `sys_lseek(fd, offset, whence)` — slot 8. Real `vfs::File::seek`
