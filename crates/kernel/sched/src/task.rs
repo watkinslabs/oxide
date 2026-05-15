@@ -16,7 +16,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::FdTable;
 use vmm::AddressSpace;
 
-use crate::ARCH_CTX_SIZE;
+use crate::{ARCH_CTX_SIZE, ARCH_FPU_SIZE};
 
 /// Subset of `siginfo_t` per `15§5` carried in the per-task RT
 /// signal queue. Standard signals (1..=31) don't queue — they
@@ -172,25 +172,15 @@ pub struct Task {
     /// the last byte = top-of-stack on x86_64 / aarch64).
     pub stack: Option<Box<[u8]>>,
 
-    /// Opaque storage for the per-arch HAL `Context` (per `14§5.2`/
-    /// `14§6.2`). Sized to `ARCH_CTX_SIZE`. Aligned on a u64 so the
-    /// arch-specific Context's first field (an `rsp` / `sp`) sits
-    /// at a natural-alignment offset. Caller (kernel) gates access
-    /// with the runqueue invariant; see struct doc-comment.
+    /// Opaque per-arch HAL `Context` (per `14§5.2`/`14§6.2`). Sized
+    /// to `ARCH_CTX_SIZE`; aligned for the arch-specific Context's
+    /// first field. Access gated by the runqueue invariant.
     pub arch_ctx: UnsafeCell<ArchCtxBuf>,
 
     /// Per-task user address space per `13§5` / `11§3`. `None` for
-    /// kernel-only threads (kthreads run in the kernel's static
-    /// page tables). Shared via `Arc` per `clone3` semantics so
-    /// `CLONE_VM` siblings share the same VMA tree (`13§5` field
-    /// list). Schedule per `13§8`: switch_address_space called only
-    /// when `next.mm != prev.mm`.
-    ///
-    /// Wrapped in `UnsafeCell` so `execve` (P2-21) can replace it
-    /// in-place: the running task is the sole writer, and reads
-    /// from `schedule()`'s AS-swap branch happen with preempt-off
-    /// on the same CPU — single-mutator-per-active-CPU per `13§5`
-    /// (same invariant the `arch_ctx` field relies on).
+    /// kthreads. `Arc`-shared so `CLONE_VM` siblings share the
+    /// VMA tree; `execve` replaces in-place under the single-
+    /// mutator-per-CPU invariant.
     pub mm: UnsafeCell<Option<Arc<AddressSpace>>>,
 
     /// Per-task open-file table per `13§5` / `16§3`. `None` for
@@ -365,6 +355,13 @@ pub struct Task {
     /// siginfo_t snapshot at the most recent ptrace stop. Tracer
     /// reads via PTRACE_GETSIGINFO; writes via SETSIGINFO.
     pub ptrace_siginfo: Spinlock<Option<SigInfo>, TaskListClass>,
+
+    /// Per-arch FPU/SIMD snapshot. Filled by `fpu_save` at ptrace-
+    /// stop; PTRACE_SETFPREGS writes here + sets `ptrace_fpu_dirty`
+    /// so the resume tail calls a matching `fpu_restore`.
+    pub fpu_state: UnsafeCell<ArchFpuBuf>,
+    /// Set by PTRACE_SETFPREGS; cleared by resume tail.
+    pub ptrace_fpu_dirty: AtomicBool,
 
     /// Set by PTRACE_SINGLESTEP, cleared by the trap handler after a
     /// single instruction has retired in user mode. While set, the
@@ -785,6 +782,12 @@ impl PosixTimer {
 #[repr(C, align(8))]
 pub struct ArchCtxBuf(pub [u8; ARCH_CTX_SIZE]);
 
+/// Opaque per-arch FPU/SIMD state buffer; per-arch crate casts to
+/// FpuStateX86_64 / FpuStateAArch64. align(16) per FXSAVE / NEON
+/// store-pair requirements.
+#[repr(C, align(16))]
+pub struct ArchFpuBuf(pub [u8; ARCH_FPU_SIZE]);
+
 // SAFETY: `arch_ctx` mutation is gated by the kernel scheduler's
 // runqueue invariant (only the CPU running this task writes the
 // buffer, and only via `Context::switch` which is a single
@@ -876,6 +879,8 @@ impl Task {
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
+            fpu_state:       UnsafeCell::new(ArchFpuBuf([0u8; ARCH_FPU_SIZE])),
+            ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
             robust_list_head: AtomicU64::new(0),
