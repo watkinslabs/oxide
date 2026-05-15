@@ -400,9 +400,28 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             }
             0
         }
+        PTRACE_SETOPTIONS => {
+            let target = match sched::live::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            target.ptrace_options.store(args.a3 as u32, Ordering::Release);
+            0
+        }
+        PTRACE_GETEVENTMSG => {
+            let target = match sched::live::registry::lookup(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let data = args.a3;
+            if data == 0 || data >= hal::USER_VA_END {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            let msg = target.ptrace_eventmsg.load(Ordering::Acquire);
+            // SAFETY: data validated < USER_VA_END; aligned u64 store of last ptrace event msg into caller's AS.
+            unsafe { core::ptr::write_volatile(data as *mut u64, msg); }
+            0
+        }
         PTRACE_GETFPREGS | PTRACE_SETFPREGS
             | PTRACE_INTERRUPT | PTRACE_LISTEN
-            | PTRACE_SETOPTIONS | PTRACE_GETEVENTMSG
             | PTRACE_GETSIGINFO | PTRACE_SETSIGINFO => 0,
         _ => -(Errno::Einval.as_i32() as i64),
     }
