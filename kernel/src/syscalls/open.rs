@@ -37,7 +37,7 @@ fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
 pub fn sys_open(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let flags    = args.a1 as u32;
-    let _mode    = args.a2;
+    let mode     = args.a2 as u32;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
@@ -61,9 +61,15 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
         i
     } else if (flags & O_CREAT) != 0 {
-        // O_CREAT: ask the owning mount's FS to create.
+        // O_CREAT: ask the owning mount's FS to create with
+        // user-supplied mode masked by the current task's umask.
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
+        let final_mode = mode & 0o777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, rel)) => match mnt.fs.create(&rel, 0o644) {
+            Some((mnt, rel)) => match mnt.fs.create(&rel, final_mode) {
                 Ok(i) => i,
                 Err(_) => return -(Errno::Enoent.as_i32() as i64),
             },
@@ -86,6 +92,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
 pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a1;
     let flags    = args.a2 as u32;
+    let mode     = args.a3 as u32;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
@@ -108,9 +115,15 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
         i
     } else if (flags & O_CREAT) != 0 {
-        // O_CREAT: ask the owning mount's FS to create.
+        // O_CREAT: ask owning mount's FS to create with the
+        // user-supplied mode masked by the task umask.
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
+        let final_mode = mode & 0o777 & !umask;
         match vfs::mount::resolve_mount(path_str) {
-            Some((mnt, rel)) => match mnt.fs.create(&rel, 0o644) {
+            Some((mnt, rel)) => match mnt.fs.create(&rel, final_mode) {
                 Ok(i) => i,
                 Err(_) => return -(Errno::Enoent.as_i32() as i64),
             },
