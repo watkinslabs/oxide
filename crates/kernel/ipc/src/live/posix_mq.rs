@@ -187,10 +187,16 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    const O_CLOEXEC: u64 = 0o2_000_000;
     let dentry = Dentry::new(None, name, inode.clone());
-    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
+    let mut fl = OpenFlags::O_RDWR;
+    if (oflag & O_NONBLOCK_BIT) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
-        Ok(fd) => fd as i64,
+        Ok(fd) => {
+            if (oflag & O_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
         Err(e) => -(e as i64),
     }
 }
