@@ -162,7 +162,10 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     use alloc::string::ToString;
     use vfs::{Dentry, File, OpenFlags};
     use syscall::errno::Errno;
-    let flags = args.a0 as u16;
+    const O_NONBLOCK: u64 = 0o0_004_000;
+    const O_CLOEXEC:  u64 = 0o2_000_000;
+    let raw   = args.a0;
+    let flags = raw as u16;
     let inode = UserfaultFdInode::new(flags);
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -173,8 +176,16 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     };
     let inode_ref: vfs::InodeRef = inode as vfs::InodeRef;
     let dentry = Dentry::new(None, "[uffd]".to_string(), inode_ref.clone());
-    let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc(file) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    let mut fl = OpenFlags::O_RDWR;
+    if (raw & O_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let file = File::new(inode_ref, dentry, fl);
+    match fdt.alloc(file) {
+        Ok(fd) => {
+            if (raw & O_CLOEXEC) != 0 { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
+        Err(e) => -(e as i64),
+    }
 }
 
 /// Lift a generic `vfs::InodeRef` to `Arc<UserfaultFdInode>` by ino tag.
