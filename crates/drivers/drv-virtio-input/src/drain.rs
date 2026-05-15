@@ -208,6 +208,13 @@ fn drain_one(ctx: &mut QueueCtx) {
         let evt = unsafe { core::ptr::read_volatile(evt_va) };
         DRAINED_EVENTS.fetch_add(1, Ordering::Relaxed);
 
+        // Publish the raw event to /dev/input/event0 readers
+        // (X11 / Wayland / evdev / libinput clients block-read
+        // these). Every event flows to the queue; the tty
+        // line-discipline below is the *additional* keyboard-as-
+        // console plumbing.
+        crate::evdev_queue::push_event0(evt.ty, evt.code, evt.value as i32);
+
         // EV_KEY: value=1 press, value=2 autorepeat, value=0 release.
         if evt.ty == EV_KEY {
             let pressed = evt.value == 1 || evt.value == 2;
