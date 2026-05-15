@@ -184,9 +184,11 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_prlimit64(pid, resource, new, old)` — slot 302. v1
-/// returns 0 — no rlimit enforcement yet.
-/// # C: O(1)
+/// `sys_prlimit64(pid, resource, new, old)` — slot 302. Reads/
+/// writes the per-task `rlimits` slot (cur,max). Enforcement is
+/// partial — RLIMIT_NOFILE consulted at fd_table::alloc; other
+/// resources stored but not yet checked.
+/// # C: O(1) self; O(N_tasks) for non-self lookup
 pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let pid      = args.a0 as u32;
