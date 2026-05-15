@@ -282,7 +282,10 @@ fn push_and_wake_fg(b: u8) {
 
     // Echo before pushing — if the byte ends up dropped (ICANON
     // VERASE / VKILL) we still want the visual effect to land.
-    if (lflag & crate::pty::lflag::ECHO) != 0 {
+    // ECHONL: NL is echoed even when ECHO is off (matches Linux).
+    let echo_on  = (lflag & crate::pty::lflag::ECHO)   != 0;
+    let echo_nl  = (lflag & crate::pty::lflag::ECHONL) != 0;
+    if echo_on || (b == b'\n' && echo_nl) {
         echo_byte(b, lflag, &term);
     }
 
@@ -298,16 +301,19 @@ fn push_and_wake_fg(b: u8) {
 /// Echo `b` to the foreground UART. CR/NL render as "\r\n" so the
 /// host terminal advances cleanly (matches what the OPOST + ONLCR
 /// path on output produces). Backspace + DEL render as "\b \b" so
-/// terminals visually erase the previous glyph. ECHOE/ECHOK
-/// niceties for VERASE / VKILL flow through `canonical_input`.
-fn echo_byte(b: u8, _lflag: u32, _term: &[u8; crate::pty::TERMIOS_BYTES]) {
+/// terminals visually erase the previous glyph. ECHOCTL gates the
+/// "^X" rendering for control chars; without it, control chars
+/// are silently dropped from echo (matches Linux n_tty behavior).
+/// ECHOE/ECHOK niceties for VERASE / VKILL flow through
+/// `canonical_input`.
+fn echo_byte(b: u8, lflag: u32, _term: &[u8; crate::pty::TERMIOS_BYTES]) {
+    let echoctl = (lflag & crate::pty::lflag::ECHOCTL) != 0;
     match b {
         b'\r' | b'\n'   => tty_emit(b"\r\n"),
         0x7f | 0x08     => tty_emit(b"\x08 \x08"),
         c if c >= 0x20 && c < 0x7f => tty_emit(&[c]),
         c if c < 0x20 && c != 0    => {
-            // Show as "^X" so users at least see *something*.
-            tty_emit(&[b'^', c + 0x40]);
+            if echoctl { tty_emit(&[b'^', c + 0x40]); }
         }
         _ => {}
     }
@@ -322,20 +328,33 @@ fn canonical_input(idx: usize, b: u8, term: &[u8; crate::pty::TERMIOS_BYTES]) {
     let verase = term[crate::pty::TERMIOS_OFF_CC + crate::pty::cc::VERASE];
     let vkill  = term[crate::pty::TERMIOS_OFF_CC + crate::pty::cc::VKILL];
     let veof   = term[crate::pty::TERMIOS_OFF_CC + crate::pty::cc::VEOF];
+    let lflag  = crate::pty::read_lflag(term);
+    let echo   = (lflag & crate::pty::lflag::ECHO)  != 0;
+    let echoe  = (lflag & crate::pty::lflag::ECHOE) != 0;
+    let echok  = (lflag & crate::pty::lflag::ECHOK) != 0;
 
     let mut line = VT_LINES[idx].lock();
 
-    // VERASE: pop one byte from line buffer (already echoed
-    // "\b \b" above so the user sees it disappear).
+    // VERASE: pop one byte from line buffer. ECHOE controls the
+    // "\b \b" visual; the unconditional echo_byte ran ahead of us
+    // and emitted "\b \b" already only because the byte matched
+    // 0x7f/0x08 — for arbitrary VERASE chars (e.g. ^H is 0x08 but
+    // ^? is 0x7f) we re-emit if ECHOE is on and ECHO didn't.
     if verase != 0 && b == verase {
         if line.len > 0 { line.len -= 1; }
+        if echo && !echoe {
+            // Already echoed as "\b \b" or "^?"; nothing extra.
+        } else if !echo && echoe {
+            tty_emit(b"\x08 \x08");
+        }
         return;
     }
 
-    // VKILL: drop the entire line.
+    // VKILL: drop the entire line. ECHOK controls the "\r\n"
+    // visual that signals "line discarded".
     if vkill != 0 && b == vkill {
         line.len = 0;
-        tty_emit(b"\r\n");
+        if echok { tty_emit(b"\r\n"); }
         return;
     }
 
