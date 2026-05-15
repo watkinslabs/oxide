@@ -114,13 +114,11 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_GETFD / F_SETFD /
-/// F_GETFL / F_SETFL / F_GETPIPE_SZ / F_SETPIPE_SZ / F_GETOWN / F_SETOWN.
-/// # C: O(N_fds) for F_DUPFD; O(1) otherwise.
-/// `sys_fcntl(fd, cmd, arg)` — slot 72. Tier-3 shim per `docs/53§4`.
-/// Multi-command dispatch over vfs::FdTable / vfs::File methods
-/// (Tier-2). F_GETPIPE_SZ/F_SETPIPE_SZ return the v1 fixed cap.
-/// # C: O(1) per command; O(N_fds) for F_DUPFD.
+/// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_DUPFD_CLOEXEC /
+/// F_GETFD / F_SETFD / F_GETFL / F_SETFL / F_GETPIPE_SZ /
+/// F_SETPIPE_SZ / F_GETOWN / F_SETOWN; F_SETLK / F_SETLKW / F_GETLK
+/// + F_OFD_* via `handle_record_lock`.
+/// # C: O(1) per cmd; O(N_fds) for F_DUPFD.
 pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_DUPFD: u64 = 0; const F_GETFD: u64 = 1; const F_SETFD: u64 = 2;
     const F_GETFL: u64 = 3; const F_SETFL: u64 = 4;
@@ -159,11 +157,9 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// F_SETLK / F_SETLKW / F_GETLK + F_OFD_* dispatch. Reads the
-/// user `struct flock`, computes the absolute byte range, and
-/// applies via `fs::posix_lock`. F_SETLKW with conflict spins on
-/// EAGAIN until success or signal (real wait-list rides a
-/// follow-up); F_GETLK probes and writes the result back.
+/// F_SETLK / F_SETLKW / F_GETLK + F_OFD_* dispatch via
+/// `fs::posix_lock`. SETLKW spins on EAGAIN until success;
+/// GETLK probes and writes back.
 fn handle_record_lock(
     cur: &sched::Task,
     _fdt: &alloc::sync::Arc<vfs::FdTable>,
@@ -229,9 +225,8 @@ fn handle_record_lock(
             }
         }
         F_SETLKW | F_OFD_SETLKW => {
-            // Spin-retry with yield until success. Real wait list
-            // keyed on inode + range rides a follow-up; v1 yields
-            // the CPU between attempts so a peer can release.
+            // Spin-yield until peer releases (real wait list rides
+            // a follow-up).
             loop {
                 match try_set_lock(inode, &req, owner) {
                     Ok(()) => return 0,
@@ -792,21 +787,31 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
 }
 
 
-/// `sys_lseek(fd, offset, whence)` — slot 8. Tier-3 shim.
-/// v1 always returns 0 for seekable file types, Espipe otherwise.
-/// Work fn `vfs::File::lseek` lands as a follow-up.
+/// `sys_lseek(fd, offset, whence)` — slot 8. Real `vfs::File::seek`
+/// for seekable file types (Regular + BlockDev); ESPIPE for the
+/// non-seekable kinds (Fifo / Socket / CharDev) per Linux.
 /// # C: O(1)
 pub fn sys_lseek(args: &SyscallArgs) -> i64 {
-    let fd = args.a0 as i32;
-    let _off = args.a1 as i64;
-    let _whence = args.a2 as i32;
+    let fd     = args.a0 as i32;
+    let off    = args.a1 as i64;
+    let whence = args.a2 as i32;
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     match file.inode().file_type() {
-        vfs::FileType::Regular | vfs::FileType::BlockDev => 0,
-        _                                                 => -(Errno::Espipe.as_i32() as i64),
+        vfs::FileType::Regular | vfs::FileType::BlockDev => {}
+        _ => return -(Errno::Espipe.as_i32() as i64),
+    }
+    let from = match whence {
+        0 => vfs::SeekFrom::Start,   // SEEK_SET
+        1 => vfs::SeekFrom::Current, // SEEK_CUR
+        2 => vfs::SeekFrom::End,     // SEEK_END
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+    match file.seek(from, off) {
+        Ok(pos) => pos as i64,
+        Err(e)  => -(e as i64),
     }
 }
 
