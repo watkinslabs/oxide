@@ -52,6 +52,15 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     };
     let resolved = resolve_path_for_open(path_raw);
     let path_str: &str = resolved.as_deref().unwrap_or(path_raw);
+    {
+        use ::security::landlock::access as la;
+        let mut op = la::READ_FILE;
+        if (flags & 0o1) != 0 { op |= la::WRITE_FILE; op &= !la::READ_FILE; }
+        if (flags & 0o2) != 0 { op |= la::READ_FILE | la::WRITE_FILE; }
+        if (flags & O_CREAT) != 0 { op |= la::MAKE_REG; }
+        if (flags & O_TRUNC) != 0 { op |= la::TRUNCATE; }
+        if let Err(rv) = crate::syscalls::landlock::check(path_str, op) { return rv; }
+    }
     // Unified mount-table lookup (R67). Special-case /dev/ptmx since
     // it allocates a new pair per open rather than resolving to a
     // pre-registered inode.
@@ -107,6 +116,16 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     };
     let resolved = resolve_path_for_open(s);
     let path_str: &str = resolved.as_deref().unwrap_or(s);
+    // Landlock check: derive requested access from open flags.
+    {
+        use ::security::landlock::access as la;
+        let mut op = la::READ_FILE;
+        if (flags & 0o1) != 0 { op |= la::WRITE_FILE; op &= !la::READ_FILE; }
+        if (flags & 0o2) != 0 { op |= la::READ_FILE | la::WRITE_FILE; }
+        if (flags & O_CREAT) != 0 { op |= la::MAKE_REG; }
+        if (flags & O_TRUNC) != 0 { op |= la::TRUNCATE; }
+        if let Err(rv) = crate::syscalls::landlock::check(path_str, op) { return rv; }
+    }
     // Unified mount-table lookup (R67). Special-case /dev/ptmx since
     // it allocates a new pair per open rather than resolving to a
     // pre-registered inode.
