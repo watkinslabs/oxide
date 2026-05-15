@@ -622,7 +622,7 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
 }
 
 
-/// `sys_access(path, mode)` — slot 21. v1: returns 0 if path
+/// `sys_access(path, mode)` — slot 21.  returns 0 if path
 /// resolves in devfs, -ENOENT otherwise. No actual permission
 /// check (mode ignored).
 /// # C: O(N_devfs_entries)
