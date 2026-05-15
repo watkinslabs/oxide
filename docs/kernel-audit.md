@@ -111,16 +111,15 @@ references.
 | feature | state | notes |
 |---|---|---|
 | pty pair termios | ✅ | `crates/tty/src/pty.rs` — c_iflag/c_oflag/c_lflag with ICANON/ECHO/ISIG/ICRNL/ONLCR. Used by `/dev/ptmx`. |
-| /dev/console termios | 🟥 | `kernel/src/syscall_glue_ioctl.rs:90` TCGETS returns zero-filled buf for non-pty char devs. No real termios state. |
+| /dev/console termios | ✅ | live tty termios via crates/tty/src/live.rs. |
 | ICANON (line buffering) | ✅ | `crates/tty/src/live.rs` cooked-mode line buffer with VERASE/VKILL/VEOF. |
-| ECHO toggle | 🟥 | `kernel/src/tty.rs:178` echoes unconditionally. login's password-prompt phase echoes too. |
-| ICRNL on input | 🟡 | `tty.rs:194` hardcoded CR→NL. Should be opt-in via per-fd c_iflag. |
-| ONLCR on output | 🟥 | `tty.rs:188` echoes "\r\n" for CR/NL on input echo only. Userspace `write(1, "\n")` does NOT get ONLCR translation. |
-| ISIG (Ctrl-C → SIGINT) | 🟥 | No translation of 0x03/0x1c/0x1a → signal. **This is why "Ctrl-C does nothing on a hung app".** |
-| VEOF/VERASE/VKILL/VINTR | 🟥 | No c_cc array applied to /dev/console input. |
-| TIOCGWINSZ | 🟡 | `syscall_glue_ioctl.rs:44` returns 80×24 hardcoded. |
-| TIOCSWINSZ | 🟥 | Probably accept-and-no-op. |
-| TIOCSCTTY (control terminal) | 🟥 | No "controlling tty" concept. |
+| ECHO toggle | ✅ | live tty cooked-mode honours c_lflag ECHO. |
+| ICRNL on input | ✅ | per-fd c_iflag honoured. |
+| ONLCR on output | ✅ | per-fd c_oflag ONLCR honoured. |
+| ISIG (Ctrl-C → SIGINT) | ✅ | VINTR/VQUIT/VSUSP signal generation per c_cc. |
+| VEOF/VERASE/VKILL/VINTR | ✅ | c_cc array applied in cooked-mode line buffer. |
+| TIOCGWINSZ / TIOCSWINSZ | ✅ | per-tty winsize storage. |
+| TIOCSCTTY (control terminal) | ✅ | per-Task ctty_dev field; setsid implicit-detach. |
 
 ### 2. Job control + process groups
 
@@ -163,7 +162,7 @@ references.
 | gettid | 🟡 | Returns tid — works for single-thread (tid == tgid). Wrong once threading lands. |
 | set_tid_address | ✅ | `syscall_glue_proc.rs:34` stores in `clear_child_tid`. CLONE_CHILD_CLEARTID wakeup-on-exit not done. |
 | futex FUTEX_WAIT/WAKE | ✅ | `kernel/src/futex.rs` (P3a). |
-| futex_waitv | 🟥 | accept-as-no-op. |
+| futex_waitv | 🟡 | ENOSYS forces glibc to fall back to per-futex FUTEX_WAIT loop. Real multi-futex wait substrate pending. |
 | robust_list | ✅ | Real set/get_robust_list against per-Task slot. |
 | rseq (restartable sequences) | ✅ | Real `sys_rseq` + rseq_writeback per F86. |
 
@@ -194,7 +193,7 @@ references.
 | pread64 / pwrite64 | ✅ | |
 | readv / writev | ✅ | |
 | preadv / pwritev | ✅ | (P9-17) |
-| preadv2 / pwritev2 | 🟥 | ENOSYS. |
+| preadv2 / pwritev2 | ✅ | aliased to preadv/pwritev (PR-H). |
 | sendfile | ✅ | `sched::xfer::sys_sendfile` staging-buffer loop. |
 | splice / tee / vmsplice | ✅ | `sched::xfer::sys_splice/tee/vmsplice`. |
 | copy_file_range | ✅ | `sched::xfer::sys_copy_file_range`. |
@@ -210,15 +209,15 @@ references.
 | stat / fstat / lstat / fstatat | ✅ | |
 | statx | 🟡 | check — modern programs prefer this. |
 | access / faccessat | 🟡 | |
-| faccessat2 | 🟥 | ENOSYS. |
-| openat2 | 🟥 | ENOSYS. systemd uses for RESOLVE_BENEATH. |
+| faccessat2 | ✅ | aliased to faccessat (PR-M). |
+| openat2 | ✅ | aliased to openat (PR-M); RESOLVE_BENEATH advisory. |
 | chmod/fchmod/fchmodat | 🟡 | |
 | chown/fchown/fchownat | 🟡 | |
 | utimes / utimensat | 🟡 | `futimesat` accept-and-no-op. |
 | chdir / fchdir | ✅ | per-task cwd |
 | getcwd | ✅ | |
 | chroot | ✅ | F95 per-task root prefix in devfs::lookup. |
-| mount / umount | 🟥 | EPERM. |
+| mount / umount | ✅ | F110 tmpfs mount backend. |
 | pivot_root | 🟥 | ENOSYS. |
 | ext4 RO read | ✅ | |
 | ext4 RW + JBD2 | 🟡 | (P7b) — works for small files. |
@@ -243,13 +242,13 @@ references.
 | timerfd_create / settime / gettime | ✅ | `timerfd.rs:103/128/181`. |
 | epoll_create / epoll_ctl / epoll_wait | ✅ | `dev_epoll.rs` (P9-21 poll readiness) |
 | epoll_pwait | 🟡 | |
-| epoll_pwait2 | 🟥 | ENOSYS. |
+| epoll_pwait2 | ✅ | aliased to epoll_pwait. |
 | inotify_init / inotify_add_watch | 🟡 | dev_inotify exists. |
 | pidfd_open | ✅ | dev/pidfd. |
 | pidfd_send_signal | ✅ | F93 cap-aware kill/tgkill/pidfd_send_signal. |
 | pidfd_getfd | ✅ | F63..F84 sweep landed real pidfd_getfd. |
-| close_range | 🟥 | Unclear — probably stub. |
-| userfaultfd | 🟥 | ENOSYS. |
+| close_range | ✅ | real range-close in fd_table. |
+| userfaultfd | ✅ | `fs::userfaultfd::sys_userfaultfd` + UFFDIO ioctls (P28a). |
 | io_uring (setup/enter/register) | ✅ | `kernel/src/io_uring.rs` real setup+enter (register stub). |
 | memfd_create | ✅ | `anonfd.rs:36`. |
 
@@ -269,7 +268,7 @@ references.
 | DHCP client | 🟥 | Missing entirely. |
 | DNS resolver | 🟥 | musl has client; no /etc/resolv.conf consumed. |
 | TLS | 🟥 | No openssl/rustls integration. |
-| sendmmsg / recvmmsg | 🟥 | ENOSYS. |
+| sendmmsg / recvmmsg | ✅ | PR-G wrapper around sendto/recvfrom. |
 | netlink (route/genl) | 🟥 | Missing. |
 | iptables / nftables | 🟥 | No netfilter. |
 | getsockopt / setsockopt | ✅ | F62 per-socket SockOpts cells + TCP_NODELAY. |
