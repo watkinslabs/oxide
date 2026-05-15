@@ -28,7 +28,7 @@ pub use cfs::CfsRunqueue;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use runqueue::RunqueueInner;
-pub use task::{cap, Creds, PosixTimer, SaHandler, SchedClass, SchedPolicy, SigInfo, Task, TaskState, RT_QUEUE_CAP};
+pub use task::{cap, ArchFpuBuf, Creds, PosixTimer, SaHandler, SchedClass, SchedPolicy, SigInfo, Task, TaskState, RT_QUEUE_CAP};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer
@@ -39,6 +39,13 @@ pub use task::{cap, Creds, PosixTimer, SaHandler, SchedClass, SchedPolicy, SigIn
 /// 128 leaves headroom for v1.x additions (FPU lazy state ptr,
 /// PCID/ASID, KPTI selector) without bumping every release.
 pub const ARCH_CTX_SIZE: usize = 128;
+
+/// Opaque per-arch FPU/SIMD state size carried on every Task per
+/// `14§7`. Sized to cover the largest per-arch shape:
+///   x86_64 FXSAVE area = 512 B
+///   aarch64 NEON V regs + FPCR/FPSR = 528 B
+/// Plus 16-byte alignment slack. 544 satisfies both with align(16).
+pub const ARCH_FPU_SIZE: usize = 544;
 
 #[cfg(test)]
 mod tests;
