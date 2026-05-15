@@ -69,6 +69,11 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         master
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
         i
+    } else if let Some(i) = ext4::rootfs::lookup_inode_any(path_str.as_bytes()) {
+        // Fallback for ext4 dirs/non-regular inodes the unified mount-
+        // table doesn't expose (e.g. /root, /etc as Directory inodes
+        // for getdents64 on open(O_DIRECTORY)).
+        i
     } else if (flags & O_CREAT) != 0 {
         // O_CREAT: ask the owning mount's FS to create with
         // user-supplied mode masked by the current task's umask.
@@ -133,6 +138,11 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
+        i
+    } else if let Some(i) = ext4::rootfs::lookup_inode_any(path_str.as_bytes()) {
+        // Fallback for ext4 dirs/non-regular inodes the unified mount-
+        // table doesn't expose (e.g. /root, /etc as Directory inodes
+        // for getdents64 on open(O_DIRECTORY)).
         i
     } else if (flags & O_CREAT) != 0 {
         // O_CREAT: ask owning mount's FS to create with the
