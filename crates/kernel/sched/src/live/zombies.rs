@@ -51,10 +51,24 @@ pub fn park_zombie(task: Arc<Task>) {
     if let Some(p) = parent {
         // SIGCHLD = 17; bit (17 - 1) = 16 in the 64-bit pending bitmap.
         p.sigpending.fetch_or(1u64 << 16, Ordering::Release);
+        accrue_child_time(&task, &p);
     }
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
     ZOMBIES.lock().push(task);
     wake_wait4_parent(parent_tid);
+}
+
+/// Add the dying child's elapsed CPU to the parent's
+/// `cumulative_child_ns` for `getrusage(RUSAGE_CHILDREN)`.
+/// # C: O(1)
+fn accrue_child_time(child: &Task, parent: &Task) {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let elapsed = now.saturating_sub(child.spawn_ns.load(Ordering::Acquire));
+    parent.cumulative_child_ns.fetch_add(elapsed, Ordering::AcqRel);
 }
 
 /// Post-mortem signaling without taking ownership of the Arc. Splits
