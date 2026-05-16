@@ -9,7 +9,7 @@
 // shell needs at v1; unknown aarch64 nrs pass through unchanged and
 // fall through to the dispatcher's ENOSYS arm (logged as such).
 
-#![cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+#![cfg_attr(not(any(target_arch = "aarch64", test)), allow(dead_code))]
 
 /// Translate an aarch64 generic-ABI syscall number to the x86_64
 /// number used by the dispatcher table. Unmapped numbers pass through.
@@ -26,12 +26,17 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (25,  72),   // fcntl
         (29,  16),   // ioctl
         (32,  73),   // flock
+        // ext4 *at family — arm-generic has NO plain (mkdir/unlink/
+        // link/rename/mknod/symlink) syscalls, only the *at variants
+        // (dirfd, path, ...). Pre-B35 these mapped to x86's plain
+        // variants, which shifted every arg by one (dirfd treated as
+        // path → EFAULT or wild reads). Always map to the *AT slot.
         (33,  259),  // mknodat
-        (34,  83),   // mkdirat
-        (35,  87),   // unlinkat
+        (34,  258),  // mkdirat  (was 83 mkdir — shifted)
+        (35,  263),  // unlinkat (was 87 unlink — shifted)
         (36,  266),  // symlinkat
-        (37,  86),   // linkat
-        (38,  82),   // renameat
+        (37,  265),  // linkat   (was 86 link — shifted)
+        (38,  264),  // renameat (was 82 rename — shifted)
         (40,  165),  // mount
         (45,  179),  // statfs
         (46,  138),  // fstatfs
@@ -46,8 +51,11 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
                      // shifts args so dirfd/path/mode line up.
         (49,  80),   // chdir
         (50,  81),   // fchdir
-        (51,  92),   // chown (fchownat)
-        (52,  91),   // chmod (fchmodat)
+        (51,  161),  // chroot (was 92 chown — broken: chroot path
+                     // was being treated as a chown path with garbage
+                     // uid/gid from x1/x2). arm-generic 51 = chroot,
+                     // not fchownat (which is 54).
+        (52,  91),   // fchmod (fd, mode) — args line up with NR_FCHMOD
         (53,  268),  // fchmodat
         (54,  260),  // fchownat
         (55,  93),   // fchown
@@ -69,7 +77,10 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (80,  5),    // fstat
         (82,  74),   // fsync
         (83,  75),   // fdatasync
-        (88,  100),  // utimensat
+        (88,  280),  // utimensat (was 100 = NR_TIMES — broken: arm
+                     // utimensat(dirfd, path, times, flags) was hitting
+                     // sys_times(struct tms*), wild-writing kernel stack
+                     // through the dirfd-as-tms-ptr)
         (90,  279),  // capget (stub)
         (91,  280),  // capset (stub)
         (93,  60),   // exit
@@ -183,4 +194,59 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
     // 150-cmp scan is cheaper than a thousand-element jump table.
     for &(arm, x86) in MAP { if arm == nr { return x86; } }
     nr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::aarch64_nr_to_x86;
+    use crate::nrs::*;
+
+    /// Path-mutating syscalls — arm-generic has only the *at form.
+    /// Mapping must land on the x86 *AT slot, not the plain variant,
+    /// otherwise every arg shifts by one (dirfd is read as path).
+    #[test]
+    fn at_family_lands_on_at_x86() {
+        assert_eq!(aarch64_nr_to_x86(33), NR_MKNODAT,   "arm mknodat → x86 mknodat");
+        assert_eq!(aarch64_nr_to_x86(34), NR_MKDIRAT,   "arm mkdirat → x86 mkdirat");
+        assert_eq!(aarch64_nr_to_x86(35), NR_UNLINKAT,  "arm unlinkat → x86 unlinkat");
+        assert_eq!(aarch64_nr_to_x86(36), NR_SYMLINKAT, "arm symlinkat → x86 symlinkat");
+        assert_eq!(aarch64_nr_to_x86(37), NR_LINKAT,    "arm linkat → x86 linkat");
+        assert_eq!(aarch64_nr_to_x86(38), NR_RENAMEAT,  "arm renameat → x86 renameat");
+        assert_eq!(aarch64_nr_to_x86(53), NR_FCHMODAT,  "arm fchmodat → x86 fchmodat");
+        assert_eq!(aarch64_nr_to_x86(54), NR_FCHOWNAT,  "arm fchownat → x86 fchownat");
+        assert_eq!(aarch64_nr_to_x86(56), NR_OPENAT,    "arm openat → x86 openat");
+        assert_eq!(aarch64_nr_to_x86(78), NR_READLINKAT,"arm readlinkat → x86 readlinkat");
+        assert_eq!(aarch64_nr_to_x86(79), NR_NEWFSTATAT,"arm newfstatat → x86 newfstatat");
+        assert_eq!(aarch64_nr_to_x86(88), NR_UTIMENSAT, "arm utimensat → x86 utimensat");
+    }
+
+    /// arm-generic 51 = chroot, not fchownat. Pre-B35 it mapped to
+    /// NR_CHOWN (92), so chroot(path) silently invoked chown(path,
+    /// garbage_uid, garbage_gid) — typically a path-permission change.
+    #[test]
+    fn chroot_maps_to_chroot_not_chown() {
+        assert_eq!(aarch64_nr_to_x86(51), NR_CHROOT);
+        assert_ne!(aarch64_nr_to_x86(51), NR_CHOWN);
+    }
+
+    /// Same-shape syscalls — arg layout matches across arches, so
+    /// the mapping just needs the right x86 NR.
+    #[test]
+    fn same_shape_essentials() {
+        assert_eq!(aarch64_nr_to_x86(57), NR_CLOSE);
+        assert_eq!(aarch64_nr_to_x86(63), NR_READ);
+        assert_eq!(aarch64_nr_to_x86(64), NR_WRITE);
+        assert_eq!(aarch64_nr_to_x86(93), NR_EXIT);
+        assert_eq!(aarch64_nr_to_x86(94), NR_EXIT_GROUP);
+        assert_eq!(aarch64_nr_to_x86(220), NR_CLONE);
+        assert_eq!(aarch64_nr_to_x86(221), NR_EXECVE);
+        assert_eq!(aarch64_nr_to_x86(222), NR_MMAP);
+    }
+
+    /// Unmapped arm nrs pass through unchanged so the dispatcher's
+    /// ENOSYS arm catches them.
+    #[test]
+    fn unknown_passes_through() {
+        assert_eq!(aarch64_nr_to_x86(999_999), 999_999);
+    }
 }

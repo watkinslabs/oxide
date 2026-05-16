@@ -78,5 +78,5 @@ mod stub_tests {
 #[cfg(target_os = "oxide-kernel")] pub mod dmesg;
 
 
-#[cfg(target_os = "oxide-kernel")] pub mod arm_abi;
+#[cfg(any(target_os = "oxide-kernel", test))] pub mod arm_abi;
 
