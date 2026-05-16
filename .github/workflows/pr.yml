@@ -31,9 +31,38 @@ jobs:
       - name: cargo test workspace
         run: cargo test --workspace --quiet
 
+  # Boot-smoke gate — boots each arch under qemu (headless, TCG)
+  # and waits for the `oxide login:` marker on serial within the
+  # SMOKE_TIMEOUT window. Without this, syscall-table and ABI
+  # regressions (which hosted tests can't catch — e.g. a wrong
+  # getpid routing → init dies at PID-1 self-check) ship silently.
+  # Timeout set generously because TCG on a GHA runner is ~50×
+  # slower than KVM on a dev box.
+  qemu-smoke:
+    name: qemu-smoke ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, arm]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust toolchain
+        run: rustup show
+      - name: install rust-src
+        run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
+      - name: install qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-system-arm
+      - name: boot smoke ${{ matrix.arch }}
+        env:
+          SMOKE_TIMEOUT: 1200
+        run: make smoke-${{ matrix.arch }}
+
   # Build both arches under both feature configs per `04§3` recipe
-  # ("release no-features, release debug-all"). QEMU smoke isn't run
-  # here yet; the `make qemu-*` targets exist for local validation.
+  # ("release no-features, release debug-all").
   build-kernel:
     name: build kernel ${{ matrix.arch }} (${{ matrix.profile.name }})
     runs-on: ubuntu-latest

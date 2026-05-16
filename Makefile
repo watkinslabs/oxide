@@ -82,6 +82,19 @@ qemu-x86-debug:
 qemu-arm-debug:
 	$(XTASK) qemu --arch aarch64 --features debug-all
 
+# Boot-smoke gates — run kernel under qemu headless and wait for
+# `oxide login:` on serial within SMOKE_TIMEOUT seconds (default
+# 600). PR-time CI uses these; locally a 30-60s dev-box boot is
+# typical, but TCG on a hosted runner needs 5-15min, hence the
+# higher default. Override via `make smoke-x86 SMOKE_TIMEOUT=900`.
+smoke-x86: x86
+	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+
+smoke-arm: arm
+	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+
+smoke: smoke-x86 smoke-arm
+
 # Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.
