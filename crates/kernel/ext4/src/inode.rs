@@ -258,6 +258,17 @@ pub fn write_extent_idx(i_block: &mut [u8; I_BLOCK_LEN], idx: u16, e: &ExtentIdx
     i_block[off+10..off+12].copy_from_slice(&0u16.to_le_bytes());
 }
 
+/// Slice variant for writing extent_idx records into an interior
+/// (depth ≥ 1) block buffer. Same layout as the inline variant.
+/// # C: O(1)
+pub fn write_extent_idx_slice(buf: &mut [u8], idx: u16, e: &ExtentIdx) {
+    let off = 12 + (idx as usize) * 12;
+    buf[off    ..off+ 4].copy_from_slice(&e.block.to_le_bytes());
+    buf[off+ 4..off+ 8].copy_from_slice(&e.leaf_lo.to_le_bytes());
+    buf[off+ 8..off+10].copy_from_slice(&e.leaf_hi.to_le_bytes());
+    buf[off+10..off+12].copy_from_slice(&0u16.to_le_bytes());
+}
+
 /// Write an extent header into the leading 12 bytes of `i_block`.
 /// Caller is responsible for bringing leaves in sync with
 /// `hdr.entries`; this helper only touches the header words.
