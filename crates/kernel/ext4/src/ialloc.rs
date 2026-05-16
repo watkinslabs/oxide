@@ -11,7 +11,8 @@ use crate::balloc::find_first_clear;
 use crate::dir;
 use crate::gdt;
 use crate::inode::{
-    self, ExtentHeader, EXT4_EXT_MAGIC, I_BLOCK_LEN, S_IFDIR, S_IFREG,
+    self, ExtentHeader, EXT4_EXT_MAGIC, I_BLOCK_LEN, S_IFBLK, S_IFCHR, S_IFDIR,
+    S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
 };
 use crate::mount::{Mount, MountError};
 use crate::superblock::SB_OFF_FREE_INODES;
@@ -208,6 +209,73 @@ impl Mount {
             let new_ino = m.alloc_inode(parent_group)?;
             m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_DIR)?;
+            Ok(new_ino)
+        })
+    }
+
+    /// Create a symlink `name` under `parent_ino` whose target is
+    /// `target`. Fast-symlink path (target ≤ 60 B) writes target
+    /// directly into `i_block`; slow path allocates one data block.
+    /// `target` must be non-empty and ≤ one filesystem block.
+    /// # C: O(N parent entries) + 1 inode-alloc + (target>60 ? 1 block-alloc + 2 block I/Os : 1 inode I/O)
+    pub fn create_symlink(&self, parent_ino: u32, name: &[u8], target: &[u8])
+        -> Result<u32, MountError>
+    {
+        let bs = self.sb.block_size as usize;
+        if target.is_empty() || target.len() > bs {
+            return Err(MountError::Inode(inode::InodeError::BadLen));
+        }
+        self.run_journaled(|m| {
+            let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
+            let new_ino = m.alloc_inode(parent_group)?;
+            m.init_inode(new_ino, S_IFLNK | 0o777, 1)?;
+            if target.len() <= I_BLOCK_LEN {
+                let (mut bytes, off) = m.read_inode_bytes(new_ino)?;
+                for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
+                bytes[0x28..0x28 + target.len()].copy_from_slice(target);
+                let n = target.len() as u64;
+                bytes[0x04..0x08].copy_from_slice(&((n & 0xFFFF_FFFF) as u32).to_le_bytes());
+                bytes[0x6C..0x70].copy_from_slice(&((n >> 32) as u32).to_le_bytes());
+                m.metadata_write(off, &bytes)?;
+            } else {
+                let mut buf = vec![0u8; bs];
+                buf[..target.len()].copy_from_slice(target);
+                m.append_block(new_ino, &buf)?;
+                m.set_inode_size(new_ino, target.len() as u64)?;
+            }
+            m.dir_link(parent_ino, name, new_ino, dir::DT_LNK)?;
+            Ok(new_ino)
+        })
+    }
+
+    /// Create a device/FIFO/socket node `name` under `parent_ino`.
+    /// `mode` must encode one of `S_IFCHR | S_IFBLK | S_IFIFO | S_IFSOCK`
+    /// in its file-type bits; `rdev` is stored verbatim in
+    /// `i_block[0..4]` for CHR/BLK (Linux "small dev" layout) and
+    /// ignored for FIFO/SOCK.
+    /// # C: O(N parent entries) + 1 inode-alloc + 1 inode I/O
+    pub fn create_mknod(&self, parent_ino: u32, name: &[u8], mode: u16, rdev: u32)
+        -> Result<u32, MountError>
+    {
+        let ftype = mode & S_IFMT;
+        let dirent_dt = match ftype {
+            S_IFCHR  => dir::DT_CHR,
+            S_IFBLK  => dir::DT_BLK,
+            S_IFIFO  => dir::DT_FIFO,
+            S_IFSOCK => dir::DT_SOCK,
+            _        => return Err(MountError::Inode(inode::InodeError::BadLen)),
+        };
+        self.run_journaled(|m| {
+            let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
+            let new_ino = m.alloc_inode(parent_group)?;
+            let mut bytes = vec![0u8; m.sb.inode_size as usize];
+            bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
+            bytes[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
+            if matches!(ftype, S_IFCHR | S_IFBLK) {
+                bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
+            }
+            m.write_inode_bytes(new_ino, &bytes)?;
+            m.dir_link(parent_ino, name, new_ino, dirent_dt)?;
             Ok(new_ino)
         })
     }
