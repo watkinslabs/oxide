@@ -307,17 +307,22 @@ pub unsafe fn spawn_user_thread_for_fork(
     unsafe { task.install_stack(stack); }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
-    // F156: inherit parent's fs_base so CLONE_VM children see the same
-    // TLS that musl/glibc set up via arch_prctl(ARCH_SET_FS). Without
-    // this, all %fs:offs reads in the child go to (fs_base=0)+offs and
-    // hit unmapped or wrong memory — busybox getty's argv-from-TLS path
-    // ends up reading code-segment bytes as paths.
-    let parent_fs_base = super::current()
-        .map(|p| {
-            // SAFETY: parent is the running task on this CPU; arch_ctx is single-mutator per `13§5`; we only read the fs_base field.
-            unsafe { (*p.arch_ctx_ptr::<ArchCtx>()).fs_base }
-        })
-        .unwrap_or(0);
+    // F156 + B38: inherit parent's fs_base so CLONE_VM children see the
+    // same TLS that musl/glibc set up via arch_prctl(ARCH_SET_FS).
+    // Without this, all %fs:offs reads in the child go to
+    // (fs_base=0)+offs and hit unmapped/wrong memory — busybox getty's
+    // argv-from-TLS path ends up reading code-segment bytes as paths.
+    //
+    // B38 fix: read the LIVE IA32_FS_BASE MSR rather than the saved
+    // `arch_ctx.fs_base` field. arch_prctl(ARCH_SET_FS) writes the MSR
+    // directly and only the next context switch syncs it back to
+    // arch_ctx; a fork() that lands between the two would otherwise
+    // pull a stale (often zero) value into the child. Mirrors the
+    // aarch64 fork path which already reads live TPIDR_EL0 via mrs.
+    // SAFETY: rdmsr IA32_FS_BASE at CPL=0 is unconditionally legal; we
+    // are on the parent's syscall stack so the MSR holds the parent's
+    // user FS_BASE.
+    let parent_fs_base = unsafe { hal_x86_64::get_user_fs_base() };
     // SAFETY: stack_top freshly installed; entry_va/user_sp/regs from parent's saved frame; new_user_for_fork lays out the iretq frame for ring-3 resume with regs preloaded.
     unsafe {
         let p = task.arch_ctx_ptr::<ArchCtx>();
