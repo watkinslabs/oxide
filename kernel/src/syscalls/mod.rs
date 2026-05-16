@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod hwrng; pub mod ioctl; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -800,6 +800,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                                  => crate::syscalls::proc::sys_sched_setaffinity(&args),
         syscall::nrs::NR_PRCTL         => sched::prctl::sys_prctl(&args),
         syscall::nrs::NR_FUTEX         => crate::syscalls::proc::sys_futex(&args),
+        syscall::nrs::NR_FUTEX_WAITV   => crate::syscalls::futex_waitv::sys_futex_waitv(&args),
         syscall::nrs::NR_CLONE3        => crate::syscalls::proc::sys_clone3(&args),
         syscall::nrs::NR_MPROTECT      => crate::syscalls::proc::sys_mprotect(&args),
         syscall::nrs::NR_MADVISE       => crate::syscalls::proc::sys_madvise(&args),
