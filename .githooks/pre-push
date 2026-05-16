@@ -35,8 +35,11 @@ if [ -z "${shas// /}" ]; then
     exit 0
 fi
 
-# Files changed across all pushed commits.
-changed="$(git diff --name-only $shas 2>/dev/null | sort -u)"
+# Files changed across all pushed commits. `git diff --name-only
+# $SHA` would compare working tree to $SHA (empty after a clean
+# commit); `git show --name-only --format=` lists exactly the
+# files each commit modified.
+changed="$(git show --name-only --format= $shas 2>/dev/null | sort -u | grep -v '^$')"
 if [ -z "$changed" ]; then
     exit 0
 fi
