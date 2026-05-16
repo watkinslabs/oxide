@@ -168,6 +168,92 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     }
 }
 
+/// `symlink(target, linkpath)` slot 88.
+/// # C: O(N parent entries)
+pub fn sys_symlink(args: &SyscallArgs) -> i64 {
+    let target = match read_path(args.a0) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let link = match read_path(args.a1) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    symlink_impl(target, link)
+}
+
+/// `symlinkat(target, newdirfd, linkpath)` slot 266. Ignores newdirfd
+/// (paths resolved absolute or cwd-relative).
+/// # C: O(N parent entries)
+pub fn sys_symlinkat(args: &SyscallArgs) -> i64 {
+    let target = match read_path(args.a0) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let link = match read_path(args.a2) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    symlink_impl(target, link)
+}
+
+fn symlink_impl(target: String, link: String) -> i64 {
+    let l = resolve(&link).unwrap_or(link);
+    if let Err(rv) = crate::syscalls::landlock::check(&l,
+        ::security::landlock::access::MAKE_SYM) { return rv; }
+    if !is_ext4_path(&l) { return -(Errno::Erofs.as_i32() as i64); }
+    match ext4::rootfs::symlink_at(target.as_bytes(), l.as_bytes()) {
+        Ok(())  => 0,
+        Err(e)  => errno_from_vfs(e),
+    }
+}
+
+/// `mknod(path, mode, dev)` slot 133.
+/// # C: O(N parent entries)
+pub fn sys_mknod(args: &SyscallArgs) -> i64 {
+    let raw = match read_path(args.a0) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    mknod_impl(raw, args.a1 as u16, args.a2 as u32)
+}
+
+/// `mknodat(dirfd, path, mode, dev)` slot 259. Ignores dirfd.
+/// # C: O(N parent entries)
+pub fn sys_mknodat(args: &SyscallArgs) -> i64 {
+    let raw = match read_path(args.a1) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    mknod_impl(raw, args.a2 as u16, args.a3 as u32)
+}
+
+fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
+    let p = resolve(&raw).unwrap_or(raw);
+    // Map mode's type bits to the Landlock access needed.
+    const S_IFMT:  u16 = 0xF000;
+    const S_IFREG: u16 = 0x8000;
+    const S_IFCHR: u16 = 0x2000;
+    const S_IFBLK: u16 = 0x6000;
+    const S_IFIFO: u16 = 0x1000;
+    const S_IFSOCK: u16 = 0xC000;
+    let ftype = mode & S_IFMT;
+    // POSIX: mknod with no type bits ⇒ regular file (≡ create).
+    let real_ftype = if ftype == 0 { S_IFREG } else { ftype };
+    let la = match real_ftype {
+        S_IFREG  => ::security::landlock::access::MAKE_REG,
+        S_IFCHR  => ::security::landlock::access::MAKE_CHAR,
+        S_IFBLK  => ::security::landlock::access::MAKE_BLOCK,
+        S_IFIFO  => ::security::landlock::access::MAKE_FIFO,
+        S_IFSOCK => ::security::landlock::access::MAKE_SOCK,
+        _        => return -(Errno::Einval.as_i32() as i64),
+    };
+    if let Err(rv) = crate::syscalls::landlock::check(&p, la) { return rv; }
+    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
+    let r = if real_ftype == S_IFREG {
+        // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
+        ext4::rootfs::create_at(p.as_bytes(), mode & 0x0FFF)
+            .map(|_| ()).ok_or(vfs::VfsError::Eio)
+    } else {
+        ext4::rootfs::mknod_at(p.as_bytes(), (real_ftype | (mode & 0x0FFF)) as u16, dev)
+    };
+    match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
+}
+
 /// `rmdir(path)` slot 84.
 /// # C: O(1)
 pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
