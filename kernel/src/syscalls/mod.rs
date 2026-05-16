@@ -487,6 +487,22 @@ fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
             // above; wrmsr IA32_FS_BASE = val updates the per-CPU
             // segment base used by user-mode `fs:` accesses.
             unsafe { hal_x86_64::set_user_fs_base(val); }
+            // B38: keep the saved arch_ctx.fs_base in sync with the
+            // live MSR. Without this, a fork() that lands before the
+            // next context switch reads a stale arch_ctx.fs_base (often
+            // 0) for the child's inherited TLS pointer. The fork path
+            // also now reads the live MSR directly (spawn.rs), but
+            // mirroring here keeps the field a valid cache for any
+            // other consumer that reads arch_ctx.
+            if let Some(cur) = sched::live::current() {
+                // SAFETY: current is the running task on this CPU;
+                // arch_ctx is single-mutator per `13§5`; we are on
+                // its own syscall path so no concurrent writer.
+                unsafe {
+                    let p: *mut hal_x86_64::ContextX86_64 = cur.arch_ctx_ptr();
+                    (*p).fs_base = val;
+                }
+            }
             0
         }
         syscall::nrs::ARCH_GET_FS => {
