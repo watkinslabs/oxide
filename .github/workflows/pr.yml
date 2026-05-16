@@ -32,8 +32,11 @@ jobs:
         run: cargo test --workspace --quiet
 
   # Build both arches under both feature configs per `04§3` recipe
-  # ("release no-features, release debug-all"). QEMU smoke isn't run
-  # here yet; the `make qemu-*` targets exist for local validation.
+  # ("release no-features, release debug-all"). Boot-smoke is a
+  # local-only gate (see `tools/boot-smoke.sh`, the pre-push hook
+  # under `.githooks/pre-push`, and CLAUDE.md§"Boot smoke before
+  # push") — hosted-runner TCG boots cost ~10-15min/arch/PR which
+  # isn't worth the GHA budget.
   build-kernel:
     name: build kernel ${{ matrix.arch }} (${{ matrix.profile.name }})
     runs-on: ubuntu-latest
