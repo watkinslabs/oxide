@@ -1,89 +1,72 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, 1044 tests pass, both arches build.
-**Shell works end-to-end** (login → bash → pwd/cd/ls/ls foo all functional).
-Host CPU stays near-idle when guest is at prompt. target/ slim (~1.9G).
+Branch: main (clean). spec-lint clean, 1049 tests pass, both arches build.
+Shell still works end-to-end per prior session.
 
-## Major milestones this session
+## This session
 
-1. **PMM poison panic at login fixed** (PR #1100, B27) — bisected through 78
-   PRs to commit 452e810 (F49 vvar-shared-frame); the new VmaBacking::KernelFrame
-   demand-page handler installed the kernel-owned vvar PA in user PT without
-   bumping the per-page refcount. AS-drop's per-leaf dec_and_maybe_free freed
-   the vvar frame, the timer-tick publisher poisoned the now-free page, the
-   next alloc panicked. Fix: inc_ref callback plumbed through
-   handle_page_fault_cow_rmap.
+1. **F82 (#1114) — mknodat + symlinkat write-side.** New ext4 helpers
+   `Mount::create_symlink` (fast-inline ≤60B; slow path via
+   `append_block` + `set_inode_size`) and `Mount::create_mknod`
+   (S_IF{CHR,BLK,FIFO,SOCK}; rdev in `i_block[0..4]` for char/block).
+   rootfs `symlink_at` / `mknod_at`; namei syscalls
+   `sys_symlink` / `sys_symlinkat` / `sys_mknod` / `sys_mknodat`
+   replace the EROFS stub. POSIX mknod-with-S_IFREG routes through
+   `create_at`. aarch64 ABI: nr 33 fixed (was→133 mknod with shifted
+   args; now→259 mknodat); nr 36→266 symlinkat added. +5 hosted tests.
 
-2. **Shell working end-to-end** (B28..B34, R02, F80..F81) — added cwd-resolve
-   to every stat-family / chmod-family / access / readlink / chdir / utime
-   syscall; openat falls back to ext4::rootfs::lookup_inode_any for non-mount
-   paths; ext4 readdir walks all dir blocks (was: block 0 only); ext4
-   Inode::readlink real (fast inline + slow data-block); seven duplicated
-   cwd-resolve sites extracted into syscalls::pathresolve::resolve_cwd.
-
-3. **Idle no longer burns host CPU** (PR #1102, B29) — `halt_forever`'s
-   tight `hlt` loop never picked up a freshly-runnable task (e.g. shell
-   woken by UART RX). Now does `schedule(); hlt;` in a loop. `tick_yield`
-   (called by every polling syscall) was busy-spinning when the polling task
-   was the sole runnable thing; now does `schedule(); hlt;` so each iteration
-   waits for an IRQ.
-
-4. **target/ 30G → 1.9G** (PR #1112, C73) — `profile.dev` had
-   `debug = "full"` baking per-type DWARF into every hosted-test rlib +
-   incremental cache. Switched to `line-tables-only` (still gets panic
-   backtraces). 16× size reduction.
+2. **F83 (#1115) — real sys_futex_waitv (slot 449).** Replaces the
+   compat ENOSYS arm. New `WAITV_GROUPS` alongside `WAITERS`; each
+   group holds N keys + Arc<Task> + AtomicI32 woken_idx. `wake_key()`
+   walks both lists; groups fire one-shot via CAS. `dispatch_waitv()`
+   does per-key `*uaddr == val` pre-flight, parks, returns index.
+   Split into `kernel/src/syscalls/futex_waitv.rs` (proc.rs hit cap).
 
 ## All PRs this session
 
 | PR | Branch | Summary |
 |----|--------|---------|
-| #1065..#1099 | F59..F79 + D11..D22 + B25/B26 | flag-honor sweep + audit refresh |
-| #1100 | B27 | vvar: inc_ref on KernelFrame demand-page (PMM poison fix) |
-| #1101 | B28 | stat family: cwd resolve |
-| #1102 | B29 | idle + tick_yield park via hlt/wfi |
-| #1103 | F80 | ext4 readlink (fast + slow symlink) |
-| #1104 | B30 | access/readlink: cwd resolve + real readlink fall-through |
-| #1105 | B31 | chdir: cwd resolve + ext4 dir fallback |
-| #1106 | B32 | perms (chmod/chown family): cwd resolve + ext4 fallback |
-| #1107 | B33 | utime: cwd resolve + ext4 fallback |
-| #1108 | B34 | openat: ext4 fallback for directories |
-| #1109 | F81 | ext4 readdir walks all dir blocks |
-| #1110 | R02 | extract shared cwd path resolver |
-| #1111 | D23 | doc(state) checkpoint |
-| #1112 | C73 | profile.dev line-tables-only (target 30G → 1.9G) |
+| #1114 | F82 | ext4 mknod/symlink write-side + arm ABI fix |
+| #1115 | F83 | sys_futex_waitv real impl (multi-key wait groups) |
 
-## Open next (priority order)
+## Open next (priority order, unchanged from prior session minus F83)
 
-1. **mknodat/symlinkat write-side** — needs ext4 mknod + symlink-create
-   helpers (F80 only added read-side). Wires real device-node creation
-   and symlink creation from userspace.
-2. **ext4 extent depth > 2** — current support is 1-2 levels; deeper trees
-   (large files / fragmented dirs) silently fail.
-3. **O_TMPFILE** — needed by modern systemd and many shell idioms.
-4. **futex_waitv** — currently silent-0; modern glibc multi-futex wait.
-5. **TLS endgame** — FS_BASE / TPIDR_EL0 setup at execve, per-task TLS
-   block allocation (currently relies on arch_prctl post-exec).
-6. **#NM-driven lazy FPU save/restore** on context switch (perf, not
-   correctness).
+1. **mknodat/symlinkat write-side** ✅ done (F82)
+2. **ext4 extent depth > 2** — current write supports depth ≤ 1
+   (ExtentTreeFull at 169 GB cap); read supports depth ≤ 2.
+3. **O_TMPFILE** — needs orphan-inode list + AT_EMPTY_PATH linkat.
+   Non-trivial (multi-day) for full Linux correctness.
+4. **futex_waitv** ✅ done (F83)
+5. **TLS endgame** — FS_BASE / TPIDR_EL0 setup at execve, per-task
+   TLS block allocation (currently relies on arch_prctl post-exec).
+6. **#NM-driven lazy FPU save/restore** on context switch (perf).
 7. **K10 eBPF verifier + JIT** (multi-PR, large).
 8. **K13 DRM/KMS atomic + per-evdev registry** (large).
 9. **virtio-net live driver** (types in, not driving an iface yet).
 10. **netlink + nftables** = network management substrate.
 11. **DHCP / DNS / TLS** = userspace work.
 
-## Discipline notes carried over
+## Investigation backlog
 
-- [[feedback_lint_gate_command]] — gate `cargo run -p xtask -- spec-lint`
-  with `grep -q "^spec-lint: clean$"` BEFORE `git checkout -b`, not after.
-- Branch per change; never delete merged branches; no Co-Authored-By
-  trailers; PR-time CI is the only soak gate.
+- **qemu-mcp boot hangs at `dl: hello / hello-from-dyn`** before
+  reaching `oxide login:`. Pre-existing per [[project_login_hang_cat_smoke]]
+  — kernel-spawned smoke ELF `hello_dyn` doesn't return cleanly,
+  stalls the smoke loop, init never spawns getty. `make qemu-x86`
+  may or may not differ (uses same `--features debug-boot`). Worth a
+  bisect after the next clean PR.
+
+## Discipline notes
+
+- spec-lint gate BEFORE `git checkout -b` per
+  [[feedback_lint_gate_command]].
+- Branch per change; never delete merged branches; no
+  Co-Authored-By trailers; PR-time CI is the only soak gate.
 
 ## First task next session
 
 ```
 git pull && cargo run -p xtask -- spec-lint && cargo test --all 2>&1 | tail -5
-make qemu-x86    # should reach `oxide login:` cleanly, host CPU idle
 ```
 
-Pick from "Open next" or attack any new bug surfaced by interactive use
-of the shell.
+Pick from "Open next". Strong candidates: TLS endgame (#5) or #NM
+lazy FPU (#6) — both well-scoped, single-PR achievable.
