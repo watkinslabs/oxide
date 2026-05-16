@@ -128,11 +128,8 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // NUMA SET/MBIND/MIGRATE/MOVE/HOME silent-0 above.
         // GET_MEMPOLICY moved to real impl (F79).
         | NR_VSERVER | NR__SYSCTL
-        // FUTEX_WAITV: real multi-futex wait substrate not yet wired.
-        // Silent-0 was the worst possible answer (programs thought a
-        // wait completed without one). ENOSYS makes glibc fall back
-        // to the per-futex FUTEX_WAIT polling loop.
-        | NR_FUTEX_WAITV
+        // FUTEX_WAITV moved to real impl (F83) — multi-key wait group
+        // walks both WAITERS and WAITV_GROUPS on wake.
         // EXECVEAT aliased to execve in PR-P (path resolved relative to dirfd).
         // PREADV2/PWRITEV2 moved to real impl (alias of preadv/pwritev) in PR-H.
         // userfaultfd; epoll moved to real impl.
