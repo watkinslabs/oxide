@@ -64,6 +64,70 @@ fn unlink_frees_inode_and_blocks() {
 }
 
 #[test]
+fn create_symlink_fast_inline_target() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let target: &[u8] = b"/etc/passwd";
+    let n = m.create_symlink(2, b"shortlink", target).unwrap();
+    let got = m.lookup_path(b"/shortlink").unwrap();
+    assert_eq!(got, n);
+    let inode = m.read_inode(n).unwrap();
+    assert!(inode.is_link());
+    assert_eq!(inode.size, target.len() as u64);
+    assert_eq!(inode.links_count, 1);
+    assert_eq!(inode.fast_symlink_target(), Some(target));
+}
+
+#[test]
+fn create_symlink_slow_via_data_block() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    // 80 B target ⇒ > I_BLOCK_LEN(60), forces slow path.
+    let target: std::vec::Vec<u8> = (0..80).map(|i| b'A' + ((i % 26) as u8)).collect();
+    let n = m.create_symlink(2, b"longlink", &target).unwrap();
+    let inode = m.read_inode(n).unwrap();
+    assert!(inode.is_link());
+    assert_eq!(inode.size, target.len() as u64);
+    assert!(inode.fast_symlink_target().is_none());
+    let blk = m.read_file_block(&inode, 0).unwrap();
+    assert_eq!(&blk[..target.len()], &target[..]);
+}
+
+#[test]
+fn create_mknod_char_device_persists_rdev() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    // /dev/null encoded as makedev(1,3) ⇒ small-dev = (major<<8) | minor.
+    let rdev: u32 = (1u32 << 8) | 3;
+    let n = m.create_mknod(2, b"nullnode", 0x2000 | 0o666, rdev).unwrap();
+    let got = m.lookup_path(b"/nullnode").unwrap();
+    assert_eq!(got, n);
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.mode & 0xF000, 0x2000); // S_IFCHR
+    assert_eq!(inode.size, 0);
+    let stored = u32::from_le_bytes([inode.i_block[0], inode.i_block[1], inode.i_block[2], inode.i_block[3]]);
+    assert_eq!(stored, rdev);
+}
+
+#[test]
+fn create_mknod_fifo_no_rdev() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_mknod(2, b"myfifo", 0x1000 | 0o644, 0).unwrap();
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.mode & 0xF000, 0x1000); // S_IFIFO
+    assert_eq!(inode.links_count, 1);
+}
+
+#[test]
+fn create_mknod_rejects_bad_type() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    // mode = S_IFREG should not be accepted by mknod() ext4 helper.
+    assert!(m.create_mknod(2, b"bogus", 0x8000 | 0o644, 0).is_err());
+}
+
+#[test]
 fn create_persists_across_remount() {
     let disk = build_disk();
     {

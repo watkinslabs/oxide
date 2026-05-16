@@ -582,6 +582,35 @@ pub fn unlink_at(path: &[u8]) -> Result<(), vfs::VfsError> {
     Ok(())
 }
 
+/// Create a symlink at `link_path` whose target is `target`.
+/// # C: O(N parent entries)
+pub fn symlink_at(target: &[u8], link_path: &[u8]) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let (pino, name) = parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
+    let new_ino = mount.create_symlink(pino, name, target)
+        .map_err(|_| vfs::VfsError::Eio)?;
+    PAGE_CACHE.invalidate(InodeId(new_ino as u64));
+    Ok(())
+}
+
+/// Create a device/FIFO/socket node at `path`. `mode` encodes type
+/// bits (`S_IF{CHR,BLK,FIFO,SOCK}`) and permission bits.
+/// # C: O(N parent entries)
+pub fn mknod_at(path: &[u8], mode: u16, rdev: u32) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let (pino, name) = parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
+    let new_ino = mount.create_mknod(pino, name, mode, rdev)
+        .map_err(|_| vfs::VfsError::Eio)?;
+    PAGE_CACHE.invalidate(InodeId(new_ino as u64));
+    Ok(())
+}
+
 /// Create an empty subdirectory at `path` with mode `mode_perm`.
 /// # C: O(N parent entries)
 pub fn mkdir_at(path: &[u8], mode_perm: u16) -> Result<(), vfs::VfsError> {
