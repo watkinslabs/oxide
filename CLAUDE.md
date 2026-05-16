@@ -121,6 +121,16 @@ When user asks about a concept: check this table → read that spec → answer. 
 - Don't move docs to `docs/v1/`. Versioning is git tags, not directories.
 - Don't claim work needs human-in-the-loop QEMU testing. Use the qemu MCP directly.
 
+## Boot smoke before push (mandatory for kernel changes)
+
+Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real userspace (init, musl, busybox) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
+
+**Rule:** before `git push` on a branch that touches `kernel/`, `crates/kernel/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`, `rust-toolchain.toml`, `Cargo.toml`, or `Cargo.lock` — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach login.
+
+A pre-push hook at `.githooks/pre-push` enforces this automatically. Install once per clone with `git config core.hooksPath .githooks`. Bypass for known-safe doc-only pushes with `SKIP_SMOKE=1 git push`.
+
+Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn GHA minutes. The pre-push hook runs on the dev box where KVM keeps boot under a minute.
+
 ## Git workflow (mandatory)
 
 **Branch per change.** Never commit directly to `main`. Branch names use a single-letter type + zero-padded counter + kebab-case title, sortable globally and within type:
