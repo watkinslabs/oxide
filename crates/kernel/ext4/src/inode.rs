@@ -18,6 +18,10 @@ pub const S_IFMT:  u16 = 0xF000;
 pub const S_IFREG: u16 = 0x8000;
 pub const S_IFDIR: u16 = 0x4000;
 pub const S_IFLNK: u16 = 0xA000;
+pub const S_IFCHR: u16 = 0x2000;
+pub const S_IFBLK: u16 = 0x6000;
+pub const S_IFIFO: u16 = 0x1000;
+pub const S_IFSOCK: u16 = 0xC000;
 
 /// Extent header magic per `ext4_extent_header.eh_magic`.
 pub const EXT4_EXT_MAGIC: u16 = 0xF30A;

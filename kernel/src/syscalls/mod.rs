@@ -777,12 +777,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PROCESS_VM_READV  => crate::syscalls::pvmrw::sys_process_vm_readv(&args), syscall::nrs::NR_PROCESS_VM_WRITEV => crate::syscalls::pvmrw::sys_process_vm_writev(&args),
         syscall::nrs::NR_UTIMES | syscall::nrs::NR_UTIME
             => crate::syscalls::utime::sys_utime_dispatch(nr, &args),
-        // link/symlink/mknod family — devfs is read-only, refuse.
-        syscall::nrs::NR_LINK   => crate::syscalls::namei::sys_link(&args),
-        syscall::nrs::NR_LINKAT => crate::syscalls::namei::sys_linkat(&args),
-        syscall::nrs::NR_SYMLINK | syscall::nrs::NR_SYMLINKAT
-            | syscall::nrs::NR_MKNOD | syscall::nrs::NR_MKNODAT
-                                 => -(Errno::Erofs.as_i32() as i64),
+        // link/symlink/mknod family.
+        syscall::nrs::NR_LINK     => crate::syscalls::namei::sys_link(&args),
+        syscall::nrs::NR_LINKAT   => crate::syscalls::namei::sys_linkat(&args),
+        syscall::nrs::NR_SYMLINK  => crate::syscalls::namei::sys_symlink(&args),
+        syscall::nrs::NR_SYMLINKAT=> crate::syscalls::namei::sys_symlinkat(&args),
+        syscall::nrs::NR_MKNOD    => crate::syscalls::namei::sys_mknod(&args),
+        syscall::nrs::NR_MKNODAT  => crate::syscalls::namei::sys_mknodat(&args),
         syscall::nrs::NR_FSTATFS | syscall::nrs::NR_STATFS
                                  => crate::syscalls::fs::sys_statfs(&args),
         syscall::nrs::NR_GETCPU        => crate::syscalls::proc::sys_getcpu(&args),

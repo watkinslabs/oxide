@@ -26,9 +26,10 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (25,  72),   // fcntl
         (29,  16),   // ioctl
         (32,  73),   // flock
-        (33,  133),  // mknodat → mknod-ish (stub)
+        (33,  259),  // mknodat
         (34,  83),   // mkdirat
         (35,  87),   // unlinkat
+        (36,  266),  // symlinkat
         (37,  86),   // linkat
         (38,  82),   // renameat
         (40,  165),  // mount
