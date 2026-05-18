@@ -20,6 +20,7 @@
 extern crate alloc;
 
 pub mod rtnetlink;
+pub mod genetlink;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -215,6 +216,7 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELROUTE) => {
                 rtnetlink::handle_delroute(hdr, msg)
             }
+            (proto::NETLINK_GENERIC, _) => genetlink::handle(msg),
             _ => {
                 let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
                 Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
