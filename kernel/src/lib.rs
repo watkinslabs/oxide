@@ -653,6 +653,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             // crate can't depend on netfilter (circular), so the
             // kernel side wires the fn pointer at boot.
             netlink::install_netfilter_handler(netfilter::handle);
+            // F104: nftables packet-path enforcement. Bridge the
+            // netfilter eval() into net::stack via a fn pointer so
+            // the net crate stays independent of netfilter.
+            net::stack::install_nf_hook(|h, p| netfilter::eval(h, p).as_u32());
             // P8 boot smoke: loopback UDP send-then-recv +
             // ICMP echo round-trip via the in-kernel net stack.
             {
