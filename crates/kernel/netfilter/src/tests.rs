@@ -206,6 +206,41 @@ use super::*;
     }
 
     #[test]
+    fn setelem_insert_dedup_remove_round_trip() {
+        let e = NftSetElem {
+            table_family: 2,
+            table_name:   String::from("oxide-test-elT"),
+            set_name:     String::from("blocked"),
+            key:          alloc::vec![10, 0, 0, 5],
+            data:         alloc::vec![],
+        };
+        let before = set_elems_snapshot().len();
+        set_elem_insert(e.clone());
+        set_elem_insert(e.clone()); // dedup
+        assert_eq!(set_elems_snapshot().len(), before + 1);
+        let n = set_elem_remove(2, "oxide-test-elT", "blocked", &[10, 0, 0, 5]);
+        assert_eq!(n, 1);
+        assert_eq!(set_elems_snapshot().len(), before);
+    }
+
+    #[test]
+    fn setelem_lookup_round_trips_with_data() {
+        let e = NftSetElem {
+            table_family: 2,
+            table_name:   String::from("oxide-test-elT2"),
+            set_name:     String::from("blocked"),
+            key:          alloc::vec![1, 2, 3, 4],
+            data:         alloc::vec![0xff],
+        };
+        set_elem_insert(e);
+        let got = set_elem_lookup(2, "oxide-test-elT2", "blocked", &[1, 2, 3, 4]);
+        assert_eq!(got, Some(alloc::vec![0xff]));
+        let miss = set_elem_lookup(2, "oxide-test-elT2", "blocked", &[9, 9, 9, 9]);
+        assert_eq!(miss, None);
+        let _ = set_elem_remove(2, "oxide-test-elT2", "blocked", &[1, 2, 3, 4]);
+    }
+
+    #[test]
     fn rule_handles_are_unique() {
         let a = next_rule_handle();
         let b = next_rule_handle();
