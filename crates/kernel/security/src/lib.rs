@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod seccomp;
 pub mod bpf;
+pub mod bpf_verify;
 #[cfg(target_os = "oxide-kernel")]
 pub mod landlock;
 
