@@ -29,6 +29,18 @@ const BPF_CLASS_MASK: u8 = 0x07;
 const BPF_ALU64: u8 = 0x07;
 const BPF_JMP:   u8 = 0x05;
 const BPF_LD:    u8 = 0x00;
+const BPF_LDX:   u8 = 0x01;
+
+// BPF_LDX | BPF_MEM | <size>
+const BPF_LDX_MEM_B:  u8 = 0x71;
+const BPF_LDX_MEM_H:  u8 = 0x69;
+const BPF_LDX_MEM_W:  u8 = 0x61;
+const BPF_LDX_MEM_DW: u8 = 0x79;
+
+/// Context register. Linux passes the program's context (skb /
+/// xdp_md / etc.) in R1 on entry. v1 models that as "R1 is an
+/// offset into `pkt`"; any other src reg on a LDX is rejected.
+const CTX_REG: u8 = 1;
 
 const BPF_SRC_X: u8 = 0x08; // bit 3 — 0=use imm, 1=use src reg
 
@@ -60,12 +72,14 @@ fn decode(bytes: &[u8]) -> Insn {
 }
 
 /// Run an eBPF program. Returns `Some(r0)` on EXIT, `None` on
-/// unsupported opcode, step-budget exhaustion, or out-of-bounds
-/// pc. `pkt` is the program's input context; v1 has no LDX/STX
-/// support so it's ignored — callers thread it forward so F109
-/// (packet loads) can wire it without churning the API.
+/// unsupported opcode, step-budget exhaustion, out-of-bounds pc,
+/// or an out-of-bounds packet load. R1 is initialized to 0 and
+/// LDX_MEM with src=R1 reads pkt[r1+off..r1+off+size] (bounds-
+/// checked). LDX with any other src reg is rejected — v1 doesn't
+/// track reg types, so we can't tell a packet pointer from a
+/// scalar otherwise.
 /// # C: O(insn count × step budget)
-pub fn run(insns: &[u8], _pkt: &[u8]) -> Option<i64> {
+pub fn run(insns: &[u8], pkt: &[u8]) -> Option<i64> {
     if insns.is_empty() || insns.len() % 8 != 0 { return None; }
     let n = insns.len() / 8;
 
@@ -121,6 +135,39 @@ pub fn run(insns: &[u8], _pkt: &[u8]) -> Option<i64> {
                 } else {
                     pc += 1;
                 }
+            }
+            BPF_LDX => {
+                if i.src != CTX_REG { return None; }
+                let base = regs[CTX_REG as usize];
+                let off = base.wrapping_add(i.off as i64);
+                if off < 0 { return None; }
+                let off = off as usize;
+                let val: i64 = match i.opcode {
+                    BPF_LDX_MEM_B => {
+                        if off >= pkt.len() { return None; }
+                        pkt[off] as i64
+                    }
+                    BPF_LDX_MEM_H => {
+                        if off + 2 > pkt.len() { return None; }
+                        u16::from_le_bytes([pkt[off], pkt[off + 1]]) as i64
+                    }
+                    BPF_LDX_MEM_W => {
+                        if off + 4 > pkt.len() { return None; }
+                        u32::from_le_bytes([
+                            pkt[off], pkt[off + 1], pkt[off + 2], pkt[off + 3]
+                        ]) as i64
+                    }
+                    BPF_LDX_MEM_DW => {
+                        if off + 8 > pkt.len() { return None; }
+                        u64::from_le_bytes([
+                            pkt[off], pkt[off + 1], pkt[off + 2], pkt[off + 3],
+                            pkt[off + 4], pkt[off + 5], pkt[off + 6], pkt[off + 7],
+                        ]) as i64
+                    }
+                    _ => return None,
+                };
+                regs[i.dst as usize] = val;
+                pc += 1;
             }
             BPF_LD => {
                 if i.opcode != BPF_LD_IMM_DW { return None; }
@@ -243,6 +290,47 @@ mod tests {
         // 0xFF is not a defined opcode in our subset.
         let p = cat(&[raw(0xff, 0, 0, 0, 0), raw(0x95, 0, 0, 0, 0)]);
         assert_eq!(run(&p, &[]), None);
+    }
+
+    #[test]
+    fn ldx_mem_b_reads_packet_byte() {
+        // LDX_MEM_B R0, [R1 + 2] ; EXIT — R1 = 0 on entry.
+        let p = cat(&[
+            raw(0x71, 0, 1, 2, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run(&p, &[0x10, 0x20, 0x30, 0x40]), Some(0x30));
+    }
+
+    #[test]
+    fn ldx_mem_w_reads_little_endian_word() {
+        // LDX_MEM_W R0, [R1 + 0] ; EXIT
+        let p = cat(&[
+            raw(0x61, 0, 1, 0, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        let pkt = [0x78, 0x56, 0x34, 0x12];
+        assert_eq!(run(&p, &pkt), Some(0x12345678));
+    }
+
+    #[test]
+    fn ldx_mem_b_out_of_bounds_returns_none() {
+        // LDX_MEM_B R0, [R1 + 99] ; EXIT — pkt too short.
+        let p = cat(&[
+            raw(0x71, 0, 1, 99, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run(&p, &[0x10]), None);
+    }
+
+    #[test]
+    fn ldx_from_non_ctx_reg_rejected() {
+        // LDX_MEM_B R0, [R2 + 0] ; EXIT — only R1 is the ctx ptr.
+        let p = cat(&[
+            raw(0x71, 0, 2, 0, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run(&p, &[0x10, 0x20]), None);
     }
 
     #[test]
