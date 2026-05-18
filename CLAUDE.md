@@ -125,7 +125,7 @@ When user asks about a concept: check this table → read that spec → answer. 
 
 Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real userspace (init, musl, busybox) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
 
-**Rule:** before `git push` on a branch that touches `kernel/`, `crates/kernel/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`, `rust-toolchain.toml`, `Cargo.toml`, or `Cargo.lock` — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach login.
+**Rule:** before `git push` on a branch that touches `kernel/`, `crates/kernel/`, `crates/drivers/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`, `rust-toolchain.toml`, `Cargo.toml`, or `Cargo.lock` — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach login.
 
 A pre-push hook at `.githooks/pre-push` enforces this automatically. Install once per clone with `git config core.hooksPath .githooks`. Bypass for known-safe doc-only pushes with `SKIP_SMOKE=1 git push`.
 
