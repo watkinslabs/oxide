@@ -98,6 +98,136 @@ core::arch::global_asm!(
     "4:  jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_50, . - oxide_irq_vec_50",
 
+    // ----- vec 0x51..0x57 -- MSI pool (F58). Same shape as 0x50.
+    //       arch-irq's per-vector handler table looks up by the
+    //       pushed vec tag, calls the registered driver fn, then
+    //       falls through to the standard tail. ------------------
+    ".globl oxide_irq_vec_51",
+    ".type  oxide_irq_vec_51, @function",
+    "oxide_irq_vec_51:",
+    "    push 0", "    push 0x51",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 51f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "51: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_51, . - oxide_irq_vec_51",
+
+    ".globl oxide_irq_vec_52",
+    ".type  oxide_irq_vec_52, @function",
+    "oxide_irq_vec_52:",
+    "    push 0", "    push 0x52",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 52f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "52: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_52, . - oxide_irq_vec_52",
+
+    ".globl oxide_irq_vec_53",
+    ".type  oxide_irq_vec_53, @function",
+    "oxide_irq_vec_53:",
+    "    push 0", "    push 0x53",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 53f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "53: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_53, . - oxide_irq_vec_53",
+
+    ".globl oxide_irq_vec_54",
+    ".type  oxide_irq_vec_54, @function",
+    "oxide_irq_vec_54:",
+    "    push 0", "    push 0x54",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 54f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "54: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_54, . - oxide_irq_vec_54",
+
+    ".globl oxide_irq_vec_55",
+    ".type  oxide_irq_vec_55, @function",
+    "oxide_irq_vec_55:",
+    "    push 0", "    push 0x55",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 55f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "55: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_55, . - oxide_irq_vec_55",
+
+    ".globl oxide_irq_vec_56",
+    ".type  oxide_irq_vec_56, @function",
+    "oxide_irq_vec_56:",
+    "    push 0", "    push 0x56",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 56f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "56: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_56, . - oxide_irq_vec_56",
+
+    ".globl oxide_irq_vec_57",
+    ".type  oxide_irq_vec_57, @function",
+    "oxide_irq_vec_57:",
+    "    push 0", "    push 0x57",
+    "    push rax", "    push rcx", "    push rdx",
+    "    push rsi", "    push rdi",
+    "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
+    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    test rax, rax", "    jz 57f",
+    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rsi, rax",
+    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
+    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    call oxide_context_switch",
+    "57: jmp oxide_irq_resume_user",
+    ".size oxide_irq_vec_57, . - oxide_irq_vec_57",
+
     // ----- shared IRQ epilogue --------------------------------------------
     // Globally addressable so `Context::new_kernel_with_irq_frame`
     // can park its address as the saved-RIP at scaffold base.
@@ -117,6 +247,13 @@ extern "C" {
     fn oxide_irq_vec_40();
     fn oxide_irq_vec_41();
     fn oxide_irq_vec_50();
+    fn oxide_irq_vec_51();
+    fn oxide_irq_vec_52();
+    fn oxide_irq_vec_53();
+    fn oxide_irq_vec_54();
+    fn oxide_irq_vec_55();
+    fn oxide_irq_vec_56();
+    fn oxide_irq_vec_57();
     fn oxide_irq_resume_user() -> !;
 }
 
@@ -124,10 +261,19 @@ extern "C" {
 pub const VEC_TIMER:   u8 = 0x40;
 /// Cross-CPU resched IPI vector per `13§9`.
 pub const VEC_RESCHED: u8 = 0x41;
-/// MSI delivery vector (F57). Boot-time virtio MSI-X programs this
-/// into the device MSI message-data field; LAPIC delivers it; the
-/// dispatcher bumps `MSI_FIRES`.
+/// MSI delivery vector (F57). Legacy alias for the first slot in
+/// the per-vector pool. Kept so existing callers compile; new code
+/// should call `alloc_x86_vector` and use the returned vector.
 pub const VEC_MSI:     u8 = 0x50;
+
+/// First / last vector in the per-vector MSI pool (F58). Each
+/// device's MSI-X table entry gets a distinct vector in this range;
+/// the arch-irq dispatcher routes each vector to its registered
+/// handler via the per-vector table.
+pub const VEC_MSI_POOL_FIRST: u8 = 0x50;
+pub const VEC_MSI_POOL_LAST:  u8 = 0x57;
+pub const VEC_MSI_POOL_LEN: usize =
+    (VEC_MSI_POOL_LAST as usize) - (VEC_MSI_POOL_FIRST as usize) + 1;
 
 /// Address of the IRQ stub for `vec`, or `0` if no IRQ stub is
 /// registered for that vector (caller falls back to fault stub).
@@ -138,7 +284,14 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
         match vec {
             VEC_TIMER   => return oxide_irq_vec_40 as *const () as usize as u64,
             VEC_RESCHED => return oxide_irq_vec_41 as *const () as usize as u64,
-            VEC_MSI     => return oxide_irq_vec_50 as *const () as usize as u64,
+            0x50 => return oxide_irq_vec_50 as *const () as usize as u64,
+            0x51 => return oxide_irq_vec_51 as *const () as usize as u64,
+            0x52 => return oxide_irq_vec_52 as *const () as usize as u64,
+            0x53 => return oxide_irq_vec_53 as *const () as usize as u64,
+            0x54 => return oxide_irq_vec_54 as *const () as usize as u64,
+            0x55 => return oxide_irq_vec_55 as *const () as usize as u64,
+            0x56 => return oxide_irq_vec_56 as *const () as usize as u64,
+            0x57 => return oxide_irq_vec_57 as *const () as usize as u64,
             _ => {}
         }
     }

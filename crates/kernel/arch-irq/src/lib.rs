@@ -43,16 +43,144 @@ pub fn intid_is_v2m(intid: u32) -> bool {
     first != 0 && count != 0 && intid >= first && intid < first + count
 }
 
-/// Hand out the shared x86 MSI IDT vector. Today every MSI-X-capable
-/// device on the boot scan gets the same `VEC_MSI = 0x50` because the
-/// dispatcher bumps a global `MSI_FIRES` counter regardless of source
-/// — per-device callback dispatch arrives in F58, at which point this
-/// becomes a real bump-allocator over `0x50..` with extra IDT stubs.
-/// # C: O(1).
+/// Bump-allocator over the MSI vector pool (`VEC_MSI_POOL_FIRST..=
+/// VEC_MSI_POOL_LAST`). Each MSI-X-capable device on the boot scan
+/// gets a distinct vector; the arch-irq dispatcher routes each one
+/// to its registered handler (see `register_msi_handler`).
+/// Returns `None` once the pool is exhausted — caller falls back to
+/// the polling kthread path.
+/// # C: O(1)
 #[cfg(target_arch = "x86_64")]
 pub fn alloc_x86_vector() -> Option<u8> {
-    Some(0x50)
+    let cur = MSI_VEC_NEXT.fetch_add(1, Ordering::AcqRel);
+    if cur > hal_x86_64::VEC_MSI_POOL_LAST { return None; }
+    Some(cur)
 }
+
+#[cfg(target_arch = "x86_64")]
+static MSI_VEC_NEXT: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(hal_x86_64::VEC_MSI_POOL_FIRST);
+
+/// Per-vector MSI handler table. Indexed by `vector -
+/// VEC_MSI_POOL_FIRST`. Drivers register at boot via
+/// `register_msi_handler`; the LAPIC dispatcher looks up + calls
+/// each fired vector's handler. Null = no handler installed
+/// (dispatcher falls back to the legacy shared-vector softirq raise).
+#[cfg(target_arch = "x86_64")]
+pub(crate) static MSI_HANDLERS: [core::sync::atomic::AtomicPtr<()>;
+    hal_x86_64::VEC_MSI_POOL_LEN] = {
+    [
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    ]
+};
+
+/// Install `handler` as the per-vector dispatch target for IDT vector
+/// `vector` (must be in `VEC_MSI_POOL_FIRST..=VEC_MSI_POOL_LAST`).
+/// Idempotent; later calls overwrite. Returns Ok on success, Err if
+/// the vector is outside the pool.
+/// # C: O(1) atomic store
+#[cfg(target_arch = "x86_64")]
+pub fn register_msi_handler(vector: u8, handler: fn()) -> Result<(), ()> {
+    if vector < hal_x86_64::VEC_MSI_POOL_FIRST
+        || vector > hal_x86_64::VEC_MSI_POOL_LAST
+    {
+        return Err(());
+    }
+    let idx = (vector - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
+    MSI_HANDLERS[idx].store(
+        handler as *mut (), Ordering::Release,
+    );
+    Ok(())
+}
+
+/// Per-SPI handler table for the GICv2m / LPI MSI range. Two
+/// parallel atomic arrays so the storage stays Send+Sync without
+/// a lock: SPIs[i] holds the INTID for slot i (0 = empty), HANDS[i]
+/// holds the fn pointer cast through `*mut ()`. Lookup scans the
+/// 8-slot table — v1 has ≤ 4 MSI devices, so the scan is cheap.
+#[cfg(target_arch = "aarch64")]
+const ARM_MSI_SLOTS: usize = 8;
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) static ARM_MSI_SPIS: [core::sync::atomic::AtomicU32; ARM_MSI_SLOTS] = [
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+];
+#[cfg(target_arch = "aarch64")]
+pub(crate) static ARM_MSI_HANDS: [core::sync::atomic::AtomicPtr<()>; ARM_MSI_SLOTS] = [
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+];
+
+/// Install `handler` for INTID `spi`. Idempotent — re-registers
+/// overwrite. Returns Err if the table is full (all 8 slots used
+/// by other SPIs).
+/// # C: O(N) atomic scan
+#[cfg(target_arch = "aarch64")]
+pub fn register_msi_handler(spi: u32, handler: fn()) -> Result<(), ()> {
+    // First pass: replace an existing entry for this SPI.
+    for i in 0..ARM_MSI_SLOTS {
+        if ARM_MSI_SPIS[i].load(Ordering::Acquire) == spi {
+            ARM_MSI_HANDS[i].store(handler as *mut (), Ordering::Release);
+            return Ok(());
+        }
+    }
+    // Second pass: claim the first empty slot via CAS on the SPI cell.
+    for i in 0..ARM_MSI_SLOTS {
+        if ARM_MSI_SPIS[i]
+            .compare_exchange(0, spi, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            ARM_MSI_HANDS[i].store(handler as *mut (), Ordering::Release);
+            return Ok(());
+        }
+    }
+    Err(())
+}
+
+/// Dispatch path. Returns true iff a handler was found + invoked.
+/// Called by the GIC dispatcher on every recognised MSI INTID.
+/// # C: O(N) atomic scan
+#[cfg(target_arch = "aarch64")]
+pub fn invoke_arm_spi_handler(intid: u32) -> bool {
+    for i in 0..ARM_MSI_SLOTS {
+        if ARM_MSI_SPIS[i].load(Ordering::Acquire) == intid {
+            let raw = ARM_MSI_HANDS[i].load(Ordering::Acquire);
+            if !raw.is_null() {
+                // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
+                let f: fn() = unsafe { core::mem::transmute(raw) };
+                f();
+                return true;
+            }
+            return false;
+        }
+    }
+    false
+}
+
+// Stub for non-aarch64 builds so unconditional callers compile.
+/// # C: O(1)
+#[cfg(not(target_arch = "aarch64"))]
+pub fn invoke_arm_spi_handler(_intid: u32) -> bool { false }
 
 /// Allocate one SPI from the GICv2m frame's range. Returns `None`
 /// when the range is unconfigured or exhausted.
