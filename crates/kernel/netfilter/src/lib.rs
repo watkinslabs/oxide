@@ -535,7 +535,7 @@ fn find_str_attr<'a>(attrs: &'a [u8], target: u16) -> Option<&'a str> {
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         if nla_type == target {
             let payload = &attrs[off + 4..off + nla_len];
@@ -677,7 +677,7 @@ fn find_u32_attr(attrs: &[u8], target: u16) -> Option<u32> {
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         if nla_type == target {
             let payload = &attrs[off + 4..off + nla_len];
@@ -695,7 +695,7 @@ fn find_u64_attr(attrs: &[u8], target: u16) -> Option<u64> {
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         if nla_type == target {
             let payload = &attrs[off + 4..off + nla_len];
@@ -713,7 +713,7 @@ fn find_bytes_attr<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u8]> {
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         if nla_type == target {
             return Some(&attrs[off + 4..off + nla_len]);
