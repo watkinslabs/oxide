@@ -647,38 +647,13 @@ fn build_newroute_reply(
 /// # C: O(N_ifaces)
 pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
-    let entries = ifaces_snapshot();
-    for (id, _name, _mac, _mtu, is_lo) in entries.iter() {
-        if *is_lo {
-            // 127.0.0.0/8 dev lo local
-            reply.extend_from_slice(&build_newroute_reply(
-                req.nlmsg_seq, req.nlmsg_pid,
-                RT_TABLE_LOCAL, RTPROT_KERNEL, RT_SCOPE_HOST, RTN_LOCAL,
-                Some(([127, 0, 0, 0], 8)),
-                None,
-                *id, Some([127, 0, 0, 1]),
-                true,
-            ));
-        } else {
-            // 10.0.2.0/24 dev eth0 link
-            reply.extend_from_slice(&build_newroute_reply(
-                req.nlmsg_seq, req.nlmsg_pid,
-                RT_TABLE_MAIN, RTPROT_KERNEL, RT_SCOPE_LINK, RTN_UNICAST,
-                Some(([10, 0, 2, 0], 24)),
-                None,
-                *id, Some([10, 0, 2, 15]),
-                true,
-            ));
-            // default via 10.0.2.2 dev eth0
-            reply.extend_from_slice(&build_newroute_reply(
-                req.nlmsg_seq, req.nlmsg_pid,
-                RT_TABLE_MAIN, RTPROT_BOOT, RT_SCOPE_UNIVERSE, RTN_UNICAST,
-                None,
-                Some([10, 0, 2, 2]),
-                *id, Some([10, 0, 2, 15]),
-                true,
-            ));
-        }
+    for r in route_snapshot().iter() {
+        reply.extend_from_slice(&build_newroute_reply(
+            req.nlmsg_seq, req.nlmsg_pid,
+            r.table, r.protocol, r.scope, r.kind,
+            r.dst, r.gateway, r.oif_ifindex, r.prefsrc,
+            true,
+        ));
     }
     let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
     done.nlmsg_flags = flags::NLM_F_MULTI;
@@ -686,6 +661,152 @@ pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
     done.write_to(&mut done_buf);
     reply.extend_from_slice(&done_buf);
     reply
+}
+
+/// One row in the kernel's route table. v1 IPv4 only; IPv6
+/// equivalents (RTA_DST length=16) ride a follow-up.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RouteRow {
+    pub table:       u8,
+    pub protocol:    u8,
+    pub scope:       u8,
+    pub kind:        u8,
+    pub dst:         Option<([u8; 4], u8)>,
+    pub gateway:     Option<[u8; 4]>,
+    pub oif_ifindex: u32,
+    pub prefsrc:     Option<[u8; 4]>,
+}
+
+static ROUTE_TABLE: Spinlock<Vec<RouteRow>, SockLockClass> =
+    Spinlock::new(Vec::new());
+
+/// Insert (or replace by key=`(table, dst, oif)`).
+/// # C: O(N)
+pub fn route_insert(row: RouteRow) {
+    let mut g = ROUTE_TABLE.lock();
+    let dup = g.iter().position(|r|
+        r.table == row.table
+        && r.dst == row.dst
+        && r.oif_ifindex == row.oif_ifindex);
+    if let Some(i) = dup { g[i] = row; }
+    else { g.push(row); }
+}
+
+/// Remove rows matching `(table, dst, oif)`. Returns count removed.
+/// # C: O(N)
+pub fn route_remove(table: u8, dst: Option<([u8; 4], u8)>, oif: u32) -> usize {
+    let mut g = ROUTE_TABLE.lock();
+    let before = g.len();
+    g.retain(|r| !(r.table == table && r.dst == dst && r.oif_ifindex == oif));
+    before - g.len()
+}
+
+/// Full snapshot for RTM_GETROUTE.
+/// # C: O(N) clone
+pub fn route_snapshot() -> Vec<RouteRow> {
+    ROUTE_TABLE.lock().clone()
+}
+
+/// Seed the boot-time default routes for the eth0 iface. Called
+/// from pci_boot alongside addr seed_defaults.
+/// # C: O(1)
+pub fn seed_default_routes(eth0_ifindex: u32) {
+    route_insert(RouteRow {
+        table: RT_TABLE_MAIN, protocol: RTPROT_KERNEL,
+        scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
+        dst: Some(([10, 0, 2, 0], 24)),
+        gateway: None, oif_ifindex: eth0_ifindex,
+        prefsrc: Some([10, 0, 2, 15]),
+    });
+    route_insert(RouteRow {
+        table: RT_TABLE_MAIN, protocol: RTPROT_BOOT,
+        scope: RT_SCOPE_UNIVERSE, kind: RTN_UNICAST,
+        dst: None, gateway: Some([10, 0, 2, 2]),
+        oif_ifindex: eth0_ifindex,
+        prefsrc: Some([10, 0, 2, 15]),
+    });
+}
+
+/// Parse RTA_* attributes following an rtmsg, returning the
+/// destination prefix, gateway, oif_ifindex, and prefsrc as we
+/// find them.
+/// # C: O(N attrs)
+fn parse_route_attrs(attrs: &[u8])
+    -> (Option<[u8; 4]>, Option<[u8; 4]>, Option<u32>, Option<[u8; 4]>)
+{
+    let mut dst: Option<[u8; 4]> = None;
+    let mut gw:  Option<[u8; 4]> = None;
+    let mut oif: Option<u32>     = None;
+    let mut src: Option<[u8; 4]> = None;
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        let payload = &attrs[off + 4..off + nla_len];
+        match (nla_type, payload.len()) {
+            (rta::RTA_DST, 4)     => dst = Some([payload[0], payload[1], payload[2], payload[3]]),
+            (rta::RTA_GATEWAY, 4) => gw  = Some([payload[0], payload[1], payload[2], payload[3]]),
+            (rta::RTA_OIF, 4)     => oif = Some(u32::from_ne_bytes([
+                                       payload[0], payload[1], payload[2], payload[3]])),
+            (rta::RTA_PREFSRC, 4) => src = Some([payload[0], payload[1], payload[2], payload[3]]),
+            _ => {}
+        }
+        off += nlmsg_align(nla_len);
+    }
+    (dst, gw, oif, src)
+}
+
+/// Handle RTM_NEWROUTE. Buffer layout: nlmsghdr | rtmsg(12) | attrs.
+/// Inserts (table, dst, oif) into the global route table. Returns
+/// NLMSG_ERROR with err=0 on success.
+/// # C: O(N attrs + route table)
+pub fn handle_newroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let rtm_off = Nlmsghdr::SIZE;
+    if full_msg.len() < rtm_off + Rtmsg::SIZE {
+        return nlmsg_ack(req, -22);
+    }
+    let family    = full_msg[rtm_off];
+    let dst_len   = full_msg[rtm_off + 1];
+    let table     = full_msg[rtm_off + 4];
+    let protocol  = full_msg[rtm_off + 5];
+    let scope     = full_msg[rtm_off + 6];
+    let kind      = full_msg[rtm_off + 7];
+    if family != AF_INET {
+        return nlmsg_ack(req, -97);
+    }
+    let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
+    let (dst_addr, gw, oif, src) = parse_route_attrs(attrs);
+    let oif = match oif {
+        Some(o) => o,
+        None    => return nlmsg_ack(req, -22),
+    };
+    let dst = dst_addr.map(|a| (a, dst_len));
+    route_insert(RouteRow {
+        table, protocol, scope, kind,
+        dst, gateway: gw, oif_ifindex: oif, prefsrc: src,
+    });
+    nlmsg_ack(req, 0)
+}
+
+/// Handle RTM_DELROUTE. Buffer layout same as RTM_NEWROUTE.
+/// # C: O(N attrs + route table)
+pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let rtm_off = Nlmsghdr::SIZE;
+    if full_msg.len() < rtm_off + Rtmsg::SIZE {
+        return nlmsg_ack(req, -22);
+    }
+    let dst_len = full_msg[rtm_off + 1];
+    let table   = full_msg[rtm_off + 4];
+    let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
+    let (dst_addr, _gw, oif, _src) = parse_route_attrs(attrs);
+    let oif = match oif {
+        Some(o) => o,
+        None    => return nlmsg_ack(req, -22),
+    };
+    let dst = dst_addr.map(|a| (a, dst_len));
+    let n = route_remove(table, dst, oif);
+    nlmsg_ack(req, if n > 0 { 0 } else { -3 /* ESRCH */ })
 }
 
 // quiet warnings for the `msg` re-export that's only used by lib.rs
@@ -752,6 +873,21 @@ mod tests {
     #[test]
     fn ifaddrmsg_size_matches_linux() {
         assert_eq!(Ifaddrmsg::SIZE, 8);
+    }
+
+    #[test]
+    fn route_table_insert_remove_snapshot() {
+        let before = route_snapshot().len();
+        route_insert(RouteRow {
+            table: RT_TABLE_MAIN, protocol: RTPROT_STATIC,
+            scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
+            dst: Some(([192, 168, 99, 0], 24)),
+            gateway: None, oif_ifindex: 7777, prefsrc: None,
+        });
+        assert_eq!(route_snapshot().len(), before + 1);
+        let n = route_remove(RT_TABLE_MAIN, Some(([192, 168, 99, 0], 24)), 7777);
+        assert_eq!(n, 1);
+        assert_eq!(route_snapshot().len(), before);
     }
 
     #[test]
