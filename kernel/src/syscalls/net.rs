@@ -42,23 +42,38 @@ fn errno_from_neterr(e: net::NetError) -> i64 {
 pub fn sys_socket(args: &SyscallArgs) -> i64 {
     const SOCK_CLOEXEC:  u32 = 0o2_000_000;
     const SOCK_NONBLOCK: u32 = 0o0_004_000;
+    const SOCK_RAW:      u32 = 3;
     let domain = args.a0 as u32;
     let raw    = args.a1 as u32;
     let typ    = raw & 0xFF;
+    let proto  = args.a2 as u32;
     let cloexec  = (raw & SOCK_CLOEXEC)  != 0;
     let nonblock = (raw & SOCK_NONBLOCK) != 0;
     const AF_UNIX_DOM: u32 = 1;
-    let inet = match (domain, typ) {
-        (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
-        (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp(),
-        (AF_INET6, SOCK_DGRAM)  => InetSocket::new_udp6(),
-        (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
-        (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
-        (AF_UNIX_DOM, SOCK_DGRAM)  => InetSocket::new_unix_dgram(),
-        (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
-        _ => return -(Errno::Eafnosupport.as_i32() as i64),
+    const AF_NETLINK_DOM: u32 = ::netlink::AF_NETLINK as u32;
+    // F88: AF_NETLINK takes its own socket type; everything else
+    // falls into the existing InetSocket union.
+    let inode: vfs::InodeRef = if domain == AF_NETLINK_DOM {
+        // Linux accepts SOCK_DGRAM and SOCK_RAW for netlink (Linux's
+        // own libnl uses SOCK_RAW). Other types → EPROTOTYPE.
+        if typ != SOCK_DGRAM && typ != SOCK_RAW {
+            return -(Errno::Esocktnosupport.as_i32() as i64);
+        }
+        let sock = ::netlink::NetlinkSocket::new(proto as u16);
+        Arc::new(sock) as _
+    } else {
+        let inet = match (domain, typ) {
+            (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
+            (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp(),
+            (AF_INET6, SOCK_DGRAM)  => InetSocket::new_udp6(),
+            (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
+            (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
+            (AF_UNIX_DOM, SOCK_DGRAM)  => InetSocket::new_unix_dgram(),
+            (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
+            _ => return -(Errno::Eafnosupport.as_i32() as i64),
+        };
+        Arc::new(inet) as _
     };
-    let inode: vfs::InodeRef = Arc::new(inet) as _;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
