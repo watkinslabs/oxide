@@ -11,6 +11,7 @@ use alloc::sync::Arc;
 use drm::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
+    DRM_IOCTL_MODE_ATOMIC, DRM_MODE_ATOMIC_TEST_ONLY,
 };
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
@@ -189,6 +190,29 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
                 core::ptr::write_volatile((arg + 60) as *mut u32, max_h);
             }
             Some(0)
+        }
+        DRM_IOCTL_MODE_ATOMIC => {
+            // struct drm_mode_atomic: 56 B. Field 0 = flags u32,
+            // field 1 = count_objs u32. v1 admits two cases:
+            //   - TEST_ONLY with count_objs == 0 → return 0 (no-op
+            //     test always passes)
+            //   - any commit with count_objs == 0 and a registered
+            //     driver → return 0 (driver opted into ATOMIC by
+            //     advertising DRM_CLIENT_CAP_ATOMIC)
+            // Anything else returns -EINVAL until property tables
+            // land. Userspace probes via TEST_ONLY first, so it
+            // sees real-success without us pretending to commit
+            // property writes we can't honor.
+            // SAFETY: arg validated < USER_VA_END; struct ≥ 56 B; aligned u32 reads of first 8 bytes.
+            let flags = unsafe { core::ptr::read_volatile(arg as *const u32) };
+            // SAFETY: arg+4 covered by the same 56-byte struct bound; aligned u32 read.
+            let count_objs = unsafe { core::ptr::read_volatile((arg + 4) as *const u32) };
+            if count_objs == 0
+                && (flags & DRM_MODE_ATOMIC_TEST_ONLY) != 0
+            {
+                return Some(0);
+            }
+            Some(-(Errno::Einval.as_i32() as i64))
         }
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }
