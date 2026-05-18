@@ -30,6 +30,7 @@ procfs  = { path = "../crates/kernel/procfs" }
 sched   = { path = "../crates/kernel/sched" }
 softirq = { path = "../crates/kernel/softirq" }
 netlink = { path = "../crates/kernel/netlink" }
+netfilter = { path = "../crates/kernel/netfilter" }
 sync    = { path = "../crates/shared/sync" }
 syscall = { path = "../crates/kernel/syscall" }
 tty     = { path = "../crates/kernel/tty" }

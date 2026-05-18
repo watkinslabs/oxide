@@ -24,9 +24,43 @@ pub mod genetlink;
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SockLockClass};
+
+/// Function signature for an external protocol handler. Receives
+/// one nlmsghdr-prefixed request buffer, returns the reply bytes
+/// to push onto the socket's RX queue. Used by NETLINK_NETFILTER
+/// (and any future protocol whose handler lives in a sibling
+/// crate) — netlink can't depend on those crates directly without
+/// circular deps, so they install their handler here.
+pub type ProtoHandler = fn(&[u8]) -> Vec<u8>;
+
+static NETFILTER_HANDLER: AtomicPtr<()> =
+    AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the NETLINK_NETFILTER protocol handler. Idempotent;
+/// the netfilter crate calls this once at boot. # C: O(1)
+pub fn install_netfilter_handler(f: ProtoHandler) {
+    NETFILTER_HANDLER.store(f as *mut (), Ordering::Release);
+}
+
+fn invoke_netfilter(msg: &[u8]) -> Vec<u8> {
+    let raw = NETFILTER_HANDLER.load(Ordering::Acquire);
+    if raw.is_null() {
+        // No handler installed: bare NLMSG_DONE ack.
+        if let Some(hdr) = Nlmsghdr::parse(msg) {
+            let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
+            Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
+            return done;
+        }
+        return alloc::vec::Vec::new();
+    }
+    // SAFETY: raw was installed via install_netfilter_handler with
+    // the documented `fn(&[u8]) -> Vec<u8>` signature.
+    let f: ProtoHandler = unsafe { core::mem::transmute(raw) };
+    f(msg)
+}
 
 /// `AF_NETLINK` numeric. Used by sys_socket dispatch.
 pub const AF_NETLINK: u16 = 16;
@@ -217,6 +251,7 @@ impl NetlinkSocket {
                 rtnetlink::handle_delroute(hdr, msg)
             }
             (proto::NETLINK_GENERIC, _) => genetlink::handle(msg),
+            (proto::NETLINK_NETFILTER, _) => invoke_netfilter(msg),
             _ => {
                 let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
                 Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
