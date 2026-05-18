@@ -531,12 +531,29 @@ keycode 57 plain=\sp
 keycode 28 plain=\n
 "#;
 
+    // B41: tests in this module mutate process-global state
+    // (LOADED + MODS_RAW). cargo test runs them in parallel by
+    // default, so a sibling test clobbering LOADED to false (e.g.
+    // `rejects_unloaded`) races with another that has just called
+    // `install()` and is about to translate. Pre-B41 manifested as
+    // an intermittent CI failure on `ctrl_letter_is_control_code`
+    // — translate(30) returned the empty `Out::NONE` because LOADED
+    // got cleared between install + translate. A crate-local
+    // spinlock serialises entry into every test in this module —
+    // staying inside `sync` keeps the no_std-friendly + spec-lint-
+    // clean envelope.
+    static SERIAL: Spinlock<(), KbdLockClass> = Spinlock::new(());
+    fn lock_serial() -> sync::Guard<'static, (), KbdLockClass> {
+        SERIAL.lock()
+    }
+
     fn install() {
         load_text(SAMPLE).expect("parse");
     }
 
     #[test]
     fn plain_letter() {
+        let _g = lock_serial();
         install();
         MODS_RAW.store(0, Ordering::Relaxed);
         assert_eq!(translate(30).as_bytes(), b"a");
@@ -544,6 +561,7 @@ keycode 28 plain=\n
 
     #[test]
     fn shift_letter() {
+        let _g = lock_serial();
         install();
         MODS_RAW.store(Mods::SHIFT.bits(), Ordering::Relaxed);
         assert_eq!(translate(30).as_bytes(), b"A");
@@ -551,6 +569,7 @@ keycode 28 plain=\n
 
     #[test]
     fn caps_folds_on_letter_only() {
+        let _g = lock_serial();
         install();
         MODS_RAW.store(Mods::CAPS.bits(), Ordering::Relaxed);
         assert_eq!(translate(30).as_bytes(), b"A");
@@ -559,6 +578,7 @@ keycode 28 plain=\n
 
     #[test]
     fn ctrl_letter_is_control_code() {
+        let _g = lock_serial();
         install();
         MODS_RAW.store(Mods::CTRL.bits(), Ordering::Relaxed);
         assert_eq!(translate(30).as_bytes(), &[0x01]);
@@ -567,6 +587,7 @@ keycode 28 plain=\n
 
     #[test]
     fn alt_prefixes_with_esc() {
+        let _g = lock_serial();
         install();
         MODS_RAW.store(Mods::ALT.bits(), Ordering::Relaxed);
         assert_eq!(translate(30).as_bytes(), &[0x1b, b'a']);
@@ -574,12 +595,14 @@ keycode 28 plain=\n
 
     #[test]
     fn rejects_unloaded() {
+        let _g = lock_serial();
         LOADED.store(false, Ordering::Relaxed);
         assert_eq!(translate(30), Out::NONE);
     }
 
     #[test]
     fn parses_escapes_and_hex() {
+        let _g = lock_serial();
         assert_eq!(parse_value(b"\\n"), Some(b'\n' as u32));
         assert_eq!(parse_value(b"\\sp"), Some(b' ' as u32));
         assert_eq!(parse_value(b"0x1b"), Some(0x1b));
@@ -590,6 +613,7 @@ keycode 28 plain=\n
 
     #[test]
     fn parses_unicode_codepoint() {
+        let _g = lock_serial();
         // U+00E4 = ä (LATIN SMALL LETTER A WITH DIAERESIS)
         assert_eq!(parse_value(b"U+00E4"), Some(0x00E4));
         // U+1F600 = 😀
@@ -615,6 +639,7 @@ keycode 28 plain=\n
 
     #[test]
     fn locale_de_umlaut_via_keymap() {
+        let _g = lock_serial();
         let blob: &[u8] = br#"
 keymap "Test DE"
 keycode 39 plain=U+00F6 shift=U+00D6
