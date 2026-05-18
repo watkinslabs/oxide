@@ -62,22 +62,29 @@ const fn build_elf() -> [u8; 171] {
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
     // Code at file offset 128 (= vaddr 0x400080):
-    //   movz w8, #1                       ; sys_write nr (oxide uses
-    //                                       x86-style numbers across
-    //                                       arches per the existing
-    //                                       userspace_smoke_arm convention)
+    //   movz w8, #64                       ; sys_write nr (aarch64-
+    //                                        generic). F123: pre-fix
+    //                                        used #1 (x86 write nr)
+    //                                        and relied on the arm→x86
+    //                                        translator's unmapped
+    //                                        pass-through. With arm 1
+    //                                        properly mapped to x86
+    //                                        io_destroy, that wedge'd
+    //                                        the smoke. Use the real
+    //                                        aarch64-generic numbers.
     //   movz x0, #1                        ; fd=1
     //   movz x1, #0x00A8                   ; buf low 16 bits
     //   movk x1, #0x0040, lsl #16          ; buf high → 0x4000A8
     //   movz x2, #3                        ; len
     //   svc  #0
-    //   movz w8, #60                       ; sys_exit nr
+    //   movz w8, #93                       ; sys_exit nr (aarch64-
+    //                                        generic; was #60 = x86)
     //   movz x0, #0                        ; code=0
     //   svc  #0
     //   brk  #0                            ; landmark
     let c = 128;
-    // 0x52800028 = movz w8, #1
-    b[c+0]=0x28; b[c+1]=0x00; b[c+2]=0x80; b[c+3]=0x52;
+    // 0x52800828 = movz w8, #64
+    b[c+0]=0x28; b[c+1]=0x08; b[c+2]=0x80; b[c+3]=0x52;
     // 0xD2800020 = movz x0, #1
     b[c+4]=0x20; b[c+5]=0x00; b[c+6]=0x80; b[c+7]=0xD2;
     // 0xD2801501 = movz x1, #0x00A8
@@ -88,8 +95,8 @@ const fn build_elf() -> [u8; 171] {
     b[c+16]=0x62; b[c+17]=0x00; b[c+18]=0x80; b[c+19]=0xD2;
     // 0xD4000001 = svc #0
     b[c+20]=0x01; b[c+21]=0x00; b[c+22]=0x00; b[c+23]=0xD4;
-    // 0x52800788 = movz w8, #60
-    b[c+24]=0x88; b[c+25]=0x07; b[c+26]=0x80; b[c+27]=0x52;
+    // 0x52800BA8 = movz w8, #93
+    b[c+24]=0xA8; b[c+25]=0x0B; b[c+26]=0x80; b[c+27]=0x52;
     // 0xD2800000 = movz x0, #0
     b[c+28]=0x00; b[c+29]=0x00; b[c+30]=0x80; b[c+31]=0xD2;
     // 0xD4000001 = svc #0
