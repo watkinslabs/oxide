@@ -256,6 +256,11 @@ fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
             core::ptr::read_volatile((insns_ptr + i) as *const u8)
         };
     }
+    // F107: structural verifier. Reject malformed programs before
+    // any future JIT or interpreter touches them.
+    if crate::bpf_verify::verify(&insns).is_err() {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let inode: InodeRef = Arc::new(BpfProgInode { insns });
     install_fd(inode, "[bpf-prog]")
 }
