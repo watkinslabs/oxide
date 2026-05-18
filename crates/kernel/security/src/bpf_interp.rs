@@ -37,6 +37,16 @@ const BPF_LDX_MEM_H:  u8 = 0x69;
 const BPF_LDX_MEM_W:  u8 = 0x61;
 const BPF_LDX_MEM_DW: u8 = 0x79;
 
+const BPF_CALL: u8 = 0x85;
+
+/// Helper-call descriptor: a (helper-id, fn) pair. The interpreter
+/// hands R1..R5 to `f` and stores its return in R0. Helpers live
+/// outside the interpreter so the kernel can plug in ones that
+/// touch sched/time/per-cpu state without dragging those deps
+/// into the bpf crate.
+pub type HelperFn = fn(i64, i64, i64, i64, i64) -> i64;
+pub struct Helper { pub id: u32, pub f: HelperFn }
+
 /// Context register. Linux passes the program's context (skb /
 /// xdp_md / etc.) in R1 on entry. v1 models that as "R1 is an
 /// offset into `pkt`"; any other src reg on a LDX is rejected.
@@ -80,6 +90,13 @@ fn decode(bytes: &[u8]) -> Insn {
 /// scalar otherwise.
 /// # C: O(insn count × step budget)
 pub fn run(insns: &[u8], pkt: &[u8]) -> Option<i64> {
+    run_with_helpers(insns, pkt, &[])
+}
+
+/// Variant of `run` that admits helper-call dispatch. Programs
+/// that issue BPF_CALL with an unknown helper id return None.
+/// # C: O(insn count × step budget)
+pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<i64> {
     if insns.is_empty() || insns.len() % 8 != 0 { return None; }
     let n = insns.len() / 8;
 
@@ -97,6 +114,13 @@ pub fn run(insns: &[u8], pkt: &[u8]) -> Option<i64> {
         // because it's not class-derived sensibly via tables.
         if i.opcode == 0x95 {
             return Some(regs[0]);
+        }
+        if i.opcode == BPF_CALL {
+            let id = i.imm as u32;
+            let h = helpers.iter().find(|h| h.id == id)?;
+            regs[0] = (h.f)(regs[1], regs[2], regs[3], regs[4], regs[5]);
+            pc += 1;
+            continue;
         }
         let class = i.opcode & BPF_CLASS_MASK;
         match class {
@@ -331,6 +355,44 @@ mod tests {
             raw(0x95, 0, 0, 0, 0),
         ]);
         assert_eq!(run(&p, &[0x10, 0x20]), None);
+    }
+
+    fn helper_add(a: i64, b: i64, _c: i64, _d: i64, _e: i64) -> i64 { a + b }
+    fn helper_const(_a: i64, _b: i64, _c: i64, _d: i64, _e: i64) -> i64 { 42 }
+
+    #[test]
+    fn call_unknown_helper_returns_none() {
+        // MOV R1, 0 ; CALL 99 ; EXIT
+        let p = cat(&[
+            raw(0xb7, 1, 0, 0, 0),
+            raw(0x85, 0, 0, 0, 99),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run(&p, &[]), None);
+    }
+
+    #[test]
+    fn call_known_helper_stores_result_in_r0() {
+        let helpers = [Helper { id: 1, f: helper_const }];
+        // CALL 1 ; EXIT
+        let p = cat(&[
+            raw(0x85, 0, 0, 0, 1),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run_with_helpers(&p, &[], &helpers), Some(42));
+    }
+
+    #[test]
+    fn call_passes_r1_r5_as_args() {
+        let helpers = [Helper { id: 2, f: helper_add }];
+        // MOV R1, 10 ; MOV R2, 32 ; CALL 2 ; EXIT
+        let p = cat(&[
+            raw(0xb7, 1, 0, 0, 10),
+            raw(0xb7, 2, 0, 0, 32),
+            raw(0x85, 0, 0, 0, 2),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(run_with_helpers(&p, &[], &helpers), Some(42));
     }
 
     #[test]
