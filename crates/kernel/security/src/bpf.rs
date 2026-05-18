@@ -81,10 +81,7 @@ pub fn sys_bpf(args: &SyscallArgs) -> i64 {
             });
             install_fd(inode, "[bpf-map]")
         }
-        BPF_PROG_LOAD => {
-            let inode: InodeRef = Arc::new(BpfProgInode { insns: Vec::new() });
-            install_fd(inode, "[bpf-prog]")
-        }
+        BPF_PROG_LOAD => handle_prog_load(args.a1, args.a2),
         BPF_MAP_LOOKUP_ELEM => handle_map_op(args.a1, args.a2, MapOp::Lookup),
         BPF_MAP_UPDATE_ELEM => handle_map_op(args.a1, args.a2, MapOp::Update),
         BPF_MAP_DELETE_ELEM => handle_map_op(args.a1, args.a2, MapOp::Delete),
@@ -209,6 +206,58 @@ fn handle_map_op(attr_ptr: u64, attr_size: u64, op: MapOp) -> i64 {
             }
         }
     }
+}
+
+/// Maximum instruction count we accept on PROG_LOAD. Linux's
+/// classic ceiling is 4096 (`BPF_MAXINSNS`); we mirror that.
+/// Each insn is 8 bytes, so the max copy is 32 KiB.
+const BPF_MAXINSNS: u32 = 4096;
+const BPF_INSN_SIZE: u32 = 8;
+
+/// Decode the `bpf_attr` PROG_LOAD variant, copy the insn array
+/// out of userspace, stash it in a fresh BpfProgInode, install
+/// the fd. Pre-F102 this stored an empty Vec; now real cBPF/eBPF
+/// bytecode survives PROG_LOAD → fd retrieval and is available
+/// for the verifier (K10 follow-up).
+/// # C: O(insn_cnt) memcpy
+fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
+    use hal::USER_VA_END;
+    // The smallest useful prog_load attr is 16 bytes (prog_type +
+    // insn_cnt + insns u64). Linux accepts shorter attrs by zero-
+    // filling missing fields; we mirror that with a minimum of 24
+    // (also reading the license ptr so we can fail-fast on the
+    // legacy "GPL" requirement once enforcement lands).
+    if attr_ptr == 0 || attr_size < 16 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if attr_ptr.checked_add(24).map_or(true, |e| e > USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: attr_ptr+24 validated < USER_VA_END; user page mapped under caller's AS; 24-byte bounded read on the syscall path.
+    let (insn_cnt, insns_ptr) = unsafe {
+        let _prog_type = core::ptr::read_volatile(attr_ptr as *const u32);
+        let cnt        = core::ptr::read_volatile((attr_ptr + 4) as *const u32);
+        let ip         = core::ptr::read_volatile((attr_ptr + 8) as *const u64);
+        (cnt, ip)
+    };
+    if insn_cnt == 0 || insn_cnt > BPF_MAXINSNS {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let total = (insn_cnt as u64) * (BPF_INSN_SIZE as u64);
+    if insns_ptr == 0 || insns_ptr >= USER_VA_END
+        || insns_ptr.checked_add(total).map_or(true, |e| e > USER_VA_END)
+    {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let mut insns: Vec<u8> = alloc::vec![0u8; total as usize];
+    for i in 0..total {
+        // SAFETY: insns_ptr..insns_ptr+total validated < USER_VA_END above; per-byte volatile read through caller's CR3.
+        insns[i as usize] = unsafe {
+            core::ptr::read_volatile((insns_ptr + i) as *const u8)
+        };
+    }
+    let inode: InodeRef = Arc::new(BpfProgInode { insns });
+    install_fd(inode, "[bpf-prog]")
 }
 
 fn install_fd(inode: InodeRef, name: &str) -> i64 {
