@@ -424,13 +424,17 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `socketpair(domain, type, protocol, sv)` slot 53. v1 supports
-/// AF_UNIX SOCK_STREAM only (the common shell-IPC case).
+/// `socketpair(domain, type, protocol, sv)` slot 53. AF_UNIX
+/// SOCK_STREAM only — DGRAM/SEQPACKET need a real message-
+/// boundary framing layer first. F123 widened the mask to Linux's
+/// `SOCK_TYPE_MASK = 0xF` so SOCK_CLOEXEC (0x80000) / SOCK_NONBLOCK
+/// (0x800) are correctly stripped before the type compare.
 /// # C: O(1)
 pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u32 = 1;
+    const SOCK_TYPE_MASK: u32 = 0xF;
     let domain = args.a0 as u32;
-    let typ    = args.a1 as u32 & 0xFF;
+    let typ    = args.a1 as u32 & SOCK_TYPE_MASK;
     let svp    = args.a3;
     if domain != AF_UNIX {
         return -(Errno::Eafnosupport.as_i32() as i64);
