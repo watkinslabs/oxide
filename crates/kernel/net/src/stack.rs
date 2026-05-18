@@ -171,8 +171,23 @@ impl NetStack {
                         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8])
         -> NetResult<()>
     {
-        let route = self.routes.lookup(dst_ip).ok_or(NetError::Enetunreach)?;
-        let iface = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?;
+        // F122: 255.255.255.255 has no specific route entry (DHCP
+        // DISCOVER fires before any route is installed). Fall back
+        // to the first non-loopback iface so the broadcast lands.
+        // Once route tables track scope (LOCAL_BROADCAST etc.), the
+        // fallback retires.
+        let (iface_id, iface) = match self.routes.lookup(dst_ip) {
+            Some(r) => (r.iface, self.ifaces.lookup(r.iface)
+                            .ok_or(NetError::Enetunreach)?),
+            None if dst_ip.is_broadcast() => {
+                let devs = self.ifaces.snapshot_devs();
+                let pick = devs.iter()
+                    .find(|(_, d)| d.name() != "lo")
+                    .ok_or(NetError::Enetunreach)?;
+                (pick.0, pick.1.clone())
+            }
+            None => return Err(NetError::Enetunreach),
+        };
         let total = IPV4_HDR_LEN + crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
@@ -186,7 +201,7 @@ impl NetStack {
         push_ipv4_header(&mut p, src_ip, dst_ip, IpProto::Udp, id)
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
-        p.iface = Some(route.iface);
+        p.iface = Some(iface_id);
         iface.xmit(p)
     }
 
