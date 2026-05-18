@@ -86,6 +86,20 @@ pub mod nfta_table {
     pub const NFTA_TABLE_USE:    u16 = 3;
 }
 
+/// nft chain attribute ids per Linux `nf_tables.h::nft_chain_attributes`.
+pub mod nfta_chain {
+    pub const NFTA_CHAIN_TABLE:  u16 = 1;
+    pub const NFTA_CHAIN_HANDLE: u16 = 2;
+    pub const NFTA_CHAIN_NAME:   u16 = 3;
+    pub const NFTA_CHAIN_HOOK:   u16 = 4;
+    pub const NFTA_CHAIN_POLICY: u16 = 5;
+    pub const NFTA_CHAIN_USE:    u16 = 6;
+    pub const NFTA_CHAIN_TYPE:   u16 = 7;
+    pub const NFTA_CHAIN_COUNTERS: u16 = 8;
+    pub const NFTA_CHAIN_FLAGS:  u16 = 9;
+    pub const NFTA_CHAIN_ID:     u16 = 11;
+}
+
 // ---- In-memory storage --------------------------------------------------
 
 #[derive(Clone, Debug)]
@@ -150,6 +164,15 @@ pub fn chain_insert(c: NftChain) {
         && x.table_name == c.table_name
         && x.name == c.name)
     { g[i] = c; } else { g.push(c); }
+}
+/// # C: O(N)
+pub fn chain_remove(family: u8, table_name: &str, chain_name: &str) -> usize {
+    let mut g = CHAINS.lock();
+    let before = g.len();
+    g.retain(|x| !(x.table_family == family
+                   && x.table_name == table_name
+                   && x.name == chain_name));
+    before - g.len()
 }
 /// # C: O(N)
 pub fn chains_snapshot() -> Vec<NftChain> { CHAINS.lock().clone() }
@@ -277,6 +300,41 @@ pub fn handle(full_msg: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Build a NFT_MSG_NEWCHAIN reply describing one chain.
+/// # C: O(1)
+fn build_newchain_reply(seq: u32, pid: u32, c: &NftChain, multi: bool) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    Nfgenmsg {
+        nfgen_family: c.table_family,
+        version:      0,
+        res_id:       0,
+    }.write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+
+    put_nlattr_str(&mut body, nfta_chain::NFTA_CHAIN_TABLE, &c.table_name);
+    put_nlattr_str(&mut body, nfta_chain::NFTA_CHAIN_NAME, &c.name);
+    put_nlattr_u32(&mut body, nfta_chain::NFTA_CHAIN_USE, 0);
+
+    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
+                   | (nft_msg::NFT_MSG_NEWCHAIN as u16);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq:   seq,
+        nlmsg_pid:   pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
 fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> {
     match cmd {
         nft_msg::NFT_MSG_GETTABLE => {
@@ -322,7 +380,62 @@ fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> 
             let n = table_remove(nfg.nfgen_family, name);
             nlmsg_ack(req, if n > 0 { 0 } else { -2 })
         }
-        _ => nlmsg_ack(req, 0), // accept-and-no-op for now
+        nft_msg::NFT_MSG_GETCHAIN => {
+            let table_name = find_str_attr(attrs, nfta_chain::NFTA_CHAIN_TABLE);
+            let chain_name = find_str_attr(attrs, nfta_chain::NFTA_CHAIN_NAME);
+            if let (Some(tn), Some(cn)) = (table_name, chain_name) {
+                let g = CHAINS.lock();
+                let found = g.iter().find(|c|
+                    c.table_family == nfg.nfgen_family
+                    && c.table_name == tn
+                    && c.name == cn).cloned();
+                drop(g);
+                match found {
+                    Some(c) => build_newchain_reply(req.nlmsg_seq, req.nlmsg_pid, &c, false),
+                    None    => nlmsg_ack(req, -2),
+                }
+            } else {
+                let mut reply: Vec<u8> = Vec::with_capacity(256);
+                for c in chains_snapshot().iter()
+                    .filter(|c| table_name.map_or(true, |tn|
+                        c.table_family == nfg.nfgen_family && c.table_name == tn))
+                {
+                    reply.extend_from_slice(&build_newchain_reply(
+                        req.nlmsg_seq, req.nlmsg_pid, c, true));
+                }
+                let mut done_buf = [0u8; Nlmsghdr::SIZE];
+                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+                done.nlmsg_flags = flags::NLM_F_MULTI;
+                done.write_to(&mut done_buf);
+                reply.extend_from_slice(&done_buf);
+                reply
+            }
+        }
+        nft_msg::NFT_MSG_NEWCHAIN => {
+            let table_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let chain_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_NAME) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            chain_insert(NftChain {
+                table_family: nfg.nfgen_family,
+                table_name:   String::from(table_name),
+                name:         String::from(chain_name),
+            });
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELCHAIN => {
+            let table_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let chain_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_NAME) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let n = chain_remove(nfg.nfgen_family, table_name, chain_name);
+            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
+        }
+        _ => nlmsg_ack(req, 0), // NEWRULE / DELRULE / sets / objects: future PRs
     }
 }
 
@@ -351,6 +464,22 @@ mod tests {
         let n = table_remove(2, "oxide-test-t");
         assert_eq!(n, 1);
         assert_eq!(tables_snapshot().len(), before);
+    }
+
+    #[test]
+    fn chain_insert_dedup_remove() {
+        let c = NftChain {
+            table_family: 2,
+            table_name:   String::from("oxide-test-t"),
+            name:         String::from("input"),
+        };
+        let before = chains_snapshot().len();
+        chain_insert(c.clone());
+        chain_insert(c.clone());
+        assert_eq!(chains_snapshot().len(), before + 1);
+        let n = chain_remove(2, "oxide-test-t", "input");
+        assert_eq!(n, 1);
+        assert_eq!(chains_snapshot().len(), before);
     }
 
     #[test]
