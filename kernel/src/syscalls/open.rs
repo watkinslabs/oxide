@@ -16,6 +16,13 @@ use vfs::{Dentry, File, OpenFlags};
 const O_CREAT:     u32 = 0o100;
 const O_TRUNC:     u32 = 0o1000;
 const O_DIRECTORY: u32 = 0o200000;
+/// `__O_TMPFILE` per Linux fcntl.h. The full Linux `O_TMPFILE`
+/// macro is `__O_TMPFILE | O_DIRECTORY` (0x410000) — old userspace
+/// that issues `open(path, O_TMPFILE | ...)` on a kernel without
+/// O_TMPFILE support falls back to opening the directory itself
+/// rather than a tempfile. Detect the high bit independently of
+/// O_DIRECTORY since we also accept either masking.
+const O_TMPFILE:   u32 = 0o20000000;
 
 /// Resolve a relative path against the calling task's cwd. Returns
 /// `None` for absolute paths (caller uses path_raw verbatim).
@@ -130,8 +137,19 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     }
     // Unified mount-table lookup (R67). Special-case /dev/ptmx since
     // it allocates a new pair per open rather than resolving to a
-    // pre-registered inode.
-    let inode = if path_str == "/dev/ptmx" {
+    // pre-registered inode. O_TMPFILE short-circuits to anonymous
+    // inode creation (no path lookup, no dir entry).
+    let inode = if (flags & O_TMPFILE) != 0 {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
+        let final_mode = (mode & 0o777 & !umask) as u16;
+        match ext4::rootfs::create_anonymous_at(path_str.as_bytes(), final_mode) {
+            Some(i) => i,
+            None    => return -(Errno::Enospc.as_i32() as i64),
+        }
+    } else if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
@@ -159,7 +177,11 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Enoent.as_i32() as i64);
     };
-    if (flags & O_DIRECTORY) != 0
+    // O_TMPFILE's macro definition is `__O_TMPFILE | O_DIRECTORY`,
+    // so the directory check would fire on every O_TMPFILE call —
+    // skip it in that case. The inode we created is a regular file
+    // by construction.
+    if (flags & O_DIRECTORY) != 0 && (flags & O_TMPFILE) == 0
         && !matches!(inode.file_type(), vfs::FileType::Directory)
     {
         return -(Errno::Enotdir.as_i32() as i64);
