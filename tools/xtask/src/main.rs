@@ -221,7 +221,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "/proc", "/sys", "/tmp", "/run",
         "/dev", "/dev/pts",
         "/home", "/home/alice", "/root",
-        "/var", "/var/log",
+        "/var", "/var/log", "/var/db", "/var/db/dhcpcd", "/var/run", "/var/run/dhcpcd",
         "/usr", "/usr/share", "/usr/share/keymaps",
     ] {
         dbg(&format!("mkdir {d}"))?;
@@ -327,6 +327,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("dynlink"),   interp_path)?;
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
 
+    // F123: vendored dhcpcd 10.3.2 — static-musl, per
+    // vendor/dhcpcd/build.sh. Real userspace DHCPv4 client. Survives
+    // the busybox→distro transition (Alpine/Gentoo default; not a
+    // busybox applet). Skipped silently if the per-arch binary
+    // hasn't been built yet — `vendor/dhcpcd/build.sh` materialises
+    // them after `tools/fetch-dhcpcd.sh` populates the source tree.
+    let dhcpcd = if arch == "aarch64" {
+        repo.join("vendor/dhcpcd/dhcpcd-aarch64")
+    } else {
+        repo.join("vendor/dhcpcd/dhcpcd-x86_64")
+    };
+    if dhcpcd.is_file() {
+        put(&dhcpcd, "/sbin/dhcpcd")?;
+    }
+
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
     let tmp = repo.join("target/oxide-rootfs-staging");
@@ -391,17 +406,43 @@ ttyS0::respawn:/bin/sh -c \"exec 0</dev/ttyS0 1>/dev/ttyS0 2>/dev/ttyS0; exec /b
 ")?,
         "/etc/inittab")?;
 
+    // /etc/dhcpcd.conf — minimal config. 10s bind timeout so rcS
+    // doesn't park forever when no DHCP server answers. No hooks
+    // (we ship no /lib/dhcpcd/dhcpcd-hooks tree); dhcpcd tolerates
+    // a missing hooks dir.
+    put(&stage("dhcpcd.conf",
+b"# F123: minimal dhcpcd.conf for oxide userspace.
+duid
+persistent
+option domain_name_servers, domain_name, domain_search, host_name
+option classless_static_routes
+option interface_mtu
+require dhcp_server_identifier
+slaac private
+timeout 10
+")?,
+        "/etc/dhcpcd.conf")?;
+
     // /etc/init.d/rcS — sysinit shell script per 51§5.2. Mounts
     // virtual filesystems, sets hostname, brings up loopback, then
     // optionally runs the kernel-acceptance smokes.
+    //
+    // F123: /var/run + /var/db are tmpfs so dhcpcd can create its
+    // lease state + control-socket dir on the (read-mostly) rootfs.
+    // dhcpcd backgrounds (-b) after 10s lease timeout so rcS keeps
+    // moving; the renewal loop respawns itself.
     put(&stage("rcS",
 b"#!/bin/sh
 mount -t proc  proc  /proc 2>/dev/null
 mount -t sysfs sysfs /sys  2>/dev/null
 mount -t tmpfs tmpfs /tmp  2>/dev/null
+mount -t tmpfs tmpfs /var/run 2>/dev/null
+mount -t tmpfs tmpfs /var/db  2>/dev/null
 mount -t devpts devpts /dev/pts 2>/dev/null
 hostname -F /etc/hostname 2>/dev/null
 ifconfig lo 127.0.0.1 up 2>/dev/null
+ifconfig eth0 up 2>/dev/null
+[ -x /sbin/dhcpcd ] && /sbin/dhcpcd -b eth0 2>/dev/null
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 :
 ")?,
