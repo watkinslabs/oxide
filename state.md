@@ -1,7 +1,8 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, 1086 tests pass, both arches build.
+Branch: main (clean). spec-lint clean, 1089 tests pass, both arches build.
 Boot-smoke gate passes both arches on every kernel-surface push.
+Recent PR-time CI: 6/6 green (last 6 PRs).
 
 ## What's working end-to-end now
 
@@ -30,8 +31,9 @@ Boot-smoke gate passes both arches on every kernel-surface push.
 | F94 | genetlink scaffold + CTRL family |
 | F96-F98 | netfilter crate + nftables tables/chains/rules |
 | F99 | BPF map LOOKUP/UPDATE/DELETE |
+| F100, F101 | nftables sets / objects / GETGEN + generation counter |
 | B41 | drv-virtio-input keymap test flake fix |
-| D25-D28 | state.md checkpoints |
+| D25-D29 | state.md checkpoints |
 
 ## Crate layout established (per docs/52§5)
 
@@ -60,8 +62,9 @@ Boot-smoke gate passes both arches on every kernel-surface push.
    bug still there. Investigation-style PR.
 7. **DNS / TLS userspace** — depends on DHCP. musl resolver + cross-
    built openssl/rustls.
-8. **nftables sets / objects / batches** — NFNL subcommands left as
-   accept-and-no-op in F96-F98.
+8. **nftables sets / objects** — ✅ done (F100, F101); batch txns
+   currently ack-each (no rollback) which userspace tolerates;
+   real transactional rollback is a v2 thing.
 
 ## Discipline notes
 
