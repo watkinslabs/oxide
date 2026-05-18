@@ -14,6 +14,9 @@ use drm::{
     DRM_IOCTL_MODE_ATOMIC, DRM_MODE_ATOMIC_TEST_ONLY,
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
     DRM_IOCTL_AUTH_MAGIC, DRM_IOCTL_GET_MAGIC,
+    DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPLANE,
+    DRM_IOCTL_MODE_GETCRTC, DRM_IOCTL_MODE_GETENCODER,
+    DRM_IOCTL_MODE_GETCONNECTOR,
 };
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
@@ -192,6 +195,30 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
                 core::ptr::write_volatile((arg + 60) as *mut u32, max_h);
             }
             Some(0)
+        }
+        DRM_IOCTL_MODE_GETPLANERESOURCES => {
+            // drm_mode_get_plane_res: plane_id_ptr u64, count_planes u32.
+            // Tell userspace there are 0 planes available — matches
+            // GETRESOURCES which already returns count_crtcs=0 when
+            // no driver registered. Mesa accepts that and skips the
+            // per-plane enumeration loop.
+            // SAFETY: arg validated; field at +8 is the count u32.
+            unsafe { core::ptr::write_volatile((arg + 8) as *mut u32, 0); }
+            Some(0)
+        }
+        DRM_IOCTL_MODE_GETPLANE => {
+            // Userspace shouldn't issue this when count_planes == 0,
+            // but be defensive: return EINVAL on any plane lookup
+            // until a driver enumerates planes.
+            Some(-(Errno::Einval.as_i32() as i64))
+        }
+        DRM_IOCTL_MODE_GETCRTC | DRM_IOCTL_MODE_GETENCODER
+        | DRM_IOCTL_MODE_GETCONNECTOR => {
+            // Same story: GETRESOURCES reports 0 of each. If the
+            // compositor ignores that count and asks anyway, fail
+            // with EINVAL so it falls back gracefully instead of
+            // wedging waiting for a connector that doesn't exist.
+            Some(-(Errno::Einval.as_i32() as i64))
         }
         DRM_IOCTL_SET_CLIENT_CAP => {
             // struct drm_set_client_cap { capability u64; value u64; }
