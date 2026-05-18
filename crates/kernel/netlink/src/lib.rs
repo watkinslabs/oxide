@@ -192,13 +192,19 @@ impl NetlinkSocket {
     /// per-protocol handler; on no match emits a NLMSG_DONE
     /// terminator so dump-style clients don't hang.
     /// # C: O(reply build)
-    fn handle_one(&self, hdr: &Nlmsghdr) {
+    fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {
         let reply = match (self.protocol, hdr.nlmsg_type) {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => {
                 rtnetlink::handle_getlink(hdr)
             }
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => {
                 rtnetlink::handle_getaddr(hdr)
+            }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => {
+                rtnetlink::handle_newaddr(hdr, msg)
+            }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => {
+                rtnetlink::handle_deladdr(hdr, msg)
             }
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => {
                 rtnetlink::handle_getroute(hdr)
@@ -236,9 +242,6 @@ impl vfs::Inode for NetlinkSocket {
     }
     fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         let consumed = buf.len();
-        // Iterate over each nlmsghdr-prefixed message in the buffer.
-        // Linux netlink lets userspace pack multiple requests in one
-        // sendmsg; the kernel walks them serially.
         let mut off = 0;
         while off + Nlmsghdr::SIZE <= buf.len() {
             let hdr = match Nlmsghdr::parse(&buf[off..]) {
@@ -249,7 +252,7 @@ impl vfs::Inode for NetlinkSocket {
             if msg_len < Nlmsghdr::SIZE || off + msg_len > buf.len() {
                 break;
             }
-            self.handle_one(&hdr);
+            self.handle_one(&hdr, &buf[off..off + msg_len]);
             off += nlmsg_align(msg_len);
         }
         Ok(consumed)

@@ -567,6 +567,15 @@ pub fn enumerate_and_log() {
                 klog::write_dec_u64(id.0 as u64);
                 klog::write_raw(b" name=eth0\n");
 
+                // F92: seed the netlink address table with the
+                // boot-time defaults. Userspace tools / DHCP can
+                // mutate via RTM_NEWADDR / RTM_DELADDR later.
+                // lo's ifindex isn't tracked here — the loopback
+                // dev registers from net::loopback elsewhere; we
+                // pass None so seeding only stamps eth0. The lo
+                // row gets seeded when loopback init lands.
+                ::netlink::rtnetlink::seed_defaults(Some(id.0), None);
+
                 // F86: spawn an RX poller kthread. The driver
                 // exposes `poll_into_stack(iface, our_ip)` but
                 // nobody was calling it — inbound frames piled
