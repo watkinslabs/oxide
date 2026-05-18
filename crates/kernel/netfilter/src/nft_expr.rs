@@ -41,6 +41,12 @@ pub const NFTA_CMP_DATA: u16 = 3;
 pub const NFTA_IMMEDIATE_DREG: u16 = 1;
 pub const NFTA_IMMEDIATE_DATA: u16 = 2;
 
+pub const NFTA_BITWISE_SREG: u16 = 1;
+pub const NFTA_BITWISE_DREG: u16 = 2;
+pub const NFTA_BITWISE_LEN:  u16 = 3;
+pub const NFTA_BITWISE_MASK: u16 = 4;
+pub const NFTA_BITWISE_XOR:  u16 = 5;
+
 pub const NFTA_COUNTER_BYTES:   u16 = 1;
 pub const NFTA_COUNTER_PACKETS: u16 = 2;
 
@@ -102,6 +108,7 @@ pub enum Expr {
     Meta      { dreg: u32, key: u32 },
     Lookup    { sreg: u32, set: String, invert: bool },
     Counter,
+    Bitwise { sreg: u32, dreg: u32, mask: Vec<u8>, xor: Vec<u8> },
 }
 
 /// Parse a `NFTA_RULE_EXPRESSIONS` payload into a list of
@@ -139,6 +146,7 @@ fn parse_one_expr(body: &[u8]) -> Option<Expr> {
         "meta"      => parse_meta(data),
         "lookup"    => parse_lookup(data),
         "counter"   => Some(Expr::Counter),
+        "bitwise"   => parse_bitwise(data),
         _ => None,
     }
 }
@@ -158,6 +166,18 @@ fn parse_cmp(d: &[u8]) -> Option<Expr> {
     let dn   = find_bytes(d, NFTA_CMP_DATA)?;
     let data = find_bytes(dn, NFTA_DATA_VALUE)?.to_vec();
     Some(Expr::Cmp { sreg, op, data })
+}
+
+fn parse_bitwise(d: &[u8]) -> Option<Expr> {
+    let sreg = find_u32_be(d, NFTA_BITWISE_SREG)?;
+    let dreg = find_u32_be(d, NFTA_BITWISE_DREG)?;
+    let mask_n = find_bytes(d, NFTA_BITWISE_MASK)?;
+    let xor_n  = find_bytes(d, NFTA_BITWISE_XOR)?;
+    // Each is a nested attr with NFTA_DATA_VALUE inside.
+    let mask = find_bytes(mask_n, NFTA_DATA_VALUE)?.to_vec();
+    let xor  = find_bytes(xor_n,  NFTA_DATA_VALUE)?.to_vec();
+    if mask.len() != xor.len() { return None; }
+    Some(Expr::Bitwise { sreg, dreg, mask, xor })
 }
 
 fn parse_lookup(d: &[u8]) -> Option<Expr> {
@@ -302,6 +322,18 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                     }
                     _ => return None,
                 }
+            }
+            Expr::Bitwise { sreg, dreg, mask, xor } => {
+                let src = reg_off(*sreg)?;
+                let dst = reg_off(*dreg)?;
+                let l = mask.len();
+                if src + l > regs.len() || dst + l > regs.len() { return None; }
+                // Read first to handle aliasing (sreg == dreg).
+                let mut tmp = Vec::with_capacity(l);
+                for i in 0..l {
+                    tmp.push((regs[src + i] & mask[i]) ^ xor[i]);
+                }
+                regs[dst .. dst + l].copy_from_slice(&tmp);
             }
             Expr::Counter => {
                 *packets = packets.wrapping_add(1);
@@ -585,6 +617,57 @@ mod tests {
         let exprs = parse_exprs(&rule);
         assert_eq!(run_rule(&exprs, &vec![0u8; 20]), Some(NF_DROP));
         assert_eq!(run_rule(&exprs, &vec![0u8; 40]), None);
+    }
+
+    #[test]
+    fn bitwise_masks_then_xors() {
+        // payload(NETWORK, 12, 4) -> reg1 ; bitwise reg1 mask 0xff_ff_00_00 xor 0 -> reg1 ;
+        // cmp reg1 == 10.0.0.0 ; drop
+        let mut pdata = Vec::new();
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_DREG, 1);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_BASE, NFT_PAYLOAD_NETWORK_HEADER);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_OFFSET, 12);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_LEN, 4);
+        let mut p_expr = Vec::new();
+        nla_str(&mut p_expr, NFTA_EXPR_NAME, "payload");
+        nla_nested(&mut p_expr, NFTA_EXPR_DATA, &pdata);
+
+        let mut maskval = Vec::new();
+        nla(&mut maskval, NFTA_DATA_VALUE, &[0xff, 0xff, 0x00, 0x00]);
+        let mut xorval = Vec::new();
+        nla(&mut xorval, NFTA_DATA_VALUE, &[0, 0, 0, 0]);
+        let mut bdata = Vec::new();
+        nla_u32_be(&mut bdata, NFTA_BITWISE_SREG, 1);
+        nla_u32_be(&mut bdata, NFTA_BITWISE_DREG, 1);
+        nla_u32_be(&mut bdata, NFTA_BITWISE_LEN, 4);
+        nla_nested(&mut bdata, NFTA_BITWISE_MASK, &maskval);
+        nla_nested(&mut bdata, NFTA_BITWISE_XOR,  &xorval);
+        let mut b_expr = Vec::new();
+        nla_str(&mut b_expr, NFTA_EXPR_NAME, "bitwise");
+        nla_nested(&mut b_expr, NFTA_EXPR_DATA, &bdata);
+
+        let mut cmp_value = Vec::new();
+        nla(&mut cmp_value, NFTA_DATA_VALUE, &[10, 0, 0, 0]);
+        let mut cdata = Vec::new();
+        nla_u32_be(&mut cdata, NFTA_CMP_SREG, 1);
+        nla_u32_be(&mut cdata, NFTA_CMP_OP,  NFT_CMP_EQ);
+        nla_nested(&mut cdata, NFTA_CMP_DATA, &cmp_value);
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "cmp");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &cdata);
+
+        let imm = build_immediate_drop();
+        let mut rule = Vec::new();
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &p_expr);
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &b_expr);
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &c_expr);
+        rule.extend_from_slice(&imm);
+
+        let exprs = parse_exprs(&rule);
+        let pkt_in = ipv4_pkt_with_src([10, 0, 5, 7]); // /16 → 10.0.0.0
+        assert_eq!(run_rule(&exprs, &pkt_in), Some(NF_DROP));
+        let pkt_out = ipv4_pkt_with_src([192, 168, 1, 1]);
+        assert_eq!(run_rule(&exprs, &pkt_out), None);
     }
 
     #[test]
