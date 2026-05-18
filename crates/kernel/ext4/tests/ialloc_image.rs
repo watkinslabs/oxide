@@ -128,6 +128,41 @@ fn create_mknod_rejects_bad_type() {
 }
 
 #[test]
+fn create_anonymous_then_free_round_trip() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let pre_inodes = m.state_free_inodes();
+    let pre_blocks = m.state_free_blocks();
+    let n = m.create_anonymous(2, 0o600).unwrap();
+    // Orphan: nlink=0, no dir entry.
+    let inode = m.read_inode(n).unwrap();
+    assert!(inode.is_reg());
+    assert_eq!(inode.links_count, 0);
+    assert!(m.lookup_path(b"/anon").is_err(), "no dir entry under root");
+    // Write some data so there's at least one block to free.
+    let bs = m.sb.block_size as usize;
+    m.append_block(n, &std::vec![0xAB; bs]).unwrap();
+    // Free the orphan — both the data block and the inode go back.
+    m.free_orphan_inode(n).unwrap();
+    assert_eq!(m.state_free_inodes(), pre_inodes, "inode reclaimed");
+    assert_eq!(m.state_free_blocks(), pre_blocks, "data block reclaimed");
+}
+
+#[test]
+fn free_orphan_inode_refuses_named_file() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"named", 0o644).unwrap();
+    // create_file gives nlink=1. free_orphan_inode must be a no-op
+    // here so a caller racing with linkat doesn't blow away a still-
+    // named file.
+    m.free_orphan_inode(n).unwrap();
+    assert!(m.lookup_path(b"/named").is_ok(), "named file still visible");
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.links_count, 1);
+}
+
+#[test]
 fn create_persists_across_remount() {
     let disk = build_disk();
     {
