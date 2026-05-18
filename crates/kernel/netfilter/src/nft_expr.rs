@@ -111,7 +111,7 @@ pub fn parse_exprs(payload: &[u8]) -> Vec<Expr> {
     let mut off = 0;
     while off + 4 <= payload.len() {
         let nla_len = u16::from_ne_bytes([payload[off], payload[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([payload[off + 2], payload[off + 3]]);
+        let nla_type = u16::from_ne_bytes([payload[off + 2], payload[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > payload.len() { break; }
         let body = &payload[off + 4 .. off + nla_len];
         if mask_nla(nla_type) == NFTA_LIST_ELEM {
@@ -194,7 +194,7 @@ fn find_bytes<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u8]> {
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         if mask_nla(nla_type) == target {
             return Some(&attrs[off + 4 .. off + nla_len]);
