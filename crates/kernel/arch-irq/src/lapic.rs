@@ -132,16 +132,27 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // SAFETY: cross-CPU IPI handler runs in IRQ context with IRQs masked; tick_pick_next reads/writes per-CPU sched state.
             unsafe { sched::live::preempt::tick_pick_next(); }
         }
-        hal_x86_64::VEC_MSI => {
-            // F57: virtio MSI delivery. EOI already issued above; bump
-            // the diagnostic counter so msi-fires-post-enum picks it up.
-            // F01: vector is shared across virtio devices — raise the
-            // input-drain softirq unconditionally; the handler is a
-            // no-op when no events are pending in the used ring.
+        v if v >= hal_x86_64::VEC_MSI_POOL_FIRST
+          && v <= hal_x86_64::VEC_MSI_POOL_LAST => {
+            // F58: per-vector MSI delivery. EOI already issued above.
+            // Bump the diagnostic counter, then route to the per-vector
+            // handler if installed. Falls through to the legacy shared-
+            // vector softirq raise so devices that haven't moved to
+            // per-vector registration yet still get drained.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
-            softirq::raise(softirq::Slot::InputDrain);
-            softirq::raise(softirq::Slot::NetRx);
-            // Drain immediately on the same tail as the timer-arm.
+            let idx = (v - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
+            let raw = crate::MSI_HANDLERS[idx].load(Ordering::Acquire);
+            if !raw.is_null() {
+                // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
+                let f: fn() = unsafe { core::mem::transmute(raw) };
+                f();
+            } else {
+                // No registered handler — fall back to the shared-
+                // vector softirq raises so any pending used-rings get
+                // drained on the next softirq pass.
+                softirq::raise(softirq::Slot::InputDrain);
+                softirq::raise(softirq::Slot::NetRx);
+            }
             if softirq::pending() {
                 // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — softirq::run_pending guards re-entry via IN_PROGRESS.
                 unsafe {

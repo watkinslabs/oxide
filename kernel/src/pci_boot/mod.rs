@@ -17,6 +17,12 @@ use hal_x86_64::mmu_ops::X86Mmu;
 const VIRTIO_BAR_VA_BASE: u64 = 0xffff_fd00_0000_0000;
 static VIRTIO_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(VIRTIO_BAR_VA_BASE);
 
+/// F58: virtio-net's allocated MSI vector (x86) / SPI (arm). Stashed
+/// during the per-device cap-scan binding; consumed by the post-scan
+/// iface-registration site to install a per-vector handler.
+static VIRTIO_NET_MSI_ID: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 fn device_flags() -> PageFlags {
     PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
 }
@@ -312,6 +318,16 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             }
                         };
                         if let Some((id, msg_addr, msg_data)) = bind {
+                            // F58: stash the per-device MSI vector/SPI
+                            // so the post-scan iface registration can
+                            // install a per-vector handler that
+                            // bypasses the shared-vector softirq raise.
+                            let is_virtio_net = d.vendor_id == 0x1AF4
+                                && (d.device_id == 0x1000 || d.device_id == 0x1041);
+                            if is_virtio_net {
+                                VIRTIO_NET_MSI_ID
+                                    .store(id, core::sync::atomic::Ordering::Release);
+                            }
                             let entry_va = tbl_va; // entry 0
                             // SAFETY: entry_va is the freshly Device-attr-mapped MSI-X table base; aligned u32 stores within the 16-byte entry.
                             unsafe {
@@ -588,17 +604,39 @@ pub fn enumerate_and_log() {
                 // default guest IP; userspace DHCP rewrites at
                 // runtime once the iface goes up.
                 //
-                // F87: also install the softirq RX path. MSI fires
-                // raise Slot::NetRx (both arches) → drain handler
-                // calls poll_into_stack with the stashed iface/IP.
-                // The kthread stays as fallback in case an MSI is
-                // missed (shared vector + soft re-entry guards).
+                // F87: install the softirq RX path. MSI fires raise
+                // Slot::NetRx (both arches) → drain handler calls
+                // poll_into_stack with the stashed iface/IP. The
+                // kthread stays as fallback in case an MSI is missed.
+                //
+                // F58: also install a PER-VECTOR handler on the
+                // device's MSI vector (x86) / SPI (arm). The arch-irq
+                // dispatcher routes that specific vector directly to
+                // rx_drain_softirq, skipping the shared softirq raise
+                // entirely for this device. If alloc-msi-id stashing
+                // failed (vector pool exhausted), the softirq path
+                // still works because the dispatcher falls back to
+                // raising the shared-vector slots when no per-vector
+                // handler is registered.
                 let our_ip: [u8; 4] = [10, 0, 2, 15];
                 drv_virtio_net::modern::set_softirq_iface(id, our_ip);
                 softirq::set_handler(
                     softirq::Slot::NetRx,
                     drv_virtio_net::modern::rx_drain_softirq,
                 );
+                let msi_id = VIRTIO_NET_MSI_ID.load(core::sync::atomic::Ordering::Acquire);
+                if msi_id != 0 {
+                    #[cfg(target_arch = "x86_64")]
+                    let _ = arch_irq::register_msi_handler(
+                        msi_id as u8,
+                        drv_virtio_net::modern::rx_drain_softirq,
+                    );
+                    #[cfg(target_arch = "aarch64")]
+                    let _ = arch_irq::register_msi_handler(
+                        msi_id,
+                        drv_virtio_net::modern::rx_drain_softirq,
+                    );
+                }
                 let our_ip_be = u32::from_be_bytes(our_ip);
                 let arg = ((id.0 as usize) << 32) | (our_ip_be as usize);
                 // SAFETY: runqueue installed by smoke_install_runqueue
