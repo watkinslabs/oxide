@@ -374,11 +374,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.
+    // B39: serial respawn line goes direct to /bin/login, NOT getty.
+    // busybox getty wedges under headless qemu (boot-smoke / CI) — its
+    // open(/dev/ttyS0)+TIOCSCTTY+tcsetattr dance hangs before reaching
+    // its first write. /dev/ttyS0 in our kernel is a console alias
+    // pinned at 115200/cooked, so getty's baud / line-discipline job
+    // is moot. The sh wrapper just plumbs fd 0/1/2 onto /dev/ttyS0 so
+    // login's read/prompt path inherits a usable tty. Interactive boot
+    // sees the same `oxide login:` prompt the user typed `root` into
+    // pre-B39.
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
-ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+ttyS0::respawn:/bin/sh -c \"exec 0</dev/ttyS0 1>/dev/ttyS0 2>/dev/ttyS0; exec /bin/login\"
 ")?,
         "/etc/inittab")?;
 
