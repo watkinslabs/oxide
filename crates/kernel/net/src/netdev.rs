@@ -151,6 +151,19 @@ impl IfaceRegistry {
     pub fn snapshot(&self) -> Vec<(NetIfaceId, String, u32)> {
         self.snapshot_in_ns(0)
     }
+
+    /// Full-device snapshot (id, Arc<dyn NetDev>) for RTM_GETLINK
+    /// dumps that need `.mac()` / `.mtu()` / `.name()` on the
+    /// returned dev. Init-NS only — namespaced variant TBD when
+    /// CLONE_NEWNET socket dispatch lands.
+    /// # C: O(N)
+    pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
+        let g = self.inner.lock();
+        g.entries.iter()
+            .filter(|e| e.ns == 0)
+            .map(|e| (e.id, e.dev.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
