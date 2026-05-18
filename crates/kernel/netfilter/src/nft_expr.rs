@@ -41,6 +41,12 @@ pub const NFTA_CMP_DATA: u16 = 3;
 pub const NFTA_IMMEDIATE_DREG: u16 = 1;
 pub const NFTA_IMMEDIATE_DATA: u16 = 2;
 
+pub const NFTA_BYTEORDER_SREG: u16 = 1;
+pub const NFTA_BYTEORDER_DREG: u16 = 2;
+pub const NFTA_BYTEORDER_OP:   u16 = 3;
+pub const NFTA_BYTEORDER_LEN:  u16 = 4;
+pub const NFTA_BYTEORDER_SIZE: u16 = 5;
+
 pub const NFTA_BITWISE_SREG: u16 = 1;
 pub const NFTA_BITWISE_DREG: u16 = 2;
 pub const NFTA_BITWISE_LEN:  u16 = 3;
@@ -108,7 +114,8 @@ pub enum Expr {
     Meta      { dreg: u32, key: u32 },
     Lookup    { sreg: u32, set: String, invert: bool },
     Counter,
-    Bitwise { sreg: u32, dreg: u32, mask: Vec<u8>, xor: Vec<u8> },
+    Bitwise   { sreg: u32, dreg: u32, mask: Vec<u8>, xor: Vec<u8> },
+    Byteorder { sreg: u32, dreg: u32, len: u32, size: u32 },
 }
 
 /// Parse a `NFTA_RULE_EXPRESSIONS` payload into a list of
@@ -147,6 +154,7 @@ fn parse_one_expr(body: &[u8]) -> Option<Expr> {
         "lookup"    => parse_lookup(data),
         "counter"   => Some(Expr::Counter),
         "bitwise"   => parse_bitwise(data),
+        "byteorder" => parse_byteorder(data),
         _ => None,
     }
 }
@@ -166,6 +174,15 @@ fn parse_cmp(d: &[u8]) -> Option<Expr> {
     let dn   = find_bytes(d, NFTA_CMP_DATA)?;
     let data = find_bytes(dn, NFTA_DATA_VALUE)?.to_vec();
     Some(Expr::Cmp { sreg, op, data })
+}
+
+fn parse_byteorder(d: &[u8]) -> Option<Expr> {
+    let sreg = find_u32_be(d, NFTA_BYTEORDER_SREG)?;
+    let dreg = find_u32_be(d, NFTA_BYTEORDER_DREG)?;
+    let _op  = find_u32_be(d, NFTA_BYTEORDER_OP).unwrap_or(0);
+    let len  = find_u32_be(d, NFTA_BYTEORDER_LEN)?;
+    let size = find_u32_be(d, NFTA_BYTEORDER_SIZE)?;
+    Some(Expr::Byteorder { sreg, dreg, len, size })
 }
 
 fn parse_bitwise(d: &[u8]) -> Option<Expr> {
@@ -322,6 +339,19 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                     }
                     _ => return None,
                 }
+            }
+            Expr::Byteorder { sreg, dreg, len, size } => {
+                let src = reg_off(*sreg)?;
+                let dst = reg_off(*dreg)?;
+                let l = *len as usize;
+                let sz = *size as usize;
+                if sz == 0 || l % sz != 0 { return None; }
+                if src + l > regs.len() || dst + l > regs.len() { return None; }
+                let mut tmp = Vec::with_capacity(l);
+                for chunk in regs[src .. src + l].chunks(sz) {
+                    for &b in chunk.iter().rev() { tmp.push(b); }
+                }
+                regs[dst .. dst + l].copy_from_slice(&tmp);
             }
             Expr::Bitwise { sreg, dreg, mask, xor } => {
                 let src = reg_off(*sreg)?;
@@ -617,6 +647,52 @@ mod tests {
         let exprs = parse_exprs(&rule);
         assert_eq!(run_rule(&exprs, &vec![0u8; 20]), Some(NF_DROP));
         assert_eq!(run_rule(&exprs, &vec![0u8; 40]), None);
+    }
+
+    #[test]
+    fn byteorder_reverses_pairs() {
+        // sreg=1, dreg=1, len=4, size=2 — reverse each 2-byte half.
+        let mut bdata = Vec::new();
+        nla_u32_be(&mut bdata, NFTA_BYTEORDER_SREG, 1);
+        nla_u32_be(&mut bdata, NFTA_BYTEORDER_DREG, 1);
+        nla_u32_be(&mut bdata, NFTA_BYTEORDER_OP, 0);
+        nla_u32_be(&mut bdata, NFTA_BYTEORDER_LEN, 4);
+        nla_u32_be(&mut bdata, NFTA_BYTEORDER_SIZE, 2);
+        let mut b_expr = Vec::new();
+        nla_str(&mut b_expr, NFTA_EXPR_NAME, "byteorder");
+        nla_nested(&mut b_expr, NFTA_EXPR_DATA, &bdata);
+        // Load 0x11 0x22 0x33 0x44 → expect 0x22 0x11 0x44 0x33
+        // We bake load via payload at offset 0 from a synthetic
+        // L3 buffer.
+        let mut pdata = Vec::new();
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_DREG, 1);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_BASE, NFT_PAYLOAD_NETWORK_HEADER);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_OFFSET, 0);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_LEN, 4);
+        let mut p_expr = Vec::new();
+        nla_str(&mut p_expr, NFTA_EXPR_NAME, "payload");
+        nla_nested(&mut p_expr, NFTA_EXPR_DATA, &pdata);
+
+        let mut cmp_value = Vec::new();
+        nla(&mut cmp_value, NFTA_DATA_VALUE, &[0x22, 0x11, 0x44, 0x33]);
+        let mut cdata = Vec::new();
+        nla_u32_be(&mut cdata, NFTA_CMP_SREG, 1);
+        nla_u32_be(&mut cdata, NFTA_CMP_OP,  NFT_CMP_EQ);
+        nla_nested(&mut cdata, NFTA_CMP_DATA, &cmp_value);
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "cmp");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &cdata);
+
+        let imm = build_immediate_drop();
+        let mut rule = Vec::new();
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &p_expr);
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &b_expr);
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &c_expr);
+        rule.extend_from_slice(&imm);
+
+        let exprs = parse_exprs(&rule);
+        let pkt = vec![0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(run_rule(&exprs, &pkt), Some(NF_DROP));
     }
 
     #[test]
