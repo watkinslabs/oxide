@@ -1,77 +1,61 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, 1078 tests pass, both arches build.
-**Both arches boot to login headless** via the new boot-smoke gate.
-**virtio-net drives an iface end-to-end** with MSI-driven RX softirq + RX
-poller kthread fallback.
-**netlink (AF_NETLINK) substrate** lands rtnetlink RTM_GETLINK / GETADDR /
-NEWADDR / DELADDR / GETROUTE / NEWROUTE / DELROUTE — `ip link show`,
-`ip addr show / add / del`, `ip route show / add / del` all wire-format
-correct.
+Branch: main (clean). spec-lint clean, 1086 tests pass, both arches build.
+Both arches boot to login headless via the boot-smoke gate.
 
-## This session highlights
+## What's working end-to-end now
 
-| PR | Branch | Summary |
-|----|--------|---------|
-| #1114 | F82 | mknodat + symlinkat write-side (+arm ABI fix mknodat) |
-| #1115 | F83 | sys_futex_waitv real impl |
-| #1117 | B35 | arm-abi *at family + chroot + utimensat shift fixes |
-| #1118 | B36 | (broken — wrong-direction systematic shift) |
-| #1119 | B37 | revert B36 + targeted arm-abi re-fixes + tests |
-| #1122 | C74 | pre-push boot-smoke hook + script (no GHA cost) |
-| #1120 | F84 | ext4 extent depth 1→2 promotion + append_depth2 |
-| #1123 | B38 | x86 fork inherits LIVE FS_BASE (race fix) |
-| #1124 | B39 | inittab uses /bin/login direct, skipping wedge'd getty |
-| #1125 | F85 | O_TMPFILE + AT_EMPTY_PATH linkat |
-| #1126 | F86 | virtio-net RX-poller kthread |
-| #1127 | F87 | MSI-driven virtio-net RX via softirq Slot::NetRx |
-| #1128 | F88 | crates/kernel/netlink/ scaffold + AF_NETLINK socket |
-| #1129 | F89 | netlink RTM_GETLINK for ip link show |
-| #1130 | F90 | netlink RTM_GETADDR for ip addr show |
-| #1131 | F91 | netlink RTM_GETROUTE for ip route show |
-| #1132 | F92 | netlink iface-addr table + RTM_NEWADDR/DELADDR |
-| #1133 | F93 | netlink route table + RTM_NEWROUTE/DELROUTE |
+- **virtio-net** drives an iface — NetDev registered, xmit ok, RX via
+  MSI-driven softirq + RX poller kthread fallback (F86, F87)
+- **netlink (AF_NETLINK)** — rtnetlink (RTM_GETLINK/GETADDR/NEWADDR/
+  DELADDR/GETROUTE/NEWROUTE/DELROUTE) + genetlink (CTRL.GETFAMILY)
+  + NFNETLINK substrate (nftables tables / chains / rules)
+- **boot-smoke gate** local-only (pre-push hook, no GHA cost)
 
-## Boot-smoke gate (C74)
+## Session totals
 
-`tools/boot-smoke.sh` + `make smoke-{x86,arm,}` + `.githooks/pre-push`
-hook gate every kernel-surface push. Fires on changes under `kernel/`,
-`crates/kernel/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`,
-`rust-toolchain.toml`, `Cargo.toml`, `Cargo.lock`. SKIP_SMOKE=1 to bypass.
+24 PRs landed: F82, F83, B35, B37, C74, F84, B38, B39, F85, F86,
+F87, F88, F89, F90, F91, F92, F93, F94, F95, F96, F97, F98, D25, D26.
+(One reverted disaster: B36.)
 
-Install once per clone:
-```
-git config core.hooksPath .githooks
-```
+## Crate layout established (per docs/52§5)
+
+| Crate | Purpose |
+|---|---|
+| `crates/kernel/net/` | protocol stack (TCP/UDP/ICMP/ARP/iface registry) |
+| `crates/kernel/netlink/` | AF_NETLINK + rtnetlink + genetlink |
+| `crates/kernel/netfilter/` | NFNETLINK + nftables |
+| `crates/drivers/drv-virtio-net/` | virtio-net device driver |
+| `crates/drivers/drv-virtio-{blk,gpu,input}/` | other virtio devices |
 
 ## Open next (priority order)
 
-1. **userspace DHCP client** — busybox `udhcpc` integration or vendor
-   real `dhcpcd`. Sends RTM_NEWADDR via netlink now that #1132 lands.
-2. **NETLINK_GENERIC (genetlink)** — modern tools (e.g. `iw`,
-   `nftables`) use this. Family registry + ctrl family.
-3. **nftables substrate** — NETLINK_NETFILTER handlers + in-memory
-   table/chain/rule storage. Multi-PR.
+1. **userspace DHCP client** — busybox `udhcpc` integration. Now that
+   #1132/#1133 ship, the kernel-side substrate is ready; userspace
+   needs cross-build + image staging.
+2. **nftables packet-path enforcement** — F96-F98 store the rule set
+   but no packet hook executes against it. NF_INET_LOCAL_IN /
+   LOCAL_OUT / etc. hook callbacks ride a follow-up.
+3. **F58 per-vector MSI dispatch** — F87 raises NetRx on the shared
+   vector. Per-vector dispatch lets the RX kthread retire and
+   each device handle its own IRQ cleanly.
 4. **K10 eBPF verifier + JIT** — large multi-PR. Verifier first,
    socket-filter prog type, then JIT.
-5. **K13 DRM/KMS atomic modeset** — `crates/drivers/drm/` + per-evdev
-   registry. Large.
-6. **DNS / TLS userspace** — depends on DHCP landing. musl resolver
-   + cross-built openssl/rustls.
-7. **getty wedge follow-up** — B39 bypassed getty entirely; the real
-   tty-ioctl/termios bug that causes it to hang headless is unfixed.
-   Filing B40 to chase it.
-8. **virtio-net per-vector MSI dispatch** — F87 raises NetRx on the
-   shared vector. F58 follow-up in arch-irq adds per-vector dispatch;
-   then the F86 polling kthread can retire.
-9. **TLS endgame** — closed enough by B38 (x86 fork FS_BASE race);
-   musl/glibc handle TLS via arch_prctl per Linux convention. No
-   further kernel work needed unless a real-libc program complains.
+5. **K13 DRM/KMS atomic modeset** — `crates/drivers/drm/` exists but
+   atomic-commit surface is incomplete. Large multi-PR.
+6. **getty wedge B40** — B39 worked around it by skipping getty. The
+   real tty-ioctl/termios bug that hangs busybox getty headless is
+   still there. Investigation-style PR.
+7. **DNS / TLS userspace** — depends on DHCP. musl resolver + cross-
+   built openssl/rustls.
+8. **nftables sets / objects / batches** — NFNL_SUBSYS_NFTABLES sub-
+   commands NEWSET/GETSET/DELSET, NEWOBJ/GETOBJ/DELOBJ. F96-F98 left
+   these as accept-and-no-op (err=0).
 
 ## Discipline notes
 
 - Pre-push hook is mandatory; smoke gate is local (KVM-cheap, no GHA
-  cost burn).
+  cost burn). Install once per clone: `git config core.hooksPath .githooks`.
 - Never rebase a published branch — `gh pr merge --merge` handles the
   integration server-side. See [[feedback_no_branch_rebase]].
 - File-length cap 1000 LOC; split into submodules at next touch.
@@ -85,7 +69,6 @@ make smoke-x86 SMOKE_TIMEOUT=300
 make smoke-arm SMOKE_TIMEOUT=300
 ```
 
-Pick from "Open next". Easiest single-PR win is #2 (NETLINK_GENERIC
-scaffold) — same crate, same shape as rtnetlink, follows the established
-pattern. eBPF / DRM / DHCP all want fresh-context planning sessions
-because they're 5+ PRs each.
+Pick from "Open next". Smallest-bite next is #8 (nftables sets);
+biggest-impact-per-PR is #2 (packet-path enforcement so the rule
+set actually fires); #4 and #5 each want multiple sessions.
