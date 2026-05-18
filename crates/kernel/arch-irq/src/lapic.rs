@@ -140,6 +140,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // no-op when no events are pending in the used ring.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             softirq::raise(softirq::Slot::InputDrain);
+            softirq::raise(softirq::Slot::NetRx);
             // Drain immediately on the same tail as the timer-arm.
             if softirq::pending() {
                 // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — softirq::run_pending guards re-entry via IN_PROGRESS.

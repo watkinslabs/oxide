@@ -36,6 +36,10 @@ pub enum Slot {
     /// virtio-input: drain device used-ring + translate events to
     /// VT input. Raised by the virtio-input device IRQ.
     InputDrain = 1,
+    /// virtio-net: drain RX queue used-ring + dispatch frames into
+    /// the net stack. Raised by the MSI dispatcher on every virtio
+    /// MSI fire (shared vector — handler bails if RX queue is empty).
+    NetRx = 2,
 }
 
 const N_SLOTS: usize = 32;

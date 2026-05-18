@@ -438,6 +438,39 @@ pub fn modern_state() -> Option<ModernNetState> { *MODERN_DEV.lock() }
 /// # C: O(1)
 pub fn is_modern_present() -> bool { MODERN_PRESENT.load(Ordering::Acquire) }
 
+// ---- F87: softirq RX handler ----------------------------------------
+//
+// `pci_boot` calls `set_softirq_iface(id, ip)` after the NetDev is
+// registered with the kernel net stack. The MSI dispatcher then
+// `softirq::raise(NetRx)` on every device MSI; the runner drains the
+// pending bit and invokes `rx_drain_softirq` (no-arg per the softirq
+// handler ABI), which forwards to `poll_into_stack` with the stashed
+// values.
+
+static SOFTIRQ_IFACE_AND_IP: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Stash the iface id + IPv4 used by the RX softirq handler. Layout
+/// is `(iface_id as u64) << 32 | be32(ip)` — same encoding as the
+/// kthread arg. 0 = unset (handler is a no-op).
+/// # C: O(1)
+pub fn set_softirq_iface(id: net::NetIfaceId, ip: [u8; 4]) {
+    let v = ((id.0 as u64) << 32) | (u32::from_be_bytes(ip) as u64);
+    SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
+}
+
+/// Softirq slot handler. Drains pending RX into the net stack.
+/// Bails fast when no iface stashed (boot ordering) or RX queue empty
+/// (poll_into_stack returns 0 in either case).
+/// # C: O(rx_drain)
+pub fn rx_drain_softirq() {
+    let v = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
+    if v == 0 { return; }
+    let id = net::NetIfaceId::from_raw((v >> 32) as u32);
+    let ip = (v as u32).to_be_bytes();
+    let _ = poll_into_stack(id, ip);
+}
+
 // -------- F59-02: RX poll on the modern transport ----------------------
 //
 // Drains queue-0 used-ring entries the device wrote since the last
