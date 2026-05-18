@@ -570,16 +570,22 @@ pub fn enumerate_and_log() {
                 // F86: spawn an RX poller kthread. The driver
                 // exposes `poll_into_stack(iface, our_ip)` but
                 // nobody was calling it — inbound frames piled
-                // up in q0.used. The kthread is the lightweight
-                // alternative to wiring an MSI-X-vector handler;
-                // a real interrupt-driven RX path is follow-up
-                // once the MSI vector dispatch table reaches the
-                // driver (see project_virtio_pci_progress memory).
-                // arg encodes (iface_id << 32) | be32(our_ip).
-                // 10.0.2.15 is the qemu user-net default guest IP;
-                // userspace DHCP rewrites this at runtime once the
-                // iface goes up — F86 hardcodes for boot smoke.
-                let our_ip_be = u32::from_be_bytes([10, 0, 2, 15]);
+                // up in q0.used. 10.0.2.15 is the qemu user-net
+                // default guest IP; userspace DHCP rewrites at
+                // runtime once the iface goes up.
+                //
+                // F87: also install the softirq RX path. MSI fires
+                // raise Slot::NetRx (both arches) → drain handler
+                // calls poll_into_stack with the stashed iface/IP.
+                // The kthread stays as fallback in case an MSI is
+                // missed (shared vector + soft re-entry guards).
+                let our_ip: [u8; 4] = [10, 0, 2, 15];
+                drv_virtio_net::modern::set_softirq_iface(id, our_ip);
+                softirq::set_handler(
+                    softirq::Slot::NetRx,
+                    drv_virtio_net::modern::rx_drain_softirq,
+                );
+                let our_ip_be = u32::from_be_bytes(our_ip);
                 let arg = ((id.0 as usize) << 32) | (our_ip_be as usize);
                 // SAFETY: runqueue installed by smoke_install_runqueue
                 // earlier in lib.rs; PMM up; spawn_kernel_thread takes
