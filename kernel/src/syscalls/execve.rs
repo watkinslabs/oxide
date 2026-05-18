@@ -167,10 +167,19 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     const EXEC_USER_STACK_TOP: u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
+    // GROWSDOWN flag wires the stack VMA into the page-fault
+    // auto-extend path: any write below the current `vma.start`
+    // within 64 KiB extends the VMA downward (Linux's
+    // STACK_GUARD_GAP), so a 64 KiB initial allocation
+    // demand-grows up to RLIMIT_STACK per docs/31§5. F123:
+    // dhcpcd-aarch64 overflowed the 64 KiB initial frame on its
+    // first wide musl init pass and SIGSEGV'd because execve was
+    // shipping PRIVATE|ANONYMOUS without GROWSDOWN, leaving
+    // try_grow_stack with no VMA to extend.
     if new_as.mmap(
         Some(stack_hint), EXEC_USER_STACK_LEN,
         VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        vmm::EXEC_STACK_VMA_FLAGS,
         VmaBacking::Anonymous,
         true,
     ).is_err() {
@@ -440,10 +449,17 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     const EXEC_USER_STACK_TOP:  u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
+    // GROWSDOWN per docs/31§5. Wires this VMA into the page-fault
+    // auto-extend path (try_grow_stack) so a write below `vma.start`
+    // within 64 KiB extends downward instead of SIGSEGV. F123:
+    // dhcpcd-aarch64 overflowed the 64 KiB initial frame on its
+    // first wide musl init pass; pre-fix the stack VMA had no
+    // GROWSDOWN flag so find_growsdown_above returned None and the
+    // task got SIGSEGV at the first stack-underflow page.
     if new_as.mmap(
         Some(stack_hint), EXEC_USER_STACK_LEN,
         VmaProt::READ | VmaProt::WRITE,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        vmm::EXEC_STACK_VMA_FLAGS,
         VmaBacking::Anonymous,
         true,
     ).is_err() {
