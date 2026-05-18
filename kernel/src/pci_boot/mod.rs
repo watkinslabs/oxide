@@ -575,6 +575,7 @@ pub fn enumerate_and_log() {
                 // pass None so seeding only stamps eth0. The lo
                 // row gets seeded when loopback init lands.
                 ::netlink::rtnetlink::seed_defaults(Some(id.0), None);
+                ::netlink::rtnetlink::seed_default_routes(id.0);
 
                 // F86: spawn an RX poller kthread. The driver
                 // exposes `poll_into_stack(iface, our_ip)` but
