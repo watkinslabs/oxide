@@ -20,6 +20,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use alloc::vec;
+use alloc::string::String;
 
 // --- expression-attr constants (Linux nft_expr.h) ---
 
@@ -39,6 +40,13 @@ pub const NFTA_CMP_DATA: u16 = 3;
 
 pub const NFTA_IMMEDIATE_DREG: u16 = 1;
 pub const NFTA_IMMEDIATE_DATA: u16 = 2;
+
+pub const NFTA_LOOKUP_SET:   u16 = 1;
+pub const NFTA_LOOKUP_SREG:  u16 = 2;
+pub const NFTA_LOOKUP_DREG:  u16 = 3;
+pub const NFTA_LOOKUP_FLAGS: u16 = 4;
+
+pub const NFT_LOOKUP_F_INV: u32 = 1;
 
 pub const NFTA_META_DREG: u16 = 1;
 pub const NFTA_META_KEY:  u16 = 2;
@@ -89,6 +97,7 @@ pub enum Expr {
     Cmp       { sreg: u32, op: u32, data: Vec<u8> },
     Immediate { dreg: u32, verdict: Option<i32>, value: Vec<u8> },
     Meta      { dreg: u32, key: u32 },
+    Lookup    { sreg: u32, set: String, invert: bool },
 }
 
 /// Parse a `NFTA_RULE_EXPRESSIONS` payload into a list of
@@ -124,6 +133,7 @@ fn parse_one_expr(body: &[u8]) -> Option<Expr> {
         "cmp"       => parse_cmp(data),
         "immediate" => parse_immediate(data),
         "meta"      => parse_meta(data),
+        "lookup"    => parse_lookup(data),
         _ => None,
     }
 }
@@ -143,6 +153,18 @@ fn parse_cmp(d: &[u8]) -> Option<Expr> {
     let dn   = find_bytes(d, NFTA_CMP_DATA)?;
     let data = find_bytes(dn, NFTA_DATA_VALUE)?.to_vec();
     Some(Expr::Cmp { sreg, op, data })
+}
+
+fn parse_lookup(d: &[u8]) -> Option<Expr> {
+    let set  = find_str(d, NFTA_LOOKUP_SET)?;
+    let sreg = find_u32_be(d, NFTA_LOOKUP_SREG)?;
+    let flags = find_u32_be(d, NFTA_LOOKUP_FLAGS).unwrap_or(0);
+    let invert = (flags & NFT_LOOKUP_F_INV) != 0;
+    Some(Expr::Lookup {
+        sreg,
+        set: String::from(set),
+        invert,
+    })
 }
 
 fn parse_meta(d: &[u8]) -> Option<Expr> {
@@ -188,13 +210,29 @@ fn find_u32_be(attrs: &[u8], target: u16) -> Option<u32> {
     Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+/// Set-lookup callback. `set_name` + `key` → optional data
+/// payload. Caller resolves family/table — that context is per-
+/// rule and stays out of the interpreter. The `key_len` parameter
+/// tells the closure how many bytes to read from the source reg
+/// (closures own set-shape knowledge).
+pub type SetLookupFn<'a> = &'a dyn Fn(&str, &[u8]) -> Option<Vec<u8>>;
+
+/// Thin wrapper around `run_rule_with_lookup` for rules that
+/// don't reference sets.
+/// # C: O(N_exprs · max_len)
+pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
+    run_rule_with_lookup(exprs, pkt, None)
+}
+
 /// Walk a parsed expression list against `pkt`. Returns:
 ///   - `Some(NF_DROP)` / `Some(NF_ACCEPT)` when an immediate sets
 ///     the verdict register
 ///   - `None` when no immediate fired (let chain policy decide) or
 ///     a cmp aborted the rule
+/// `lookup` is invoked when a rule contains an Expr::Lookup; pass
+/// `None` if the caller doesn't model sets.
 /// # C: O(N_exprs · max_len) per rule
-pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
+pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookupFn>) -> Option<i32> {
     let mut regs = vec![0u8; REG_BYTES];
     for e in exprs {
         match e {
@@ -245,6 +283,20 @@ pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
                     }
                     _ => return None,
                 }
+            }
+            Expr::Lookup { sreg, set, invert } => {
+                let src = reg_off(*sreg)?;
+                // Hand the closure a 16-byte register window (the
+                // legacy register width); the closure inspects only
+                // the prefix that matches its set's key_len.
+                if src + 16 > regs.len() { return None; }
+                let key = &regs[src .. src + 16];
+                let hit = match lookup {
+                    Some(f) => f(set.as_str(), key).is_some(),
+                    None    => false,
+                };
+                let matched = hit ^ *invert;
+                if !matched { return None; }
             }
             Expr::Immediate { dreg, verdict, value } => {
                 if *dreg == 0 {
@@ -510,6 +562,64 @@ mod tests {
         let exprs = parse_exprs(&rule);
         assert_eq!(run_rule(&exprs, &vec![0u8; 20]), Some(NF_DROP));
         assert_eq!(run_rule(&exprs, &vec![0u8; 40]), None);
+    }
+
+    fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {
+        // payload (NETWORK 12, 4) -> reg 1; lookup (set, reg 1); drop
+        let mut pdata = Vec::new();
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_DREG, 1);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_BASE, NFT_PAYLOAD_NETWORK_HEADER);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_OFFSET, 12);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_LEN, 4);
+        let mut p_expr = Vec::new();
+        nla_str(&mut p_expr, NFTA_EXPR_NAME, "payload");
+        nla_nested(&mut p_expr, NFTA_EXPR_DATA, &pdata);
+
+        let mut ldata = Vec::new();
+        let mut sname = set_name.as_bytes().to_vec();
+        sname.push(0);
+        nla(&mut ldata, NFTA_LOOKUP_SET, &sname);
+        nla_u32_be(&mut ldata, NFTA_LOOKUP_SREG, 1);
+        nla_u32_be(&mut ldata, NFTA_LOOKUP_FLAGS, if invert { NFT_LOOKUP_F_INV } else { 0 });
+        let mut l_expr = Vec::new();
+        nla_str(&mut l_expr, NFTA_EXPR_NAME, "lookup");
+        nla_nested(&mut l_expr, NFTA_EXPR_DATA, &ldata);
+
+        let imm = build_immediate_drop();
+        let mut out = Vec::new();
+        nla_nested(&mut out, NFTA_LIST_ELEM, &p_expr);
+        nla_nested(&mut out, NFTA_LIST_ELEM, &l_expr);
+        out.extend_from_slice(&imm);
+        out
+    }
+
+    #[test]
+    fn lookup_hit_drops() {
+        let rule = build_lookup_rule("blocked", false);
+        let exprs = parse_exprs(&rule);
+        let look = |_set: &str, key: &[u8]| -> Option<Vec<u8>> {
+            if &key[..4] == &[10, 0, 0, 5] { Some(Vec::new()) } else { None }
+        };
+        let pkt = ipv4_pkt_with_src([10, 0, 0, 5]);
+        assert_eq!(run_rule_with_lookup(&exprs, &pkt, Some(&look)), Some(NF_DROP));
+    }
+
+    #[test]
+    fn lookup_miss_falls_through() {
+        let rule = build_lookup_rule("blocked", false);
+        let exprs = parse_exprs(&rule);
+        let look = |_s: &str, _k: &[u8]| -> Option<Vec<u8>> { None };
+        let pkt = ipv4_pkt_with_src([10, 0, 0, 5]);
+        assert_eq!(run_rule_with_lookup(&exprs, &pkt, Some(&look)), None);
+    }
+
+    #[test]
+    fn lookup_inverted_miss_drops() {
+        let rule = build_lookup_rule("allowed", true);
+        let exprs = parse_exprs(&rule);
+        let look = |_s: &str, _k: &[u8]| -> Option<Vec<u8>> { None };
+        let pkt = ipv4_pkt_with_src([10, 0, 0, 5]);
+        assert_eq!(run_rule_with_lookup(&exprs, &pkt, Some(&look)), Some(NF_DROP));
     }
 
     #[test]
