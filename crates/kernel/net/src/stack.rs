@@ -32,6 +32,39 @@ use crate::udp::UdpHdr;
 use crate::tcp_hdr::{TcpHdr, flags as tcp_flags, TCP_HDR_MIN_LEN};
 use crate::tcp_conn::{TcpConn, Endpoint};
 
+/// Netfilter hook callback. Returns a Linux-style verdict packed
+/// into u32 (NF_DROP=0, NF_ACCEPT=1, NF_STOLEN=2, NF_QUEUE=3,
+/// NF_REPEAT=4). `pkt` is the L3 (or L2-if-known) bytes; `hook_id`
+/// selects which chain set to walk. netfilter installs the real
+/// impl via `install_nf_hook` at boot; if uninstalled, deliver_rx
+/// treats every packet as Accept.
+pub type NfHookFn = fn(hook_id: u32, pkt: &[u8]) -> u32;
+
+static NF_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the netfilter hook bridge. Idempotent. Called once at
+/// boot from the kernel side; netfilter can't be a direct dep of
+/// net because netlink already depends on net.
+/// # C: O(1)
+pub fn install_nf_hook(f: NfHookFn) {
+    NF_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Invoke the registered netfilter hook. Returns NF_ACCEPT (1)
+/// when no hook is installed so the default-accept path still
+/// works without netfilter wired.
+/// # C: O(1) when no hook; otherwise O(eval)
+fn nf_hook_eval(hook_id: u32, pkt: &[u8]) -> u32 {
+    let raw = NF_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if raw.is_null() { return 1; /* NF_ACCEPT */ }
+    // SAFETY: raw was installed via `install_nf_hook` with the documented `fn(u32, &[u8]) -> u32` signature.
+    let f: NfHookFn = unsafe { core::mem::transmute(raw) };
+    f(hook_id, pkt)
+}
+
+pub const NF_INET_LOCAL_IN: u32 = 1;
+
 /// Per-port UDP rx queue. The bind-syscall reads from here.
 pub struct UdpRxQueue {
     pub bound_ip:   Ipv4Addr,
@@ -270,6 +303,9 @@ impl NetStack {
     /// stack: parse IP, demux to ICMP / UDP / TCP, dispatch.
     /// # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        // Netfilter LOCAL_IN hook: drop the packet silently when
+        // a chain bound to NF_INET_LOCAL_IN votes Drop.
+        if nf_hook_eval(NF_INET_LOCAL_IN, l3) == 0 { return Ok(()); }
         let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }

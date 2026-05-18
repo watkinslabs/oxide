@@ -164,6 +164,95 @@ pub struct NftChain {
     pub table_family: u8,
     pub table_name:   String,
     pub name:         String,
+    /// Some(hook_id) iff this is a base chain (registered to a
+    /// netfilter hook); None for regular chains (only callable
+    /// via jump/goto from another rule).
+    pub hook:         Option<u32>,
+    /// Hook priority. Linux uses signed i32 (NF_IP_PRI_FILTER = 0,
+    /// NF_IP_PRI_MANGLE = -150, etc.). We sort ascending on eval.
+    pub priority:     i32,
+    /// Default verdict when no rule in this chain matches.
+    /// NF_DROP = 0, NF_ACCEPT = 1. v1 stores as u32.
+    pub policy:       u32,
+}
+
+/// Netfilter verdict per `linux/netfilter.h`. Returned by every
+/// hook handler; the net-stack callsite decides whether to deliver
+/// the packet based on this.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Verdict {
+    /// `NF_DROP` — discard the packet.
+    Drop,
+    /// `NF_ACCEPT` — pass the packet through to the next layer.
+    Accept,
+    /// `NF_STOLEN` — handler took ownership (e.g. nf_queue). Net
+    /// stack must not deliver or free; the hook will dispose.
+    Stolen,
+    /// `NF_QUEUE` — userspace queue handler (number embedded).
+    Queue(u16),
+    /// `NF_REPEAT` — re-run the same hook; v1 treats as Accept.
+    Repeat,
+}
+
+impl Verdict {
+    /// Linux returns NF_DROP=0 / NF_ACCEPT=1 / NF_STOLEN=2 /
+    /// NF_QUEUE=3 / NF_REPEAT=4 packed into a u32 (high 16 bits
+    /// hold the queue number for NF_QUEUE).
+    /// # C: O(1)
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Verdict::Drop      => 0,
+            Verdict::Accept    => 1,
+            Verdict::Stolen    => 2,
+            Verdict::Queue(q)  => 3 | ((q as u32) << 16),
+            Verdict::Repeat    => 4,
+        }
+    }
+}
+
+/// Netfilter hook ids per Linux `nf_inet_hooks`. v1 covers the
+/// inet protocol family (IPv4/IPv6 share the same numbers).
+pub mod hook {
+    pub const NF_INET_PRE_ROUTING:  u32 = 0;
+    pub const NF_INET_LOCAL_IN:     u32 = 1;
+    pub const NF_INET_FORWARD:      u32 = 2;
+    pub const NF_INET_LOCAL_OUT:    u32 = 3;
+    pub const NF_INET_POST_ROUTING: u32 = 4;
+    pub const NF_INET_NUM_HOOKS:    u32 = 5;
+}
+
+/// Default chain policy values.
+pub const NFT_CHAIN_POLICY_ACCEPT: u32 = 1; // matches Linux NF_ACCEPT
+pub const NFT_CHAIN_POLICY_DROP:   u32 = 0; // matches Linux NF_DROP
+
+/// Walk every base chain attached to `hook_id` (sorted ascending
+/// by `priority`), run its rules against `pkt`, and return the
+/// first non-Accept verdict (or the chain's `policy` if no rule
+/// matches).
+///
+/// v1 rule-expression interpreter is a stub: every rule evaluates
+/// to "no match" so chain policy alone decides the verdict. The
+/// real `NFTA_RULE_EXPRESSIONS` decoder (NFT_PAYLOAD / NFT_CMP /
+/// NFT_IMMEDIATE) rides a follow-up. So today policy=accept means
+/// Accept, policy=drop means Drop — a real packet filter.
+///
+/// `_pkt` is the raw L2/L3 bytes; the future expression
+/// interpreter inspects it.
+/// # C: O(N_chains) policy-only today; O(N_chains × N_rules) once expression eval lands
+pub fn eval(hook_id: u32, _pkt: &[u8]) -> Verdict {
+    let mut chains: Vec<NftChain> = CHAINS.lock().clone();
+    chains.retain(|c| c.hook == Some(hook_id));
+    chains.sort_by_key(|c| c.priority);
+    for c in chains.iter() {
+        // v1: every rule "doesn't match"; chain policy is the
+        // verdict. Future PR walks RULES with c.chain_name and
+        // interprets the expression payload.
+        match c.policy {
+            NFT_CHAIN_POLICY_DROP => return Verdict::Drop,
+            _ => continue, // Accept-style policy: try next chain
+        }
+    }
+    Verdict::Accept
 }
 
 #[derive(Clone, Debug)]
@@ -438,7 +527,7 @@ pub fn handle(full_msg: &[u8]) -> Vec<u8> {
     };
     let attrs = &full_msg[nfg_off + Nfgenmsg::SIZE..];
     match subsys {
-        subsys::NFNL_SUBSYS_NFTABLES => handle_nft(&hdr, &nfg, cmd, attrs),
+        subsys::NFNL_SUBSYS_NFTABLES => nft_dispatch::handle_nft(&hdr, &nfg, cmd, attrs),
         _ => nlmsg_ack(&hdr, 0),
     }
 }
@@ -458,6 +547,18 @@ fn build_newchain_reply(seq: u32, pid: u32, c: &NftChain, multi: bool) -> Vec<u8
     put_nlattr_str(&mut body, nfta_chain::NFTA_CHAIN_TABLE, &c.table_name);
     put_nlattr_str(&mut body, nfta_chain::NFTA_CHAIN_NAME, &c.name);
     put_nlattr_u32(&mut body, nfta_chain::NFTA_CHAIN_USE, 0);
+    put_nlattr_u32(&mut body, nfta_chain::NFTA_CHAIN_POLICY, c.policy);
+    // If this is a base chain (hook bound), emit a NFTA_CHAIN_HOOK
+    // nested attribute containing { HOOKNUM, PRIORITY }. nft
+    // userspace needs both to render `type filter hook input
+    // priority 0;`.
+    if let Some(hook_id) = c.hook {
+        let mut inner: Vec<u8> = Vec::with_capacity(16);
+        // NFTA_HOOK_HOOKNUM = 1, NFTA_HOOK_PRIORITY = 2 per Linux.
+        put_nlattr(&mut inner, 1u16, &hook_id.to_be_bytes());
+        put_nlattr(&mut inner, 2u16, &(c.priority as u32).to_be_bytes());
+        put_nlattr(&mut body, nfta_chain::NFTA_CHAIN_HOOK, &inner);
+    }
 
     let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
                    | (nft_msg::NFT_MSG_NEWCHAIN as u16);
@@ -606,367 +707,8 @@ fn build_newset_reply(seq: u32, pid: u32, s: &NftSet, multi: bool) -> Vec<u8> {
     out
 }
 
-/// Build a NFT_MSG_NEWGEN reply with the current generation id.
-/// # C: O(1)
-fn build_newgen_reply(seq: u32, pid: u32) -> Vec<u8> {
-    let mut body: Vec<u8> = Vec::with_capacity(32);
-    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
-    Nfgenmsg { nfgen_family: 0, version: 0, res_id: 0 }.write_to(&mut nfg_buf);
-    body.extend_from_slice(&nfg_buf);
-    put_nlattr_u32(&mut body, nfta_gen::NFTA_GEN_ID, gen_current());
 
-    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
-                   | (nft_msg::NFT_MSG_NEWGEN as u16);
-    let total = Nlmsghdr::SIZE + body.len();
-    let hdr = Nlmsghdr {
-        nlmsg_len: total as u32, nlmsg_type,
-        nlmsg_flags: 0, nlmsg_seq: seq, nlmsg_pid: pid,
-    };
-    let mut out: Vec<u8> = Vec::with_capacity(total);
-    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
-    hdr.write_to(&mut hdr_buf);
-    out.extend_from_slice(&hdr_buf);
-    out.extend_from_slice(&body);
-    while out.len() % 4 != 0 { out.push(0); }
-    out
-}
-
-/// Build a NFT_MSG_NEWOBJ reply for one stateful object.
-/// # C: O(1)
-fn build_newobj_reply(seq: u32, pid: u32, o: &NftObject, multi: bool) -> Vec<u8> {
-    let mut body: Vec<u8> = Vec::with_capacity(64);
-    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
-    Nfgenmsg { nfgen_family: o.table_family, version: 0, res_id: 0 }
-        .write_to(&mut nfg_buf);
-    body.extend_from_slice(&nfg_buf);
-
-    put_nlattr_str(&mut body, nfta_obj::NFTA_OBJ_TABLE, &o.table_name);
-    put_nlattr_str(&mut body, nfta_obj::NFTA_OBJ_NAME, &o.name);
-    put_nlattr_u32(&mut body, nfta_obj::NFTA_OBJ_TYPE, o.ty);
-    if !o.data.is_empty() {
-        put_nlattr(&mut body, nfta_obj::NFTA_OBJ_DATA, &o.data);
-    }
-    put_nlattr_u32(&mut body, nfta_obj::NFTA_OBJ_USE, 0);
-
-    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
-                   | (nft_msg::NFT_MSG_NEWOBJ as u16);
-    let total = Nlmsghdr::SIZE + body.len();
-    let hdr = Nlmsghdr {
-        nlmsg_len: total as u32, nlmsg_type,
-        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
-        nlmsg_seq: seq, nlmsg_pid: pid,
-    };
-    let mut out: Vec<u8> = Vec::with_capacity(total);
-    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
-    hdr.write_to(&mut hdr_buf);
-    out.extend_from_slice(&hdr_buf);
-    out.extend_from_slice(&body);
-    while out.len() % 4 != 0 { out.push(0); }
-    out
-}
-
-fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> {
-    match cmd {
-        nft_msg::NFT_MSG_GETGEN => build_newgen_reply(req.nlmsg_seq, req.nlmsg_pid),
-        nft_msg::NFT_MSG_GETTABLE => {
-            // Single table lookup or full dump.
-            if let Some(name) = find_str_attr(attrs, nfta_table::NFTA_TABLE_NAME) {
-                let g = TABLES.lock();
-                let found = g.iter().find(|t|
-                    t.family == nfg.nfgen_family && t.name == name).cloned();
-                drop(g);
-                match found {
-                    Some(t) => build_newtable_reply(req.nlmsg_seq, req.nlmsg_pid, &t, false),
-                    None    => nlmsg_ack(req, -2 /* ENOENT */),
-                }
-            } else {
-                let mut reply: Vec<u8> = Vec::with_capacity(256);
-                for t in tables_snapshot().iter() {
-                    let one = build_newtable_reply(req.nlmsg_seq, req.nlmsg_pid, t, true);
-                    reply.extend_from_slice(&one);
-                }
-                let mut done_buf = [0u8; Nlmsghdr::SIZE];
-                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-                done.nlmsg_flags = flags::NLM_F_MULTI;
-                done.write_to(&mut done_buf);
-                reply.extend_from_slice(&done_buf);
-                reply
-            }
-        }
-        nft_msg::NFT_MSG_NEWTABLE => {
-            let name = match find_str_attr(attrs, nfta_table::NFTA_TABLE_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            table_insert(NftTable {
-                family: nfg.nfgen_family,
-                name:   String::from(name),
-                flags:  0,
-            });
-            nlmsg_ack(req, 0)
-        }
-        nft_msg::NFT_MSG_DELTABLE => {
-            let name = match find_str_attr(attrs, nfta_table::NFTA_TABLE_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let n = table_remove(nfg.nfgen_family, name);
-            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
-        }
-        nft_msg::NFT_MSG_GETCHAIN => {
-            let table_name = find_str_attr(attrs, nfta_chain::NFTA_CHAIN_TABLE);
-            let chain_name = find_str_attr(attrs, nfta_chain::NFTA_CHAIN_NAME);
-            if let (Some(tn), Some(cn)) = (table_name, chain_name) {
-                let g = CHAINS.lock();
-                let found = g.iter().find(|c|
-                    c.table_family == nfg.nfgen_family
-                    && c.table_name == tn
-                    && c.name == cn).cloned();
-                drop(g);
-                match found {
-                    Some(c) => build_newchain_reply(req.nlmsg_seq, req.nlmsg_pid, &c, false),
-                    None    => nlmsg_ack(req, -2),
-                }
-            } else {
-                let mut reply: Vec<u8> = Vec::with_capacity(256);
-                for c in chains_snapshot().iter()
-                    .filter(|c| table_name.map_or(true, |tn|
-                        c.table_family == nfg.nfgen_family && c.table_name == tn))
-                {
-                    reply.extend_from_slice(&build_newchain_reply(
-                        req.nlmsg_seq, req.nlmsg_pid, c, true));
-                }
-                let mut done_buf = [0u8; Nlmsghdr::SIZE];
-                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-                done.nlmsg_flags = flags::NLM_F_MULTI;
-                done.write_to(&mut done_buf);
-                reply.extend_from_slice(&done_buf);
-                reply
-            }
-        }
-        nft_msg::NFT_MSG_NEWCHAIN => {
-            let table_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let chain_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            chain_insert(NftChain {
-                table_family: nfg.nfgen_family,
-                table_name:   String::from(table_name),
-                name:         String::from(chain_name),
-            });
-            nlmsg_ack(req, 0)
-        }
-        nft_msg::NFT_MSG_DELCHAIN => {
-            let table_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let chain_name = match find_str_attr(attrs, nfta_chain::NFTA_CHAIN_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let n = chain_remove(nfg.nfgen_family, table_name, chain_name);
-            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
-        }
-        nft_msg::NFT_MSG_GETRULE => {
-            let table_name = find_str_attr(attrs, nfta_rule::NFTA_RULE_TABLE);
-            let chain_name = find_str_attr(attrs, nfta_rule::NFTA_RULE_CHAIN);
-            let want_handle = find_u64_attr(attrs, nfta_rule::NFTA_RULE_HANDLE);
-            if let (Some(tn), Some(cn), Some(h)) = (table_name, chain_name, want_handle) {
-                let g = RULES.lock();
-                let found = g.iter().find(|r|
-                    r.table_family == nfg.nfgen_family
-                    && r.table_name == tn
-                    && r.chain_name == cn
-                    && r.handle == h).cloned();
-                drop(g);
-                match found {
-                    Some(r) => build_newrule_reply(req.nlmsg_seq, req.nlmsg_pid, &r, false),
-                    None    => nlmsg_ack(req, -2),
-                }
-            } else {
-                let mut reply: Vec<u8> = Vec::with_capacity(256);
-                for r in rules_snapshot().iter().filter(|r|
-                    table_name.map_or(true, |tn|
-                        r.table_family == nfg.nfgen_family && r.table_name == tn)
-                    && chain_name.map_or(true, |cn| r.chain_name == cn))
-                {
-                    reply.extend_from_slice(&build_newrule_reply(
-                        req.nlmsg_seq, req.nlmsg_pid, r, true));
-                }
-                let mut done_buf = [0u8; Nlmsghdr::SIZE];
-                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-                done.nlmsg_flags = flags::NLM_F_MULTI;
-                done.write_to(&mut done_buf);
-                reply.extend_from_slice(&done_buf);
-                reply
-            }
-        }
-        nft_msg::NFT_MSG_NEWRULE => {
-            let table_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let chain_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_CHAIN) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let raw_expr = find_bytes_attr(attrs, nfta_rule::NFTA_RULE_EXPRESSIONS)
-                .map(|b| b.to_vec()).unwrap_or_default();
-            rule_insert(NftRule {
-                table_family: nfg.nfgen_family,
-                table_name:   String::from(table_name),
-                chain_name:   String::from(chain_name),
-                handle:       next_rule_handle(),
-                raw_expr,
-            });
-            nlmsg_ack(req, 0)
-        }
-        nft_msg::NFT_MSG_DELRULE => {
-            let table_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let chain_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_CHAIN) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            // No handle = delete every rule in (table, chain). With
-            // handle = single-row delete. Mirrors nft userspace semantics.
-            let handle = find_u64_attr(attrs, nfta_rule::NFTA_RULE_HANDLE);
-            let n = match handle {
-                Some(h) => rule_remove(nfg.nfgen_family, table_name, chain_name, h),
-                None => {
-                    let mut g = RULES.lock();
-                    let before = g.len();
-                    g.retain(|r| !(r.table_family == nfg.nfgen_family
-                                   && r.table_name == table_name
-                                   && r.chain_name == chain_name));
-                    before - g.len()
-                }
-            };
-            nlmsg_ack(req, if n > 0 || handle.is_none() { 0 } else { -2 })
-        }
-        nft_msg::NFT_MSG_GETSET => {
-            let tn = find_str_attr(attrs, nfta_set::NFTA_SET_TABLE);
-            let sn = find_str_attr(attrs, nfta_set::NFTA_SET_NAME);
-            if let (Some(tn), Some(sn)) = (tn, sn) {
-                let g = SETS.lock();
-                let found = g.iter().find(|s|
-                    s.table_family == nfg.nfgen_family
-                    && s.table_name == tn
-                    && s.name == sn).cloned();
-                drop(g);
-                match found {
-                    Some(s) => build_newset_reply(req.nlmsg_seq, req.nlmsg_pid, &s, false),
-                    None    => nlmsg_ack(req, -2),
-                }
-            } else {
-                let mut reply: Vec<u8> = Vec::with_capacity(256);
-                for s in sets_snapshot().iter().filter(|s|
-                    tn.map_or(true, |t|
-                        s.table_family == nfg.nfgen_family && s.table_name == t))
-                {
-                    reply.extend_from_slice(&build_newset_reply(
-                        req.nlmsg_seq, req.nlmsg_pid, s, true));
-                }
-                let mut done_buf = [0u8; Nlmsghdr::SIZE];
-                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-                done.nlmsg_flags = flags::NLM_F_MULTI;
-                done.write_to(&mut done_buf);
-                reply.extend_from_slice(&done_buf);
-                reply
-            }
-        }
-        nft_msg::NFT_MSG_NEWSET => {
-            let table_name = match find_str_attr(attrs, nfta_set::NFTA_SET_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let set_name = match find_str_attr(attrs, nfta_set::NFTA_SET_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let flags     = find_u32_attr(attrs, nfta_set::NFTA_SET_FLAGS).unwrap_or(0);
-            let key_type  = find_u32_attr(attrs, nfta_set::NFTA_SET_KEY_TYPE).unwrap_or(0);
-            let key_len   = find_u32_attr(attrs, nfta_set::NFTA_SET_KEY_LEN).unwrap_or(0);
-            let data_type = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_TYPE).unwrap_or(0);
-            let data_len  = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_LEN).unwrap_or(0);
-            set_insert(NftSet {
-                table_family: nfg.nfgen_family,
-                table_name:   String::from(table_name),
-                name:         String::from(set_name),
-                key_type, key_len, data_type, data_len, flags,
-            });
-            nlmsg_ack(req, 0)
-        }
-        nft_msg::NFT_MSG_DELSET => {
-            let table_name = match find_str_attr(attrs, nfta_set::NFTA_SET_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let set_name = match find_str_attr(attrs, nfta_set::NFTA_SET_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let n = set_remove(nfg.nfgen_family, table_name, set_name);
-            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
-        }
-        nft_msg::NFT_MSG_GETOBJ => {
-            let tn = find_str_attr(attrs, nfta_obj::NFTA_OBJ_TABLE);
-            let on = find_str_attr(attrs, nfta_obj::NFTA_OBJ_NAME);
-            if let (Some(tn), Some(on)) = (tn, on) {
-                let g = OBJECTS.lock();
-                let found = g.iter().find(|o|
-                    o.table_family == nfg.nfgen_family
-                    && o.table_name == tn
-                    && o.name == on).cloned();
-                drop(g);
-                match found {
-                    Some(o) => build_newobj_reply(req.nlmsg_seq, req.nlmsg_pid, &o, false),
-                    None    => nlmsg_ack(req, -2),
-                }
-            } else {
-                let mut reply: Vec<u8> = Vec::with_capacity(256);
-                for o in objects_snapshot().iter().filter(|o|
-                    tn.map_or(true, |t|
-                        o.table_family == nfg.nfgen_family && o.table_name == t))
-                {
-                    reply.extend_from_slice(&build_newobj_reply(
-                        req.nlmsg_seq, req.nlmsg_pid, o, true));
-                }
-                let mut done_buf = [0u8; Nlmsghdr::SIZE];
-                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
-                done.nlmsg_flags = flags::NLM_F_MULTI;
-                done.write_to(&mut done_buf);
-                reply.extend_from_slice(&done_buf);
-                reply
-            }
-        }
-        nft_msg::NFT_MSG_NEWOBJ => {
-            let table_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let obj_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let ty = find_u32_attr(attrs, nfta_obj::NFTA_OBJ_TYPE).unwrap_or(0);
-            let data = find_bytes_attr(attrs, nfta_obj::NFTA_OBJ_DATA)
-                .map(|b| b.to_vec()).unwrap_or_default();
-            object_insert(NftObject {
-                table_family: nfg.nfgen_family,
-                table_name:   String::from(table_name),
-                name:         String::from(obj_name),
-                ty, data,
-            });
-            gen_bump();
-            nlmsg_ack(req, 0)
-        }
-        nft_msg::NFT_MSG_DELOBJ => {
-            let table_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_TABLE) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let obj_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_NAME) {
-                Some(s) => s, None => return nlmsg_ack(req, -22),
-            };
-            let n = object_remove(nfg.nfgen_family, table_name, obj_name);
-            if n > 0 { gen_bump(); }
-            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
-        }
-        _ => nlmsg_ack(req, 0), // batches: future PR
-    }
-}
-
+mod nft_dispatch;
 
 #[cfg(test)]
 mod tests;

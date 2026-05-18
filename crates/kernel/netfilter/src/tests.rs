@@ -86,11 +86,64 @@ use super::*;
     }
 
     #[test]
+    fn verdict_encoding_matches_linux() {
+        assert_eq!(Verdict::Drop.as_u32(),     0);
+        assert_eq!(Verdict::Accept.as_u32(),   1);
+        assert_eq!(Verdict::Stolen.as_u32(),   2);
+        assert_eq!(Verdict::Queue(7).as_u32(), 3 | (7u32 << 16));
+        assert_eq!(Verdict::Repeat.as_u32(),   4);
+    }
+
+    #[test]
+    fn eval_accepts_when_no_base_chain_on_hook() {
+        // No chain registered on a fresh hook id ⇒ default Accept.
+        // 4242 is well outside any real hook value to avoid colliding
+        // with other tests' inserts.
+        assert_eq!(eval(4242, &[]), Verdict::Accept);
+    }
+
+    #[test]
+    fn eval_drop_policy_drops_packet() {
+        // Insert a base chain bound to a synthetic hook id with
+        // policy=DROP. eval() should return Drop. Use a per-test
+        // hook id so parallel tests don't trample.
+        let c = NftChain {
+            table_family: 2,
+            table_name:   String::from("oxide-test-hookT"),
+            name:         String::from("input"),
+            hook:         Some(7777),
+            priority:     0,
+            policy:       NFT_CHAIN_POLICY_DROP,
+        };
+        chain_insert(c);
+        assert_eq!(eval(7777, &[]), Verdict::Drop);
+        let _ = chain_remove(2, "oxide-test-hookT", "input");
+    }
+
+    #[test]
+    fn eval_accept_policy_passes_through() {
+        let c = NftChain {
+            table_family: 2,
+            table_name:   String::from("oxide-test-hookT2"),
+            name:         String::from("input"),
+            hook:         Some(7778),
+            priority:     0,
+            policy:       NFT_CHAIN_POLICY_ACCEPT,
+        };
+        chain_insert(c);
+        assert_eq!(eval(7778, &[]), Verdict::Accept);
+        let _ = chain_remove(2, "oxide-test-hookT2", "input");
+    }
+
+    #[test]
     fn chain_insert_dedup_remove() {
         let c = NftChain {
             table_family: 2,
             table_name:   String::from("oxide-test-t"),
             name:         String::from("input"),
+            hook:         None,
+            priority:     0,
+            policy:       NFT_CHAIN_POLICY_ACCEPT,
         };
         let before = chains_snapshot().len();
         chain_insert(c.clone());
