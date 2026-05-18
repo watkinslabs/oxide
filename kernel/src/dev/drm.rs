@@ -12,6 +12,8 @@ use drm::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC, DRM_MODE_ATOMIC_TEST_ONLY,
+    DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
+    DRM_IOCTL_AUTH_MAGIC, DRM_IOCTL_GET_MAGIC,
 };
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
@@ -189,6 +191,27 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
                 core::ptr::write_volatile((arg + 56) as *mut u32, min_h);
                 core::ptr::write_volatile((arg + 60) as *mut u32, max_h);
             }
+            Some(0)
+        }
+        DRM_IOCTL_SET_CLIENT_CAP => {
+            // struct drm_set_client_cap { capability u64; value u64; }
+            // Accept any cap; we don't track per-fd state yet. Mesa /
+            // Wayland clients set DRM_CLIENT_CAP_{STEREO_3D,
+            // UNIVERSAL_PLANES,ATOMIC,ASPECT_RATIO,WRITEBACK_CONNECTORS}
+            // here. Returning 0 means "honored"; real enforcement
+            // hangs off per-fd state in a follow-up.
+            Some(0)
+        }
+        DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER => {
+            // Master arbitration is moot when there's exactly one
+            // KMS client (the compositor). Return 0 so logind /
+            // weston-launch are happy.
+            Some(0)
+        }
+        DRM_IOCTL_AUTH_MAGIC | DRM_IOCTL_GET_MAGIC => {
+            // Render-node authentication scheme. v1 ships a single
+            // unified card node — Auth is implicit. Return 0; magic
+            // value 0 is harmless because we never check it.
             Some(0)
         }
         DRM_IOCTL_MODE_ATOMIC => {
