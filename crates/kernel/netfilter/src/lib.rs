@@ -86,6 +86,18 @@ pub mod nfta_table {
     pub const NFTA_TABLE_USE:    u16 = 3;
 }
 
+/// nft rule attribute ids per Linux `nf_tables.h::nft_rule_attributes`.
+pub mod nfta_rule {
+    pub const NFTA_RULE_TABLE:        u16 = 1;
+    pub const NFTA_RULE_CHAIN:        u16 = 2;
+    pub const NFTA_RULE_HANDLE:       u16 = 3;
+    pub const NFTA_RULE_EXPRESSIONS:  u16 = 4;
+    pub const NFTA_RULE_COMPAT:       u16 = 5;
+    pub const NFTA_RULE_POSITION:     u16 = 6;
+    pub const NFTA_RULE_USERDATA:     u16 = 7;
+    pub const NFTA_RULE_ID:           u16 = 9;
+}
+
 /// nft chain attribute ids per Linux `nf_tables.h::nft_chain_attributes`.
 pub mod nfta_chain {
     pub const NFTA_CHAIN_TABLE:  u16 = 1;
@@ -182,6 +194,16 @@ pub fn rule_insert(r: NftRule) -> u64 {
     let h = r.handle;
     RULES.lock().push(r);
     h
+}
+/// # C: O(N)
+pub fn rule_remove(family: u8, table_name: &str, chain_name: &str, handle: u64) -> usize {
+    let mut g = RULES.lock();
+    let before = g.len();
+    g.retain(|r| !(r.table_family == family
+                   && r.table_name == table_name
+                   && r.chain_name == chain_name
+                   && r.handle == handle));
+    before - g.len()
 }
 /// # C: O(N)
 pub fn rules_snapshot() -> Vec<NftRule> { RULES.lock().clone() }
@@ -335,6 +357,77 @@ fn build_newchain_reply(seq: u32, pid: u32, c: &NftChain, multi: bool) -> Vec<u8
     out
 }
 
+/// Find a u64 attribute (big-endian per nft convention).
+fn find_u64_attr(attrs: &[u8], target: u16) -> Option<u64> {
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        if nla_type == target {
+            let payload = &attrs[off + 4..off + nla_len];
+            if payload.len() == 8 {
+                return Some(u64::from_be_bytes(payload.try_into().ok()?));
+            }
+        }
+        off += nlmsg_align(nla_len);
+    }
+    None
+}
+
+/// Find a raw byte-slice attribute (no string trim).
+fn find_bytes_attr<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u8]> {
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        if nla_type == target {
+            return Some(&attrs[off + 4..off + nla_len]);
+        }
+        off += nlmsg_align(nla_len);
+    }
+    None
+}
+
+/// Build a NFT_MSG_NEWRULE reply describing one rule.
+/// # C: O(1)
+fn build_newrule_reply(seq: u32, pid: u32, r: &NftRule, multi: bool) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    Nfgenmsg {
+        nfgen_family: r.table_family,
+        version:      0,
+        res_id:       0,
+    }.write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+
+    put_nlattr_str(&mut body, nfta_rule::NFTA_RULE_TABLE, &r.table_name);
+    put_nlattr_str(&mut body, nfta_rule::NFTA_RULE_CHAIN, &r.chain_name);
+    put_nlattr(&mut body, nfta_rule::NFTA_RULE_HANDLE, &r.handle.to_be_bytes());
+    if !r.raw_expr.is_empty() {
+        put_nlattr(&mut body, nfta_rule::NFTA_RULE_EXPRESSIONS, &r.raw_expr);
+    }
+
+    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
+                   | (nft_msg::NFT_MSG_NEWRULE as u16);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq:   seq,
+        nlmsg_pid:   pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
 fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> {
     match cmd {
         nft_msg::NFT_MSG_GETTABLE => {
@@ -435,7 +528,82 @@ fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> 
             let n = chain_remove(nfg.nfgen_family, table_name, chain_name);
             nlmsg_ack(req, if n > 0 { 0 } else { -2 })
         }
-        _ => nlmsg_ack(req, 0), // NEWRULE / DELRULE / sets / objects: future PRs
+        nft_msg::NFT_MSG_GETRULE => {
+            let table_name = find_str_attr(attrs, nfta_rule::NFTA_RULE_TABLE);
+            let chain_name = find_str_attr(attrs, nfta_rule::NFTA_RULE_CHAIN);
+            let want_handle = find_u64_attr(attrs, nfta_rule::NFTA_RULE_HANDLE);
+            if let (Some(tn), Some(cn), Some(h)) = (table_name, chain_name, want_handle) {
+                let g = RULES.lock();
+                let found = g.iter().find(|r|
+                    r.table_family == nfg.nfgen_family
+                    && r.table_name == tn
+                    && r.chain_name == cn
+                    && r.handle == h).cloned();
+                drop(g);
+                match found {
+                    Some(r) => build_newrule_reply(req.nlmsg_seq, req.nlmsg_pid, &r, false),
+                    None    => nlmsg_ack(req, -2),
+                }
+            } else {
+                let mut reply: Vec<u8> = Vec::with_capacity(256);
+                for r in rules_snapshot().iter().filter(|r|
+                    table_name.map_or(true, |tn|
+                        r.table_family == nfg.nfgen_family && r.table_name == tn)
+                    && chain_name.map_or(true, |cn| r.chain_name == cn))
+                {
+                    reply.extend_from_slice(&build_newrule_reply(
+                        req.nlmsg_seq, req.nlmsg_pid, r, true));
+                }
+                let mut done_buf = [0u8; Nlmsghdr::SIZE];
+                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+                done.nlmsg_flags = flags::NLM_F_MULTI;
+                done.write_to(&mut done_buf);
+                reply.extend_from_slice(&done_buf);
+                reply
+            }
+        }
+        nft_msg::NFT_MSG_NEWRULE => {
+            let table_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let chain_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_CHAIN) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let raw_expr = find_bytes_attr(attrs, nfta_rule::NFTA_RULE_EXPRESSIONS)
+                .map(|b| b.to_vec()).unwrap_or_default();
+            rule_insert(NftRule {
+                table_family: nfg.nfgen_family,
+                table_name:   String::from(table_name),
+                chain_name:   String::from(chain_name),
+                handle:       next_rule_handle(),
+                raw_expr,
+            });
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELRULE => {
+            let table_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let chain_name = match find_str_attr(attrs, nfta_rule::NFTA_RULE_CHAIN) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            // No handle = delete every rule in (table, chain). With
+            // handle = single-row delete. Mirrors nft userspace semantics.
+            let handle = find_u64_attr(attrs, nfta_rule::NFTA_RULE_HANDLE);
+            let n = match handle {
+                Some(h) => rule_remove(nfg.nfgen_family, table_name, chain_name, h),
+                None => {
+                    let mut g = RULES.lock();
+                    let before = g.len();
+                    g.retain(|r| !(r.table_family == nfg.nfgen_family
+                                   && r.table_name == table_name
+                                   && r.chain_name == chain_name));
+                    before - g.len()
+                }
+            };
+            nlmsg_ack(req, if n > 0 || handle.is_none() { 0 } else { -2 })
+        }
+        _ => nlmsg_ack(req, 0), // sets / objects: future PRs
     }
 }
 
@@ -464,6 +632,24 @@ mod tests {
         let n = table_remove(2, "oxide-test-t");
         assert_eq!(n, 1);
         assert_eq!(tables_snapshot().len(), before);
+    }
+
+    #[test]
+    fn rule_insert_and_remove_round_trip() {
+        let h = next_rule_handle();
+        let r = NftRule {
+            table_family: 2,
+            table_name:   String::from("oxide-test-t"),
+            chain_name:   String::from("input"),
+            handle:       h,
+            raw_expr:     vec![1, 2, 3],
+        };
+        let before = rules_snapshot().len();
+        rule_insert(r);
+        assert_eq!(rules_snapshot().len(), before + 1);
+        let n = rule_remove(2, "oxide-test-t", "input", h);
+        assert_eq!(n, 1);
+        assert_eq!(rules_snapshot().len(), before);
     }
 
     #[test]
