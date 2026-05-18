@@ -86,6 +86,22 @@ pub mod nfta_table {
     pub const NFTA_TABLE_USE:    u16 = 3;
 }
 
+/// nft set attribute ids per Linux `nf_tables.h::nft_set_attributes`.
+pub mod nfta_set {
+    pub const NFTA_SET_TABLE:        u16 = 1;
+    pub const NFTA_SET_NAME:         u16 = 2;
+    pub const NFTA_SET_FLAGS:        u16 = 3;
+    pub const NFTA_SET_KEY_TYPE:     u16 = 4;
+    pub const NFTA_SET_KEY_LEN:      u16 = 5;
+    pub const NFTA_SET_DATA_TYPE:    u16 = 6;
+    pub const NFTA_SET_DATA_LEN:     u16 = 7;
+    pub const NFTA_SET_POLICY:       u16 = 8;
+    pub const NFTA_SET_DESC:         u16 = 9;
+    pub const NFTA_SET_ID:           u16 = 10;
+    pub const NFTA_SET_TIMEOUT:      u16 = 11;
+    pub const NFTA_SET_USERDATA:     u16 = 13;
+}
+
 /// nft rule attribute ids per Linux `nf_tables.h::nft_rule_attributes`.
 pub mod nfta_rule {
     pub const NFTA_RULE_TABLE:        u16 = 1;
@@ -140,6 +156,40 @@ pub struct NftRule {
 static TABLES: Spinlock<Vec<NftTable>, SockLockClass> = Spinlock::new(Vec::new());
 static CHAINS: Spinlock<Vec<NftChain>, SockLockClass> = Spinlock::new(Vec::new());
 static RULES:  Spinlock<Vec<NftRule>,  SockLockClass> = Spinlock::new(Vec::new());
+static SETS:   Spinlock<Vec<NftSet>,   SockLockClass> = Spinlock::new(Vec::new());
+
+#[derive(Clone, Debug)]
+pub struct NftSet {
+    pub table_family: u8,
+    pub table_name:   String,
+    pub name:         String,
+    pub key_type:     u32,
+    pub key_len:      u32,
+    pub data_type:    u32,
+    pub data_len:     u32,
+    pub flags:        u32,
+}
+
+/// # C: O(N)
+pub fn set_insert(s: NftSet) {
+    let mut g = SETS.lock();
+    if let Some(i) = g.iter().position(|x|
+        x.table_family == s.table_family
+        && x.table_name == s.table_name
+        && x.name == s.name)
+    { g[i] = s; } else { g.push(s); }
+}
+/// # C: O(N)
+pub fn set_remove(family: u8, table_name: &str, set_name: &str) -> usize {
+    let mut g = SETS.lock();
+    let before = g.len();
+    g.retain(|x| !(x.table_family == family
+                   && x.table_name == table_name
+                   && x.name == set_name));
+    before - g.len()
+}
+/// # C: O(N)
+pub fn sets_snapshot() -> Vec<NftSet> { SETS.lock().clone() }
 
 static NEXT_RULE_HANDLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(1);
@@ -357,6 +407,24 @@ fn build_newchain_reply(seq: u32, pid: u32, c: &NftChain, multi: bool) -> Vec<u8
     out
 }
 
+/// Find a u32 attribute (big-endian per nft convention).
+fn find_u32_attr(attrs: &[u8], target: u16) -> Option<u32> {
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        if nla_type == target {
+            let payload = &attrs[off + 4..off + nla_len];
+            if payload.len() == 4 {
+                return Some(u32::from_be_bytes(payload.try_into().ok()?));
+            }
+        }
+        off += nlmsg_align(nla_len);
+    }
+    None
+}
+
 /// Find a u64 attribute (big-endian per nft convention).
 fn find_u64_attr(attrs: &[u8], target: u16) -> Option<u64> {
     let mut off = 0;
@@ -411,6 +479,45 @@ fn build_newrule_reply(seq: u32, pid: u32, r: &NftRule, multi: bool) -> Vec<u8> 
 
     let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
                    | (nft_msg::NFT_MSG_NEWRULE as u16);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq:   seq,
+        nlmsg_pid:   pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+/// Build a NFT_MSG_NEWSET reply describing one set.
+/// # C: O(1)
+fn build_newset_reply(seq: u32, pid: u32, s: &NftSet, multi: bool) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    Nfgenmsg {
+        nfgen_family: s.table_family,
+        version:      0,
+        res_id:       0,
+    }.write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+
+    put_nlattr_str(&mut body, nfta_set::NFTA_SET_TABLE, &s.table_name);
+    put_nlattr_str(&mut body, nfta_set::NFTA_SET_NAME, &s.name);
+    put_nlattr_u32(&mut body, nfta_set::NFTA_SET_FLAGS, s.flags);
+    put_nlattr_u32(&mut body, nfta_set::NFTA_SET_KEY_TYPE, s.key_type);
+    put_nlattr_u32(&mut body, nfta_set::NFTA_SET_KEY_LEN, s.key_len);
+    put_nlattr_u32(&mut body, nfta_set::NFTA_SET_DATA_TYPE, s.data_type);
+    put_nlattr_u32(&mut body, nfta_set::NFTA_SET_DATA_LEN, s.data_len);
+
+    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
+                   | (nft_msg::NFT_MSG_NEWSET as u16);
     let total = Nlmsghdr::SIZE + body.len();
     let hdr = Nlmsghdr {
         nlmsg_len:   total as u32,
@@ -603,7 +710,68 @@ fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> 
             };
             nlmsg_ack(req, if n > 0 || handle.is_none() { 0 } else { -2 })
         }
-        _ => nlmsg_ack(req, 0), // sets / objects: future PRs
+        nft_msg::NFT_MSG_GETSET => {
+            let tn = find_str_attr(attrs, nfta_set::NFTA_SET_TABLE);
+            let sn = find_str_attr(attrs, nfta_set::NFTA_SET_NAME);
+            if let (Some(tn), Some(sn)) = (tn, sn) {
+                let g = SETS.lock();
+                let found = g.iter().find(|s|
+                    s.table_family == nfg.nfgen_family
+                    && s.table_name == tn
+                    && s.name == sn).cloned();
+                drop(g);
+                match found {
+                    Some(s) => build_newset_reply(req.nlmsg_seq, req.nlmsg_pid, &s, false),
+                    None    => nlmsg_ack(req, -2),
+                }
+            } else {
+                let mut reply: Vec<u8> = Vec::with_capacity(256);
+                for s in sets_snapshot().iter().filter(|s|
+                    tn.map_or(true, |t|
+                        s.table_family == nfg.nfgen_family && s.table_name == t))
+                {
+                    reply.extend_from_slice(&build_newset_reply(
+                        req.nlmsg_seq, req.nlmsg_pid, s, true));
+                }
+                let mut done_buf = [0u8; Nlmsghdr::SIZE];
+                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+                done.nlmsg_flags = flags::NLM_F_MULTI;
+                done.write_to(&mut done_buf);
+                reply.extend_from_slice(&done_buf);
+                reply
+            }
+        }
+        nft_msg::NFT_MSG_NEWSET => {
+            let table_name = match find_str_attr(attrs, nfta_set::NFTA_SET_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let set_name = match find_str_attr(attrs, nfta_set::NFTA_SET_NAME) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let flags     = find_u32_attr(attrs, nfta_set::NFTA_SET_FLAGS).unwrap_or(0);
+            let key_type  = find_u32_attr(attrs, nfta_set::NFTA_SET_KEY_TYPE).unwrap_or(0);
+            let key_len   = find_u32_attr(attrs, nfta_set::NFTA_SET_KEY_LEN).unwrap_or(0);
+            let data_type = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_TYPE).unwrap_or(0);
+            let data_len  = find_u32_attr(attrs, nfta_set::NFTA_SET_DATA_LEN).unwrap_or(0);
+            set_insert(NftSet {
+                table_family: nfg.nfgen_family,
+                table_name:   String::from(table_name),
+                name:         String::from(set_name),
+                key_type, key_len, data_type, data_len, flags,
+            });
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELSET => {
+            let table_name = match find_str_attr(attrs, nfta_set::NFTA_SET_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let set_name = match find_str_attr(attrs, nfta_set::NFTA_SET_NAME) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let n = set_remove(nfg.nfgen_family, table_name, set_name);
+            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
+        }
+        _ => nlmsg_ack(req, 0), // objects / batches: future PRs
     }
 }
 
@@ -632,6 +800,23 @@ mod tests {
         let n = table_remove(2, "oxide-test-t");
         assert_eq!(n, 1);
         assert_eq!(tables_snapshot().len(), before);
+    }
+
+    #[test]
+    fn set_insert_dedup_remove() {
+        let s = NftSet {
+            table_family: 2,
+            table_name:   String::from("oxide-test-t"),
+            name:         String::from("blocked_ips"),
+            key_type: 7, key_len: 4, data_type: 0, data_len: 0, flags: 0,
+        };
+        let before = sets_snapshot().len();
+        set_insert(s.clone());
+        set_insert(s);
+        assert_eq!(sets_snapshot().len(), before + 1);
+        let n = set_remove(2, "oxide-test-t", "blocked_ips");
+        assert_eq!(n, 1);
+        assert_eq!(sets_snapshot().len(), before);
     }
 
     #[test]
