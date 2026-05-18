@@ -28,6 +28,7 @@ kalloc  = { path = "../crates/shared/kalloc" }
 pmm     = { path = "../crates/kernel/mm-pmm" }
 procfs  = { path = "../crates/kernel/procfs" }
 sched   = { path = "../crates/kernel/sched" }
+softirq = { path = "../crates/kernel/softirq" }
 sync    = { path = "../crates/shared/sync" }
 syscall = { path = "../crates/kernel/syscall" }
 tty     = { path = "../crates/kernel/tty" }
