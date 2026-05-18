@@ -58,6 +58,7 @@ const BPF_PROG_LOAD:     u64 = 5;
 const BPF_MAP_LOOKUP_ELEM: u64 = 1;
 const BPF_MAP_UPDATE_ELEM: u64 = 2;
 const BPF_MAP_DELETE_ELEM: u64 = 3;
+const BPF_MAP_GET_NEXT_KEY: u64 = 4;
 
 /// `sys_bpf(cmd, attr, size)` — slot 321.
 /// # C: O(1) for admit; O(log N) for map ops
@@ -85,6 +86,7 @@ pub fn sys_bpf(args: &SyscallArgs) -> i64 {
         BPF_MAP_LOOKUP_ELEM => handle_map_op(args.a1, args.a2, MapOp::Lookup),
         BPF_MAP_UPDATE_ELEM => handle_map_op(args.a1, args.a2, MapOp::Update),
         BPF_MAP_DELETE_ELEM => handle_map_op(args.a1, args.a2, MapOp::Delete),
+        BPF_MAP_GET_NEXT_KEY => handle_map_get_next_key(args.a1, args.a2),
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
@@ -206,6 +208,87 @@ fn handle_map_op(attr_ptr: u64, attr_size: u64, op: MapOp) -> i64 {
             }
         }
     }
+}
+
+/// Iterate map keys. Linux convention: `attr.key` is NULL or
+/// non-existent → return first key in iteration order;
+/// otherwise return the key strictly greater than `attr.key`
+/// (BTreeMap sorted order). Writes into `attr.value` (which the
+/// UAPI names `next_key`). -ENOENT when no successor exists.
+/// # C: O(N_entries)
+fn handle_map_get_next_key(attr_ptr: u64, attr_size: u64) -> i64 {
+    use hal::USER_VA_END;
+    if attr_ptr == 0 || attr_size < BPF_ATTR_MAP_OPS_SIZE {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if attr_ptr.checked_add(BPF_ATTR_MAP_OPS_SIZE).map_or(true, |e| e > USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: attr_ptr range validated < USER_VA_END; 32-byte struct.
+    let map_fd = unsafe { core::ptr::read_volatile(attr_ptr as *const u32) };
+    // SAFETY: attr_ptr + 8/16 still within validated 32-byte range.
+    let cur_key = unsafe { core::ptr::read_volatile((attr_ptr + 8) as *const u64) };
+    // SAFETY: same struct bound; field 'value' UAPI-aliased to next_key.
+    let next_key_ptr = unsafe { core::ptr::read_volatile((attr_ptr + 16) as *const u64) };
+
+    let cur = match sched::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task; preempt-off in this op path.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(map_fd as i32) {
+        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let inode = file.inode();
+    let map = match inode.as_any().and_then(|a| a.downcast_ref::<BpfMapInode>()) {
+        Some(m) => m, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    if next_key_ptr == 0 || next_key_ptr >= USER_VA_END
+        || next_key_ptr.checked_add(map.key_size as u64)
+            .map_or(true, |e| e > USER_VA_END)
+    {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+
+    // Read the lookup key if a pointer was supplied.
+    let key_in: Option<Vec<u8>> = if cur_key != 0
+        && cur_key < USER_VA_END
+        && cur_key.checked_add(map.key_size as u64)
+            .map_or(false, |e| e <= USER_VA_END)
+    {
+        let mut k = alloc::vec![0u8; map.key_size as usize];
+        for i in 0..map.key_size {
+            // SAFETY: cur_key range validated above; per-byte volatile read.
+            k[i as usize] = unsafe {
+                core::ptr::read_volatile((cur_key + i as u64) as *const u8)
+            };
+        }
+        Some(k)
+    } else { None };
+
+    let entries = map.entries.lock();
+    let chosen: Option<Vec<u8>> = match key_in {
+        None    => entries.keys().next().cloned(),
+        Some(k) => entries.range(k.clone()..)
+                          .find(|(kk, _)| **kk > k)
+                          .map(|(kk, _)| kk.clone()),
+    };
+    drop(entries);
+    let next = match chosen {
+        Some(k) => k,
+        None    => return -(Errno::Enoent.as_i32() as i64),
+    };
+    for i in 0..map.key_size as usize {
+        // SAFETY: next_key_ptr + key_size validated above; per-byte volatile write.
+        unsafe {
+            core::ptr::write_volatile(
+                (next_key_ptr + i as u64) as *mut u8,
+                *next.get(i).unwrap_or(&0));
+        }
+    }
+    0
 }
 
 /// Maximum instruction count we accept on PROG_LOAD. Linux's
