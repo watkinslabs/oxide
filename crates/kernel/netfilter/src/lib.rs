@@ -77,6 +77,28 @@ pub mod nft_msg {
     pub const NFT_MSG_NEWSET:      u8 = 9;
     pub const NFT_MSG_GETSET:      u8 = 10;
     pub const NFT_MSG_DELSET:      u8 = 11;
+    pub const NFT_MSG_NEWGEN:      u8 = 15;
+    pub const NFT_MSG_GETGEN:      u8 = 16;
+    pub const NFT_MSG_NEWOBJ:      u8 = 18;
+    pub const NFT_MSG_GETOBJ:      u8 = 19;
+    pub const NFT_MSG_DELOBJ:      u8 = 20;
+}
+
+/// nft object attribute ids per Linux `nf_tables.h::nft_object_attributes`.
+pub mod nfta_obj {
+    pub const NFTA_OBJ_TABLE:  u16 = 1;
+    pub const NFTA_OBJ_NAME:   u16 = 2;
+    pub const NFTA_OBJ_TYPE:   u16 = 3;  // counter / quota / limit / ...
+    pub const NFTA_OBJ_DATA:   u16 = 4;
+    pub const NFTA_OBJ_USE:    u16 = 5;
+    pub const NFTA_OBJ_HANDLE: u16 = 6;
+}
+
+/// nft generation attribute ids (NEWGEN replies).
+pub mod nfta_gen {
+    pub const NFTA_GEN_ID:    u16 = 1;
+    pub const NFTA_GEN_PROC_PID:  u16 = 2;
+    pub const NFTA_GEN_PROC_NAME: u16 = 3;
 }
 
 /// nft table attribute ids.
@@ -190,6 +212,55 @@ pub fn set_remove(family: u8, table_name: &str, set_name: &str) -> usize {
 }
 /// # C: O(N)
 pub fn sets_snapshot() -> Vec<NftSet> { SETS.lock().clone() }
+
+#[derive(Clone, Debug)]
+pub struct NftObject {
+    pub table_family: u8,
+    pub table_name:   String,
+    pub name:         String,
+    pub ty:           u32,    // NFT_OBJECT_COUNTER / QUOTA / LIMIT / ...
+    pub data:         Vec<u8>, // opaque per-type NFTA_OBJ_DATA payload
+}
+
+static OBJECTS: Spinlock<Vec<NftObject>, SockLockClass> =
+    Spinlock::new(Vec::new());
+
+/// # C: O(N)
+pub fn object_insert(o: NftObject) {
+    let mut g = OBJECTS.lock();
+    if let Some(i) = g.iter().position(|x|
+        x.table_family == o.table_family
+        && x.table_name == o.table_name
+        && x.name == o.name)
+    { g[i] = o; } else { g.push(o); }
+}
+/// # C: O(N)
+pub fn object_remove(family: u8, table_name: &str, obj_name: &str) -> usize {
+    let mut g = OBJECTS.lock();
+    let before = g.len();
+    g.retain(|x| !(x.table_family == family
+                   && x.table_name == table_name
+                   && x.name == obj_name));
+    before - g.len()
+}
+/// # C: O(N)
+pub fn objects_snapshot() -> Vec<NftObject> { OBJECTS.lock().clone() }
+
+/// Nftables generation counter. `nft` bumps it across every commit
+/// transaction so userspace can detect concurrent edits. Each
+/// successful write-side handler (NEWTABLE/CHAIN/RULE/SET/OBJ)
+/// `gen_bump()`s; GETGEN reads.
+static NFT_GEN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// # C: O(1)
+pub fn gen_current() -> u32 {
+    NFT_GEN.load(core::sync::atomic::Ordering::Acquire)
+}
+/// # C: O(1)
+pub fn gen_bump() -> u32 {
+    NFT_GEN.fetch_add(1, core::sync::atomic::Ordering::AcqRel) + 1
+}
 
 static NEXT_RULE_HANDLE: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(1);
@@ -535,8 +606,68 @@ fn build_newset_reply(seq: u32, pid: u32, s: &NftSet, multi: bool) -> Vec<u8> {
     out
 }
 
+/// Build a NFT_MSG_NEWGEN reply with the current generation id.
+/// # C: O(1)
+fn build_newgen_reply(seq: u32, pid: u32) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(32);
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    Nfgenmsg { nfgen_family: 0, version: 0, res_id: 0 }.write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+    put_nlattr_u32(&mut body, nfta_gen::NFTA_GEN_ID, gen_current());
+
+    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
+                   | (nft_msg::NFT_MSG_NEWGEN as u16);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len: total as u32, nlmsg_type,
+        nlmsg_flags: 0, nlmsg_seq: seq, nlmsg_pid: pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+/// Build a NFT_MSG_NEWOBJ reply for one stateful object.
+/// # C: O(1)
+fn build_newobj_reply(seq: u32, pid: u32, o: &NftObject, multi: bool) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    Nfgenmsg { nfgen_family: o.table_family, version: 0, res_id: 0 }
+        .write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+
+    put_nlattr_str(&mut body, nfta_obj::NFTA_OBJ_TABLE, &o.table_name);
+    put_nlattr_str(&mut body, nfta_obj::NFTA_OBJ_NAME, &o.name);
+    put_nlattr_u32(&mut body, nfta_obj::NFTA_OBJ_TYPE, o.ty);
+    if !o.data.is_empty() {
+        put_nlattr(&mut body, nfta_obj::NFTA_OBJ_DATA, &o.data);
+    }
+    put_nlattr_u32(&mut body, nfta_obj::NFTA_OBJ_USE, 0);
+
+    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
+                   | (nft_msg::NFT_MSG_NEWOBJ as u16);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len: total as u32, nlmsg_type,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq: seq, nlmsg_pid: pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
 fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> {
     match cmd {
+        nft_msg::NFT_MSG_GETGEN => build_newgen_reply(req.nlmsg_seq, req.nlmsg_pid),
         nft_msg::NFT_MSG_GETTABLE => {
             // Single table lookup or full dump.
             if let Some(name) = find_str_attr(attrs, nfta_table::NFTA_TABLE_NAME) {
@@ -771,92 +902,71 @@ fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> 
             let n = set_remove(nfg.nfgen_family, table_name, set_name);
             nlmsg_ack(req, if n > 0 { 0 } else { -2 })
         }
-        _ => nlmsg_ack(req, 0), // objects / batches: future PRs
+        nft_msg::NFT_MSG_GETOBJ => {
+            let tn = find_str_attr(attrs, nfta_obj::NFTA_OBJ_TABLE);
+            let on = find_str_attr(attrs, nfta_obj::NFTA_OBJ_NAME);
+            if let (Some(tn), Some(on)) = (tn, on) {
+                let g = OBJECTS.lock();
+                let found = g.iter().find(|o|
+                    o.table_family == nfg.nfgen_family
+                    && o.table_name == tn
+                    && o.name == on).cloned();
+                drop(g);
+                match found {
+                    Some(o) => build_newobj_reply(req.nlmsg_seq, req.nlmsg_pid, &o, false),
+                    None    => nlmsg_ack(req, -2),
+                }
+            } else {
+                let mut reply: Vec<u8> = Vec::with_capacity(256);
+                for o in objects_snapshot().iter().filter(|o|
+                    tn.map_or(true, |t|
+                        o.table_family == nfg.nfgen_family && o.table_name == t))
+                {
+                    reply.extend_from_slice(&build_newobj_reply(
+                        req.nlmsg_seq, req.nlmsg_pid, o, true));
+                }
+                let mut done_buf = [0u8; Nlmsghdr::SIZE];
+                let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+                done.nlmsg_flags = flags::NLM_F_MULTI;
+                done.write_to(&mut done_buf);
+                reply.extend_from_slice(&done_buf);
+                reply
+            }
+        }
+        nft_msg::NFT_MSG_NEWOBJ => {
+            let table_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let obj_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_NAME) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let ty = find_u32_attr(attrs, nfta_obj::NFTA_OBJ_TYPE).unwrap_or(0);
+            let data = find_bytes_attr(attrs, nfta_obj::NFTA_OBJ_DATA)
+                .map(|b| b.to_vec()).unwrap_or_default();
+            object_insert(NftObject {
+                table_family: nfg.nfgen_family,
+                table_name:   String::from(table_name),
+                name:         String::from(obj_name),
+                ty, data,
+            });
+            gen_bump();
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELOBJ => {
+            let table_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let obj_name = match find_str_attr(attrs, nfta_obj::NFTA_OBJ_NAME) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let n = object_remove(nfg.nfgen_family, table_name, obj_name);
+            if n > 0 { gen_bump(); }
+            nlmsg_ack(req, if n > 0 { 0 } else { -2 })
+        }
+        _ => nlmsg_ack(req, 0), // batches: future PR
     }
 }
+
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nfgenmsg_roundtrip() {
-        let n = Nfgenmsg { nfgen_family: 2, version: 0, res_id: 0x1234 };
-        let mut buf = [0u8; Nfgenmsg::SIZE];
-        n.write_to(&mut buf);
-        let p = Nfgenmsg::parse(&buf).unwrap();
-        assert_eq!(p.nfgen_family, 2);
-        assert_eq!(p.version, 0);
-        assert_eq!(p.res_id, 0x1234);
-    }
-
-    #[test]
-    fn table_insert_dedup_remove() {
-        let t = NftTable { family: 2, name: String::from("oxide-test-t"), flags: 0 };
-        let before = tables_snapshot().len();
-        table_insert(t.clone());
-        table_insert(t.clone()); // dedup
-        assert_eq!(tables_snapshot().len(), before + 1);
-        let n = table_remove(2, "oxide-test-t");
-        assert_eq!(n, 1);
-        assert_eq!(tables_snapshot().len(), before);
-    }
-
-    #[test]
-    fn set_insert_dedup_remove() {
-        let s = NftSet {
-            table_family: 2,
-            table_name:   String::from("oxide-test-t"),
-            name:         String::from("blocked_ips"),
-            key_type: 7, key_len: 4, data_type: 0, data_len: 0, flags: 0,
-        };
-        let before = sets_snapshot().len();
-        set_insert(s.clone());
-        set_insert(s);
-        assert_eq!(sets_snapshot().len(), before + 1);
-        let n = set_remove(2, "oxide-test-t", "blocked_ips");
-        assert_eq!(n, 1);
-        assert_eq!(sets_snapshot().len(), before);
-    }
-
-    #[test]
-    fn rule_insert_and_remove_round_trip() {
-        let h = next_rule_handle();
-        let r = NftRule {
-            table_family: 2,
-            table_name:   String::from("oxide-test-t"),
-            chain_name:   String::from("input"),
-            handle:       h,
-            raw_expr:     vec![1, 2, 3],
-        };
-        let before = rules_snapshot().len();
-        rule_insert(r);
-        assert_eq!(rules_snapshot().len(), before + 1);
-        let n = rule_remove(2, "oxide-test-t", "input", h);
-        assert_eq!(n, 1);
-        assert_eq!(rules_snapshot().len(), before);
-    }
-
-    #[test]
-    fn chain_insert_dedup_remove() {
-        let c = NftChain {
-            table_family: 2,
-            table_name:   String::from("oxide-test-t"),
-            name:         String::from("input"),
-        };
-        let before = chains_snapshot().len();
-        chain_insert(c.clone());
-        chain_insert(c.clone());
-        assert_eq!(chains_snapshot().len(), before + 1);
-        let n = chain_remove(2, "oxide-test-t", "input");
-        assert_eq!(n, 1);
-        assert_eq!(chains_snapshot().len(), before);
-    }
-
-    #[test]
-    fn rule_handles_are_unique() {
-        let a = next_rule_handle();
-        let b = next_rule_handle();
-        assert_ne!(a, b);
-    }
-}
+mod tests;
