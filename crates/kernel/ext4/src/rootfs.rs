@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use block::{BlockDevice, BlockOp, BlockRequest, PageCache};
+use ::sync as sync;
 use block::types::{BlockError, InodeId, KResult, PAGE_BYTES};
 use crate::Mount;
 
@@ -104,6 +105,23 @@ static PAGE_CACHE: PageCache = PageCache::new();
 static CACHE_HITS:   core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static CACHE_MISSES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// O_TMPFILE orphan inodes pending cleanup. `create_anonymous_at`
+/// inserts; `link_inode_at` removes (file has a name now); the
+/// close-hook only does the disk-touching free-path if the closed
+/// inode is in this set. Keeps the hook a true no-op for the 99.9%
+/// of file closes that aren't O_TMPFILE drops.
+static ORPHAN_INODES: sync::Spinlock<alloc::vec::Vec<u32>, sync::Tty> =
+    sync::Spinlock::new(alloc::vec::Vec::new());
+
+fn orphan_insert(ino: u32)        { ORPHAN_INODES.lock().push(ino); }
+fn orphan_remove(ino: u32) -> bool {
+    let mut g = ORPHAN_INODES.lock();
+    if let Some(pos) = g.iter().position(|&i| i == ino) {
+        g.swap_remove(pos); true
+    } else { false }
+}
+fn orphan_contains(ino: u32) -> bool { ORPHAN_INODES.lock().iter().any(|&i| i == ino) }
+
 /// Snapshot (hits, misses).
 /// # C: O(1)
 pub fn cache_stats() -> (u64, u64) {
@@ -130,6 +148,45 @@ pub unsafe fn init() {
     };
     let leaked = alloc::boxed::Box::leak(alloc::boxed::Box::new(mount));
     MOUNT_PTR.store(leaked as *mut _, Ordering::Release);
+    // Register the orphan-cleanup close hook so O_TMPFILE inodes get
+    // freed once their last fd closes. Hook bails out if the closed
+    // inode isn't an ext4 inode (via the 0x6E54 high-half marker that
+    // Ext4StatInode bakes into `ino()`).
+    vfs::file::set_close_hook(close_hook_free_orphan);
+}
+
+/// Close-hook: when the last File for an ext4 inode drops AND the
+/// inode's on-disk nlink is 0, free its data blocks + inode bitmap
+/// slot. Fires for every File-drop; cheap when the inode isn't ext4
+/// (high-half check) or the strong count says other fds hold it.
+fn close_hook_free_orphan(ino_ref: &vfs::InodeRef, _was_writable: bool) {
+    // Marker baked in by Ext4StatInode::ino(): `0x6E54_0000 | ino`,
+    // so the marker lives in bits 16..31 (works while ext4 ino fits
+    // in 16 bits, which holds for our embedded rootfs image). Bail
+    // out fast for any other filesystem's inode.
+    let vfs_ino: u64 = ino_ref.ino();
+    if (vfs_ino & 0xFFFF_0000) != 0x6E54_0000 { return; }
+    let ino = (vfs_ino & 0x0000_FFFF) as u32;
+    // Fast-path filter: only inodes that `create_anonymous_at`
+    // tagged as orphan can ever need freeing. Anything else
+    // (regular ext4 files) short-circuits here without disk I/O.
+    if !orphan_contains(ino) { return; }
+    // Wait for the LAST File holding this Arc — otherwise a process
+    // with dup'd fds would free out from under the surviving fd.
+    if alloc::sync::Arc::strong_count(ino_ref) != 1 { return; }
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    // Re-check on-disk nlink (race-free against linkat that may have
+    // happened on this inode and removed it from the orphan set).
+    if let Ok(inode) = mount.read_inode(ino) {
+        if inode.links_count == 0 {
+            let _ = mount.free_orphan_inode(ino);
+            orphan_remove(ino);
+            PAGE_CACHE.invalidate(InodeId(ino as u64));
+        }
+    }
 }
 
 /// Look up an absolute path. Returns the inode number or
@@ -566,6 +623,61 @@ pub fn create_at(path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
     let new_ino = mount.create_file(pino, name, mode_perm).ok()?;
     PAGE_CACHE.invalidate(InodeId(new_ino as u64));
     wrap_file(new_ino)
+}
+
+/// Create an anonymous (O_TMPFILE) regular file in the directory
+/// named by `dir_path`. The inode is allocated with nlink=0 and no
+/// dir entry; the returned vfs::InodeRef wraps the new inode for
+/// fd installation. If the fd is closed without `linkat_inode`,
+/// `free_orphan_inode_at` reclaims it.
+/// # C: O(1) inode alloc + 1 I/O
+pub fn create_anonymous_at(dir_path: &[u8], mode_perm: u16) -> Option<vfs::InodeRef> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let dir_ino = mount.lookup_path(dir_path).ok()?;
+    let new_ino = mount.create_anonymous(dir_ino, mode_perm).ok()?;
+    orphan_insert(new_ino);
+    PAGE_CACHE.invalidate(InodeId(new_ino as u64));
+    wrap_file(new_ino)
+}
+
+/// Free an orphan inode (one with nlink==0). Used by the File
+/// drop hook when an O_TMPFILE fd's last reference goes away.
+/// # C: O(N_extents) block-free + 1 inode-free
+pub fn free_orphan_inode(ino: u32) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    mount.free_orphan_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
+    PAGE_CACHE.invalidate(InodeId(ino as u64));
+    Ok(())
+}
+
+/// Link an already-allocated inode under `link_path`. Used by
+/// `linkat(fd, "", AT_FDCWD, link_path, AT_EMPTY_PATH)` to give an
+/// O_TMPFILE inode a name. Adds a dir entry + bumps nlink.
+/// # C: O(N parent entries)
+pub fn link_inode_at(ino: u32, link_path: &[u8]) -> Result<(), vfs::VfsError> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return Err(vfs::VfsError::Eio); }
+    // SAFETY: MOUNT_PTR is published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
+    let inode = mount.read_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
+    if inode.is_dir() { return Err(vfs::VfsError::Eperm); }
+    let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
+    let (parent_ino, name_owned) = parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
+    let name: alloc::vec::Vec<u8> = name_owned.to_vec();
+    mount.run_journaled(|m| {
+        m.dir_link(parent_ino, &name, ino, ftype)?;
+        m.adjust_nlink(ino, 1)?;
+        Ok(())
+    }).map_err(|_| vfs::VfsError::Eio)?;
+    // Linked = no longer orphan.
+    orphan_remove(ino);
+    Ok(())
 }
 
 /// Unlink the file at `path`. `Enoent` if missing.
