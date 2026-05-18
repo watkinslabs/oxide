@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloc::vec;
 
-use crate::{flags, nlmsg_align, Nlmsghdr};
+use crate::{flags, msg, nlmsg_align, Nlmsghdr};
 
 // ---- Message types -------------------------------------------------------
 
@@ -86,6 +86,53 @@ pub mod iff {
 
 pub const ARPHRD_ETHER:    u16 = 1;
 pub const ARPHRD_LOOPBACK: u16 = 772;
+
+// ---- struct ifaddrmsg (8 bytes) -----------------------------------------
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Ifaddrmsg {
+    pub ifa_family:    u8, // AF_INET or AF_INET6
+    pub ifa_prefixlen: u8, // /N (e.g. 24)
+    pub ifa_flags:     u8, // IFA_F_*
+    pub ifa_scope:     u8, // RT_SCOPE_*
+    pub ifa_index:     u32, // ifindex
+}
+
+impl Ifaddrmsg {
+    pub const SIZE: usize = 8;
+
+    /// # C: O(1)
+    pub fn write_to(&self, buf: &mut [u8]) {
+        buf[0] = self.ifa_family;
+        buf[1] = self.ifa_prefixlen;
+        buf[2] = self.ifa_flags;
+        buf[3] = self.ifa_scope;
+        buf[4..8].copy_from_slice(&self.ifa_index.to_ne_bytes());
+    }
+}
+
+// ---- IFA_* attribute types ----------------------------------------------
+
+pub mod ifa {
+    pub const IFA_UNSPEC:    u16 = 0;
+    pub const IFA_ADDRESS:   u16 = 1;  // peer addr (or local on lo)
+    pub const IFA_LOCAL:     u16 = 2;  // local addr
+    pub const IFA_LABEL:     u16 = 3;  // ifname
+    pub const IFA_BROADCAST: u16 = 4;
+    pub const IFA_ANYCAST:   u16 = 5;
+    pub const IFA_CACHEINFO: u16 = 6;
+    pub const IFA_FLAGS:     u16 = 8;
+}
+
+pub const AF_INET:  u8 = 2;
+pub const AF_INET6: u8 = 10;
+
+pub const RT_SCOPE_UNIVERSE: u8 = 0;
+pub const RT_SCOPE_SITE:     u8 = 200;
+pub const RT_SCOPE_LINK:     u8 = 253;
+pub const RT_SCOPE_HOST:     u8 = 254;
+pub const RT_SCOPE_NOWHERE:  u8 = 255;
 
 // ---- nlattr helpers ------------------------------------------------------
 
@@ -212,6 +259,95 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
     reply
 }
 
+/// Build a single RTM_NEWADDR reply for one iface's IPv4 address.
+/// `addr` / `prefixlen` are stored as host-order; we serialize the
+/// IPv4 as network-order bytes per Linux RTNL convention.
+/// # C: O(N attrs)
+fn build_newaddr_reply(
+    seq: u32, pid: u32,
+    ifindex: i32,
+    label: &str,
+    addr: [u8; 4],
+    prefixlen: u8,
+    scope: u8,
+    multi: bool,
+) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let ifa = Ifaddrmsg {
+        ifa_family:    AF_INET,
+        ifa_prefixlen: prefixlen,
+        ifa_flags:     0,
+        ifa_scope:     scope,
+        ifa_index:     ifindex as u32,
+    };
+    let mut ifa_buf = [0u8; Ifaddrmsg::SIZE];
+    ifa.write_to(&mut ifa_buf);
+    body.extend_from_slice(&ifa_buf);
+
+    put_nlattr(&mut body, ifa::IFA_LOCAL,   &addr);
+    put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr);
+    if scope != RT_SCOPE_HOST {
+        // Broadcast = network|~mask, derived from prefixlen.
+        let host_mask = if prefixlen >= 32 { 0u32 }
+                        else { (1u32 << (32 - prefixlen)) - 1 };
+        let a = u32::from_be_bytes(addr);
+        let bcast = ((a & !host_mask) | host_mask).to_be_bytes();
+        put_nlattr(&mut body, ifa::IFA_BROADCAST, &bcast);
+    }
+    put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
+
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type:  RTM_NEWADDR,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq:   seq,
+        nlmsg_pid:   pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+/// RTM_GETADDR dump. One RTM_NEWADDR per iface's IPv4 address,
+/// terminated by NLMSG_DONE. v1 wires hardcoded addresses:
+/// `lo` → 127.0.0.1/8 host-scope; any non-loopback → 10.0.2.15/24
+/// universe-scope (qemu user-net default). Real per-iface address
+/// table lands when userspace tooling writes them in via
+/// RTM_NEWADDR (a follow-up; for now the kernel publishes the
+/// defaults so `ip addr show` shows sensible output).
+/// # C: O(N_ifaces)
+pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
+    let mut reply: Vec<u8> = Vec::with_capacity(256);
+    let entries = ifaces_snapshot();
+    for (id, name, _mac, _mtu, is_lo) in entries.iter() {
+        let (addr, prefixlen, scope) = if *is_lo {
+            ([127u8, 0, 0, 1], 8u8, RT_SCOPE_HOST)
+        } else {
+            ([10u8, 0, 2, 15], 24u8, RT_SCOPE_UNIVERSE)
+        };
+        let one = build_newaddr_reply(
+            req.nlmsg_seq, req.nlmsg_pid,
+            *id as i32, name, addr, prefixlen, scope,
+            /*multi=*/true,
+        );
+        reply.extend_from_slice(&one);
+    }
+    let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+    done.nlmsg_flags = flags::NLM_F_MULTI;
+    let mut done_buf = [0u8; Nlmsghdr::SIZE];
+    done.write_to(&mut done_buf);
+    reply.extend_from_slice(&done_buf);
+    reply
+}
+
+// quiet warnings for the `msg` re-export that's only used by lib.rs
+const _: u16 = msg::NLMSG_DONE;
+
 /// Iface snapshot used by RTM_GETLINK. Kernel build pulls live
 /// devices from `net::sock::stack().ifaces`; hosted/test builds
 /// return an empty list so the rtnetlink reply path is testable
@@ -268,6 +404,25 @@ mod tests {
         assert_eq!(out2.len(), 8);
         let nla_len2 = u16::from_ne_bytes([out2[0], out2[1]]) as usize;
         assert_eq!(nla_len2, 6);
+    }
+
+    #[test]
+    fn ifaddrmsg_size_matches_linux() {
+        assert_eq!(Ifaddrmsg::SIZE, 8);
+    }
+
+    #[test]
+    fn build_newaddr_reply_well_formed() {
+        let bytes = build_newaddr_reply(
+            1, 42, 2, "eth0", [10, 0, 2, 15], 24, RT_SCOPE_UNIVERSE, true,
+        );
+        // Header nlmsg_type == RTM_NEWADDR
+        let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
+        assert_eq!(ty, RTM_NEWADDR);
+        // ifaddrmsg right after the 16-byte header
+        assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);
+        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 24); // prefixlen
+        assert_eq!(bytes[Nlmsghdr::SIZE + 3], RT_SCOPE_UNIVERSE);
     }
 
     #[test]
