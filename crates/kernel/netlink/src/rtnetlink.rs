@@ -9,6 +9,75 @@ use alloc::vec::Vec;
 use alloc::vec;
 
 use crate::{flags, msg, nlmsg_align, Nlmsghdr};
+use sync::{Spinlock, Socket as SockLockClass};
+
+/// One entry in the kernel's iface→address table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct IfaceAddr {
+    pub ifindex:   u32,
+    pub family:    u8,   // AF_INET (v1 IPv6 ride a follow-up)
+    pub addr:      [u8; 4],
+    pub prefixlen: u8,
+    pub scope:     u8,
+}
+
+/// Process-global iface address table. F92 replaces the previous
+/// hardcoded snapshot in `handle_getaddr` with a real table that
+/// userspace can mutate via RTM_NEWADDR / RTM_DELADDR. Boot seeds
+/// the qemu user-net default so `ip addr show` still works without
+/// a running DHCP client.
+static ADDR_TABLE: Spinlock<Vec<IfaceAddr>, SockLockClass> =
+    Spinlock::new(Vec::new());
+
+/// Insert (or replace, by ifindex+addr+prefixlen) an address row.
+/// Idempotent; same triple twice is one row.
+/// # C: O(N) duplicate scan
+pub fn addr_insert(row: IfaceAddr) {
+    let mut g = ADDR_TABLE.lock();
+    let dup = g.iter().position(|r|
+        r.ifindex == row.ifindex
+        && r.addr == row.addr
+        && r.prefixlen == row.prefixlen);
+    if let Some(i) = dup { g[i] = row; }
+    else { g.push(row); }
+}
+
+/// Remove rows matching (ifindex, addr, prefixlen). Returns the
+/// number removed. # C: O(N)
+pub fn addr_remove(ifindex: u32, addr: [u8; 4], prefixlen: u8) -> usize {
+    let mut g = ADDR_TABLE.lock();
+    let before = g.len();
+    g.retain(|r|
+        !(r.ifindex == ifindex
+          && r.addr == addr
+          && r.prefixlen == prefixlen));
+    before - g.len()
+}
+
+/// Snapshot of all address rows. # C: O(N)
+pub fn addr_snapshot() -> Vec<IfaceAddr> {
+    ADDR_TABLE.lock().clone()
+}
+
+/// Boot-time seed of the default v1 addresses. Idempotent — re-
+/// running with the same rows is a no-op. Called from pci_boot
+/// right after the eth0 NetDev registers so `ip addr show` works
+/// before any DHCP client runs.
+/// # C: O(1) — fixed-size insert sequence
+pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
+    if let Some(idx) = lo_ifindex {
+        addr_insert(IfaceAddr {
+            ifindex: idx, family: AF_INET,
+            addr: [127, 0, 0, 1], prefixlen: 8, scope: RT_SCOPE_HOST,
+        });
+    }
+    if let Some(idx) = eth0_ifindex {
+        addr_insert(IfaceAddr {
+            ifindex: idx, family: AF_INET,
+            addr: [10, 0, 2, 15], prefixlen: 24, scope: RT_SCOPE_UNIVERSE,
+        });
+    }
+}
 
 // ---- Message types -------------------------------------------------------
 
@@ -389,16 +458,16 @@ fn build_newaddr_reply(
 /// # C: O(N_ifaces)
 pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
-    let entries = ifaces_snapshot();
-    for (id, name, _mac, _mtu, is_lo) in entries.iter() {
-        let (addr, prefixlen, scope) = if *is_lo {
-            ([127u8, 0, 0, 1], 8u8, RT_SCOPE_HOST)
-        } else {
-            ([10u8, 0, 2, 15], 24u8, RT_SCOPE_UNIVERSE)
-        };
+    let ifaces = ifaces_snapshot();
+    for row in addr_snapshot().iter() {
+        // Resolve the iface label by ifindex; missing → "?"
+        let name = ifaces.iter()
+            .find(|(id, _, _, _, _)| *id == row.ifindex)
+            .map(|(_, n, _, _, _)| n.as_str())
+            .unwrap_or("?");
         let one = build_newaddr_reply(
             req.nlmsg_seq, req.nlmsg_pid,
-            *id as i32, name, addr, prefixlen, scope,
+            row.ifindex as i32, name, row.addr, row.prefixlen, row.scope,
             /*multi=*/true,
         );
         reply.extend_from_slice(&one);
@@ -409,6 +478,105 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     done.write_to(&mut done_buf);
     reply.extend_from_slice(&done_buf);
     reply
+}
+
+/// Parse the nlattr stream that follows an ifaddrmsg, looking for
+/// the four addresses we care about: IFA_LOCAL, IFA_ADDRESS,
+/// IFA_BROADCAST, IFA_LABEL. Returns IFA_LOCAL or IFA_ADDRESS as
+/// the canonical addr.
+/// # C: O(N attrs)
+fn parse_newaddr_attrs(attrs: &[u8]) -> Option<[u8; 4]> {
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        let payload = &attrs[off + 4..off + nla_len];
+        if (nla_type == ifa::IFA_LOCAL || nla_type == ifa::IFA_ADDRESS)
+            && payload.len() == 4
+        {
+            return Some([payload[0], payload[1], payload[2], payload[3]]);
+        }
+        off += nlmsg_align(nla_len);
+    }
+    None
+}
+
+/// Build a NLMSG_ERROR reply (16 B nlmsghdr + 4 B errno + the
+/// echoed request header). errno=0 means "ack" per Linux RTNL
+/// convention — userspace tools (`ip`, glibc netlink, libmnl)
+/// treat err=0 as success.
+/// # C: O(1)
+fn nlmsg_ack(req: &Nlmsghdr, err: i32) -> Vec<u8> {
+    let total = Nlmsghdr::SIZE + 4 + Nlmsghdr::SIZE;
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type:  msg::NLMSG_ERROR,
+        nlmsg_flags: 0,
+        nlmsg_seq:   req.nlmsg_seq,
+        nlmsg_pid:   req.nlmsg_pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&err.to_ne_bytes());
+    let mut req_buf = [0u8; Nlmsghdr::SIZE];
+    req.write_to(&mut req_buf);
+    out.extend_from_slice(&req_buf);
+    out
+}
+
+/// Handle RTM_NEWADDR. Buffer layout: nlmsghdr(16) | ifaddrmsg(8) |
+/// attrs. Inserts the (ifindex, addr, prefixlen) tuple into the
+/// process-global address table. Returns an NLMSG_ERROR with
+/// err=0 on success.
+/// # C: O(N attrs + addr_table size)
+pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let ifa_off = Nlmsghdr::SIZE;
+    if full_msg.len() < ifa_off + Ifaddrmsg::SIZE {
+        return nlmsg_ack(req, -22 /* EINVAL */);
+    }
+    let family    = full_msg[ifa_off];
+    let prefixlen = full_msg[ifa_off + 1];
+    let scope     = full_msg[ifa_off + 3];
+    let ifindex   = u32::from_ne_bytes([
+        full_msg[ifa_off + 4], full_msg[ifa_off + 5],
+        full_msg[ifa_off + 6], full_msg[ifa_off + 7],
+    ]);
+    if family != AF_INET {
+        return nlmsg_ack(req, -97 /* EAFNOSUPPORT */);
+    }
+    let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
+    let addr = match parse_newaddr_attrs(attrs) {
+        Some(a) => a,
+        None    => return nlmsg_ack(req, -22 /* EINVAL */),
+    };
+    addr_insert(IfaceAddr {
+        ifindex, family, addr, prefixlen, scope,
+    });
+    nlmsg_ack(req, 0)
+}
+
+/// Handle RTM_DELADDR. Buffer layout same as RTM_NEWADDR.
+/// # C: O(N attrs + addr_table size)
+pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let ifa_off = Nlmsghdr::SIZE;
+    if full_msg.len() < ifa_off + Ifaddrmsg::SIZE {
+        return nlmsg_ack(req, -22);
+    }
+    let prefixlen = full_msg[ifa_off + 1];
+    let ifindex   = u32::from_ne_bytes([
+        full_msg[ifa_off + 4], full_msg[ifa_off + 5],
+        full_msg[ifa_off + 6], full_msg[ifa_off + 7],
+    ]);
+    let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
+    let addr = match parse_newaddr_attrs(attrs) {
+        Some(a) => a,
+        None    => return nlmsg_ack(req, -22),
+    };
+    let n = addr_remove(ifindex, addr, prefixlen);
+    nlmsg_ack(req, if n > 0 { 0 } else { -2 /* ENOENT */ })
 }
 
 /// Build one RTM_NEWROUTE reply.
@@ -584,6 +752,37 @@ mod tests {
     #[test]
     fn ifaddrmsg_size_matches_linux() {
         assert_eq!(Ifaddrmsg::SIZE, 8);
+    }
+
+    #[test]
+    fn addr_table_insert_remove_snapshot() {
+        // Snapshot of total rows changes around our operations; we
+        // capture before/after rather than asserting absolute counts
+        // (other tests in the binary may have seeded rows).
+        let before = addr_snapshot().len();
+        addr_insert(IfaceAddr {
+            ifindex: 9999, family: AF_INET,
+            addr: [10, 9, 9, 9], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+        });
+        let after_insert = addr_snapshot().len();
+        assert_eq!(after_insert, before + 1);
+        let n = addr_remove(9999, [10, 9, 9, 9], 32);
+        assert_eq!(n, 1);
+        assert_eq!(addr_snapshot().len(), before);
+    }
+
+    #[test]
+    fn addr_insert_dedupes_same_key() {
+        let row = IfaceAddr {
+            ifindex: 9998, family: AF_INET,
+            addr: [10, 9, 9, 8], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+        };
+        let before = addr_snapshot().len();
+        addr_insert(row);
+        addr_insert(row); // second insert should replace, not duplicate
+        let after = addr_snapshot().len();
+        assert_eq!(after, before + 1);
+        let _ = addr_remove(9998, [10, 9, 9, 8], 32);
     }
 
     #[test]
