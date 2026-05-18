@@ -1,0 +1,12 @@
+[package]
+name    = "netfilter"
+version = "0.1.0"
+edition = "2021"
+description = "Netfilter substrate (NFNETLINK / nftables) per `26§7`. NFNL message dispatch + in-memory table/chain/rule storage. The kernel exposes the netfilter wire surface so `nft list ruleset` etc. work; packet-path enforcement (NF_INET_LOCAL_IN/OUT hook execution) rides a follow-up."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync    = { path = "../../shared/sync" }
+netlink = { path = "../netlink" }
