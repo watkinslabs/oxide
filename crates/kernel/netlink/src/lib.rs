@@ -19,6 +19,8 @@
 
 extern crate alloc;
 
+pub mod rtnetlink;
+
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -184,6 +186,25 @@ impl NetlinkSocket {
     pub fn dequeue(&self) -> Option<Vec<u8>> {
         self.rx_queue.lock().pop_front()
     }
+
+    /// Dispatch a single parsed request header. Routes by
+    /// `(self.protocol, hdr.nlmsg_type)` into the appropriate
+    /// per-protocol handler; on no match emits a NLMSG_DONE
+    /// terminator so dump-style clients don't hang.
+    /// # C: O(reply build)
+    fn handle_one(&self, hdr: &Nlmsghdr) {
+        let reply = match (self.protocol, hdr.nlmsg_type) {
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => {
+                rtnetlink::handle_getlink(hdr)
+            }
+            _ => {
+                let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
+                Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
+                done
+            }
+        };
+        self.enqueue(reply);
+    }
 }
 
 impl vfs::Inode for NetlinkSocket {
@@ -208,15 +229,22 @@ impl vfs::Inode for NetlinkSocket {
         }
     }
     fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
-        // F88 minimum: parse the header, ack-with-NLMSG_DONE if
-        // dump-style request, otherwise silently swallow. Per-
-        // protocol handlers (rtnetlink etc.) plug in via the
-        // dispatch fn in F89+ and will overwrite this behaviour.
         let consumed = buf.len();
-        if let Some(hdr) = Nlmsghdr::parse(buf) {
-            let mut reply = alloc::vec![0u8; Nlmsghdr::SIZE];
-            Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut reply);
-            self.enqueue(reply);
+        // Iterate over each nlmsghdr-prefixed message in the buffer.
+        // Linux netlink lets userspace pack multiple requests in one
+        // sendmsg; the kernel walks them serially.
+        let mut off = 0;
+        while off + Nlmsghdr::SIZE <= buf.len() {
+            let hdr = match Nlmsghdr::parse(&buf[off..]) {
+                Some(h) => h,
+                None    => break,
+            };
+            let msg_len = hdr.nlmsg_len as usize;
+            if msg_len < Nlmsghdr::SIZE || off + msg_len > buf.len() {
+                break;
+            }
+            self.handle_one(&hdr);
+            off += nlmsg_align(msg_len);
         }
         Ok(consumed)
     }
