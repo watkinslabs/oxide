@@ -1,82 +1,50 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, 1089 tests pass, both arches build.
+Branch: main (clean). spec-lint clean, ~1100 tests pass, both arches build.
 Boot-smoke gate passes both arches on every kernel-surface push.
-Recent PR-time CI: 6/6 green (last 6 PRs).
+Recent PR-time CI: 10/10 green (F104–F113).
 
 ## What's working end-to-end now
 
-- **virtio-net** drives an iface — NetDev registered, xmit ok, RX via
-  MSI-driven softirq + RX poller kthread fallback (F86, F87)
-- **netlink (AF_NETLINK)** — rtnetlink (RTM_GETLINK/GETADDR/NEWADDR/
-  DELADDR/GETROUTE/NEWROUTE/DELROUTE), genetlink (CTRL.GETFAMILY),
-  NFNETLINK (nftables tables/chains/rules)
-- **BPF maps** — BPF_MAP_LOOKUP / UPDATE / DELETE round-trip; verifier
-  + JIT for PROG_LOAD still pending (F99)
-- **boot-smoke gate** — pre-push hook, no GHA cost, gates kernel/,
-  crates/{kernel,drivers,arch}/, userspace/, targets/, vendor/
-
-## Session totals — 28 PRs
-
-| Range | Theme |
-|---|---|
-| F82, F84, F85 | ext4 mknod/symlink/depth=2/O_TMPFILE |
-| F83 | sys_futex_waitv |
-| B35, B36(revert), B37 | arm-abi *at + chroot + utimensat sweep |
-| C74, C75 | pre-push boot-smoke hook + crates/drivers/* trigger |
-| B38 | x86 fork inherits LIVE FS_BASE (race) |
-| B39 | inittab uses /bin/login direct (getty wedge bypass) |
-| F86, F87 | virtio-net RX kthread + MSI-driven softirq |
-| F88-F95 | netlink crate + rtnetlink + addr/route tables + lo seed |
-| F94 | genetlink scaffold + CTRL family |
-| F96-F98 | netfilter crate + nftables tables/chains/rules |
-| F99 | BPF map LOOKUP/UPDATE/DELETE |
-| F100, F101 | nftables sets / objects / GETGEN + generation counter |
-| B41 | drv-virtio-input keymap test flake fix |
-| D25-D29 | state.md checkpoints |
-
-## Crate layout established (per docs/52§5)
-
-| Crate | Purpose |
-|---|---|
-| `crates/kernel/net/` | protocol stack (TCP/UDP/ICMP/ARP/iface registry) |
-| `crates/kernel/netlink/` | AF_NETLINK + rtnetlink + genetlink |
-| `crates/kernel/netfilter/` | NFNETLINK + nftables |
-| `crates/drivers/drv-virtio-net/` | virtio-net device driver |
-| `crates/drivers/drv-virtio-{blk,gpu,input}/` | other virtio devices |
-| `crates/kernel/security/` | BPF / Landlock / capabilities |
+- **netfilter packet path** — eval(hook_id, pkt) walks base chains
+  by priority, runs each rule's expression list, applies policy on
+  fall-through. Wired into net::stack::deliver_rx on NF_INET_LOCAL_IN.
+  Expression set: payload (NETWORK + TRANSPORT bases via IHL), cmp
+  (EQ/NEQ), immediate (VERDICT/value), meta (LEN/NFPROTO/L4PROTO),
+  lookup (set membership + invert)
+- **nft set elements** — NEWSETELEM/DELSETELEM/GETSETELEM round-
+  trip; set_elem_lookup powers the lookup expression
+- **eBPF substrate** — structural verifier (size, align, regs,
+  jump bounds, EXIT terminator, wide-load straddling) + interpreter
+  (ALU64/JMP/EXIT/LD_IMM_DW/LDX_MEM_{B,H,W,DW}/CALL helpers); 1M
+  step budget; R1 = context register
+- **virtio-net** drives an iface — MSI-driven softirq + RX poller
+  kthread fallback
+- **netlink** — rtnetlink + genetlink (CTRL) + NFNETLINK (nft+nfgen)
+- **BPF maps** — LOOKUP/UPDATE/DELETE round-trip; PROG_LOAD now
+  rejects malformed via verifier
 
 ## Open next (priority order)
 
-1. **userspace DHCP** — busybox `udhcpc` integration. Substrate ready.
-2. **nftables packet-path enforcement** — F96-F98 store rules; need
-   `nf_hook_eval(hook_id, pkt) -> verdict` API in netfilter + NF_INET_
-   LOCAL_IN/OUT callsites in net stack.
-3. **F58 per-vector MSI dispatch** — F87 raises NetRx on the shared
-   vector. Per-vector lets the F86 polling kthread retire.
-4. **K10 eBPF verifier + JIT** — F99 ships map ops; PROG_LOAD still
-   stores empty insns. Verifier first, then JIT. Multi-PR.
-5. **K13 DRM/KMS atomic modeset** — `crates/drivers/drm/` exists but
-   atomic-commit surface is incomplete. Multi-PR.
-6. **getty wedge B40** — B39 worked around it. Real tty-ioctl/termios
-   bug still there. Investigation-style PR.
-7. **DNS / TLS userspace** — depends on DHCP. musl resolver + cross-
-   built openssl/rustls.
-8. **nftables sets / objects** — ✅ done (F100, F101); batch txns
-   currently ack-each (no rollback) which userspace tolerates;
-   real transactional rollback is a v2 thing.
+1. **userspace DHCP** — busybox `udhcpc` cross-build + image stage
+2. **K10 eBPF rest** — path-sensitive verifier (reg type/scalar
+   bounds) → JIT; PROG_LOAD currently runs structural-only
+3. **K13 DRM/KMS atomic modeset** — atomic-commit surface
+4. **getty wedge B40** — real tty-ioctl/termios bug behind the
+   /bin/login direct workaround
+5. **DNS / TLS userspace** — depends on DHCP
+6. **nft sweep** — bitwise / byteorder / counter exprs; batch txns
+   real rollback; global find_*_attr should mask NLA_F_NESTED
 
 ## Discipline notes
 
-- Pre-push hook gates kernel-surface pushes (now includes
-  `crates/drivers/*` per C75). Install once per clone:
-  `git config core.hooksPath .githooks`
+- Pre-push hook gates kernel-surface pushes — install once per
+  clone: `git config core.hooksPath .githooks`
 - Never rebase a published branch — `gh pr merge --merge` handles
-  the integration server-side ([[feedback_no_branch_rebase]])
-- Verify post-merge CI on main, not just the pre-push hook —
-  test-hosted can flake on parallel-shared-state tests (B41)
-- File-length cap 1000 LOC; split into submodules at next touch
-- spec-lint clean before every commit AND every PR
+  integration server-side
+- Never delete branches (`git branch -d/-D`) — preserve all
+- Verify post-merge CI on main; this run: 5/5 green so far
+- spec-lint clean before every commit + PR
 
 ## First task next session
 
@@ -88,8 +56,6 @@ gh pr list --state merged --limit 5 --json number,statusCheckRollup \
   --jq '.[] | {n: .number, failed: ([.statusCheckRollup[]? | select(.conclusion=="FAILURE") | .name] | join(","))}'
 ```
 
-Then pick from "Open next". The remaining items are each multi-day:
-- eBPF verifier (#4) is the biggest single subsystem
-- DRM/KMS (#5) is the second
-- DHCP userspace (#1) is cross-build + image staging
-- nftables packet-path (#2) is the smallest viable kernel-side bite
+Then pick from "Open next". eBPF JIT (#2) and DRM/KMS (#3) are the
+two biggest remaining single subsystems. DHCP (#1) is the next
+user-visible win (real network address acquisition).
