@@ -493,6 +493,7 @@ dependencies = [
  "procfs",
  "sched",
  "security",
+ "softirq",
  "sync",
  "syscall",
  "tty",
