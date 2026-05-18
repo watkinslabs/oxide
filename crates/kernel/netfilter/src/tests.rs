@@ -121,6 +121,57 @@ use super::*;
     }
 
     #[test]
+    fn eval_runs_rule_immediate_drop() {
+        use super::nft_expr::*;
+        // Build a rule that unconditionally drops via NFTA_RULE_EXPRESSIONS.
+        fn nla(buf: &mut Vec<u8>, ty: u16, payload: &[u8]) {
+            let total = 4 + payload.len();
+            buf.extend_from_slice(&(total as u16).to_ne_bytes());
+            buf.extend_from_slice(&ty.to_ne_bytes());
+            buf.extend_from_slice(payload);
+            while buf.len() % 4 != 0 { buf.push(0); }
+        }
+        fn nested(buf: &mut Vec<u8>, ty: u16, inner: &[u8]) { nla(buf, ty | 0x8000, inner); }
+        fn u32be(buf: &mut Vec<u8>, ty: u16, v: u32) { nla(buf, ty, &v.to_be_bytes()); }
+        fn s(buf: &mut Vec<u8>, ty: u16, st: &str) {
+            let mut p = st.as_bytes().to_vec(); p.push(0);
+            nla(buf, ty, &p);
+        }
+        let mut verdict = Vec::new();
+        u32be(&mut verdict, NFTA_VERDICT_CODE, NF_DROP as u32);
+        let mut data = Vec::new();
+        nested(&mut data, NFTA_DATA_VERDICT, &verdict);
+        let mut idata = Vec::new();
+        u32be(&mut idata, NFTA_IMMEDIATE_DREG, 0);
+        nested(&mut idata, NFTA_IMMEDIATE_DATA, &data);
+        let mut expr = Vec::new();
+        s(&mut expr, NFTA_EXPR_NAME, "immediate");
+        nested(&mut expr, NFTA_EXPR_DATA, &idata);
+        let mut raw_expr = Vec::new();
+        nested(&mut raw_expr, NFTA_LIST_ELEM, &expr);
+
+        let c = NftChain {
+            table_family: 2,
+            table_name:   String::from("oxide-test-evalT"),
+            name:         String::from("input"),
+            hook:         Some(8881),
+            priority:     0,
+            policy:       NFT_CHAIN_POLICY_ACCEPT,
+        };
+        chain_insert(c);
+        let r = NftRule {
+            table_family: 2,
+            table_name:   String::from("oxide-test-evalT"),
+            chain_name:   String::from("input"),
+            handle:       next_rule_handle(),
+            raw_expr,
+        };
+        rule_insert(r);
+        assert_eq!(eval(8881, &[]), Verdict::Drop);
+        let _ = chain_remove(2, "oxide-test-evalT", "input");
+    }
+
+    #[test]
     fn eval_accept_policy_passes_through() {
         let c = NftChain {
             table_family: 2,

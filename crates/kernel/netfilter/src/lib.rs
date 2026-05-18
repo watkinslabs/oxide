@@ -230,27 +230,38 @@ pub const NFT_CHAIN_POLICY_DROP:   u32 = 0; // matches Linux NF_DROP
 /// first non-Accept verdict (or the chain's `policy` if no rule
 /// matches).
 ///
-/// v1 rule-expression interpreter is a stub: every rule evaluates
-/// to "no match" so chain policy alone decides the verdict. The
-/// real `NFTA_RULE_EXPRESSIONS` decoder (NFT_PAYLOAD / NFT_CMP /
-/// NFT_IMMEDIATE) rides a follow-up. So today policy=accept means
-/// Accept, policy=drop means Drop — a real packet filter.
-///
-/// `_pkt` is the raw L2/L3 bytes; the future expression
-/// interpreter inspects it.
-/// # C: O(N_chains) policy-only today; O(N_chains × N_rules) once expression eval lands
-pub fn eval(hook_id: u32, _pkt: &[u8]) -> Verdict {
+/// For each base chain on this hook, walk its rules in insert
+/// order. A rule that ends with an immediate verdict short-circuits
+/// the chain; rules that don't fire (cmp mismatched) fall through.
+/// If no rule fires, chain policy decides. Multiple chains chain in
+/// priority order — Accept moves on to the next chain; Drop returns
+/// immediately.
+/// # C: O(N_chains × N_rules × expr_len)
+pub fn eval(hook_id: u32, pkt: &[u8]) -> Verdict {
     let mut chains: Vec<NftChain> = CHAINS.lock().clone();
     chains.retain(|c| c.hook == Some(hook_id));
     chains.sort_by_key(|c| c.priority);
+    let rules_snap = RULES.lock().clone();
     for c in chains.iter() {
-        // v1: every rule "doesn't match"; chain policy is the
-        // verdict. Future PR walks RULES with c.chain_name and
-        // interprets the expression payload.
-        match c.policy {
-            NFT_CHAIN_POLICY_DROP => return Verdict::Drop,
-            _ => continue, // Accept-style policy: try next chain
+        let mut chain_verdict: Option<Verdict> = None;
+        for r in rules_snap.iter()
+            .filter(|r| r.table_family == c.table_family
+                     && r.table_name   == c.table_name
+                     && r.chain_name   == c.name)
+        {
+            let exprs = nft_expr::parse_exprs(&r.raw_expr);
+            match nft_expr::run_rule(&exprs, pkt) {
+                Some(nft_expr::NF_DROP)   => { chain_verdict = Some(Verdict::Drop);   break; }
+                Some(nft_expr::NF_ACCEPT) => { chain_verdict = Some(Verdict::Accept); break; }
+                _ => {}
+            }
         }
+        let v = chain_verdict.unwrap_or_else(|| match c.policy {
+            NFT_CHAIN_POLICY_DROP => Verdict::Drop,
+            _                     => Verdict::Accept,
+        });
+        if v == Verdict::Drop { return Verdict::Drop; }
+        // Accept falls through to the next base chain.
     }
     Verdict::Accept
 }
@@ -709,6 +720,7 @@ fn build_newset_reply(seq: u32, pid: u32, s: &NftSet, multi: bool) -> Vec<u8> {
 
 
 mod nft_dispatch;
+pub mod nft_expr;
 
 #[cfg(test)]
 mod tests;
