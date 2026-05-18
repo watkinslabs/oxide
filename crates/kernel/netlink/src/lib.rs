@@ -209,6 +209,12 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => {
                 rtnetlink::handle_getroute(hdr)
             }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWROUTE) => {
+                rtnetlink::handle_newroute(hdr, msg)
+            }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELROUTE) => {
+                rtnetlink::handle_delroute(hdr, msg)
+            }
             _ => {
                 let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
                 Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
