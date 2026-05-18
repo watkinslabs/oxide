@@ -481,11 +481,14 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         // GICv2m SPI range or the GICv3 LPI range (≥ 8192).
         if crate::intid_is_v2m(intid) || intid >= LPI_BASE {
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
-            // Shared-vector softirq raises mirror the x86 lapic
-            // path: any device-MSI fire wakes both bottom halves;
-            // each handler bails if its used ring is empty.
-            softirq::raise(softirq::Slot::InputDrain);
-            softirq::raise(softirq::Slot::NetRx);
+            // F58: route to the per-SPI handler if a driver
+            // registered one. Falls back to the shared softirq
+            // raise so devices that haven't moved to per-vector
+            // registration still get drained.
+            if !crate::invoke_arm_spi_handler(intid) {
+                softirq::raise(softirq::Slot::InputDrain);
+                softirq::raise(softirq::Slot::NetRx);
+            }
         }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
         // so the level-triggered line drops and re-arms for the next
