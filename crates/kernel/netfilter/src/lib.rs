@@ -77,6 +77,9 @@ pub mod nft_msg {
     pub const NFT_MSG_NEWSET:      u8 = 9;
     pub const NFT_MSG_GETSET:      u8 = 10;
     pub const NFT_MSG_DELSET:      u8 = 11;
+    pub const NFT_MSG_NEWSETELEM:  u8 = 12;
+    pub const NFT_MSG_GETSETELEM:  u8 = 13;
+    pub const NFT_MSG_DELSETELEM:  u8 = 14;
     pub const NFT_MSG_NEWGEN:      u8 = 15;
     pub const NFT_MSG_GETGEN:      u8 = 16;
     pub const NFT_MSG_NEWOBJ:      u8 = 18;
@@ -122,6 +125,20 @@ pub mod nfta_set {
     pub const NFTA_SET_ID:           u16 = 10;
     pub const NFTA_SET_TIMEOUT:      u16 = 11;
     pub const NFTA_SET_USERDATA:     u16 = 13;
+}
+
+/// nft set-element attrs (Linux nf_tables.h::nft_set_elem_attributes
+/// and ::nft_set_elem_list_attributes).
+pub mod nfta_set_elem {
+    pub const NFTA_SET_ELEM_LIST_TABLE: u16 = 1;
+    pub const NFTA_SET_ELEM_LIST_SET:   u16 = 2;
+    pub const NFTA_SET_ELEM_LIST_ELEMENTS: u16 = 3;
+
+    pub const NFTA_SET_ELEM_KEY:     u16 = 1;
+    pub const NFTA_SET_ELEM_DATA:    u16 = 2;
+    pub const NFTA_SET_ELEM_FLAGS:   u16 = 3;
+
+    pub const NFTA_DATA_VALUE:       u16 = 1;
 }
 
 /// nft rule attribute ids per Linux `nf_tables.h::nft_rule_attributes`.
@@ -312,6 +329,55 @@ pub fn set_remove(family: u8, table_name: &str, set_name: &str) -> usize {
 }
 /// # C: O(N)
 pub fn sets_snapshot() -> Vec<NftSet> { SETS.lock().clone() }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NftSetElem {
+    pub table_family: u8,
+    pub table_name:   String,
+    pub set_name:     String,
+    pub key:          Vec<u8>,
+    pub data:         Vec<u8>,
+}
+
+static SET_ELEMS: Spinlock<Vec<NftSetElem>, SockLockClass> = Spinlock::new(Vec::new());
+
+/// # C: O(N)
+pub fn set_elem_insert(e: NftSetElem) {
+    let mut g = SET_ELEMS.lock();
+    if let Some(i) = g.iter().position(|x|
+        x.table_family == e.table_family
+        && x.table_name == e.table_name
+        && x.set_name   == e.set_name
+        && x.key        == e.key)
+    { g[i] = e; } else { g.push(e); }
+}
+
+/// # C: O(N) — removes every elem matching (family, table, set, key)
+pub fn set_elem_remove(family: u8, table: &str, set: &str, key: &[u8]) -> usize {
+    let mut g = SET_ELEMS.lock();
+    let before = g.len();
+    g.retain(|x| !(x.table_family == family
+                   && x.table_name == table
+                   && x.set_name   == set
+                   && x.key.as_slice() == key));
+    before - g.len()
+}
+
+/// # C: O(N)
+pub fn set_elems_snapshot() -> Vec<NftSetElem> { SET_ELEMS.lock().clone() }
+
+/// Look up an element by key in a named set. Returns Some(data)
+/// when the key is present, None otherwise.
+/// # C: O(N) in the global elem table
+pub fn set_elem_lookup(family: u8, table: &str, set: &str, key: &[u8]) -> Option<Vec<u8>> {
+    let g = SET_ELEMS.lock();
+    g.iter()
+        .find(|x| x.table_family == family
+                && x.table_name == table
+                && x.set_name   == set
+                && x.key.as_slice() == key)
+        .map(|x| x.data.clone())
+}
 
 #[derive(Clone, Debug)]
 pub struct NftObject {
