@@ -241,6 +241,22 @@ use super::*;
     }
 
     #[test]
+    fn find_attr_strips_nla_f_nested_bit() {
+        // Build attrs with the F_NESTED bit set on the type field
+        // and confirm find_str_attr / find_bytes_attr still locate
+        // the payload after the F114 mask sweep.
+        let mut buf: Vec<u8> = Vec::new();
+        // type = NFTA_RULE_TABLE | NLA_F_NESTED (just to test the mask)
+        let payload = b"foo\0";
+        let total = 4 + payload.len();
+        buf.extend_from_slice(&(total as u16).to_ne_bytes());
+        buf.extend_from_slice(&(0x8000u16 | super::nfta_rule::NFTA_RULE_TABLE).to_ne_bytes());
+        buf.extend_from_slice(payload);
+        while buf.len() % 4 != 0 { buf.push(0); }
+        assert_eq!(super::find_str_attr(&buf, super::nfta_rule::NFTA_RULE_TABLE), Some("foo"));
+    }
+
+    #[test]
     fn rule_handles_are_unique() {
         let a = next_rule_handle();
         let b = next_rule_handle();

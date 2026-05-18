@@ -489,7 +489,7 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<[u8; 4]> {
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         let payload = &attrs[off + 4..off + nla_len];
         if (nla_type == ifa::IFA_LOCAL || nla_type == ifa::IFA_ADDRESS)
@@ -754,7 +754,7 @@ fn parse_route_attrs(attrs: &[u8])
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
-        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]);
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if nla_len < 4 || off + nla_len > attrs.len() { break; }
         let payload = &attrs[off + 4..off + nla_len];
         match (nla_type, payload.len()) {
