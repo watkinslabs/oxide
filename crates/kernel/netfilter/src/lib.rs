@@ -267,7 +267,23 @@ pub fn eval(hook_id: u32, pkt: &[u8]) -> Verdict {
                      && r.chain_name   == c.name)
         {
             let exprs = nft_expr::parse_exprs(&r.raw_expr);
-            match nft_expr::run_rule(&exprs, pkt) {
+            // F113: route nft_expr::Lookup back to set_elem_lookup
+            // with the rule's (family, table) — those bind the set
+            // to a concrete (family, table, name) tuple.
+            let family = r.table_family;
+            let table  = r.table_name.clone();
+            let sets   = SETS.lock().clone();
+            let lookup = move |set_name: &str, regbytes: &[u8]| -> Option<Vec<u8>> {
+                let s = sets.iter().find(|s|
+                    s.table_family == family
+                    && s.table_name == table
+                    && s.name == set_name)?;
+                let kl = s.key_len as usize;
+                if kl == 0 || kl > regbytes.len() { return None; }
+                let key = &regbytes[..kl];
+                set_elem_lookup(family, &table, set_name, key)
+            };
+            match nft_expr::run_rule_with_lookup(&exprs, pkt, Some(&lookup)) {
                 Some(nft_expr::NF_DROP)   => { chain_verdict = Some(Verdict::Drop);   break; }
                 Some(nft_expr::NF_ACCEPT) => { chain_verdict = Some(Verdict::Accept); break; }
                 _ => {}
