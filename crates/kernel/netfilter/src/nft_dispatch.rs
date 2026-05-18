@@ -59,6 +59,99 @@ fn build_newobj_reply(seq: u32, pid: u32, o: &NftObject, multi: bool) -> Vec<u8>
     out
 }
 
+/// Build a NFT_MSG_NEWSETELEM reply listing every elem in a set.
+/// # C: O(n_elems)
+fn build_setelems_reply(seq: u32, pid: u32, table: &str, set: &str,
+                        family: u8, multi: bool) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(128);
+    let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
+    Nfgenmsg { nfgen_family: family, version: 0, res_id: 0 }
+        .write_to(&mut nfg_buf);
+    body.extend_from_slice(&nfg_buf);
+    put_nlattr_str(&mut body, nfta_set_elem::NFTA_SET_ELEM_LIST_TABLE, table);
+    put_nlattr_str(&mut body, nfta_set_elem::NFTA_SET_ELEM_LIST_SET, set);
+
+    let mut list_payload: Vec<u8> = Vec::new();
+    for e in set_elems_snapshot().iter()
+        .filter(|e| e.table_family == family
+                 && e.table_name == table
+                 && e.set_name == set)
+    {
+        let mut elem: Vec<u8> = Vec::new();
+        let mut keyval: Vec<u8> = Vec::new();
+        put_nlattr(&mut keyval, nfta_set_elem::NFTA_DATA_VALUE, &e.key);
+        put_nlattr(&mut elem, nfta_set_elem::NFTA_SET_ELEM_KEY, &keyval);
+        if !e.data.is_empty() {
+            let mut dataval: Vec<u8> = Vec::new();
+            put_nlattr(&mut dataval, nfta_set_elem::NFTA_DATA_VALUE, &e.data);
+            put_nlattr(&mut elem, nfta_set_elem::NFTA_SET_ELEM_DATA, &dataval);
+        }
+        // NFTA_LIST_ELEM = 1 — wraps each set-elem inside the
+        // NFTA_SET_ELEM_LIST_ELEMENTS payload.
+        put_nlattr(&mut list_payload, 1, &elem);
+    }
+    put_nlattr(&mut body,
+               nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS,
+               &list_payload);
+
+    let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
+                   | (nft_msg::NFT_MSG_NEWSETELEM as u16);
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len: total as u32, nlmsg_type,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq: seq, nlmsg_pid: pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+/// Walk a NFTA_SET_ELEM_LIST_ELEMENTS payload, calling `f` with
+/// each (key, data) tuple. Returns the count seen. Used by both
+/// NEWSETELEM (insert) and DELSETELEM (remove by key).
+fn walk_setelem_list<F: FnMut(&[u8], &[u8])>(payload: &[u8], mut f: F) -> usize {
+    let mut count = 0usize;
+    let mut off = 0;
+    while off + 4 <= payload.len() {
+        let nla_len = u16::from_ne_bytes([payload[off], payload[off + 1]]) as usize;
+        if nla_len < 4 || off + nla_len > payload.len() { break; }
+        let elem = &payload[off + 4 .. off + nla_len];
+
+        let keyval = find_nested_value(elem, nfta_set_elem::NFTA_SET_ELEM_KEY);
+        let dataval = find_nested_value(elem, nfta_set_elem::NFTA_SET_ELEM_DATA);
+        if let Some(k) = keyval {
+            f(k, dataval.unwrap_or(&[]));
+            count += 1;
+        }
+        off += nlmsg_align(nla_len);
+    }
+    count
+}
+
+fn find_nested_value<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u8]> {
+    let raw = find_bytes_attr_masked(attrs, target)?;
+    find_bytes_attr_masked(raw, nfta_set_elem::NFTA_DATA_VALUE)
+}
+
+fn find_bytes_attr_masked<'a>(attrs: &'a [u8], target: u16) -> Option<&'a [u8]> {
+    let mut off = 0;
+    while off + 4 <= attrs.len() {
+        let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
+        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        if nla_type == target {
+            return Some(&attrs[off + 4 .. off + nla_len]);
+        }
+        off += nlmsg_align(nla_len);
+    }
+    None
+}
+
 pub(super) fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) -> Vec<u8> {
     match cmd {
         nft_msg::NFT_MSG_GETGEN => build_newgen_reply(req.nlmsg_seq, req.nlmsg_pid),
@@ -371,6 +464,52 @@ pub(super) fn handle_nft(req: &Nlmsghdr, nfg: &Nfgenmsg, cmd: u8, attrs: &[u8]) 
             let n = object_remove(nfg.nfgen_family, table_name, obj_name);
             if n > 0 { gen_bump(); }
             nlmsg_ack(req, if n > 0 { 0 } else { -2 })
+        }
+        nft_msg::NFT_MSG_NEWSETELEM => {
+            let table = match find_str_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let set = match find_str_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_SET) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let list = find_bytes_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS)
+                .unwrap_or(&[]);
+            walk_setelem_list(list, |k, d| {
+                set_elem_insert(NftSetElem {
+                    table_family: nfg.nfgen_family,
+                    table_name:   String::from(table),
+                    set_name:     String::from(set),
+                    key:  k.to_vec(),
+                    data: d.to_vec(),
+                });
+            });
+            gen_bump();
+            nlmsg_ack(req, 0)
+        }
+        nft_msg::NFT_MSG_DELSETELEM => {
+            let table = match find_str_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_TABLE) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let set = match find_str_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_SET) {
+                Some(s) => s, None => return nlmsg_ack(req, -22),
+            };
+            let list = find_bytes_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_ELEMENTS)
+                .unwrap_or(&[]);
+            let mut total = 0usize;
+            walk_setelem_list(list, |k, _d| {
+                total += set_elem_remove(nfg.nfgen_family, table, set, k);
+            });
+            if total > 0 { gen_bump(); }
+            nlmsg_ack(req, if total > 0 { 0 } else { -2 })
+        }
+        nft_msg::NFT_MSG_GETSETELEM => {
+            let table = find_str_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_TABLE);
+            let set = find_str_attr(attrs, nfta_set_elem::NFTA_SET_ELEM_LIST_SET);
+            match (table, set) {
+                (Some(t), Some(s)) => build_setelems_reply(
+                    req.nlmsg_seq, req.nlmsg_pid, t, s, nfg.nfgen_family, false),
+                _ => nlmsg_ack(req, -22),
+            }
         }
         _ => nlmsg_ack(req, 0), // batches: future PR
     }
