@@ -566,6 +566,32 @@ pub fn enumerate_and_log() {
                 klog::write_raw(b"[INFO]  virtio-net-iface registered id=");
                 klog::write_dec_u64(id.0 as u64);
                 klog::write_raw(b" name=eth0\n");
+
+                // F86: spawn an RX poller kthread. The driver
+                // exposes `poll_into_stack(iface, our_ip)` but
+                // nobody was calling it — inbound frames piled
+                // up in q0.used. The kthread is the lightweight
+                // alternative to wiring an MSI-X-vector handler;
+                // a real interrupt-driven RX path is follow-up
+                // once the MSI vector dispatch table reaches the
+                // driver (see project_virtio_pci_progress memory).
+                // arg encodes (iface_id << 32) | be32(our_ip).
+                // 10.0.2.15 is the qemu user-net default guest IP;
+                // userspace DHCP rewrites this at runtime once the
+                // iface goes up — F86 hardcodes for boot smoke.
+                let our_ip_be = u32::from_be_bytes([10, 0, 2, 15]);
+                let arg = ((id.0 as usize) << 32) | (our_ip_be as usize);
+                // SAFETY: runqueue installed by smoke_install_runqueue
+                // earlier in lib.rs; PMM up; spawn_kernel_thread takes
+                // an extern "C" fn ptr — virtio_net_rx_kthread is one.
+                let _ = unsafe {
+                    sched::live::spawn_kernel_thread(
+                        0x4E45_5401, // 'NET' + 1
+                        "virtio-net-rx",
+                        virtio_net_rx_kthread,
+                        arg,
+                    )
+                };
             }
         }
 
@@ -652,5 +678,23 @@ pub fn enumerate_and_log() {
             klog::write_dec_u64((uart_after - uart_before) as u64);
             klog::write_raw(b"\n");
         }
+    }
+}
+
+/// F86 RX-poller kthread. Loops calling `poll_into_stack` and
+/// `tick_yield`ing so user tasks (init, login, sh) still get
+/// scheduled. arg layout: high 32 bits = `NetIfaceId.0`,
+/// low 32 bits = our IPv4 in big-endian. Replaceable by an
+/// MSI-X-driven interrupt handler once the vector-dispatch
+/// table reaches the driver crate — for now polling is the
+/// minimum-viable correct path.
+/// # C: O(rx_drain) per iteration + O(log N) CFS pick on yield
+extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
+    let iface_id = net::NetIfaceId::from_raw((arg >> 32) as u32);
+    let our_ip   = (arg as u32).to_be_bytes();
+    loop {
+        drv_virtio_net::modern::poll_into_stack(iface_id, our_ip);
+        // SAFETY: process ctx; runqueue installed; preempt-off through the kthread frame; tick_yield saves into current.arch_ctx and switches.
+        unsafe { sched::live::tick_yield(); }
     }
 }
