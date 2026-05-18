@@ -197,6 +197,9 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => {
                 rtnetlink::handle_getlink(hdr)
             }
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => {
+                rtnetlink::handle_getaddr(hdr)
+            }
             _ => {
                 let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
                 Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
