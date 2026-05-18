@@ -40,6 +40,17 @@ pub const NFTA_CMP_DATA: u16 = 3;
 pub const NFTA_IMMEDIATE_DREG: u16 = 1;
 pub const NFTA_IMMEDIATE_DATA: u16 = 2;
 
+pub const NFTA_META_DREG: u16 = 1;
+pub const NFTA_META_KEY:  u16 = 2;
+pub const NFTA_META_SREG: u16 = 3;
+
+// nft_meta_keys (Linux nf_tables.h)
+pub const NFT_META_LEN:     u32 = 0;
+pub const NFT_META_NFPROTO: u32 = 15;
+pub const NFT_META_L4PROTO: u32 = 16;
+
+pub const NFPROTO_IPV4: u8 = 2;
+
 pub const NFTA_DATA_VALUE:   u16 = 1;
 pub const NFTA_DATA_VERDICT: u16 = 2;
 
@@ -77,6 +88,7 @@ pub enum Expr {
     Payload   { dreg: u32, base: u32, offset: u32, len: u32 },
     Cmp       { sreg: u32, op: u32, data: Vec<u8> },
     Immediate { dreg: u32, verdict: Option<i32>, value: Vec<u8> },
+    Meta      { dreg: u32, key: u32 },
 }
 
 /// Parse a `NFTA_RULE_EXPRESSIONS` payload into a list of
@@ -111,6 +123,7 @@ fn parse_one_expr(body: &[u8]) -> Option<Expr> {
         "payload"   => parse_payload(data),
         "cmp"       => parse_cmp(data),
         "immediate" => parse_immediate(data),
+        "meta"      => parse_meta(data),
         _ => None,
     }
 }
@@ -130,6 +143,12 @@ fn parse_cmp(d: &[u8]) -> Option<Expr> {
     let dn   = find_bytes(d, NFTA_CMP_DATA)?;
     let data = find_bytes(dn, NFTA_DATA_VALUE)?.to_vec();
     Some(Expr::Cmp { sreg, op, data })
+}
+
+fn parse_meta(d: &[u8]) -> Option<Expr> {
+    let dreg = find_u32_be(d, NFTA_META_DREG)?;
+    let key  = find_u32_be(d, NFTA_META_KEY)?;
+    Some(Expr::Meta { dreg, key })
 }
 
 fn parse_immediate(d: &[u8]) -> Option<Expr> {
@@ -198,6 +217,25 @@ pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
                     _ => false,
                 };
                 if !matched { return None; }
+            }
+            Expr::Meta { dreg, key } => {
+                let dst = reg_off(*dreg)?;
+                match *key {
+                    NFT_META_LEN => {
+                        if dst + 4 > regs.len() { return None; }
+                        regs[dst .. dst + 4].copy_from_slice(&(pkt.len() as u32).to_le_bytes());
+                    }
+                    NFT_META_NFPROTO => {
+                        if dst + 1 > regs.len() { return None; }
+                        regs[dst] = NFPROTO_IPV4;
+                    }
+                    NFT_META_L4PROTO => {
+                        if pkt.len() < 10 { return None; }
+                        if dst + 1 > regs.len() { return None; }
+                        regs[dst] = pkt[9]; // IPv4 hdr.proto
+                    }
+                    _ => return None,
+                }
             }
             Expr::Immediate { dreg, verdict, value } => {
                 if *dreg == 0 {
@@ -329,6 +367,79 @@ mod tests {
         let exprs = parse_exprs(&rule);
         let pkt = ipv4_pkt_with_src([10, 0, 0, 6]);
         assert_eq!(run_rule(&exprs, &pkt), None);
+    }
+
+    fn build_meta_l4proto_drop_match(want: u8) -> Vec<u8> {
+        // meta l4proto -> reg1
+        let mut mdata = Vec::new();
+        nla_u32_be(&mut mdata, NFTA_META_DREG, 1);
+        nla_u32_be(&mut mdata, NFTA_META_KEY,  NFT_META_L4PROTO);
+        let mut m_expr = Vec::new();
+        nla_str(&mut m_expr, NFTA_EXPR_NAME, "meta");
+        nla_nested(&mut m_expr, NFTA_EXPR_DATA, &mdata);
+
+        // cmp eq reg1, want (1 byte)
+        let mut cmp_value = Vec::new();
+        nla(&mut cmp_value, NFTA_DATA_VALUE, &[want]);
+        let mut cdata = Vec::new();
+        nla_u32_be(&mut cdata, NFTA_CMP_SREG, 1);
+        nla_u32_be(&mut cdata, NFTA_CMP_OP, NFT_CMP_EQ);
+        nla_nested(&mut cdata, NFTA_CMP_DATA, &cmp_value);
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "cmp");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &cdata);
+
+        let imm = build_immediate_drop();
+        let mut out = Vec::new();
+        nla_nested(&mut out, NFTA_LIST_ELEM, &m_expr);
+        nla_nested(&mut out, NFTA_LIST_ELEM, &c_expr);
+        out.extend_from_slice(&imm);
+        out
+    }
+
+    fn ipv4_pkt_proto(proto: u8) -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        p[9] = proto;
+        p
+    }
+
+    #[test]
+    fn meta_l4proto_matches_tcp() {
+        let rule = build_meta_l4proto_drop_match(6); // TCP
+        let exprs = parse_exprs(&rule);
+        assert_eq!(run_rule(&exprs, &ipv4_pkt_proto(6)), Some(NF_DROP));
+        assert_eq!(run_rule(&exprs, &ipv4_pkt_proto(17)), None);
+    }
+
+    #[test]
+    fn meta_len_loads_pkt_len() {
+        // Standalone parse-and-run of just meta + cmp on pkt len.
+        let mut mdata = Vec::new();
+        nla_u32_be(&mut mdata, NFTA_META_DREG, 1);
+        nla_u32_be(&mut mdata, NFTA_META_KEY,  NFT_META_LEN);
+        let mut m_expr = Vec::new();
+        nla_str(&mut m_expr, NFTA_EXPR_NAME, "meta");
+        nla_nested(&mut m_expr, NFTA_EXPR_DATA, &mdata);
+
+        let mut cmp_value = Vec::new();
+        nla(&mut cmp_value, NFTA_DATA_VALUE, &(20u32).to_le_bytes());
+        let mut cdata = Vec::new();
+        nla_u32_be(&mut cdata, NFTA_CMP_SREG, 1);
+        nla_u32_be(&mut cdata, NFTA_CMP_OP,  NFT_CMP_EQ);
+        nla_nested(&mut cdata, NFTA_CMP_DATA, &cmp_value);
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "cmp");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &cdata);
+
+        let imm = build_immediate_drop();
+        let mut rule = Vec::new();
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &m_expr);
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &c_expr);
+        rule.extend_from_slice(&imm);
+
+        let exprs = parse_exprs(&rule);
+        assert_eq!(run_rule(&exprs, &vec![0u8; 20]), Some(NF_DROP));
+        assert_eq!(run_rule(&exprs, &vec![0u8; 40]), None);
     }
 
     #[test]
