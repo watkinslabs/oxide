@@ -486,6 +486,7 @@ dependencies = [
  "klog",
  "modules",
  "net",
+ "netlink",
  "nscg",
  "pci",
  "pmm",
@@ -578,6 +579,15 @@ dependencies = [
  "klog",
  "sync",
  "syscall",
+ "vfs",
+]
+
+[[package]]
+name = "netlink"
+version = "0.1.0"
+dependencies = [
+ "net",
+ "sync",
  "vfs",
 ]
 

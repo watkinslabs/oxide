@@ -1,0 +1,13 @@
+[package]
+name    = "netlink"
+version = "0.1.0"
+edition = "2021"
+description = "Netlink protocol family (AF_NETLINK) per `25§7` — kernel-side message dispatch + socket type. NETLINK_ROUTE and NETLINK_GENERIC live here; family-specific handlers (rtnetlink, genetlink, nftables) plug in via the handler registry."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync = { path = "../../shared/sync" }
+vfs  = { path = "../vfs" }
+net  = { path = "../net" }
