@@ -83,6 +83,34 @@ bitflags::bitflags! {
     }
 }
 
+/// Flag set for the user-stack VMA installed by `sys_execve` per
+/// `docs/31§5` ("Stack: 8 MiB initial, MAP_GROWSDOWN, MAP_STACK").
+/// Centralised so the kernel call site and the hosted regression
+/// test agree on the contract: `GROWSDOWN` must be present or the
+/// page-fault auto-extend path (`try_grow_stack`) refuses to grow
+/// the stack and any task overflowing its initial frame SIGSEGV's.
+/// B43: dhcpcd-aarch64 hit this exact failure pre-fix.
+pub const EXEC_STACK_VMA_FLAGS: VmaFlags = VmaFlags::PRIVATE
+    .union(VmaFlags::ANONYMOUS)
+    .union(VmaFlags::GROWSDOWN);
+
+#[cfg(test)]
+mod exec_stack_flags_tests {
+    use super::{EXEC_STACK_VMA_FLAGS, VmaFlags};
+
+    /// B43 regression: execve's stack VMA must carry `GROWSDOWN` so
+    /// `try_grow_stack` extends it on a fault below `vma.start`.
+    /// Pre-B43 the flag was missing; this test would have caught it.
+    #[test]
+    fn exec_stack_flags_include_growsdown() {
+        assert!(EXEC_STACK_VMA_FLAGS.contains(VmaFlags::GROWSDOWN),
+            "execve stack VMA must be GROWSDOWN — see docs/31§5");
+        assert!(EXEC_STACK_VMA_FLAGS.contains(VmaFlags::PRIVATE));
+        assert!(EXEC_STACK_VMA_FLAGS.contains(VmaFlags::ANONYMOUS));
+        assert!(!EXEC_STACK_VMA_FLAGS.contains(VmaFlags::SHARED));
+    }
+}
+
 /// File-backed mmap surface, per `11§4` + `17§5`. The demand-page
 /// handler calls `read_at(off, dst)` to populate a freshly-allocated
 /// user frame; impls are expected to route through the page cache so
