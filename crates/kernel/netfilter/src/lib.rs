@@ -283,7 +283,12 @@ pub fn eval(hook_id: u32, pkt: &[u8]) -> Verdict {
                 let key = &regbytes[..kl];
                 set_elem_lookup(family, &table, set_name, key)
             };
-            match nft_expr::run_rule_with_lookup(&exprs, pkt, Some(&lookup)) {
+            let mut pkts = 0u64;
+            let mut bytes = 0u64;
+            let verdict = nft_expr::run_rule_full(
+                &exprs, pkt, Some(&lookup), &mut pkts, &mut bytes);
+            if pkts != 0 { counter_bump(r.handle, pkts, bytes); }
+            match verdict {
                 Some(nft_expr::NF_DROP)   => { chain_verdict = Some(Verdict::Drop);   break; }
                 Some(nft_expr::NF_ACCEPT) => { chain_verdict = Some(Verdict::Accept); break; }
                 _ => {}
@@ -356,6 +361,26 @@ pub struct NftSetElem {
 }
 
 static SET_ELEMS: Spinlock<Vec<NftSetElem>, SockLockClass> = Spinlock::new(Vec::new());
+
+/// Per-rule counter stats. Key = rule.handle; value =
+/// (packets, bytes). F119 wires Expr::Counter to bump this; the
+/// counter object dump path (NEWOBJ counter type) reads it back
+/// for `nft list counter` queries.
+static COUNTERS: Spinlock<alloc::collections::BTreeMap<u64, (u64, u64)>,
+                          SockLockClass> = Spinlock::new(alloc::collections::BTreeMap::new());
+
+/// # C: O(log N) — BTreeMap insert/update
+pub fn counter_bump(handle: u64, packets: u64, bytes: u64) {
+    let mut g = COUNTERS.lock();
+    let e = g.entry(handle).or_insert((0, 0));
+    e.0 = e.0.wrapping_add(packets);
+    e.1 = e.1.wrapping_add(bytes);
+}
+
+/// # C: O(log N)
+pub fn counter_get(handle: u64) -> (u64, u64) {
+    COUNTERS.lock().get(&handle).copied().unwrap_or((0, 0))
+}
 
 /// # C: O(N)
 pub fn set_elem_insert(e: NftSetElem) {
