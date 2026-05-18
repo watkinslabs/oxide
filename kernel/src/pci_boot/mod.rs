@@ -567,15 +567,19 @@ pub fn enumerate_and_log() {
                 klog::write_dec_u64(id.0 as u64);
                 klog::write_raw(b" name=eth0\n");
 
-                // F92: seed the netlink address table with the
-                // boot-time defaults. Userspace tools / DHCP can
-                // mutate via RTM_NEWADDR / RTM_DELADDR later.
-                // lo's ifindex isn't tracked here — the loopback
-                // dev registers from net::loopback elsewhere; we
-                // pass None so seeding only stamps eth0. The lo
-                // row gets seeded when loopback init lands.
-                ::netlink::rtnetlink::seed_defaults(Some(id.0), None);
+                // F92/F93: seed the netlink address + route tables
+                // with the boot-time defaults. Userspace tools /
+                // DHCP can mutate via RTM_NEWADDR / RTM_NEWROUTE
+                // later. F95: lo's ifindex comes from the live iface
+                // registry — `register_loopback()` runs from sock.rs
+                // on first stack() access (which we just did), so
+                // "lo" is reachable by name.
+                let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
+                ::netlink::rtnetlink::seed_defaults(Some(id.0), lo_idx);
                 ::netlink::rtnetlink::seed_default_routes(id.0);
+                if let Some(lo_idx) = lo_idx {
+                    ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
+                }
 
                 // F86: spawn an RX poller kthread. The driver
                 // exposes `poll_into_stack(iface, our_ip)` but
