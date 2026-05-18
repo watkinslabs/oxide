@@ -41,6 +41,9 @@ pub const NFTA_CMP_DATA: u16 = 3;
 pub const NFTA_IMMEDIATE_DREG: u16 = 1;
 pub const NFTA_IMMEDIATE_DATA: u16 = 2;
 
+pub const NFTA_COUNTER_BYTES:   u16 = 1;
+pub const NFTA_COUNTER_PACKETS: u16 = 2;
+
 pub const NFTA_LOOKUP_SET:   u16 = 1;
 pub const NFTA_LOOKUP_SREG:  u16 = 2;
 pub const NFTA_LOOKUP_DREG:  u16 = 3;
@@ -98,6 +101,7 @@ pub enum Expr {
     Immediate { dreg: u32, verdict: Option<i32>, value: Vec<u8> },
     Meta      { dreg: u32, key: u32 },
     Lookup    { sreg: u32, set: String, invert: bool },
+    Counter,
 }
 
 /// Parse a `NFTA_RULE_EXPRESSIONS` payload into a list of
@@ -134,6 +138,7 @@ fn parse_one_expr(body: &[u8]) -> Option<Expr> {
         "immediate" => parse_immediate(data),
         "meta"      => parse_meta(data),
         "lookup"    => parse_lookup(data),
+        "counter"   => Some(Expr::Counter),
         _ => None,
     }
 }
@@ -233,6 +238,20 @@ pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
 /// `None` if the caller doesn't model sets.
 /// # C: O(N_exprs · max_len) per rule
 pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookupFn>) -> Option<i32> {
+    let mut visits = 0u64;
+    let mut bytes  = 0u64;
+    run_rule_full(exprs, pkt, lookup, &mut visits, &mut bytes)
+}
+
+/// Same as `run_rule_with_lookup` but also accumulates counter
+/// stats: every Counter expression the run path reaches bumps
+/// `*packets += 1` and `*bytes += pkt.len()`. Cmp-aborted rules
+/// don't reach later Counter exprs (positional semantics match
+/// Linux's nft_counter).
+/// # C: O(N_exprs · max_len)
+pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
+                     lookup: Option<SetLookupFn>,
+                     packets: &mut u64, bytes: &mut u64) -> Option<i32> {
     let mut regs = vec![0u8; REG_BYTES];
     for e in exprs {
         match e {
@@ -283,6 +302,10 @@ pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookup
                     }
                     _ => return None,
                 }
+            }
+            Expr::Counter => {
+                *packets = packets.wrapping_add(1);
+                *bytes   = bytes.wrapping_add(pkt.len() as u64);
             }
             Expr::Lookup { sreg, set, invert } => {
                 let src = reg_off(*sreg)?;
@@ -562,6 +585,67 @@ mod tests {
         let exprs = parse_exprs(&rule);
         assert_eq!(run_rule(&exprs, &vec![0u8; 20]), Some(NF_DROP));
         assert_eq!(run_rule(&exprs, &vec![0u8; 40]), None);
+    }
+
+    #[test]
+    fn counter_increments_on_reach() {
+        // counter ; immediate drop
+        let mut counter_data = Vec::new(); // counter expr has no body in v1
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "counter");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &counter_data);
+        let imm = build_immediate_drop();
+        let mut rule = Vec::new();
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &c_expr);
+        rule.extend_from_slice(&imm);
+        let exprs = parse_exprs(&rule);
+
+        let mut packets = 0u64;
+        let mut bytes = 0u64;
+        let pkt = vec![0u8; 40];
+        assert_eq!(run_rule_full(&exprs, &pkt, None, &mut packets, &mut bytes),
+                   Some(NF_DROP));
+        assert_eq!(packets, 1);
+        assert_eq!(bytes, 40);
+        // Run again — accumulates
+        assert_eq!(run_rule_full(&exprs, &pkt, None, &mut packets, &mut bytes),
+                   Some(NF_DROP));
+        assert_eq!(packets, 2);
+        assert_eq!(bytes, 80);
+        let _ = counter_data.is_empty();
+    }
+
+    #[test]
+    fn counter_not_bumped_when_cmp_fails_before() {
+        // cmp(reg1, eq, 0xff) — fails because reg starts 0; counter; drop
+        // The counter sits after cmp, so it should NOT execute.
+        let mut cmp_value = Vec::new();
+        nla(&mut cmp_value, NFTA_DATA_VALUE, &[0xff, 0xff, 0xff, 0xff]);
+        let mut cdata = Vec::new();
+        nla_u32_be(&mut cdata, NFTA_CMP_SREG, 1);
+        nla_u32_be(&mut cdata, NFTA_CMP_OP, NFT_CMP_EQ);
+        nla_nested(&mut cdata, NFTA_CMP_DATA, &cmp_value);
+        let mut cmp_expr = Vec::new();
+        nla_str(&mut cmp_expr, NFTA_EXPR_NAME, "cmp");
+        nla_nested(&mut cmp_expr, NFTA_EXPR_DATA, &cdata);
+
+        let mut counter_data = Vec::new();
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "counter");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &counter_data);
+
+        let imm = build_immediate_drop();
+        let mut rule = Vec::new();
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &cmp_expr);
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &c_expr);
+        rule.extend_from_slice(&imm);
+        let exprs = parse_exprs(&rule);
+        let mut p = 0u64;
+        let mut b = 0u64;
+        assert_eq!(run_rule_full(&exprs, &vec![0u8; 20], None, &mut p, &mut b), None);
+        assert_eq!(p, 0);
+        assert_eq!(b, 0);
+        let _ = counter_data.is_empty();
     }
 
     fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {
