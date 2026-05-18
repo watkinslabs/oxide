@@ -199,8 +199,17 @@ pub fn run_rule(exprs: &[Expr], pkt: &[u8]) -> Option<i32> {
     for e in exprs {
         match e {
             Expr::Payload { dreg, base, offset, len } => {
-                if *base != NFT_PAYLOAD_NETWORK_HEADER { return None; }
-                let off = *offset as usize;
+                let base_off: usize = match *base {
+                    NFT_PAYLOAD_NETWORK_HEADER => 0,
+                    NFT_PAYLOAD_TRANSPORT_HEADER => {
+                        // IPv4 IHL → byte offset to L4. Only IPv4
+                        // for now; IPv6 lands when v6 stack does.
+                        if pkt.is_empty() || (pkt[0] >> 4) != 4 { return None; }
+                        ((pkt[0] & 0x0f) as usize) * 4
+                    }
+                    _ => return None,
+                };
+                let off = base_off + *offset as usize;
                 let l = *len as usize;
                 if pkt.len() < off + l { return None; }
                 let dst = reg_off(*dreg)?;
@@ -401,6 +410,67 @@ mod tests {
         let mut p = vec![0u8; 20];
         p[9] = proto;
         p
+    }
+
+    fn build_transport_port_drop(dst_port_be: [u8; 2]) -> Vec<u8> {
+        // payload (TRANSPORT, offset 2, len 2) -> reg 1   (UDP dst port)
+        let mut pdata = Vec::new();
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_DREG, 1);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_BASE, NFT_PAYLOAD_TRANSPORT_HEADER);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_OFFSET, 2);
+        nla_u32_be(&mut pdata, NFTA_PAYLOAD_LEN, 2);
+        let mut p_expr = Vec::new();
+        nla_str(&mut p_expr, NFTA_EXPR_NAME, "payload");
+        nla_nested(&mut p_expr, NFTA_EXPR_DATA, &pdata);
+
+        let mut cmp_value = Vec::new();
+        nla(&mut cmp_value, NFTA_DATA_VALUE, &dst_port_be);
+        let mut cdata = Vec::new();
+        nla_u32_be(&mut cdata, NFTA_CMP_SREG, 1);
+        nla_u32_be(&mut cdata, NFTA_CMP_OP,  NFT_CMP_EQ);
+        nla_nested(&mut cdata, NFTA_CMP_DATA, &cmp_value);
+        let mut c_expr = Vec::new();
+        nla_str(&mut c_expr, NFTA_EXPR_NAME, "cmp");
+        nla_nested(&mut c_expr, NFTA_EXPR_DATA, &cdata);
+
+        let imm = build_immediate_drop();
+        let mut out = Vec::new();
+        nla_nested(&mut out, NFTA_LIST_ELEM, &p_expr);
+        nla_nested(&mut out, NFTA_LIST_ELEM, &c_expr);
+        out.extend_from_slice(&imm);
+        out
+    }
+
+    fn ipv4_udp_pkt(dst_port: u16) -> Vec<u8> {
+        // Minimal IPv4 hdr (IHL=5 → 20 bytes) + 8 byte UDP hdr.
+        let mut p = vec![0u8; 28];
+        p[0] = 0x45; // ver=4 IHL=5
+        p[9] = 17;   // proto=UDP
+        // UDP dst port at L4+2..L4+4
+        let dp = dst_port.to_be_bytes();
+        p[22] = dp[0]; p[23] = dp[1];
+        p
+    }
+
+    #[test]
+    fn payload_transport_filters_udp_dst_port() {
+        let rule = build_transport_port_drop([0, 53]); // DNS
+        let exprs = parse_exprs(&rule);
+        assert_eq!(run_rule(&exprs, &ipv4_udp_pkt(53)), Some(NF_DROP));
+        assert_eq!(run_rule(&exprs, &ipv4_udp_pkt(80)), None);
+    }
+
+    #[test]
+    fn payload_transport_honors_variable_ihl() {
+        // IHL=6 (24 bytes of IPv4 hdr w/ 4-byte options). Put port
+        // at offset 24+2=26.
+        let rule = build_transport_port_drop([0, 22]);
+        let exprs = parse_exprs(&rule);
+        let mut p = vec![0u8; 32];
+        p[0] = 0x46; // ver=4 IHL=6
+        p[9] = 6;    // TCP
+        p[26] = 0; p[27] = 22;
+        assert_eq!(run_rule(&exprs, &p), Some(NF_DROP));
     }
 
     #[test]
