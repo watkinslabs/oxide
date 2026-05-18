@@ -649,6 +649,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_dec_u64(m2);
                 klog::write_raw(b"\n");
             }
+            // F96: install netfilter NFNL handler. The netlink
+            // crate can't depend on netfilter (circular), so the
+            // kernel side wires the fn pointer at boot.
+            netlink::install_netfilter_handler(netfilter::handle);
             // P8 boot smoke: loopback UDP send-then-recv +
             // ICMP echo round-trip via the in-kernel net stack.
             {
