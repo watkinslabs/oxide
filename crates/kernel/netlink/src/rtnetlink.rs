@@ -707,6 +707,19 @@ pub fn route_snapshot() -> Vec<RouteRow> {
     ROUTE_TABLE.lock().clone()
 }
 
+/// Seed the boot-time default route for the loopback iface.
+/// `local 127.0.0.0/8 dev lo proto kernel scope host`.
+/// # C: O(1)
+pub fn seed_default_routes_lo(lo_ifindex: u32) {
+    route_insert(RouteRow {
+        table: RT_TABLE_LOCAL, protocol: RTPROT_KERNEL,
+        scope: RT_SCOPE_HOST, kind: RTN_LOCAL,
+        dst: Some(([127, 0, 0, 0], 8)),
+        gateway: None, oif_ifindex: lo_ifindex,
+        prefsrc: Some([127, 0, 0, 1]),
+    });
+}
+
 /// Seed the boot-time default routes for the eth0 iface. Called
 /// from pci_boot alongside addr seed_defaults.
 /// # C: O(1)
