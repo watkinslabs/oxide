@@ -125,6 +125,62 @@ impl Mount {
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
     }
 
+    /// Create an anonymous (O_TMPFILE) regular file in directory
+    /// `parent_ino`. Allocates an inode with `nlink=0` and the empty
+    /// extent tree, but does NOT add a directory entry — the inode
+    /// is "orphan" until a subsequent `linkat(AT_EMPTY_PATH)` adds
+    /// a name + bumps `nlink` to 1. If the last fd closes with
+    /// `nlink` still 0, `free_orphan_inode` frees the data blocks
+    /// and the inode itself.
+    /// # C: O(1) — one inode alloc + one inode I/O
+    pub fn create_anonymous(&self, parent_ino: u32, mode_perm: u16)
+        -> Result<u32, MountError>
+    {
+        self.run_journaled(|m| {
+            let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
+            let new_ino = m.alloc_inode(parent_group)?;
+            m.init_inode(new_ino, S_IFREG | (mode_perm & 0x0FFF), 0)?;
+            Ok(new_ino)
+        })
+    }
+
+    /// Free an orphan inode (one with `nlink==0`, e.g. an O_TMPFILE
+    /// file whose last fd is being closed). Walks the extent tree
+    /// and frees each data block, then frees the inode bitmap slot.
+    /// Errors if the inode's recorded `nlink` is non-zero (the caller
+    /// would otherwise be unlinking a still-named file).
+    /// # C: O(N_extents) block frees + 1 inode-free
+    pub fn free_orphan_inode(&self, ino: u32) -> Result<(), MountError> {
+        self.run_journaled(|m| {
+            let (mut bytes, off) = m.read_inode_bytes(ino)?;
+            let links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
+            if links != 0 {
+                // Caller raced with a linkat; nothing to do.
+                return Ok(());
+            }
+            let mut i_block = [0u8; I_BLOCK_LEN];
+            i_block.copy_from_slice(&bytes[0x28..0x28 + I_BLOCK_LEN]);
+            if let Ok(hdr) = inode::parse_extent_header(&i_block) {
+                if hdr.depth == 0 {
+                    for i in 0..hdr.entries {
+                        if let Some(e) = inode::parse_inline_extent(&i_block, &hdr, i) {
+                            for k in 0..e.len as u64 {
+                                let _ = m.free_block(e.start_lba() + k);
+                            }
+                        }
+                    }
+                }
+            }
+            bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
+            bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
+            bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
+            for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
+            m.metadata_write(off, &bytes)?;
+            m.free_inode(ino)?;
+            Ok(())
+        })
+    }
+
     /// Create a regular file `name` under directory `parent_ino`.
     /// Allocates an inode, writes a fresh on-disk inode (mode
     /// `S_IFREG | mode_perm`, nlink=1, empty extent tree, size 0),
