@@ -134,6 +134,72 @@ pub const RT_SCOPE_LINK:     u8 = 253;
 pub const RT_SCOPE_HOST:     u8 = 254;
 pub const RT_SCOPE_NOWHERE:  u8 = 255;
 
+// ---- struct rtmsg (12 bytes) --------------------------------------------
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Rtmsg {
+    pub rtm_family:    u8,
+    pub rtm_dst_len:   u8,
+    pub rtm_src_len:   u8,
+    pub rtm_tos:       u8,
+    pub rtm_table:     u8,
+    pub rtm_protocol:  u8,
+    pub rtm_scope:     u8,
+    pub rtm_type:      u8,
+    pub rtm_flags:     u32,
+}
+
+impl Rtmsg {
+    pub const SIZE: usize = 12;
+
+    /// # C: O(1)
+    pub fn write_to(&self, buf: &mut [u8]) {
+        buf[0] = self.rtm_family;
+        buf[1] = self.rtm_dst_len;
+        buf[2] = self.rtm_src_len;
+        buf[3] = self.rtm_tos;
+        buf[4] = self.rtm_table;
+        buf[5] = self.rtm_protocol;
+        buf[6] = self.rtm_scope;
+        buf[7] = self.rtm_type;
+        buf[8..12].copy_from_slice(&self.rtm_flags.to_ne_bytes());
+    }
+}
+
+// ---- RTA_* attribute types ----------------------------------------------
+
+pub mod rta {
+    pub const RTA_UNSPEC:    u16 = 0;
+    pub const RTA_DST:       u16 = 1;
+    pub const RTA_SRC:       u16 = 2;
+    pub const RTA_IIF:       u16 = 3;
+    pub const RTA_OIF:       u16 = 4;
+    pub const RTA_GATEWAY:   u16 = 5;
+    pub const RTA_PRIORITY:  u16 = 6;
+    pub const RTA_PREFSRC:   u16 = 7;
+    pub const RTA_METRICS:   u16 = 8;
+    pub const RTA_TABLE:     u16 = 15;
+}
+
+// ---- RTPROT_* / RTN_* / RT_TABLE_* --------------------------------------
+
+pub const RTPROT_UNSPEC:   u8 = 0;
+pub const RTPROT_REDIRECT: u8 = 1;
+pub const RTPROT_KERNEL:   u8 = 2;
+pub const RTPROT_BOOT:     u8 = 3;
+pub const RTPROT_STATIC:   u8 = 4;
+
+pub const RTN_UNSPEC:      u8 = 0;
+pub const RTN_UNICAST:     u8 = 1;
+pub const RTN_LOCAL:       u8 = 2;
+pub const RTN_BROADCAST:   u8 = 3;
+
+pub const RT_TABLE_UNSPEC:  u8 = 0;
+pub const RT_TABLE_DEFAULT: u8 = 253;
+pub const RT_TABLE_MAIN:    u8 = 254;
+pub const RT_TABLE_LOCAL:   u8 = 255;
+
 // ---- nlattr helpers ------------------------------------------------------
 
 /// `struct nlattr` is 4-byte header { u16 nla_len; u16 nla_type }
@@ -345,6 +411,115 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     reply
 }
 
+/// Build one RTM_NEWROUTE reply.
+/// # C: O(N attrs)
+#[allow(clippy::too_many_arguments)]
+fn build_newroute_reply(
+    seq: u32, pid: u32,
+    table: u8, protocol: u8, scope: u8, kind: u8,
+    dst: Option<([u8; 4], u8)>, // (addr, prefixlen)
+    gateway: Option<[u8; 4]>,
+    oif_ifindex: u32,
+    prefsrc: Option<[u8; 4]>,
+    multi: bool,
+) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(64);
+    let dst_len = dst.map(|(_, n)| n).unwrap_or(0);
+    let rtm = Rtmsg {
+        rtm_family:   AF_INET,
+        rtm_dst_len:  dst_len,
+        rtm_src_len:  0,
+        rtm_tos:      0,
+        rtm_table:    table,
+        rtm_protocol: protocol,
+        rtm_scope:    scope,
+        rtm_type:     kind,
+        rtm_flags:    0,
+    };
+    let mut rtm_buf = [0u8; Rtmsg::SIZE];
+    rtm.write_to(&mut rtm_buf);
+    body.extend_from_slice(&rtm_buf);
+
+    if let Some((addr, _)) = dst {
+        put_nlattr(&mut body, rta::RTA_DST, &addr);
+    }
+    if let Some(g) = gateway {
+        put_nlattr(&mut body, rta::RTA_GATEWAY, &g);
+    }
+    put_nlattr_u32(&mut body, rta::RTA_OIF, oif_ifindex);
+    if let Some(s) = prefsrc {
+        put_nlattr(&mut body, rta::RTA_PREFSRC, &s);
+    }
+
+    let total = Nlmsghdr::SIZE + body.len();
+    let hdr = Nlmsghdr {
+        nlmsg_len:   total as u32,
+        nlmsg_type:  RTM_NEWROUTE,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_seq:   seq,
+        nlmsg_pid:   pid,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+/// RTM_GETROUTE dump. v1 publishes the hardcoded route table used
+/// at boot. Real per-iface route table writes via RTM_NEWROUTE are
+/// follow-up (need the route-policy substrate + persistent table).
+///
+/// Published routes when an eth0-like iface is up:
+///   `local 127.0.0.0/8 dev lo proto kernel scope host`
+///   `10.0.2.0/24 dev eth0 proto kernel scope link src 10.0.2.15`
+///   `default via 10.0.2.2 dev eth0 proto boot`
+/// # C: O(N_ifaces)
+pub fn handle_getroute(req: &Nlmsghdr) -> Vec<u8> {
+    let mut reply: Vec<u8> = Vec::with_capacity(256);
+    let entries = ifaces_snapshot();
+    for (id, _name, _mac, _mtu, is_lo) in entries.iter() {
+        if *is_lo {
+            // 127.0.0.0/8 dev lo local
+            reply.extend_from_slice(&build_newroute_reply(
+                req.nlmsg_seq, req.nlmsg_pid,
+                RT_TABLE_LOCAL, RTPROT_KERNEL, RT_SCOPE_HOST, RTN_LOCAL,
+                Some(([127, 0, 0, 0], 8)),
+                None,
+                *id, Some([127, 0, 0, 1]),
+                true,
+            ));
+        } else {
+            // 10.0.2.0/24 dev eth0 link
+            reply.extend_from_slice(&build_newroute_reply(
+                req.nlmsg_seq, req.nlmsg_pid,
+                RT_TABLE_MAIN, RTPROT_KERNEL, RT_SCOPE_LINK, RTN_UNICAST,
+                Some(([10, 0, 2, 0], 24)),
+                None,
+                *id, Some([10, 0, 2, 15]),
+                true,
+            ));
+            // default via 10.0.2.2 dev eth0
+            reply.extend_from_slice(&build_newroute_reply(
+                req.nlmsg_seq, req.nlmsg_pid,
+                RT_TABLE_MAIN, RTPROT_BOOT, RT_SCOPE_UNIVERSE, RTN_UNICAST,
+                None,
+                Some([10, 0, 2, 2]),
+                *id, Some([10, 0, 2, 15]),
+                true,
+            ));
+        }
+    }
+    let mut done = Nlmsghdr::done(req.nlmsg_seq, req.nlmsg_pid);
+    done.nlmsg_flags = flags::NLM_F_MULTI;
+    let mut done_buf = [0u8; Nlmsghdr::SIZE];
+    done.write_to(&mut done_buf);
+    reply.extend_from_slice(&done_buf);
+    reply
+}
+
 // quiet warnings for the `msg` re-export that's only used by lib.rs
 const _: u16 = msg::NLMSG_DONE;
 
@@ -409,6 +584,28 @@ mod tests {
     #[test]
     fn ifaddrmsg_size_matches_linux() {
         assert_eq!(Ifaddrmsg::SIZE, 8);
+    }
+
+    #[test]
+    fn rtmsg_size_matches_linux() {
+        assert_eq!(Rtmsg::SIZE, 12);
+    }
+
+    #[test]
+    fn build_newroute_reply_well_formed() {
+        let bytes = build_newroute_reply(
+            1, 42,
+            RT_TABLE_MAIN, RTPROT_KERNEL, RT_SCOPE_LINK, RTN_UNICAST,
+            Some(([10, 0, 2, 0], 24)),
+            None,
+            2, Some([10, 0, 2, 15]),
+            true,
+        );
+        let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
+        assert_eq!(ty, RTM_NEWROUTE);
+        assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);
+        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 24); // dst_len
+        assert_eq!(bytes[Nlmsghdr::SIZE + 4], RT_TABLE_MAIN);
     }
 
     #[test]
