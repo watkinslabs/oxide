@@ -87,6 +87,9 @@ pub enum SockKind {
     /// queue; sendto/recvfrom push/pop here. Real per-message SCM
     /// metadata (sender creds, fd array) rides F121.
     UnixDgram(Arc<crate::UnixDgramQueue>),
+    /// AF_UNIX SOCK_SEQPACKET / SOCK_DGRAM on a socketpair —
+    /// bidirectional msg-boundary-preserving pair. F125.
+    UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
 }
 
 /// Process-global AF_UNIX path registry.
@@ -239,6 +242,10 @@ impl vfs::Inode for InetSocket {
                 buf[..n].copy_from_slice(&got);
                 Ok(n)
             }
+            SockKind::UnixMsgPair(pair, end) => match pair.recv(*end, buf.len()) {
+                Some(msg) => { let n = msg.len(); buf[..n].copy_from_slice(&msg); Ok(n) }
+                None      => Err(vfs::VfsError::Eagain),
+            },
             SockKind::TcpConn(entry) => {
                 drain_loopback();
                 let got = stack().tcp_recv(entry, buf.len());
@@ -252,7 +259,8 @@ impl vfs::Inode for InetSocket {
 
     fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         match &*self.kind.lock() {
-            SockKind::Unix(pair, end) => Ok(pair.write(*end, buf)),
+            SockKind::Unix(pair, end)        => Ok(pair.write(*end, buf)),
+            SockKind::UnixMsgPair(pair, end) => Ok(pair.send(*end, buf)),
             SockKind::TcpConn(entry) => {
                 let n = stack().tcp_send(entry, buf).map_err(|_| vfs::VfsError::Eio)?;
                 drain_loopback();
@@ -307,6 +315,12 @@ impl vfs::Inode for InetSocket {
             SockKind::UnixDgram(q) => {
                 let mut mask = POLL_OUT;
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
+                mask
+            }
+            SockKind::UnixMsgPair(pair, end) => {
+                let mut mask = POLL_OUT;
+                if pair.has_msg(*end) { mask |= POLL_IN; }
+                if pair.is_eof(*end)  { mask |= POLL_HUP; }
                 mask
             }
         }

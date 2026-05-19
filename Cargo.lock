@@ -578,6 +578,7 @@ dependencies = [
  "bitflags",
  "hal",
  "klog",
+ "sched",
  "sync",
  "syscall",
  "vfs",
