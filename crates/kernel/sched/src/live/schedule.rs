@@ -370,10 +370,35 @@ pub unsafe fn schedule_from_irq() {
 pub unsafe fn tick_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract (process / kthread context, preempt-off, single-CPU); delegated wholesale.
     unsafe { schedule(); }
+    // F130: HLT must execute with IF=1 or the CPU never wakes — the
+    // syscall entry stub clears IF via SFMASK, so without re-enabling
+    // around the halt a `sys_nanosleep` (or any other syscall that
+    // yields voluntarily while alone-on-CPU) parks forever waiting
+    // for an interrupt the CPU is gated against. Linux uses the
+    // same `sti; hlt` pair in `default_idle()`. The two-instruction
+    // sequence is interrupt-atomic: any IRQ posted between `sti`
+    // and `hlt` is held off by one instruction and serviced at the
+    // hlt, so we don't miss wakeups.
+    // Idle path. x86 NEEDS the halt with IRQs unmasked or the CPU
+    // never wakes: HLT with IF=0 (the syscall-tail invariant set by
+    // SFMASK) only wakes on NMI/INIT/RESET per Intel SDM Vol. 3
+    // §8.10.1. STI+HLT is the canonical idiom (sti delays IF=1 until
+    // after the next instruction so the IRQ edge is serviced at
+    // hlt-resume, not in arbitrary kernel code).
+    //
+    // arm: skip halt. Just schedule() and let the caller's loop spin.
+    // QEMU virt + KVM arm WFI semantics with our DAIF.I=1 (SVC
+    // syscall invariant) hang reliably — both plain WFI and the
+    // daifclr+wfi+daifset pair fail to wake on the CNTV INTID 27
+    // periodic line. CPU busy-loop is wasteful but correct; full
+    // tickless-idle for arm rides a follow-up.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    hal_x86_64::halt();
+    // SAFETY: privileged sti+hlt+cli at CPL=0. The sti window is exactly one instruction (the hlt) per Intel SDM Vol. 2A: STI delays IF=1 until after the NEXT instruction, so any IRQ edge raised between sti and hlt is serviced at hlt-resume, not in arbitrary kernel code. cli after returns to the syscall-tail IF=0 invariant.
+    unsafe {
+        core::arch::asm!("sti; hlt; cli", options(nomem, nostack, preserves_flags));
+    }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    hal_aarch64::halt();
+    core::hint::spin_loop();
 }
 
 /// Mark a task `done` (Zombie state). Subsequent `schedule()` /
