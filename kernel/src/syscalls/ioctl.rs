@@ -22,6 +22,16 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCGPGRP:  u64 = 0x540F;
     const TIOCSPGRP:  u64 = 0x5410;
     const TIOCSCTTY:  u64 = 0x540E;
+    const TIOCNOTTY:  u64 = 0x5422;
+    const TIOCGSID:   u64 = 0x5429;
+    // Modem-control bits (DTR/RTS/CD/RI/DSR/CTS). For our v1 console
+    // alias these are nominal — report all signals asserted on GET,
+    // accept and ignore SETs / BISs / BICs. busybox getty issues a
+    // TIOCMGET to confirm carrier-detect before the login banner.
+    const TIOCMGET:   u64 = 0x5415;
+    const TIOCMBIS:   u64 = 0x5416;
+    const TIOCMBIC:   u64 = 0x5417;
+    const TIOCMSET:   u64 = 0x5418;
     let fd  = args.a0 as i32;
     let req = args.a1;
     let arg = args.a2;
@@ -210,6 +220,60 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             tty::live::set_session(vt, cur.sid.load(Ordering::Acquire));
             0
         }
+        TIOCGSID => {
+            // B40: busybox getty calls `tcgetsid(STDIN_FILENO)` to
+            // decide whether to TIOCSCTTY-steal. Linux returns the
+            // session id that owns the tty, or ENOTTY when none does.
+            // We track sid per VT (set on TIOCSCTTY); pty pairs track
+            // it on the pair. Return 0/ENOTTY (rather than -EFAULT)
+            // when no session has claimed yet so getty falls through
+            // to the TIOCSCTTY path.
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            let sid: u32 = if let Some(pair) = &pty_pair {
+                pair.with_pair(|p| p.session_pid)
+            } else {
+                tty::live::session((ino & 0xff) as u8)
+            };
+            if sid == 0 { return -(Errno::Enotty.as_i32() as i64); }
+            // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
+            unsafe { core::ptr::write_volatile(arg as *mut u32, sid); }
+            0
+        }
+        TIOCNOTTY => {
+            // B40: detach controlling tty for the calling session.
+            // v1 clears the per-VT sid slot when the calling task
+            // matches; ignored otherwise. busybox getty issues this
+            // to drop inherited ctty before its TIOCSCTTY-steal so a
+            // real session leader doesn't already own the line.
+            if pty_pair.is_some() { return 0; }
+            let vt = (ino & 0xff) as u8;
+            let cur = match sched::live::current() {
+                Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
+            };
+            use core::sync::atomic::Ordering;
+            let my_sid = cur.sid.load(Ordering::Acquire);
+            if my_sid != 0 && tty::live::session(vt) == my_sid {
+                tty::live::set_session(vt, 0);
+            }
+            0
+        }
+        TIOCMGET => {
+            // Nominal modem-status: DTR | RTS | CD | DSR | CTS all
+            // asserted (matches a healthy serial console). Bits from
+            // linux/include/uapi/asm-generic/termios.h.
+            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            const TIOCM_LE:  u32 = 0x001;
+            const TIOCM_DTR: u32 = 0x002;
+            const TIOCM_RTS: u32 = 0x004;
+            const TIOCM_CTS: u32 = 0x020;
+            const TIOCM_CAR: u32 = 0x040;
+            const TIOCM_DSR: u32 = 0x100;
+            let bits = TIOCM_LE | TIOCM_DTR | TIOCM_RTS | TIOCM_CTS | TIOCM_CAR | TIOCM_DSR;
+            // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
+            unsafe { core::ptr::write_volatile(arg as *mut u32, bits); }
+            0
+        }
+        TIOCMSET | TIOCMBIS | TIOCMBIC => 0,
         _ => -(Errno::Enotty.as_i32() as i64),
     }
 }
