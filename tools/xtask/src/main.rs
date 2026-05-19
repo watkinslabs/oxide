@@ -362,6 +362,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
         put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
     }
+    // B44: opt-in marker (off by default) for reproducing the
+    // dhcpcd userspace heap-corruption hunt. The kernel now
+    // survives the resulting user-mode #GP (delivers SIGSEGV
+    // instead of halting), but dhcpcd itself still crashes; auto-
+    // launch stays gated until the userspace cause is fixed.
+    if std::env::var("OXIDE_DHCPCD_ENABLE").as_deref() == Ok("1") {
+        put(&stage("oxide-dhcpcd-enable", b"1\n")?, "/etc/oxide-dhcpcd-enable")?;
+    }
     put(&stage("os-release",
         b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")?,
         "/etc/os-release")?;
