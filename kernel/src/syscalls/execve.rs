@@ -8,6 +8,34 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::{USER_VA_END, TimerOps};
 
+/// B46: reset caught signal handlers to SIG_DFL per execve(2) ABI.
+/// "All signals that were being caught by the calling thread (set
+/// to a value other than SIG_DFL and SIG_IGN) are reset to the
+/// default disposition." Without this, a SIGCHLD handler installed
+/// by busybox-init at e.g. 0x4925f9 leaks into every execve'd
+/// child — when the child later forks its own grandchild and the
+/// grandchild exits, SIGCHLD fires with handler=0x4925f9, but that
+/// address is in busybox's text not the child's, so iretq lands
+/// on an unmapped page and the child silently SIGSEGVs in its
+/// waitpid path.
+/// # SAFETY: running task on this CPU; preempt-off; sole writer
+/// to sigactions slot per `13§5` single-mutator invariant.
+/// # C: O(1) — 64-slot scan.
+fn reset_caught_signals(cur: &sched::Task) {
+    // SAFETY: running task on this CPU, preempt-off; sole writer to sigactions slot per `13§5` single-mutator invariant for the duration of this execve.
+    unsafe {
+        let table = &mut *cur.sigactions.get();
+        for slot in table.iter_mut() {
+            if slot.handler != 0 && slot.handler != 1 {
+                slot.handler  = 0;
+                slot.flags    = 0;
+                slot.restorer = 0;
+                slot.mask     = 0;
+            }
+        }
+    }
+}
+
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`.
 /// # SAFETY: dispatch ctx, IRQs masked.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
@@ -218,6 +246,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     if let Some(fdt) = unsafe { cur.fd_table_ref() } {
         fdt.close_on_exec();
     }
+    reset_caught_signals(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
     // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
     // exec time so the parent stops sharing the now-replaced mm.
@@ -477,6 +506,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     if let Some(fdt) = unsafe { cur.fd_table_ref() } {
         fdt.close_on_exec();
     }
+    reset_caught_signals(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
     // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
     // exec time so the parent stops sharing the now-replaced mm.
