@@ -27,6 +27,8 @@ pub enum NetError {
     Eafnosupport,
     Enotconn,
     Erange,
+    Econnrefused,
+    Enoent,
 }
 
 pub type NetResult<T> = core::result::Result<T, NetError>;

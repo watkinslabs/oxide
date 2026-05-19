@@ -417,7 +417,12 @@ pub enum RemoteAddr {
 pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<(), NetError> {
     match addr {
         RemoteAddr::UnixPath(path) => {
-            let pair = UNIX_REGISTRY.connect(&path).ok_or(NetError::Enobufs)?;
+            // B47: connect to a non-existent AF_UNIX path returns
+            // ECONNREFUSED on Linux (no listener) — used to return
+            // ENOBUFS which dhcpcd treated as fatal "out of buffer
+            // memory" instead of "nobody home, I'll create my own
+            // socket and listen".
+            let pair = UNIX_REGISTRY.connect(&path).ok_or(NetError::Econnrefused)?;
             *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
             Ok(())
         }

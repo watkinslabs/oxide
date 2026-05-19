@@ -34,6 +34,8 @@ fn errno_from_neterr(e: net::NetError) -> i64 {
         net::NetError::Eafnosupport  => Errno::Eafnosupport,
         net::NetError::Enotconn      => Errno::Enotconn,
         net::NetError::Erange        => Errno::Erange,
+        net::NetError::Econnrefused  => Errno::Econnrefused,
+        net::NetError::Enoent        => Errno::Enoent,
     } as i32 as i64)
 }
 
