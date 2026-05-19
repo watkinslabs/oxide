@@ -1,71 +1,51 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, ~1100 hosted tests pass,
-both arches build. Recent CI: 21/21 green (this session).
+Branch: main (clean). spec-lint clean, 1149 hosted tests pass,
+both arches build, x86 smoke 14s + arm smoke 18s green.
 
-## Session tally (PRs #1150–#1170)
+## Session tally (PRs #1172–#1176)
 
-| PR | What |
-|---|---|
-| F104 | netfilter→net::stack hook bridge on NF_INET_LOCAL_IN |
-| F105 | nft expr interpreter: immediate / cmp / payload (NETWORK) |
-| F106 | nft meta expr: LEN / NFPROTO / L4PROTO |
-| F107 | BPF structural verifier |
-| F108 | BPF interpreter core (ALU64 / JMP / EXIT / LD_IMM_DW) |
-| F109 | BPF LDX_MEM_{B,H,W,DW} packet loads |
-| F110 | BPF_CALL helper dispatch table |
-| F111 | nft payload TRANSPORT base via IPv4 IHL |
-| F112 | nft set elements: NEWSETELEM / DELSETELEM / GETSETELEM |
-| F113 | nft lookup expression (set membership, F_INV honored) |
-| F114 | netlink + netfilter mask NLA_F_NESTED in nla_type compares |
-| F115 | DRM_IOCTL_MODE_ATOMIC TEST_ONLY → 0 |
-| F116 | DRM SET_CLIENT_CAP + master arb + auth → 0 |
-| F117 | DRM plane/CRTC/encoder/connector lookup stubs |
-| F118 | BPF_MAP_GET_NEXT_KEY iteration |
-| F119 | nft counter expression — per-rule (packets, bytes) |
-| F120 | nft bitwise expression — (src AND mask) XOR xor |
-| F121 | nft byteorder expression — per-element byte-reverse |
-| F122 | UDP broadcast send falls back to first non-lo iface |
-| C76  | split nft_expr tests into nft_expr_tests.rs (905→405 LOC) |
-| D30  | state.md checkpoint after F113 |
+| PR    | What |
+|-------|------|
+| B42   | aarch64→x86 syscall translator rebuild; ARM smoke ELF uses generic NRs |
+| B43   | execve user-stack VMA gets `VmaFlags::GROWSDOWN` (per `docs/31§5`) |
+| F123  | vendor dhcpcd 10.3.2 (per-arch static-musl), stage `/sbin/dhcpcd`, `/etc/dhcpcd.conf`, `/var/{db,run}/dhcpcd`, rcS launch (gated); `sys_socketpair` mask 0xFF→0xF |
+| F125  | epoll waitqueue (`sched::live::EPOLL_GLOBAL_WAIT` + `notify_epoll_waiters`); `UnixMsgPair` for AF_UNIX SEQPACKET/DGRAM socketpair |
+| D32   | `try_grow_stack` cap 64 KiB → 8 MiB (RLIMIT_STACK-style); fixes wide musl init frames |
 
 ## What works end-to-end now
 
-- **netfilter packet path** — eval(hook_id, pkt) walks base chains
-  in priority order, runs each rule's expression list, applies
-  policy on fall-through. NF_INET_LOCAL_IN wired into deliver_rx
-- **nft expression set** — immediate, cmp (EQ/NEQ), payload
-  (NETWORK + TRANSPORT via IHL), meta (LEN/NFPROTO/L4PROTO),
-  lookup (set + F_INV), counter (stateful per-handle), bitwise,
-  byteorder
-- **nft set elements** — NEW/DEL/GET round-trip; set_elem_lookup
-  powers the lookup expression
-- **eBPF substrate** — structural verifier + interpreter + helper
-  CALL dispatch; map LOOKUP/UPDATE/DELETE/GET_NEXT_KEY all round-
-  trip; PROG_LOAD rejects malformed
-- **virtio-net** drives an iface — MSI-driven softirq + RX poller
-- **netlink** — rtnetlink + genetlink (CTRL) + NFNETLINK; F_NESTED
-  bit handled correctly across all parsers
-- **DRM** — atomic-probe, client caps, master arb, auth, plane
-  enumeration all return non-ENOTTY so compositors advance
-- **UDP broadcast** — `send_udp_to(255.255.255.255, ...)` works
-  even without a route entry (picks first non-lo iface)
+- **aarch64 syscall ABI** — comprehensive arm-generic → x86 translation table; epoll/inotify/shm/rlimit/renameat2 etc. all routed, not silently aliased into wild syscalls
+- **demand-grow stack** — execve flags GROWSDOWN; auto-extends up to 8 MiB on per-fault basis; a 140 KiB sub-sp,N is one grow, not 35
+- **epoll blocking** — `sys_epoll_wait` parks on the global waitlist when timeout!=0 + no events ready; `UnixPair::write`, `UnixMsgPair::send`, `UnixDgramQueue::push` all wake parkers; was a 700k-syscalls/min spin in dhcpcd's privsep child
+- **AF_UNIX socketpair** — STREAM (byte ring) and SEQPACKET/DGRAM (msg-pair) both supported; framing layer handles message-boundary preservation
+- **dhcpcd substrate** — binary staged, conf staged, rcS will launch when `/etc/oxide-dhcpcd-enable` marker is present
 
 ## Open next (priority order)
 
-1. **userspace DHCP** — busybox udhcpc cross-build + image stage;
-   substrate now complete (broadcast UDP + ARP-broadcast L2)
-2. **K10 eBPF rest** — path-sensitive verifier (reg types, scalar
-   bounds) → JIT; structural-only today
-3. **K13 DRM/KMS atomic modeset** — property tables + real
-   atomic-commit; today only TEST_ONLY-with-no-ops returns 0
-4. **getty wedge B40** — real tty-ioctl/termios bug behind the
-   /bin/login direct workaround in inittab
-5. **DNS / TLS userspace** — depends on DHCP
-6. **nft polish** — dynset (rule-side set updates), batch txn
-   rollback, NFT_LOOKUP with full key_len semantics
-7. **net** — route table scope tracking (RT_SCOPE_LINK) so the
-   broadcast fallback in send_udp_to can retire
+1. **dhcpcd `0x4925f9` crash** — children SIGSEGV on indirect jump to a heap address (likely function-pointer corruption from an earlier syscall returning wrong data). Repro: stage `/etc/oxide-dhcpcd-enable` in rootfs, smoke; children loop crash, init respawns, boot never reaches login. Auto-launch gated absent until fixed
+2. **K10 eBPF rest** — path-sensitive verifier (reg types, scalar bounds) → JIT; structural-only today
+3. **K13 DRM/KMS atomic modeset** — property tables + real atomic-commit
+4. **getty wedge B40** — real tty-ioctl/termios bug behind the `/bin/login` direct workaround in inittab
+5. **DNS / TLS userspace** — depends on dhcpcd actually leasing
+6. **per-fd targeted epoll wakes** — current model is global broadcast; needs Inode poll-wait hook without dragging `sched` into `vfs`
+
+## Repro for dhcpcd-0x4925f9 hunt
+
+```sh
+# stage the dhcpcd-enable marker into rootfs:
+cat >> tools/xtask/src/main.rs <<'PATCH'
+# (inside cmd_rootfs near oxide-init-smokes staging):
+put(&stage("oxide-dhcpcd-enable", b"1\n")?, "/etc/oxide-dhcpcd-enable")?;
+PATCH
+
+cargo run -p xtask -- rootfs --arch x86_64
+FEATURES="debug-syscall,sched/debug-syscall,debug-irq" \
+  ./tools/boot-smoke.sh x86 60
+# look for "[FAULT] sigsegv: kill tid=NNNN ... rip=00000000004925f9"
+# the rip address is NOT in dhcpcd's .text (ends 0x4301c9) —
+# it's a heap address jumped to via corrupted function pointer.
+```
 
 ## Discipline notes
 
@@ -74,11 +54,9 @@ both arches build. Recent CI: 21/21 green (this session).
 - Never rebase a published branch — `gh pr merge --merge` handles
   integration server-side
 - Never delete branches (`git branch -d/-D`) — preserve all
-- Verify post-merge CI on main, not just the pre-push hook
 - spec-lint clean before every commit + PR
-- nft_expr.rs and nft_expr_tests.rs both well under the 1000-LOC
-  cap now (405 / 501); next nft expression doesn't need another
-  split
+- Debug-syscall trace floods UART; smoke timeouts under it need
+  ~3× normal; don't conclude "wedge" from a short-window trace
 
 ## First task next session
 
@@ -86,10 +64,9 @@ both arches build. Recent CI: 21/21 green (this session).
 git pull && cargo run -p xtask -- spec-lint && cargo test --all 2>&1 | tail -5
 make smoke-x86 SMOKE_TIMEOUT=300
 make smoke-arm SMOKE_TIMEOUT=300
-gh pr list --state merged --limit 5 --json number,statusCheckRollup \
-  --jq '.[] | {n: .number, failed: ([.statusCheckRollup[]? | select(.conclusion=="FAILURE") | .name] | join(","))}'
 ```
 
-Then pick from "Open next". DHCP (#1) is the next user-visible
-win — kernel-side broadcast is in place, so the work is in
-userspace cross-build + image staging.
+Then pick from "Open next". Item 1 (dhcpcd `0x4925f9`) is the
+last piece for end-to-end DHCP. The fix is likely in the
+syscall-return data layer (some struct field returned by us
+differs from Linux, dhcpcd treats it as a function ptr).
