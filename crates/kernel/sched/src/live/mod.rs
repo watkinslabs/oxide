@@ -69,3 +69,31 @@ pub unsafe fn send_resched_ipi(cpu: u32) -> bool {
 }
 
 pub mod stop;
+
+/// Global epoll wait list. `sys_epoll_wait` parks here when its
+/// scan finds zero ready entries and `timeout != 0`; any fd-state-
+/// change site (socket send, pipe write, etc.) calls
+/// `notify_epoll_waiters()` after committing to wake every parked
+/// caller. Each wakes, rescans its interest set, and either
+/// returns events to user space or re-parks.
+///
+/// Lives in `sched` (not `fs::epoll`) so that the net/IPC layers
+/// — which don't depend on `fs` — can still trigger the wakeup
+/// without circular crate edges.
+///
+/// Single global vs per-EpollInode: v1 simplification. Spurious
+/// wakeups are correct (level-triggered semantics) and cheap when
+/// N_epolls is small (busybox+dhcpcd boot has <5). Per-fd targeted
+/// wakeups are a follow-up once the Inode trait grows a poll-wait
+/// hook without dragging sched into vfs.
+pub static EPOLL_GLOBAL_WAIT: WaitList = WaitList::new();
+
+/// Wake every task parked in `sys_epoll_wait`. Call from any fd-
+/// state-change site after committing the transition that would
+/// flip a poll bit (POLL_IN became readable, POLL_HUP set, ...).
+/// Spurious calls are safe — woken epollers re-scan and re-park
+/// if still empty.
+/// # C: O(N_parked_epollers)
+pub fn notify_epoll_waiters() {
+    EPOLL_GLOBAL_WAIT.wake_all();
+}
