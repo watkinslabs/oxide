@@ -1,63 +1,55 @@
 # state — hand-off
 
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
-both arches build, x86 smoke 14s + arm smoke 18s green.
+both arches build, x86 smoke 15s + arm smoke 20s green.
+Boot now reaches `oxide login:` through REAL getty (no more
+`/bin/sh -c 'exec /bin/login'` workaround).
 
-## Session tally (PRs #1178–#1182)
+## Session tally (PRs #1178–#1186)
 
 | PR    | What |
 |-------|------|
-| B44   | non-#PF user-mode trap (#GP / #UD / etc.) now delivers SIGSEGV via the live FaultFrame's CS-CPL check instead of halting the kernel; SIGSEGV block split into `user_as/signal.rs` |
-| F126  | TIOCGSID / TIOCNOTTY / TIOCM[GET\|SET\|BIS\|BIC] added (closes the kernel ioctl surface busybox getty wedges on) |
-| B45   | x86 fault stub pushes rbx/rbp/r12-r15 in addition to caller-saved; full GPR dump on unhandled #GP/#UD lets the diagnostic name the bad register |
-| F128  | MADV_DONTNEED no longer destructively munmap+mmap — uses refcount-aware `evict_pages_in_range` so GROWSDOWN flags, file backing, and COW-shared peers all survive |
+| B44   | user-mode #GP delivers SIGSEGV instead of halting kernel |
+| F126  | TIOCGSID / TIOCNOTTY / TIOCM* — closes getty kernel-ioctl surface |
+| B45   | full-GPR dump on unhandled trap (rbx/rbp/r12-r15 captured) |
+| F128  | MADV_DONTNEED drops pages, preserves VMA (was destructively munmap+mmap) |
+| B46   | execve resets caught signal handlers to SIG_DFL — fixes the busybox-init SIGCHLD-handler leak (0x4925f9) that was silently SIGSEGV-ing every fork+execve'd child in its waitpid path |
+| F129  | execve also resets sigaltstack / robust futex list / pdeath_sig / itimer / posix timers / RT sigqueue (companion sweep to B46) |
+| F130  | **`tick_yield` x86 idle uses `sti; hlt; cli`** — fixes `sys_nanosleep`/`usleep`/`clock_nanosleep` hanging forever when alone-on-CPU (SFMASK cleared IF on syscall entry, HLT with IF=0 only wakes on NMI/INIT/RESET per Intel SDM §8.10.1). Flips inittab from the `/bin/login`-direct workaround back to real `/sbin/getty`. Adds `/bin/usleep_smoke` probe. |
 
 ## What works end-to-end now
 
-- **kernel survives user-mode #GP / #UD / #DE / #SS** — a single
-  dhcpcd-class non-canonical-pointer dereference delivers SIGSEGV
-  to the offending task; kernel keeps running.
-- **getty kernel surface complete** — TIOCGSID returns the per-VT
-  (or pair) session id or ENOTTY; TIOCNOTTY clears it; TIOCMGET
-  reports DTR/RTS/CD/DSR/CTS/LE asserted; SET/BIS/BIC accept and
-  no-op. (Inittab still uses the `/bin/login`-direct workaround
-  because getty wedges later in its tcgetattr/init_tty_attrs path
-  — F127 attempt parked locally on a deferred branch.)
-- **full register state on fault** — `[FAULT]` block under
-  `debug-irq` now logs every GPR. dhcpcd crash diagnosed as
-  userspace bug: `free_options(ctx, ifo)` called with `ifo`
-  pointing to user stack (0x7ffffffa7040), `ifo->environ` read
-  returns garbage 0xe580024eb70f2376 (non-canonical) → #GP on
-  the next deref.
-- **MADV_DONTNEED preserves VMA metadata** — anonymous pages
-  refault as zero, file-backed pages refault from disk, COW-shared
-  frames stay alive in the peer AS.
+- **Real getty boot path** — `oxide Linux on /dev/ttyS0 / oxide login:` via `/sbin/getty -L 115200 ttyS0 vt100` through busybox getty's full TIOCSCTTY / TCSETS / usleep / tcflush / print-issue / prompt flow.
+- **Kernel survives user-mode #GP / #UD / #DE** — single non-canonical-pointer deref no longer wedges every CPU.
+- **`usleep` / `nanosleep` / `clock_nanosleep`** — work alone-on-CPU. CRITICAL fix; was silently parking countless programs.
+- **execve preserves Linux signal-disposition + per-task-state semantics** — caught handlers reset, sigaltstack/robust_list/pdeath/itimer/posix-timers/rt-sigqueue cleared. No more handler-leak across exec boundaries.
+- **`MADV_DONTNEED`** — drops pages, preserves VMA. GROWSDOWN flags, file backing, and COW-shared peers all survive.
+- **Smoke output now visible** — `sem_smoke: PASS / msg_smoke: PASS / mq_smoke: PASS / mprotect_smoke: PASS / mmap_zero_smoke: PASS / usleep_smoke: PASS`. These were all silently SIGSEGV'ing before B46.
 
 ## Open next (priority order)
 
-1. **dhcpcd userspace heap-corruption** — fault now diagnosed as
-   userspace, not a kernel bug. `free_options` is being called
-   with an uninitialised stack-resident struct. Next step is to
-   identify the dhcpcd callsite (the rip-0x40935a function's
-   exact name + caller chain). Likely an init/teardown path
-   triggered by our F125 (epoll waitqueue) progression past where
-   dhcpcd previously wedged. Auto-launch in rcS stays gated
-   behind `/etc/oxide-dhcpcd-enable`.
-2. **getty wedge past tcgetattr** — F126 closed the ioctl
-   surface; F127 attempt (parked) showed getty still doesn't
-   reach the login prompt under our /dev/ttyS0 console alias.
-   Next step is debug-syscall trace to see which post-ioctl
-   call wedges.
-3. **K10 eBPF rest** — path-sensitive verifier (reg types,
-   scalar bounds) → JIT; structural-only today.
+1. **dhcpcd `0x40935a` #GP** — survived B46 + F129 + F130. Real
+   dhcpcd-specific bug: a function in dhcpcd is being called with
+   `ifo` pointing to user stack 0x7ffffffa7040, where offset
+   0x10120 contains a deterministic non-canonical value
+   (0xe580024eb70f2376) that gets dereffed → #GP. Needs caller-
+   chain inspection (gdb-attached qemu) to identify the calling
+   site — the binary is stripped so addr2line is no help. dhcpcd
+   auto-launch in rcS stays gated behind `/etc/oxide-dhcpcd-enable`
+   marker (off by default).
+2. **arm tickless idle** — F130's arm side spins (busy-loop)
+   inside `tick_yield` instead of `wfi` because QEMU virt + DAIF.I=1
+   hangs both plain wfi and daifclr+wfi+daifset. Wasteful but
+   correct; full tickless-idle for arm wants the right
+   daifclr/wfit/daifset pairing or a separate idle helper.
+3. **K10 eBPF rest** — path-sensitive verifier (reg types, scalar
+   bounds) → JIT; structural-only today.
 4. **K13 DRM/KMS atomic modeset** — property tables + real
    atomic-commit.
-5. **per-fd targeted epoll wakes** — current model is global
-   broadcast; needs `Inode::wake_poll()` hook without dragging
-   `sched` into `vfs`.
-6. **file-backed mmap completeness** — phase 14 item; current
-   path covers basic cases; less-common combinations (MAP_SHARED
-   with non-anon backing) needs auditing.
+5. **per-fd targeted epoll wakes** — global broadcast today; needs
+   `Inode::wake_poll()` hook without dragging `sched` into `vfs`.
+6. **file-backed mmap completeness** — phase 14 item; less-common
+   combinations (MAP_SHARED with non-anon backing) need auditing.
 
 ## Discipline notes
 
@@ -67,8 +59,8 @@ both arches build, x86 smoke 14s + arm smoke 18s green.
   integration server-side
 - Never delete branches (`git branch -d/-D`) — preserve all
 - spec-lint clean before every commit + PR
-- `debug-irq` cfg gates `[FAULT]` + `[FAULT] sigsegv:` + GPR dump.
-  Use `FEATURES=debug-irq make qemu-x86` to see them.
+- `debug-irq` cfg gates `[FAULT]` lines + GPR dump. Use
+  `FEATURES=debug-irq make qemu-x86` to see them.
 
 ## First task next session
 
@@ -78,7 +70,7 @@ make smoke-x86 SMOKE_TIMEOUT=300
 make smoke-arm SMOKE_TIMEOUT=300
 ```
 
-Then pick from "Open next". Item 1 (dhcpcd userspace) needs a
-caller-chain trace via either gdb-attached qemu or a kernel-side
-ELF backtracer keyed off the current task's frame chain — not a
-kernel-completeness blocker, but the last piece before real DHCP.
+Then pick from "Open next". Item 1 (dhcpcd 0x40935a) is now a
+pure userspace investigation — needs gdb-attached qemu to walk
+the call chain because the binary is stripped. Item 2 (arm
+tickless idle) is a small kernel cleanup. Items 3–6 are larger.
