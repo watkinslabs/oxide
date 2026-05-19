@@ -526,14 +526,16 @@ fn growsdown_extends_within_guard_gap() {
 #[test]
 fn growsdown_rejects_beyond_guard_gap() {
     let a = AddressSpace::new(0).unwrap();
-    let stack_start = uva(0x8000_0000);
+    let stack_start = uva(0x4000_0000);
     a.mmap(Some(stack_start), 4 * PAGE, r_w(),
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
         VmaBacking::Anonymous, true).unwrap();
-    // Fault way below — beyond 64 KiB guard (0x10000 = exactly
-    // 64K; need strictly greater).
-    let fault_va = uva(0x7ffe_0000); // 0x20000 below = 128K
-    assert!(!a.try_grow_stack(fault_va), "beyond guard rejects");
+    // D32: v1 grow-cap = 8 MiB (RLIMIT_STACK default). A fault
+    // beyond that is treated as a wild pointer, not a deep stack
+    // frame. Pre-D32 cap was 64 KiB — dhcpcd's musl-init wide
+    // frame (~140 KiB on first resolver call) tripped it.
+    let fault_va = uva(0x3000_0000); // 0x1000_0000 below = 256 MiB
+    assert!(!a.try_grow_stack(fault_va), "beyond cap rejects");
     assert!(a.find_vma(fault_va).is_none());
 }
 
