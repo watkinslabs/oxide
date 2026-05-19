@@ -436,17 +436,14 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
-    /// F158: try to extend a `MAP_GROWSDOWN` VMA whose `start` is
-    /// just above `va` to cover `va`. Linux uses a 64 KiB guard
-    /// distance — a fault below that is treated as a stack
-    /// underflow (SIGSEGV) rather than auto-extension. Returns
-    /// `true` if the VMA was extended (caller can retry the fault),
-    /// `false` if no GROWSDOWN VMA covers the access.
+    /// Try to extend a `MAP_GROWSDOWN` VMA. D32: cap = 8 MiB
+    /// (Linux RLIMIT_STACK default); was 64 KiB which SIGSEGV'd
+    /// musl's wide init frames.
     /// # C: O(log N)
     pub fn try_grow_stack(&self, va: UserVirtAddr) -> bool {
-        const STACK_GUARD_GAP: u64 = 64 * 1024;
+        const STACK_GROW_MAX: u64 = 8 * 1024 * 1024;
         let mut tree = self.vmas.write();
-        let cur_start = match tree.find_growsdown_above(va, STACK_GUARD_GAP) {
+        let cur_start = match tree.find_growsdown_above(va, STACK_GROW_MAX) {
             Some(v) => v.start,
             None    => return false,
         };
