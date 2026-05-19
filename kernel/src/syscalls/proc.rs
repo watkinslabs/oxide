@@ -183,13 +183,15 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
     };
     match advice {
         4 | 8 | 9 => {
-            let _ = mm.munmap(ua, len);
-            use vmm::{VmaProt, VmaFlags, VmaBacking};
-            let _ = mm.mmap(
-                Some(ua), len, VmaProt::READ | VmaProt::WRITE,
-                VmaFlags::ANONYMOUS | VmaFlags::PRIVATE,
-                VmaBacking::Anonymous, true);
-            0
+            // F128: MADV_DONTNEED / MADV_FREE / MADV_REMOVE. Linux
+            // drops physical pages but keeps the VMA — anonymous
+            // refaults as zero, file-backed refaults from disk.
+            // Prior impl destructively munmap+mmap, which dropped
+            // VMA-specific flags (GROWSDOWN, file backing) and
+            // could corrupt COW-shared frames. The new helper does
+            // refcount-aware page eviction without touching VMAs.
+            let _ = (cur, mm); // suppress unused warnings on this branch
+            pmm::user_as::evict_pages_in_range(addr, len as u64)
         }
         0..=3 | 10..=21 => 0,                          // hints
         100 => -(Errno::Eperm.as_i32() as i64),        // MADV_HWPOISON
