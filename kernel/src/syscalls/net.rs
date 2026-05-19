@@ -424,31 +424,26 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `socketpair(domain, type, protocol, sv)` slot 53. AF_UNIX
-/// SOCK_STREAM only — DGRAM/SEQPACKET need a real message-
-/// boundary framing layer first. F123 widened the mask to Linux's
-/// `SOCK_TYPE_MASK = 0xF` so SOCK_CLOEXEC (0x80000) / SOCK_NONBLOCK
-/// (0x800) are correctly stripped before the type compare.
+/// `socketpair` slot 53. AF_UNIX STREAM / SEQPACKET / DGRAM (F125).
 /// # C: O(1)
 pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u32 = 1;
     const SOCK_TYPE_MASK: u32 = 0xF;
+    const SOCK_SEQPACKET: u32 = 5;
     let domain = args.a0 as u32;
     let typ    = args.a1 as u32 & SOCK_TYPE_MASK;
     let svp    = args.a3;
-    if domain != AF_UNIX {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
-    if typ != SOCK_STREAM {
+    if domain != AF_UNIX { return -(Errno::Eafnosupport.as_i32() as i64); }
+    if typ != SOCK_STREAM && typ != SOCK_SEQPACKET && typ != SOCK_DGRAM {
         return -(Errno::Esocktnosupport.as_i32() as i64);
     }
-    if svp == 0 || svp >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let pair = net::UnixPair::new();
+    if svp == 0 || svp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    let stream = if typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
+    let msg    = if typ != SOCK_STREAM { Some(net::UnixMsgPair::new()) } else { None };
     let mk = |end: net::UnixEnd| -> vfs::InodeRef {
         let s = InetSocket::new_tcp();
-        *s.kind.lock() = SockKind::Unix(pair.clone(), end);
+        if let Some(p) = &stream { *s.kind.lock() = SockKind::Unix(p.clone(), end); }
+        else if let Some(p) = &msg { *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end); }
         Arc::new(s) as _
     };
     let cur = match sched::live::current() {
@@ -784,8 +779,12 @@ pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
     };
     const SHUT_WR: u32 = 1;
     const SHUT_RDWR: u32 = 2;
-    if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
-        if how == SHUT_WR || how == SHUT_RDWR { pair.close_writer(*end); }
+    if how == SHUT_WR || how == SHUT_RDWR {
+        match &*sock.kind.lock() {
+            SockKind::Unix(p, e)        => p.close_writer(*e),
+            SockKind::UnixMsgPair(p, e) => p.close_writer(*e),
+            _ => {}
+        }
     }
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let _ = net::sock::stack().tcp_close(entry);
