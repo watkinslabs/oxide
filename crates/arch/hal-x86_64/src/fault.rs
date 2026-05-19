@@ -84,18 +84,28 @@ core::arch::global_asm!(
     // clobbered `%rsi` and re-fault at a garbage address.
     //
     // Stack after GPR save (10 × 8 = 80 B pushed):
-    //   [rsp+0x00] r11
-    //   [rsp+0x08] r10
-    //   [rsp+0x10] r9
-    //   [rsp+0x18] r8
-    //   [rsp+0x20] rdi
-    //   [rsp+0x28] rsi
-    //   [rsp+0x30] rdx
-    //   [rsp+0x38] rcx
-    //   [rsp+0x40] rax
-    //   [rsp+0x48] (pad — keeps total even × 8 so post-save rsp is
-    //              16-aligned for the SysV ABI call)
-    //   [rsp+0x50..]  fault frame (vec/err/rip/cs/rflags/rsp/ss)
+    // B45: capture callee-saved (rbx/rbp/r12-r15) in addition to
+    // caller-saved so the #GP diagnostic can name the bad register.
+    // Layout after the 15 GPR pushes (15 × 8 = 120 B = 0x78, + 0x08
+    // align pad → 0x80 to the fault frame):
+    //   [rsp+0x00]  (align pad)
+    //   [rsp+0x08]  r15
+    //   [rsp+0x10]  r14
+    //   [rsp+0x18]  r13
+    //   [rsp+0x20]  r12
+    //   [rsp+0x28]  rbp
+    //   [rsp+0x30]  rbx
+    //   [rsp+0x38]  r11
+    //   [rsp+0x40]  r10
+    //   [rsp+0x48]  r9
+    //   [rsp+0x50]  r8
+    //   [rsp+0x58]  rdi
+    //   [rsp+0x60]  rsi
+    //   [rsp+0x68]  rdx
+    //   [rsp+0x70]  rcx
+    //   [rsp+0x78]  rax
+    //   [rsp+0x80..]  fault frame (vec/err/rip/cs/rflags/rsp/ss)
+    // Rust dispatcher gets rdi=*FaultFrame, rsi=*FaultGprs.
     ".globl oxide_fault_common",
     ".type  oxide_fault_common, @function",
     "oxide_fault_common:",
@@ -109,8 +119,15 @@ core::arch::global_asm!(
     "    push r9",
     "    push r10",
     "    push r11",
+    "    push rbx",
+    "    push rbp",
+    "    push r12",
+    "    push r13",
+    "    push r14",
+    "    push r15",
     "    sub  rsp, 8",                   // align to 16 before call
-    "    lea  rdi, [rsp + 0x50]",        // arg 0 = pointer to fault frame
+    "    lea  rdi, [rsp + 0x80]",        // arg 0 = *FaultFrame
+    "    lea  rsi, [rsp + 0x08]",        // arg 1 = *FaultGprs (skip pad)
     "    call oxide_fault_print_rust",   // returns bool in al
     "    add  rsp, 8",                   // undo align
     "    test al, al",
@@ -118,7 +135,13 @@ core::arch::global_asm!(
     "    cli",
     "1:  hlt",
     "    jmp 1b",
-    "2:  pop r11",
+    "2:  pop r15",
+    "    pop r14",
+    "    pop r13",
+    "    pop r12",
+    "    pop rbp",
+    "    pop rbx",
+    "    pop r11",
     "    pop r10",
     "    pop r9",
     "    pop r8",
@@ -207,6 +230,33 @@ pub struct FaultFrame {
     pub rflags:    u64,
     pub rsp:       u64,
     pub ss:        u64,
+}
+
+/// Snapshot of every general-purpose register at the moment of
+/// the fault. Pushed by the per-vector stub in the order shown by
+/// the module-level stack diagram, then handed to
+/// `oxide_fault_print_rust` so the diagnostic can name the bad
+/// register on a user-mode #GP / #UD / etc. Callee-saved regs
+/// (rbx, rbp, r12-r15) are captured BEFORE the Rust dispatcher
+/// runs — by SysV they survive the call, so on stub entry they
+/// still hold the user's values.
+#[repr(C)]
+pub struct FaultGprs {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub rbp: u64,
+    pub rbx: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9:  u64,
+    pub r8:  u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rax: u64,
 }
 
 /// Read CR2 (page-fault linear address). Only meaningful for vec 14.
@@ -311,6 +361,8 @@ fn current_handler() -> FaultHandler {
 /// from the rust-side print fn.
 static CUR_FAULT_FRAME: core::sync::atomic::AtomicPtr<FaultFrame>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static CUR_FAULT_GPRS: core::sync::atomic::AtomicPtr<FaultGprs>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
 /// Snapshot of the live `*mut FaultFrame` while in fault context.
 /// Returns null if no fault is active (i.e., not called from a
@@ -322,18 +374,31 @@ pub fn current_fault_frame() -> *mut FaultFrame {
     CUR_FAULT_FRAME.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// B45: pointer to the saved-GPR block on the kernel stack while
+/// `oxide_fault_print_rust` is on the stack. Lets the SIGSEGV
+/// terminator dump every general-purpose register on a user-mode
+/// #GP / #UD so we can name the bad register without re-entering
+/// QEMU under gdb. Cleared on exit from the rust-side print fn.
+/// # SAFETY: caller is in fault dispatch with IRQs masked.
+/// # C: O(1)
+pub fn current_fault_gprs() -> *const FaultGprs {
+    CUR_FAULT_GPRS.load(core::sync::atomic::Ordering::Acquire)
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame) -> bool {
+unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr: *const FaultGprs) -> bool {
     // SAFETY: stub-built frame on the kernel stack, valid for read+write.
     let f = unsafe { &mut *frame_ptr };
     // F158: publish the live FaultFrame so the kernel SIGSEGV
     // delivery path can rewrite it for catchable user signals.
     CUR_FAULT_FRAME.store(frame_ptr, core::sync::atomic::Ordering::Release);
+    CUR_FAULT_GPRS.store(gprs_ptr as *mut FaultGprs, core::sync::atomic::Ordering::Release);
     struct ClearOnDrop;
     impl Drop for ClearOnDrop {
         fn drop(&mut self) {
             CUR_FAULT_FRAME.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+            CUR_FAULT_GPRS.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
         }
     }
     let _guard = ClearOnDrop;
@@ -375,9 +440,36 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame) -> bool 
                 klog::write_raw(decode_pfec(f.error));
             }
             klog::write_raw(b"\n");
+            // B45: full GPR dump when we're about to halt. Helps name
+            // the bad register on a kernel-mode trip without needing
+            // to re-attach gdb. User-mode trips also get this dump
+            // before the SIGSEGV terminator (which logs its own line).
+            if !gprs_ptr.is_null() {
+                // SAFETY: gprs_ptr is the stub-built GPR block on the
+                // kernel stack; valid for read while we're in fault
+                // dispatch (the stub doesn't pop until after we return).
+                let g = unsafe { &*gprs_ptr };
+                klog::write_raw(b"[FAULT] rax=");  klog::write_hex_u64(g.rax);
+                klog::write_raw(b" rbx=");          klog::write_hex_u64(g.rbx);
+                klog::write_raw(b" rcx=");          klog::write_hex_u64(g.rcx);
+                klog::write_raw(b" rdx=");          klog::write_hex_u64(g.rdx);
+                klog::write_raw(b"\n[FAULT] rsi="); klog::write_hex_u64(g.rsi);
+                klog::write_raw(b" rdi=");          klog::write_hex_u64(g.rdi);
+                klog::write_raw(b" rbp=");          klog::write_hex_u64(g.rbp);
+                klog::write_raw(b" rsp=");          klog::write_hex_u64(f.rsp);
+                klog::write_raw(b"\n[FAULT] r8=");  klog::write_hex_u64(g.r8);
+                klog::write_raw(b" r9=");           klog::write_hex_u64(g.r9);
+                klog::write_raw(b" r10=");          klog::write_hex_u64(g.r10);
+                klog::write_raw(b" r11=");          klog::write_hex_u64(g.r11);
+                klog::write_raw(b"\n[FAULT] r12="); klog::write_hex_u64(g.r12);
+                klog::write_raw(b" r13=");          klog::write_hex_u64(g.r13);
+                klog::write_raw(b" r14=");          klog::write_hex_u64(g.r14);
+                klog::write_raw(b" r15=");          klog::write_hex_u64(g.r15);
+                klog::write_raw(b"\n");
+            }
         }
         #[cfg(not(feature = "debug-irq"))]
-        { let _ = f; }
+        { let _ = (f, gprs_ptr); }
     }
     handled
 }
