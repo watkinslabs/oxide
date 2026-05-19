@@ -38,7 +38,8 @@ pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use fault::{
     install_fault_handler, install_user_trap_hook, vector_stub_addr,
-    current_fault_frame, FaultFrame, FaultHandler, UserTrapHook,
+    current_fault_frame, current_fault_gprs,
+    FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
 };
 pub use irq::{
     irq_stub_addr,
