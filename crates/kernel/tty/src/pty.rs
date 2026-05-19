@@ -302,6 +302,9 @@ pub struct Pair {
     pub hung_up: bool,
     /// Foreground process group id per `28§4` / TIOCSPGRP.
     pub foreground_pgid: u32,
+    /// Controlling-session id per `28§4` / TIOCSCTTY. TIOCGSID reads
+    /// this; 0 means no session has claimed the pty yet.
+    pub session_pid: u32,
     /// Linux `struct termios` byte image (60 B). TCGETS copies out;
     /// TCSETS copies in wholesale. Hot-path readers (`master_write`,
     /// `slave_read`) consult `read_lflag` / `read_vintr`.
@@ -359,7 +362,7 @@ impl Pair {
         Self {
             pts_num,
             m_to_s: Ring::new(), s_to_m: Ring::new(),
-            hung_up: false, foreground_pgid: 0,
+            hung_up: false, foreground_pgid: 0, session_pid: 0,
             termios: [0u8; TERMIOS_BYTES],
             winsize: Winsize::default_pty(),
             pending_sigint: false,
