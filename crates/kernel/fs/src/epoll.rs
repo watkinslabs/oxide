@@ -205,19 +205,44 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     if out > 0 || timeout == 0 {
         return out as i64;
     }
-    // Park + wait for a state-change wakeup. On wake, rescan once
-    // and return whatever's ready (caller's loop re-enters for more).
-    // Live-only: hosted tests skip the park (no runqueue), which is
-    // fine because the timeout-aware loop above already returned 0
-    // for the hosted-test single-shot case before reaching here.
+    // B47: honour the caller's timeout (ms). Without this, dhcpcd's
+    // eloop blocks forever on its 10 s lease-attempt poll because
+    // we'd just park-on-empty and never wake. timeout < 0 means
+    // wait forever (epoll_wait(2)).
     #[cfg(target_os = "oxide-kernel")]
-    // SAFETY: process ctx; preempt-off across the syscall; WaitList::park bumps Arc + marks Sleeping, schedule() yields. UP single-CPU.
-    unsafe {
-        sched::live::EPOLL_GLOBAL_WAIT.park();
-        sched::live::schedule();
+    {
+        use hal::TimerOps;
+        let now = || {
+            #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+            #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+        };
+        let deadline_ns: Option<u64> = if timeout < 0 {
+            None
+        } else {
+            Some(now().saturating_add((timeout as u64).saturating_mul(1_000_000)))
+        };
+        loop {
+            // Park + wait for a wakeup. tick_yield will wake periodically
+            // on the timer IRQ even if nobody notified the wait list,
+            // which lets us re-check the deadline and any newly-ready fds.
+            // SAFETY: process ctx; preempt-off across the syscall; WaitList::park bumps Arc + marks Sleeping; tick_yield yields. UP single-CPU.
+            unsafe {
+                sched::live::EPOLL_GLOBAL_WAIT.park();
+                sched::live::tick_yield();
+            }
+            let out2 = scan_once(&ep, &fdt, evp, maxevents);
+            if out2 > 0 { return out2 as i64; }
+            if let Some(d) = deadline_ns {
+                if now() >= d { return 0; }
+            }
+        }
     }
-    let out2 = scan_once(&ep, &fdt, evp, maxevents);
-    out2 as i64
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        // Hosted tests: no runqueue. Return 0 (no events) so the
+        // hosted-test single-shot path completes.
+        0
+    }
 }
 
 /// One non-blocking scan over an epoll's interest list. Writes
