@@ -64,6 +64,16 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = crate::dev::drm::handle_drm_ioctl(file.inode(), req, arg) {
         return rv;
     }
+    // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
+    // dhcpcd's whole bring-up dance uses SIOCGIFFLAGS / SIOCSIFFLAGS
+    // / SIOCGIFADDR / SIOCSIFADDR / SIOCGIFINDEX / SIOCGIFHWADDR
+    // / SIOCGIFMTU / SIOCGIFNETMASK / SIOCADDRT to probe + configure
+    // eth0 before sending the DHCPDISCOVER.
+    if (req & 0xFFFFFF00) == 0x00008900 {
+        if let Some(rv) = crate::syscalls::siocgif::handle_sioc(req, arg) {
+            return rv;
+        }
+    }
     if file.inode().file_type() != vfs::FileType::CharDev {
         return -(Errno::Enotty.as_i32() as i64);
     }
