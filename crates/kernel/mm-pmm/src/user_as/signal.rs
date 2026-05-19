@@ -70,14 +70,15 @@ pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     //   rdi = sig num (11)
     //   rsi = ptr to siginfo_t (only meaningful with SA_SIGINFO)
     //   rdx = ptr to ucontext_t (only meaningful with SA_SIGINFO)
-    // Per fault.rs stack diagram, the slots are at frame_ptr -
-    // 0x30 (rdi), -0x28 (rsi), -0x20 (rdx).
+    // Per fault.rs stack diagram (B45 layout — callee-saved pushes
+    // added), the slots are at frame_ptr - 0x28 (rdi), -0x20 (rsi),
+    // -0x18 (rdx).
     let frame_addr = frame_ptr as u64;
-    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x30/-0x28/-0x20 are within the per-task syscall/fault stack and only oxide_fault_common (which runs after we return) reads them.
+    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x28/-0x20/-0x18 are within the per-task syscall/fault stack and only oxide_fault_common (which runs after we return) reads them.
     unsafe {
-        core::ptr::write_volatile((frame_addr - 0x30) as *mut u64, 11);
-        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, si);
-        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, uc);
+        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, 11);
+        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, si);
+        core::ptr::write_volatile((frame_addr - 0x18) as *mut u64, uc);
     }
     let _ = sa.flags;
     true
@@ -109,6 +110,33 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
         klog::write_raw(b" rip=");      klog::write_hex_u64(rip);
         klog::write_raw(b" cr2=");      klog::write_hex_u64(cr2);
         klog::write_raw(b"\n");
+        // B45: dump every general-purpose register the stub captured.
+        // Lets us name the bad register on a #GP without re-attaching
+        // gdb. Kernel-mode trips get their dump from
+        // oxide_fault_print_rust (which only fires when the handler
+        // returns false); the SIGSEGV path diverges before that block
+        // runs, so we mirror the dump here.
+        let gp = hal_x86_64::current_fault_gprs();
+        if !gp.is_null() {
+            // SAFETY: stub-built GPR block on the kernel stack; valid for read while we're in fault dispatch (the stub doesn't pop until after the Rust dispatcher returns — which it doesn't here, since we diverge — so the slots stay live for the schedule()-away that follows).
+            let g = unsafe { &*gp };
+            klog::write_raw(b"[FAULT] rax=");  klog::write_hex_u64(g.rax);
+            klog::write_raw(b" rbx=");          klog::write_hex_u64(g.rbx);
+            klog::write_raw(b" rcx=");          klog::write_hex_u64(g.rcx);
+            klog::write_raw(b" rdx=");          klog::write_hex_u64(g.rdx);
+            klog::write_raw(b"\n[FAULT] rsi="); klog::write_hex_u64(g.rsi);
+            klog::write_raw(b" rdi=");          klog::write_hex_u64(g.rdi);
+            klog::write_raw(b" rbp=");          klog::write_hex_u64(g.rbp);
+            klog::write_raw(b"\n[FAULT] r8=");  klog::write_hex_u64(g.r8);
+            klog::write_raw(b" r9=");           klog::write_hex_u64(g.r9);
+            klog::write_raw(b" r10=");          klog::write_hex_u64(g.r10);
+            klog::write_raw(b" r11=");          klog::write_hex_u64(g.r11);
+            klog::write_raw(b"\n[FAULT] r12="); klog::write_hex_u64(g.r12);
+            klog::write_raw(b" r13=");          klog::write_hex_u64(g.r13);
+            klog::write_raw(b" r14=");          klog::write_hex_u64(g.r14);
+            klog::write_raw(b" r15=");          klog::write_hex_u64(g.r15);
+            klog::write_raw(b"\n");
+        }
     }
     // Coredump before parking the zombie. Best-effort.
     // Hook installed at boot from `fs::coredump::write_for_current`.
