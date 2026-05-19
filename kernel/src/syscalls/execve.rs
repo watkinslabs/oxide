@@ -36,6 +36,56 @@ fn reset_caught_signals(cur: &sched::Task) {
     }
 }
 
+/// F129: sweep all other per-task state Linux execve(2) resets:
+///   * sigaltstack → SS_DISABLE (per sigaltstack(2): "The alternate
+///     signal stack is reset on each call to execve(2)")
+///   * robust futex list → null (per set_robust_list(2): "On exec
+///     the head is set to NULL.")
+///   * pdeath_sig → 0 (per prctl(PR_SET_PDEATHSIG): "is cleared upon
+///     a call to execve")
+///   * alarm / interval timer → 0 (per alarm(2): "All asynchronous
+///     events ... are cleared by execve()")
+///   * POSIX timers → all disarmed and cleared (per timer_create(2):
+///     "Timers are not preserved across an execve(2)")
+///   * RT signal queues → drained (per signal(7) sigqueue semantics:
+///     queued info is task-private and dies with the program image)
+/// Signal mask (sigprocmask) and pending bitmap are PRESERVED per
+/// execve(2) "the set of signals pending is preserved across execve".
+/// # SAFETY: running task on this CPU, preempt-off; sole writer to
+/// every slot per `13§5` single-mutator invariant.
+/// # C: O(N_timers) — bounded by `PosixTimer::SLOTS` (32).
+fn reset_per_execve_state(cur: &sched::Task) {
+    use core::sync::atomic::Ordering;
+    // sigaltstack disabled.
+    cur.sigaltstack_sp.store(0, Ordering::Release);
+    cur.sigaltstack_size.store(0, Ordering::Release);
+    cur.sigaltstack_flags.store(2 /* SS_DISABLE */, Ordering::Release);
+    // robust futex list dropped — stale user-VA into the old AS.
+    cur.robust_list_head.store(0, Ordering::Release);
+    cur.robust_list_len.store(0, Ordering::Release);
+    // parent-death signal cleared — handler would be in the old text.
+    cur.pdeathsig.store(0, Ordering::Release);
+    // ITIMER_REAL / alarm() armed against the dying image.
+    cur.alarm_ns.store(0, Ordering::Release);
+    cur.alarm_interval_ns.store(0, Ordering::Release);
+    // POSIX timers — disarm + clear handler addresses (which point
+    // into the old text).
+    // SAFETY: running task on this CPU, preempt-off; sole writer to the per-task posix_timers slot per `13§5` single-mutator invariant for the duration of this execve.
+    unsafe {
+        let timers = &mut *cur.posix_timers.get();
+        for t in timers.iter_mut() {
+            *t = sched::PosixTimer::default();
+        }
+    }
+    // RT signal queues — drain. The siginfos hold sigval_t.ptr values
+    // that would point into the old AS. SAFETY: spinlock locks here,
+    // single-CPU UP; the lock guards the per-task queue array.
+    {
+        let mut g = cur.rt_sigqueue.lock();
+        for q in g.iter_mut() { q.clear(); }
+    }
+}
+
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`.
 /// # SAFETY: dispatch ctx, IRQs masked.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
@@ -247,6 +297,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
         fdt.close_on_exec();
     }
     reset_caught_signals(&cur);
+    reset_per_execve_state(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
     // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
     // exec time so the parent stops sharing the now-replaced mm.
@@ -507,6 +558,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
         fdt.close_on_exec();
     }
     reset_caught_signals(&cur);
+    reset_per_execve_state(&cur);
     // F156: clear CLONE_VFORK rendezvous so the parent (suspended in
     // sys_clone) returns. Linux fires `mm_struct::vfork_done` at
     // exec time so the parent stops sharing the now-replaced mm.
