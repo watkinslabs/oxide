@@ -448,6 +448,14 @@ pub fn set_session(vt: u8, sid: u32) {
     VT_SID[vt_index(vt)].store(sid, Ordering::Release);
 }
 
+/// Read the controlling-session id for `vt`. Used by TIOCGSID
+/// (busybox getty's `tcgetsid()` call) and the Linux `TIOCNOTTY`
+/// path. Returns 0 when no session has claimed the VT yet.
+/// # C: O(1)
+pub fn session(vt: u8) -> u32 {
+    VT_SID[vt_index(vt)].load(Ordering::Acquire)
+}
+
 /// Read a snapshot of `vt`'s termios image. Used by TCGETS.
 /// `vt == 0` resolves to foreground.
 /// # C: O(1)
