@@ -33,6 +33,14 @@ fn is_ext4_path(p: &str) -> bool {
  || p.starts_with("/sbin/") || p.starts_with("/lib/")  || p.starts_with("/opt/")
  || p.starts_with("/home/") || p.starts_with("/root/") || p == "/init"
  || p == "/hello.txt"
+ // B47: /var and /tmp host writable state for daemons (dhcpcd's
+ // lease + control socket dirs, /tmp for temporary files). We
+ // pre-create the parent dirs in the ext4 image and mount tmpfs
+ // over /var/{run,db} + /tmp; dhcpcd does mkdir('/var/db/dhcpcd')
+ // (EEXIST is fine) which our gate was returning EROFS for. Route
+ // those to ext4 too — the overlay-mount machinery rides a
+ // follow-up; for now the tmpfs mount silently shadows the dir.
+ || p.starts_with("/var/") || p.starts_with("/tmp/") || p.starts_with("/run/")
 }
 
 fn errno_from_vfs(e: vfs::VfsError) -> i64 {
