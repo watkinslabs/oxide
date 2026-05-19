@@ -16,6 +16,11 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
+// Park / wake plumbing lives in `sched::live` so net/IPC layers
+// (which don't depend on `fs`) can trigger epoll wakeups without a
+// circular crate edge. See `sched::live::EPOLL_GLOBAL_WAIT` and
+// `sched::live::notify_epoll_waiters`.
+
 const EPOLL_INO_BASE: Ino = 0x7400_0000;
 const EPOLL_INO_MASK: Ino = 0x00FF_FFFF;
 
@@ -161,14 +166,23 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
 
 /// `sys_epoll_wait(epfd, events*, maxevents, timeout)` /
 /// `sys_epoll_pwait(epfd, events*, maxevents, timeout, sigmask, sz)`.
-/// v1: reports each interest entry whose fd is still open as
-/// level-triggered ready, up to maxevents. timeout ignored.
-/// # C: O(N_entries)
+/// Level-triggered scan over the epoll's interest set. When the
+/// scan returns zero ready entries:
+///   * timeout == 0  → return 0 immediately (non-blocking poll)
+///   * timeout != 0  → park on the global epoll waitlist + schedule;
+///     wake on any fd-state-change `notify_pollers()` call; re-scan
+///     after wake and return whatever's ready (caller's loop re-
+///     enters if it still needs more events).
+/// Without the park-on-empty path, a daemon polling for input
+/// (dhcpcd's privsep child) starves the rest of the UP runqueue
+/// and the producer never gets to send.
+/// # C: O(N_entries) per scan; one park+wake per blocked round-trip.
 pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let epfd = args.a0 as i32;
     let evp  = args.a1;
     let maxevents = args.a2 as i32;
+    let timeout   = args.a3 as i32;
     if maxevents <= 0 { return -(Errno::Einval.as_i32() as i64); }
     if evp == 0 || evp >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
@@ -186,24 +200,44 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
     let ep = match epoll_inode_of(&epfile) {
         Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
     };
+    // First scan: report any already-ready entries without parking.
+    let out = scan_once(&ep, &fdt, evp, maxevents);
+    if out > 0 || timeout == 0 {
+        return out as i64;
+    }
+    // Park + wait for a state-change wakeup. On wake, rescan once
+    // and return whatever's ready (caller's loop re-enters for more).
+    // Live-only: hosted tests skip the park (no runqueue), which is
+    // fine because the timeout-aware loop above already returned 0
+    // for the hosted-test single-shot case before reaching here.
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: process ctx; preempt-off across the syscall; WaitList::park bumps Arc + marks Sleeping, schedule() yields. UP single-CPU.
+    unsafe {
+        sched::live::EPOLL_GLOBAL_WAIT.park();
+        sched::live::schedule();
+    }
+    let out2 = scan_once(&ep, &fdt, evp, maxevents);
+    out2 as i64
+}
+
+/// One non-blocking scan over an epoll's interest list. Writes
+/// ready events into the user-supplied buffer; returns the count.
+/// # C: O(N_entries)
+fn scan_once(ep: &Arc<EpollInode>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: i32) -> i32 {
     let snapshot: Vec<EpollEntry> = ep.entries.lock().clone();
     let mut out = 0i32;
     for e in snapshot.iter() {
         if out >= maxevents { break; }
         let f = match fdt.get(e.fd) { Ok(f) => f, Err(_) => continue };
-        // Real readiness: ask the inode for its poll mask, then
-        // intersect with the caller's interest. Skip when no
-        // bit overlaps — level-triggered semantics.
         let ready = f.inode().poll() & e.events;
         if ready == 0 { continue; }
         let dst = evp + (out as u64) * (EPOLL_EVENT_SIZE as u64);
-        // SAFETY: evp validated; per-record stride within user buffer
-        // sized for maxevents records; CPL=0 writes through caller's AS.
+        // SAFETY: evp validated by caller; per-record stride within user buffer sized for maxevents records; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile(dst as *mut u32, ready);
             core::ptr::write_volatile((dst + EPOLL_DATA_OFF as u64) as *mut u64, e.data);
         }
         out += 1;
     }
-    out as i64
+    out
 }

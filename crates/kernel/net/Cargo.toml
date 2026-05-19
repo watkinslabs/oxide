@@ -14,6 +14,9 @@ sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
 vfs      = { path = "../vfs" }
 syscall  = { path = "../syscall" }
+# F125: net calls sched::live::notify_epoll_waiters() after any
+# UnixPair/UnixDgram state change so epoll_wait parkers wake.
+sched    = { path = "../sched" }
 
 [features]
 default = []

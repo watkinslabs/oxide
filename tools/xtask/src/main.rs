@@ -442,7 +442,13 @@ mount -t devpts devpts /dev/pts 2>/dev/null
 hostname -F /etc/hostname 2>/dev/null
 ifconfig lo 127.0.0.1 up 2>/dev/null
 ifconfig eth0 up 2>/dev/null
-[ -x /sbin/dhcpcd ] && /sbin/dhcpcd -b eth0 2>/dev/null
+# F125: dhcpcd launch gated behind /etc/oxide-dhcpcd-enable.
+# Without the marker, rcS skips it and boot reaches login cleanly.
+# With it set, dhcpcd advances further than F123-era did (epoll
+# waitqueue + SEQPACKET socketpair both wired) but wedges on a
+# downstream syscall path that surfaces post-lease-socket setup.
+# Flip the marker on once that gap closes.
+[ -x /sbin/dhcpcd ] && [ -e /etc/oxide-dhcpcd-enable ] && /sbin/dhcpcd -b eth0 2>/dev/null
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 :
 ")?,
