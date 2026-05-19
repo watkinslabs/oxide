@@ -126,6 +126,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke",
                                                       "userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke.c"),
         ("userspace/mprotect_smoke/mprotect_smoke",   "userspace/mprotect_smoke/mprotect_smoke.c"),
+        ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -316,6 +317,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
     put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
+    put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     // dynamic-linker stub at the per-arch musl path. The kernel's
     // ELF loader sees PT_INTERP="/lib/ld-musl-<arch>.so.1" in any
     // -pie binary and dual-loads this stub alongside the exec.
@@ -475,7 +477,7 @@ b"#!/bin/sh
 [ -e /etc/oxide-init-smokes ] || exit 0
 echo init-fork-exec works
 for s in /bin/bare3 /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
-         /bin/mprotect_smoke /bin/hello_dyn ; do
+         /bin/mprotect_smoke /bin/mmap_zero_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
 done
 ")?,
