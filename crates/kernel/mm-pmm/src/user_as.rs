@@ -800,6 +800,50 @@ pub fn glue_mmap(
     }
 }
 
+/// F128: drop every mapped page in `[addr, addr+len)` WITHOUT
+/// touching the VMA(s) that cover the range. Mirrors Linux
+/// `MADV_DONTNEED` — anonymous pages refault as zero on next
+/// access; file pages refault from the file. Refcount-aware:
+/// uses `rmap_aware_dec_and_maybe_free` so COW-shared frames
+/// don't get yanked from the peer.
+/// # C: O(pages)
+pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
+    use syscall::errno::Errno;
+    use hal::{MmuOps, PageSize, Va};
+    if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let len_aligned = (len + 0xfff) & !0xfff;
+    if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut va = addr;
+    let end = addr + len_aligned;
+    while va < end {
+        // SAFETY: privileged read of live page tables; va validated user-half above.
+        #[cfg(target_arch = "x86_64")]
+        let translated = <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va));
+        #[cfg(target_arch = "aarch64")]
+        let translated = <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate(Va(va));
+        if let Some((pa, _flags)) = translated {
+            // SAFETY: page is currently mapped; unmap is the inverse of demand-page install. The dec_ref-and-maybe-free that follows handles the COW-shared case correctly (Linux: MADV_DONTNEED on a shared page just unmaps the caller's PTE, never frees the underlying frame).
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::unmap(Va(va), PageSize::P4K);
+                #[cfg(target_arch = "aarch64")]
+                <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
+            }
+            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
+            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
+            #[cfg(target_arch = "x86_64")]
+            unsafe { hal_x86_64::flush_local_va(va); }
+        }
+        va += 0x1000;
+    }
+    0
+}
+
 /// Wrap `AddressSpace::munmap` + per-page PT unmap + frame free.
 /// Walks `[addr, addr+len)`, for each present PTE: translate → unmap
 /// → free PA back to PMM → flush_va. Then removes the VMA(s).
