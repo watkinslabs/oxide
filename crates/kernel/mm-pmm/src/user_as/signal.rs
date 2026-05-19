@@ -136,6 +136,24 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             klog::write_raw(b" r14=");          klog::write_hex_u64(g.r14);
             klog::write_raw(b" r15=");          klog::write_hex_u64(g.r15);
             klog::write_raw(b"\n");
+            // B47: walk the frame-pointer chain via [rbp]=prev_rbp,
+            // [rbp+8]=return_addr per SysV. Up to 12 frames; stop
+            // at non-canonical / out-of-range rbp.
+            let mut bp = g.rbp;
+            for _ in 0..12 {
+                if bp == 0 || bp >= hal::USER_VA_END || (bp & 7) != 0 { break; }
+                // SAFETY: bp validated < USER_VA_END and 8-byte aligned; CPL=0 read through caller's AS. Any unmapped page faults to user_fault_handler which can deliver a second SIGSEGV — but we're already terminating, so the recursion is bounded.
+                let prev_bp = unsafe { core::ptr::read_volatile(bp as *const u64) };
+                // SAFETY: same range/alignment guarantees; +8 stays within the same frame slot.
+                let ret_rip = unsafe { core::ptr::read_volatile((bp + 8) as *const u64) };
+                klog::write_raw(b"[FAULT] frame rbp=");
+                klog::write_hex_u64(bp);
+                klog::write_raw(b" ret=");
+                klog::write_hex_u64(ret_rip);
+                klog::write_raw(b"\n");
+                if prev_bp <= bp { break; }
+                bp = prev_bp;
+            }
         }
     }
     // Coredump before parking the zombie. Best-effort.

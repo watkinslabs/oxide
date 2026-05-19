@@ -875,9 +875,16 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
                 #[cfg(target_arch = "aarch64")]
                 <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
             }
-            // Free the PA back to PMM.
-            // SAFETY: pa was reachable via the live PT entry just unmapped above; we're now the sole owner since the unmap completed and the TLB flush below makes the old translation unobservable.
-            unsafe { crate::setup::free_one_frame(pa.0); }
+            // B47: dec_ref + maybe free. Refcount-aware: a frame
+            // shared with a forked peer AS (still mapped there via
+            // COW) stays alive; only the unconditional free_one_frame
+            // path would yank it out from under the peer. dhcpcd's
+            // double-fork daemonize triggers this — the launcher's
+            // free → munmap → unmap_pte for the if_options heap was
+            // freeing pages still mapped in the grandchild's AS,
+            // corrupting grandchild's view of the same struct.
+            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
