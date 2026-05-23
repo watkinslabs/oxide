@@ -124,9 +124,20 @@ pub fn kernel_master() -> u64 {
 /// single-CPU pre-init.
 /// # C: O(1) (256-entry copy)
 pub unsafe fn new_user_pml4() -> Option<u64> {
-    let hhdm   = HHDM_OFFSET.load(Ordering::Acquire);
-    let master = MASTER_PML4_PA.load(Ordering::Acquire);
-    if hhdm == 0 || master == 0 { return None; }
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    if hhdm == 0 { return None; }
+    // F136: clone from the CURRENT active CR3, not the saved
+    // MASTER_PML4_PA. Limine's master PT (the one MASTER_PML4_PA
+    // captures at boot) is frozen before PCI enum runs — every
+    // map_mmio_pages call after `user_as::init` activates the boot
+    // AS root writes to the active CR3, leaving Limine's PML4
+    // without the device-attr mappings. Cloning from active CR3
+    // gives the new AS every kernel-half mapping the calling
+    // context already has (including PCI MMIO BARs the device
+    // drivers will reach for from syscall context).
+    // SAFETY: CR3 read is privileged; legal at CPL=0; pure read.
+    let src_pa = unsafe { crate::regs::read_cr3() } & !0xfff;
+    if src_pa == 0 { return None; }
     let pa = alloc_frame()?;
     // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at
     // hhdm + pa is mapped writable in the kernel master tables; no
@@ -134,7 +145,7 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     unsafe {
         let dst = (hhdm.wrapping_add(pa)) as *mut u64;
         core::ptr::write_bytes(dst, 0, 512);
-        let src = (hhdm.wrapping_add(master)) as *const u64;
+        let src = (hhdm.wrapping_add(src_pa)) as *const u64;
         // Copy kernel-half PML4 entries 256..512. Each entry is one
         // u64 referencing an L3 (PDPT) table that's shared across
         // every AS for the lifetime of the kernel.
