@@ -90,6 +90,20 @@ pub enum SockKind {
     /// AF_UNIX SOCK_SEQPACKET / SOCK_DGRAM on a socketpair —
     /// bidirectional msg-boundary-preserving pair. F125.
     UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
+    /// F131: AF_PACKET / PF_PACKET SOCK_RAW. dhcpcd uses this to
+    /// send the DHCPDISCOVER L2 frame before it has an IPv4 address.
+    /// `ifindex == 0` means unbound (sendto / recvfrom return EINVAL
+    /// until bind sets a specific iface).
+    Packet {
+        ifindex:  core::sync::atomic::AtomicU32,
+        protocol: core::sync::atomic::AtomicU16,
+        /// Pending RX frames. v1: empty (no rx-path delivery yet);
+        /// recvfrom on AF_PACKET returns Eagain. dhcpcd's flow sends
+        /// the DISCOVER and waits on epoll with a 10 s timeout, then
+        /// gives up — we just want the send half to actually push
+        /// bytes through virtio-net.
+        rx: sync::Spinlock<alloc::collections::VecDeque<alloc::vec::Vec<u8>>, SockLockClass>,
+    },
 }
 
 /// Process-global AF_UNIX path registry.
@@ -144,6 +158,7 @@ pub struct SockOpts {
 pub const AF_INET:  u16 = 2;
 pub const AF_INET6: u16 = 10;
 pub const AF_UNIX:  u16 = 1;
+pub const AF_PACKET: u16 = 17;
 
 impl InetSocket {
     /// # C: O(1)
@@ -207,6 +222,22 @@ impl InetSocket {
         let s = Self::new_tcp();
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         *s.kind.lock() = SockKind::UnixDgram(crate::UnixDgramQueue::new());
+        s
+    }
+
+    /// F131: `socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))` —
+    /// raw L2 packet socket dhcpcd uses for DHCPDISCOVER before
+    /// it owns an IPv4. `proto` is the wire byte-order protocol
+    /// the caller passed; we store host-order.
+    /// # C: O(1)
+    pub fn new_packet(proto: u16) -> Self {
+        let s = Self::new_tcp();
+        s.family.store(AF_PACKET, core::sync::atomic::Ordering::Release);
+        *s.kind.lock() = SockKind::Packet {
+            ifindex:  core::sync::atomic::AtomicU32::new(0),
+            protocol: core::sync::atomic::AtomicU16::new(proto),
+            rx:       Spinlock::new(alloc::collections::VecDeque::new()),
+        };
         s
     }
 
@@ -321,6 +352,14 @@ impl vfs::Inode for InetSocket {
                 let mut mask = POLL_OUT;
                 if pair.has_msg(*end) { mask |= POLL_IN; }
                 if pair.is_eof(*end)  { mask |= POLL_HUP; }
+                mask
+            }
+            SockKind::Packet { rx, .. } => {
+                // F131: tx always ready; rx readable when rx queue
+                // has a frame. v1 rx queue stays empty until the
+                // virtio-net rx-deliver path lands.
+                let mut mask = POLL_OUT;
+                if !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask
             }
         }
