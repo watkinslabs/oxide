@@ -53,6 +53,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let nonblock = (raw & SOCK_NONBLOCK) != 0;
     const AF_UNIX_DOM: u32 = 1;
     const AF_NETLINK_DOM: u32 = ::netlink::AF_NETLINK as u32;
+    const AF_PACKET_DOM: u32 = 17;
     // F88: AF_NETLINK takes its own socket type; everything else
     // falls into the existing InetSocket union.
     let inode: vfs::InodeRef = if domain == AF_NETLINK_DOM {
@@ -71,6 +72,14 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
             (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
             (AF_UNIX_DOM, SOCK_DGRAM)  => InetSocket::new_unix_dgram(),
+            (AF_PACKET_DOM, _) => {
+                // F131: SOCK_RAW + SOCK_DGRAM both admitted. The
+                // protocol arg is htons(ETH_P_*); store host-order
+                // (caller did the swap).
+                let proto_be = (proto & 0xFFFF) as u16;
+                let proto_host = proto_be.swap_bytes();
+                InetSocket::new_packet(proto_host)
+            }
             (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
             _ => return -(Errno::Eafnosupport.as_i32() as i64),
         };
@@ -348,6 +357,27 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
         net::sock::BoundAddr::Inet { ip, port }
+    } else if family == 17 /* AF_PACKET */ {
+        // F131: sockaddr_ll layout (linux/if_packet.h):
+        //   u16 sll_family
+        //   u16 sll_protocol  (be)
+        //   i32 sll_ifindex
+        //   u16 sll_hatype
+        //   u8  sll_pkttype
+        //   u8  sll_halen
+        //   u8  sll_addr[8]
+        // SAFETY: addr_p validated < USER_VA_END at read_sa_family above; sockaddr_ll spans +0..+20.
+        let (proto_be, ifindex) = unsafe {
+            let p = core::ptr::read_volatile((addr_p + 2) as *const u16);
+            let i = core::ptr::read_volatile((addr_p + 4) as *const i32);
+            (p, i)
+        };
+        if let net::sock::SockKind::Packet { ifindex: ifi, protocol, .. } = &*sock.kind.lock() {
+            ifi.store(ifindex as u32, core::sync::atomic::Ordering::Release);
+            protocol.store(proto_be.swap_bytes(), core::sync::atomic::Ordering::Release);
+            return 0;
+        }
+        return -(Errno::Einval.as_i32() as i64);
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
@@ -378,6 +408,10 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
+    // F131: AF_PACKET fast path lives in af_packet.rs.
+    if let Some(rv) = crate::syscalls::af_packet::sendto(&sock, bufp, len) {
+        return rv;
+    }
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
     let timeo = sock.opts.sndtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
@@ -674,69 +708,9 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     total
 }
 
-/// `sendmmsg(fd, mmsghdr*, vlen, flags)` — slot 307. Walks the
-/// mmsghdr array calling `sendmsg` for each entry; writes the
-/// per-entry byte count into the trailing `msg_len` u32 of each
-/// mmsghdr. Stops on the first error and returns the count of
-/// successfully-sent messages (Linux semantics: error is reported
-/// only if zero messages succeeded).
-/// # C: O(vlen)
-pub fn sys_sendmmsg(args: &SyscallArgs) -> i64 {
-    let fd       = args.a0;
-    let mmsg_ptr = args.a1;
-    let vlen     = args.a2;
-    let flags    = args.a3;
-    if mmsg_ptr == 0 || vlen == 0 { return 0; }
-    if vlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let mut sent: i64 = 0;
-    for i in 0..vlen {
-        // struct mmsghdr = { struct msghdr (56 bytes); u32 msg_len; pad }; size 64.
-        let entry = mmsg_ptr + i * 64;
-        if entry >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        let mut sa = *args;
-        sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
-        let r = sys_sendmsg(&sa);
-        if r < 0 {
-            return if sent > 0 { sent } else { r };
-        }
-        // Write back msg_len at +56.
-        // SAFETY: entry < USER_VA_END; +56 within the 64-byte mmsghdr.
-        unsafe { core::ptr::write_volatile((entry + 56) as *mut u32, r as u32); }
-        sent += 1;
-    }
-    sent
-}
-
-/// `recvmmsg(fd, mmsghdr*, vlen, flags, timeout)` — slot 299.
-/// Calls recvmsg per entry; same Linux semantics as sendmmsg.
-/// Timeout is currently ignored (recvfrom path already polls via
-/// internal yield-loop on blocking sockets).
-/// # C: O(vlen)
-pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
-    let fd       = args.a0;
-    let mmsg_ptr = args.a1;
-    let vlen     = args.a2;
-    let flags    = args.a3;
-    let _timeout = args.a4;
-    if mmsg_ptr == 0 || vlen == 0 { return 0; }
-    if vlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let mut got: i64 = 0;
-    for i in 0..vlen {
-        let entry = mmsg_ptr + i * 64;
-        if entry >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        let mut sa = *args;
-        sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
-        let r = sys_recvmsg(&sa);
-        if r < 0 {
-            return if got > 0 { got } else { r };
-        }
-        if r == 0 { break; }
-        // SAFETY: entry < USER_VA_END; msg_len at +56.
-        unsafe { core::ptr::write_volatile((entry + 56) as *mut u32, r as u32); }
-        got += 1;
-    }
-    got
-}
+// sys_sendmmsg / sys_recvmmsg moved to mmsg.rs to keep net.rs
+// under the 1000-line cap (`08§7`).
+pub use crate::syscalls::mmsg::{sys_sendmmsg, sys_recvmmsg};
 
 /// `getsockname(fd, addr, addrlen)` slot 51 — write local addr.
 /// # C: O(1)
