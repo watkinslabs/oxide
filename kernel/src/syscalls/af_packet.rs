@@ -40,13 +40,10 @@ pub fn sendto(sock: &Arc<InetSocket>, bufp: u64, len: usize) -> Option<i64> {
     let frame: alloc::vec::Vec<u8> = unsafe {
         core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
     };
-    let mut pkt = net::Pkt::new_with_headroom(net::DEFAULT_HEADROOM, frame.len());
-    let put_slot = match pkt.put(frame.len()) {
-        Ok(s) => s,
-        Err(_) => return Some(-(Errno::Emsgsize.as_i32() as i64)),
-    };
-    put_slot.copy_from_slice(&frame);
-    match dev.xmit(pkt) {
+    // F135: AF_PACKET caller already framed the L2 header — go
+    // through NetDev::xmit_raw so the driver doesn't prepend
+    // another ethernet header on top.
+    match dev.xmit_raw(&frame) {
         Ok(()) => Some(frame.len() as i64),
         Err(_) => Some(-(Errno::Enobufs.as_i32() as i64)),
     }

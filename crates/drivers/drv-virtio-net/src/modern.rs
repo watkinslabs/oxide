@@ -392,6 +392,27 @@ impl net::NetDev for VirtioNetDev {
             }
         }
     }
+    /// F135: AF_PACKET / bpf transmit path — the caller already
+    /// built the L2 header; we hand the frame straight to the
+    /// virtio-net tx queue without prepending anything. dhcpcd's
+    /// DHCPDISCOVER ride this code path.
+    fn xmit_raw(&self, frame: &[u8]) -> net::NetResult<()> {
+        if frame.len() < 14 || frame.len() > 1518 {
+            self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(net::NetError::Erange);
+        }
+        match tx_frame(frame) {
+            Ok(_) => {
+                self.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.tx_bytes  .fetch_add(frame.len() as u64, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(_) => {
+                self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+                Err(net::NetError::Eio)
+            }
+        }
+    }
     fn stats(&self) -> net::NetStats {
         net::NetStats {
             tx_packets: self.tx_packets.load(Ordering::Relaxed),
