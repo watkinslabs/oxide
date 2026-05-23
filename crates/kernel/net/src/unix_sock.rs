@@ -305,6 +305,17 @@ impl UnixRegistry {
         self.inner.lock().get(path).cloned()
     }
 
+    /// True if `path` is registered as a SOCK_STREAM listener or a
+    /// SOCK_DGRAM queue. Used by AF_UNIX-aware path syscalls
+    /// (chmod / unlink / stat) to no-op gracefully instead of
+    /// returning ENOENT for sockets that don't yet have a backing
+    /// tmpfs entry.
+    /// # C: O(log N) × 2
+    pub fn is_bound(&self, path: &str) -> bool {
+        if self.inner.lock().contains_key(path) { return true; }
+        self.dgrams.lock().contains_key(path)
+    }
+
     /// Connect to `path`: allocate a new UnixPair; queue the A
     /// end into the listener's accept_q so the server's
     /// `accept()` retrieves it; return the B end to the client.
