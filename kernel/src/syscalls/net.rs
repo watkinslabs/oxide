@@ -333,6 +333,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
     let fd     = args.a0;
     let addr_p = args.a1;
+    if crate::syscalls::netlink_fd::is_netlink(fd) {
+        return crate::syscalls::netlink_fd::bind();
+    }
     let sock   = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
@@ -408,6 +411,9 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
+    if crate::syscalls::netlink_fd::is_netlink(fd) {
+        return crate::syscalls::netlink_fd::sendto(fd, bufp, len);
+    }
     // F131: AF_PACKET fast path lives in af_packet.rs.
     if let Some(rv) = crate::syscalls::af_packet::sendto(&sock, bufp, len) {
         return rv;
@@ -717,14 +723,24 @@ pub use crate::syscalls::mmsg::{sys_sendmmsg, sys_recvmmsg};
 pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
+    if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    if crate::syscalls::netlink_fd::is_netlink(fd) {
+        return crate::syscalls::netlink_fd::getsockname(addr_p);
+    }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let port = (*sock.local_port.lock()).unwrap_or(0);
     let ip   = *sock.local_ip.lock();
     write_sockaddr_for_socket(addr_p, &sock, ip, port);
     0
+}
+
+fn fd_file(fd: u64) -> Option<Arc<vfs::File>> {
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; sole reader of fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    fdt.get(fd as i32).ok()
 }
 
 /// `getpeername(fd, addr, addrlen)` slot 52.
@@ -782,6 +798,9 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     let optname  = args.a2;
     let optval   = args.a3;
     let optlen   = args.a4 as u32;
+    if crate::syscalls::netlink_fd::is_netlink(fd) {
+        return crate::syscalls::netlink_fd::setsockopt();
+    }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };
@@ -933,6 +952,9 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let flags  = args.a3;
     let src_p  = args.a4;
     const MSG_DONTWAIT: u64 = 0x40;
+    if crate::syscalls::netlink_fd::is_netlink(fd) {
+        return crate::syscalls::netlink_fd::recvfrom(fd, bufp, len, src_p);
+    }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => return -(Errno::Enotsock.as_i32() as i64),
     };

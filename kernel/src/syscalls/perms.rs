@@ -55,6 +55,19 @@ fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
 /// `sys_chmod(path, mode)` — slot 90.
 /// # C: O(N_path)
 pub fn sys_chmod(args: &SyscallArgs) -> i64 {
+    // F132: AF_UNIX socket paths don't have backing filesystem
+    // entries in v1 — the UnixRegistry tracks them by string key.
+    // Linux's bind(AF_UNIX) materialises a socket-type inode at the
+    // path; chmod on it succeeds. Until we materialise socket-type
+    // tmpfs inodes, accept chmod on any known UnixRegistry path
+    // so dhcpcd's control-socket setup (bind → chmod → listen)
+    // doesn't bail at the chmod step.
+    // SAFETY: read_user_cstr does its own ptr-range + bounded-read validation.
+    if let Some(bytes) = unsafe { crate::devfs::read_user_cstr(args.a0, 108) } {
+        if let Ok(s) = core::str::from_utf8(bytes) {
+            if net::sock::UNIX_REGISTRY.is_bound(s) { return 0; }
+        }
+    }
     let inode = match resolve_path_inode(args.a0) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a1 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
