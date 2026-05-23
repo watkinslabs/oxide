@@ -576,6 +576,24 @@ pub fn sendto(
     dest: Option<RemoteAddr>,
     creds: SenderCreds,
 ) -> Result<usize, NetError> {
+    // F134: AF_UNIX SOCK_SEQPACKET / SOCK_DGRAM on a socketpair.
+    // dhcpcd's launcher waits on its grandchild via
+    //   send(fork_fd, &exit_code, sizeof(exit_code), MSG_EOR)
+    // over a SOCK_SEQPACKET socketpair. Previously sendto fell
+    // through to the AF_INET UDP arm + Eaddrnotavail because there
+    // was no dest path or peer recorded, so the launcher hung
+    // forever waiting on a signal it could never receive.
+    if let SockKind::UnixMsgPair(pair, end) = &*sock.kind.lock() {
+        let pair = pair.clone();
+        let end = *end;
+        return Ok(pair.send(end, payload));
+    }
+    // AF_UNIX SOCK_STREAM socketpair: same shape, byte ring instead.
+    if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
+        let pair = pair.clone();
+        let end = *end;
+        return Ok(pair.write(end, payload));
+    }
     // AF_UNIX SOCK_DGRAM: dest path required, push to peer queue.
     if let SockKind::UnixDgram(_) = &*sock.kind.lock() {
         let path = match dest {
