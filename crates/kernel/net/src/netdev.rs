@@ -11,7 +11,7 @@ use alloc::string::String;
 use sync::{Spinlock, Socket as SocketLockClass};
 
 use crate::addr::{MacAddr, NetIfaceId};
-use crate::pkt::Pkt;
+use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 
 /// `25§3` `KR<()>` analogue for the net subsystem.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -59,6 +59,19 @@ pub trait NetDev: Send + Sync {
     /// driver-IRQ tx-completion callback (real NICs); v1 hosted
     /// surface is sync.
     fn xmit(&self, pkt: Pkt) -> NetResult<()>;
+    /// F135: transmit a complete L2 frame verbatim (caller has
+    /// already prepended its own Ethernet header). AF_PACKET
+    /// SOCK_RAW sendto and bpf write() take this path. Default
+    /// re-wraps as a Pkt and falls back to `xmit`, which is wrong
+    /// for drivers that prepend their own header — those must
+    /// override.
+    /// # C: O(len)
+    fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
+        let mut pkt = Pkt::new_with_headroom(DEFAULT_HEADROOM, frame.len());
+        let slot = pkt.put(frame.len()).map_err(|_| NetError::Erange)?;
+        slot.copy_from_slice(frame);
+        self.xmit(pkt)
+    }
     /// Snapshot the per-iface running counters. Default returns
     /// zeros for devices that don't track them yet.
     /// # C: O(1)
