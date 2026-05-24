@@ -47,6 +47,17 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
         if (options & WNOHANG) != 0 { return 0; }
         // SAFETY: process ctx; runqueue installed; preempt-off; park+schedule per `13§8`.
         unsafe { sched::live::park_for_wait4(); }
+        // F143: post-park reap recheck closes the missed-wakeup race
+        // where a child sys_exit between the reap_one above and
+        // park_for_wait4 fires wake_wait4_parent while WAITERS is
+        // empty — losing the wake. If the child has Zombied since,
+        // unpark + return its status without going through schedule().
+        if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid) {
+            sched::live::unpark_self_from_wait4();
+            let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
+            write_wstatus(wstatus, wstat);
+            return tid as i64;
+        }
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
     }
