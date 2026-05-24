@@ -367,9 +367,18 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             let i = core::ptr::read_volatile((addr_p + 4) as *const i32);
             (p, i)
         };
-        if let net::sock::SockKind::Packet { ifindex: ifi, protocol, .. } = &*sock.kind.lock() {
-            ifi.store(ifindex as u32, core::sync::atomic::Ordering::Release);
-            protocol.store(proto_be.swap_bytes(), core::sync::atomic::Ordering::Release);
+        let registered = {
+            let k = sock.kind.lock();
+            if let net::sock::SockKind::Packet { ifindex: ifi, protocol, .. } = &*k {
+                ifi.store(ifindex as u32, core::sync::atomic::Ordering::Release);
+                protocol.store(proto_be.swap_bytes(), core::sync::atomic::Ordering::Release);
+                true
+            } else { false }
+        };
+        if registered {
+            // F137: hook into the rx delivery registry so virtio-net
+            // can push DHCPOFFER frames into this socket's queue.
+            net::sock::register_packet(&sock);
             return 0;
         }
         return -(Errno::Einval.as_i32() as i64);

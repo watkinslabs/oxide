@@ -109,6 +109,53 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
+/// F137: AF_PACKET socket registry. Bind installs a `Weak<InetSocket>`
+/// here keyed by ifindex; the virtio-net rx path iterates this list
+/// and pushes a frame copy into each matching socket's rx queue so
+/// dhcpcd's recvfrom() sees the DHCPOFFER. Dropped sockets stay as
+/// dead Weaks until the next deliver pass GCs them.
+/// ETH_P_ALL = 0x0003 (host order) matches every protocol.
+pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLockClass>
+    = Spinlock::new(Vec::new());
+
+/// Add `sock` to the AF_PACKET registry. Idempotent — duplicate adds
+/// just live as redundant Weak entries (harmless; the rx path is the
+/// hot side and dedupes implicitly via socket identity).
+/// # C: O(N) — registry is small (one entry per AF_PACKET fd).
+pub fn register_packet(sock: &Arc<InetSocket>) {
+    let mut g = PACKET_REGISTRY.lock();
+    g.retain(|w| w.upgrade().is_some());
+    g.push(Arc::downgrade(sock));
+}
+
+/// Deliver a complete L2 frame to all AF_PACKET sockets bound to
+/// `iface` (ifindex 0 = any). Filters by socket's stored protocol
+/// (0x0003 ETH_P_ALL or matches frame ethertype). Frames are
+/// truncated to 65536 bytes on enqueue and a hard cap of 64 frames
+/// per socket prevents unbounded growth.
+/// # C: O(N sockets) — call from net rx softirq only.
+pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
+    use core::sync::atomic::Ordering;
+    if frame.len() < 14 { return; }
+    let et = ((frame[12] as u16) << 8) | (frame[13] as u16);
+    let mut g = PACKET_REGISTRY.lock();
+    g.retain(|w| w.upgrade().is_some());
+    for w in g.iter() {
+        let sock = match w.upgrade() { Some(s) => s, None => continue };
+        let k = sock.kind.lock();
+        if let SockKind::Packet { ifindex, protocol, rx } = &*k {
+            let want_if = ifindex.load(Ordering::Acquire);
+            if want_if != 0 && want_if != iface.raw() { continue; }
+            let p = protocol.load(Ordering::Acquire);
+            if p != 0x0003 && p != et { continue; }
+            let mut q = rx.lock();
+            if q.len() < 64 {
+                q.push_back(frame.to_vec());
+            }
+        }
+    }
+}
+
 /// Per-AF_INET / AF_INET6 socket VFS state — one Inode per socket fd.
 ///
 /// `family` records the address family the userspace `socket(2)` call
@@ -644,6 +691,18 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
         let take = core::cmp::min(max_len, msg.payload.len());
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&msg.payload[..take]);
+        return Ok(Received { payload: out, peer: None });
+    }
+    // F137: AF_PACKET. Pop one queued frame; peer = None for now
+    // (the sockaddr_ll shaping rides with sys_recvfrom's writer).
+    if let SockKind::Packet { rx, .. } = &*sock.kind.lock() {
+        let frame = {
+            let mut q = rx.lock();
+            q.pop_front().ok_or(NetError::Eagain)?
+        };
+        let take = core::cmp::min(max_len, frame.len());
+        let mut out = alloc::vec::Vec::with_capacity(take);
+        out.extend_from_slice(&frame[..take]);
         return Ok(Received { payload: out, peer: None });
     }
     // TCP.
