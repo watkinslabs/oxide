@@ -120,6 +120,36 @@ pub unsafe fn park_for_wait4() {
     WAITERS.lock().push(arc);
 }
 
+/// F143: undo `park_for_wait4` for the current task — used when
+/// `sys_wait4`'s post-park reap recheck found a Zombie that was
+/// added between the loop-top reap and the park (missed-wakeup
+/// race). Removes self from WAITERS and restores Runnable state.
+/// # SAFETY: caller is the running task on this CPU; preempt-off.
+/// # C: O(N_waiters)
+pub fn unpark_self_from_wait4() {
+    let rq = match super::runqueue::global() { Some(r) => r, None => return };
+    let raw = rq.current.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    let cur_tid = {
+        // SAFETY: rq.current is non-null after install_global; we read tid without bumping the strong count.
+        let t: &Task = unsafe { &*raw };
+        t.tid
+    };
+    let mut waiters = WAITERS.lock();
+    let mut i = waiters.len();
+    while i > 0 {
+        i -= 1;
+        if waiters[i].tid == cur_tid {
+            let arc = waiters.swap_remove(i);
+            arc.set_state(TaskState::Runnable);
+            return;
+        }
+    }
+    // SAFETY: rq.current is non-null after install_global; we are sole writer to state via the single-mutator invariant for the running task on this CPU.
+    let t: &Task = unsafe { &*raw };
+    t.set_state(TaskState::Runnable);
+}
+
 /// Wake any parent task waiting in `wait4(-1, ...)` for `parent_tid`'s
 /// children to exit. Called from `park_zombie` after the child has
 /// been added to the ZOMBIES registry. The woken parent re-runs the
