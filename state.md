@@ -1,18 +1,20 @@
 # state — hand-off
 
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
-both arches build, x86 smoke 16s + arm smoke 20s green.
+both arches build, x86 smoke 14s + arm smoke 20s green.
 
-## Session tally (PRs #1199–#1204)
+## Session tally (PRs #1199–#1206)
 
 | PR    | What |
 |-------|------|
-| F137  | AF_PACKET RX delivery: virtio-net rx tap copies each L2 frame into matching `SockKind::Packet` queues; bind registers the socket in `PACKET_REGISTRY` (Weak); `recvfrom` pops one frame. ETH_P_ALL + exact-protocol filter; 64-frame backlog cap. |
-| F138  | SIOCSIFADDR propagates new IPv4 into the virtio-net rx softirq's stashed `our_ip` so the in-driver ARP responder answers who-has queries for the leased address. New `set_softirq_ip(ip)` + `softirq_iface_id()` helpers. |
-| F139  | `recvfrom` fills sockaddr_ll for AF_PACKET sockets (family=17, proto be, ifindex, hatype=ETHER, pkttype broadcast/host, halen=6, addr=src MAC). New `af_packet::write_sockaddr_ll` helper keeps net.rs under the 1000-line cap. |
-| F140  | `af_packet_smoke` now exercises the RX path via `recvfrom(MSG_DONTWAIT)` — EAGAIN is the happy path; if a frame arrives, validates sockaddr_ll.sll_family. |
-| F141  | Replace upstream dhcpcd with busybox `udhcpc` (already in the vendored busybox). New /sbin/udhcpc + /sbin/udhcpd hardlinks. Background launch in rcS, gated behind /etc/oxide-udhcpc-enable so default boot stays fast. |
-| F142  | Admit `socket(AF_INET, SOCK_RAW, …)` and `socket(AF_INET6, SOCK_RAW, …)` as UDP shells. udhcpc / libc getifaddrs open RAW only as ioctl handles for SIOCGIF*. |
+| F137  | AF_PACKET RX delivery into bound sockets (virtio-net tap → PACKET_REGISTRY → recvfrom queue). |
+| F138  | SIOCSIFADDR propagates new IPv4 into virtio-net rx softirq's ARP responder IP. |
+| F139  | recvfrom fills sockaddr_ll (family, proto be, ifindex, hatype, pkttype, halen, src MAC) on AF_PACKET sockets. |
+| F140  | af_packet_smoke exercises the RX path via recvfrom(MSG_DONTWAIT). |
+| F141  | Switch v1 DHCP client from upstream dhcpcd 10.3.2 to busybox udhcpc (already in vendored busybox). |
+| F142  | AF_INET / AF_INET6 + SOCK_RAW admitted as UDP shells (ioctl-handle usage). |
+| F143  | wait4 missed-wakeup race: post-park reap recheck + unpark_self_from_wait4. Bites every fork+exec+wait4(specific-pid) flow on a fast-exiting child. |
+| D34   | state.md hand-off snapshot mid-session. |
 
 ## DHCP-stack status
 
@@ -23,25 +25,39 @@ both arches build, x86 smoke 16s + arm smoke 20s green.
 | AF_PACKET sockaddr_ll fill   | ✅ F139 |
 | AF_INET SOCK_RAW (ioctl handle) | ✅ F142 |
 | SIOCSIFADDR → ARP responder IP | ✅ F138 |
-| dhcpcd 10.3.2 launch         | ✅ B46/B47/F132/F133/F134 (reaches login) |
-| dhcpcd → lease               | ❌ wedges post-lease-setup; switched to udhcpc per F141 |
-| udhcpc launch (OXIDE_UDHCPC_ENABLE=1) | ✅ starts, logs "udhcpc: started, v1.37.0" |
-| udhcpc fork+exec /bin/true (deconfig handler) | ❌ wait4 wedges — child likely Zombies but parent never reaps |
-| udhcpc DISCOVER on wire      | blocked behind wait4 wedge |
+| wait4 fast-child race        | ✅ F143 |
+| dhcpcd 10.3.2                | ✅ reaches login; wedges post-lease-setup |
+| udhcpc launch (OXIDE_UDHCPC_ENABLE=1) | ❌ boot wedges at CAT smoke output; image-layout-dependent |
+
+## Open: udhcpc boot wedge
+
+Repro: build with `OXIDE_UDHCPC_ENABLE=1`. Boot stops cleanly at
+the CAT smoke output (`Linux version 5.15.0-oxide…PREEMPT`) and
+never produces "init-fork-exec works" from rcS. Without the marker,
+boot reaches login in 16s. The marker adds one 2-byte file to /etc
+and re-runs mkfs.ext4 — the kernel doesn't read the marker, yet
+boot is image-layout-sensitive. Same wedge bites the dhcpcd marker.
+
+Possible causes (untested):
+- /sbin/init inode reordering after marker bumps /etc dir entry
+  count; kernel ext4 reader returns stale/wrong inode.
+- Some early kernel probe that runs the ext4 readdir and pages
+  in a now-different block of /etc.
+- The kernel-spawned CAT smoke's final exit→spawn-init transition
+  is sensitive to free-frame ordering.
+
+Next: bisect by staging the marker file with content sizes that
+shift inode allocation (zero-length, exactly-block-aligned),
+and check whether the wedge correlates with /sbin/init's inode
+number landing in a different ext4 block group.
 
 ## Open next (priority order)
 
-1. **wait4 / fork+exec /bin/true reaper wedge**. Repro: enable
-   `OXIDE_UDHCPC_ENABLE=1`. udhcpc forks, child execs /bin/true,
-   parent calls wait4 — and parks forever. /bin/true is a busybox
-   hardlink that exits 0 immediately. Most likely the child's
-   Zombie state isn't visible to `sched::live::reap_one` —
-   either the reap_one filter mismatches the child's tid/pgid or
-   the Zombie set/get is racing. Same wedge probably bites every
-   userspace program that does fork+exec+wait4 on a fast child.
-2. **AF_UNIX socket-path tmpfs materialisation** — F132's `chmod`-
-   tolerance is a hack; bind(AF_UNIX) should create a socket-type
-   tmpfs inode at the path.
+1. **udhcpc boot wedge** (above) — DHCP can't actually execute
+   until this clears.
+2. **AF_UNIX socket-path tmpfs materialisation** — F132's
+   `chmod`-tolerance is a hack; bind(AF_UNIX) should create a
+   socket-type tmpfs inode at the path.
 3. **arm tickless idle** — F130's arm path busy-spins. WFI with
    DAIF.I=1 (SVC-syscall invariant) wedged on QEMU virt; need a
    safe daifclr+wfi+daifset pattern that matches CNTV INTID 27
@@ -66,12 +82,11 @@ make smoke-x86 SMOKE_TIMEOUT=300
 make smoke-arm SMOKE_TIMEOUT=300
 ```
 
-Then pick item 1 (wait4 reaper wedge):
-- Add `klog::write_raw(b"reap_one: matched tid=X\n")` in
-  `sched::live::reap_one` happy path
-- Add `klog::write_raw(b"set_state(Zombie)")` in sys_exit
-- Boot with OXIDE_UDHCPC_ENABLE=1; check whether the child's
-  exit message appears before wait4 parks
-- If yes: reap_one filter wrong (wrong tid / pid comparison)
-- If no: sys_exit isn't marking Zombie or marking under a
-  different identity than the parent expects
+Then pick item 1 (udhcpc boot wedge). Approach:
+- Add a klog::write_raw before `spawn_user_blob_with_vpid(init_blob, …)`
+  in `kernel/src/smoke/elf.rs` to confirm whether init spawn even
+  runs with the marker present.
+- If it does run, the wedge is downstream (init's first instruction
+  faults somehow under the new image layout).
+- If it doesn't run, the orchestrator never returns from its final
+  schedule() — debug the wait4 / Zombie reap path with the marker.
