@@ -317,12 +317,8 @@ fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.
+/// `sys_bind(fd, addr, addrlen)` slot 49. Tier-3 shim per `docs/53§4`.
 /// # C: O(1)
-/// `sys_bind(fd, addr, addrlen)` slot 49. Tier-3 shim per
-/// `docs/53§4`. Parses the user sockaddr into `net::sock::BoundAddr`
-/// then calls `net::sock::bind`. ABI translation (sockaddr layout,
-/// AF_UNIX vs AF_INET dispatch) is the shim's job; the actual
-/// bind work lives in net.
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
     let fd     = args.a0;
@@ -355,14 +351,8 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         };
         net::sock::BoundAddr::Inet { ip, port }
     } else if family == 17 /* AF_PACKET */ {
-        // F131: sockaddr_ll layout (linux/if_packet.h):
-        //   u16 sll_family
-        //   u16 sll_protocol  (be)
-        //   i32 sll_ifindex
-        //   u16 sll_hatype
-        //   u8  sll_pkttype
-        //   u8  sll_halen
-        //   u8  sll_addr[8]
+        // F131: sockaddr_ll: u16 family + u16 proto_be + i32 ifindex
+        // + u16 hatype + u8 pkttype + u8 halen + u8[8] addr.
         // SAFETY: addr_p validated < USER_VA_END at read_sa_family above; sockaddr_ll spans +0..+20.
         let (proto_be, ifindex) = unsafe {
             let p = core::ptr::read_volatile((addr_p + 2) as *const u16);
@@ -387,11 +377,22 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
-    // Tier-2 call: typed bind, typed result.
-    match net::sock::bind(&sock, addr) {
-        Ok(()) => 0,
-        Err(e) => errno_from_neterr(e),
+    // F153: also materialise an AF_UNIX path as a tmpfs sock inode
+    // so stat(path) returns S_IFSOCK + chmod/unlink flow through VFS.
+    let unix_path = match &addr {
+        net::sock::BoundAddr::UnixListener(p) => Some(p.clone()),
+        net::sock::BoundAddr::UnixDgram { path, .. } => Some(path.clone()),
+        _ => None,
+    };
+    let rv = match net::sock::bind(&sock, addr) {
+        Ok(()) => 0, Err(e) => errno_from_neterr(e),
+    };
+    if rv == 0 {
+        if let Some(p) = unix_path {
+            fs::tmpfs::register(p, fs::tmpfs::TmpfsSockInode::new() as vfs::InodeRef);
+        }
     }
+    rv
 }
 
 /// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44. Tier-3
@@ -680,10 +681,7 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let msgp   = args.a1;
     let _flags = args.a2;
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // F122: AF_UNIX SOCK_DGRAM cmsg writeback. Pop one msg from
-    // queue; copy payload into iovs; if msg_control buffer is
-    // supplied, write SCM_CREDENTIALS cmsg with sender's
-    // (pid, uid, gid). SCM_RIGHTS is a follow-up (Arc<File> capture path).
+    // F122: AF_UNIX SOCK_DGRAM cmsg writeback handled in unix_cmsg.
     let sock = socket_from_fd(fd);
     if let Some(s) = &sock {
         let is_dgram = matches!(*s.kind.lock(), SockKind::UnixDgram(_));
