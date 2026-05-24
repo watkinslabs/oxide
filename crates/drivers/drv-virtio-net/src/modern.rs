@@ -287,6 +287,11 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
     rx_poll(|f: &[u8]| {
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);
+        // F137: tap full L2 frame to AF_PACKET sockets bound on this
+        // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
+        // every frame regardless of whether the kernel stack also
+        // consumes it.
+        net::sock::deliver_packet_rx(iface, f);
         match et {
             0x0806 => {
                 if f.len() < 14 + 28 { return; }
