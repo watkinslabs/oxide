@@ -129,6 +129,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
+        ("userspace/online_smoke/online_smoke",       "userspace/online_smoke/online_smoke.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -323,6 +324,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
     put(&user("af_packet_smoke"), "/bin/af_packet_smoke")?;
+    put(&user("online_smoke"),    "/bin/online_smoke")?;
     // dynamic-linker stub at the per-arch musl path. The kernel's
     // ELF loader sees PT_INTERP="/lib/ld-musl-<arch>.so.1" in any
     // -pie binary and dual-loads this stub alongside the exec.
@@ -467,7 +469,13 @@ ifconfig eth0 up 2>/dev/null
 # hits fewer of the gap-y syscall paths. Gated behind
 # /etc/oxide-udhcpc-enable so the default boot stays fast.
 if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
-    /sbin/udhcpc -i eth0 -b -s /usr/share/udhcpc/default.script &
+    # Foreground -t 3 -T 2: ~6s ceiling for a slirp lease; once
+    # bound, default.script (F147) installs ifaddr + default route
+    # via SIOCSIFADDR / SIOCADDRT, and the kernel net stack is
+    # routable (F148/F149).
+    /sbin/udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 3 -T 2
+    # Confirm with a real outbound DNS round-trip (slirp's 10.0.2.3).
+    [ -x /bin/online_smoke ] && /bin/online_smoke
 fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 :

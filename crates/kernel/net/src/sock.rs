@@ -442,6 +442,28 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     STACK.recv_udp(port)
 }
 
+/// F150: hook the kernel installs at boot so the net crate can ask
+/// the kernel for an iface's primary IPv4 without owning the global
+/// ifaddr table here. Defaults to the unspec address until installed.
+/// # C: O(1)
+static IFACE_PRIMARY_IP_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+pub type IfacePrimaryIpFn = fn(NetIfaceId) -> Option<Ipv4Addr>;
+
+/// # C: O(1) — atomic store; install once at boot.
+pub fn set_iface_primary_ip_hook(f: IfacePrimaryIpFn) {
+    IFACE_PRIMARY_IP_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+fn iface_primary_ip(id: Option<NetIfaceId>) -> Option<Ipv4Addr> {
+    let id = id?;
+    let p = IFACE_PRIMARY_IP_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: hook installed via set_iface_primary_ip_hook with a function pointer of the IfacePrimaryIpFn shape.
+    let f: IfacePrimaryIpFn = unsafe { core::mem::transmute(p) };
+    f(id)
+}
+
 /// AF_INET dgram-socket send — auto-binds an ephemeral local
 /// port if not already bound, builds + xmits the datagram,
 /// drains lo so an immediate recv on the same socket sees it.
@@ -451,7 +473,23 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
 {
     let src_port = sock.ensure_bound()?;
     let src_ip   = *sock.local_ip.lock();
-    let src_ip   = if src_ip == Ipv4Addr::ANY { Ipv4Addr::LOOPBACK } else { src_ip };
+    // F150: pick the right source IP for outbound. ANY-bound socket
+    // → use loopback only when dst is loopback; else consult the
+    // route table for the outbound iface and use ITS configured IP.
+    // Without this every outbound UDP claims src=127.0.0.1, and
+    // replies from a remote peer (slirp's DNS at 10.0.2.3, …) can
+    // never make it back since they target loopback not eth0.
+    let src_ip = if src_ip != Ipv4Addr::ANY {
+        src_ip
+    } else if dst.is_loopback() {
+        Ipv4Addr::LOOPBACK
+    } else {
+        // Find the outbound iface's primary IPv4 via the route table.
+        STACK.routes.lookup(dst)
+            .and_then(|r| r.src_hint)
+            .or_else(|| iface_primary_ip(STACK.routes.lookup(dst).map(|r| r.iface)))
+            .unwrap_or(Ipv4Addr::LOOPBACK)
+    };
     STACK.send_udp_to(src_ip, src_port, dst, dst_port, payload)?;
     drain_loopback();
     Ok(payload.len())
