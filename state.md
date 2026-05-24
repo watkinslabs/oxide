@@ -1,69 +1,69 @@
 # state — hand-off
 
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
-both arches build, x86 smoke 14s + arm smoke 20s green.
+both arches build, x86 smoke 16s + arm smoke 20s green.
 
-## Session tally (PRs #1199–#1206)
+## Session tally (PRs #1199–#1219)
+
+Network stack went from "AF_PACKET sendto admitted" to **fully
+online** on both arches.
 
 | PR    | What |
 |-------|------|
-| F137  | AF_PACKET RX delivery into bound sockets (virtio-net tap → PACKET_REGISTRY → recvfrom queue). |
-| F138  | SIOCSIFADDR propagates new IPv4 into virtio-net rx softirq's ARP responder IP. |
-| F139  | recvfrom fills sockaddr_ll (family, proto be, ifindex, hatype, pkttype, halen, src MAC) on AF_PACKET sockets. |
-| F140  | af_packet_smoke exercises the RX path via recvfrom(MSG_DONTWAIT). |
-| F141  | Switch v1 DHCP client from upstream dhcpcd 10.3.2 to busybox udhcpc (already in vendored busybox). |
-| F142  | AF_INET / AF_INET6 + SOCK_RAW admitted as UDP shells (ioctl-handle usage). |
-| F143  | wait4 missed-wakeup race: post-park reap recheck + unpark_self_from_wait4. Bites every fork+exec+wait4(specific-pid) flow on a fast-exiting child. |
-| D34   | state.md hand-off snapshot mid-session. |
+| F137  | AF_PACKET RX delivery into bound sockets |
+| F138  | SIOCSIFADDR propagates new IPv4 into virtio-net ARP responder |
+| F139  | AF_PACKET sockaddr_ll fill on recvfrom |
+| F140  | af_packet_smoke exercises RX path |
+| F141  | busybox udhcpc as v1 DHCP client |
+| F142  | AF_INET / AF_INET6 SOCK_RAW admitted as UDP shells |
+| F143  | wait4 missed-wakeup race fix |
+| F144  | **CFS voluntary-schedule vruntime fix** — was THE wedge for every fork+exec+wait4 daemonize flow |
+| F145  | virtio-net rx drain from timer tick (replaces kthread) |
+| F146  | AF_PACKET SOCK_DGRAM eth-header strip/prepend; sys_poll inode dispatch; deliver_packet_rx wakes waiters |
+| F147  | udhcpc lease handler script (ifconfig + route + resolv.conf) |
+| F148  | SIOCADDRT / SIOCDELRT populate kernel route table |
+| F149  | ARP resolver for outbound IPv4 + src-MAC snooping |
+| F150  | socket_sendto picks iface primary IP for src; /bin/online_smoke proves UDP DNS round-trip |
+| F151  | /bin/tcp_smoke proves TCP 3WHS via eth0 |
+| F152  | **ARM lockstep**: rearm CNTV in elf_smoke_arm so tick_poll fires; retire kthread |
+| F153  | bind(AF_UNIX) materialises tmpfs socket-type inode |
+| F154  | ARM tickless idle (daifclr+wfi+daifset in tick_yield) |
+| F155  | smoke-dhcp make target + boot-smoke-dhcp.sh |
+| D34/D35 | mid-session hand-offs |
 
-## DHCP-stack status
+## End-to-end online (OXIDE_UDHCPC_ENABLE=1 on both arches)
 
-| Stage | Status |
-|-------|--------|
-| AF_PACKET socket/bind/sendto | ✅ F131/F135 |
-| AF_PACKET RX delivery        | ✅ F137 |
-| AF_PACKET sockaddr_ll fill   | ✅ F139 |
-| AF_INET SOCK_RAW (ioctl handle) | ✅ F142 |
-| SIOCSIFADDR → ARP responder IP | ✅ F138 |
-| wait4 fast-child race        | ✅ F143 |
-| dhcpcd 10.3.2                | ✅ reaches login; wedges post-lease-setup |
-| udhcpc launch (OXIDE_UDHCPC_ENABLE=1) | ❌ boot wedges at CAT smoke output; image-layout-dependent |
+```
+udhcpc: started, v1.37.0
+udhcpc: broadcasting discover
+udhcpc: broadcasting select for 10.0.2.15, server 10.0.2.2
+udhcpc: lease of 10.0.2.15 obtained from 10.0.2.2, lease time 86400
+udhcpc: configured eth0 as 10.0.2.15 via 10.0.2.2
+online_smoke: PASS rx=103 bytes from 10.0.2.3:53
+tcp_smoke: 10.0.2.2:22 connect OK
+tcp_smoke: 10.0.2.3:53 connect OK
+tcp_smoke: PASS hits=2
+```
 
-## Open: udhcpc boot wedge
-
-Repro: build with `OXIDE_UDHCPC_ENABLE=1`. Boot stops cleanly at
-the CAT smoke output (`Linux version 5.15.0-oxide…PREEMPT`) and
-never produces "init-fork-exec works" from rcS. Without the marker,
-boot reaches login in 16s. The marker adds one 2-byte file to /etc
-and re-runs mkfs.ext4 — the kernel doesn't read the marker, yet
-boot is image-layout-sensitive. Same wedge bites the dhcpcd marker.
-
-Possible causes (untested):
-- /sbin/init inode reordering after marker bumps /etc dir entry
-  count; kernel ext4 reader returns stale/wrong inode.
-- Some early kernel probe that runs the ext4 readdir and pages
-  in a now-different block of /etc.
-- The kernel-spawned CAT smoke's final exit→spawn-init transition
-  is sensitive to free-frame ordering.
-
-Next: bisect by staging the marker file with content sizes that
-shift inode allocation (zero-length, exactly-block-aligned),
-and check whether the wedge correlates with /sbin/init's inode
-number landing in a different ext4 block group.
+ARM completes the lease too (verified via `make smoke-dhcp-arm`);
+the default.script + smoke chain takes longer than the 180s standard
+smoke window can hold so DHCP stays opt-in.
 
 ## Open next (priority order)
 
-1. **udhcpc boot wedge** (above) — DHCP can't actually execute
-   until this clears.
-2. **AF_UNIX socket-path tmpfs materialisation** — F132's
-   `chmod`-tolerance is a hack; bind(AF_UNIX) should create a
-   socket-type tmpfs inode at the path.
-3. **arm tickless idle** — F130's arm path busy-spins. WFI with
-   DAIF.I=1 (SVC-syscall invariant) wedged on QEMU virt; need a
-   safe daifclr+wfi+daifset pattern that matches CNTV INTID 27
-   wake.
-4. **K10 eBPF verifier**, **K13 DRM atomic modeset**,
-   **per-fd targeted epoll wakes** — big tickets.
+1. **wget / netcat outbound** — full read of an SSH banner or
+   HTTP body. TCP 3WHS is proven; `recv` after connect is the
+   remaining question.
+2. **DNS resolver** (libc res_init) — read /etc/resolv.conf, send
+   queries, fill /etc/hosts cache. Unlocks getent + curl style.
+3. **AF_UNIX through tmpfs path lookup** — F153 materialises the
+   inode; need `connect(AF_UNIX, path)` to consult the inode's
+   UnixListener Arc directly (today it still goes through
+   UNIX_REGISTRY string-key lookup).
+4. **smoke-arm-dhcp perf** — investigate why the full chain
+   exceeds 180s; probably default.script's fork/exec overhead.
+5. **K10 eBPF verifier**, **K13 DRM atomic modeset**,
+   **per-fd targeted epoll wakes** — large.
 
 ## Discipline notes
 
@@ -73,6 +73,9 @@ number landing in a different ext4 block group.
 - Never delete branches
 - spec-lint clean before every commit + PR
 - Never commit directly to main
+- **ARM lockstep**: every kernel-side network change verified on
+  both `make smoke-{x86,arm}` AND `make smoke-dhcp-{x86,arm}` (the
+  latter takes longer on arm under TCG)
 
 ## First task next session
 
@@ -80,13 +83,7 @@ number landing in a different ext4 block group.
 git pull && cargo run -p xtask -- spec-lint && cargo test --all 2>&1 | grep "test result" | head -5
 make smoke-x86 SMOKE_TIMEOUT=300
 make smoke-arm SMOKE_TIMEOUT=300
+make smoke-dhcp-x86  # quick: ~16s
 ```
 
-Then pick item 1 (udhcpc boot wedge). Approach:
-- Add a klog::write_raw before `spawn_user_blob_with_vpid(init_blob, …)`
-  in `kernel/src/smoke/elf.rs` to confirm whether init spawn even
-  runs with the marker present.
-- If it does run, the wedge is downstream (init's first instruction
-  faults somehow under the new image layout).
-- If it doesn't run, the orchestrator never returns from its final
-  schedule() — debug the wait4 / Zombie reap path with the marker.
+Then pick item 1 (wget / nc full TCP body read).
