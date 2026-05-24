@@ -61,6 +61,14 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                         None        => POLLIN,
                     };
                     revents = events & (inb | POLLOUT);
+                } else {
+                    // F146: delegate to inode.poll() for sockets, pipes,
+                    // ext4 regulars etc. The inode-side mask is bits
+                    // POLL_IN(1) / POLL_OUT(4) / POLL_HUP(0x10) — same
+                    // numeric layout as POLLIN/POLLOUT/POLLHUP so we
+                    // can intersect against `events` directly.
+                    let mask = file.inode().poll() as i16;
+                    revents = events & mask;
                 }
             }
             // SAFETY: revents at p+6 inside validated range; 2-byte aligned.

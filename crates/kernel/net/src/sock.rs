@@ -97,11 +97,13 @@ pub enum SockKind {
     Packet {
         ifindex:  core::sync::atomic::AtomicU32,
         protocol: core::sync::atomic::AtomicU16,
-        /// Pending RX frames. v1: empty (no rx-path delivery yet);
-        /// recvfrom on AF_PACKET returns Eagain. dhcpcd's flow sends
-        /// the DISCOVER and waits on epoll with a 10 s timeout, then
-        /// gives up — we just want the send half to actually push
-        /// bytes through virtio-net.
+        /// F146: sock_type — SOCK_RAW (3) caller sends full L2 frame
+        /// (xmit_raw); SOCK_DGRAM (2) caller sends L3 payload and the
+        /// kernel prepends the ethernet header using sll_addr from
+        /// sendto's destination sockaddr_ll. busybox udhcpc opens
+        /// SOCK_DGRAM; dhcpcd 10.3.2 opens SOCK_RAW.
+        sock_type: core::sync::atomic::AtomicU8,
+        /// Pending RX frames.
         rx: sync::Spinlock<alloc::collections::VecDeque<alloc::vec::Vec<u8>>, SockLockClass>,
     },
 }
@@ -138,21 +140,36 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
     let et = ((frame[12] as u16) << 8) | (frame[13] as u16);
+    let mut delivered = false;
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
     for w in g.iter() {
         let sock = match w.upgrade() { Some(s) => s, None => continue };
         let k = sock.kind.lock();
-        if let SockKind::Packet { ifindex, protocol, rx } = &*k {
+        if let SockKind::Packet { ifindex, protocol, sock_type, rx } = &*k {
             let want_if = ifindex.load(Ordering::Acquire);
             if want_if != 0 && want_if != iface.raw() { continue; }
             let p = protocol.load(Ordering::Acquire);
             if p != 0x0003 && p != et { continue; }
+            const SOCK_DGRAM: u8 = 2;
+            let stype = sock_type.load(Ordering::Acquire);
+            let payload: alloc::vec::Vec<u8> = if stype == SOCK_DGRAM {
+                frame[14..].to_vec()
+            } else {
+                frame.to_vec()
+            };
             let mut q = rx.lock();
             if q.len() < 64 {
-                q.push_back(frame.to_vec());
+                q.push_back(payload);
+                delivered = true;
             }
         }
+    }
+    drop(g);
+    // F146: wake any poll/epoll/select waiters so a userspace task
+    // parked on the AF_PACKET socket actually sees the frame.
+    if delivered {
+        sched::live::notify_epoll_waiters();
     }
 }
 
@@ -277,13 +294,14 @@ impl InetSocket {
     /// it owns an IPv4. `proto` is the wire byte-order protocol
     /// the caller passed; we store host-order.
     /// # C: O(1)
-    pub fn new_packet(proto: u16) -> Self {
+    pub fn new_packet(proto: u16, sock_type: u8) -> Self {
         let s = Self::new_tcp();
         s.family.store(AF_PACKET, core::sync::atomic::Ordering::Release);
         *s.kind.lock() = SockKind::Packet {
-            ifindex:  core::sync::atomic::AtomicU32::new(0),
-            protocol: core::sync::atomic::AtomicU16::new(proto),
-            rx:       Spinlock::new(alloc::collections::VecDeque::new()),
+            ifindex:   core::sync::atomic::AtomicU32::new(0),
+            protocol:  core::sync::atomic::AtomicU16::new(proto),
+            sock_type: core::sync::atomic::AtomicU8::new(sock_type),
+            rx:        Spinlock::new(alloc::collections::VecDeque::new()),
         };
         s
     }
