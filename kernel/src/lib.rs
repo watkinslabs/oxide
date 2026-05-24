@@ -597,6 +597,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     unsafe {
         ext4::rootfs::init();
         net::sock::init();
+        // F150: install the iface-primary-IP hook so socket_sendto can
+        // pick the right outbound src IP for routed (non-loopback) dst.
+        net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         modules::registry::init_exports();
         // Register every FS backend with the unified mount table per docs/16.
         // Order matters only for human readability; lookup uses longest-prefix-match.
