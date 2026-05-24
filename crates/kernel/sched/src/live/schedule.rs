@@ -175,6 +175,15 @@ pub unsafe fn schedule() {
         let mut inner = rq.inner.lock();
         // SAFETY: rq.current is non-null after install_global.
         let prev_ref = unsafe { rq.current_ref() };
+        // F144: bump prev's vruntime BEFORE re-enqueue so the CFS
+        // picker actually rotates. Without this, a voluntary yield
+        // (e.g. vfork's busy-yield loop) re-enqueues prev at the
+        // same (vruntime, tid) key it had on entry — and the BTreeMap
+        // tiebreak (lower tid wins) re-selects prev indefinitely,
+        // starving a freshly-spawned child whose tid is higher.
+        // Schedule_from_irq already does this; voluntary schedule
+        // had been skipping it.
+        update_vruntime_prev(prev_ref, &inner);
         // Re-enqueue the current runnable task (unless it's idle
         // or marked done) so the picker can return to it later.
         if !matches!(prev_ref.class, SchedClass::Idle)
