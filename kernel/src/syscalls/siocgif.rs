@@ -90,7 +90,8 @@ pub fn handle_sioc(req: u64, arg: u64) -> Option<i64> {
         SIOCSIFHWADDR => Some(0),
         SIOCGIFINDEX => Some(siocgifindex(arg)),
         SIOCGIFTXQLEN | SIOCSIFTXQLEN => Some(0),
-        SIOCADDRT | SIOCDELRT => Some(0), // routes accepted as no-ops; v1 has no rt table
+        SIOCADDRT => Some(siocaddrt(arg)),
+        SIOCDELRT => Some(siocdelrt(arg)),
         _ => None,
     }
 }
@@ -308,5 +309,74 @@ fn siocgifconf(arg: u64) -> i64 {
     let bytes_written = (written * stride) as i32;
     // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifc_len at +0 of the 16-byte ifconf header.
     unsafe { core::ptr::write_volatile(arg as *mut i32, bytes_written); }
+    0
+}
+
+/// F148: SIOCADDRT — install a route into the kernel net stack's
+/// route table. `struct rtentry` layout per linux/route.h:
+///   u64 rt_pad1; struct sockaddr rt_dst (16); struct sockaddr
+///   rt_gateway (16); struct sockaddr rt_genmask (16); u16 rt_flags;
+///   u16 rt_pad2; u64 rt_pad3, rt_pad4; u16 rt_metric; ...
+/// sockaddr_in layout: u16 family + u16 port + u32 addr (big-endian)
+/// + 8 bytes zero pad. addr lives at +4 of each sockaddr_in.
+/// The iface is picked by gateway-on-subnet match across the
+/// per-iface address/netmask table populated by SIOCSIFADDR.
+fn siocaddrt(arg: u64) -> i64 {
+    if arg + 56 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: arg + 56 bounds-checked above; rtentry's three sockaddrs
+    // start at offsets 8, 24, 40; each sockaddr_in's sin_addr is +4.
+    let (dst_be, gw_be, mask_be) = unsafe {
+        (
+            core::ptr::read_volatile((arg + 8  + 4) as *const u32),
+            core::ptr::read_volatile((arg + 24 + 4) as *const u32),
+            core::ptr::read_volatile((arg + 40 + 4) as *const u32),
+        )
+    };
+    let dst  = net::Ipv4Addr::from_u32(u32::from_be(dst_be));
+    let gw   = net::Ipv4Addr::from_u32(u32::from_be(gw_be));
+    let mask = u32::from_be(mask_be);
+    let prefix_len = if mask == 0 { 0 } else { 32 - mask.trailing_zeros() as u8 };
+    // Pick the iface whose connected subnet contains the gateway.
+    let mut iface_id: Option<net::NetIfaceId> = None;
+    for raw in 0..32u32 {
+        let id = net::NetIfaceId::from_raw(raw);
+        if net::sock::stack().ifaces.lookup(id).is_none() { continue; }
+        let (ip_host, m_host) = get_ifaddr(id);
+        if m_host == 0 { continue; }
+        let m_be = m_host.to_be();
+        if (gw_be & m_be) == (ip_host.to_be() & m_be) {
+            iface_id = Some(id);
+            break;
+        }
+    }
+    let iface_id = match iface_id { Some(i) => i, None => return -(Errno::Enetunreach.as_i32() as i64) };
+    net::sock::stack().routes.add(net::route::RouteEntry {
+        dst, prefix_len,
+        iface: iface_id,
+        gateway: if gw.as_u32() == 0 { None } else { Some(gw) },
+        src_hint: None,
+    });
+    0
+}
+
+/// F148: SIOCDELRT — drop matching routes from the kernel table.
+fn siocdelrt(arg: u64) -> i64 {
+    if arg + 56 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: arg + 56 bounds-checked above; sockaddr_in offsets per linux/route.h rtentry layout.
+    let (dst_be, gw_be) = unsafe {
+        (
+            core::ptr::read_volatile((arg + 8  + 4) as *const u32),
+            core::ptr::read_volatile((arg + 24 + 4) as *const u32),
+        )
+    };
+    let dst = net::Ipv4Addr::from_u32(u32::from_be(dst_be));
+    let gw  = net::Ipv4Addr::from_u32(u32::from_be(gw_be));
+    net::sock::stack().routes.retain(|e| {
+        let gw_match = match (e.gateway, gw.as_u32()) {
+            (Some(g), x) if x != 0 => g.as_u32() != x,
+            _ => true,
+        };
+        e.dst.as_u32() != dst.as_u32() || gw_match
+    });
     0
 }
