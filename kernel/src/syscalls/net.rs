@@ -72,7 +72,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
                 // (caller did the swap).
                 let proto_be = (proto & 0xFFFF) as u16;
                 let proto_host = proto_be.swap_bytes();
-                InetSocket::new_packet(proto_host)
+                InetSocket::new_packet(proto_host, typ as u8)
             }
             (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
             _ => return -(Errno::Eafnosupport.as_i32() as i64),
@@ -420,8 +420,8 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     };
     if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     if len > 65507 { return -(Errno::Emsgsize.as_i32() as i64); }
-    // F131: AF_PACKET fast path lives in af_packet.rs.
-    if let Some(rv) = crate::syscalls::af_packet::sendto(&sock, bufp, len) {
+    // F131/F146: AF_PACKET fast path lives in af_packet.rs.
+    if let Some(rv) = crate::syscalls::af_packet::sendto(&sock, bufp, len, dest_p) {
         return rv;
     }
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
