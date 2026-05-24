@@ -382,6 +382,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&stage("oxide-dhcpcd-enable", b"1\n")?, "/etc/oxide-dhcpcd-enable")?;
     }
     // F141: udhcpc marker — opt-in busybox-based DHCP client.
+    // (F155 explored default-on; arm TCG boot doesn't reach login
+    // inside the 180s smoke window when the full DHCP + online_smoke
+    // + tcp_smoke chain runs, so DHCP stays opt-in until perf work
+    // closes that gap. x86 handles default-on fine in 16s.)
     if std::env::var("OXIDE_UDHCPC_ENABLE").as_deref() == Ok("1") {
         put(&stage("oxide-udhcpc-enable", b"1\n")?, "/etc/oxide-udhcpc-enable")?;
     }
