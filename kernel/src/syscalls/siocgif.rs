@@ -195,7 +195,14 @@ fn siocsifaddr(arg: u64) -> i64 {
     };
     // SAFETY: arg + 24 within user range; sa_family at +16, addr at +20.
     let ip_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
-    set_ifaddr(id, u32::from_be(ip_be), 0, true, false);
+    let ip_host = u32::from_be(ip_be);
+    set_ifaddr(id, ip_host, 0, true, false);
+    // F138: if this iface is the one the virtio-net rx softirq is
+    // bound to, update its stashed IP so the ARP responder starts
+    // answering "who-has <new-ip>" with our MAC.
+    if drv_virtio_net::modern::softirq_iface_id() == id.raw() {
+        drv_virtio_net::modern::set_softirq_ip(ip_host.to_be_bytes());
+    }
     0
 }
 

@@ -485,6 +485,24 @@ pub fn set_softirq_iface(id: net::NetIfaceId, ip: [u8; 4]) {
     SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
 }
 
+/// F138: update only the IP slot (preserves iface id). SIOCSIFADDR
+/// calls this when userspace (dhcpcd) configures eth0's address so
+/// the rx-side ARP responder starts replying to "who-has <new-ip>"
+/// queries from the host's slirp NAT.
+/// # C: O(1)
+pub fn set_softirq_ip(ip: [u8; 4]) {
+    let cur = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
+    let v = (cur & 0xFFFF_FFFF_0000_0000) | (u32::from_be_bytes(ip) as u64);
+    SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
+}
+
+/// F138: read the current stashed iface id (0 = none yet).
+/// Used by siocsifaddr to decide whether to update the IP slot.
+/// # C: O(1)
+pub fn softirq_iface_id() -> u32 {
+    (SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire) >> 32) as u32
+}
+
 /// Softirq slot handler. Drains pending RX into the net stack.
 /// Bails fast when no iface stashed (boot ordering) or RX queue empty
 /// (poll_into_stack returns 0 in either case).
