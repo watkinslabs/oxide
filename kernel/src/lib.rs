@@ -868,6 +868,12 @@ unsafe fn tick_poll_combined() {
     // SAFETY: deferred to the underlying hooks; tty::live::tick_poll_uart owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
     unsafe { tty::live::tick_poll_uart(); }
     fbcon::kernel::tick_drain();
+    // F145: poll virtio-net rx from the timer tick as a fallback for
+    // missed MSI-X edges. Real MSI handler still calls rx_drain_softirq
+    // when it fires; this just ensures frames in the rx ring get
+    // delivered even if the device's interrupt-coalesce or our MSI
+    // routing dropped the edge.
+    drv_virtio_net::modern::rx_drain_softirq();
     // Refresh the vDSO vvar page with the live monotonic clock so
     // userspace __vdso_clock_gettime returns current time without
     // a syscall. Cheap (one TimerOps read + 4 atomic stores).
