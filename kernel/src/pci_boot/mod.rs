@@ -642,14 +642,14 @@ pub fn enumerate_and_log() {
                 // SAFETY: runqueue installed by smoke_install_runqueue
                 // earlier in lib.rs; PMM up; spawn_kernel_thread takes
                 // an extern "C" fn ptr — virtio_net_rx_kthread is one.
-                let _ = unsafe {
-                    sched::live::spawn_kernel_thread(
-                        0x4E45_5401, // 'NET' + 1
-                        "virtio-net-rx",
-                        virtio_net_rx_kthread,
-                        arg,
-                    )
-                };
+                // F152: kthread retired. F145's tick_poll_combined →
+                // rx_drain_softirq pumps the rx ring from every timer
+                // tick on both arches; the kthread was just a spinner
+                // that hogged CPU on arm (where tick_yield is a true
+                // spin_loop, not a hlt-wait). MSI handler still fires
+                // rx_drain_softirq directly when an edge arrives.
+                let _ = arg;
+                let _ = virtio_net_rx_kthread;
             }
         }
 

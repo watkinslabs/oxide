@@ -77,6 +77,32 @@ impl Inode for TmpfsFileInode {
     }
 }
 
+/// F152: socket-type tmpfs inode. bind(AF_UNIX, path) materialises
+/// one of these at `path` so stat() returns S_IFSOCK + chmod()
+/// flows through normal VFS (no per-call UNIX_REGISTRY override).
+/// All I/O on this inode errors — actual datagram queueing lives
+/// in `net::UnixDgramQueue` / SockKind::UnixDgram.
+pub struct TmpfsSockInode {
+    ino: Ino,
+}
+
+impl TmpfsSockInode {
+    /// # C: O(1)
+    pub fn new() -> Arc<Self> {
+        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self { ino })
+    }
+}
+
+impl Inode for TmpfsSockInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Socket }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    fn write(&self, _off: u64, _src: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+}
+
 /// Path → tmpfs inode registry. Same `&str → InodeRef` shape as
 /// devfs but mutable (callers can register new files on demand).
 static REGISTRY: Spinlock<Vec<(String, InodeRef)>, TaskListClass>
