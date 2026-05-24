@@ -95,6 +95,22 @@ smoke-arm: arm
 
 smoke: smoke-x86 smoke-arm
 
+# F155: end-to-end DHCP path smoke. Boots with OXIDE_UDHCPC_ENABLE=1
+# so udhcpc, online_smoke, tcp_smoke run from rcS; checks for the
+# lease confirmation line on serial. ARM TCG can't reach login
+# inside a 180s window with the full chain, so default to 600s.
+DHCP_SMOKE_TIMEOUT ?= 600
+smoke-dhcp-x86: x86
+	OXIDE_UDHCPC_ENABLE=1 ./tools/boot-smoke-dhcp.sh x86 $(DHCP_SMOKE_TIMEOUT)
+smoke-dhcp-arm: arm
+	OXIDE_UDHCPC_ENABLE=1 ./tools/boot-smoke-dhcp.sh arm $(DHCP_SMOKE_TIMEOUT)
+# `smoke-dhcp` aggregate runs x86 only. ARM TCG is too slow under
+# the boot+udhcpc+default.script chain to land the lease inside a
+# reasonable CI window; run `make smoke-dhcp-arm` explicitly when
+# needed (still completes the lease per F152, just not the
+# default.script echo confirmation).
+smoke-dhcp: smoke-dhcp-x86
+
 # Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.
