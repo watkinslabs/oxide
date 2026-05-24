@@ -53,13 +53,46 @@ pub fn write_sockaddr_ll(src_p: u64, sock: &Arc<InetSocket>, frame: &[u8]) {
 /// AF_PACKET sendto path. Returns Some(rv) when `sock` is a
 /// PACKET socket and we attempted xmit; None otherwise so the
 /// caller falls through to AF_INET/AF_UNIX dispatch.
+///
+/// F146: differentiate SOCK_RAW vs SOCK_DGRAM. SOCK_RAW (3) hands
+/// the body to xmit_raw — caller already built the ethernet
+/// header. SOCK_DGRAM (2) — kernel prepends an ethernet header
+/// using `dest_mac` (from sendto's sockaddr_ll.sll_addr if
+/// supplied; broadcast otherwise) and the socket's stored
+/// protocol as ethertype. busybox udhcpc opens SOCK_DGRAM.
+///
 /// # SAFETY: `bufp..bufp+len` validated < USER_VA_END by caller.
-/// # C: O(len) — single copy into a fresh Pkt.
-pub fn sendto(sock: &Arc<InetSocket>, bufp: u64, len: usize) -> Option<i64> {
-    let ifi = {
+/// # C: O(len) — single copy into a fresh Vec.
+pub fn sendto(
+    sock: &Arc<InetSocket>,
+    bufp: u64,
+    len: usize,
+    dest_p: u64,
+) -> Option<i64> {
+    // F146: extract sll_addr from sockaddr_ll if caller supplied
+    // dest; SOCK_DGRAM uses it as the L2 destination MAC.
+    let dest_mac: Option<[u8; 6]> = if dest_p != 0 && dest_p + 20 <= USER_VA_END {
+        // SAFETY: dest_p..dest_p+20 bounds-checked above; user page mapped under caller's AS at CPL=0; sockaddr_ll layout is little-endian fixed-shape u16 family + u16 proto + i32 ifindex + u16 hatype + u8 pkttype + u8 halen + u8[8] addr.
+        let fam = unsafe { core::ptr::read_volatile(dest_p as *const u16) };
+        if fam == 17 {
+            let mut mac = [0u8; 6];
+            // SAFETY: same bounds-check range; addr field starts at +12 inside the 20-byte sockaddr_ll; per-byte volatile reads.
+            unsafe {
+                for i in 0..6 {
+                    mac[i] = core::ptr::read_volatile((dest_p + 12 + i as u64) as *const u8);
+                }
+            }
+            Some(mac)
+        } else { None }
+    } else { None };
+    let (ifi, sock_type, proto_host) = {
         let g = sock.kind.lock();
         match &*g {
-            SockKind::Packet { ifindex, .. } => ifindex.load(Ordering::Acquire),
+            SockKind::Packet { ifindex, sock_type, protocol, .. } => (
+                ifindex.load(Ordering::Acquire),
+                sock_type.load(Ordering::Acquire),
+                protocol.load(Ordering::Acquire),
+            ),
             _ => return None,
         }
     };
@@ -72,14 +105,30 @@ pub fn sendto(sock: &Arc<InetSocket>, bufp: u64, len: usize) -> Option<i64> {
         return Some(-(Errno::Einval.as_i32() as i64));
     }
     // SAFETY: caller verified bufp..bufp+len is in the user range and the user page is mapped under the active AS; CPL=0 read.
-    let frame: alloc::vec::Vec<u8> = unsafe {
+    let body: alloc::vec::Vec<u8> = unsafe {
         core::slice::from_raw_parts(bufp as *const u8, len).to_vec()
     };
-    // F135: AF_PACKET caller already framed the L2 header — go
-    // through NetDev::xmit_raw so the driver doesn't prepend
-    // another ethernet header on top.
-    match dev.xmit_raw(&frame) {
-        Ok(()) => Some(frame.len() as i64),
+    const SOCK_DGRAM: u8 = 2;
+    if sock_type == SOCK_DGRAM {
+        // Prepend ethernet header: dst MAC = dest_mac or broadcast;
+        // src MAC = iface's hwaddr; ethertype = socket's stored proto
+        // (host order; on-wire is be).
+        let dst = dest_mac.unwrap_or([0xff; 6]);
+        let src = dev.mac().0;
+        let mut frame = alloc::vec::Vec::with_capacity(14 + body.len());
+        frame.extend_from_slice(&dst);
+        frame.extend_from_slice(&src);
+        frame.push((proto_host >> 8) as u8);
+        frame.push((proto_host & 0xff) as u8);
+        frame.extend_from_slice(&body);
+        return match dev.xmit_raw(&frame) {
+            Ok(()) => Some(body.len() as i64),
+            Err(_) => Some(-(Errno::Enobufs.as_i32() as i64)),
+        };
+    }
+    // SOCK_RAW: caller-supplied full L2 frame.
+    match dev.xmit_raw(&body) {
+        Ok(()) => Some(body.len() as i64),
         Err(_) => Some(-(Errno::Enobufs.as_i32() as i64)),
     }
 }

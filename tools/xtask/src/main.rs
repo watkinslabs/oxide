@@ -467,7 +467,7 @@ ifconfig eth0 up 2>/dev/null
 # hits fewer of the gap-y syscall paths. Gated behind
 # /etc/oxide-udhcpc-enable so the default boot stays fast.
 if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
-    /sbin/udhcpc -i eth0 -b -s /bin/true -q -n 2>/dev/null &
+    /sbin/udhcpc -i eth0 -b -s /bin/true -q -n &
 fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 :
