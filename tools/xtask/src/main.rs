@@ -304,6 +304,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "mdev", "ifconfig", "route", "ip",
             "mount", "umount",
             "fdisk", "swapon", "swapoff",
+            "udhcpc", "udhcpd",
         ] {
             dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
         }
@@ -375,6 +376,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // launch stays gated until the userspace cause is fixed.
     if std::env::var("OXIDE_DHCPCD_ENABLE").as_deref() == Ok("1") {
         put(&stage("oxide-dhcpcd-enable", b"1\n")?, "/etc/oxide-dhcpcd-enable")?;
+    }
+    // F141: udhcpc marker — opt-in busybox-based DHCP client.
+    if std::env::var("OXIDE_UDHCPC_ENABLE").as_deref() == Ok("1") {
+        put(&stage("oxide-udhcpc-enable", b"1\n")?, "/etc/oxide-udhcpc-enable")?;
     }
     put(&stage("os-release",
         b"NAME=oxide\nVERSION=0.1\nID=oxide\nPRETTY_NAME=\"oxide-os 0.1\"\n")?,
@@ -456,13 +461,14 @@ mount -t devpts devpts /dev/pts 2>/dev/null
 hostname -F /etc/hostname 2>/dev/null
 ifconfig lo 127.0.0.1 up 2>/dev/null
 ifconfig eth0 up 2>/dev/null
-# F125: dhcpcd launch gated behind /etc/oxide-dhcpcd-enable.
-# Without the marker, rcS skips it and boot reaches login cleanly.
-# With it set, dhcpcd advances further than F123-era did (epoll
-# waitqueue + SEQPACKET socketpair both wired) but wedges on a
-# downstream syscall path that surfaces post-lease-socket setup.
-# Flip the marker on once that gap closes.
-[ -x /sbin/dhcpcd ] && [ -e /etc/oxide-dhcpcd-enable ] && /sbin/dhcpcd -b eth0 2>/dev/null
+# F141: udhcpc is the v1 DHCP client (busybox applet - already in
+# the rootfs, no separate vendor binary). Real upstream dhcpcd
+# still wedges post-lease-setup; udhcpc's simpler state machine
+# hits fewer of the gap-y syscall paths. Gated behind
+# /etc/oxide-udhcpc-enable so the default boot stays fast.
+if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
+    /sbin/udhcpc -i eth0 -b -s /bin/true -q -n 2>/dev/null &
+fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 :
 ")?,
