@@ -58,8 +58,12 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         let inet = match (domain, typ) {
             (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
             (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp(),
+            // F142: AF_INET+SOCK_RAW admitted as UDP shell. udhcpc /
+            // libc getifaddrs use RAW sockets as ioctl handles only.
+            (AF_INET,  SOCK_RAW)    => InetSocket::new_udp(),
             (AF_INET6, SOCK_DGRAM)  => InetSocket::new_udp6(),
             (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
+            (AF_INET6, SOCK_RAW)    => InetSocket::new_udp6(),
             (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
             (AF_UNIX_DOM, SOCK_DGRAM)  => InetSocket::new_unix_dgram(),
             (AF_PACKET_DOM, _) => {
@@ -390,11 +394,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
-/// # C: O(1)
-/// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
-/// Tier-3 shim per `docs/53§4`. Parses optional dest into
-/// `RemoteAddr`, fetches sender creds, calls `net::sock::sendto`.
+/// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44. Tier-3
+/// shim per `docs/53§4`. Parses optional dest into `RemoteAddr`,
+/// fetches sender creds, calls `net::sock::sendto`.
 /// # C: O(payload bytes)
 pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
@@ -996,5 +998,3 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     }
     take as i64
 }
-
-// recvmsg_unix_dgram moved to `syscall_glue_unix_cmsg.rs` (F122).
