@@ -314,6 +314,20 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
                 }
             }
             0x0800 => {
+                // F149: snoop incoming IPv4 frames — every (src_ip,
+                // src_mac) is a valid arp cache entry; pre-populates
+                // the entry for the gateway after the first inbound
+                // reply, so subsequent xmits can resolve.
+                if f.len() >= 14 + 20 {
+                    let mut src_ip = [0u8; 4];
+                    src_ip.copy_from_slice(&f[14 + 12 .. 14 + 16]);
+                    let mut src_mac = [0u8; 6];
+                    src_mac.copy_from_slice(&f[6..12]);
+                    arp_cache().insert(
+                        net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
+                        net::MacAddr(src_mac),
+                    );
+                }
                 let _ = stack.deliver_rx(iface, &f[14..]);
             }
             _ => {}
@@ -365,20 +379,20 @@ impl net::NetDev for VirtioNetDev {
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
     fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {
-        // F59-11: synchronous xmit. Caller has filled `pkt.data()`
-        // with the L3 (or L2 already-framed) payload and set
-        // `pkt.proto` to the ethertype. We always prepend a fresh
-        // Ethernet header here using the cached gateway MAC for
-        // off-link destinations; on-link / explicit-dst routing is
-        // F59-13 (route table consultation). v1 fallback: broadcast
-        // dst when arp_cache has no entry.
         let body = pkt.data();
         if body.len() + 14 > 1518 {
             self.tx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err(net::NetError::Erange);
         }
-        // Resolve dst MAC: gateway-of-cache for now, else broadcast.
-        let dst = arp_cache().snapshot().first().map(|(_, m)| *m)
+        // F149: real next-hop MAC resolution. For IPv4 frames, parse
+        // the destination IP, consult the route table for next-hop
+        // (route.gateway or the destination itself for on-link), look
+        // up MAC in arp_cache. On miss, send a single ARP request
+        // and fall back to broadcast for THIS frame (the upper
+        // protocol — TCP retransmit / UDP retry — sends again once
+        // the cache populates). Non-IPv4 frames keep the prior
+        // behavior (broadcast or first cached entry).
+        let dst = resolve_next_hop_mac(self.mac, pkt.proto, body)
             .unwrap_or(net::MacAddr([0xFF; 6]));
         let mut frame = alloc::vec![0u8; 14 + body.len()];
         net::ethernet::EthHdr::write_to(
@@ -513,6 +527,46 @@ pub fn rx_drain_softirq() {
     let id = net::NetIfaceId::from_raw((v >> 32) as u32);
     let ip = (v as u32).to_be_bytes();
     let _ = poll_into_stack(id, ip);
+}
+
+/// F149: resolve next-hop MAC for an outbound IPv4 frame body.
+/// Returns Some(mac) when arp_cache has the next-hop, else None
+/// (after firing an ARP request so the next attempt can resolve).
+/// # C: O(1) cache hit; O(1) ARP request on miss.
+fn resolve_next_hop_mac(src_mac: [u8; 6], proto: u16, body: &[u8]) -> Option<net::MacAddr> {
+    if proto != net::eth_p::IPV4 || body.len() < 20 { return None; }
+    let dst_ip = net::Ipv4Addr::new(body[16], body[17], body[18], body[19]);
+    let next_hop_ip = match net::sock::stack().routes.lookup(dst_ip) {
+        Some(r) => r.gateway.unwrap_or(dst_ip),
+        None    => dst_ip,
+    };
+    if let Some(m) = arp_cache().lookup(next_hop_ip) {
+        return Some(m);
+    }
+    // Cache miss — fire an ARP request so the next call resolves.
+    if let Some(our_ip) = first_iface_ip() {
+        let req = net::arp::build_request(
+            net::MacAddr(src_mac), our_ip, next_hop_ip,
+        );
+        let mut frame = alloc::vec![0u8; 14 + req.len()];
+        net::ethernet::EthHdr::write_to(
+            net::MacAddr([0xFF; 6]), net::MacAddr(src_mac),
+            net::eth_p::ARP, &mut frame[..14],
+        );
+        frame[14..].copy_from_slice(&req);
+        let _ = tx_frame(&frame);
+    }
+    None
+}
+
+/// Find any local iface's IPv4 address (used as the ARP sender_ip).
+/// Reads the stashed `our_ip` slot the rx softirq uses, falling back
+/// to 0.0.0.0 when the iface is unconfigured.
+/// # C: O(1)
+fn first_iface_ip() -> Option<net::Ipv4Addr> {
+    let v = SOFTIRQ_IFACE_AND_IP.load(Ordering::Acquire);
+    if v == 0 { return None; }
+    Some(net::Ipv4Addr::from_u32(v as u32))
 }
 
 // -------- F59-02: RX poll on the modern transport ----------------------
