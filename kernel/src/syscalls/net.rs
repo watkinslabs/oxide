@@ -46,8 +46,6 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     const AF_UNIX_DOM: u32 = 1;
     const AF_NETLINK_DOM: u32 = ::netlink::AF_NETLINK as u32;
     const AF_PACKET_DOM: u32 = 17;
-    // F88: AF_NETLINK takes its own socket type; everything else
-    // falls into the existing InetSocket union.
     let inode: vfs::InodeRef = if domain == AF_NETLINK_DOM {
         // Linux accepts SOCK_DGRAM and SOCK_RAW for netlink (Linux's
         // own libnl uses SOCK_RAW). Other types → EPROTOTYPE.
@@ -987,7 +985,9 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     // SAFETY: bufp+take validated < USER_VA_END; user page mapped under caller's AS.
     unsafe { core::ptr::copy_nonoverlapping(rcv.payload.as_ptr(), bufp as *mut u8, take); }
     if src_p != 0 {
-        if let Some((ip, port)) = rcv.peer {
+        if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
+            crate::syscalls::af_packet::write_sockaddr_ll(src_p, &sock, &rcv.payload);
+        } else if let Some((ip, port)) = rcv.peer {
             write_sockaddr_for_socket(src_p, &sock, ip, port);
         } else if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
             let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
