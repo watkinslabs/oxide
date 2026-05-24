@@ -269,11 +269,20 @@ pub unsafe fn run() -> ! {
     // log with no way to interact (`make qemu-arm` was useless).
     spawn_init_from_rootfs_arm();
 
+    // F152-arm: re-arm CNTV periodic timer for the userland phase.
+    // The canary smoke disarmed CNTV; without re-arming, the only
+    // periodic-tick hook on ARM (`tick_poll_combined` →
+    // `rx_drain_softirq`) never fires, so virtio-net rx frames stack
+    // up forever and DHCP/UDP/TCP recv never wake user tasks.
+    // Mirrors the x86 lapic::timer_periodic call in smoke::elf::run_as_task.
+    // SAFETY: GIC INTID 27 was already enabled by canary; enable_intid is idempotent (GICD_ISENABLER* sets the bit; harmless to re-set).
+    unsafe { arch_irq::gic::enable_intid(27); }
+    // SAFETY: CNTV_TVAL_EL0 + CNTV_CTL_EL0 are unprivileged at EL1; canary disarmed CNTV; we re-arm with a 1ms period to drive the userland tick_poll path.
+    unsafe { hal_aarch64::timer::timer_periodic(1_000_000); }
+
     // Schedule loop with IRQs unmasked so the PL011 RX IRQ (SPI 33)
-    // wakes us when stdin bytes arrive — the dispatcher's INTID-33
-    // path acks the IRQ and calls tick_poll_uart to drain into the
-    // foreground VT's ring. No CNTV re-arm needed: PL011 is the input
-    // path on ARM (timer-tick poll is a fallback only).
+    // and the CNTV timer tick (INTID 27) wake us when stdin bytes
+    // arrive or when net-rx softirq needs to drain.
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
