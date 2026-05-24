@@ -395,19 +395,26 @@ pub unsafe fn tick_yield() {
     // after the next instruction so the IRQ edge is serviced at
     // hlt-resume, not in arbitrary kernel code).
     //
-    // arm: skip halt. Just schedule() and let the caller's loop spin.
-    // QEMU virt + KVM arm WFI semantics with our DAIF.I=1 (SVC
-    // syscall invariant) hang reliably — both plain WFI and the
-    // daifclr+wfi+daifset pair fail to wake on the CNTV INTID 27
-    // periodic line. CPU busy-loop is wasteful but correct; full
-    // tickless-idle for arm rides a follow-up.
+    // arm: daifclr+wfi+daifset. F152 re-armed CNTV (INTID 27) for the
+    // userland phase; with the periodic timer line firing, WFI now
+    // actually wakes (the prior comment about WFI hanging predates
+    // F152). The pair is interrupt-atomic by the arm WFE/WFI semantic:
+    // any pending unmasked IRQ wakes before WFI parks.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     // SAFETY: privileged sti+hlt+cli at CPL=0. The sti window is exactly one instruction (the hlt) per Intel SDM Vol. 2A: STI delays IF=1 until after the NEXT instruction, so any IRQ edge raised between sti and hlt is serviced at hlt-resume, not in arbitrary kernel code. cli after returns to the syscall-tail IF=0 invariant.
     unsafe {
         core::arch::asm!("sti; hlt; cli", options(nomem, nostack, preserves_flags));
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    core::hint::spin_loop();
+    // SAFETY: msr daifclr/wfi/daifset are privileged at EL1; the daifclr-wfi-daifset triplet is the canonical arm idle pattern (Linux arm64 default_idle). Any IRQ pending before WFI causes WFI to fall through; daifset restores the syscall-tail DAIF.I=1 invariant.
+    unsafe {
+        core::arch::asm!(
+            "msr daifclr, #2",
+            "wfi",
+            "msr daifset, #2",
+            options(nomem, nostack, preserves_flags),
+        );
+    }
 }
 
 /// Mark a task `done` (Zombie state). Subsequent `schedule()` /
