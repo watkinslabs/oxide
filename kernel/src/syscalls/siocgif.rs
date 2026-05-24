@@ -59,6 +59,14 @@ fn get_ifaddr(id: net::NetIfaceId) -> (u32, u32) {
     (IFADDR[idx].addr.load(Ordering::Acquire), IFADDR[idx].mask.load(Ordering::Acquire))
 }
 
+/// F150: hook installed into the net crate so socket_sendto can
+/// resolve outbound src IPs without owning the ifaddr table.
+/// # C: O(1)
+pub fn iface_primary_ip_hook(id: net::NetIfaceId) -> Option<net::Ipv4Addr> {
+    let (ip, _mask) = get_ifaddr(id);
+    if ip == 0 { None } else { Some(net::Ipv4Addr::from_u32(ip)) }
+}
+
 fn set_ifaddr(id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool) {
     let idx = id.raw() as usize;
     if idx >= IFADDR_SLOTS { return; }
