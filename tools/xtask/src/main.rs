@@ -225,7 +225,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "/dev", "/dev/pts",
         "/home", "/home/alice", "/root",
         "/var", "/var/log", "/var/db", "/var/db/dhcpcd", "/var/run", "/var/run/dhcpcd",
-        "/usr", "/usr/share", "/usr/share/keymaps",
+        "/usr", "/usr/share", "/usr/share/keymaps", "/usr/share/udhcpc",
     ] {
         dbg(&format!("mkdir {d}"))?;
     }
@@ -467,7 +467,7 @@ ifconfig eth0 up 2>/dev/null
 # hits fewer of the gap-y syscall paths. Gated behind
 # /etc/oxide-udhcpc-enable so the default boot stays fast.
 if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
-    /sbin/udhcpc -i eth0 -b -s /bin/true -q -n &
+    /sbin/udhcpc -i eth0 -b -s /usr/share/udhcpc/default.script &
 fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 :
@@ -494,6 +494,42 @@ done
 ")?,
         "/etc/init.d/oxide-smokes")?;
     dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;
+
+    // F147: udhcpc default lease-event script. udhcpc invokes this
+    // with $1 ∈ {deconfig, bound, renew, …} and exports the lease
+    // params (ip, subnet, router, dns, broadcast, …) as env vars.
+    // On bound/renew: configure the iface, add the default route,
+    // write /etc/resolv.conf. On deconfig: tear the addr down.
+    put(&stage("udhcpc-default.script",
+b"#!/bin/sh
+# busybox udhcpc lease-event handler. Invoked by udhcpc with
+# $1 = event name and lease fields exported as env vars.
+RESOLV=/etc/resolv.conf
+case \"$1\" in
+    deconfig)
+        ifconfig $interface 0.0.0.0 2>/dev/null
+        ;;
+    bound|renew)
+        ifconfig $interface $ip netmask ${subnet:-255.255.255.0} \\
+            broadcast ${broadcast:-+} 2>/dev/null
+        if [ -n \"$router\" ]; then
+            while route del default gw 0.0.0.0 dev $interface 2>/dev/null; do :; done
+            for r in $router; do
+                route add default gw $r dev $interface 2>/dev/null
+            done
+        fi
+        : > $RESOLV
+        [ -n \"$domain\" ] && echo \"search $domain\" >> $RESOLV
+        for s in $dns; do
+            echo \"nameserver $s\" >> $RESOLV
+        done
+        echo \"udhcpc: configured $interface as $ip via $router\"
+        ;;
+esac
+exit 0
+")?,
+        "/usr/share/udhcpc/default.script")?;
+    dbg("sif /usr/share/udhcpc/default.script mode 0100755")?;
 
     // /etc/profile — login-shell environment.
     put(&stage("profile",
