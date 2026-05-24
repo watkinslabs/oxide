@@ -80,6 +80,26 @@ int main(int argc, char** argv, char** envp) {
     {
         write(1, FAIL_SEND, sizeof(FAIL_SEND)-1); return 1;
     }
+
+    // F140: exercise the RX path. With MSG_DONTWAIT and no frames
+    // queued the kernel must return -1/EAGAIN (not EINVAL); on a
+    // real rx (slirp ARP / DHCPOFFER replay), we'd see the L2
+    // frame in `buf` and a populated sockaddr_ll in `peer`.
+    #ifndef MSG_DONTWAIT
+    #define MSG_DONTWAIT 0x40
+    #endif
+    unsigned char rxbuf[1500];
+    struct sockaddr_ll peer; memset(&peer, 0, sizeof(peer));
+    unsigned int plen = sizeof(peer);
+    ssize_t r = recvfrom(fd, rxbuf, sizeof(rxbuf), MSG_DONTWAIT,
+                        (struct sockaddr*)&peer, &plen);
+    if (r < 0 && errno != 11 /* EAGAIN */) {
+        char b[64]; int n = snprintf(b, sizeof(b), "af_packet_smoke: recvfrom errno=%d\n", errno);
+        write(1, b, n); return 1;
+    }
+    if (r > 0 && peer.sll_family != AF_PACKET) {
+        write(1, "af_packet_smoke: peer sll_family wrong\n", 39); return 1;
+    }
     write(1, PASS, sizeof(PASS)-1);
     return 0;
 }
