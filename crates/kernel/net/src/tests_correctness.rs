@@ -122,6 +122,82 @@ fn f179_past_window_data_ignored() {
     assert!(c.ooo_buf.is_empty(), "past-window data must not enter ooo_buf");
 }
 
+// ----- F179a: SACK option emit + consume + retx-skip ---------------
+
+#[test]
+fn f179a_sack_blocks_coalesce_contiguous_ooo() {
+    let mut c = client_established();
+    let base = c.rcv_nxt;
+    // OOO chunks at base+5..10 and base+10..15 should collapse
+    // into a single block (left=base+5, right=base+15).
+    c.ooo_buf.insert(base.wrapping_add(5), alloc::vec![0u8; 5]);
+    c.ooo_buf.insert(base.wrapping_add(10), alloc::vec![0u8; 5]);
+    let blocks = c.sack_blocks();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].left,  base.wrapping_add(5));
+    assert_eq!(blocks[0].right, base.wrapping_add(15));
+}
+
+#[test]
+fn f179a_sack_blocks_two_disjoint_runs() {
+    let mut c = client_established();
+    let base = c.rcv_nxt;
+    c.ooo_buf.insert(base.wrapping_add(5),  alloc::vec![0u8; 5]);
+    c.ooo_buf.insert(base.wrapping_add(20), alloc::vec![0u8; 8]);
+    let blocks = c.sack_blocks();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].left,  base.wrapping_add(5));
+    assert_eq!(blocks[0].right, base.wrapping_add(10));
+    assert_eq!(blocks[1].left,  base.wrapping_add(20));
+    assert_eq!(blocks[1].right, base.wrapping_add(28));
+}
+
+#[test]
+fn f179a_ack_with_ooo_carries_sack_option() {
+    let mut c = client_established();
+    let base = c.rcv_nxt;
+    // Push OOO then in-order; the ACK reply should carry SACK.
+    let ooo = build_data_segment(base.wrapping_add(5), c.snd_nxt, b"world");
+    let _ = c.input(lo(), lo(), &ooo);
+    // Verify build_ack_with_sack emits a SACK option.
+    let ack = c.build_ack_with_sack();
+    let parsed = crate::tcp_hdr::parse_sack_option(&ack);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].left,  base.wrapping_add(5));
+    assert_eq!(parsed[0].right, base.wrapping_add(10));
+}
+
+#[test]
+fn f179a_apply_sack_marks_retx_entries() {
+    let mut c = client_established();
+    c.peer_mss = 10;
+    c.send(b"hello-world-12345");  // 17 bytes → 2 segs (10 + 7)
+    let _ = c.output(1500, true);
+    assert_eq!(c.retx_q.len(), 2);
+    // Synthesize SACK that covers the FIRST segment only.
+    let first = &c.retx_q[0];
+    let blk = crate::tcp_hdr::SackBlock {
+        left: first.seq,
+        right: first.seq.wrapping_add(first.payload.len() as u32),
+    };
+    c.apply_sack(&[blk]);
+    assert!(c.retx_q[0].sacked,  "first segment must be marked sacked");
+    assert!(!c.retx_q[1].sacked, "second segment NOT in block, stays unsacked");
+}
+
+#[test]
+fn f179a_retransmit_due_skips_sacked() {
+    let mut c = client_established();
+    c.peer_mss = 10;
+    c.send(b"hello-world-12345");
+    let _ = c.output(1500, true);
+    // Force last_sent_ns to expire RTO; sacked must still skip.
+    for s in c.retx_q.iter_mut() { s.last_sent_ns = 1; }
+    c.retx_q[0].sacked = true;
+    let resent = c.retransmit_due(1 + c.rto_ns + 1);
+    assert_eq!(resent.len(), 1, "only the non-sacked entry retransmits");
+}
+
 // ----- F176: SO_REUSEADDR + TIME_WAIT conflict ----------------------
 
 #[test]
