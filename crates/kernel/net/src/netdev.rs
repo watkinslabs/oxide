@@ -29,6 +29,8 @@ pub enum NetError {
     Erange,
     Econnrefused,
     Enoent,
+    /// F168: blocking op interrupted by a signal (EINTR).
+    Eintr,
 }
 
 pub type NetResult<T> = core::result::Result<T, NetError>;
