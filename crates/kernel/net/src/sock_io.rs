@@ -178,6 +178,84 @@ pub(crate) fn read_tcp_blocking(
     }
 }
 
+/// F171: blocking read on an AF_UNIX SOCK_STREAM pair. Park on
+/// the per-ring read waitq until the writer pushes or closes;
+/// return EOF (Ok(0)) when peer closed AND ring is empty. Honors
+/// SO_RCVTIMEO via park_with_deadline (timer scanner wake → Eagain).
+/// # C: blocks until ring non-empty or peer FIN/close
+/// # Ctx: process; preempt-off; runqueue installed
+pub(crate) fn read_unix_stream_blocking(
+    pair: &alloc::sync::Arc<crate::UnixPair>,
+    end: crate::UnixEnd,
+    buf: &mut [u8],
+    deadline_ns: u64,
+) -> vfs::KResult<usize> {
+    loop {
+        let got = pair.read(end, buf.len());
+        if !got.is_empty() {
+            let n = got.len();
+            buf[..n].copy_from_slice(&got);
+            return Ok(n);
+        }
+        if pair.is_eof(end) { return Ok(0); }
+        #[cfg(target_os = "oxide-kernel")]
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(vfs::VfsError::Eintr);
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
+            return Err(vfs::VfsError::Eagain);
+        }
+        // SAFETY: process ctx; preempt-off owned by syscall stub; writer wakes us via pair.reader_waiters(end).wake_all.
+        #[cfg(target_os = "oxide-kernel")]
+        unsafe {
+            pair.reader_waiters(end).park_with_deadline(deadline_ns);
+            sched::live::schedule::schedule();
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(vfs::VfsError::Eagain);
+    }
+}
+
+/// F171: blocking recv on an AF_UNIX SOCK_SEQPACKET/SOCK_DGRAM
+/// socketpair (UnixMsgPair). Per-message semantic: returns at
+/// most one pre-truncated message per call. EOF when peer closed
+/// AND queue drained.
+/// # C: blocks until queue non-empty or peer FIN/close
+/// # Ctx: process; preempt-off; runqueue installed
+pub(crate) fn read_unix_msg_blocking(
+    pair: &alloc::sync::Arc<crate::UnixMsgPair>,
+    end: crate::UnixEnd,
+    buf: &mut [u8],
+    deadline_ns: u64,
+) -> vfs::KResult<usize> {
+    loop {
+        if let Some(msg) = pair.recv(end, buf.len()) {
+            let n = msg.len();
+            buf[..n].copy_from_slice(&msg);
+            return Ok(n);
+        }
+        // recv returns None only when nothing pending AND not EOF
+        // (EOF returns Some(empty)). So fall through to park.
+        #[cfg(target_os = "oxide-kernel")]
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(vfs::VfsError::Eintr);
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
+            return Err(vfs::VfsError::Eagain);
+        }
+        // SAFETY: process ctx; preempt-off; sender wakes us via pair.reader_waiters(end).wake_all.
+        #[cfg(target_os = "oxide-kernel")]
+        unsafe {
+            pair.reader_waiters(end).park_with_deadline(deadline_ns);
+            sched::live::schedule::schedule();
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(vfs::VfsError::Eagain);
+    }
+}
+
 /// F169: monotonic-ns reader visible to io helpers without
 /// crossing the kernel-vs-hosted boundary at every call site.
 #[cfg(target_os = "oxide-kernel")]

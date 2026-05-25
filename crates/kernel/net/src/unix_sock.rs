@@ -19,9 +19,18 @@ use sync::{Spinlock, Socket as UnixLockClass};
 pub enum UnixEnd { A, B }
 
 /// One stream-pair in-kernel: two unidirectional byte queues.
+/// F171: per-direction WaitList lets a parked reader (Inode::read)
+/// wake precisely when its ring grows, instead of every AF_UNIX
+/// peer waking on every global epoll-notify pulse.
 pub struct UnixPair {
     pub a_to_b: Spinlock<UnixRing, UnixLockClass>,
     pub b_to_a: Spinlock<UnixRing, UnixLockClass>,
+    /// Reader of a_to_b (UnixEnd::B's read side) parks here.
+    /// Writer (UnixEnd::A's write) wakes it after pushing.
+    #[cfg(target_os = "oxide-kernel")]
+    pub a_to_b_waiters: sched::live::WaitList,
+    #[cfg(target_os = "oxide-kernel")]
+    pub b_to_a_waiters: sched::live::WaitList,
 }
 
 pub struct UnixRing {
@@ -36,14 +45,26 @@ impl UnixPair {
         Arc::new(Self {
             a_to_b: Spinlock::new(UnixRing { buf: VecDeque::new(), closed_writer: false }),
             b_to_a: Spinlock::new(UnixRing { buf: VecDeque::new(), closed_writer: false }),
+            #[cfg(target_os = "oxide-kernel")]
+            a_to_b_waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            b_to_a_waiters: sched::live::WaitList::new(),
         })
+    }
+
+    /// Returns the WaitList the reader of `end` should park on.
+    /// `end == A` reads from b_to_a; `end == B` reads from a_to_b.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn reader_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+        match end { UnixEnd::A => &self.b_to_a_waiters, UnixEnd::B => &self.a_to_b_waiters }
     }
 
     /// Append `data` from `end` into the ring it writes to.
     /// Returns the number of bytes accepted (full byte count
     /// for v1 — unbounded growth, as VecDeque is heap-backed).
-    /// F125: wake any epoll_wait parker so a reader blocked on
-    /// the peer's fd re-scans and sees POLL_IN.
+    /// F125: wake any epoll_wait parker; F171: wake the specific
+    /// per-ring read waiter so blocking-read callers unpark.
     /// # C: O(data.len())
     pub fn write(&self, end: UnixEnd, data: &[u8]) -> usize {
         let mut g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
@@ -52,7 +73,15 @@ impl UnixPair {
         let n = data.len();
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
-        sched::live::notify_epoll_waiters();
+        {
+            // Writer on `end` feeds the ring the OTHER end reads from.
+            let waiters = match end {
+                UnixEnd::A => &self.a_to_b_waiters,
+                UnixEnd::B => &self.b_to_a_waiters,
+            };
+            waiters.wake_all();
+            sched::live::notify_epoll_waiters();
+        }
         n
     }
 
@@ -73,14 +102,22 @@ impl UnixPair {
     /// Mark this end's writer side closed. The peer's next read
     /// on this ring returns 0 once the queue drains (EOF).
     /// F125: wake epoll_wait parkers so a peer blocked on POLL_HUP
-    /// observes the transition.
+    /// observes the transition. F171: also wake the per-ring
+    /// reader waitq so a blocking read returns EOF promptly.
     /// # C: O(1)
     pub fn close_writer(&self, end: UnixEnd) {
         let mut g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
         g.closed_writer = true;
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
-        sched::live::notify_epoll_waiters();
+        {
+            let waiters = match end {
+                UnixEnd::A => &self.a_to_b_waiters,
+                UnixEnd::B => &self.b_to_a_waiters,
+            };
+            waiters.wake_all();
+            sched::live::notify_epoll_waiters();
+        }
     }
 
     /// True when reads from `end` would observe EOF (peer closed
@@ -106,6 +143,11 @@ impl UnixPair {
 pub struct UnixMsgPair {
     pub a_to_b: Spinlock<UnixMsgRing, UnixLockClass>,
     pub b_to_a: Spinlock<UnixMsgRing, UnixLockClass>,
+    /// F171: per-ring read waitqs — same shape as UnixPair.
+    #[cfg(target_os = "oxide-kernel")]
+    pub a_to_b_waiters: sched::live::WaitList,
+    #[cfg(target_os = "oxide-kernel")]
+    pub b_to_a_waiters: sched::live::WaitList,
 }
 
 pub struct UnixMsgRing {
@@ -119,13 +161,24 @@ impl UnixMsgPair {
         Arc::new(Self {
             a_to_b: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false }),
             b_to_a: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false }),
+            #[cfg(target_os = "oxide-kernel")]
+            a_to_b_waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            b_to_a_waiters: sched::live::WaitList::new(),
         })
+    }
+
+    /// WaitList the reader of `end` should park on.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn reader_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+        match end { UnixEnd::A => &self.b_to_a_waiters, UnixEnd::B => &self.a_to_b_waiters }
     }
 
     /// Enqueue one message from `end` into the ring it writes to.
     /// Returns bytes accepted (full payload — VecDeque is heap so
-    /// unbounded for v1). Returns 0 if peer closed. Wakes epoll
-    /// parkers so a peer blocked on poll observes POLL_IN.
+    /// unbounded for v1). Returns 0 if peer closed. F125/F171: wakes
+    /// per-ring read waitq + epoll parkers.
     /// # C: O(payload.len())
     pub fn send(&self, end: UnixEnd, payload: &[u8]) -> usize {
         let mut g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
@@ -134,7 +187,14 @@ impl UnixMsgPair {
         let n = payload.len();
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
-        sched::live::notify_epoll_waiters();
+        {
+            let waiters = match end {
+                UnixEnd::A => &self.a_to_b_waiters,
+                UnixEnd::B => &self.b_to_a_waiters,
+            };
+            waiters.wake_all();
+            sched::live::notify_epoll_waiters();
+        }
         n
     }
 
@@ -161,15 +221,21 @@ impl UnixMsgPair {
 
     /// Mark this end's writer side closed. Peer's next recv on the
     /// drained queue returns `Some(empty)` (EOF → read returns 0).
-    /// Wakes epoll parkers so a peer blocked on POLL_HUP observes
-    /// the transition.
+    /// F171: wakes per-ring read waitq + epoll parkers.
     /// # C: O(1)
     pub fn close_writer(&self, end: UnixEnd) {
         let mut g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
         g.closed_writer = true;
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
-        sched::live::notify_epoll_waiters();
+        {
+            let waiters = match end {
+                UnixEnd::A => &self.a_to_b_waiters,
+                UnixEnd::B => &self.b_to_a_waiters,
+            };
+            waiters.wake_all();
+            sched::live::notify_epoll_waiters();
+        }
     }
 
     /// True when recv from `end` would observe EOF (peer closed +
@@ -201,6 +267,10 @@ impl UnixMsgPair {
 /// queue + payload path; F121 wires creds + fd-passing.
 pub struct UnixDgramQueue {
     pub msgs: Spinlock<VecDeque<UnixDgram>, UnixLockClass>,
+    /// F171: single per-queue read waitlist (only one reader on a
+    /// SOCK_DGRAM socket today — no per-direction split needed).
+    #[cfg(target_os = "oxide-kernel")]
+    pub waiters: sched::live::WaitList,
 }
 
 pub struct UnixDgram {
@@ -216,15 +286,22 @@ pub struct UnixDgram {
 impl UnixDgramQueue {
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { msgs: Spinlock::new(VecDeque::new()) })
+        Arc::new(Self {
+            msgs: Spinlock::new(VecDeque::new()),
+            #[cfg(target_os = "oxide-kernel")]
+            waiters: sched::live::WaitList::new(),
+        })
     }
-    /// Push a complete dgram onto the queue. F125: wake epoll
-    /// parkers — a peer's poll() flips POLL_IN once a msg lands.
+    /// Push a complete dgram onto the queue. F125/F171: wake both
+    /// the per-queue waitlist (blocking recv) and epoll parkers.
     /// # C: O(1)
     pub fn push(&self, msg: UnixDgram) {
         self.msgs.lock().push_back(msg);
         #[cfg(target_os = "oxide-kernel")]
-        sched::live::notify_epoll_waiters();
+        {
+            self.waiters.wake_all();
+            sched::live::notify_epoll_waiters();
+        }
     }
     /// Pop one dgram if any. Returns the full message (caller copies
     /// payload + cmsgs into user buffers).
