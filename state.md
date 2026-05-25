@@ -1,73 +1,73 @@
 # state — hand-off
 
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
-both arches build, x86 smoke 16s + arm smoke 20s green.
+x86 smoke 16s + arm smoke 20s green.
 
-## What actually works
+## What actually works (post-F156/F157)
 
 - DHCP via udhcpc: lease, ifconfig, route, resolv.conf
 - AF_PACKET TX + RX (sockaddr_ll, eth-strip/prepend per type)
 - UDP outbound + reply (online_smoke does a real DNS round-trip)
 - TCP loopback (lo path closes 3WHS via drain_loopback)
+- **TCP outbound through slirp NAT** — real 3WHS to host services:
+    `tcp_smoke: 10.0.2.2:22 connect OK`
+    `tcp_smoke: 10.0.2.2:22 rx=21 first='SSH-2.0-OpenSSH_9.9`
 - ARM lockstep on the above
 
-## What is NOT honest
+## What got fixed in this session (F156 + F157)
 
-**`tcp_smoke: PASS hits=2` is misleading.** `InetSocket::new_tcp()`
-initialises `kind = SockKind::Udp`. `net::sock::connect`'s first
-action is `matches!(sock.kind, SockKind::Udp) → return Ok(())`. So
-`connect(AF_INET, SOCK_STREAM, …)` returns 0 without doing the
-3-way handshake. `tcp_smoke` calls connect, gets rc=0, prints
-"connect OK" — but `tcp_connect` was never called, no SYN ever
-went out the wire.
+state.md's prior hand-off blamed the TCP wedge on iretq /
+wake-from-IRQ archaeology. That was wrong. Five distinct bugs:
 
-This was discovered in F156-tcp-recv (local branch retained).
-Several fixes were attempted:
+1. **F156:** `InetSocket::new_tcp()` set `kind = SockKind::Udp`,
+   so `connect()` short-circuited SOCK_STREAM to "store peer +
+   return Ok" without sending a SYN. Added `SockKind::TcpInit`.
+2. **F156:** lock-across-match in the ephemeral-port allocator —
+   `match *sock.local_port.lock() { … *sock.local_port.lock() = … }`
+   self-deadlocked. Hoist guard.
+3. **F156:** ANY-bound TCP defaulted local_ip to LOOPBACK for
+   off-host destinations. Ported F150's iface-primary logic.
+4. **F156:** `virtio-net::modern::rx_poll` held `MODERN_DEV.lock()`
+   across cb. cb's TCP path emits an ACK via `tx_frame` which
+   re-takes the lock → UP spinlock self-deadlock. UDP/AF_PACKET
+   never tripped this (no kernel-side outbound from rx); TCP
+   always does (ACK from SYN-ACK). Collect frames under lock,
+   drop, dispatch.
+5. **F157:** `Inode::read` for TcpConn returned `Ok(0)` for empty
+   recv_buf regardless of state — userspace treated as EOF.
+   Return `Eagain` unless peer FIN'd.
 
-1. New `SockKind::TcpInit` placeholder so SOCK_STREAM doesn't hit
-   the SOCK_DGRAM short-circuit. Routes connect into the real
-   TCP path.
-
-2. Lock-deadlock fix in `connect`'s local-port allocator —
-   `match *sock.local_port.lock() { …, None => { … *sock.local_port.lock() = … }}`
-   held the spinlock across an inner re-lock. Latent because
-   path (1) was the only way to reach it.
-
-3. F150-style outbound src-IP pick (use iface primary, not
-   LOOPBACK) so slirp's NAT can route the reply.
-
-4. Wait-for-3WHS loops (tick_yield variants, sti+spin variants,
-   sti+hlt+cli variants).
-
-Result: with (1)+(2)+(3) applied, `tcp_connect` IS called, the
-SYN does go out, `[deliver_rx tcp]` confirms the SYN-ACK arrives,
-and the TCP state machine transitions to Established. But
-`tcp_smoke` itself wedges immediately after `sys_connect` returns
-— before printing "connect OK". Even when connect() does no wait
-loop at all and returns Ok(()) immediately, userspace doesn't
-resume cleanly. Cause is somewhere in the IRQ-exit / schedule
-return path; needs proper instrumentation.
-
-### Where to dig
-- The wedge is AFTER sys_connect returns Ok to userspace. Print
-  `current().tid` in iretq epilogue or sys_write entry to see if
-  tcp_smoke's task ever resumes.
-- F143 (wait4 missed-wakeup) and F144 (CFS vruntime in voluntary
-  schedule) are recent changes that might interact badly with
-  IRQs-fire-during-syscall-return.
-- The branch `F156-tcp-recv` (local) has the attempt history.
+The `F156-tcp-recv` branch in state.md's prior hand-off was empty
+(local work was lost or never committed).
 
 ## Open next (priority order)
 
-1. **F156 tcp_smoke post-connect wedge** (above) — gates real TCP.
+1. **kernel-side blocking TCP read** — sys_read should consult
+   O_NONBLOCK and park on a socket waitq instead of forcing
+   userspace into usleep-retry loops. Needs socket waitq plumbing
+   (per-conn waitlist, wake on deliver_tcp data delivery,
+   wake on FIN).
 2. **DNS resolver wiring** (libc res_init) — uses /etc/resolv.conf
-   from F147.
+   from F147; TCP path now real so dig/host/getaddrinfo can run.
 3. **AF_UNIX path-lookup via VFS** — F153 materialises the inode;
    `connect(AF_UNIX, path)` should consult the inode's UnixListener
    Arc directly instead of UNIX_REGISTRY string-key lookup.
 4. **smoke-arm-dhcp perf** — full chain exceeds 180s on TCG.
 5. **K10 eBPF verifier**, **K13 DRM atomic modeset**,
    **per-fd targeted epoll wakes** — large.
+
+## Diagnostic lesson
+
+state.md's prior "instrument iretq" suggestion would have burned
+the session. The actual chain: drop a single klog probe pair
+around `tick_yield` showed the wedge wasn't in iretq at all —
+it was AT `hlt`. Then probing with `sti+pause+cli` (no yield)
+reproduced — proving the wedge fired whenever IRQs were allowed
+in, not when a task was switched. From there, walking what an
+inbound TCP segment does that UDP doesn't (emit an ACK from RX
+context) led directly to the rx_poll spinlock self-deadlock in
+~10 minutes. Lesson: probe the cheap diagnostic before
+believing the prior session's framing.
 
 ## Discipline notes
 
@@ -89,5 +89,5 @@ make smoke-arm SMOKE_TIMEOUT=300
 make smoke-dhcp-x86  # quick: ~16s
 ```
 
-Then `git checkout F156-tcp-recv` and instrument the iretq path
-to find where tcp_smoke wedges after sys_connect returns.
+Then start on kernel-side blocking TCP read (item 1 above) or
+pick DNS resolver wiring (item 2).
