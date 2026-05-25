@@ -80,6 +80,7 @@ bitflags::bitflags! {
 pub enum VfsError {
     Eperm   = 1,
     Enoent  = 2,
+    Eintr   = 4,
     Eio     = 5,
     Ebadf   = 9,
     Enomem  = 12,
