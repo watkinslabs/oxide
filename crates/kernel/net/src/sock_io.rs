@@ -68,13 +68,17 @@ pub(crate) fn write_tcp_blocking(
                     | crate::tcp_state::TcpState::LastAck
                     | crate::tcp_state::TcpState::Closing
                     | crate::tcp_state::TcpState::TimeWait
+                    | crate::tcp_state::TcpState::FinWait1
+                    | crate::tcp_state::TcpState::FinWait2
                 ) {
-                    // Connection shutting down. POSIX would deliver
-                    // SIGPIPE + return EPIPE on a blocking write to a
-                    // closed-write side; we don't deliver SIGPIPE yet,
-                    // so surface the byte count if any, else Eio.
+                    // F166: POSIX write to a closed/closing send-side
+                    // returns EPIPE (and would deliver SIGPIPE — that
+                    // arrives once the signal infrastructure carries
+                    // it; ABI errno is unchanged). Short success then
+                    // EPIPE on next call: surface the count now, peer
+                    // hangup discovered next time.
                     if total > 0 { return Ok(total); }
-                    return Err(vfs::VfsError::Eio);
+                    return Err(vfs::VfsError::Epipe);
                 }
                 // SAFETY: process ctx (sys_write); runqueue installed; preempt-off owned by syscall stub; deliver_tcp's wake_all on ACK frees send_buf space.
                 #[cfg(target_os = "oxide-kernel")]
