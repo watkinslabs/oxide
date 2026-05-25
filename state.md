@@ -3,88 +3,87 @@
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
 x86 smoke ~16s green; arm smoke ~20s green (pre-push hook).
 
-## What actually works (post-F156…F167)
+## What actually works (post-F156…F170)
 
-- DHCP via udhcpc; UDP outbound + reply; AF_PACKET TX/RX
-- TCP loopback + TCP outbound through slirp NAT (real 3WHS)
-- TCP recv via per-conn waitq, real EOF semantics
-- TCP send bounded by SO_SNDBUF, blocks via waitq when full
-- TCP connect waits via waitq + SYN retransmission (RFC 6298)
-- TCP data retransmission on RTO; conn aborts after max retries
-- TCP accept blocks on per-listener waitq
-- close()/shutdown() emit FIN; TIME_WAIT reaper (60s) cleans tcp_conns
-- UDP recvfrom blocks on per-port waitq
-- SO_ERROR returns real per-conn errno (ECONNREFUSED/RESET/ETIMEDOUT)
-- shutdown(SHUT_RD/WR/RDWR) distinct semantics
-- Write to closed TCP side → SIGPIPE + EPIPE (POSIX)
-- ARM lockstep on the above
+### TCP
+- Real 3WHS through slirp NAT; SSH banner round-trip
+- Per-conn waitq for connect/recv/send with SO_RCVTIMEO/SNDTIMEO
+  timer-wake (F169) and EINTR on signal (F168)
+- SYN + data retransmission with RFC 6298 RTO (F159)
+- Conn abort after 6 SYN retries / 15 data retries → ETIMEDOUT
+- SO_SNDBUF cap honored; write_blocking + write_nonblock (F164)
+- output() drains correctly; retx_q single source of truth (F165)
+- close() emits FIN; TIME_WAIT (60s) reaper (F161)
+- shutdown(SHUT_RD/WR/RDWR) distinct semantics (F166)
+- EPIPE + SIGPIPE on write to closing/closed side (F166/F167)
+- SO_ERROR returns real per-conn errno (F163)
 
-## Discipline added this session
+### UDP / AF_UNIX / AF_PACKET
+- UDP recvfrom blocks on per-port waitq (F162)
+- AF_UNIX accept blocks on per-listener waitq (F170)
+- AF_PACKET recvfrom + AF_UNIX recv still on global epoll-wake
+  / tick_yield fallback (separate PRs)
 
-- **R04 on docs/07§5**: no magic numbers for typed ABI constants
-  (errno/signal/flag/syscall-slot). CLAUDE.md Forbidden patterns
-  list updated.
-- **spec-lint `code/magic-errno`**: enforces R04. Validated by
-  injection — fires on `*_eno = 110;` style.
-- **Typed enums introduced**: `sched::live::Signum` for per-task
-  signal raise (Sigchld/Sigpipe/Sigalrm/Sigterm/Sigint/Sighup);
-  retrofit zombies.rs SIGCHLD raw shifts.
+### Discipline / lint
+- R04 docs/07§5: no magic numbers for typed ABI constants
+- `code/magic-errno` lint enforces R04 (validated by injection)
+- `sched::live::Signum` typed enum + `send_signal_self` /
+  `wake_if_sleeping` / `deliverable_signals` helpers
 
-## PRs shipped this session
+## PRs this session (19 total)
 
-| # | What | Why it mattered |
+| # | What | Headline |
 |---|---|---|
-| 1222 | F156 TCP outbound 3WHS works | virtio-net rx_poll spinlock self-deadlock; SockKind discrimination; src-IP pick |
-| 1223 | F157 TCP read Eagain (interim) | small fix to unblock the rx round-trip |
-| 1224 | D38 state.md truth | killed the iretq-archaeology dead-end |
-| 1225 | F158 TCP read blocking via waitq | proper Inode::read contract |
-| 1226 | F159 TCP retx + connect waitq + abort | dropped SYN no longer permanent stall |
-| 1227 | F160 accept blocking waitq | TCP server side |
-| 1228 | F161 close hook + TIME_WAIT reaper + UDP unbind | fd leak fix |
-| 1229 | F162 UDP recvfrom blocking waitq | DNS / NTP no longer busy-poll |
-| 1230 | F163 SO_ERROR real per-conn errno | async-connect / EPOLLOUT path |
-| 1231 | R04 docs/07: forbid magic numbers | typed-enum standardization |
-| 1232 | C lint code/magic-errno | R04 enforcement |
-| 1233 | F164 TCP write blocking + SO_SNDBUF | backpressure on stalled peer |
-| 1234 | F165 TCP output() drains correctly | multi-segment writes; single-source retx_q |
-| 1235 | F166 shutdown SHUT_* + EPIPE | POSIX semantics |
-| 1236 | F167 SIGPIPE delivery + Signum | `cmd \| head` style works |
+| 1222 | F156 TCP outbound | virtio-net spinlock self-deadlock fix |
+| 1223 | F157 read Eagain | interim |
+| 1224 | D38 | state truth |
+| 1225 | F158 read blocking waitq | proper Inode::read contract |
+| 1226 | F159 retx + connect waitq | SYN/data RTO + abort |
+| 1227 | F160 accept blocking | TCP listener waitq |
+| 1228 | F161 close + TW reaper | FIN + cleanup |
+| 1229 | F162 UDP recvfrom waitq | DNS no longer busy-poll |
+| 1230 | F163 SO_ERROR | real per-conn errno |
+| 1231 | R04 spec | no-magic-numbers rule |
+| 1232 | C lint | R04 enforcement |
+| 1233 | F164 write blocking + SO_SNDBUF | backpressure |
+| 1234 | F165 output() correctness | multi-segment + single-source retx |
+| 1235 | F166 shutdown + EPIPE | POSIX semantics |
+| 1236 | F167 SIGPIPE + Signum | `cmd \| head` works |
+| 1237 | D39 | state mid-session |
+| 1238 | F168 EINTR | signal-aware blocking |
+| 1239 | F169 SO_*TIMEO | timer-wake infra |
+| 1240 | F170 AF_UNIX accept | per-listener waitq |
 
-## Open next (priority order — gates for cross-compiled Linux apps)
+## Open next (Tier 2 — degraded behavior without)
 
-1. **SO_RCVTIMEO / SO_SNDTIMEO honored in blocking waits**
-   — read/write/connect helpers park indefinitely. Need a
-   timer-wake primitive on `WaitList` (`park_with_deadline`).
-   Many apps rely on bounded blocking I/O.
-2. **Signal-aware blocking (-EINTR on signal)** — Ctrl-C on a
-   blocked read currently hangs. Park helpers should re-check
-   `sigpending` on wake and return Eintr if a non-blocked signal
-   arrived.
-3. **SO_REUSEADDR enforcement at bind** — without it, servers
-   that restart inside the 60s TIME_WAIT window get EADDRINUSE.
-4. **AF_UNIX accept / recvfrom waitqs** (currently tick_yield
-   fallback). AF_PACKET same.
-5. **TCP MSS negotiation** — we hardcode 1460, peer's MSS option
-   in SYN/SYN-ACK ignored. Wire-correct interop with small-MTU
-   networks (slirp default is 1500 → fine, but real-network
-   apps may see fragments).
-6. **ICMP unreach → SO_ERROR** for the offending socket. UDP
-   apps rely on this to learn "no listener".
-7. **TCP_NODELAY semantic** — we're effectively always-NODELAY.
-   Apps relying on Nagle for small-write batching see different
-   latency profile.
-8. **Window scaling** + **SACK** — throughput gates on
-   high-BDP / lossy links. Large.
+1. **AF_UNIX recv per-pair waitq** — UnixPair/UnixMsgPair/UnixDgramQueue
+   still use the global epoll-wake. Per-pair waitqs avoid waking
+   every epoll'd fd on every Unix-socket activity.
+2. **AF_PACKET recvfrom waitq** — dhcpcd / wireshark-style apps.
+3. **TCP MSS negotiation** — we hardcode 1460; ignore peer's
+   MSS option in SYN/SYN-ACK. OK on slirp (MTU 1500); breaks
+   on real-network apps over tunnels.
+4. **ICMP unreach → SO_ERROR on UDP** — apps learn "no listener".
+5. **SO_REUSEADDR enforcement** — once we have richer bind
+   conflicts (we currently only EADDRINUSE on duplicate listener,
+   which SO_REUSEADDR doesn't actually relax).
+6. **ARP cache aging / timeout** — stale entries.
+7. **TCP_NODELAY semantic** — we're effectively always-NODELAY;
+   no Nagle small-write coalescing.
+8. **Window scaling + SACK** — throughput on high-BDP / lossy
+   links.
+9. **IPv6 real transport** — `family = AF_INET6` accepted but
+   V4-mapped only.
+10. **Per-fd targeted epoll wakes** — global notify_epoll_waiters
+    wakes every epoll on every socket event.
 
 ## Discipline notes
 
-- Pre-push hook gates kernel-surface pushes — install once per
-  clone: `git config core.hooksPath .githooks`
+- Pre-push hook gates kernel-surface pushes: `git config core.hooksPath .githooks`
 - Never rebase a published branch; never delete branches
-- spec-lint clean before every commit + PR (new rule: no magic-errno)
+- spec-lint clean before every commit + PR (incl. magic-errno)
 - Never commit directly to main
-- **ARM lockstep**: every kernel-side network change verified on
-  both arches via the pre-push smoke (smoke-x86 + smoke-arm)
+- ARM lockstep via pre-push (smoke-x86 + smoke-arm)
 - Use typed enums for ABI constants (Errno, Signum, OpenFlags, NR_*)
 
 ## First task next session
@@ -96,7 +95,7 @@ make smoke-arm SMOKE_TIMEOUT=300
 make smoke-dhcp-x86  # quick: ~16s
 ```
 
-Then attack item 1 above (SO_*TIMEO via timer-wake primitive on
-WaitList) — it's the biggest remaining Linux-app gate and the
-required infra (`park_with_deadline`) also unblocks item 2
-(signal-aware Eintr).
+Pick item 1 (AF_UNIX recv waitqs) or item 4 (ICMP unreach →
+SO_ERROR). Both are tractable. After those, the remaining list
+is performance work (MSS / window / SACK / IPv6) that's lower
+priority for "cross-compile Linux apps and they work right".
