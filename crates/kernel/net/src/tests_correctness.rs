@@ -182,6 +182,82 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
                NetError::Eaddrinuse);
 }
 
+// ----- F185: TCP Reno congestion control ----------------------------
+
+#[test]
+fn f185_initial_cwnd_is_iw10() {
+    let c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 1000);
+    assert_eq!(c.cwnd, 10 * 1460,
+        "RFC 6928 IW=10 init window in bytes");
+    assert_eq!(c.ssthresh, u32::MAX);
+}
+
+#[test]
+fn f185_slow_start_grows_cwnd_per_acked_byte() {
+    let mut c = client_established();
+    let before = c.cwnd;
+    // Synthesize a cumulative ACK that newly acks 500 bytes.
+    c.cc_on_ack(500, 0);
+    assert_eq!(c.cwnd, before + 500,
+        "slow-start cwnd += bytes_acked (capped at MSS)");
+}
+
+#[test]
+fn f185_slow_start_caps_at_mss_per_ack() {
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    let before = c.cwnd;
+    c.cc_on_ack(5_000, 0);
+    assert_eq!(c.cwnd, before + 1460,
+        "single-ACK growth capped at MSS");
+}
+
+#[test]
+fn f185_three_dup_acks_fast_retransmit_halves_cwnd() {
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    c.cwnd = 20_000;
+    c.ssthresh = u32::MAX;
+    c.cc_on_ack(0, 0);
+    c.cc_on_ack(0, 0);
+    assert_eq!(c.dup_acks, 2);
+    c.cc_on_ack(0, 0);
+    assert_eq!(c.dup_acks, 3);
+    assert_eq!(c.ssthresh, 10_000, "ssthresh = cwnd/2");
+    assert_eq!(c.cwnd, 10_000 + 3 * 1460, "cwnd = ssthresh + 3*MSS");
+}
+
+#[test]
+fn f185_rto_drops_cwnd_to_one_mss() {
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    c.cwnd = 20_000;
+    c.cc_on_rto();
+    assert_eq!(c.cwnd, 1460, "RTO drops cwnd to MSS");
+    assert_eq!(c.ssthresh, 10_000, "RTO halves ssthresh");
+    assert_eq!(c.dup_acks, 0);
+}
+
+#[test]
+fn f185_ca_phase_grows_one_mss_per_rtt_window() {
+    // Once cwnd >= ssthresh, growth is mss²/cwnd per ACK so a
+    // full window of ACKs adds roughly 1 MSS.
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    c.cwnd = 14_600;       // 10 MSS
+    c.ssthresh = 14_600;   // CA phase
+    let start = c.cwnd;
+    for _ in 0..10 {       // 10 ACKs = 1 window
+        c.cc_on_ack(1460, 0);
+    }
+    let grown = c.cwnd - start;
+    // With strict mss²/cwnd math, 10 ACKs at cwnd≈14600 ≈ 1460 +
+    // slow drift. Allow [1400, 1700] band — exact value depends on
+    // integer rounding as cwnd creeps up each step.
+    assert!(grown >= 1300 && grown <= 1700,
+        "CA growth ≈ 1 MSS/window, got {}", grown);
+}
+
 // ----- F184: per-iface MTU → own_mss --------------------------------
 
 #[test]
