@@ -49,8 +49,8 @@ pub fn park_zombie(task: Arc<Task>) {
     // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
     if let Some(p) = parent {
-        // SIGCHLD = 17; bit (17 - 1) = 16 in the 64-bit pending bitmap.
-        p.sigpending.fetch_or(1u64 << 16, Ordering::Release);
+        // F167: typed signal bit instead of `1u64 << 16` magic.
+        p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
         accrue_child_time(&task, &p);
     }
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
@@ -85,8 +85,8 @@ pub fn signal_child_exit(task: &Task) {
     // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
     if let Some(p) = parent {
-        // SIGCHLD = 17; bit (17-1) = 16 in the 64-bit pending bitmap.
-        p.sigpending.fetch_or(1u64 << 16, Ordering::Release);
+        // F167: typed signal bit.
+        p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
     }
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
     wake_wait4_parent(parent_tid);
