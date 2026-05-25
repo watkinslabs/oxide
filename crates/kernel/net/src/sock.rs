@@ -587,10 +587,7 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     STACK.recv_udp(port)
 }
 
-/// F150: hook the kernel installs at boot so the net crate can ask
-/// the kernel for an iface's primary IPv4 without owning the global
-/// ifaddr table here. Defaults to the unspec address until installed.
-/// # C: O(1)
+/// F150: boot-installed hook: iface primary IPv4 lookup. # C: O(1)
 static IFACE_PRIMARY_IP_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 pub type IfacePrimaryIpFn = fn(NetIfaceId) -> Option<Ipv4Addr>;
@@ -939,9 +936,13 @@ pub fn sendto(
         return Ok(n);
     }
     // UDP/other: dest or stored peer.
+    if let Some(RemoteAddr::Inet6 { ip, port }) = dest {
+        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
+    }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
         Some(RemoteAddr::UnixPath(_))       => return Err(NetError::Einval),
+        Some(RemoteAddr::Inet6 { .. })      => unreachable!(),
         None => sock.peer.lock().ok_or(NetError::Eaddrnotavail)?,
     };
     socket_sendto(sock, dst_ip, dst_port, payload)
