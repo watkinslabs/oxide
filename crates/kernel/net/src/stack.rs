@@ -232,6 +232,10 @@ pub struct NetStack {
     next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
     next_isn: Spinlock<u32, StackLockClass>,
+    /// F180c: global NDP cache (ip → MAC).
+    pub ndp: crate::ndp::NdpCache,
+    /// F180c: per-iface IPv6 address registry (NS responder).
+    v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>,
 }
 
 impl NetStack {
@@ -246,7 +250,18 @@ impl NetStack {
             tcp_listens: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(0x1000_0000),
+            ndp:        crate::ndp::NdpCache::new(),
+            v6_addrs:   Spinlock::new(BTreeMap::new()),
         }
+    }
+
+    /// F180c: register a v6 addr on `iface`; NS replies. # C: O(log N)
+    pub fn add_v6_addr(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) {
+        self.v6_addrs.lock().entry(iface).or_default().push(ip);
+    }
+    /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
+    pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
+        self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| *a == ip)).unwrap_or(false)
     }
 
     /// Boot-time wiring: create + register a loopback netdev,
@@ -374,9 +389,7 @@ impl NetStack {
         self.tcp_listen_ip(IpAddr::V4(local_ip), local_port, reuseaddr)
     }
 
-    /// F180b: address-family-aware listen. v4 callers go through
-    /// `tcp_listen`; v6 sockets pass `IpAddr::V6`.
-    /// # C: O(log N) listener lookup + O(N_conns) TIME_WAIT scan
+    /// F180b: address-family-aware listen (v4 + v6). # C: O(log N).
     pub fn tcp_listen_ip(&self, local_ip: IpAddr, local_port: u16, reuseaddr: bool)
         -> NetResult<Arc<TcpListenEntry>>
     {
@@ -417,10 +430,7 @@ impl NetStack {
         )
     }
 
-    /// F180b: address-family-aware active open. v4 callers go through
-    /// `tcp_connect`; v6 sockets pass `IpAddr::V6`. Demuxes outbound
-    /// via `send_l4_over_ip` (v4 path or v6 path per IpAddr variant).
-    /// # C: O(log N) demux insert + 1 segment xmit
+    /// F180b: address-family-aware active open (v4+v6). # C: O(log N).
     pub fn tcp_connect_ip(&self, local_ip: IpAddr, local_port: u16,
                            remote_ip: IpAddr, remote_port: u16)
         -> NetResult<Arc<TcpEntry>>
@@ -502,10 +512,7 @@ impl NetStack {
         entry.conn.lock().recv(max)
     }
 
-    /// Application initiates graceful close: emits FIN, transitions
-    /// the conn out of ESTABLISHED. The demux remains responsible
-    /// for the rest of the close handshake (CloseWait, etc.).
-    /// # C: O(1)
+    /// Graceful close: emit FIN; demux drives the rest. # C: O(1)
     pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
         let (seg, src, dst) = {
             let mut c = entry.conn.lock();
@@ -536,15 +543,10 @@ impl NetStack {
         // First 4 bytes of any L4 header are src_port + dst_port (BE).
         let src_port = u16::from_be_bytes([orig_l4[0], orig_l4[1]]);
         let dst_port = u16::from_be_bytes([orig_l4[2], orig_l4[3]]);
-        // Map ICMP code → errno. PORT (3) → ECONNREFUSED is the
-        // common case (no listener on remote port). HOST/NET/PROTO
-        // → EHOSTUNREACH-ish; we map them all to ECONNREFUSED for
-        // v1 simplicity since the Linux apps that care (DNS, NTP)
-        // treat them similarly. Refinements land in F18x.
-        let eno = match code {
-            crate::icmp::unreach_code::PORT => syscall::errno::Errno::Econnrefused as i32,
-            _                                => syscall::errno::Errno::Econnrefused as i32,
-        };
+        // ICMP code → errno: all dest-unreach map to ECONNREFUSED in v1
+        // (apps that care — DNS/NTP — treat them alike). Refines in F18x.
+        let _ = code;
+        let eno = syscall::errno::Errno::Econnrefused as i32;
         match orig_hdr.proto {
             p if p == IpProto::Udp as u8 => {
                 // The originating socket bound to src_port (our side).

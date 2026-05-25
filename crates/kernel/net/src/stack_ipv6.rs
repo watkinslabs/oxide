@@ -168,11 +168,30 @@ impl NetStack {
                 self.xmit_ipv6(iface, dst, src, IpProto::Icmpv6, &reply)?;
             }
             t if t == crate::ndp::NDP_NS => {
-                // F180c: NS handling lands with NDP cache + per-iface
-                // v6-addr registry. v1: drop silently.
+                // F180c: parse the solicitation; if the target matches
+                // an address bound on this iface, build a solicited NA
+                // and ship it back. Source-lladdr in the NS populates
+                // the cache too (peer is talking to us).
+                if let Ok(msg) = crate::ndp::NdpMsg::parse(payload, src, dst) {
+                    if let Some(mac) = msg.lladdr { self.ndp.insert(src, mac); }
+                    if self.v6_addr_owned_by(iface, msg.target) {
+                        let our_mac = self.ifaces.lookup(iface)
+                            .map(|d| d.mac()).unwrap_or(crate::addr::MacAddr::ZERO);
+                        let na = crate::ndp::NdpMsg::build_na(
+                            msg.target, src, our_mac, msg.target, 0x2000_0000,
+                        );
+                        self.xmit_ipv6(iface, msg.target, src, IpProto::Icmpv6, &na)?;
+                    }
+                }
             }
             t if t == crate::ndp::NDP_NA => {
-                // F180c: NA cache-populate lands with NDP cache.
+                // F180c: cache the target_lladdr binding so subsequent
+                // v6 xmit on this neighbor can fill the Ethernet dst.
+                if let Ok(msg) = crate::ndp::NdpMsg::parse(payload, src, dst) {
+                    if let Some(mac) = msg.lladdr {
+                        self.ndp.insert(msg.target, mac);
+                    }
+                }
             }
             _ => {}
         }
