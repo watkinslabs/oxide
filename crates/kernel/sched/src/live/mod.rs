@@ -32,6 +32,7 @@ pub mod schedule;
 pub mod spawn;
 pub mod wait_list;
 pub mod zombies;
+pub mod sigpend;
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
@@ -40,6 +41,7 @@ pub use schedule::{
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};
 pub use wait_list::WaitList;
+pub use sigpend::{send_signal_self, Signum};
 pub use zombies::{enqueue_zombie, park_for_wait4, park_zombie, reap_one, signal_child_exit, unpark_self_from_wait4};
 
 pub mod preempt;

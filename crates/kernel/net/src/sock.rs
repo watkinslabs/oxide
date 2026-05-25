@@ -515,9 +515,8 @@ impl vfs::Inode for InetSocket {
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                 .max(TCP_SNDBUF_DEFAULT) as usize;
             let entry = entry.clone();
-            // F166: surface EPIPE for writes to a closing/closed
-            // send side BEFORE attempting tcp_send (otherwise tcp_send
-            // may succeed with bytes that go nowhere).
+            // F166/F167: closing/closed send side → SIGPIPE + EPIPE
+            // before tcp_send so we don't queue bytes into a corpse.
             let st = entry.conn.lock().state;
             if matches!(st,
                 crate::tcp_state::TcpState::Closed
@@ -528,6 +527,7 @@ impl vfs::Inode for InetSocket {
                 | crate::tcp_state::TcpState::FinWait1
                 | crate::tcp_state::TcpState::FinWait2
             ) {
+                sched::live::send_signal_self(sched::live::Signum::Sigpipe);
                 return Err(vfs::VfsError::Epipe);
             }
             return match stack().tcp_send(&entry, buf, cap) {
