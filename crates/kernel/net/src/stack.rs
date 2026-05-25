@@ -335,14 +335,30 @@ impl NetStack {
 
     /// Open a passive listener at (`local_ip`, `local_port`).
     /// Returns the listen-entry Arc so callers can poll `accept`.
-    /// `Eaddrinuse` if the (ip, port) tuple is already a listener.
-    /// # C: O(log N)
-    pub fn tcp_listen(&self, local_ip: Ipv4Addr, local_port: u16)
+    /// `Eaddrinuse` if the (ip, port) tuple is already a listener
+    /// OR if a TIME_WAIT conn lingers at that (local_ip, local_port)
+    /// AND `reuseaddr == false` (POSIX SO_REUSEADDR semantic per
+    /// Linux's `tcp_v4_get_port`).
+    /// # C: O(log N) listener lookup + O(N_conns) TIME_WAIT scan
+    pub fn tcp_listen(&self, local_ip: Ipv4Addr, local_port: u16, reuseaddr: bool)
         -> NetResult<Arc<TcpListenEntry>>
     {
         let key = TcpListenKey { local_ip, local_port };
         let mut g = self.tcp_listens.lock();
         if g.contains_key(&key) { return Err(NetError::Eaddrinuse); }
+        // F176: TIME_WAIT conflict. The conn table holds 4-tuples;
+        // a TIME_WAIT entry at our (local_ip, local_port, _, _) blocks
+        // bind unless SO_REUSEADDR is set. Skip the scan entirely when
+        // reuseaddr=true so the common server-restart case is fast.
+        if !reuseaddr {
+            let conns = self.tcp_conns.lock();
+            let conflict = conns.iter().any(|(k, e)| {
+                k.local_port == local_port
+                    && (k.local_ip == local_ip || local_ip == Ipv4Addr::ANY)
+                    && e.conn.lock().state == crate::tcp_state::TcpState::TimeWait
+            });
+            if conflict { return Err(NetError::Eaddrinuse); }
+        }
         let entry = Arc::new(TcpListenEntry::new(
             Endpoint { ip: local_ip, port: local_port },
         ));
@@ -854,7 +870,7 @@ mod tests {
     fn tcp_handshake_via_loopback() {
         let stack = NetStack::new();
         let (id, lo) = stack.register_loopback();
-        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234).unwrap();
+        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
         let client = stack.tcp_connect(
             Ipv4Addr::LOOPBACK, 50000,
             Ipv4Addr::LOOPBACK, 1234,
@@ -870,7 +886,7 @@ mod tests {
     fn tcp_data_round_trip_via_loopback() {
         let stack = NetStack::new();
         let (id, lo) = stack.register_loopback();
-        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234).unwrap();
+        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
         let client = stack.tcp_connect(
             Ipv4Addr::LOOPBACK, 50000,
             Ipv4Addr::LOOPBACK, 1234,
