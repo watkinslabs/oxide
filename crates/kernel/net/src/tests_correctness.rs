@@ -15,9 +15,10 @@ use crate::arp::{ArpCache, ARP_STALE_NS};
 use crate::stack::NetStack;
 use crate::netdev::NetError;
 
-fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip, port } }
+fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
 
 fn lo() -> Ipv4Addr { Ipv4Addr::LOOPBACK }
+fn lo_ip() -> IpAddr { IpAddr::V4(Ipv4Addr::LOOPBACK) }
 
 // ----- F173: MSS option in active-open SYN ---------------------------
 
@@ -35,7 +36,7 @@ fn f173_input_latches_peer_mss_from_synack() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_options(0x2000_0000, c.snd_nxt, 1460, Some(536), None);
-    let _ = c.input(lo(), lo(), &synack);
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert_eq!(c.peer_mss, 536, "peer MSS=536 must be latched");
 }
 
@@ -55,7 +56,7 @@ fn f178_input_latches_peer_wscale_only_when_present() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let with_ws = build_synack_with_options(0x2000_0000, c.snd_nxt, 65535, Some(1460), Some(7));
-    let _ = c.input(lo(), lo(), &with_ws);
+    let _ = c.input(lo_ip(), lo_ip(), &with_ws);
     assert_eq!(c.rcv_wscale, 7);
 }
 
@@ -64,7 +65,7 @@ fn f178_input_no_wscale_keeps_default_zero() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let no_ws = build_synack_with_options(0x2000_0000, c.snd_nxt, 65535, Some(1460), None);
-    let _ = c.input(lo(), lo(), &no_ws);
+    let _ = c.input(lo_ip(), lo_ip(), &no_ws);
     assert_eq!(c.rcv_wscale, 0,
         "rcv_wscale stays 0 when peer omits WSCALE (RFC 7323 §1.3)");
 }
@@ -74,12 +75,12 @@ fn f178_input_non_syn_applies_rcv_wscale_to_window() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_options(0x2000_0000, c.snd_nxt, 100, Some(1460), Some(3));
-    let _ = c.input(lo(), lo(), &synack);
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
     // SYN window is unscaled; established conn snd_wnd = 100.
     assert_eq!(c.snd_wnd, 100);
     // Now an ACK with window=200 should be scaled by rcv_wscale=3.
     let ack = build_plain_ack(0x2000_0001, c.snd_nxt, 200);
-    let _ = c.input(lo(), lo(), &ack);
+    let _ = c.input(lo_ip(), lo_ip(), &ack);
     assert_eq!(c.snd_wnd, 200u32 << 3, "non-SYN window must be left-shifted by rcv_wscale");
 }
 
@@ -89,7 +90,7 @@ fn f178_input_non_syn_applies_rcv_wscale_to_window() {
 fn f179_in_order_delivers_immediately() {
     let mut c = client_established();
     let seg = build_data_segment(c.rcv_nxt, c.snd_nxt, b"hello");
-    let _ = c.input(lo(), lo(), &seg);
+    let _ = c.input(lo_ip(), lo_ip(), &seg);
     assert_eq!(c.recv_buf.iter().copied().collect::<Vec<u8>>(), b"hello");
 }
 
@@ -99,12 +100,12 @@ fn f179_ooo_buffered_until_gap_fills() {
     let base = c.rcv_nxt;
     // Push gap-segment first: seq = base+5..base+10 ("world").
     let ooo = build_data_segment(base.wrapping_add(5), c.snd_nxt, b"world");
-    let _ = c.input(lo(), lo(), &ooo);
+    let _ = c.input(lo_ip(), lo_ip(), &ooo);
     assert!(c.recv_buf.is_empty(), "OOO data must not deliver before gap fills");
     assert_eq!(c.ooo_buf.len(), 1);
     // Now push the gap: seq = base..base+5 ("hello").
     let fill = build_data_segment(base, c.snd_nxt, b"hello");
-    let _ = c.input(lo(), lo(), &fill);
+    let _ = c.input(lo_ip(), lo_ip(), &fill);
     let got: Vec<u8> = c.recv_buf.iter().copied().collect();
     assert_eq!(got, b"helloworld",
         "in-order arrival must drain contiguous OOO chunks");
@@ -117,7 +118,7 @@ fn f179_past_window_data_ignored() {
     let base = c.rcv_nxt;
     // Past-window: seq = base - 10 (already ACK'd range).
     let stale = build_data_segment(base.wrapping_sub(10), c.snd_nxt, b"stale");
-    let _ = c.input(lo(), lo(), &stale);
+    let _ = c.input(lo_ip(), lo_ip(), &stale);
     assert!(c.recv_buf.is_empty());
     assert!(c.ooo_buf.is_empty(), "past-window data must not enter ooo_buf");
 }
@@ -179,6 +180,35 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
     stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).unwrap();
     assert_eq!(stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).err().unwrap(),
                NetError::Eaddrinuse);
+}
+
+// ----- F180b: TCP over IPv6 -----------------------------------------
+
+#[test]
+fn f180b_tcp_listen_then_connect_over_ipv6_via_lo() {
+    use crate::addr::{IpAddr, Ipv6Addr};
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let listener = stack.tcp_listen_ip(IpAddr::V6(Ipv6Addr::LOOPBACK), 4444, true).unwrap();
+    let client = stack.tcp_connect_ip(
+        IpAddr::V6(Ipv6Addr::LOOPBACK), 50001,
+        IpAddr::V6(Ipv6Addr::LOOPBACK), 4444,
+    ).unwrap();
+    // SYN → SYN-ACK → ACK via v6 deliver path.
+    for _ in 0..3 { stack.drain_loopback(id, &lo); }
+    let server = stack.tcp_accept(&listener).expect("v6 accept");
+    assert_eq!(client.conn.lock().state, TcpState::Established);
+    assert_eq!(server.conn.lock().state, TcpState::Established);
+}
+
+#[test]
+fn f180b_tcp_demux_keys_v6_independently_of_v4() {
+    use crate::addr::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    // Same port on both families must not collide.
+    stack.tcp_listen_ip(IpAddr::V4(Ipv4Addr::LOOPBACK), 7777, true).unwrap();
+    stack.tcp_listen_ip(IpAddr::V6(Ipv6Addr::LOOPBACK), 7777, true).unwrap();
 }
 
 // ----- F180: IPv6 minimum-viable deliver_rx_ipv6 --------------------
@@ -302,7 +332,7 @@ fn f182_negotiates_ts_only_when_peer_echoes() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_ts(0x2000_0000, c.snd_nxt, 65535, Some(7777));
-    let _ = c.input(lo(), lo(), &synack);
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert!(c.ts_enabled);
     assert_eq!(c.ts_recent, 7777);
 }
@@ -312,7 +342,7 @@ fn f182_no_ts_in_synack_keeps_disabled() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_options(0x2000_0000, c.snd_nxt, 65535, Some(1460), None);
-    let _ = c.input(lo(), lo(), &synack);
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert!(!c.ts_enabled, "no TS in SYN-ACK → ts disabled (don't waste bytes)");
 }
 
@@ -332,7 +362,7 @@ fn f182_paws_drops_old_tsval() {
     // Synthesize an in-window data segment with TSval=999 (way older).
     let base = c.rcv_nxt;
     let stale = build_data_segment_with_ts(base, c.snd_nxt, b"old", 999, 0);
-    let resp = c.input(lo(), lo(), &stale).unwrap();
+    let resp = c.input(lo_ip(), lo_ip(), &stale).unwrap();
     assert!(resp.is_none(), "PAWS drop: no response, no ACK update");
     assert!(c.recv_buf.is_empty(),
         "PAWS drop must not deliver stale payload to recv_buf");
@@ -346,7 +376,7 @@ fn f182_paws_accepts_newer_tsval_and_updates_recent() {
     c.ts_recent = 1_000;
     let base = c.rcv_nxt;
     let fresh = build_data_segment_with_ts(base, c.snd_nxt, b"new", 2_000, 0);
-    let _ = c.input(lo(), lo(), &fresh).unwrap();
+    let _ = c.input(lo_ip(), lo_ip(), &fresh).unwrap();
     let got: Vec<u8> = c.recv_buf.iter().copied().collect();
     assert_eq!(got, b"new");
     assert_eq!(c.ts_recent, 2_000);
@@ -405,7 +435,7 @@ fn client_established_with_ts() -> TcpConn {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_ts(0x2000_0000, c.snd_nxt, 65535, Some(100));
-    let _ = c.input(lo(), lo(), &synack);
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert!(c.ts_enabled);
     c
 }
@@ -446,7 +476,7 @@ fn f179a_ack_with_ooo_carries_sack_option() {
     let base = c.rcv_nxt;
     // Push OOO then in-order; the ACK reply should carry SACK.
     let ooo = build_data_segment(base.wrapping_add(5), c.snd_nxt, b"world");
-    let _ = c.input(lo(), lo(), &ooo);
+    let _ = c.input(lo_ip(), lo_ip(), &ooo);
     // Verify build_ack_with_sack emits a SACK option.
     let ack = c.build_ack_with_sack();
     let parsed = crate::tcp_hdr::parse_sack_option(&ack);
@@ -657,7 +687,7 @@ fn client_established() -> TcpConn {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_options(0x2000_0000, c.snd_nxt, 65535, Some(1460), None);
-    let _ = c.input(lo(), lo(), &synack);
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert_eq!(c.state, TcpState::Established);
     c
 }

@@ -17,13 +17,15 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
-use crate::addr::Ipv4Addr;
+use crate::addr::{IpAddr, Ipv4Addr};
 use crate::tcp_hdr::{TcpHdr, TCP_HDR_MIN_LEN, flags};
 use crate::tcp_state::{TcpEvent, TcpState, transition};
 
-/// Endpoint = (ip, port).
+/// Endpoint = (ip, port). F180b: `ip` is `IpAddr` (V4 or V6) so a
+/// single TcpConn handles both families; `build_segment` dispatches
+/// to the matching pseudo-header for checksum.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Endpoint { pub ip: Ipv4Addr, pub port: u16 }
+pub struct Endpoint { pub ip: IpAddr, pub port: u16 }
 
 /// One unacked transmission record on the retransmit queue.
 /// Tracks the seq the segment occupies + when it was sent so
@@ -147,7 +149,7 @@ impl TcpConn {
     pub fn new_listener(local: Endpoint) -> Self {
         Self {
             local,
-            remote: Endpoint { ip: Ipv4Addr::ANY, port: 0 },
+            remote: Endpoint { ip: IpAddr::V4(Ipv4Addr::ANY), port: 0 },
             state: TcpState::Listen,
             snd_una: 0, snd_nxt: 0, rcv_nxt: 0, window: 65535,
             send_buf: VecDeque::new(), recv_buf: VecDeque::new(),
@@ -251,7 +253,7 @@ impl TcpConn {
         if !s.payload.is_empty() {
             buf[crate::tcp_hdr::TCP_HDR_MIN_LEN..].copy_from_slice(&s.payload);
         }
-        h.build_into(self.local.ip, self.remote.ip, &mut buf);
+        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
 
@@ -281,10 +283,10 @@ impl TcpConn {
     /// validated. Drives the state machine, applies payload bytes
     /// to `recv_buf`, possibly emits a response segment.
     /// # C: O(payload size)
-    pub fn input(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, seg: &[u8])
+    pub fn input(&mut self, src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8])
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
-        let hdr = TcpHdr::parse(seg, src_ip, dst_ip)
+        let hdr = crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip)
             .map_err(|_| TcpConnError::BadHdr)?;
         if (hdr.flags & flags::RST) != 0 {
             // F163: surface as SO_ERROR. RST during SynSent (peer
@@ -600,7 +602,7 @@ impl TcpConn {
             data_offset: data_offset as u8, flags: flags::ACK,
             window: self.window, checksum: 0, urg_ptr: 0,
         };
-        h.build_into(self.local.ip, self.remote.ip, &mut buf);
+        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
 
@@ -651,7 +653,7 @@ impl TcpConn {
             data_offset, flags: flag_bits, window: self.window,
             checksum: 0, urg_ptr: 0,
         };
-        h.build_into(self.local.ip, self.remote.ip, &mut buf);
+        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
 
@@ -688,7 +690,7 @@ impl TcpConn {
             data_offset: 10, flags: flag_bits, window: self.window,
             checksum: 0, urg_ptr: 0,
         };
-        h.build_into(self.local.ip, self.remote.ip, &mut buf);
+        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
 }
@@ -720,7 +722,8 @@ pub const OWN_WSCALE: u8 = 0;
 mod tests {
     use super::*;
 
-    fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip, port } }
+    fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
+    fn lo_ip() -> IpAddr { IpAddr::V4(Ipv4Addr::LOOPBACK) }
 
     #[test]
     fn three_way_handshake_completes() {
@@ -729,9 +732,9 @@ mod tests {
         let mut server = TcpConn::new_listener(ep(lo, 80));
 
         let syn = client.active_open().unwrap();
-        let synack = server.input(lo, lo, &syn).unwrap().expect("SYN-ACK");
-        let ack = client.input(lo, lo, &synack).unwrap().expect("ACK");
-        let resp = server.input(lo, lo, &ack).unwrap();
+        let synack = server.input(lo_ip(), lo_ip(), &syn).unwrap().expect("SYN-ACK");
+        let ack = client.input(lo_ip(), lo_ip(), &synack).unwrap().expect("ACK");
+        let resp = server.input(lo_ip(), lo_ip(), &ack).unwrap();
         assert!(resp.is_none());
 
         assert_eq!(client.state, TcpState::Established);
@@ -744,15 +747,15 @@ mod tests {
         let mut client = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);
         let mut server = TcpConn::new_listener(ep(lo, 80));
         let syn    = client.active_open().unwrap();
-        let synack = server.input(lo, lo, &syn).unwrap().unwrap();
-        let ack    = client.input(lo, lo, &synack).unwrap().unwrap();
-        let _      = server.input(lo, lo, &ack).unwrap();
+        let synack = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+        let ack    = client.input(lo_ip(), lo_ip(), &synack).unwrap().unwrap();
+        let _      = server.input(lo_ip(), lo_ip(), &ack).unwrap();
 
         client.send(b"oxide-tcp");
         let segs = client.output(1500, true);
         assert_eq!(segs.len(), 1);
-        let server_ack = server.input(lo, lo, &segs[0]).unwrap().unwrap();
-        let _ = client.input(lo, lo, &server_ack).unwrap();
+        let server_ack = server.input(lo_ip(), lo_ip(), &segs[0]).unwrap().unwrap();
+        let _ = client.input(lo_ip(), lo_ip(), &server_ack).unwrap();
 
         let got = server.recv(64);
         assert_eq!(&got[..], b"oxide-tcp");
@@ -764,18 +767,18 @@ mod tests {
         let mut client = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);
         let mut server = TcpConn::new_listener(ep(lo, 80));
         let syn    = client.active_open().unwrap();
-        let synack = server.input(lo, lo, &syn).unwrap().unwrap();
-        let ack    = client.input(lo, lo, &synack).unwrap().unwrap();
-        let _      = server.input(lo, lo, &ack).unwrap();
+        let synack = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+        let ack    = client.input(lo_ip(), lo_ip(), &synack).unwrap().unwrap();
+        let _      = server.input(lo_ip(), lo_ip(), &ack).unwrap();
 
         let fin = client.local_close().unwrap();
         assert_eq!(client.state, TcpState::FinWait1);
-        let server_ack = server.input(lo, lo, &fin).unwrap().unwrap();
+        let server_ack = server.input(lo_ip(), lo_ip(), &fin).unwrap().unwrap();
         // Server is now in CloseWait. Local close on server emits FIN.
         let server_fin = server.local_close().unwrap();
         assert_eq!(server.state, TcpState::LastAck);
-        let client_ack = client.input(lo, lo, &server_fin).unwrap().unwrap();
-        let _ = server.input(lo, lo, &client_ack).unwrap();
+        let client_ack = client.input(lo_ip(), lo_ip(), &server_fin).unwrap().unwrap();
+        let _ = server.input(lo_ip(), lo_ip(), &client_ack).unwrap();
         assert_eq!(server.state, TcpState::Closed);
         // Client's transition from FinWait1 takes the FIN+ACK path
         // through Closing → TimeWait.
@@ -802,8 +805,8 @@ mod tests {
         let mut server = TcpConn::new_listener(ep(lo, 80));
         let syn    = client.active_open().unwrap();
         assert_eq!(client.retx_q.len(), 1);
-        let synack = server.input(lo, lo, &syn).unwrap().unwrap();
-        let _ = client.input(lo, lo, &synack).unwrap();
+        let synack = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+        let _ = client.input(lo_ip(), lo_ip(), &synack).unwrap();
         // After receiving SYN+ACK, the SYN should be acked + popped.
         assert_eq!(client.retx_q.len(), 0);
     }
@@ -834,7 +837,7 @@ mod tests {
             window: 0, checksum: 0, urg_ptr: 0,
         };
         h.build_into(lo, lo, &mut buf);
-        let _ = conn.input(lo, lo, &buf);
+        let _ = conn.input(lo_ip(), lo_ip(), &buf);
         assert_eq!(conn.state, TcpState::Closed);
     }
 }
