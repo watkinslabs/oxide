@@ -11,6 +11,16 @@ pub const ICMP_TYPE_DEST_UNREACH: u8 = 3;
 pub const ICMP_TYPE_ECHO_REQUEST: u8 = 8;
 pub const ICMP_TYPE_TIME_EXC:     u8 = 11;
 
+/// F174: RFC 792 code subfields for ICMP_TYPE_DEST_UNREACH.
+pub mod unreach_code {
+    pub const NET:        u8 = 0;
+    pub const HOST:       u8 = 1;
+    pub const PROTOCOL:   u8 = 2;
+    pub const PORT:       u8 = 3;
+    pub const FRAG:       u8 = 4;
+    pub const SRC_ROUTE:  u8 = 5;
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IcmpError { Short, BadChecksum, BadType }
 

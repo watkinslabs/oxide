@@ -79,9 +79,20 @@ pub struct UdpRxQueue {
     /// deliver_rx wakes after pushing.
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
+    /// F174: per-port pending async error (ICMP destination
+    /// unreachable, etc.). Linux errno value; cleared by SO_ERROR
+    /// read or consumed by the next recvfrom call.
+    pub error_eno: core::sync::atomic::AtomicI32,
 }
 
 impl UdpRxQueue {
+    /// F174: read + clear the pending per-port error (ICMP unreach).
+    /// Returns 0 if no error pending. Linux semantic: SO_ERROR /
+    /// next recv consumes the error.
+    /// # C: O(1)
+    pub fn take_error(&self) -> i32 {
+        self.error_eno.swap(0, core::sync::atomic::Ordering::AcqRel)
+    }
     /// # C: O(1)
     pub fn new(bound_ip: Ipv4Addr, bound_port: u16) -> Self {
         Self {
@@ -89,6 +100,7 @@ impl UdpRxQueue {
             q: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
+            error_eno: core::sync::atomic::AtomicI32::new(0),
         }
     }
 }
@@ -437,6 +449,65 @@ impl NetStack {
         self.send_l4_over_ipv4(src, dst, IpProto::Tcp, &seg)
     }
 
+    /// F174: handle an incoming ICMP Destination Unreachable.
+    /// `payload` is the full ICMP message — 8-byte header + the
+    /// echoed IPv4 header + first 8 bytes of the original L4. We
+    /// reconstruct the original 4-tuple and surface the right
+    /// errno on the originating socket (UDP port or TCP conn).
+    /// # C: O(log N) demux lookups
+    fn handle_dest_unreach(&self, code: u8, payload: &[u8]) {
+        use core::sync::atomic::Ordering;
+        // 8-byte ICMP header, then original IP+8B of L4 starts at +8.
+        const ICMP_HDR: usize = 8;
+        if payload.len() < ICMP_HDR + crate::ipv4::IPV4_HDR_LEN + 8 { return; }
+        let orig_ip = &payload[ICMP_HDR..];
+        let orig_hdr = match Ipv4Hdr::parse(orig_ip) {
+            Ok(h) => h, Err(_) => return,
+        };
+        let orig_l4_off = orig_hdr.ihl_bytes();
+        if orig_ip.len() < orig_l4_off + 8 { return; }
+        let orig_l4 = &orig_ip[orig_l4_off..orig_l4_off + 8];
+        // First 4 bytes of any L4 header are src_port + dst_port (BE).
+        let src_port = u16::from_be_bytes([orig_l4[0], orig_l4[1]]);
+        let dst_port = u16::from_be_bytes([orig_l4[2], orig_l4[3]]);
+        // Map ICMP code → errno. PORT (3) → ECONNREFUSED is the
+        // common case (no listener on remote port). HOST/NET/PROTO
+        // → EHOSTUNREACH-ish; we map them all to ECONNREFUSED for
+        // v1 simplicity since the Linux apps that care (DNS, NTP)
+        // treat them similarly. Refinements land in F18x.
+        let eno = match code {
+            crate::icmp::unreach_code::PORT => syscall::errno::Errno::Econnrefused as i32,
+            _                                => syscall::errno::Errno::Econnrefused as i32,
+        };
+        match orig_hdr.proto {
+            p if p == IpProto::Udp as u8 => {
+                // The originating socket bound to src_port (our side).
+                if let Some(q) = self.udp.lock().get(&src_port).cloned() {
+                    q.error_eno.store(eno, Ordering::Release);
+                    #[cfg(target_os = "oxide-kernel")]
+                    q.waiters.wake_all();
+                }
+            }
+            p if p == IpProto::Tcp as u8 => {
+                let key = TcpKey {
+                    local_ip:    orig_hdr.src,
+                    local_port:  src_port,
+                    remote_ip:   orig_hdr.dst,
+                    remote_port: dst_port,
+                };
+                if let Some(entry) = self.tcp_conns.lock().get(&key).cloned() {
+                    let mut c = entry.conn.lock();
+                    if c.error_eno == 0 { c.error_eno = eno; }
+                    c.state = crate::tcp_state::TcpState::Closed;
+                    drop(c);
+                    #[cfg(target_os = "oxide-kernel")]
+                    entry.rx_waiters.wake_all();
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// F159: walk active TCP conns and re-emit any segments whose
     /// RTO has expired. Drops conns whose front-of-retx_q segment
     /// has been retried past a state-dependent ceiling (6 for SYN,
@@ -575,6 +646,8 @@ impl NetStack {
                     p.iface = Some(iface);
                     let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
                     dev.xmit(p)?;
+                } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH {
+                    self.handle_dest_unreach(echo.code, payload);
                 }
             }
             p if p == IpProto::Udp as u8 => {
