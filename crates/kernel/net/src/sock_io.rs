@@ -71,12 +71,15 @@ pub(crate) fn write_tcp_blocking(
                     | crate::tcp_state::TcpState::FinWait1
                     | crate::tcp_state::TcpState::FinWait2
                 ) {
-                    // F166: POSIX write to a closed/closing send-side
-                    // returns EPIPE (and would deliver SIGPIPE — that
-                    // arrives once the signal infrastructure carries
-                    // it; ABI errno is unchanged). Short success then
-                    // EPIPE on next call: surface the count now, peer
-                    // hangup discovered next time.
+                    // F166/F167: POSIX write to a closed/closing send
+                    // side returns EPIPE AND raises SIGPIPE. Userspace
+                    // that ignored SIGPIPE (signal(SIGPIPE, SIG_IGN))
+                    // observes EPIPE; default disposition terminates
+                    // the process. Short success then EPIPE on next
+                    // call: surface the count now, peer hangup
+                    // discovered next time.
+                    #[cfg(target_os = "oxide-kernel")]
+                    sched::live::send_signal_self(sched::live::Signum::Sigpipe);
                     if total > 0 { return Ok(total); }
                     return Err(vfs::VfsError::Epipe);
                 }
