@@ -83,16 +83,13 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
         let mut ready: i64 = 0;
         for &(fd, want_read, want_write) in &wanted {
             let file = match fdt.get(fd as i32) { Ok(f) => f, Err(_) => continue };
-            let (got_read, got_write) = if file.inode().file_type() == vfs::FileType::CharDev {
-                let ino = file.inode().ino();
-                if (ino & 0xFFFF_0000) == 0x6000_0000 {
-                    let is_master = (ino & 0x8000) == 0;
-                    crate::dev::pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
-                        let r = pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() });
-                        (r, true)
-                    }).unwrap_or((false, false))
-                } else { (true, true) }
-            } else { (true, true) };
+            // F202: consult inode.poll() — was special-casing pty and
+            // returning (true,true) for everything else, so dropbear's
+            // pipe-driven exec channel never woke on actual readiness.
+            let mask = file.inode().poll();
+            let got_read  = (mask & vfs::POLL_IN)  != 0
+                         || (mask & vfs::POLL_HUP) != 0;
+            let got_write = (mask & vfs::POLL_OUT) != 0;
             let mut hit = false;
             if want_read  && got_read  { set_bit(readfds_p, fd); hit = true; }
             if want_write && got_write { set_bit(writefds_p, fd); hit = true; }
