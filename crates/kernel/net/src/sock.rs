@@ -235,6 +235,8 @@ pub struct SockOpts {
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384;
 pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
 
+pub use crate::sock_io::compute_deadline_ns;
+
 impl Default for SockOpts {
     fn default() -> Self {
         use core::sync::atomic::*;
@@ -442,7 +444,13 @@ impl vfs::Inode for InetSocket {
                 Some(msg) => { let n = msg.len(); buf[..n].copy_from_slice(&msg); Ok(n) }
                 None      => Err(vfs::VfsError::Eagain),
             },
-            K::Tcp(entry) => crate::sock_io::read_tcp_blocking(&entry, buf),
+            K::Tcp(entry) => {
+                // F169: convert SO_RCVTIMEO (ns) into an absolute
+                // monotonic deadline; 0 = no timeout (indefinite).
+                let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+                let deadline_ns = compute_deadline_ns(timeo);
+                crate::sock_io::read_tcp_blocking(&entry, buf, deadline_ns)
+            }
             K::Other => Err(vfs::VfsError::Einval),
         }
     }
@@ -500,7 +508,9 @@ impl vfs::Inode for InetSocket {
             K::Tcp(entry) => {
                 let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                     .max(TCP_SNDBUF_DEFAULT) as usize;
-                crate::sock_io::write_tcp_blocking(&entry, buf, cap)
+                let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+                let deadline_ns = compute_deadline_ns(timeo);
+                crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns)
             }
             K::Other => Err(vfs::VfsError::Einval),
         }
