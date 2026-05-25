@@ -69,6 +69,10 @@ pub struct TcpConn {
     /// ETIMEDOUT). Cleared on read. Linux errno value (positive),
     /// not the negated-syscall-return form.
     pub error_eno: i32,
+    /// F173: peer-advertised MSS (from their SYN / SYN-ACK MSS
+    /// option). `0` = not yet observed — output() falls back to
+    /// the local-iface MTU-derived default.
+    pub peer_mss: u16,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -98,6 +102,7 @@ impl TcpConn {
             rto_ns:   1_000_000_000,    // RFC 6298 §2.1 initial RTO = 1 s
             tw_start_ns: 0,
             error_eno: 0,
+            peer_mss: 0,
         }
     }
 
@@ -115,6 +120,7 @@ impl TcpConn {
             rto_ns:   1_000_000_000,
             tw_start_ns: 0,
             error_eno: 0,
+            peer_mss: 0,
         }
     }
 
@@ -205,13 +211,15 @@ impl TcpConn {
         buf
     }
 
-    /// Client active open: emit a SYN segment, transition to SynSent.
+    /// Client active open: emit a SYN segment with our MSS option,
+    /// transition to SynSent.
     /// # C: O(1)
     pub fn active_open(&mut self) -> Result<Vec<u8>, TcpConnError> {
         let new_state = transition(self.state, TcpEvent::ActiveOpen)
             .ok_or(TcpConnError::BadState)?;
         let seq_start = self.snd_nxt;
-        let seg = self.build_segment(flags::SYN, &[]);
+        // F173: advertise our MSS in the initial SYN per RFC 9293 §3.7.1.
+        let seg = self.build_syn_with_mss(flags::SYN, OWN_MSS_DEFAULT);
         self.snd_nxt = self.snd_nxt.wrapping_add(1);
         self.state = new_state;
         // SYN consumes one sequence; track for retransmit.
@@ -255,15 +263,20 @@ impl TcpConn {
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.snd_una = 0;
                 self.snd_nxt = 0;
+                // F173: latch peer's MSS option if present.
+                if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 self.state = transition(self.state, TcpEvent::RecvSyn)
                     .ok_or(TcpConnError::BadState)?;
-                let resp = self.build_segment(flags::SYN | flags::ACK, &[]);
+                // F173: advertise our MSS in the SYN-ACK.
+                let resp = self.build_syn_with_mss(flags::SYN | flags::ACK, OWN_MSS_DEFAULT);
                 self.snd_nxt = self.snd_nxt.wrapping_add(1);
                 Ok(Some(resp))
             }
             TcpState::SynSent if (hdr.flags & (flags::SYN | flags::ACK)) == (flags::SYN | flags::ACK) => {
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.snd_una = hdr.ack;
+                // F173: latch peer's MSS.
+                if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 // Pop SYN from retx_q (its seq+1 ≤ ack now).
                 while let Some(front) = self.retx_q.front() {
                     let len = front.payload.len() as u32 +
@@ -349,7 +362,16 @@ impl TcpConn {
     /// — those states require explicit handshake/close segments.
     /// # C: O(send_buf)
     pub fn output(&mut self, mtu: usize) -> Vec<Vec<u8>> {
-        let mss = mtu.saturating_sub(40).min(1460);  // 20 IP + 20 TCP
+        // F173: MSS = min(local-MTU-derived, peer-advertised).
+        // Peer's MSS is what they're willing to receive (RFC 9293
+        // §3.7.1); we must not exceed it. Falls back to 1460 when
+        // peer didn't advertise (legacy / hosted tests).
+        let local_mss = mtu.saturating_sub(40).min(1460);  // 20 IP + 20 TCP
+        let mss = if self.peer_mss != 0 {
+            core::cmp::min(local_mss, self.peer_mss as usize)
+        } else {
+            local_mss
+        };
         let mut out = Vec::new();
         if !self.state.is_established() && self.state != TcpState::CloseWait {
             return out;
@@ -420,7 +442,36 @@ impl TcpConn {
         h.build_into(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
+
+    /// F173: build a SYN (or SYN-ACK) with a single MSS option
+    /// (kind=2, len=4). 4-byte option fits one 32-bit option-word,
+    /// so the header becomes 24 bytes (data_offset = 6). Used by
+    /// `active_open` and the LISTEN-side SYN-ACK responder.
+    /// # C: O(1)
+    fn build_syn_with_mss(&self, flag_bits: u8, mss: u16) -> Vec<u8> {
+        const OPT_LEN: usize = 4;
+        let total = TCP_HDR_MIN_LEN + OPT_LEN;
+        let mut buf = alloc::vec![0u8; total];
+        // MSS option immediately after the fixed header.
+        buf[TCP_HDR_MIN_LEN]     = crate::tcp_hdr::opt::MSS;
+        buf[TCP_HDR_MIN_LEN + 1] = OPT_LEN as u8;
+        buf[TCP_HDR_MIN_LEN + 2..TCP_HDR_MIN_LEN + 4]
+            .copy_from_slice(&mss.to_be_bytes());
+        let mut h = TcpHdr {
+            src_port: self.local.port, dst_port: self.remote.port,
+            seq: self.snd_nxt, ack: self.rcv_nxt,
+            data_offset: 6, flags: flag_bits, window: self.window,
+            checksum: 0, urg_ptr: 0,
+        };
+        h.build_into(self.local.ip, self.remote.ip, &mut buf);
+        buf
+    }
 }
+
+/// F173: MSS we advertise. Conservative default (1460 = 1500-byte
+/// MTU minus 20 IP + 20 TCP); per-iface MTU lookup is a follow-up
+/// when the bind table tracks iface scope.
+pub const OWN_MSS_DEFAULT: u16 = 1460;
 
 #[cfg(test)]
 mod tests {
