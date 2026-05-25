@@ -166,6 +166,10 @@ fn ecn_tos(c: &TcpConn) -> u8 {
     if c.ecn_enabled { 0x02 } else { 0 }
 }
 
+/// F195: bridge to tcp_conn::ka_now_ns from stack code. # C: O(1)
+fn ka_now_ns_local() -> u64 { crate::tcp_conn::ka_now_ns() }
+
+
 fn stamp_last_sent(entry: &TcpEntry, n: usize) {
     if n == 0 { return; }
     let now = monotonic_ns_safe();
@@ -230,6 +234,8 @@ pub struct NetStack {
     next_isn: Spinlock<u32, StackLockClass>,
     /// F180c: global NDP cache (ip → MAC).
     pub ndp: crate::ndp::NdpCache,
+    /// F195: IPv4 reassembly table.
+    pub ipv4_reasm: crate::ipv4_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
     v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>,
 }
@@ -247,6 +253,7 @@ impl NetStack {
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(0x1000_0000),
             ndp:        crate::ndp::NdpCache::new(),
+            ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
         }
     }
@@ -298,9 +305,7 @@ impl NetStack {
         (id, lo)
     }
 
-    /// Reserve `port` for incoming UDP datagrams to `bind_ip`.
-    /// `Eaddrinuse` if already bound.
-    /// # C: O(log N)
+    /// UDP bind. Eaddrinuse if taken. # C: O(log N)
     pub fn bind_udp(&self, bind_ip: Ipv4Addr, port: u16) -> NetResult<()> {
         let mut g = self.udp.lock();
         if g.contains_key(&port) { return Err(NetError::Eaddrinuse); }
@@ -308,9 +313,7 @@ impl NetStack {
         Ok(())
     }
 
-    /// Pop one queued datagram for `port`, blocking-style: returns
-    /// `None` immediately if nothing is queued.
-    /// # C: O(log N)
+    /// Pop one queued datagram or None. # C: O(log N)
     pub fn recv_udp(&self, port: u16) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
         let q = { self.udp.lock().get(&port)?.clone() };
         let popped = q.q.lock().pop_front();
@@ -325,17 +328,12 @@ impl NetStack {
         self.udp.lock().get(&port).cloned()
     }
 
-    /// F161: release a previously-bound UDP port. Called from
-    /// `InetSocket::Drop` so close on a UDP socket frees its port
-    /// for reuse without an explicit close() syscall hook.
-    /// # C: O(log N)
+    /// F161: release UDP port (from Drop). # C: O(log N)
     pub fn unbind_udp(&self, port: u16) {
         self.udp.lock().remove(&port);
     }
 
-    /// F180a: expose the v6 UDP map to `stack_ipv6` impls without
-    /// making the field pub-everywhere.
-    /// # C: O(1)
+    /// F180a: v6 UDP map accessor. # C: O(1)
     pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass> {
         &self.udp6
     }
@@ -344,21 +342,14 @@ impl NetStack {
     /// F174: expose tcp conn map for stack_icmp. # C: O(1)
     pub fn tcp_conns_map(&self) -> &Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass> { &self.tcp_conns }
 
-    /// F161: public wrapper for the private send_l4_over_ipv4 path
-    /// — used by `InetSocket::Drop` to emit the FIN/RST from the
-    /// kernel-side close. Restricted to IpProto::Tcp; UDP / ICMP
-    /// already have dedicated public entry points.
-    /// # C: O(payload + route lookup)
+    /// F161: pub send_l4_over_ipv4 wrapper. # C: O(payload + route)
     pub fn send_l4_over_ipv4_pub(&self, src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8])
         -> NetResult<()>
     {
         self.send_l4_over_ipv4(src, dst, IpProto::Tcp, l4)
     }
 
-    /// Build + transmit a UDP datagram. Looks up the route to
-    /// `dst_ip`; if the route's iface is loopback (no L2), hand
-    /// the IP packet straight to xmit.
-    /// # C: O(payload + route lookup)
+    /// Build + xmit UDP datagram. # C: O(payload + route lookup)
     pub fn send_udp_to(&self, src_ip: Ipv4Addr, src_port: u16,
                         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8])
         -> NetResult<()>
@@ -647,8 +638,7 @@ impl NetStack {
         self.send_l4_over_ipv4_tos(src, dst, proto, l4, 0)
     }
 
-    /// F190: ECN-aware variant — `tos` populates the TOS byte.
-    /// # C: O(payload)
+    /// F190: ECN TOS variant. # C: O(payload)
     pub(crate) fn send_l4_over_ipv4_tos(&self, src: Ipv4Addr, dst: Ipv4Addr,
                           proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()>
     {
@@ -666,24 +656,31 @@ impl NetStack {
         iface.xmit(p)
     }
 
-    // F180b: send_l4_over_ip / send_l4_over_ipv6 live in stack_ipv6.rs.
+    // F180b: send_l4 in stack_ipv6.rs.
 
     /// Demux IPv4 → ICMP/UDP/TCP. # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        // Netfilter LOCAL_IN hook: drop the packet silently when
-        // a chain bound to NF_INET_LOCAL_IN votes Drop.
         if nf_hook_eval(NF_INET_LOCAL_IN, l3) == 0 { return Ok(()); }
         let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
-        let payload = &l3[hdr.ihl_bytes() .. total];
+        let frag_payload = &l3[hdr.ihl_bytes() .. total];
+        let assembled;
+        let mf = (hdr.flags_frag & 0x2000) != 0;
+        let off8 = (hdr.flags_frag & 0x1FFF) as usize;
+        let payload: &[u8] = if mf || off8 != 0 {
+            let k = crate::ipv4_reasm::ReasmKey { src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id };
+            match self.ipv4_reasm.push(k, ka_now_ns_local(), off8 * 8, frag_payload, mf) {
+                Some(b) => { assembled = b; &assembled[..] }
+                None    => return Ok(()),
+            }
+        } else { frag_payload };
         match hdr.proto {
             p if p == IpProto::Icmp as u8 => {
                 let echo = match icmp::IcmpEcho::parse(payload) {
                     Ok(h) => h, Err(_) => return Ok(()),
                 };
                 if echo.typ == ICMP_TYPE_ECHO_REQUEST {
-                    // Build reply, ship back via the same iface.
                     let reply = match icmp::build_echo_reply(payload) {
                         Ok(r) => r, Err(_) => return Ok(()),
                     };
@@ -711,7 +708,7 @@ impl NetStack {
                 // not hold the udp-map lock across either.
                 let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
                 if let Some(q) = q_arc {
-                    let body = &payload[crate::udp::UDP_HDR_LEN..];
+                    let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
                     q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
                     {
