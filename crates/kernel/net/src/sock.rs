@@ -800,19 +800,19 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
 /// `listen` per `listen(2)`. AF_UNIX listeners bind(2) does the
 /// work; listen is a no-op. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
-pub fn listen(sock: &alloc::sync::Arc<InetSocket>, _backlog: i32) -> Result<(), NetError> {
+pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
     if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return Ok(()); }
     let port = sock.local_port.lock().ok_or(NetError::Einval)?;
     let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
+    let reuseport = sock.opts.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    // F180b: AF_INET6 listeners key the demux on the v6 local-addr;
-    // AF_INET on v4 as before. tcp_listen_ip handles both.
     let local_ip = if fam == AF_INET6 {
         crate::addr::IpAddr::V6(*sock.local_ip6.lock())
     } else {
         crate::addr::IpAddr::V4(*sock.local_ip.lock())
     };
-    let le = stack().tcp_listen_ip(local_ip, port, reuseaddr)?;
+    let le = stack().tcp_listen_ip_with(local_ip, port, reuseaddr, reuseport)?;
+    le.set_backlog(backlog);
     le.register_poll_subs(&sock.poll_subs);
     *sock.kind.lock() = SockKind::TcpListener(le);
     Ok(())

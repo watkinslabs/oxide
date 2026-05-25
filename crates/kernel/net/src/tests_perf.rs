@@ -11,6 +11,49 @@ use crate::tcp_hdr::{TcpHdr, parse_mss_option, parse_wscale_option, TCP_HDR_MIN_
 use crate::tcp_state::TcpState;
 use super::{ep, lo, lo_ip, client_established, build_synack_with_options};
 
+// ----- F192: listen backlog cap + SO_REUSEPORT distribute -----------
+
+#[test]
+fn f192_default_backlog_is_128() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7100, true).unwrap();
+    assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), 128);
+}
+
+#[test]
+fn f192_set_backlog_clamps_to_somaxconn() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7101, true).unwrap();
+    le.set_backlog(99999);
+    assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), 4096);
+    le.set_backlog(0);
+    assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), 128);
+    le.set_backlog(-5);
+    assert_eq!(le.backlog.load(core::sync::atomic::Ordering::Acquire), 128);
+}
+
+#[test]
+fn f192_reuseport_allows_duplicate_listeners() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    let le1 = stack.tcp_listen_ip_with(IpAddr::V4(Ipv4Addr::LOOPBACK), 7102, false, true).unwrap();
+    let le2 = stack.tcp_listen_ip_with(IpAddr::V4(Ipv4Addr::LOOPBACK), 7102, false, true).unwrap();
+    let le3 = stack.tcp_listen_ip_with(IpAddr::V4(Ipv4Addr::LOOPBACK), 7102, false, true).unwrap();
+    assert!(!alloc::sync::Arc::ptr_eq(&le1, &le2));
+    assert!(!alloc::sync::Arc::ptr_eq(&le2, &le3));
+}
+
+#[test]
+fn f192_non_reuseport_blocks_duplicate() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    let _le1 = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7103, true).unwrap();
+    let err = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7103, true).err().unwrap();
+    assert_eq!(err, crate::netdev::NetError::Eaddrinuse);
+}
+
 // ----- F191: Path MTU Discovery -------------------------------------
 
 #[test]
