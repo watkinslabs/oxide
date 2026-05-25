@@ -49,13 +49,17 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
                 let udp_q = if matches!(*sock.kind.lock(), SockKind::Udp) {
                     sock.local_port.lock().and_then(|p| net::sock::stack().udp_queue_arc(p))
                 } else { None };
+                let dl = deadline.unwrap_or(0);
                 if let Some(q) = udp_q {
                     // F169: park with SO_RCVTIMEO deadline; timer
                     // scanner wakes us on expiry → next iter exits via
                     // the deadline check above.
-                    let dl = deadline.unwrap_or(0);
-                    // SAFETY: process ctx (sys_recvfrom); runqueue installed; preempt-off owned by syscall stub; deliver_rx wakes after push; timer scanner wakes on deadline.
+                    // SAFETY: process ctx (sys_recvfrom UDP); runqueue installed; preempt-off owned by syscall stub; deliver_rx wakes after push; timer scanner wakes on deadline.
                     unsafe { q.waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
+                } else if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
+                    // F172: per-socket waitq for AF_PACKET; deliver_packet_rx wakes.
+                    // SAFETY: process ctx (sys_recvfrom AF_PACKET); runqueue installed; preempt-off; deliver_packet_rx wakes after rx push; timer scanner wakes on deadline.
+                    unsafe { sock.recv_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
                 } else {
                     // SAFETY: process ctx; preempt-off; tick_yield reschedules.
                     unsafe { sched::live::tick_yield(); }
