@@ -255,6 +255,27 @@ impl NetStack {
         }
     }
 
+    /// F184: MSS for `dst` = egress iface MTU − (v4:40, v6:60). 0 if
+    /// no iface — caller falls back to OWN_MSS_DEFAULT. # C: O(log N).
+    pub fn mss_for_dst(&self, dst: IpAddr) -> u16 {
+        let mtu = match dst {
+            IpAddr::V4(d) => self.routes.lookup(d)
+                .and_then(|r| self.ifaces.lookup(r.iface))
+                .map(|i| i.mtu()),
+            IpAddr::V6(d) => {
+                let devs = self.ifaces.snapshot_devs();
+                let iface_id = if d == Ipv6Addr::LOOPBACK {
+                    devs.iter().find(|(_, dev)| dev.name() == "lo").map(|(i, _)| *i)
+                } else {
+                    devs.iter().find(|(_, dev)| dev.name() != "lo").map(|(i, _)| *i)
+                };
+                iface_id.and_then(|i| self.ifaces.lookup(i)).map(|i| i.mtu())
+            }
+        };
+        let overhead = if matches!(dst, IpAddr::V6(_)) { 60 } else { 40 };
+        mtu.map(|m| (m.saturating_sub(overhead)).min(0xFFFF) as u16).unwrap_or(0)
+    }
+
     /// F180c: register a v6 addr on `iface`; NS replies. # C: O(log N)
     pub fn add_v6_addr(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) {
         self.v6_addrs.lock().entry(iface).or_default().push(ip);
@@ -322,6 +343,10 @@ impl NetStack {
     pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass> {
         &self.udp6
     }
+    /// F174: expose udp v4 map for stack_icmp. # C: O(1)
+    pub fn udp_map(&self) -> &Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass> { &self.udp }
+    /// F174: expose tcp conn map for stack_icmp. # C: O(1)
+    pub fn tcp_conns_map(&self) -> &Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass> { &self.tcp_conns }
 
     /// F161: public wrapper for the private send_l4_over_ipv4 path
     /// — used by `InetSocket::Drop` to emit the FIN/RST from the
@@ -445,6 +470,9 @@ impl NetStack {
             Endpoint { ip: remote_ip, port: remote_port },
             isn,
         );
+        // F184: derive advertised MSS from the egress iface MTU minus
+        // L3+L4 header (v4=40, v6=60). 0 = fall back to OWN_MSS_DEFAULT.
+        conn.own_mss = self.mss_for_dst(remote_ip);
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
         let entry = Arc::new(TcpEntry::new(conn));
         let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
@@ -522,58 +550,10 @@ impl NetStack {
         self.send_l4_over_ip(src, dst, IpProto::Tcp, &seg)
     }
 
-    /// F174: handle an incoming ICMP Destination Unreachable.
-    /// `payload` is the full ICMP message — 8-byte header + the
-    /// echoed IPv4 header + first 8 bytes of the original L4. We
-    /// reconstruct the original 4-tuple and surface the right
-    /// errno on the originating socket (UDP port or TCP conn).
-    /// # C: O(log N) demux lookups
+    /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
+    /// Implementation moved to stack_icmp.rs (1000-line cap).
     fn handle_dest_unreach(&self, code: u8, payload: &[u8]) {
-        use core::sync::atomic::Ordering;
-        // 8-byte ICMP header, then original IP+8B of L4 starts at +8.
-        const ICMP_HDR: usize = 8;
-        if payload.len() < ICMP_HDR + crate::ipv4::IPV4_HDR_LEN + 8 { return; }
-        let orig_ip = &payload[ICMP_HDR..];
-        let orig_hdr = match Ipv4Hdr::parse(orig_ip) {
-            Ok(h) => h, Err(_) => return,
-        };
-        let orig_l4_off = orig_hdr.ihl_bytes();
-        if orig_ip.len() < orig_l4_off + 8 { return; }
-        let orig_l4 = &orig_ip[orig_l4_off..orig_l4_off + 8];
-        // First 4 bytes of any L4 header are src_port + dst_port (BE).
-        let src_port = u16::from_be_bytes([orig_l4[0], orig_l4[1]]);
-        let dst_port = u16::from_be_bytes([orig_l4[2], orig_l4[3]]);
-        // ICMP code → errno: all dest-unreach map to ECONNREFUSED in v1
-        // (apps that care — DNS/NTP — treat them alike). Refines in F18x.
-        let _ = code;
-        let eno = syscall::errno::Errno::Econnrefused as i32;
-        match orig_hdr.proto {
-            p if p == IpProto::Udp as u8 => {
-                // The originating socket bound to src_port (our side).
-                if let Some(q) = self.udp.lock().get(&src_port).cloned() {
-                    q.error_eno.store(eno, Ordering::Release);
-                    #[cfg(target_os = "oxide-kernel")]
-                    q.waiters.wake_all();
-                }
-            }
-            p if p == IpProto::Tcp as u8 => {
-                let key = TcpKey {
-                    local_ip:    IpAddr::V4(orig_hdr.src),
-                    local_port:  src_port,
-                    remote_ip:   IpAddr::V4(orig_hdr.dst),
-                    remote_port: dst_port,
-                };
-                if let Some(entry) = self.tcp_conns.lock().get(&key).cloned() {
-                    let mut c = entry.conn.lock();
-                    if c.error_eno == 0 { c.error_eno = eno; }
-                    c.state = crate::tcp_state::TcpState::Closed;
-                    drop(c);
-                    #[cfg(target_os = "oxide-kernel")]
-                    entry.rx_waiters.wake_all();
-                }
-            }
-            _ => {}
-        }
+        crate::stack_icmp::handle_dest_unreach(self, code, payload)
     }
 
     /// F159: walk active TCP conns and re-emit any segments whose
@@ -842,6 +822,8 @@ impl NetStack {
             local_ep.ip = dst_ip;
         }
         let mut new_conn = TcpConn::new_listener(local_ep);
+        // F184: SYN-ACK we're about to build advertises our MSS too.
+        new_conn.own_mss = self.mss_for_dst(src_ip);
         let resp = new_conn.input(src_ip, dst_ip, seg)
             .map_err(|_| NetError::Einval)?;
         let new_entry = Arc::new(TcpEntry::new(new_conn));
