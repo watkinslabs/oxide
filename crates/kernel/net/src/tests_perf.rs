@@ -11,6 +11,56 @@ use crate::tcp_hdr::{TcpHdr, parse_mss_option, parse_wscale_option, TCP_HDR_MIN_
 use crate::tcp_state::TcpState;
 use super::{ep, lo, lo_ip, client_established, build_synack_with_options};
 
+// ----- F195: IPv4 reassembly ----------------------------------------
+
+#[test]
+fn f195_two_fragments_reassemble_to_udp_payload() {
+    use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
+    use crate::udp::{UDP_HDR_LEN, UdpHdr};
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    stack.bind_udp(Ipv4Addr::LOOPBACK, 12345).unwrap();
+    // Build a complete UDP datagram with 1000-byte payload.
+    let payload = alloc::vec![0x42u8; 1000];
+    let l4_len = UDP_HDR_LEN + payload.len();
+    let mut udp_buf = alloc::vec![0u8; l4_len];
+    UdpHdr::build_into(7777, 12345, Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK,
+        &payload, &mut udp_buf);
+    // Split into 2 fragments at 512-byte boundary (must be 8-byte
+    // aligned per RFC 791).
+    let split = 512usize;
+    // Frag 1: offset 0, len 512, MF=1
+    let frag1_body = &udp_buf[..split];
+    let mut f1 = alloc::vec![0u8; IPV4_HDR_LEN + frag1_body.len()];
+    let mut h1 = Ipv4Hdr::build(Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK,
+        IpProto::Udp, frag1_body.len() as u16, 42);
+    h1.flags_frag = 0x2000;   // MF=1, offset=0
+    h1.checksum = 0;
+    let mut tmp = [0u8; IPV4_HDR_LEN];
+    h1.write_to(&mut tmp);
+    h1.checksum = crate::ipv4::ip_checksum(&tmp);
+    h1.write_to(&mut f1[..IPV4_HDR_LEN]);
+    f1[IPV4_HDR_LEN..].copy_from_slice(frag1_body);
+    // Frag 2: offset 512 (=64 8-byte units), len rest, MF=0
+    let frag2_body = &udp_buf[split..];
+    let mut f2 = alloc::vec![0u8; IPV4_HDR_LEN + frag2_body.len()];
+    let mut h2 = Ipv4Hdr::build(Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK,
+        IpProto::Udp, frag2_body.len() as u16, 42);
+    h2.flags_frag = (split as u16) / 8;  // MF=0, offset = 64
+    h2.checksum = 0;
+    h2.write_to(&mut tmp);
+    h2.checksum = crate::ipv4::ip_checksum(&tmp);
+    h2.write_to(&mut f2[..IPV4_HDR_LEN]);
+    f2[IPV4_HDR_LEN..].copy_from_slice(frag2_body);
+    // Deliver both fragments.
+    stack.deliver_rx(id, &f1).unwrap();
+    stack.deliver_rx(id, &f2).unwrap();
+    // Receiver should see the full reassembled datagram.
+    let (_src, _sp, body) = stack.recv_udp(12345).expect("reassembled UDP delivered");
+    assert_eq!(body.len(), 1000);
+    assert_eq!(body, payload);
+}
+
 // ----- F194: SO_LINGER abortive close -------------------------------
 
 #[test]
