@@ -595,8 +595,12 @@ static RX_NEXT_AVAIL: AtomicU16 = AtomicU16::new(1);
 /// Returns frames delivered. Returns 0 if the device isn't initialized
 /// or the device hasn't advanced its used.idx since the last call.
 ///
-/// # C: O(frames_in_flight) under MODERN_DEV.lock()
-/// # Lk: takes MODERN_DEV; cb runs while the lock is held.
+/// # C: O(frames_in_flight)
+/// # Lk: takes MODERN_DEV across ring read + avail publish, drops it
+///       before invoking cb. Required so cb's downstream (e.g. the TCP
+///       stack emitting an ACK via tx_frame) can re-take the lock
+///       without UP self-deadlock. Frames are copied out before unlock
+///       so the device can safely overwrite rx0_buf once republished.
 pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
     if !MODERN_PRESENT.load(Ordering::Acquire) { return 0; }
     let g = MODERN_DEV.lock();
@@ -630,6 +634,10 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
 
     let q0_size = s.q0_size as usize;
     let mut delivered = 0usize;
+    // Collect frame copies under the lock so we can safely drop the
+    // lock before invoking cb (cb's TCP-stack path may re-take it via
+    // tx_frame when emitting an ACK — UP spinlock self-deadlock).
+    let mut frames: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
     while last != dev_used_idx {
         let slot = (last as usize) % q0_size;
         // used.ring[slot] = { u32 id; u32 len; } at +4 + slot*8.
@@ -655,14 +663,15 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
             let body_len = frame_total as usize - VIRTIO_NET_HDR_LEN;
             // SAFETY: rx0 buffer is HHDM-mapped, owned by this driver
             // under MODERN_DEV.lock(); the device finished writing
-            // before publishing used.ring per Virtio 1.2 §2.6.8.
+            // before publishing used.ring per Virtio 1.2 §2.6.8. Copy
+            // out so we can release the lock before cb runs.
             let body = unsafe {
                 core::slice::from_raw_parts(
                     (buf_va + VIRTIO_NET_HDR_LEN as u64) as *const u8,
                     body_len,
                 )
             };
-            cb(body);
+            frames.push(body.to_vec());
         }
         delivered += 1;
     }
@@ -697,6 +706,13 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
         unsafe {
             core::ptr::write_volatile(s.q0_notify_va as *mut u16, 0u16);
         }
+    }
+    // Drop MODERN_DEV.lock() before invoking cb — cb may call tx_frame
+    // (e.g. TCP stack emitting an ACK from deliver_rx) which re-acquires
+    // the same lock. UP spinlock would deadlock if we held it here.
+    drop(g);
+    for f in frames {
+        cb(&f);
     }
     delivered
 }
