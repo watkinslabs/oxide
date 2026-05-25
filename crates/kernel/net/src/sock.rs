@@ -200,6 +200,11 @@ pub struct InetSocket {
     /// userspace (systemd, ssh) from failing setsockopt+getsockopt
     /// consistency checks.
     pub opts: SockOpts,
+    /// F166: shutdown(SHUT_RD | SHUT_RDWR) latches this — subsequent
+    /// `read`/`recvfrom` return Ok(0) (POSIX EOF) without consulting
+    /// the connection's receive buffer. shutdown(SHUT_WR) sends FIN
+    /// via the existing close path and does not touch this flag.
+    pub read_shut: core::sync::atomic::AtomicBool,
 }
 
 /// Common SOL_SOCKET options held per socket. Each is an `i32` cell
@@ -268,6 +273,7 @@ impl InetSocket {
             peer:       Spinlock::new(None),
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
+            read_shut:  core::sync::atomic::AtomicBool::new(false),
         }
     }
     /// # C: O(1)
@@ -284,6 +290,7 @@ impl InetSocket {
             // or TcpConn.
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
+            read_shut:  core::sync::atomic::AtomicBool::new(false),
         }
     }
     /// `socket(AF_INET6, SOCK_DGRAM, …)` — same V4 transport substrate
@@ -402,6 +409,11 @@ impl vfs::Inode for InetSocket {
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
 
     fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        // F166: shutdown(SHUT_RD | SHUT_RDWR) latches read_shut →
+        // read returns EOF without consulting the recv buffer.
+        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+            return Ok(0);
+        }
         // F158: snapshot the kind out of its lock first so we don't
         // hold sock.kind.lock() across a park (deliver_tcp's wake path
         // doesn't touch this lock but holding it across schedule is
@@ -439,6 +451,9 @@ impl vfs::Inode for InetSocket {
     /// Eagain when recv_buf is empty AND the connection is still in a
     /// data-transfer state; Ok(0) only on peer FIN.
     fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+            return Ok(0);
+        }
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             drain_loopback();
             let got = stack().tcp_recv(entry, buf.len());
@@ -500,6 +515,21 @@ impl vfs::Inode for InetSocket {
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                 .max(TCP_SNDBUF_DEFAULT) as usize;
             let entry = entry.clone();
+            // F166: surface EPIPE for writes to a closing/closed
+            // send side BEFORE attempting tcp_send (otherwise tcp_send
+            // may succeed with bytes that go nowhere).
+            let st = entry.conn.lock().state;
+            if matches!(st,
+                crate::tcp_state::TcpState::Closed
+                | crate::tcp_state::TcpState::CloseWait
+                | crate::tcp_state::TcpState::LastAck
+                | crate::tcp_state::TcpState::Closing
+                | crate::tcp_state::TcpState::TimeWait
+                | crate::tcp_state::TcpState::FinWait1
+                | crate::tcp_state::TcpState::FinWait2
+            ) {
+                return Err(vfs::VfsError::Epipe);
+            }
             return match stack().tcp_send(&entry, buf, cap) {
                 Ok(n) => { drain_loopback(); Ok(n) }
                 Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
