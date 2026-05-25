@@ -195,6 +195,10 @@ fn stamp_last_sent(entry: &TcpEntry, n: usize) {
 pub struct TcpListenEntry {
     /// Backlog of accepted-but-not-yet-claimed Arc<TcpEntry>.
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
+    /// F192: max accept_q depth — listen(2) backlog (clamped to
+    /// somaxconn=4096). deliver_tcp drops SYNs that would push
+    /// past this.
+    pub backlog: core::sync::atomic::AtomicUsize,
     pub local: Endpoint,
     /// F160: tasks parked in blocking sys_accept waiting for a SYN.
     /// `deliver_tcp` (listener branch) wakes the list after pushing
@@ -211,11 +215,17 @@ impl TcpListenEntry {
     pub fn new(local: Endpoint) -> Self {
         Self {
             accept_q: Spinlock::new(VecDeque::new()),
+            backlog: core::sync::atomic::AtomicUsize::new(128),
             local,
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
         }
+    }
+    /// F192: set listen(2) backlog (clamped 1..=somaxconn). # C: O(1)
+    pub fn set_backlog(&self, b: i32) {
+        let n = if b <= 0 { 128 } else { core::cmp::min(b as usize, 4096) };
+        self.backlog.store(n, core::sync::atomic::Ordering::Release);
     }
 
     /// F181a: register listener-fd subscribers.
@@ -233,7 +243,7 @@ pub struct NetStack {
     /// `stack_ipv6` impls without making the field pub.
     udp6:       Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass>,
     tcp_conns:    Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
-    tcp_listens:  Spinlock<BTreeMap<TcpListenKey, Arc<TcpListenEntry>>, StackLockClass>,
+    tcp_listens:  Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
     next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
@@ -407,13 +417,8 @@ impl NetStack {
         iface.xmit(p)
     }
 
-    /// Open a passive listener at (`local_ip`, `local_port`).
-    /// Returns the listen-entry Arc so callers can poll `accept`.
-    /// `Eaddrinuse` if the (ip, port) tuple is already a listener
-    /// OR if a TIME_WAIT conn lingers at that (local_ip, local_port)
-    /// AND `reuseaddr == false` (POSIX SO_REUSEADDR semantic per
-    /// Linux's `tcp_v4_get_port`).
-    /// # C: O(log N) listener lookup + O(N_conns) TIME_WAIT scan
+    /// Open v4 listener at (ip,port). Eaddrinuse if taken or TIME_WAIT
+    /// conflict (unless SO_REUSEADDR). # C: O(log N + N_conns).
     pub fn tcp_listen(&self, local_ip: Ipv4Addr, local_port: u16, reuseaddr: bool)
         -> NetResult<Arc<TcpListenEntry>>
     {
@@ -424,9 +429,20 @@ impl NetStack {
     pub fn tcp_listen_ip(&self, local_ip: IpAddr, local_port: u16, reuseaddr: bool)
         -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_ip_with(local_ip, local_port, reuseaddr, false)
+    }
+
+    /// F192: SO_REUSEPORT-aware listen. When `reuseport=true`, a
+    /// duplicate (ip,port) registration appends to the per-key Vec
+    /// instead of failing; deliver_tcp hash-distributes SYNs across
+    /// the bucket by 4-tuple. # C: O(log N).
+    pub fn tcp_listen_ip_with(&self, local_ip: IpAddr, local_port: u16,
+                                reuseaddr: bool, reuseport: bool)
+        -> NetResult<Arc<TcpListenEntry>>
+    {
         let key = TcpListenKey { local_ip, local_port };
         let mut g = self.tcp_listens.lock();
-        if g.contains_key(&key) { return Err(NetError::Eaddrinuse); }
+        if g.contains_key(&key) && !reuseport { return Err(NetError::Eaddrinuse); }
         if !reuseaddr {
             let conns = self.tcp_conns.lock();
             let any_v4 = IpAddr::V4(Ipv4Addr::ANY);
@@ -442,7 +458,7 @@ impl NetStack {
         let entry = Arc::new(TcpListenEntry::new(
             Endpoint { ip: local_ip, port: local_port },
         ));
-        g.insert(key, entry.clone());
+        g.entry(key).or_default().push(entry.clone());
         Ok(entry)
     }
 
@@ -484,35 +500,18 @@ impl NetStack {
         let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
         self.tcp_conns.lock().insert(key, entry.clone());
         self.send_l4_over_ip(local_ip, remote_ip, IpProto::Tcp, &syn)?;
-        // F159: stamp the queued SYN with the actual xmit time so the
-        // retx scanner doesn't treat it as instantly overdue (default
-        // last_sent_ns=0 from active_open). On stamp failure (no timer
-        // yet, hosted tests) leave at 0 — retx_tick is a no-op there.
+        // F159: stamp SYN xmit time so retx scanner sees real RTO.
         stamp_last_sent(&entry, 1);
         Ok(entry)
     }
 
-    /// Pop one accepted connection from a listener's backlog.
-    /// Returns `None` if no connection is ready.
-    /// # C: O(1)
+    /// Pop one accepted connection from listener's backlog. # C: O(1)
     pub fn tcp_accept(&self, listener: &TcpListenEntry) -> Option<Arc<TcpEntry>> {
         listener.accept_q.lock().pop_front()
     }
 
-    /// Application sends `data` on an established connection.
-    /// Returns the number of bytes drained into segments and
-    /// transmitted; bytes still queued (waiting for ACK clocking)
-    /// stay in the conn's send_buf for output() to drain later.
-    /// # C: O(data + N segments)
-    /// Append `data` to the connection's send queue and drain
-    /// whatever output() can produce immediately. Returns the byte
-    /// count actually accepted into send_buf (may be less than
-    /// data.len() if SO_SNDBUF would be exceeded).
-    ///
-    /// F164: bounded by `sndbuf_cap` — caller passes the socket's
-    /// effective SO_SNDBUF. Returns Eagain when the buffer is at
-    /// cap and zero bytes can be queued.
-    /// # C: O(data) + O(N segments)
+    /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
+    /// when full. # C: O(data + N segments)
     pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool)
         -> NetResult<usize>
     {
@@ -562,18 +561,8 @@ impl NetStack {
         crate::stack_icmp::handle_dest_unreach(self, code, payload)
     }
 
-    /// F159: walk active TCP conns and re-emit any segments whose
-    /// RTO has expired. Drops conns whose front-of-retx_q segment
-    /// has been retried past a state-dependent ceiling (6 for SYN,
-    /// 15 for data — Linux defaults for tcp_syn_retries /
-    /// tcp_retries2). Dropped conns transition to Closed and wake
-    /// their rx_waiters so parked connect / read / accept calls
-    /// observe the failure.
-    ///
-    /// Intended call site: `virtio_net_rx_kthread`'s loop, ~100 ms
-    /// cadence. Not safe from IRQ context (acquires tcp_conns lock +
-    /// per-conn lock + ifaces.lookup).
-    /// # C: O(N_conns * retx_q.len())
+    /// F159: RTO scanner. Re-emits expired segs; drops conns past
+    /// retry ceilings (SYN=6, data=15). # C: O(N_conns·retx_q).
     pub fn tcp_retx_tick(&self, now_ns: u64) {
         // Snapshot the conn list to keep the tcp_conns lock short.
         let entries: Vec<(TcpKey, Arc<TcpEntry>)> = {
@@ -678,9 +667,7 @@ impl NetStack {
 
     // F180b: send_l4_over_ip / send_l4_over_ipv6 live in stack_ipv6.rs.
 
-    /// Deliver an L3 frame (starting at the IPv4 header) up the
-    /// stack: parse IP, demux to ICMP / UDP / TCP, dispatch.
-    /// # C: O(payload)
+    /// Demux IPv4 → ICMP/UDP/TCP. # C: O(payload)
     pub fn deliver_rx(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         // Netfilter LOCAL_IN hook: drop the packet silently when
         // a chain bound to NF_INET_LOCAL_IN votes Drop.
@@ -766,11 +753,7 @@ impl NetStack {
             g.get(&key).cloned()
         };
         if let Some(entry) = entry {
-            // F158: snapshot recv_buf len + state pre/post input() so we
-            // can decide whether to wake parked readers. Wake on either
-            // (a) new bytes appended to recv_buf, or (b) terminal state
-            // transition (Closed / CloseWait / LastAck) so a parked
-            // reader can observe EOF.
+            // F158: wake on either recv_buf growth or terminal state
             let (pre_len, _pre_state) = {
                 let c = entry.conn.lock();
                 (c.recv_buf.len(), c.state)
@@ -800,14 +783,11 @@ impl NetStack {
                 self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, s, tos)?;
             }
             stamp_last_sent(&entry, segs.len());
-            // F159: wake unconditionally — any input may have changed
-            // state (SynSent→Established for connect waiters, * → Closed
-            // for terminal observers) or appended data (recv waiters).
+            // F159+F181a: wake conn rx + targeted epoll.
             #[cfg(target_os = "oxide-kernel")]
             {
                 let _ = (pre_len, post_len, post_state);
                 entry.rx_waiters.wake_all();
-                // F181a: targeted epoll wake for the owning fd.
                 let slot = entry.poll_subs.lock().clone();
                 if let Some(weak) = slot {
                     if let Some(s) = weak.upgrade() { s.notify(); }
@@ -822,18 +802,41 @@ impl NetStack {
             IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::ANY),
             IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::ANY),
         };
-        let listener = {
+        let bucket = {
             let g = self.tcp_listens.lock();
             g.get(&lkey).cloned()
                 .or_else(|| g.get(&TcpListenKey { local_ip: any_for_family, local_port: hdr.dst_port }).cloned())
         };
-        let listener = match listener { Some(l) => l, None => return Ok(()) };
+        let bucket = match bucket { Some(b) if !b.is_empty() => b, _ => return Ok(()) };
+        // F192: SO_REUSEPORT hash distribute by 4-tuple. Single-entry
+        // bucket → idx 0.
+        let idx = if bucket.len() == 1 { 0 } else {
+            let mut h: u32 = 0;
+            let v4_oct;
+            let v6_arr;
+            let bytes: &[u8] = match src_ip {
+                IpAddr::V4(a) => { v4_oct = a.octets(); &v4_oct[..] }
+                IpAddr::V6(a) => { v6_arr = a.0;         &v6_arr[..] }
+            };
+            for b in bytes { h = h.wrapping_mul(31).wrapping_add(*b as u32); }
+            h = h.wrapping_add(hdr.src_port as u32).wrapping_add(hdr.dst_port as u32);
+            (h as usize) % bucket.len()
+        };
+        let listener = bucket[idx].clone();
         // F180b: synthesise a per-conn local endpoint that pins the
         // wildcard listener to the actual delivery dst — so outbound
         // segments carry a real src, not 0.0.0.0/::.
         let mut local_ep = listener.local;
         if local_ep.ip == IpAddr::V4(Ipv4Addr::ANY) || local_ep.ip == IpAddr::V6(Ipv6Addr::ANY) {
             local_ep.ip = dst_ip;
+        }
+        // F192: enforce listen backlog. Drop the SYN on the floor
+        // when accept_q is already at cap — peer retries naturally
+        // via SYN retx.
+        {
+            let q = listener.accept_q.lock();
+            let cap = listener.backlog.load(core::sync::atomic::Ordering::Acquire);
+            if q.len() >= cap { return Ok(()); }
         }
         let mut new_conn = TcpConn::new_listener(local_ep);
         // F184: SYN-ACK we're about to build advertises our MSS too.
