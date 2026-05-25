@@ -234,6 +234,25 @@ impl NetStack {
         g.get_mut(&port)?.q.pop_front()
     }
 
+    /// F161: release a previously-bound UDP port. Called from
+    /// `InetSocket::Drop` so close on a UDP socket frees its port
+    /// for reuse without an explicit close() syscall hook.
+    /// # C: O(log N)
+    pub fn unbind_udp(&self, port: u16) {
+        self.udp.lock().remove(&port);
+    }
+
+    /// F161: public wrapper for the private send_l4_over_ipv4 path
+    /// — used by `InetSocket::Drop` to emit the FIN/RST from the
+    /// kernel-side close. Restricted to IpProto::Tcp; UDP / ICMP
+    /// already have dedicated public entry points.
+    /// # C: O(payload + route lookup)
+    pub fn send_l4_over_ipv4_pub(&self, src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8])
+        -> NetResult<()>
+    {
+        self.send_l4_over_ipv4(src, dst, IpProto::Tcp, l4)
+    }
+
     /// Build + transmit a UDP datagram. Looks up the route to
     /// `dst_ip`; if the route's iface is loopback (no L2), hand
     /// the IP packet straight to xmit.
@@ -393,12 +412,31 @@ impl NetStack {
             g.iter().map(|(k, v)| (*k, v.clone())).collect()
         };
         let mut to_drop: Vec<TcpKey> = Vec::new();
+        // F161: 2*MSL linger before reclaiming a TIME_WAIT 4-tuple
+        // (Linux tcp_fin_timeout default 60 s). Closed conns are
+        // dropped immediately — no 4-tuple reservation needed once
+        // both sides agree the connection is gone.
+        const TW_TIMEOUT_NS: u64 = 60_000_000_000;
         for (key, entry) in entries.iter() {
             // Per-entry: decide retx + drop under the conn lock,
             // collect segments to emit after dropping it.
             let (segs, abort, src, dst) = {
                 let mut c = entry.conn.lock();
-                if c.retx_q.is_empty() {
+                // F161: TIME_WAIT timer + Closed-cleanup. Reap any
+                // conn that has reached Closed, or has lingered in
+                // TimeWait past 2*MSL. Stamp tw_start_ns on first
+                // observation if zero.
+                if c.state == crate::tcp_state::TcpState::Closed {
+                    (Vec::new(), true, c.local.ip, c.remote.ip)
+                } else if c.state == crate::tcp_state::TcpState::TimeWait {
+                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
+                    if now_ns.saturating_sub(c.tw_start_ns) >= TW_TIMEOUT_NS {
+                        c.state = crate::tcp_state::TcpState::Closed;
+                        (Vec::new(), true, c.local.ip, c.remote.ip)
+                    } else {
+                        (Vec::new(), false, c.local.ip, c.remote.ip)
+                    }
+                } else if c.retx_q.is_empty() {
                     (Vec::new(), false, c.local.ip, c.remote.ip)
                 } else {
                     let front_is_syn = (c.retx_q.front().unwrap().flags
