@@ -1,41 +1,72 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, 138 net tests pass
-(workspace total ~1182), x86 + arm smoke green via pre-push.
+Branch: F196-vendor-dropbear (in flight → PR pending).
+Workspace: spec-lint clean, vfs tests 43/43, x86 smoke 16s, arm
+smoke 20s.
 
-## What just landed (this session)
+## Endgame this session: working SSH login
 
-- **F180a** (#1260): IPv6 UDP bind/recv + ICMPv6 echo + per-port
-  Udp6RxQueue with poll subs.
-- **F180b** (#1261): TCP over IPv6. Endpoint becomes IpAddr-tagged;
-  tcp_hdr v6 pseudo-header + parse_ip/build_into_ip dispatch.
-  TcpKey/TcpListenKey on IpAddr; v4 + v6 share one demux.
-  AF_INET6 connect/listen route through tcp_connect_ip /
-  tcp_listen_ip. drain_loopback dispatches by ethertype.
-- **F180c** (#1262): NdpCache + per-iface IPv6 address registry.
-  deliver_rx_ipv6 NS arm replies with solicited NA when target
-  is owned; NA arm populates cache. 3 hosted tests.
+Cross-built static-musl dropbear 2024.86 (vendor/dropbear/), wired
+into rootfs at /sbin/dropbearmulti with /sbin/dropbear +
+/sbin/dropbearkey hardlinks. rcS generates ed25519 host key,
+brings eth0 up (10.0.2.15/24), backgrounds `dropbear -R -p
+0.0.0.0:22`. QEMU forwards host TCP 2222 → guest 22.
 
-Plus prior session in-flight: F181a per-fd targeted epoll wake.
+## What this PR lands
 
-## Open
+1. **vendor/dropbear/build.sh + tools/fetch-dropbear.sh** — same
+   pattern as dhcpcd / busybox. Static-musl x86_64 + aarch64.
+2. **rootfs integration** — xtask drops the multibin + symlinks +
+   mkdir /etc/dropbear; rcS starts dropbear when /sbin/dropbear
+   exists.
+3. **aarch64 FEAT_RNG probe (hwrng.rs)** — cortex-a72 is ARMv8.0,
+   no MRS RNDR. Pre-fix, dropbearkey wedged for 6+ min on arm.
+   Probe ID_AA64ISAR0_EL1[63:60] once; only emit MRS RNDR when
+   the feature is implemented. Else `hw_random_u64` returns None
+   and caller drops to LCG. Mirrors Linux's
+   arch_get_random_seed_long false path on non-FEAT_RNG CPUs.
+4. **vfs::Dentry::absolute_path()** — walks parent chain → bytes
+   joined by `/`. 4 hosted tests (root, single, nested, deep).
+5. **proclink::task_fd_path drive-by** — was returning basename
+   only; now uses Dentry::absolute_path so `/proc/<pid>/fd/N`
+   readlinks resolve to real absolute paths.
+6. **execve refactor + sys_execveat AT_EMPTY_PATH** — pre-fix
+   the execveat shim discarded dirfd+flags and forwarded an
+   empty path to sys_execve, so fexecve(3) (libc maps to
+   `execveat(fd, "", AT_EMPTY_PATH)`) always returned ENOENT.
+   Now: sys_execve reads user path → execve_inner; sys_execveat
+   resolves fd via fdt.get + Dentry::absolute_path → calls the
+   same execve_inner with the resolved bytes. Path storage
+   switched from `[u8;64] + usize` to `Vec<u8>` end-to-end;
+   resolve_shebang_chain signature updated to match.
 
-Master plan `00§3`: phase 8 (net) shipping ongoing. Remaining
-tier-3 / perf items:
+## Verified end-to-end
 
-1. Real per-iface MTU lookup (OWN_MSS currently fixed 1460).
-2. Recv-buf autotune + OWN_WSCALE > 0 for high-BDP.
-3. Congestion control (Reno → CUBIC).
-4. F180c follow-on: outbound v6 unicast to off-link neighbors
-   should consult NdpCache + emit NS on miss. Cache + responder
-   are in place; send_l4_over_ipv6 still skips L2 because lo is
-   the only registered v6 path today. Lifts naturally once a
-   non-lo v6-capable iface exists.
+- ssh -p 2222 alice@127.0.0.1 → TCP 3WHS completes; dropbear logs
+  "Child connection from 10.0.2.2:..."; fexecve succeeds (was
+  ENOENT pre-F196). Banner write still fails (next bug, below).
+- spec-lint clean; vfs 43/43, smoke x86 16s + arm 20s.
+- No SSH session yet (session-fd EBADF, see open).
 
-## First task next session
+## Open — next bug to chase
 
-Pick (4) or (1). For (4): extend `send_l4_over_ipv6` to look
-up neighbor MAC in `stack.ndp` when iface != lo, queue an NS
-solicitation on miss, stash the packet for re-emit on NA
-arrival. Tests construct a hosted virtio-style iface and
-verify NS emit + retry.
+**`Exit before auth: Error writing: Bad file descriptor`**
+After dropbear's child fexecves itself, it tries to write the
+SSH banner to its session socket and gets EBADF. Likely
+suspects:
+
+- dup2 not surviving fexecve cleanly (the session fd is moved
+  to a specific slot pre-exec).
+- O_CLOEXEC on the fd dropbear expects to keep open after exec.
+- Our close_on_exec sweep dropping a non-cloexec fd.
+
+Repro: vendor/dropbear/dropbearmulti-x86_64 is in rootfs; boot,
+`ssh -p 2222 alice@127.0.0.1`. Watch `[36] Jan 01 ...
+Child connection / Exit before auth ...` on the serial.
+
+## Out-of-scope (deferred for later PRs)
+
+- TCP_INFO field completeness past tcpi_total_retrans (F188).
+- SCM_RIGHTS over SOCK_STREAM (F189 covers SOCK_DGRAM only).
+- AF_NETLINK ROUTE / sock_diag completeness (D45 gap analysis #1).
+- Outbound IPv6 NDP NS-on-cache-miss (F180c follow-on).

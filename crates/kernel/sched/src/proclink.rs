@@ -128,5 +128,5 @@ fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<Vec<u8>> {
     // SAFETY: fd_table slot single-mutator per `13§5`.
     let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
     let file = fdt.get(fd).ok()?;
-    Some(file.dentry().name().as_bytes().to_vec())
+    Some(file.dentry().absolute_path())
 }
