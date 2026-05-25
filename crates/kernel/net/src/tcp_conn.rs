@@ -292,9 +292,12 @@ impl TcpConn {
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
                 }
                 if (hdr.flags & flags::ACK) != 0 {
-                    let acked = hdr.ack.wrapping_sub(self.snd_una) as usize;
-                    if acked > 0 && acked <= self.send_buf.len() {
-                        for _ in 0..acked { self.send_buf.pop_front(); }
+                    // F165: advance snd_una; the actual bytes live in
+                    // retx_q (output() drains send_buf into segments),
+                    // so the retx_q sweep below is the one that frees
+                    // memory. snd_una alone tracks "what peer has".
+                    let acked = hdr.ack.wrapping_sub(self.snd_una);
+                    if acked > 0 {
                         self.snd_una = hdr.ack;
                     }
                     // Pop retx_q entries whose seq+len is fully ACK'd.
@@ -336,8 +339,14 @@ impl TcpConn {
         }
     }
 
-    /// Drain bytes from `send_buf` into one or more PSH+ACK
-    /// segments. Caller transmits them in order.
+    /// Drain `send_buf` into PSH+ACK segments, MSS each, in order.
+    /// Each segment is moved (not copied) into `retx_q` as the
+    /// authoritative copy until the peer ACKs it; `send_buf` is
+    /// fully drained on return when the conn is in a sending state.
+    ///
+    /// Caller wraps each returned Vec in IP+xmit. Empty result when
+    /// the conn isn't allowed to send (LISTEN, SynSent, FIN-WAIT*, etc.)
+    /// — those states require explicit handshake/close segments.
     /// # C: O(send_buf)
     pub fn output(&mut self, mtu: usize) -> Vec<Vec<u8>> {
         let mss = mtu.saturating_sub(40).min(1460);  // 20 IP + 20 TCP
@@ -347,7 +356,13 @@ impl TcpConn {
         }
         while !self.send_buf.is_empty() {
             let take = core::cmp::min(mss, self.send_buf.len());
-            let chunk: Vec<u8> = self.send_buf.iter().take(take).copied().collect();
+            // Move (drain) bytes out of send_buf into the segment.
+            // After this loop, send_buf is empty and retx_q owns the
+            // unACKed bytes — single source of truth (RFC 9293 §3.4).
+            let mut chunk: Vec<u8> = Vec::with_capacity(take);
+            for _ in 0..take {
+                chunk.push(self.send_buf.pop_front().unwrap());
+            }
             let seq_start = self.snd_nxt;
             let seg = self.build_segment(flags::PSH | flags::ACK, &chunk);
             self.snd_nxt = self.snd_nxt.wrapping_add(take as u32);
@@ -357,8 +372,6 @@ impl TcpConn {
                 payload: chunk, last_sent_ns: 0, retries: 0,
             });
             out.push(seg);
-            if take < mss { break; }
-            break;
         }
         out
     }
