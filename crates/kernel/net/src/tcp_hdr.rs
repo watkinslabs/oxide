@@ -89,7 +89,7 @@ impl TcpHdr {
     pub fn payload_offset(&self) -> usize { self.data_offset as usize * 4 }
 }
 
-/// F173/F178/F179: TCP option kinds per RFC 9293 §3.1 + RFC 7323 + RFC 2018.
+/// F173/F178/F179/F182: TCP option kinds per RFC 9293 §3.1 + RFC 7323 + RFC 2018.
 pub mod opt {
     pub const END:           u8 = 0;
     pub const NOP:           u8 = 1;
@@ -97,6 +97,7 @@ pub mod opt {
     pub const WSCALE:        u8 = 3;  // RFC 7323 §2.2
     pub const SACK_PERMIT:   u8 = 4;  // RFC 2018 §2
     pub const SACK:          u8 = 5;  // RFC 2018 §3
+    pub const TIMESTAMP:     u8 = 8;  // RFC 7323 §3
 }
 
 /// F179: a single Selective ACK block — half-open `[left, right)`.
@@ -124,6 +125,19 @@ pub fn parse_sack_option(seg: &[u8]) -> alloc::vec::Vec<SackBlock> {
 /// # C: O(option_bytes)
 pub fn parse_sack_permitted(seg: &[u8]) -> bool {
     walk_options(seg, opt::SACK_PERMIT).is_some()
+}
+
+/// F182: parse Timestamps option (kind=8, len=10) per RFC 7323 §3.
+/// Returns (TSval, TSecr) tuple — both 32-bit unsigned, BE on wire.
+/// # C: O(option_bytes)
+pub fn parse_ts_option(seg: &[u8]) -> Option<(u32, u32)> {
+    walk_options(seg, opt::TIMESTAMP).and_then(|b| {
+        if b.len() != 8 { return None; }
+        Some((
+            u32::from_be_bytes([b[0], b[1], b[2], b[3]]),
+            u32::from_be_bytes([b[4], b[5], b[6], b[7]]),
+        ))
+    })
 }
 
 /// F178: parse the peer's TCP Window Scale option from a SYN /
