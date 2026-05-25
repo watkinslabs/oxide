@@ -93,6 +93,45 @@ fn lint_file(path: &PathBuf, ext_gated: &HashSet<PathBuf>, f: &mut Findings) {
         check_klog_ungated(path, &lines, f);
     }
     if !is_test { check_no_dyn_hal(path, &lines, f); }
+    if !is_test { check_magic_errno(path, &lines, f); }
+}
+
+/// Per docs/07§5 / R04: ABI-meaning fields (`*_eno` / `*_errno` /
+/// `*_signo` / `*_slot`) and the assigned errno values they hold
+/// must come from a typed enum, not bare integer literals. Pattern:
+/// `<ident>_eno = <int>;` (also _errno, _signo, _slot). Allows
+/// `= 0` (cleared / not-an-error sentinel) and named constants.
+/// # C: O(lines)
+fn check_magic_errno(path: &Path, lines: &[&str], f: &mut Findings) {
+    let p_str = path.to_string_lossy();
+    // Errno enum itself defines the numeric values — exempt.
+    if p_str.contains("syscall/src/errno.rs") { return; }
+    for (i, l) in lines.iter().enumerate() {
+        let t = strip_line_comment(l).trim();
+        // Match `<base>_<suffix> = <digits>;` where suffix flags an
+        // ABI-meaning slot. Tolerate whitespace + trailing comma/semi.
+        for suffix in ["_eno", "_errno", "_signo", "_slot"] {
+            if let Some(eq) = t.find(suffix) {
+                let after = t[eq + suffix.len()..].trim_start();
+                if !after.starts_with('=') { continue; }
+                let val = after[1..].trim();
+                // Strip trailing `;` `,` `)` etc.
+                let v = val.trim_end_matches(|c: char| c == ';' || c == ',' || c == ')').trim();
+                // Accept: `0` (clear), `Errno::*`, named const (UPPER_SNAKE), unrelated rhs (.read()/etc).
+                if v == "0" { continue; }
+                if v.starts_with("Errno::") || v.starts_with("syscall::errno::") { continue; }
+                if v.starts_with("Signum::") { continue; }
+                if v.starts_with("NR_") { continue; }
+                // Identifier-only rhs (function call, field load, named const) is fine.
+                if v.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') { continue; }
+                // Bare integer or hex literal — fail.
+                if v.chars().all(|c| c.is_ascii_digit() || c == 'x' || c == '_' || c.is_ascii_hexdigit()) {
+                    f.push(path, i + 1, "code/magic-errno",
+                        format!("`{}` assigned bare integer `{}` — use Errno::* / Signum::* / NR_* (07§5)", suffix, v));
+                }
+            }
+        }
+    }
 }
 
 fn is_klog_crate(path: &Path) -> bool {
