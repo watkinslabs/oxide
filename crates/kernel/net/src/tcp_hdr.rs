@@ -89,6 +89,44 @@ impl TcpHdr {
     pub fn payload_offset(&self) -> usize { self.data_offset as usize * 4 }
 }
 
+/// F173: TCP option kinds we care about per RFC 9293 §3.1.
+pub mod opt {
+    pub const END:  u8 = 0;
+    pub const NOP:  u8 = 1;
+    pub const MSS:  u8 = 2;
+}
+
+/// F173: parse the peer's TCP MSS option out of a SYN / SYN-ACK
+/// segment. Walks the options blob between byte 20 and `data_offset
+/// * 4`. Returns `None` if the option is absent or the header has
+/// no options. Per RFC 9293, MSS is only valid in SYN segments;
+/// caller is responsible for that check.
+/// # C: O(option_bytes)
+pub fn parse_mss_option(seg: &[u8]) -> Option<u16> {
+    if seg.len() < TCP_HDR_MIN_LEN { return None; }
+    let data_offset = (seg[12] >> 4) as usize;
+    if data_offset <= 5 { return None; }
+    let hdr_len = data_offset * 4;
+    if seg.len() < hdr_len { return None; }
+    let opts = &seg[TCP_HDR_MIN_LEN..hdr_len];
+    let mut i = 0usize;
+    while i < opts.len() {
+        let kind = opts[i];
+        if kind == opt::END { return None; }
+        if kind == opt::NOP { i += 1; continue; }
+        // Option-with-length: byte i+1 is total length including
+        // kind+len bytes. Reject malformed (len < 2 or runs off end).
+        if i + 1 >= opts.len() { return None; }
+        let len = opts[i + 1] as usize;
+        if len < 2 || i + len > opts.len() { return None; }
+        if kind == opt::MSS && len == 4 {
+            return Some(u16::from_be_bytes([opts[i + 2], opts[i + 3]]));
+        }
+        i += len;
+    }
+    None
+}
+
 /// Validate a TCP segment's checksum against the IPv4 pseudo-header.
 /// `buf` is the entire TCP segment (header + payload).
 /// # C: O(N)
