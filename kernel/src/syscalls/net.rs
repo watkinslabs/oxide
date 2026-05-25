@@ -70,12 +70,9 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_UNIX_DOM, SOCK_STREAM) => InetSocket::new_unix(),
             (AF_UNIX_DOM, SOCK_DGRAM)  => InetSocket::new_unix_dgram(),
             (AF_PACKET_DOM, _) => {
-                // F131: SOCK_RAW + SOCK_DGRAM both admitted. The
-                // protocol arg is htons(ETH_P_*); store host-order
-                // (caller did the swap).
+                // F131: proto is htons(ETH_P_*); store host-order.
                 let proto_be = (proto & 0xFFFF) as u16;
-                let proto_host = proto_be.swap_bytes();
-                InetSocket::new_packet(proto_host, typ as u8)
+                InetSocket::new_packet(proto_be.swap_bytes(), typ as u8)
             }
             (AF_INET, _) | (AF_INET6, _) | (AF_UNIX_DOM, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
             _ => return -(Errno::Eafnosupport.as_i32() as i64),
@@ -99,9 +96,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// Read a `struct sockaddr_in` (16 bytes) at user pointer `ptr`:
-///   u16 sin_family ; u16 sin_port ; u32 sin_addr ; u8 zero[8].
-/// Read sa_family at the user pointer (first 2 bytes).
+/// Read sa_family (first 2 bytes) at user pointer `ptr`.
 fn read_sa_family(ptr: u64) -> Option<u16> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
     // SAFETY: ptr in user range; user page mapped (caller's AS).
@@ -147,10 +142,7 @@ fn write_sockaddr_in(ptr: u64, addr_be: u32, port_be: u16) {
     }
 }
 
-/// Read a `struct sockaddr_in6` (28 bytes):
-///   u16 sin6_family ; u16 sin6_port ; u32 sin6_flowinfo ;
-///   u8[16] sin6_addr ; u32 sin6_scope_id.
-/// Returns (family, port_host, addr_bytes, scope_id).
+/// Read sockaddr_in6 (28 B). Returns (family, port_host, addr_bytes, scope_id).
 fn read_sockaddr_in6(ptr: u64) -> Option<(u32, u16, [u8; 16], u32)> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
     if ptr.checked_add(28).map_or(true, |e| e >= USER_VA_END) { return None; }
@@ -351,17 +343,24 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
                 net::sock::BoundAddr::UnixDgram { path, queue: q.clone() },
             _ => net::sock::BoundAddr::UnixListener(path),
         }
-    } else if family == AF_INET as u16 || family == AF_INET6 as u16 {
+    } else if family == AF_INET as u16 {
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
         if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
         let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
         net::sock::BoundAddr::Inet { ip, port }
+    } else if family == AF_INET6 as u16 {
+        // F180a: AF_INET6 bind via v6 path with the 16-byte address.
+        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+        if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+        let (_fam, port, bytes, _scope) = match read_sockaddr_in6(addr_p) {
+            Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
+        };
+        net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }
     } else if family == 17 /* AF_PACKET */ {
-        // F131: sockaddr_ll: u16 family + u16 proto_be + i32 ifindex
-        // + u16 hatype + u8 pkttype + u8 halen + u8[8] addr.
-        // SAFETY: addr_p validated < USER_VA_END at read_sa_family above; sockaddr_ll spans +0..+20.
+        // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.
+        // SAFETY: addr_p validated < USER_VA_END above; sockaddr_ll spans +0..+20.
         let (proto_be, ifindex) = unsafe {
             let p = core::ptr::read_volatile((addr_p + 2) as *const u16);
             let i = core::ptr::read_volatile((addr_p + 4) as *const i32);
@@ -376,8 +375,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             } else { false }
         };
         if registered {
-            // F137: hook into the rx delivery registry so virtio-net
-            // can push DHCPOFFER frames into this socket's queue.
+            // F137: register for rx delivery (e.g. DHCPOFFER frames).
             net::sock::register_packet(&sock);
             return 0;
         }
