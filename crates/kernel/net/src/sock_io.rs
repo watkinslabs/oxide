@@ -55,6 +55,7 @@ pub(crate) fn write_tcp_blocking(
     entry: &alloc::sync::Arc<TcpEntry>,
     buf: &[u8],
     sndbuf_cap: usize,
+    deadline_ns: u64,
 ) -> vfs::KResult<usize> {
     let mut total = 0usize;
     while total < buf.len() {
@@ -96,10 +97,16 @@ pub(crate) fn write_tcp_blocking(
                     if total > 0 { return Ok(total); }
                     return Err(vfs::VfsError::Eintr);
                 }
-                // SAFETY: process ctx (sys_write); runqueue installed; preempt-off owned by syscall stub; deliver_tcp's wake_all on ACK frees send_buf space; signal wake also rouses us via wake_if_sleeping.
+                // F169: SO_SNDTIMEO expiry → short success or Eagain.
+                #[cfg(target_os = "oxide-kernel")]
+                if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
+                    if total > 0 { return Ok(total); }
+                    return Err(vfs::VfsError::Eagain);
+                }
+                // SAFETY: process ctx (sys_write); runqueue installed; preempt-off owned by syscall stub; park_with_deadline + schedule resume on deliver_tcp / signal / timer wake.
                 #[cfg(target_os = "oxide-kernel")]
                 unsafe {
-                    entry.rx_waiters.park();
+                    entry.rx_waiters.park_with_deadline(deadline_ns);
                     sched::live::schedule::schedule();
                 }
                 #[cfg(not(target_os = "oxide-kernel"))]
@@ -132,6 +139,7 @@ pub(crate) fn write_tcp_blocking(
 pub(crate) fn read_tcp_blocking(
     entry: &alloc::sync::Arc<TcpEntry>,
     buf: &mut [u8],
+    deadline_ns: u64,
 ) -> vfs::KResult<usize> {
     loop {
         drain_loopback();
@@ -154,17 +162,42 @@ pub(crate) fn read_tcp_blocking(
         if sched::live::deliverable_signals_self() != 0 {
             return Err(vfs::VfsError::Eintr);
         }
-        // Race-safe: we re-checked state and recv_buf under
-        // entry.conn.lock; deliver_tcp mutates that same lock
-        // before wake_all, so any wake between our check and
-        // park sees post-mutation state on the next iter.
-        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp / signal wake.
+        // F169: SO_RCVTIMEO expiry → Eagain (POSIX).
+        #[cfg(target_os = "oxide-kernel")]
+        if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
+            return Err(vfs::VfsError::Eagain);
+        }
+        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park_with_deadline + schedule resume on deliver_tcp / signal / timer wake.
         #[cfg(target_os = "oxide-kernel")]
         unsafe {
-            entry.rx_waiters.park();
+            entry.rx_waiters.park_with_deadline(deadline_ns);
             sched::live::schedule::schedule();
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(vfs::VfsError::Eagain);
     }
+}
+
+/// F169: monotonic-ns reader visible to io helpers without
+/// crossing the kernel-vs-hosted boundary at every call site.
+#[cfg(target_os = "oxide-kernel")]
+fn monotonic_ns_safe() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { return hal_x86_64::X86TimerOps::monotonic_ns().0; }
+    #[cfg(target_arch = "aarch64")]
+    { return hal_aarch64::ArmTimerOps::monotonic_ns().0; }
+    #[allow(unreachable_code)]
+    0
+}
+
+/// F169: convert a SO_RCVTIMEO / SO_SNDTIMEO ns value into an
+/// absolute monotonic deadline. `0` (no timeout configured) →
+/// `0` (indefinite wait). Saturating add prevents wrap.
+/// # C: O(1)
+pub fn compute_deadline_ns(timeo_ns: i64) -> u64 {
+    if timeo_ns <= 0 { return 0; }
+    let now = monotonic_ns_safe();
+    if now == 0 { return 0; }
+    now.saturating_add(timeo_ns as u64)
 }

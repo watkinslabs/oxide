@@ -576,8 +576,11 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
                     _ => None,
                 };
                 if let Some(l) = listener {
-                    // SAFETY: process ctx (sys_accept); runqueue installed; preempt-off owned by syscall stub; deliver_tcp wakes on accept_q push.
-                    unsafe { l.accept_waiters.park(); sched::live::schedule::schedule(); }
+                    // F169: park with the SO_RCVTIMEO deadline so the
+                    // timer scanner wakes us on expiry.
+                    let dl = deadline.unwrap_or(0);
+                    // SAFETY: process ctx (sys_accept); runqueue installed; preempt-off owned by syscall stub; deliver_tcp wakes on accept_q push; timer scanner wakes on deadline.
+                    unsafe { l.accept_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
                 } else {
                     // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
                     unsafe { sched::live::tick_yield(); }
