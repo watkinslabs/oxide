@@ -102,9 +102,7 @@ fn read_sa_family(ptr: u64) -> Option<u16> {
     unsafe { Some(core::ptr::read_volatile(ptr as *const u16)) }
 }
 
-/// Read a sockaddr_un path at offset 2 (after sun_family). Reads
-/// up to 107 bytes + NUL terminator.
-/// # C: O(108)
+/// Read sockaddr_un path (NUL-terminated, ≤107 B). # C: O(108)
 pub(crate) fn read_sockaddr_un_path(ptr: u64) -> Option<alloc::string::String> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
     // SAFETY: ptr in user range; user page mapped (caller's AS); 108-byte bounded read.
@@ -175,8 +173,7 @@ fn write_sockaddr_in6(ptr: u64, addr_bytes: [u8; 16], port_be: u16, scope_id: u3
     }
 }
 
-/// IPv4-mapped check: `::ffff:a.b.c.d` is the IPv6 form of an IPv4
-/// address. Returns Some(Ipv4Addr) when the bytes match the prefix.
+/// IPv4-mapped check (`::ffff:a.b.c.d`).
 /// Used to thread V6 sockets through the V4 transport for v1.
 fn ipv4_from_v6_mapped(b: &[u8; 16]) -> Option<net::Ipv4Addr> {
     let prefix_zeros = b[0..10].iter().all(|&x| x == 0);
@@ -848,7 +845,12 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     match (level, optname) {
         (SOL_SOCKET, 2)  => if let Some(v) = read_i32(optval) { sock.opts.reuseaddr.store(v, Ordering::Release); },
         (SOL_SOCKET, 15) => if let Some(v) = read_i32(optval) { sock.opts.reuseport.store(v, Ordering::Release); },
-        (SOL_SOCKET, 9)  => if let Some(v) = read_i32(optval) { sock.opts.keepalive.store(v, Ordering::Release); },
+        (SOL_SOCKET, 9)  => if let Some(v) = read_i32(optval) {
+            sock.opts.keepalive.store(v, Ordering::Release);
+            if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
+                entry.conn.lock().ka_enabled = v != 0;
+            }
+        },
         (SOL_SOCKET, 6)  => if let Some(v) = read_i32(optval) { sock.opts.broadcast.store(v, Ordering::Release); },
         (SOL_SOCKET, 7)  => if let Some(v) = read_i32(optval) { sock.opts.sndbuf.store(v, Ordering::Release); },
         (SOL_SOCKET, 8)  => if let Some(v) = read_i32(optval) { sock.opts.rcvbuf.store(v, Ordering::Release); },
