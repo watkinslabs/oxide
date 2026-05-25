@@ -110,6 +110,15 @@ pub struct TcpConn {
     /// stack::tcp_listen_ip) derives from outgoing iface MTU − L3/L4
     /// header sizes: v4 = mtu-40, v6 = mtu-60.
     pub own_mss: u16,
+    /// F185: TCP Reno congestion control (RFC 5681).
+    /// `cwnd` bounds in-flight bytes in addition to snd_wnd; init to
+    /// IW=10*MSS (RFC 6928). `ssthresh` switches us from slow-start
+    /// (cwnd += bytes_acked per ACK) into congestion avoidance
+    /// (cwnd += mss²/cwnd per ACK). `dup_acks` counts back-to-back
+    /// duplicate ACKs; 3 → fast retransmit (RFC 5681 §3.2).
+    pub cwnd:     u32,
+    pub ssthresh: u32,
+    pub dup_acks: u8,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -147,6 +156,9 @@ impl TcpConn {
             ts_enabled: false,
             ts_recent:  0,
             own_mss:    0,
+            cwnd:       10 * (OWN_MSS_DEFAULT as u32),
+            ssthresh:   u32::MAX,
+            dup_acks:   0,
         }
     }
 
@@ -172,6 +184,9 @@ impl TcpConn {
             ts_enabled: false,
             ts_recent:  0,
             own_mss:    0,
+            cwnd:       10 * (OWN_MSS_DEFAULT as u32),
+            ssthresh:   u32::MAX,
+            dup_acks:   0,
         }
     }
 
@@ -245,8 +260,64 @@ impl TcpConn {
             // Exponential backoff per RFC 6298 §5.5 — double RTO
             // each timeout, capped at 60 s.
             self.rto_ns = core::cmp::min(self.rto_ns.saturating_mul(2), 60_000_000_000);
+            // F185: RTO loss event. RFC 5681 §3.1 step 2: ssthresh =
+            // max(FlightSize/2, 2*MSS); cwnd = MSS; dup_acks = 0.
+            self.cc_on_rto();
         }
         out
+    }
+
+    /// F185: effective MSS for cwnd math (own_mss + peer hint).
+    /// # C: O(1)
+    fn cc_mss(&self) -> u32 {
+        let m = if self.own_mss != 0 { self.own_mss } else { OWN_MSS_DEFAULT };
+        let m = if self.peer_mss != 0 { core::cmp::min(m, self.peer_mss) } else { m };
+        m as u32
+    }
+
+    /// F185: Reno on-ACK. `acked` = newly cumulatively-ACKed bytes;
+    /// `payload_len` = data we just received in this segment (used
+    /// to filter pure dup-ACKs).
+    /// # C: O(1)
+    pub fn cc_on_ack(&mut self, acked: u32, payload_len: u32) {
+        let mss = self.cc_mss();
+        if acked > 0 {
+            self.dup_acks = 0;
+            if self.cwnd < self.ssthresh {
+                // Slow start: cwnd += bytes_acked (capped at MSS/ACK
+                // per RFC 5681 §3.1 to avoid bursts).
+                let inc = core::cmp::min(acked, mss);
+                self.cwnd = self.cwnd.saturating_add(inc);
+            } else {
+                // Congestion avoidance: cwnd += mss²/cwnd per ACK,
+                // approximated to 1 MSS per RTT.
+                let inc = (mss as u64 * mss as u64 / core::cmp::max(self.cwnd as u64, 1)) as u32;
+                self.cwnd = self.cwnd.saturating_add(core::cmp::max(inc, 1));
+            }
+            return;
+        }
+        // No new data + no advance = pure duplicate ACK candidate.
+        if payload_len == 0 {
+            self.dup_acks = self.dup_acks.saturating_add(1);
+            if self.dup_acks == 3 {
+                // Fast retransmit: halve, then inflate by 3 segments.
+                let half = self.cwnd / 2;
+                self.ssthresh = core::cmp::max(half, 2 * mss);
+                self.cwnd = self.ssthresh.saturating_add(3 * mss);
+            } else if self.dup_acks > 3 {
+                // Fast recovery: inflate by 1 MSS per extra dup.
+                self.cwnd = self.cwnd.saturating_add(mss);
+            }
+        }
+    }
+
+    /// F185: Reno RTO loss event. # C: O(1)
+    pub fn cc_on_rto(&mut self) {
+        let mss = self.cc_mss();
+        let half = self.cwnd / 2;
+        self.ssthresh = core::cmp::max(half, 2 * mss);
+        self.cwnd = mss;
+        self.dup_acks = 0;
     }
 
     fn build_retx(&self, s: &UnackedSegment) -> alloc::vec::Vec<u8> {
@@ -426,6 +497,13 @@ impl TcpConn {
                     if acked > 0 {
                         self.snd_una = hdr.ack;
                     }
+                    // F185: Reno cwnd update. New cumulative ACK clears
+                    // dup_acks; pure duplicate (no advance + no payload
+                    // + same window) increments dup_acks; on the 3rd
+                    // dup, ssthresh = max(cwnd/2, 2*mss), cwnd =
+                    // ssthresh + 3*mss, retransmit the first unACK'd
+                    // segment (RFC 5681 §3.2).
+                    self.cc_on_ack(acked, payload.len() as u32);
                     // F179a: apply any SACK blocks peer included.
                     let blocks = crate::tcp_hdr::parse_sack_option(seg);
                     if !blocks.is_empty() { self.apply_sack(&blocks); }
@@ -495,11 +573,12 @@ impl TcpConn {
         if !nodelay && !self.retx_q.is_empty() && self.send_buf.len() < mss {
             return out;
         }
-        // F178: respect peer's advertised window. Available bytes
-        // we may put on the wire = snd_wnd minus already-in-flight
-        // (sum of retx_q.payload). Stop when we'd exceed the window.
+        // F178/F185: in-flight bound = min(snd_wnd, cwnd) − in_flight.
+        // cwnd governs sender-side congestion control (slow-start /
+        // CA); snd_wnd governs receiver flow control. RFC 5681 §3.1.
         let in_flight: u32 = self.retx_q.iter().map(|s| s.payload.len() as u32).sum();
-        let mut avail = self.snd_wnd.saturating_sub(in_flight);
+        let effective_wnd = core::cmp::min(self.snd_wnd, self.cwnd);
+        let mut avail = effective_wnd.saturating_sub(in_flight);
         while !self.send_buf.is_empty() && avail > 0 {
             let chunk_cap = core::cmp::min(mss as u32, avail) as usize;
             let take = core::cmp::min(chunk_cap, self.send_buf.len());
