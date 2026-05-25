@@ -313,6 +313,22 @@ impl Inode for PipeInode {
         else { Err(VfsError::Eagain) }
     }
 
+    /// Readiness for select/poll per Linux pipe(7):
+    /// - POLLIN  when bytes are buffered, or when the last writer
+    ///   has closed (read returns EOF immediately, not a block).
+    /// - POLLHUP when readers==0 (write side will get EPIPE).
+    /// - POLLOUT when buffer has room AND at least one reader.
+    fn poll(&self) -> u32 {
+        let len = self.buf.lock().len;
+        let writers = self.writers.load(Ordering::Acquire);
+        let readers = self.readers.load(Ordering::Acquire);
+        let mut mask = 0u32;
+        if len > 0 || writers == 0 { mask |= vfs::POLL_IN; }
+        if readers == 0 { mask |= vfs::POLL_HUP; }
+        if len < PIPE_CAP && readers > 0 { mask |= vfs::POLL_OUT; }
+        mask
+    }
+
     /// Non-blocking pipe write per Linux O_NONBLOCK semantics.
     fn write_nonblock(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
