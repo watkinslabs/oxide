@@ -403,7 +403,7 @@ impl NetStack {
     /// effective SO_SNDBUF. Returns Eagain when the buffer is at
     /// cap and zero bytes can be queued.
     /// # C: O(data) + O(N segments)
-    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize)
+    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool)
         -> NetResult<usize>
     {
         let (segs, accepted, src, dst) = {
@@ -417,7 +417,7 @@ impl NetStack {
             if avail == 0 { return Err(NetError::Eagain); }
             let accept = core::cmp::min(avail, data.len());
             c.send(&data[..accept]);
-            let segs = c.output(1500);
+            let segs = c.output(1500, nodelay);
             (segs, accept, c.local.ip, c.remote.ip)
         };
         let n = segs.len();
@@ -712,14 +712,25 @@ impl NetStack {
             if let Some(r) = resp {
                 self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
             }
+            // F175: post-input output drain. ACK that clears retx_q
+            // unblocks Nagle-held sends; pump them out now. Use
+            // nodelay=true because the Nagle condition is already
+            // expressed by retx_q.is_empty(); calling with true just
+            // skips the redundant guard.
+            let drain_segs = {
+                let mut c = entry.conn.lock();
+                let (src, dst) = (c.local.ip, c.remote.ip);
+                let segs = c.output(1500, true);
+                (segs, src, dst)
+            };
+            let (segs, src, dst) = drain_segs;
+            for s in &segs {
+                self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s)?;
+            }
+            stamp_last_sent(&entry, segs.len());
             // F159: wake unconditionally — any input may have changed
             // state (SynSent→Established for connect waiters, * → Closed
             // for terminal observers) or appended data (recv waiters).
-            // Wakers re-check their condition; wake_all is cheap O(N)
-            // and avoids missing state transitions our pre/post diff
-            // doesn't enumerate (CloseWait, FinWait*, etc.). Suppress
-            // the (new_data || term) bindings — kept inside the cfg arm
-            // only.
             #[cfg(target_os = "oxide-kernel")]
             {
                 let _ = (pre_len, post_len, post_state);
@@ -866,7 +877,7 @@ mod tests {
         ).unwrap();
         for _ in 0..3 { stack.drain_loopback(id, &lo); }
         let server = stack.tcp_accept(&listener).unwrap();
-        stack.tcp_send(&client, b"oxide-tcp-payload", 65536).unwrap();
+        stack.tcp_send(&client, b"oxide-tcp-payload", 65536, true).unwrap();
         for _ in 0..3 { stack.drain_loopback(id, &lo); }
         let got = stack.tcp_recv(&server, 1024);
         assert_eq!(&got[..], b"oxide-tcp-payload");

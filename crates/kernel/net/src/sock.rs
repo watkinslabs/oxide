@@ -195,11 +195,8 @@ pub struct InetSocket {
     pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
-    /// SOL_SOCKET integer options stored verbatim from setsockopt and
-    /// echoed back from getsockopt. Enforcement on the data path lands
-    /// alongside per-option logic; the round-trip alone keeps
-    /// userspace (systemd, ssh) from failing setsockopt+getsockopt
-    /// consistency checks.
+    /// SOL_SOCKET integer options — setsockopt store, getsockopt
+    /// read-back. Data-path enforcement per-option as it lands.
     pub opts: SockOpts,
     /// F166: shutdown(SHUT_RD | SHUT_RDWR) latches this — subsequent
     /// `read`/`recvfrom` return Ok(0) (POSIX EOF) without consulting
@@ -516,7 +513,8 @@ impl vfs::Inode for InetSocket {
                     .max(TCP_SNDBUF_DEFAULT) as usize;
                 let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
                 let deadline_ns = compute_deadline_ns(timeo);
-                crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns)
+                let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
+                crate::sock_io::write_tcp_blocking(&entry, buf, cap, deadline_ns, nodelay)
             }
             K::Other => Err(vfs::VfsError::Einval),
         }
@@ -546,7 +544,8 @@ impl vfs::Inode for InetSocket {
                 sched::live::send_signal_self(sched::live::Signum::Sigpipe);
                 return Err(vfs::VfsError::Epipe);
             }
-            return match stack().tcp_send(&entry, buf, cap) {
+            let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
+            return match stack().tcp_send(&entry, buf, cap, nodelay) {
                 Ok(n) => { drain_loopback(); Ok(n) }
                 Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
                 Err(_) => Err(vfs::VfsError::Eio),
@@ -934,7 +933,8 @@ pub fn sendto(
         let entry = entry.clone();
         let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(TCP_SNDBUF_DEFAULT) as usize;
-        let n = stack().tcp_send(&entry, payload, cap)?;
+        let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let n = stack().tcp_send(&entry, payload, cap, nodelay)?;
         drain_loopback();
         return Ok(n);
     }
