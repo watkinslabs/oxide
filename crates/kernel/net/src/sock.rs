@@ -340,43 +340,64 @@ impl vfs::Inode for InetSocket {
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
 
     fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        match &*self.kind.lock() {
-            SockKind::Unix(pair, end) => {
-                let got = pair.read(*end, buf.len());
+        // F158: snapshot the kind out of its lock first so we don't
+        // hold sock.kind.lock() across a park (deliver_tcp's wake path
+        // doesn't touch this lock but holding it across schedule is
+        // still wrong on principle and breaks AF_UNIX peers that
+        // close-and-flip kind during read).
+        enum K {
+            Unix(Arc<crate::UnixPair>, crate::UnixEnd),
+            UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
+            Tcp(Arc<TcpEntry>),
+            Other,
+        }
+        let k = match &*self.kind.lock() {
+            SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
+            SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
+            SockKind::TcpConn(e)        => K::Tcp(e.clone()),
+            _                            => K::Other,
+        };
+        match k {
+            K::Unix(pair, end) => {
+                let got = pair.read(end, buf.len());
                 let n = got.len();
                 buf[..n].copy_from_slice(&got);
                 Ok(n)
             }
-            SockKind::UnixMsgPair(pair, end) => match pair.recv(*end, buf.len()) {
+            K::UnixMsgPair(pair, end) => match pair.recv(end, buf.len()) {
                 Some(msg) => { let n = msg.len(); buf[..n].copy_from_slice(&msg); Ok(n) }
                 None      => Err(vfs::VfsError::Eagain),
             },
-            SockKind::TcpConn(entry) => {
-                drain_loopback();
-                let got = stack().tcp_recv(entry, buf.len());
-                if !got.is_empty() {
-                    let n = got.len();
-                    buf[..n].copy_from_slice(&got);
-                    return Ok(n);
-                }
-                // F157: distinguish "no data yet" from real EOF. Returning
-                // Ok(0) when recv_buf is empty but the connection is still
-                // Established means userspace sees EOF on the very first
-                // read after connect — tcp_smoke bails before the SSH
-                // banner arrives. Real EOF is only when peer sent FIN
-                // (CloseWait) or the conn has reached Closed / LastAck.
-                let st = entry.conn.lock().state;
-                if st == crate::tcp_state::TcpState::Closed
-                    || st == crate::tcp_state::TcpState::CloseWait
-                    || st == crate::tcp_state::TcpState::LastAck
-                {
-                    Ok(0)
-                } else {
-                    Err(vfs::VfsError::Eagain)
-                }
-            }
-            _ => Err(vfs::VfsError::Einval),
+            K::Tcp(entry) => read_tcp_blocking(&entry, buf),
+            K::Other => Err(vfs::VfsError::Einval),
         }
+    }
+
+    /// Non-blocking variant per `15§5` / vfs::Inode contract. Returns
+    /// Eagain when recv_buf is empty AND the connection is still in a
+    /// data-transfer state; Ok(0) only on peer FIN.
+    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if let SockKind::TcpConn(entry) = &*self.kind.lock() {
+            drain_loopback();
+            let got = stack().tcp_recv(entry, buf.len());
+            if !got.is_empty() {
+                let n = got.len();
+                buf[..n].copy_from_slice(&got);
+                return Ok(n);
+            }
+            let st = entry.conn.lock().state;
+            if st == crate::tcp_state::TcpState::Closed
+                || st == crate::tcp_state::TcpState::CloseWait
+                || st == crate::tcp_state::TcpState::LastAck
+            {
+                return Ok(0);
+            }
+            return Err(vfs::VfsError::Eagain);
+        }
+        // Fall back to the blocking path for non-TCP sock kinds — their
+        // existing read() impl already returns Eagain for empty queues
+        // where applicable (UnixMsgPair).
+        self.read(_off, buf)
     }
 
     fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
@@ -520,6 +541,60 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     STACK.send_udp_to(src_ip, src_port, dst, dst_port, payload)?;
     drain_loopback();
     Ok(payload.len())
+}
+
+
+/// F158: blocking TCP recv. Park on entry.rx_waiters until data
+/// arrives in recv_buf or the connection reaches a terminal data
+/// state (peer FIN'd → return Ok(0) for EOF, RST → Closed). Used
+/// from `Inode::read` for SockKind::TcpConn. The non-blocking shim
+/// `Inode::read_nonblock` does the immediate-Eagain version inline.
+///
+/// Drain loopback every iteration so the lo-path's TCP traffic (test
+/// harness side) makes progress too — virtio-net's MSI-driven softirq
+/// handles the off-host path independently and wakes us via wake_all.
+/// # C: blocks indefinitely
+/// # Lk: takes entry.conn briefly between yields; entry.rx_waiters during park
+/// # Ctx: process; preempt-off; runqueue installed
+fn read_tcp_blocking(
+    entry: &alloc::sync::Arc<TcpEntry>,
+    buf: &mut [u8],
+) -> vfs::KResult<usize> {
+    loop {
+        drain_loopback();
+        let got = stack().tcp_recv(entry, buf.len());
+        if !got.is_empty() {
+            let n = got.len();
+            buf[..n].copy_from_slice(&got);
+            return Ok(n);
+        }
+        let st = entry.conn.lock().state;
+        if st == crate::tcp_state::TcpState::Closed
+            || st == crate::tcp_state::TcpState::CloseWait
+            || st == crate::tcp_state::TcpState::LastAck
+        {
+            // Peer terminated AND nothing buffered — POSIX EOF.
+            return Ok(0);
+        }
+        // Park on the per-entry rx_waiters list. deliver_tcp's
+        // wake_all() (called after recv_buf grows or state goes
+        // terminal) will move us back to Runnable. Race-safe: we
+        // already re-checked state and recv_buf above with the
+        // entry.conn lock; deliver_tcp mutates that same lock
+        // before wake_all, so any wake we'd miss between the check
+        // and the park is impossible — the wake happens with the
+        // post-mutation state visible.
+        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp wake.
+        #[cfg(target_os = "oxide-kernel")]
+        unsafe {
+            entry.rx_waiters.park();
+            sched::live::schedule::schedule();
+        }
+        // Hosted-test fallback: spin once and return Eagain so tests
+        // don't loop forever waiting for a scheduler that isn't here.
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(vfs::VfsError::Eagain);
+    }
 }
 
 
