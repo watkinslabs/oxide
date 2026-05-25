@@ -7,8 +7,9 @@ use crate::addr::Ipv6Addr;
 use crate::ipv4::ip_checksum;
 
 pub const ICMPV6_HDR_LEN: usize = 8;
-pub const ICMPV6_TYPE_ECHO_REQUEST: u8 = 128;
-pub const ICMPV6_TYPE_ECHO_REPLY:   u8 = 129;
+pub const ICMPV6_TYPE_PACKET_TOO_BIG: u8 = 2;
+pub const ICMPV6_TYPE_ECHO_REQUEST:   u8 = 128;
+pub const ICMPV6_TYPE_ECHO_REPLY:     u8 = 129;
 pub const IPPROTO_ICMPV6:          u8 = 58;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
