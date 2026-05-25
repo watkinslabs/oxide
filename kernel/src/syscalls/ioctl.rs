@@ -222,16 +222,17 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // Make this fd's tty the controlling terminal for the
             // caller's session. v1 records sid on the VT but doesn't
             // enforce session-match checks on subsequent TIOCSPGRP.
-            if pty_pair.is_some() {
-                // PTY controlling-tty already tracked via pair's
-                // session field — pre-existing semantics, no-op
-                // here for the v1 path.
-                return 0;
-            }
-            let vt = (ino & 0xff) as u8;
             let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
             };
+            // F200: store the inode on the calling task so /dev/tty
+            // open can redirect to it.
+            // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer to ctty.
+            unsafe { *cur.ctty.get() = Some(file.inode().clone()); }
+            if pty_pair.is_some() {
+                return 0;
+            }
+            let vt = (ino & 0xff) as u8;
             use core::sync::atomic::Ordering;
             tty::live::set_session(vt, cur.sid.load(Ordering::Acquire));
             0
