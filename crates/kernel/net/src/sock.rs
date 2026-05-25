@@ -188,20 +188,16 @@ pub struct InetSocket {
     /// SOL_SOCKET integer options — setsockopt store, getsockopt
     /// read-back. Data-path enforcement per-option as it lands.
     pub opts: SockOpts,
-    /// F166: shutdown(SHUT_RD | SHUT_RDWR) latches this — subsequent
-    /// `read`/`recvfrom` return Ok(0) (POSIX EOF) without consulting
-    /// the connection's receive buffer. shutdown(SHUT_WR) sends FIN
-    /// via the existing close path and does not touch this flag.
+    /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
-    /// F172: socket-level read waitlist for AF_PACKET.
+    /// F180a: AF_INET6 address slots; IPv4 uses `local_ip` / `peer`.
+    pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
+    pub peer6:     Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>,
+    /// F172: AF_PACKET recv waitlist.
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
-    /// F181: per-fd epoll subscriber list. Arc'd so other inodes
-    /// (the peer end of a UnixPair, the UDP port queue, the TCP
-    /// listener) can hold Weak refs and wake-targeted on events.
-    /// epoll_ctl(ADD) subscribes; event sites call
-    /// `poll_subs.notify()` to wake only the epolls actually
-    /// watching this fd.
+    /// F181: per-fd epoll subscribers (Arc'd for Weak refs from
+    /// peer-end Unix queues / UDP / TCP entries).
     pub poll_subs: Arc<vfs::PollSubscribers>,
 }
 
@@ -211,9 +207,7 @@ pub struct SockOpts {
     pub reuseport: core::sync::atomic::AtomicI32,
     pub keepalive: core::sync::atomic::AtomicI32,
     pub broadcast: core::sync::atomic::AtomicI32,
-    /// F164: SO_SNDBUF in bytes. Default = `TCP_SNDBUF_DEFAULT`;
-    /// enforced by `tcp_send` to bound the per-conn send queue and
-    /// drive write-side backpressure.
+    /// F164: SO_SNDBUF (bytes); enforced by tcp_send → backpressure.
     pub sndbuf:    core::sync::atomic::AtomicI32,
     pub rcvbuf:    core::sync::atomic::AtomicI32,
     pub sndtimeo_ns: core::sync::atomic::AtomicI64,
@@ -226,9 +220,7 @@ pub struct SockOpts {
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
 }
 
-/// F164: default SO_SNDBUF / SO_RCVBUF in bytes. Matches Linux
-/// tcp_wmem[1] / tcp_rmem[1] defaults (16 KiB) — modest, exercises
-/// the backpressure path without overcommitting memory.
+/// F164: default SO_SNDBUF/SO_RCVBUF bytes (Linux tcp_wmem[1] = 16K).
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384;
 pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
 
@@ -276,6 +268,8 @@ impl InetSocket {
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
+            local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
+            peer6:     Spinlock::new(None),
         }
     }
     /// # C: O(1)
@@ -296,6 +290,8 @@ impl InetSocket {
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
+            local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
+            peer6:     Spinlock::new(None),
         }
     }
     /// `socket(AF_INET6, SOCK_DGRAM, …)`. V4 transport substrate;
@@ -679,9 +675,10 @@ pub enum BoundAddr {
     /// `bind` on an AF_UNIX SOCK_DGRAM socket — register the
     /// already-allocated queue at `path`.
     UnixDgram { path: String, queue: alloc::sync::Arc<crate::UnixDgramQueue> },
-    /// `bind` on an AF_INET / AF_INET6 socket — UDP-style port
-    /// reservation. v1 inet stack is IPv4 only.
+    /// `bind` on an AF_INET socket — UDP-style port reservation.
     Inet { ip: Ipv4Addr, port: u16 },
+    /// F180a: `bind` on an AF_INET6 socket — IPv6 UDP port slot.
+    Inet6 { ip: crate::Ipv6Addr, port: u16 },
 }
 
 /// Bind a socket to an address per `bind(2)`. Tier-2 work fn:
@@ -703,6 +700,16 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             *sock.local_ip.lock() = ip;
             // F181a: register subscribers on the just-bound queue.
             if let Some(q) = stack().udp_queue_arc(port) {
+                q.register_poll_subs(&sock.poll_subs);
+            }
+            Ok(())
+        }
+        BoundAddr::Inet6 { ip, port } => {
+            // F180a: AF_INET6 UDP bind routes through udp6 map.
+            stack().bind_udp6(ip, port)?;
+            *sock.local_port.lock() = Some(port);
+            *sock.local_ip6.lock() = ip;
+            if let Some(q) = stack().udp6_queue_arc(port) {
                 q.register_poll_subs(&sock.poll_subs);
             }
             Ok(())
