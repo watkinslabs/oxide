@@ -570,20 +570,27 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }
                 if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
-                // F160: park on TCP listener's accept_waiters; tick_yield fallback for AF_UNIX (uses global epoll wake).
-                let listener = match &*sock.kind.lock() {
-                    net::sock::SockKind::TcpListener(l) => Some(l.clone()),
-                    _ => None,
+                // F160/F170: per-listener waitq park — TCP or AF_UNIX.
+                enum LW { Tcp(Arc<net::stack::TcpListenEntry>), Unix(Arc<net::UnixListener>), None }
+                let lw = match &*sock.kind.lock() {
+                    net::sock::SockKind::TcpListener(l)  => LW::Tcp(l.clone()),
+                    net::sock::SockKind::UnixListener(l) => LW::Unix(l.clone()),
+                    _                                     => LW::None,
                 };
-                if let Some(l) = listener {
-                    // F169: park with the SO_RCVTIMEO deadline so the
-                    // timer scanner wakes us on expiry.
-                    let dl = deadline.unwrap_or(0);
-                    // SAFETY: process ctx (sys_accept); runqueue installed; preempt-off owned by syscall stub; deliver_tcp wakes on accept_q push; timer scanner wakes on deadline.
-                    unsafe { l.accept_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
-                } else {
-                    // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
-                    unsafe { sched::live::tick_yield(); }
+                let dl = deadline.unwrap_or(0);
+                match lw {
+                    LW::Tcp(l)  => {
+                        // SAFETY: process ctx (sys_accept TCP); deliver_tcp wakes on accept_q push; timer scanner wakes on deadline.
+                        unsafe { l.accept_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
+                    }
+                    LW::Unix(l) => {
+                        // SAFETY: process ctx (sys_accept AF_UNIX); UnixRegistry::connect wakes accept_waiters after push.
+                        unsafe { l.accept_waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
+                    }
+                    LW::None    => {
+                        // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
+                        unsafe { sched::live::tick_yield(); }
+                    }
                 }
                 continue;
             }

@@ -241,6 +241,11 @@ impl UnixDgramQueue {
 pub struct UnixListener {
     pub path: String,
     pub accept_q: Spinlock<VecDeque<Arc<UnixPair>>, UnixLockClass>,
+    /// F170: per-listener waitlist for `sys_accept`. Connect()
+    /// wakes after pushing a freshly-paired UnixPair onto
+    /// `accept_q`. Kernel-only — hosted tests don't run sched.
+    #[cfg(target_os = "oxide-kernel")]
+    pub accept_waiters: sched::live::WaitList,
 }
 
 impl UnixListener {
@@ -249,6 +254,8 @@ impl UnixListener {
         Arc::new(Self {
             path,
             accept_q: Spinlock::new(VecDeque::new()),
+            #[cfg(target_os = "oxide-kernel")]
+            accept_waiters: sched::live::WaitList::new(),
         })
     }
 }
@@ -325,6 +332,9 @@ impl UnixRegistry {
         let listener = self.lookup(path)?;
         let pair = UnixPair::new();
         listener.accept_q.lock().push_back(pair.clone());
+        // F170: wake any blocking accept() parked on this listener.
+        #[cfg(target_os = "oxide-kernel")]
+        listener.accept_waiters.wake_all();
         Some(pair)
     }
 }
