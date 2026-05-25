@@ -204,12 +204,14 @@ pub struct InetSocket {
 
 /// Common SOL_SOCKET options held per socket. Each is an `i32` cell
 /// matching Linux `int`-shaped options. SO_LINGER stores `(onoff,linger)`.
-#[derive(Default)]
 pub struct SockOpts {
     pub reuseaddr: core::sync::atomic::AtomicI32,
     pub reuseport: core::sync::atomic::AtomicI32,
     pub keepalive: core::sync::atomic::AtomicI32,
     pub broadcast: core::sync::atomic::AtomicI32,
+    /// F164: SO_SNDBUF in bytes. Default = `TCP_SNDBUF_DEFAULT`;
+    /// enforced by `tcp_send` to bound the per-conn send queue and
+    /// drive write-side backpressure.
     pub sndbuf:    core::sync::atomic::AtomicI32,
     pub rcvbuf:    core::sync::atomic::AtomicI32,
     pub sndtimeo_ns: core::sync::atomic::AtomicI64,
@@ -220,6 +222,33 @@ pub struct SockOpts {
     pub mark:      core::sync::atomic::AtomicI32,
     /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
+}
+
+/// F164: default SO_SNDBUF / SO_RCVBUF in bytes. Matches Linux
+/// tcp_wmem[1] / tcp_rmem[1] defaults (16 KiB) — modest, exercises
+/// the backpressure path without overcommitting memory.
+pub const TCP_SNDBUF_DEFAULT: i32 = 16384;
+pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
+
+impl Default for SockOpts {
+    fn default() -> Self {
+        use core::sync::atomic::*;
+        Self {
+            reuseaddr:   AtomicI32::new(0),
+            reuseport:   AtomicI32::new(0),
+            keepalive:   AtomicI32::new(0),
+            broadcast:   AtomicI32::new(0),
+            sndbuf:      AtomicI32::new(TCP_SNDBUF_DEFAULT),
+            rcvbuf:      AtomicI32::new(TCP_RCVBUF_DEFAULT),
+            sndtimeo_ns: AtomicI64::new(0),
+            rcvtimeo_ns: AtomicI64::new(0),
+            linger_on:   AtomicI32::new(0),
+            linger_s:    AtomicI32::new(0),
+            priority:    AtomicI32::new(0),
+            mark:        AtomicI32::new(0),
+            tcp_nodelay: AtomicI32::new(0),
+        }
+    }
 }
 
 /// Linux `AF_INET` numeric value — kept here so dev_net code can tag
@@ -401,7 +430,7 @@ impl vfs::Inode for InetSocket {
                 Some(msg) => { let n = msg.len(); buf[..n].copy_from_slice(&msg); Ok(n) }
                 None      => Err(vfs::VfsError::Eagain),
             },
-            K::Tcp(entry) => read_tcp_blocking(&entry, buf),
+            K::Tcp(entry) => crate::sock_io::read_tcp_blocking(&entry, buf),
             K::Other => Err(vfs::VfsError::Einval),
         }
     }
@@ -434,16 +463,50 @@ impl vfs::Inode for InetSocket {
     }
 
     fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
-        match &*self.kind.lock() {
-            SockKind::Unix(pair, end)        => Ok(pair.write(*end, buf)),
-            SockKind::UnixMsgPair(pair, end) => Ok(pair.send(*end, buf)),
-            SockKind::TcpConn(entry) => {
-                let n = stack().tcp_send(entry, buf).map_err(|_| vfs::VfsError::Eio)?;
-                drain_loopback();
-                Ok(n)
-            }
-            _ => Err(vfs::VfsError::Einval),
+        // F164: snapshot kind out of its lock for parity with read();
+        // a TCP write may park on entry.rx_waiters until the peer's
+        // ACK frees send_buf space — we must not hold sock.kind.lock()
+        // across the park.
+        enum K {
+            Unix(Arc<crate::UnixPair>, crate::UnixEnd),
+            UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
+            Tcp(Arc<TcpEntry>),
+            Other,
         }
+        let k = match &*self.kind.lock() {
+            SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
+            SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
+            SockKind::TcpConn(e)        => K::Tcp(e.clone()),
+            _                            => K::Other,
+        };
+        match k {
+            K::Unix(pair, end)        => Ok(pair.write(end, buf)),
+            K::UnixMsgPair(pair, end) => Ok(pair.send(end, buf)),
+            K::Tcp(entry) => {
+                let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+                    .max(TCP_SNDBUF_DEFAULT) as usize;
+                crate::sock_io::write_tcp_blocking(&entry, buf, cap)
+            }
+            K::Other => Err(vfs::VfsError::Einval),
+        }
+    }
+
+    /// F164: non-blocking write per O_NONBLOCK. Returns Eagain when
+    /// the connection's send buffer is at SO_SNDBUF; else writes as
+    /// many bytes as fit. UDP / AF_UNIX delegate to their existing
+    /// write() — neither blocks on send today.
+    fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        if let SockKind::TcpConn(entry) = &*self.kind.lock() {
+            let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+                .max(TCP_SNDBUF_DEFAULT) as usize;
+            let entry = entry.clone();
+            return match stack().tcp_send(&entry, buf, cap) {
+                Ok(n) => { drain_loopback(); Ok(n) }
+                Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
+                Err(_) => Err(vfs::VfsError::Eio),
+            };
+        }
+        self.write(_off, buf)
     }
 
     fn poll(&self) -> u32 {
@@ -577,89 +640,7 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
 }
 
 
-/// F159: blocking wait for TCP connect's SYN-ACK. Park on
-/// entry.rx_waiters; deliver_tcp wakes after any input (state
-/// transition to Established for normal path, to Closed on RST);
-/// tcp_retx_tick wakes after flipping state to Closed for
-/// retry-exhaustion. Returns Eio (ABI Etimedout) on abort, Ok on
-/// Established. drain_loopback every iter so a self-loopback
-/// connect doesn't depend on virtio's softirq.
-/// # C: blocks indefinitely
-/// # Ctx: process; preempt-off; runqueue installed
-fn connect_wait_established(
-    entry: &alloc::sync::Arc<TcpEntry>,
-) -> Result<(), NetError> {
-    loop {
-        drain_loopback();
-        let st = entry.conn.lock().state;
-        if st.is_established() { return Ok(()); }
-        if st == crate::tcp_state::TcpState::Closed {
-            return Err(NetError::Eio);
-        }
-        // SAFETY: process ctx (sys_connect); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp/retx_tick wake.
-        #[cfg(target_os = "oxide-kernel")]
-        unsafe {
-            entry.rx_waiters.park();
-            sched::live::schedule::schedule();
-        }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(NetError::Eio);
-    }
-}
-
-
-/// F158: blocking TCP recv. Park on entry.rx_waiters until data
-/// arrives in recv_buf or the connection reaches a terminal data
-/// state (peer FIN'd → return Ok(0) for EOF, RST → Closed). Used
-/// from `Inode::read` for SockKind::TcpConn. The non-blocking shim
-/// `Inode::read_nonblock` does the immediate-Eagain version inline.
-///
-/// Drain loopback every iteration so the lo-path's TCP traffic (test
-/// harness side) makes progress too — virtio-net's MSI-driven softirq
-/// handles the off-host path independently and wakes us via wake_all.
-/// # C: blocks indefinitely
-/// # Lk: takes entry.conn briefly between yields; entry.rx_waiters during park
-/// # Ctx: process; preempt-off; runqueue installed
-fn read_tcp_blocking(
-    entry: &alloc::sync::Arc<TcpEntry>,
-    buf: &mut [u8],
-) -> vfs::KResult<usize> {
-    loop {
-        drain_loopback();
-        let got = stack().tcp_recv(entry, buf.len());
-        if !got.is_empty() {
-            let n = got.len();
-            buf[..n].copy_from_slice(&got);
-            return Ok(n);
-        }
-        let st = entry.conn.lock().state;
-        if st == crate::tcp_state::TcpState::Closed
-            || st == crate::tcp_state::TcpState::CloseWait
-            || st == crate::tcp_state::TcpState::LastAck
-        {
-            // Peer terminated AND nothing buffered — POSIX EOF.
-            return Ok(0);
-        }
-        // Park on the per-entry rx_waiters list. deliver_tcp's
-        // wake_all() (called after recv_buf grows or state goes
-        // terminal) will move us back to Runnable. Race-safe: we
-        // already re-checked state and recv_buf above with the
-        // entry.conn lock; deliver_tcp mutates that same lock
-        // before wake_all, so any wake we'd miss between the check
-        // and the park is impossible — the wake happens with the
-        // post-mutation state visible.
-        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp wake.
-        #[cfg(target_os = "oxide-kernel")]
-        unsafe {
-            entry.rx_waiters.park();
-            sched::live::schedule::schedule();
-        }
-        // Hosted-test fallback: spin once and return Eagain so tests
-        // don't loop forever waiting for a scheduler that isn't here.
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(vfs::VfsError::Eagain);
-    }
-}
+// F164: blocking-I/O helpers moved to sock_io.rs (1000-line cap).
 
 
 // ─── Tier-2 work fns per `docs/53§3` ───
@@ -788,7 +769,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // flips state to Closed on retry-exhaustion. Race-safe:
             // we re-check state under entry.conn.lock() each iter;
             // wakes are issued post-mutation.
-            connect_wait_established(&entry)
+            crate::sock_io::connect_wait_established(&entry)
         }
     }
 }
@@ -905,7 +886,9 @@ pub fn sendto(
     // TCP: send into the existing connection.
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();
-        let n = stack().tcp_send(&entry, payload)?;
+        let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+            .max(TCP_SNDBUF_DEFAULT) as usize;
+        let n = stack().tcp_send(&entry, payload, cap)?;
         drain_loopback();
         return Ok(n);
     }
