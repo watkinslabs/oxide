@@ -46,8 +46,8 @@ fn f173_input_latches_peer_mss_from_synack() {
 fn f178_active_open_emits_wscale_option() {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let syn = c.active_open().unwrap();
-    assert_eq!(parse_wscale_option(&syn), Some(0),
-        "active_open SYN must advertise WSCALE (OWN_WSCALE=0)");
+    assert_eq!(parse_wscale_option(&syn), Some(7),
+        "active_open SYN must advertise WSCALE (F186: OWN_WSCALE=7)");
 }
 
 #[test]
@@ -180,6 +180,43 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
     stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).unwrap();
     assert_eq!(stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).err().unwrap(),
                NetError::Eaddrinuse);
+}
+
+// ----- F186: OWN_WSCALE=7 + recv-buf autotune -----------------------
+
+#[test]
+fn f186_own_wscale_advertised_is_7() {
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 1000);
+    let syn = c.active_open().unwrap();
+    assert_eq!(parse_wscale_option(&syn), Some(7));
+}
+
+#[test]
+fn f186_current_rcv_window_scales_with_snd_wscale() {
+    let mut c = client_established();
+    c.snd_wscale = 7;
+    c.rcv_buf_cap = 65536;
+    // No data in recv_buf → free = 65536; advertised = 65536 >> 7 = 512.
+    assert_eq!(c.current_rcv_window(), 512);
+}
+
+#[test]
+fn f186_autotune_doubles_cap_when_peak_exceeds_half() {
+    let mut c = client_established();
+    c.rcv_buf_cap = 65_536;
+    c.recv_buf.extend(core::iter::repeat(0u8).take(40_000));
+    c.rcv_autotune();
+    assert_eq!(c.rcv_buf_cap, 131_072);
+}
+
+#[test]
+fn f186_autotune_caps_at_rcv_buf_max() {
+    let mut c = client_established();
+    c.rcv_buf_cap = 2 * 1024 * 1024;
+    c.rcv_buf_max = 4 * 1024 * 1024;
+    c.recv_buf.extend(core::iter::repeat(0u8).take(2 * 1024 * 1024 - 10));
+    c.rcv_autotune();
+    assert_eq!(c.rcv_buf_cap, 4 * 1024 * 1024, "cap clamps at max");
 }
 
 // ----- F185: TCP Reno congestion control ----------------------------
