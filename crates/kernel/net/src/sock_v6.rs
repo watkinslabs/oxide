@@ -4,7 +4,7 @@
 // v1 source-address pick (LOOPBACK for ::1 else ANY).
 
 use crate::netdev::NetError;
-use crate::sock::{InetSocket, SockKind, alloc_ephemeral_port, stack};
+use crate::sock::{InetSocket, SockKind, alloc_ephemeral_port, drain_loopback, stack};
 
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
@@ -38,4 +38,20 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     *sock.peer6.lock() = Some((dst_ip, port));
     crate::sock_io::connect_wait_established(&entry)
+}
+
+/// F180b: AF_INET6 datagram sendto. Allocates an ephemeral src port
+/// on demand; routes via stack().send_udp6_to.
+/// # C: O(payload)
+pub fn sendto_v6(sock: &alloc::sync::Arc<InetSocket>,
+                  dst_ip: crate::Ipv6Addr, dst_port: u16,
+                  payload: &[u8]) -> Result<usize, NetError> {
+    let src_port = match *sock.local_port.lock() {
+        Some(p) => p,
+        None    => { let p = alloc_ephemeral_port()?; *sock.local_port.lock() = Some(p); p }
+    };
+    let src_ip = *sock.local_ip6.lock();
+    stack().send_udp6_to(src_ip, src_port, dst_ip, dst_port, payload)?;
+    drain_loopback();
+    Ok(payload.len())
 }
