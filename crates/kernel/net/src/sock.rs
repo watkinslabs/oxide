@@ -433,22 +433,18 @@ impl vfs::Inode for InetSocket {
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
             _                            => K::Other,
         };
+        let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+        let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                let got = pair.read(end, buf.len());
-                let n = got.len();
-                buf[..n].copy_from_slice(&got);
-                Ok(n)
+                crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns)
             }
-            K::UnixMsgPair(pair, end) => match pair.recv(end, buf.len()) {
-                Some(msg) => { let n = msg.len(); buf[..n].copy_from_slice(&msg); Ok(n) }
-                None      => Err(vfs::VfsError::Eagain),
-            },
+            K::UnixMsgPair(pair, end) => {
+                crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns)
+            }
             K::Tcp(entry) => {
                 // F169: convert SO_RCVTIMEO (ns) into an absolute
                 // monotonic deadline; 0 = no timeout (indefinite).
-                let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
-                let deadline_ns = compute_deadline_ns(timeo);
                 crate::sock_io::read_tcp_blocking(&entry, buf, deadline_ns)
             }
             K::Other => Err(vfs::VfsError::Einval),
