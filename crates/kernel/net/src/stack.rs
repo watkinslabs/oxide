@@ -152,6 +152,23 @@ pub struct TcpListenEntry {
     /// Backlog of accepted-but-not-yet-claimed Arc<TcpEntry>.
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
     pub local: Endpoint,
+    /// F160: tasks parked in blocking sys_accept waiting for a SYN.
+    /// `deliver_tcp` (listener branch) wakes the list after pushing
+    /// a freshly-spawned TcpEntry to accept_q.
+    #[cfg(target_os = "oxide-kernel")]
+    pub accept_waiters: sched::live::WaitList,
+}
+
+impl TcpListenEntry {
+    /// # C: O(1)
+    pub fn new(local: Endpoint) -> Self {
+        Self {
+            accept_q: Spinlock::new(VecDeque::new()),
+            local,
+            #[cfg(target_os = "oxide-kernel")]
+            accept_waiters: sched::live::WaitList::new(),
+        }
+    }
 }
 
 pub struct NetStack {
@@ -269,10 +286,9 @@ impl NetStack {
         let key = TcpListenKey { local_ip, local_port };
         let mut g = self.tcp_listens.lock();
         if g.contains_key(&key) { return Err(NetError::Eaddrinuse); }
-        let entry = Arc::new(TcpListenEntry {
-            accept_q: Spinlock::new(VecDeque::new()),
-            local: Endpoint { ip: local_ip, port: local_port },
-        });
+        let entry = Arc::new(TcpListenEntry::new(
+            Endpoint { ip: local_ip, port: local_port },
+        ));
         g.insert(key, entry.clone());
         Ok(entry)
     }
@@ -563,6 +579,9 @@ impl NetStack {
         if let Some(r) = resp {
             self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
         }
+        // F160: wake any blocking accept() parked on this listener.
+        #[cfg(target_os = "oxide-kernel")]
+        listener.accept_waiters.wake_all();
         Ok(())
     }
 
