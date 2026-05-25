@@ -60,6 +60,10 @@ pub struct TcpConn {
     /// discover when this expires; on every timeout RTO doubles
     /// (exponential backoff per `25§7`).
     pub rto_ns:     u64,
+    /// F161: monotonic timestamp when the conn entered TimeWait.
+    /// Zero before entry. `tcp_retx_tick` removes entries that have
+    /// been in TimeWait for >= 2*MSL (Linux tcp_fin_timeout = 60s).
+    pub tw_start_ns: u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -87,6 +91,7 @@ impl TcpConn {
             srtt_ns:  0,
             rttvar_ns: 0,
             rto_ns:   1_000_000_000,    // RFC 6298 §2.1 initial RTO = 1 s
+            tw_start_ns: 0,
         }
     }
 
@@ -102,6 +107,24 @@ impl TcpConn {
             retx_q:   VecDeque::new(),
             srtt_ns:  0, rttvar_ns: 0,
             rto_ns:   1_000_000_000,
+            tw_start_ns: 0,
+        }
+    }
+
+    /// F161: graceful close from kernel-side `Drop`. RST if mid-handshake
+    /// (peer never saw data); FIN if Established / CloseWait; no-op in
+    /// closing-states. Returns the segment caller should xmit.
+    /// # C: O(1)
+    pub fn drop_close(&mut self) -> Option<Vec<u8>> {
+        use crate::tcp_hdr::flags;
+        match self.state {
+            TcpState::SynSent | TcpState::SynRecv => {
+                let seg = self.build_segment(flags::RST, &[]);
+                self.state = TcpState::Closed;
+                Some(seg)
+            }
+            TcpState::Established | TcpState::CloseWait => self.local_close().ok(),
+            _ => None,
         }
     }
 

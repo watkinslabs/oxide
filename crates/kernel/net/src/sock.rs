@@ -329,6 +329,39 @@ impl InetSocket {
 
 impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
 
+/// F161: last-fd close path. When the final Arc<InetSocket> drops
+/// (every fd referencing this socket has been closed), tell the
+/// peer we're done. For TcpConn: emit FIN (or RST if mid-handshake)
+/// via the entry's TCB. The entry stays in `tcp_conns` until
+/// `tcp_retx_tick` removes it post-TimeWait — that's how we keep
+/// the 4-tuple reserved for the linger window so a quick reconnect
+/// on the same ports can't collide. UDP / AF_UNIX have no
+/// per-protocol close handshake; UDP just unbinds the port, AF_UNIX
+/// flips peer EOF via the existing pair / queue Drop in unix_sock.
+impl Drop for InetSocket {
+    fn drop(&mut self) {
+        if let SockKind::TcpConn(entry) = &*self.kind.lock() {
+            let (seg, src, dst) = {
+                let mut c = entry.conn.lock();
+                let s = c.drop_close();
+                (s, c.local.ip, c.remote.ip)
+            };
+            if let Some(s) = seg {
+                let _ = STACK.send_l4_over_ipv4_pub(src, dst, &s);
+                drain_loopback();
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            entry.rx_waiters.wake_all();
+        }
+        // UDP: free the bound port so a subsequent socket() can reuse it.
+        if matches!(*self.kind.lock(), SockKind::Udp) {
+            if let Some(p) = *self.local_port.lock() {
+                STACK.unbind_udp(p);
+            }
+        }
+    }
+}
+
 impl vfs::Inode for InetSocket {
     fn ino(&self) -> vfs::Ino {
         // High-bits tag so socket inode numbers don't collide
