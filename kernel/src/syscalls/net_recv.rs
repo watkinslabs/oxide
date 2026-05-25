@@ -50,8 +50,12 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
                     sock.local_port.lock().and_then(|p| net::sock::stack().udp_queue_arc(p))
                 } else { None };
                 if let Some(q) = udp_q {
-                    // SAFETY: process ctx (sys_recvfrom); runqueue installed; preempt-off owned by syscall stub; deliver_rx wakes after pushing.
-                    unsafe { q.waiters.park(); sched::live::schedule::schedule(); }
+                    // F169: park with SO_RCVTIMEO deadline; timer
+                    // scanner wakes us on expiry → next iter exits via
+                    // the deadline check above.
+                    let dl = deadline.unwrap_or(0);
+                    // SAFETY: process ctx (sys_recvfrom); runqueue installed; preempt-off owned by syscall stub; deliver_rx wakes after push; timer scanner wakes on deadline.
+                    unsafe { q.waiters.park_with_deadline(dl); sched::live::schedule::schedule(); }
                 } else {
                     // SAFETY: process ctx; preempt-off; tick_yield reschedules.
                     unsafe { sched::live::tick_yield(); }
