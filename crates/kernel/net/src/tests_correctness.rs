@@ -15,10 +15,14 @@ use crate::arp::{ArpCache, ARP_STALE_NS};
 use crate::stack::NetStack;
 use crate::netdev::NetError;
 
-fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
+// F184-F191 tests live in tests_perf.rs (1000-line cap).
+#[path = "tests_perf.rs"]
+mod tests_perf;
 
-fn lo() -> Ipv4Addr { Ipv4Addr::LOOPBACK }
-fn lo_ip() -> IpAddr { IpAddr::V4(Ipv4Addr::LOOPBACK) }
+pub(super) fn ep(ip: Ipv4Addr, port: u16) -> Endpoint { Endpoint { ip: IpAddr::V4(ip), port } }
+
+pub(super) fn lo() -> Ipv4Addr { Ipv4Addr::LOOPBACK }
+pub(super) fn lo_ip() -> IpAddr { IpAddr::V4(Ipv4Addr::LOOPBACK) }
 
 // ----- F173: MSS option in active-open SYN ---------------------------
 
@@ -182,225 +186,6 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
                NetError::Eaddrinuse);
 }
 
-// ----- F190: ECN (RFC 3168) -----------------------------------------
-
-#[test]
-fn f190_active_open_syn_carries_ece_cwr() {
-    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
-    let syn = c.active_open().unwrap();
-    // TCP flags byte at offset 13.
-    let flags = syn[13];
-    assert!(flags & 0x40 != 0, "ECE must be set on ECN-negotiating SYN");
-    assert!(flags & 0x80 != 0, "CWR must be set on ECN-negotiating SYN");
-}
-
-#[test]
-fn f190_syn_ack_ece_only_enables_ecn() {
-    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
-    let _ = c.active_open().unwrap();
-    // Build SYN-ACK with ECE flag from scratch (proper checksum).
-    let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN];
-    let mut h = TcpHdr {
-        src_port: 80, dst_port: 5000,
-        seq: 0x2000_0000, ack: c.snd_nxt, data_offset: 5,
-        flags: crate::tcp_hdr::flags::SYN | crate::tcp_hdr::flags::ACK | crate::tcp_hdr::flags::ECE,
-        window: 65535, checksum: 0, urg_ptr: 0,
-    };
-    h.build_into(lo(), lo(), &mut buf);
-    let _ = c.input(lo_ip(), lo_ip(), &buf);
-    assert!(c.ecn_enabled, "ECE-only SYN-ACK must enable ECN");
-}
-
-#[test]
-fn f190_ece_triggers_one_loss_event_per_rtt() {
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    c.ecn_enabled = true;
-    c.cwnd = 30_000;
-    c.ssthresh = u32::MAX;
-    crate::tcp_cc::on_ece(&mut c);
-    let after = c.cwnd;
-    assert!(after < 30_000, "ECN reduction must shrink cwnd");
-    // Immediate second ECE within the rate-limit window: cwnd unchanged.
-    crate::tcp_cc::on_ece(&mut c);
-    assert_eq!(c.cwnd, after, "ECN rate-limit prevents double-reduce");
-    assert!(c.send_cwr, "send_cwr armed");
-}
-
-// ----- F187: CUBIC congestion control -------------------------------
-
-#[test]
-fn f187_loss_sets_w_max_to_cwnd() {
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    c.cwnd = 30_000;
-    c.cc_on_rto();
-    assert_eq!(c.cubic_w_max, 30_000,
-        "W_max snapshotted at the cwnd value at loss");
-}
-
-#[test]
-fn f187_beta_07_not_05() {
-    // CUBIC β=0.7 yields a bigger post-loss cwnd than Reno's /2,
-    // making faster recovery on capacity probes.
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    c.cwnd = 100_000;
-    c.cc_on_rto();
-    // 100000 × 717/1024 = 70019. Way above Reno's 50000.
-    assert!(c.ssthresh > 50_000 && c.ssthresh < 80_000);
-}
-
-#[test]
-fn f187_icbrt_handles_small_inputs() {
-    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(0), 0);
-    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(1), 1);
-    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(8), 2);
-    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(27), 3);
-    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(125), 5);
-    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(1000), 10);
-}
-
-// ----- F186: OWN_WSCALE=7 + recv-buf autotune -----------------------
-
-#[test]
-fn f186_own_wscale_advertised_is_7() {
-    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 1000);
-    let syn = c.active_open().unwrap();
-    assert_eq!(parse_wscale_option(&syn), Some(7));
-}
-
-#[test]
-fn f186_current_rcv_window_scales_with_snd_wscale() {
-    let mut c = client_established();
-    c.snd_wscale = 7;
-    c.rcv_buf_cap = 65536;
-    // No data in recv_buf → free = 65536; advertised = 65536 >> 7 = 512.
-    assert_eq!(c.current_rcv_window(), 512);
-}
-
-#[test]
-fn f186_autotune_doubles_cap_when_peak_exceeds_half() {
-    let mut c = client_established();
-    c.rcv_buf_cap = 65_536;
-    c.recv_buf.extend(core::iter::repeat(0u8).take(40_000));
-    c.rcv_autotune();
-    assert_eq!(c.rcv_buf_cap, 131_072);
-}
-
-#[test]
-fn f186_autotune_caps_at_rcv_buf_max() {
-    let mut c = client_established();
-    c.rcv_buf_cap = 2 * 1024 * 1024;
-    c.rcv_buf_max = 4 * 1024 * 1024;
-    c.recv_buf.extend(core::iter::repeat(0u8).take(2 * 1024 * 1024 - 10));
-    c.rcv_autotune();
-    assert_eq!(c.rcv_buf_cap, 4 * 1024 * 1024, "cap clamps at max");
-}
-
-// ----- F185: TCP Reno congestion control ----------------------------
-
-#[test]
-fn f185_initial_cwnd_is_iw10() {
-    let c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 1000);
-    assert_eq!(c.cwnd, 10 * 1460,
-        "RFC 6928 IW=10 init window in bytes");
-    assert_eq!(c.ssthresh, u32::MAX);
-}
-
-#[test]
-fn f185_slow_start_grows_cwnd_per_acked_byte() {
-    let mut c = client_established();
-    let before = c.cwnd;
-    // Synthesize a cumulative ACK that newly acks 500 bytes.
-    c.cc_on_ack(500, 0);
-    assert_eq!(c.cwnd, before + 500,
-        "slow-start cwnd += bytes_acked (capped at MSS)");
-}
-
-#[test]
-fn f185_slow_start_caps_at_mss_per_ack() {
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    let before = c.cwnd;
-    c.cc_on_ack(5_000, 0);
-    assert_eq!(c.cwnd, before + 1460,
-        "single-ACK growth capped at MSS");
-}
-
-#[test]
-fn f185_three_dup_acks_fast_retransmit_halves_cwnd() {
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    c.cwnd = 20_000;
-    c.ssthresh = u32::MAX;
-    c.cc_on_ack(0, 0);
-    c.cc_on_ack(0, 0);
-    assert_eq!(c.dup_acks, 2);
-    c.cc_on_ack(0, 0);
-    assert_eq!(c.dup_acks, 3);
-    // F187: CUBIC β=0.7 → 20000×717/1024 ≈ 14003.
-    assert!(c.ssthresh >= 13_900 && c.ssthresh <= 14_100,
-        "ssthresh ≈ cwnd·0.7 (CUBIC β), got {}", c.ssthresh);
-    assert_eq!(c.cwnd, c.ssthresh + 3 * 1460);
-}
-
-#[test]
-fn f185_rto_drops_cwnd_to_one_mss() {
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    c.cwnd = 20_000;
-    c.cc_on_rto();
-    assert_eq!(c.cwnd, 1460, "RTO drops cwnd to MSS");
-    assert!(c.ssthresh >= 13_900 && c.ssthresh <= 14_100,
-        "RTO ssthresh ≈ cwnd·0.7 (CUBIC β), got {}", c.ssthresh);
-    assert_eq!(c.dup_acks, 0);
-}
-
-#[test]
-fn f185_ca_phase_grows_non_negative() {
-    // F187: CUBIC CA growth shape depends on tcp_now_ms epoch (stubbed
-    // to 0 in hosted). cwnd must not shrink.
-    let mut c = client_established();
-    c.peer_mss = 1460;
-    c.cwnd = 14_600;
-    c.ssthresh = 14_600;
-    let start = c.cwnd;
-    for _ in 0..10 { c.cc_on_ack(1460, 0); }
-    assert!(c.cwnd >= start);
-}
-
-// ----- F184: per-iface MTU → own_mss --------------------------------
-
-#[test]
-fn f184_mss_for_v4_loopback_subtracts_40() {
-    let stack = NetStack::new();
-    let _ = stack.register_loopback();
-    // lo MTU = 65535; v4 overhead = 40 → MSS = 65495.
-    assert_eq!(stack.mss_for_dst(IpAddr::V4(Ipv4Addr::LOOPBACK)), 65495);
-}
-
-#[test]
-fn f184_mss_for_v6_loopback_subtracts_60() {
-    use crate::addr::Ipv6Addr;
-    let stack = NetStack::new();
-    let _ = stack.register_loopback();
-    // v6 overhead = 60 → 65475.
-    assert_eq!(stack.mss_for_dst(IpAddr::V6(Ipv6Addr::LOOPBACK)), 65475);
-}
-
-#[test]
-fn f184_active_open_syn_advertises_mtu_derived_mss() {
-    let stack = NetStack::new();
-    let (id, lo) = stack.register_loopback();
-    let _ = stack.tcp_connect(Ipv4Addr::LOOPBACK, 51000, Ipv4Addr::LOOPBACK, 80).unwrap();
-    let syn = lo.rx_pop().expect("SYN must be on lo");
-    // strip IPv4 header (20 bytes for no options).
-    let l4 = &syn.data()[20..];
-    assert_eq!(parse_mss_option(l4), Some(65495),
-        "SYN MSS must reflect lo's 65535 - 40 v4 overhead");
-    let _ = id;
-}
 
 // ----- F180c: NDP cache + NS/NA dispatch ----------------------------
 
@@ -915,7 +700,7 @@ fn f178_output_respects_peer_window() {
 
 // ----- helpers -------------------------------------------------------
 
-fn build_synack_with_options(
+pub(super) fn build_synack_with_options(
     peer_seq: u32, peer_ack: u32, window: u16,
     mss: Option<u16>, wscale: Option<u8>,
 ) -> Vec<u8> {
@@ -975,7 +760,7 @@ fn build_data_segment(seq: u32, peer_ack: u32, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
-fn client_established() -> TcpConn {
+pub(super) fn client_established() -> TcpConn {
     let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
     let _ = c.active_open().unwrap();
     let synack = build_synack_with_options(0x2000_0000, c.snd_nxt, 65535, Some(1460), None);
