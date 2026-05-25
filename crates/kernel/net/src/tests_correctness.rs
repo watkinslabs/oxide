@@ -122,6 +122,67 @@ fn f179_past_window_data_ignored() {
     assert!(c.ooo_buf.is_empty(), "past-window data must not enter ooo_buf");
 }
 
+// ----- F180: IPv6 minimum-viable deliver_rx_ipv6 --------------------
+
+#[test]
+fn f180_ipv6_echo_request_produces_echo_reply_on_lo() {
+    use crate::addr::Ipv6Addr;
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::icmpv6::{Icmp6Echo, ICMPV6_TYPE_ECHO_REQUEST, IPPROTO_ICMPV6, ICMPV6_HDR_LEN};
+    let stack = NetStack::new();
+    let (id, lo_dev) = stack.register_loopback();
+    // Build an Echo Request: 40-byte IPv6 header + 8-byte ICMPv6
+    // + 4-byte payload.
+    let src = Ipv6Addr::LOOPBACK;
+    let dst = Ipv6Addr::LOOPBACK;
+    let payload = b"oxv6";
+    let icmp_len = ICMPV6_HDR_LEN + payload.len();
+    let total = IPV6_HDR_LEN + icmp_len;
+    let mut frame = alloc::vec![0u8; total];
+    // ICMPv6 first (so build_into can compute checksum over the body).
+    let mut h = Icmp6Echo { typ: ICMPV6_TYPE_ECHO_REQUEST, code: 0, checksum: 0, id: 1, seq: 42 };
+    let mut icmp_buf = alloc::vec![0u8; icmp_len];
+    h.build_into(src, dst, payload, &mut icmp_buf);
+    frame[IPV6_HDR_LEN..].copy_from_slice(&icmp_buf);
+    // IPv6 header.
+    let v6 = Ipv6Hdr::build(src, dst, crate::addr::IpProto::Icmpv6, icmp_len as u16);
+    v6.write_to(&mut frame[..IPV6_HDR_LEN]);
+    // Deliver — should xmit an Echo Reply onto lo.
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+    // Pop the reply from lo's xmit queue.
+    let reply = lo_dev.rx_pop().expect("echo reply should land on lo");
+    let reply_v6 = Ipv6Hdr::parse(reply.data()).unwrap();
+    assert_eq!(reply_v6.next_header, IPPROTO_ICMPV6);
+    let reply_icmp = &reply.data()[IPV6_HDR_LEN..];
+    assert_eq!(reply_icmp[0], crate::icmpv6::ICMPV6_TYPE_ECHO_REPLY);
+}
+
+#[test]
+fn f180_ipv6_udp_dropped_silently() {
+    use crate::addr::Ipv6Addr;
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    // 40-byte IPv6 header advertising UDP next-header + zero payload.
+    let mut frame = alloc::vec![0u8; IPV6_HDR_LEN];
+    let v6 = Ipv6Hdr::build(Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        crate::addr::IpProto::Udp, 0);
+    v6.write_to(&mut frame);
+    // No socket bound for IPv6; should drop cleanly (no error, no panic).
+    let r = stack.deliver_rx_ipv6(id, &frame);
+    assert!(r.is_ok(), "IPv6 UDP without socket: drop, not error");
+}
+
+#[test]
+fn f180_ipv6_bad_version_rejected() {
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let mut frame = alloc::vec![0u8; crate::ipv6::IPV6_HDR_LEN];
+    frame[0] = 0x40;  // version 4
+    let r = stack.deliver_rx_ipv6(id, &frame);
+    assert!(r.is_err(), "bad-version IPv6 frame must Err(Einval)");
+}
+
 // ----- F181: per-fd targeted epoll wake -----------------------------
 
 // InetSocket lives under #[cfg(target_os = "oxide-kernel")] in lib.rs;
