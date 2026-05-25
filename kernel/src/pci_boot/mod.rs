@@ -772,6 +772,9 @@ extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
             // blocking helpers can return ETIMEDOUT/EAGAIN. Same
             // cadence as retx since both are coarse-grained.
             sched::live::tick_wake_expired(now_ns);
+            // F177: garbage-collect stale ARP neighbor entries
+            // (older than 60s). Same cadence; cheap O(N) scan.
+            drv_virtio_net::modern::arp_cache().gc(now_ns);
             last_retx_ns = now_ns;
         }
         // SAFETY: process ctx; runqueue installed; preempt-off through the kthread frame; tick_yield saves into current.arch_ctx and switches.
