@@ -45,6 +45,8 @@ pub use netdev::{NetDev, NetError, NetResult, IfaceRegistry, IfaceEntry, NetStat
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock;
+#[cfg(target_os = "oxide-kernel")]
+pub mod sock_io;
 pub use loopback::LoopbackDev;
 
 pub use addr::{
