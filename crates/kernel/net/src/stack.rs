@@ -24,6 +24,7 @@ use sync::{Spinlock, Socket as StackLockClass};
 use crate::addr::{IpProto, Ipv4Addr, NetIfaceId};
 use crate::icmp::{self, ICMP_TYPE_ECHO_REQUEST};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN, push_ipv4_header};
+use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
 use crate::loopback::LoopbackDev;
 use crate::netdev::{IfaceRegistry, NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
@@ -628,6 +629,58 @@ impl NetStack {
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
         iface.xmit(p)
+    }
+
+    /// F180: deliver an IPv6 L3 frame (header starts at offset 0).
+    /// Minimum-viable v1: parse the 40-byte fixed header; respond
+    /// to ICMPv6 Echo Requests; UDP/TCP/other next-headers are
+    /// dropped silently (no IPv6 socket binding yet — full NDP /
+    /// SLAAC / dual-stack listeners land in a follow-on). Extension
+    /// headers (HBH, Routing, Fragment, …) are not parsed — frames
+    /// with non-fixed-header next_header beyond ICMPv6/UDP/TCP get
+    /// dropped. Linux apps using IPv4 only (the common cross-build
+    /// case) are unaffected; this just keeps the kernel from
+    /// silently ignoring incoming v6 traffic and prevents the
+    /// driver from getting backed up.
+    /// # C: O(payload)
+    pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        let hdr = Ipv6Hdr::parse(l3).map_err(|_| NetError::Einval)?;
+        let payload_start = IPV6_HDR_LEN;
+        let payload_end = payload_start + hdr.payload_length as usize;
+        if payload_end > l3.len() { return Err(NetError::Einval); }
+        let payload = &l3[payload_start..payload_end];
+        match hdr.next_header {
+            n if n == crate::icmpv6::IPPROTO_ICMPV6 => {
+                // Echo request → echo reply via the dst→src flip.
+                if payload.is_empty() { return Ok(()); }
+                let typ = payload[0];
+                if typ == crate::icmpv6::ICMPV6_TYPE_ECHO_REQUEST {
+                    let reply = match crate::icmpv6::build_echo_reply(hdr.src, hdr.dst, payload) {
+                        Ok(r) => r, Err(_) => return Ok(()),
+                    };
+                    let total = IPV6_HDR_LEN + reply.len();
+                    let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total);
+                    p.put(reply.len()).map_err(|_| NetError::Enobufs)?
+                        .copy_from_slice(&reply);
+                    push_ipv6_header(&mut p, hdr.dst, hdr.src, IpProto::Icmpv6)
+                        .map_err(|_| NetError::Enobufs)?;
+                    p.proto = crate::addr::eth_p::IPV6;
+                    p.iface = Some(iface);
+                    let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
+                    dev.xmit(p)?;
+                }
+                // Other ICMPv6 types (NS/NA/RS/RA/Redirect/...)
+                // dropped — NDP cache + RA processing lands in a
+                // follow-on. Linux apps without IPv6 connectivity
+                // never see these; with it, peer NDP times out and
+                // retries until cache populates via reverse-path.
+            }
+            // UDP / TCP over IPv6: dropped until V6 socket binding
+            // lands. Caller's L4 retries / connect timeout handles
+            // the absence gracefully.
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Deliver an L3 frame (starting at the IPv4 header) up the
