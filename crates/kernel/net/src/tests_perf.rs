@@ -11,6 +11,16 @@ use crate::tcp_hdr::{TcpHdr, parse_mss_option, parse_wscale_option, TCP_HDR_MIN_
 use crate::tcp_state::TcpState;
 use super::{ep, lo, lo_ip, client_established, build_synack_with_options};
 
+// ----- F194: SO_LINGER abortive close -------------------------------
+
+#[test]
+fn f194_build_rst_probe_carries_rst_flag() {
+    let mut c = client_established();
+    let seg = c.build_keepalive_probe_with_flag(crate::tcp_hdr::flags::RST);
+    // Flags byte at offset 13.
+    assert!(seg[13] & 0x04 != 0, "RST flag set on linger=0 probe");
+}
+
 // ----- F193: TCP keepalive probes -----------------------------------
 
 #[test]

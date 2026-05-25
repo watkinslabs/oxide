@@ -216,9 +216,7 @@ impl TcpConn {
         }
     }
 
-    /// F161: graceful close from kernel-side `Drop`. RST if mid-handshake
-    /// (peer never saw data); FIN if Established / CloseWait; no-op in
-    /// closing-states. Returns the segment caller should xmit.
+    /// F161: graceful close (RST mid-handshake / FIN Established).
     /// # C: O(1)
     pub fn drop_close(&mut self) -> Option<Vec<u8>> {
         use crate::tcp_hdr::flags;
@@ -299,9 +297,15 @@ impl TcpConn {
     }
     /// F193: build a 0-byte probe at seq=snd_una-1. # C: O(1)
     pub(crate) fn build_keepalive_probe(&mut self) -> Vec<u8> {
+        self.build_keepalive_probe_with_flag(flags::ACK)
+    }
+
+    /// F194: 0-byte segment at seq=snd_una-1 with caller flags.
+    /// Used by SO_LINGER abortive close to emit RST. # C: O(1)
+    pub fn build_keepalive_probe_with_flag(&mut self, flag_bits: u8) -> Vec<u8> {
         let saved = self.snd_nxt;
         self.snd_nxt = self.snd_una.wrapping_sub(1);
-        let seg = self.build_segment(flags::ACK, &[]);
+        let seg = self.build_segment(flag_bits, &[]);
         self.snd_nxt = saved;
         seg
     }
