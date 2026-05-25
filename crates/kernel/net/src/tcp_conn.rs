@@ -361,11 +361,8 @@ impl TcpConn {
     /// the conn isn't allowed to send (LISTEN, SynSent, FIN-WAIT*, etc.)
     /// — those states require explicit handshake/close segments.
     /// # C: O(send_buf)
-    pub fn output(&mut self, mtu: usize) -> Vec<Vec<u8>> {
+    pub fn output(&mut self, mtu: usize, nodelay: bool) -> Vec<Vec<u8>> {
         // F173: MSS = min(local-MTU-derived, peer-advertised).
-        // Peer's MSS is what they're willing to receive (RFC 9293
-        // §3.7.1); we must not exceed it. Falls back to 1460 when
-        // peer didn't advertise (legacy / hosted tests).
         let local_mss = mtu.saturating_sub(40).min(1460);  // 20 IP + 20 TCP
         let mss = if self.peer_mss != 0 {
             core::cmp::min(local_mss, self.peer_mss as usize)
@@ -374,6 +371,16 @@ impl TcpConn {
         };
         let mut out = Vec::new();
         if !self.state.is_established() && self.state != TcpState::CloseWait {
+            return out;
+        }
+        // F175: Nagle. When TCP_NODELAY is off (default) and there's
+        // already unACKed data on the wire, hold back partial-MSS
+        // sends — coalesce until either the ACK frees the pipe or
+        // we accumulate enough to fill a full segment. RFC 1122
+        // §4.2.3.4. Apps that want every write on the wire set
+        // TCP_NODELAY=1 (Linux libc / kernel default for SOCK_STREAM
+        // is Nagle enabled, NODELAY=0).
+        if !nodelay && !self.retx_q.is_empty() && self.send_buf.len() < mss {
             return out;
         }
         while !self.send_buf.is_empty() {
@@ -506,7 +513,7 @@ mod tests {
         let _      = server.input(lo, lo, &ack).unwrap();
 
         client.send(b"oxide-tcp");
-        let segs = client.output(1500);
+        let segs = client.output(1500, true);
         assert_eq!(segs.len(), 1);
         let server_ack = server.input(lo, lo, &segs[0]).unwrap().unwrap();
         let _ = client.input(lo, lo, &server_ack).unwrap();
