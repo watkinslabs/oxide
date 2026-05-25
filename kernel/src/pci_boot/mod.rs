@@ -767,6 +767,11 @@ extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
         let now_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         if now_ns.saturating_sub(last_retx_ns) >= 100_000_000 {
             net::sock::stack().tcp_retx_tick(now_ns);
+            // F169: scan parked tasks for SO_RCVTIMEO / SO_SNDTIMEO
+            // deadlines that expired — wakes them with Eagain so the
+            // blocking helpers can return ETIMEDOUT/EAGAIN. Same
+            // cadence as retx since both are coarse-grained.
+            sched::live::tick_wake_expired(now_ns);
             last_retx_ns = now_ns;
         }
         // SAFETY: process ctx; runqueue installed; preempt-off through the kthread frame; tick_yield saves into current.arch_ctx and switches.
