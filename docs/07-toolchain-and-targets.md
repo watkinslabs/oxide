@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-05-25 (R04)
+
+- Changed: §5 adds "No magic numbers for errno / ABI constants" rule.
+- Why: F163 set `error_eno = 110` / `111` / `104` inline. Unreadable, ungreppable, breaks when the Linux errno table is wrong, and forces reviewers to consult `errno.h` to verify each occurrence. Same hazard for other typed ABI constants (`MAP_*`, `O_*`, `SOCK_*`, `SO_*`, signal numbers, syscall slot numbers). These all have existing typed enums (`syscall::errno::Errno`, `vfs::OpenFlags`, `sched::sig::Signum`, `syscall::nrs::*`); raw integer literals are a code-review failure.
+- Affected code: `spec-lint` gains a `code/magic-errno` rule (next PR); existing call sites audited.
+- Test contract change: §9 adds "magic-errno injected → spec-lint fail" once the lint lands.
+
 ## Revision 2026-05-02 (R03)
 
 - Changed: added §3.4 "Build chain (kernel-only vs userspace)".
@@ -159,6 +166,7 @@ cargo build -Z build-std=core,compiler_builtins,alloc \
 - No `static mut` outside `#[cfg(test)]`. CI grep, build fail. Per `06§11`.
 - No `dyn HAL trait`. Post-build `nm | grep -E 'vtable.*<.* as oxide::hal::(MmuOps|CpuOps|Context|IrqOps|TimerOps)>'` → fail. Per `05§C1`.
 - `kassert!(cond, "literal")` only; no `panic!(fmt)`. CI grep `panic!(.*\{` → fail.
+- **No magic numbers for typed ABI constants.** Errno values, `OpenFlags`, `MAP_*`, `SOCK_*`, `SO_*`, signal numbers, syscall slot numbers go through their typed enum (`syscall::errno::Errno`, `vfs::OpenFlags`, `sched::sig::Signum`, `syscall::nrs::*`, etc.). A bare integer assigned to a field named `*_eno` / `*_errno` / `*_signo` / `*_slot`, or compared against an integer in an errno/signal/flag context, is a CI lint failure (`code/magic-errno`). Adds-to-enum first, uses-the-name second. Local constants for non-ABI numeric thresholds (RTO ms, retry counts, buffer sizes) are fine — name them `const FOO_NS: u64 = …;` so reviewers see the meaning.
 - `# C:` on every `pub fn`. CI lint via `tools/spec-lint/`. Per `04§1.2`.
 - `// SAFETY: <≥30 chars naming invariant>` on every `unsafe { }`. CI lint.
 - klog macros only accept `&'static str` format strings (compile-time interned). No `format!()` results passed in. CI grep.
