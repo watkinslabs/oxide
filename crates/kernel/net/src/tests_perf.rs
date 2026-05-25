@@ -11,6 +11,48 @@ use crate::tcp_hdr::{TcpHdr, parse_mss_option, parse_wscale_option, TCP_HDR_MIN_
 use crate::tcp_state::TcpState;
 use super::{ep, lo, lo_ip, client_established, build_synack_with_options};
 
+// ----- F193: TCP keepalive probes -----------------------------------
+
+#[test]
+fn f193_no_probe_before_idle_threshold() {
+    let mut c = client_established();
+    c.ka_enabled  = true;
+    c.ka_idle_ns  = 1_000_000_000;
+    c.last_rx_ns  = 0;
+    assert!(c.keepalive_due(500_000_000).is_none(), "below threshold = no probe");
+}
+
+#[test]
+fn f193_probe_fires_after_idle_threshold() {
+    let mut c = client_established();
+    c.ka_enabled  = true;
+    c.ka_idle_ns  = 1_000_000_000;
+    c.last_rx_ns  = 0;
+    assert!(c.keepalive_due(2_000_000_000).is_some(), "past idle = probe");
+    assert_eq!(c.ka_count, 1);
+}
+
+#[test]
+fn f193_disabled_never_fires() {
+    let mut c = client_established();
+    c.ka_enabled = false;
+    c.last_rx_ns = 0;
+    assert!(c.keepalive_due(60_000_000_000_000).is_none());
+}
+
+#[test]
+fn f193_probe_count_increments_per_call() {
+    let mut c = client_established();
+    c.ka_enabled  = true;
+    c.ka_idle_ns  = 1_000_000_000;
+    c.ka_intvl_ns = 100_000_000;
+    c.last_rx_ns  = 0;
+    let _ = c.keepalive_due(2_000_000_000).unwrap();
+    let _ = c.keepalive_due(3_000_000_000).unwrap();
+    let _ = c.keepalive_due(4_000_000_000).unwrap();
+    assert_eq!(c.ka_count, 3);
+}
+
 // ----- F192: listen backlog cap + SO_REUSEPORT distribute -----------
 
 #[test]

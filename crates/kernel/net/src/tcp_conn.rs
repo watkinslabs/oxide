@@ -65,94 +65,52 @@ pub struct TcpConn {
     /// discover when this expires; on every timeout RTO doubles
     /// (exponential backoff per `25§7`).
     pub rto_ns:     u64,
-    /// F161: monotonic timestamp when the conn entered TimeWait.
-    /// Zero before entry. `tcp_retx_tick` removes entries that have
-    /// been in TimeWait for >= 2*MSL (Linux tcp_fin_timeout = 60s).
+    /// F161: TimeWait entry timestamp (0 before entry, 2*MSL reap).
     pub tw_start_ns: u64,
-    /// F163: pending async error to surface via SO_ERROR. Set on
-    /// abort paths (peer RST → ECONNREFUSED, retry-exhaust →
-    /// ETIMEDOUT). Cleared on read. Linux errno value (positive),
-    /// not the negated-syscall-return form.
+    /// F163: async error surfaced via SO_ERROR (Linux errno).
     pub error_eno: i32,
-    /// F173: peer-advertised MSS (from their SYN / SYN-ACK MSS
-    /// option). `0` = not yet observed — output() falls back to
-    /// the local-iface MTU-derived default.
+    /// F173: peer-advertised MSS (0 = not yet observed).
     pub peer_mss: u16,
-    /// F178: RFC 7323 Window Scale. `snd_wscale` is what we
-    /// advertise (peer left-shifts our window field by this);
-    /// `rcv_wscale` is what peer advertised (we left-shift their
-    /// window field by this). Both default 0 (no scaling); only
-    /// negotiated when BOTH ends include WSCALE in SYN/SYN-ACK.
+    /// F178: WSCALE (RFC 7323). 0 = no scaling.
     pub snd_wscale: u8,
     pub rcv_wscale: u8,
     /// Peer's currently-advertised window size in bytes (after
     /// applying rcv_wscale). Bounds the in-flight byte count
     /// output() will emit.
     pub snd_wnd: u32,
-    /// F179: out-of-order receive buffer keyed by absolute peer
-    /// seq. Stashes payload chunks whose seq > rcv_nxt (gap
-    /// between current in-order watermark and the just-arrived
-    /// segment). Drained into `recv_buf` whenever a fill arrives
-    /// that closes the gap. Without this, OOO segments were
-    /// silently dropped and the peer's RTO retx storm was the
-    /// only path forward.
+    /// F179: out-of-order recv stash (drained on gap-fill).
     pub ooo_buf: BTreeMap<u32, Vec<u8>>,
-    /// F182: RFC 7323 Timestamps state.
-    /// `ts_enabled` flips true only when BOTH ends include TSopt
-    /// in the SYN exchange. `ts_recent` is the most recently
-    /// accepted peer TSval (echoed in our outgoing TSecr). PAWS:
-    /// drop incoming segments with TSval `< ts_recent` per
-    /// RFC 7323 §5.3.
+    /// F182: TS option state (RFC 7323) + PAWS drop on stale TSval.
     pub ts_enabled: bool,
     pub ts_recent:  u32,
-    /// F184: MSS we advertise in our SYN's MSS option (RFC 6691).
-    /// 0 = fall back to OWN_MSS_DEFAULT. Caller (stack::tcp_connect_ip,
-    /// stack::tcp_listen_ip) derives from outgoing iface MTU − L3/L4
-    /// header sizes: v4 = mtu-40, v6 = mtu-60.
+    /// F184: MSS we advertise (0 = OWN_MSS_DEFAULT).
     pub own_mss: u16,
-    /// F185: TCP Reno congestion control (RFC 5681).
-    /// `cwnd` bounds in-flight bytes in addition to snd_wnd; init to
-    /// IW=10*MSS (RFC 6928). `ssthresh` switches us from slow-start
-    /// (cwnd += bytes_acked per ACK) into congestion avoidance
-    /// (cwnd += mss²/cwnd per ACK). `dup_acks` counts back-to-back
-    /// duplicate ACKs; 3 → fast retransmit (RFC 5681 §3.2).
+    /// F185+F187: CUBIC CC state (cwnd, ssthresh, dup-ack counter).
     pub cwnd:     u32,
     pub ssthresh: u32,
     pub dup_acks: u8,
-    /// F187: CUBIC state (RFC 8312). `cubic_w_max` is the cwnd at
-    /// the last congestion event (bytes); `cubic_epoch_ms` is the
-    /// monotonic timestamp at which the current cubic epoch started
-    /// (0 = uninitialised, gets set on the first CA-phase ACK after
-    /// loss); `cubic_k_ms` is K — the time for the cubic function
-    /// to climb back to W_max. CC switches Reno → CUBIC: loss event
-    /// uses β=0.7 (×7/10) instead of /2; CA growth follows the
-    /// concave→convex cubic curve around W_max.
+    /// F187: CUBIC epoch + W_max (RFC 8312).
     pub cubic_w_max:    u32,
     pub cubic_epoch_ms: u32,
     pub cubic_k_ms:     u32,
-    /// F186: receive-buffer ceiling in bytes. Autotuned upward (×2
-    /// each time peak fill exceeds cap/2 within an RTT) up to
-    /// `rcv_buf_max`. Drives `current_rcv_window()` so the wire
-    /// advertisement reflects actual free space, not a fixed 65535.
+    /// F186: recv-buf cap + autotune peak (× ≤ rcv_buf_max).
     pub rcv_buf_cap: u32,
     pub rcv_buf_max: u32,
-    /// F186: peak `recv_buf.len()` observed since the last autotune
-    /// check; reset when autotune fires.
     pub rcv_peak: u32,
-    /// F190: ECN state (RFC 3168). `ecn_enabled` flips true only
-    /// when both ends advertise ECN in the SYN exchange (we send
-    /// ECE+CWR on SYN; peer's SYN-ACK with ECE-only confirms).
-    /// `send_ece` arms the ECE flag on outgoing ACKs after we see
-    /// a CE-marked segment, until peer answers with CWR. `send_cwr`
-    /// arms CWR on our next data seg after we apply the peer's ECE
-    /// as a congestion signal.
+    /// F190: ECN (negotiate via SYN ECE+CWR; arm CWR on next data,
+    /// ECE on ACKs while we owe peer a congestion echo).
     pub ecn_enabled: bool,
     pub send_ece:    bool,
     pub send_cwr:    bool,
-    /// F190: monotonic timestamp of the last ECN-driven cwnd
-    /// reduction. Used to rate-limit so peer-spurious ECE flags
-    /// can't tank cwnd more than once per RTT.
     pub ecn_last_reduce_ms: u32,
+    /// F193: SO_KEEPALIVE state (defaults 7200s/75s/9).
+    pub ka_enabled:  bool,
+    pub ka_idle_ns:  u64,
+    pub ka_intvl_ns: u64,
+    pub ka_cnt_max:  u32,
+    pub ka_count:    u32,
+    pub last_rx_ns:  u64,
+    pub next_ka_ns:  u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -203,6 +161,13 @@ impl TcpConn {
             send_ece:    false,
             send_cwr:    false,
             ecn_last_reduce_ms: 0,
+            ka_enabled:  false,
+            ka_idle_ns:  7_200_000_000_000,
+            ka_intvl_ns:    75_000_000_000,
+            ka_cnt_max:  9,
+            ka_count:    0,
+            last_rx_ns:  0,
+            next_ka_ns:  0,
         }
     }
 
@@ -241,6 +206,13 @@ impl TcpConn {
             send_ece:    false,
             send_cwr:    false,
             ecn_last_reduce_ms: 0,
+            ka_enabled:  false,
+            ka_idle_ns:  7_200_000_000_000,
+            ka_intvl_ns:    75_000_000_000,
+            ka_cnt_max:  9,
+            ka_count:    0,
+            last_rx_ns:  0,
+            next_ka_ns:  0,
         }
     }
 
@@ -319,6 +291,19 @@ impl TcpConn {
             self.cc_on_rto();
         }
         out
+    }
+
+    /// F193: keepalive scheduler — delegate to tcp_cc. # C: O(1)
+    pub fn keepalive_due(&mut self, now_ns: u64) -> Option<Vec<u8>> {
+        crate::tcp_cc::keepalive_due(self, now_ns)
+    }
+    /// F193: build a 0-byte probe at seq=snd_una-1. # C: O(1)
+    pub(crate) fn build_keepalive_probe(&mut self) -> Vec<u8> {
+        let saved = self.snd_nxt;
+        self.snd_nxt = self.snd_una.wrapping_sub(1);
+        let seg = self.build_segment(flags::ACK, &[]);
+        self.snd_nxt = saved;
+        seg
     }
 
     /// F185+F187: CC API delegates to tcp_cc module. # C: O(1)
@@ -402,6 +387,9 @@ impl TcpConn {
     {
         let hdr = crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip)
             .map_err(|_| TcpConnError::BadHdr)?;
+        // F193: any segment from peer resets the idle timer.
+        self.last_rx_ns = ka_now_ns();
+        self.ka_count = 0;
         if (hdr.flags & flags::RST) != 0 {
             // F163: surface as SO_ERROR. RST during SynSent (peer
             // refused connection) is ECONNREFUSED (Linux errno 111);
@@ -852,6 +840,18 @@ impl TcpConn {
 /// Kernel-build reads the HAL timer; hosted tests stub to 0 (PAWS
 /// stays inert — tests synthesize TSvals explicitly).
 /// # C: O(1)
+/// F193: monotonic ns clock for keepalive scheduling. Hosted = 0.
+/// # C: O(1)
+pub fn ka_now_ns() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; return hal_x86_64::X86TimerOps::monotonic_ns().0; }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; return hal_aarch64::ArmTimerOps::monotonic_ns().0; }
+    #[allow(unreachable_code)]
+    0
+}
+
+/// F182: monotonic ms clock for TSval. Hosted = 0. # C: O(1)
 pub fn tcp_now_ms() -> u32 {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     { use hal::TimerOps; return (hal_x86_64::X86TimerOps::monotonic_ns().0 / 1_000_000) as u32; }

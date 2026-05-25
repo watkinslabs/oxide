@@ -111,3 +111,21 @@ pub fn on_rto(c: &mut TcpConn) {
     c.cwnd = mss;
     c.dup_acks = 0;
 }
+
+/// F193: keepalive probe scheduler. Returns Some(probe) when due;
+/// bumps ka_count. Caller aborts when ka_count > ka_cnt_max.
+/// # C: O(1)
+pub fn keepalive_due(c: &mut TcpConn, now_ns: u64) -> Option<alloc::vec::Vec<u8>> {
+    use crate::tcp_state::TcpState;
+    if !c.ka_enabled { return None; }
+    if !matches!(c.state, TcpState::Established | TcpState::CloseWait) { return None; }
+    let idle = now_ns.saturating_sub(c.last_rx_ns);
+    if c.ka_count == 0 {
+        if idle < c.ka_idle_ns { return None; }
+    } else if now_ns < c.next_ka_ns {
+        return None;
+    }
+    c.ka_count = c.ka_count.saturating_add(1);
+    c.next_ka_ns = now_ns.saturating_add(c.ka_intvl_ns);
+    Some(c.build_keepalive_probe())
+}
