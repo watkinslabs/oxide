@@ -105,6 +105,11 @@ pub struct TcpConn {
     /// RFC 7323 §5.3.
     pub ts_enabled: bool,
     pub ts_recent:  u32,
+    /// F184: MSS we advertise in our SYN's MSS option (RFC 6691).
+    /// 0 = fall back to OWN_MSS_DEFAULT. Caller (stack::tcp_connect_ip,
+    /// stack::tcp_listen_ip) derives from outgoing iface MTU − L3/L4
+    /// header sizes: v4 = mtu-40, v6 = mtu-60.
+    pub own_mss: u16,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -141,6 +146,7 @@ impl TcpConn {
             ooo_buf: BTreeMap::new(),
             ts_enabled: false,
             ts_recent:  0,
+            own_mss:    0,
         }
     }
 
@@ -165,6 +171,7 @@ impl TcpConn {
             ooo_buf: BTreeMap::new(),
             ts_enabled: false,
             ts_recent:  0,
+            own_mss:    0,
         }
     }
 
@@ -671,7 +678,8 @@ impl TcpConn {
         let mut i = TCP_HDR_MIN_LEN;
         // MSS
         buf[i] = opt::MSS;    buf[i + 1] = 4;
-        buf[i + 2..i + 4].copy_from_slice(&OWN_MSS_DEFAULT.to_be_bytes());
+        let mss = if self.own_mss != 0 { self.own_mss } else { OWN_MSS_DEFAULT };
+        buf[i + 2..i + 4].copy_from_slice(&mss.to_be_bytes());
         i += 4;
         // NOP + WSCALE
         buf[i] = opt::NOP;    i += 1;
