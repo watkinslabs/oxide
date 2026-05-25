@@ -3,70 +3,87 @@
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
 x86 smoke ~16s green; arm smoke ~20s green (pre-push hook).
 
-## What actually works (post-F156…F175)
+## What actually works (post-F156…F179)
 
 ### TCP — wire correct
-- Real 3WHS through slirp NAT; SSH banner round-trip
-- Per-conn waitq for connect/recv/send; per-listener for accept
-- SO_RCVTIMEO/SNDTIMEO via timer-wake scanner (F169)
-- EINTR on signal (F168); SIGPIPE+EPIPE on closed-side write
-- SYN + data retx with RFC 6298 RTO + abort after retries
-- SO_SNDBUF cap, write-side backpressure
+- Real 3WHS through slirp NAT
+- Per-conn waitqs (connect/recv/send) + per-listener (accept)
+- SO_RCVTIMEO/SNDTIMEO via timer-wake scanner; EINTR on signal
+- SIGPIPE + EPIPE on closed-side write; SO_ERROR per-conn errno
+- SYN + data retx (RFC 6298); conn abort after retries
+- SO_SNDBUF cap; write-blocking backpressure
 - output() drains correctly; single-source retx_q
-- close() emits FIN; TIME_WAIT (60s) reaper
-- shutdown(SHUT_RD/WR/RDWR) distinct semantics
-- SO_ERROR per-conn (RST → ECONNREFUSED/RESET; retry → ETIMEDOUT)
-- **MSS negotiation** (F173) — peer's MSS option latched, min applied
-- **Nagle / TCP_NODELAY** (F175) — default-on coalescing, ACK-drains
-- **ICMP unreach → SO_ERROR** (F174) — abort + surface eno
+- close+TIME_WAIT (60s) reaper; shutdown(SHUT_RD/WR/RDWR) distinct
+- **MSS negotiation** (F173)
+- **TCP_NODELAY / Nagle** (F175)
+- **ICMP unreach → SO_ERROR** (F174)
+- **SO_REUSEADDR strict TIME_WAIT check** (F176)
+- **Window scaling (RFC 7323)** + snd_wnd enforcement (F178)
+- **Out-of-order receive buffer** (F179) — silent OOO drop fixed
 
-### UDP — wire correct
-- recvfrom blocks on per-port waitq with SO_RCVTIMEO
-- UDP port released on close
-- ICMP unreach → per-port error_eno, consumed by next recv / SO_ERROR
+### UDP / AF_UNIX / AF_PACKET
+- UDP recvfrom per-port waitq; ICMP unreach → error_eno
+- AF_UNIX accept + per-pair recv waitqs
+- AF_PACKET recvfrom per-socket waitq
 
-### AF_UNIX — per-pair waitqs
-- accept blocks on UnixListener.accept_waiters (F170)
-- read blocks on per-direction waitq for UnixPair/UnixMsgPair (F171)
-- UnixDgramQueue per-queue waitq (F171)
-
-### AF_PACKET
-- recvfrom blocks on per-socket recv_waiters (F172)
+### ARP
+- **Per-entry timestamp + 60s stale GC** (F177, Linux gc_stale_time)
 
 ### Discipline
-- R04 docs/07§5 rule + `code/magic-errno` lint enforces typed-enum
-  ABI literals (Errno, Signum, OpenFlags, NR_*)
+- R04 docs/07§5 + `code/magic-errno` lint enforce typed-enum ABI
+  literals (Errno, Signum, OpenFlags, NR_*)
 - sched::live::Signum + send_signal_self + wake_if_sleeping +
-  deliverable_signals helpers
+  deliverable_signals
 
-## PRs this session (26 total)
+## This session's PRs (33 total: F156…F179 + lints + state)
 
 F156 outbound TCP · F157 read EAGAIN (interim) · D38 state ·
 F158 read waitq · F159 retx + connect waitq · F160 accept ·
-F161 close+TW reaper · F162 UDP recv waitq · F163 SO_ERROR ·
-R04 + C lint magic-errno · F164 write+SNDBUF · F165 output()
-correctness · F166 shutdown+EPIPE · F167 SIGPIPE+Signum ·
-D39 state · F168 EINTR · F169 SO_*TIMEO · F170 AF_UNIX accept ·
-D40 state · F171 AF_UNIX recv per-pair · F172 AF_PACKET recv ·
-F173 MSS · F174 ICMP unreach · F175 Nagle
+F161 close+TW · F162 UDP recv waitq · F163 SO_ERROR ·
+R04 + C lint · F164 write+SNDBUF · F165 output() correctness ·
+F166 shutdown+EPIPE · F167 SIGPIPE+Signum · D39 state ·
+F168 EINTR · F169 SO_*TIMEO · F170 AF_UNIX accept · D40 state ·
+F171 AF_UNIX recv · F172 AF_PACKET recv · F173 MSS ·
+F174 ICMP unreach · F175 Nagle · D41 state · F176 SO_REUSEADDR ·
+F177 ARP aging · F178 window scaling · F179 OOO recv buffer
 
-## Open next (priority order — most are perf, not correctness)
+## Open next (in correctness-priority order)
 
-1. **SO_REUSEADDR enforcement** — currently no-op since we only
-   EADDRINUSE on duplicate listener (SO_REUSEADDR doesn't relax
-   that case). Once TIME_WAIT conflict matters, this lights up.
-2. **ARP cache aging / timeout** — stale entries linger forever.
-3. **Window scaling** — we advertise + ignore window=65535 fixed.
-   Throughput cap on high-BDP links.
-4. **SACK** — limits recovery on lossy links.
-5. **Real IPv6 transport** — `family=AF_INET6` accepted but
-   V4-mapped only.
-6. **Per-fd targeted epoll wakes** — `notify_epoll_waiters`
-   still wakes every epoll'd fd on every socket event.
-7. **TCP timestamps option (RFC 7323)** — better RTT samples,
-   PAWS protection.
-8. **Cross-build distro programs** — toolchain integration to
-   actually run /bin/bash, /usr/bin/curl etc. as smoke targets.
+### Deferred from this session (size / scope)
+
+1. **F180 IPv6 real transport** — IPv6 header parse/emit, ICMPv6,
+   NDP cache (replacing ARP), SLAAC/RA, dual-stack listeners.
+   ~2000 LoC; substantial standalone effort. Not gated for
+   IPv4-app cross-build.
+2. **F179a SACK option emit/consume + sacked-retx skip** — RFC 2018
+   §3-§5. Performance optimization on top of F179's OOO buffer
+   (recovery faster post-loss). Without it: peer's RTO catches
+   us up via retx, correct but slower.
+3. **F181 Per-fd targeted epoll wakes** — replace global
+   notify_epoll_waiters with fd→subscriber map. Needs Inode
+   trait extension + epoll_ctl(ADD) bookkeeping. Perf, not
+   correctness.
+4. **F182 TCP timestamps + PAWS** (RFC 7323) — TSopt on every
+   segment, ts_recent tracking, PAWS drop. Useful only for
+   long-running (hours+) flows where seq wrap is a real hazard.
+   Defer until that workload exists.
+
+### Tier 3 (perf / edge)
+
+5. Real per-iface MTU lookup for OWN_MSS (currently 1460 fixed).
+6. Recv-buf autotune + OWN_WSCALE > 0 for high-BDP.
+7. Congestion control (Reno → CUBIC).
+8. TCP keepalive (SO_KEEPALIVE setsockopt is round-tripped but
+   not honored).
+9. Multipath / RFC 7414 misc.
+
+### The real next step — proof
+
+10. **Cross-build a real distro program** (bash / curl / ssh / nginx)
+    as a smoke target. Network stack is wire-correct at this point;
+    the only way to validate the suite end-to-end is to run something
+    real against it. Toolchain work + rootfs image work — separate
+    project tier from the kernel-side PRs above.
 
 ## Discipline notes
 
@@ -86,8 +103,6 @@ make smoke-arm SMOKE_TIMEOUT=300
 make smoke-dhcp-x86  # quick: ~16s
 ```
 
-Pick item 8 (cross-build a real distro program — bash/curl/ssh
-as a smoke target) — that's the biggest "do Linux apps actually
-work" delta now that the network stack itself is wire-correct.
-Items 1-7 are perf/edge cases; the cross-build proves the suite
-end-to-end.
+Pick #10 (cross-build) or #1 (IPv6) depending on what bottleneck
+matters next. The Tier-1+2 correctness work is done; further
+kernel PRs are perf or features, not bugs.
