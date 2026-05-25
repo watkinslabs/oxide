@@ -74,6 +74,11 @@ pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
 pub enum SockKind {
     /// SOCK_DGRAM — bound port managed via NetStack's UDP map.
     Udp,
+    /// SOCK_STREAM after `socket()` but before `listen()`/`connect()`/
+    /// `accept()`. Discriminates a fresh TCP socket from a fresh UDP
+    /// one so `connect()` routes through `tcp_connect` instead of the
+    /// UDP "store peer + Ok" short-circuit at line ~572.
+    TcpInit,
     /// SOCK_STREAM, after `listen()`. Holds the listener handle.
     TcpListener(Arc<TcpListenEntry>),
     /// SOCK_STREAM, after `connect()` or `accept()`.
@@ -243,8 +248,12 @@ impl InetSocket {
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
             peer:       Spinlock::new(None),
-            // Placeholder — set by listen() / connect() / accept().
-            kind:       Spinlock::new(SockKind::Udp),
+            // TcpInit (not Udp) so `connect()` routes SOCK_STREAM
+            // through the real `tcp_connect` 3WHS path instead of
+            // the UDP store-peer-and-return-Ok short-circuit.
+            // listen()/connect()/accept() transition to TcpListener
+            // or TcpConn.
+            kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
         }
     }
@@ -427,6 +436,7 @@ impl vfs::Inode for InetSocket {
                 if !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask
             }
+            SockKind::TcpInit => POLL_OUT,
         }
     }
 }
@@ -578,22 +588,59 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // local IP to loopback if ANY, kick stack, drain a few
             // times, fail with Etimedout (mapped at the ABI layer)
             // if we don't reach Established.
-            let local_port = match *sock.local_port.lock() {
-                Some(p) => p,
-                None    => {
-                    let p = alloc_ephemeral_port()?;
-                    *sock.local_port.lock() = Some(p);
-                    p
+            //
+            // Lock-across-match hazard: a match scrutinee like
+            // `match *sock.local_port.lock() { … None => *sock.local_port.lock() = … }`
+            // keeps the scrutinee's MutexGuard alive across the arms
+            // (Rust temporary scoping rule), and the None arm's
+            // re-lock deadlocks against it. Read the slot, drop the
+            // guard, then re-acquire to assign.
+            let local_port = {
+                let cur = *sock.local_port.lock();
+                match cur {
+                    Some(p) => p,
+                    None    => {
+                        let p = alloc_ephemeral_port()?;
+                        *sock.local_port.lock() = Some(p);
+                        p
+                    }
                 }
             };
-            let local_ip = match *sock.local_ip.lock() {
-                ip if ip == Ipv4Addr::ANY => Ipv4Addr::LOOPBACK,
-                ip => ip,
+            // F156: source-IP pick matches socket_sendto's F150 logic —
+            // an ANY-bound TCP socket connecting to a remote slirp
+            // address must claim src=iface_primary (10.0.2.15) not
+            // src=127.0.0.1, or the SYN-ACK can never come back.
+            let bound = *sock.local_ip.lock();
+            let local_ip = if bound != Ipv4Addr::ANY {
+                bound
+            } else if dst_ip.is_loopback() {
+                Ipv4Addr::LOOPBACK
+            } else {
+                STACK.routes.lookup(dst_ip)
+                    .and_then(|r| r.src_hint)
+                    .or_else(|| iface_primary_ip(STACK.routes.lookup(dst_ip).map(|r| r.iface)))
+                    .unwrap_or(Ipv4Addr::LOOPBACK)
             };
             let entry = stack().tcp_connect(local_ip, local_port, dst_ip, port)?;
             *sock.kind.lock() = SockKind::TcpConn(entry.clone());
             *sock.peer.lock() = Some((dst_ip, port));
-            for _ in 0..4 { drain_loopback(); }
+            // Wait for SYN-ACK. Self-loopback frames arrive via
+            // drain_loopback (lo iface). Off-host frames (slirp gateway,
+            // 10.0.2.x) arrive via virtio-net MSI → softirq → deliver_rx,
+            // which needs IRQs unmasked between checks. tick_yield's
+            // sti+hlt+cli on x86 (daifclr+wfi+daifset on arm) provides
+            // that window. Bounded so an unreachable host returns
+            // Etimedout instead of wedging forever.
+            for _ in 0..200 {
+                drain_loopback();
+                let st = entry.conn.lock().state;
+                if st.is_established() { break; }
+                if st == crate::tcp_state::TcpState::Closed { break; }
+                // SAFETY: connect() runs in process context (sys_connect
+                // from userspace); tick_yield's preempt-off + IRQ-on
+                // contract is satisfied.
+                unsafe { sched::live::tick_yield(); }
+            }
             if !entry.conn.lock().state.is_established() {
                 return Err(NetError::Eio); // ABI maps to Etimedout
             }
