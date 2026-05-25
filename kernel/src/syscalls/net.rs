@@ -34,8 +34,7 @@ pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
     } as i32 as i64)
 }
 
-/// `socket(domain, type, protocol)` slot 41.
-/// # C: O(1)
+/// `socket(domain, type, protocol)` slot 41. # C: O(1)
 pub fn sys_socket(args: &SyscallArgs) -> i64 {
     const SOCK_CLOEXEC:  u32 = 0o2_000_000;
     const SOCK_NONBLOCK: u32 = 0o0_004_000;
@@ -105,7 +104,8 @@ fn read_sa_family(ptr: u64) -> Option<u16> {
 
 /// Read a sockaddr_un path at offset 2 (after sun_family). Reads
 /// up to 107 bytes + NUL terminator.
-fn read_sockaddr_un_path(ptr: u64) -> Option<alloc::string::String> {
+/// # C: O(108)
+pub(crate) fn read_sockaddr_un_path(ptr: u64) -> Option<alloc::string::String> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
     // SAFETY: ptr in user range; user page mapped (caller's AS); 108-byte bounded read.
     unsafe {
@@ -211,11 +211,8 @@ fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
     } else { None }
 }
 
-/// Write the sockaddr at `ptr` matching the socket's family. For
-/// AF_INET6 sockets we synthesize the V6-equivalent of the V4
-/// state held in InetSocket (V4 → V4-mapped ::ffff:x.x.x.x, V4
-/// loopback → ::1, V4 ANY → ::).
-/// # C: O(1)
+/// Write sockaddr at `ptr` per sock family (V4 → in, V6 → in6 with
+/// mapped/::1/:: synthesis when sock holds V4 state). # C: O(1)
 pub(crate) fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
     if fam == net::sock::AF_INET6 {
@@ -663,24 +660,29 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sendmsg(fd, msghdr, flags)` slot 46. v1 walks the iovec array
-/// and calls into the same TCP/UDP/UNIX dispatch as sendto, using
-/// `msg_name` as destaddr (else NULL). SCM_RIGHTS / SCM_CREDS in
-/// msg_control are not yet honored (controllen treated as 0).
-/// # C: O(1)
+/// `sendmsg(fd, msghdr, flags)` slot 46. F189 honors SCM_RIGHTS
+/// when the dest is an AF_UNIX SOCK_DGRAM (captures Arc<File> from
+/// current fd_table; receiver dup's via recvmsg_unix_dgram).
+/// # C: O(iov + nfds)
 pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
     let _flags = args.a2;
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // SAFETY: msgp range validated; user page mapped under caller's AS.
-    let (name, _namelen, iov, iovlen) = unsafe {
+    let (name, _namelen, iov, iovlen, control, controllen) = unsafe {
         let name      = core::ptr::read_volatile(msgp as *const u64);
         let namelen   = core::ptr::read_volatile((msgp + 8) as *const u32);
         let iov       = core::ptr::read_volatile((msgp + 16) as *const u64);
         let iovlen    = core::ptr::read_volatile((msgp + 24) as *const u64);
-        (name, namelen, iov, iovlen)
+        let control   = core::ptr::read_volatile((msgp + 32) as *const u64);
+        let controllen= core::ptr::read_volatile((msgp + 40) as *const u64);
+        (name, namelen, iov, iovlen, control, controllen)
     };
+    // F189: SCM_RIGHTS short-circuit for AF_UNIX SOCK_DGRAM.
+    if let Some(r) = crate::syscalls::cmsg_parse::try_sendmsg_with_fds(
+        fd, name, iov, iovlen, control, controllen,
+    ) { return r; }
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let mut total: i64 = 0;
     for i in 0..iovlen {
@@ -700,9 +702,7 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     total
 }
 
-/// `recvmsg(fd, msghdr, flags)` slot 47. Walks iovec, calls
-/// recvfrom into each buffer until one returns Eagain or 0.
-/// # C: O(1)
+/// `recvmsg(fd, msghdr, flags)` slot 47. # C: O(iov)
 pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
