@@ -100,7 +100,35 @@ pub static EPOLL_GLOBAL_WAIT: WaitList = WaitList::new();
 /// flip a poll bit (POLL_IN became readable, POLL_HUP set, ...).
 /// Spurious calls are safe — woken epollers re-scan and re-park
 /// if still empty.
-/// # C: O(N_parked_epollers)
+///
+/// F181: dispatch wakes via the per-EpollInode waitlist hook
+/// installed at boot (set_epoll_broadcast_hook). Falls back to
+/// the global wait list when the hook is unset (early boot, no
+/// fs crate active). InetSocket events should prefer the F181
+/// targeted path (per-fd subscribers) and only fall through here
+/// for inode types that haven't been migrated to subscriber lists.
+/// # C: O(N_epoll_instances) typical
 pub fn notify_epoll_waiters() {
-    EPOLL_GLOBAL_WAIT.wake_all();
+    let p = EPOLL_BROADCAST_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() {
+        EPOLL_GLOBAL_WAIT.wake_all();
+        return;
+    }
+    // SAFETY: hook installed via set_epoll_broadcast_hook with
+    // the documented `fn()` signature; Acquire-paired with the
+    // Release store in the setter.
+    let f: fn() = unsafe { core::mem::transmute(p) };
+    f();
+}
+
+/// F181: broadcast wake hook installed by `fs::epoll` at boot.
+/// Lives here so non-fs callers (net, ipc) can drive
+/// notify_epoll_waiters() without the circular dep (fs depends on
+/// vfs+sched; net depends on sched but not fs).
+static EPOLL_BROADCAST_HOOK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1)
+pub fn set_epoll_broadcast_hook(f: fn()) {
+    EPOLL_BROADCAST_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }

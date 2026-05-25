@@ -122,6 +122,50 @@ fn f179_past_window_data_ignored() {
     assert!(c.ooo_buf.is_empty(), "past-window data must not enter ooo_buf");
 }
 
+// ----- F181: per-fd targeted epoll wake -----------------------------
+
+// InetSocket lives under #[cfg(target_os = "oxide-kernel")] in lib.rs;
+// the trait-shape test below covers PollSubscribers behavior
+// without requiring the sock module on hosted builds.
+
+#[test]
+fn f181_subscribe_unsubscribe_via_id() {
+    use alloc::sync::{Arc, Weak};
+    let subs = vfs::PollSubscribers::new();
+    // Fake EpollNotify impl that records wake count.
+    struct FakeEp { woken: core::sync::atomic::AtomicU32 }
+    impl vfs::EpollNotify for FakeEp {
+        fn notify(&self) {
+            self.woken.fetch_add(1, core::sync::atomic::Ordering::Release);
+        }
+    }
+    let ep: Arc<FakeEp> = Arc::new(FakeEp { woken: core::sync::atomic::AtomicU32::new(0) });
+    let weak: Weak<dyn vfs::EpollNotify> = Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
+    subs.subscribe(42, weak);
+    assert!(subs.has_subscribers());
+    subs.notify();
+    assert_eq!(ep.woken.load(core::sync::atomic::Ordering::Acquire), 1);
+    subs.unsubscribe(42);
+    assert!(!subs.has_subscribers());
+    subs.notify();
+    assert_eq!(ep.woken.load(core::sync::atomic::Ordering::Acquire), 1,
+        "after unsubscribe, notify must not fire");
+}
+
+#[test]
+fn f181_dead_weak_subscribers_pruned_on_notify() {
+    use alloc::sync::{Arc, Weak};
+    let subs = vfs::PollSubscribers::new();
+    struct FakeEp;
+    impl vfs::EpollNotify for FakeEp { fn notify(&self) {} }
+    let ep: Arc<FakeEp> = Arc::new(FakeEp);
+    let weak: Weak<dyn vfs::EpollNotify> = Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
+    subs.subscribe(1, weak);
+    drop(ep);  // dropping the Arc → Weak.upgrade returns None
+    subs.notify();  // GC-prunes the dead Weak
+    assert!(!subs.has_subscribers());
+}
+
 // ----- F182: TCP Timestamps + PAWS ----------------------------------
 
 #[test]
