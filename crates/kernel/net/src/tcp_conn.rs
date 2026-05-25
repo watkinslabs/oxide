@@ -73,6 +73,17 @@ pub struct TcpConn {
     /// option). `0` = not yet observed — output() falls back to
     /// the local-iface MTU-derived default.
     pub peer_mss: u16,
+    /// F178: RFC 7323 Window Scale. `snd_wscale` is what we
+    /// advertise (peer left-shifts our window field by this);
+    /// `rcv_wscale` is what peer advertised (we left-shift their
+    /// window field by this). Both default 0 (no scaling); only
+    /// negotiated when BOTH ends include WSCALE in SYN/SYN-ACK.
+    pub snd_wscale: u8,
+    pub rcv_wscale: u8,
+    /// Peer's currently-advertised window size in bytes (after
+    /// applying rcv_wscale). Bounds the in-flight byte count
+    /// output() will emit.
+    pub snd_wnd: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -103,6 +114,9 @@ impl TcpConn {
             tw_start_ns: 0,
             error_eno: 0,
             peer_mss: 0,
+            snd_wscale: 0,
+            rcv_wscale: 0,
+            snd_wnd: 65535,
         }
     }
 
@@ -121,6 +135,9 @@ impl TcpConn {
             tw_start_ns: 0,
             error_eno: 0,
             peer_mss: 0,
+            snd_wscale: 0,
+            rcv_wscale: 0,
+            snd_wnd: 65535,
         }
     }
 
@@ -211,15 +228,17 @@ impl TcpConn {
         buf
     }
 
-    /// Client active open: emit a SYN segment with our MSS option,
-    /// transition to SynSent.
+    /// Client active open: emit a SYN with MSS + WindowScale,
+    /// transition to SynSent. F178: we always advertise WSCALE on
+    /// the active open; peer's response determines if scaling
+    /// engages (RFC 7323 §1.3).
     /// # C: O(1)
     pub fn active_open(&mut self) -> Result<Vec<u8>, TcpConnError> {
         let new_state = transition(self.state, TcpEvent::ActiveOpen)
             .ok_or(TcpConnError::BadState)?;
         let seq_start = self.snd_nxt;
-        // F173: advertise our MSS in the initial SYN per RFC 9293 §3.7.1.
-        let seg = self.build_syn_with_mss(flags::SYN, OWN_MSS_DEFAULT);
+        self.snd_wscale = OWN_WSCALE;
+        let seg = self.build_syn_with_opts(flags::SYN);
         self.snd_nxt = self.snd_nxt.wrapping_add(1);
         self.state = new_state;
         // SYN consumes one sequence; track for retransmit.
@@ -265,18 +284,30 @@ impl TcpConn {
                 self.snd_nxt = 0;
                 // F173: latch peer's MSS option if present.
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
+                // F178: latch peer's window-scale only if they sent
+                // one; otherwise both sides stay at scale 0 per RFC
+                // 7323 §1.3 (must be in SYN for either end to use).
+                if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
+                    self.rcv_wscale = s;
+                    self.snd_wscale = OWN_WSCALE;
+                }
+                // SYN segment carries unscaled window per RFC 7323 §2.2.
+                self.snd_wnd = hdr.window as u32;
                 self.state = transition(self.state, TcpEvent::RecvSyn)
                     .ok_or(TcpConnError::BadState)?;
-                // F173: advertise our MSS in the SYN-ACK.
-                let resp = self.build_syn_with_mss(flags::SYN | flags::ACK, OWN_MSS_DEFAULT);
+                let resp = self.build_syn_with_opts(flags::SYN | flags::ACK);
                 self.snd_nxt = self.snd_nxt.wrapping_add(1);
                 Ok(Some(resp))
             }
             TcpState::SynSent if (hdr.flags & (flags::SYN | flags::ACK)) == (flags::SYN | flags::ACK) => {
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.snd_una = hdr.ack;
-                // F173: latch peer's MSS.
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
+                if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
+                    self.rcv_wscale = s;
+                    // We already advertised our own in the active SYN.
+                }
+                self.snd_wnd = hdr.window as u32;  // SYN: unscaled.
                 // Pop SYN from retx_q (its seq+1 ≤ ack now).
                 while let Some(front) = self.retx_q.front() {
                     let len = front.payload.len() as u32 +
@@ -298,6 +329,8 @@ impl TcpConn {
                 Ok(None)
             }
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
+                // F178: non-SYN segments carry the scaled window.
+                self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 // Apply payload bytes (in-order only — no reassembly yet).
                 let payload = &seg[hdr.payload_offset()..];
                 if !payload.is_empty() && hdr.seq == self.rcv_nxt {
@@ -373,21 +406,20 @@ impl TcpConn {
         if !self.state.is_established() && self.state != TcpState::CloseWait {
             return out;
         }
-        // F175: Nagle. When TCP_NODELAY is off (default) and there's
-        // already unACKed data on the wire, hold back partial-MSS
-        // sends — coalesce until either the ACK frees the pipe or
-        // we accumulate enough to fill a full segment. RFC 1122
-        // §4.2.3.4. Apps that want every write on the wire set
-        // TCP_NODELAY=1 (Linux libc / kernel default for SOCK_STREAM
-        // is Nagle enabled, NODELAY=0).
+        // F175: Nagle. RFC 1122 §4.2.3.4.
         if !nodelay && !self.retx_q.is_empty() && self.send_buf.len() < mss {
             return out;
         }
-        while !self.send_buf.is_empty() {
-            let take = core::cmp::min(mss, self.send_buf.len());
-            // Move (drain) bytes out of send_buf into the segment.
-            // After this loop, send_buf is empty and retx_q owns the
-            // unACKed bytes — single source of truth (RFC 9293 §3.4).
+        // F178: respect peer's advertised window. Available bytes
+        // we may put on the wire = snd_wnd minus already-in-flight
+        // (sum of retx_q.payload). Stop when we'd exceed the window.
+        let in_flight: u32 = self.retx_q.iter().map(|s| s.payload.len() as u32).sum();
+        let mut avail = self.snd_wnd.saturating_sub(in_flight);
+        while !self.send_buf.is_empty() && avail > 0 {
+            let chunk_cap = core::cmp::min(mss as u32, avail) as usize;
+            let take = core::cmp::min(chunk_cap, self.send_buf.len());
+            if take == 0 { break; }
+            // (continue with original loop body below — pop+segment)
             let mut chunk: Vec<u8> = Vec::with_capacity(take);
             for _ in 0..take {
                 chunk.push(self.send_buf.pop_front().unwrap());
@@ -395,12 +427,12 @@ impl TcpConn {
             let seq_start = self.snd_nxt;
             let seg = self.build_segment(flags::PSH | flags::ACK, &chunk);
             self.snd_nxt = self.snd_nxt.wrapping_add(take as u32);
-            // Track for retransmit; cleared on ACK.
             self.retx_q.push_back(UnackedSegment {
                 seq: seq_start, flags: flags::PSH | flags::ACK,
                 payload: chunk, last_sent_ns: 0, retries: 0,
             });
             out.push(seg);
+            avail = avail.saturating_sub(take as u32);
         }
         out
     }
@@ -450,24 +482,31 @@ impl TcpConn {
         buf
     }
 
-    /// F173: build a SYN (or SYN-ACK) with a single MSS option
-    /// (kind=2, len=4). 4-byte option fits one 32-bit option-word,
-    /// so the header becomes 24 bytes (data_offset = 6). Used by
-    /// `active_open` and the LISTEN-side SYN-ACK responder.
+    /// F173/F178: build a SYN (or SYN-ACK) with MSS + WindowScale
+    /// options. Header is 28 bytes (data_offset = 7): 20 fixed + 4
+    /// MSS + 3 WSCALE + 1 NOP padding (RFC 9293 wants 32-bit
+    /// alignment). NOP at offset 24 so WSCALE lands on a
+    /// 4-byte-aligned offset for readability — both arrangements
+    /// are wire-legal.
     /// # C: O(1)
-    fn build_syn_with_mss(&self, flag_bits: u8, mss: u16) -> Vec<u8> {
-        const OPT_LEN: usize = 4;
-        let total = TCP_HDR_MIN_LEN + OPT_LEN;
+    fn build_syn_with_opts(&self, flag_bits: u8) -> Vec<u8> {
+        use crate::tcp_hdr::opt;
+        const OPTS_LEN: usize = 8;  // MSS(4) + NOP(1) + WSCALE(3)
+        let total = TCP_HDR_MIN_LEN + OPTS_LEN;
         let mut buf = alloc::vec![0u8; total];
-        // MSS option immediately after the fixed header.
-        buf[TCP_HDR_MIN_LEN]     = crate::tcp_hdr::opt::MSS;
-        buf[TCP_HDR_MIN_LEN + 1] = OPT_LEN as u8;
-        buf[TCP_HDR_MIN_LEN + 2..TCP_HDR_MIN_LEN + 4]
-            .copy_from_slice(&mss.to_be_bytes());
+        let mut i = TCP_HDR_MIN_LEN;
+        // MSS option (kind=2, len=4, value=u16 BE).
+        buf[i] = opt::MSS;    buf[i + 1] = 4;
+        buf[i + 2..i + 4].copy_from_slice(&OWN_MSS_DEFAULT.to_be_bytes());
+        i += 4;
+        // NOP for alignment.
+        buf[i] = opt::NOP;    i += 1;
+        // WSCALE option (kind=3, len=3, value=u8 shift).
+        buf[i] = opt::WSCALE; buf[i + 1] = 3; buf[i + 2] = self.snd_wscale;
         let mut h = TcpHdr {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: self.snd_nxt, ack: self.rcv_nxt,
-            data_offset: 6, flags: flag_bits, window: self.window,
+            data_offset: 7, flags: flag_bits, window: self.window,
             checksum: 0, urg_ptr: 0,
         };
         h.build_into(self.local.ip, self.remote.ip, &mut buf);
@@ -475,10 +514,15 @@ impl TcpConn {
     }
 }
 
-/// F173: MSS we advertise. Conservative default (1460 = 1500-byte
-/// MTU minus 20 IP + 20 TCP); per-iface MTU lookup is a follow-up
-/// when the bind table tracks iface scope.
+/// F173: MSS we advertise. Conservative default; per-iface MTU
+/// lookup lands once the bind table tracks iface scope.
 pub const OWN_MSS_DEFAULT: u16 = 1460;
+
+/// F178: shift count we advertise via WSCALE option. `0` keeps
+/// us at the unscaled 65535 effective window — adequate for v1
+/// where our recv_buf is bounded by SO_RCVBUF=16K anyway. A
+/// future expansion (large rcv_buf + autotune) raises this.
+pub const OWN_WSCALE: u8 = 0;
 
 #[cfg(test)]
 mod tests {
