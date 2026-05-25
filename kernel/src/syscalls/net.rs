@@ -317,7 +317,6 @@ fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.
-/// `sys_bind(fd, addr, addrlen)` slot 49. Tier-3 shim per `docs/53§4`.
 /// # C: O(1)
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
     const AF_UNIX: u16 = 1;
@@ -395,9 +394,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     rv
 }
 
-/// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44. Tier-3
-/// shim per `docs/53§4`. Parses optional dest into `RemoteAddr`,
-/// fetches sender creds, calls `net::sock::sendto`.
+/// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
 /// # C: O(payload bytes)
 pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
@@ -540,11 +537,8 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
 }
 
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
-/// Non-blocking: returns Eagain when no connection is ready.
-/// # C: O(1)
-/// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
-/// Non-blocking: returns Eagain when no connection is ready.
-/// Tier-3 shim per `docs/53§4`.
+/// Blocking unless fd has O_NONBLOCK (then Eagain on empty backlog);
+/// honors SO_RCVTIMEO. Tier-3 shim per `docs/53§4`.
 /// # C: O(1)
 pub fn sys_accept(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
@@ -567,8 +561,18 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }
                 if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
-                // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules and returns.
-                unsafe { sched::live::tick_yield(); }
+                // F160: park on TCP listener's accept_waiters; tick_yield fallback for AF_UNIX (uses global epoll wake).
+                let listener = match &*sock.kind.lock() {
+                    net::sock::SockKind::TcpListener(l) => Some(l.clone()),
+                    _ => None,
+                };
+                if let Some(l) = listener {
+                    // SAFETY: process ctx (sys_accept); runqueue installed; preempt-off owned by syscall stub; deliver_tcp wakes on accept_q push.
+                    unsafe { l.accept_waiters.park(); sched::live::schedule::schedule(); }
+                } else {
+                    // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
+                    unsafe { sched::live::tick_yield(); }
+                }
                 continue;
             }
             Err(e) => return errno_from_neterr(e),
@@ -598,12 +602,9 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `connect(fd, sockaddr, addrlen)` slot 42.
-/// # C: O(1)
-/// `connect(fd, sockaddr, addrlen)` slot 42. Tier-3 shim per
-/// `docs/53§4`. Parses user sockaddr → `net::sock::RemoteAddr`
-/// then calls `net::sock::connect`.
-/// # C: O(1) for UDP/UNIX, O(drain) for TCP 3WHS.
+/// `connect(fd, sockaddr, addrlen)` slot 42. Parses user sockaddr →
+/// `net::sock::RemoteAddr` then calls `net::sock::connect`.
+/// # C: O(1) UDP/UNIX, O(SYN-ACK RTT) TCP.
 pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
