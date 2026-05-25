@@ -330,6 +330,12 @@ pub fn poll_into_stack(iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
                 }
                 let _ = stack.deliver_rx(iface, &f[14..]);
             }
+            0x86dd => {
+                // F180: IPv6. Hand the L3 payload to the stack's
+                // IPv6 path; minimum-viable demux handles ICMPv6
+                // echo + graceful drop for unbound L4 destinations.
+                let _ = stack.deliver_rx_ipv6(iface, &f[14..]);
+            }
             _ => {}
         }
     })
