@@ -92,6 +92,23 @@ pub struct TcpListenKey { pub local_ip: Ipv4Addr, pub local_port: u16 }
 /// listener table lock. Cheap to clone the Arc.
 pub struct TcpEntry {
     pub conn: Spinlock<TcpConn, StackLockClass>,
+    /// F158: tasks parked in a blocking sys_read on this connection.
+    /// `deliver_tcp` wakes the list after appending to recv_buf or
+    /// after a state change that ends data-transfer (FIN / RST).
+    /// Kernel-only: hosted tests don't run the scheduler.
+    #[cfg(target_os = "oxide-kernel")]
+    pub rx_waiters: sched::live::WaitList,
+}
+
+impl TcpEntry {
+    /// # C: O(1)
+    pub fn new(conn: TcpConn) -> Self {
+        Self {
+            conn: Spinlock::new(conn),
+            #[cfg(target_os = "oxide-kernel")]
+            rx_waiters: sched::live::WaitList::new(),
+        }
+    }
 }
 
 pub struct TcpListenEntry {
@@ -243,7 +260,7 @@ impl NetStack {
             isn,
         );
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry { conn: Spinlock::new(conn) });
+        let entry = Arc::new(TcpEntry::new(conn));
         let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
         self.tcp_conns.lock().insert(key, entry.clone());
         self.send_l4_over_ipv4(local_ip, remote_ip, IpProto::Tcp, &syn)?;
@@ -386,10 +403,32 @@ impl NetStack {
             g.get(&key).cloned()
         };
         if let Some(entry) = entry {
+            // F158: snapshot recv_buf len + state pre/post input() so we
+            // can decide whether to wake parked readers. Wake on either
+            // (a) new bytes appended to recv_buf, or (b) terminal state
+            // transition (Closed / CloseWait / LastAck) so a parked
+            // reader can observe EOF.
+            let (pre_len, _pre_state) = {
+                let c = entry.conn.lock();
+                (c.recv_buf.len(), c.state)
+            };
             let resp = entry.conn.lock().input(src_ip, dst_ip, seg)
                 .map_err(|_| NetError::Einval)?;
+            let (post_len, post_state) = {
+                let c = entry.conn.lock();
+                (c.recv_buf.len(), c.state)
+            };
             if let Some(r) = resp {
                 self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
+            }
+            let new_data = post_len > pre_len;
+            let term = matches!(post_state,
+                crate::tcp_state::TcpState::Closed
+                | crate::tcp_state::TcpState::CloseWait
+                | crate::tcp_state::TcpState::LastAck);
+            if new_data || term {
+                #[cfg(target_os = "oxide-kernel")]
+                entry.rx_waiters.wake_all();
             }
             return Ok(());
         }
@@ -405,7 +444,7 @@ impl NetStack {
         let mut new_conn = TcpConn::new_listener(listener.local);
         let resp = new_conn.input(src_ip, dst_ip, seg)
             .map_err(|_| NetError::Einval)?;
-        let new_entry = Arc::new(TcpEntry { conn: Spinlock::new(new_conn) });
+        let new_entry = Arc::new(TcpEntry::new(new_conn));
         self.tcp_conns.lock().insert(key, new_entry.clone());
         listener.accept_q.lock().push_back(new_entry);
         if let Some(r) = resp {
