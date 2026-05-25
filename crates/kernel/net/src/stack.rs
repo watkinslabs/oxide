@@ -382,13 +382,31 @@ impl NetStack {
     /// transmitted; bytes still queued (waiting for ACK clocking)
     /// stay in the conn's send_buf for output() to drain later.
     /// # C: O(data + N segments)
-    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8]) -> NetResult<usize> {
-        let segs;
-        let (src, dst) = {
+    /// Append `data` to the connection's send queue and drain
+    /// whatever output() can produce immediately. Returns the byte
+    /// count actually accepted into send_buf (may be less than
+    /// data.len() if SO_SNDBUF would be exceeded).
+    ///
+    /// F164: bounded by `sndbuf_cap` — caller passes the socket's
+    /// effective SO_SNDBUF. Returns Eagain when the buffer is at
+    /// cap and zero bytes can be queued.
+    /// # C: O(data) + O(N segments)
+    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize)
+        -> NetResult<usize>
+    {
+        let (segs, accepted, src, dst) = {
             let mut c = entry.conn.lock();
-            c.send(data);
-            segs = c.output(1500);
-            (c.local.ip, c.remote.ip)
+            // Quotas: send_buf bytes + retx_q bytes both count
+            // against SO_SNDBUF (unACKed data total — RFC 1122
+            // §4.2.2.1 / Linux sk_wmem_queued).
+            let in_flight: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
+            let used = c.send_buf.len() + in_flight;
+            let avail = sndbuf_cap.saturating_sub(used);
+            if avail == 0 { return Err(NetError::Eagain); }
+            let accept = core::cmp::min(avail, data.len());
+            c.send(&data[..accept]);
+            let segs = c.output(1500);
+            (segs, accept, c.local.ip, c.remote.ip)
         };
         let n = segs.len();
         for s in &segs {
@@ -397,7 +415,7 @@ impl NetStack {
         // F159: stamp the last N retx_q entries (one per emitted segment)
         // with the actual xmit time.
         stamp_last_sent(entry, n);
-        Ok(data.len())
+        Ok(accepted)
     }
 
     /// Application drains up to `max` bytes from the recv buffer.
@@ -775,7 +793,7 @@ mod tests {
         ).unwrap();
         for _ in 0..3 { stack.drain_loopback(id, &lo); }
         let server = stack.tcp_accept(&listener).unwrap();
-        stack.tcp_send(&client, b"oxide-tcp-payload").unwrap();
+        stack.tcp_send(&client, b"oxide-tcp-payload", 65536).unwrap();
         for _ in 0..3 { stack.drain_loopback(id, &lo); }
         let got = stack.tcp_recv(&server, 1024);
         assert_eq!(&got[..], b"oxide-tcp-payload");
