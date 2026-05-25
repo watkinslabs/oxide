@@ -55,27 +55,19 @@ pub struct UdpRxQueue {
     /// Datagrams waiting for a reader. Each entry is
     /// (src_ip, src_port, payload bytes).
     pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Vec<u8>)>, StackLockClass>,
-    /// F162: tasks parked in blocking sys_recvfrom on this port.
-    /// deliver_rx wakes after pushing.
+    /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
-    /// F174: per-port pending async error (ICMP destination
-    /// unreachable, etc.). Linux errno value; cleared by SO_ERROR
-    /// read or consumed by the next recvfrom call.
+    /// F174: per-port pending async error (Linux errno).
     pub error_eno: core::sync::atomic::AtomicI32,
-    /// F181a: epoll subscribers of the bound socket — set via
-    /// `register_poll_subs` after bind. deliver_rx UDP arm wakes
-    /// targeted instead of broadcasting.
+    /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
-// F180a Udp6RxQueue + IPv6 NetStack methods moved to stack_ipv6.rs.
+// F180a Udp6RxQueue + IPv6 methods in stack_ipv6.rs.
 
 impl UdpRxQueue {
-    /// F174: read + clear the pending per-port error (ICMP unreach).
-    /// Returns 0 if no error pending. Linux semantic: SO_ERROR /
-    /// next recv consumes the error.
-    /// # C: O(1)
+    /// F174: read+clear pending per-port errno. # C: O(1)
     pub fn take_error(&self) -> i32 {
         self.error_eno.swap(0, core::sync::atomic::Ordering::AcqRel)
     }
@@ -117,16 +109,10 @@ pub struct TcpListenKey { pub local_ip: IpAddr, pub local_port: u16 }
 /// listener table lock. Cheap to clone the Arc.
 pub struct TcpEntry {
     pub conn: Spinlock<TcpConn, StackLockClass>,
-    /// F158: tasks parked in a blocking sys_read on this connection.
-    /// `deliver_tcp` wakes the list after appending to recv_buf or
-    /// after a state change that ends data-transfer (FIN / RST).
-    /// Kernel-only: hosted tests don't run the scheduler.
+    /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
-    /// F181a: per-fd epoll subscribers of the owning InetSocket.
-    /// Registered via `register_poll_subs` when the entry is bound
-    /// (connect → TcpConn assignment; accept → new socket). Wakes
-    /// from deliver_tcp use this instead of the global broadcast.
+    /// F181a: per-fd epoll subscribers (deliver_tcp wakes).
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
@@ -193,20 +179,14 @@ fn stamp_last_sent(entry: &TcpEntry, n: usize) {
 }
 
 pub struct TcpListenEntry {
-    /// Backlog of accepted-but-not-yet-claimed Arc<TcpEntry>.
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
-    /// F192: max accept_q depth — listen(2) backlog (clamped to
-    /// somaxconn=4096). deliver_tcp drops SYNs that would push
-    /// past this.
+    /// F192: backlog cap (listen(2), clamped somaxconn=4096).
     pub backlog: core::sync::atomic::AtomicUsize,
     pub local: Endpoint,
-    /// F160: tasks parked in blocking sys_accept waiting for a SYN.
-    /// `deliver_tcp` (listener branch) wakes the list after pushing
-    /// a freshly-spawned TcpEntry to accept_q.
+    /// F160: blocking-accept waiters.
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
-    /// F181a: owning listener-fd epoll subscribers — wakes when
-    /// accept_q grows (fd flips POLL_IN).
+    /// F181a: per-fd epoll subscribers (POLL_IN on accept_q growth).
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
@@ -619,6 +599,27 @@ impl NetStack {
             };
             for s in &segs {
                 let _ = self.send_l4_over_ip(src, dst, IpProto::Tcp, s);
+            }
+            // F193: keepalive probe scheduling. Idle for ka_idle_ns →
+            // fire probes at ka_intvl_ns cadence; abort after ka_cnt_max.
+            let (ka_seg, ka_abort, ka_src, ka_dst) = {
+                let mut c = entry.conn.lock();
+                let probe = c.keepalive_due(now_ns);
+                let abort_ka = c.ka_count > c.ka_cnt_max;
+                if abort_ka && c.error_eno == 0 {
+                    c.error_eno = syscall::errno::Errno::Etimedout as i32;
+                    c.state = crate::tcp_state::TcpState::Closed;
+                }
+                (probe, abort_ka, c.local.ip, c.remote.ip)
+            };
+            if let Some(s) = &ka_seg {
+                let _ = self.send_l4_over_ip(ka_src, ka_dst, IpProto::Tcp, s);
+            }
+            if ka_abort {
+                to_drop.push(*key);
+                #[cfg(target_os = "oxide-kernel")]
+                entry.rx_waiters.wake_all();
+                continue;
             }
             if abort {
                 to_drop.push(*key);
