@@ -1,8 +1,6 @@
-// Kernel-side wrapper around `crate::NetStack`. One global stack
-// owns the iface registry + UDP port map; boot calls `init()` to
-// register the loopback netdev. AF_INET socket fds are VFS Inodes
-// that hold an ephemeral src port + a destination address (set by
-// connect / overridden per-sendto).
+// Kernel-side wrapper around `crate::NetStack`. AF_INET fds are
+// VFS Inodes holding an ephemeral src port + dest (via connect /
+// per-sendto). `init()` registers the loopback netdev at boot.
 
 
 
@@ -13,8 +11,7 @@ use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
 use crate::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
 
-/// Process-global stack. Initialised by `init()`; subsequent
-/// AF_INET socket ops take a `&'static` view through `stack()`.
+/// Process-global stack; AF_INET ops take a `&'static` via `stack()`.
 static STACK: NetStack = NetStack::new();
 
 /// Cached lo iface id + Arc<LoopbackDev> after `init()`. None before.
@@ -33,8 +30,7 @@ pub unsafe fn init() {
     *g = Some((id, lo));
 }
 
-/// `&'static` reference to the global stack. Safe to call after
-/// `init()`; before init lookups will all miss.
+/// `&'static` ref to the global stack; lookups miss until `init()`.
 /// # C: O(1)
 pub fn stack() -> &'static NetStack { &STACK }
 
@@ -49,8 +45,7 @@ pub fn drain_loopback() {
     }
 }
 
-/// Snapshot of the AF_INET ephemeral-port allocator. Counter
-/// rolls over within the dynamic-port range (49152..=65535).
+/// AF_INET ephemeral-port allocator; rolls over within 49152..=65535.
 static EPHEM_NEXT: core::sync::atomic::AtomicU16
     = core::sync::atomic::AtomicU16::new(49152);
 
@@ -115,10 +110,9 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
-/// F137: AF_PACKET socket registry. Bind installs `Weak<InetSocket>`
-/// keyed by ifindex; rx path iterates + pushes frame copies to each
-/// matching socket's rx queue. Dropped sockets garbage-collect as
-/// dead Weaks on the next deliver pass. ETH_P_ALL (0x0003 host) = any.
+/// F137: AF_PACKET socket registry. Bind installs Weak<InetSocket>;
+/// rx pushes frame copies; dropped sockets GC on next pass.
+/// ETH_P_ALL (0x0003 host) = any protocol.
 pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLockClass>
     = Spinlock::new(Vec::new());
 
@@ -141,9 +135,8 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
     let et = ((frame[12] as u16) << 8) | (frame[13] as u16);
-    // F172: collect socks woken so we wake their per-socket recv
-    // waitlists after dropping the registry lock (wake_all takes
-    // the runqueue inner lock — don't nest under PACKET_REGISTRY).
+    // F172: collect socks; wake outside PACKET_REGISTRY lock to
+    // avoid nesting wake_all's runqueue inner lock under it.
     let mut woken: Vec<Arc<InetSocket>> = Vec::new();
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
@@ -173,22 +166,19 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     }
     drop(g);
     if !woken.is_empty() {
-        for s in &woken { s.recv_waiters.wake_all(); }
-        // F146: also wake global epoll subscribers (poll/select/etc).
-        sched::live::notify_epoll_waiters();
+        for s in &woken {
+            s.recv_waiters.wake_all();
+            // F181: targeted epoll wake — only the epolls that
+            // `epoll_ctl(ADD)`d this AF_PACKET fd, not every epoll
+            // on the box. Falls back to no-op (returns immediately)
+            // when this socket has no subscribers.
+            s.poll_subs.notify();
+        }
     }
 }
 
-/// Per-AF_INET / AF_INET6 socket VFS state — one Inode per socket fd.
-///
-/// `family` records the address family the userspace `socket(2)` call
-/// asked for: AF_INET (2) or AF_INET6 (10). The `local_ip` / `peer`
-/// slots stay V4-shaped for v1 because the transport layer is V4-only
-/// on the wire; on AF_INET6 sockets the V4 slot mirrors the IPv4
-/// equivalent of an IPv6 address (V4-mapped ::ffff:x.x.x.x or the
-/// loopback `127.0.0.1` for `::1`). Real V6 transport lands in
-/// phase 18b. The `family` tag drives which sockaddr shape the
-/// syscall path reads + writes.
+/// AF_INET/AF_INET6 socket VFS state — one Inode per fd. v1: V4
+/// slots only; AF_INET6 stores V4-mapped. Real V6 in F180.
 pub struct InetSocket {
     pub family:     core::sync::atomic::AtomicU16,
     pub local_port: Spinlock<Option<u16>, SockLockClass>,
@@ -203,18 +193,18 @@ pub struct InetSocket {
     /// the connection's receive buffer. shutdown(SHUT_WR) sends FIN
     /// via the existing close path and does not touch this flag.
     pub read_shut: core::sync::atomic::AtomicBool,
-    /// F172: socket-level read waitlist for kinds whose recv state
-    /// lives in the SockKind variant rather than a separately-Arc'd
-    /// queue struct — primarily AF_PACKET. UnixPair/UnixDgramQueue
-    /// have their own per-pair waitqs; TcpEntry has `rx_waiters`;
-    /// UDP uses the per-port `UdpRxQueue.waiters`. AF_PACKET ride
-    /// this slot.
+    /// F172: socket-level read waitlist for AF_PACKET.
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
+    /// F181: per-fd epoll subscriber list. epoll_ctl(ADD) on this
+    /// socket's fd subscribes the caller's EpollInode; socket
+    /// event sites call `poll_subs.notify()` to wake only the
+    /// epolls actually watching this fd — not every epoll on
+    /// the system.
+    pub poll_subs: vfs::PollSubscribers,
 }
 
-/// Common SOL_SOCKET options held per socket. Each is an `i32` cell
-/// matching Linux `int`-shaped options. SO_LINGER stores `(onoff,linger)`.
+/// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
 pub struct SockOpts {
     pub reuseaddr: core::sync::atomic::AtomicI32,
     pub reuseport: core::sync::atomic::AtomicI32,
@@ -284,6 +274,7 @@ impl InetSocket {
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
+            poll_subs:    vfs::PollSubscribers::new(),
         }
     }
     /// # C: O(1)
@@ -303,6 +294,7 @@ impl InetSocket {
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
+            poll_subs:    vfs::PollSubscribers::new(),
         }
     }
     /// `socket(AF_INET6, SOCK_DGRAM, …)`. V4 transport substrate;
@@ -416,6 +408,13 @@ impl vfs::Inode for InetSocket {
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+
+    /// F181: targeted-wake subscriber list — epoll_ctl(ADD) on
+    /// this socket's fd registers here, event sites call
+    /// `self.poll_subs.notify()` instead of the global broadcast.
+    fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
+        Some(&self.poll_subs)
+    }
 
     fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         // F166: shutdown(SHUT_RD | SHUT_RDWR) latches read_shut →

@@ -44,17 +44,47 @@ pub struct EpollEntry { pub fd: i32, pub events: u32, pub data: u64 }
 pub struct EpollInode {
     pub id:      u32,
     pub entries: Spinlock<Vec<EpollEntry>, TaskListClass>,
+    /// F181: per-EpollInode WaitList (Arc'd so subscribers can hold
+    /// Weak). epoll_wait parks here; F181-aware event sites wake
+    /// only the EpollInodes that subscribed via `epoll_ctl(ADD)`.
+    /// Kernel-only — hosted tests don't run the scheduler.
+    #[cfg(target_os = "oxide-kernel")]
+    pub waiters: Arc<sched::live::WaitList>,
 }
 
 static EPOLLS: Spinlock<Vec<Arc<EpollInode>>, TaskListClass>
     = Spinlock::new(Vec::new());
+
+/// F181: broadcast wake registered with sched at boot via
+/// `install_epoll_broadcast`. Walks every live EpollInode and
+/// wakes its per-instance waitlist. Kernel-only — hosted tests
+/// don't run epoll_wait.
+/// # C: O(N_epoll_instances)
+#[cfg(target_os = "oxide-kernel")]
+pub fn broadcast_wake_all_epolls() {
+    let snapshot: Vec<Arc<EpollInode>> = EPOLLS.lock().iter().cloned().collect();
+    for ep in snapshot { ep.waiters.wake_all(); }
+}
+
+/// One-shot boot wiring: tell sched how to broadcast epoll wakes
+/// without taking a fs dependency.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn install_epoll_broadcast() {
+    sched::live::set_epoll_broadcast_hook(broadcast_wake_all_epolls);
+}
 static NEXT_EPOLL_ID: AtomicU32 = AtomicU32::new(0);
 
 impl EpollInode {
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
         let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::Relaxed);
-        let arc = Arc::new(Self { id, entries: Spinlock::new(Vec::new()) });
+        let arc = Arc::new(Self {
+            id,
+            entries: Spinlock::new(Vec::new()),
+            #[cfg(target_os = "oxide-kernel")]
+            waiters: Arc::new(sched::live::WaitList::new()),
+        });
         let mut g = EPOLLS.lock();
         if g.len() <= id as usize { g.resize_with(id as usize + 1, || Arc::clone(&arc)); }
         else { g[id as usize] = Arc::clone(&arc); }
@@ -69,6 +99,14 @@ impl Inode for EpollInode {
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Einval) }
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+}
+
+/// F181: EpollInode is the wake-callback recipient registered by
+/// per-fd subscribers. `notify` wakes its WaitList directly —
+/// no fan-out, no global broadcast.
+#[cfg(target_os = "oxide-kernel")]
+impl vfs::EpollNotify for EpollInode {
+    fn notify(&self) { self.waiters.wake_all(); }
 }
 
 /// # C: O(1)
@@ -140,6 +178,9 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             (ev, da)
         }
     };
+    // F181: resolve target fd → InodeRef so we can register / drop
+    // the epoll on the inode's PollSubscribers when supported.
+    let target_inode = fdt.get(fd).ok().map(|f| f.inode().clone());
     let mut list = ep.entries.lock();
     match op {
         EPOLL_CTL_ADD => {
@@ -147,6 +188,15 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
                 return -(Errno::Eexist.as_i32() as i64);
             }
             list.push(EpollEntry { fd, events, data });
+            // F181: targeted-wake subscribe if the inode supports it.
+            #[cfg(target_os = "oxide-kernel")]
+            if let Some(inode) = target_inode.as_ref() {
+                if let Some(subs) = inode.poll_subscribers() {
+                    let weak: alloc::sync::Weak<dyn vfs::EpollNotify> =
+                        alloc::sync::Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
+                    subs.subscribe(ep.id, weak);
+                }
+            }
             0
         }
         EPOLL_CTL_MOD => {
@@ -158,7 +208,14 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
         EPOLL_CTL_DEL => {
             let n = list.len();
             list.retain(|e| e.fd != fd);
-            if list.len() == n { -(Errno::Enoent.as_i32() as i64) } else { 0 }
+            if list.len() == n { return -(Errno::Enoent.as_i32() as i64); }
+            #[cfg(target_os = "oxide-kernel")]
+            if let Some(inode) = target_inode.as_ref() {
+                if let Some(subs) = inode.poll_subscribers() {
+                    subs.unsubscribe(ep.id);
+                }
+            }
+            0
         }
         _ => -(Errno::Einval.as_i32() as i64),
     }
@@ -225,9 +282,13 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
             // Park + wait for a wakeup. tick_yield will wake periodically
             // on the timer IRQ even if nobody notified the wait list,
             // which lets us re-check the deadline and any newly-ready fds.
+            // F181: park on this epoll's own waitlist; targeted
+            // wake from subscribed-fd events lands here. tick_yield
+            // also gives the timer a chance to fire so a non-event
+            // deadline still rouses us periodically for re-scan.
             // SAFETY: process ctx; preempt-off across the syscall; WaitList::park bumps Arc + marks Sleeping; tick_yield yields. UP single-CPU.
             unsafe {
-                sched::live::EPOLL_GLOBAL_WAIT.park();
+                ep.waiters.park();
                 sched::live::tick_yield();
             }
             let out2 = scan_once(&ep, &fdt, evp, maxevents);

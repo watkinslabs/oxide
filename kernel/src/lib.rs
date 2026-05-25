@@ -156,6 +156,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         fs::flock::install_drop_hook();
         fs::inotify::install_write_hook();
         fs::pipe::install_close_hook();
+        fs::epoll::install_epoll_broadcast();
     }
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
