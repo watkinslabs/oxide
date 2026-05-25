@@ -836,13 +836,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // Linux x86_64 clone(flags, child_stack, ptid, ctid, tls).
         syscall::nrs::NR_CLONE         => crate::syscalls::clone::sys_clone_dispatch(&args, args.a0, args.a1, args.a2, args.a3, args.a4),
         syscall::nrs::NR_EXECVE        => crate::syscalls::execve::sys_execve(&args),
-        // execveat(dirfd, path, argv, envp, flags). v1 ignores dirfd
-        // + flags and routes through execve with the absolute path
-        // resolution it already does.
-        syscall::nrs::NR_EXECVEAT      => {
-            let mut sa = args; sa.a0 = args.a1; sa.a1 = args.a2; sa.a2 = args.a3; sa.a3 = 0;
-            crate::syscalls::execve::sys_execve(&sa)
-        }
+        // execveat(dirfd, path, argv, envp, flags) honors AT_EMPTY_PATH
+        // — fexecve(3) maps to execveat(fd, "", AT_EMPTY_PATH).
+        syscall::nrs::NR_EXECVEAT      => crate::syscalls::execve::sys_execveat(&args),
         syscall::nrs::NR_WAIT4         => sys_wait4(&args),
         syscall::nrs::NR_WAITID        => sys_waitid(&args),
         syscall::nrs::NR_TKILL         => sys_kill(&args),
