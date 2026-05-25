@@ -86,11 +86,93 @@ fn reset_per_execve_state(cur: &sched::Task) {
     }
 }
 
-/// `sys_execve(path, argv, envp)` per `15§5` / `31§4`.
+
+/// `execveat(dirfd, path, argv, envp, flags)` per Linux ABI. Honors
+/// `AT_EMPTY_PATH` (flag 0x1000): when path is empty, exec the file
+/// referenced by `dirfd`. This is the kernel side of `fexecve(3)`
+/// (libc translates `fexecve(fd, ...)` to `execveat(fd, "", argv,
+/// envp, AT_EMPTY_PATH)`). Non-empty paths route through execve.
+/// dirfd is ignored for absolute paths.
+/// # C: O(path + dentry depth) + execve_inner cost
+pub fn sys_execveat(args: &SyscallArgs) -> i64 {
+    const AT_EMPTY_PATH: u64 = 0x1000;
+    let dirfd = args.a0 as i32;
+    let pathp = args.a1;
+    let argv  = args.a2;
+    let envp  = args.a3;
+    let flags = args.a4;
+    let path_is_empty = if pathp == 0 {
+        true
+    } else if pathp >= USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    } else {
+        // SAFETY: pathp validated < USER_VA_END; one-byte probe.
+        unsafe { core::ptr::read_volatile(pathp as *const u8) == 0 }
+    };
+    if path_is_empty && (flags & AT_EMPTY_PATH) != 0 {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        // SAFETY: running task; sole reader of fd_table slot per `13§5`.
+        let fdt = match unsafe { cur.fd_table_ref() } {
+            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let f = match fdt.get(dirfd) {
+            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let kpath = f.dentry().absolute_path();
+        if kpath.is_empty() { return -(Errno::Enoent.as_i32() as i64); }
+        // Synthesise SyscallArgs where execve_inner sees argv/envp
+        // in their familiar slots (a1, a2).
+        let sa = SyscallArgs { a0: 0, a1: argv, a2: envp, a3: 0, a4: 0, a5: 0 };
+        return execve_inner(&sa, kpath);
+    }
+    // Plain path-based execveat. dirfd ignored; sys_execve does the
+    // user-pointer read + path resolution.
+    let mut sa = *args;
+    sa.a0 = pathp; sa.a1 = argv; sa.a2 = envp; sa.a3 = 0;
+    sys_execve(&sa)
+}
+
+/// Read up to 64 bytes of a NUL-terminated path from a userspace
+/// pointer into an owned Vec. Empty Vec ↔ NULL/empty user pointer.
+/// Errors come back negated for the caller to forward.
+/// # C: O(64)
+fn read_user_exec_path(path_ptr: u64) -> Result<alloc::vec::Vec<u8>, i64> {
+    if path_ptr == 0 { return Ok(alloc::vec::Vec::new()); }
+    if path_ptr >= USER_VA_END {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(64);
+    for i in 0..64u64 {
+        // SAFETY: bounded 64-byte read from validated user pointer < USER_VA_END; CPL=0 / EL1 reads through caller's AS pre-activate.
+        let b = unsafe { core::ptr::read_volatile((path_ptr + i) as *const u8) };
+        if b == 0 { break; }
+        out.push(b);
+    }
+    Ok(out)
+}
+
+/// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
+/// that reads the user-space path then delegates to `execve_inner`.
+/// # SAFETY: dispatch ctx, IRQs masked.
+/// # C: O(64) + execve_inner cost
+#[cfg(target_arch = "x86_64")]
+pub fn sys_execve(args: &SyscallArgs) -> i64 {
+    let path_owned = match read_user_exec_path(args.a0) {
+        Ok(v) => v, Err(rc) => return rc,
+    };
+    execve_inner(args, path_owned)
+}
+
+/// execve body shared between `sys_execve` (path from user pointer)
+/// and `sys_execveat` (path resolved from `dirfd` for AT_EMPTY_PATH).
+/// `args.a1` = argv, `args.a2` = envp; `args.a0` is ignored — the
+/// caller has already produced `path_owned` from whatever source.
 /// # SAFETY: dispatch ctx, IRQs masked.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "x86_64")]
-pub fn sys_execve(args: &SyscallArgs) -> i64 {
+fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 
@@ -98,53 +180,19 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
-
-    // Read the first byte of the path argument as a kernel-static
-    // ELF selector (v1 stand-in for VFS path lookup per docs/16).
-    // `path = NULL` falls back to the default blob — preserves the
-    // P2-21 legacy behavior. CPL=0 reads through user pages
-    // directly per `15§3` (kernel can read user memory while
-    // running on its kernel stack with CR3 = user AS).
-    let path_ptr = args.a0;
     // Owned ext4 read storage; rooted in this fn frame so the blob's
-    // lifetime extends across `load_static_blob` and drops at fn end
-    // — no per-exec Box::leak (replaces the prior `Box::leak` pattern;
-    // B22 made `load_static_blob` accept a non-'static slice).
+    // lifetime extends across `load_static_blob` and drops at fn end.
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
-    // F62: hoist path_buf/path_len so we can record the exec path
-    // for /proc/self/exe even when path_ptr != 0.
-    let mut path_buf = [0u8; 64];
-    let mut path_len = 0usize;
-    let mut blob: &[u8] = if path_ptr == 0 {
+    let mut blob: &[u8] = if path_owned.is_empty() {
         crate::smoke::elf::EXEC_BLOB
+    } else if let Some(v) = ext4::rootfs::read_file(&path_owned) {
+        ext4_blob = Some(v);
+        // SAFETY: ext4_blob just-set; outlives the load_static_blob call below.
+        ext4_blob.as_deref().expect("just set")
     } else {
-        if path_ptr >= USER_VA_END {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        for i in 0..64 {
-            // SAFETY: bounded read up to 64 bytes from a user pointer < USER_VA_END; CPL=0 reads through user mapping pre-activate.
-            let b = unsafe { core::ptr::read_volatile((path_ptr + i) as *const u8) };
-            if b == 0 { break; }
-            path_buf[i as usize] = b;
-            path_len = (i + 1) as usize;
-        }
-        let path = &path_buf[..path_len];
-        // Read from ext4 directly into an owned Vec — no per-exec
-        // Box::leak (B23-followup: the blob only lives for the
-        // duration of `load_static_blob`; segment bytes get copied
-        // into AS-owned staging via `stash_bytes` per B22).
-        if let Some(v) = ext4::rootfs::read_file(path) {
-            ext4_blob = Some(v);
-            // SAFETY: ext4_blob is rooted in this stack frame and
-            // outlives the load_static_blob call below.
-            ext4_blob.as_deref().expect("just set")
-        } else if path_len >= 1 {
-            match crate::smoke::elf::lookup_blob(path[0]) {
-                Some(b) => b,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
-        } else {
-            return -(Errno::Enoent.as_i32() as i64);
+        match crate::smoke::elf::lookup_blob(path_owned[0]) {
+            Some(b) => b,
+            None    => return -(Errno::Enoent.as_i32() as i64),
         }
     };
 
@@ -194,12 +242,13 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
 
     // Shebang resolution. Only ext4-loaded files can be scripts —
     // the static `elf_smoke` blobs are all real ELFs. When the chain
-    // fires, `argv_vec` is rewritten in place and `path_buf`/`blob`
+    // fires, `argv_vec` is rewritten in place and `path_owned`/`blob`
     // are repointed at the final interpreter.
+    let mut path_owned = path_owned;
     if ext4_blob.is_some() && blob.starts_with(b"#!") {
         let mut owned = ext4_blob.take().expect("ext4_blob.is_some()");
         if let Err(e) = resolve_shebang_chain(
-            &mut owned, &mut path_buf, &mut path_len, &mut argv_vec,
+            &mut owned, &mut path_owned, &mut argv_vec,
         ) {
             return -(e.as_i32() as i64);
         }
@@ -321,7 +370,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
         *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
-        let path_str = match core::str::from_utf8(&path_buf[..path_len]) {
+        let path_str = match core::str::from_utf8(&path_owned) {
             Ok(s) => alloc::string::String::from(s),
             Err(_) => alloc::string::String::new(),
         };
@@ -359,7 +408,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
             &envp_slices[..envc],
             &img,
             &random16,
-            &path_buf[..path_len],
+            &path_owned,
             vdso_ehdr,
         )
     } {
@@ -413,6 +462,18 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "aarch64")]
 pub fn sys_execve(args: &SyscallArgs) -> i64 {
+    let path_owned = match read_user_exec_path(args.a0) {
+        Ok(v) => v, Err(rc) => return rc,
+    };
+    if path_owned.is_empty() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    execve_inner(args, path_owned)
+}
+
+/// aarch64 execve body. See x86_64 doc for the contract.
+#[cfg(target_arch = "aarch64")]
+fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 {
     use core::sync::atomic::Ordering;
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
@@ -421,24 +482,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
-
-    // 1. Read the path argument and look it up via dev_ext4. v1
-    //    cap: 64-byte path, NUL-terminated, single absolute path.
-    let path_ptr = args.a0;
-    if path_ptr == 0 || path_ptr >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let mut path_buf = [0u8; 64];
-    let mut path_len = 0;
-    for i in 0..64 {
-        // SAFETY: bounded read up to 64 bytes from a user pointer < USER_VA_END; CPL=0 reads through user mapping pre-activate (still on caller's TTBR0).
-        let b = unsafe { core::ptr::read_volatile((path_ptr + i) as *const u8) };
-        if b == 0 { break; }
-        path_buf[i as usize] = b;
-        path_len = (i + 1) as usize;
-    }
-    let path = &path_buf[..path_len];
-    let mut blob_vec = match ext4::rootfs::read_file(path) {
+    let mut blob_vec = match ext4::rootfs::read_file(&path_owned) {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
@@ -483,11 +527,11 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     }
 
     // Shebang resolution per Linux fs/binfmt_script.c. Mirrors the
-    // x86 path above; on success blob_vec/path_buf/argv_vec are
+    // x86 path above; on success blob_vec/path_owned/argv_vec are
     // updated to the resolved interpreter chain.
     if blob_vec.starts_with(b"#!") {
         if let Err(e) = resolve_shebang_chain(
-            &mut blob_vec, &mut path_buf, &mut path_len, &mut argv_vec,
+            &mut blob_vec, &mut path_owned, &mut argv_vec,
         ) {
             return -(e.as_i32() as i64);
         }
@@ -593,17 +637,12 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
     let exec_path_for_caps = unsafe {
         *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
         *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
-        let path_str = match core::str::from_utf8(&path_buf[..path_len]) {
+        let path_str = match core::str::from_utf8(&path_owned) {
             Ok(s) => alloc::string::String::from(s),
             Err(_) => alloc::string::String::new(),
         };
         if !path_str.is_empty() {
             *cur.exe_path.get() = Some(path_str.clone());
-            // Linux semantics: /proc/<pid>/exe lives on the mm
-            // (struct mm_struct::exe_file), shared by CLONE_VM
-            // threads and fork-copied. Bind it to the new AS so
-            // hardlinks to the same inode produce different
-            // readlinks based on what the user actually invoked.
             if let Some(mm) = cur.mm_ref() {
                 mm.set_exe_path(path_str.clone());
             }
@@ -624,7 +663,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
             &envp_slices[..envc],
             &img,
             &random16,
-            &path_buf[..path_len],
+            &path_owned,
             vdso_ehdr,
         )
     } {
@@ -708,15 +747,15 @@ fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
 ///
 /// On entry:
 ///   * `blob_owned` holds the file content the user asked execve to load
-///   * `path_buf[..*path_len]` holds the path the user named
+///   * `path_owned` holds the path the user named
 ///   * `argv_vec` holds the original argv (argv[0] is the user's choice)
 ///
 /// On every iteration where `blob_owned` begins with `#!`:
 ///   1. Parse `#!<interp>[ <opt-arg>]\n` from the first line (max 128 bytes).
 ///   2. Splice argv: new argv = [interp, opt-arg?, original_path] ++ argv[1..].
 ///      argv[0] of the original program is dropped, exactly as Linux does.
-///   3. Update `path_buf`/`*path_len` to `interp`, re-read it from ext4
-///      into `blob_owned`, and loop. Bail with ENOENT if interp missing.
+///   3. Update `path_owned` to `interp`, re-read it from ext4 into
+///      `blob_owned`, and loop. Bail with ENOENT if interp missing.
 ///
 /// Recursion cap = 4 (matches Linux `BINPRM_MAX_RECURSION`).
 /// Returns `Ok(())` when the chain terminates on a non-script blob.
@@ -724,8 +763,7 @@ fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) fn resolve_shebang_chain(
     blob_owned: &mut alloc::vec::Vec<u8>,
-    path_buf: &mut [u8; 64],
-    path_len: &mut usize,
+    path_owned: &mut alloc::vec::Vec<u8>,
     argv_vec: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
 ) -> Result<(), Errno> {
     for _ in 0..4 {
@@ -747,7 +785,7 @@ pub(crate) fn resolve_shebang_chain(
         while j > i && (line[j-1] == b' ' || line[j-1] == b'\t' || line[j-1] == b'\r') { j -= 1; }
         let opt_arg: Option<alloc::vec::Vec<u8>> =
             if j > i { Some(line[i..j].to_vec()) } else { None };
-        let cur_path: alloc::vec::Vec<u8> = path_buf[..*path_len].to_vec();
+        let cur_path: alloc::vec::Vec<u8> = path_owned.clone();
         // Splice argv per Linux: drop original argv[0] (if any), prepend
         // [interp, opt-arg?, original_path] in front of argv[1..].
         let original_tail: alloc::vec::Vec<alloc::vec::Vec<u8>> =
@@ -761,10 +799,7 @@ pub(crate) fn resolve_shebang_chain(
         argv_vec.push(cur_path);
         argv_vec.extend(original_tail);
         // Update path → interp, refresh blob from ext4.
-        if interp.len() > 64 { return Err(Errno::Enametoolong); }
-        *path_buf = [0u8; 64];
-        path_buf[..interp.len()].copy_from_slice(&interp);
-        *path_len = interp.len();
+        *path_owned = interp.clone();
         match ext4::rootfs::read_file(&interp) {
             Some(v) => *blob_owned = v,
             None    => return Err(Errno::Enoent),

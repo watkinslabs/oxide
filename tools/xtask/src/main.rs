@@ -510,14 +510,13 @@ if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
 fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
 # F196: dropbear ssh server (port 22). Generates host keys on first
-# boot, then backgrounds. -E logs to stderr, -F foreground=off.
+# boot, then backgrounds.
 if [ -x /sbin/dropbear ]; then
-    # Only ed25519: RSA-2048 keygen too slow under aarch64 TCG.
     [ -f /etc/dropbear/dropbear_ed25519_host_key ] || \\
         /sbin/dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null
     ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
     route add default gw 10.0.2.2 2>/dev/null
-    /sbin/dropbear -R -p 22 -r /etc/dropbear/dropbear_ed25519_host_key &
+    /sbin/dropbear -R -p 0.0.0.0:22 &
 fi
 :
 ")?,

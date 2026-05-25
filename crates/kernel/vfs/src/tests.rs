@@ -495,3 +495,40 @@ fn trim_hostname_empty_stays_empty() {
     assert_eq!(trim_hostname(b"\n",     64), b"");
     assert_eq!(trim_hostname(b"\n\n\0", 64), b"");
 }
+
+// ---- F197: Dentry::absolute_path -----------------------------------
+
+#[test]
+fn dentry_absolute_path_root_is_slash() {
+    let i: InodeRef = MemFile::new(1);
+    let root = Dentry::new_root(i);
+    assert_eq!(root.absolute_path(), b"/");
+}
+
+#[test]
+fn dentry_absolute_path_single_component() {
+    let i: InodeRef = MemFile::new(1);
+    let root = Dentry::new_root(Arc::clone(&i));
+    let bin  = Dentry::new(Some(root), String::from("bin"), Arc::clone(&i));
+    assert_eq!(bin.absolute_path(), b"/bin");
+}
+
+#[test]
+fn dentry_absolute_path_nested_components() {
+    let i: InodeRef = MemFile::new(1);
+    let root = Dentry::new_root(Arc::clone(&i));
+    let sbin = Dentry::new(Some(root),           String::from("sbin"), Arc::clone(&i));
+    let exe  = Dentry::new(Some(Arc::clone(&sbin)), String::from("init"), Arc::clone(&i));
+    assert_eq!(exe.absolute_path(), b"/sbin/init");
+}
+
+#[test]
+fn dentry_absolute_path_deep_chain() {
+    let i: InodeRef = MemFile::new(1);
+    let root = Dentry::new_root(Arc::clone(&i));
+    let a    = Dentry::new(Some(root),            String::from("usr"),   Arc::clone(&i));
+    let b    = Dentry::new(Some(Arc::clone(&a)),  String::from("share"), Arc::clone(&i));
+    let c    = Dentry::new(Some(Arc::clone(&b)),  String::from("zoneinfo"), Arc::clone(&i));
+    let leaf = Dentry::new(Some(Arc::clone(&c)),  String::from("UTC"),   Arc::clone(&i));
+    assert_eq!(leaf.absolute_path(), b"/usr/share/zoneinfo/UTC");
+}
