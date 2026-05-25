@@ -71,6 +71,17 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     let inode = if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
+    } else if path_str == "/dev/tty" {
+        // F200: /dev/tty resolves to caller's ctty (POSIX §11.1.3).
+        // ENXIO when none, so session-aware userspace can detect it.
+        match sched::live::current() {
+            // SAFETY: single-mutator per `13§5`; current task on this CPU.
+            Some(t) => match unsafe { (*t.ctty.get()).clone() } {
+                Some(i) => i,
+                None    => return -(Errno::Enxio.as_i32() as i64),
+            },
+            None => return -(Errno::Enxio.as_i32() as i64),
+        }
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
         i
     } else if let Some(i) = ext4::rootfs::lookup_inode_any(path_str.as_bytes()) {
@@ -152,6 +163,20 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     } else if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
+    } else if path_str == "/dev/tty" {
+        // F200: Linux /dev/tty resolves to the calling task's
+        // controlling terminal (POSIX §11.1.3). No ctty → ENXIO so
+        // session-aware userspace (e.g. dropbear's setsid check)
+        // observes the absence. The static console alias was the
+        // pre-F200 behavior; falls back to it for the boot path.
+        match sched::live::current() {
+            // SAFETY: single-mutator per `13§5` — current task on this CPU.
+            Some(t) => match unsafe { (*t.ctty.get()).clone() } {
+                Some(i) => i,
+                None    => return -(Errno::Enxio.as_i32() as i64),
+            },
+            None => return -(Errno::Enxio.as_i32() as i64),
+        }
     } else if let Ok(i) = vfs::mount::lookup(path_str) {
         i
     } else if let Some(i) = ext4::rootfs::lookup_inode_any(path_str.as_bytes()) {
