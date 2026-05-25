@@ -126,6 +126,8 @@ pub fn sys_clone_dispatch(
     unsafe {
         *child.cwd.get() = (*cur.cwd.get()).clone();
         *child.rlimits.get() = *cur.rlimits.get();
+        // F200: ctty inherits across fork(2) per POSIX §11.1.3.
+        *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
     // Materialise an Arc<Task> for the parent by bumping its

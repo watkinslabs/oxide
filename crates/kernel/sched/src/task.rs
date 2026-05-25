@@ -151,15 +151,10 @@ pub struct Task {
     /// signal delivery rely on this; getty / shells rewrite it.
     pub pgid: AtomicU32,
 
-    /// Session id per POSIX setsid(2). Initialised to `tid`.
-    /// `sys_setsid` sets both `pgid` and `sid` to `tid`, making the
-    /// caller a session leader.
+    /// Session id (POSIX setsid). Init = `tid`. # C: O(1)
     pub sid:  AtomicU32,
 
-    /// Top of this task's kernel stack (one past the last byte).
-    /// Set when the task is constructed alongside its arch ctx.
-    /// `null` until set; AtomicPtr so reads are race-free across
-    /// concurrent CPU views (read-only on hot paths).
+    /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 
     /// Backing storage for the kernel stack — allocated by the
@@ -245,6 +240,10 @@ pub struct Task {
     /// uses `task.name` as a fallback). Wrapped in `UnsafeCell`
     /// for the same single-mutator invariant as `mm`.
     pub cmdline: UnsafeCell<Option<alloc::string::String>>,
+
+    /// F200: controlling terminal (POSIX §11.1.3). None = no ctty.
+    /// Cleared at setsid(2); set at TIOCSCTTY; inherited at fork(2).
+    pub ctty: UnsafeCell<Option<vfs::InodeRef>>,
 
     /// Absolute path passed to the most recent `sys_execve(path,…)`,
     /// per Linux `/proc/<pid>/exe`. Distinct from `cmdline` (which
@@ -856,6 +855,7 @@ impl Task {
             sigactions: UnsafeCell::new([SaHandler { handler: 0, flags: 0, restorer: 0, mask: 0 }; 64]),
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
+            ctty:       UnsafeCell::new(None),
             exe_path:   UnsafeCell::new(None),
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
             environ:    UnsafeCell::new(None),
