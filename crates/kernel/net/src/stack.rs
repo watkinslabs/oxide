@@ -111,6 +111,43 @@ impl TcpEntry {
     }
 }
 
+/// F159: monotonic time source visible to net crate. On
+/// `oxide-kernel` builds uses the per-arch HAL timer; hosted tests
+/// return 0 so retx_tick is a no-op without a real clock.
+/// # C: O(1)
+fn monotonic_ns_safe() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        use hal::TimerOps;
+        return hal_x86_64::X86TimerOps::monotonic_ns().0;
+    }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    {
+        use hal::TimerOps;
+        return hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    }
+    #[allow(unreachable_code)]
+    0
+}
+
+/// F159: stamp the last `n` entries of `entry`'s retx_q with the
+/// current monotonic ns. Called immediately after the corresponding
+/// segments are handed to the iface for xmit so retx_tick has a
+/// real baseline to compare RTO against. No-op on n == 0 / empty
+/// queue.
+/// # C: O(n)
+fn stamp_last_sent(entry: &TcpEntry, n: usize) {
+    if n == 0 { return; }
+    let now = monotonic_ns_safe();
+    if now == 0 { return; } // hosted tests / pre-timer boot
+    let mut c = entry.conn.lock();
+    let len = c.retx_q.len();
+    let start = len.saturating_sub(n);
+    for i in start..len {
+        c.retx_q[i].last_sent_ns = now;
+    }
+}
+
 pub struct TcpListenEntry {
     /// Backlog of accepted-but-not-yet-claimed Arc<TcpEntry>.
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
@@ -242,8 +279,8 @@ impl NetStack {
 
     /// Open an active TCP connection from `local` to `remote`.
     /// Emits the SYN, parks the half-open conn in the demux table.
-    /// Caller polls the returned `TcpEntry`'s state until it
-    /// reaches `Established` (or until a Reset happens).
+    /// Caller (`sock::connect`) parks on `entry.rx_waiters` for the
+    /// SYN-ACK; `tcp_retx_tick` handles SYN retransmission on RTO.
     /// # C: O(log N) demux insert + 1 segment xmit
     pub fn tcp_connect(&self, local_ip: Ipv4Addr, local_port: u16,
                         remote_ip: Ipv4Addr, remote_port: u16)
@@ -264,6 +301,11 @@ impl NetStack {
         let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
         self.tcp_conns.lock().insert(key, entry.clone());
         self.send_l4_over_ipv4(local_ip, remote_ip, IpProto::Tcp, &syn)?;
+        // F159: stamp the queued SYN with the actual xmit time so the
+        // retx scanner doesn't treat it as instantly overdue (default
+        // last_sent_ns=0 from active_open). On stamp failure (no timer
+        // yet, hosted tests) leave at 0 — retx_tick is a no-op there.
+        stamp_last_sent(&entry, 1);
         Ok(entry)
     }
 
@@ -287,9 +329,13 @@ impl NetStack {
             segs = c.output(1500);
             (c.local.ip, c.remote.ip)
         };
+        let n = segs.len();
         for s in &segs {
             self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s)?;
         }
+        // F159: stamp the last N retx_q entries (one per emitted segment)
+        // with the actual xmit time.
+        stamp_last_sent(entry, n);
         Ok(data.len())
     }
 
@@ -310,6 +356,69 @@ impl NetStack {
             (s, c.local.ip, c.remote.ip)
         };
         self.send_l4_over_ipv4(src, dst, IpProto::Tcp, &seg)
+    }
+
+    /// F159: walk active TCP conns and re-emit any segments whose
+    /// RTO has expired. Drops conns whose front-of-retx_q segment
+    /// has been retried past a state-dependent ceiling (6 for SYN,
+    /// 15 for data — Linux defaults for tcp_syn_retries /
+    /// tcp_retries2). Dropped conns transition to Closed and wake
+    /// their rx_waiters so parked connect / read / accept calls
+    /// observe the failure.
+    ///
+    /// Intended call site: `virtio_net_rx_kthread`'s loop, ~100 ms
+    /// cadence. Not safe from IRQ context (acquires tcp_conns lock +
+    /// per-conn lock + ifaces.lookup).
+    /// # C: O(N_conns * retx_q.len())
+    pub fn tcp_retx_tick(&self, now_ns: u64) {
+        // Snapshot the conn list to keep the tcp_conns lock short.
+        let entries: Vec<(TcpKey, Arc<TcpEntry>)> = {
+            let g = self.tcp_conns.lock();
+            g.iter().map(|(k, v)| (*k, v.clone())).collect()
+        };
+        let mut to_drop: Vec<TcpKey> = Vec::new();
+        for (key, entry) in entries.iter() {
+            // Per-entry: decide retx + drop under the conn lock,
+            // collect segments to emit after dropping it.
+            let (segs, abort, src, dst) = {
+                let mut c = entry.conn.lock();
+                if c.retx_q.is_empty() {
+                    (Vec::new(), false, c.local.ip, c.remote.ip)
+                } else {
+                    let front_is_syn = (c.retx_q.front().unwrap().flags
+                        & crate::tcp_hdr::flags::SYN) != 0;
+                    let max = if front_is_syn { 6 } else { 15 };
+                    let max_retries = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0);
+                    if max_retries >= max {
+                        // Give up on this connection.
+                        c.state = crate::tcp_state::TcpState::Closed;
+                        c.retx_q.clear();
+                        (Vec::new(), true, c.local.ip, c.remote.ip)
+                    } else {
+                        let segs = c.retransmit_due(now_ns);
+                        (segs, false, c.local.ip, c.remote.ip)
+                    }
+                }
+            };
+            for s in &segs {
+                let _ = self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s);
+            }
+            if abort {
+                to_drop.push(*key);
+                #[cfg(target_os = "oxide-kernel")]
+                entry.rx_waiters.wake_all();
+            } else if !segs.is_empty() {
+                // Wake too — connect waiters might have been parked
+                // forever otherwise on a successful retx that revives
+                // the handshake.
+                #[cfg(target_os = "oxide-kernel")]
+                entry.rx_waiters.wake_all();
+            }
+        }
+        if !to_drop.is_empty() {
+            let mut g = self.tcp_conns.lock();
+            for k in to_drop { g.remove(&k); }
+        }
     }
 
     /// Wrap an L4 segment in IPv4 + xmit it via the routing table.
@@ -421,13 +530,17 @@ impl NetStack {
             if let Some(r) = resp {
                 self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
             }
-            let new_data = post_len > pre_len;
-            let term = matches!(post_state,
-                crate::tcp_state::TcpState::Closed
-                | crate::tcp_state::TcpState::CloseWait
-                | crate::tcp_state::TcpState::LastAck);
-            if new_data || term {
-                #[cfg(target_os = "oxide-kernel")]
+            // F159: wake unconditionally — any input may have changed
+            // state (SynSent→Established for connect waiters, * → Closed
+            // for terminal observers) or appended data (recv waiters).
+            // Wakers re-check their condition; wake_all is cheap O(N)
+            // and avoids missing state transitions our pre/post diff
+            // doesn't enumerate (CloseWait, FinWait*, etc.). Suppress
+            // the (new_data || term) bindings — kept inside the cfg arm
+            // only.
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                let _ = (pre_len, post_len, post_state);
                 entry.rx_waiters.wake_all();
             }
             return Ok(());

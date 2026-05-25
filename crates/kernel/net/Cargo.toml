@@ -18,6 +18,14 @@ syscall  = { path = "../syscall" }
 # UnixPair/UnixDgram state change so epoll_wait parkers wake.
 sched    = { path = "../sched" }
 
+# F159: TCP retx scanner needs monotonic_ns. Per-arch HAL only links
+# in for the matching kernel target; hosted tests skip the call site
+# via `target_os = "oxide-kernel"`.
+[target.'cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64", package = "hal-x86_64" }
+[target.'cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64", package = "hal-aarch64" }
+
 [features]
 default = []
 hosted  = []
