@@ -38,10 +38,9 @@ pub unsafe fn init() {
 /// # C: O(1)
 pub fn stack() -> &'static NetStack { &STACK }
 
-/// Drain loopback's xmit queue back through deliver_rx. v1 calls
-/// this synchronously after every UDP send + after deliver_rx
-/// (for ICMP echo replies that `deliver_rx` itself xmit'd).
-/// Replaces a real soft-IRQ NET_RX scheduler.
+/// Drain lo's xmit queue back through deliver_rx; synchronous on
+/// every UDP send + after deliver_rx (so ICMP echo replies the
+/// path itself xmit'd land). Replaces a real soft-IRQ NET_RX.
 /// # C: O(N pending)
 pub fn drain_loopback() {
     let g = LO.lock();
@@ -116,19 +115,16 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
-/// F137: AF_PACKET socket registry. Bind installs a `Weak<InetSocket>`
-/// here keyed by ifindex; the virtio-net rx path iterates this list
-/// and pushes a frame copy into each matching socket's rx queue so
-/// dhcpcd's recvfrom() sees the DHCPOFFER. Dropped sockets stay as
-/// dead Weaks until the next deliver pass GCs them.
-/// ETH_P_ALL = 0x0003 (host order) matches every protocol.
+/// F137: AF_PACKET socket registry. Bind installs `Weak<InetSocket>`
+/// keyed by ifindex; rx path iterates + pushes frame copies to each
+/// matching socket's rx queue. Dropped sockets garbage-collect as
+/// dead Weaks on the next deliver pass. ETH_P_ALL (0x0003 host) = any.
 pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLockClass>
     = Spinlock::new(Vec::new());
 
-/// Add `sock` to the AF_PACKET registry. Idempotent — duplicate adds
-/// just live as redundant Weak entries (harmless; the rx path is the
-/// hot side and dedupes implicitly via socket identity).
-/// # C: O(N) — registry is small (one entry per AF_PACKET fd).
+/// Add to AF_PACKET registry. Idempotent (duplicate adds = harmless
+/// redundant Weak entries; rx dedupes implicitly by socket identity).
+/// # C: O(N) — registry small (one entry per AF_PACKET fd).
 pub fn register_packet(sock: &Arc<InetSocket>) {
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
@@ -145,7 +141,10 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
     let et = ((frame[12] as u16) << 8) | (frame[13] as u16);
-    let mut delivered = false;
+    // F172: collect socks woken so we wake their per-socket recv
+    // waitlists after dropping the registry lock (wake_all takes
+    // the runqueue inner lock — don't nest under PACKET_REGISTRY).
+    let mut woken: Vec<Arc<InetSocket>> = Vec::new();
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
     for w in g.iter() {
@@ -166,14 +165,16 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
             let mut q = rx.lock();
             if q.len() < 64 {
                 q.push_back(payload);
-                delivered = true;
+                drop(q);
+                drop(k);
+                woken.push(sock);
             }
         }
     }
     drop(g);
-    // F146: wake any poll/epoll/select waiters so a userspace task
-    // parked on the AF_PACKET socket actually sees the frame.
-    if delivered {
+    if !woken.is_empty() {
+        for s in &woken { s.recv_waiters.wake_all(); }
+        // F146: also wake global epoll subscribers (poll/select/etc).
         sched::live::notify_epoll_waiters();
     }
 }
@@ -205,6 +206,14 @@ pub struct InetSocket {
     /// the connection's receive buffer. shutdown(SHUT_WR) sends FIN
     /// via the existing close path and does not touch this flag.
     pub read_shut: core::sync::atomic::AtomicBool,
+    /// F172: socket-level read waitlist for kinds whose recv state
+    /// lives in the SockKind variant rather than a separately-Arc'd
+    /// queue struct — primarily AF_PACKET. UnixPair/UnixDgramQueue
+    /// have their own per-pair waitqs; TcpEntry has `rx_waiters`;
+    /// UDP uses the per-port `UdpRxQueue.waiters`. AF_PACKET ride
+    /// this slot.
+    #[cfg(target_os = "oxide-kernel")]
+    pub recv_waiters: sched::live::WaitList,
 }
 
 /// Common SOL_SOCKET options held per socket. Each is an `i32` cell
@@ -276,6 +285,8 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
+            #[cfg(target_os = "oxide-kernel")]
+            recv_waiters: sched::live::WaitList::new(),
         }
     }
     /// # C: O(1)
@@ -293,11 +304,12 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
+            #[cfg(target_os = "oxide-kernel")]
+            recv_waiters: sched::live::WaitList::new(),
         }
     }
-    /// `socket(AF_INET6, SOCK_DGRAM, …)` — same V4 transport substrate
-    /// for v1; `family = AF_INET6` flips the syscall ABI to the
-    /// 28-byte sockaddr_in6 shape on bind/connect/sendto/recv*.
+    /// `socket(AF_INET6, SOCK_DGRAM, …)`. V4 transport substrate;
+    /// `family = AF_INET6` flips the ABI to the 28-byte sockaddr_in6.
     /// # C: O(1)
     pub fn new_udp6() -> Self {
         let s = Self::new_udp();
@@ -312,10 +324,8 @@ impl InetSocket {
     }
 
     /// `socket(AF_UNIX, SOCK_STREAM, …)`. F114: InetSocket shell
-    /// tagged AF_UNIX with no kind set yet — bind/connect/accept
-    /// transition it to `SockKind::Unix(pair, end)`. Without this
-    /// `socket(AF_UNIX, …)` returned EAFNOSUPPORT, breaking the
-    /// standard 4-step AF_UNIX flow.
+    /// tagged AF_UNIX, kind set by bind/connect/accept transition
+    /// to `SockKind::Unix(pair, end)`.
     /// # C: O(1)
     pub fn new_unix() -> Self {
         let s = Self::new_tcp();
