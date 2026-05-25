@@ -55,6 +55,7 @@ pub enum Errno {
     Enotconn          = 107,
     Etimedout         = 110,
     Econnrefused      = 111,
+    Econnreset        = 104,
 }
 
 impl Errno {
