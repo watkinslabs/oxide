@@ -201,9 +201,11 @@ impl TcpConn {
     pub fn retransmit_due(&mut self, now_ns: u64) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         let mut out = alloc::vec::Vec::new();
         let rto = self.rto_ns;
-        // Two-pass: snapshot expired indices, then build segments.
+        // F179a: skip entries the peer has SACKed; their loss-recovery
+        // burden is gone. Only un-sacked + expired entries re-emit.
         let mut expired = alloc::vec::Vec::new();
         for (i, s) in self.retx_q.iter().enumerate() {
+            if s.sacked { continue; }
             if now_ns.saturating_sub(s.last_sent_ns) >= rto {
                 expired.push(i);
             }
@@ -377,14 +379,14 @@ impl TcpConn {
                     }
                 }
                 if (hdr.flags & flags::ACK) != 0 {
-                    // F165: advance snd_una; the actual bytes live in
-                    // retx_q (output() drains send_buf into segments),
-                    // so the retx_q sweep below is the one that frees
-                    // memory. snd_una alone tracks "what peer has".
+                    // F165: advance snd_una; bytes live in retx_q.
                     let acked = hdr.ack.wrapping_sub(self.snd_una);
                     if acked > 0 {
                         self.snd_una = hdr.ack;
                     }
+                    // F179a: apply any SACK blocks peer included.
+                    let blocks = crate::tcp_hdr::parse_sack_option(seg);
+                    if !blocks.is_empty() { self.apply_sack(&blocks); }
                     // Pop retx_q entries whose seq+len is fully ACK'd.
                     while let Some(front) = self.retx_q.front() {
                         let len = front.payload.len() as u32 +
@@ -411,7 +413,9 @@ impl TcpConn {
                     emit_fin_ack = Some(self.build_segment(flags::ACK, &[]));
                 }
                 if !payload.is_empty() && emit_fin_ack.is_none() {
-                    return Ok(Some(self.build_segment(flags::ACK, &[])));
+                    // F179a: include SACK blocks when we have OOO
+                    // data buffered so peer can fast-retx the gap.
+                    return Ok(Some(self.build_ack_with_sack()));
                 }
                 Ok(emit_fin_ack)
             }
@@ -504,6 +508,89 @@ impl TcpConn {
         self.snd_nxt = self.snd_nxt.wrapping_add(1);
         self.state = new_state;
         Ok(seg)
+    }
+
+    /// F179a: collapse `ooo_buf` into RFC 2018 SACK blocks. Each
+    /// block = (left, right) for a contiguous run of buffered
+    /// chunks. Max 4 blocks per RFC 2018 §3 (header room).
+    /// # C: O(ooo_buf.len())
+    pub fn sack_blocks(&self) -> alloc::vec::Vec<crate::tcp_hdr::SackBlock> {
+        use crate::tcp_hdr::SackBlock;
+        let mut out: alloc::vec::Vec<SackBlock> = alloc::vec::Vec::new();
+        let mut iter = self.ooo_buf.iter().peekable();
+        while let Some((&seq, chunk)) = iter.next() {
+            let mut right = seq.wrapping_add(chunk.len() as u32);
+            // Coalesce contiguous neighbors.
+            while let Some(&(&nseq, nchunk)) = iter.peek() {
+                if nseq == right {
+                    right = right.wrapping_add(nchunk.len() as u32);
+                    iter.next();
+                } else { break; }
+            }
+            out.push(SackBlock { left: seq, right });
+            if out.len() == 4 { break; }
+        }
+        out
+    }
+
+    /// F179a: build an ACK segment carrying any SACK blocks the
+    /// peer should know about. When `ooo_buf` is empty (no holes
+    /// to report) this degenerates to a plain ACK via the regular
+    /// `build_segment` path.
+    /// # C: O(blocks)
+    pub fn build_ack_with_sack(&self) -> Vec<u8> {
+        let blocks = self.sack_blocks();
+        if blocks.is_empty() {
+            return self.build_segment(flags::ACK, &[]);
+        }
+        use crate::tcp_hdr::{opt, TCP_HDR_MIN_LEN};
+        let body = 8 * blocks.len();
+        let opt_len = 2 + body;
+        // 2 NOPs to align kind+len + blocks onto a 4-byte word.
+        let padded = (2 + opt_len + 3) & !3;
+        let total = TCP_HDR_MIN_LEN + padded;
+        let mut buf = alloc::vec![0u8; total];
+        let mut i = TCP_HDR_MIN_LEN;
+        buf[i] = opt::NOP; i += 1;
+        buf[i] = opt::NOP; i += 1;
+        buf[i] = opt::SACK; buf[i + 1] = opt_len as u8;
+        i += 2;
+        for b in &blocks {
+            buf[i..i + 4].copy_from_slice(&b.left.to_be_bytes());
+            buf[i + 4..i + 8].copy_from_slice(&b.right.to_be_bytes());
+            i += 8;
+        }
+        let data_offset = (TCP_HDR_MIN_LEN + padded) / 4;
+        let mut h = TcpHdr {
+            src_port: self.local.port, dst_port: self.remote.port,
+            seq: self.snd_nxt, ack: self.rcv_nxt,
+            data_offset: data_offset as u8, flags: flags::ACK,
+            window: self.window, checksum: 0, urg_ptr: 0,
+        };
+        h.build_into(self.local.ip, self.remote.ip, &mut buf);
+        buf
+    }
+
+    /// F179a: peer ACK'd `blocks` selectively — mark every
+    /// retx_q segment whose [seq, seq+len) falls fully within
+    /// any block as sacked so the retx scanner skips it.
+    /// # C: O(retx_q * blocks)
+    pub fn apply_sack(&mut self, blocks: &[crate::tcp_hdr::SackBlock]) {
+        for s in self.retx_q.iter_mut() {
+            if s.sacked { continue; }
+            let len = s.payload.len() as u32
+                + if (s.flags & (flags::SYN | flags::FIN)) != 0 { 1 } else { 0 };
+            let end = s.seq.wrapping_add(len);
+            for b in blocks {
+                // Within-block check (wrap-safe via wrapping_sub).
+                let starts_in = b.right.wrapping_sub(s.seq) != 0
+                    && (b.right.wrapping_sub(s.seq) & 0x8000_0000) == 0
+                    && s.seq.wrapping_sub(b.left) & 0x8000_0000 == 0;
+                let ends_in   = b.right.wrapping_sub(end) & 0x8000_0000 == 0
+                    && end.wrapping_sub(b.left) != 0;
+                if starts_in && ends_in { s.sacked = true; break; }
+            }
+        }
     }
 
     fn build_segment(&self, flag_bits: u8, payload: &[u8]) -> Vec<u8> {
