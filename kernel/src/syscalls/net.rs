@@ -938,7 +938,16 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
-            (SOL_SOCKET, 4)  => return i32_back(0), // SO_ERROR — no async err yet
+            (SOL_SOCKET, 4)  => {
+                // F163: SO_ERROR — read + clear per-conn error.
+                let e = if let SockKind::TcpConn(entry) = &*s.kind.lock() {
+                    let mut c = entry.conn.lock();
+                    let v = c.error_eno;
+                    c.error_eno = 0;
+                    v
+                } else { 0 };
+                return i32_back(e);
+            }
             _ => {}
         }
     }

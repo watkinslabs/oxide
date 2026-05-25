@@ -64,6 +64,11 @@ pub struct TcpConn {
     /// Zero before entry. `tcp_retx_tick` removes entries that have
     /// been in TimeWait for >= 2*MSL (Linux tcp_fin_timeout = 60s).
     pub tw_start_ns: u64,
+    /// F163: pending async error to surface via SO_ERROR. Set on
+    /// abort paths (peer RST → ECONNREFUSED, retry-exhaust →
+    /// ETIMEDOUT). Cleared on read. Linux errno value (positive),
+    /// not the negated-syscall-return form.
+    pub error_eno: i32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -92,6 +97,7 @@ impl TcpConn {
             rttvar_ns: 0,
             rto_ns:   1_000_000_000,    // RFC 6298 §2.1 initial RTO = 1 s
             tw_start_ns: 0,
+            error_eno: 0,
         }
     }
 
@@ -108,6 +114,7 @@ impl TcpConn {
             srtt_ns:  0, rttvar_ns: 0,
             rto_ns:   1_000_000_000,
             tw_start_ns: 0,
+            error_eno: 0,
         }
     }
 
@@ -226,6 +233,18 @@ impl TcpConn {
         let hdr = TcpHdr::parse(seg, src_ip, dst_ip)
             .map_err(|_| TcpConnError::BadHdr)?;
         if (hdr.flags & flags::RST) != 0 {
+            // F163: surface as SO_ERROR. RST during SynSent (peer
+            // refused connection) is ECONNREFUSED (Linux errno 111);
+            // RST after Established maps to ECONNRESET (104). Set
+            // only if no prior error is pending so the first cause
+            // wins.
+            if self.error_eno == 0 {
+                self.error_eno = if self.state == TcpState::SynSent {
+                    syscall::errno::Errno::Econnrefused as i32
+                } else {
+                    syscall::errno::Errno::Econnreset as i32
+                };
+            }
             self.state = TcpState::Closed;
             return Ok(None);
         }
