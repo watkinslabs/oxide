@@ -194,32 +194,19 @@ fn ipv6_unspecified(b: &[u8; 16]) -> bool {
     b.iter().all(|&x| x == 0)
 }
 
-/// Read a sockaddr that may be `sockaddr_in` (16 bytes, AF_INET) or
-/// `sockaddr_in6` (28 bytes, AF_INET6). Returns the V4-equivalent
-/// (IpAddr::V6 maps `::1` → 127.0.0.1, `::` → ANY, V4-mapped → its
-/// embedded V4) for the v1 V4-only transport. Returns the requested
-/// family so callers can validate it against the socket's family.
+/// Read sockaddr_in (v4) or sockaddr_in6 (v6). Returns V4-equivalent
+/// (V4 → as-is, ::1 → 127.0.0.1, :: → ANY, ::ffff:a.b.c.d → V4 mapped).
+/// Native v6 returns None — caller routes through tcp_connect_ip.
 fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
     let fam = read_sa_family(ptr)? as u32;
     if fam == AF_INET {
         let (_, port, addr_host) = read_sockaddr_in(ptr)?;
         Some((fam, net::Ipv4Addr::from_u32(addr_host), port))
     } else if fam == AF_INET6 {
-        let (_, port, b, _scope) = read_sockaddr_in6(ptr)?;
-        // IPv4-mapped: forward to V4 transport directly.
-        if let Some(v4) = ipv4_from_v6_mapped(&b) {
-            return Some((fam, v4, port));
-        }
-        // ::1 loopback: treat as 127.0.0.1.
-        if ipv6_loopback(&b) {
-            return Some((fam, net::Ipv4Addr::LOOPBACK, port));
-        }
-        // :: (unspecified): treat as INADDR_ANY.
-        if ipv6_unspecified(&b) {
-            return Some((fam, net::Ipv4Addr::ANY, port));
-        }
-        // Any other v6 address: not reachable on the v1 V4-only
-        // transport. Caller maps to -EAFNOSUPPORT.
+        let (_, port, b, _) = read_sockaddr_in6(ptr)?;
+        if let Some(v4) = ipv4_from_v6_mapped(&b) { return Some((fam, v4, port)); }
+        if ipv6_loopback(&b)    { return Some((fam, net::Ipv4Addr::LOOPBACK, port)); }
+        if ipv6_unspecified(&b) { return Some((fam, net::Ipv4Addr::ANY, port)); }
         None
     } else { None }
 }
@@ -647,6 +634,21 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
     } else if family == AF_INET || family == AF_INET6 {
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
         if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+        // F180b: native v6 dst (non-mapped, non-::1, non-::) routes
+        // through tcp_connect_ip; mapped/loopback/unspec fall through.
+        if family == AF_INET6 {
+            if let Some((_, port, bytes, _)) = read_sockaddr_in6(addr_p) {
+                let special = ipv4_from_v6_mapped(&bytes).is_some()
+                    || ipv6_loopback(&bytes) || ipv6_unspecified(&bytes);
+                if !special {
+                    return match net::sock::connect(&sock, net::sock::RemoteAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }) {
+                        Ok(()) => 0,
+                        Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
+                        Err(e) => errno_from_neterr(e),
+                    };
+                }
+            }
+        }
         let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };

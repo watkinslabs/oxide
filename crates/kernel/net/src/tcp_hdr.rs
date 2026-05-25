@@ -3,7 +3,7 @@
 // options. Window scaling / SACK / timestamps land alongside
 // the connection state machine.
 
-use crate::addr::Ipv4Addr;
+use crate::addr::{IpAddr, Ipv4Addr, Ipv6Addr};
 use crate::ipv4::ip_checksum;
 
 pub const TCP_HDR_MIN_LEN: usize = 20;
@@ -209,6 +209,101 @@ fn compute_tcp_checksum(
         all[12 + 17] = 0;
     }
     ip_checksum(&all)
+}
+
+/// F180b: TCP checksum over the IPv6 pseudo-header per RFC 8200 §8.1.
+/// # C: O(N)
+fn compute_tcp_checksum_v6(
+    buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr,
+    tcp_len: usize, zero_field: bool,
+) -> u16 {
+    let mut pseudo = [0u8; 40];
+    pseudo[0..16].copy_from_slice(&src.0);
+    pseudo[16..32].copy_from_slice(&dst.0);
+    pseudo[32..36].copy_from_slice(&(tcp_len as u32).to_be_bytes());
+    pseudo[36] = 0; pseudo[37] = 0; pseudo[38] = 0;
+    pseudo[39] = 6;  // IpProto::Tcp
+    let mut all = alloc::vec::Vec::with_capacity(40 + buf.len());
+    all.extend_from_slice(&pseudo);
+    all.extend_from_slice(buf);
+    if zero_field && all.len() >= 40 + 18 {
+        all[40 + 16] = 0;
+        all[40 + 17] = 0;
+    }
+    ip_checksum(&all)
+}
+
+impl TcpHdr {
+    /// F180b: dual-family build — dispatches to v4 or v6 pseudo-
+    /// header based on `src`/`dst` IpAddr variant. Both addresses
+    /// must be the same family; mixed = checksum garbage (caller's
+    /// responsibility).
+    /// # C: O(N) checksum
+    pub fn build_into_ip(
+        &mut self, src: IpAddr, dst: IpAddr, out: &mut [u8],
+    ) {
+        match (src, dst) {
+            (IpAddr::V4(s), IpAddr::V4(d)) => self.build_into(s, d, out),
+            (IpAddr::V6(s), IpAddr::V6(d)) => self.build_into_v6(s, d, out),
+            _ => unreachable!("TcpHdr::build_into_ip mixed v4/v6 src+dst"),
+        }
+    }
+
+    /// F180b: build for IPv6 src/dst. Same wire layout as v4; only
+    /// the pseudo-header differs.
+    /// # C: O(N) checksum
+    pub fn build_into_v6(
+        &mut self, src: Ipv6Addr, dst: Ipv6Addr, out: &mut [u8],
+    ) {
+        out[ 0.. 2].copy_from_slice(&self.src_port.to_be_bytes());
+        out[ 2.. 4].copy_from_slice(&self.dst_port.to_be_bytes());
+        out[ 4.. 8].copy_from_slice(&self.seq.to_be_bytes());
+        out[ 8..12].copy_from_slice(&self.ack.to_be_bytes());
+        out[12]            = self.data_offset << 4;
+        out[13]            = self.flags;
+        out[14..16].copy_from_slice(&self.window.to_be_bytes());
+        out[16..18].copy_from_slice(&0u16.to_be_bytes());
+        out[18..20].copy_from_slice(&self.urg_ptr.to_be_bytes());
+        let total_len = out.len();
+        let cs = compute_tcp_checksum_v6(out, src, dst, total_len, true);
+        self.checksum = cs;
+        out[16..18].copy_from_slice(&cs.to_be_bytes());
+    }
+
+    /// F180b: parse with v6 pseudo-header validation.
+    /// # C: O(N) checksum
+    pub fn parse_v6(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, TcpHdrError> {
+        if buf.len() < TCP_HDR_MIN_LEN { return Err(TcpHdrError::Short); }
+        let data_offset = buf[12] >> 4;
+        if data_offset < 5 { return Err(TcpHdrError::BadDataOffset); }
+        let hdr_len = data_offset as usize * 4;
+        if buf.len() < hdr_len { return Err(TcpHdrError::BadLen); }
+        if compute_tcp_checksum_v6(buf, src, dst, buf.len(), false) != 0 {
+            return Err(TcpHdrError::BadChecksum);
+        }
+        Ok(Self {
+            src_port:    u16::from_be_bytes([buf[0], buf[1]]),
+            dst_port:    u16::from_be_bytes([buf[2], buf[3]]),
+            seq:         u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            ack:         u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+            data_offset,
+            flags:       buf[13],
+            window:      u16::from_be_bytes([buf[14], buf[15]]),
+            checksum:    u16::from_be_bytes([buf[16], buf[17]]),
+            urg_ptr:     u16::from_be_bytes([buf[18], buf[19]]),
+        })
+    }
+}
+
+/// F180b: dispatched parse — picks v4 or v6 pseudo-header based on
+/// the src/dst IpAddr variant.
+/// # C: O(N) checksum
+pub fn parse_ip(buf: &[u8], src: IpAddr, dst: IpAddr) -> Result<TcpHdr, TcpHdrError> {
+    match (src, dst) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => TcpHdr::parse(buf, s, d),
+        (IpAddr::V6(s), IpAddr::V6(d)) => TcpHdr::parse_v6(buf, s, d),
+        _ => Err(TcpHdrError::BadChecksum),
+    }
 }
 
 #[cfg(test)]

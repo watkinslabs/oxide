@@ -110,27 +110,19 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
-/// F137: AF_PACKET socket registry. Bind installs Weak<InetSocket>;
-/// rx pushes frame copies; dropped sockets GC on next pass.
-/// ETH_P_ALL (0x0003 host) = any protocol.
+/// F137: AF_PACKET registry — Weak<InetSocket>; GC on next pass.
 pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLockClass>
     = Spinlock::new(Vec::new());
 
-/// Add to AF_PACKET registry. Idempotent (duplicate adds = harmless
-/// redundant Weak entries; rx dedupes implicitly by socket identity).
-/// # C: O(N) — registry small (one entry per AF_PACKET fd).
+/// Add to AF_PACKET registry. Idempotent. # C: O(N).
 pub fn register_packet(sock: &Arc<InetSocket>) {
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
     g.push(Arc::downgrade(sock));
 }
 
-/// Deliver a complete L2 frame to all AF_PACKET sockets bound to
-/// `iface` (ifindex 0 = any). Filters by socket's stored protocol
-/// (0x0003 ETH_P_ALL or matches frame ethertype). Frames are
-/// truncated to 65536 bytes on enqueue and a hard cap of 64 frames
-/// per socket prevents unbounded growth.
-/// # C: O(N sockets) — call from net rx softirq only.
+/// Deliver L2 frame to AF_PACKET socks on `iface` (0=any). Filters by
+/// proto (ETH_P_ALL or ethertype). 64 frames/sock cap. # C: O(N socks).
 pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
@@ -185,19 +177,15 @@ pub struct InetSocket {
     pub local_ip:   Spinlock<Ipv4Addr, SockLockClass>,
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
-    /// SOL_SOCKET integer options — setsockopt store, getsockopt
-    /// read-back. Data-path enforcement per-option as it lands.
     pub opts: SockOpts,
     /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
-    /// F180a: AF_INET6 address slots; IPv4 uses `local_ip` / `peer`.
+    /// F180a: AF_INET6 address slots; IPv4 uses local_ip / peer.
     pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
     pub peer6:     Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>,
-    /// F172: AF_PACKET recv waitlist.
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
-    /// F181: per-fd epoll subscribers (Arc'd for Weak refs from
-    /// peer-end Unix queues / UDP / TCP entries).
+    /// F181: per-fd epoll subscribers.
     pub poll_subs: Arc<vfs::PollSubscribers>,
 }
 
@@ -599,10 +587,7 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     STACK.recv_udp(port)
 }
 
-/// F150: hook the kernel installs at boot so the net crate can ask
-/// the kernel for an iface's primary IPv4 without owning the global
-/// ifaddr table here. Defaults to the unspec address until installed.
-/// # C: O(1)
+/// F150: boot-installed hook: iface primary IPv4 lookup. # C: O(1)
 static IFACE_PRIMARY_IP_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 pub type IfacePrimaryIpFn = fn(NetIfaceId) -> Option<Ipv4Addr>;
@@ -725,6 +710,8 @@ pub enum RemoteAddr {
     UnixPath(String),
     /// `connect`/`sendto` on AF_INET — IPv4 destination.
     Inet { ip: Ipv4Addr, port: u16 },
+    /// F180b: `connect`/`sendto` on AF_INET6 — IPv6 destination.
+    Inet6 { ip: crate::Ipv6Addr, port: u16 },
 }
 
 /// Connect a socket to a remote per `connect(2)`. Tier-2 work fn.
@@ -805,6 +792,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // wakes are issued post-mutation.
             crate::sock_io::connect_wait_established(&entry)
         }
+        RemoteAddr::Inet6 { ip, port } => crate::sock_v6::connect_v6(sock, ip, port),
     }
 }
 
@@ -815,11 +803,16 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, _backlog: i32) -> Result<(), NetError> {
     if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return Ok(()); }
     let port = sock.local_port.lock().ok_or(NetError::Einval)?;
-    let ip = *sock.local_ip.lock();
     let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
-    let le = stack().tcp_listen(ip, port, reuseaddr)?;
-    // F181a: bind listener-fd subscribers so accept-q growth wakes
-    // epoll without broadcasting.
+    let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    // F180b: AF_INET6 listeners key the demux on the v6 local-addr;
+    // AF_INET on v4 as before. tcp_listen_ip handles both.
+    let local_ip = if fam == AF_INET6 {
+        crate::addr::IpAddr::V6(*sock.local_ip6.lock())
+    } else {
+        crate::addr::IpAddr::V4(*sock.local_ip.lock())
+    };
+    let le = stack().tcp_listen_ip(local_ip, port, reuseaddr)?;
     le.register_poll_subs(&sock.poll_subs);
     *sock.kind.lock() = SockKind::TcpListener(le);
     Ok(())
@@ -855,7 +848,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         _ => return Err(NetError::Einval),
     };
     let entry = stack().tcp_accept(&listener_arc).ok_or(NetError::Eagain)?;
-    let (peer_ip, peer_port) = {
+    let (peer_ip_any, peer_port) = {
         let c = entry.conn.lock();
         (c.remote.ip, c.remote.port)
     };
@@ -863,11 +856,16 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     let new_sock = alloc::sync::Arc::new(
         if listener_fam == AF_INET6 { InetSocket::new_tcp6() } else { InetSocket::new_tcp() }
     );
-    // F181a: bind accepted fd's subscribers.
     entry.register_poll_subs(&new_sock.poll_subs);
     *new_sock.kind.lock() = SockKind::TcpConn(entry);
-    *new_sock.peer.lock() = Some((peer_ip, peer_port));
-    Ok(Accepted { new_sock, peer: Some((peer_ip, peer_port)) })
+    // F180b: pin the peer slot for the family the listener was opened
+    // in. v6 listeners only ever see v6 conns (deliver path keys by
+    // IpAddr); same for v4.
+    let peer_v4 = match peer_ip_any { crate::addr::IpAddr::V4(a) => Some((a, peer_port)), _ => None };
+    let peer_v6 = match peer_ip_any { crate::addr::IpAddr::V6(a) => Some((a, peer_port)), _ => None };
+    if let Some(p) = peer_v4 { *new_sock.peer.lock() = Some(p); }
+    if let Some(p) = peer_v6 { *new_sock.peer6.lock() = Some(p); }
+    Ok(Accepted { new_sock, peer: peer_v4 })
 }
 
 
@@ -938,9 +936,13 @@ pub fn sendto(
         return Ok(n);
     }
     // UDP/other: dest or stored peer.
+    if let Some(RemoteAddr::Inet6 { ip, port }) = dest {
+        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
+    }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
         Some(RemoteAddr::UnixPath(_))       => return Err(NetError::Einval),
+        Some(RemoteAddr::Inet6 { .. })      => unreachable!(),
         None => sock.peer.lock().ok_or(NetError::Eaddrnotavail)?,
     };
     socket_sendto(sock, dst_ip, dst_port, payload)
