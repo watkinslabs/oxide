@@ -66,12 +66,31 @@ fn nf_hook_eval(hook_id: u32, pkt: &[u8]) -> u32 {
 pub const NF_INET_LOCAL_IN: u32 = 1;
 
 /// Per-port UDP rx queue. The bind-syscall reads from here.
+/// F162: q + waiters live behind their own locks so `deliver_rx`
+/// and `sys_recvfrom` can serialize against each other without
+/// holding the outer udp-map lock across long operations / parks.
 pub struct UdpRxQueue {
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
     /// Datagrams waiting for a reader. Each entry is
     /// (src_ip, src_port, payload bytes).
-    pub q: VecDeque<(Ipv4Addr, u16, Vec<u8>)>,
+    pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Vec<u8>)>, StackLockClass>,
+    /// F162: tasks parked in blocking sys_recvfrom on this port.
+    /// deliver_rx wakes after pushing.
+    #[cfg(target_os = "oxide-kernel")]
+    pub waiters: sched::live::WaitList,
+}
+
+impl UdpRxQueue {
+    /// # C: O(1)
+    pub fn new(bound_ip: Ipv4Addr, bound_port: u16) -> Self {
+        Self {
+            bound_ip, bound_port,
+            q: Spinlock::new(VecDeque::new()),
+            #[cfg(target_os = "oxide-kernel")]
+            waiters: sched::live::WaitList::new(),
+        }
+    }
 }
 
 /// Connection 4-tuple key for TCP demultiplexing.
@@ -174,7 +193,7 @@ impl TcpListenEntry {
 pub struct NetStack {
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
-    udp:        Spinlock<BTreeMap<u16, UdpRxQueue>, StackLockClass>,
+    udp:        Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass>,
     tcp_conns:    Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
     tcp_listens:  Spinlock<BTreeMap<TcpListenKey, Arc<TcpListenEntry>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
@@ -220,9 +239,7 @@ impl NetStack {
     pub fn bind_udp(&self, bind_ip: Ipv4Addr, port: u16) -> NetResult<()> {
         let mut g = self.udp.lock();
         if g.contains_key(&port) { return Err(NetError::Eaddrinuse); }
-        g.insert(port, UdpRxQueue {
-            bound_ip: bind_ip, bound_port: port, q: VecDeque::new(),
-        });
+        g.insert(port, Arc::new(UdpRxQueue::new(bind_ip, port)));
         Ok(())
     }
 
@@ -230,8 +247,17 @@ impl NetStack {
     /// `None` immediately if nothing is queued.
     /// # C: O(log N)
     pub fn recv_udp(&self, port: u16) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
-        let mut g = self.udp.lock();
-        g.get_mut(&port)?.q.pop_front()
+        let q = { self.udp.lock().get(&port)?.clone() };
+        let popped = q.q.lock().pop_front();
+        popped
+    }
+
+    /// F162: clone the per-port UdpRxQueue Arc out of the udp map so
+    /// callers (sys_recvfrom) can park on its waitlist without holding
+    /// the map lock. None when nothing's bound.
+    /// # C: O(log N)
+    pub fn udp_queue_arc(&self, port: u16) -> Option<Arc<UdpRxQueue>> {
+        self.udp.lock().get(&port).cloned()
     }
 
     /// F161: release a previously-bound UDP port. Called from
@@ -531,10 +557,16 @@ impl NetStack {
             p if p == IpProto::Udp as u8 => {
                 let udp = UdpHdr::parse(payload, hdr.src, hdr.dst)
                     .map_err(|_| NetError::Einval)?;
-                let mut g = self.udp.lock();
-                if let Some(q) = g.get_mut(&udp.dst_port) {
+                // Clone the queue Arc out of the map then drop the
+                // map lock before touching the queue itself. wake_all
+                // takes the waitlist lock + runqueue inner; we must
+                // not hold the udp-map lock across either.
+                let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
+                if let Some(q) = q_arc {
                     let body = &payload[crate::udp::UDP_HDR_LEN..];
-                    q.q.push_back((hdr.src, udp.src_port, body.to_vec()));
+                    q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
+                    #[cfg(target_os = "oxide-kernel")]
+                    q.waiters.wake_all();
                 }
             }
             p if p == IpProto::Tcp as u8 => self.deliver_tcp(iface, hdr.src, hdr.dst, payload)?,
