@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use sync::{Spinlock, Socket as StackLockClass};
 
-use crate::addr::{IpProto, Ipv6Addr, NetIfaceId};
+use crate::addr::{IpAddr, IpProto, Ipv6Addr, NetIfaceId};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
 use crate::netdev::{NetError, NetResult};
 use crate::pkt::Pkt;
@@ -141,9 +141,11 @@ impl NetStack {
                 }
             }
             n if n == IpProto::Tcp as u8 => {
-                // F180b: TCP/IPv6 needs TcpConn address-family
-                // refactor. Until that ships, drop silently — same
-                // shape as a Linux kernel without TCP-v6 enabled.
+                // F180b: dispatch through the unified deliver_tcp; the
+                // demux table keys on IpAddr so v4 + v6 share it.
+                let src = crate::addr::IpAddr::V6(hdr.src);
+                let dst = crate::addr::IpAddr::V6(hdr.dst);
+                let _ = self.deliver_tcp(iface, src, dst, payload);
             }
             _ => {}
         }
@@ -175,6 +177,54 @@ impl NetStack {
             _ => {}
         }
         Ok(())
+    }
+
+    /// F180b: family-dispatching L4 xmit. v4 stays on v4; v6 → v6;
+    /// mismatched family pair fails Einval (no v4-in-v6 tunneling).
+    /// # C: O(payload)
+    pub fn send_l4_over_ip(&self, src: IpAddr, dst: IpAddr,
+                            proto: IpProto, l4: &[u8]) -> NetResult<()>
+    {
+        match (src, dst) {
+            (IpAddr::V4(s), IpAddr::V4(d)) => {
+                // F161 wrapper handles TCP only; for non-TCP protos we
+                // still need a v4 path. send_l4_over_ipv4 is private; the
+                // only currently-routed proto via send_l4_over_ip is TCP,
+                // so the pub wrapper suffices. Other protos (UDP) use
+                // their own send_udp_to / send_udp6_to paths.
+                let _ = proto;
+                self.send_l4_over_ipv4_pub(s, d, l4)
+            }
+            (IpAddr::V6(s), IpAddr::V6(d)) => self.send_l4_over_ipv6(s, d, proto, l4),
+            _ => Err(NetError::Einval),
+        }
+    }
+
+    /// F180b: build + xmit a v6-encapsulated L4 segment. v1 routes
+    /// loopback → lo, else first non-lo iface; F180c lifts to a real
+    /// v6 route table.
+    /// # C: O(payload + route lookup)
+    pub(crate) fn send_l4_over_ipv6(&self, src: Ipv6Addr, dst: Ipv6Addr,
+                                     proto: IpProto, l4: &[u8]) -> NetResult<()>
+    {
+        let devs = self.ifaces.snapshot_devs();
+        let iface_id = if dst == Ipv6Addr::LOOPBACK {
+            devs.iter().find(|(_, d)| d.name() == "lo")
+                .map(|(i, _)| *i).ok_or(NetError::Enetunreach)?
+        } else {
+            devs.iter().find(|(_, d)| d.name() != "lo")
+                .map(|(i, _)| *i).ok_or(NetError::Enetunreach)?
+        };
+        let iface = self.ifaces.lookup(iface_id).ok_or(NetError::Enetunreach)?;
+        let total = IPV6_HDR_LEN + l4.len();
+        let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
+        p.put(l4.len()).map_err(|_| NetError::Enobufs)?
+            .copy_from_slice(l4);
+        push_ipv6_header(&mut p, src, dst, proto)
+            .map_err(|_| NetError::Enobufs)?;
+        p.proto = crate::addr::eth_p::IPV6;
+        p.iface = Some(iface_id);
+        iface.xmit(p)
     }
 
     /// F180a: wrap `body` in IPv6 + xmit.
