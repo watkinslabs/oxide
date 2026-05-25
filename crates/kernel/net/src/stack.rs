@@ -470,7 +470,12 @@ impl NetStack {
                     let max = if front_is_syn { 6 } else { 15 };
                     let max_retries = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0);
                     if max_retries >= max {
-                        // Give up on this connection.
+                        // Give up on this connection. F163: surface as
+                        // SO_ERROR = ETIMEDOUT so a getsockopt after
+                        // async-connect's EPOLLOUT can report the cause.
+                        if c.error_eno == 0 {
+                            c.error_eno = syscall::errno::Errno::Etimedout as i32;
+                        }
                         c.state = crate::tcp_state::TcpState::Closed;
                         c.retx_q.clear();
                         (Vec::new(), true, c.local.ip, c.remote.ip)
