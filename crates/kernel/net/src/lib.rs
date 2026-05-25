@@ -57,6 +57,8 @@ pub use tcp_state::{transition, TcpEvent, TcpState};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_correctness;
 
 /// Subsystem-level error per `38`. Kept for the existing skeleton
 /// `init` shim; per-module errors live in their own files.
