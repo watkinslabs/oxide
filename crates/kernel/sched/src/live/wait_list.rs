@@ -54,6 +54,19 @@ impl WaitList {
     /// # C: O(1)
     /// # Lk: WaitList.waiters (TaskList class)
     pub unsafe fn park(&self) {
+        // SAFETY: same contract as park_with_deadline; 0 deadline disables the timer-wake path.
+        unsafe { self.park_with_deadline(0); }
+    }
+
+    /// F169: as `park` but also stamps `current.wakeup_deadline_ns`
+    /// so the periodic deadline scanner (`tick_wake_expired`) can
+    /// rouse the task with `Eagain` semantics when the SO_*TIMEO
+    /// window expires without another waker firing. Pass `0` for
+    /// the deadline to disable the timer (== plain `park`).
+    /// # SAFETY: see `park`. Caller still owns the post-park
+    /// `schedule()` call.
+    /// # C: O(1)
+    pub unsafe fn park_with_deadline(&self, deadline_ns: u64) {
         let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let raw = rq.current.load(Ordering::Acquire);
         if raw.is_null() { return; }
@@ -61,6 +74,7 @@ impl WaitList {
         unsafe { Arc::increment_strong_count(raw); }
         // SAFETY: matching Arc::from_raw consumes the bumped ref.
         let arc = unsafe { Arc::from_raw(raw) };
+        arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
         arc.set_state(TaskState::Sleeping);
         self.waiters.lock().push(arc);
     }
@@ -105,6 +119,9 @@ impl WaitList {
         let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let mut inner = rq.inner.lock();
         t.set_state(TaskState::Runnable);
+        // F169: explicit wake — the deadline scanner shouldn't
+        // also re-rouse this task. Clear before enqueue.
+        t.wakeup_deadline_ns.store(0, Ordering::Release);
         t.lift_vruntime(inner.cfs.min_vruntime());
         inner.enqueue(t);
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
