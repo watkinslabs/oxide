@@ -71,4 +71,31 @@ impl Dentry {
     pub fn set_inode(&self, inode: Option<InodeRef>) {
         *self.inode.write() = inode;
     }
+
+    /// Absolute path for this dentry — walk the parent chain to the
+    /// root and join names with `/`. Used by `/proc/<pid>/fd/N`
+    /// readlink + by `execveat(fd, "", AT_EMPTY_PATH)` to materialise
+    /// the path of an open file descriptor.
+    ///
+    /// Returns `b"/"` for the root dentry; otherwise an absolute path
+    /// like `b"/sbin/init"`. Empty-named ancestors (the root sentinel)
+    /// don't contribute a slash so we don't emit `//sbin/init`.
+    /// # C: O(depth)
+    pub fn absolute_path(&self) -> alloc::vec::Vec<u8> {
+        use alloc::vec::Vec;
+        let mut parts: Vec<&str> = Vec::new();
+        if !self.name.is_empty() { parts.push(&self.name); }
+        let mut cur = self.parent.as_ref();
+        while let Some(p) = cur {
+            if !p.name.is_empty() { parts.push(&p.name); }
+            cur = p.parent.as_ref();
+        }
+        if parts.is_empty() { return alloc::vec![b'/']; }
+        let mut out: Vec<u8> = Vec::new();
+        for name in parts.iter().rev() {
+            out.push(b'/');
+            out.extend_from_slice(name.as_bytes());
+        }
+        out
+    }
 }
