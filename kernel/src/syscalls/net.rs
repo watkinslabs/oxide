@@ -497,8 +497,15 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let msg    = if typ != SOCK_STREAM { Some(net::UnixMsgPair::new()) } else { None };
     let mk = |end: net::UnixEnd| -> vfs::InodeRef {
         let s = InetSocket::new_tcp();
-        if let Some(p) = &stream { *s.kind.lock() = SockKind::Unix(p.clone(), end); }
-        else if let Some(p) = &msg { *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end); }
+        if let Some(p) = &stream {
+            *s.kind.lock() = SockKind::Unix(p.clone(), end);
+            // F181a: tell the pair which subscribers wake on
+            // peer-end writes/close.
+            p.register_end_subs(end, &s.poll_subs);
+        } else if let Some(p) = &msg {
+            *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
+            p.register_end_subs(end, &s.poll_subs);
+        }
         Arc::new(s) as _
     };
     let cur = match sched::live::current() {
