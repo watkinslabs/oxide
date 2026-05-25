@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -765,7 +765,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SOCKET   => crate::syscalls::net::sys_socket(&args),
         syscall::nrs::NR_BIND     => crate::syscalls::net::sys_bind(&args),
         syscall::nrs::NR_SENDTO   => crate::syscalls::net::sys_sendto(&args),
-        syscall::nrs::NR_RECVFROM => crate::syscalls::net::sys_recvfrom(&args),
+        syscall::nrs::NR_RECVFROM => crate::syscalls::net_recv::sys_recvfrom(&args),
         syscall::nrs::NR_LISTEN  => crate::syscalls::net::sys_listen(&args),
         syscall::nrs::NR_ACCEPT | syscall::nrs::NR_ACCEPT4
                                        => crate::syscalls::net::sys_accept(&args),
