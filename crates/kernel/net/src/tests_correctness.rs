@@ -182,6 +182,78 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
                NetError::Eaddrinuse);
 }
 
+// ----- F180c: NDP cache + NS/NA dispatch ----------------------------
+
+#[test]
+fn f180c_na_populates_ndp_cache() {
+    use crate::addr::{Ipv6Addr, MacAddr};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::ndp::NdpMsg;
+    use crate::icmpv6::IPPROTO_ICMPV6;
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let target = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,2]);
+    let neighbor_mac = MacAddr([0xde, 0xad, 0xbe, 0xef, 0, 1]);
+    let na = NdpMsg::build_na(target, Ipv6Addr::LOOPBACK, neighbor_mac, target, 0);
+    let total = IPV6_HDR_LEN + na.len();
+    let mut frame = alloc::vec![0u8; total];
+    let h = Ipv6Hdr::build(target, Ipv6Addr::LOOPBACK, IpProto::Icmpv6, na.len() as u16);
+    h.write_to(&mut frame[..IPV6_HDR_LEN]);
+    frame[IPV6_HDR_LEN..].copy_from_slice(&na);
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+    assert_eq!(stack.ndp.lookup(target), Some(neighbor_mac),
+        "NA target_lladdr must populate NdpCache");
+}
+
+#[test]
+fn f180c_ns_for_owned_addr_emits_na() {
+    use crate::addr::{Ipv6Addr, MacAddr};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::ndp::{NdpMsg, NDP_NA};
+    use crate::icmpv6::IPPROTO_ICMPV6;
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let our_addr = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,1]);
+    stack.add_v6_addr(id, our_addr);
+    let peer = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,2]);
+    let peer_mac = MacAddr([1,2,3,4,5,6]);
+    let ns = NdpMsg::build_ns(peer, our_addr, peer_mac, our_addr);
+    let total = IPV6_HDR_LEN + ns.len();
+    let mut frame = alloc::vec![0u8; total];
+    let h = Ipv6Hdr::build(peer, our_addr, IpProto::Icmpv6, ns.len() as u16);
+    h.write_to(&mut frame[..IPV6_HDR_LEN]);
+    frame[IPV6_HDR_LEN..].copy_from_slice(&ns);
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+    // Source-lladdr from the NS should land in the cache.
+    assert_eq!(stack.ndp.lookup(peer), Some(peer_mac));
+    // And lo should have a frame queued — the NA reply.
+    let reply = lo.rx_pop().expect("NS for owned addr must produce NA");
+    let parsed = Ipv6Hdr::parse(reply.data()).unwrap();
+    let body = &reply.data()[IPV6_HDR_LEN..];
+    assert_eq!(body[0], NDP_NA, "reply must be NDP NA (136)");
+    let _ = parsed;
+}
+
+#[test]
+fn f180c_ns_for_unowned_addr_silent() {
+    use crate::addr::{Ipv6Addr, MacAddr};
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::ndp::NdpMsg;
+    use crate::icmpv6::IPPROTO_ICMPV6;
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let unowned = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,9]);
+    let peer = Ipv6Addr::LOOPBACK;
+    let ns = NdpMsg::build_ns(peer, unowned, MacAddr::ZERO, unowned);
+    let total = IPV6_HDR_LEN + ns.len();
+    let mut frame = alloc::vec![0u8; total];
+    let h = Ipv6Hdr::build(peer, unowned, IpProto::Icmpv6, ns.len() as u16);
+    h.write_to(&mut frame[..IPV6_HDR_LEN]);
+    frame[IPV6_HDR_LEN..].copy_from_slice(&ns);
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+    assert!(lo.rx_pop().is_none(), "NS for unowned addr must not reply");
+}
+
 // ----- F180b: TCP over IPv6 -----------------------------------------
 
 #[test]
