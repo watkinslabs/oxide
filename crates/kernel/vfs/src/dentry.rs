@@ -79,7 +79,11 @@ impl Dentry {
     ///
     /// Returns `b"/"` for the root dentry; otherwise an absolute path
     /// like `b"/sbin/init"`. Empty-named ancestors (the root sentinel)
-    /// don't contribute a slash so we don't emit `//sbin/init`.
+    /// don't contribute a slash so we don't emit `//sbin/init`. If a
+    /// dentry's `name` already contains slashes (the legacy
+    /// `install_open` path stores the entire pathname in a single
+    /// dentry with no parent), that name is returned as-is —
+    /// guarding against `//dev/pts/3` from `b"/" + name`.
     /// # C: O(depth)
     pub fn absolute_path(&self) -> alloc::vec::Vec<u8> {
         use alloc::vec::Vec;
@@ -91,6 +95,11 @@ impl Dentry {
             cur = p.parent.as_ref();
         }
         if parts.is_empty() { return alloc::vec![b'/']; }
+        // Single-component dentry whose name already encodes an
+        // absolute path (install_open shape today). Return verbatim.
+        if parts.len() == 1 && parts[0].starts_with('/') {
+            return parts[0].as_bytes().to_vec();
+        }
         let mut out: Vec<u8> = Vec::new();
         for name in parts.iter().rev() {
             out.push(b'/');
