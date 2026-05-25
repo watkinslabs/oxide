@@ -122,6 +122,65 @@ fn f179_past_window_data_ignored() {
     assert!(c.ooo_buf.is_empty(), "past-window data must not enter ooo_buf");
 }
 
+// ----- F180a: IPv6 UDP bind + recv path -----------------------------
+
+#[test]
+fn f180a_ipv6_udp_bind_then_recv_routes_via_udp6() {
+    use crate::addr::Ipv6Addr;
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::udp::{UDP_HDR_LEN, build_into_v6};
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    // bind a v6 UDP socket on port 5060.
+    stack.bind_udp6(Ipv6Addr::LOOPBACK, 5060).unwrap();
+    // Build a v6/UDP frame: 40 IPv6 hdr + 8 UDP hdr + 5 payload.
+    let payload = b"oxv6!";
+    let l4_len  = UDP_HDR_LEN + payload.len();
+    let total   = IPV6_HDR_LEN + l4_len;
+    let mut frame = alloc::vec![0u8; total];
+    build_into_v6(33000, 5060, Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        payload, &mut frame[IPV6_HDR_LEN..]);
+    let h = Ipv6Hdr::build(Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        crate::addr::IpProto::Udp, l4_len as u16);
+    h.write_to(&mut frame[..IPV6_HDR_LEN]);
+    stack.deliver_rx_ipv6(id, &frame).unwrap();
+    // recv_udp6 should yield (src, src_port, payload).
+    let (src, sport, body) = stack.recv_udp6(5060).expect("v6 UDP must route to bound queue");
+    assert_eq!(src, Ipv6Addr::LOOPBACK);
+    assert_eq!(sport, 33000);
+    assert_eq!(body, payload);
+}
+
+#[test]
+fn f180a_ipv6_udp_no_bind_silent_drop() {
+    use crate::addr::Ipv6Addr;
+    use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+    use crate::udp::{UDP_HDR_LEN, build_into_v6};
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let payload = b"x";
+    let l4_len  = UDP_HDR_LEN + payload.len();
+    let total   = IPV6_HDR_LEN + l4_len;
+    let mut frame = alloc::vec![0u8; total];
+    build_into_v6(1234, 9999, Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        payload, &mut frame[IPV6_HDR_LEN..]);
+    let h = Ipv6Hdr::build(Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK,
+        crate::addr::IpProto::Udp, l4_len as u16);
+    h.write_to(&mut frame[..IPV6_HDR_LEN]);
+    // No socket bound → cleanly drop, no error.
+    assert!(stack.deliver_rx_ipv6(id, &frame).is_ok());
+    assert!(stack.recv_udp6(9999).is_none());
+}
+
+#[test]
+fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
+    use crate::addr::Ipv6Addr;
+    let stack = NetStack::new();
+    stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).unwrap();
+    assert_eq!(stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).err().unwrap(),
+               NetError::Eaddrinuse);
+}
+
 // ----- F180: IPv6 minimum-viable deliver_rx_ipv6 --------------------
 
 #[test]

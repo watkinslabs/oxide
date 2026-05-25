@@ -101,6 +101,83 @@ fn compute_udp_checksum_with_field(
     ip_checksum(&all)
 }
 
+/// F180a: build a UDP header for the IPv6 pseudo-header per RFC 8200
+/// §8.1. `out` must already contain the payload at `[8..]`; this
+/// fills bytes 0..8 (src_port, dst_port, length, checksum) and
+/// validates over the 40-byte IPv6 pseudo-header.
+/// # C: O(N) checksum
+pub fn build_into_v6(
+    src_port: u16, dst_port: u16,
+    src_ip: crate::addr::Ipv6Addr, dst_ip: crate::addr::Ipv6Addr,
+    payload: &[u8], out: &mut [u8],
+) {
+    let length: u16 = (8 + payload.len()) as u16;
+    out[ 0.. 2].copy_from_slice(&src_port.to_be_bytes());
+    out[ 2.. 4].copy_from_slice(&dst_port.to_be_bytes());
+    out[ 4.. 6].copy_from_slice(&length.to_be_bytes());
+    out[ 6.. 8].copy_from_slice(&0u16.to_be_bytes());
+    if !payload.is_empty() {
+        out[8.. 8 + payload.len()].copy_from_slice(payload);
+    }
+    let cs = compute_udp_checksum_v6(&out[..length as usize], src_ip, dst_ip);
+    out[6..8].copy_from_slice(&cs.to_be_bytes());
+}
+
+/// Validate UDP/IPv6 segment checksum against the v6 pseudo-header.
+/// # C: O(N)
+pub fn udp_checksum_v6_ok(buf: &[u8], src: crate::addr::Ipv6Addr, dst: crate::addr::Ipv6Addr) -> bool {
+    compute_udp_checksum_v6_with_field(buf, src, dst, true) == 0
+}
+
+/// # C: O(N)
+pub fn compute_udp_checksum_v6(buf: &[u8], src: crate::addr::Ipv6Addr, dst: crate::addr::Ipv6Addr) -> u16 {
+    compute_udp_checksum_v6_with_field(buf, src, dst, false)
+}
+
+fn compute_udp_checksum_v6_with_field(
+    buf: &[u8], src: crate::addr::Ipv6Addr, dst: crate::addr::Ipv6Addr,
+    include_field: bool,
+) -> u16 {
+    // IPv6 pseudo-header: src(16) + dst(16) + len(4 BE u32) + zero(3) + nxt(1)
+    let mut pseudo = [0u8; 40];
+    pseudo[0..16].copy_from_slice(&src.0);
+    pseudo[16..32].copy_from_slice(&dst.0);
+    pseudo[32..36].copy_from_slice(&(buf.len() as u32).to_be_bytes());
+    pseudo[36] = 0; pseudo[37] = 0; pseudo[38] = 0;
+    pseudo[39] = 17;  // IpProto::Udp
+    let mut all = alloc::vec::Vec::with_capacity(40 + buf.len());
+    all.extend_from_slice(&pseudo);
+    all.extend_from_slice(buf);
+    if !include_field && all.len() >= 40 + 8 {
+        all[40 + 6] = 0;
+        all[40 + 7] = 0;
+    }
+    ip_checksum(&all)
+}
+
+/// F180a: parse UDP header out of an IPv6 segment.
+/// # C: O(N)
+pub fn parse_v6(
+    buf: &[u8], src: crate::addr::Ipv6Addr, dst: crate::addr::Ipv6Addr,
+) -> Result<UdpHdr, UdpError> {
+    if buf.len() < UDP_HDR_LEN { return Err(UdpError::Short); }
+    let length = u16::from_be_bytes([buf[4], buf[5]]);
+    if (length as usize) < UDP_HDR_LEN || (length as usize) > buf.len() {
+        return Err(UdpError::BadLen);
+    }
+    let cs = u16::from_be_bytes([buf[6], buf[7]]);
+    // IPv6 UDP checksum is mandatory (no zero-skip).
+    if !udp_checksum_v6_ok(&buf[..length as usize], src, dst) {
+        return Err(UdpError::BadChecksum);
+    }
+    Ok(UdpHdr {
+        src_port: u16::from_be_bytes([buf[0], buf[1]]),
+        dst_port: u16::from_be_bytes([buf[2], buf[3]]),
+        length,
+        checksum: cs,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
