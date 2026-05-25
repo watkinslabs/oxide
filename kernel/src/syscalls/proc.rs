@@ -680,6 +680,10 @@ pub fn sys_setsid(_args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return 1 };
     cur.sid.store(cur.tid, Ordering::Release);
     cur.pgid.store(cur.tid, Ordering::Release);
+    // F200: setsid(2) detaches the session leader from any
+    // controlling terminal it inherited.
+    // SAFETY: single-mutator per `13§5` — running task on this CPU.
+    unsafe { *cur.ctty.get() = None; }
     cur.tid as i64
 }
 
