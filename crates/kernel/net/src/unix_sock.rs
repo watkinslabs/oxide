@@ -355,9 +355,13 @@ pub struct UnixDgram {
     pub payload: Vec<u8>,
     /// Sender's (pid, uid, gid) at sendmsg time. (0, 0, 0) if unset.
     pub creds: (u32, u32, u32),
-    /// fds-to-pass — placeholder for SCM_RIGHTS. F121 wires the real
-    /// kernel-side Arc<File> capture; F120 keeps the field at length
-    /// zero (caller's cmsg parsing ignores).
+    /// F189: SCM_RIGHTS — files carried alongside the payload. Sender
+    /// captures Arc<File> refs from its fd_table; receiver dup's them
+    /// into its own table on recvmsg.
+    #[cfg(target_os = "oxide-kernel")]
+    pub fds: Vec<Arc<vfs::File>>,
+    /// Hosted-test stub for the same slot. # C: O(1)
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub fds: Vec<u32>,
 }
 

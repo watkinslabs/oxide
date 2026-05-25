@@ -60,6 +60,10 @@ pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64
         written += take;
     }
     // SCM_CREDENTIALS cmsg writeback (CMSG_LEN(ucred) = 16 + 12 = 28).
+    // F189: SCM_RIGHTS rides alongside when fds are present. Pack
+    // creds first (28 B), then SCM_RIGHTS (16 + 4·nfds B). Receiver
+    // allocates fresh fds in its own table for each Arc<File>.
+    let mut cmsg_total: u64 = 0;
     if control != 0 && controllen >= 28 && control < USER_VA_END {
         const SOL_SOCKET: i32 = 1;
         const SCM_CREDENTIALS: i32 = 2;
@@ -72,8 +76,46 @@ pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64
             core::ptr::write_volatile((control + 16)  as *mut u32, pid);
             core::ptr::write_volatile((control + 20)  as *mut u32, uid);
             core::ptr::write_volatile((control + 24)  as *mut u32, gid);
-            core::ptr::write_volatile((msgp + 40) as *mut u64, 28);
         }
+        cmsg_total = 32;  // CMSG_ALIGN(28) = 32
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    if !msg.fds.is_empty() && control != 0 && control < USER_VA_END {
+        const SOL_SOCKET: i32 = 1;
+        const SCM_RIGHTS:    i32 = 1;
+        let nfds = msg.fds.len() as u64;
+        let len = 16 + 4 * nfds;
+        if cmsg_total + len <= controllen {
+            let base = control + cmsg_total;
+            if let Some(cur) = sched::live::current() {
+                // SAFETY: caller is the running task — sole reader of fd_table slot.
+                if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+                    let fdt = fdt.clone();
+                    let mut written = 0u64;
+                    for f in &msg.fds {
+                        let dentry = f.dentry().clone();
+                        let inode = f.inode().clone();
+                        let new_f = vfs::File::new(inode, dentry, f.flags());
+                        if let Ok(fd) = fdt.alloc(alloc::sync::Arc::new(new_f)) {
+                            // SAFETY: cmsg payload area inside controllen-bounded buf.
+                            unsafe { core::ptr::write_volatile((base + 16 + written * 4) as *mut i32, fd); }
+                            written += 1;
+                        }
+                    }
+                    // SAFETY: header writes within validated range.
+                    unsafe {
+                        core::ptr::write_volatile( base        as *mut u64, 16 + 4 * written);
+                        core::ptr::write_volatile((base +  8)  as *mut i32, SOL_SOCKET);
+                        core::ptr::write_volatile((base + 12)  as *mut i32, SCM_RIGHTS);
+                    }
+                    cmsg_total += (16 + 4 * written + 7) & !7;
+                }
+            }
+        }
+    }
+    if cmsg_total != 0 {
+        // SAFETY: msg_controllen slot at msgp+40, validated < USER_VA_END.
+        unsafe { core::ptr::write_volatile((msgp + 40) as *mut u64, cmsg_total); }
     } else if control == 0 || controllen == 0 {
         if msgp + 40 < USER_VA_END {
             // SAFETY: msgp validated < USER_VA_END at entry; the +40 slot is the msg_controllen field.
