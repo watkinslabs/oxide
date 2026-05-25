@@ -161,6 +161,14 @@ impl NetStack {
         if payload.is_empty() { return Ok(()); }
         let typ = payload[0];
         match typ {
+            t if t == crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG => {
+                // F191: ICMPv6 Packet Too Big. Bytes 4..8 = MTU;
+                // payload[8..] = invoking packet (IPv6 hdr + L4).
+                if payload.len() >= 8 + crate::ipv6::IPV6_HDR_LEN + 4 {
+                    let mtu = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                    self.handle_v6_packet_too_big(mtu, &payload[8..]);
+                }
+            }
             t if t == crate::icmpv6::ICMPV6_TYPE_ECHO_REQUEST => {
                 let reply = match crate::icmpv6::build_echo_reply(src, dst, payload) {
                     Ok(r) => r, Err(_) => return Ok(()),
@@ -256,6 +264,36 @@ impl NetStack {
         p.proto = crate::addr::eth_p::IPV6;
         p.iface = Some(iface_id);
         iface.xmit(p)
+    }
+
+    /// F191: clamp the affected TCP conn's peer_mss after an ICMPv6
+    /// Packet Too Big. `invoking` is the bytes after the ICMPv6 hdr:
+    /// IPv6 hdr (40 B) + first 4 bytes of L4 (ports).
+    /// # C: O(log N) demux lookup
+    fn handle_v6_packet_too_big(&self, mtu: u32, invoking: &[u8]) {
+        use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+        use crate::stack::TcpKey;
+        let h = match Ipv6Hdr::parse(invoking) { Ok(h) => h, Err(_) => return };
+        if h.next_header != IpProto::Tcp as u8 { return; }
+        if invoking.len() < IPV6_HDR_LEN + 4 { return; }
+        let l4 = &invoking[IPV6_HDR_LEN..];
+        let src_port = u16::from_be_bytes([l4[0], l4[1]]);
+        let dst_port = u16::from_be_bytes([l4[2], l4[3]]);
+        // v6 overhead = 40 (no TCP options budget).
+        let new_mss = (mtu as u16).saturating_sub(40);
+        if new_mss < 1280u16.saturating_sub(40) { return; }
+        let key = TcpKey {
+            local_ip:    crate::addr::IpAddr::V6(h.src),
+            local_port:  src_port,
+            remote_ip:   crate::addr::IpAddr::V6(h.dst),
+            remote_port: dst_port,
+        };
+        if let Some(entry) = self.tcp_conns_map().lock().get(&key).cloned() {
+            let mut c = entry.conn.lock();
+            if c.peer_mss == 0 || new_mss < c.peer_mss {
+                c.peer_mss = new_mss;
+            }
+        }
     }
 
     /// F180a: wrap `body` in IPv6 + xmit.
