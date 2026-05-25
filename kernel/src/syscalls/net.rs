@@ -13,7 +13,9 @@ const AF_INET6:    u32 = 10;
 const SOCK_STREAM: u32 = 1;
 const SOCK_DGRAM:  u32 = 2;
 
-fn errno_from_neterr(e: net::NetError) -> i64 {
+/// Map net::NetError into a Linux errno (negated, ABI-ready).
+/// # C: O(1)
+pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
     -(match e {
         net::NetError::Eaddrinuse    => Errno::Eaddrinuse,
         net::NetError::Eaddrnotavail => Errno::Eaddrnotavail,
@@ -233,7 +235,8 @@ fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
 /// AF_INET6 sockets we synthesize the V6-equivalent of the V4
 /// state held in InetSocket (V4 → V4-mapped ::ffff:x.x.x.x, V4
 /// loopback → ::1, V4 ANY → ::).
-fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
+/// # C: O(1)
+pub(crate) fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
     if fam == net::sock::AF_INET6 {
         let mut b = [0u8; 16];
@@ -256,7 +259,9 @@ fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, por
     }
 }
 
-fn file_is_nonblock(fd: u64) -> bool {
+/// True iff the fd's vfs::File has `O_NONBLOCK` set.
+/// # C: O(1)
+pub(crate) fn file_is_nonblock(fd: u64) -> bool {
     let Some(cur) = sched::live::current() else { return false };
     // SAFETY: running task; sole reader of fd_table slot per `13§5`.
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return false };
@@ -264,7 +269,10 @@ fn file_is_nonblock(fd: u64) -> bool {
     file.flags().contains(vfs::OpenFlags::O_NONBLOCK)
 }
 
-fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
+/// Resolve an fd to its InetSocket Arc. None when fd is closed
+/// or refers to a non-socket inode.
+/// # C: O(1)
+pub(crate) fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
     let cur = sched::live::current()?;
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?;
@@ -710,7 +718,7 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
         if len == 0 { continue; }
         let mut sa = *args;
         sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
-        let r = sys_recvfrom(&sa);
+        let r = crate::syscalls::net_recv::sys_recvfrom(&sa);
         if r < 0 { return if total > 0 { total } else { r }; }
         if r == 0 { break; }
         total += r;
@@ -941,59 +949,5 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `recvfrom(fd, buf, len, flags, src, src_len)` slot 45.
-/// # C: O(1)
-/// `recvfrom(fd, buf, len, flags, src, srclen)` slot 45. Tier-3
-/// shim per `docs/53§4`.
-/// # C: O(payload bytes)
-pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
-    use hal::TimerOps;
-    use core::sync::atomic::Ordering;
-    let fd     = args.a0;
-    let bufp   = args.a1;
-    let len    = args.a2 as usize;
-    let flags  = args.a3;
-    let src_p  = args.a4;
-    const MSG_DONTWAIT: u64 = 0x40;
-    if crate::syscalls::netlink_fd::is_netlink(fd) {
-        return crate::syscalls::netlink_fd::recvfrom(fd, bufp, len, src_p);
-    }
-    let sock = match socket_from_fd(fd) {
-        Some(s) => s, None => { trace_enotsock_at(fd, b"recvfrom"); return -(Errno::Enotsock.as_i32() as i64); }
-    };
-    if bufp == 0 || bufp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
-    let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
-    #[cfg(target_arch = "x86_64")]
-    let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
-    #[cfg(target_arch = "aarch64")]
-    let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
-    let rcv = loop {
-        match net::sock::recvfrom(&sock, len) {
-            Ok(r)  => break r,
-            Err(net::NetError::Eagain) => {
-                if nonblock { return -(Errno::Eagain.as_i32() as i64); }
-                if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
-                // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules and returns.
-                unsafe { sched::live::tick_yield(); }
-                continue;
-            }
-            Err(e) => return errno_from_neterr(e),
-        }
-    };
-    let take = rcv.payload.len();
-    // SAFETY: bufp+take validated < USER_VA_END; user page mapped under caller's AS.
-    unsafe { core::ptr::copy_nonoverlapping(rcv.payload.as_ptr(), bufp as *mut u8, take); }
-    if src_p != 0 {
-        if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
-            crate::syscalls::af_packet::write_sockaddr_ll(src_p, &sock, &rcv.payload);
-        } else if let Some((ip, port)) = rcv.peer {
-            write_sockaddr_for_socket(src_p, &sock, ip, port);
-        } else if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
-            let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-            write_sockaddr_for_socket(src_p, &sock, ip, port);
-        }
-    }
-    take as i64
-}
+// F162: sys_recvfrom moved to net_recv.rs to stay under the
+// 1000-line spec-lint cap. Re-exported via the syscalls module.
