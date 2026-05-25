@@ -6,8 +6,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use hal::USER_VA_END;
-use net::sock::{InetSocket, SockKind};
-use net::sock::caller_creds;
+use net::sock::{InetSocket, SockKind, SenderCreds};
 use syscall::errno::Errno;
 use vfs::File;
 
@@ -60,7 +59,7 @@ pub fn parse_scm_rights(control: u64, controllen: u64) -> Vec<Arc<File>> {
                 let fd = unsafe {
                     core::ptr::read_volatile((base + 16 + i * 4) as *const i32)
                 };
-                if let Some(f) = fdt.get(fd) { out.push(f); }
+                if let Ok(f) = fdt.get(fd) { out.push(f); }
             }
         }
         // Advance to next cmsg (8-byte aligned).
@@ -117,7 +116,14 @@ pub fn sendmsg_unix_dgram_with_fds(
             );
         }
     }
-    let creds = caller_creds();
+    let creds = match sched::live::current() {
+        Some(t) => SenderCreds {
+            pid: t.tgid.load(core::sync::atomic::Ordering::Acquire),
+            uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
+            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
+        },
+        None => SenderCreds::default(),
+    };
     let n = payload.len();
     q.push(net::UnixDgram {
         payload,

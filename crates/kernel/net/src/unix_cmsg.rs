@@ -96,7 +96,7 @@ pub fn recvmsg_unix_dgram(sock: &alloc::sync::Arc<InetSocket>, msgp: u64) -> i64
                         let dentry = f.dentry().clone();
                         let inode = f.inode().clone();
                         let new_f = vfs::File::new(inode, dentry, f.flags());
-                        if let Ok(fd) = fdt.alloc(alloc::sync::Arc::new(new_f)) {
+                        if let Ok(fd) = fdt.alloc(new_f) {
                             // SAFETY: cmsg payload area inside controllen-bounded buf.
                             unsafe { core::ptr::write_volatile((base + 16 + written * 4) as *mut i32, fd); }
                             written += 1;
