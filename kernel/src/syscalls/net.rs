@@ -959,13 +959,23 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (SOL_SOCKET, 4)  => {
-                // F163: SO_ERROR — read + clear per-conn error.
-                let e = if let SockKind::TcpConn(entry) = &*s.kind.lock() {
-                    let mut c = entry.conn.lock();
-                    let v = c.error_eno;
-                    c.error_eno = 0;
-                    v
-                } else { 0 };
+                // F163/F174: SO_ERROR — read+clear per-conn (TCP) or
+                // per-port (UDP, ICMP-unreach surface) error.
+                let e = match &*s.kind.lock() {
+                    SockKind::TcpConn(entry) => {
+                        let mut c = entry.conn.lock();
+                        let v = c.error_eno;
+                        c.error_eno = 0;
+                        v
+                    }
+                    SockKind::Udp => {
+                        if let Some(p) = *s.local_port.lock() {
+                            net::sock::stack().udp_queue_arc(p)
+                                .map(|q| q.take_error()).unwrap_or(0)
+                        } else { 0 }
+                    }
+                    _ => 0,
+                };
                 return i32_back(e);
             }
             _ => {}
