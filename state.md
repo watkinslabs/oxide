@@ -1,111 +1,41 @@
 # state — hand-off
 
-Branch: main (clean). spec-lint clean, 1179 hosted tests pass,
-x86 smoke ~16s green; arm smoke ~20s green (pre-push hook).
+Branch: main (clean). spec-lint clean, 138 net tests pass
+(workspace total ~1182), x86 + arm smoke green via pre-push.
 
-## What actually works (post-F156…F183)
+## What just landed (this session)
 
-### TCP — RFC-conformant on the common paths
-- Real 3WHS through slirp NAT
-- Per-conn waitqs (connect/recv/send) + per-listener (accept)
-- SO_RCVTIMEO/SNDTIMEO via timer-wake; EINTR on signal
-- SIGPIPE + EPIPE on closed-side write; SO_ERROR per-conn errno
-- SYN + data retx (RFC 6298); conn abort after retries
-- SO_SNDBUF cap; write-blocking backpressure
-- output() drains correctly; single-source retx_q
-- close+TIME_WAIT (60s) reaper; shutdown(SHUT_RD/WR/RDWR) distinct
-- **MSS negotiation** (F173)
-- **TCP_NODELAY / Nagle** (F175)
-- **ICMP unreach → SO_ERROR** (F174)
-- **SO_REUSEADDR strict TIME_WAIT check** (F176)
-- **Window scaling (RFC 7323)** + snd_wnd enforcement (F178)
-- **OOO receive buffer** (F179)
-- **SACK option emit/consume + skip-sacked retx** (F179a, RFC 2018)
-- **Timestamps + PAWS** (F182, RFC 7323) — every segment carries
-  TSopt when negotiated; PAWS drops stale TSvals (seq-wrap
-  protection); ts_recent tracked per-conn
+- **F180a** (#1260): IPv6 UDP bind/recv + ICMPv6 echo + per-port
+  Udp6RxQueue with poll subs.
+- **F180b** (#1261): TCP over IPv6. Endpoint becomes IpAddr-tagged;
+  tcp_hdr v6 pseudo-header + parse_ip/build_into_ip dispatch.
+  TcpKey/TcpListenKey on IpAddr; v4 + v6 share one demux.
+  AF_INET6 connect/listen route through tcp_connect_ip /
+  tcp_listen_ip. drain_loopback dispatches by ethertype.
+- **F180c** (#1262): NdpCache + per-iface IPv6 address registry.
+  deliver_rx_ipv6 NS arm replies with solicited NA when target
+  is owned; NA arm populates cache. 3 hosted tests.
 
-### UDP / AF_UNIX / AF_PACKET
-- UDP recvfrom per-port waitq; ICMP unreach → error_eno
-- AF_UNIX accept + per-pair recv waitqs (F170, F171)
-- AF_PACKET recvfrom per-socket waitq (F172)
+Plus prior session in-flight: F181a per-fd targeted epoll wake.
 
-### ARP
-- Per-entry timestamp + 60s stale GC (F177, Linux gc_stale_time)
+## Open
 
-### Tests
-- **F183**: 14 hosted regression tests covering MSS/WSCALE/OOO/
-  ARP-age/SO_REUSEADDR/SO_SNDBUF/multi-segment-output
-- **F179a**: 5 hosted tests for SACK block coalesce + apply + skip
-- **F182**: 6 hosted tests for TS negotiation + PAWS drop/accept
-- Total: 1179 hosted tests (was 1151 pre-session, +28 net-specific)
-- Catches regressions at hosted-test time — no QEMU boot needed
-  to validate
+Master plan `00§3`: phase 8 (net) shipping ongoing. Remaining
+tier-3 / perf items:
 
-### Discipline
-- R04 docs/07§5 + `code/magic-errno` lint enforce typed-enum ABI
-  literals (Errno, Signum, OpenFlags, NR_*)
-- sched::live::Signum + send_signal_self + wake_if_sleeping +
-  deliverable_signals
-- Pre-push hook gates ARM lockstep (both smokes must pass)
-
-## This session's PRs (37 total: F156…F183 + F179a + F182 + 5× state)
-
-Core network correctness: F156-F179 (16 PRs)
-Tier-2 correctness: F176 SO_REUSEADDR · F177 ARP age ·
-F178 wscale · F179 OOO recv · F179a SACK ·
-F182 timestamps+PAWS
-Hosted tests: F183 (regression suite)
-Spec/lint: R04 + `code/magic-errno` enforcement
-State updates: D38, D39, D40, D41, D42, D43
-
-## Open next
-
-### Deferred — explicitly out of scope for this session
-
-1. **F180 IPv6 real transport** — minimum viable is ~500 LoC
-   (parse + ICMPv6 echo + demux); full RFC support (NDP cache,
-   SLAAC, RA, dual-stack listeners) is ~2000 LoC. Real project,
-   not a single PR. Not gated for IPv4-only Linux apps.
-2. **F181 Per-fd targeted epoll wake** — current global
-   `notify_epoll_waiters` IS correct (level-triggered
-   semantic); per-fd subscriber map is a perf win when many
-   epoll'd fds + many epollers coexist. v1 has 1-2 epolls in
-   practice. Inode-trait change required; modest refactor.
-
-### Tier 3 (perf / features)
-
-3. Real per-iface MTU lookup for OWN_MSS (currently 1460 fixed).
-4. Recv-buf autotune + OWN_WSCALE > 0 for high-BDP.
-5. Congestion control (Reno → CUBIC).
-6. TCP keepalive (SO_KEEPALIVE round-tripped, not honored).
-
-### The real proof
-
-7. **Cross-build a real distro program** (bash / curl / ssh / nginx)
-   as a smoke target. Stack is now RFC-conformant across the
-   common Linux-app paths — the only validation that matters
-   end-to-end is running something real against it.
-
-## Discipline notes
-
-- Pre-push hook gates kernel-surface pushes: `git config core.hooksPath .githooks`
-- Never rebase a published branch; never delete branches
-- spec-lint clean before every commit + PR (incl. magic-errno)
-- Never commit directly to main
-- ARM lockstep via pre-push (smoke-x86 + smoke-arm)
-- Use typed enums for ABI constants (Errno, Signum, OpenFlags, NR_*)
-- **Every new correctness fix lands with hosted tests** (F183 pattern)
+1. Real per-iface MTU lookup (OWN_MSS currently fixed 1460).
+2. Recv-buf autotune + OWN_WSCALE > 0 for high-BDP.
+3. Congestion control (Reno → CUBIC).
+4. F180c follow-on: outbound v6 unicast to off-link neighbors
+   should consult NdpCache + emit NS on miss. Cache + responder
+   are in place; send_l4_over_ipv6 still skips L2 because lo is
+   the only registered v6 path today. Lifts naturally once a
+   non-lo v6-capable iface exists.
 
 ## First task next session
 
-```
-git pull && cargo run -p xtask -- spec-lint && cargo test --all 2>&1 | grep "test result" | head -5
-make smoke-x86 SMOKE_TIMEOUT=300
-make smoke-arm SMOKE_TIMEOUT=300
-make smoke-dhcp-x86  # quick: ~16s
-```
-
-Either tackle cross-build (the proof), F180 IPv6 (multi-session
-project), or F181 epoll refactor (perf with modest refactor).
-The correctness tier is closed.
+Pick (4) or (1). For (4): extend `send_l4_over_ipv6` to look
+up neighbor MAC in `stack.ndp` when iface != lo, queue an NS
+solicitation on miss, stash the packet for re-emit on NA
+arrival. Tests construct a hosted virtio-style iface and
+verify NS emit + retry.
