@@ -26,7 +26,13 @@ pub(crate) fn connect_wait_established(
         if st == crate::tcp_state::TcpState::Closed {
             return Err(NetError::Eio);
         }
-        // SAFETY: process ctx (sys_connect); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp/retx_tick wake.
+        // F168: surface -EINTR if a non-blocked signal arrived between
+        // our last wake and now.
+        #[cfg(target_os = "oxide-kernel")]
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(NetError::Eintr);
+        }
+        // SAFETY: process ctx (sys_connect); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp/retx_tick wake / signal wake.
         #[cfg(target_os = "oxide-kernel")]
         unsafe {
             entry.rx_waiters.park();
@@ -83,7 +89,14 @@ pub(crate) fn write_tcp_blocking(
                     if total > 0 { return Ok(total); }
                     return Err(vfs::VfsError::Epipe);
                 }
-                // SAFETY: process ctx (sys_write); runqueue installed; preempt-off owned by syscall stub; deliver_tcp's wake_all on ACK frees send_buf space.
+                // F168: signal-interruptible — return short success
+                // if we already accepted some bytes, else EINTR.
+                #[cfg(target_os = "oxide-kernel")]
+                if sched::live::deliverable_signals_self() != 0 {
+                    if total > 0 { return Ok(total); }
+                    return Err(vfs::VfsError::Eintr);
+                }
+                // SAFETY: process ctx (sys_write); runqueue installed; preempt-off owned by syscall stub; deliver_tcp's wake_all on ACK frees send_buf space; signal wake also rouses us via wake_if_sleeping.
                 #[cfg(target_os = "oxide-kernel")]
                 unsafe {
                     entry.rx_waiters.park();
@@ -135,11 +148,17 @@ pub(crate) fn read_tcp_blocking(
         {
             return Ok(0);
         }
+        // F168: any non-blocked pending signal aborts the wait with
+        // -EINTR before parking — Linux semantic for slow syscalls.
+        #[cfg(target_os = "oxide-kernel")]
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(vfs::VfsError::Eintr);
+        }
         // Race-safe: we re-checked state and recv_buf under
         // entry.conn.lock; deliver_tcp mutates that same lock
         // before wake_all, so any wake between our check and
         // park sees post-mutation state on the next iter.
-        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp wake.
+        // SAFETY: process ctx (sys_read); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp / signal wake.
         #[cfg(target_os = "oxide-kernel")]
         unsafe {
             entry.rx_waiters.park();
