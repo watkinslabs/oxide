@@ -96,10 +96,23 @@ pub fn build_reply(req: &ArpPkt, our_mac: MacAddr) -> alloc::vec::Vec<u8> {
     buf
 }
 
-/// Per-iface ARP neighbor cache.
-pub struct ArpCache {
-    pub(crate) inner: Spinlock<BTreeMap<Ipv4Addr, MacAddr>, ArpLockClass>,
+/// Per-iface ARP neighbor cache. F177: each entry carries the
+/// monotonic-ns insert timestamp; `lookup` treats entries older
+/// than `ARP_STALE_NS` as absent (forces a fresh ARP request).
+/// Linux defaults: stale=60s reachable, gc_stale_time=60s; we use
+/// a single 60s ceiling for v1 simplicity.
+pub struct ArpEntry {
+    pub mac: MacAddr,
+    pub inserted_ns: u64,
 }
+
+pub struct ArpCache {
+    pub(crate) inner: Spinlock<BTreeMap<Ipv4Addr, ArpEntry>, ArpLockClass>,
+}
+
+/// F177: 60 seconds in monotonic ns. Matches Linux's default
+/// `gc_stale_time` for the IPv4 neighbor table.
+pub const ARP_STALE_NS: u64 = 60_000_000_000;
 
 impl ArpCache {
     /// # C: O(1)
@@ -107,23 +120,83 @@ impl ArpCache {
         Self { inner: Spinlock::new(BTreeMap::new()) }
     }
 
-    /// # C: O(1)
+    /// Insert/refresh an entry with the caller-supplied monotonic
+    /// timestamp. Callers in process / driver context read the
+    /// clock once and pass it in so test code can pin time.
+    /// # C: O(log N)
+    pub fn insert_at(&self, ip: Ipv4Addr, mac: MacAddr, now_ns: u64) {
+        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns });
+    }
+
+    /// Timestamp-less insert. On kernel builds reads monotonic_ns
+    /// itself; on hosted-test builds stamps 0 (entry never stales).
+    /// Production driver callers don't need to thread a clock.
+    /// # C: O(log N)
     pub fn insert(&self, ip: Ipv4Addr, mac: MacAddr) {
-        self.inner.lock().insert(ip, mac);
+        self.insert_at(ip, mac, now_ns_safe())
+    }
+
+    /// Lookup with stale check: drops + returns None when the
+    /// entry is older than `ARP_STALE_NS`. `now_ns == 0` disables
+    /// the stale check (hosted tests, pre-clock callers).
+    /// # C: O(log N)
+    pub fn lookup_at(&self, ip: Ipv4Addr, now_ns: u64) -> Option<MacAddr> {
+        let mut g = self.inner.lock();
+        let mac = match g.get(&ip) {
+            Some(e) => {
+                if now_ns != 0 && e.inserted_ns != 0
+                    && now_ns.saturating_sub(e.inserted_ns) > ARP_STALE_NS
+                {
+                    None
+                } else {
+                    Some(e.mac)
+                }
+            }
+            None => None,
+        };
+        if mac.is_none() { g.remove(&ip); }
+        mac
+    }
+
+    /// Lookup; reads monotonic_ns itself on kernel builds so the
+    /// stale check fires. Hosted tests get the never-stale path.
+    /// # C: O(log N)
+    pub fn lookup(&self, ip: Ipv4Addr) -> Option<MacAddr> {
+        self.lookup_at(ip, now_ns_safe())
     }
 
     /// # C: O(N)
-    pub fn lookup(&self, ip: Ipv4Addr) -> Option<MacAddr> {
-        self.inner.lock().get(&ip).copied()
+    pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
+        self.inner.lock().iter().map(|(k, v)| (*k, v.mac)).collect()
     }
 
-    /// # C: O(1)
-    pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
-        self.inner.lock().iter().map(|(k, v)| (*k, *v)).collect()
+    /// F177: garbage-collect any entries older than `ARP_STALE_NS`.
+    /// Intended caller is the rx kthread's periodic tick (~100ms);
+    /// `now_ns == 0` is a no-op (pre-clock).
+    /// # C: O(N)
+    pub fn gc(&self, now_ns: u64) {
+        if now_ns == 0 { return; }
+        self.inner.lock().retain(|_, e| {
+            e.inserted_ns == 0
+                || now_ns.saturating_sub(e.inserted_ns) <= ARP_STALE_NS
+        });
     }
 }
 
 impl Default for ArpCache { fn default() -> Self { Self::new() } }
+
+/// F177: monotonic-ns reader visible to ArpCache without forcing
+/// every caller to thread a clock. Kernel-target hooks the HAL
+/// timer; hosted tests get 0 (entries never stale).
+/// # C: O(1)
+fn now_ns_safe() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; return hal_x86_64::X86TimerOps::monotonic_ns().0; }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; return hal_aarch64::ArmTimerOps::monotonic_ns().0; }
+    #[allow(unreachable_code)]
+    0
+}
 
 #[cfg(test)]
 mod tests {
