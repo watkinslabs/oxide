@@ -354,9 +354,26 @@ impl vfs::Inode for InetSocket {
             SockKind::TcpConn(entry) => {
                 drain_loopback();
                 let got = stack().tcp_recv(entry, buf.len());
-                let n = got.len();
-                buf[..n].copy_from_slice(&got);
-                Ok(n)
+                if !got.is_empty() {
+                    let n = got.len();
+                    buf[..n].copy_from_slice(&got);
+                    return Ok(n);
+                }
+                // F157: distinguish "no data yet" from real EOF. Returning
+                // Ok(0) when recv_buf is empty but the connection is still
+                // Established means userspace sees EOF on the very first
+                // read after connect — tcp_smoke bails before the SSH
+                // banner arrives. Real EOF is only when peer sent FIN
+                // (CloseWait) or the conn has reached Closed / LastAck.
+                let st = entry.conn.lock().state;
+                if st == crate::tcp_state::TcpState::Closed
+                    || st == crate::tcp_state::TcpState::CloseWait
+                    || st == crate::tcp_state::TcpState::LastAck
+                {
+                    Ok(0)
+                } else {
+                    Err(vfs::VfsError::Eagain)
+                }
             }
             _ => Err(vfs::VfsError::Einval),
         }
