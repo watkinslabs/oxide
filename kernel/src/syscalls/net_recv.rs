@@ -40,6 +40,17 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let deadline = if timeo > 0 { Some(now().saturating_add(timeo as u64)) } else { None };
     let rcv = loop {
+        // F174: surface any pending UDP per-port error (ICMP unreach)
+        // before the recv attempt. POSIX: error takes precedence over
+        // queued data; libc's recvfrom returns -errno and clears.
+        if matches!(*sock.kind.lock(), SockKind::Udp) {
+            if let Some(p) = *sock.local_port.lock() {
+                if let Some(q) = net::sock::stack().udp_queue_arc(p) {
+                    let e = q.take_error();
+                    if e != 0 { return -(e as i64); }
+                }
+            }
+        }
         match net::sock::recvfrom(&sock, len) {
             Ok(r)  => break r,
             Err(net::NetError::Eagain) => {
