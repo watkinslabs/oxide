@@ -823,10 +823,7 @@ pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `setsockopt(fd, level, optname, optval, optlen)` slot 54.
-/// Stores SOL_SOCKET integer options into `InetSocket::opts` so
-/// `getsockopt` reads back the value the caller set.
-/// # C: O(1)
+/// `setsockopt(fd, level, optname, optval, optlen)` slot 54. # C: O(1)
 pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     const SOL_SOCKET: u64  = 1;
@@ -965,6 +962,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
+            // F188: TCP_INFO returns the Linux tcp_info struct.
+            (IPPROTO_TCP, 11) => return crate::syscalls::tcp_info::write_tcp_info(&s, optval, optlen_p),
             (SOL_SOCKET, 4)  => {
                 // F163/F174: SO_ERROR — read+clear per-conn (TCP) or
                 // per-port (UDP, ICMP-unreach surface) error.
