@@ -353,6 +353,30 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&dhcpcd, "/sbin/dhcpcd")?;
     }
 
+    // F196: vendored dropbear 2024.86 — static-musl ssh server, per
+    // vendor/dropbear/build.sh. Multi-binary form: argv[0] dispatches
+    // into dropbear/dropbearkey. Skipped silently if the per-arch
+    // binary hasn't been built yet.
+    let dbear = if arch == "aarch64" {
+        repo.join("vendor/dropbear/dropbearmulti-aarch64")
+    } else {
+        repo.join("vendor/dropbear/dropbearmulti-x86_64")
+    };
+    if dbear.is_file() {
+        put(&dbear, "/sbin/dropbearmulti")?;
+        // F196: hardlink dispatch (matches busybox argv[0] pattern).
+        let dbear_ln = |target: &str, link: &str| -> Result<(), u8> {
+            let cmd = format!("ln {} {}", target, link);
+            let mut c = Command::new("debugfs");
+            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
+            c.stdout(std::process::Stdio::null());
+            run(c)
+        };
+        dbear_ln("/sbin/dropbearmulti", "/sbin/dropbear")?;
+        dbear_ln("/sbin/dropbearmulti", "/sbin/dropbearkey")?;
+        dbg("mkdir /etc/dropbear")?;
+    }
+
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
     // /etc/shadow + /etc/inittab written via tempfile then put().
     let tmp = repo.join("target/oxide-rootfs-staging");
@@ -485,6 +509,16 @@ if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
     [ -x /bin/tcp_smoke ]    && /bin/tcp_smoke
 fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
+# F196: dropbear ssh server (port 22). Generates host keys on first
+# boot, then backgrounds. -E logs to stderr, -F foreground=off.
+if [ -x /sbin/dropbear ]; then
+    # Only ed25519: RSA-2048 keygen too slow under aarch64 TCG.
+    [ -f /etc/dropbear/dropbear_ed25519_host_key ] || \\
+        /sbin/dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null
+    ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
+    route add default gw 10.0.2.2 2>/dev/null
+    /sbin/dropbear -R -p 22 -r /etc/dropbear/dropbear_ed25519_host_key &
+fi
 :
 ")?,
         "/etc/init.d/rcS")?;
