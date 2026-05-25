@@ -33,7 +33,13 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCMBIC:   u64 = 0x5417;
     const TIOCMSET:   u64 = 0x5418;
     let fd  = args.a0 as i32;
-    let req = args.a1;
+    // ioctl request numbers are conventionally 32-bit (Linux's
+    // `_IO*` macros encode them in 32 bits). musl's userspace stub
+    // passes them as `int`, so on x86_64 the upper 32 bits of rsi
+    // can carry sign-extended garbage (e.g. TIOCGPTN = 0x80045430
+    // sign-extends to 0xFFFFFFFF80045430). Mask to 32 bits so our
+    // match arms compare correctly.
+    let req = args.a1 & 0xFFFF_FFFF;
     let arg = args.a2;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
