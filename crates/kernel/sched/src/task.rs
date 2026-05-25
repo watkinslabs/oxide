@@ -1,11 +1,9 @@
-// Task / SchedClass / TaskState definitions for the runqueue. Mirrors
-// the spec's `13§5` shape. `mm` is now real (P2-13a integrates with
-// `vmm::AddressSpace` for per-task address spaces). The other Arc'd
-// payloads (`fd_table`, `sig`, `creds`, `ns`, `cgroup`) land with
-// their consumer subsystems.
+// Task / SchedClass / TaskState definitions for the runqueue per
+// `13§5`. `mm` real via vmm::AddressSpace (P2-13a); other Arc'd
+// payloads (fd_table, sig, creds, ns, cgroup) land with their
+// consumer subsystems.
 
 extern crate alloc;
-
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
@@ -282,6 +280,9 @@ pub struct Task {
     /// Monotonic ns at spawn; getrusage/times/proc-stat utime
     /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
     pub spawn_ns: AtomicU64,
+    /// F169: monotonic-ns deadline for `WaitList::park_with_deadline`.
+    /// `0` = indefinite. Cleared on wake.
+    pub wakeup_deadline_ns: AtomicU64,
     /// Cumulative ns of exited children's CPU; read by
     /// getrusage(RUSAGE_CHILDREN).
     pub cumulative_child_ns: AtomicU64,
@@ -861,6 +862,7 @@ impl Task {
             rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
             nice:       AtomicI8::new(0),
             spawn_ns:   AtomicU64::new(0),
+            wakeup_deadline_ns: AtomicU64::new(0),
             cumulative_child_ns: AtomicU64::new(0),
             alarm_ns:   AtomicU64::new(0),
             alarm_interval_ns: AtomicU64::new(0),
