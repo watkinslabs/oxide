@@ -89,20 +89,28 @@ impl TcpHdr {
     pub fn payload_offset(&self) -> usize { self.data_offset as usize * 4 }
 }
 
-/// F173: TCP option kinds we care about per RFC 9293 §3.1.
+/// F173/F178: TCP option kinds per RFC 9293 §3.1 + RFC 7323.
 pub mod opt {
-    pub const END:  u8 = 0;
-    pub const NOP:  u8 = 1;
-    pub const MSS:  u8 = 2;
+    pub const END:    u8 = 0;
+    pub const NOP:    u8 = 1;
+    pub const MSS:    u8 = 2;
+    pub const WSCALE: u8 = 3;  // RFC 7323 §2.2
 }
 
-/// F173: parse the peer's TCP MSS option out of a SYN / SYN-ACK
-/// segment. Walks the options blob between byte 20 and `data_offset
-/// * 4`. Returns `None` if the option is absent or the header has
-/// no options. Per RFC 9293, MSS is only valid in SYN segments;
-/// caller is responsible for that check.
+/// F178: parse the peer's TCP Window Scale option from a SYN /
+/// SYN-ACK. Returns the shift count (capped at 14 per RFC 7323
+/// §2.3 — values beyond are clamped). `None` if absent.
 /// # C: O(option_bytes)
-pub fn parse_mss_option(seg: &[u8]) -> Option<u16> {
+pub fn parse_wscale_option(seg: &[u8]) -> Option<u8> {
+    walk_options(seg, opt::WSCALE).map(|bytes| {
+        if bytes.is_empty() { 0 } else { core::cmp::min(bytes[0], 14) }
+    })
+}
+
+/// Walk options looking for `want_kind`. Returns the option value
+/// bytes (after kind+len) on first match; None otherwise.
+/// # C: O(option_bytes)
+fn walk_options(seg: &[u8], want_kind: u8) -> Option<&[u8]> {
     if seg.len() < TCP_HDR_MIN_LEN { return None; }
     let data_offset = (seg[12] >> 4) as usize;
     if data_offset <= 5 { return None; }
@@ -114,17 +122,23 @@ pub fn parse_mss_option(seg: &[u8]) -> Option<u16> {
         let kind = opts[i];
         if kind == opt::END { return None; }
         if kind == opt::NOP { i += 1; continue; }
-        // Option-with-length: byte i+1 is total length including
-        // kind+len bytes. Reject malformed (len < 2 or runs off end).
         if i + 1 >= opts.len() { return None; }
         let len = opts[i + 1] as usize;
         if len < 2 || i + len > opts.len() { return None; }
-        if kind == opt::MSS && len == 4 {
-            return Some(u16::from_be_bytes([opts[i + 2], opts[i + 3]]));
+        if kind == want_kind {
+            return Some(&opts[i + 2 .. i + len]);
         }
         i += len;
     }
     None
+}
+
+/// F173: parse peer MSS option from SYN / SYN-ACK.
+/// # C: O(option_bytes)
+pub fn parse_mss_option(seg: &[u8]) -> Option<u16> {
+    walk_options(seg, opt::MSS).and_then(|b| {
+        if b.len() == 2 { Some(u16::from_be_bytes([b[0], b[1]])) } else { None }
+    })
 }
 
 /// Validate a TCP segment's checksum against the IPv4 pseudo-header.
