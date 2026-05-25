@@ -119,6 +119,15 @@ pub struct TcpConn {
     pub cwnd:     u32,
     pub ssthresh: u32,
     pub dup_acks: u8,
+    /// F186: receive-buffer ceiling in bytes. Autotuned upward (×2
+    /// each time peak fill exceeds cap/2 within an RTT) up to
+    /// `rcv_buf_max`. Drives `current_rcv_window()` so the wire
+    /// advertisement reflects actual free space, not a fixed 65535.
+    pub rcv_buf_cap: u32,
+    pub rcv_buf_max: u32,
+    /// F186: peak `recv_buf.len()` observed since the last autotune
+    /// check; reset when autotune fires.
+    pub rcv_peak: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -159,6 +168,9 @@ impl TcpConn {
             cwnd:       10 * (OWN_MSS_DEFAULT as u32),
             ssthresh:   u32::MAX,
             dup_acks:   0,
+            rcv_buf_cap: 65_536,
+            rcv_buf_max: 4 * 1024 * 1024,
+            rcv_peak:    0,
         }
     }
 
@@ -187,6 +199,9 @@ impl TcpConn {
             cwnd:       10 * (OWN_MSS_DEFAULT as u32),
             ssthresh:   u32::MAX,
             dup_acks:   0,
+            rcv_buf_cap: 65_536,
+            rcv_buf_max: 4 * 1024 * 1024,
+            rcv_peak:    0,
         }
     }
 
@@ -311,6 +326,29 @@ impl TcpConn {
         }
     }
 
+    /// F186: window value to advertise on the wire = free recv-buf
+    /// bytes, shifted right by snd_wscale per RFC 7323 §2.1. Clamped
+    /// to u16 (the TCP header field width).
+    /// # C: O(1)
+    pub fn current_rcv_window(&self) -> u16 {
+        let free = (self.rcv_buf_cap as usize).saturating_sub(self.recv_buf.len()) as u32;
+        let scaled = free >> self.snd_wscale;
+        if scaled > u16::MAX as u32 { u16::MAX } else { scaled as u16 }
+    }
+
+    /// F186: bump rcv_buf_cap when recent peak fill > cap/2 (Linux
+    /// tcp_rcv_space_adjust shape). Caller invokes after appending
+    /// to recv_buf so the next ACK reflects the larger window.
+    /// # C: O(1)
+    pub fn rcv_autotune(&mut self) {
+        let len = self.recv_buf.len() as u32;
+        if len > self.rcv_peak { self.rcv_peak = len; }
+        if self.rcv_peak > self.rcv_buf_cap / 2 && self.rcv_buf_cap < self.rcv_buf_max {
+            self.rcv_buf_cap = core::cmp::min(self.rcv_buf_cap.saturating_mul(2), self.rcv_buf_max);
+            self.rcv_peak = 0;
+        }
+    }
+
     /// F185: Reno RTO loss event. # C: O(1)
     pub fn cc_on_rto(&mut self) {
         let mss = self.cc_mss();
@@ -325,7 +363,7 @@ impl TcpConn {
         let mut h = TcpHdr {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: s.seq, ack: self.rcv_nxt,
-            data_offset: 5, flags: s.flags, window: self.window,
+            data_offset: 5, flags: s.flags, window: self.current_rcv_window(),
             checksum: 0, urg_ptr: 0,
         };
         if !s.payload.is_empty() {
@@ -476,6 +514,9 @@ impl TcpConn {
                             self.recv_buf.extend(chunk.into_iter());
                             self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
                         }
+                        // F186: peek recv_buf high-water; grow cap if
+                        // we're filling >½ of it (Linux tcp_rcv_space).
+                        self.rcv_autotune();
                     } else {
                         // OOO arrival: only stash if strictly ahead of
                         // rcv_nxt (wrap-safe — diff with high bit clear).
@@ -686,7 +727,7 @@ impl TcpConn {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: self.snd_nxt, ack: self.rcv_nxt,
             data_offset: data_offset as u8, flags: flags::ACK,
-            window: self.window, checksum: 0, urg_ptr: 0,
+            window: self.current_rcv_window(), checksum: 0, urg_ptr: 0,
         };
         h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
@@ -736,7 +777,7 @@ impl TcpConn {
         let mut h = TcpHdr {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: self.snd_nxt, ack: self.rcv_nxt,
-            data_offset, flags: flag_bits, window: self.window,
+            data_offset, flags: flag_bits, window: self.current_rcv_window(),
             checksum: 0, urg_ptr: 0,
         };
         h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
@@ -774,7 +815,7 @@ impl TcpConn {
         let mut h = TcpHdr {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: self.snd_nxt, ack: self.rcv_nxt,
-            data_offset: 10, flags: flag_bits, window: self.window,
+            data_offset: 10, flags: flag_bits, window: self.current_rcv_window(),
             checksum: 0, urg_ptr: 0,
         };
         h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
@@ -799,11 +840,11 @@ fn tcp_now_ms() -> u32 {
 /// lookup lands once the bind table tracks iface scope.
 pub const OWN_MSS_DEFAULT: u16 = 1460;
 
-/// F178: shift count we advertise via WSCALE option. `0` keeps
-/// us at the unscaled 65535 effective window — adequate for v1
-/// where our recv_buf is bounded by SO_RCVBUF=16K anyway. A
-/// future expansion (large rcv_buf + autotune) raises this.
-pub const OWN_WSCALE: u8 = 0;
+/// F186: WSCALE we advertise. 7 matches Linux default; with the
+/// 16-bit window field this raises the effective rcv-window cap
+/// to 65535 << 7 = 8 MiB, enough for high-BDP paths. Smaller
+/// rcvbuf still works — peer scales our actual advertised window.
+pub const OWN_WSCALE: u8 = 7;
 
 #[cfg(test)]
 mod tests {
