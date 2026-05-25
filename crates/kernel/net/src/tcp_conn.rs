@@ -14,7 +14,7 @@
 // listen backlog > 1.
 
 extern crate alloc;
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
 use crate::addr::Ipv4Addr;
@@ -27,7 +27,9 @@ pub struct Endpoint { pub ip: Ipv4Addr, pub port: u16 }
 
 /// One unacked transmission record on the retransmit queue.
 /// Tracks the seq the segment occupies + when it was sent so
-/// the RTO timer can re-emit it on timeout.
+/// the RTO timer can re-emit it on timeout. F179: `sacked`
+/// marks segments the peer has confirmed receipt of via SACK;
+/// `retransmit_due` skips them.
 #[derive(Clone, Debug)]
 pub struct UnackedSegment {
     pub seq:        u32,
@@ -35,6 +37,7 @@ pub struct UnackedSegment {
     pub payload:    alloc::vec::Vec<u8>,
     pub last_sent_ns: u64,
     pub retries:    u32,
+    pub sacked:     bool,
 }
 
 #[derive(Debug)]
@@ -84,6 +87,14 @@ pub struct TcpConn {
     /// applying rcv_wscale). Bounds the in-flight byte count
     /// output() will emit.
     pub snd_wnd: u32,
+    /// F179: out-of-order receive buffer keyed by absolute peer
+    /// seq. Stashes payload chunks whose seq > rcv_nxt (gap
+    /// between current in-order watermark and the just-arrived
+    /// segment). Drained into `recv_buf` whenever a fill arrives
+    /// that closes the gap. Without this, OOO segments were
+    /// silently dropped and the peer's RTO retx storm was the
+    /// only path forward.
+    pub ooo_buf: BTreeMap<u32, Vec<u8>>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -117,6 +128,7 @@ impl TcpConn {
             snd_wscale: 0,
             rcv_wscale: 0,
             snd_wnd: 65535,
+            ooo_buf: BTreeMap::new(),
         }
     }
 
@@ -138,6 +150,7 @@ impl TcpConn {
             snd_wscale: 0,
             rcv_wscale: 0,
             snd_wnd: 65535,
+            ooo_buf: BTreeMap::new(),
         }
     }
 
@@ -244,7 +257,7 @@ impl TcpConn {
         // SYN consumes one sequence; track for retransmit.
         self.retx_q.push_back(UnackedSegment {
             seq: seq_start, flags: flags::SYN, payload: alloc::vec::Vec::new(),
-            last_sent_ns: 0, retries: 0,
+            last_sent_ns: 0, retries: 0, sacked: false,
         });
         Ok(seg)
     }
@@ -331,11 +344,37 @@ impl TcpConn {
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
                 // F178: non-SYN segments carry the scaled window.
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
-                // Apply payload bytes (in-order only — no reassembly yet).
+                // F179: deliver in-order; stash strictly-future
+                // (seq > rcv_nxt) into ooo_buf for later drain.
+                // Past-window (seq < rcv_nxt) or empty payload:
+                // ignore (we already ACK'd that range).
                 let payload = &seg[hdr.payload_offset()..];
-                if !payload.is_empty() && hdr.seq == self.rcv_nxt {
-                    self.recv_buf.extend(payload.iter().copied());
-                    self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+                if !payload.is_empty() {
+                    if hdr.seq == self.rcv_nxt {
+                        self.recv_buf.extend(payload.iter().copied());
+                        self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+                        // Drain any contiguous OOO chunks now reachable.
+                        while let Some((&seq, _)) = self.ooo_buf.iter().next() {
+                            if seq != self.rcv_nxt { break; }
+                            let chunk = self.ooo_buf.remove(&seq).unwrap();
+                            let len = chunk.len() as u32;
+                            self.recv_buf.extend(chunk.into_iter());
+                            self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
+                        }
+                    } else {
+                        // OOO arrival: only stash if strictly ahead of
+                        // rcv_nxt (wrap-safe — diff with high bit clear).
+                        let diff = hdr.seq.wrapping_sub(self.rcv_nxt);
+                        if (diff & 0x8000_0000) == 0 && diff != 0 {
+                            // Cap the OOO buffer to bound memory; 64 KiB
+                            // mirrors typical Linux tcp_rmem.
+                            const OOO_CAP: usize = 64 * 1024;
+                            let used: usize = self.ooo_buf.values().map(|v| v.len()).sum();
+                            if used + payload.len() <= OOO_CAP {
+                                self.ooo_buf.entry(hdr.seq).or_insert_with(|| payload.to_vec());
+                            }
+                        }
+                    }
                 }
                 if (hdr.flags & flags::ACK) != 0 {
                     // F165: advance snd_una; the actual bytes live in
@@ -429,7 +468,7 @@ impl TcpConn {
             self.snd_nxt = self.snd_nxt.wrapping_add(take as u32);
             self.retx_q.push_back(UnackedSegment {
                 seq: seq_start, flags: flags::PSH | flags::ACK,
-                payload: chunk, last_sent_ns: 0, retries: 0,
+                payload: chunk, last_sent_ns: 0, retries: 0, sacked: false,
             });
             out.push(seg);
             avail = avail.saturating_sub(take as u32);
