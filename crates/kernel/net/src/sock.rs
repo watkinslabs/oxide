@@ -820,14 +820,15 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
 }
 
 
-/// `listen` per `listen(2)`. Returns Ok(()) on success. For AF_UNIX
-/// listeners bind(2) already did the work — listen is a no-op.
+/// `listen` per `listen(2)`. AF_UNIX listeners bind(2) does the
+/// work; listen is a no-op. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, _backlog: i32) -> Result<(), NetError> {
     if matches!(*sock.kind.lock(), SockKind::UnixListener(_)) { return Ok(()); }
     let port = sock.local_port.lock().ok_or(NetError::Einval)?;
     let ip = *sock.local_ip.lock();
-    let le = stack().tcp_listen(ip, port)?;
+    let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
+    let le = stack().tcp_listen(ip, port, reuseaddr)?;
     *sock.kind.lock() = SockKind::TcpListener(le);
     Ok(())
 }
