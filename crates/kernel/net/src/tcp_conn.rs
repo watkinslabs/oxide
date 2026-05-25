@@ -95,6 +95,14 @@ pub struct TcpConn {
     /// silently dropped and the peer's RTO retx storm was the
     /// only path forward.
     pub ooo_buf: BTreeMap<u32, Vec<u8>>,
+    /// F182: RFC 7323 Timestamps state.
+    /// `ts_enabled` flips true only when BOTH ends include TSopt
+    /// in the SYN exchange. `ts_recent` is the most recently
+    /// accepted peer TSval (echoed in our outgoing TSecr). PAWS:
+    /// drop incoming segments with TSval `< ts_recent` per
+    /// RFC 7323 §5.3.
+    pub ts_enabled: bool,
+    pub ts_recent:  u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -129,6 +137,8 @@ impl TcpConn {
             rcv_wscale: 0,
             snd_wnd: 65535,
             ooo_buf: BTreeMap::new(),
+            ts_enabled: false,
+            ts_recent:  0,
         }
     }
 
@@ -151,6 +161,8 @@ impl TcpConn {
             rcv_wscale: 0,
             snd_wnd: 65535,
             ooo_buf: BTreeMap::new(),
+            ts_enabled: false,
+            ts_recent:  0,
         }
     }
 
@@ -297,16 +309,16 @@ impl TcpConn {
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.snd_una = 0;
                 self.snd_nxt = 0;
-                // F173: latch peer's MSS option if present.
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
-                // F178: latch peer's window-scale only if they sent
-                // one; otherwise both sides stay at scale 0 per RFC
-                // 7323 §1.3 (must be in SYN for either end to use).
                 if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
                     self.rcv_wscale = s;
                     self.snd_wscale = OWN_WSCALE;
                 }
-                // SYN segment carries unscaled window per RFC 7323 §2.2.
+                // F182: mutual TS negotiation.
+                if let Some((tsval, _)) = crate::tcp_hdr::parse_ts_option(seg) {
+                    self.ts_enabled = true;
+                    self.ts_recent  = tsval;
+                }
                 self.snd_wnd = hdr.window as u32;
                 self.state = transition(self.state, TcpEvent::RecvSyn)
                     .ok_or(TcpConnError::BadState)?;
@@ -320,7 +332,11 @@ impl TcpConn {
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
                     self.rcv_wscale = s;
-                    // We already advertised our own in the active SYN.
+                }
+                // F182: SYN-ACK carrying TSopt confirms TS negotiation.
+                if let Some((tsval, _)) = crate::tcp_hdr::parse_ts_option(seg) {
+                    self.ts_enabled = true;
+                    self.ts_recent  = tsval;
                 }
                 self.snd_wnd = hdr.window as u32;  // SYN: unscaled.
                 // Pop SYN from retx_q (its seq+1 ≤ ack now).
@@ -344,6 +360,23 @@ impl TcpConn {
                 Ok(None)
             }
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
+                // F182: PAWS — RFC 7323 §5.3. Drop segments whose
+                // TSval is older than ts_recent (mod 2^32, wrap-safe).
+                // Older = (tsval - ts_recent) high-bit set. Skipped
+                // segments produce no ACK update; peer will retx.
+                if self.ts_enabled {
+                    if let Some((tsval, _)) = crate::tcp_hdr::parse_ts_option(seg) {
+                        let diff = tsval.wrapping_sub(self.ts_recent);
+                        if diff & 0x8000_0000 != 0 {
+                            return Ok(None);  // PAWS drop.
+                        }
+                        // Update ts_recent only for in-window data
+                        // (avoids stale ack-only segments rewinding).
+                        if hdr.seq == self.rcv_nxt {
+                            self.ts_recent = tsval;
+                        }
+                    }
+                }
                 // F178: non-SYN segments carry the scaled window.
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 // F179: deliver in-order; stash strictly-future
@@ -594,50 +627,83 @@ impl TcpConn {
     }
 
     fn build_segment(&self, flag_bits: u8, payload: &[u8]) -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + payload.len()];
+        use crate::tcp_hdr::opt;
+        // F182: when TS is enabled, every segment carries TSopt.
+        // Layout: 2 NOPs + 10-byte TS = 12 bytes → data_offset += 3.
+        let ts_opt_len = if self.ts_enabled { 12 } else { 0 };
+        let data_offset = (5 + ts_opt_len / 4) as u8;
+        let total = TCP_HDR_MIN_LEN + ts_opt_len + payload.len();
+        let mut buf = alloc::vec![0u8; total];
+        if self.ts_enabled {
+            let mut i = TCP_HDR_MIN_LEN;
+            buf[i] = opt::NOP; i += 1;
+            buf[i] = opt::NOP; i += 1;
+            buf[i] = opt::TIMESTAMP; buf[i + 1] = 10;
+            buf[i + 2..i + 6].copy_from_slice(&tcp_now_ms().to_be_bytes());
+            buf[i + 6..i + 10].copy_from_slice(&self.ts_recent.to_be_bytes());
+        }
+        if !payload.is_empty() {
+            buf[TCP_HDR_MIN_LEN + ts_opt_len..].copy_from_slice(payload);
+        }
         let mut h = TcpHdr {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: self.snd_nxt, ack: self.rcv_nxt,
-            data_offset: 5, flags: flag_bits, window: self.window,
+            data_offset, flags: flag_bits, window: self.window,
             checksum: 0, urg_ptr: 0,
         };
-        if !payload.is_empty() {
-            buf[TCP_HDR_MIN_LEN..].copy_from_slice(payload);
-        }
         h.build_into(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
 
-    /// F173/F178: build a SYN (or SYN-ACK) with MSS + WindowScale
-    /// options. Header is 28 bytes (data_offset = 7): 20 fixed + 4
-    /// MSS + 3 WSCALE + 1 NOP padding (RFC 9293 wants 32-bit
-    /// alignment). NOP at offset 24 so WSCALE lands on a
-    /// 4-byte-aligned offset for readability — both arrangements
-    /// are wire-legal.
+    /// F173/F178/F182: build a SYN (or SYN-ACK) with MSS +
+    /// WindowScale + Timestamps options. Header total:
+    /// 20 fixed + 4 MSS + 1 NOP + 3 WSCALE + 2 NOPs + 10 TS = 40
+    /// bytes → data_offset = 10. NOPs align WSCALE and TS onto
+    /// 4-byte boundaries for wire-format clarity.
     /// # C: O(1)
     fn build_syn_with_opts(&self, flag_bits: u8) -> Vec<u8> {
         use crate::tcp_hdr::opt;
-        const OPTS_LEN: usize = 8;  // MSS(4) + NOP(1) + WSCALE(3)
+        const OPTS_LEN: usize = 20;  // MSS(4)+NOP(1)+WSCALE(3)+NOP(1)+NOP(1)+TS(10)
         let total = TCP_HDR_MIN_LEN + OPTS_LEN;
         let mut buf = alloc::vec![0u8; total];
         let mut i = TCP_HDR_MIN_LEN;
-        // MSS option (kind=2, len=4, value=u16 BE).
+        // MSS
         buf[i] = opt::MSS;    buf[i + 1] = 4;
         buf[i + 2..i + 4].copy_from_slice(&OWN_MSS_DEFAULT.to_be_bytes());
         i += 4;
-        // NOP for alignment.
+        // NOP + WSCALE
         buf[i] = opt::NOP;    i += 1;
-        // WSCALE option (kind=3, len=3, value=u8 shift).
         buf[i] = opt::WSCALE; buf[i + 1] = 3; buf[i + 2] = self.snd_wscale;
+        i += 3;
+        // NOP + NOP + Timestamps. TSval = our_now, TSecr = ts_recent
+        // (echoes the latest peer TSval we accepted; 0 on initial SYN).
+        buf[i] = opt::NOP;    i += 1;
+        buf[i] = opt::NOP;    i += 1;
+        buf[i] = opt::TIMESTAMP; buf[i + 1] = 10;
+        buf[i + 2..i + 6].copy_from_slice(&tcp_now_ms().to_be_bytes());
+        buf[i + 6..i + 10].copy_from_slice(&self.ts_recent.to_be_bytes());
         let mut h = TcpHdr {
             src_port: self.local.port, dst_port: self.remote.port,
             seq: self.snd_nxt, ack: self.rcv_nxt,
-            data_offset: 7, flags: flag_bits, window: self.window,
+            data_offset: 10, flags: flag_bits, window: self.window,
             checksum: 0, urg_ptr: 0,
         };
         h.build_into(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
+}
+
+/// F182: monotonic millisecond clock for TSval per RFC 7323 §5.4.
+/// Kernel-build reads the HAL timer; hosted tests stub to 0 (PAWS
+/// stays inert — tests synthesize TSvals explicitly).
+/// # C: O(1)
+fn tcp_now_ms() -> u32 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; return (hal_x86_64::X86TimerOps::monotonic_ns().0 / 1_000_000) as u32; }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; return (hal_aarch64::ArmTimerOps::monotonic_ns().0 / 1_000_000) as u32; }
+    #[allow(unreachable_code)]
+    0
 }
 
 /// F173: MSS we advertise. Conservative default; per-iface MTU
