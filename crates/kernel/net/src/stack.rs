@@ -1,18 +1,5 @@
-// `NetStack` — top-level glue. Owns the iface registry + routing
-// table + a UDP-port socket map. Provides:
-//   - register_iface
-//   - add_route
-//   - bind_udp(port) → returns a handle that the kernel uses for
-//     recv (callbacks deferred to the syscall layer)
-//   - send_udp_to(src_port, src_ip, dst_ip, dst_port, payload):
-//     builds UDP+IPv4, looks up route, hands packet to iface
-//   - deliver_rx(iface_id, &[u8] of L3 starting at IP header):
-//     parses IPv4, demuxes to UDP / ICMP, dispatches reply (ICMP
-//     echo) or queues to bound socket
-//
-// Hosted-testable on a LoopbackDev: send_udp_to writes to lo's
-// xmit; the test calls drain_loopback() which pops from lo.rx and
-// feeds back through deliver_rx.
+// NetStack: ifaces + routing + UDP/TCP demux. v6 helpers in
+// stack_ipv6.rs. Hosted-testable via LoopbackDev.
 
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -21,7 +8,7 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as StackLockClass};
 
-use crate::addr::{IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
+use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::icmp::{self, ICMP_TYPE_ECHO_REQUEST};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN, push_ipv4_header};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
@@ -33,21 +20,13 @@ use crate::udp::UdpHdr;
 use crate::tcp_hdr::{TcpHdr, flags as tcp_flags, TCP_HDR_MIN_LEN};
 use crate::tcp_conn::{TcpConn, Endpoint};
 
-/// Netfilter hook callback. Returns a Linux-style verdict packed
-/// into u32 (NF_DROP=0, NF_ACCEPT=1, NF_STOLEN=2, NF_QUEUE=3,
-/// NF_REPEAT=4). `pkt` is the L3 (or L2-if-known) bytes; `hook_id`
-/// selects which chain set to walk. netfilter installs the real
-/// impl via `install_nf_hook` at boot; if uninstalled, deliver_rx
-/// treats every packet as Accept.
+/// Netfilter verdict callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
 pub type NfHookFn = fn(hook_id: u32, pkt: &[u8]) -> u32;
 
 static NF_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
-/// Install the netfilter hook bridge. Idempotent. Called once at
-/// boot from the kernel side; netfilter can't be a direct dep of
-/// net because netlink already depends on net.
-/// # C: O(1)
+/// Install netfilter bridge. Idempotent. # C: O(1)
 pub fn install_nf_hook(f: NfHookFn) {
     NF_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }
@@ -122,15 +101,16 @@ impl UdpRxQueue {
 /// Connection 4-tuple key for TCP demultiplexing.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TcpKey {
-    pub local_ip:    Ipv4Addr,
+    pub local_ip:    IpAddr,
     pub local_port:  u16,
-    pub remote_ip:   Ipv4Addr,
+    pub remote_ip:   IpAddr,
     pub remote_port: u16,
 }
 
-/// Listening socket key (only local side).
+/// Listening socket key (only local side). F180b: `IpAddr` so a single
+/// table covers v4 + v6 listeners; UNSPECIFIED matches both families.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct TcpListenKey { pub local_ip: Ipv4Addr, pub local_port: u16 }
+pub struct TcpListenKey { pub local_ip: IpAddr, pub local_port: u16 }
 
 /// Stack-owned per-connection record. Wraps the TcpConn TCB in
 /// its own Spinlock so demux + app calls don't contend with the
@@ -391,18 +371,26 @@ impl NetStack {
     pub fn tcp_listen(&self, local_ip: Ipv4Addr, local_port: u16, reuseaddr: bool)
         -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_ip(IpAddr::V4(local_ip), local_port, reuseaddr)
+    }
+
+    /// F180b: address-family-aware listen. v4 callers go through
+    /// `tcp_listen`; v6 sockets pass `IpAddr::V6`.
+    /// # C: O(log N) listener lookup + O(N_conns) TIME_WAIT scan
+    pub fn tcp_listen_ip(&self, local_ip: IpAddr, local_port: u16, reuseaddr: bool)
+        -> NetResult<Arc<TcpListenEntry>>
+    {
         let key = TcpListenKey { local_ip, local_port };
         let mut g = self.tcp_listens.lock();
         if g.contains_key(&key) { return Err(NetError::Eaddrinuse); }
-        // F176: TIME_WAIT conflict. The conn table holds 4-tuples;
-        // a TIME_WAIT entry at our (local_ip, local_port, _, _) blocks
-        // bind unless SO_REUSEADDR is set. Skip the scan entirely when
-        // reuseaddr=true so the common server-restart case is fast.
         if !reuseaddr {
             let conns = self.tcp_conns.lock();
+            let any_v4 = IpAddr::V4(Ipv4Addr::ANY);
+            let any_v6 = IpAddr::V6(crate::addr::Ipv6Addr::ANY);
             let conflict = conns.iter().any(|(k, e)| {
                 k.local_port == local_port
-                    && (k.local_ip == local_ip || local_ip == Ipv4Addr::ANY)
+                    && (k.local_ip == local_ip
+                        || local_ip == any_v4 || local_ip == any_v6)
                     && e.conn.lock().state == crate::tcp_state::TcpState::TimeWait
             });
             if conflict { return Err(NetError::Eaddrinuse); }
@@ -423,6 +411,20 @@ impl NetStack {
                         remote_ip: Ipv4Addr, remote_port: u16)
         -> NetResult<Arc<TcpEntry>>
     {
+        self.tcp_connect_ip(
+            IpAddr::V4(local_ip), local_port,
+            IpAddr::V4(remote_ip), remote_port,
+        )
+    }
+
+    /// F180b: address-family-aware active open. v4 callers go through
+    /// `tcp_connect`; v6 sockets pass `IpAddr::V6`. Demuxes outbound
+    /// via `send_l4_over_ip` (v4 path or v6 path per IpAddr variant).
+    /// # C: O(log N) demux insert + 1 segment xmit
+    pub fn tcp_connect_ip(&self, local_ip: IpAddr, local_port: u16,
+                           remote_ip: IpAddr, remote_port: u16)
+        -> NetResult<Arc<TcpEntry>>
+    {
         let isn = {
             let mut s = self.next_isn.lock();
             *s = s.wrapping_add(0x1000);
@@ -437,7 +439,7 @@ impl NetStack {
         let entry = Arc::new(TcpEntry::new(conn));
         let key = TcpKey { local_ip, local_port, remote_ip, remote_port };
         self.tcp_conns.lock().insert(key, entry.clone());
-        self.send_l4_over_ipv4(local_ip, remote_ip, IpProto::Tcp, &syn)?;
+        self.send_l4_over_ip(local_ip, remote_ip, IpProto::Tcp, &syn)?;
         // F159: stamp the queued SYN with the actual xmit time so the
         // retx scanner doesn't treat it as instantly overdue (default
         // last_sent_ns=0 from active_open). On stamp failure (no timer
@@ -486,7 +488,7 @@ impl NetStack {
         };
         let n = segs.len();
         for s in &segs {
-            self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s)?;
+            self.send_l4_over_ip(src, dst, IpProto::Tcp, s)?;
         }
         // F159: stamp the last N retx_q entries (one per emitted segment)
         // with the actual xmit time.
@@ -510,7 +512,7 @@ impl NetStack {
             let s = c.local_close().map_err(|_| NetError::Eio)?;
             (s, c.local.ip, c.remote.ip)
         };
-        self.send_l4_over_ipv4(src, dst, IpProto::Tcp, &seg)
+        self.send_l4_over_ip(src, dst, IpProto::Tcp, &seg)
     }
 
     /// F174: handle an incoming ICMP Destination Unreachable.
@@ -554,9 +556,9 @@ impl NetStack {
             }
             p if p == IpProto::Tcp as u8 => {
                 let key = TcpKey {
-                    local_ip:    orig_hdr.src,
+                    local_ip:    IpAddr::V4(orig_hdr.src),
                     local_port:  src_port,
-                    remote_ip:   orig_hdr.dst,
+                    remote_ip:   IpAddr::V4(orig_hdr.dst),
                     remote_port: dst_port,
                 };
                 if let Some(entry) = self.tcp_conns.lock().get(&key).cloned() {
@@ -639,7 +641,7 @@ impl NetStack {
                 }
             };
             for s in &segs {
-                let _ = self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s);
+                let _ = self.send_l4_over_ip(src, dst, IpProto::Tcp, s);
             }
             if abort {
                 to_drop.push(*key);
@@ -678,7 +680,7 @@ impl NetStack {
         iface.xmit(p)
     }
 
-    // F180 IPv6 deliver/xmit moved to stack_ipv6.rs (1000-line cap).
+    // F180b: send_l4_over_ip / send_l4_over_ipv6 live in stack_ipv6.rs.
 
     /// Deliver an L3 frame (starting at the IPv4 header) up the
     /// stack: parse IP, demux to ICMP / UDP / TCP, dispatch.
@@ -738,7 +740,8 @@ impl NetStack {
                     }
                 }
             }
-            p if p == IpProto::Tcp as u8 => self.deliver_tcp(iface, hdr.src, hdr.dst, payload)?,
+            p if p == IpProto::Tcp as u8 =>
+                self.deliver_tcp(iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst), payload)?,
             _ => {}
         }
         Ok(())
@@ -749,12 +752,12 @@ impl NetStack {
     /// instantiate a new connection from it. Drives the matched
     /// TcpConn's `input`; xmit any returned response segment.
     /// # C: O(log N) lookup + O(payload) handler
-    fn deliver_tcp(&self, _iface: NetIfaceId,
-                    src_ip: Ipv4Addr, dst_ip: Ipv4Addr, seg: &[u8])
+    pub(crate) fn deliver_tcp(&self, _iface: NetIfaceId,
+                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8])
         -> NetResult<()>
     {
         if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
-        let hdr = match TcpHdr::parse(seg, src_ip, dst_ip) {
+        let hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip) {
             Ok(h) => h, Err(_) => return Ok(()),
         };
         let key = TcpKey {
@@ -783,7 +786,7 @@ impl NetStack {
                 (c.recv_buf.len(), c.state)
             };
             if let Some(r) = resp {
-                self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
+                self.send_l4_over_ip(dst_ip, src_ip, IpProto::Tcp, &r)?;
             }
             // F175: post-input output drain. ACK that clears retx_q
             // unblocks Nagle-held sends; pump them out now. Use
@@ -798,7 +801,7 @@ impl NetStack {
             };
             let (segs, src, dst) = drain_segs;
             for s in &segs {
-                self.send_l4_over_ipv4(src, dst, IpProto::Tcp, s)?;
+                self.send_l4_over_ip(src, dst, IpProto::Tcp, s)?;
             }
             stamp_last_sent(&entry, segs.len());
             // F159: wake unconditionally — any input may have changed
@@ -819,20 +822,31 @@ impl NetStack {
         // Listener path: only SYNs spawn new conns.
         if (hdr.flags & tcp_flags::SYN) == 0 { return Ok(()); }
         let lkey = TcpListenKey { local_ip: dst_ip, local_port: hdr.dst_port };
+        let any_for_family = match dst_ip {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::ANY),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::ANY),
+        };
         let listener = {
             let g = self.tcp_listens.lock();
             g.get(&lkey).cloned()
-                .or_else(|| g.get(&TcpListenKey { local_ip: Ipv4Addr::ANY, local_port: hdr.dst_port }).cloned())
+                .or_else(|| g.get(&TcpListenKey { local_ip: any_for_family, local_port: hdr.dst_port }).cloned())
         };
         let listener = match listener { Some(l) => l, None => return Ok(()) };
-        let mut new_conn = TcpConn::new_listener(listener.local);
+        // F180b: synthesise a per-conn local endpoint that pins the
+        // wildcard listener to the actual delivery dst — so outbound
+        // segments carry a real src, not 0.0.0.0/::.
+        let mut local_ep = listener.local;
+        if local_ep.ip == IpAddr::V4(Ipv4Addr::ANY) || local_ep.ip == IpAddr::V6(Ipv6Addr::ANY) {
+            local_ep.ip = dst_ip;
+        }
+        let mut new_conn = TcpConn::new_listener(local_ep);
         let resp = new_conn.input(src_ip, dst_ip, seg)
             .map_err(|_| NetError::Einval)?;
         let new_entry = Arc::new(TcpEntry::new(new_conn));
         self.tcp_conns.lock().insert(key, new_entry.clone());
         listener.accept_q.lock().push_back(new_entry);
         if let Some(r) = resp {
-            self.send_l4_over_ipv4(dst_ip, src_ip, IpProto::Tcp, &r)?;
+            self.send_l4_over_ip(dst_ip, src_ip, IpProto::Tcp, &r)?;
         }
         // F160: wake any blocking accept() parked on this listener.
         #[cfg(target_os = "oxide-kernel")]
@@ -847,14 +861,16 @@ impl NetStack {
         Ok(())
     }
 
-    /// Test/boot-trace helper: drain `lo`'s xmit queue and feed
-    /// each packet back through `deliver_rx` as if the wire round-
-    /// tripped them. Real soft-IRQ NET_RX is the eventual driver
-    /// for this.
+    /// Drain lo xmit → deliver_rx; v6 frames route to deliver_rx_ipv6.
     /// # C: O(N pending)
     pub fn drain_loopback(&self, iface: NetIfaceId, lo: &LoopbackDev) {
         while let Some(p) = lo.rx_pop() {
-            let _ = self.deliver_rx(iface, p.data());
+            // F180b: dispatch by ethertype so v6 lo round-trips work.
+            if p.proto == crate::addr::eth_p::IPV6 {
+                let _ = self.deliver_rx_ipv6(iface, p.data());
+            } else {
+                let _ = self.deliver_rx(iface, p.data());
+            }
         }
     }
 }

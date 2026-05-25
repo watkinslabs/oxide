@@ -129,7 +129,7 @@ impl Ipv6Addr {
 }
 
 /// Tagged union of v4/v6 addresses for routing & socket APIs.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum IpAddr {
     V4(Ipv4Addr),
     V6(Ipv6Addr),
