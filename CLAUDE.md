@@ -69,6 +69,7 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 - doc-comment that restates the function name
 - `unsafe { ... }` without `// SAFETY:` ≥30 chars
 - Forbidden phrases in docs (per `08§4`)
+- Magic-number errno / signal / flag / syscall-slot literals — use the typed enum (`Errno::Foo as i32`, `Signum::Foo`, `OpenFlags::FOO`, `syscall::nrs::NR_FOO`). Per `07§5`
 
 ## Where things live
 
