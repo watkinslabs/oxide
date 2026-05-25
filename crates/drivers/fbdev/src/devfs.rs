@@ -28,8 +28,13 @@ impl Inode for FbInode {
 /// `None` for unknown commands so the generic CharDev path runs.
 /// # C: O(1)
 pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
-    let tag = inode.ino() & 0xFFFF_FFFF_0000_0000;
-    if tag != FB0_INO_BASE & 0xFFFF_FFFF_0000_0000 { return None; }
+    // F199: precedence-safe parens. The earlier form
+    // `tag != FB0_INO_BASE & MASK` evaluated as
+    // `tag != (FB0_INO_BASE & MASK)` = `tag != 0`, so every inode
+    // with zero top-32 bits (including pty slaves, ino 0x60008003)
+    // fell into this branch and got EFAULT from the arg==NULL gate
+    // below. Compare against the upper-16-bit base instead.
+    if (inode.ino() & 0xFFFF_0000) != FB0_INO_BASE { return None; }
     let idx = (inode.ino() & 0xFFFF) as u32;
     use syscall::errno::Errno;
     if arg == 0 || arg >= hal::USER_VA_END {

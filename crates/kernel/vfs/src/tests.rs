@@ -523,6 +523,15 @@ fn dentry_absolute_path_nested_components() {
 }
 
 #[test]
+fn dentry_absolute_path_install_open_shape() {
+    // install_open today builds a single dentry whose name is the
+    // full path — preserve it verbatim instead of prepending '/'.
+    let i: InodeRef = MemFile::new(1);
+    let d = Dentry::new(None, String::from("/dev/pts/3"), i);
+    assert_eq!(d.absolute_path(), b"/dev/pts/3");
+}
+
+#[test]
 fn dentry_absolute_path_deep_chain() {
     let i: InodeRef = MemFile::new(1);
     let root = Dentry::new_root(Arc::clone(&i));
