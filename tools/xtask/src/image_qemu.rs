@@ -376,7 +376,8 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // guest 10.0.2.x with a DHCP server at 10.0.2.2. No
         // external visibility (slirp is host-isolated), but
         // sufficient for verifying DHCPDISCOVER reaches a server.
-        "-netdev", "user,id=net0",
+        // F196: host:2222 → guest:22 for ssh access.
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // Serial: dedicated chardev with `mux=on,signal=off` so Ctrl-A
         // is QEMU's monitor escape and Ctrl-C reaches the guest.
@@ -451,7 +452,8 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         "-device", "virtio-keyboard-pci,bus=pcie.0",
         // F135: virtio-net for AF_PACKET / DHCP. Same slirp NAT
         // backend as x86.
-        "-netdev", "user,id=net0",
+        // F196: host:2222 → guest:22 for ssh access.
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
