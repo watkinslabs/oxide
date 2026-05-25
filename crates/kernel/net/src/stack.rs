@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as StackLockClass};
 
-use crate::addr::{IpProto, Ipv4Addr, NetIfaceId};
+use crate::addr::{IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::icmp::{self, ICMP_TYPE_ECHO_REQUEST};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN, push_ipv4_header};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
@@ -89,6 +89,8 @@ pub struct UdpRxQueue {
     /// targeted instead of broadcasting.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
+
+// F180a Udp6RxQueue + IPv6 NetStack methods moved to stack_ipv6.rs.
 
 impl UdpRxQueue {
     /// F174: read + clear the pending per-port error (ICMP unreach).
@@ -241,6 +243,9 @@ pub struct NetStack {
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
     udp:        Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass>,
+    /// F180a: IPv6 UDP socket map. Accessor `udp6_map()` exposed to
+    /// `stack_ipv6` impls without making the field pub.
+    udp6:       Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass>,
     tcp_conns:    Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
     tcp_listens:  Spinlock<BTreeMap<TcpListenKey, Arc<TcpListenEntry>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
@@ -256,6 +261,7 @@ impl NetStack {
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
             udp:    Spinlock::new(BTreeMap::new()),
+            udp6:   Spinlock::new(BTreeMap::new()),
             tcp_conns:   Spinlock::new(BTreeMap::new()),
             tcp_listens: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
@@ -313,6 +319,13 @@ impl NetStack {
     /// # C: O(log N)
     pub fn unbind_udp(&self, port: u16) {
         self.udp.lock().remove(&port);
+    }
+
+    /// F180a: expose the v6 UDP map to `stack_ipv6` impls without
+    /// making the field pub-everywhere.
+    /// # C: O(1)
+    pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass> {
+        &self.udp6
     }
 
     /// F161: public wrapper for the private send_l4_over_ipv4 path
@@ -665,35 +678,7 @@ impl NetStack {
         iface.xmit(p)
     }
 
-    /// F180: deliver an IPv6 L3 frame. Stub — full impl in F180a-c
-    /// (UDP/TCP demux, NDP, dual-stack listeners). v1: parse + ICMPv6
-    /// echo response only; other next-headers dropped silently.
-    /// # C: O(payload)
-    pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        let hdr = Ipv6Hdr::parse(l3).map_err(|_| NetError::Einval)?;
-        let payload_end = IPV6_HDR_LEN + hdr.payload_length as usize;
-        if payload_end > l3.len() { return Err(NetError::Einval); }
-        let payload = &l3[IPV6_HDR_LEN..payload_end];
-        if hdr.next_header == crate::icmpv6::IPPROTO_ICMPV6
-            && !payload.is_empty()
-            && payload[0] == crate::icmpv6::ICMPV6_TYPE_ECHO_REQUEST
-        {
-            let reply = match crate::icmpv6::build_echo_reply(hdr.src, hdr.dst, payload) {
-                Ok(r) => r, Err(_) => return Ok(()),
-            };
-            let total = IPV6_HDR_LEN + reply.len();
-            let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total);
-            p.put(reply.len()).map_err(|_| NetError::Enobufs)?
-                .copy_from_slice(&reply);
-            push_ipv6_header(&mut p, hdr.dst, hdr.src, IpProto::Icmpv6)
-                .map_err(|_| NetError::Enobufs)?;
-            p.proto = crate::addr::eth_p::IPV6;
-            p.iface = Some(iface);
-            let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
-            dev.xmit(p)?;
-        }
-        Ok(())
-    }
+    // F180 IPv6 deliver/xmit moved to stack_ipv6.rs (1000-line cap).
 
     /// Deliver an L3 frame (starting at the IPv4 header) up the
     /// stack: parse IP, demux to ICMP / UDP / TCP, dispatch.
