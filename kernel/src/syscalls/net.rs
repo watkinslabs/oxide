@@ -13,8 +13,7 @@ const AF_INET6:    u32 = 10;
 const SOCK_STREAM: u32 = 1;
 const SOCK_DGRAM:  u32 = 2;
 
-/// Map net::NetError into a Linux errno (negated, ABI-ready).
-/// # C: O(1)
+/// Map net::NetError → Linux errno (negated, ABI-ready). # C: O(1)
 pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
     -(match e {
         net::NetError::Eaddrinuse    => Errno::Eaddrinuse,
@@ -86,7 +85,8 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let dentry = Dentry::new(None, String::from("[socket]"), Arc::clone(&inode));
-    let mut fl = OpenFlags::empty();
+    // F198: sockets are RW by spec — File::write needs O_RDWR.
+    let mut fl = OpenFlags::O_RDWR;
     if nonblock { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
     match fdt.alloc(file) {
@@ -497,13 +497,13 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let a = {
         let inode = mk(net::UnixEnd::A);
         let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
-        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
+        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
         match fdt.alloc(f) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     let b = {
         let inode = mk(net::UnixEnd::B);
         let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
-        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::empty());
+        let f = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
         match fdt.alloc(f) { Ok(fd) => fd, Err(e) => return -(e as i64) }
     };
     // Write both fds back to user[]int sv[2].
@@ -595,7 +595,7 @@ pub fn sys_accept(args: &SyscallArgs) -> i64 {
     const SOCK_CLOEXEC:  u64 = 0o2_000_000;
     const SOCK_NONBLOCK: u64 = 0o0_004_000;
     let flags = args.a3;
-    let mut fl = vfs::OpenFlags::empty();
+    let mut fl = vfs::OpenFlags::O_RDWR;
     if (flags & SOCK_NONBLOCK) != 0 { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file = vfs::File::new(inode, dentry, fl);
     match fdt.alloc(file) {
