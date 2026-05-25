@@ -534,6 +534,11 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
                 if sig != 0 {
                     t.sigpending.fetch_or(bit, Ordering::Release);
                     if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+                    // F168: a signal raised on a Sleeping task must
+                    // wake it so the parked helper can observe the
+                    // bit and return -EINTR (Linux semantic). No-op
+                    // for any other task state.
+                    sched::live::wake_if_sleeping(&t);
                 }
                 0
             }
