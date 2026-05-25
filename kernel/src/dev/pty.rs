@@ -61,6 +61,12 @@ impl Inode for PtyMasterInode {
             unsafe { sched::live::tick_yield(); }
         }
     }
+    /// F201: O_NONBLOCK read — EAGAIN when no data, so select()+read
+    /// loops (dropbear's session pump) don't spin or block forever.
+    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut g = self.pair.inner.lock();
+        if g.master_readable() { Ok(g.master_read(buf)) } else { Err(VfsError::Eagain) }
+    }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
         let (n, signals, fg) = {
             let mut g = self.pair.inner.lock();
@@ -73,6 +79,15 @@ impl Inode for PtyMasterInode {
         };
         if signals != 0 && fg != 0 { post_signal_pgrp(fg, signals); }
         Ok(n)
+    }
+    /// F201: readiness for select/poll. POLLIN when slave→master
+    /// queue has bytes; POLLOUT always (we don't backpressure on
+    /// master writes today).
+    fn poll(&self) -> u32 {
+        let g = self.pair.inner.lock();
+        let mut mask = vfs::POLL_OUT;
+        if g.master_readable() { mask |= vfs::POLL_IN; }
+        mask
     }
 }
 
@@ -95,9 +110,23 @@ impl Inode for PtySlaveInode {
             unsafe { sched::live::tick_yield(); }
         }
     }
+    /// F201: O_NONBLOCK read — EAGAIN when master→slave queue empty.
+    fn read_nonblock(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        let mut g = self.pair.inner.lock();
+        if g.slave_readable() { Ok(g.slave_read(buf)) } else { Err(VfsError::Eagain) }
+    }
     fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
         let mut g = self.pair.inner.lock();
         Ok(g.slave_write(buf))
+    }
+    /// F201: readiness for select/poll. POLLIN when master→slave
+    /// queue has bytes; POLLOUT always (slave→master is bounded by
+    /// pty buffer but we don't surface backpressure yet).
+    fn poll(&self) -> u32 {
+        let g = self.pair.inner.lock();
+        let mut mask = vfs::POLL_OUT;
+        if g.slave_readable() { mask |= vfs::POLL_IN; }
+        mask
     }
 }
 
