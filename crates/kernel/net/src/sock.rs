@@ -544,6 +544,37 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
 }
 
 
+/// F159: blocking wait for TCP connect's SYN-ACK. Park on
+/// entry.rx_waiters; deliver_tcp wakes after any input (state
+/// transition to Established for normal path, to Closed on RST);
+/// tcp_retx_tick wakes after flipping state to Closed for
+/// retry-exhaustion. Returns Eio (ABI Etimedout) on abort, Ok on
+/// Established. drain_loopback every iter so a self-loopback
+/// connect doesn't depend on virtio's softirq.
+/// # C: blocks indefinitely
+/// # Ctx: process; preempt-off; runqueue installed
+fn connect_wait_established(
+    entry: &alloc::sync::Arc<TcpEntry>,
+) -> Result<(), NetError> {
+    loop {
+        drain_loopback();
+        let st = entry.conn.lock().state;
+        if st.is_established() { return Ok(()); }
+        if st == crate::tcp_state::TcpState::Closed {
+            return Err(NetError::Eio);
+        }
+        // SAFETY: process ctx (sys_connect); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp/retx_tick wake.
+        #[cfg(target_os = "oxide-kernel")]
+        unsafe {
+            entry.rx_waiters.park();
+            sched::live::schedule::schedule();
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(NetError::Eio);
+    }
+}
+
+
 /// F158: blocking TCP recv. Park on entry.rx_waiters until data
 /// arrives in recv_buf or the connection reaches a terminal data
 /// state (peer FIN'd → return Ok(0) for EOF, RST → Closed). Used
@@ -716,27 +747,15 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             let entry = stack().tcp_connect(local_ip, local_port, dst_ip, port)?;
             *sock.kind.lock() = SockKind::TcpConn(entry.clone());
             *sock.peer.lock() = Some((dst_ip, port));
-            // Wait for SYN-ACK. Self-loopback frames arrive via
-            // drain_loopback (lo iface). Off-host frames (slirp gateway,
-            // 10.0.2.x) arrive via virtio-net MSI → softirq → deliver_rx,
-            // which needs IRQs unmasked between checks. tick_yield's
-            // sti+hlt+cli on x86 (daifclr+wfi+daifset on arm) provides
-            // that window. Bounded so an unreachable host returns
-            // Etimedout instead of wedging forever.
-            for _ in 0..200 {
-                drain_loopback();
-                let st = entry.conn.lock().state;
-                if st.is_established() { break; }
-                if st == crate::tcp_state::TcpState::Closed { break; }
-                // SAFETY: connect() runs in process context (sys_connect
-                // from userspace); tick_yield's preempt-off + IRQ-on
-                // contract is satisfied.
-                unsafe { sched::live::tick_yield(); }
-            }
-            if !entry.conn.lock().state.is_established() {
-                return Err(NetError::Eio); // ABI maps to Etimedout
-            }
-            Ok(())
+            // F159: park on entry.rx_waiters for the SYN-ACK. The
+            // virtio_net_rx_kthread drives the SYN retransmission
+            // timer (RFC 6298) and aborts after 6 SYN retries;
+            // deliver_tcp wakes us on the SYN-ACK that drives state
+            // to Established, and tcp_retx_tick wakes us when it
+            // flips state to Closed on retry-exhaustion. Race-safe:
+            // we re-check state under entry.conn.lock() each iter;
+            // wakes are issued post-mutation.
+            connect_wait_established(&entry)
         }
     }
 }
