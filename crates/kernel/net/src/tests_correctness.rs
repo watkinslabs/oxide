@@ -182,6 +182,38 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
                NetError::Eaddrinuse);
 }
 
+// ----- F184: per-iface MTU → own_mss --------------------------------
+
+#[test]
+fn f184_mss_for_v4_loopback_subtracts_40() {
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    // lo MTU = 65535; v4 overhead = 40 → MSS = 65495.
+    assert_eq!(stack.mss_for_dst(IpAddr::V4(Ipv4Addr::LOOPBACK)), 65495);
+}
+
+#[test]
+fn f184_mss_for_v6_loopback_subtracts_60() {
+    use crate::addr::Ipv6Addr;
+    let stack = NetStack::new();
+    let _ = stack.register_loopback();
+    // v6 overhead = 60 → 65475.
+    assert_eq!(stack.mss_for_dst(IpAddr::V6(Ipv6Addr::LOOPBACK)), 65475);
+}
+
+#[test]
+fn f184_active_open_syn_advertises_mtu_derived_mss() {
+    let stack = NetStack::new();
+    let (id, lo) = stack.register_loopback();
+    let _ = stack.tcp_connect(Ipv4Addr::LOOPBACK, 51000, Ipv4Addr::LOOPBACK, 80).unwrap();
+    let syn = lo.rx_pop().expect("SYN must be on lo");
+    // strip IPv4 header (20 bytes for no options).
+    let l4 = &syn.data()[20..];
+    assert_eq!(parse_mss_option(l4), Some(65495),
+        "SYN MSS must reflect lo's 65535 - 40 v4 overhead");
+    let _ = id;
+}
+
 // ----- F180c: NDP cache + NS/NA dispatch ----------------------------
 
 #[test]
