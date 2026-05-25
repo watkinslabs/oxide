@@ -204,8 +204,20 @@ impl NetStack {
     pub fn send_l4_over_ip(&self, src: IpAddr, dst: IpAddr,
                             proto: IpProto, l4: &[u8]) -> NetResult<()>
     {
+        self.send_l4_over_ip_tos(src, dst, proto, l4, 0)
+    }
+
+    /// F190: ECN-aware variant — `tos` populates the IPv4 TOS byte
+    /// (or v6 Traffic-Class). ECT(0)=0x02 on ECN-enabled flows.
+    /// # C: O(payload)
+    pub fn send_l4_over_ip_tos(&self, src: IpAddr, dst: IpAddr,
+                                proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()>
+    {
         match (src, dst) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {
+                if tos != 0 {
+                    return self.send_l4_over_ipv4_tos(s, d, proto, l4, tos);
+                }
                 // F161 wrapper handles TCP only; for non-TCP protos we
                 // still need a v4 path. send_l4_over_ipv4 is private; the
                 // only currently-routed proto via send_l4_over_ip is TCP,
