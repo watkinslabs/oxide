@@ -84,6 +84,10 @@ pub struct UdpRxQueue {
     /// unreachable, etc.). Linux errno value; cleared by SO_ERROR
     /// read or consumed by the next recvfrom call.
     pub error_eno: core::sync::atomic::AtomicI32,
+    /// F181a: epoll subscribers of the bound socket — set via
+    /// `register_poll_subs` after bind. deliver_rx UDP arm wakes
+    /// targeted instead of broadcasting.
+    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
 impl UdpRxQueue {
@@ -102,7 +106,14 @@ impl UdpRxQueue {
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             error_eno: core::sync::atomic::AtomicI32::new(0),
+            poll_subs: Spinlock::new(None),
         }
+    }
+
+    /// F181a: register bound socket's subscribers.
+    /// # C: O(1)
+    pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
+        *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
 }
 
@@ -130,6 +141,11 @@ pub struct TcpEntry {
     /// Kernel-only: hosted tests don't run the scheduler.
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
+    /// F181a: per-fd epoll subscribers of the owning InetSocket.
+    /// Registered via `register_poll_subs` when the entry is bound
+    /// (connect → TcpConn assignment; accept → new socket). Wakes
+    /// from deliver_tcp use this instead of the global broadcast.
+    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
 impl TcpEntry {
@@ -139,7 +155,15 @@ impl TcpEntry {
             conn: Spinlock::new(conn),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
+            poll_subs: Spinlock::new(None),
         }
+    }
+
+    /// F181a: register owning InetSocket's epoll subscribers. Call
+    /// when binding `entry → TcpConn(entry)` on the InetSocket.
+    /// # C: O(1)
+    pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
+        *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
 }
 
@@ -189,6 +213,9 @@ pub struct TcpListenEntry {
     /// a freshly-spawned TcpEntry to accept_q.
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
+    /// F181a: owning listener-fd epoll subscribers — wakes when
+    /// accept_q grows (fd flips POLL_IN).
+    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
 impl TcpListenEntry {
@@ -199,7 +226,14 @@ impl TcpListenEntry {
             local,
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
+            poll_subs: Spinlock::new(None),
         }
+    }
+
+    /// F181a: register listener-fd subscribers.
+    /// # C: O(1)
+    pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
+        *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
 }
 
@@ -631,54 +665,32 @@ impl NetStack {
         iface.xmit(p)
     }
 
-    /// F180: deliver an IPv6 L3 frame (header starts at offset 0).
-    /// Minimum-viable v1: parse the 40-byte fixed header; respond
-    /// to ICMPv6 Echo Requests; UDP/TCP/other next-headers are
-    /// dropped silently (no IPv6 socket binding yet — full NDP /
-    /// SLAAC / dual-stack listeners land in a follow-on). Extension
-    /// headers (HBH, Routing, Fragment, …) are not parsed — frames
-    /// with non-fixed-header next_header beyond ICMPv6/UDP/TCP get
-    /// dropped. Linux apps using IPv4 only (the common cross-build
-    /// case) are unaffected; this just keeps the kernel from
-    /// silently ignoring incoming v6 traffic and prevents the
-    /// driver from getting backed up.
+    /// F180: deliver an IPv6 L3 frame. Stub — full impl in F180a-c
+    /// (UDP/TCP demux, NDP, dual-stack listeners). v1: parse + ICMPv6
+    /// echo response only; other next-headers dropped silently.
     /// # C: O(payload)
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         let hdr = Ipv6Hdr::parse(l3).map_err(|_| NetError::Einval)?;
-        let payload_start = IPV6_HDR_LEN;
-        let payload_end = payload_start + hdr.payload_length as usize;
+        let payload_end = IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() { return Err(NetError::Einval); }
-        let payload = &l3[payload_start..payload_end];
-        match hdr.next_header {
-            n if n == crate::icmpv6::IPPROTO_ICMPV6 => {
-                // Echo request → echo reply via the dst→src flip.
-                if payload.is_empty() { return Ok(()); }
-                let typ = payload[0];
-                if typ == crate::icmpv6::ICMPV6_TYPE_ECHO_REQUEST {
-                    let reply = match crate::icmpv6::build_echo_reply(hdr.src, hdr.dst, payload) {
-                        Ok(r) => r, Err(_) => return Ok(()),
-                    };
-                    let total = IPV6_HDR_LEN + reply.len();
-                    let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total);
-                    p.put(reply.len()).map_err(|_| NetError::Enobufs)?
-                        .copy_from_slice(&reply);
-                    push_ipv6_header(&mut p, hdr.dst, hdr.src, IpProto::Icmpv6)
-                        .map_err(|_| NetError::Enobufs)?;
-                    p.proto = crate::addr::eth_p::IPV6;
-                    p.iface = Some(iface);
-                    let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
-                    dev.xmit(p)?;
-                }
-                // Other ICMPv6 types (NS/NA/RS/RA/Redirect/...)
-                // dropped — NDP cache + RA processing lands in a
-                // follow-on. Linux apps without IPv6 connectivity
-                // never see these; with it, peer NDP times out and
-                // retries until cache populates via reverse-path.
-            }
-            // UDP / TCP over IPv6: dropped until V6 socket binding
-            // lands. Caller's L4 retries / connect timeout handles
-            // the absence gracefully.
-            _ => {}
+        let payload = &l3[IPV6_HDR_LEN..payload_end];
+        if hdr.next_header == crate::icmpv6::IPPROTO_ICMPV6
+            && !payload.is_empty()
+            && payload[0] == crate::icmpv6::ICMPV6_TYPE_ECHO_REQUEST
+        {
+            let reply = match crate::icmpv6::build_echo_reply(hdr.src, hdr.dst, payload) {
+                Ok(r) => r, Err(_) => return Ok(()),
+            };
+            let total = IPV6_HDR_LEN + reply.len();
+            let mut p = Pkt::with_capacity(IPV6_HDR_LEN, total);
+            p.put(reply.len()).map_err(|_| NetError::Enobufs)?
+                .copy_from_slice(&reply);
+            push_ipv6_header(&mut p, hdr.dst, hdr.src, IpProto::Icmpv6)
+                .map_err(|_| NetError::Enobufs)?;
+            p.proto = crate::addr::eth_p::IPV6;
+            p.iface = Some(iface);
+            let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
+            dev.xmit(p)?;
         }
         Ok(())
     }
@@ -731,7 +743,14 @@ impl NetStack {
                     let body = &payload[crate::udp::UDP_HDR_LEN..];
                     q.q.lock().push_back((hdr.src, udp.src_port, body.to_vec()));
                     #[cfg(target_os = "oxide-kernel")]
-                    q.waiters.wake_all();
+                    {
+                        q.waiters.wake_all();
+                        // F181a: targeted epoll wake on bound socket.
+                        let slot = q.poll_subs.lock().clone();
+                        if let Some(weak) = slot {
+                            if let Some(s) = weak.upgrade() { s.notify(); }
+                        }
+                    }
                 }
             }
             p if p == IpProto::Tcp as u8 => self.deliver_tcp(iface, hdr.src, hdr.dst, payload)?,
@@ -804,6 +823,11 @@ impl NetStack {
             {
                 let _ = (pre_len, post_len, post_state);
                 entry.rx_waiters.wake_all();
+                // F181a: targeted epoll wake for the owning fd.
+                let slot = entry.poll_subs.lock().clone();
+                if let Some(weak) = slot {
+                    if let Some(s) = weak.upgrade() { s.notify(); }
+                }
             }
             return Ok(());
         }
@@ -827,7 +851,14 @@ impl NetStack {
         }
         // F160: wake any blocking accept() parked on this listener.
         #[cfg(target_os = "oxide-kernel")]
-        listener.accept_waiters.wake_all();
+        {
+            listener.accept_waiters.wake_all();
+            // F181a: targeted epoll wake for the listener fd.
+            let slot = listener.poll_subs.lock().clone();
+            if let Some(weak) = slot {
+                if let Some(s) = weak.upgrade() { s.notify(); }
+            }
+        }
         Ok(())
     }
 
