@@ -748,10 +748,27 @@ pub fn enumerate_and_log() {
 /// minimum-viable correct path.
 /// # C: O(rx_drain) per iteration + O(log N) CFS pick on yield
 extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
+    use hal::TimerOps;
     let iface_id = net::NetIfaceId::from_raw((arg >> 32) as u32);
     let our_ip   = (arg as u32).to_be_bytes();
+    let mut last_retx_ns: u64 = 0;
     loop {
         drv_virtio_net::modern::poll_into_stack(iface_id, our_ip);
+        // F159: drive TCP retransmission + connection-abort timers.
+        // Cadence is ~100 ms — coarser than the RFC 6298 minimum RTO
+        // (200 ms) so a single timer-tick window is enough to observe
+        // an expired RTO; finer than the typical Linux 200 ms periodic
+        // tcp_write_timer. Per-conn lock + per-iface xmit happens here
+        // in process context so we don't have to make rx_poll's
+        // MODERN_DEV lock IRQ-safe.
+        #[cfg(target_arch = "x86_64")]
+        let now_ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        if now_ns.saturating_sub(last_retx_ns) >= 100_000_000 {
+            net::sock::stack().tcp_retx_tick(now_ns);
+            last_retx_ns = now_ns;
+        }
         // SAFETY: process ctx; runqueue installed; preempt-off through the kthread frame; tick_yield saves into current.arch_ctx and switches.
         unsafe { sched::live::tick_yield(); }
     }
