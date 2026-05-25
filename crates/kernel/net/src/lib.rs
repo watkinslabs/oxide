@@ -52,6 +52,7 @@ pub mod sock_drop;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
 pub mod stack_ipv6;
+pub mod tcp_cc;
 pub mod stack_icmp;
 pub use loopback::LoopbackDev;
 

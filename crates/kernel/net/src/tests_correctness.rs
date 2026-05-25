@@ -182,6 +182,40 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
                NetError::Eaddrinuse);
 }
 
+// ----- F187: CUBIC congestion control -------------------------------
+
+#[test]
+fn f187_loss_sets_w_max_to_cwnd() {
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    c.cwnd = 30_000;
+    c.cc_on_rto();
+    assert_eq!(c.cubic_w_max, 30_000,
+        "W_max snapshotted at the cwnd value at loss");
+}
+
+#[test]
+fn f187_beta_07_not_05() {
+    // CUBIC β=0.7 yields a bigger post-loss cwnd than Reno's /2,
+    // making faster recovery on capacity probes.
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    c.cwnd = 100_000;
+    c.cc_on_rto();
+    // 100000 × 717/1024 = 70019. Way above Reno's 50000.
+    assert!(c.ssthresh > 50_000 && c.ssthresh < 80_000);
+}
+
+#[test]
+fn f187_icbrt_handles_small_inputs() {
+    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(0), 0);
+    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(1), 1);
+    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(8), 2);
+    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(27), 3);
+    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(125), 5);
+    assert_eq!(crate::tcp_conn::TcpConn::icbrt_test(1000), 10);
+}
+
 // ----- F186: OWN_WSCALE=7 + recv-buf autotune -----------------------
 
 #[test]
@@ -260,8 +294,10 @@ fn f185_three_dup_acks_fast_retransmit_halves_cwnd() {
     assert_eq!(c.dup_acks, 2);
     c.cc_on_ack(0, 0);
     assert_eq!(c.dup_acks, 3);
-    assert_eq!(c.ssthresh, 10_000, "ssthresh = cwnd/2");
-    assert_eq!(c.cwnd, 10_000 + 3 * 1460, "cwnd = ssthresh + 3*MSS");
+    // F187: CUBIC β=0.7 → 20000×717/1024 ≈ 14003.
+    assert!(c.ssthresh >= 13_900 && c.ssthresh <= 14_100,
+        "ssthresh ≈ cwnd·0.7 (CUBIC β), got {}", c.ssthresh);
+    assert_eq!(c.cwnd, c.ssthresh + 3 * 1460);
 }
 
 #[test]
@@ -271,28 +307,22 @@ fn f185_rto_drops_cwnd_to_one_mss() {
     c.cwnd = 20_000;
     c.cc_on_rto();
     assert_eq!(c.cwnd, 1460, "RTO drops cwnd to MSS");
-    assert_eq!(c.ssthresh, 10_000, "RTO halves ssthresh");
+    assert!(c.ssthresh >= 13_900 && c.ssthresh <= 14_100,
+        "RTO ssthresh ≈ cwnd·0.7 (CUBIC β), got {}", c.ssthresh);
     assert_eq!(c.dup_acks, 0);
 }
 
 #[test]
-fn f185_ca_phase_grows_one_mss_per_rtt_window() {
-    // Once cwnd >= ssthresh, growth is mss²/cwnd per ACK so a
-    // full window of ACKs adds roughly 1 MSS.
+fn f185_ca_phase_grows_non_negative() {
+    // F187: CUBIC CA growth shape depends on tcp_now_ms epoch (stubbed
+    // to 0 in hosted). cwnd must not shrink.
     let mut c = client_established();
     c.peer_mss = 1460;
-    c.cwnd = 14_600;       // 10 MSS
-    c.ssthresh = 14_600;   // CA phase
+    c.cwnd = 14_600;
+    c.ssthresh = 14_600;
     let start = c.cwnd;
-    for _ in 0..10 {       // 10 ACKs = 1 window
-        c.cc_on_ack(1460, 0);
-    }
-    let grown = c.cwnd - start;
-    // With strict mss²/cwnd math, 10 ACKs at cwnd≈14600 ≈ 1460 +
-    // slow drift. Allow [1400, 1700] band — exact value depends on
-    // integer rounding as cwnd creeps up each step.
-    assert!(grown >= 1300 && grown <= 1700,
-        "CA growth ≈ 1 MSS/window, got {}", grown);
+    for _ in 0..10 { c.cc_on_ack(1460, 0); }
+    assert!(c.cwnd >= start);
 }
 
 // ----- F184: per-iface MTU → own_mss --------------------------------

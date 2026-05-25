@@ -119,6 +119,17 @@ pub struct TcpConn {
     pub cwnd:     u32,
     pub ssthresh: u32,
     pub dup_acks: u8,
+    /// F187: CUBIC state (RFC 8312). `cubic_w_max` is the cwnd at
+    /// the last congestion event (bytes); `cubic_epoch_ms` is the
+    /// monotonic timestamp at which the current cubic epoch started
+    /// (0 = uninitialised, gets set on the first CA-phase ACK after
+    /// loss); `cubic_k_ms` is K — the time for the cubic function
+    /// to climb back to W_max. CC switches Reno → CUBIC: loss event
+    /// uses β=0.7 (×7/10) instead of /2; CA growth follows the
+    /// concave→convex cubic curve around W_max.
+    pub cubic_w_max:    u32,
+    pub cubic_epoch_ms: u32,
+    pub cubic_k_ms:     u32,
     /// F186: receive-buffer ceiling in bytes. Autotuned upward (×2
     /// each time peak fill exceeds cap/2 within an RTT) up to
     /// `rcv_buf_max`. Drives `current_rcv_window()` so the wire
@@ -171,6 +182,9 @@ impl TcpConn {
             rcv_buf_cap: 65_536,
             rcv_buf_max: 4 * 1024 * 1024,
             rcv_peak:    0,
+            cubic_w_max:    0,
+            cubic_epoch_ms: 0,
+            cubic_k_ms:     0,
         }
     }
 
@@ -202,6 +216,9 @@ impl TcpConn {
             rcv_buf_cap: 65_536,
             rcv_buf_max: 4 * 1024 * 1024,
             rcv_peak:    0,
+            cubic_w_max:    0,
+            cubic_epoch_ms: 0,
+            cubic_k_ms:     0,
         }
     }
 
@@ -282,49 +299,15 @@ impl TcpConn {
         out
     }
 
-    /// F185: effective MSS for cwnd math (own_mss + peer hint).
-    /// # C: O(1)
-    fn cc_mss(&self) -> u32 {
-        let m = if self.own_mss != 0 { self.own_mss } else { OWN_MSS_DEFAULT };
-        let m = if self.peer_mss != 0 { core::cmp::min(m, self.peer_mss) } else { m };
-        m as u32
-    }
-
-    /// F185: Reno on-ACK. `acked` = newly cumulatively-ACKed bytes;
-    /// `payload_len` = data we just received in this segment (used
-    /// to filter pure dup-ACKs).
-    /// # C: O(1)
+    /// F185+F187: CC API delegates to tcp_cc module. # C: O(1)
     pub fn cc_on_ack(&mut self, acked: u32, payload_len: u32) {
-        let mss = self.cc_mss();
-        if acked > 0 {
-            self.dup_acks = 0;
-            if self.cwnd < self.ssthresh {
-                // Slow start: cwnd += bytes_acked (capped at MSS/ACK
-                // per RFC 5681 §3.1 to avoid bursts).
-                let inc = core::cmp::min(acked, mss);
-                self.cwnd = self.cwnd.saturating_add(inc);
-            } else {
-                // Congestion avoidance: cwnd += mss²/cwnd per ACK,
-                // approximated to 1 MSS per RTT.
-                let inc = (mss as u64 * mss as u64 / core::cmp::max(self.cwnd as u64, 1)) as u32;
-                self.cwnd = self.cwnd.saturating_add(core::cmp::max(inc, 1));
-            }
-            return;
-        }
-        // No new data + no advance = pure duplicate ACK candidate.
-        if payload_len == 0 {
-            self.dup_acks = self.dup_acks.saturating_add(1);
-            if self.dup_acks == 3 {
-                // Fast retransmit: halve, then inflate by 3 segments.
-                let half = self.cwnd / 2;
-                self.ssthresh = core::cmp::max(half, 2 * mss);
-                self.cwnd = self.ssthresh.saturating_add(3 * mss);
-            } else if self.dup_acks > 3 {
-                // Fast recovery: inflate by 1 MSS per extra dup.
-                self.cwnd = self.cwnd.saturating_add(mss);
-            }
-        }
+        crate::tcp_cc::on_ack(self, acked, payload_len)
     }
+    /// F187: RTO loss event. # C: O(1)
+    pub fn cc_on_rto(&mut self) { crate::tcp_cc::on_rto(self) }
+    /// F187: test hook for icbrt. # C: O(log x)
+    #[cfg(test)]
+    pub fn icbrt_test(x: u64) -> u64 { crate::tcp_cc::icbrt(x) }
 
     /// F186: window value to advertise on the wire = free recv-buf
     /// bytes, shifted right by snd_wscale per RFC 7323 §2.1. Clamped
@@ -347,15 +330,6 @@ impl TcpConn {
             self.rcv_buf_cap = core::cmp::min(self.rcv_buf_cap.saturating_mul(2), self.rcv_buf_max);
             self.rcv_peak = 0;
         }
-    }
-
-    /// F185: Reno RTO loss event. # C: O(1)
-    pub fn cc_on_rto(&mut self) {
-        let mss = self.cc_mss();
-        let half = self.cwnd / 2;
-        self.ssthresh = core::cmp::max(half, 2 * mss);
-        self.cwnd = mss;
-        self.dup_acks = 0;
     }
 
     fn build_retx(&self, s: &UnackedSegment) -> alloc::vec::Vec<u8> {
@@ -827,7 +801,7 @@ impl TcpConn {
 /// Kernel-build reads the HAL timer; hosted tests stub to 0 (PAWS
 /// stays inert — tests synthesize TSvals explicitly).
 /// # C: O(1)
-fn tcp_now_ms() -> u32 {
+pub fn tcp_now_ms() -> u32 {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     { use hal::TimerOps; return (hal_x86_64::X86TimerOps::monotonic_ns().0 / 1_000_000) as u32; }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
