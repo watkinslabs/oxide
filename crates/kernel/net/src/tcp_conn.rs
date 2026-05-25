@@ -139,6 +139,20 @@ pub struct TcpConn {
     /// F186: peak `recv_buf.len()` observed since the last autotune
     /// check; reset when autotune fires.
     pub rcv_peak: u32,
+    /// F190: ECN state (RFC 3168). `ecn_enabled` flips true only
+    /// when both ends advertise ECN in the SYN exchange (we send
+    /// ECE+CWR on SYN; peer's SYN-ACK with ECE-only confirms).
+    /// `send_ece` arms the ECE flag on outgoing ACKs after we see
+    /// a CE-marked segment, until peer answers with CWR. `send_cwr`
+    /// arms CWR on our next data seg after we apply the peer's ECE
+    /// as a congestion signal.
+    pub ecn_enabled: bool,
+    pub send_ece:    bool,
+    pub send_cwr:    bool,
+    /// F190: monotonic timestamp of the last ECN-driven cwnd
+    /// reduction. Used to rate-limit so peer-spurious ECE flags
+    /// can't tank cwnd more than once per RTT.
+    pub ecn_last_reduce_ms: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -185,6 +199,10 @@ impl TcpConn {
             cubic_w_max:    0,
             cubic_epoch_ms: 0,
             cubic_k_ms:     0,
+            ecn_enabled: false,
+            send_ece:    false,
+            send_cwr:    false,
+            ecn_last_reduce_ms: 0,
         }
     }
 
@@ -219,6 +237,10 @@ impl TcpConn {
             cubic_w_max:    0,
             cubic_epoch_ms: 0,
             cubic_k_ms:     0,
+            ecn_enabled: false,
+            send_ece:    false,
+            send_cwr:    false,
+            ecn_last_reduce_ms: 0,
         }
     }
 
@@ -357,7 +379,9 @@ impl TcpConn {
             .ok_or(TcpConnError::BadState)?;
         let seq_start = self.snd_nxt;
         self.snd_wscale = OWN_WSCALE;
-        let seg = self.build_syn_with_opts(flags::SYN);
+        // F190: advertise ECN-capable per RFC 3168 §6.1.1. Peer
+        // confirms by echoing ECE (without CWR) in the SYN-ACK.
+        let seg = self.build_syn_with_opts(flags::SYN | flags::ECE | flags::CWR);
         self.snd_nxt = self.snd_nxt.wrapping_add(1);
         self.state = new_state;
         // SYN consumes one sequence; track for retransmit.
@@ -414,7 +438,14 @@ impl TcpConn {
                 self.snd_wnd = hdr.window as u32;
                 self.state = transition(self.state, TcpEvent::RecvSyn)
                     .ok_or(TcpConnError::BadState)?;
-                let resp = self.build_syn_with_opts(flags::SYN | flags::ACK);
+                // F190: peer's SYN carrying ECE+CWR offers ECN.
+                // Our SYN-ACK answers with ECE-only to confirm.
+                let mut sa_flags = flags::SYN | flags::ACK;
+                if (hdr.flags & (flags::ECE | flags::CWR)) == (flags::ECE | flags::CWR) {
+                    self.ecn_enabled = true;
+                    sa_flags |= flags::ECE;
+                }
+                let resp = self.build_syn_with_opts(sa_flags);
                 self.snd_nxt = self.snd_nxt.wrapping_add(1);
                 Ok(Some(resp))
             }
@@ -431,6 +462,10 @@ impl TcpConn {
                     self.ts_recent  = tsval;
                 }
                 self.snd_wnd = hdr.window as u32;  // SYN: unscaled.
+                // F190: peer's SYN-ACK with ECE (no CWR) confirms ECN.
+                if (hdr.flags & flags::ECE) != 0 && (hdr.flags & flags::CWR) == 0 {
+                    self.ecn_enabled = true;
+                }
                 // Pop SYN from retx_q (its seq+1 ≤ ack now).
                 while let Some(front) = self.retx_q.front() {
                     let len = front.payload.len() as u32 +
@@ -512,13 +547,16 @@ impl TcpConn {
                     if acked > 0 {
                         self.snd_una = hdr.ack;
                     }
-                    // F185: Reno cwnd update. New cumulative ACK clears
-                    // dup_acks; pure duplicate (no advance + no payload
-                    // + same window) increments dup_acks; on the 3rd
-                    // dup, ssthresh = max(cwnd/2, 2*mss), cwnd =
-                    // ssthresh + 3*mss, retransmit the first unACK'd
-                    // segment (RFC 5681 §3.2).
+                    // F185+F187: cwnd update on ACK.
                     self.cc_on_ack(acked, payload.len() as u32);
+                    // F190: ECN-Echo from peer = single congestion event
+                    // per RTT. Cleared when peer ACKs our CWR.
+                    if self.ecn_enabled && (hdr.flags & flags::ECE) != 0 {
+                        crate::tcp_cc::on_ece(self);
+                    }
+                    if self.ecn_enabled && (hdr.flags & flags::CWR) != 0 {
+                        self.send_ece = false;
+                    }
                     // F179a: apply any SACK blocks peer included.
                     let blocks = crate::tcp_hdr::parse_sack_option(seg);
                     if !blocks.is_empty() { self.apply_sack(&blocks); }
@@ -674,7 +712,7 @@ impl TcpConn {
     /// to report) this degenerates to a plain ACK via the regular
     /// `build_segment` path.
     /// # C: O(blocks)
-    pub fn build_ack_with_sack(&self) -> Vec<u8> {
+    pub fn build_ack_with_sack(&mut self) -> Vec<u8> {
         let blocks = self.sack_blocks();
         if blocks.is_empty() {
             return self.build_segment(flags::ACK, &[]);
@@ -729,7 +767,20 @@ impl TcpConn {
         }
     }
 
-    fn build_segment(&self, flag_bits: u8, payload: &[u8]) -> Vec<u8> {
+    fn build_segment(&mut self, mut flag_bits: u8, payload: &[u8]) -> Vec<u8> {
+        // F190: ECN flag stamping. CWR rides the next data segment
+        // (cleared once stamped). ECE rides every ACK while we owe
+        // the peer a congestion echo (cleared on peer CWR receipt).
+        if self.ecn_enabled {
+            if self.send_cwr && !payload.is_empty() {
+                flag_bits |= flags::CWR;
+                self.send_cwr = false;
+            }
+            if self.send_ece && (flag_bits & flags::ACK) != 0 {
+                flag_bits |= flags::ECE;
+            }
+        }
+        let flag_bits = flag_bits;
         use crate::tcp_hdr::opt;
         // F182: when TS is enabled, every segment carries TSopt.
         // Layout: 2 NOPs + 10-byte TS = 12 bytes → data_offset += 3.

@@ -126,8 +126,25 @@ pub fn ip_checksum(buf: &[u8]) -> u16 {
 pub fn push_ipv4_header(
     pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16
 ) -> Result<(), crate::pkt::PktError> {
+    push_ipv4_header_tos(pkt, src, dst, proto, id, 0)
+}
+
+/// F190: ECN-aware push — `tos` lets the caller stamp ECT(0)=0x02
+/// (or ECT(1)=0x01) into the TOS byte for ECN-enabled flows.
+/// # C: O(payload_len) for the checksum
+pub fn push_ipv4_header_tos(
+    pkt: &mut Pkt, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto, id: u16, tos: u8,
+) -> Result<(), crate::pkt::PktError> {
     let payload_len = pkt.len() as u16;
-    let hdr = Ipv4Hdr::build(src, dst, proto, payload_len, id);
+    let mut hdr = Ipv4Hdr::build(src, dst, proto, payload_len, id);
+    if tos != 0 {
+        hdr.tos = tos;
+        // Rebuild checksum after the TOS mutation.
+        hdr.checksum = 0;
+        let mut buf = [0u8; IPV4_HDR_LEN];
+        hdr.write_to(&mut buf);
+        hdr.checksum = ip_checksum(&buf);
+    }
     let slot = pkt.push(IPV4_HDR_LEN)?;
     hdr.write_to(slot);
     Ok(())

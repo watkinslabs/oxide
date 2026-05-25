@@ -174,6 +174,12 @@ fn monotonic_ns_safe() -> u64 {
 /// real baseline to compare RTO against. No-op on n == 0 / empty
 /// queue.
 /// # C: O(n)
+/// F190: TOS byte for an outbound TCP segment — ECT(0)=0x02 when
+/// the conn negotiated ECN, else 0. # C: O(1)
+fn ecn_tos(c: &TcpConn) -> u8 {
+    if c.ecn_enabled { 0x02 } else { 0 }
+}
+
 fn stamp_last_sent(entry: &TcpEntry, n: usize) {
     if n == 0 { return; }
     let now = monotonic_ns_safe();
@@ -510,7 +516,7 @@ impl NetStack {
     pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool)
         -> NetResult<usize>
     {
-        let (segs, accepted, src, dst) = {
+        let (segs, accepted, src, dst, tos) = {
             let mut c = entry.conn.lock();
             // Quotas: send_buf bytes + retx_q bytes both count
             // against SO_SNDBUF (unACKed data total — RFC 1122
@@ -522,11 +528,11 @@ impl NetStack {
             let accept = core::cmp::min(avail, data.len());
             c.send(&data[..accept]);
             let segs = c.output(1500, nodelay);
-            (segs, accept, c.local.ip, c.remote.ip)
+            (segs, accept, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
         let n = segs.len();
         for s in &segs {
-            self.send_l4_over_ip(src, dst, IpProto::Tcp, s)?;
+            self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, s, tos)?;
         }
         // F159: stamp the last N retx_q entries (one per emitted segment)
         // with the actual xmit time.
@@ -542,12 +548,12 @@ impl NetStack {
 
     /// Graceful close: emit FIN; demux drives the rest. # C: O(1)
     pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
-        let (seg, src, dst) = {
+        let (seg, src, dst, tos) = {
             let mut c = entry.conn.lock();
             let s = c.local_close().map_err(|_| NetError::Eio)?;
-            (s, c.local.ip, c.remote.ip)
+            (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
-        self.send_l4_over_ip(src, dst, IpProto::Tcp, &seg)
+        self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, &seg, tos)
     }
 
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
@@ -648,6 +654,14 @@ impl NetStack {
     fn send_l4_over_ipv4(&self, src: Ipv4Addr, dst: Ipv4Addr,
                           proto: IpProto, l4: &[u8]) -> NetResult<()>
     {
+        self.send_l4_over_ipv4_tos(src, dst, proto, l4, 0)
+    }
+
+    /// F190: ECN-aware variant — `tos` populates the TOS byte.
+    /// # C: O(payload)
+    pub(crate) fn send_l4_over_ipv4_tos(&self, src: Ipv4Addr, dst: Ipv4Addr,
+                          proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()>
+    {
         let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
         let iface = self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?;
         let total = IPV4_HDR_LEN + l4.len();
@@ -655,7 +669,7 @@ impl NetStack {
         p.put(l4.len()).map_err(|_| NetError::Enobufs)?
             .copy_from_slice(l4);
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
-        push_ipv4_header(&mut p, src, dst, proto, id)
+        crate::ipv4::push_ipv4_header_tos(&mut p, src, dst, proto, id, tos)
             .map_err(|_| NetError::Enobufs)?;
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
@@ -777,13 +791,13 @@ impl NetStack {
             // skips the redundant guard.
             let drain_segs = {
                 let mut c = entry.conn.lock();
-                let (src, dst) = (c.local.ip, c.remote.ip);
+                let (src, dst, tos) = (c.local.ip, c.remote.ip, ecn_tos(&c));
                 let segs = c.output(1500, true);
-                (segs, src, dst)
+                (segs, src, dst, tos)
             };
-            let (segs, src, dst) = drain_segs;
+            let (segs, src, dst, tos) = drain_segs;
             for s in &segs {
-                self.send_l4_over_ip(src, dst, IpProto::Tcp, s)?;
+                self.send_l4_over_ip_tos(src, dst, IpProto::Tcp, s, tos)?;
             }
             stamp_last_sent(&entry, segs.len());
             // F159: wake unconditionally — any input may have changed

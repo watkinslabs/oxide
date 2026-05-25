@@ -182,6 +182,51 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
                NetError::Eaddrinuse);
 }
 
+// ----- F190: ECN (RFC 3168) -----------------------------------------
+
+#[test]
+fn f190_active_open_syn_carries_ece_cwr() {
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
+    let syn = c.active_open().unwrap();
+    // TCP flags byte at offset 13.
+    let flags = syn[13];
+    assert!(flags & 0x40 != 0, "ECE must be set on ECN-negotiating SYN");
+    assert!(flags & 0x80 != 0, "CWR must be set on ECN-negotiating SYN");
+}
+
+#[test]
+fn f190_syn_ack_ece_only_enables_ecn() {
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
+    let _ = c.active_open().unwrap();
+    // Build SYN-ACK with ECE flag from scratch (proper checksum).
+    let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN];
+    let mut h = TcpHdr {
+        src_port: 80, dst_port: 5000,
+        seq: 0x2000_0000, ack: c.snd_nxt, data_offset: 5,
+        flags: crate::tcp_hdr::flags::SYN | crate::tcp_hdr::flags::ACK | crate::tcp_hdr::flags::ECE,
+        window: 65535, checksum: 0, urg_ptr: 0,
+    };
+    h.build_into(lo(), lo(), &mut buf);
+    let _ = c.input(lo_ip(), lo_ip(), &buf);
+    assert!(c.ecn_enabled, "ECE-only SYN-ACK must enable ECN");
+}
+
+#[test]
+fn f190_ece_triggers_one_loss_event_per_rtt() {
+    let mut c = client_established();
+    c.peer_mss = 1460;
+    c.ecn_enabled = true;
+    c.cwnd = 30_000;
+    c.ssthresh = u32::MAX;
+    crate::tcp_cc::on_ece(&mut c);
+    let after = c.cwnd;
+    assert!(after < 30_000, "ECN reduction must shrink cwnd");
+    // Immediate second ECE within the rate-limit window: cwnd unchanged.
+    crate::tcp_cc::on_ece(&mut c);
+    assert_eq!(c.cwnd, after, "ECN rate-limit prevents double-reduce");
+    assert!(c.send_cwr, "send_cwr armed");
+}
+
 // ----- F187: CUBIC congestion control -------------------------------
 
 #[test]
