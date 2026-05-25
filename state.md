@@ -3,79 +3,70 @@
 Branch: main (clean). spec-lint clean, 1151 hosted tests pass,
 x86 smoke ~16s green; arm smoke ~20s green (pre-push hook).
 
-## What actually works (post-F156…F170)
+## What actually works (post-F156…F175)
 
-### TCP
+### TCP — wire correct
 - Real 3WHS through slirp NAT; SSH banner round-trip
-- Per-conn waitq for connect/recv/send with SO_RCVTIMEO/SNDTIMEO
-  timer-wake (F169) and EINTR on signal (F168)
-- SYN + data retransmission with RFC 6298 RTO (F159)
-- Conn abort after 6 SYN retries / 15 data retries → ETIMEDOUT
-- SO_SNDBUF cap honored; write_blocking + write_nonblock (F164)
-- output() drains correctly; retx_q single source of truth (F165)
-- close() emits FIN; TIME_WAIT (60s) reaper (F161)
-- shutdown(SHUT_RD/WR/RDWR) distinct semantics (F166)
-- EPIPE + SIGPIPE on write to closing/closed side (F166/F167)
-- SO_ERROR returns real per-conn errno (F163)
+- Per-conn waitq for connect/recv/send; per-listener for accept
+- SO_RCVTIMEO/SNDTIMEO via timer-wake scanner (F169)
+- EINTR on signal (F168); SIGPIPE+EPIPE on closed-side write
+- SYN + data retx with RFC 6298 RTO + abort after retries
+- SO_SNDBUF cap, write-side backpressure
+- output() drains correctly; single-source retx_q
+- close() emits FIN; TIME_WAIT (60s) reaper
+- shutdown(SHUT_RD/WR/RDWR) distinct semantics
+- SO_ERROR per-conn (RST → ECONNREFUSED/RESET; retry → ETIMEDOUT)
+- **MSS negotiation** (F173) — peer's MSS option latched, min applied
+- **Nagle / TCP_NODELAY** (F175) — default-on coalescing, ACK-drains
+- **ICMP unreach → SO_ERROR** (F174) — abort + surface eno
 
-### UDP / AF_UNIX / AF_PACKET
-- UDP recvfrom blocks on per-port waitq (F162)
-- AF_UNIX accept blocks on per-listener waitq (F170)
-- AF_PACKET recvfrom + AF_UNIX recv still on global epoll-wake
-  / tick_yield fallback (separate PRs)
+### UDP — wire correct
+- recvfrom blocks on per-port waitq with SO_RCVTIMEO
+- UDP port released on close
+- ICMP unreach → per-port error_eno, consumed by next recv / SO_ERROR
 
-### Discipline / lint
-- R04 docs/07§5: no magic numbers for typed ABI constants
-- `code/magic-errno` lint enforces R04 (validated by injection)
-- `sched::live::Signum` typed enum + `send_signal_self` /
-  `wake_if_sleeping` / `deliverable_signals` helpers
+### AF_UNIX — per-pair waitqs
+- accept blocks on UnixListener.accept_waiters (F170)
+- read blocks on per-direction waitq for UnixPair/UnixMsgPair (F171)
+- UnixDgramQueue per-queue waitq (F171)
 
-## PRs this session (19 total)
+### AF_PACKET
+- recvfrom blocks on per-socket recv_waiters (F172)
 
-| # | What | Headline |
-|---|---|---|
-| 1222 | F156 TCP outbound | virtio-net spinlock self-deadlock fix |
-| 1223 | F157 read Eagain | interim |
-| 1224 | D38 | state truth |
-| 1225 | F158 read blocking waitq | proper Inode::read contract |
-| 1226 | F159 retx + connect waitq | SYN/data RTO + abort |
-| 1227 | F160 accept blocking | TCP listener waitq |
-| 1228 | F161 close + TW reaper | FIN + cleanup |
-| 1229 | F162 UDP recvfrom waitq | DNS no longer busy-poll |
-| 1230 | F163 SO_ERROR | real per-conn errno |
-| 1231 | R04 spec | no-magic-numbers rule |
-| 1232 | C lint | R04 enforcement |
-| 1233 | F164 write blocking + SO_SNDBUF | backpressure |
-| 1234 | F165 output() correctness | multi-segment + single-source retx |
-| 1235 | F166 shutdown + EPIPE | POSIX semantics |
-| 1236 | F167 SIGPIPE + Signum | `cmd \| head` works |
-| 1237 | D39 | state mid-session |
-| 1238 | F168 EINTR | signal-aware blocking |
-| 1239 | F169 SO_*TIMEO | timer-wake infra |
-| 1240 | F170 AF_UNIX accept | per-listener waitq |
+### Discipline
+- R04 docs/07§5 rule + `code/magic-errno` lint enforces typed-enum
+  ABI literals (Errno, Signum, OpenFlags, NR_*)
+- sched::live::Signum + send_signal_self + wake_if_sleeping +
+  deliverable_signals helpers
 
-## Open next (Tier 2 — degraded behavior without)
+## PRs this session (26 total)
 
-1. **AF_UNIX recv per-pair waitq** — UnixPair/UnixMsgPair/UnixDgramQueue
-   still use the global epoll-wake. Per-pair waitqs avoid waking
-   every epoll'd fd on every Unix-socket activity.
-2. **AF_PACKET recvfrom waitq** — dhcpcd / wireshark-style apps.
-3. **TCP MSS negotiation** — we hardcode 1460; ignore peer's
-   MSS option in SYN/SYN-ACK. OK on slirp (MTU 1500); breaks
-   on real-network apps over tunnels.
-4. **ICMP unreach → SO_ERROR on UDP** — apps learn "no listener".
-5. **SO_REUSEADDR enforcement** — once we have richer bind
-   conflicts (we currently only EADDRINUSE on duplicate listener,
-   which SO_REUSEADDR doesn't actually relax).
-6. **ARP cache aging / timeout** — stale entries.
-7. **TCP_NODELAY semantic** — we're effectively always-NODELAY;
-   no Nagle small-write coalescing.
-8. **Window scaling + SACK** — throughput on high-BDP / lossy
-   links.
-9. **IPv6 real transport** — `family = AF_INET6` accepted but
+F156 outbound TCP · F157 read EAGAIN (interim) · D38 state ·
+F158 read waitq · F159 retx + connect waitq · F160 accept ·
+F161 close+TW reaper · F162 UDP recv waitq · F163 SO_ERROR ·
+R04 + C lint magic-errno · F164 write+SNDBUF · F165 output()
+correctness · F166 shutdown+EPIPE · F167 SIGPIPE+Signum ·
+D39 state · F168 EINTR · F169 SO_*TIMEO · F170 AF_UNIX accept ·
+D40 state · F171 AF_UNIX recv per-pair · F172 AF_PACKET recv ·
+F173 MSS · F174 ICMP unreach · F175 Nagle
+
+## Open next (priority order — most are perf, not correctness)
+
+1. **SO_REUSEADDR enforcement** — currently no-op since we only
+   EADDRINUSE on duplicate listener (SO_REUSEADDR doesn't relax
+   that case). Once TIME_WAIT conflict matters, this lights up.
+2. **ARP cache aging / timeout** — stale entries linger forever.
+3. **Window scaling** — we advertise + ignore window=65535 fixed.
+   Throughput cap on high-BDP links.
+4. **SACK** — limits recovery on lossy links.
+5. **Real IPv6 transport** — `family=AF_INET6` accepted but
    V4-mapped only.
-10. **Per-fd targeted epoll wakes** — global notify_epoll_waiters
-    wakes every epoll on every socket event.
+6. **Per-fd targeted epoll wakes** — `notify_epoll_waiters`
+   still wakes every epoll'd fd on every socket event.
+7. **TCP timestamps option (RFC 7323)** — better RTT samples,
+   PAWS protection.
+8. **Cross-build distro programs** — toolchain integration to
+   actually run /bin/bash, /usr/bin/curl etc. as smoke targets.
 
 ## Discipline notes
 
@@ -95,7 +86,8 @@ make smoke-arm SMOKE_TIMEOUT=300
 make smoke-dhcp-x86  # quick: ~16s
 ```
 
-Pick item 1 (AF_UNIX recv waitqs) or item 4 (ICMP unreach →
-SO_ERROR). Both are tractable. After those, the remaining list
-is performance work (MSS / window / SACK / IPv6) that's lower
-priority for "cross-compile Linux apps and they work right".
+Pick item 8 (cross-build a real distro program — bash/curl/ssh
+as a smoke target) — that's the biggest "do Linux apps actually
+work" delta now that the network stack itself is wire-correct.
+Items 1-7 are perf/edge cases; the cross-build proves the suite
+end-to-end.
