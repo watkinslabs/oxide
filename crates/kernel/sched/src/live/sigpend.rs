@@ -42,3 +42,36 @@ pub fn send_signal_self(sig: Signum) {
         cur.sigpending.fetch_or(sig.bit(), Ordering::Release);
     }
 }
+
+/// F168: bits in `task.sigpending` that are not masked by
+/// `task.sigmask`. Zero when every pending signal is currently
+/// blocked. Blocking syscalls treat a non-zero result as "wake
+/// up and surface -EINTR" (Linux semantic).
+/// # C: O(1)
+pub fn deliverable_signals(task: &crate::Task) -> u64 {
+    task.sigpending.load(Ordering::Acquire) & !task.sigmask.load(Ordering::Acquire)
+}
+
+/// F168: convenience for the running task. None when no task
+/// is current.
+/// # C: O(1)
+pub fn deliverable_signals_self() -> u64 {
+    super::schedule::current().map(deliverable_signals).unwrap_or(0)
+}
+
+/// F168: if `task` is currently Sleeping (parked on some
+/// WaitList), transition to Runnable and enqueue so the parked
+/// helper observes the just-set pending signal on its next
+/// re-check. No-op for other states. Mirrors `wake_if_stopped`.
+/// # C: O(log N) under runqueue inner lock
+pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
+    if task.state() != crate::TaskState::Sleeping { return; }
+    task.set_state(crate::TaskState::Runnable);
+    if let Some(rq) = super::runqueue::global() {
+        let mut inner = rq.inner.lock();
+        task.lift_vruntime(inner.cfs.min_vruntime());
+        inner.enqueue(alloc::sync::Arc::clone(task));
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        crate::preempt::set_need_resched();
+    }
+}
