@@ -84,6 +84,26 @@ fn cubic_on_loss(c: &mut TcpConn) {
     c.cubic_epoch_ms = 0;
 }
 
+/// F190: ECN-Echo congestion signal. Treat as one loss event per
+/// RTT (rate-limited via ecn_last_reduce_ms). Cubic β reduction;
+/// keep cwnd ≥ ssthresh (no slow-start restart, per RFC 3168 §6.1.2).
+/// # C: O(1)
+pub fn on_ece(c: &mut TcpConn) {
+    // Same-RTT echo guard: if cwnd is already at-or-below the
+    // post-reduction level we'd compute now, skip — this ECE is
+    // the peer still telling us about the same CE.
+    if c.cubic_w_max != 0
+        && c.cwnd <= ((c.cubic_w_max as u64 * 8 / 10) as u32)
+    { return; }
+    cubic_on_loss(c);
+    c.cwnd = c.ssthresh;
+    c.ecn_last_reduce_ms = {
+        let n = crate::tcp_conn::tcp_now_ms();
+        if n == 0 { 1 } else { n }
+    };
+    c.send_cwr = true;
+}
+
 /// RTO loss event — CUBIC β=0.7; cwnd → MSS. # C: O(1)
 pub fn on_rto(c: &mut TcpConn) {
     let mss = cc_mss(c);
