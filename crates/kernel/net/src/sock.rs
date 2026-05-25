@@ -196,12 +196,13 @@ pub struct InetSocket {
     /// F172: socket-level read waitlist for AF_PACKET.
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
-    /// F181: per-fd epoll subscriber list. epoll_ctl(ADD) on this
-    /// socket's fd subscribes the caller's EpollInode; socket
-    /// event sites call `poll_subs.notify()` to wake only the
-    /// epolls actually watching this fd — not every epoll on
-    /// the system.
-    pub poll_subs: vfs::PollSubscribers,
+    /// F181: per-fd epoll subscriber list. Arc'd so other inodes
+    /// (the peer end of a UnixPair, the UDP port queue, the TCP
+    /// listener) can hold Weak refs and wake-targeted on events.
+    /// epoll_ctl(ADD) subscribes; event sites call
+    /// `poll_subs.notify()` to wake only the epolls actually
+    /// watching this fd.
+    pub poll_subs: Arc<vfs::PollSubscribers>,
 }
 
 /// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
@@ -274,7 +275,7 @@ impl InetSocket {
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
-            poll_subs:    vfs::PollSubscribers::new(),
+            poll_subs:    Arc::new(vfs::PollSubscribers::new()),
         }
     }
     /// # C: O(1)
@@ -294,7 +295,7 @@ impl InetSocket {
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
-            poll_subs:    vfs::PollSubscribers::new(),
+            poll_subs:    Arc::new(vfs::PollSubscribers::new()),
         }
     }
     /// `socket(AF_INET6, SOCK_DGRAM, …)`. V4 transport substrate;
@@ -331,7 +332,10 @@ impl InetSocket {
     pub fn new_unix_dgram() -> Self {
         let s = Self::new_tcp();
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        *s.kind.lock() = SockKind::UnixDgram(crate::UnixDgramQueue::new());
+        let q = crate::UnixDgramQueue::new();
+        // F181a: queue wakes the owning socket's subscribers.
+        q.register_subs(&s.poll_subs);
+        *s.kind.lock() = SockKind::UnixDgram(q);
         s
     }
 
@@ -366,38 +370,7 @@ impl InetSocket {
 
 impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
 
-/// F161: last-fd close path. When the final Arc<InetSocket> drops
-/// (every fd referencing this socket has been closed), tell the
-/// peer we're done. For TcpConn: emit FIN (or RST if mid-handshake)
-/// via the entry's TCB. The entry stays in `tcp_conns` until
-/// `tcp_retx_tick` removes it post-TimeWait — that's how we keep
-/// the 4-tuple reserved for the linger window so a quick reconnect
-/// on the same ports can't collide. UDP / AF_UNIX have no
-/// per-protocol close handshake; UDP just unbinds the port, AF_UNIX
-/// flips peer EOF via the existing pair / queue Drop in unix_sock.
-impl Drop for InetSocket {
-    fn drop(&mut self) {
-        if let SockKind::TcpConn(entry) = &*self.kind.lock() {
-            let (seg, src, dst) = {
-                let mut c = entry.conn.lock();
-                let s = c.drop_close();
-                (s, c.local.ip, c.remote.ip)
-            };
-            if let Some(s) = seg {
-                let _ = STACK.send_l4_over_ipv4_pub(src, dst, &s);
-                drain_loopback();
-            }
-            #[cfg(target_os = "oxide-kernel")]
-            entry.rx_waiters.wake_all();
-        }
-        // UDP: free the bound port so a subsequent socket() can reuse it.
-        if matches!(*self.kind.lock(), SockKind::Udp) {
-            if let Some(p) = *self.local_port.lock() {
-                STACK.unbind_udp(p);
-            }
-        }
-    }
-}
+// F161 InetSocket::Drop moved to sock_drop.rs (1000-line cap).
 
 impl vfs::Inode for InetSocket {
     fn ino(&self) -> vfs::Ino {
@@ -413,7 +386,7 @@ impl vfs::Inode for InetSocket {
     /// this socket's fd registers here, event sites call
     /// `self.poll_subs.notify()` instead of the global broadcast.
     fn poll_subscribers(&self) -> Option<&vfs::PollSubscribers> {
-        Some(&self.poll_subs)
+        Some(self.poll_subs.as_ref())
     }
 
     fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
@@ -728,6 +701,10 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             stack().bind_udp(ip, port)?;
             *sock.local_port.lock() = Some(port);
             *sock.local_ip.lock() = ip;
+            // F181a: register subscribers on the just-bound queue.
+            if let Some(q) = stack().udp_queue_arc(port) {
+                q.register_poll_subs(&sock.poll_subs);
+            }
             Ok(())
         }
     }
@@ -756,6 +733,9 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // memory" instead of "nobody home, I'll create my own
             // socket and listen".
             let pair = UNIX_REGISTRY.connect(&path).ok_or(NetError::Econnrefused)?;
+            // F181a: client end is B; register subscribers before
+            // setting kind so peer-A writes find live subs.
+            pair.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
             *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
             Ok(())
         }
@@ -803,6 +783,9 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
                     .unwrap_or(Ipv4Addr::LOOPBACK)
             };
             let entry = stack().tcp_connect(local_ip, local_port, dst_ip, port)?;
+            // F181a: bind owning fd's subscribers so deliver_tcp can
+            // wake epoll without broadcasting.
+            entry.register_poll_subs(&sock.poll_subs);
             *sock.kind.lock() = SockKind::TcpConn(entry.clone());
             *sock.peer.lock() = Some((dst_ip, port));
             // F159: park on entry.rx_waiters for the SYN-ACK. The
@@ -828,6 +811,9 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, _backlog: i32) -> Result<(), 
     let ip = *sock.local_ip.lock();
     let reuseaddr = sock.opts.reuseaddr.load(core::sync::atomic::Ordering::Acquire) != 0;
     let le = stack().tcp_listen(ip, port, reuseaddr)?;
+    // F181a: bind listener-fd subscribers so accept-q growth wakes
+    // epoll without broadcasting.
+    le.register_poll_subs(&sock.poll_subs);
     *sock.kind.lock() = SockKind::TcpListener(le);
     Ok(())
 }
@@ -850,6 +836,10 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         let l = l.clone();
         let pair = l.accept_q.lock().pop_front().ok_or(NetError::Eagain)?;
         let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp());
+        // F181a: server end is A. Register subscribers before
+        // assigning the kind so the first write from peer-B sees
+        // a live subscription.
+        pair.register_end_subs(crate::UnixEnd::A, &new_sock.poll_subs);
         *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
         return Ok(Accepted { new_sock, peer: None });
     }
@@ -866,6 +856,8 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     let new_sock = alloc::sync::Arc::new(
         if listener_fam == AF_INET6 { InetSocket::new_tcp6() } else { InetSocket::new_tcp() }
     );
+    // F181a: bind accepted fd's subscribers.
+    entry.register_poll_subs(&new_sock.poll_subs);
     *new_sock.kind.lock() = SockKind::TcpConn(entry);
     *new_sock.peer.lock() = Some((peer_ip, peer_port));
     Ok(Accepted { new_sock, peer: Some((peer_ip, peer_port)) })

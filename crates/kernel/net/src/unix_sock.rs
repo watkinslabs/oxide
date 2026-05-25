@@ -10,7 +10,7 @@
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as UnixLockClass};
@@ -18,10 +18,50 @@ use sync::{Spinlock, Socket as UnixLockClass};
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum UnixEnd { A, B }
 
+/// F181a: wake the PEER end's epoll subscribers (the end whose
+/// `read` would now succeed). When `end == A` we just wrote to
+/// a_to_b (peer = B), so wake end_b_subs; vice versa.
+/// Falls back to global epoll broadcast when peer's subs slot is
+/// empty (binding race) so no events get silently swallowed.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd) {
+    let slot = match end {
+        UnixEnd::A => pair.end_b_subs.lock().clone(),
+        UnixEnd::B => pair.end_a_subs.lock().clone(),
+    };
+    if let Some(weak) = slot {
+        if let Some(subs) = weak.upgrade() {
+            subs.notify();
+            return;
+        }
+    }
+    sched::live::notify_epoll_waiters();
+}
+
+/// F181a: msgpair sibling of `wake_peer_subs`.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn wake_msgpair_peer_subs(pair: &UnixMsgPair, end: UnixEnd) {
+    let slot = match end {
+        UnixEnd::A => pair.end_b_subs.lock().clone(),
+        UnixEnd::B => pair.end_a_subs.lock().clone(),
+    };
+    if let Some(weak) = slot {
+        if let Some(subs) = weak.upgrade() {
+            subs.notify();
+            return;
+        }
+    }
+    sched::live::notify_epoll_waiters();
+}
+
 /// One stream-pair in-kernel: two unidirectional byte queues.
 /// F171: per-direction WaitList lets a parked reader (Inode::read)
-/// wake precisely when its ring grows, instead of every AF_UNIX
-/// peer waking on every global epoll-notify pulse.
+/// wake precisely when its ring grows.
+/// F181a: each end's epoll-subscriber list is registered via
+/// `register_end_subs` so write()/close_writer wake only the
+/// peer end's subscribers, not every epoll on the box.
 pub struct UnixPair {
     pub a_to_b: Spinlock<UnixRing, UnixLockClass>,
     pub b_to_a: Spinlock<UnixRing, UnixLockClass>,
@@ -31,6 +71,11 @@ pub struct UnixPair {
     pub a_to_b_waiters: sched::live::WaitList,
     #[cfg(target_os = "oxide-kernel")]
     pub b_to_a_waiters: sched::live::WaitList,
+    /// End A's epoll subscribers (the InetSocket on end A). Wakeable
+    /// when a_to_b advances? No — end A reads from b_to_a. So this
+    /// is woken when end B writes (write(end=B) advances b_to_a).
+    pub end_a_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    pub end_b_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
 }
 
 pub struct UnixRing {
@@ -49,7 +94,19 @@ impl UnixPair {
             a_to_b_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
             b_to_a_waiters: sched::live::WaitList::new(),
+            end_a_subs: Spinlock::new(None),
+            end_b_subs: Spinlock::new(None),
         })
+    }
+
+    /// F181a: register an end's epoll-subscriber list. Called when
+    /// an InetSocket is bound to this pair's end (socketpair,
+    /// AF_UNIX accept, AF_UNIX connect). Writes wake the OPPOSITE
+    /// end's subscribers.
+    /// # C: O(1)
+    pub fn register_end_subs(&self, end: UnixEnd, subs: &Arc<vfs::PollSubscribers>) {
+        let slot = match end { UnixEnd::A => &self.end_a_subs, UnixEnd::B => &self.end_b_subs };
+        *slot.lock() = Some(Arc::downgrade(subs));
     }
 
     /// Returns the WaitList the reader of `end` should park on.
@@ -80,7 +137,11 @@ impl UnixPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            sched::live::notify_epoll_waiters();
+            // F181a: targeted epoll wake — peer end's subscribers
+            // are the ones whose poll() flips to POLL_IN. Fall back
+            // to global broadcast only if peer's subs not registered
+            // (pre-binding race; rare and safe).
+            wake_peer_subs(self, end);
         }
         n
     }
@@ -116,7 +177,7 @@ impl UnixPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            sched::live::notify_epoll_waiters();
+            wake_peer_subs(self, end);
         }
     }
 
@@ -148,6 +209,9 @@ pub struct UnixMsgPair {
     pub a_to_b_waiters: sched::live::WaitList,
     #[cfg(target_os = "oxide-kernel")]
     pub b_to_a_waiters: sched::live::WaitList,
+    /// F181a: per-end epoll subscribers — see UnixPair.
+    pub end_a_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    pub end_b_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
 }
 
 pub struct UnixMsgRing {
@@ -165,7 +229,16 @@ impl UnixMsgPair {
             a_to_b_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
             b_to_a_waiters: sched::live::WaitList::new(),
+            end_a_subs: Spinlock::new(None),
+            end_b_subs: Spinlock::new(None),
         })
+    }
+
+    /// F181a: register an end's subscribers (mirrors UnixPair).
+    /// # C: O(1)
+    pub fn register_end_subs(&self, end: UnixEnd, subs: &Arc<vfs::PollSubscribers>) {
+        let slot = match end { UnixEnd::A => &self.end_a_subs, UnixEnd::B => &self.end_b_subs };
+        *slot.lock() = Some(Arc::downgrade(subs));
     }
 
     /// WaitList the reader of `end` should park on.
@@ -193,7 +266,7 @@ impl UnixMsgPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            sched::live::notify_epoll_waiters();
+            wake_msgpair_peer_subs(self, end);
         }
         n
     }
@@ -234,7 +307,7 @@ impl UnixMsgPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            sched::live::notify_epoll_waiters();
+            wake_msgpair_peer_subs(self, end);
         }
     }
 
@@ -271,6 +344,11 @@ pub struct UnixDgramQueue {
     /// SOCK_DGRAM socket today — no per-direction split needed).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
+    /// F181a: epoll subscribers of the owning InetSocket. Set via
+    /// `register_subs` when the InetSocket is bound to this queue
+    /// at socket() time. push() wakes targeted subscribers instead
+    /// of broadcasting.
+    pub subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
 }
 
 pub struct UnixDgram {
@@ -290,16 +368,29 @@ impl UnixDgramQueue {
             msgs: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
+            subs: Spinlock::new(None),
         })
     }
-    /// Push a complete dgram onto the queue. F125/F171: wake both
-    /// the per-queue waitlist (blocking recv) and epoll parkers.
+
+    /// F181a: register owning InetSocket's subscribers.
+    /// # C: O(1)
+    pub fn register_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
+        *self.subs.lock() = Some(Arc::downgrade(subs));
+    }
+
+    /// Push a complete dgram onto the queue.
     /// # C: O(1)
     pub fn push(&self, msg: UnixDgram) {
         self.msgs.lock().push_back(msg);
         #[cfg(target_os = "oxide-kernel")]
         {
             self.waiters.wake_all();
+            // F181a: wake owning socket's epoll subscribers; fall
+            // back to global broadcast if subs not yet registered.
+            let slot = self.subs.lock().clone();
+            if let Some(weak) = slot {
+                if let Some(s) = weak.upgrade() { s.notify(); return; }
+            }
             sched::live::notify_epoll_waiters();
         }
     }
