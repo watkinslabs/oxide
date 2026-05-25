@@ -117,6 +117,17 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn poll(&self) -> u32 { POLL_IN | POLL_OUT }
 
+    /// F181: per-Inode subscriber list for targeted epoll wakes.
+    /// Default `None` falls back to the global epoll-broadcast wake
+    /// (notify_epoll_waiters). Inodes whose event sites can issue
+    /// targeted wakes (InetSocket, future Pipe/Tty) override to
+    /// return Some — `epoll_ctl(ADD)` then subscribes the calling
+    /// epoll, and the inode's event sites call
+    /// `self.poll_subscribers().unwrap().notify()` to wake only
+    /// subscribers instead of every epoll on the system.
+    /// # C: O(1)
+    fn poll_subscribers(&self) -> Option<&crate::PollSubscribers> { None }
+
     /// Per-FS metadata accessors. Defaults return `None` (i.e. "the
     /// kernel-side `inode_times` overlay or the statx fallback owns
     /// the answer"). Per-FS impls override with `Some(stored_value)` —
