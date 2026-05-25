@@ -89,12 +89,41 @@ impl TcpHdr {
     pub fn payload_offset(&self) -> usize { self.data_offset as usize * 4 }
 }
 
-/// F173/F178: TCP option kinds per RFC 9293 §3.1 + RFC 7323.
+/// F173/F178/F179: TCP option kinds per RFC 9293 §3.1 + RFC 7323 + RFC 2018.
 pub mod opt {
-    pub const END:    u8 = 0;
-    pub const NOP:    u8 = 1;
-    pub const MSS:    u8 = 2;
-    pub const WSCALE: u8 = 3;  // RFC 7323 §2.2
+    pub const END:           u8 = 0;
+    pub const NOP:           u8 = 1;
+    pub const MSS:           u8 = 2;
+    pub const WSCALE:        u8 = 3;  // RFC 7323 §2.2
+    pub const SACK_PERMIT:   u8 = 4;  // RFC 2018 §2
+    pub const SACK:          u8 = 5;  // RFC 2018 §3
+}
+
+/// F179: a single Selective ACK block — half-open `[left, right)`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SackBlock { pub left: u32, pub right: u32 }
+
+/// F179: parse SACK option from a non-SYN segment. Returns up to
+/// 4 blocks per RFC 2018 (option max len = 2 + 8*4 = 34 bytes).
+/// Empty result if absent or malformed.
+/// # C: O(blocks)
+pub fn parse_sack_option(seg: &[u8]) -> alloc::vec::Vec<SackBlock> {
+    let bytes = match walk_options(seg, opt::SACK) { Some(b) => b, None => return alloc::vec::Vec::new() };
+    let mut out = alloc::vec::Vec::new();
+    let mut i = 0usize;
+    while i + 8 <= bytes.len() && out.len() < 4 {
+        let l = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+        let r = u32::from_be_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]);
+        if r.wrapping_sub(l) > 0 { out.push(SackBlock { left: l, right: r }); }
+        i += 8;
+    }
+    out
+}
+
+/// F179: parse SACK-Permitted (presence-only option, kind=4 len=2).
+/// # C: O(option_bytes)
+pub fn parse_sack_permitted(seg: &[u8]) -> bool {
+    walk_options(seg, opt::SACK_PERMIT).is_some()
 }
 
 /// F178: parse the peer's TCP Window Scale option from a SYN /
