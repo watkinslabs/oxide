@@ -34,16 +34,33 @@
 #![cfg(target_os = "oxide-kernel")]
 
 const SIG_FRAME_MAGIC: u64 = 0x5A55_5A55_DEAD_BEEF;
-// 48 B so sp = saved_sp - 48 stays 16-aligned (handler-entry SP must be
-// 16-aligned on AArch64) and so we have room for the saved sigmask
-// slot at offset 40. Layout:
-//   [sp +  0]  magic
-//   [sp +  8]  saved_pstate / rflags
-//   [sp + 16]  saved_sp / rsp
-//   [sp + 24]  saved_pc / rip
-//   [sp + 32]  restorer  (x86 ret target; ARM also writes for symmetry, but LR=restorer)
-//   [sp + 40]  saved sigmask — restored by rt_sigreturn
+// 48 B signal frame. All saved-context slots live AT OR ABOVE the
+// handler-entry SP; the handler's own stack grows BELOW its SP and
+// must not be allowed to clobber the saved frame. Layout, in terms
+// of new_sp (handler-entry SP) — same on x86 and ARM:
+//
+//   x86_64 (handler `ret` pops slot 0 as the return target):
+//     [new_rsp +  0]  restorer  ← ret pops, lands at restorer
+//     [new_rsp +  8]  magic
+//     [new_rsp + 16]  saved_rflags
+//     [new_rsp + 24]  saved_rsp
+//     [new_rsp + 32]  saved_rip
+//     [new_rsp + 40]  saved_sigmask
+//
+//   aarch64 (handler `ret` is `br lr`; no stack pop; LR=restorer):
+//     [new_sp  +  0]  magic
+//     [new_sp  +  8]  saved_pstate
+//     [new_sp  + 16]  saved_sp
+//     [new_sp  + 24]  saved_pc
+//     [new_sp  + 32]  saved_sigmask
+//     (no restorer slot — LR carries it)
+//
+// x86 also reserves the 128-byte red zone below saved_rsp per the
+// SysV x86_64 ABI so the interrupted frame's red-zone data stays
+// intact across signal delivery.
 const SIG_FRAME_BYTES: u64 = 48;
+#[cfg(target_arch = "x86_64")]
+const X86_RED_ZONE: u64 = 128;
 
 /// Arch-neutral entry: route to deliver_x86 / deliver_arm.
 /// # SAFETY: caller is the syscall dispatch tail on the running
@@ -90,9 +107,16 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
     let saved_rflags = frame[1];
     let saved_rsp    = frame[2];
 
-    // Pick the new user RSP. -8 for the restorer return address.
-    let mut sp = saved_rsp;
-    sp = sp.saturating_sub(SIG_FRAME_BYTES);
+    // Carve the signal frame BELOW the red zone and pick new_rsp so
+    // the saved-context slots live at addresses ABOVE the handler's
+    // entry SP (the handler's own stack grows below). SysV requires
+    // rsp % 16 == 8 at function entry (post-`call` invariant) — the
+    // restorer addr at [new_rsp+0] plays the role of the pushed
+    // return address.
+    let top = saved_rsp.saturating_sub(X86_RED_ZONE);
+    // (top - SIG_FRAME_BYTES) rounded down to 16, then -8 → %16==8.
+    let aligned = top.saturating_sub(SIG_FRAME_BYTES) & !0xfu64;
+    let new_rsp = aligned.saturating_sub(8);
 
     // Block the delivered signal during its handler (POSIX
     // SA_NODEFER-off). Without this, the syscall-return path
@@ -107,21 +131,15 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
         None    => 0,
     };
 
-    // SAFETY: sp validated < USER_VA_END (saved_rsp came from user, was < USER_VA_END); CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted).
+    // SAFETY: new_rsp validated < saved_rsp < USER_VA_END; CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted).
     unsafe {
-        core::ptr::write_volatile((sp +  0) as *mut u64, SIG_FRAME_MAGIC);
-        core::ptr::write_volatile((sp +  8) as *mut u64, saved_rflags);
-        core::ptr::write_volatile((sp + 16) as *mut u64, saved_rsp);
-        core::ptr::write_volatile((sp + 24) as *mut u64, saved_rip);
-        core::ptr::write_volatile((sp + 32) as *mut u64, restorer);
-        core::ptr::write_volatile((sp + 40) as *mut u64, old_sigmask);
+        core::ptr::write_volatile((new_rsp +  0) as *mut u64, restorer);
+        core::ptr::write_volatile((new_rsp +  8) as *mut u64, SIG_FRAME_MAGIC);
+        core::ptr::write_volatile((new_rsp + 16) as *mut u64, saved_rflags);
+        core::ptr::write_volatile((new_rsp + 24) as *mut u64, saved_rsp);
+        core::ptr::write_volatile((new_rsp + 32) as *mut u64, saved_rip);
+        core::ptr::write_volatile((new_rsp + 40) as *mut u64, old_sigmask);
     }
-
-    // The handler will be entered with the restorer addr as if it
-    // were the call's return address -- i.e. rsp points AT the
-    // restorer slot (sp+32), and ret pops from there. Per SysV,
-    // the handler is `void(int sig)`; place sig in rdi.
-    let new_rsp = sp + 32;
 
     #[cfg(feature = "debug-sched")]
     {
@@ -163,24 +181,24 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
     // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
     let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
     let cur_rsp = frame[2];
-    // Handler entered with rsp=sp+32 (pointing at restorer addr).
-    // Handler `ret` popped restorer (rsp=sp+40, jumped to restorer).
-    // sa_restorer issues `mov rax, 15; syscall` — at syscall the
-    // user rsp is sp+40. Magic is at sp+0; frame_base = cur_rsp - 40.
-    let frame_base = cur_rsp.saturating_sub(40);
+    // Handler entered with rsp = new_rsp; `ret` popped the restorer
+    // slot at [new_rsp+0] (rsp += 8) and jumped to the restorer
+    // which issues `mov rax,15; syscall` without touching rsp →
+    // cur_rsp at syscall = new_rsp + 8. frame_base = new_rsp.
+    let frame_base = cur_rsp.saturating_sub(8);
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
     }
     // SAFETY: frame_base validated < USER_VA_END; CPL=0 reads through caller's AS.
-    let magic = unsafe { core::ptr::read_volatile(frame_base as *const u64) };
+    let magic = unsafe { core::ptr::read_volatile((frame_base + 8) as *const u64) };
     if magic != SIG_FRAME_MAGIC {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: same validated range as the magic read; saved fields at +8/+16/+24/+40 are 8-byte aligned per the layout we wrote in deliver_x86; CPL=0 reads through caller's AS.
+    // SAFETY: same validated range as the magic read; saved fields at +16/+24/+32/+40 are 8-byte aligned per the layout we wrote in deliver_x86; CPL=0 reads through caller's AS.
     let (saved_rflags, saved_rsp, saved_rip, saved_sigmask) = unsafe { (
-        core::ptr::read_volatile((frame_base +  8) as *const u64),
         core::ptr::read_volatile((frame_base + 16) as *const u64),
         core::ptr::read_volatile((frame_base + 24) as *const u64),
+        core::ptr::read_volatile((frame_base + 32) as *const u64),
         core::ptr::read_volatile((frame_base + 40) as *const u64),
     ) };
     frame[0] = saved_rip;
@@ -219,11 +237,12 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
     let saved_pstate = frame.spsr_el1;
     let saved_sp    = frame.sp_el0;
 
-    // Carve a 48-byte signal frame on the user stack: same wire
-    // shape as x86 plus a saved-sigmask slot at +40. sp = saved_sp
-    // - 48 keeps the new SP 16-byte aligned (AAPCS64 requires
-    // 16-aligned SP at any public function entry).
-    let mut sp = saved_sp.saturating_sub(SIG_FRAME_BYTES);
+    // Carve the signal frame so saved-context slots live AT OR
+    // ABOVE new_sp; the handler's own stack grows below new_sp and
+    // must not be allowed to clobber the saved frame. AAPCS64
+    // requires SP % 16 == 0 at any public function entry, so
+    // new_sp = (saved_sp - 48) & ~0xf.
+    let new_sp = saved_sp.saturating_sub(SIG_FRAME_BYTES) & !0xfu64;
     // Block the delivered signal during its handler (POSIX
     // SA_NODEFER-off). Prevents the syscall-return path from
     // re-entering deliver_arm for SIGCHLD while busybox-init is
@@ -235,20 +254,14 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
         Some(c) => c.sigmask.fetch_or(1u64 << (sig - 1), Ordering::AcqRel),
         None    => 0,
     };
-    // SAFETY: sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
+    // SAFETY: new_sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
     unsafe {
-        core::ptr::write_volatile((sp +  0) as *mut u64, SIG_FRAME_MAGIC);
-        core::ptr::write_volatile((sp +  8) as *mut u64, saved_pstate);
-        core::ptr::write_volatile((sp + 16) as *mut u64, saved_sp);
-        core::ptr::write_volatile((sp + 24) as *mut u64, saved_pc);
-        core::ptr::write_volatile((sp + 32) as *mut u64, restorer);
-        core::ptr::write_volatile((sp + 40) as *mut u64, old_sigmask);
+        core::ptr::write_volatile((new_sp +  0) as *mut u64, SIG_FRAME_MAGIC);
+        core::ptr::write_volatile((new_sp +  8) as *mut u64, saved_pstate);
+        core::ptr::write_volatile((new_sp + 16) as *mut u64, saved_sp);
+        core::ptr::write_volatile((new_sp + 24) as *mut u64, saved_pc);
+        core::ptr::write_volatile((new_sp + 32) as *mut u64, old_sigmask);
     }
-
-    // The handler enters with x30 = restorer (so a final `ret`
-    // tail-calls into the restorer thunk) and sp = sp+32 (pointing
-    // at restorer slot). Per AAPCS64, sig goes in x0.
-    let new_sp = sp + 32;
 
     #[cfg(feature = "debug-sched")]
     {
@@ -283,16 +296,13 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     // SAFETY: per fn contract — live saved SVC frame, sole writer per dispatch.
     let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
     let cur_sp = frame.sp_el0;
-    // ARM `ret` is a register-indirect branch — does NOT pop the
-    // stack (unlike x86 `ret` which does). Handler entered with
-    // SP=frame_base+32 and LR=restorer; epilogue restores SP to
-    // frame_base+32 before `ret` to restorer; sa_restorer's `svc
-    // #0` fires with SP unchanged → cur_sp = frame_base + 32, so
-    // frame_base = cur_sp - 32. Pre-B22 code used cur_sp - 40 (copy
-    // of x86 path where the 8-byte pop adds an extra slot); magic
-    // check read at frame_base - 8 failed, and init faulted with
-    // FAR = SIG_FRAME_MAGIC.
-    let frame_base = cur_sp.saturating_sub(32);
+    // ARM `ret` is `br lr` — does NOT pop the stack. Handler
+    // entered with SP=new_sp and LR=restorer; epilogue restores SP
+    // to new_sp before `ret`; sa_restorer's `svc #0` fires with SP
+    // unchanged → cur_sp == new_sp == frame_base. Saved-context
+    // slots all live at addresses ≥ new_sp so the handler's stack
+    // cannot clobber them.
+    let frame_base = cur_sp;
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -301,12 +311,12 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     if magic != SIG_FRAME_MAGIC {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: same validated range; saved fields at +8/+16/+24/+40 are 8-byte aligned per layout in deliver_arm.
+    // SAFETY: same validated range; saved fields at +8/+16/+24/+32 are 8-byte aligned per layout in deliver_arm.
     let (saved_pstate, saved_sp, saved_pc, saved_sigmask) = unsafe { (
         core::ptr::read_volatile((frame_base +  8) as *const u64),
         core::ptr::read_volatile((frame_base + 16) as *const u64),
         core::ptr::read_volatile((frame_base + 24) as *const u64),
-        core::ptr::read_volatile((frame_base + 40) as *const u64),
+        core::ptr::read_volatile((frame_base + 32) as *const u64),
     ) };
     frame.elr_el1  = saved_pc;
     frame.spsr_el1 = saved_pstate;
