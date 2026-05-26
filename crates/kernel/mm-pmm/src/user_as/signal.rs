@@ -217,6 +217,17 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
         klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
         klog::write_raw(b" far=");      klog::write_hex_u64(far);
         klog::write_raw(b" elr=");      klog::write_hex_u64(elr);
+        // Dump user SP_EL0 (= user SP at fault). EL1 fault context
+        // preserves SP_EL0 — `mrs` reads it directly without
+        // touching any per-task save area. Catches stack-corruption
+        // bugs where x9 / x29 derived from `sp+const` look like
+        // small constants (e.g. F204 dropbear sha256_compress).
+        let sp_el0: u64;
+        // SAFETY: `mrs sp_el0` is a privileged read at EL1 with no
+        // side effects; sp_el0 holds the interrupted EL0 SP per
+        // ARMv8 D1.7.
+        unsafe { core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack, preserves_flags)); }
+        klog::write_raw(b" sp_el0=");   klog::write_hex_u64(sp_el0);
         klog::write_raw(b"\n");
     }
     if let Some(rq) = sched::live::global() {
