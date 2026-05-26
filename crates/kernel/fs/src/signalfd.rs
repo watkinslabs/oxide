@@ -66,6 +66,14 @@ pub fn sys_signalfd4(args: &syscall::SyscallArgs) -> i64 {
     }
     // SAFETY: mask_ptr validated; CPL=0 reads through caller's AS.
     let mask = unsafe { core::ptr::read_volatile(mask_ptr as *const u64) };
+    #[cfg(feature = "debug-ssh")]
+    {
+        klog::write_raw(b"[INFO]  ssh-trace: signalfd4 in_fd=");
+        klog::write_dec_u64(in_fd as u64);
+        klog::write_raw(b" mask=");
+        klog::write_hex_u64(mask);
+        klog::write_raw(b"\n");
+    }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
