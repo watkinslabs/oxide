@@ -1,51 +1,52 @@
 # state — hand-off
 
-Branch: F202-ssh-exec-segfault (in flight → PR pending).
-Workspace: spec-lint clean, x86 smoke 16s.
+Branch: F203-ssh-channel-eof (next bug; no fix landed yet).
+Workspace: spec-lint clean.
 
-## Endgame this session: working SSH login
+## Where we are
 
-**`ssh ... 'echo HELLO; id'` now returns output over the SSH exec
-channel.** Captured client side:
+Two PRs landed this session: #1281 (F201 pipe + pty `poll()`)
+and #1282 (F202 `sys_select` consults `inode.poll()`). The
+combination took the SSH exec channel from "hangs forever +
+Aiee segfault" to actually returning shell output to the client:
 
+    $ ssh -p 2222 alice@127.0.0.1 'echo HELLO; id; uname -a'
     HELLO
     uid=1000(alice) gid=1000 groups=1000,10(wheel),100(users)
+    Linux oxide 5.15.0-oxide #1 SMP PREEMPT oxide v0.1.0 x86_64 GNU/Linux
 
-Subsequent commands in the same exec request still stall — the
-chain pauses after the first couple of outputs — but the
-pipe→relay→ssh-socket path is unambiguously alive.
+## Open — F203 candidates
 
-## What this PR lands
+1. **Channel never closes.** ssh client hangs waiting for
+   CHANNEL_EOF/CHANNEL_CLOSE after the last output arrives.
+   Likely pipe writers→0 (POLL_HUP) isn't producing the EOF read
+   that dropbear's session pump needs to emit CHANNEL_EOF.
+   Inspect `crates/kernel/fs/src/pipe.rs` close-hook (`writers
+   .fetch_sub`) plus the `read()` path that returns Ok(0) when
+   writers==0 — verify it actually unblocks a parked reader.
 
-**sys_select consults inode.poll().**
-`kernel/src/syscalls/select.rs` was hardcoded `(true, true)` for
-every non-pty char dev and every non-char-dev file, so dropbear's
-session pump (`select(read_pipe, sock)`) never reflected actual
-queue state. Pipes, sockets, ptys, regular files all now project
-through the inode-trait poll mask:
+2. **"Aiee, segfault!"** prints on busybox sh exit after the
+   exec command finishes. Trace under
+   `make qemu-x86-debug FEATURES=debug-syscall,debug-irq` and
+   filter `[FAULT] sigsegv` to capture rip/cr2. Probably either
+   (a) wait4 path on shell reaping subshell `uname` child, or
+   (b) sys_exit_group teardown of the last user thread.
 
-    got_read  = (mask & (POLL_IN  | POLL_HUP)) != 0
-    got_write = (mask &  POLL_OUT)             != 0
+3. **N-1 commands rule:** each test run delivers one more
+   command than the previous build; smells like a buffer-drain
+   off-by-one in dropbear's exec → ssh-socket forwarder. Could
+   be a side effect of (1).
 
-POLL_HUP folded into read-ready so EOF wakes a peer's read loop
-(Linux pipe(7) and socket select semantics).
+## Reproducer (literal first command for next session)
 
-## Verified
+    make qemu-x86 OXIDE_QEMU_HEADLESS=1 > /tmp/q.log 2>&1 &
+    until ss -lnt | grep -q 2222; do sleep 1; done
+    sshpass -p swordfish ssh -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null -p 2222 \
+      alice@127.0.0.1 'echo HELLO'
 
-- spec-lint clean.
-- x86 smoke 16s.
-- `ssh -p 2222 alice@127.0.0.1 'echo HELLO; id'` returns
-  HELLO + uid=1000(alice) over the SSH exec channel (was: hang +
-  Aiee segfault pre-F202).
-
-## Open — next bug
-
-After the first one or two commands in a single exec request,
-the channel stalls. Probably the pipe→ssh forward isn't draining
-on POLL_HUP after the shell exits (we wake on HUP, read returns
-bytes, but the EOF-on-empty path may not be plumbed back into
-SSH2 CHANNEL_EOF / CHANNEL_CLOSE). Next session: confirm shell
-exit_status reaches dropbear, then trace channel close emission.
+Expect HELLO + hang. Then `tail -50 /tmp/q.log` for the segfault
+print.
 
 ## Out-of-scope (deferred for later PRs)
 
