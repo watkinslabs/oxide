@@ -59,6 +59,26 @@ pub fn deliver_taken(p: &PendingSignal) {
     }
 }
 
+/// Filter-and-log per-syscall (nr, rv) under the SSH-only gate.
+/// Excludes the highest-frequency callers so PL011 doesn't drown
+/// on aarch64. Anything that prints here is a candidate for the
+/// SIGCHLD-detection mechanism dropbear-aarch64 actually uses.
+/// # C: O(1)
+pub fn syscall_nr_rv(nr: u64, rv: i64) {
+    let _ = (nr, rv);
+    debug_ssh! {
+        let noisy = matches!(nr,
+            72 | 23 | 63 | 0 | 64 | 1 | 35 | 230 | 113 | 228 | 233 | 232 | 96);
+        if !noisy {
+            klog::write_raw(b"[INFO]  ssh-trace: syscall nr=");
+            klog::write_dec_u64(nr);
+            klog::write_raw(b" rv=");
+            klog::write_hex_u64(rv as u64);
+            klog::write_raw(b"\n");
+        }
+    }
+}
+
 /// # C: O(1)
 pub fn deliver_blocked() {
     debug_ssh! {
