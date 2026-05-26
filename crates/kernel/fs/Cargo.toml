@@ -30,3 +30,5 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 default = []
 debug-boot = []
 debug-sched = []
+# F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.
+debug-ssh = []
