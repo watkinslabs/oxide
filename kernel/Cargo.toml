@@ -69,7 +69,7 @@ debug-sched = ["sched/debug-sched","fs/debug-sched"]  # first-kthread coroutine 
 debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = []  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
-debug-ssh = ["sched/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
+debug-ssh = ["sched/debug-ssh","fs/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
 debug-trace = []  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules","debug-syscall","sched/debug-syscall"]
 
