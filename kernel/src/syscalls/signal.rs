@@ -782,6 +782,13 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     let info    = args.a1;
     let timeout = args.a2;
     let sz      = args.a3;
+    debug_ssh! {
+        klog::write_raw(b"[INFO]  ssh-trace: rt_sigtimedwait set_ptr=");
+        klog::write_hex_u64(set);
+        klog::write_raw(b" timeout_ptr=");
+        klog::write_hex_u64(timeout);
+        klog::write_raw(b"\n");
+    }
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
     if set == 0 || set >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);

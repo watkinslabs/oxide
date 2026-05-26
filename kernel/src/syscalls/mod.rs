@@ -342,6 +342,11 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
             // over the leak on x86 can't run on arm. Dropping here
             // makes the close-on-exit semantic uniform across the
             // signal-delivery vs poll-driven wake paths.
+            debug_ssh! {
+                klog::write_raw(b"[INFO]  ssh-trace: sys_exit tid=");
+                klog::write_dec_u64(task.tid as u64);
+                klog::write_raw(b" drop_fd_table\n");
+            }
             // SAFETY: task is the exiting task running on this CPU; sole writer to fd_table slot per single-mutator-per-active-CPU; preempt-off through sys_exit. Replacing with None decrements the Arc; if the parent has its own Arc (POSIX fork's deep copy) or CLONE_FILES siblings exist, those references keep entries alive. Otherwise the Files drop and their close hooks fire (pipe writer/reader counts, etc.).
             unsafe { task.replace_fd_table(None); }
             sched::live::mark_done(task);
@@ -907,6 +912,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
     }
+    debug_ssh! { crate::syscalls::signal_trace::syscall_nr_rv(nr, rv); }
     // POSIX timers + rseq cpu_id writeback at syscall-return tail.
     sched::timers::fire_due_timers();
     crate::syscalls::proc::rseq_writeback();
