@@ -355,10 +355,36 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
     let Some(pipe) = any.downcast_ref::<PipeInode>() else { return };
     if was_writable {
         let prev = pipe.writers.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 { pipe.read_waiters.wake_all(); }
+        if prev == 0 {
+            // Re-zero on underflow: count tracking is fundamentally
+            // tied to Arc<File> ownership, but fork_clone today bumps
+            // Arc refcount without bumping writers/readers. Once that
+            // is fixed via a per-clone hook, this guard goes away.
+            pipe.writers.store(0, Ordering::Release);
+        }
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: pipe_close writer prev=");
+            klog::write_dec_u64(prev as u64);
+            klog::write_raw(b" readers=");
+            klog::write_dec_u64(pipe.readers.load(Ordering::Acquire) as u64);
+            klog::write_raw(b"\n");
+        }
+        if prev <= 1 { pipe.read_waiters.wake_all(); }
     } else {
         let prev = pipe.readers.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 { pipe.write_waiters.wake_all(); }
+        if prev == 0 {
+            pipe.readers.store(0, Ordering::Release);
+        }
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: pipe_close reader prev=");
+            klog::write_dec_u64(prev as u64);
+            klog::write_raw(b" writers=");
+            klog::write_dec_u64(pipe.writers.load(Ordering::Acquire) as u64);
+            klog::write_raw(b"\n");
+        }
+        if prev <= 1 { pipe.write_waiters.wake_all(); }
     }
 }
 
@@ -366,4 +392,24 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
 /// # C: O(1)
 pub fn install_close_hook() {
     vfs::set_close_hook(pipe_close_hook);
+    vfs::set_clone_hook(pipe_clone_hook);
+}
+
+/// F205 clone hook: fires whenever a File reference is duplicated
+/// (fork_clone, dup, dup2). Each duplication is a new "open count"
+/// on the pipe end, mirroring Linux's per-fd writer/reader tracking.
+/// Without it, fork_clone bumps the Arc<File> refcount but leaves
+/// writers/readers at the original value; closing one duplicate
+/// drops the Arc to 1 (File still alive, no close hook fires),
+/// the surviving fd holds writers > 0 forever, and pipe POLL_HUP
+/// never propagates to the read side.
+/// # C: O(1)
+fn pipe_clone_hook(inode: &InodeRef, was_writable: bool) {
+    let Some(any) = inode.as_any() else { return };
+    let Some(pipe) = any.downcast_ref::<PipeInode>() else { return };
+    if was_writable {
+        pipe.writers.fetch_add(1, Ordering::AcqRel);
+    } else {
+        pipe.readers.fetch_add(1, Ordering::AcqRel);
+    }
 }

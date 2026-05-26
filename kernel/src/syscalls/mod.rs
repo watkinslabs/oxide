@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_trace; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -326,6 +326,24 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(args.a0 as i32, Ordering::Release);
             task.vfork_pending.store(false, Ordering::Release); // F156 vfork
+            // F205: drop the exiting task's fd_table Arc reference
+            // BEFORE waking the parent. Linux closes a process's
+            // open files at exit (do_exit → exit_files → put_files_struct);
+            // without this, every File in the table stays alive until
+            // the parent reaps via wait4. That breaks pipe POLL_HUP
+            // propagation — the shell child's stdout-pipe-write-end
+            // File doesn't drop, pipe_close_hook doesn't fire,
+            // writers stays > 0, dropbear's select on the read end
+            // never reports POLL_HUP, and CHANNEL_EOF never goes
+            // out. The bug was load-bearing on aarch64 because
+            // dropbear-aarch64 keeps SIGCHLD masked across pselect
+            // (musl maps select(2) → pselect6 with sigmask=NULL),
+            // so the SIGCHLD-handler-driven reap path that papers
+            // over the leak on x86 can't run on arm. Dropping here
+            // makes the close-on-exit semantic uniform across the
+            // signal-delivery vs poll-driven wake paths.
+            // SAFETY: task is the exiting task running on this CPU; sole writer to fd_table slot per single-mutator-per-active-CPU; preempt-off through sys_exit. Replacing with None decrements the Arc; if the parent has its own Arc (POSIX fork's deep copy) or CLONE_FILES siblings exist, those references keep entries alive. Otherwise the Files drop and their close hooks fire (pipe writer/reader counts, etc.).
+            unsafe { task.replace_fd_table(None); }
             sched::live::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
@@ -926,6 +944,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     }
     // P3-65: deliver pending signals at syscall return.
     if let Some(p) = crate::syscalls::signal::take_lowest_pending() {
+        debug_ssh! { crate::syscalls::signal_trace::deliver_taken(&p); }
         // Job-control signals come first — their default action is
         // stop / continue, not terminate, regardless of handler.
         // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP
@@ -963,6 +982,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                 unsafe { ::fs::sig_dispatch::deliver(handler, p.restorer, p.sig); }
             }
         }
+    } else {
+        debug_ssh! { crate::syscalls::signal_trace::deliver_blocked(); }
     }
     rv as u64
 }

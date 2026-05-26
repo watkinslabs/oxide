@@ -129,6 +129,7 @@ impl FdTable {
     /// # C: O(N)
     pub fn dup(&self, fd: i32) -> KResult<i32> {
         let f = self.get(fd)?;
+        crate::file::fire_clone_hook(&f);
         self.alloc(f)
     }
 
@@ -138,6 +139,7 @@ impl FdTable {
     pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
         if min < 0 { return Err(VfsError::Einval); }
         let f = self.get(fd)?;
+        crate::file::fire_clone_hook(&f);
         self.inner.lock().alloc_fd_min(f, min as usize)
     }
 
@@ -150,6 +152,7 @@ impl FdTable {
         }
         let f = self.get(old_fd)?;
         if old_fd == new_fd { return Ok(new_fd); }
+        crate::file::fire_clone_hook(&f);
         let mut g = self.inner.lock();
         g.ensure_capacity(new_fd as usize);
         g.files[new_fd as usize]   = Some(f);
@@ -189,6 +192,19 @@ impl FdTable {
     /// # C: O(N)
     pub fn fork_clone(&self) -> Self {
         let g = self.inner.lock();
+        // F205: fire the clone hook for every duplicated File reference.
+        // Each Arc::clone is conceptually a new "open count" — pipes
+        // (and any other inode tracking per-fd state) need to know.
+        // Without this, fork_clone bumps Arc<File> refcount but pipe
+        // writers/readers stay at the pre-fork value; closing one
+        // copy drops Arc to 1 (no close hook), the surviving fd
+        // holds writers > 0 forever, and POLL_HUP never reaches the
+        // read side — breaks dropbear's shell-pipe relay on arm.
+        for slot in g.files.iter() {
+            if let Some(f) = slot.as_ref() {
+                crate::file::fire_clone_hook(f);
+            }
+        }
         Self { inner: Spinlock::new(FdTableInner {
             files:   g.files.clone(),
             cloexec: g.cloexec.clone(),

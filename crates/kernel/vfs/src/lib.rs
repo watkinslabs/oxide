@@ -35,7 +35,7 @@ pub mod poll_subs;
 pub use dentry::Dentry;
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER};
 pub use fdtable::{FdTable, FD_TABLE_MAX};
-pub use file::{File, SeekFrom, fire_dirent_create, fire_dirent_delete, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
+pub use file::{File, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeRef, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};
 pub use poll_subs::{EpollNotify, PollSubscribers};

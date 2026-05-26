@@ -644,6 +644,7 @@ pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
             core::ptr::read_volatile((act +  24)  as *const u64),
         ) };
         table[idx] = SaHandler { handler: h, flags: f, restorer: r, mask: m };
+        debug_ssh! { crate::syscalls::signal_trace::sigaction(cur.tid, sig as u64, h, f, r); }
     }
     0
 }
@@ -681,6 +682,7 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     };
     let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
     cur.sigmask.store(new_mask, Ordering::Release);
+    debug_ssh! { crate::syscalls::signal_trace::sigprocmask(cur.tid, how, prior, new_mask); }
     0
 }
 
