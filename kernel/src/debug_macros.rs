@@ -38,6 +38,13 @@ macro_rules! debug_boot { ($($t:tt)*) => {} }
 macro_rules! debug_syscall { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-syscall"))]
 macro_rules! debug_syscall { ($($t:tt)*) => {} }
+// F205: targeted trace inside select/wait4/exit/signal-child paths.
+// Narrower than debug-sched so the kernel can be built with trace
+// active without flooding the PL011 UART past its drain rate on ARM.
+#[cfg(feature = "debug-ssh")]
+macro_rules! debug_ssh { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-ssh"))]
+macro_rules! debug_ssh { ($($t:tt)*) => {} }
 
 // dtrace: structured trace probes that bypass the BOOT_UART lock.
 // Emit directly to COM1 (x86) so probes work even when the klog path
