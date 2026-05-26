@@ -95,14 +95,24 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
             if want_write && got_write { set_bit(writefds_p, fd); hit = true; }
             if hit { ready += 1; }
         }
-        if ready > 0 { return ready; }
+        if ready > 0 {
+            debug_ssh! {
+                klog::write_raw(b"[INFO]  ssh-trace: select ready=");
+                klog::write_dec_u64(ready as u64);
+                klog::write_raw(b"\n");
+            }
+            return ready;
+        }
         // Check deadline / non-block.
         if let Some(dl) = deadline_ns {
             #[cfg(target_arch = "x86_64")]
             let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
             #[cfg(target_arch = "aarch64")]
             let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-            if now >= dl { return 0; }
+            if now >= dl {
+                debug_ssh! { klog::write_raw(b"[INFO]  ssh-trace: select timeout\n"); }
+                return 0;
+            }
         }
         // SAFETY: process ctx; runqueue installed; tick_yield reschedules and returns.
         unsafe { sched::live::tick_yield(); }

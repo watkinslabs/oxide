@@ -84,11 +84,21 @@ pub fn signal_child_exit(task: &Task) {
     use core::sync::atomic::Ordering;
     // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
+    let parent_tid = task.parent_tid.load(Ordering::Acquire);
+    #[cfg(feature = "debug-ssh")]
+    {
+        klog::write_raw(b"[INFO]  ssh-trace: signal_child_exit child=");
+        klog::write_dec_u64(task.tid as u64);
+        klog::write_raw(b" parent_tid=");
+        klog::write_dec_u64(parent_tid as u64);
+        klog::write_raw(b" parent_upgrade=");
+        klog::write_dec_u64(if parent.is_some() { 1 } else { 0 });
+        klog::write_raw(b"\n");
+    }
     if let Some(p) = parent {
         // F167: typed signal bit.
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
     }
-    let parent_tid = task.parent_tid.load(Ordering::Acquire);
     wake_wait4_parent(parent_tid);
 }
 
