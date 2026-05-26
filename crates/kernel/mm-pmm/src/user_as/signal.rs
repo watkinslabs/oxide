@@ -40,6 +40,23 @@ pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     if sa.handler == 0 || sa.handler == 1 { return false; }
     let frame_ptr = hal_x86_64::current_fault_frame();
     if frame_ptr.is_null() { return false; }
+    // F203: log the catchable-signal dispatch so we can see which
+    // user-space RIP keeps faulting under handler-installed cover
+    // (dropbear's sigsegv_handler is the canonical case — without
+    // this trace the kernel-side fault is invisible because the
+    // terminate path's [FAULT] block doesn't run).
+    #[cfg(feature = "debug-irq")]
+    {
+        // SAFETY: frame published on kernel stack by oxide_fault_print_rust; read-only.
+        let f = unsafe { &*frame_ptr };
+        klog::write_raw(b"[FAULT] catchable-sigsegv tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" rip=");      klog::write_hex_u64(f.rip);
+        klog::write_raw(b" rsp=");      klog::write_hex_u64(f.rsp);
+        klog::write_raw(b" cr2=");      klog::write_hex_u64(cr2);
+        klog::write_raw(b" handler="); klog::write_hex_u64(sa.handler);
+        klog::write_raw(b"\n");
+    }
     // SAFETY: frame_ptr is the live FaultFrame for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
     let frame = unsafe { &mut *frame_ptr };
     // User stack layout (top → bottom):
