@@ -179,6 +179,18 @@ core::arch::global_asm!(
     ".type  oxide_lower_el_sync_handler, %function",
     "oxide_lower_el_sync_handler:",
     "    msr daifset, #0xf",
+    // F204: stash the user's x9 in a tiny 16-byte stack preamble
+    // before clobbering it with the EC dispatch. TPIDR_EL1 is
+    // already used as the per-CPU base pointer per `21§7`, so we
+    // can't use it. Each downstream block (svc/softstep/default)
+    // pops the preamble and restores x9 before saving x0..x18 to
+    // its own frame. Without this, a demand-page fault on e.g.
+    // `ldr w3, [x9, x1]` would resolve and `eret`, but x9 had
+    // been clobbered to 0x24 (the data-abort EC code) → retried
+    // load uses 0x24 as base and re-faults at far=0x24. Surfaced
+    // by dropbear-aarch64 sha256_compress under SSH (F204).
+    "    sub sp, sp, #16",
+    "    str x9, [sp]",
     "    mrs x9, esr_el1",
     "    lsr x9, x9, #26",
     "    and x9, x9, #0x3f",
@@ -190,8 +202,12 @@ core::arch::global_asm!(
     // SS bits instead of running the syscall dispatcher).
     "    cmp x9, #0x32",
     "    b.eq oxide_softstep_save_block",
+    "    ldr x9, [sp]",
+    "    add sp, sp, #16",
     "    b oxide_default_vector_handler",
     "oxide_svc_save_block:",
+    "    ldr  x9, [sp]",             // F204: pop 16-B preamble, restore user x9
+    "    add  sp, sp, #16",
     "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0x00]",
     "    stp  x2,  x3,  [sp, #0x10]",
@@ -247,6 +263,8 @@ core::arch::global_asm!(
     // current task. Hook returns the original user x0 so the shared
     // restore block's `ldr x0, [sp, #0xc8]` is a no-op for this path.
     "oxide_softstep_save_block:",
+    "    ldr  x9, [sp]",             // F204: pop 16-B preamble, restore user x9
+    "    add  sp, sp, #16",
     "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0x00]",
     "    stp  x2,  x3,  [sp, #0x10]",
