@@ -34,3 +34,6 @@ hosted  = []
 # forwards via `--features debug-sched`.
 debug-sched = []
 debug-syscall = []
+# F205 SSH-relay diagnostic — toggled from kernel/Cargo.toml's
+# `debug-ssh` feature which forwards via `--features debug-ssh`.
+debug-ssh = []
