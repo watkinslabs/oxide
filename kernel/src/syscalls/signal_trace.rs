@@ -34,11 +34,24 @@ pub fn sigaction(tid: u32, sig: u64, h: u64, f: u64, r: u64) {
 pub fn sigprocmask(tid: u32, how: u64, prior: u64, new: u64) {
     let _ = (tid, how, prior, new);
     debug_ssh! {
+        let saved_pc: u64 = {
+            #[cfg(target_arch = "aarch64")]
+            {
+                let p = hal_aarch64::current_svc_frame();
+                if p.is_null() { 0 } else {
+                    // SAFETY: live SvcFrame on running task's kernel stack per single-mutator invariant.
+                    unsafe { (*p).elr_el1 }
+                }
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            { 0 }
+        };
         klog::write_raw(b"[INFO]  ssh-trace: rt_sigprocmask tid=");
         klog::write_dec_u64(tid as u64);
         klog::write_raw(b" how="); klog::write_dec_u64(how);
         klog::write_raw(b" prior="); klog::write_hex_u64(prior);
         klog::write_raw(b" new="); klog::write_hex_u64(new);
+        klog::write_raw(b" caller_pc="); klog::write_hex_u64(saved_pc);
         klog::write_raw(b"\n");
     }
 }
