@@ -360,16 +360,12 @@ pub struct Task {
     /// Set by PTRACE_SETFPREGS; cleared by resume tail.
     pub ptrace_fpu_dirty: AtomicBool,
 
-    /// PTRACE_SINGLESTEP arm bit. Resume path sets RFLAGS.TF (x86)
-    /// or MDSCR_EL1.SS+SPSR.SS (arm); trap handler clears after one
-    /// instruction retires.
+    /// PTRACE_SINGLESTEP arm bit (RFLAGS.TF x86; MDSCR_EL1.SS+SPSR.SS arm).
     pub singlestep: AtomicU32,
-
-    /// Per-task seccomp filter chain (cBPF programs). Each entry is
-    /// a `Vec<u64>` representing 8-byte sock_filter words; the
-    /// kernel/seccomp interpreter reinterprets at run time. Single-
-    /// mutator per `13§5`; running task on this CPU is the sole
-    /// writer. Drop on task exit. # C: O(F × I) per syscall
+    /// F206 aarch64 per-task SVC-frame ptr; deliver_arm reads here.
+    #[cfg(target_arch = "aarch64")]
+    pub svc_frame: core::sync::atomic::AtomicU64,
+    /// Per-task seccomp cBPF chain per `13§5`. Drop on task exit.
     pub seccomp_filters: UnsafeCell<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
 
     /// Per-thread robust-mutex list head + len per
@@ -879,6 +875,8 @@ impl Task {
             fpu_state:       UnsafeCell::new(ArchFpuBuf([0u8; ARCH_FPU_SIZE])),
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
+            #[cfg(target_arch = "aarch64")]
+            svc_frame:     core::sync::atomic::AtomicU64::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),

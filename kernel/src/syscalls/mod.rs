@@ -569,7 +569,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
     debug_ssh! { crate::syscalls::signal_trace::dispatch_entry(orig_nr, nr); }
     let _ = orig_nr;
-
+    // F206 per-task SVC-frame snapshot; deliver_arm reads via slot.
+    #[cfg(target_arch = "aarch64")]
+    if let Some(c) = sched::current() {
+        c.svc_frame.store(hal_aarch64::current_svc_frame() as u64,
+                          core::sync::atomic::Ordering::Release);
+    }
     // F205: pull the 6th argument (a5) from the saved frame.
     // SysV C-ABI fits 5 args in regs after nr; a5 comes from the
     // arch's saved-syscall-frame block. See syscall_a5::read().
@@ -984,11 +989,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // SAFETY: dispatch tail; per-arch saved frame is live; the
         // helper writes only the saved-frame and user signal stack.
         let sig_rv = unsafe { crate::syscalls::signal_dispatch::dispatch_pending(&p, &|sa| sys_exit(sa)) };
-        // On aarch64 the SVC restore asm clobbers user x0 with the
-        // dispatcher retval — so when a handler was set up we must
-        // return `sig` to pass signum into the handler's first
-        // AAPCS64 arg. The x86 path injects sig via the saved-rdi
-        // slot directly and returns 0 here.
+        // aarch64: SVC restore clobbers user x0 with dispatcher retval
+        // — return `sig` so it seeds handler arg0. x86 injects via rdi.
         if sig_rv != 0 { return sig_rv; }
     } else {
         debug_ssh! { crate::syscalls::signal_trace::deliver_blocked(); }
