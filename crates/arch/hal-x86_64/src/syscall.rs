@@ -319,10 +319,19 @@ pub unsafe fn install_syscall_msrs() {
             wrmsr(IA32_EFER, efer | EFER_SCE);
 
             // STAR[47:32] = kernel CS base = 0x28 → kernel SS = 0x30.
-            // STAR[63:48] = 0x38 → sysret-compat CS=0x38, sysret SS=0x40,
-            // sysretq CS=0x48 (RPL forced to 3 by the instruction).
-            // Matches `gdt::USER_CS32` / `gdt::USER_DS` / `gdt::USER_CS`.
-            let star: u64 = (0x28u64 << 32) | (0x38u64 << 48);
+            // STAR[63:48] = (USER_CS32 | 3) = 0x3B. sysretq derives
+            //   CS = STAR[63:48] + 16  → 0x4B (= USER_CS with RPL=3)
+            //   SS = STAR[63:48] +  8  → 0x43 (= USER_DS with RPL=3)
+            // On Intel SYSRET, RPL is force-ORed to 3 on both CS and
+            // SS. On AMD (and KVM emulating AMD-style SYSRET), the OR
+            // happens only for CS — SS comes out exactly as
+            // STAR[63:48]+8 with no RPL fixup. If STAR[63:48] were
+            // 0x38 (no RPL bits), SS on AMD/KVM-AMD would land as
+            // 0x40 (RPL=0), and the next CPL3 IRQ would push that
+            // bare-RPL SS into its iretq frame; iretq back to ring 3
+            // then #GP's because SS.RPL != CS.RPL. Linux bakes RPL=3
+            // into STAR's user-selector for the same reason.
+            let star: u64 = (0x28u64 << 32) | (((crate::gdt::USER_CS32 as u64) & 0xFFFF) << 48);
             wrmsr(IA32_STAR, star);
 
             wrmsr(IA32_LSTAR, oxide_syscall_entry as *const () as usize as u64);
