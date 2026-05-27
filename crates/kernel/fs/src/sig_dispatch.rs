@@ -304,14 +304,13 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
         klog::write_dec_u64(sig as u64);
         klog::write_raw(b" handler=");
         klog::write_hex_u64(handler);
-        klog::write_raw(b" restorer=");
-        klog::write_hex_u64(restorer);
         klog::write_raw(b" new_sp=");
         klog::write_hex_u64(new_sp);
         klog::write_raw(b" saved_pc=");
         klog::write_hex_u64(saved_pc);
         klog::write_raw(b"\n");
     }
+    let _ = saved_pc;
 }
 
 /// `sys_rt_sigreturn` body for aarch64. Mirrors rt_sigreturn_x86 —

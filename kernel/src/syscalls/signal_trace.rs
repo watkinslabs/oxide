@@ -80,13 +80,14 @@ pub fn dispatch_entry(orig_nr: u64, mapped_nr: u64) {
 pub fn syscall_nr_rv(nr: u64, rv: i64) {
     let _ = (nr, rv);
     debug_ssh! {
-        // Always log rt_sigreturn (15) — it's the diagnostic gold for
-        // signal-handler return.
         let always = matches!(nr, 15);
         let noisy = matches!(nr,
-            72 | 23 | 63 | 0 | 64 | 1 | 35 | 230 | 113 | 228 | 233 | 232 | 96);
+            72 | 23 | 35 | 230 | 113 | 228 | 233 | 232 | 96);
         if always || !noisy {
-            klog::write_raw(b"[INFO]  ssh-trace: syscall nr=");
+            let tid = sched::live::current().map(|c| c.tid).unwrap_or(0);
+            klog::write_raw(b"[INFO]  ssh-trace: syscall tid=");
+            klog::write_dec_u64(tid as u64);
+            klog::write_raw(b" nr=");
             klog::write_dec_u64(nr);
             klog::write_raw(b" rv=");
             klog::write_hex_u64(rv as u64);
