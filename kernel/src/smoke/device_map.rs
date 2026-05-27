@@ -108,6 +108,16 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
                     // SAFETY: CLI restores the pre-STI state
                     // (IF clear) before further bring-up steps.
                     unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+                    // Disarm the periodic timer post-smoke. Under TCG
+                    // the inter-tick gap is generous so a leftover armed
+                    // timer mostly hits CLI-masked windows; under KVM
+                    // (in-kernel irqchip + accurate TSC) the timer
+                    // keeps posting into the IRR and the very next STI
+                    // (e.g. before run_as_task's first schedule()) drops
+                    // an IRQ flood. The canary / preempt smokes downstream
+                    // re-arm + disarm cleanly per their own contracts.
+                    // SAFETY: same LAPIC mapping as timer_periodic; idempotent stop of the periodic vector.
+                    unsafe { lapic::timer_disarm(); }
                 }
                 let post = lapic::TICK_COUNT.load(core::sync::atomic::Ordering::Relaxed);
                 klog::write_raw(b"[INFO]  lapic: timer ticks=");
