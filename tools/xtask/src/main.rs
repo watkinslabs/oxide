@@ -396,6 +396,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
         put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
     }
+    // F211: arch marker — rcS picks sshd daemonize mode by this file.
+    if arch == "aarch64" {
+        put(&stage("oxide-arch-is-aarch64", b"1\n")?, "/etc/oxide-arch-is-aarch64")?;
+    }
     // B44: opt-in marker (off by default) for reproducing the
     // dhcpcd userspace heap-corruption hunt. The kernel now
     // survives the resulting user-mode #GP (delivers SIGSEGV
@@ -539,10 +543,15 @@ if [ -x /usr/sbin/sshd ]; then
     ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
     route add default gw 10.0.2.2 2>/dev/null
     echo sshd-step-launch
-    # F210: bypass sshd default daemonize (wedges on our kernel post-
-    # double-fork chain). -D = foreground; -e logs to stderr.
-    /usr/sbin/sshd -e
-    echo sshd-step-launched rv=$?
+    if [ -f /etc/oxide-arch-is-aarch64 ]; then
+        # ARM TCG: -D + bg until ARM daemonize path settles.
+        /usr/sbin/sshd -D -e 2>&1 &
+        echo sshd-step-launched-bg pid=$!
+    else
+        # x86: default daemonize (F211 CFS sleeper credit fixes wait4).
+        /usr/sbin/sshd -e
+        echo sshd-step-launched-fg rv=$?
+    fi
 fi
 :
 ")?,
