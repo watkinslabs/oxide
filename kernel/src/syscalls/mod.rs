@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -105,6 +105,19 @@ fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let inode = ::fs::pipe::PipeInode::new();
     inode.writers.store(1, core::sync::atomic::Ordering::Release);
     inode.readers.store(1, core::sync::atomic::Ordering::Release);
+    debug_ssh! {
+        let w = inode.writers.load(core::sync::atomic::Ordering::Acquire);
+        let r = inode.readers.load(core::sync::atomic::Ordering::Acquire);
+        klog::write_raw(b"[INFO]  ssh-trace: pipe_create ino=");
+        klog::write_dec_u64(inode.ino);
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" w_post_store=");
+        klog::write_dec_u64(w as u64);
+        klog::write_raw(b" r_post_store=");
+        klog::write_dec_u64(r as u64);
+        klog::write_raw(b"\n");
+    }
     let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;
@@ -326,6 +339,29 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(args.a0 as i32, Ordering::Release);
             task.vfork_pending.store(false, Ordering::Release); // F156 vfork
+            // F205: drop the exiting task's fd_table Arc reference
+            // BEFORE waking the parent. Linux closes a process's
+            // open files at exit (do_exit → exit_files → put_files_struct);
+            // without this, every File in the table stays alive until
+            // the parent reaps via wait4. That breaks pipe POLL_HUP
+            // propagation — the shell child's stdout-pipe-write-end
+            // File doesn't drop, pipe_close_hook doesn't fire,
+            // writers stays > 0, dropbear's select on the read end
+            // never reports POLL_HUP, and CHANNEL_EOF never goes
+            // out. The bug was load-bearing on aarch64 because
+            // dropbear-aarch64 keeps SIGCHLD masked across pselect
+            // (musl maps select(2) → pselect6 with sigmask=NULL),
+            // so the SIGCHLD-handler-driven reap path that papers
+            // over the leak on x86 can't run on arm. Dropping here
+            // makes the close-on-exit semantic uniform across the
+            // signal-delivery vs poll-driven wake paths.
+            debug_ssh! {
+                klog::write_raw(b"[INFO]  ssh-trace: sys_exit tid=");
+                klog::write_dec_u64(task.tid as u64);
+                klog::write_raw(b" drop_fd_table\n");
+            }
+            // SAFETY: task is the exiting task running on this CPU; sole writer to fd_table slot per single-mutator-per-active-CPU; preempt-off through sys_exit. Replacing with None decrements the Arc; if the parent has its own Arc (POSIX fork's deep copy) or CLONE_FILES siblings exist, those references keep entries alive. Otherwise the Files drop and their close hooks fire (pipe writer/reader counts, etc.).
+            unsafe { task.replace_fd_table(None); }
             sched::live::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
@@ -528,10 +564,24 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 ) -> u64 {
     // arm64 uses generic numbering; remap to x86_64 (the table key).
+    let orig_nr = nr;
     #[cfg(target_arch = "aarch64")]
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
+    debug_ssh! { crate::syscalls::signal_trace::dispatch_entry(orig_nr, nr); }
+    let _ = orig_nr;
+    // F206 per-task SVC-frame snapshot; deliver_arm reads via slot.
+    #[cfg(target_arch = "aarch64")]
+    if let Some(c) = sched::current() {
+        c.svc_frame.store(hal_aarch64::current_svc_frame() as u64,
+                          core::sync::atomic::Ordering::Release);
+    }
+    // F205: pull the 6th argument (a5) from the saved frame.
+    // SysV C-ABI fits 5 args in regs after nr; a5 comes from the
+    // arch's saved-syscall-frame block. See syscall_a5::read().
+    // SAFETY: called from the syscall dispatch tail with per-arch save block live.
+    let a5 = unsafe { crate::syscalls::syscall_a5::read() };
 
-    let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
+    let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
@@ -889,6 +939,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_hex_u64(rv as u64);
         klog::write_raw(b"\n");
     }
+    debug_ssh! { crate::syscalls::signal_trace::syscall_nr_rv(nr, rv); }
     // POSIX timers + rseq cpu_id writeback at syscall-return tail.
     sched::timers::fire_due_timers();
     crate::syscalls::proc::rseq_writeback();
@@ -926,6 +977,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     }
     // P3-65: deliver pending signals at syscall return.
     if let Some(p) = crate::syscalls::signal::take_lowest_pending() {
+        debug_ssh! { crate::syscalls::signal_trace::deliver_taken(&p); }
         // Job-control signals come first — their default action is
         // stop / continue, not terminate, regardless of handler.
         // SIGSTOP (19) is uncatchable per signal(7); the others (TSTP
@@ -934,35 +986,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
-        if p.sig == 18 {
-            // SIGCONT — default no-op. User handler dispatches normally;
-            // SIG_DFL silently drops.
-            if p.handler != 0 && p.handler != 1 {
-                // SAFETY: dispatch tail; same conditions as the SIG_DFL→handler arm below.
-                unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig); }
-            }
-            return rv as u64;
-        }
-        match p.handler {
-            0 => {
-                // SIG_DFL — Linux signal(7) defaults: SIGCHLD/SIGURG/
-                // SIGWINCH ignore; SIGQUIT/SIGILL/SIGTRAP/SIGABRT/
-                // SIGBUS/SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ
-                // terminate with core; rest terminate.
-                if !matches!(p.sig, 17 | 23 | 28) {
-                    if matches!(p.sig, 3 | 4 | 5 | 6 | 7 | 8 | 11 | 24 | 25 | 31) {
-                        ::fs::coredump::write_for_current(p.sig as i32);
-                    }
-                    let exit_args = SyscallArgs { a0: (p.sig | 0x100) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
-                    let _ = sys_exit(&exit_args);
-                }
-            }
-            1 => {  /* SIG_IGN: drop */ }
-            handler => {
-                // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; per-arch saved frame is live; ::fs::sig_dispatch::deliver dispatches to deliver_x86/_arm which rewrite the saved frame so the asm epilogue's sysretq/eret enters the user handler with the constructed signal frame on the user stack.
-                unsafe { ::fs::sig_dispatch::deliver(handler, p.restorer, p.sig); }
-            }
-        }
+        // SAFETY: dispatch tail; per-arch saved frame is live; the
+        // helper writes only the saved-frame and user signal stack.
+        let sig_rv = unsafe { crate::syscalls::signal_dispatch::dispatch_pending(&p, &|sa| sys_exit(sa)) };
+        // aarch64: SVC restore clobbers user x0 with dispatcher retval
+        // — return `sig` so it seeds handler arg0. x86 injects via rdi.
+        if sig_rv != 0 { return sig_rv; }
+    } else {
+        debug_ssh! { crate::syscalls::signal_trace::deliver_blocked(); }
     }
     rv as u64
 }

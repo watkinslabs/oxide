@@ -644,6 +644,7 @@ pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
             core::ptr::read_volatile((act +  24)  as *const u64),
         ) };
         table[idx] = SaHandler { handler: h, flags: f, restorer: r, mask: m };
+        debug_ssh! { crate::syscalls::signal_trace::sigaction(cur.tid, sig as u64, h, f, r); }
     }
     0
 }
@@ -681,6 +682,7 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     };
     let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
     cur.sigmask.store(new_mask, Ordering::Release);
+    debug_ssh! { crate::syscalls::signal_trace::sigprocmask(cur.tid, how, prior, new_mask); }
     0
 }
 
@@ -780,6 +782,13 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     let info    = args.a1;
     let timeout = args.a2;
     let sz      = args.a3;
+    debug_ssh! {
+        klog::write_raw(b"[INFO]  ssh-trace: rt_sigtimedwait set_ptr=");
+        klog::write_hex_u64(set);
+        klog::write_raw(b" timeout_ptr=");
+        klog::write_hex_u64(timeout);
+        klog::write_raw(b"\n");
+    }
     if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
     if set == 0 || set >= hal::USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);

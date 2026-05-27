@@ -93,9 +93,27 @@ When user says `<doc>§<sec>`, **read that section first** before responding.
 | Bootloader handoff, observability, error handling | `36`–`38` |
 | Build+image, CI, debug catalog, tests, acceptance | `39`–`43` |
 | Repo layout + crate ownership boundaries | `52` |
+| Syscall layering tiers | `53` |
+| **Assembly + low-level ABI correctness checklist (x86_64 AND aarch64)** | **`54`** ← read BEFORE touching `crates/arch/hal-{x86_64,aarch64}` asm OR signal/syscall paths |
 | Boot flow Mermaid | `boot-flow.md` |
 
 When user asks about a concept: check this table → read that spec → answer. Don't guess; read.
+
+## Quick reference — typed constants (NEVER use bare literals)
+
+Per `07§5`. Replace magic numbers with the named constant at call site:
+
+| Concept | Use | NOT |
+|---|---|---|
+| Signal number | `sched::live::sigpend::Signum::Sigchld as u8` | `17` |
+| `sa_handler` SIG_DFL / SIG_IGN | named consts in same module | `0`, `1` |
+| errno | `Errno::Echild.as_i32() as i64` | `-10` |
+| Syscall slot | `syscall::nrs::NR_PSELECT6` | `270` |
+| Open flag | `OpenFlags::O_NONBLOCK` | `0o4000` |
+| Poll mask | `vfs::POLL_IN` / `POLL_HUP` | `1` / `0x10` |
+
+Bare integer literals in any of these positions = silent bug bait
+(off-by-one between arches, between Linux uapi versions, etc.).
 
 ## Toolchain (`docs/07`)
 
