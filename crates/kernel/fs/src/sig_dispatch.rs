@@ -34,31 +34,52 @@
 #![cfg(target_os = "oxide-kernel")]
 
 const SIG_FRAME_MAGIC: u64 = 0x5A55_5A55_DEAD_BEEF;
-// 48 B signal frame. All saved-context slots live AT OR ABOVE the
-// handler-entry SP; the handler's own stack grows BELOW its SP and
-// must not be allowed to clobber the saved frame. Layout, in terms
-// of new_sp (handler-entry SP) — same on x86 and ARM:
-//
-//   x86_64 (handler `ret` pops slot 0 as the return target):
-//     [new_rsp +  0]  restorer  ← ret pops, lands at restorer
-//     [new_rsp +  8]  magic
-//     [new_rsp + 16]  saved_rflags
-//     [new_rsp + 24]  saved_rsp
-//     [new_rsp + 32]  saved_rip
-//     [new_rsp + 40]  saved_sigmask
-//
-//   aarch64 (handler `ret` is `br lr`; no stack pop; LR=restorer):
-//     [new_sp  +  0]  magic
-//     [new_sp  +  8]  saved_pstate
-//     [new_sp  + 16]  saved_sp
-//     [new_sp  + 24]  saved_pc
-//     [new_sp  + 32]  saved_sigmask
-//     (no restorer slot — LR carries it)
-//
-// x86 also reserves the 128-byte red zone below saved_rsp per the
-// SysV x86_64 ABI so the interrupted frame's red-zone data stays
-// intact across signal delivery.
-const SIG_FRAME_BYTES: u64 = 48;
+
+/// User-mode signal frame on aarch64 — laid out at handler-entry SP
+/// (`new_sp`) by `deliver_arm`, read back by `rt_sigreturn_arm`. All
+/// saved-context slots live AT OR ABOVE new_sp; the handler's own
+/// stack grows BELOW new_sp and cannot clobber the frame. The kernel
+/// overwrites `frame.x30` with the restorer addr so the handler's
+/// `ret` lands in the sigreturn trampoline — sigreturn MUST restore
+/// the original x30 from this frame, or any user `ret` after sigreturn
+/// lands back at the restorer (infinite sigreturn loop).
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+struct SigFrameArm {
+    magic:    u64,
+    pstate:   u64,
+    sp:       u64,
+    pc:       u64,
+    sigmask:  u64,
+    x30:      u64,
+}
+
+/// User-mode signal frame on x86_64 — laid out at new_rsp by
+/// `deliver_x86`, read back by `rt_sigreturn_x86`. Slot 0 is the
+/// restorer address — handler's terminating `ret` pops it as the
+/// return target. Magic sits at slot 1.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+struct SigFrameX86 {
+    restorer: u64,
+    magic:    u64,
+    rflags:   u64,
+    rsp:      u64,
+    rip:      u64,
+    sigmask:  u64,
+}
+
+/// Reserved bytes at `new_sp` for the SigFrame{Arm,X86} above. Sized
+/// to fit the struct plus alignment slack.
+const SIG_FRAME_BYTES: u64 = 64;
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(core::mem::size_of::<SigFrameArm>() as u64 <= SIG_FRAME_BYTES);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(core::mem::size_of::<SigFrameX86>() as u64 <= SIG_FRAME_BYTES);
+/// x86_64 SysV ABI red zone — 128 B below RSP that callers may rely
+/// on staying intact across function calls. Signal delivery must skip
+/// past it before carving the sigframe so interrupted-frame data
+/// living in the red zone survives the handler.
 #[cfg(target_arch = "x86_64")]
 const X86_RED_ZONE: u64 = 128;
 
@@ -141,15 +162,16 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
         None    => 0,
     };
 
-    // SAFETY: new_rsp validated < saved_rsp < USER_VA_END; CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted).
-    unsafe {
-        core::ptr::write_volatile((new_rsp +  0) as *mut u64, restorer);
-        core::ptr::write_volatile((new_rsp +  8) as *mut u64, SIG_FRAME_MAGIC);
-        core::ptr::write_volatile((new_rsp + 16) as *mut u64, saved_rflags);
-        core::ptr::write_volatile((new_rsp + 24) as *mut u64, saved_rsp);
-        core::ptr::write_volatile((new_rsp + 32) as *mut u64, saved_rip);
-        core::ptr::write_volatile((new_rsp + 40) as *mut u64, old_sigmask);
-    }
+    let sigframe = SigFrameX86 {
+        restorer,
+        magic:   SIG_FRAME_MAGIC,
+        rflags:  saved_rflags,
+        rsp:     saved_rsp,
+        rip:     saved_rip,
+        sigmask: old_sigmask,
+    };
+    // SAFETY: new_rsp validated < saved_rsp < USER_VA_END; CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted); SigFrameX86 is repr(C) matching rt_sigreturn_x86's read.
+    unsafe { core::ptr::write_volatile(new_rsp as *mut SigFrameX86, sigframe); }
 
     #[cfg(feature = "debug-sched")]
     {
@@ -199,30 +221,23 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: frame_base validated < USER_VA_END; CPL=0 reads through caller's AS.
-    let magic = unsafe { core::ptr::read_volatile((frame_base + 8) as *const u64) };
-    if magic != SIG_FRAME_MAGIC {
+    // SAFETY: frame_base validated < USER_VA_END; CPL=0 reads through caller's AS; SigFrameX86 is repr(C) with the layout deliver_x86 wrote.
+    let sf = unsafe { core::ptr::read_volatile(frame_base as *const SigFrameX86) };
+    if sf.magic != SIG_FRAME_MAGIC {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: same validated range as the magic read; saved fields at +16/+24/+32/+40 are 8-byte aligned per the layout we wrote in deliver_x86; CPL=0 reads through caller's AS.
-    let (saved_rflags, saved_rsp, saved_rip, saved_sigmask) = unsafe { (
-        core::ptr::read_volatile((frame_base + 16) as *const u64),
-        core::ptr::read_volatile((frame_base + 24) as *const u64),
-        core::ptr::read_volatile((frame_base + 32) as *const u64),
-        core::ptr::read_volatile((frame_base + 40) as *const u64),
-    ) };
-    frame[0] = saved_rip;
-    frame[1] = saved_rflags;
-    frame[2] = saved_rsp;
+    frame[0] = sf.rip;
+    frame[1] = sf.rflags;
+    frame[2] = sf.rsp;
     if let Some(c) = sched::live::current() {
-        c.sigmask.store(saved_sigmask, core::sync::atomic::Ordering::Release);
+        c.sigmask.store(sf.sigmask, core::sync::atomic::Ordering::Release);
     }
     #[cfg(feature = "debug-sched")]
     {
         klog::write_raw(b"[INFO]  sig: rt_sigreturn rip=");
-        klog::write_hex_u64(saved_rip);
+        klog::write_hex_u64(sf.rip);
         klog::write_raw(b" rsp=");
-        klog::write_hex_u64(saved_rsp);
+        klog::write_hex_u64(sf.rsp);
         klog::write_raw(b"\n");
     }
     0
@@ -241,8 +256,16 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
 /// # C: O(1)
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
+    // F206: read SVC frame from per-task slot (captured at dispatch
+    // entry; race-free across schedule()). Fall back to global only
+    // for tasks with no slot set (kthread paths don't deliver here).
+    use core::sync::atomic::Ordering as Ord_;
+    let per_task = sched::live::current()
+        .map(|c| c.svc_frame.load(Ord_::Acquire)).unwrap_or(0);
+    let frame_ptr = if per_task != 0 { per_task as *mut hal_aarch64::SvcFrame }
+                    else { hal_aarch64::current_svc_frame() };
     // SAFETY: per fn contract — frame is the live saved SVC frame at the top of cur's syscall stack; sole writer for the lifetime of this dispatch tail per `13§5`.
-    let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
+    let frame = unsafe { &mut *frame_ptr };
     let saved_pc    = frame.elr_el1;
     let saved_pstate = frame.spsr_el1;
     let saved_sp    = frame.sp_el0;
@@ -251,7 +274,7 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
     // ABOVE new_sp; the handler's own stack grows below new_sp and
     // must not be allowed to clobber the saved frame. AAPCS64
     // requires SP % 16 == 0 at any public function entry, so
-    // new_sp = (saved_sp - 48) & ~0xf.
+    // new_sp = (saved_sp - SIG_FRAME_BYTES) & ~0xf.
     let new_sp = saved_sp.saturating_sub(SIG_FRAME_BYTES) & !0xfu64;
     // Block the delivered signal during its handler (POSIX
     // SA_NODEFER-off). Prevents the syscall-return path from
@@ -264,14 +287,16 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
         Some(c) => c.sigmask.fetch_or(1u64 << (sig - 1), Ordering::AcqRel),
         None    => 0,
     };
+    let sigframe = SigFrameArm {
+        magic:   SIG_FRAME_MAGIC,
+        pstate:  saved_pstate,
+        sp:      saved_sp,
+        pc:      saved_pc,
+        sigmask: old_sigmask,
+        x30:     frame.x30,
+    };
     // SAFETY: new_sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
-    unsafe {
-        core::ptr::write_volatile((new_sp +  0) as *mut u64, SIG_FRAME_MAGIC);
-        core::ptr::write_volatile((new_sp +  8) as *mut u64, saved_pstate);
-        core::ptr::write_volatile((new_sp + 16) as *mut u64, saved_sp);
-        core::ptr::write_volatile((new_sp + 24) as *mut u64, saved_pc);
-        core::ptr::write_volatile((new_sp + 32) as *mut u64, old_sigmask);
-    }
+    unsafe { core::ptr::write_volatile(new_sp as *mut SigFrameArm, sigframe); }
 
     #[cfg(feature = "debug-sched")]
     {
@@ -336,21 +361,16 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     if frame_base == 0 || frame_base >= hal::USER_VA_END {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: frame_base validated < USER_VA_END; CPL=EL1 reads through caller's TTBR0.
-    let magic = unsafe { core::ptr::read_volatile(frame_base as *const u64) };
-    if magic != SIG_FRAME_MAGIC {
+    // SAFETY: frame_base validated < USER_VA_END; CPL=EL1 reads through caller's TTBR0; SigFrameArm is repr(C) with the layout deliver_arm wrote.
+    let sf = unsafe { core::ptr::read_volatile(frame_base as *const SigFrameArm) };
+    if sf.magic != SIG_FRAME_MAGIC {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: same validated range; saved fields at +8/+16/+24/+32 are 8-byte aligned per layout in deliver_arm.
-    let (saved_pstate, saved_sp, saved_pc, saved_sigmask) = unsafe { (
-        core::ptr::read_volatile((frame_base +  8) as *const u64),
-        core::ptr::read_volatile((frame_base + 16) as *const u64),
-        core::ptr::read_volatile((frame_base + 24) as *const u64),
-        core::ptr::read_volatile((frame_base + 32) as *const u64),
-    ) };
-    frame.elr_el1  = saved_pc;
-    frame.spsr_el1 = saved_pstate;
-    frame.sp_el0   = saved_sp;
+    frame.elr_el1  = sf.pc;
+    frame.spsr_el1 = sf.pstate;
+    frame.sp_el0   = sf.sp;
+    frame.x30      = sf.x30;
+    let saved_sigmask = sf.sigmask;
     if let Some(c) = sched::live::current() {
         let prior = c.sigmask.swap(saved_sigmask, core::sync::atomic::Ordering::AcqRel);
         #[cfg(feature = "debug-ssh")]
@@ -368,9 +388,9 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     #[cfg(feature = "debug-sched")]
     {
         klog::write_raw(b"[INFO]  sig: rt_sigreturn_arm pc=");
-        klog::write_hex_u64(saved_pc);
+        klog::write_hex_u64(sf.pc);
         klog::write_raw(b" sp=");
-        klog::write_hex_u64(saved_sp);
+        klog::write_hex_u64(sf.sp);
         klog::write_raw(b"\n");
     }
     0
