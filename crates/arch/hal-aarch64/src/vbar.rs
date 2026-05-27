@@ -488,6 +488,19 @@ pub fn current_svc_frame() -> *mut SvcFrame {
     oxide_svc_frame_base.load(core::sync::atomic::Ordering::Acquire) as *mut SvcFrame
 }
 
+/// F205: explicitly restore the per-CPU SVC-frame pointer. The
+/// dispatch tail snapshots this at entry and re-installs before
+/// signal delivery so a `schedule()`-driven race that updates the
+/// global to another task's frame doesn't corrupt our handler
+/// setup. Single-CPU UP only.
+/// # SAFETY: caller is the dispatch tail; `frame_base` must equal
+/// the live SP at our SVC save block (i.e. the value the asm
+/// stored at entry).
+/// # C: O(1)
+pub fn set_current_svc_frame(frame_base: u64) {
+    oxide_svc_frame_base.store(frame_base, core::sync::atomic::Ordering::Release);
+}
+
 /// Address of the vector table, or 0 on host where the asm symbol
 /// doesn't exist.
 fn vector_table_addr() -> u64 {
