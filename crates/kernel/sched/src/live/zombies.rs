@@ -188,7 +188,10 @@ fn wake_wait4_parent(parent_tid: u32) {
     let mut inner = rq.inner.lock();
     for t in woken {
         t.set_state(TaskState::Runnable);
-        t.lift_vruntime(inner.cfs.min_vruntime());
+        // F211: sleeper credit. Reset vruntime to min so a long-running
+        // task that blocked on wait4 doesn't lose the pick to a freshly-
+        // spawned child with vruntime=0. See Task::set_vruntime_to_floor.
+        t.set_vruntime_to_floor(inner.cfs.min_vruntime());
         inner.enqueue(t);
     }
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
