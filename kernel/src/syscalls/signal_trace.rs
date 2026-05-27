@@ -59,6 +59,19 @@ pub fn deliver_taken(p: &PendingSignal) {
     }
 }
 
+/// # C: O(1)
+pub fn dispatch_entry(orig_nr: u64, mapped_nr: u64) {
+    let _ = (orig_nr, mapped_nr);
+    debug_ssh! {
+        if orig_nr == 139 || mapped_nr == 15 {
+            klog::write_raw(b"[INFO]  ssh-trace: dispatch-entry orig_nr=");
+            klog::write_dec_u64(orig_nr);
+            klog::write_raw(b" mapped_nr="); klog::write_dec_u64(mapped_nr);
+            klog::write_raw(b"\n");
+        }
+    }
+}
+
 /// Filter-and-log per-syscall (nr, rv) under the SSH-only gate.
 /// Excludes the highest-frequency callers so PL011 doesn't drown
 /// on aarch64. Anything that prints here is a candidate for the
@@ -67,9 +80,12 @@ pub fn deliver_taken(p: &PendingSignal) {
 pub fn syscall_nr_rv(nr: u64, rv: i64) {
     let _ = (nr, rv);
     debug_ssh! {
+        // Always log rt_sigreturn (15) — it's the diagnostic gold for
+        // signal-handler return.
+        let always = matches!(nr, 15);
         let noisy = matches!(nr,
             72 | 23 | 63 | 0 | 64 | 1 | 35 | 230 | 113 | 228 | 233 | 232 | 96);
-        if !noisy {
+        if always || !noisy {
             klog::write_raw(b"[INFO]  ssh-trace: syscall nr=");
             klog::write_dec_u64(nr);
             klog::write_raw(b" rv=");

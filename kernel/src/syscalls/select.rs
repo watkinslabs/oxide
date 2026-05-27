@@ -205,12 +205,27 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
     let saved_mask = if args.a5 != 0 && args.a5 < USER_VA_END {
         // SAFETY: a5 validated < USER_VA_END; 16-byte pair (ptr+len); 8-aligned per ABI.
         let ss_ptr = unsafe { core::ptr::read_volatile(args.a5 as *const u64) };
+        debug_ssh! {
+            klog::write_raw(b"[INFO]  ssh-trace: pselect6 a5_pair=");
+            klog::write_hex_u64(args.a5);
+            klog::write_raw(b" inner_ptr=");
+            klog::write_hex_u64(ss_ptr);
+            klog::write_raw(b"\n");
+        }
         if ss_ptr != 0 && ss_ptr < USER_VA_END {
             // SAFETY: ss_ptr validated < USER_VA_END; 8-byte sigset_t per Linux ABI.
             let new_mask = unsafe { core::ptr::read_volatile(ss_ptr as *const u64) };
             // SIGKILL (9) and SIGSTOP (19) are non-blockable per signal(7).
             let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
-            cur.as_ref().map(|c| c.sigmask.swap(new_mask, Ordering::AcqRel))
+            let r = cur.as_ref().map(|c| c.sigmask.swap(new_mask, Ordering::AcqRel));
+            debug_ssh! {
+                klog::write_raw(b"[INFO]  ssh-trace: pselect6 swap_mask new=");
+                klog::write_hex_u64(new_mask);
+                klog::write_raw(b" old=");
+                klog::write_hex_u64(r.unwrap_or(0));
+                klog::write_raw(b"\n");
+            }
+            r
         } else {
             None
         }
