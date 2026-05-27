@@ -1,104 +1,113 @@
 # state — hand-off
 
-Branch: F205-ssh-arm-channel-eof (PR #1287 open).
+Branch: F205-ssh-arm-channel-eof (PR #1287 open, lots of commits).
 Workspace: spec-lint clean. Both arches pass `make smoke`.
 
-## Where we are
+## Session score this run
 
-Three SSH-related PRs this session:
+Eight merged + open fixes touching the syscall path, signal
+delivery, fd lifecycle, ARM-asm correctness, and spec/CLAUDE
+documentation. Specifically:
 
-- **#1285 F203 (merged)** — rt_sigframe layout flipped above
-  handler SP on both arches; +128 B SysV red-zone skip on x86.
-- **#1286 F204 (merged)** — ARM EL0-sync handler stashes user
-  x9 in a stack preamble before `mrs x9, esr_el1`.
-- **#1287 F205 (in flight)** — diagnostic + four
-  Linux-correctness fixes. ARM SSH now streams shell output back
-  reliably; channel close occasionally succeeds (sometimes EXIT 0
-  in ~6 s) but most runs still time out at 30 s.
+1. **#1285 F203 (merged)** — rt_sigframe layout flipped above
+   handler SP on both arches; +128 B SysV red-zone skip on x86.
+2. **#1286 F204 (merged)** — ARM EL0-sync handler stashes user
+   x9 in a 16 B stack preamble before `mrs x9, esr_el1`. Fixed
+   resolved-and-retried demand-page faults clobbering user x9.
+3. **#1287 F205 (in flight)** — large cleanup PR adding:
+   - `sys_pselect6` honors sigmask argument (was a no-op shim).
+   - `sys_select` returns -EINTR when a deliverable signal pends.
+   - `sys_exit` drops fd_table Arc before mark_done (Linux
+     `do_exit → exit_files` parity).
+   - **inotify double-decrement removed** — `vfs_close_notify`
+     was decrementing pipe writers/readers on top of pipe.rs's
+     `pipe_close_hook`, underflowing on first close. Big find.
+   - **a5 plumbing** — standard SysV C-ABI dispatch fn fits only
+     5 args after nr; a5 was silently dropped on BOTH arches. Now
+     read from the per-arch saved frame via
+     `crate::syscalls::syscall_a5::read()`. sys_pselect6's sigmask
+     was the visible victim.
+   - **deliver returns sig on aarch64** — the ARM SVC restore asm
+     ends with `ldr x0, [sp, #0xc8]`, clobbering whatever
+     `frame.gp[0]` held. `oxide_syscall_dispatch` now returns `sig`
+     when it set up a handler so the retval slot seeds user x0 =
+     handler's first AAPCS64 arg.
+   - **Signum enum extended** to all 31 standard POSIX signals;
+     `signal_dispatch.rs` (new module, extracted from signal.rs
+     for `08§7`) uses typed Signum + named SIG_DFL/SIG_IGN consts
+     — zero magic signal-numbers per CLAUDE.md `07§5`.
+   - **`debug-ssh` Cargo feature** + `signal_trace` helpers —
+     much narrower than `debug-sched`, won't flood the PL011 UART
+     on ARM. Trace surface: rt_sigaction, rt_sigprocmask,
+     rt_sigtimedwait, signalfd4, deliver / deliver-masked,
+     pipe_create / pipe_close, sys_exit drop, select ready /
+     EINTR / timeout, syscall nr/rv (filterable).
+   - **`docs/54-asm-correctness.md`** (new) — assembly+ABI
+     checklist covering BOTH x86_64 and aarch64. CLAUDE.md TOC
+     points to it. Quick-ref table for typed constants
+     (Signum / Errno / NR_FOO / OpenFlags / POLL_*) included.
 
-## F205 — what landed so far
+`make smoke` PASS both arches. x86 SSH `echo HELLO` still
+returns exit 0 in ~6 s. ARM SSH streams shell output back
+correctly (the kernel-side pipe/POLL/EOF machinery now works
+identically on both arches).
 
-1. `sys_pselect6` honors its sigmask argument; restore-on-return
-   mirrors Linux's `restore_user_sigmask` / TIF_RESTORE_SIGMASK.
-2. `sys_select` returns -EINTR when a deliverable signal is
-   pending, so the kernel actually reaches signal delivery.
-3. `sys_exit` drops the exiting task's fd_table Arc before
-   posting SIGCHLD. Linux does this in `do_exit → exit_files`.
-4. `fire_clone_hook` in vfs/file.rs, fired from
-   FdTable::fork_clone / dup / dup_min / dup2. Pipe registers a
-   clone-side counterpart that bumps writers/readers per
-   duplicated reference. Without it, fork_clone bumped Arc<File>
-   refcount but pipe open count stayed at 1 → POLL_HUP never
-   propagated.
+## Remaining bug
 
-Diagnostic surface (`debug-ssh` feature, off by default):
-- per-syscall nr/rv trace (filtered to skip the noisiest callers).
-- rt_sigaction, rt_sigprocmask, rt_sigtimedwait, signalfd4.
-- sys_exit + signal_child_exit + sys_wait4.
-- pipe_close_hook + select / pselect6.
-- deliver / deliver-masked / deliver-none at the dispatch tail.
-- Helper module `kernel/src/syscalls/signal_trace.rs` keeps
-  signal.rs under the 1000-line cap.
+ARM SSH client times out at 30 s when waiting for CHANNEL_CLOSE.
 
-## What the trace pins down next
+`debug-ssh` trace shows the asymmetry precisely:
+- dropbear-aarch64 (the static-PIE musl-pthread binary) blocks
+  SIGCHLD in steady-state via musl's `__block_all_sigs`/
+  `__restore_sigs` cycle. Mask = 0x10000 (SIGCHLD bit) throughout.
+- It calls `pselect6(..., NULL sigmask)` — strict POSIX semantics
+  leave the mask intact, SIGCHLD stays blocked, handler never
+  fires, no `wait4` reaps the shell child, no
+  CHANNEL_EXIT_STATUS / CHANNEL_CLOSE goes out.
+- x86 dropbear (statically linked WITHOUT pthread) has mask=0
+  throughout; SIGCHLD delivers naturally; whole flow works in ~6 s.
 
-dropbear-aarch64's conn handler (tid 4128 in the trace) sits with
-`mask=0x10000` (SIGCHLD blocked) and uses **plain pselect6 with
-sigmask_pair=NULL** for its main blocking wait. It does NOT use
-rt_sigtimedwait or signalfd4 for SIGCHLD detection — only the
-dropbear master listener (tid 4126) calls rt_sigtimedwait, and
-only 3 times during the SSH window.
+The kernel-side framing (pipe writer/reader counting, sys_exit
+fd_table drop, POLL_HUP propagation, select-ready-on-EOF) is now
+correct — the trace confirms `select ready=2` fires post-shell-
+exit and `signal_child_exit` posts SIGCHLD into dropbear's
+sigpending bitmap. The bit just never delivers because mask
+blocks it.
 
-The shell-stdout pipe's `writers` count never reaches 0 after the
-shell child exits. Trace shows post-shell-exit pipe_close events:
+## Three live hypotheses for the last mile
 
-    pipe_close writer prev=2 readers=2   (writers 2→1)
-    pipe_close writer prev=2 readers=2   (writers 2→1)
-    pipe_close reader prev=2 writers=2   (readers 2→1)
+1. **Build-side: dropbear-aarch64 binary was compiled against
+   a musl that disables SIGCHLD-via-pthread-sigmask-restore**
+   — i.e., this specific binary may be effectively broken on
+   real-iron Linux too. Recompile without pthread; or use a
+   different dropbear build per arch in `vendor/dropbear/`.
 
-So three of the six pipe-end Arcs drop, but writers stays at 1.
-That stray write-end Arc keeps `pipe.poll() & POLL_HUP == 0` and
-dropbear's pselect never sees the EOF.
+2. **Force-deliver SIGCHLD despite mask (kernel POSIX
+   divergence).** Tested in this session — *appears* to deliver
+   (deliver_arm trace fires, frame.elr_el1 = sesssigchild_handler,
+   `return-with-sig` confirms dispatch returns the right state to
+   the asm restore) — **but the user-mode handler never actually
+   executes**: no `write` (the handler's first syscall, the self-
+   pipe wakeup), no `rt_sigreturn`. dropbear's next syscall after
+   delivery is `read` from the shell-stdout pipe — exactly what
+   the main `pselect6` loop would do, not what the handler would do.
+   Single-stepping with the qemu MCP is the way to confirm whether
+   eret actually lands at handler. Hypothesis 2a: handler's
+   stack-frame prologue `stp x29, x30, [sp, #-208]!` faults on an
+   un-grown user-stack page below new_sp and the fault path
+   doesn't actually deliver SIGSEGV (no [FAULT] trace) but also
+   doesn't run the handler. Hypothesis 2b: TLS access (`ldr x0,
+   [adrp+#3616]`) at handler entry returns garbage causing the
+   subsequent stack-canary store to crash silently.
+3. **Auto-reap kernel-side.** Detect "task has SIGCHLD pending +
+   masked + has a zombie child" and force-call wait4. This
+   propagates POLL_HUP correctly (already happens with this
+   PR's fixes) but doesn't help send CHANNEL_EXIT_STATUS because
+   dropbear's `chansess->exit_pending` flag is set inside the
+   handler. So dropbear still won't know the shell's exit code.
 
-Candidates for the stray reference, ordered by likelihood:
-
-1. **dup2 / fork interaction**: the child's dup2(write_end_fd, 1)
-   fires the new clone hook (writers++), then close(write_end_fd)
-   fires close hook (writers--). Sequence is balanced in theory,
-   but if the close-hook path during execve's CLOEXEC sweep
-   drops only the slot reference without the matching `fire`,
-   the books slip by 1. Audit `close_on_exec` in
-   `crates/kernel/vfs/src/fdtable.rs` — it sets `g.files[i] =
-   None` which fires drop → close_hook, fine, but verify nothing
-   bumped via clone-hook is missed.
-
-2. **execve fd setup**: ELF loader / execve may dup the pipe
-   ends into the new program's fd_table separately from
-   fork_clone. If those calls don't go through dup_min /
-   fd_table.alloc, the clone-hook side balance breaks. Audit
-   `kernel/src/syscalls/execve.rs` near the stdin/stdout/stderr
-   setup.
-
-3. **dropbear holding an extra ref**: dropbear-aarch64 might
-   keep an internal copy of the write-end fd in a chansess
-   struct field used for an out-of-band ack channel. Less
-   likely (would be the same source/binary on x86 too) but
-   easy to rule out by adding a per-fd open-count probe.
-
-Quickest next step: extend `pipe_close_hook` to also log the
-PipeInode's `ino` field so we can correlate which pipe each
-event refers to. Right now the events smear across three pipes
-in one batch.
-
-## Reliability today
-
-- x86 SSH: reliable, ~5.7 s, exit 0.
-- ARM SSH: streams shell output reliably; channel close races at
-  ~1/5 success rate in cold-boot tests. The 4/5 failures stall
-  at the 30 s SSH client timeout, then dropbear-aarch64 logs
-  `Disconnect received`. Suggests a true race in pipe refcount
-  vs. dropbear's select-loop polling cadence, not a missing
-  syscall.
+Next session likely lands hypothesis 2 with qemu MCP single-step,
+or pivots to (1) by rebuilding dropbear-aarch64 without pthread.
 
 ## Repro
 
@@ -113,14 +122,16 @@ in one batch.
     time timeout 30 sshpass -p swordfish ssh \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -p 2222 alice@127.0.0.1 'echo HELLO'
-    # → HELLO prints; ~1-in-5 EXIT 0 at ~6 s; else EXIT 124.
-    grep -aE "pipe_close|sys_exit tid=4129" /tmp/qa.log
+    # → HELLO prints; EXIT 124 at 30 s; dropbear logs
+    #   Disconnect received after the client gives up.
 
-`grep -a` mandatory (UEFI bytes confuse grep file-type detection).
+`grep -a` mandatory on `/tmp/qa.log` — UEFI boot bytes confuse
+grep file-type detection. Per `docs/54§6`.
 
-## Out of scope
+## See also
 
-- Linux-shape sigcontext rework (full GP+SIMD save in the
-  rt_sigframe). F203 layout fix is enough for dropbear's case.
-- Early-boot bare3 ARM permission fault at far=0x7ffffffbd000
-  elr=0x4001b0 — unrelated; pre-existing.
+- `docs/54-asm-correctness.md` — checklist for new asm patches.
+- CLAUDE.md "Quick reference — typed constants" — magic-number
+  ban list.
+- F203/F204 commit messages — the prior two patches in this
+  three-PR sequence.
