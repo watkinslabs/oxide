@@ -342,8 +342,17 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         }
     };
     let mut c = Command::new("qemu-system-x86_64");
+    // F207: KVM is opt-in (set OXIDE_QEMU_KVM=1). TCG default — KVM
+    // exposes a boot-time kernel bug (HLT/IF semantics, MSR delta vs
+    // TCG) that wedges at "keymap loaded"; fix lives in a follow-up.
+    // KVM with TCG-friendly kernel cuts host CPU from 100% to idle on
+    // guest HLT, which matters for long-running interactive sessions.
+    let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
+        && std::path::Path::new("/dev/kvm").exists()
+    { "kvm" } else { "tcg" };
     c.args([
         "-machine", "q35",
+        "-accel", accel,
         // x86 baseline = Haswell-v4 (BMI2/AVX2 era, 2013+). LLVM
         // emits SHRX/etc. by default for the kernel target; older
         // CPU models (qemu64) trap #UD on those.
