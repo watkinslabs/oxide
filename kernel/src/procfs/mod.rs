@@ -541,11 +541,10 @@ impl Inode for ProcSelfFdInode {
         // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
         let fdt = unsafe { cur.fd_table_ref() }.ok_or(VfsError::Enoent)?.clone();
         let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
-        // Per Linux /proc/<pid>/fd/<n>: the entry is a SYMLINK that
-        // resolves to the open file's path. Wrap the dentry name in
-        // a ProcFdLinkInode whose readlink() returns that path.
+        // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path
+        // (ttyname requires /dev/pts/<n>, not the basename "<n>").
         Ok(crate::procfs::proc_links::fd_link_for_path(
-            file.dentry().name().as_bytes(), fd))
+            &file.dentry().absolute_path(), fd))
     }
     fn readdir(
         &self,
