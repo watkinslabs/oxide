@@ -39,9 +39,21 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
             write_wstatus(wstatus, wstat);
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
+            debug_ssh! {
+                klog::write_raw(b"[INFO]  ssh-trace: wait4 reaped tid=");
+                klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" parent=");
+                klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b"\n");
+            }
             return tid as i64;
         }
         if !sched::live::registry::has_children(parent_tid) {
+            debug_ssh! {
+                klog::write_raw(b"[INFO]  ssh-trace: wait4 ECHILD parent=");
+                klog::write_dec_u64(parent_tid as u64);
+                klog::write_raw(b"\n");
+            }
             return -(Errno::Echild.as_i32() as i64);
         }
         if (options & WNOHANG) != 0 { return 0; }

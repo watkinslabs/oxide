@@ -174,11 +174,22 @@ pub fn sys_clone_dispatch(
     unsafe {
         *child.sigactions.get() = *cur.sigactions.get();
     }
-    if (flags & CLONE_SIGHAND) != 0 {
-        // Inherit pending+mask too — CLONE_SIGHAND siblings share
-        // the disposition table; v1 also clones the mask.
-        child.sigmask.store(cur.sigmask.load(Ordering::Acquire), Ordering::Release);
-    }
+    // F205: ALWAYS inherit sigmask on clone/fork, regardless of
+    // CLONE_SIGHAND. Per POSIX fork(2) "process signal mask" is in
+    // the unconditional-inherit list; per Linux copy_thread() the
+    // mask is unconditionally copied (kernel/fork.c). The prior
+    // CLONE_SIGHAND-only condition meant that musl's `fork() →
+    // __block_all_sigs() → _Fork() → __restore_sigs(saved=...)`
+    // chain corrupted the child's mask: child started at 0, the
+    // first __restore_sigs read the inherited save buffer (=
+    // blocked-app) and SET mask to blocked-app — not the prior
+    // mask the parent saw, but the snapshot the parent captured
+    // INSIDE its critical section. Subsequent restore_sigs cycles
+    // propagated that wrong value down through the child's
+    // lifetime, leaving SIGCHLD permanently in the mask for
+    // dropbear-aarch64 and breaking the SSH channel-close path.
+    child.sigmask.store(cur.sigmask.load(Ordering::Acquire), Ordering::Release);
+    let _ = CLONE_SIGHAND;
 
     // CLONE_PARENT_SETTID: write child tid in caller's AS.
     if (flags & CLONE_PARENT_SETTID) != 0 && ptid != 0 && ptid < hal::USER_VA_END {

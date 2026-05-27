@@ -178,7 +178,7 @@ pub struct PipeInode {
     buf: Spinlock<PipeBuf, TtyClass>,
     /// Inode number — globally unique among pipes; allocated from
     /// a monotonic counter per `01§4`.
-    ino: Ino,
+    pub ino: Ino,
     /// Live write-end count; decremented by the vfs close hook on
     /// every writable File::Drop targeting this inode. A read on
     /// an empty pipe returns `Ok(0)` (EOF) when this hits zero.
@@ -351,14 +351,60 @@ impl Inode for PipeInode {
 /// EPIPE.
 /// # C: O(1) per call
 fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
-    let Some(any) = inode.as_any() else { return };
-    let Some(pipe) = any.downcast_ref::<PipeInode>() else { return };
+    let Some(any) = inode.as_any() else {
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: pipe_close non-any ino=");
+            klog::write_dec_u64(inode.ino());
+            klog::write_raw(b"\n");
+        }
+        return;
+    };
+    let Some(pipe) = any.downcast_ref::<PipeInode>() else {
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: pipe_close non-pipe-inode ino=");
+            klog::write_dec_u64(inode.ino());
+            klog::write_raw(b" was_writable=");
+            klog::write_dec_u64(if was_writable { 1 } else { 0 });
+            klog::write_raw(b"\n");
+        }
+        return;
+    };
     if was_writable {
+        #[cfg(feature = "debug-ssh")]
+        let pre = pipe.writers.load(Ordering::Acquire);
         let prev = pipe.writers.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 { pipe.read_waiters.wake_all(); }
+        if prev == 0 {
+            pipe.writers.store(0, Ordering::Release);
+        }
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: pipe_close ino=");
+            klog::write_dec_u64(pipe.ino);
+            klog::write_raw(b" writer pre_load=");
+            klog::write_dec_u64(pre as u64);
+            klog::write_raw(b" fs_prev=");
+            klog::write_dec_u64(prev as u64);
+            klog::write_raw(b"\n");
+        }
+        if prev <= 1 { pipe.read_waiters.wake_all(); }
     } else {
         let prev = pipe.readers.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 { pipe.write_waiters.wake_all(); }
+        if prev == 0 {
+            pipe.readers.store(0, Ordering::Release);
+        }
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: pipe_close ino=");
+            klog::write_dec_u64(pipe.ino);
+            klog::write_raw(b" reader prev=");
+            klog::write_dec_u64(prev as u64);
+            klog::write_raw(b" writers=");
+            klog::write_dec_u64(pipe.writers.load(Ordering::Acquire) as u64);
+            klog::write_raw(b"\n");
+        }
+        if prev <= 1 { pipe.write_waiters.wake_all(); }
     }
 }
 

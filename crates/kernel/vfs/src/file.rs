@@ -86,6 +86,37 @@ pub fn set_close_hook(f: fn(&InodeRef, bool)) {
     hal::kassert!(false, "CLOSE_HOOKS table full");
 }
 
+/// Clone-hook slot: fires when a Fd-table reference to an existing
+/// File is duplicated (fork_clone, dup, dup2). Conceptually mirrors
+/// CLOSE_HOOKS — every "open count++" event has a matching "open
+/// count--" on close. Without this, fork_clone bumps the Arc<File>
+/// refcount but the pipe writer/reader counts stay at 1; closing
+/// the original drops the Arc to 1 (File alive), no close hook fires,
+/// pipe POLL_HUP never propagates. F205. Bool: writable flag, same
+/// convention as the close hook.
+static CLONE_HOOK: AtomicU64 = AtomicU64::new(0);
+/// # C: O(1)
+pub fn set_clone_hook(f: fn(&InodeRef, bool)) {
+    CLONE_HOOK.store(f as u64, Ordering::Release);
+}
+/// Fire the clone hook for a File reference being duplicated. Caller
+/// is fork_clone / dup / dup2 right after the Arc::clone — they have
+/// already produced the new reference; we just announce it to any
+/// subscriber that tracks per-reference state (e.g. pipe writer count).
+/// # C: O(1)
+pub fn fire_clone_hook(file: &File) {
+    let h = CLONE_HOOK.load(Ordering::Acquire);
+    if h == 0 { return; }
+    let was_writable = {
+        let bits = file.flags.load(Ordering::Acquire);
+        let f = OpenFlags::from_bits_retain(bits);
+        f.contains(OpenFlags::O_WRONLY) || f.contains(OpenFlags::O_RDWR)
+    };
+    // SAFETY: h was installed by `set_clone_hook` with the documented signature.
+    let f: fn(&InodeRef, bool) = unsafe { core::mem::transmute(h) };
+    f(&file.inode, was_writable);
+}
+
 /// Dirent-mutation hooks per `16§R02`. Fired by devfs / tmpfs path-
 /// registry mutations so inotify watches on the parent directory
 /// can dispatch IN_CREATE / IN_DELETE / IN_MOVED with the new dirent
