@@ -539,11 +539,10 @@ if [ -x /usr/sbin/sshd ]; then
     ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
     route add default gw 10.0.2.2 2>/dev/null
     echo sshd-step-launch
-    # -D: don't daemonize. -e: log to stderr (merged to stdout).
-    # Our kernel + musl daemonize chain hangs sshd; force-fg + bg-shell.
-    /usr/sbin/sshd -D -e 2>&1 &
-    SSHD_PID=$!
-    echo sshd-step-launched pid=$SSHD_PID
+    # F210: bypass sshd default daemonize (wedges on our kernel post-
+    # double-fork chain). -D = foreground; -e logs to stderr.
+    /usr/sbin/sshd -e
+    echo sshd-step-launched rv=$?
 fi
 :
 ")?,

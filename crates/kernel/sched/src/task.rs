@@ -985,14 +985,14 @@ impl Task {
     /// # C: O(1)
     pub fn set_state(&self, s: TaskState) { self.state.store(s as u8, Ordering::Release); }
 
-    /// Lift this task's vruntime to `floor` if it's currently below.
-    /// Used when waking a long-sleeping CFS task into a moving RQ
-    /// `min_vruntime` (`13§5` invariant 5).
+    /// Lift this task's vruntime to `floor` if it's currently below;
+    /// `13§5` invariant 5. F211: also see `set_vruntime_to_floor`.
     /// # C: O(1)
     pub fn lift_vruntime(&self, floor: u64) {
         let cur = self.vruntime.load(Ordering::Acquire);
-        if cur < floor {
-            self.vruntime.store(floor, Ordering::Release);
-        }
+        if cur < floor { self.vruntime.store(floor, Ordering::Release); }
     }
+    /// F211 sleeper credit on wake (Linux place_entity).
+    /// # C: O(1)
+    pub fn set_vruntime_to_floor(&self, f: u64) { self.vruntime.store(f, Ordering::Release); }
 }
