@@ -27,24 +27,6 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
-# F209: PTY chan-session bidir_fd patch. Upstream sets bidir_fd=0
-# in ptycommand because PTY master isn't a socket; on
-# SSH_MSG_CHANNEL_EOF from client (e.g. ssh -tt with closed-stdin),
-# check_close → close_chan_fd(master, SHUT_WR) takes the
-# `!bidir_fd` branch which m_close()s the master fd entirely,
-# tearing down the read direction too. Shell stdout written
-# after that point is buffered on the PTY but can never reach
-# the client. Setting bidir_fd=1 routes through shutdown(fd, how)
-# (returns ENOTSOCK on PTY, harmless), marks writefd=FD_CLOSED,
-# and leaves the underlying fd open so the read direction
-# (PTY → network) continues working until check_close also sees
-# writebuf drained AND child exited. Idempotent — second run sees
-# the line already patched.
-PTY_CHAN_FILE="$SRC/src/svr-chansession.c"
-if grep -q '	channel->bidir_fd = 0;$' "$PTY_CHAN_FILE"; then
-  sed -i 's|^	channel->bidir_fd = 0;$|	/* F209 oxide2: bidir_fd=1 so close_chan_fd(SHUT_WR) does not\n	 * m_close the PTY master and orphan the read direction. */\n	channel->bidir_fd = 1;|' "$PTY_CHAN_FILE"
-fi
-
 # musl-gcc lacks Linux UAPI headers; stage host copies into a private
 # tree and -isystem them (same approach as busybox/dhcpcd builds).
 HDRS_X86=/tmp/musl-hdrs-dropbear
