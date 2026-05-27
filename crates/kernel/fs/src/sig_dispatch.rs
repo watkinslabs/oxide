@@ -63,18 +63,28 @@ const SIG_FRAME_BYTES: u64 = 48;
 const X86_RED_ZONE: u64 = 128;
 
 /// Arch-neutral entry: route to deliver_x86 / deliver_arm.
+/// Returns `sig` on aarch64 (the caller — `oxide_syscall_dispatch` —
+/// must use it as the dispatch's `u64` return value so x0 ends up =
+/// sig at handler entry; the SVC restore asm clobbers `frame.gp[0]`
+/// with the dispatcher's return value). x86_64 ignores the return.
 /// # SAFETY: caller is the syscall dispatch tail on the running
 /// task's per-task kernel stack; the per-arch saved frame is live;
 /// active CR3/TTBR0 is the running task's user AS.
 /// # C: O(1)
 #[inline]
-pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32) {
+pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: defers to deliver_x86 whose preconditions are exactly the caller's per fn contract.
-    unsafe { deliver_x86(handler, restorer, sig); }
+    {
+        // SAFETY: defers to deliver_x86 whose preconditions are exactly the caller's per fn contract.
+        unsafe { deliver_x86(handler, restorer, sig); }
+        0
+    }
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: defers to deliver_arm whose preconditions are exactly the caller's per fn contract.
-    unsafe { deliver_arm(handler, restorer, sig); }
+    {
+        // SAFETY: defers to deliver_arm whose preconditions are exactly the caller's per fn contract.
+        unsafe { deliver_arm(handler, restorer, sig); }
+        sig as u64
+    }
 }
 
 /// Arch-neutral entry: route to rt_sigreturn_x86 / rt_sigreturn_arm.
@@ -277,10 +287,31 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
     frame.elr_el1 = handler;
     frame.sp_el0  = new_sp;
     frame.gp[0]   = sig as u64;       // x0 = sig per AAPCS64
+    // NOTE: the SVC restore asm finishes with `ldr x0, [sp, #0xc8]`
+    // — the retval slot — and the asm post-dispatch stores the
+    // dispatcher's return value into that slot, so frame.gp[0]
+    // alone is not enough to make x0 = sig at handler entry. The
+    // caller (oxide_syscall_dispatch) must instead return `sig` as
+    // its u64 retval whenever it dispatched a signal. We signal
+    // that via the deliver() return value (see below).
     frame.x30     = restorer;         // lr — handler `ret` lands at restorer
     // SPSR_EL1 unchanged: stays EL0t with the same DAIF bits the
     // user had when the syscall fired.
     let _ = saved_pstate;
+    #[cfg(feature = "debug-ssh")]
+    {
+        klog::write_raw(b"[INFO]  ssh-trace: deliver_arm sig=");
+        klog::write_dec_u64(sig as u64);
+        klog::write_raw(b" handler=");
+        klog::write_hex_u64(handler);
+        klog::write_raw(b" restorer=");
+        klog::write_hex_u64(restorer);
+        klog::write_raw(b" new_sp=");
+        klog::write_hex_u64(new_sp);
+        klog::write_raw(b" saved_pc=");
+        klog::write_hex_u64(saved_pc);
+        klog::write_raw(b"\n");
+    }
 }
 
 /// `sys_rt_sigreturn` body for aarch64. Mirrors rt_sigreturn_x86 —
@@ -322,7 +353,18 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
     frame.spsr_el1 = saved_pstate;
     frame.sp_el0   = saved_sp;
     if let Some(c) = sched::live::current() {
-        c.sigmask.store(saved_sigmask, core::sync::atomic::Ordering::Release);
+        let prior = c.sigmask.swap(saved_sigmask, core::sync::atomic::Ordering::AcqRel);
+        #[cfg(feature = "debug-ssh")]
+        {
+            klog::write_raw(b"[INFO]  ssh-trace: rt_sigreturn_arm tid=");
+            klog::write_dec_u64(c.tid as u64);
+            klog::write_raw(b" mask_was=");
+            klog::write_hex_u64(prior);
+            klog::write_raw(b" mask_restored=");
+            klog::write_hex_u64(saved_sigmask);
+            klog::write_raw(b"\n");
+        }
+        let _ = prior;
     }
     #[cfg(feature = "debug-sched")]
     {

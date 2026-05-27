@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_trace; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -105,6 +105,19 @@ fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let inode = ::fs::pipe::PipeInode::new();
     inode.writers.store(1, core::sync::atomic::Ordering::Release);
     inode.readers.store(1, core::sync::atomic::Ordering::Release);
+    debug_ssh! {
+        let w = inode.writers.load(core::sync::atomic::Ordering::Acquire);
+        let r = inode.readers.load(core::sync::atomic::Ordering::Acquire);
+        klog::write_raw(b"[INFO]  ssh-trace: pipe_create ino=");
+        klog::write_dec_u64(inode.ino);
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" w_post_store=");
+        klog::write_dec_u64(w as u64);
+        klog::write_raw(b" r_post_store=");
+        klog::write_dec_u64(r as u64);
+        klog::write_raw(b"\n");
+    }
     let dentry = Dentry::new(None, "pipe".to_string(), inode.clone());
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;
@@ -551,10 +564,19 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
 ) -> u64 {
     // arm64 uses generic numbering; remap to x86_64 (the table key).
+    let orig_nr = nr;
     #[cfg(target_arch = "aarch64")]
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
+    debug_ssh! { crate::syscalls::signal_trace::dispatch_entry(orig_nr, nr); }
+    let _ = orig_nr;
 
-    let args = SyscallArgs { a0, a1, a2, a3, a4, a5: 0 };
+    // F205: pull the 6th argument (a5) from the saved frame.
+    // SysV C-ABI fits 5 args in regs after nr; a5 comes from the
+    // arch's saved-syscall-frame block. See syscall_a5::read().
+    // SAFETY: called from the syscall dispatch tail with per-arch save block live.
+    let a5 = unsafe { crate::syscalls::syscall_a5::read() };
+
+    let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = crate::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }
@@ -959,35 +981,15 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
-        if p.sig == 18 {
-            // SIGCONT — default no-op. User handler dispatches normally;
-            // SIG_DFL silently drops.
-            if p.handler != 0 && p.handler != 1 {
-                // SAFETY: dispatch tail; same conditions as the SIG_DFL→handler arm below.
-                unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig); }
-            }
-            return rv as u64;
-        }
-        match p.handler {
-            0 => {
-                // SIG_DFL — Linux signal(7) defaults: SIGCHLD/SIGURG/
-                // SIGWINCH ignore; SIGQUIT/SIGILL/SIGTRAP/SIGABRT/
-                // SIGBUS/SIGFPE/SIGSEGV/SIGSYS/SIGXCPU/SIGXFSZ
-                // terminate with core; rest terminate.
-                if !matches!(p.sig, 17 | 23 | 28) {
-                    if matches!(p.sig, 3 | 4 | 5 | 6 | 7 | 8 | 11 | 24 | 25 | 31) {
-                        ::fs::coredump::write_for_current(p.sig as i32);
-                    }
-                    let exit_args = SyscallArgs { a0: (p.sig | 0x100) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
-                    let _ = sys_exit(&exit_args);
-                }
-            }
-            1 => {  /* SIG_IGN: drop */ }
-            handler => {
-                // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; per-arch saved frame is live; ::fs::sig_dispatch::deliver dispatches to deliver_x86/_arm which rewrite the saved frame so the asm epilogue's sysretq/eret enters the user handler with the constructed signal frame on the user stack.
-                unsafe { ::fs::sig_dispatch::deliver(handler, p.restorer, p.sig); }
-            }
-        }
+        // SAFETY: dispatch tail; per-arch saved frame is live; the
+        // helper writes only the saved-frame and user signal stack.
+        let sig_rv = unsafe { crate::syscalls::signal_dispatch::dispatch_pending(&p, &|sa| sys_exit(sa)) };
+        // On aarch64 the SVC restore asm clobbers user x0 with the
+        // dispatcher retval — so when a handler was set up we must
+        // return `sig` to pass signum into the handler's first
+        // AAPCS64 arg. The x86 path injects sig via the saved-rdi
+        // slot directly and returns 0 here.
+        if sig_rv != 0 { return sig_rv; }
     } else {
         debug_ssh! { crate::syscalls::signal_trace::deliver_blocked(); }
     }

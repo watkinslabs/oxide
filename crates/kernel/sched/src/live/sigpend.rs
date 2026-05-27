@@ -12,15 +12,47 @@ use core::sync::atomic::Ordering;
 /// current task directly (peer-closed write → SIGPIPE; child exit
 /// → SIGCHLD; alarm timer → SIGALRM; etc.). Numeric values match
 /// Linux uapi.
+/// Full POSIX-1.2024 standard signal set per Linux signal(7) — the
+/// numeric values match the Linux uapi `<asm-generic/signal.h>` so
+/// these can serve as the kernel-internal typed alternative to raw
+/// signo integer literals (CLAUDE.md `07§5` rule). NEVER add a new
+/// case without checking it against signal(7) — silent off-by-one
+/// would mis-route signal handlers.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 pub enum Signum {
-    Sigchld = 17,
-    Sigpipe = 13,
-    Sigalrm = 14,
-    Sigterm = 15,
-    Sigint  = 2,
-    Sighup  = 1,
+    Sighup    = 1,
+    Sigint    = 2,
+    Sigquit   = 3,
+    Sigill    = 4,
+    Sigtrap   = 5,
+    Sigabrt   = 6,        // also SIGIOT
+    Sigbus    = 7,
+    Sigfpe    = 8,
+    Sigkill   = 9,
+    Sigusr1   = 10,
+    Sigsegv   = 11,
+    Sigusr2   = 12,
+    Sigpipe   = 13,
+    Sigalrm   = 14,
+    Sigterm   = 15,
+    Sigstkflt = 16,
+    Sigchld   = 17,
+    Sigcont   = 18,
+    Sigstop   = 19,
+    Sigtstp   = 20,
+    Sigttin   = 21,
+    Sigttou   = 22,
+    Sigurg    = 23,
+    Sigxcpu   = 24,
+    Sigxfsz   = 25,
+    Sigvtalrm = 26,
+    Sigprof   = 27,
+    Sigwinch  = 28,
+    Sigio     = 29,        // also SIGPOLL
+    Sigpwr    = 30,
+    Sigsys    = 31,        // also SIGUNUSED
 }
 
 impl Signum {
