@@ -6,31 +6,6 @@ with their merging PR and date.
 
 ## Open — actively worked
 
-### T16 — Growable kernel heap (CRITICAL, blocks everything bigger)
-Our `kalloc::KAlloc` is a fixed-size static BSS array (raised to
-256 MiB in F246). Once the hole-list fragments past that or a single
-large alloc exceeds the available contiguous run, the kernel panics
-on alloc — even when the underlying VM has GBs of RAM free.
-
-Real Linux uses vmalloc + the page frame allocator: each large alloc
-gets backing PMM pages mapped into a kernel virtual range; small
-allocs ride a slab. We need the equivalent before anything bigger
-than current workloads runs reliably.
-
-Plan:
-1. Reserve a 1 GiB kernel VA range for the dynamic heap (above the
-   existing static heap).
-2. Add a `kalloc::grow(extra_bytes)` path that requests PMM pages,
-   maps them into the reservation, and extends the hole-list.
-3. On alloc-failure in the hole-list, attempt `grow(round_up(size))`
-   before returning `null`.
-4. Track total mapped heap pages in `/proc/meminfo` (Slab/MemAvailable).
-
-Until T16 lands every "this works on Linux but OOMs on oxide" bug
-will trace here.
-
-
-
 ### T11 — ARM TCP CLOSE_WAIT leak (high impact)
 Accepted TCP sockets on ARM never reach `InetSocket::Drop` after
 the peer side closes. Caps `SSH_SMOKE_CONNECTIONS=4` on ARM TCG;
@@ -70,6 +45,25 @@ works, the libc-load is the trigger. Then audit our
 fork/dlopen interaction (likely an mmap or ld-musl reentry
 issue under fork).
 
+### T17 — vim vendor + cross-build (distro endgame proof)
+Vim 9.1 (current upstream) dropped the builtin termcap fallback; configure
+requires linking against `tinfo / ncurses / termlib / termcap`. None
+of those are vendored in the musl-cross tree, so vim cross-build is
+gated on first vendoring a static-musl ncurses. Plan:
+
+1. F-NN-ncurses: vendor + cross-build ncurses 6.x static-musl for
+   {x86_64, aarch64}, mirror the bash/coreutils/zlib pattern. Install
+   under `vendor/ncurses/install-<arch>/` so other tools can `-I
+   <root>/include -L <root>/lib -lncurses`.
+2. F-NN-vim: `./configure --with-tlib=ncurses ...` against the
+   vendored prefix, static-musl, --with-features=tiny. Stage at
+   `/usr/bin/vim` in the rootfs. Add `vim -e -c q` smoke on both
+   arches (proves the editor opens + drains + exits without termcap
+   surprises).
+
+Owner: open. Required for "distro fully built and proven out for
+core utils, vim etc." per the live /loop directive.
+
 ### T15 — ARM dynamic bash as `/bin/sh` boot wedge (low impact)
 Staging dynamic bash at `/bin/sh` on ARM wedges init silently
 post-keymap. Bash dynamically loads fine when invoked as
@@ -79,6 +73,7 @@ busybox-ash as `/bin/sh` on ARM.
 
 ## Recently closed
 
+- **T16 Growable kernel heap (vmalloc-equivalent)** — closed by **#1328 F247** (per-instance KAlloc grow hook → PMM buddy via HHDM; STATIC_HEAP back to 64 MiB; hosted test covers grow path).
 - **T13 SSH-connect smoke through PAM dlopen** — closed by **#1314 F231** (real PAM dlopen via dynamic sshd + pam_permit.so).
 - **T12 wait4 status decode `$?=255`** — closed by **#1320 F237** (clear SIGCHLD pending bit when wait4 drains last zombie).
 - **T10 multi-conn ssh smoke** — closed earlier (boot-smoke-ssh.sh tail-tools + pty).
