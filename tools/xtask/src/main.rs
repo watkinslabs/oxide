@@ -161,11 +161,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-<arch>.so.1
-    // so the kernel exercises the dual-image load path through our
-    // stub interpreter. Keep this list short until the full ld-musl
-    // runtime lands; static-pie is the only flavor most utilities
-    // need today. hello_dyn is now arch-portable (#ifdef syscall ABI).
+    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-<arch>.so.1.
+    // hello_dyn (-nostdlib): exercises PT_INTERP load + jump only.
+    // hello_dyn_libc (full crt1 + libc): exercises DT_NEEDED resolution,
+    // GOT/PLT relocations, libc constructors, printf — full ld-musl
+    // smoke since F230 staged the real musl loader.
     let dyn_bins: &[(&str, &str)] =
         &[("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c")];
     for (out_rel, src_rel) in dyn_bins {
@@ -176,6 +176,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let mut c = Command::new(&cc);
         c.args(["-fPIE", "-pie", "-O2", "-nostartfiles", "-nostdlib",
                 "-fno-stack-protector",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
+    let dyn_libc_bins: &[(&str, &str)] = &[
+        ("userspace/hello_dyn_libc/hello_dyn_libc",
+         "userspace/hello_dyn_libc/hello_dyn_libc.c"),
+    ];
+    for (out_rel, src_rel) in dyn_libc_bins {
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
+        let src = repo.join(src_rel);
+        eprintln!("xtask rootfs: {} dynamic {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-fno-stack-protector",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
@@ -328,16 +342,27 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("af_packet_smoke"), "/bin/af_packet_smoke")?;
     put(&user("online_smoke"),    "/bin/online_smoke")?;
     put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
-    // dynamic-linker stub at the per-arch musl path. The kernel's
-    // ELF loader sees PT_INTERP="/lib/ld-musl-<arch>.so.1" in any
-    // -pie binary and dual-loads this stub alongside the exec.
+    // F230: real musl dynamic loader at the per-arch interp path.
+    // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
+    // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
+    // musl-gcc links against); aarch64 copied from the cross
+    // toolchain (musl 1.2.2-git, what the cross CC links against).
+    // Same binary handles DT_NEEDED + relocations + dlopen for any
+    // dynamic ELF we link. The userspace/dynlink stub is no longer
+    // staged — kept as build-only for reference.
     let interp_path = if arch == "aarch64" {
         "/lib/ld-musl-aarch64.so.1"
     } else {
         "/lib/ld-musl-x86_64.so.1"
     };
-    put(&user("dynlink"),   interp_path)?;
+    let ldso = repo.join(format!("vendor/musl/ld-musl-{arch}.so.1"));
+    if ldso.is_file() {
+        put(&ldso, interp_path)?;
+    } else {
+        eprintln!("xtask rootfs: WARN missing {}", ldso.display());
+    }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
+    put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
 
     // F123: vendored dhcpcd 10.3.2 — static-musl, per
     // vendor/dhcpcd/build.sh. Real userspace DHCPv4 client. Survives
@@ -677,6 +702,9 @@ for s in /bin/bare3 /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
 done
+echo pre-hello_dyn_libc
+/bin/hello_dyn_libc
+echo post-hello_dyn_libc rv=$?
 ")?,
         "/etc/init.d/oxide-smokes")?;
     dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;
