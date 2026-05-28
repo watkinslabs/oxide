@@ -241,6 +241,41 @@ impl vfs::fs::FileSystem for TmpfsFs {
     fn create(&self, path: &str, _mode: u32) -> vfs::fs::KResult<vfs::InodeRef> {
         Ok(lookup_or_create(path))
     }
+
+    /// Drop the registry entry for `path`. Returns ENOENT if absent.
+    /// F225: GNU patch's atomic-rename pattern needs unlink (sometimes
+    /// it removes the dest before renaming the .tmp file in).
+    /// # C: O(N_tmpfs_entries)
+    fn unlink(&self, path: &str) -> vfs::fs::KResult<()> {
+        let mut g = REGISTRY.lock();
+        let len = g.len();
+        g.retain(|(p, _)| p != path);
+        if g.len() == len { Err(vfs::VfsError::Enoent) } else { Ok(()) }
+    }
+
+    /// rename(from, to) — atomic-write idiom used by every editor +
+    /// package manager + GNU patch. Replaces the destination entry
+    /// (if any) with the source inode, then drops the source entry.
+    /// F225: required for GNU patch's `patch foo.txt < diff` flow,
+    /// which writes patched content to `foo.txt.<temp>` then renames
+    /// it over the original.
+    /// # C: O(N_tmpfs_entries)
+    fn rename(&self, from: &str, to: &str) -> vfs::fs::KResult<()> {
+        let mut g = REGISTRY.lock();
+        // Find source.
+        let src_idx = match g.iter().position(|(p, _)| p == from) {
+            Some(i) => i, None => return Err(vfs::VfsError::Enoent),
+        };
+        let src_inode = Arc::clone(&g[src_idx].1);
+        // Replace dest (if it exists) or push a new entry, then drop source.
+        if let Some(dst_idx) = g.iter().position(|(p, _)| p == to) {
+            g[dst_idx].1 = src_inode;
+        } else {
+            g.push((to.into(), src_inode));
+        }
+        g.swap_remove(src_idx);
+        Ok(())
+    }
 }
 
 /// Singleton accessor.

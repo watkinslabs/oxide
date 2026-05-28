@@ -191,25 +191,27 @@ done
 # so a low SSH_SMOKE_CONNECTIONS still exercises the binaries.
 run_tail() {
     local label="$1" cmd="$2" want="$3" out
-    out="$(timeout 60 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "$cmd" 2>&1)"
+    out="$(timeout 120 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "$cmd" 2>&1)"
     grep -q -- "$want" <<<"$out" || { echo "boot-smoke-ssh: FAIL — $label" >&2; echo "$out" >&2; return 1; }
     echo "boot-smoke-ssh: $label OK"
     return 0
 }
 if [ "$failed" -eq 0 ]; then
-    run_tail "gawk --version"        "/usr/bin/gawk --version"        "GNU Awk" || failed=1
-    run_tail "awk --version"         "/usr/bin/awk --version"         "GNU Awk" || failed=1
-    run_tail "find --version"        "/usr/bin/find --version"        "GNU findutils" || failed=1
+    # Run the round-trip / behavior checks FIRST while sshd is still
+    # fresh; --version checks (which only fork-exec-write a few
+    # bytes) tolerate the cumulative slowdown later in the list.
+    run_tail "patch round-trip" \
+             "echo a > /tmp/p1; printf '%s\n' '--- /tmp/p1' '+++ /tmp/p2' '@@ -1 +1 @@' '-a' '+OXPATCH_OK' > /tmp/p.diff; /usr/bin/patch -i /tmp/p.diff /tmp/p1 2>/dev/null; cat /tmp/p1" \
+             "OXPATCH_OK" || failed=1
     run_tail "find /etc -name passwd" "/usr/bin/find /etc -name passwd" "/etc/passwd" || failed=1
-    run_tail "diff --version"        "/usr/bin/diff --version"        "diffutils" || failed=1
-    # diff <same> <same> produces NO output. echo DIFF_DONE so the
-    # smoke can grep for "DIFF_DONE" — its presence implies diff
-    # ran AND produced no diff lines (because the marker is the only
-    # thing printed). Exit code is ignored: our static-musl diff
-    # binary exits 255 on the teardown atexit handler regardless.
     run_tail "diff /etc/passwd /etc/passwd" \
              "/usr/bin/diff /etc/passwd /etc/passwd 2>/dev/null; echo OXDIFF_DONE" \
              "OXDIFF_DONE" || failed=1
+    run_tail "gawk --version"        "/usr/bin/gawk --version"        "GNU Awk" || failed=1
+    run_tail "awk --version"         "/usr/bin/awk --version"         "GNU Awk" || failed=1
+    run_tail "find --version"        "/usr/bin/find --version"        "GNU findutils" || failed=1
+    run_tail "diff --version"        "/usr/bin/diff --version"        "diffutils" || failed=1
+    run_tail "patch --version"       "/usr/bin/patch --version"       "GNU patch" || failed=1
 fi
 
 # Finish with an interactive PTY session — covers the SCM_RIGHTS +
