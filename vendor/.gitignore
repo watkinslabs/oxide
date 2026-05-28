@@ -170,3 +170,11 @@ xz/xz-5.6.3.tar.xz
 !ncurses/install-aarch64/**
 ncurses/ncurses-6.5/
 ncurses/ncurses-6.5.tar.gz
+# vim 9.1.0950 -- F251 (T17 step 2). Static-musl, features=tiny,
+# linked against vendor/ncurses/install-<arch>/libncursesw.a.
+!vim/
+!vim/build.sh
+!vim/vim-x86_64
+!vim/vim-aarch64
+vim/vim-9.1.0950/
+vim/vim-9.1.0950.tar.gz
