@@ -577,6 +577,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // Built --without-openssl, so only ed25519 host keys + chacha20-
     // poly1305 + curve25519 work. Password auth on (alice/swordfish).
     // PermitRootLogin=no since root has no password.
+    // F229: openssh now compiled with PAM + zlib support
+    // (libpam.a + libz.a statically linked). UsePAM defaults to no
+    // because libpam's dlopen-based module loading needs a dynamic
+    // loader we don't ship yet; PasswordAuthentication still goes
+    // through openssh's internal /etc/shadow path. Compression
+    // (Compression yes) leverages the zlib linkage.
     put(&stage("sshd_config",
         b"Port 22\n\
 AddressFamily inet\n\
@@ -586,12 +592,29 @@ PermitRootLogin no\n\
 PasswordAuthentication yes\n\
 PermitEmptyPasswords no\n\
 PubkeyAuthentication yes\n\
+UsePAM no\n\
+Compression yes\n\
 PrintMotd no\n\
 PrintLastLog no\n\
 UseDNS no\n\
 StrictModes no\n\
 LogLevel INFO\n")?,
         "/etc/ssh/sshd_config")?;
+    // F229: minimal /etc/pam.d/sshd — present so any future toggle
+    // of UsePAM=yes finds a valid service file. Modules listed are
+    // the standard Linux distro chain (account+session+auth via
+    // pam_unix.so) but the actual dlopen path stays unused until
+    // a dynamic loader ships.
+    dbg("mkdir /etc/pam.d")?;
+    put(&stage("pam_sshd",
+        b"# /etc/pam.d/sshd -- standard openssh PAM stack.\n\
+# Modules dlopen'd from /lib/security; not active until UsePAM=yes\n\
+# in sshd_config AND a dynamic loader is present in the rootfs.\n\
+auth       required   pam_unix.so\n\
+account    required   pam_unix.so\n\
+password   required   pam_unix.so\n\
+session    required   pam_unix.so\n")?,
+        "/etc/pam.d/sshd")?;
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.
