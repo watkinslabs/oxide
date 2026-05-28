@@ -224,58 +224,39 @@ pub fn reap_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
     Some((tid, code))
 }
 
-/// B14: drop Zombies whose parent has long since stopped caring,
-/// either because they're orphaned (parent task gone) OR the parent
-/// has had >`MAX_LINGER_NS` to wait4 and didn't. Linux uses init as
-/// the default subreaper for the orphan case and the parent's
-/// SIG_IGN/SA_NOCLDWAIT for the second case; we approximate both
-/// with a timed-reap sweep so sshd's per-conn fork-exit churn
-/// doesn't pile up zombies indefinitely (we observed ~340 KB per
-/// orphaned task — Task struct + 16 KB kernel stack — staying
-/// alive forever in ZOMBIES on TCG ARM).
-///
-/// Called from the periodic tick path. The 5-second linger is a
-/// generous overestimate of Linux's nominal "SIGCHLD-then-wait4"
-/// latency — any reasonable parent reacts in milliseconds; only
-/// pathologically-blocked parents (sshd in our case) exceed it.
-/// # C: O(N_zombies × N_tasks) — registry lookup is O(N_tasks).
+/// B14: reap zombies whose parent is gone — Linux subreaper path.
+/// Linux's do_exit → forget_original_parent walks children at
+/// parent-exit time and reparents them to init (or the nearest
+/// PR_SET_CHILD_SUBREAPER); init's SIGCHLD handler then reaps via
+/// wait4. We do the equivalent here in one place: any zombie whose
+/// parent_tid no longer resolves to a live Task gets dropped on
+/// the next tick — same end-to-end behavior as init reaping its
+/// reparented children.
+/// # C: O(N_zombies × N_tasks).
 pub fn reap_orphans() {
     use crate::registry;
-    // 500 ms — Linux's nominal SIGCHLD→wait4 latency is <10 ms;
-    // anything longer is a stuck parent (sshd waiting on a select
-    // that's blocked elsewhere) and the zombie is functionally
-    // abandoned.
-    const MAX_LINGER_NS: u64 = 500_000_000;
-    let now_ns = monotonic_ns();
     let mut q = ZOMBIES.lock();
     q.retain(|t| {
         let pt = t.parent_tid.load(Ordering::Acquire);
-        // pid 0 is the boot anchor — never reap (no parent slot).
         if pt == 0 { return true; }
-        // Orphan: parent task is gone → reap.
-        if registry::lookup(pt).is_none() { return false; }
-        // Linger gate: if parent has been alive for >5s and still
-        // hasn't reaped, give up and reclaim. Stamps zombie_since_ns
-        // on first observation so the timer starts when the task
-        // becomes a zombie, not when it was created.
-        let stamped = t.zombie_since_ns.load(Ordering::Acquire);
-        if stamped == 0 {
-            t.zombie_since_ns.store(now_ns, Ordering::Release);
-            return true;
-        }
-        now_ns.saturating_sub(stamped) < MAX_LINGER_NS
+        registry::lookup(pt).is_some()
     });
 }
 
-#[cfg(target_arch = "x86_64")]
-fn monotonic_ns() -> u64 {
-    use hal::TimerOps;
-    hal_x86_64::X86TimerOps::monotonic_ns().0
+/// Linux `forget_original_parent` — walk live children of the
+/// exiting task and rewrite their `parent_tid` to PID 1 (init).
+/// Called from `sys_exit` so that when the children themselves
+/// exit later, they queue SIGCHLD to init rather than to a
+/// dead parent that will never wait4 them, and `reap_orphans`
+/// above sees them as orphans only if init itself dies.
+/// # C: O(N_tasks).
+pub fn reparent_children(dying_tid: u32) {
+    use crate::registry;
+    for tid in registry::live_tids() {
+        if let Some(t) = registry::lookup(tid) {
+            if t.parent_tid.load(Ordering::Acquire) == dying_tid {
+                t.parent_tid.store(1, Ordering::Release);
+            }
+        }
+    }
 }
-#[cfg(target_arch = "aarch64")]
-fn monotonic_ns() -> u64 {
-    use hal::TimerOps;
-    hal_aarch64::ArmTimerOps::monotonic_ns().0
-}
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn monotonic_ns() -> u64 { 0 }
