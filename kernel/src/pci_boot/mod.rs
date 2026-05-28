@@ -772,6 +772,11 @@ extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
             // blocking helpers can return ETIMEDOUT/EAGAIN. Same
             // cadence as retx since both are coarse-grained.
             sched::live::tick_wake_expired(now_ns);
+            // B14: subreap orphan zombies (parent gone, never waited).
+            // Without this they accumulate in ZOMBIES holding Task
+            // struct + 16KB kernel stack per orphan — sshd's per-conn
+            // churn was leaking ~340 KB per ssh connection.
+            sched::live::zombies::reap_orphans();
             // F177: garbage-collect stale ARP neighbor entries
             // (older than 60s). Same cadence; cheap O(N) scan.
             drv_virtio_net::modern::arp_cache().gc(now_ns);

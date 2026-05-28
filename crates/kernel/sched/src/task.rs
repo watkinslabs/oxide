@@ -279,9 +279,10 @@ pub struct Task {
     /// Monotonic ns at spawn; getrusage/times/proc-stat utime
     /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
     pub spawn_ns: AtomicU64,
-    /// F169: monotonic-ns deadline for `WaitList::park_with_deadline`.
-    /// `0` = indefinite. Cleared on wake.
+    /// F169 WaitList::park_with_deadline; 0 = indefinite.
     pub wakeup_deadline_ns: AtomicU64,
+    /// B14 reap_orphans first-observation stamp.
+    pub zombie_since_ns: AtomicU64,
     /// Cumulative ns of exited children's CPU; read by
     /// getrusage(RUSAGE_CHILDREN).
     pub cumulative_child_ns: AtomicU64,
@@ -859,6 +860,7 @@ impl Task {
             nice:       AtomicI8::new(0),
             spawn_ns:   AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
+            zombie_since_ns: AtomicU64::new(0),
             cumulative_child_ns: AtomicU64::new(0),
             alarm_ns:   AtomicU64::new(0),
             alarm_interval_ns: AtomicU64::new(0),
