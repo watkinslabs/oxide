@@ -1,23 +1,5 @@
-// xtask: sole CI entry point per docs/07§8.
-//
-// Subcommand surface (07§8):
-//   xtask kernel    --arch <x86_64|aarch64> --profile <release|dev|debug-build>
-//   xtask user      --arch <a>
-//   xtask image     --arch <a>
-//   xtask test      [--hosted|--kernel|--loom|--miri|--proptest]
-//   xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
-//   xtask soak      --arch <a> --duration H
-//   xtask bench     --arch <a>
-//   xtask spec-lint
-//   xtask doc-check
-//
-// Implementation status (P0-03 skeleton):
-//   spec-lint  : implemented (delegates to tools/spec-lint binary)
-//   kernel     : implemented for build (-Z build-std + target JSON);
-//                kernel crate doesn't exist yet -> errors at cargo level
-//   test       : --hosted implemented (delegates to `cargo test`)
-//   user, image, qemu, soak, bench, doc-check : stubs that print
-//                "not yet implemented; awaiting <spec>"
+// xtask: sole CI entry point per docs/07§8. Subcommands: kernel,
+// user, image, test, qemu, soak, bench, spec-lint, doc-check.
 
 use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
@@ -219,14 +201,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // 2. Build a fresh 8 MiB ext4 image at kernel/blobs/rootfs-<arch>.img.
+    // F251: bumped from 16 → 32 MiB to fit vim 9.1 + remaining headroom.
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=16"]);
+                "bs=1M", "count=32"]);
         run(c)?;
     }
     {
@@ -422,6 +404,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let bash_bin = repo.join(format!("vendor/bash/bash-{}", arch));
     if bash_bin.is_file() {
         put(&bash_bin, "/bin/bash")?;
+    }
+
+    // F251: vim 9.1.0950 static-musl + vendored ncurses → /usr/bin/vim.
+    let vim_bin = repo.join(format!("vendor/vim/vim-{}", arch));
+    if vim_bin.is_file() {
+        put(&vim_bin, "/usr/bin/vim")?;
     }
 
     // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed
