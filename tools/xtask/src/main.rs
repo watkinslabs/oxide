@@ -1,6 +1,4 @@
-// xtask: sole CI entry point per docs/07§8. Subcommands: kernel,
-// user, image, test, qemu, soak, bench, spec-lint, doc-check.
-
+// xtask: CI entry point per 07§8.
 use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
 
@@ -38,22 +36,8 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-// ---------------------------------------------------------------------------
-// rootfs: build kernel/blobs/rootfs.img from source userspace binaries
-// ---------------------------------------------------------------------------
-
-/// Reproducible per-arch userspace rootfs image builder.
-///
-/// Driven by `--arch <x86_64|aarch64>`. Runs:
-///   1. arch-specific musl-gcc on every userspace/<bin>/<bin>.c.
-///      x86_64 uses host /usr/bin/musl-gcc; aarch64 uses
-///      vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-///      (fetched via `tools/fetch-cross.sh` if missing).
-///   2. dd + mkfs.ext4 → kernel/blobs/rootfs-<arch>.img.
-///   3. debugfs to populate /bin/* and /etc/* in the per-arch image.
-///
-/// Idempotent; rerun whenever userspace sources change. The kernel
-/// `include_bytes!`s the matching per-arch blob in dev_ext4.rs.
+// rootfs: build kernel/blobs/rootfs-<arch>.img from userspace.
+/// Per-arch userspace rootfs image builder. --arch <x86_64|aarch64>.
 pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
     if arch != "x86_64" && arch != "aarch64" {
@@ -413,6 +397,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let vim_bin = repo.join(format!("vendor/vim/vim-{}", arch));
     if vim_bin.is_file() {
         put(&vim_bin, "/usr/bin/vim")?;
+    }
+
+    // F254: less 643 static-musl + vendored ncurses → /usr/bin/less.
+    let less_bin = repo.join(format!("vendor/less/less-{}", arch));
+    if less_bin.is_file() {
+        put(&less_bin, "/usr/bin/less")?;
     }
 
     // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed

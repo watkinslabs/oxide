@@ -178,3 +178,10 @@ ncurses/ncurses-6.5.tar.gz
 !vim/vim-aarch64
 vim/vim-9.1.0950/
 vim/vim-9.1.0950.tar.gz
+# less 643 -- F254. Static-musl + vendored ncurses; /usr/bin/less.
+!less/
+!less/build.sh
+!less/less-x86_64
+!less/less-aarch64
+less/less-643/
+less/less-643.tar.gz
