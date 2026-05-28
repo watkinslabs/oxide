@@ -117,6 +117,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/online_smoke/online_smoke",       "userspace/online_smoke/online_smoke.c"),
         ("userspace/tcp_smoke/tcp_smoke",             "userspace/tcp_smoke/tcp_smoke.c"),
         ("userspace/exit_test/exit_test",             "userspace/exit_test/exit_test.c"),
+        ("userspace/socketpair_fork_probe/socketpair_fork_probe",
+                                                      "userspace/socketpair_fork_probe/socketpair_fork_probe.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -364,6 +366,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
     put(&user("exit_test"),       "/bin/exit_test")?;
     put(&user("pthread_socketpair_probe"), "/bin/pthread_socketpair_probe")?;
+    put(&user("socketpair_fork_probe"),    "/bin/socketpair_fork_probe")?;
     // F230: real musl dynamic loader at the per-arch interp path.
     // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
     // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
@@ -754,6 +757,9 @@ echo post-bash-dynamic rv=$?
 echo pre-pthread-probe
 timeout 10 /bin/pthread_socketpair_probe
 echo post-pthread-probe rv=$?
+echo pre-socketpair-fork-probe
+timeout 10 /bin/socketpair_fork_probe
+echo post-socketpair-fork-probe rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
