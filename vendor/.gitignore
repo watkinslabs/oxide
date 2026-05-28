@@ -122,3 +122,10 @@ findutils/findutils-4.10.0.tar.xz
 !diffutils/cmp-aarch64
 diffutils/diffutils-3.10/
 diffutils/diffutils-3.10.tar.xz
+# GNU patch 2.7.6 — F225.
+!patch/
+!patch/build.sh
+!patch/patch-x86_64
+!patch/patch-aarch64
+patch/patch-2.7.6/
+patch/patch-2.7.6.tar.xz
