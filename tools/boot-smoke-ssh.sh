@@ -212,6 +212,7 @@ if [ "$failed" -eq 0 ]; then
     run_tail "find --version"        "/usr/bin/find --version"        "GNU findutils" || failed=1
     run_tail "diff --version"        "/usr/bin/diff --version"        "diffutils" || failed=1
     run_tail "patch --version"       "/usr/bin/patch --version"       "GNU patch" || failed=1
+    run_tail "bzip2 --version"       "/usr/bin/bzip2 --version 2>&1; :" "bzip2," || failed=1
 fi
 
 # Finish with an interactive PTY session — covers the SCM_RIGHTS +
