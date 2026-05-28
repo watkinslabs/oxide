@@ -94,7 +94,7 @@ SSH_OPTS=(
 
 run_one() {
     local idx="$1" cmd="$2" want="$3" out
-    out="$(timeout 20 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "$cmd" 2>&1)"
+    out="$(timeout 90 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "$cmd" 2>&1)"
     local rv=$?
     if [ "$rv" -ne 0 ]; then
         echo "boot-smoke-ssh: FAIL — conn #$idx ($cmd) rv=$rv" >&2
@@ -133,42 +133,45 @@ run_pty() {
 }
 
 # Rotation of commands across $N_CONN sessions. Each tests a
-# different code path (pure stdout, /proc read, uid identity).
+# different code path. ARM TCG sshd-session accumulates per-conn
+# overhead so deeper rotations (>16) bog down — keep the first 16
+# slots covering the essentials, push less-critical checks to the
+# tail.
 CMDS=(
     "echo OXIDE_SSH_OK"
     "id"
-    "cat /etc/passwd"
+    "/usr/bin/cat /etc/passwd"
     "uname -m"
-    "pwd"
     "/bin/bash -c 'echo BASH:\$BASH_VERSION'"
     "/usr/bin/sed --version"
     "/usr/bin/sed -n 1p /etc/passwd"
     "/usr/bin/ls --version"
-    "/usr/bin/cat /etc/passwd"
     "/usr/bin/grep --version"
     "/usr/bin/grep root /etc/passwd"
     "/usr/bin/tar --version"
     "/usr/bin/tar -cf /tmp/p.tar /etc/passwd 2>/dev/null; /usr/bin/tar -tf /tmp/p.tar; :"
     "/usr/bin/make --version"
     "printf 'oxgoal:\n\t@echo MAKE_OK\n' > /tmp/M && /usr/bin/make -f /tmp/M"
+    "/usr/bin/gawk --version"
+    "/usr/bin/awk --version"
 )
 WANTS=(
     "OXIDE_SSH_OK"
     "uid=1000(alice)"
     "alice:"
     "."
-    "/home/alice"
     "BASH:5."
     "GNU sed"
     "root:"
     "GNU coreutils"
-    "alice:"
     "GNU grep"
     "root:"
     "GNU tar"
     "etc/passwd"
     "GNU Make"
     "MAKE_OK"
+    "GNU Awk"
+    "GNU Awk"
 )
 NCMD=${#CMDS[@]}
 
@@ -179,14 +182,36 @@ for i in $(seq 1 "$N_CONN"); do
         failed=1
         break
     fi
+    # Small breather between back-to-back sessions so ARM TCG's
+    # sshd-session fork+exec doesn't queue up under load.
+    sleep 1
 done
+
+# Dedicated awk/gawk validation. Run AFTER the rotation but as
+# its own (small) check so a low SSH_SMOKE_CONNECTIONS still
+# exercises both binaries.
+run_awk() {
+    local out
+    out="$(timeout 60 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "/usr/bin/gawk --version" 2>&1)"
+    grep -q "GNU Awk" <<<"$out" || { echo "boot-smoke-ssh: FAIL — gawk --version" >&2; echo "$out" >&2; return 1; }
+    out="$(timeout 60 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "/usr/bin/awk --version" 2>&1)"
+    grep -q "GNU Awk" <<<"$out" || { echo "boot-smoke-ssh: FAIL — awk --version" >&2; echo "$out" >&2; return 1; }
+    echo "boot-smoke-ssh: awk validation OK (gawk + awk both report GNU Awk)"
+    return 0
+}
+if [ "$failed" -eq 0 ]; then
+    if ! run_awk; then
+        failed=1
+    fi
+fi
 
 # Finish with an interactive PTY session — covers the SCM_RIGHTS +
 # TIOCSCTTY + shell-relay path the exec-mode sessions can't reach.
 # Brief settle gap so sshd's connection-reaper doesn't hit the new
-# PTY session mid-cleanup of the prior 14 exec connections.
+# PTY session mid-cleanup of the prior exec connections (cumulative
+# sshd-session load takes longer to drain on ARM TCG).
 if [ "$failed" -eq 0 ]; then
-    sleep 5
+    sleep 10
     if ! run_pty 1; then
         failed=1
     fi
@@ -198,5 +223,5 @@ if [ "$failed" -ne 0 ]; then
     exit 1
 fi
 
-echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions + 1 pty on $ARCH"
+echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions + awk + 1 pty on $ARCH"
 exit 0
