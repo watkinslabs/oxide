@@ -104,3 +104,12 @@ make/make-4.4.1.tar.gz
 !gawk/gawk-aarch64
 gawk/gawk-5.3.1/
 gawk/gawk-5.3.1.tar.xz
+# GNU findutils 4.10.0 — F223.
+!findutils/
+!findutils/build.sh
+!findutils/find-x86_64
+!findutils/find-aarch64
+!findutils/xargs-x86_64
+!findutils/xargs-aarch64
+findutils/findutils-4.10.0/
+findutils/findutils-4.10.0.tar.xz
