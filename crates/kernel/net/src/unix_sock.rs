@@ -76,6 +76,15 @@ pub struct UnixPair {
     /// is woken when end B writes (write(end=B) advances b_to_a).
     pub end_a_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    /// SCM_RIGHTS bursts queued by writes on each direction. Each
+    /// burst captures the `Arc<File>` set attached to one sendmsg(2);
+    /// the receiver pops the FIFO head on its next recvmsg(2) and
+    /// installs the fds into its fd_table. Linux strictly couples fds
+    /// to byte offsets — v1 simplifies to FIFO with first-recvmsg
+    /// delivery, which matches openssh's monitor/preauth (sendmsg one
+    /// header+payload+fds → recvmsg one header → recvmsg one payload).
+    pub a_to_b_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
+    pub b_to_a_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
 }
 
 pub struct UnixRing {
@@ -96,7 +105,44 @@ impl UnixPair {
             b_to_a_waiters: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
+            a_to_b_fds: Spinlock::new(VecDeque::new()),
+            b_to_a_fds: Spinlock::new(VecDeque::new()),
         })
+    }
+
+    /// Queue a SCM_RIGHTS burst from `end` for the peer to pick up
+    /// on its next recvmsg-with-cmsg. The fds are captured as
+    /// `Arc<File>` so the underlying file stays alive even if the
+    /// sender closes its descriptor before the peer drains.
+    /// # C: O(1)
+    pub fn push_fds(&self, end: UnixEnd, fds: alloc::vec::Vec<Arc<vfs::File>>) {
+        if fds.is_empty() { return; }
+        let mut g = match end {
+            UnixEnd::A => self.a_to_b_fds.lock(),
+            UnixEnd::B => self.b_to_a_fds.lock(),
+        };
+        g.push_back(fds);
+    }
+
+    /// Pop the next SCM_RIGHTS burst queued for the reader at `end`.
+    /// `end == A` consumes from b_to_a_fds. Returns empty when none.
+    /// # C: O(1)
+    pub fn pop_fds(&self, end: UnixEnd) -> alloc::vec::Vec<Arc<vfs::File>> {
+        let mut g = match end {
+            UnixEnd::A => self.b_to_a_fds.lock(),
+            UnixEnd::B => self.a_to_b_fds.lock(),
+        };
+        g.pop_front().unwrap_or_default()
+    }
+
+    /// True if reader at `end` has a fd burst pending.
+    /// # C: O(1)
+    pub fn has_fds(&self, end: UnixEnd) -> bool {
+        let g = match end {
+            UnixEnd::A => self.b_to_a_fds.lock(),
+            UnixEnd::B => self.a_to_b_fds.lock(),
+        };
+        !g.is_empty()
     }
 
     /// F181a: register an end's epoll-subscriber list. Called when
