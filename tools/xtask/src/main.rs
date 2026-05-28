@@ -624,15 +624,10 @@ UseDNS no\n\
 StrictModes no\n\
 LogLevel INFO\n")?,
         "/etc/ssh/sshd_config")?;
-    // F231: /etc/pam.d/sshd chain — pam_permit.so for all 4 stages.
-    // pam_permit always returns PAM_SUCCESS so libpam-dlopen +
-    // pam_sm_* exec just works through to session setup. Real
-    // pam_unix (with /etc/shadow lookup + crypt) lands in F232 once
-    // libpam-shared + libcrypt vendor builds are in place.
     dbg("mkdir /etc/pam.d")?;
     put(&stage("pam_sshd",
-        b"# /etc/pam.d/sshd -- pam_permit fallback; pam_unix wires up\n\
-# in F239 once the dlopen-then-conv-then-stall trace is resolved.\n\
+        b"# /etc/pam.d/sshd -- pam_permit (task #14: real pam_unix\n\
+# activation deferred -- sshpam_thread + conv socketpair hangs).\n\
 auth       required   pam_permit.so\n\
 account    required   pam_permit.so\n\
 password   required   pam_permit.so\n\

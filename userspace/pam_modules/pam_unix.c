@@ -61,7 +61,26 @@ int pam_sm_authenticate(pam_handle_t *p, int f, int c, const char **v) {
 }
 
 int pam_sm_setcred      (pam_handle_t *p, int f, int c, const char **v) { (void)p; (void)f; (void)c; (void)v; return PAM_SUCCESS; }
-int pam_sm_acct_mgmt    (pam_handle_t *p, int f, int c, const char **v) { (void)p; (void)f; (void)c; (void)v; return PAM_SUCCESS; }
+// Account stage: verify the user exists in /etc/shadow and has a
+// usable password slot. No password is checked here — that's auth.
+int pam_sm_acct_mgmt(pam_handle_t *p, int f, int c, const char **v) {
+    (void)f; (void)c; (void)v;
+    const char *user = NULL;
+    if (pam_get_user(p, &user, NULL) != PAM_SUCCESS || !user) return PAM_USER_UNKNOWN;
+    FILE *fh = fopen("/etc/shadow", "r");
+    if (!fh) return PAM_AUTHINFO_UNAVAIL;
+    char line[1024];
+    int rv = PAM_USER_UNKNOWN;
+    size_t ulen = strlen(user);
+    while (fgets(line, sizeof line, fh)) {
+        if (strncmp(line, user, ulen) == 0 && line[ulen] == ':') {
+            rv = PAM_SUCCESS;
+            break;
+        }
+    }
+    fclose(fh);
+    return rv;
+}
 int pam_sm_open_session (pam_handle_t *p, int f, int c, const char **v) { (void)p; (void)f; (void)c; (void)v; return PAM_SUCCESS; }
 int pam_sm_close_session(pam_handle_t *p, int f, int c, const char **v) { (void)p; (void)f; (void)c; (void)v; return PAM_SUCCESS; }
 int pam_sm_chauthtok    (pam_handle_t *p, int f, int c, const char **v) { (void)p; (void)f; (void)c; (void)v; return PAM_AUTHTOK_ERR; }
