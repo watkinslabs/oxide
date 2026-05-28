@@ -150,6 +150,8 @@ CMDS=(
     "/usr/bin/sed -n 1p /etc/passwd"
     "/usr/bin/ls --version"
     "/usr/bin/cat /etc/passwd"
+    "/usr/bin/grep --version"
+    "/usr/bin/grep root /etc/passwd"
 )
 WANTS=(
     "OXIDE_SSH_OK"
@@ -162,6 +164,8 @@ WANTS=(
     "root:"
     "GNU coreutils"
     "alice:"
+    "GNU grep"
+    "root:"
 )
 NCMD=${#CMDS[@]}
 

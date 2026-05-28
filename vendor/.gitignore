@@ -76,3 +76,10 @@ sed/sed-4.9.tar.xz
 !coreutils/coreutils-aarch64
 coreutils/coreutils-8.32/
 coreutils/coreutils-8.32.tar.xz
+# GNU grep 3.11 — F219.
+!grep/
+!grep/build.sh
+!grep/grep-x86_64
+!grep/grep-aarch64
+grep/grep-3.11/
+grep/grep-3.11.tar.xz
