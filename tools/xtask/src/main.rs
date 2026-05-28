@@ -749,6 +749,9 @@ done
 echo pre-exit_test
 /bin/exit_test
 echo post-exit_test rv=$?
+echo pre-bash-dynamic
+/bin/bash --version 2>&1 | head -1
+echo post-bash-dynamic rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
