@@ -93,6 +93,33 @@ pub use security::bpf as dev_bpf;
 #[global_allocator]
 static GLOBAL_ALLOC: kalloc::KAlloc = kalloc::KAlloc::new();
 
+/// F247 (T16): grow callback the kalloc fallback path invokes when
+/// the static heap runs dry. Asks the PMM for a contiguous run of
+/// pages large enough to cover `min_extra` and returns its HHDM-
+/// mapped VA + size. Returns `None` if the PMM can't satisfy.
+/// Mirrors the Linux vmalloc / `__get_free_pages(GFP_KERNEL)` shape.
+/// # C: O(MAX_ORDER) bounded
+#[cfg(target_os = "oxide-kernel")]
+fn kalloc_grow_from_pmm(min_extra: usize) -> Option<(usize, usize)> {
+    let pmm = pmm::setup::pmm_static()?;
+    let hhdm = pmm::user_as::hhdm_offset();
+    if hhdm == 0 { return None; }
+    // Round up to a power-of-two number of pages so the buddy allocator
+    // can satisfy in a single block; bump to at least 1 MiB to amortise.
+    const PAGE_SIZE: usize = hal::PAGE_SIZE_BYTES as usize;
+    const PAGES_PER_MIB: usize = kalloc::MIB / PAGE_SIZE;
+    let mut pages = min_extra.div_ceil(PAGE_SIZE);
+    if pages == 0 { pages = 1; }
+    if !pages.is_power_of_two() { pages = pages.next_power_of_two(); }
+    if pages < PAGES_PER_MIB { pages = PAGES_PER_MIB; }
+    let order = pages.trailing_zeros() as u8;
+    let pfn = pmm.alloc(pmm::Order(order)).ok()?;
+    let pa  = (pfn.0 as usize) * PAGE_SIZE;
+    let va  = hhdm.wrapping_add(pa as u64) as usize;
+    let size = pages * PAGE_SIZE;
+    Some((va, size))
+}
+
 // Boot-stub → kernel handoff types now live in `crates/boot-info`
 // per the `52§3` shared layer. Re-exported here so existing
 // `crate::BootInfo` / `crate::BootMemRegion` / `crate::BootMemKind`
@@ -221,6 +248,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // outlives the call.
     let pmm = unsafe { pmm::setup::init_from_boot_info(info) };
     if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
+    // F247 (T16): wire the kalloc grow hook now that the PMM can hand
+    // out frames. Any allocation that overflows the static heap from
+    // here on routes through PMM-allocated pages mapped via HHDM.
+    #[cfg(target_os = "oxide-kernel")]
+    if pmm.is_ok() {
+        GLOBAL_ALLOC.set_grow_hook(kalloc_grow_from_pmm);
+    }
     debug_boot! {
         match &pmm {
             Ok(_)                                       => klog::kinfo!("pmm: ready"),
