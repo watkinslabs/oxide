@@ -361,6 +361,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // send-eof + drain semantic handles that correctly. Per
     // vendor/openssh/build.sh. Skipped silently if the per-arch
     // binaries haven't been built yet.
+    // F216: vendored GNU bash 5.2.37 — static-musl. Drops in at
+    // /bin/bash; busybox /bin/sh symlink remains for scripts that
+    // hard-code sh. Per vendor/bash/build.sh.
+    let bash_bin = repo.join(format!("vendor/bash/bash-{}", arch));
+    if bash_bin.is_file() {
+        put(&bash_bin, "/bin/bash")?;
+    }
+
     let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
     let sshdsess_bin = repo.join(format!("vendor/openssh/sshd-session-{}", arch));
     let sshkeygen_bin = repo.join(format!("vendor/openssh/ssh-keygen-{}", arch));
