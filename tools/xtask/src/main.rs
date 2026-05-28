@@ -383,6 +383,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&grep_bin, "/usr/bin/grep")?;
     }
 
+    // F220: vendored GNU tar 1.35 — static-musl /usr/bin/tar.
+    let tar_bin = repo.join(format!("vendor/tar/tar-{}", arch));
+    if tar_bin.is_file() {
+        put(&tar_bin, "/usr/bin/tar")?;
+    }
+
     // F218: vendored GNU coreutils 8.32 — static-musl, single-binary
     // mode. Binary at /usr/libexec/coreutils; symlinks per applet under
     // /usr/bin so PATH lookup picks real GNU semantics over busybox.

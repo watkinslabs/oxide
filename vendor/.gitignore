@@ -83,3 +83,10 @@ coreutils/coreutils-8.32.tar.xz
 !grep/grep-aarch64
 grep/grep-3.11/
 grep/grep-3.11.tar.xz
+# GNU tar 1.35 — F220.
+!tar/
+!tar/build.sh
+!tar/tar-x86_64
+!tar/tar-aarch64
+tar/tar-1.35/
+tar/tar-1.35.tar.xz
