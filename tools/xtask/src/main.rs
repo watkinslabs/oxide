@@ -100,23 +100,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     std::fs::create_dir_all(&user_out).map_err(|_| 1u8)?;
     eprintln!("xtask rootfs: arch={arch} CC={}", cc.display());
 
-    // 1. Build userspace binaries via musl-gcc.
-    //
-    // `portable_bins` use musl libc wrappers (write/fork/execve/...)
-    // and build on every arch. `x86_bins` still embed x86 `syscall`
-    // inline asm and are skipped on aarch64 until they're ported
-    // to libc-wrapper or arch-conditional syscall macros. The
-    // aarch64 boot path only needs init to reach userspace today;
-    // shell + applets come via vendored busybox once the aarch64
-    // cross-build of busybox lands.
-    // F153-1 erased userspace/init/ — PID 1 is now /sbin/init,
-    // a hardlink to /bin/busybox (busybox dispatches the `init`
-    // applet). What stays in `userspace/` is the kernel-acceptance
-    // test surface: syscall-corner smokes (sem/msg/mq/ptrace/
-    // ptrace_singlestep/mprotect), bare3 (real-musl-crt1 isolation
-    // case for F62), and the dynamic-loader smokes (dynlink +
-    // hello_dyn). All of those build against full musl crt1 — the
-    // same path upstream busybox/coreutils/bash use.
+    // 1. Build userspace binaries via musl-gcc — static-musl
+    // kernel-acceptance smokes + dynamic-loader test binaries.
     let crt_bins: &[(&str, &str)] = &[
         ("userspace/bare/bare3",                      "userspace/bare/bare3.c"),
         ("userspace/sem_smoke/sem_smoke",             "userspace/sem_smoke/sem_smoke.c"),
@@ -144,9 +129,22 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // dynlink is our v1 dynamic linker stub — keeps its own _start
-    // (no musl crt1) since it IS the loader. Built per-arch and
-    // staged at /lib/ld-musl-<arch>.so.1 below.
+    // pthread probes (link with -pthread + -lpthread).
+    let pthread_bins: &[(&str, &str)] = &[
+        ("userspace/pthread_socketpair_probe/pthread_socketpair_probe",
+         "userspace/pthread_socketpair_probe/pthread_socketpair_probe.c"),
+    ];
+    for (out_rel, src_rel) in pthread_bins {
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
+        let src = repo.join(src_rel);
+        let mut c = Command::new(&cc);
+        c.args(["-static", "-no-pie", "-O2", "-fno-stack-protector", "-pthread",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(), "-lpthread"]);
+        run(c)?;
+    }
+
+    // Legacy v1 dynlink stub; ld-musl staged separately below.
     let dynlink_bins: &[(&str, &str)] = &[
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
@@ -162,11 +160,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-<arch>.so.1.
-    // hello_dyn (-nostdlib): exercises PT_INTERP load + jump only.
-    // hello_dyn_libc (full crt1 + libc): exercises DT_NEEDED resolution,
-    // GOT/PLT relocations, libc constructors, printf — full ld-musl
-    // smoke since F230 staged the real musl loader.
+    // -pie test binaries — PT_INTERP=/lib/ld-musl-<arch>.so.1.
     let dyn_bins: &[(&str, &str)] =
         &[("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c")];
     for (out_rel, src_rel) in dyn_bins {
@@ -369,6 +363,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("online_smoke"),    "/bin/online_smoke")?;
     put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
     put(&user("exit_test"),       "/bin/exit_test")?;
+    put(&user("pthread_socketpair_probe"), "/bin/pthread_socketpair_probe")?;
     // F230: real musl dynamic loader at the per-arch interp path.
     // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
     // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
@@ -755,6 +750,9 @@ echo post-exit_test rv=$?
 echo pre-bash-dynamic
 /bin/bash --version 2>&1 | head -1
 echo post-bash-dynamic rv=$?
+echo pre-pthread-probe
+timeout 10 /bin/pthread_socketpair_probe
+echo post-pthread-probe rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
