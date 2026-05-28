@@ -131,7 +131,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // pthread probes (link with -pthread + -lpthread).
+    // pthread probes.
     let pthread_bins: &[(&str, &str)] = &[
         ("userspace/pthread_socketpair_probe/pthread_socketpair_probe",
          "userspace/pthread_socketpair_probe/pthread_socketpair_probe.c"),
@@ -146,7 +146,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // Legacy v1 dynlink stub; ld-musl staged separately below.
     let dynlink_bins: &[(&str, &str)] = &[
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
@@ -195,6 +194,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let pam_module_srcs: &[(&str, &str)] = &[
         ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
         ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
+        ("pam_unix_stub.so", "userspace/pam_modules/pam_unix_stub.c"),
     ];
     for (out_name, src_rel) in pam_module_srcs {
         let out = user_out.join(out_name);
@@ -624,20 +624,20 @@ LogLevel INFO\n")?,
         "/etc/ssh/sshd_config")?;
     dbg("mkdir /etc/pam.d")?;
     put(&stage("pam_sshd",
-        b"# /etc/pam.d/sshd -- pam_permit (task #14: real pam_unix\n\
-# activation blocked on openssh privsep AF_UNIX socketpair message\n\
-# loss between monitor and preauth at type 105 handoff).\n\
-auth       required   pam_permit.so\n\
-account    required   pam_permit.so\n\
-password   required   pam_permit.so\n\
-session    required   pam_permit.so\n")?,
+        b"# pam_unix activated -- openssh built with real pthread\n\
+# (-DUNSUPPORTED_POSIX_THREADS_HACK) + 128 MB kernel heap (F246).\n\
+auth       required   pam_unix.so\n\
+account    required   pam_unix.so\n\
+password   required   pam_unix.so\n\
+session    required   pam_unix.so\n")?,
         "/etc/pam.d/sshd")?;
     // Stage PAM modules at /usr/lib/security/ — libpam was built
     // with --prefix=/usr --libdir=lib so DEFAULT_MODULE_PATH baked
     // into libpam.a is "/usr/lib/security/".
-    put(&user("pam_permit.so"), "/usr/lib/security/pam_permit.so")?;
-    put(&user("pam_deny.so"),   "/usr/lib/security/pam_deny.so")?;
-    put(&user("pam_unix.so"),   "/usr/lib/security/pam_unix.so")?;
+    put(&user("pam_permit.so"),    "/usr/lib/security/pam_permit.so")?;
+    put(&user("pam_deny.so"),      "/usr/lib/security/pam_deny.so")?;
+    put(&user("pam_unix.so"),      "/usr/lib/security/pam_unix.so")?;
+    put(&user("pam_unix_stub.so"), "/usr/lib/security/pam_unix_stub.so")?;
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.

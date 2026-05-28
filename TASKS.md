@@ -6,6 +6,31 @@ with their merging PR and date.
 
 ## Open — actively worked
 
+### T16 — Growable kernel heap (CRITICAL, blocks everything bigger)
+Our `kalloc::KAlloc` is a fixed-size static BSS array (raised to
+256 MiB in F246). Once the hole-list fragments past that or a single
+large alloc exceeds the available contiguous run, the kernel panics
+on alloc — even when the underlying VM has GBs of RAM free.
+
+Real Linux uses vmalloc + the page frame allocator: each large alloc
+gets backing PMM pages mapped into a kernel virtual range; small
+allocs ride a slab. We need the equivalent before anything bigger
+than current workloads runs reliably.
+
+Plan:
+1. Reserve a 1 GiB kernel VA range for the dynamic heap (above the
+   existing static heap).
+2. Add a `kalloc::grow(extra_bytes)` path that requests PMM pages,
+   maps them into the reservation, and extends the hole-list.
+3. On alloc-failure in the hole-list, attempt `grow(round_up(size))`
+   before returning `null`.
+4. Track total mapped heap pages in `/proc/meminfo` (Slab/MemAvailable).
+
+Until T16 lands every "this works on Linux but OOMs on oxide" bug
+will trace here.
+
+
+
 ### T11 — ARM TCP CLOSE_WAIT leak (high impact)
 Accepted TCP sockets on ARM never reach `InetSocket::Drop` after
 the peer side closes. Caps `SSH_SMOKE_CONNECTIONS=4` on ARM TCG;
@@ -21,17 +46,29 @@ made `oxide_context_switch` `wrmsr` FS_BASE on the next task so
 first-run pthreads start with correct TLS. `pthread_join` now
 works end-to-end (`/bin/pthread_socketpair_probe` PASSes).
 
-F244 narrowed the remaining gap to **openssh privsep monitor↔
-preauth AF_UNIX socketpair**. `sshd -ddd` trace shows monitor
-sends `mm_request_send: entering, type 105` (the PAM init reply)
-and preauth's `mm_request_receive_expect: entering, type 105` is
-waiting — but preauth never receives. Message lost on the
-AF_UNIX socketpair across the privsep boundary.
+F244 narrowed to monitor↔preauth AF_UNIX socketpair message
+loss between type 104 (request) and type 105 (response).
 
-Next: audit our `crates/kernel/net/src/unix_sock.rs`
-`UnixPair`/`UnixEnd` send + recv path — likely a missed wakeup
-for the cross-process recv side. `/etc/pam.d/sshd` stays on
-`pam_permit` until this unblocks.
+F245 ruled out basic AF_UNIX cross-process patterns —
+/bin/socketpair_fork_probe round-trips length-prefixed messages
+and works (including nonblocking + poll-with-infinite-timeout,
+which exactly matches openssh's atomicio6 pattern).
+
+F246 narrowed further: openssh's `UNSUPPORTED_POSIX_THREADS_HACK`
+default means `pthread_create` is actually `fork()`. So the
+sshpam_init_ctx path is a NESTED fork (monitor forks the
+fake-pthread child while preauth is waiting on type 105 reply).
+Pam_permit works because its `.so` is `-nostdlib` (no
+DT_NEEDED) — pam_unix.so has DT_NEEDED libc.so, triggering
+nested dlopen during PAM init. The difference between
+working/hanging seems to be the nested dlopen side-effects
+during fork, not the AF_UNIX path itself.
+
+Next: build a minimal pam_unix variant with `-nostdlib` (just
+the symbol exports + a hard-coded fail/success) — if that
+works, the libc-load is the trigger. Then audit our
+fork/dlopen interaction (likely an mmap or ld-musl reentry
+issue under fork).
 
 ### T15 — ARM dynamic bash as `/bin/sh` boot wedge (low impact)
 Staging dynamic bash at `/bin/sh` on ARM wedges init silently
