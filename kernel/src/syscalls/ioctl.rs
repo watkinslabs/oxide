@@ -229,7 +229,22 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // open can redirect to it.
             // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer to ctty.
             unsafe { *cur.ctty.get() = Some(file.inode().clone()); }
-            if pty_pair.is_some() {
+            if let Some(pair) = &pty_pair {
+                // F215: TIOCSCTTY must seed the slave's foreground
+                // pgid with the calling session leader's pgid — Linux
+                // POSIX: when a session leader acquires a controlling
+                // terminal, the foreground process group is set to
+                // the leader's process group. Without this,
+                // tcgetpgrp(slave) returns 0 on the very first call
+                // and any job-control shell (busybox sh, bash, dash)
+                // kills itself with SIGTTIN before reading any input.
+                use core::sync::atomic::Ordering;
+                let pgid = cur.pgid.load(Ordering::Acquire);
+                let sid  = cur.sid.load(Ordering::Acquire);
+                pair.with_pair(|p| {
+                    p.foreground_pgid = pgid;
+                    p.session_pid = sid;
+                });
                 return 0;
             }
             let vt = (ino & 0xff) as u8;
