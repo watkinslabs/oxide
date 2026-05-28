@@ -143,29 +143,27 @@ pub fn load_static_blob(
     blob: &[u8],
     as_: &AddressSpace,
 ) -> Result<LoadedImage, LoadError> {
-    // Load the exec at its declared bias.
-    let exec = place_image(blob, as_, None)?;
+    // Two cases per Linux execve:
+    //   * No PT_INTERP (static, static-PIE): the kernel is the
+    //     only thing that runs before user `_start`, so we apply
+    //     R_*_RELATIVE self-relocs to the exec image now.
+    //   * PT_INTERP present (dynamic): musl's `_dlstart` self-
+    //     relocates the loader, then walks the exec's PT_DYNAMIC
+    //     and applies its relocs. Kernel pre-application would
+    //     be a DOUBLE-relocation — every R_RELATIVE entry would
+    //     be biased twice and the program crashes. Skip pre-reloc
+    //     on both images in this case.
+    let exec_parsed = parse(blob, ARCH_MACHINE)?;
+    let has_interp = exec_parsed.interp.is_some();
+    let exec = place_image(blob, as_, None, !has_interp)?;
 
-    // If the ELF has a PT_INTERP, look up the interpreter file from
-    // the rootfs and load it at INTERP_LOAD_BIAS. The interpreter
-    // is itself an ET_DYN with self-relocs, so `place_image` does
-    // the same staging+rebase for it.
-    let parsed = parse(blob, ARCH_MACHINE)?;
+    let parsed = exec_parsed;
     let mut interp_base: u64 = 0;
     let mut interp_entry: u64 = 0;
-    // PT_INTERP dual-image load: read the interpreter file directly
-    // from ext4 (arch-neutral) and stage as a second `place_image`.
-    // Both arches use the same flow now — the interpreter binary
-    // itself is per-arch (`/lib/ld-musl-x86_64.so.1` vs
-    // `/lib/ld-musl-aarch64.so.1`), but the kernel-side mechanics
-    // are identical.
     if let Some(interp_path) = parsed.interp {
         let interp_blob = read_interp_blob(interp_path)
             .ok_or(LoadError::Enoexec)?;
-        // place_image copies the segment bytes it needs into the
-        // AS-owned `staged_bytes` Vec via `stash_bytes`. The original
-        // interp_blob Vec drops at end of this scope — no leak.
-        let interp = place_image(&interp_blob, as_, Some(INTERP_LOAD_BIAS))?;
+        let interp = place_image(&interp_blob, as_, Some(INTERP_LOAD_BIAS), false)?;
         interp_base  = INTERP_LOAD_BIAS;
         interp_entry = interp.entry.as_u64();
     }
@@ -192,6 +190,7 @@ fn place_image(
     blob: &[u8],
     as_: &AddressSpace,
     bias_override: Option<u64>,
+    apply_self_relocs: bool,
 ) -> Result<LoadedImage, LoadError> {
     let parsed = parse(blob, ARCH_MACHINE)?;
 
@@ -243,7 +242,7 @@ fn place_image(
     // Each rela's r_off + bias is a user VA; find which staging
     // entry owns it, translate to the buffer offset, and write
     // there. Demand-faulting later just maps the patched bytes.
-    if matches!(parsed.elf_type, ElfType::Dyn) && bias != 0 {
+    if apply_self_relocs && matches!(parsed.elf_type, ElfType::Dyn) && bias != 0 {
         apply_relative_relocs_into(blob, &parsed, bias, &mut staging)?;
     }
 
