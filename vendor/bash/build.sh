@@ -94,7 +94,7 @@ build_one() {
     CFLAGS_FOR_BUILD="-std=gnu89 -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
     LDFLAGS_FOR_BUILD="" \
     CFLAGS="-Os -std=gnu89 -Wno-implicit-function-declaration -Wno-incompatible-pointer-types $extra" \
-    LDFLAGS="-static" \
+    LDFLAGS="" \
     ./configure \
       --host="${arch}-linux-musl" \
       --cache-file=config.cache \
@@ -104,7 +104,6 @@ build_one() {
       --disable-history \
       --disable-net-redirections \
       --disable-help-builtin \
-      --enable-static-link \
       --prefix=/usr \
     && make -j4 bash \
   )
