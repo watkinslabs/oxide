@@ -93,9 +93,9 @@ ac_cv_dev_ptmx=yes
 EOF
   ( cd "$SRC" && \
     CC="$cc" \
-    CFLAGS="-Os $extra -I${pam_root} -I${zlib_root}/include" \
+    CFLAGS="-Os $extra -I${pam_root} -I${zlib_root}/include -DUNSUPPORTED_POSIX_THREADS_HACK" \
     LDFLAGS="-Wl,--export-dynamic -L${pam_root} -L${zlib_root}/lib" \
-    LIBS="-lpam -lpam_misc -lz" \
+    LIBS="-lpam -lpam_misc -lz -lpthread" \
     ./configure \
       --cache-file=config.cache \
       --host="${arch}-linux-musl" \
