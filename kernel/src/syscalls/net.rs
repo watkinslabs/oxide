@@ -705,13 +705,12 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let msgp   = args.a1;
     let _flags = args.a2;
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // F122/F213: AF_UNIX cmsg writeback for DGRAM + STREAM (openssh privsep).
+    // F122/F213: route to DGRAM/STREAM cmsg handlers (lock dropped before recurse).
     let sock = socket_from_fd(fd);
-    if let Some(s) = &sock { match &*s.kind.lock() {
-        SockKind::UnixDgram(_) => return net::unix_cmsg::recvmsg_unix_dgram(s, msgp),
-        SockKind::Unix(_, _)   => return crate::syscalls::cmsg_parse::recvmsg_unix_stream(s, msgp),
-        _ => {}
-    }}
+    if let Some(s) = &sock {
+        if matches!(*s.kind.lock(), SockKind::UnixDgram(_)) { return net::unix_cmsg::recvmsg_unix_dgram(s, msgp); }
+        if matches!(*s.kind.lock(), SockKind::Unix(_, _))   { return crate::syscalls::cmsg_parse::recvmsg_unix_stream(s, msgp); }
+    }
     // SAFETY: msgp range validated; user page mapped under caller's AS.
     let (name, _namelen, iov, iovlen) = unsafe {
         let name      = core::ptr::read_volatile(msgp as *const u64);
