@@ -265,9 +265,11 @@ pub struct Task {
     pub environ: UnsafeCell<Option<alloc::string::String>>,
 
     /// Per-task rlimits per POSIX getrlimit(2) / prlimit64(2).
-    /// 16 slots indexed by `RLIMIT_*`; each is `(cur, max)`. Default
-    /// `(RLIM_INFINITY, RLIM_INFINITY)` for every resource. Fork
-    /// inherits per POSIX. Same single-mutator invariant as `mm`.
+    /// 16 slots indexed by `RLIMIT_*`; each is `(cur, max)`. Linux
+    /// init defaults installed at Task::new (see `crate::rlimit::
+    /// DEFAULT_RLIMITS`): RLIMIT_STACK = (8 MiB, RLIM_INFINITY),
+    /// the rest unlimited. Fork inherits per POSIX. Same
+    /// single-mutator invariant as `mm`.
     pub rlimits: UnsafeCell<[(u64, u64); 16]>,
 
     /// Per-task nice value per POSIX nice(2)/setpriority(2). Range
@@ -854,7 +856,7 @@ impl Task {
             exe_path:   UnsafeCell::new(None),
             cwd:        UnsafeCell::new(alloc::string::String::from("/")),
             environ:    UnsafeCell::new(None),
-            rlimits:    UnsafeCell::new([(u64::MAX, u64::MAX); 16]),
+            rlimits:    UnsafeCell::new(crate::rlimit::DEFAULT_RLIMITS),
             nice:       AtomicI8::new(0),
             spawn_ns:   AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),

@@ -17,8 +17,9 @@ pub mod anon_vma;
 pub mod rmap;
 pub mod vma;
 pub mod tree;
+pub(crate) mod hole;
 
-pub use address_space::{AddressSpace, MIN_USER_VA};
+pub use address_space::{AddressSpace, MIN_USER_VA, MMAP_BASE_GAP};
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
