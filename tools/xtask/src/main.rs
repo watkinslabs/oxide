@@ -247,6 +247,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "/usr", "/usr/share", "/usr/share/keymaps", "/usr/share/udhcpc",
         "/usr/bin", "/usr/sbin", "/usr/libexec",
         "/usr/lib", "/usr/lib/security",
+        // F252: terminfo db for ncurses-linked programs.
+        "/usr/share/terminfo", "/usr/share/terminfo/d", "/usr/share/terminfo/l",
+        "/usr/share/terminfo/s", "/usr/share/terminfo/v", "/usr/share/terminfo/x",
     ] {
         dbg(&format!("mkdir {d}"))?;
     }
@@ -852,6 +855,15 @@ hosts:  files
     put(&stage("de.kmap", km_de)?, "/usr/share/keymaps/de.kmap")?;
     put(&stage("fr.kmap", km_fr)?, "/usr/share/keymaps/fr.kmap")?;
     put(&stage("es.kmap", km_es)?, "/usr/share/keymaps/es.kmap")?;
+
+    // F252: minimal terminfo db for ncurses-linked programs.
+    for (sub, name) in &[
+        ("d", "dumb"), ("l", "linux"), ("s", "screen"),
+        ("v", "vt100"), ("x", "xterm"), ("x", "xterm-256color"),
+    ] {
+        let host = repo.join(format!("kernel/blobs/terminfo/{sub}/{name}"));
+        put(&host, &format!("/usr/share/terminfo/{sub}/{name}"))?;
+    }
 
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
