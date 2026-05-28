@@ -140,3 +140,5 @@ vendor/dhcpcd/dhcpcd-*.tar.*
 vendor/dhcpcd/dhcpcd-10.3.2/
 vendor/dropbear/dropbear-*.tar.*
 vendor/dropbear/dropbear-2024.86/
+vendor/openssh/openssh-*.tar.*
+vendor/openssh/openssh-9.9p2/

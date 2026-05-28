@@ -111,6 +111,20 @@ smoke-dhcp-arm: arm
 # default.script echo confirmation).
 smoke-dhcp: smoke-dhcp-x86
 
+# F210 end-to-end ssh smoke. Boots qemu, waits for sshd Server
+# listening line + oxide login, then runs N back-to-back ssh
+# sessions (echo, id, cat /etc/passwd, uname -m, pwd) — every
+# session must rv=0 with expected output. Catches regressions in
+# KEX, auth, cred-emulate-setxuid, channel/exec, fork-exec, and
+# socket teardown in one shot.
+SSH_SMOKE_TIMEOUT ?= 600
+SSH_SMOKE_CONNECTIONS ?= 5
+smoke-ssh-x86: x86
+	./tools/boot-smoke-ssh.sh x86 $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
+smoke-ssh-arm: arm
+	./tools/boot-smoke-ssh.sh arm $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
+smoke-ssh: smoke-ssh-x86 smoke-ssh-arm
+
 # Rebuild kernel/blobs/rootfs.img from userspace/ sources. Run after
 # editing any userspace/<name>/<name>.c so include_bytes! picks up
 # the new bytes on the next kernel build.

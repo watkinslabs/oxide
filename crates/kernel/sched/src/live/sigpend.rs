@@ -101,7 +101,8 @@ pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
     task.set_state(crate::TaskState::Runnable);
     if let Some(rq) = super::runqueue::global() {
         let mut inner = rq.inner.lock();
-        task.lift_vruntime(inner.cfs.min_vruntime());
+        // F211: sleeper credit on wake. See Task::set_vruntime_to_floor.
+        task.set_vruntime_to_floor(inner.cfs.min_vruntime());
         inner.enqueue(alloc::sync::Arc::clone(task));
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
         crate::preempt::set_need_resched();
