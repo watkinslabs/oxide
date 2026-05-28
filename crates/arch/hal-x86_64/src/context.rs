@@ -45,6 +45,15 @@ core::arch::global_asm!(
     "    mov  r13, [rsi + 0x20]",
     "    mov  r14, [rsi + 0x28]",
     "    mov  r15, [rsi + 0x30]",
+    // F243: load next's saved fs_base into IA32_FS_BASE MSR so
+    // first-run tasks (CLONE_SETTLS / fork) start with the correct
+    // user TLS. wrmsr clobbers rcx/rax/rdx — those are caller-
+    // saved per SysV and the Rust caller doesn't read them post-call.
+    "    mov  rax, [rsi + 0x38]",
+    "    mov  rdx, rax",
+    "    shr  rdx, 32",
+    "    mov  ecx, 0xC0000100",
+    "    wrmsr",
     "    ret",
     ".size oxide_context_switch, . - oxide_context_switch",
 );
