@@ -380,6 +380,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let ldso = repo.join(format!("vendor/musl/ld-musl-{arch}.so.1"));
     if ldso.is_file() {
         put(&ldso, interp_path)?;
+        // ARM cross-musl-gcc emits DT_NEEDED = "libc.so"; ld-musl
+        // resolves it via the same file under a second name.
+        if arch == "aarch64" {
+            put(&ldso, "/lib/libc.so")?;
+        }
     } else {
         eprintln!("xtask rootfs: WARN missing {}", ldso.display());
     }
