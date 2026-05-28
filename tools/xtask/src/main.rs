@@ -395,6 +395,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&make_bin, "/usr/bin/make")?;
     }
 
+    // F225: vendored GNU patch 2.7.6 — static-musl /usr/bin/patch.
+    let patch_bin = repo.join(format!("vendor/patch/patch-{}", arch));
+    if patch_bin.is_file() { put(&patch_bin, "/usr/bin/patch")?; }
+
     // F224: vendored GNU diffutils 3.10 — static-musl /usr/bin/diff + cmp.
     let diff_bin = repo.join(format!("vendor/diffutils/diff-{}", arch));
     let cmp_bin  = repo.join(format!("vendor/diffutils/cmp-{}",  arch));
