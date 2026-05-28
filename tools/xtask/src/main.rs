@@ -403,6 +403,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let bz_bin = repo.join(format!("vendor/bzip2/bzip2-{}", arch));
     if bz_bin.is_file() { put(&bz_bin, "/usr/bin/bzip2")?; }
 
+    // F227: vendored xz-utils 5.6.3 — static-musl /usr/bin/xz.
+    let xz_bin = repo.join(format!("vendor/xz/xz-{}", arch));
+    if xz_bin.is_file() { put(&xz_bin, "/usr/bin/xz")?; }
+
     // F224: vendored GNU diffutils 3.10 — static-musl /usr/bin/diff + cmp.
     let diff_bin = repo.join(format!("vendor/diffutils/diff-{}", arch));
     let cmp_bin  = repo.join(format!("vendor/diffutils/cmp-{}",  arch));
