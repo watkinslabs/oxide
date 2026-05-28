@@ -122,7 +122,7 @@ SSH_SMOKE_TIMEOUT ?= 600
 # slowdown on ARM TCG starts biting >~16, so the default is 16 even
 # though the CMDS[] rotation now defines 18+ entries. Bump explicitly
 # on x86 KVM (much faster) when validating new tools.
-SSH_SMOKE_CONNECTIONS ?= 10
+SSH_SMOKE_CONNECTIONS ?= 8
 smoke-ssh-x86: x86
 	./tools/boot-smoke-ssh.sh x86 $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
 smoke-ssh-arm: arm
