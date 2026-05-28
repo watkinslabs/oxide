@@ -136,6 +136,7 @@ CMDS=(
     "cat /etc/passwd"
     "uname -m"
     "pwd"
+    "/bin/bash -c 'echo BASH:\$BASH_VERSION'"
 )
 WANTS=(
     "OXIDE_SSH_OK"
@@ -143,6 +144,7 @@ WANTS=(
     "alice:"
     "."
     "/home/alice"
+    "BASH:5."
 )
 NCMD=${#CMDS[@]}
 
