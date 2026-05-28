@@ -195,6 +195,25 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
+    // F231: PAM modules as real shared objects. Built `-shared -fPIC
+    // -nostdlib` so they have no DT_NEEDED to libc.so — libpam loads
+    // them via dlopen and only consumes their `pam_sm_*` exports.
+    // Staged at /lib/security/<name>.so; /etc/pam.d/sshd references
+    // them by basename.
+    let pam_module_srcs: &[(&str, &str)] = &[
+        ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
+        ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
+    ];
+    for (out_name, src_rel) in pam_module_srcs {
+        let out = user_out.join(out_name);
+        let src = repo.join(src_rel);
+        eprintln!("xtask rootfs: {} -shared {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-fPIC", "-shared", "-nostdlib", "-fno-stack-protector",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
+
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
@@ -244,6 +263,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "/var", "/var/log", "/var/db", "/var/db/dhcpcd", "/var/run", "/var/run/dhcpcd",
         "/usr", "/usr/share", "/usr/share/keymaps", "/usr/share/udhcpc",
         "/usr/bin", "/usr/sbin", "/usr/libexec",
+        "/usr/lib", "/usr/lib/security",
     ] {
         dbg(&format!("mkdir {d}"))?;
     }
@@ -575,16 +595,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
           alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
-    // F210: /etc/ssh/sshd_config — minimal openssh-server config.
-    // Built --without-openssl, so only ed25519 host keys + chacha20-
-    // poly1305 + curve25519 work. Password auth on (alice/swordfish).
-    // PermitRootLogin=no since root has no password.
-    // F229: openssh now compiled with PAM + zlib support
-    // (libpam.a + libz.a statically linked). UsePAM defaults to no
-    // because libpam's dlopen-based module loading needs a dynamic
-    // loader we don't ship yet; PasswordAuthentication still goes
-    // through openssh's internal /etc/shadow path. Compression
-    // (Compression yes) leverages the zlib linkage.
+    // F231: openssh sshd_config now runs through PAM. UsePAM=yes
+    // invokes libpam at session-setup time; libpam dlopens modules
+    // listed in /etc/pam.d/sshd from /lib/security/. Auth chain
+    // ALSO still runs the openssh internal /etc/shadow path via
+    // PasswordAuthentication=yes — UsePAM here adds the session
+    // setup PAM hooks on top of openssh's own password check.
     put(&stage("sshd_config",
         b"Port 22\n\
 AddressFamily inet\n\
@@ -594,7 +610,7 @@ PermitRootLogin no\n\
 PasswordAuthentication yes\n\
 PermitEmptyPasswords no\n\
 PubkeyAuthentication yes\n\
-UsePAM no\n\
+UsePAM yes\n\
 Compression yes\n\
 PrintMotd no\n\
 PrintLastLog no\n\
@@ -602,21 +618,24 @@ UseDNS no\n\
 StrictModes no\n\
 LogLevel INFO\n")?,
         "/etc/ssh/sshd_config")?;
-    // F229: minimal /etc/pam.d/sshd — present so any future toggle
-    // of UsePAM=yes finds a valid service file. Modules listed are
-    // the standard Linux distro chain (account+session+auth via
-    // pam_unix.so) but the actual dlopen path stays unused until
-    // a dynamic loader ships.
+    // F231: /etc/pam.d/sshd chain — pam_permit.so for all 4 stages.
+    // pam_permit always returns PAM_SUCCESS so libpam-dlopen +
+    // pam_sm_* exec just works through to session setup. Real
+    // pam_unix (with /etc/shadow lookup + crypt) lands in F232 once
+    // libpam-shared + libcrypt vendor builds are in place.
     dbg("mkdir /etc/pam.d")?;
     put(&stage("pam_sshd",
-        b"# /etc/pam.d/sshd -- standard openssh PAM stack.\n\
-# Modules dlopen'd from /lib/security; not active until UsePAM=yes\n\
-# in sshd_config AND a dynamic loader is present in the rootfs.\n\
-auth       required   pam_unix.so\n\
-account    required   pam_unix.so\n\
-password   required   pam_unix.so\n\
-session    required   pam_unix.so\n")?,
+        b"# /etc/pam.d/sshd -- F231 minimal chain via pam_permit.\n\
+auth       required   pam_permit.so\n\
+account    required   pam_permit.so\n\
+password   required   pam_permit.so\n\
+session    required   pam_permit.so\n")?,
         "/etc/pam.d/sshd")?;
+    // Stage PAM modules at /usr/lib/security/ — libpam was built
+    // with --prefix=/usr --libdir=lib so DEFAULT_MODULE_PATH baked
+    // into libpam.a is "/usr/lib/security/".
+    put(&user("pam_permit.so"), "/usr/lib/security/pam_permit.so")?;
+    put(&user("pam_deny.so"),   "/usr/lib/security/pam_deny.so")?;
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.
