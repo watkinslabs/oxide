@@ -52,6 +52,12 @@ cross/aarch64-linux-musl-cross/
 !pam/install-aarch64/**
 pam/Linux-PAM-1.7.2/
 pam/Linux-PAM-1.7.2.tar.xz
+# musl dynamic loader (ld-musl-<arch>.so.1) — F230.
+# x86_64 from Fedora /lib/ld-musl-x86_64.so.1 (musl 1.2.5).
+# aarch64 from vendor/cross/.../aarch64-linux-musl/lib/libc.so (musl 1.2.2-git).
+!musl/
+!musl/ld-musl-x86_64.so.1
+!musl/ld-musl-aarch64.so.1
 # GNU bash 5.2.37: per-arch static-musl binary + build recipe.
 # F216 — first GNU userspace program; sets the pattern for further
 # coreutils / util-linux / etc. cross-builds.
