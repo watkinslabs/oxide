@@ -58,17 +58,50 @@ PROGRAMS="sshd sshd-session ssh ssh-keygen"
 
 build_one() {
   local arch="$1" cc="$2" extra="$3" suffix="$4"
-  echo "=== building openssh for $arch ==="
+  local pam_root="$(pwd)/../pam/install-${arch}"
+  local zlib_root="$(pwd)/../zlib/install-${arch}"
+  echo "=== building openssh for $arch (with PAM + zlib) ==="
   cleanup_objs
+  # Pre-seed autoconf cache for cross-compile so configure stops
+  # guessing. All values reflect Linux/musl reality on our targets:
+  #   - setresuid/setresgid work (we have B13 cap-emulate-setxuid)
+  #   - snprintf/vsnprintf correct (musl)
+  #   - utf-8 locales (musl supports C.UTF-8)
+  #   - SA_RESTART interrupts select() (Linux behavior)
+  #   - fflush(NULL), calloc(0,N) work as POSIX says
+  #   - /dev/ptmx + /dev/urandom + /dev/random exist (verified at runtime)
+  #   - struct dirent has space for full d_name (musl: char[256])
+  cat > "$SRC/config.cache" <<EOF
+ac_cv_func_setresuid=yes
+ac_cv_func_setresgid=yes
+ac_cv_func_snprintf=yes
+ac_cv_func_vsnprintf=yes
+ac_cv_func_strnvis=no
+ac_cv_have_decl___VA_OPT__=yes
+ac_cv_have_devurandom=yes
+ssh_cv_signal_sigchld_eintr_select=yes
+ssh_cv_calloc_zero=yes
+ssh_cv_func_fflush_null_works=yes
+ssh_cv_libc_defines_sys_errlist=yes
+ssh_cv_libc_defines_sys_nerr=yes
+ssh_cv_dirent_d_name_size_ok=yes
+ssh_cv_snprintf_overflow_handled=yes
+ssh_cv_have_utf8_locale=yes
+ac_cv_lib_z_deflate=yes
+ac_cv_var_dev_ptmx=/dev/ptmx
+ac_cv_dev_ptmx=yes
+EOF
   ( cd "$SRC" && \
     CC="$cc" \
-    CFLAGS="-Os -static $extra" \
-    LDFLAGS="-static" \
+    CFLAGS="-Os -static $extra -I${pam_root} -I${zlib_root}/include" \
+    LDFLAGS="-static -L${pam_root} -L${zlib_root}/lib" \
+    LIBS="-lpam -lpam_misc -lz" \
     ./configure \
+      --cache-file=config.cache \
       --host="${arch}-linux-musl" \
       --without-openssl \
-      --without-zlib \
-      --without-pam \
+      --with-zlib="${zlib_root}" \
+      --with-pam \
       --without-selinux \
       --without-libedit \
       --without-audit \
@@ -76,6 +109,7 @@ build_one() {
       --with-privsep-user=root \
       --with-privsep-path=/var/empty \
       --with-sandbox=no \
+      --with-maildir=/var/mail \
       --prefix=/usr \
       --sysconfdir=/etc/ssh \
       --libexecdir=/usr/libexec \

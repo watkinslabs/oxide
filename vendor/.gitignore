@@ -52,6 +52,17 @@ cross/aarch64-linux-musl-cross/
 !pam/install-aarch64/**
 pam/Linux-PAM-1.7.2/
 pam/Linux-PAM-1.7.2.tar.xz
+pam/Linux-PAM-1.5.3/
+pam/Linux-PAM-1.5.3.tar.xz
+# zlib 1.3.1 — F229 vendored static for openssh compression.
+!zlib/
+!zlib/build.sh
+!zlib/install-x86_64/
+!zlib/install-x86_64/**
+!zlib/install-aarch64/
+!zlib/install-aarch64/**
+zlib/zlib-1.3.1/
+zlib/zlib-1.3.1.tar.gz
 # GNU bash 5.2.37: per-arch static-musl binary + build recipe.
 # F216 — first GNU userspace program; sets the pattern for further
 # coreutils / util-linux / etc. cross-builds.
