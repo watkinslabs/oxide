@@ -54,13 +54,7 @@ int main(void) {
     }
     write(1, "probe: main sent \"yo\"\n", 22);
     write(sp[1], "yo", 2);
-    // pthread_join would hang here on our kernel (task #14 root cause:
-    // CLONE_SETTLS not threaded into ArchCtx, so child's pthread_self
-    // returns main's pthread struct; detach_state futex addresses
-    // diverge). Detach + sleep to let the child finish without
-    // blocking the smoke.
-    pthread_detach(t);
-    usleep(50 * 1000);
-    write(1, "probe: PASS (detach, no join)\n", 30);
+    pthread_join(t, NULL);
+    write(1, "probe: PASS\n", 12);
     return 0;
 }
