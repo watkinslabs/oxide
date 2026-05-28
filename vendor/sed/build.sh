@@ -47,7 +47,7 @@ build_one() {
     CFLAGS_FOR_BUILD="-D_GNU_SOURCE -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
     LDFLAGS_FOR_BUILD="" \
     CFLAGS="-Os -D_GNU_SOURCE -Wno-implicit-function-declaration -Wno-incompatible-pointer-types $extra" \
-    LDFLAGS="-static" \
+    LDFLAGS="" \
     ./configure \
       --host="${arch}-linux-musl" \
       --disable-nls \
