@@ -69,3 +69,10 @@ bash/config.cache
 !sed/sed-aarch64
 sed/sed-4.9/
 sed/sed-4.9.tar.xz
+# GNU coreutils 8.32 — F218. Single-binary cross-build (102 applets).
+!coreutils/
+!coreutils/build.sh
+!coreutils/coreutils-x86_64
+!coreutils/coreutils-aarch64
+coreutils/coreutils-8.32/
+coreutils/coreutils-8.32.tar.xz
