@@ -43,21 +43,40 @@ follow-up).
 
 ## Open work — pick where to resume
 
-### A. openssh KEX_ECDH_REPLY stall
+### A. openssh KEX_ECDH_REPLY stall — root cause narrowed
 
-sshd accepts the SSH connection, exchanges banner + KEXINIT, gets
-client's KEX_ECDH_INIT, then never replies with KEX_ECDH_REPLY. ssh
-client times out at 30s. With `FEATURES=debug-ssh` enabled (per-
-syscall klog overhead changes timing) the KEX completes far enough
-to see ECDH_REPLY go out. Suggests a busy-poll race in our
-`pselect6`/`ppoll` (`crates/kernel/sched/src/live/schedule.rs::tick_yield`
-+ `kernel/src/syscalls/select.rs` + `kernel/src/syscalls/poll.rs`)
-— the tick-yield + hlt-on-IRQ loop doesn't wait long enough for
-sshd-session's compute, OR there's a missed wakeup against the
-TCP socket's recv_buf.
+In-kernel trace confirms client's `KEX_ECDH_INIT` (68-byte TCP
+segment, 48-byte payload) reaches the server's recv_buf — and our
+socket `poll()` correctly returns POLL_IN. **sshd-session never
+reads it.** The preauth child (pid 4130) does only 2 `ppoll(2)`
+calls across the entire 30-s SSH attempt window and then exits
+on the preauth grace timer with `Connection from ... timed out
+[preauth]`.
 
-A diagnosis agent ran in background; its report is in
-`/tmp/claude-1000/-home-nd-oxide2/.../tasks/a9f885757af1d2338.output`.
+Sequence per kernel trace:
+  1. KEXINIT arrives (1404 B segment). recv_buf grows to 1405.
+  2. sshd reads 20 single bytes (banner peeling) then 1 bulk
+     read of 1432 B — this bulk includes BOTH the KEXINIT
+     remainder AND the freshly-arrived ECDH_INIT (since
+     ECDH_INIT lands in recv_buf between byte 20 and the
+     bulk read).
+  3. recv_buf goes to 0. sshd's poll on the socket returns
+     POLL_OUT only.
+  4. sshd-session ppoll's. Returns 0 (no event). Times out.
+
+So the ECDH_INIT bytes ARE in sshd-session's userspace buffer
+already (consumed by the bulk read). The stall is sshd's packet
+parser failing to iterate past the first SSH packet in that
+buffer — looks more like a monitor↔preauth socketpair / privsep
+state machine issue than a kernel scheduler issue. Real fix
+likely needs deeper sshd-side instrumentation (sshd -ddd is
+captured in the boot log) or a kernel-side audit of our
+AF_UNIX socketpair `read`/`recvmsg` for SCM_RIGHTS / cmsg
+edge cases since openssh's monitor model leans hard on those.
+
+Workaround in rcS: `sshd -D -e 2>&1 &` (foreground sshd
+backgrounded by the shell). Boot reaches `oxide login:` and
+sshd answers on port 22 but the KEX still stalls.
 
 ### B. ARM init/getty respawn after daemonize
 
