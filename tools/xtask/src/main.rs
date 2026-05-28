@@ -395,6 +395,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&make_bin, "/usr/bin/make")?;
     }
 
+    // F224: vendored GNU diffutils 3.10 — static-musl /usr/bin/diff + cmp.
+    let diff_bin = repo.join(format!("vendor/diffutils/diff-{}", arch));
+    let cmp_bin  = repo.join(format!("vendor/diffutils/cmp-{}",  arch));
+    if diff_bin.is_file() { put(&diff_bin, "/usr/bin/diff")?; }
+    if cmp_bin.is_file()  { put(&cmp_bin,  "/usr/bin/cmp")?;  }
+
     // F223: vendored GNU findutils 4.10.0 — static-musl /usr/bin/find +
     // /usr/bin/xargs. Real find supports -printf, -regex, -prune,
     // -newer, -mtime, -exec ... +, etc. that busybox find doesn't.

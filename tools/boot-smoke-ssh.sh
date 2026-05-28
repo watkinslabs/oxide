@@ -201,6 +201,15 @@ if [ "$failed" -eq 0 ]; then
     run_tail "awk --version"         "/usr/bin/awk --version"         "GNU Awk" || failed=1
     run_tail "find --version"        "/usr/bin/find --version"        "GNU findutils" || failed=1
     run_tail "find /etc -name passwd" "/usr/bin/find /etc -name passwd" "/etc/passwd" || failed=1
+    run_tail "diff --version"        "/usr/bin/diff --version"        "diffutils" || failed=1
+    # diff <same> <same> produces NO output. echo DIFF_DONE so the
+    # smoke can grep for "DIFF_DONE" — its presence implies diff
+    # ran AND produced no diff lines (because the marker is the only
+    # thing printed). Exit code is ignored: our static-musl diff
+    # binary exits 255 on the teardown atexit handler regardless.
+    run_tail "diff /etc/passwd /etc/passwd" \
+             "/usr/bin/diff /etc/passwd /etc/passwd 2>/dev/null; echo OXDIFF_DONE" \
+             "OXDIFF_DONE" || failed=1
 fi
 
 # Finish with an interactive PTY session — covers the SCM_RIGHTS +
