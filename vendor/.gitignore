@@ -160,3 +160,13 @@ bzip2/bzip2-1.0.8.tar.gz
 !xz/xz-aarch64
 xz/xz-5.6.3/
 xz/xz-5.6.3.tar.xz
+# ncurses 6.5 — F250. Static libncursesw.a + headers; prerequisite
+# for vim cross-build (T17). Wide-char build only.
+!ncurses/
+!ncurses/build.sh
+!ncurses/install-x86_64/
+!ncurses/install-x86_64/**
+!ncurses/install-aarch64/
+!ncurses/install-aarch64/**
+ncurses/ncurses-6.5/
+ncurses/ncurses-6.5.tar.gz
