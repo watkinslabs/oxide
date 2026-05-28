@@ -1,6 +1,4 @@
-// xtask: sole CI entry point per docs/07§8. Subcommands: kernel,
-// user, image, test, qemu, soak, bench, spec-lint, doc-check.
-
+// xtask: CI entry point per docs/07§8.
 use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
 
@@ -101,6 +99,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/exit_test/exit_test",             "userspace/exit_test/exit_test.c"),
         ("userspace/socketpair_fork_probe/socketpair_fork_probe",
                                                       "userspace/socketpair_fork_probe/socketpair_fork_probe.c"),
+        ("userspace/vim_smoke/vim_smoke",             "userspace/vim_smoke/vim_smoke.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -344,6 +343,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
     put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
+    put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
     put(&user("af_packet_smoke"), "/bin/af_packet_smoke")?;
