@@ -1,12 +1,15 @@
 // /usr/lib/security/pam_unix.so — minimal Linux pam_unix module.
-// F239: real /etc/shadow + crypt() check via the PAM conv function.
+// F240: revert to PAM_AUTHTOK-only path (no conv-call) — openssh's
+// sshpam_thread_conv uses a socketpair to the main thread, and
+// invoking conv from a dlopen'd module inside pam_authenticate hangs
+// silently in our environment. Tracked as task #14.
 //
-// libpam dlopens us; ld-musl resolves pam_get_item against
-// sshd-session's statically-linked libpam (sshd built with
-// -Wl,--export-dynamic in F231). PAM_CONV item gives us the
-// conv callback openssh's sshpam_thread uses to ping the
-// client over keyboard-interactive — we use it to ask for
-// the password, then crypt-check against /etc/shadow.
+// This path works when the calling application has already populated
+// PAM_AUTHTOK via pam_set_item before invoking pam_authenticate
+// (e.g. login(1) or sudo). It fails (PAM_AUTH_ERR) when called from
+// openssh's keyboard-interactive flow because openssh expects the
+// module to prompt via conv. Activating pam_unix in /etc/pam.d/sshd
+// remains deferred.
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,35 +24,9 @@ extern char *crypt(const char *key, const char *setting);
 #define PAM_USER_UNKNOWN    10
 #define PAM_AUTHTOK_ERR     20
 #define PAM_AUTHINFO_UNAVAIL 9
-#define PAM_CONV_ERR        19
-
-#define PAM_CONV             5
-#define PAM_PROMPT_ECHO_OFF  1
+#define PAM_AUTHTOK          6
 
 typedef struct pam_handle pam_handle_t;
-
-struct pam_message  { int msg_style; const char *msg; };
-struct pam_response { char *resp; int resp_retcode; };
-struct pam_conv     {
-    int (*conv)(int num_msg, const struct pam_message **msg,
-                struct pam_response **resp, void *appdata_ptr);
-    void *appdata_ptr;
-};
-
-static int prompt_password(pam_handle_t *p, char **out) {
-    const void *raw = NULL;
-    if (pam_get_item(p, PAM_CONV, &raw) != PAM_SUCCESS || !raw) return PAM_CONV_ERR;
-    const struct pam_conv *cv = (const struct pam_conv *)raw;
-    struct pam_message  msg  = { .msg_style = PAM_PROMPT_ECHO_OFF, .msg = "Password: " };
-    const struct pam_message *msgs[1] = { &msg };
-    struct pam_response *resp = NULL;
-    int rv = cv->conv(1, msgs, &resp, cv->appdata_ptr);
-    if (rv != PAM_SUCCESS || !resp) return PAM_CONV_ERR;
-    if (!resp[0].resp) { free(resp); return PAM_CONV_ERR; }
-    *out = resp[0].resp;
-    free(resp);
-    return PAM_SUCCESS;
-}
 
 static int check_shadow(const char *user, const char *pw) {
     FILE *f = fopen("/etc/shadow", "r");
@@ -78,12 +55,9 @@ int pam_sm_authenticate(pam_handle_t *p, int f, int c, const char **v) {
     (void)f; (void)c; (void)v;
     const char *user = NULL;
     if (pam_get_user(p, &user, NULL) != PAM_SUCCESS || !user) return PAM_AUTH_ERR;
-    char *pw = NULL;
-    int rv = prompt_password(p, &pw);
-    if (rv != PAM_SUCCESS) return rv;
-    rv = check_shadow(user, pw);
-    free(pw);
-    return rv;
+    const void *tok = NULL;
+    if (pam_get_item(p, PAM_AUTHTOK, &tok) != PAM_SUCCESS || !tok) return PAM_AUTH_ERR;
+    return check_shadow(user, (const char *)tok);
 }
 
 int pam_sm_setcred      (pam_handle_t *p, int f, int c, const char **v) { (void)p; (void)f; (void)c; (void)v; return PAM_SUCCESS; }
