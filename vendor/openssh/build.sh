@@ -93,8 +93,8 @@ ac_cv_dev_ptmx=yes
 EOF
   ( cd "$SRC" && \
     CC="$cc" \
-    CFLAGS="-Os -static $extra -I${pam_root} -I${zlib_root}/include" \
-    LDFLAGS="-static -L${pam_root} -L${zlib_root}/lib" \
+    CFLAGS="-Os $extra -I${pam_root} -I${zlib_root}/include" \
+    LDFLAGS="-Wl,--export-dynamic -L${pam_root} -L${zlib_root}/lib" \
     LIBS="-lpam -lpam_misc -lz" \
     ./configure \
       --cache-file=config.cache \
