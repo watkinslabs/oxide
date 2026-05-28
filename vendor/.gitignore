@@ -136,3 +136,10 @@ patch/patch-2.7.6.tar.xz
 !bzip2/bzip2-aarch64
 bzip2/bzip2-1.0.8/
 bzip2/bzip2-1.0.8.tar.gz
+# xz-utils 5.6.3 — F227.
+!xz/
+!xz/build.sh
+!xz/xz-x86_64
+!xz/xz-aarch64
+xz/xz-5.6.3/
+xz/xz-5.6.3.tar.xz
