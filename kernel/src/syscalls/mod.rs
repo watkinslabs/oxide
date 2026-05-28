@@ -360,9 +360,9 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" drop_fd_table\n");
             }
-            // B13: drop fd_table + mm at exit so files/AS pages release before reap.
-            // SAFETY: task is the exiting task on this CPU; sole writer to fd_table/mm slots per single-mutator-per-active-CPU; CLONE_VM siblings keep mm alive via own Arc.
-            unsafe { task.replace_fd_table(None); task.replace_mm(None); }
+            // B13/B14: drop fd_table+mm at exit + reparent children to init.
+            // SAFETY: exiting task on this CPU; sole writer per single-mutator.
+            unsafe { task.replace_fd_table(None); task.replace_mm(None); sched::live::reparent_children(task.tid); }
             sched::live::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
