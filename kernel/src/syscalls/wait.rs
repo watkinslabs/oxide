@@ -38,6 +38,19 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
         if let Some((tid, code)) = sched::live::reap_one(parent_tid, pid) {
             let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
             write_wstatus(wstatus, wstat);
+            // F237: if no more zombies for this parent, clear the
+            // SIGCHLD pending bit. Without this, the bit stays set
+            // and signal_dispatch fires a SIGCHLD handler AFTER
+            // wait4 already reaped — busybox-ash's handler then
+            // calls waitpid(-1, WNOHANG) which returns -1/ECHILD
+            // and corrupts the shell's $? to 255.
+            if !sched::live::has_zombies(parent_tid) {
+                use core::sync::atomic::Ordering;
+                if let Some(cur) = sched::live::current() {
+                    let bit = sched::live::sigpend::Signum::Sigchld.bit();
+                    cur.sigpending.fetch_and(!bit, Ordering::Release);
+                }
+            }
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: wait4 reaped tid=");
