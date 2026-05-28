@@ -395,6 +395,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&make_bin, "/usr/bin/make")?;
     }
 
+    // F223: vendored GNU findutils 4.10.0 — static-musl /usr/bin/find +
+    // /usr/bin/xargs. Real find supports -printf, -regex, -prune,
+    // -newer, -mtime, -exec ... +, etc. that busybox find doesn't.
+    let find_bin = repo.join(format!("vendor/findutils/find-{}", arch));
+    let xargs_bin = repo.join(format!("vendor/findutils/xargs-{}", arch));
+    if find_bin.is_file() { put(&find_bin, "/usr/bin/find")?; }
+    if xargs_bin.is_file() { put(&xargs_bin, "/usr/bin/xargs")?; }
+
     // F222: vendored GNU gawk 5.3.1 — static-musl /usr/bin/gawk +
     // /usr/bin/awk hardlink so POSIX `awk ...` resolves to gawk.
     let gawk_bin = repo.join(format!("vendor/gawk/gawk-{}", arch));
