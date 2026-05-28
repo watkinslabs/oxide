@@ -377,6 +377,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&sed_bin, "/usr/bin/sed")?;
     }
 
+    // F219: vendored GNU grep 3.11 — static-musl /usr/bin/grep.
+    let grep_bin = repo.join(format!("vendor/grep/grep-{}", arch));
+    if grep_bin.is_file() {
+        put(&grep_bin, "/usr/bin/grep")?;
+    }
+
     // F218: vendored GNU coreutils 8.32 — static-musl, single-binary
     // mode. Binary at /usr/libexec/coreutils; symlinks per applet under
     // /usr/bin so PATH lookup picks real GNU semantics over busybox.
