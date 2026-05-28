@@ -360,8 +360,9 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" drop_fd_table\n");
             }
-            // SAFETY: task is the exiting task running on this CPU; sole writer to fd_table slot per single-mutator-per-active-CPU; preempt-off through sys_exit. Replacing with None decrements the Arc; if the parent has its own Arc (POSIX fork's deep copy) or CLONE_FILES siblings exist, those references keep entries alive. Otherwise the Files drop and their close hooks fire (pipe writer/reader counts, etc.).
-            unsafe { task.replace_fd_table(None); }
+            // B13: drop fd_table + mm at exit so files/AS pages release before reap.
+            // SAFETY: task is the exiting task on this CPU; sole writer to fd_table/mm slots per single-mutator-per-active-CPU; CLONE_VM siblings keep mm alive via own Arc.
+            unsafe { task.replace_fd_table(None); task.replace_mm(None); }
             sched::live::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
