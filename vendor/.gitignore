@@ -97,3 +97,10 @@ tar/tar-1.35.tar.xz
 !make/make-aarch64
 make/make-4.4.1/
 make/make-4.4.1.tar.gz
+# GNU gawk 5.3.1 — F222.
+!gawk/
+!gawk/build.sh
+!gawk/gawk-x86_64
+!gawk/gawk-aarch64
+gawk/gawk-5.3.1/
+gawk/gawk-5.3.1.tar.xz

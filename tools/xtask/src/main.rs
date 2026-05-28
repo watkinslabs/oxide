@@ -395,6 +395,18 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&make_bin, "/usr/bin/make")?;
     }
 
+    // F222: vendored GNU gawk 5.3.1 — static-musl /usr/bin/gawk +
+    // /usr/bin/awk hardlink so POSIX `awk ...` resolves to gawk.
+    let gawk_bin = repo.join(format!("vendor/gawk/gawk-{}", arch));
+    if gawk_bin.is_file() {
+        put(&gawk_bin, "/usr/bin/gawk")?;
+        let cmd = format!("ln /usr/bin/gawk /usr/bin/awk");
+        let mut c = Command::new("debugfs");
+        c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
+        c.stdout(std::process::Stdio::null());
+        run(c)?;
+    }
+
     // F218: vendored GNU coreutils 8.32 — static-musl, single-binary
     // mode. Binary at /usr/libexec/coreutils; symlinks per applet under
     // /usr/bin so PATH lookup picks real GNU semantics over busybox.
