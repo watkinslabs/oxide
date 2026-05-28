@@ -90,3 +90,10 @@ grep/grep-3.11.tar.xz
 !tar/tar-aarch64
 tar/tar-1.35/
 tar/tar-1.35.tar.xz
+# GNU make 4.4.1 — F221.
+!make/
+!make/build.sh
+!make/make-x86_64
+!make/make-aarch64
+make/make-4.4.1/
+make/make-4.4.1.tar.gz
