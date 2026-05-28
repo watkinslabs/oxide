@@ -112,7 +112,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
             };
             wake_key(key, val as usize) as i64
         }
-        _ => 0, // Unsupported ops: accept-and-no-op; musl tolerates.
+        _ => 0,
     }
 }
 

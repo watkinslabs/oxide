@@ -312,6 +312,17 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" drop_fd_table\n");
             }
+            // F242: CLONE_CHILD_CLEARTID — Linux do_exit clears the
+            // user-pointed-to tid + FUTEX_WAKEs anyone parked there.
+            // pthread_join uses this exact mechanism; without it,
+            // joining threads hang forever.
+            let ctid = task.clear_child_tid.load(Ordering::Acquire);
+            if ctid != 0 && ctid < hal::USER_VA_END {
+                // SAFETY: ctid validated < USER_VA_END; CPL=0 write through caller's AS.
+                unsafe { core::ptr::write_volatile(ctid as *mut i32, 0); }
+                let _ = ipc::live::futex::dispatch(ctid, 1 /* FUTEX_WAKE */, 1);
+                task.clear_child_tid.store(0, Ordering::Release);
+            }
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); sched::live::reparent_children(task.tid); }
