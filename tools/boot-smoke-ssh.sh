@@ -187,22 +187,20 @@ for i in $(seq 1 "$N_CONN"); do
     sleep 1
 done
 
-# Dedicated awk/gawk validation. Run AFTER the rotation but as
-# its own (small) check so a low SSH_SMOKE_CONNECTIONS still
-# exercises both binaries.
-run_awk() {
-    local out
-    out="$(timeout 60 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "/usr/bin/gawk --version" 2>&1)"
-    grep -q "GNU Awk" <<<"$out" || { echo "boot-smoke-ssh: FAIL — gawk --version" >&2; echo "$out" >&2; return 1; }
-    out="$(timeout 60 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "/usr/bin/awk --version" 2>&1)"
-    grep -q "GNU Awk" <<<"$out" || { echo "boot-smoke-ssh: FAIL — awk --version" >&2; echo "$out" >&2; return 1; }
-    echo "boot-smoke-ssh: awk validation OK (gawk + awk both report GNU Awk)"
+# Dedicated post-rotation tool checks. Run AFTER the main rotation
+# so a low SSH_SMOKE_CONNECTIONS still exercises the binaries.
+run_tail() {
+    local label="$1" cmd="$2" want="$3" out
+    out="$(timeout 60 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "$cmd" 2>&1)"
+    grep -q -- "$want" <<<"$out" || { echo "boot-smoke-ssh: FAIL — $label" >&2; echo "$out" >&2; return 1; }
+    echo "boot-smoke-ssh: $label OK"
     return 0
 }
 if [ "$failed" -eq 0 ]; then
-    if ! run_awk; then
-        failed=1
-    fi
+    run_tail "gawk --version"        "/usr/bin/gawk --version"        "GNU Awk" || failed=1
+    run_tail "awk --version"         "/usr/bin/awk --version"         "GNU Awk" || failed=1
+    run_tail "find --version"        "/usr/bin/find --version"        "GNU findutils" || failed=1
+    run_tail "find /etc -name passwd" "/usr/bin/find /etc -name passwd" "/etc/passwd" || failed=1
 fi
 
 # Finish with an interactive PTY session — covers the SCM_RIGHTS +
@@ -223,5 +221,5 @@ if [ "$failed" -ne 0 ]; then
     exit 1
 fi
 
-echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions + awk + 1 pty on $ARCH"
+echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions + tail-tools + 1 pty on $ARCH"
 exit 0
