@@ -369,6 +369,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&bash_bin, "/bin/bash")?;
     }
 
+    // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed
+    // ahead of busybox's sed applet (PATH order /usr/bin before /bin).
+    // Per vendor/sed/build.sh.
+    let sed_bin = repo.join(format!("vendor/sed/sed-{}", arch));
+    if sed_bin.is_file() {
+        put(&sed_bin, "/usr/bin/sed")?;
+    }
+
     let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
     let sshdsess_bin = repo.join(format!("vendor/openssh/sshd-session-{}", arch));
     let sshkeygen_bin = repo.join(format!("vendor/openssh/ssh-keygen-{}", arch));
