@@ -113,3 +113,12 @@ gawk/gawk-5.3.1.tar.xz
 !findutils/xargs-aarch64
 findutils/findutils-4.10.0/
 findutils/findutils-4.10.0.tar.xz
+# GNU diffutils 3.10 — F224.
+!diffutils/
+!diffutils/build.sh
+!diffutils/diff-x86_64
+!diffutils/diff-aarch64
+!diffutils/cmp-x86_64
+!diffutils/cmp-aarch64
+diffutils/diffutils-3.10/
+diffutils/diffutils-3.10.tar.xz
