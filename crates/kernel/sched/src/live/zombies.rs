@@ -206,6 +206,18 @@ fn wake_wait4_parent(parent_tid: u32) {
 /// matches any child; `pid > 0` matches that specific TID; other
 /// values not yet supported.
 /// # C: O(N_zombies)
+/// True iff any queued zombie has `parent_tid == parent`. Used
+/// by `sys_wait4` to decide whether to clear the SIGCHLD pending
+/// bit after a reap (F237 — keeps a signal_dispatch SIGCHLD
+/// from firing after wait4 already drained the zombies, which
+/// would make busybox-ash's handler re-wait → ECHILD → $?=255).
+/// # C: O(N_zombies)
+pub fn has_zombies(parent: u32) -> bool {
+    use core::sync::atomic::Ordering;
+    ZOMBIES.lock().iter().any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
+}
+
+/// # C: O(N_zombies)
 pub fn reap_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
     use core::sync::atomic::Ordering;
     let mut q = ZOMBIES.lock();
