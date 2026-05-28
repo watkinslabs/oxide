@@ -115,7 +115,9 @@ run_one() {
 # shell exec, slave→master output, master→network forwarding.
 run_pty() {
     local idx="$1" out
-    out="$(printf 'echo OXIDE_PTY_OK\nexit\n' | timeout 25 sshpass -p swordfish ssh -tt "${SSH_OPTS[@]}" alice@127.0.0.1 2>&1)"
+    # Drives a cp/mv round-trip through real coreutils alongside the
+    # echo, so the PTY session validates the full coreutils path too.
+    out="$(printf 'echo OXIDE_PTY_OK\n/usr/bin/cp /etc/passwd /tmp/p.copy && /usr/bin/mv /tmp/p.copy /tmp/p.final && /usr/bin/wc -l /tmp/p.final && /usr/bin/rm /tmp/p.final\nexit\n' | timeout 25 sshpass -p swordfish ssh -tt "${SSH_OPTS[@]}" alice@127.0.0.1 2>&1)"
     # ssh -tt frequently surfaces busybox exit code as 255 even on a
     # clean session; accept 0 OR 255 as long as the expected output
     # made it through the PTY relay.
@@ -124,7 +126,14 @@ run_pty() {
         echo "--- stdout ---" >&2; echo "$out" >&2
         return 1
     fi
-    echo "boot-smoke-ssh: pty conn #$idx OK"
+    # The cp/mv/wc/rm round-trip should land "/tmp/p.final" with a
+    # numeric line count from wc. Sanity-check for "/tmp/p.final".
+    if ! grep -q "/tmp/p.final" <<<"$out"; then
+        echo "boot-smoke-ssh: FAIL — pty conn #$idx coreutils round-trip missing" >&2
+        echo "--- stdout ---" >&2; echo "$out" >&2
+        return 1
+    fi
+    echo "boot-smoke-ssh: pty conn #$idx OK (echo + cp/mv/wc/rm round-trip)"
     return 0
 }
 
@@ -139,6 +148,8 @@ CMDS=(
     "/bin/bash -c 'echo BASH:\$BASH_VERSION'"
     "/usr/bin/sed --version"
     "/usr/bin/sed -n 1p /etc/passwd"
+    "/usr/bin/ls --version"
+    "/usr/bin/cat /etc/passwd"
 )
 WANTS=(
     "OXIDE_SSH_OK"
@@ -149,6 +160,8 @@ WANTS=(
     "BASH:5."
     "GNU sed"
     "root:"
+    "GNU coreutils"
+    "alice:"
 )
 NCMD=${#CMDS[@]}
 
