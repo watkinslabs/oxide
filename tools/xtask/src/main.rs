@@ -131,6 +131,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
         ("userspace/online_smoke/online_smoke",       "userspace/online_smoke/online_smoke.c"),
         ("userspace/tcp_smoke/tcp_smoke",             "userspace/tcp_smoke/tcp_smoke.c"),
+        ("userspace/exit_test/exit_test",             "userspace/exit_test/exit_test.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -342,6 +343,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("af_packet_smoke"), "/bin/af_packet_smoke")?;
     put(&user("online_smoke"),    "/bin/online_smoke")?;
     put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
+    put(&user("exit_test"),       "/bin/exit_test")?;
     // F230: real musl dynamic loader at the per-arch interp path.
     // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
     // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
@@ -725,6 +727,9 @@ for s in /bin/bare3 /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
 done
+echo pre-exit_test
+/bin/exit_test
+echo post-exit_test rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
