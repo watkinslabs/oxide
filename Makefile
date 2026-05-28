@@ -120,7 +120,7 @@ smoke-dhcp: smoke-dhcp-x86
 SSH_SMOKE_TIMEOUT ?= 600
 # Default 10 so the rotation covers every CMDS[]/WANTS[] entry
 # including the new coreutils ls/cat checks.
-SSH_SMOKE_CONNECTIONS ?= 12
+SSH_SMOKE_CONNECTIONS ?= 14
 smoke-ssh-x86: x86
 	./tools/boot-smoke-ssh.sh x86 $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
 smoke-ssh-arm: arm
