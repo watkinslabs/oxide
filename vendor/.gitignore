@@ -62,3 +62,10 @@ pam/Linux-PAM-1.7.2.tar.xz
 bash/bash-5.2.37/
 bash/bash-5.2.37.tar.gz
 bash/config.cache
+# GNU sed 4.9 — F217.
+!sed/
+!sed/build.sh
+!sed/sed-x86_64
+!sed/sed-aarch64
+sed/sed-4.9/
+sed/sed-4.9.tar.xz
