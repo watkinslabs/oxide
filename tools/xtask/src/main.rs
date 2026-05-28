@@ -726,7 +726,7 @@ fi
 b"#!/bin/sh
 [ -e /etc/oxide-init-smokes ] || exit 0
 echo init-fork-exec works
-for s in /bin/bare3 /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
+for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/mprotect_smoke /bin/mmap_zero_smoke /bin/usleep_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
