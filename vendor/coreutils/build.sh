@@ -78,7 +78,7 @@ EOF
             -DS_IRWXUGO='(S_IRWXU|S_IRWXG|S_IRWXO)' \
             -DSYS_getdents=SYS_getdents64 \
             -Wno-implicit-function-declaration -Wno-incompatible-pointer-types $extra" \
-    LDFLAGS="-static" \
+    LDFLAGS="" \
     ./configure \
       --cache-file=config.cache \
       --host="${arch}-linux-musl" \

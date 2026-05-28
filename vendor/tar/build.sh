@@ -43,7 +43,7 @@ build_one() {
             -DS_IXUGO='(S_IXUSR|S_IXGRP|S_IXOTH)' \
             -DS_IRWXUGO='(S_IRWXU|S_IRWXG|S_IRWXO)' \
             -Wno-implicit-function-declaration -Wno-incompatible-pointer-types $extra" \
-    LDFLAGS="-static" \
+    LDFLAGS="" \
     ./configure \
       --host="${arch}-linux-musl" \
       --disable-nls \
