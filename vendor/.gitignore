@@ -178,3 +178,10 @@ ncurses/ncurses-6.5.tar.gz
 !vim/vim-aarch64
 vim/vim-9.1.0950/
 vim/vim-9.1.0950.tar.gz
+# nano 8.5 -- F255. Static-musl + vendored ncurses; /usr/bin/nano.
+!nano/
+!nano/build.sh
+!nano/nano-x86_64
+!nano/nano-aarch64
+nano/nano-8.5/
+nano/nano-8.5.tar.xz
