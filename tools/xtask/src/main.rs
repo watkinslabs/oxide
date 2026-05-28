@@ -622,7 +622,8 @@ LogLevel INFO\n")?,
     dbg("mkdir /etc/pam.d")?;
     put(&stage("pam_sshd",
         b"# /etc/pam.d/sshd -- pam_permit (task #14: real pam_unix\n\
-# activation deferred -- sshpam_thread + conv socketpair hangs).\n\
+# activation blocked on openssh privsep AF_UNIX socketpair message\n\
+# loss between monitor and preauth at type 105 handoff).\n\
 auth       required   pam_permit.so\n\
 account    required   pam_permit.so\n\
 password   required   pam_permit.so\n\
