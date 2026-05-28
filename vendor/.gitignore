@@ -54,6 +54,12 @@ pam/Linux-PAM-1.7.2/
 pam/Linux-PAM-1.7.2.tar.xz
 pam/Linux-PAM-1.5.3/
 pam/Linux-PAM-1.5.3.tar.xz
+# musl dynamic loader (ld-musl-<arch>.so.1) — F230.
+# x86_64 from Fedora /lib/ld-musl-x86_64.so.1 (musl 1.2.5).
+# aarch64 from vendor/cross/.../aarch64-linux-musl/lib/libc.so (musl 1.2.2-git).
+!musl/
+!musl/ld-musl-x86_64.so.1
+!musl/ld-musl-aarch64.so.1
 # zlib 1.3.1 — F229 vendored static for openssh compression.
 !zlib/
 !zlib/build.sh

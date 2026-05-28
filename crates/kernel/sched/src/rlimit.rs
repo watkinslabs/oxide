@@ -26,6 +26,22 @@ pub mod rlim {
 /// `RLIM_INFINITY` per POSIX — the "no limit" sentinel.
 pub const INFINITY: u64 = u64::MAX;
 
+/// Linux's init-task rlimit defaults (kernel/include/asm-generic/
+/// resource.h `INIT_RLIMITS`). Inherited by every task at creation
+/// (and by fork per POSIX). Only the rusable ones diverge from
+/// RLIM_INFINITY; the rest stay unlimited so they don't bite.
+///
+/// RLIMIT_STACK = (8 MiB, RLIM_INFINITY) — Linux's _STK_LIM. Used
+/// by execve to compute mmap_base = stack_top - rlim_stack - GAP
+/// and by try_grow_stack as the upper bound on auto-extension.
+pub const DEFAULT_RLIMITS: [(u64, u64); rlim::COUNT] = {
+    let mut a = [(INFINITY, INFINITY); rlim::COUNT];
+    a[rlim::STACK] = (8 * 1024 * 1024, INFINITY);
+    a[rlim::NOFILE] = (1024, 4096);  // Linux _RLIM_NOFILE / NR_OPEN_DEFAULT
+    a[rlim::CORE]   = (0, INFINITY);  // disabled by default
+    a
+};
+
 /// Validate a setrlimit(2) request against the current `(old_cur, old_max)`.
 /// Returns the new `(cur, max)` or `Err(())` if the request would
 /// raise the hard limit (privileged-only, v1 always-root semantics
