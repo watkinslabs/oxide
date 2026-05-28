@@ -892,12 +892,25 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         va += 0x1000;
     }
 
-    // VMA bookkeeping side.
+    // VMA bookkeeping side. Post-execve the running CR3 targets
+    // cur.mm — that's where the user's VMAs live, not the global
+    // boot AS. Mirror glue_mmap so MAP_FIXED's overlap-clear
+    // (via glue_munmap) hits the right AS.
     let uva = match UserVirtAddr::new(addr) {
         Some(u) => u,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
-    match with(|as_| as_.munmap(uva, len_aligned as usize)) {
+    let r = if let Some(cur) = sched::live::current() {
+        // SAFETY: running task on this CPU; sole mm writer.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            Some(mm.munmap(uva, len_aligned as usize))
+        } else {
+            with(|as_| as_.munmap(uva, len_aligned as usize))
+        }
+    } else {
+        with(|as_| as_.munmap(uva, len_aligned as usize))
+    };
+    match r {
         Some(Ok(()))  => 0,
         Some(Err(_))  => -(Errno::Einval.as_i32() as i64),
         None          => -(Errno::Enosys.as_i32() as i64),

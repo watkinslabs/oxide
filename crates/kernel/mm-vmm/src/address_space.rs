@@ -32,11 +32,12 @@ pub const MIN_USER_VA: u64 = PAGE_SIZE_BYTES;
 
 /// Top of the mmap arena used by anon mmap with no hint. Linux places
 /// anonymous mmaps in a high-address region below the stack and grows
-/// downward (`arch_get_unmapped_area_topdown`). Our v1 uses a fixed
-/// mmap_base = USER_VA_END - 0x40000 (256 KiB below the top), with the
-/// initial-exec stack reserving the top 128 KiB at `USER_VA_END - 0x20000`.
-/// 256 KiB headroom keeps the stack VMA out of the mmap-search path.
-pub const MMAP_TOP: u64 = USER_VA_END - 0x40000;
+/// downward (`arch_get_unmapped_area_topdown`). The stack VMA at
+/// `USER_VA_END - 0x20000` is 64 KiB; below it must be a wide
+/// unmap gap so the stack can grow downward (up to STACK_GROW_MAX
+/// = 8 MiB in `try_grow_stack`) without colliding with mmap'd
+/// regions. F230: 8 MiB stack reserve + 8 MiB safety = 16 MiB gap.
+pub const MMAP_TOP: u64 = USER_VA_END - 0x100_0000;
 
 /// Per-process AS. Public surface mirrors `11§3`. The Page Table side
 /// (`11§9`) lives in `root_pa`: the PA of this AS's top-level table
