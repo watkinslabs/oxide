@@ -110,6 +110,24 @@ run_one() {
     return 0
 }
 
+# Interactive PTY mode: ssh -tt with piped commands. Validates the
+# full PTY path: SCM_RIGHTS fd pass, TIOCSCTTY foreground pgid seed,
+# shell exec, slave→master output, master→network forwarding.
+run_pty() {
+    local idx="$1" out
+    out="$(printf 'echo OXIDE_PTY_OK\nexit\n' | timeout 25 sshpass -p swordfish ssh -tt "${SSH_OPTS[@]}" alice@127.0.0.1 2>&1)"
+    # ssh -tt frequently surfaces busybox exit code as 255 even on a
+    # clean session; accept 0 OR 255 as long as the expected output
+    # made it through the PTY relay.
+    if ! grep -q "OXIDE_PTY_OK" <<<"$out"; then
+        echo "boot-smoke-ssh: FAIL — pty conn #$idx output missing OXIDE_PTY_OK" >&2
+        echo "--- stdout ---" >&2; echo "$out" >&2
+        return 1
+    fi
+    echo "boot-smoke-ssh: pty conn #$idx OK"
+    return 0
+}
+
 # Rotation of commands across $N_CONN sessions. Each tests a
 # different code path (pure stdout, /proc read, uid identity).
 CMDS=(
@@ -137,11 +155,19 @@ for i in $(seq 1 "$N_CONN"); do
     fi
 done
 
+# Finish with an interactive PTY session — covers the SCM_RIGHTS +
+# TIOCSCTTY + shell-relay path the exec-mode sessions can't reach.
+if [ "$failed" -eq 0 ]; then
+    if ! run_pty 1; then
+        failed=1
+    fi
+fi
+
 if [ "$failed" -ne 0 ]; then
     echo "------ last 80 lines of boot log ------" >&2
     tail -n 80 "$LOG" >&2
     exit 1
 fi
 
-echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions on $ARCH"
+echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions + 1 pty on $ARCH"
 exit 0
