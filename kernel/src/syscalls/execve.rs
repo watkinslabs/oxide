@@ -280,18 +280,30 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     // 64 KiB stack — busybox + glibc/musl static binaries routinely
     // use >4 KiB through SIGCHLD handlers, /proc parsers, and stdio
     // init. A single 4 KiB page underflows on the first wide musl
-    // libc init frame. Matches the aarch64 execve path below.
-    const EXEC_USER_STACK_LEN: usize = 0x10000;
-    // F152-3: stack near the top of the user-half VA range, Linux-style.
-    // The previous fixed VA of 0x4F1_000 collided with the text
-    // segment of any ELF whose .text extended past 0xF1000 bytes —
-    // busybox-ash's text PT_LOAD ends at 0x50e000, so its 0x500012
-    // function pointer landed in the stack VMA (R+W, NX) and faulted
-    // on the first call into that page. Place stack at
-    // USER_VA_END - 0x20000 so the [start, end) range stays
-    // strictly below USER_VA_END (`UserVirtAddr::new` rejects ==).
-    const EXEC_USER_STACK_VA:  u64   = hal::USER_VA_END - 0x20000;
-    const EXEC_USER_STACK_TOP: u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
+    // F230: real Linux layout. The stack reservation is RLIMIT_STACK
+    // (default 8 MiB per `crate::rlimit::DEFAULT_RLIMITS`) at the
+    // top of user VA. Full reservation up front mirrors Linux's
+    // setup_arg_pages() — no auto-grow under RLIMIT_STACK.
+    // mmap_base = stack_bottom - MMAP_BASE_GAP (128 MiB) per
+    // `arch_pick_mmap_base`. Result: stack + mmap arena are
+    // multi-gigabyte apart, matching real Linux.
+    let rlim_stack: u64 = {
+        // SAFETY: rlimits slot single-mutator per `13§5`; cur is the
+        // running task on this CPU; we only read, no concurrent writer.
+        let (rc, _) = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::STACK] };
+        // Page-align; clamp at 1 GiB so a buggy setrlimit can't
+        // reserve all of user VA.
+        ((rc + 0xfff) & !0xfff).min(0x4000_0000)
+    };
+    let stack_top: u64 = hal::USER_VA_END - 0x10000;
+    let exec_user_stack_va_u: u64  = stack_top - rlim_stack;
+    let exec_user_stack_top_u: u64 = stack_top;
+    let exec_user_stack_len_u: usize = rlim_stack as usize;
+    // Local re-binds keep the rest of this fn (which references
+    // EXEC_USER_STACK_* by name) unchanged.
+    let EXEC_USER_STACK_VA  = exec_user_stack_va_u;
+    let EXEC_USER_STACK_TOP = exec_user_stack_top_u;
+    let EXEC_USER_STACK_LEN = exec_user_stack_len_u;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
     // GROWSDOWN flag wires the stack VMA into the page-fault
@@ -312,6 +324,9 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     ).is_err() {
         return -(Errno::Enomem.as_i32() as i64);
     }
+    // Linux `arch_pick_mmap_base`: anon-mmap arena top sits
+    // MMAP_BASE_GAP (128 MiB) below the stack reservation bottom.
+    new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
 
     // 3. Replace `current.mm` with the new AS and activate it.
     //    Order: activate BEFORE replace_mm so CR3 doesn't dangle
@@ -559,27 +574,22 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
     // 64 KiB stack — busybox + glibc/musl static binaries (Go later)
-    // routinely use >4 KiB, especially through SIGCHLD handlers and
-    // /proc parsers. A single 4 KiB page overflows on the first
-    // wide stack frame (e.g. busybox sh's parser locals); 64 KiB is
-    // the same shape Linux's sysctl-default rlim_cur hands out for
-    // small static binaries.
-    const EXEC_USER_STACK_LEN:  usize = 0x10000;
-    // F156: place stack near top of user-half VA so it stays disjoint
-    // from any reasonable ELF text. Prior 0x4F1_000 collided with
-    // busybox's .text (ends 0x50e000), chopping a hole in code via
-    // MAP_FIXED. Mirrors the x86_64 path above.
-    const EXEC_USER_STACK_VA:   u64   = hal::USER_VA_END - 0x20000;
-    const EXEC_USER_STACK_TOP:  u64   = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN as u64;
+    // F230: real Linux layout (matches x86_64 path above). Stack
+    // reservation = RLIMIT_STACK (8 MiB default), allocated up-front
+    // per Linux's setup_arg_pages(); mmap_base = stack_bottom -
+    // MMAP_BASE_GAP per arch_pick_mmap_base.
+    let rlim_stack: u64 = {
+        // SAFETY: rlimits slot single-mutator per `13§5`; cur is the
+        // running task on this CPU; we only read, no concurrent writer.
+        let (rc, _) = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::STACK] };
+        ((rc + 0xfff) & !0xfff).min(0x4000_0000)
+    };
+    let stack_top: u64 = hal::USER_VA_END - 0x10000;
+    let EXEC_USER_STACK_VA:  u64   = stack_top - rlim_stack;
+    let EXEC_USER_STACK_TOP: u64   = stack_top;
+    let EXEC_USER_STACK_LEN: usize = rlim_stack as usize;
     let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
         .expect("EXEC_USER_STACK_VA in user range");
-    // GROWSDOWN per docs/31§5. Wires this VMA into the page-fault
-    // auto-extend path (try_grow_stack) so a write below `vma.start`
-    // within 64 KiB extends downward instead of SIGSEGV. F123:
-    // dhcpcd-aarch64 overflowed the 64 KiB initial frame on its
-    // first wide musl init pass; pre-fix the stack VMA had no
-    // GROWSDOWN flag so find_growsdown_above returned None and the
-    // task got SIGSEGV at the first stack-underflow page.
     if new_as.mmap(
         Some(stack_hint), EXEC_USER_STACK_LEN,
         VmaProt::READ | VmaProt::WRITE,
@@ -589,6 +599,7 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
     ).is_err() {
         return -(Errno::Enomem.as_i32() as i64);
     }
+    new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
 
     // 3. Replace cur.mm + activate the new AS.
     // SAFETY: new_root carries kernel-half cloned from master at new_user_l0; activate writes TTBR0_EL1 + flushes user TLB; preempt-off; single-CPU.

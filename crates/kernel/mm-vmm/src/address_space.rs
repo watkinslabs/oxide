@@ -30,14 +30,22 @@ use crate::{Error, KResult};
 /// bound is in `01§1`).
 pub const MIN_USER_VA: u64 = PAGE_SIZE_BYTES;
 
-/// Top of the mmap arena used by anon mmap with no hint. Linux places
-/// anonymous mmaps in a high-address region below the stack and grows
-/// downward (`arch_get_unmapped_area_topdown`). The stack VMA at
-/// `USER_VA_END - 0x20000` is 64 KiB; below it must be a wide
-/// unmap gap so the stack can grow downward (up to STACK_GROW_MAX
-/// = 8 MiB in `try_grow_stack`) without colliding with mmap'd
-/// regions. F230: 8 MiB stack reserve + 8 MiB safety = 16 MiB gap.
+/// Fallback mmap arena top for ASes whose `mmap_base` was never
+/// set (boot anchor, hosted tests). Production ASes get their
+/// `mmap_base` programmed at execve time from `arch_pick_mmap_base`
+/// (= `stack_top - rlim_stack - MMAP_BASE_GAP`) so this constant is
+/// only the safe-default for non-user contexts. We keep it well
+/// below USER_VA_END so any unintentional use still has stack room.
 pub const MMAP_TOP: u64 = USER_VA_END - 0x100_0000;
+
+/// Linux `STACK_RND_MASK`/`mmap_base` gap below the top of the
+/// stack reservation, per `arch/x86/mm/mmap.c arch_pick_mmap_base`.
+/// Linux uses 128 MiB plus a randomised slice; v1 uses a fixed
+/// 128 MiB (no ASLR yet) so the mmap arena starts that far below
+/// the bottom of the rlim_stack reservation. Result: stack can
+/// grow up to RLIMIT_STACK without crossing into the mmap arena,
+/// and the mmap arena has gigabytes of room beneath it.
+pub const MMAP_BASE_GAP: u64 = 128 * 1024 * 1024;
 
 /// Per-process AS. Public surface mirrors `11§3`. The Page Table side
 /// (`11§9`) lives in `root_pa`: the PA of this AS's top-level table
@@ -67,6 +75,14 @@ pub struct AddressSpace {
     /// child mm. Hardlinks to the same inode produce different
     /// `exe_path`s — the dentry-of-record is what the user invoked.
     exe_path: Spinlock<Option<alloc::string::String>, AddressSpaceClass>,
+    /// Top of the anon-mmap arena per Linux `mm_struct::mmap_base`
+    /// (`arch_pick_mmap_base`). Set at exec time to
+    /// `stack_top - rlim_stack - GAP` so anonymous mmaps grow
+    /// top-down from a position that leaves the stack room to
+    /// expand up to RLIMIT_STACK. Default 0 means "not initialised"
+    /// — `find_hole` falls back to the legacy `MMAP_TOP` constant
+    /// (used by boot-anchor AS + hosted tests).
+    mmap_base: core::sync::atomic::AtomicU64,
 }
 
 impl Drop for AddressSpace {
@@ -104,6 +120,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(0),
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(None),
+            mmap_base: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -164,6 +181,20 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn brk_max(&self) -> u64 {
         self.brk_max.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Per-AS mmap arena top per Linux `mm_struct::mmap_base`.
+    /// `execve` computes this from RLIMIT_STACK + a fixed GAP per
+    /// `arch_pick_mmap_base`. `find_hole` searches downward from
+    /// it. Zero = uninitialised; callers fall back to the legacy
+    /// global `MMAP_TOP` const.
+    /// # C: O(1)
+    pub fn set_mmap_base(&self, base: u64) {
+        self.mmap_base.store(base, core::sync::atomic::Ordering::Release);
+    }
+    /// # C: O(1)
+    pub fn mmap_base(&self) -> u64 {
+        self.mmap_base.load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// Try to set `brk` to `new`. Returns the post-operation brk
@@ -233,6 +264,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
+            mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
         }))
     }
 
@@ -337,6 +369,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
+            mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
         // inherits the parent's `Arc<AnonVma>` (already cloned by
@@ -419,6 +452,7 @@ impl AddressSpace {
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
+            mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
         }))
     }
 
@@ -507,7 +541,13 @@ impl AddressSpace {
             };
             match from_hint {
                 Some(h) => h,
-                None => find_hole(&tree, len_u64).ok_or(Error::NoMem)?,
+                None => {
+                    let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
+                        0 => MMAP_TOP,
+                        v => v,
+                    };
+                    find_hole(&tree, len_u64, top).ok_or(Error::NoMem)?
+                },
             }
         };
 
@@ -893,52 +933,7 @@ fn end_of(start: UserVirtAddr, len: u64) -> KResult<UserVirtAddr> {
     UserVirtAddr::new(end).ok_or(Error::Inval)
 }
 
-/// True iff `[start, end)` overlaps no existing VMA.
-/// # C: O(N)
-fn hole_clear(tree: &VmaTree, start: UserVirtAddr, end: UserVirtAddr) -> bool {
-    let s = start.as_u64();
-    let e = end.as_u64();
-    for v in tree.iter() {
-        if v.start.as_u64() >= e { break; }
-        if v.end.as_u64()   >  s { return false; }
-    }
-    true
-}
-
-/// Top-down hole search starting at `MMAP_TOP`, descending toward
-/// `MIN_USER_VA`. Mirrors Linux `arch_get_unmapped_area_topdown` —
-/// anonymous mmap with no hint lands in the high-address mmap arena,
-/// not at low addresses where userspace doesn't expect them
-/// (programs assume mmap returns strictly above `.text`). The search
-/// returns the *highest* candidate `cand` in `[MIN_USER_VA, MMAP_TOP)`
-/// such that `[cand, cand+len)` is hole.
-/// # C: O(N) over VMAs (one ascending walk + reverse over a small Vec)
-fn find_hole(tree: &VmaTree, len: u64) -> Option<UserVirtAddr> {
-    if len == 0 || len > MMAP_TOP - MIN_USER_VA { return None; }
-    // Snapshot VMA spans clipped to [MIN_USER_VA, MMAP_TOP) into a
-    // Vec we can reverse-iterate.
-    let mut vmas: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
-    for v in tree.iter() {
-        let s = v.start.as_u64().max(MIN_USER_VA);
-        let e = v.end.as_u64().min(MMAP_TOP);
-        if e > s { vmas.push((s, e)); }
-    }
-    // Walk gaps from highest to lowest.
-    let mut top = MMAP_TOP;
-    for &(s, e) in vmas.iter().rev() {
-        // Gap is [e, top). If it fits, place at top-len (highest).
-        if top.saturating_sub(e) >= len {
-            return UserVirtAddr::new(top - len);
-        }
-        top = s;
-    }
-    // Final gap: [MIN_USER_VA, top).
-    if top.saturating_sub(MIN_USER_VA) >= len {
-        UserVirtAddr::new(top - len)
-    } else {
-        None
-    }
-}
+pub(crate) use crate::hole::{find_hole, hole_clear};
 
 impl AddressSpace {
     /// `mremap` per `mremap(2)`. Tier-2 work fn per `docs/53§3`.
