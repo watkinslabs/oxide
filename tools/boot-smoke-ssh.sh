@@ -137,6 +137,8 @@ CMDS=(
     "uname -m"
     "pwd"
     "/bin/bash -c 'echo BASH:\$BASH_VERSION'"
+    "/usr/bin/sed --version"
+    "/usr/bin/sed -n 1p /etc/passwd"
 )
 WANTS=(
     "OXIDE_SSH_OK"
@@ -145,6 +147,8 @@ WANTS=(
     "."
     "/home/alice"
     "BASH:5."
+    "GNU sed"
+    "root:"
 )
 NCMD=${#CMDS[@]}
 
