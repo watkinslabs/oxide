@@ -195,11 +195,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F231: PAM modules as real shared objects. Built `-shared -fPIC
-    // -nostdlib` so they have no DT_NEEDED to libc.so — libpam loads
-    // them via dlopen and only consumes their `pam_sm_*` exports.
-    // Staged at /lib/security/<name>.so; /etc/pam.d/sshd references
-    // them by basename.
+    // F231: PAM modules as shared objects. libpam dlopens them.
     let pam_module_srcs: &[(&str, &str)] = &[
         ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
         ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
@@ -210,6 +206,15 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         eprintln!("xtask rootfs: {} -shared {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
         let mut c = Command::new(&cc);
         c.args(["-O2", "-fPIC", "-shared", "-nostdlib", "-fno-stack-protector",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
+    {
+        // F239: pam_unix needs libc (fopen/crypt) — default crt link.
+        let out = user_out.join("pam_unix.so");
+        let src = repo.join("userspace/pam_modules/pam_unix.c");
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-fPIC", "-shared", "-fno-stack-protector",
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
@@ -600,12 +605,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
           alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
-    // F231: openssh sshd_config now runs through PAM. UsePAM=yes
-    // invokes libpam at session-setup time; libpam dlopens modules
-    // listed in /etc/pam.d/sshd from /lib/security/. Auth chain
-    // ALSO still runs the openssh internal /etc/shadow path via
-    // PasswordAuthentication=yes — UsePAM here adds the session
-    // setup PAM hooks on top of openssh's own password check.
+    // F231: sshd_config UsePAM=yes — libpam dlopens modules from
+    // /usr/lib/security/ at session setup.
     put(&stage("sshd_config",
         b"Port 22\n\
 AddressFamily inet\n\
@@ -630,7 +631,8 @@ LogLevel INFO\n")?,
     // libpam-shared + libcrypt vendor builds are in place.
     dbg("mkdir /etc/pam.d")?;
     put(&stage("pam_sshd",
-        b"# /etc/pam.d/sshd -- F231 minimal chain via pam_permit.\n\
+        b"# /etc/pam.d/sshd -- pam_permit fallback; pam_unix wires up\n\
+# in F239 once the dlopen-then-conv-then-stall trace is resolved.\n\
 auth       required   pam_permit.so\n\
 account    required   pam_permit.so\n\
 password   required   pam_permit.so\n\
@@ -641,6 +643,7 @@ session    required   pam_permit.so\n")?,
     // into libpam.a is "/usr/lib/security/".
     put(&user("pam_permit.so"), "/usr/lib/security/pam_permit.so")?;
     put(&user("pam_deny.so"),   "/usr/lib/security/pam_deny.so")?;
+    put(&user("pam_unix.so"),   "/usr/lib/security/pam_unix.so")?;
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.
