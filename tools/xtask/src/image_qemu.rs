@@ -358,7 +358,7 @@ fn qemu_run_x86_64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32)
         // CPU models (qemu64) trap #UD on those.
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "1G",
         "-bios", ovmf.to_str().unwrap(),
         // Boot drive attached as virtio-blk-pci (not legacy IDE) so the
         // F19-F30 modern virtio-pci transport bring-up runs on x86 the
@@ -444,7 +444,7 @@ fn qemu_run_aarch64_disk(repo: &std::path::Path, img: &std::path::Path, smp: u32
         // BSS reservation alongside UEFI/edk2 overhead on aarch64. With
         // 256 MiB Limine OOMed during kernel load. x86 with 256 MiB
         // works because OVMF x64 leaves more headroom.
-        "-m", "512M",
+        "-m", "1G",
         "-bios", ovmf.to_str().unwrap(),
         // Drive on the `virt` machine: explicit virtio-blk-pci so
         // OVMF aarch64 sees it as a UEFI block device and walks the
@@ -501,7 +501,7 @@ fn qemu_run_x86_64(_repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> 
         // so the kernel runs on plain qemu64 too.
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "1G",
         "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
         "-display", "none",
@@ -524,7 +524,7 @@ fn qemu_run_aarch64(repo: &std::path::Path, iso: &std::path::Path, smp: u32) -> 
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
-        "-m", "256M",
+        "-m", "1G",
         "-bios", ovmf.to_str().unwrap(),
         "-cdrom", iso.to_str().unwrap(),
         "-serial", "stdio",
