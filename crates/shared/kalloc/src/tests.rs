@@ -219,3 +219,41 @@ fn writes_to_allocated_memory_dont_clobber_others() {
         ka.dealloc(p2, l);
     }
 }
+
+// F247 (T16): the grow hook must satisfy an alloc that the initial
+// heap cannot. Set up a small heap, hand back a bigger region from
+// the hook, and watch alloc retry-succeed.
+use std::sync::Mutex;
+const GROW_TEST_TINY_HEAP: usize = 16 * 1024;
+const GROW_TEST_BIG_ALLOC: usize = MIB;
+const GROW_TEST_BIG_ALIGN: usize = 64;
+const GROW_TEST_REGION_BYTES: usize = 4 * MIB;
+static GROW_REGIONS: Mutex<Vec<Box<[u8]>>> = Mutex::new(Vec::new());
+fn grow_with_big_buffer(min: usize) -> Option<(usize, usize)> {
+    let mut v = vec![0u8; min.max(GROW_TEST_REGION_BYTES)];
+    let start = v.as_mut_ptr() as usize;
+    let len   = v.len();
+    GROW_REGIONS.lock().unwrap().push(v.into_boxed_slice());
+    Some((start, len))
+}
+
+#[test]
+fn grow_hook_satisfies_over_capacity_alloc() {
+    // Static-like tiny heap.
+    let buf: Vec<u8> = vec![0u8; GROW_TEST_TINY_HEAP];
+    let mut buf = buf.into_boxed_slice();
+    let ka = KAlloc::new();
+    unsafe { ka.init(buf.as_mut_ptr() as usize, buf.len()) };
+
+    // Layout much bigger than the tiny static heap.
+    let big = Layout::from_size_align(GROW_TEST_BIG_ALLOC, GROW_TEST_BIG_ALIGN).unwrap();
+    // SAFETY: KAlloc has no grow hook yet — verify OOM first.
+    let p_oom = unsafe { ka.alloc(big) };
+    assert!(p_oom.is_null(), "expected OOM before grow hook installed");
+
+    // Wire the hook + retry.
+    ka.set_grow_hook(grow_with_big_buffer);
+    let p_ok = unsafe { ka.alloc(big) };
+    assert!(!p_ok.is_null(), "alloc should succeed via grow hook");
+    unsafe { ka.dealloc(p_ok, big) };
+}
