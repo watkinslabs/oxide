@@ -129,3 +129,10 @@ diffutils/diffutils-3.10.tar.xz
 !patch/patch-aarch64
 patch/patch-2.7.6/
 patch/patch-2.7.6.tar.xz
+# bzip2 1.0.8 — F226 (not GNU but ubiquitous).
+!bzip2/
+!bzip2/build.sh
+!bzip2/bzip2-x86_64
+!bzip2/bzip2-aarch64
+bzip2/bzip2-1.0.8/
+bzip2/bzip2-1.0.8.tar.gz
