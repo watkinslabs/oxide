@@ -149,6 +149,8 @@ CMDS=(
     "/usr/bin/grep root /etc/passwd"
     "/usr/bin/tar --version"
     "/usr/bin/tar -cf /tmp/p.tar /etc/passwd 2>/dev/null; /usr/bin/tar -tf /tmp/p.tar; :"
+    "/usr/bin/make --version"
+    "printf 'oxgoal:\n\t@echo MAKE_OK\n' > /tmp/M && /usr/bin/make -f /tmp/M"
 )
 WANTS=(
     "OXIDE_SSH_OK"
@@ -165,6 +167,8 @@ WANTS=(
     "root:"
     "GNU tar"
     "etc/passwd"
+    "GNU Make"
+    "MAKE_OK"
 )
 NCMD=${#CMDS[@]}
 

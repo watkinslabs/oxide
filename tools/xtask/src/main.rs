@@ -389,6 +389,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&tar_bin, "/usr/bin/tar")?;
     }
 
+    // F221: vendored GNU make 4.4.1 — static-musl /usr/bin/make.
+    let make_bin = repo.join(format!("vendor/make/make-{}", arch));
+    if make_bin.is_file() {
+        put(&make_bin, "/usr/bin/make")?;
+    }
+
     // F218: vendored GNU coreutils 8.32 — static-musl, single-binary
     // mode. Binary at /usr/libexec/coreutils; symlinks per applet under
     // /usr/bin so PATH lookup picks real GNU semantics over busybox.
