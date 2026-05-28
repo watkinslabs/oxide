@@ -545,9 +545,6 @@ if [ -x /usr/sbin/sshd ]; then
     ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
     route add default gw 10.0.2.2 2>/dev/null
     echo sshd-step-launch
-    # F211: -D -e &  (foreground sshd, backgrounded by shell).
-    # default daemonize works post-F211 sleeper-credit fix but the
-    # silent rv=255 + slower KEX path argues for the simpler launch.
     /usr/sbin/sshd -D -e 2>&1 &
     echo sshd-step-launched-bg pid=$!
 fi
