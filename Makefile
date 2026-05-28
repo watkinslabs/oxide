@@ -118,7 +118,9 @@ smoke-dhcp: smoke-dhcp-x86
 # KEX, auth, cred-emulate-setxuid, channel/exec, fork-exec, and
 # socket teardown in one shot.
 SSH_SMOKE_TIMEOUT ?= 600
-SSH_SMOKE_CONNECTIONS ?= 5
+# Default 6 so the rotation reaches every CMDS[]/WANTS[] entry
+# (echo, id, /etc/passwd, uname, pwd, /bin/bash).
+SSH_SMOKE_CONNECTIONS ?= 6
 smoke-ssh-x86: x86
 	./tools/boot-smoke-ssh.sh x86 $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
 smoke-ssh-arm: arm
