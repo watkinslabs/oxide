@@ -377,6 +377,42 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&sed_bin, "/usr/bin/sed")?;
     }
 
+    // F218: vendored GNU coreutils 8.32 — static-musl, single-binary
+    // mode. Binary at /usr/libexec/coreutils; symlinks per applet under
+    // /usr/bin so PATH lookup picks real GNU semantics over busybox.
+    // Skipping 'install' (clashes with package-manager keyword) and
+    // 'true'/'false'/'echo'/'test' (built-in to every shell). Per
+    // vendor/coreutils/build.sh.
+    let cu_bin = repo.join(format!("vendor/coreutils/coreutils-{}", arch));
+    if cu_bin.is_file() {
+        put(&cu_bin, "/usr/libexec/coreutils")?;
+        let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
+            let cmd = format!("ln {} {}", target, link);
+            let mut c = Command::new("debugfs");
+            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
+            c.stdout(std::process::Stdio::null());
+            run(c)
+        };
+        for applet in &[
+            "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "ln",
+            "chmod", "chown", "chgrp", "touch", "stat", "dd",
+            "head", "tail", "wc", "sort", "uniq", "tr", "cut", "tee", "tac",
+            "mktemp", "readlink", "realpath", "dirname", "basename",
+            "sleep", "date", "whoami", "id", "uname", "seq", "yes", "nproc",
+            "nohup", "env", "printf", "printenv", "pwd",
+            "expr", "factor", "expand", "unexpand", "fold", "fmt",
+            "split", "csplit", "comm", "join", "paste", "shuf", "shred",
+            "df", "du", "sync", "kill", "nice", "timeout", "tty",
+            "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum",
+            "base32", "base64", "basenc", "od",
+            "nl", "pr", "ptx", "tsort", "truncate", "link", "unlink",
+            "logname", "groups", "users", "who", "uptime", "hostid",
+            "mkfifo", "mknod", "numfmt",
+        ] {
+            dbg_ln("/usr/libexec/coreutils", &format!("/usr/bin/{applet}"))?;
+        }
+    }
+
     let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
     let sshdsess_bin = repo.join(format!("vendor/openssh/sshd-session-{}", arch));
     let sshkeygen_bin = repo.join(format!("vendor/openssh/ssh-keygen-{}", arch));
