@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# End-to-end SSH smoke gate. Boots the kernel under qemu headless,
+# waits for `oxide login:` AND for sshd to be listening on port 22,
+# then runs N back-to-back ssh sessions exercising connect, KEX, auth,
+# channel/exec, and clean shutdown. Each session checks rv=0 and that
+# the output matches the expected substring. Any failed session = FAIL.
+#
+# Usage:
+#   tools/boot-smoke-ssh.sh x86            # default 600s timeout, 3 connections
+#   tools/boot-smoke-ssh.sh arm 1200 5     # 1200s timeout, 5 connections
+#
+# Requires sshpass; QEMU is launched with hostfwd 127.0.0.1:2222->:22
+# by the default make qemu-{x86,arm} target.
+set -uo pipefail
+
+usage() {
+    cat >&2 <<EOF
+usage: $0 <x86|arm> [timeout_seconds] [num_connections]
+       SMOKE_TIMEOUT and SSH_SMOKE_CONNECTIONS env vars also accepted.
+EOF
+    exit 2
+}
+
+ARCH="${1:-}"
+case "$ARCH" in
+    x86) MAKE_TARGET=qemu-x86 ;;
+    arm) MAKE_TARGET=qemu-arm ;;
+    *)   usage ;;
+esac
+TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
+N_CONN="${3:-${SSH_SMOKE_CONNECTIONS:-3}}"
+
+if ! command -v sshpass >/dev/null 2>&1; then
+    echo "boot-smoke-ssh: ERROR — sshpass not installed" >&2
+    exit 2
+fi
+
+LOG="$(mktemp /tmp/oxide-ssh-smoke-${ARCH}-XXXXXX.log)"
+PIDFILE="$(mktemp /tmp/oxide-ssh-smoke-${ARCH}-XXXXXX.pid)"
+KNOWN_HOSTS="$(mktemp /tmp/oxide-ssh-known-XXXXXX)"
+cleanup() {
+    if [ -s "$PIDFILE" ]; then
+        local pid
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "-$pid" 2>/dev/null || true
+            sleep 1
+            kill -KILL "-$pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$LOG" "$PIDFILE" "$KNOWN_HOSTS"
+}
+trap cleanup EXIT
+
+echo "boot-smoke-ssh: arch=$ARCH timeout=${TIMEOUT}s connections=$N_CONN log=$LOG"
+
+OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+echo $! > "$PIDFILE"
+
+deadline=$(( $(date +%s) + TIMEOUT ))
+saw_login=0
+saw_sshd=0
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        echo "boot-smoke-ssh: FAIL — qemu exited before ssh ready" >&2
+        tail -n 60 "$LOG" >&2
+        exit 1
+    fi
+    if [ "$saw_login" -eq 0 ] && grep -q "oxide login:" "$LOG" 2>/dev/null; then
+        saw_login=1
+    fi
+    if [ "$saw_sshd" -eq 0 ] && grep -q "Server listening on 0.0.0.0 port 22" "$LOG" 2>/dev/null; then
+        saw_sshd=1
+    fi
+    if [ "$saw_login" -eq 1 ] && [ "$saw_sshd" -eq 1 ]; then
+        break
+    fi
+    sleep 2
+done
+if [ "$saw_login" -eq 0 ] || [ "$saw_sshd" -eq 0 ]; then
+    echo "boot-smoke-ssh: FAIL — timeout waiting for login=$saw_login sshd=$saw_sshd" >&2
+    tail -n 80 "$LOG" >&2
+    exit 1
+fi
+
+SSH_OPTS=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile="$KNOWN_HOSTS"
+    -o GlobalKnownHostsFile=/dev/null
+    -o ConnectTimeout=10
+    -p 2222
+)
+
+run_one() {
+    local idx="$1" cmd="$2" want="$3" out
+    out="$(timeout 20 sshpass -p swordfish ssh "${SSH_OPTS[@]}" alice@127.0.0.1 "$cmd" 2>&1)"
+    local rv=$?
+    if [ "$rv" -ne 0 ]; then
+        echo "boot-smoke-ssh: FAIL — conn #$idx ($cmd) rv=$rv" >&2
+        echo "--- stdout ---" >&2; echo "$out" >&2
+        return 1
+    fi
+    if ! grep -q -- "$want" <<<"$out"; then
+        echo "boot-smoke-ssh: FAIL — conn #$idx ($cmd) output missing '$want'" >&2
+        echo "--- stdout ---" >&2; echo "$out" >&2
+        return 1
+    fi
+    echo "boot-smoke-ssh: conn #$idx OK — '$cmd' produced '$want'"
+    return 0
+}
+
+# Rotation of commands across $N_CONN sessions. Each tests a
+# different code path (pure stdout, /proc read, uid identity).
+CMDS=(
+    "echo OXIDE_SSH_OK"
+    "id"
+    "cat /etc/passwd"
+    "uname -m"
+    "pwd"
+)
+WANTS=(
+    "OXIDE_SSH_OK"
+    "uid=1000(alice)"
+    "alice:"
+    "."
+    "/home/alice"
+)
+NCMD=${#CMDS[@]}
+
+failed=0
+for i in $(seq 1 "$N_CONN"); do
+    idx=$(( (i - 1) % NCMD ))
+    if ! run_one "$i" "${CMDS[$idx]}" "${WANTS[$idx]}"; then
+        failed=1
+        break
+    fi
+done
+
+if [ "$failed" -ne 0 ]; then
+    echo "------ last 80 lines of boot log ------" >&2
+    tail -n 80 "$LOG" >&2
+    exit 1
+fi
+
+echo "boot-smoke-ssh: PASS — $N_CONN ssh sessions on $ARCH"
+exit 0

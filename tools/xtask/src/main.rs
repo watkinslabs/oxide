@@ -228,6 +228,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "/home", "/home/alice", "/root",
         "/var", "/var/log", "/var/db", "/var/db/dhcpcd", "/var/run", "/var/run/dhcpcd",
         "/usr", "/usr/share", "/usr/share/keymaps", "/usr/share/udhcpc",
+        "/usr/bin", "/usr/sbin", "/usr/libexec",
     ] {
         dbg(&format!("mkdir {d}"))?;
     }
@@ -353,28 +354,26 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&dhcpcd, "/sbin/dhcpcd")?;
     }
 
-    // F196: vendored dropbear 2024.86 — static-musl ssh server, per
-    // vendor/dropbear/build.sh. Multi-binary form: argv[0] dispatches
-    // into dropbear/dropbearkey. Skipped silently if the per-arch
-    // binary hasn't been built yet.
-    let dbear = if arch == "aarch64" {
-        repo.join("vendor/dropbear/dropbearmulti-aarch64")
-    } else {
-        repo.join("vendor/dropbear/dropbearmulti-x86_64")
-    };
-    if dbear.is_file() {
-        put(&dbear, "/sbin/dropbearmulti")?;
-        // F196: hardlink dispatch (matches busybox argv[0] pattern).
-        let dbear_ln = |target: &str, link: &str| -> Result<(), u8> {
-            let cmd = format!("ln {} {}", target, link);
-            let mut c = Command::new("debugfs");
-            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
-            c.stdout(std::process::Stdio::null());
-            run(c)
-        };
-        dbear_ln("/sbin/dropbearmulti", "/sbin/dropbear")?;
-        dbear_ln("/sbin/dropbearmulti", "/sbin/dropbearkey")?;
-        dbg("mkdir /etc/dropbear")?;
+    // F210: vendored openssh-portable 9.9p2 — static-musl ssh server
+    // (replaces dropbear). dropbear's check_close → close-PTY-master
+    // arm on CHANNEL_EOF loses shell stdout when `ssh -tt 'cmd'` runs
+    // with closed stdin (reproduces on real Linux too); openssh's
+    // send-eof + drain semantic handles that correctly. Per
+    // vendor/openssh/build.sh. Skipped silently if the per-arch
+    // binaries haven't been built yet.
+    let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
+    let sshdsess_bin = repo.join(format!("vendor/openssh/sshd-session-{}", arch));
+    let sshkeygen_bin = repo.join(format!("vendor/openssh/ssh-keygen-{}", arch));
+    let ssh_bin = repo.join(format!("vendor/openssh/ssh-{}", arch));
+    if sshd_bin.is_file() && sshdsess_bin.is_file() && sshkeygen_bin.is_file() {
+        put(&sshd_bin,      "/usr/sbin/sshd")?;
+        put(&sshdsess_bin,  "/usr/libexec/sshd-session")?;
+        put(&sshkeygen_bin, "/usr/bin/ssh-keygen")?;
+        if ssh_bin.is_file() { put(&ssh_bin, "/usr/bin/ssh")?; }
+        dbg("mkdir /etc/ssh")?;
+        // /var/empty is sshd's privsep chroot. We `--with-privsep-user=root`
+        // so privsep is degenerate, but sshd still wants the dir to exist.
+        dbg("mkdir /var/empty")?;
     }
 
     // /etc/issue + /etc/os-release + /etc/passwd + /etc/group +
@@ -396,6 +395,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // Set OXIDE_INIT_SMOKES=0 to skip the marker (interactive boot).
     if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
         put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
+    }
+    // F211: arch marker — rcS picks sshd daemonize mode by this file.
+    if arch == "aarch64" {
+        put(&stage("oxide-arch-is-aarch64", b"1\n")?, "/etc/oxide-arch-is-aarch64")?;
     }
     // B44: opt-in marker (off by default) for reproducing the
     // dhcpcd userspace heap-corruption hunt. The kernel now
@@ -437,6 +440,25 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
           alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
+    // F210: /etc/ssh/sshd_config — minimal openssh-server config.
+    // Built --without-openssl, so only ed25519 host keys + chacha20-
+    // poly1305 + curve25519 work. Password auth on (alice/swordfish).
+    // PermitRootLogin=no since root has no password.
+    put(&stage("sshd_config",
+        b"Port 22\n\
+AddressFamily inet\n\
+ListenAddress 0.0.0.0\n\
+HostKey /etc/ssh/ssh_host_ed25519_key\n\
+PermitRootLogin no\n\
+PasswordAuthentication yes\n\
+PermitEmptyPasswords no\n\
+PubkeyAuthentication yes\n\
+PrintMotd no\n\
+PrintLastLog no\n\
+UseDNS no\n\
+StrictModes no\n\
+LogLevel INFO\n")?,
+        "/etc/ssh/sshd_config")?;
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.
@@ -509,14 +531,22 @@ if [ -e /etc/oxide-udhcpc-enable ] && [ -x /sbin/udhcpc ]; then
     [ -x /bin/tcp_smoke ]    && /bin/tcp_smoke
 fi
 [ -x /etc/init.d/oxide-smokes ] && /etc/init.d/oxide-smokes
-# F196: dropbear ssh server (port 22). Generates host keys on first
-# boot, then backgrounds.
-if [ -x /sbin/dropbear ]; then
-    [ -f /etc/dropbear/dropbear_ed25519_host_key ] || \\
-        /sbin/dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null
+# F210: openssh sshd (port 22). Generates host keys on first boot
+# (only the ed25519 type, since the binary was built without OpenSSL
+# and the other key types depend on it), then forks the daemon.
+if [ -x /usr/sbin/sshd ]; then
+    echo sshd-step-pre-keygen
+    if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+        /usr/bin/ssh-keygen -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key 2>&1
+        echo ssh-keygen-rv=$?
+    fi
+    echo sshd-step-post-keygen
+    ls -l /etc/ssh/ 2>&1
     ifconfig eth0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null
     route add default gw 10.0.2.2 2>/dev/null
-    /sbin/dropbear -R -p 0.0.0.0:22 &
+    echo sshd-step-launch
+    /usr/sbin/sshd -D -e 2>&1 &
+    echo sshd-step-launched-bg pid=$!
 fi
 :
 ")?,

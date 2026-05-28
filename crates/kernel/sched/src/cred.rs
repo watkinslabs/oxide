@@ -95,6 +95,57 @@ pub fn sys_getresgid(args: &SyscallArgs) -> i64 {
 
 const NOCHANGE: u32 = u32::MAX;
 
+/// Linux `cap_emulate_setxuid` (security/commoncap.c). Called after
+/// any setuid-family transition. Mirrors the kernel's POSIX-cap
+/// emulation rules so a privileged daemon that drops uid actually
+/// loses its caps — without this, openssh's `permanently_set_uid`
+/// safety probe (setuid(0) after setresuid(uid,uid,uid)) succeeds,
+/// the daemon aborts with `was able to restore old [e]uid`, and the
+/// user session never starts. Rules per Linux:
+///   * If any of {old_ruid, old_euid, old_suid} was 0 AND none of
+///     {new_ruid, new_euid, new_suid} is 0 → clear permitted +
+///     effective (caps are gone permanently for this task).
+///   * Else if old_euid == 0 and new_euid != 0 → clear effective
+///     (caps preserved in permitted, can be re-raised via capset).
+///   * Else if old_euid != 0 and new_euid == 0 → restore effective
+///     from permitted.
+/// The fsuid transitions mirror this for the file-related caps
+/// (CHOWN/DAC_OVERRIDE/DAC_READ_SEARCH/FOWNER/FSETID/MKNOD/LINUX_IMMUTABLE).
+fn cap_emulate_setxuid(
+    cur: &crate::Task,
+    old_r: u32, old_e: u32, old_s: u32,
+    new_r: u32, new_e: u32, new_s: u32,
+    old_fs: u32, new_fs: u32,
+) {
+    let had_root = old_r == 0 || old_e == 0 || old_s == 0;
+    let has_root = new_r == 0 || new_e == 0 || new_s == 0;
+    if had_root && !has_root {
+        cur.creds.cap_permitted.store(0, Ordering::Release);
+        cur.creds.cap_effective.store(0, Ordering::Release);
+        cur.creds.cap_ambient.store(0, Ordering::Release);
+    } else if old_e == 0 && new_e != 0 {
+        cur.creds.cap_effective.store(0, Ordering::Release);
+    } else if old_e != 0 && new_e == 0 {
+        let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
+        cur.creds.cap_effective.store(perm, Ordering::Release);
+    }
+    const FS_CAP_MASK: u64 = (1u64 << crate::cap::CHOWN)
+        | (1u64 << crate::cap::DAC_OVERRIDE)
+        | (1u64 << crate::cap::DAC_READ_SEARCH)
+        | (1u64 << crate::cap::FOWNER)
+        | (1u64 << crate::cap::FSETID)
+        | (1u64 << crate::cap::MKNOD)
+        | (1u64 << crate::cap::LINUX_IMMUTABLE);
+    if old_fs == 0 && new_fs != 0 {
+        let e = cur.creds.cap_effective.load(Ordering::Acquire);
+        cur.creds.cap_effective.store(e & !FS_CAP_MASK, Ordering::Release);
+    } else if old_fs != 0 && new_fs == 0 {
+        let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
+        let e = cur.creds.cap_effective.load(Ordering::Acquire);
+        cur.creds.cap_effective.store(e | (perm & FS_CAP_MASK), Ordering::Release);
+    }
+}
+
 /// True if `target` is acceptable for a non-root uid transition —
 /// i.e. it appears in the existing {ruid, euid, suid} triple.
 fn uid_allowed(target: u32, r: u32, e: u32, s: u32) -> bool {
@@ -118,12 +169,18 @@ pub fn sys_setresuid(args: &SyscallArgs) -> i64 {
         if e != NOCHANGE && !uid_allowed(e, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if s != NOCHANGE && !uid_allowed(s, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
     }
+    let old_fs = cur.creds.fsuid.load(Ordering::Acquire);
+    let new_r = if r != NOCHANGE { r } else { cr };
+    let new_e = if e != NOCHANGE { e } else { ce };
+    let new_s = if s != NOCHANGE { s } else { cs };
+    let new_fs = if e != NOCHANGE { e } else { old_fs };
     if r != NOCHANGE { cur.creds.ruid.store(r, Ordering::Release); }
     if e != NOCHANGE {
         cur.creds.euid.store(e, Ordering::Release);
         cur.creds.fsuid.store(e, Ordering::Release); // Linux mirrors euid into fsuid
     }
     if s != NOCHANGE { cur.creds.suid.store(s, Ordering::Release); }
+    cap_emulate_setxuid(&cur, cr, ce, cs, new_r, new_e, new_s, old_fs, new_fs);
     0
 }
 
@@ -156,19 +213,22 @@ pub fn sys_setresgid(args: &SyscallArgs) -> i64 {
 pub fn sys_setuid(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     let uid = args.a0 as u32;
+    let cr = cur.creds.ruid.load(Ordering::Acquire);
+    let ce = cur.creds.euid.load(Ordering::Acquire);
+    let cs = cur.creds.suid.load(Ordering::Acquire);
+    let old_fs = cur.creds.fsuid.load(Ordering::Acquire);
     if cur.has_cap(crate::cap::SETUID) {
         cur.creds.ruid.store(uid,  Ordering::Release);
         cur.creds.euid.store(uid,  Ordering::Release);
         cur.creds.suid.store(uid,  Ordering::Release);
         cur.creds.fsuid.store(uid, Ordering::Release);
+        cap_emulate_setxuid(&cur, cr, ce, cs, uid, uid, uid, old_fs, uid);
         return 0;
     }
-    let cr = cur.creds.ruid.load(Ordering::Acquire);
-    let ce = cur.creds.euid.load(Ordering::Acquire);
-    let cs = cur.creds.suid.load(Ordering::Acquire);
     if !uid_allowed(uid, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
     cur.creds.euid.store(uid,  Ordering::Release);
     cur.creds.fsuid.store(uid, Ordering::Release);
+    cap_emulate_setxuid(&cur, cr, ce, cs, cr, uid, cs, old_fs, uid);
     0
 }
 
@@ -209,15 +269,18 @@ pub fn sys_setreuid(args: &SyscallArgs) -> i64 {
         if r != NOCHANGE && !uid_allowed(r, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
         if e != NOCHANGE && !uid_allowed(e, cr, ce, cs) { return -(Errno::Eperm.as_i32() as i64); }
     }
+    let old_fs = cur.creds.fsuid.load(Ordering::Acquire);
     let new_r = if r != NOCHANGE { r } else { cr };
     let new_e = if e != NOCHANGE { e } else { ce };
     cur.creds.ruid.store(new_r, Ordering::Release);
     cur.creds.euid.store(new_e, Ordering::Release);
     cur.creds.fsuid.store(new_e, Ordering::Release);
     // suid follows new euid when r was set explicitly OR new_e differs from old ruid
+    let new_s = if r != NOCHANGE || new_e != cr { new_e } else { cs };
     if r != NOCHANGE || new_e != cr {
         cur.creds.suid.store(new_e, Ordering::Release);
     }
+    cap_emulate_setxuid(&cur, cr, ce, cs, new_r, new_e, new_s, old_fs, new_e);
     0
 }
 

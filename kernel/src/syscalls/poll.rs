@@ -88,7 +88,10 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
 /// # C: O(nfds × N_loop)
 pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
     let ts_ptr = args.a2;
-    let timeout_ms: u64 = if ts_ptr == 0 || ts_ptr >= USER_VA_END {
+    // NULL timespec = block forever (poll timeout = -1). {0,0} = single-pass.
+    let timeout_arg: u64 = if ts_ptr == 0 {
+        (-1i32) as u32 as u64
+    } else if ts_ptr >= USER_VA_END {
         0
     } else {
         // SAFETY: ts_ptr validated < USER_VA_END; struct timespec is 16 B; CPL=0 reads.
@@ -99,7 +102,7 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
             else { (s as u64) * 1000 + (n as u64) / 1_000_000 }
         }
     };
-    let inner = SyscallArgs { a0: args.a0, a1: args.a1, a2: timeout_ms, a3: 0, a4: 0, a5: 0 };
+    let inner = SyscallArgs { a0: args.a0, a1: args.a1, a2: timeout_arg, a3: 0, a4: 0, a5: 0 };
     sys_poll(&inner)
 }
 

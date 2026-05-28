@@ -1,108 +1,116 @@
 # state — hand-off
 
-Branch: F205-ssh-arm-channel-eof (PR #1287). Also open: C12-qemu-kvm-optin (#1288).
-Workspace: spec-lint clean. Both arches pass `make smoke`.
+Branch: `F210-replace-dropbear-with-openssh` (PR #1293, open). On
+top of main (post-history-rewrite). `make qemu-x86` reaches `oxide
+login:` with openssh sshd daemonized; `make qemu-arm` reaches
+`Server listening` but not `oxide login:` (separate ARM scheduling
+follow-up).
 
-## What shipped this session
+## Shipped this branch (3 commits ahead of main)
 
-- **#1287 4057360**: POSIX `fork(2)` bug — `sys_clone` only inherited
-  the parent's sigmask if `CLONE_SIGHAND` was set. Linux unconditionally
-  copies the mask in `kernel/fork.c::copy_thread`. Without this fix,
-  musl's `fork() → __block_all_sigs() → _Fork() → __restore_sigs()` chain
-  corrupted the child's mask: child started at 0, the first `__restore_sigs`
-  read the *parent's* save buffer and propagated the wrong value forward.
-- **#1288 C12 KVM opt-in**: `OXIDE_QEMU_KVM=1 make qemu-x86` switches to
-  `-accel kvm`. Default stays TCG (KVM exposes a separate boot-time
-  HLT/IF semantics gap that wedges at "keymap loaded"). Lets interactive
-  users escape TCG's 100%-host-CPU idle floor.
+- **F210 (3f5824f5)** — vendor openssh-portable 9.9p2; replaces
+  dropbear. `tools/fetch-openssh.sh` + `vendor/openssh/build.sh`
+  static-musl build of `sshd` + `sshd-session` + `ssh-keygen` +
+  `ssh` (`--without-openssl` → chacha20-poly1305 + curve25519 +
+  ed25519; `--with-sandbox=no` → no seccomp filter).
+  `xtask rootfs` installs to `/usr/sbin/sshd`,
+  `/usr/libexec/sshd-session`, `/usr/bin/ssh-keygen`. sshd_config:
+  `AddressFamily inet` (our IPv4 wildcard listener-lookup fallback
+  doesn't match sshd's default IPv6 dual-stack bind). Switch motivated
+  by dropbear's `check_close → close-PTY-master on CHANNEL_EOF`
+  defect — reproduces on real-Linux dropbear too, so it's upstream
+  behavior, not our kernel.
 
-## What's verified but NOT shipped (rolled back)
+- **F211 (470a70ee)** — CFS sleeper credit on wake-from-blocking-wait
+  + Linux-PAM 1.7.2 vendored static build.
+  - `Task::set_vruntime_to_floor(floor)` *sets* vruntime to floor
+    unconditionally (vs. `lift_vruntime` which only raises). Used
+    from `wake_wait4_parent`, `WaitList::enqueue_runnable`,
+    `wake_if_sleeping`. Mirrors Linux `place_entity()`
+    GENTLE_FAIR_SLEEPERS. Fixes the daemonize-vs-wait4 starvation
+    (shell with high vruntime kept losing the CFS pick to its
+    just-spawned daemonize child whose vruntime started at 0).
+  - `tools/fetch-pam.sh` + `vendor/pam/build.sh` → meson static
+    build of `libpam.a` + `libpam_misc.a` for both arches. PAM
+    modules build as separate `.o` files in
+    `_build-$arch/modules/<name>/`; NOT embedded in libpam.a
+    (Linux-PAM 1.7.2 dropped autotools' `--enable-static-modules`).
 
-F206 attempts to fix the SVC-frame race in `deliver_arm`. Definitively
-diagnosed by a `pre-eret` trace at the last kernel call site before
-`eret`: `deliver_arm` wrote `frame.elr_el1 = handler` but the eret read
-`elr = original PC`. Different addresses. The global
-`oxide_svc_frame_base` was stale by the time deliver_arm ran (another
-task's SVC entry between this task's syscall body and signal-tail).
+- **F211 rcS (0394cd0e)** — per-arch sshd launch. ARM uses
+  `sshd -D -e 2>&1 &` (bg-shell wrapper); x86 uses default
+  daemonize. Selection via `/etc/oxide-arch-is-aarch64` marker
+  written by `xtask rootfs --arch aarch64`.
 
-With F206 working (per-task svc_frame slot read by deliver_arm), the
-trace confirmed `pre-eret elr=handler` and **`HELLO` from `echo HELLO`
-reached the SSH client on ARM for the first time ever**. SSH still
-times out at 30s on channel close — separate problem: mask=0x10000
-(SIGCHLD bit) propagates through dropbear's fork chain and stays
-blocked.
+## Open work — pick where to resume
 
-Three F206 implementation attempts, all broke ARM smoke at "keymap loaded":
-1. Per-task `Task.svc_frame: AtomicU64` set at dispatch entry — wedges.
-2. Same field set at signal-tail (post-schedule) — too late, global
-   already stale.
-3. Linux-style `pt_regs = task->kernel_stack - sizeof(SvcFrame)` —
-   wedges. Reason: `Task.kernel_stack` is the *context-switch* stack top
-   used by `oxide_context_switch`, NOT the EL1 SVC stack. On aarch64
-   our boot installs ONE global `KERNEL_STACK` and writes it to SP_EL1
-   once; SP_EL1 isn't re-armed per task on context switch.
+### A. openssh KEX_ECDH_REPLY stall — root cause narrowed
 
-## The actual right fix (next session)
+In-kernel trace confirms client's `KEX_ECDH_INIT` (68-byte TCP
+segment, 48-byte payload) reaches the server's recv_buf — and our
+socket `poll()` correctly returns POLL_IN. **sshd-session never
+reads it.** The preauth child (pid 4130) does only 2 `ppoll(2)`
+calls across the entire 30-s SSH attempt window and then exits
+on the preauth grace timer with `Connection from ... timed out
+[preauth]`.
 
-**Per-task SP_EL1 setup.** Linux runs every task on its own kernel
-stack; SP_EL1 is reloaded on every context switch so the next SVC from
-that task pushes its frame on the task-local kernel stack. Then
-`pt_regs = current->stack_top - sizeof(pt_regs)` is correct without
-any global or per-task race.
+Sequence per kernel trace:
+  1. KEXINIT arrives (1404 B segment). recv_buf grows to 1405.
+  2. sshd reads 20 single bytes (banner peeling) then 1 bulk
+     read of 1432 B — this bulk includes BOTH the KEXINIT
+     remainder AND the freshly-arrived ECDH_INIT (since
+     ECDH_INIT lands in recv_buf between byte 20 and the
+     bulk read).
+  3. recv_buf goes to 0. sshd's poll on the socket returns
+     POLL_OUT only.
+  4. sshd-session ppoll's. Returns 0 (no event). Times out.
 
-Concrete plan:
-1. `Task` already has `kernel_stack: AtomicPtr<u8>` — repurpose as
-   the EL1 stack top (verify all current users; today it's set via
-   `set_kernel_stack` for kthreads).
-2. `oxide_context_switch` (asm in
-   `crates/arch/hal-aarch64/src/context.rs`) gains `msr sp_el1, x9`
-   on the load side, where x9 = next->kernel_stack.
-3. SVC entry uses SP_EL1 = current task's stack → frame sits at top-288.
-4. `deliver_arm` reads frame from `current->kernel_stack - 288`. No
-   global. No race.
-5. Drop `oxide_svc_frame_base` and `current_svc_frame()`.
+So the ECDH_INIT bytes ARE in sshd-session's userspace buffer
+already (consumed by the bulk read). The stall is sshd's packet
+parser failing to iterate past the first SSH packet in that
+buffer — looks more like a monitor↔preauth socketpair / privsep
+state machine issue than a kernel scheduler issue. Real fix
+likely needs deeper sshd-side instrumentation (sshd -ddd is
+captured in the boot log) or a kernel-side audit of our
+AF_UNIX socketpair `read`/`recvmsg` for SCM_RIGHTS / cmsg
+edge cases since openssh's monitor model leans hard on those.
 
-Risks: must allocate kernel stacks for ALL tasks (kthreads + user
-processes). Today only kthreads have explicit stacks via
-`set_kernel_stack`; user tasks share the global one. Allocator pressure
-is small (~16 KiB × N tasks).
+Workaround in rcS: `sshd -D -e 2>&1 &` (foreground sshd
+backgrounded by the shell). Boot reaches `oxide login:` and
+sshd answers on port 22 but the KEX still stalls.
 
-## Also worth knowing
+### B. ARM init/getty respawn after daemonize
 
-- **CPU at 100%**: TCG interpretation, not a kernel bug. Guest is
-  halting properly (`halt_forever()` does `schedule → halt → loop`).
-  KVM accel resolves this on x86 with a kernel-side fix for the
-  KVM/HLT divergence (separate work).
-- **PTY mode broken differently**: `ssh -tt` fails with "ttyname fails
-  for openpty device" — a separate bug from the channel-close hang.
-  Likely missing `/proc/self/fd` symlink or wrong `/dev/pts/N` entry.
-- **debug-ssh trace surface**: rt_sigaction, rt_sigprocmask (with
-  caller_pc), deliver/deliver-masked, pipe_create/close, sys_exit drop,
-  pselect6 ready/EINTR/timeout, syscall nr/rv tid-tagged. Lives under
-  `kernel/src/syscalls/signal_trace.rs` + `signal_dispatch.rs`.
+`make qemu-arm` doesn't reach `oxide login:` after sshd
+daemonization even though `Server listening` does appear. Workaround
+is the `-D + bg-shell` path in rcS. Probably scheduler starvation
+by sshd's tight `rt_sigprocmask + ppoll` loop; F211 likely
+insufficient on ARM TCG.
 
-## Repro
+### C. PAM not yet wired into openssh
 
-    pkill -f qemu-system; rm -f /tmp/uart.sock /tmp/qa.log
-    setsid bash -c 'OXIDE_QEMU_UART_SOCK=/tmp/uart.sock \
-        OXIDE_QEMU_HEADLESS=1 \
-        exec make qemu-arm FEATURES="debug-ssh" \
-        > /dev/null 2>&1 < /dev/null' &
-    until [ -S /tmp/uart.sock ]; do sleep 1; done
-    socat -u UNIX-CONNECT:/tmp/uart.sock OPEN:/tmp/qa.log,creat,trunc &
-    until ss -lnt | grep -q 2222; do sleep 5; done
-    time timeout 30 sshpass -p swordfish ssh \
-        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -p 2222 alice@127.0.0.1 'echo HELLO'
-    # Post-F206: HELLO reaches client; exit=124 at 30 s.
-    # Without F206: nothing reaches client.
+`vendor/pam/install-{x86_64,aarch64}/libpam.a` is built but
+openssh `build.sh` still passes `--without-pam`. Wiring needs
+the modules (pam_unix + pam_deny + pam_permit + pam_nologin)
+linked statically — Linux-PAM 1.7.2's meson build didn't surface
+those as artifacts. Requires either downgrading to PAM 1.5.x
+(autotools, has `--enable-static-modules`) or hand-linking the
+module `.o` files from `_build-$arch/modules/<name>/`.
 
-`grep -a` mandatory on `/tmp/qa.log` (per `docs/54§6`).
+## Repro patterns
+
+    # x86 KVM + openssh, expected to reach login + sshd listen
+    OXIDE_QEMU_KVM=1 OXIDE_QEMU_HEADLESS=1 make qemu-x86
+
+    # SSH connection attempt (stalls at KEX_ECDH_REPLY today)
+    timeout 30 sshpass -p swordfish \
+      ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -p 2222 alice@127.0.0.1 'echo HI'
+
+    # Same with kernel-side syscall-trace overhead — KEX progresses further
+    FEATURES=debug-ssh OXIDE_QEMU_KVM=1 OXIDE_QEMU_HEADLESS=1 make qemu-x86
 
 ## See also
 
-- `docs/54-asm-correctness.md` — checklist for new asm patches.
-- F203/F204/F205 commit messages — three prior SSH-targeted PRs.
-- `kernel/src/syscalls/signal_dispatch.rs` — Signum-typed dispatch.
-- `crates/arch/hal-aarch64/src/vbar.rs` line 244-247 — where the
-  to-be-replaced `oxide_svc_frame_base` global gets written.
+- PR #1290 (merged) — C13 KVM-default fix: STAR RPL=3 + LAPIC timer disarm.
+- PAM agent report: `/tmp/claude-1000/.../tasks/aa06e90592a74036a.output`.
+- Daemonize-audit report: `/tmp/claude-1000/.../tasks/a9d3bf255fd80df91.output`.

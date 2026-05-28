@@ -122,7 +122,8 @@ impl WaitList {
         // F169: explicit wake — the deadline scanner shouldn't
         // also re-rouse this task. Clear before enqueue.
         t.wakeup_deadline_ns.store(0, Ordering::Release);
-        t.lift_vruntime(inner.cfs.min_vruntime());
+        // F211: sleeper credit on wake. See Task::set_vruntime_to_floor.
+        t.set_vruntime_to_floor(inner.cfs.min_vruntime());
         inner.enqueue(t);
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
         crate::preempt::set_need_resched();
