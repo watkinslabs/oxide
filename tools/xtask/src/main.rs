@@ -195,11 +195,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F231: PAM modules as real shared objects. Built `-shared -fPIC
-    // -nostdlib` so they have no DT_NEEDED to libc.so — libpam loads
-    // them via dlopen and only consumes their `pam_sm_*` exports.
-    // Staged at /lib/security/<name>.so; /etc/pam.d/sshd references
-    // them by basename.
+    // F231: PAM modules as shared objects (no DT_NEEDED). libpam
+    // dlopen's them by basename via DEFAULT_MODULE_PATH.
     let pam_module_srcs: &[(&str, &str)] = &[
         ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
         ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
@@ -364,14 +361,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("online_smoke"),    "/bin/online_smoke")?;
     put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
     put(&user("exit_test"),       "/bin/exit_test")?;
-    // F230: real musl dynamic loader at the per-arch interp path.
-    // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
-    // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
-    // musl-gcc links against); aarch64 copied from the cross
-    // toolchain (musl 1.2.2-git, what the cross CC links against).
-    // Same binary handles DT_NEEDED + relocations + dlopen for any
-    // dynamic ELF we link. The userspace/dynlink stub is no longer
-    // staged — kept as build-only for reference.
+    // F230: real musl ld-musl-<arch>.so.1 at the per-arch interp.
     let interp_path = if arch == "aarch64" {
         "/lib/ld-musl-aarch64.so.1"
     } else {
@@ -380,6 +370,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let ldso = repo.join(format!("vendor/musl/ld-musl-{arch}.so.1"));
     if ldso.is_file() {
         put(&ldso, interp_path)?;
+        // ARM cross-musl-gcc emits DT_NEEDED = "libc.so"; ld-musl
+        // resolves it via the same file under a second name.
+        if arch == "aarch64" {
+            put(&ldso, "/lib/libc.so")?;
+        }
     } else {
         eprintln!("xtask rootfs: WARN missing {}", ldso.display());
     }
@@ -415,6 +410,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if bash_bin.is_file() {
         put(&bash_bin, "/bin/bash")?;
     }
+    // /bin/sh = busybox-ash hardlink (created via "sh" applet list).
+    // bash mis-fires task #15 on ARM and the busybox-ash $?=255 bug
+    // (task #12) only matters for scripts that explicitly check $?.
 
     // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed
     // ahead of busybox's sed applet (PATH order /usr/bin before /bin).
@@ -749,6 +747,9 @@ done
 echo pre-exit_test
 /bin/exit_test
 echo post-exit_test rv=$?
+echo pre-bash-exit_test
+/bin/bash -c '/bin/exit_test; echo bash-rv=$?'
+echo post-bash-exit_test rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
