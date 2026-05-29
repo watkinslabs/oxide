@@ -247,3 +247,35 @@ util-linux/util-linux-2.40.2.tar.xz
 !shadow/chgpasswd-aarch64
 shadow/shadow-4.16.0/
 shadow/shadow-4.16.0.tar.xz
+# procps-ng 4.0.5 -- F261 (D3). ps, top, free, vmstat, uptime, pgrep,
+# pkill, pmap, tload, w, watch, slabtop, sysctl.
+!procps-ng/
+!procps-ng/build.sh
+!procps-ng/ps-x86_64
+!procps-ng/ps-aarch64
+!procps-ng/top-x86_64
+!procps-ng/top-aarch64
+!procps-ng/free-x86_64
+!procps-ng/free-aarch64
+!procps-ng/vmstat-x86_64
+!procps-ng/vmstat-aarch64
+!procps-ng/uptime-x86_64
+!procps-ng/uptime-aarch64
+!procps-ng/pgrep-x86_64
+!procps-ng/pgrep-aarch64
+!procps-ng/pkill-x86_64
+!procps-ng/pkill-aarch64
+!procps-ng/pmap-x86_64
+!procps-ng/pmap-aarch64
+!procps-ng/tload-x86_64
+!procps-ng/tload-aarch64
+!procps-ng/w-x86_64
+!procps-ng/w-aarch64
+!procps-ng/watch-x86_64
+!procps-ng/watch-aarch64
+!procps-ng/slabtop-x86_64
+!procps-ng/slabtop-aarch64
+!procps-ng/sysctl-x86_64
+!procps-ng/sysctl-aarch64
+procps-ng/procps-ng-4.0.5/
+procps-ng/procps-ng-4.0.5.tar.xz
