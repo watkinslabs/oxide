@@ -25,7 +25,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{KMalloc, Spinlock};
 
@@ -36,7 +36,14 @@ pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 /// generous for early-boot subsystems (vmm VMA tree, sched runqueues,
 /// vfs dentry cache); replaced by PMM-backed slab routing per `12§2`
 /// once a binary stage exists.
-pub const STATIC_HEAP_SIZE: usize = 64 * 1024 * 1024;
+pub const STATIC_HEAP_SIZE: usize = 64 * MIB;
+
+/// Bytes in 1 MiB.
+pub const MIB: usize = 1024 * 1024;
+
+/// Minimum grow-callback request size — avoid thrashing the PMM with
+/// tiny grows by always pulling a 1 MiB chunk.
+pub const GROW_CHUNK_MIN: usize = 1 * MIB;
 
 /// Bump-aligned BSS storage. `align(4096)` keeps the heap page-aligned
 /// so future mappings can be relaxed at page granularity.
@@ -55,6 +62,7 @@ static STATIC_HEAP: StaticHeap = StaticHeap(UnsafeCell::new(MaybeUninit::uninit(
 pub struct KAlloc {
     inner: Spinlock<HoleList, KMalloc>,
     initialized: AtomicBool,
+    grow_hook: AtomicU64,
 }
 
 impl KAlloc {
@@ -65,6 +73,7 @@ impl KAlloc {
         Self {
             inner: Spinlock::new(HoleList::new()),
             initialized: AtomicBool::new(false),
+            grow_hook: AtomicU64::new(GROW_HOOK_NONE),
         }
     }
 
@@ -109,6 +118,35 @@ impl Default for KAlloc {
     fn default() -> Self { Self::new() }
 }
 
+/// T16 (F247) growable kernel heap: when the hole-list allocator can't
+/// satisfy a request, fall back to a registered grow callback that
+/// asks the PMM for more pages and feeds them to the hole list.
+/// Linux's vmalloc equivalent; without it the kernel OOMs on any
+/// single workload bigger than the static heap can hold.
+///
+/// Callback signature: takes the minimum extra bytes needed; returns
+/// `(start_addr, size_bytes)` of a fresh region added to the hole
+/// list, or `None` if no more memory is available. The callback owns
+/// the lifetime of the region — it must stay valid until process
+/// shutdown.
+pub type GrowFn = fn(min_extra: usize) -> Option<(usize, usize)>;
+
+/// Sentinel "no hook installed" stored in `KAlloc::grow_hook`.
+const GROW_HOOK_NONE: u64 = 0;
+
+impl KAlloc {
+    /// Register a callback the alloc path invokes when the hole-list
+    /// can't satisfy a request. Idempotent: a later call replaces the
+    /// prior hook.
+    /// # SAFETY: `f` must remain a valid fn-pointer for the lifetime
+    /// of this allocator; the kernel never unloads it.
+    /// # C: O(1)
+    pub fn set_grow_hook(&self, f: GrowFn) {
+        let raw = (f as usize) as u64;
+        self.grow_hook.store(raw, Ordering::Release);
+    }
+}
+
 // SAFETY: `KAlloc::alloc` returns either null or a NonNull pointing
 // into the heap region the caller passed to `init`. `dealloc` accepts
 // only pointers that came from `alloc`; both paths take the inner
@@ -117,10 +155,30 @@ unsafe impl GlobalAlloc for KAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if !self.is_initialized() { return ptr::null_mut(); }
         let mut g = self.inner.lock();
-        match g.alloc(layout) {
-            Some(p) => p.as_ptr(),
-            None    => ptr::null_mut(),
+        if let Some(p) = g.alloc(layout) {
+            return p.as_ptr();
         }
+        // T16: hole-list couldn't satisfy. Try the grow hook.
+        let raw = self.grow_hook.load(Ordering::Acquire);
+        if raw == GROW_HOOK_NONE {
+            return ptr::null_mut();
+        }
+        drop(g);
+        // SAFETY: stored only via set_grow_hook from a `GrowFn`; the
+        // round-trip cast restores the fn-pointer's ABI.
+        let f: GrowFn = unsafe { core::mem::transmute(raw as usize) };
+        // Ask for at least the layout, with align headroom, rounded up
+        // to GROW_CHUNK_MIN so we don't thrash the PMM with tiny grows.
+        let need = layout.size().saturating_add(layout.align()).max(GROW_CHUNK_MIN);
+        let (addr, size) = match f(need) {
+            Some(p) => p,
+            None    => return ptr::null_mut(),
+        };
+        let mut g = self.inner.lock();
+        // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
+        // exclusive ownership of [addr, addr + size); fully writable.
+        unsafe { g.add_free_region(addr, size) };
+        g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {

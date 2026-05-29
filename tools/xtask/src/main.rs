@@ -1,24 +1,4 @@
-// xtask: sole CI entry point per docs/07§8.
-//
-// Subcommand surface (07§8):
-//   xtask kernel    --arch <x86_64|aarch64> --profile <release|dev|debug-build>
-//   xtask user      --arch <a>
-//   xtask image     --arch <a>
-//   xtask test      [--hosted|--kernel|--loom|--miri|--proptest]
-//   xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
-//   xtask soak      --arch <a> --duration H
-//   xtask bench     --arch <a>
-//   xtask spec-lint
-//   xtask doc-check
-//
-// Implementation status (P0-03 skeleton):
-//   spec-lint  : implemented (delegates to tools/spec-lint binary)
-//   kernel     : implemented for build (-Z build-std + target JSON);
-//                kernel crate doesn't exist yet -> errors at cargo level
-//   test       : --hosted implemented (delegates to `cargo test`)
-//   user, image, qemu, soak, bench, doc-check : stubs that print
-//                "not yet implemented; awaiting <spec>"
-
+// xtask: CI entry point per docs/07§8.
 use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
 
@@ -56,22 +36,8 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-// ---------------------------------------------------------------------------
-// rootfs: build kernel/blobs/rootfs.img from source userspace binaries
-// ---------------------------------------------------------------------------
-
-/// Reproducible per-arch userspace rootfs image builder.
-///
-/// Driven by `--arch <x86_64|aarch64>`. Runs:
-///   1. arch-specific musl-gcc on every userspace/<bin>/<bin>.c.
-///      x86_64 uses host /usr/bin/musl-gcc; aarch64 uses
-///      vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
-///      (fetched via `tools/fetch-cross.sh` if missing).
-///   2. dd + mkfs.ext4 → kernel/blobs/rootfs-<arch>.img.
-///   3. debugfs to populate /bin/* and /etc/* in the per-arch image.
-///
-/// Idempotent; rerun whenever userspace sources change. The kernel
-/// `include_bytes!`s the matching per-arch blob in dev_ext4.rs.
+// rootfs: build kernel/blobs/rootfs-<arch>.img from userspace.
+/// Per-arch userspace rootfs image builder. --arch <x86_64|aarch64>.
 pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
     if arch != "x86_64" && arch != "aarch64" {
@@ -100,23 +66,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     std::fs::create_dir_all(&user_out).map_err(|_| 1u8)?;
     eprintln!("xtask rootfs: arch={arch} CC={}", cc.display());
 
-    // 1. Build userspace binaries via musl-gcc.
-    //
-    // `portable_bins` use musl libc wrappers (write/fork/execve/...)
-    // and build on every arch. `x86_bins` still embed x86 `syscall`
-    // inline asm and are skipped on aarch64 until they're ported
-    // to libc-wrapper or arch-conditional syscall macros. The
-    // aarch64 boot path only needs init to reach userspace today;
-    // shell + applets come via vendored busybox once the aarch64
-    // cross-build of busybox lands.
-    // F153-1 erased userspace/init/ — PID 1 is now /sbin/init,
-    // a hardlink to /bin/busybox (busybox dispatches the `init`
-    // applet). What stays in `userspace/` is the kernel-acceptance
-    // test surface: syscall-corner smokes (sem/msg/mq/ptrace/
-    // ptrace_singlestep/mprotect), bare3 (real-musl-crt1 isolation
-    // case for F62), and the dynamic-loader smokes (dynlink +
-    // hello_dyn). All of those build against full musl crt1 — the
-    // same path upstream busybox/coreutils/bash use.
+    // 1. Build userspace binaries via musl-gcc — static-musl
+    // kernel-acceptance smokes + dynamic-loader test binaries.
     let crt_bins: &[(&str, &str)] = &[
         ("userspace/bare/bare3",                      "userspace/bare/bare3.c"),
         ("userspace/sem_smoke/sem_smoke",             "userspace/sem_smoke/sem_smoke.c"),
@@ -132,6 +83,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/online_smoke/online_smoke",       "userspace/online_smoke/online_smoke.c"),
         ("userspace/tcp_smoke/tcp_smoke",             "userspace/tcp_smoke/tcp_smoke.c"),
         ("userspace/exit_test/exit_test",             "userspace/exit_test/exit_test.c"),
+        ("userspace/socketpair_fork_probe/socketpair_fork_probe",
+                                                      "userspace/socketpair_fork_probe/socketpair_fork_probe.c"),
+        ("userspace/vim_smoke/vim_smoke",             "userspace/vim_smoke/vim_smoke.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -144,9 +98,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // dynlink is our v1 dynamic linker stub — keeps its own _start
-    // (no musl crt1) since it IS the loader. Built per-arch and
-    // staged at /lib/ld-musl-<arch>.so.1 below.
+    // pthread probes.
+    let pthread_bins: &[(&str, &str)] = &[
+        ("userspace/pthread_socketpair_probe/pthread_socketpair_probe",
+         "userspace/pthread_socketpair_probe/pthread_socketpair_probe.c"),
+    ];
+    for (out_rel, src_rel) in pthread_bins {
+        let basename = out_rel.rsplit('/').next().unwrap();
+        let out = user_out.join(basename);
+        let src = repo.join(src_rel);
+        let mut c = Command::new(&cc);
+        c.args(["-static", "-no-pie", "-O2", "-fno-stack-protector", "-pthread",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(), "-lpthread"]);
+        run(c)?;
+    }
+
     let dynlink_bins: &[(&str, &str)] = &[
         ("userspace/dynlink/dynlink",   "userspace/dynlink/dynlink.c"),
     ];
@@ -162,11 +128,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // -pie (non-static) test binaries — emit PT_INTERP=/lib/ld-musl-<arch>.so.1.
-    // hello_dyn (-nostdlib): exercises PT_INTERP load + jump only.
-    // hello_dyn_libc (full crt1 + libc): exercises DT_NEEDED resolution,
-    // GOT/PLT relocations, libc constructors, printf — full ld-musl
-    // smoke since F230 staged the real musl loader.
+    // -pie test binaries — PT_INTERP=/lib/ld-musl-<arch>.so.1.
     let dyn_bins: &[(&str, &str)] =
         &[("userspace/hello_dyn/hello_dyn", "userspace/hello_dyn/hello_dyn.c")];
     for (out_rel, src_rel) in dyn_bins {
@@ -195,14 +157,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F231: PAM modules as real shared objects. Built `-shared -fPIC
-    // -nostdlib` so they have no DT_NEEDED to libc.so — libpam loads
-    // them via dlopen and only consumes their `pam_sm_*` exports.
-    // Staged at /lib/security/<name>.so; /etc/pam.d/sshd references
-    // them by basename.
+    // F231: PAM modules as shared objects. libpam dlopens them.
     let pam_module_srcs: &[(&str, &str)] = &[
         ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
         ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
+        ("pam_unix_stub.so", "userspace/pam_modules/pam_unix_stub.c"),
     ];
     for (out_name, src_rel) in pam_module_srcs {
         let out = user_out.join(out_name);
@@ -213,19 +172,28 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
                 "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
         run(c)?;
     }
+    {
+        // F239: pam_unix needs libc (fopen/crypt) — default crt link.
+        let out = user_out.join("pam_unix.so");
+        let src = repo.join("userspace/pam_modules/pam_unix.c");
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-fPIC", "-shared", "-fno-stack-protector",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        run(c)?;
+    }
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // 2. Build a fresh 8 MiB ext4 image at kernel/blobs/rootfs-<arch>.img.
+    // F251: bumped from 16 → 32 MiB to fit vim 9.1 + remaining headroom.
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=16"]);
+                "bs=1M", "count=32"]);
         run(c)?;
     }
     {
@@ -264,6 +232,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "/usr", "/usr/share", "/usr/share/keymaps", "/usr/share/udhcpc",
         "/usr/bin", "/usr/sbin", "/usr/libexec",
         "/usr/lib", "/usr/lib/security",
+        // F252: terminfo db for ncurses-linked programs.
+        "/usr/share/terminfo", "/usr/share/terminfo/d", "/usr/share/terminfo/l",
+        "/usr/share/terminfo/s", "/usr/share/terminfo/v", "/usr/share/terminfo/x",
     ] {
         dbg(&format!("mkdir {d}"))?;
     }
@@ -358,12 +329,15 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
     put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
+    put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
     put(&user("af_packet_smoke"), "/bin/af_packet_smoke")?;
     put(&user("online_smoke"),    "/bin/online_smoke")?;
     put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
     put(&user("exit_test"),       "/bin/exit_test")?;
+    put(&user("pthread_socketpair_probe"), "/bin/pthread_socketpair_probe")?;
+    put(&user("socketpair_fork_probe"),    "/bin/socketpair_fork_probe")?;
     // F230: real musl dynamic loader at the per-arch interp path.
     // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
     // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
@@ -380,6 +354,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let ldso = repo.join(format!("vendor/musl/ld-musl-{arch}.so.1"));
     if ldso.is_file() {
         put(&ldso, interp_path)?;
+        // ARM cross-musl-gcc emits DT_NEEDED = "libc.so"; ld-musl
+        // resolves it via the same file under a second name.
+        if arch == "aarch64" {
+            put(&ldso, "/lib/libc.so")?;
+        }
     } else {
         eprintln!("xtask rootfs: WARN missing {}", ldso.display());
     }
@@ -414,6 +393,18 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let bash_bin = repo.join(format!("vendor/bash/bash-{}", arch));
     if bash_bin.is_file() {
         put(&bash_bin, "/bin/bash")?;
+    }
+
+    // F251: vim 9.1.0950 static-musl + vendored ncurses → /usr/bin/vim.
+    let vim_bin = repo.join(format!("vendor/vim/vim-{}", arch));
+    if vim_bin.is_file() {
+        put(&vim_bin, "/usr/bin/vim")?;
+    }
+
+    // F254: less 643 static-musl + vendored ncurses → /usr/bin/less.
+    let less_bin = repo.join(format!("vendor/less/less-{}", arch));
+    if less_bin.is_file() {
+        put(&less_bin, "/usr/bin/less")?;
     }
 
     // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed
@@ -595,12 +586,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
           alice:$6$alsalt$Gy2r/DsI0Nj04MSfT1ob.ARb1hRHSZAx9elcKZSElN4EA7.NvTuioqQSs7hTeM7c/.mZ2Sk6GuR4vey3Lk1521:19000:0:99999:7:::\n\
           nobody:!:19000:0:99999:7:::\n")?,
         "/etc/shadow")?;
-    // F231: openssh sshd_config now runs through PAM. UsePAM=yes
-    // invokes libpam at session-setup time; libpam dlopens modules
-    // listed in /etc/pam.d/sshd from /lib/security/. Auth chain
-    // ALSO still runs the openssh internal /etc/shadow path via
-    // PasswordAuthentication=yes — UsePAM here adds the session
-    // setup PAM hooks on top of openssh's own password check.
+    // F231: sshd_config UsePAM=yes — libpam dlopens modules from
+    // /usr/lib/security/ at session setup.
     put(&stage("sshd_config",
         b"Port 22\n\
 AddressFamily inet\n\
@@ -618,24 +605,22 @@ UseDNS no\n\
 StrictModes no\n\
 LogLevel INFO\n")?,
         "/etc/ssh/sshd_config")?;
-    // F231: /etc/pam.d/sshd chain — pam_permit.so for all 4 stages.
-    // pam_permit always returns PAM_SUCCESS so libpam-dlopen +
-    // pam_sm_* exec just works through to session setup. Real
-    // pam_unix (with /etc/shadow lookup + crypt) lands in F232 once
-    // libpam-shared + libcrypt vendor builds are in place.
     dbg("mkdir /etc/pam.d")?;
     put(&stage("pam_sshd",
-        b"# /etc/pam.d/sshd -- F231 minimal chain via pam_permit.\n\
-auth       required   pam_permit.so\n\
-account    required   pam_permit.so\n\
-password   required   pam_permit.so\n\
-session    required   pam_permit.so\n")?,
+        b"# pam_unix activated -- openssh built with real pthread\n\
+# (-DUNSUPPORTED_POSIX_THREADS_HACK) + 128 MB kernel heap (F246).\n\
+auth       required   pam_unix.so\n\
+account    required   pam_unix.so\n\
+password   required   pam_unix.so\n\
+session    required   pam_unix.so\n")?,
         "/etc/pam.d/sshd")?;
     // Stage PAM modules at /usr/lib/security/ — libpam was built
     // with --prefix=/usr --libdir=lib so DEFAULT_MODULE_PATH baked
     // into libpam.a is "/usr/lib/security/".
-    put(&user("pam_permit.so"), "/usr/lib/security/pam_permit.so")?;
-    put(&user("pam_deny.so"),   "/usr/lib/security/pam_deny.so")?;
+    put(&user("pam_permit.so"),    "/usr/lib/security/pam_permit.so")?;
+    put(&user("pam_deny.so"),      "/usr/lib/security/pam_deny.so")?;
+    put(&user("pam_unix.so"),      "/usr/lib/security/pam_unix.so")?;
+    put(&user("pam_unix_stub.so"), "/usr/lib/security/pam_unix_stub.so")?;
     // /etc/inittab per 51§5.1. busybox init reads this verbatim:
     //   <id>:<runlevels>:<action>:<process>
     // sysinit runs synchronously before respawn lines start.
@@ -741,7 +726,7 @@ fi
 b"#!/bin/sh
 [ -e /etc/oxide-init-smokes ] || exit 0
 echo init-fork-exec works
-for s in /bin/bare3 /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
+for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/mprotect_smoke /bin/mmap_zero_smoke /bin/usleep_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
@@ -749,6 +734,15 @@ done
 echo pre-exit_test
 /bin/exit_test
 echo post-exit_test rv=$?
+echo pre-bash-dynamic
+/bin/bash --version 2>&1 | head -1
+echo post-bash-dynamic rv=$?
+echo pre-pthread-probe
+timeout 10 /bin/pthread_socketpair_probe
+echo post-pthread-probe rv=$?
+echo pre-socketpair-fork-probe
+timeout 10 /bin/socketpair_fork_probe
+echo post-socketpair-fork-probe rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
@@ -853,6 +847,15 @@ hosts:  files
     put(&stage("de.kmap", km_de)?, "/usr/share/keymaps/de.kmap")?;
     put(&stage("fr.kmap", km_fr)?, "/usr/share/keymaps/fr.kmap")?;
     put(&stage("es.kmap", km_es)?, "/usr/share/keymaps/es.kmap")?;
+
+    // F252: minimal terminfo db for ncurses-linked programs.
+    for (sub, name) in &[
+        ("d", "dumb"), ("l", "linux"), ("s", "screen"),
+        ("v", "vt100"), ("x", "xterm"), ("x", "xterm-256color"),
+    ] {
+        let host = repo.join(format!("kernel/blobs/terminfo/{sub}/{name}"));
+        put(&host, &format!("/usr/share/terminfo/{sub}/{name}"))?;
+    }
 
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
