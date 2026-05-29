@@ -45,25 +45,6 @@ works, the libc-load is the trigger. Then audit our
 fork/dlopen interaction (likely an mmap or ld-musl reentry
 issue under fork).
 
-### T17 — vim vendor + cross-build (distro endgame proof)
-Vim 9.1 (current upstream) dropped the builtin termcap fallback; configure
-requires linking against `tinfo / ncurses / termlib / termcap`. None
-of those are vendored in the musl-cross tree, so vim cross-build is
-gated on first vendoring a static-musl ncurses. Plan:
-
-1. F-NN-ncurses: vendor + cross-build ncurses 6.x static-musl for
-   {x86_64, aarch64}, mirror the bash/coreutils/zlib pattern. Install
-   under `vendor/ncurses/install-<arch>/` so other tools can `-I
-   <root>/include -L <root>/lib -lncurses`.
-2. F-NN-vim: `./configure --with-tlib=ncurses ...` against the
-   vendored prefix, static-musl, --with-features=tiny. Stage at
-   `/usr/bin/vim` in the rootfs. Add `vim -e -c q` smoke on both
-   arches (proves the editor opens + drains + exits without termcap
-   surprises).
-
-Owner: open. Required for "distro fully built and proven out for
-core utils, vim etc." per the live /loop directive.
-
 ### T15 — ARM dynamic bash as `/bin/sh` boot wedge (low impact)
 Staging dynamic bash at `/bin/sh` on ARM wedges init silently
 post-keymap. Bash dynamically loads fine when invoked as
@@ -73,6 +54,7 @@ busybox-ash as `/bin/sh` on ARM.
 
 ## Recently closed
 
+- **T17 Vim cross-build + runtime smoke** — closed by **#1330 F250 (ncurses)** + **#1331 F251 (vim cross-build)** + **#1332 F252 (terminfo db)** + **#1334 F254 (less, also ncurses)** + **#1336 F256 (vim_smoke wired)**. Vim ex-mode :qa! exits 0 on both x86 and ARM.
 - **T16 Growable kernel heap (vmalloc-equivalent)** — closed by **#1328 F247** (per-instance KAlloc grow hook → PMM buddy via HHDM; STATIC_HEAP back to 64 MiB; hosted test covers grow path).
 - **T13 SSH-connect smoke through PAM dlopen** — closed by **#1314 F231** (real PAM dlopen via dynamic sshd + pam_permit.so).
 - **T12 wait4 status decode `$?=255`** — closed by **#1320 F237** (clear SIGCHLD pending bit when wait4 drains last zombie).
