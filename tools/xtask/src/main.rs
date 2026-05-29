@@ -1,4 +1,4 @@
-// xtask: CI entry point per docs/07§8.
+// xtask: CI entry, 07§8.
 use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
 
@@ -36,8 +36,7 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-// rootfs: build kernel/blobs/rootfs-<arch>.img from userspace.
-/// Per-arch userspace rootfs image builder. --arch <x86_64|aarch64>.
+/// Per-arch rootfs build. --arch <x86_64|aarch64>.
 pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
     if arch != "x86_64" && arch != "aarch64" {
@@ -60,8 +59,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     } else {
         std::path::PathBuf::from("/usr/bin/musl-gcc")
     };
-    // Per-arch userspace build dir so x86 + arm artifacts don't
-    // overwrite each other when both rootfs builds run.
+    // Per-arch userspace build dir.
     let user_out = repo.join(format!("target/userspace-{arch}"));
     std::fs::create_dir_all(&user_out).map_err(|_| 1u8)?;
     eprintln!("xtask rootfs: arch={arch} CC={}", cc.display());
@@ -197,13 +195,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
     {
-        // Force 4 KiB blocks. The default mkfs.ext4 heuristic picks
-        // 1 KiB blocks for small images; with ~80 hardlinks under
-        // /bin and 1 KiB dir blocks, debugfs `ln` hits "No free
-        // space in the directory" partway through the applet list
-        // and silently drops /bin/{login,getty,init,...} (debugfs
-        // exits 0 on the link error). 4 KiB blocks give /bin enough
-        // room for the full applet set.
+        // 4 KiB blocks (default heuristic picks 1 KiB, too small for /bin).
         let mut c = Command::new("mkfs.ext4");
         c.args(["-F", "-b", "4096",
                 "-O", "^has_journal", "-L", "oxide", img.to_str().unwrap()]);
@@ -241,15 +233,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
         let cmd = format!("write {} {}", host.display(), target);
         dbg(&cmd)?;
-        // debugfs `write` lands at mode 0o100644 (regular, no x bit) by
-        // default. The kernel's sys_statx reads the ext4 i_mode, and
-        // ARM busybox refuses to exec without x bits. Stamp 0o100755 so
-        // every staged binary (busybox + smoke ELFs) is executable.
+        // debugfs `write` is 0o100644; stamp 0o100755 so binaries exec.
         dbg(&format!("sif {target} mode 0100755"))
     };
-    // Helper to resolve a userspace binary by name from the per-arch
-    // build output dir. Replaces the older `repo.join("userspace/<x>/<x>")`
-    // pattern that hard-coded host-arch artifacts.
     let user = |name: &str| user_out.join(name);
     // Vendored busybox 1.37.0 — pre-built static-musl per
     // vendor/busybox/build.sh. busybox keys on argv[0]: the same
@@ -299,19 +285,16 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "pwd", "basename", "dirname", "which", "clear", "reset",
             "more", "less", "vi", "tar", "gzip", "gunzip",
             "ifconfig", "route", "ping", "nc", "wget",
-            "su", "passwd", "login", "getty", "init",
+            "passwd",
             "mknod", "stty", "tty", "mesg",
         ] {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
-        // /sbin applets — system-management dispatch. Per FHS, init,
-        // halt, reboot, getty, mount.* live here. Hardlinking under
-        // both /bin and /sbin matches every standard distro layout.
+        // /sbin applets per FHS. D1 (F259): real util-linux replaces
+        // busybox login/agetty/mount/umount/su/kill/losetup.
         for applet in &[
             "init", "halt", "reboot", "poweroff", "shutdown",
-            "getty", "agetty", "login",
             "mdev", "ifconfig", "route", "ip",
-            "mount", "umount",
             "fdisk", "swapon", "swapoff",
             "udhcpc", "udhcpd",
         ] {
@@ -380,16 +363,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&dhcpcd, "/sbin/dhcpcd")?;
     }
 
-    // F210: vendored openssh-portable 9.9p2 — static-musl ssh server
-    // (replaces dropbear). dropbear's check_close → close-PTY-master
-    // arm on CHANNEL_EOF loses shell stdout when `ssh -tt 'cmd'` runs
-    // with closed stdin (reproduces on real Linux too); openssh's
-    // send-eof + drain semantic handles that correctly. Per
-    // vendor/openssh/build.sh. Skipped silently if the per-arch
-    // binaries haven't been built yet.
-    // F216: vendored GNU bash 5.2.37 — static-musl. Drops in at
-    // /bin/bash; busybox /bin/sh symlink remains for scripts that
-    // hard-code sh. Per vendor/bash/build.sh.
+    // F216: bash 5.2.37 → /bin/bash and /bin/sh (F258).
     let bash_bin = repo.join(format!("vendor/bash/bash-{}", arch));
     if bash_bin.is_file() {
         put(&bash_bin, "/bin/bash")?;
@@ -399,6 +373,33 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         // now hit GNU bash 5.2.
         put(&bash_bin, "/bin/sh")?;
     }
+
+    // F259 (D1): util-linux — login, agetty, mount, umount, su, etc.
+    let ln_via_debugfs = |target: &str, link: &str| -> Result<(), u8> {
+        let cmd = format!("ln {target} {link}");
+        let mut c = Command::new("debugfs");
+        c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
+        c.stdout(std::process::Stdio::null());
+        run(c)
+    };
+    for (name, dest) in &[
+        ("login",   "/bin/login"),
+        ("agetty",  "/sbin/agetty"),
+        ("mount",   "/bin/mount"),
+        ("umount",  "/bin/umount"),
+        ("su",      "/bin/su"),
+        ("kill",    "/bin/kill"),
+        ("cal",     "/usr/bin/cal"),
+        ("losetup", "/sbin/losetup"),
+    ] {
+        let host = repo.join(format!("vendor/util-linux/{name}-{arch}"));
+        if host.is_file() {
+            put(&host, dest)?;
+        }
+    }
+    ln_via_debugfs("/sbin/agetty",  "/sbin/getty")?;
+    ln_via_debugfs("/bin/login",    "/usr/bin/login")?;
+    ln_via_debugfs("/bin/su",       "/usr/bin/su")?;
 
     // F251: vim 9.1.0950 static-musl + vendored ncurses → /usr/bin/vim.
     let vim_bin = repo.join(format!("vendor/vim/vim-{}", arch));

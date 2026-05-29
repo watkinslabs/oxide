@@ -185,3 +185,37 @@ vim/vim-9.1.0950.tar.gz
 !less/less-aarch64
 less/less-643/
 less/less-643.tar.gz
+# util-linux 2.40.2 -- F259 (D1). Static-musl: login, agetty, mount,
+# umount, su, kill, cal, losetup -- distro programs that replace
+# busybox versions.
+!util-linux/
+!util-linux/build.sh
+!util-linux/login-x86_64
+!util-linux/login-aarch64
+!util-linux/agetty-x86_64
+!util-linux/agetty-aarch64
+!util-linux/mount-x86_64
+!util-linux/mount-aarch64
+!util-linux/umount-x86_64
+!util-linux/umount-aarch64
+!util-linux/su-x86_64
+!util-linux/su-aarch64
+!util-linux/kill-x86_64
+!util-linux/kill-aarch64
+!util-linux/cal-x86_64
+!util-linux/cal-aarch64
+!util-linux/losetup-x86_64
+!util-linux/losetup-aarch64
+util-linux/util-linux-2.40.2/
+util-linux/util-linux-2.40.2.tar.xz
+# F259: pam_misc.h + pam_client.h copied into install-<arch>/security/
+# and install-<arch>/include-security/ so util-linux's configure finds
+# them via -I${pam_root}.
+!pam/install-x86_64/security/pam_misc.h
+!pam/install-aarch64/security/pam_misc.h
+!pam/install-x86_64/include-security/pam_misc.h
+!pam/install-aarch64/include-security/pam_misc.h
+!pam/install-x86_64/security/pam_client.h
+!pam/install-aarch64/security/pam_client.h
+!pam/install-x86_64/include-security/pam_client.h
+!pam/install-aarch64/include-security/pam_client.h
