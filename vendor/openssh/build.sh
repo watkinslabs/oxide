@@ -110,6 +110,7 @@ EOF
       --with-privsep-path=/var/empty \
       --with-sandbox=no \
       --with-maildir=/var/mail \
+      --with-default-path=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
       --prefix=/usr \
       --sysconfdir=/etc/ssh \
       --libexecdir=/usr/libexec \
