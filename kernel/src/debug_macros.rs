@@ -34,6 +34,11 @@ macro_rules! debug_sched { ($($t:tt)*) => {} }
 macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-boot"))]
 macro_rules! debug_boot { ($($t:tt)*) => {} }
+// cgroup v2 boot self-test + charge/uncharge trace (`26§10`).
+#[cfg(feature = "debug-cgroup")]
+macro_rules! debug_cgroup { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-cgroup"))]
+macro_rules! debug_cgroup { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-syscall")]
 macro_rules! debug_syscall { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-syscall"))]

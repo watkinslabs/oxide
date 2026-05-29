@@ -26,6 +26,7 @@ const _: () = assert!(
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 pub mod debug_macros;
+pub mod cgroup_boot;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
@@ -608,6 +609,19 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     ::sched::set_current_hook(|| sched::live::current());
     // SAFETY: kernel_main runs single-CPU pre-init; nscg::init reports ready (per-task ns slots set up by sched).
     let _ = unsafe { nscg::init() };
+    // cgroup v2 (`26§4`): install the signal-delivery hook so
+    // `cgroup.kill` can SIGKILL members, then mount the unified
+    // hierarchy at /sys/fs/cgroup so the mount point exists for
+    // userspace from boot. A later `mount -t cgroup2` is idempotent.
+    cgroup::set_signal_hook(crate::cgroup_boot::cgroup_kill_hook);
+    cgroup::mount_root();
+    // Permanent, `debug-cgroup`-gated boot self-test (`26§8`,
+    // `docs/41`): exercise the cgroup v2 VFS path end-to-end via the
+    // real mount-table lookup + inode read/write the userspace shell
+    // uses, klogging PASS/FAIL. Deterministic early-boot validation
+    // that doesn't depend on flaky userspace serial capture. Zero
+    // codegen when the feature is off, like every other debug gate.
+    debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }
     // SAFETY: kernel_main runs single-CPU pre-init; security::init reports ready (per-task seccomp slot is None until prctl/seccomp installs).
     let _ = unsafe { security::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; drv::init reports ready; per-driver register() happens during PCI enumeration.
@@ -642,6 +656,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
         let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(crate::procfs::fs_impl::ProcfsFs));
         let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
+        // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
+        // are in the mount table so `/proc/self/cgroup` resolves.
+        debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }
     }
     #[cfg(target_os = "oxide-kernel")]
     {

@@ -1,0 +1,16 @@
+[package]
+name = "cgroup"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+devfs = { path = "../devfs" }
+sync  = { path = "../../shared/sync" }
+vfs   = { path = "../vfs" }
+
+[features]
+debug-cgroup = []

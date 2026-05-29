@@ -97,6 +97,26 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Erofs)
     }
 
+    /// Create a child directory `name` with permission `mode` within
+    /// this directory inode (Linux `inode_operations->mkdir`). Returns
+    /// the new directory's inode. Default returns `Erofs` so static /
+    /// read-only dir inodes reject `mkdir(2)`; writable pseudo-FS
+    /// (cgroupfs) and tmpfs override. `Eexist` if `name` already
+    /// exists; `Enotdir` if `self` is not a directory.
+    /// # C: depends on FS impl
+    fn mkdir(&self, _name: &str, _mode: u32) -> KResult<InodeRef> {
+        Err(VfsError::Erofs)
+    }
+
+    /// Remove the empty child directory `name` (Linux
+    /// `inode_operations->rmdir`). Default `Erofs`. `Enoent` if
+    /// missing; `Enotempty` (mapped to `Einval` where the envelope
+    /// lacks it) if the child still has entries/members.
+    /// # C: depends on FS impl
+    fn rmdir(&self, _name: &str) -> KResult<()> {
+        Err(VfsError::Erofs)
+    }
+
     /// Iterate child entries of a directory. `off` is the cookie from
     /// a previous call; `0` starts from the beginning. The callback
     /// returns `false` to stop early. Default impl returns

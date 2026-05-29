@@ -54,6 +54,14 @@ pub fn sys_clone_dispatch(
         None    => return -(Errno::Einval.as_i32() as i64),
     };
 
+    // cgroup v2 pids controller (`26§4`): a process fork past an
+    // ancestor pids.max fails with EAGAIN (Linux pids_can_fork).
+    // Thread spawns (CLONE_THREAD) join the existing process and are
+    // gated by the same subtree, but membership is per-process here.
+    if (flags & CLONE_THREAD) == 0 && cgroup::fork_would_exceed_pids(cur.tid as u64) {
+        return -(Errno::Eagain.as_i32() as i64);
+    }
+
     let share_vm = (flags & CLONE_VM) != 0;
     let child_mm: alloc::sync::Arc<vmm::AddressSpace> = if share_vm {
         // CLONE_VM: child shares parent's address space; no PT root
@@ -115,6 +123,12 @@ pub fn sys_clone_dispatch(
     // Record parent_tid for `wait4` (P2-22) + parent Weak<Task>
     // for `park_zombie` SIGCHLD delivery (P3-67).
     child.parent_tid.store(cur.tid, Ordering::Release);
+    // cgroup v2 (`26§4`): a forked process inherits the parent's
+    // cgroup (Linux cgroup_post_fork). Threads share it implicitly
+    // (membership is tracked per-process).
+    if (flags & CLONE_THREAD) == 0 {
+        cgroup::inherit(child_tid as u64, cur.tid as u64);
+    }
     // Inherit parent's pgid + sid per POSIX fork(2). setpgid/setsid in
     // child override later. Without inheritance every fork would land
     // in its own pgrp and shells couldn't track job state.
