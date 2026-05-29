@@ -215,10 +215,20 @@ pub fn sys_clone_dispatch(
         child.clear_child_tid.store(ctid, Ordering::Release);
     }
     // CLONE_SETTLS: x86_64 stores TLS in FS_BASE; child resumes
-    // with this base via wrmsr at iretq-prep. The fork-spawn path
-    // doesn't yet thread a separate FS_BASE through ArchCtx;
-    // glibc/musl set FS_BASE via arch_prctl post-clone too, so we
-    // accept the flag silently for now.
+    // with this base via wrmsr at iretq-prep. F242: wire it up
+    // so pthread's per-thread FS_BASE is correct — pthread_self()
+    // in the child returns the child's pthread struct (not the
+    // parent's), which is required for pthread_join's
+    // detach_state futex sync.
+    #[cfg(target_arch = "x86_64")]
+    if (flags & CLONE_SETTLS) != 0 {
+        // SAFETY: child task not yet scheduled; sole writer to arch_ctx.
+        unsafe {
+            let p: *mut hal_x86_64::ContextX86_64 = child.arch_ctx_ptr();
+            (*p).fs_base = tls;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     let _ = tls;
 
     debug_sched! {

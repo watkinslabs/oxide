@@ -312,6 +312,17 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" drop_fd_table\n");
             }
+            // F242: CLONE_CHILD_CLEARTID — Linux do_exit clears the
+            // user-pointed-to tid + FUTEX_WAKEs anyone parked there.
+            // pthread_join uses this exact mechanism; without it,
+            // joining threads hang forever.
+            let ctid = task.clear_child_tid.load(Ordering::Acquire);
+            if ctid != 0 && ctid < hal::USER_VA_END {
+                // SAFETY: ctid validated < USER_VA_END; CPL=0 write through caller's AS.
+                unsafe { core::ptr::write_volatile(ctid as *mut i32, 0); }
+                let _ = ipc::live::futex::dispatch(ctid, 1 /* FUTEX_WAKE */, 1);
+                task.clear_child_tid.store(0, Ordering::Release);
+            }
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); sched::live::reparent_children(task.tid); }
@@ -851,7 +862,16 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_RT_SIGQUEUEINFO  => crate::syscalls::signal::sys_rt_sigqueueinfo(&args),
         syscall::nrs::NR_RT_TGSIGQUEUEINFO => crate::syscalls::signal::sys_rt_tgsigqueueinfo(&args),
         // Real-impl arms that overlap with compat-stub categories.
-        syscall::nrs::NR_PIPE          => sys_pipe2(&args),
+        syscall::nrs::NR_PIPE          => {
+            // pipe(int[2]) — legacy, no flag argument. Mask args.a1 so
+            // stale register contents from the calling frame don't
+            // accidentally enable O_NONBLOCK / O_CLOEXEC on the new
+            // pipe ends. Without this, sh's `cmd | head -10` was
+            // hitting EAGAIN because pipe(2) read flags off uninit r1.
+            let mut a = args;
+            a.a1 = 0;
+            sys_pipe2(&a)
+        }
         syscall::nrs::NR_CREAT         => crate::syscalls::open::sys_open(&args),
         syscall::nrs::NR_EXIT_GROUP    => sys_exit(&args),
         syscall::nrs::NR_INIT_MODULE   => sys_init_module(&args),
