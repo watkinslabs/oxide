@@ -4,16 +4,33 @@ Single source of truth for things that need revisiting. Update on
 every PR that opens, closes, or pivots an item. Tag closed items
 with their merging PR and date.
 
-## Open — actively worked
+## Distro Roadmap — drop busybox, become a real Linux server distro
 
-### T11 — ARM TCP CLOSE_WAIT leak (high impact)
-Accepted TCP sockets on ARM never reach `InetSocket::Drop` after
-the peer side closes. Caps `SSH_SMOKE_CONNECTIONS=4` on ARM TCG;
-cumulative SSH connections accumulate ~680 KB/each. Hunt has been
-multi-hour without a smoking gun — `glue_munmap` against
-`cur.mm` fix in F230 was on the right path but didn't fully close
-it. Next: instrument `Arc<InetSocket>` strong-count at each fd
-close to find the stray ref holder.
+Direction set 2026-05-28: stay on musl (server-class — no GNOME/
+Wayland), drop busybox in favor of real distro programs, target
+systemd-musl (Chimera-Linux-style patches) as PID 1 / service
+manager. Bash is `/bin/sh` since F258.
+
+| Phase | Vendor | Purpose | Replaces (busybox) |
+|---|---|---|---|
+| **D1** | util-linux 2.40 | `login`, `agetty`, `mount`, `su`, `umount`, `losetup`, `swapon`, `dmesg`, `kill`, `more`, `cal`, `script`, `mesg`, `tty`, `chsh`, `hexdump`, etc. | login, getty, mount, umount, su, dmesg, kill, more, tty, hexdump |
+| **D2** | shadow-utils 4.16 | `useradd`, `userdel`, `usermod`, `groupadd`, `passwd`, `chage`, `gpasswd` | passwd, adduser (busybox lies) |
+| **D3** | procps-ng 4.0 | `ps`, `top`, `free`, `vmstat`, `uptime`, `pgrep`, `pkill`, `pmap`, `tload`, `slabtop` | ps, top, free, vmstat, uptime |
+| **D4** | iproute2 6.x | `ip`, `ss`, `tc`, `bridge`, `rtmon` | ifconfig, route (deprecated anyway) |
+| **D5** | iputils | `ping`, `tracepath`, `arping` | ping, traceroute |
+| **D6** | systemd-musl | PID 1, service mgr, journald, networkd, resolved | busybox init, our rcS script |
+| **D7** | dropbusy | Final cut: remove busybox vendor; /sbin/init = systemd | -- |
+
+Each phase = its own PR + boot smoke on both arches. Phases are
+sequential — D2 builds on D1 etc. systemd-musl (D6) likely needs
+several mini-PRs on its own (build, PID-1 swap, unit files,
+journald, networkd, resolved).
+
+Kernel surface that will surface: cgroups v2 hierarchies, BPF
+LSM hooks, real namespaces (mount, net, pid, ipc, uts, user),
+seccomp, capability propagation through exec, more inotify/
+fsnotify edges, dbus over AF_UNIX. Each gap fixed in the same PR
+that surfaces it per CLAUDE.md.
 
 ### T14 — Real `pam_unix.so` activation (medium impact)
 F242 wired CLONE_SETTLS into `child.arch_ctx.fs_base`. F243
