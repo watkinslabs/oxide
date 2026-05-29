@@ -1,86 +1,76 @@
-# state — hand-off
+# Session hand-off — 2026-05-29
 
-Branch: `F237-sigchld-siginfo` (open, no commits yet — placeholder for
-the next iteration's SIGCHLD siginfo work). Main is 7 PRs ahead of
-the prior state.md baseline; SSH is end-to-end working on x86 with
-real PAM dlopen + dynamic distro userspace.
+## TL;DR
+Distro roadmap mid-flight. Server-class musl distro, no GNOME/Wayland,
+target systemd-musl. Bash is `/bin/sh`. **D4 iproute2 MERGED (#1346)**.
+**D5 iputils — open PR (branch F263-vendor-iputils), CI pending.**
 
-## Shipped since last state.md (7 merged PRs)
+## Where we are (D-roadmap from TASKS.md)
 
-- **#1312 F229** — openssh-portable 9.9p2 rebuilt with libpam.a +
-  libz.a statically linked; sshd_config keeps UsePAM=no at this stage
-  because dlopen needs a dynamic loader; /etc/pam.d/sshd written.
-- **#1313 F230** — vendor real musl `ld-musl-<arch>.so.1` (from
-  Fedora host on x86 + the cross toolchain on ARM); kernel
-  `place_image` skips pre-relocation when PT_INTERP is present
-  (was double-relocating dynamic execs); `glue_munmap` targets
-  `cur.mm` not the global boot AS so MAP_FIXED overlap-clear hits
-  the right address space; RLIMIT_STACK-driven `mmap_base` layout
-  (stack reservation top, mmap arena 128 MiB below, multi-GB gap
-  matching Linux `arch_pick_mmap_base`).
-- **#1314 F231** — vendor/openssh rebuilt DYNAMIC (`-static` dropped,
-  `--export-dynamic` added); userspace/pam_modules/{pam_permit,pam_deny}.c
-  built `-shared -fPIC -nostdlib`; staged at /usr/lib/security/ (matches
-  libpam's baked DEFAULT_MODULE_PATH); UsePAM=yes; sshd's libpam
-  dlopens pam_permit.so end-to-end. `smoke-ssh-x86` PASS through PAM
-  on every connection.
-- **#1315 F232** — `sys_waitid` decodes real (si_code, si_status) from
-  the wait4 wstat; was previously hardcoded si_status=0.
-  `userspace/exit_test/exit_test.c` smoke confirms wstat encoding
-  correct: A=0x2a00 (fork+ret 42), B=0x0000 (true), C=0x0100 (false).
-- **#1316 F233** — GNU bash 5.2.37 dynamic (was static-pie). 600 KB
-  x86 / 820 KB ARM stripped.
-- **#1317 F234** — sed, grep, coreutils, tar, diffutils, patch,
-  gawk, findutils, make, gzip all dynamic. /usr/bin shrinks ~70%.
-  xz kept static (libtool/liblzma needs separate plumbing).
-- **#1319 F236** — ARM `/lib/libc.so` second-name for ld-musl
-  (ARM cross-musl-gcc emits DT_NEEDED="libc.so" not the loader name).
+| Phase | What | Status |
+|---|---|---|
+| D1 | util-linux 2.40.2 | merged (#1343) |
+| D2 | shadow-utils 4.16.0 | merged (#1344) |
+| D3 | procps-ng 4.0.5 | merged (#1345) |
+| D4 | iproute2 6.10.0 | **merged (#1346)** |
+| D5 | iputils 20240117 — ping/tracepath/clockdiff/arping | **open PR F263** |
+| D6 | systemd-musl (Chimera-style) as PID 1 | not started |
+| D7 | drop busybox vendor entirely | not started |
 
-## End-to-end proof, both arches
+## First task next session
 
-- `make smoke-ssh-x86 SSH_SMOKE_CONNECTIONS=1` PASS — 1 ssh + 9
-  tail-tools (find, gawk, diff, patch, bzip2, xz, ...) + 1 pty,
-  ALL through dynamic distro tools + real PAM dlopen.
-- ARM boot-smoke PASS in 22s.
-- ARM ssh: PAM dlopen confirmed working (`Accepted
-  keyboard-interactive/pam` for 8+ sessions); SSH smoke times out
-  somewhere later — suspected the long-standing CLOSE_WAIT leak
-  (task #11), orthogonal to PAM.
+If D5 PR not yet merged: check CI, then
+```
+gh pr merge <N> --merge --delete-branch=true
+git checkout main && git pull --ff-only
+git branch -D F263-vendor-iputils
+```
+Then start **D6 systemd-musl** — multi-PR effort:
+1. vendor systemd source + apply Chimera-Linux musl patch series
+2. cross-build (musl link is the hard part — Chimera has it solved)
+3. swap /sbin/init busybox→systemd; replace /etc/init.d/rcS with
+   /etc/systemd/system/*.service units
+4. journald + networkd + resolved as separate sub-PRs
 
-## Open defects (queue for next session)
+## D5 details (this session)
 
-1. **Task #11 — ARM TCP CLOSE_WAIT leak.** Accept'd sockets never
-   close on ARM cumulative SSH; `InetSocket::Drop` never fires.
-   Caps `SSH_SMOKE_CONNECTIONS=4` on ARM TCG.
-2. **Task #12 — busybox-ash `$?=255` on clean exit.** Kernel wait4
-   wstat encoding is correct (proved by exit_test); bash decodes
-   correctly. busybox-ash gets garbage — likely needs SIGCHLD
-   siginfo_t (we currently deliver SIGCHLD as a single pending
-   bit, no per-event si_status). F237 branch placeholder.
-3. **Task #14 — real `pam_unix.so`.** Replace pam_permit.so with
-   real `/etc/shadow` + crypt() auth. Requires (a) libpam.so
-   shared (1.7.2 meson rebuild), (b) libcrypt (vendor or
-   in-tree), (c) `pam_unix.so` shared module with /etc/shadow read.
-4. **Task #15 — ARM dynamic bash as `/bin/sh` wedges init.** Bash at
-   /bin/bash works on ARM; using it as `/bin/sh` causes boot wedge
-   silently. Root cause unknown; deferred. busybox-ash stays
-   `/bin/sh` on ARM.
+- iputils is meson/ninja (not autotools). build.sh writes a native
+  file (musl-gcc) + an aarch64 cross file with `[built-in options]`
+  c_args (`-isystem` kernel headers) + c_link_args `-static`.
+- Patched `find_library('resolv')` → optional (musl folds resolver
+  into libc; no libresolv.a).
+- busybox `ping` applet removed from xtask /bin list; iputils owns
+  /bin/ping. tracepath→/usr/bin, clockdiff→/usr/bin, arping→/usr/sbin.
+- xtask/main.rs hit the 1000-line cap again (D-phase pattern); trimmed
+  comments down to 999.
 
-## Repro patterns
+## Open follow-ups (TASKS.md has full list)
 
-    # End-to-end SSH smoke on x86
-    pkill -f qemu-system; sleep 2
-    bash -c "trap '' SIGURG; make smoke-ssh-x86 SSH_SMOKE_CONNECTIONS=1"
+- **iputils ping runtime ICMP not yet exercised in smoke.** D5 boots
+  on both arches but `ping -c1 127.0.0.1` not run. Verify + fix any
+  kernel ICMP socket gap.
+- iproute2 `ip link` returns "EOF on netlink" on RTM_GETLINK dumps —
+  kernel rtnetlink partial-reply fix.
+- util-linux `mount` non-PIE; busybox mount stays at /bin/mount.
+- `xtask rootfs` silently doesn't reproduce pthread_socketpair_probe
+  (staging WARNs missing); pre-existing, image reproducible without it.
 
-    # Both arches boot smoke
-    bash tools/boot-smoke.sh x86 90
-    bash tools/boot-smoke.sh arm 600
+## Hard-won workflow notes (this session)
 
-    # Direct kernel-wait4 smoke check
-    /bin/exit_test                  # in-guest: prints A=00002a00 etc.
+- **One simple shell command per Bash call.** Do NOT bundle many
+  commands as parallel tool calls — one non-zero exit cancels the
+  whole batch ("Cancelled: parallel tool call" cascade). Do NOT chain
+  git with `;`/`&&`/pipes-to-other-tools — `Bash(git:*)` only matches
+  pure-git lines, so compound lines trigger permission prompts.
+- Tool-output DISPLAY was intermittently corrupted this session
+  (doubled lines, wrong file contents, fake trailing lines). Edit's
+  exact-match is the reliable ground truth; `wc -l`/single greps are
+  trustworthy. Verify via Edit match, not via reading back.
 
-## Pick up
+## Direction reminders
 
-Resume from F237-sigchld-siginfo. First task: build SIGCHLD siginfo
-queue (per-task) so SA_SIGINFO handlers see proper si_status / si_pid.
-That's the root-cause fix for task #12.
+- Server-class distro on musl, no desktop, no glibc.
+- systemd-musl is the target init (Chimera-style patches OK).
+- Each D-phase = its own PR, both-arch boot smoke required, branch
+  deleted on merge.
+- Stick to the roadmap table; side quests get a TASKS.md entry.

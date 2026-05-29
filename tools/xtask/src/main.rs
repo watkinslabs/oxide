@@ -202,8 +202,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // 3. Populate via debugfs (each command is its own invocation —
-    //    debugfs's -R takes one command at a time).
+    // 3. Populate via debugfs (one -R command per invocation).
     let dbg = |cmd: &str| -> Result<(), u8> {
         let mut c = Command::new("debugfs");
         c.args(["-w", "-R", cmd, img.to_str().unwrap()]);
@@ -274,9 +273,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
         // /sbin applets per FHS. F259 util-linux owns login/agetty/su.
-        // mount + umount stay on busybox for boot's rcS (util-linux
-        // mount on x86 was built non-PIE dynamic and won't run under
-        // our kernel's loader; revisit once we rebuild it as PIE).
+        // mount/umount stay on busybox for rcS (util-linux mount on x86
+        // is non-PIE dynamic, won't load yet; rebuild as PIE later).
         for applet in &[
             "init", "halt", "reboot", "poweroff", "shutdown",
             "mdev", "ifconfig", "route",
@@ -286,8 +284,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ] {
             dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
         }
-        // /bin alias of mount + umount so rcS's `mount -t proc proc /proc`
-        // (no leading slash) still works -- /bin appears before /sbin in PATH.
+        // /bin alias of mount/umount so rcS's `mount -t proc proc /proc`
+        // (no leading slash) resolves -- /bin precedes /sbin in PATH.
         dbg_ln("/bin/busybox", "/bin/mount")?;
         dbg_ln("/bin/busybox", "/bin/umount")?;
         // Kernel boot path probes /sbin/init then /init.

@@ -71,12 +71,24 @@ busybox-ash as `/bin/sh` on ARM.
 
 ## Recently closed
 
+- **D5 iputils 20240117** — closed by **#1347 F263**. ping, tracepath,
+  clockdiff, arping; static-musl both arches (meson/ninja). busybox
+  `ping` applet dropped; iputils owns /bin/ping. Follow-ups below.
+- **D4 iproute2 6.10.0** — closed by **#1346 F262**. ip/ss/tc/bridge/
+  rtmon/lnstat/nstat/ifstat, static-musl both arches.
+
 - **T17 Vim cross-build + runtime smoke** — closed by **#1330 F250 (ncurses)** + **#1331 F251 (vim cross-build)** + **#1332 F252 (terminfo db)** + **#1334 F254 (less, also ncurses)** + **#1336 F256 (vim_smoke wired)**. Vim ex-mode :qa! exits 0 on both x86 and ARM.
 - **T16 Growable kernel heap (vmalloc-equivalent)** — closed by **#1328 F247** (per-instance KAlloc grow hook → PMM buddy via HHDM; STATIC_HEAP back to 64 MiB; hosted test covers grow path).
 - **T13 SSH-connect smoke through PAM dlopen** — closed by **#1314 F231** (real PAM dlopen via dynamic sshd + pam_permit.so).
 - **T12 wait4 status decode `$?=255`** — closed by **#1320 F237** (clear SIGCHLD pending bit when wait4 drains last zombie).
 - **T10 multi-conn ssh smoke** — closed earlier (boot-smoke-ssh.sh tail-tools + pty).
 
+## Open follow-ups (non-blocking)
+
+- **iputils ping runtime ICMP path** — D5 staged + boots, but ping
+  send/recv (raw/dgram ICMP socket) not yet exercised in smoke.
+  Verify `ping -c1 127.0.0.1` on both arches; fix any kernel ICMP
+  socket gap in the same follow-up.
 ## Notes for the next session
 
 - The kernel-side investigation paths are tracked in `state.md`
