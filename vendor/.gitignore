@@ -219,3 +219,31 @@ util-linux/util-linux-2.40.2.tar.xz
 !pam/install-aarch64/security/pam_client.h
 !pam/install-x86_64/include-security/pam_client.h
 !pam/install-aarch64/include-security/pam_client.h
+# shadow-utils 4.16.0 -- F260 (D2). useradd/userdel/usermod/groupadd/
+# groupdel/groupmod/passwd/chage/gpasswd/newgrp/chgpasswd.
+!shadow/
+!shadow/build.sh
+!shadow/useradd-x86_64
+!shadow/useradd-aarch64
+!shadow/userdel-x86_64
+!shadow/userdel-aarch64
+!shadow/usermod-x86_64
+!shadow/usermod-aarch64
+!shadow/groupadd-x86_64
+!shadow/groupadd-aarch64
+!shadow/groupdel-x86_64
+!shadow/groupdel-aarch64
+!shadow/groupmod-x86_64
+!shadow/groupmod-aarch64
+!shadow/passwd-x86_64
+!shadow/passwd-aarch64
+!shadow/chage-x86_64
+!shadow/chage-aarch64
+!shadow/gpasswd-x86_64
+!shadow/gpasswd-aarch64
+!shadow/newgrp-x86_64
+!shadow/newgrp-aarch64
+!shadow/chgpasswd-x86_64
+!shadow/chgpasswd-aarch64
+shadow/shadow-4.16.0/
+shadow/shadow-4.16.0.tar.xz

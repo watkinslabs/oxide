@@ -237,16 +237,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         dbg(&format!("sif {target} mode 0100755"))
     };
     let user = |name: &str| user_out.join(name);
-    // Vendored busybox 1.37.0 — pre-built static-musl per
-    // vendor/busybox/build.sh. busybox keys on argv[0]: the same
-    // binary at /bin/sh runs as ash, at /bin/ls runs as ls, etc.
-    // Stage it at every applet path (incl. /bin/sh) so login →
-    // /bin/sh hands straight into busybox-ash. The toy oxide-sh
-    // moves to /bin/oxide-sh for dev probing / boot smoke.
-    // Per-arch vendored busybox. x86_64 binary in vendor/busybox/busybox
-    // (built via vendor/busybox/build.sh against musl-gcc); aarch64
-    // binary in vendor/busybox/busybox-aarch64 (extracted from Alpine
-    // Linux's busybox-static apk, statically linked against musl).
+    // busybox 1.37.0 static-musl. Per-arch binary, argv[0]-dispatched.
     let bb = if arch == "aarch64" {
         repo.join("vendor/busybox/busybox-aarch64")
     } else {
@@ -285,7 +276,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "pwd", "basename", "dirname", "which", "clear", "reset",
             "more", "less", "vi", "tar", "gzip", "gunzip",
             "ifconfig", "route", "ping", "nc", "wget",
-            "passwd",
             "mknod", "stty", "tty", "mesg",
         ] {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
@@ -400,6 +390,27 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     ln_via_debugfs("/sbin/agetty",  "/sbin/getty")?;
     ln_via_debugfs("/bin/login",    "/usr/bin/login")?;
     ln_via_debugfs("/bin/su",       "/usr/bin/su")?;
+
+    // F260 (D2): shadow-utils — useradd/passwd/groupadd/etc.
+    for (name, dest) in &[
+        ("useradd",   "/usr/sbin/useradd"),
+        ("userdel",   "/usr/sbin/userdel"),
+        ("usermod",   "/usr/sbin/usermod"),
+        ("groupadd",  "/usr/sbin/groupadd"),
+        ("groupdel",  "/usr/sbin/groupdel"),
+        ("groupmod",  "/usr/sbin/groupmod"),
+        ("passwd",    "/usr/bin/passwd"),
+        ("chage",     "/usr/bin/chage"),
+        ("gpasswd",   "/usr/bin/gpasswd"),
+        ("newgrp",    "/usr/bin/newgrp"),
+        ("chgpasswd", "/usr/sbin/chgpasswd"),
+    ] {
+        let host = repo.join(format!("vendor/shadow/{name}-{arch}"));
+        if host.is_file() {
+            put(&host, dest)?;
+        }
+    }
+    ln_via_debugfs("/usr/bin/passwd", "/bin/passwd")?;
 
     // F251: vim 9.1.0950 static-musl + vendored ncurses → /usr/bin/vim.
     let vim_bin = repo.join(format!("vendor/vim/vim-{}", arch));
@@ -627,18 +638,7 @@ session    required   pam_unix.so\n")?,
     put(&user("pam_deny.so"),      "/usr/lib/security/pam_deny.so")?;
     put(&user("pam_unix.so"),      "/usr/lib/security/pam_unix.so")?;
     put(&user("pam_unix_stub.so"), "/usr/lib/security/pam_unix_stub.so")?;
-    // /etc/inittab per 51§5.1. busybox init reads this verbatim:
-    //   <id>:<runlevels>:<action>:<process>
-    // sysinit runs synchronously before respawn lines start.
-    // B39: serial respawn line goes direct to /bin/login, NOT getty.
-    // busybox getty wedges under headless qemu (boot-smoke / CI) — its
-    // open(/dev/ttyS0)+TIOCSCTTY+tcsetattr dance hangs before reaching
-    // its first write. /dev/ttyS0 in our kernel is a console alias
-    // pinned at 115200/cooked, so getty's baud / line-discipline job
-    // is moot. The sh wrapper just plumbs fd 0/1/2 onto /dev/ttyS0 so
-    // login's read/prompt path inherits a usable tty. Interactive boot
-    // sees the same `oxide login:` prompt the user typed `root` into
-    // pre-B39.
+    // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
