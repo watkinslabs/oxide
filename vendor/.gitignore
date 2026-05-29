@@ -301,3 +301,18 @@ procps-ng/procps-ng-4.0.5.tar.xz
 !iproute2/ifstat-aarch64
 iproute2/iproute2-6.10.0/
 iproute2/iproute2-6.10.0.tar.xz
+# iputils 20240117 -- F263 (D5). ping, tracepath, clockdiff, arping.
+!iputils/
+!iputils/build.sh
+!iputils/ping-x86_64
+!iputils/ping-aarch64
+!iputils/tracepath-x86_64
+!iputils/tracepath-aarch64
+!iputils/clockdiff-x86_64
+!iputils/clockdiff-aarch64
+!iputils/arping-x86_64
+!iputils/arping-aarch64
+iputils/iputils-20240117/
+iputils/iputils-20240117.tar.gz
+iputils/build-x86_64/
+iputils/build-aarch64/
