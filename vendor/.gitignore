@@ -247,3 +247,25 @@ util-linux/util-linux-2.40.2.tar.xz
 !shadow/chgpasswd-aarch64
 shadow/shadow-4.16.0/
 shadow/shadow-4.16.0.tar.xz
+# iproute2 6.10.0 -- F262 (D4). ip, ss, tc, bridge, rtmon, lnstat,
+# nstat, ifstat.
+!iproute2/
+!iproute2/build.sh
+!iproute2/ip-x86_64
+!iproute2/ip-aarch64
+!iproute2/ss-x86_64
+!iproute2/ss-aarch64
+!iproute2/tc-x86_64
+!iproute2/tc-aarch64
+!iproute2/bridge-x86_64
+!iproute2/bridge-aarch64
+!iproute2/rtmon-x86_64
+!iproute2/rtmon-aarch64
+!iproute2/lnstat-x86_64
+!iproute2/lnstat-aarch64
+!iproute2/nstat-x86_64
+!iproute2/nstat-aarch64
+!iproute2/ifstat-x86_64
+!iproute2/ifstat-aarch64
+iproute2/iproute2-6.10.0/
+iproute2/iproute2-6.10.0.tar.xz
