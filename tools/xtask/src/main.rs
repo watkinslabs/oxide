@@ -719,12 +719,8 @@ fi
     dbg("sif /etc/init.d/rcS mode 0100755")?;
 
     // /etc/init.d/oxide-smokes — kernel-acceptance smoke harness
-    // (replaces the C harness from old userspace/init/init.c).
-    // Gated by the marker file so OXIDE_INIT_SMOKES=0 boots skip it.
-    // ptrace_smoke + ptrace_singlestep_smoke removed pending real
-    // PTRACE_SINGLESTEP TF/SS arming + SIGSTOP/SIGTRAP race fix.
-    // They hang the script (child enters PTRACE-ATTACH SIGSTOP but
-    // never gets the SIGTRAP that would let waitpid return).
+    // (replaces the C harness from old userspace/init/init.c). Gated
+    // by the marker file so OXIDE_INIT_SMOKES=0 boots skip it.
     put(&stage("oxide-smokes",
 b"#!/bin/sh
 [ -e /etc/oxide-init-smokes ] || exit 0
@@ -749,15 +745,24 @@ echo post-socketpair-fork-probe rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
+echo pre-cgroup-smoke
+echo cgroup-ctl=$(cat /sys/fs/cgroup/cgroup.controllers)
+echo '+pids +memory' > /sys/fs/cgroup/cgroup.subtree_control
+mkdir /sys/fs/cgroup/oxide.test
+echo 7 > /sys/fs/cgroup/oxide.test/pids.max
+echo cgroup-pidsmax=$(cat /sys/fs/cgroup/oxide.test/pids.max)
+echo $$ > /sys/fs/cgroup/oxide.test/cgroup.procs
+echo cgroup-self=$(cat /proc/self/cgroup)
+echo $$ > /sys/fs/cgroup/cgroup.procs
+rmdir /sys/fs/cgroup/oxide.test
+echo post-cgroup-smoke rv=$?
 ")?,
         "/etc/init.d/oxide-smokes")?;
     dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;
 
-    // F147: udhcpc default lease-event script. udhcpc invokes this
-    // with $1 ∈ {deconfig, bound, renew, …} and exports the lease
-    // params (ip, subnet, router, dns, broadcast, …) as env vars.
-    // On bound/renew: configure the iface, add the default route,
-    // write /etc/resolv.conf. On deconfig: tear the addr down.
+    // F147/F149: udhcpc lease-event script. $1 ∈ {deconfig,bound,
+    // renew}; bound/renew set iface+route+resolv.conf, deconfig tears
+    // the addr down. Lease fields arrive as env vars from udhcpc.
     put(&stage("udhcpc-default.script",
 b"#!/bin/sh
 # busybox udhcpc lease-event handler. Invoked by udhcpc with

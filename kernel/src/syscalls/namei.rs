@@ -50,8 +50,55 @@ fn errno_from_vfs(e: vfs::VfsError) -> i64 {
         vfs::VfsError::Enotdir => Errno::Enotdir as i32,
         vfs::VfsError::Erofs   => Errno::Erofs   as i32,
         vfs::VfsError::Eio     => Errno::Eio     as i32,
+        vfs::VfsError::Eperm   => Errno::Eperm   as i32,
+        vfs::VfsError::Eexist  => Errno::Eexist  as i32,
+        vfs::VfsError::Einval  => Errno::Einval  as i32,
+        vfs::VfsError::Eacces  => Errno::Eacces  as i32,
+        vfs::VfsError::Enomem  => Errno::Enomem  as i32,
+        vfs::VfsError::Enospc  => Errno::Enospc  as i32,
+        vfs::VfsError::Ebusy   => Errno::Ebusy   as i32,
+        vfs::VfsError::Enotempty => Errno::Enotempty as i32,
+        vfs::VfsError::Enosys  => Errno::Enosys  as i32,
         _                      => Errno::Eio     as i32,
     } as i64)
+}
+
+/// Split an absolute path into `(parent, basename)`. `None` for `/`
+/// or a trailing-only slash.
+fn split_parent(p: &str) -> Option<(&str, &str)> {
+    let p = if p.len() > 1 { p.strip_suffix('/').unwrap_or(p) } else { p };
+    let idx = p.rfind('/')?;
+    let name = &p[idx + 1..];
+    if name.is_empty() { return None; }
+    let parent = if idx == 0 { "/" } else { &p[..idx] };
+    Some((parent, name))
+}
+
+/// Dispatch `mkdir` to the pseudo-FS inode owning the parent dir
+/// (Linux `inode_operations->mkdir`; e.g. cgroupfs). `Some(rv)` when
+/// the parent inode handled it; `None` (no such inode, or read-only
+/// `Erofs`) means fall through to the ext4 backend.
+/// # C: O(N registry)
+fn pseudo_mkdir(p: &str, mode: u32) -> Option<i64> {
+    let (parent, name) = split_parent(p)?;
+    let pino = crate::devfs::lookup(parent)?;
+    match pino.mkdir(name, mode) {
+        Ok(_) => Some(0),
+        Err(vfs::VfsError::Erofs) => None,
+        Err(e) => Some(errno_from_vfs(e)),
+    }
+}
+
+/// `rmdir` counterpart to `pseudo_mkdir`.
+/// # C: O(N registry)
+fn pseudo_rmdir(p: &str) -> Option<i64> {
+    let (parent, name) = split_parent(p)?;
+    let pino = crate::devfs::lookup(parent)?;
+    match pino.rmdir(name) {
+        Ok(()) => Some(0),
+        Err(vfs::VfsError::Erofs) => None,
+        Err(e) => Some(errno_from_vfs(e)),
+    }
 }
 
 /// `link(target, link)` slot 86. Hardlink only — both must
@@ -191,8 +238,9 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let mode = args.a1 as u16;
+    if let Some(rv) = pseudo_mkdir(&p, mode as u32) { return rv; }
+    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
@@ -209,8 +257,9 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     let mode = args.a2 as u16;
+    if let Some(rv) = pseudo_mkdir(&p, mode as u32) { return rv; }
+    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
@@ -312,6 +361,7 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::REMOVE_DIR) { return rv; }
+    if let Some(rv) = pseudo_rmdir(&p) { return rv; }
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::rmdir_at(p.as_bytes()) {
         Ok(())  => 0,
