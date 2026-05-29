@@ -35,9 +35,18 @@ Research cache: `research/systemd-musl.md`, `research/kernel-gaps-systemd.md`,
 Sequential-ish; K1+K2 are the hard gates. Implement to FROZEN specs
 `26` (namespaces+cgroups), `16` (vfs), `27` (security), `19` (dev/proc/sysfs).
 
+**Rule (user, 2026-05-29): if a Linux primitive the kernel lacks blocks
+the current work, STOP and add it PROPERLY as foundational work before
+continuing — never a syscall-layer hack/workaround.** e.g. cgroup mkdir
+needs real VFS `mkdir`/`rmdir` inode dispatch (Linux `inode_operations`),
+not path-prefix special-casing. Add the missing trait surface, then build
+on it. The VFS `Inode` trait is an explicit "v1 subset" — complete it as
+each subsystem needs the full Linux surface.
+
 | Id | Work | Spec | Status |
 |---|---|---|---|
 | K1 | cgroup v2 unified hierarchy: real cgroupfs at `/sys/fs/cgroup`; controllers cpu/cpuset/io/memory/pids; `cgroup.procs`/`threads`/`controllers`/`subtree_control`/`events`(populated notify)/`kill`/`freeze`/`stat`; `/proc/<pid>/cgroup` real | `26` | **next** |
+| K1b | cgroup v2 controller ENFORCEMENT depth (interface is real+complete in K1; these deepen it): memory.max charge/OOM via per-cgroup page accounting; cpu.weight/cpu.max honored by scheduler; pids counts threads (not just process leaders); io controller wired to block layer; cpuset affinity applied; cgroup.freeze actually freezes (not just flag); /proc/self/mountinfo dynamic cgroup2 line | `26`,`13` | not started |
 | K2 | real mount: MS_BIND, MS_REC, MS_MOVE, propagation (SHARED/PRIVATE/SLAVE/UNBINDABLE), pivot_root; real fs types proc/sysfs/devtmpfs/tmpfs/cgroup2 | `16` | not started |
 | K3 | per-mount-namespace mount tables: CLONE_NEWNS real (copy-on-unshare, peer propagation) | `26` | not started |
 | K4 | rtnetlink RTM_GETLINK dump fix (networkd link enum; also fixes iproute2 `ip link` EOF) | `25` | not started |

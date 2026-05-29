@@ -40,6 +40,7 @@ pub enum Errno {
     Erange  = 34,
     Enametoolong = 36,
     Enosys  = 38,
+    Enotempty = 39,
     Eidrm   = 43,
     Enomsg  = 42,
     Eopnotsupp        = 95,

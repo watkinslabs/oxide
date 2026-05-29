@@ -53,10 +53,15 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
             crate::devfs::register_in_ns(ns, target, inode);
             0
         }
+        // cgroup v2 unified hierarchy per `26§4`: mount the real tree
+        // at /sys/fs/cgroup (fixed mount point, invariant 4 — single
+        // hierarchy, no v1). Idempotent.
+        "cgroup2" => { cgroup::mount_root(); 0 }
         // proc and sysfs are already registered at boot; admit-and-noop
         // for these fstypes so userspace remount probes (systemd, /etc/
-        // mtab tooling) don't choke.
-        "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup" | "cgroup2" => 0,
+        // mtab tooling) don't choke. cgroup v1 is never mounted (26§2
+        // invariant 4) — admit-noop so legacy probes don't error.
+        "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup" => 0,
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
     }
 }

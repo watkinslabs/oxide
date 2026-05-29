@@ -40,6 +40,7 @@ vmm     = { path = "../crates/kernel/mm-vmm" }
 power    = { path = "../crates/kernel/power" }
 firmware = { path = "../crates/kernel/firmware" }
 nscg     = { path = "../crates/kernel/nscg" }
+cgroup   = { path = "../crates/kernel/cgroup" }
 security = { path = "../crates/kernel/security" }
 drv             = { path = "../crates/drivers/drv" }
 drv-virtio-gpu    = { path = "../crates/drivers/drv-virtio-gpu" }
@@ -67,9 +68,10 @@ debug-irq  = ["pmm/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick 
 debug-acpi = ["firmware/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = ["sched/debug-sched","fs/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
 debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-cgroup = ["cgroup/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
 debug-ssh = ["sched/debug-ssh","fs/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
 debug-trace = []  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
-debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-modules","debug-syscall","sched/debug-syscall"]
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]
 

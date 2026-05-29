@@ -7,6 +7,7 @@
 pub mod fs_impl;
 pub mod proc_links;
 pub mod static_files;
+pub mod cgroup_file;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -617,7 +618,7 @@ impl Inode for ProcRootInode {
         Ok(idx as u64)
     }
 }
-
+pub use crate::procfs::cgroup_file::ProcCgroupInode;
 /// Per-pid `/proc/<tid>` directory. Synthesises status/cmdline/stat/maps.
 pub struct ProcPidDirInode { pub tid: u32, pub is_self: bool }
 
@@ -667,7 +668,7 @@ impl Inode for ProcPidDirInode {
             "syscall"  => Ok(StaticFileInode::new(b"running\n") as InodeRef),
             "mounts"   => Ok(StaticFileInode::new(MOUNTS_BODY) as InodeRef),
             "mountinfo" => Ok(StaticFileInode::new(MOUNTINFO_BODY) as InodeRef),
-            "cgroup"   => Ok(StaticFileInode::new(b"0::/\n") as InodeRef),
+            "cgroup"   => Ok(Arc::new(ProcCgroupInode { tid: Some(self.tid) }) as InodeRef),
             "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
