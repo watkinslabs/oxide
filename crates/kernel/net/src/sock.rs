@@ -1,6 +1,4 @@
-// Kernel-side wrapper around `crate::NetStack`. AF_INET fds are
-// VFS Inodes holding an ephemeral src port + dest (via connect /
-// per-sendto). `init()` registers the loopback netdev at boot.
+// Kernel-side AF_INET/UNIX wrapper around `crate::NetStack`.
 
 
 
@@ -245,7 +243,7 @@ pub const AF_PACKET: u16 = 17;
 impl InetSocket {
     /// # C: O(1)
     pub fn new_udp() -> Self {
-        Self {
+        let _s = Self {
             family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
@@ -258,11 +256,12 @@ impl InetSocket {
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
-        }
+        };
+        _s
     }
     /// # C: O(1)
     pub fn new_tcp() -> Self {
-        Self {
+        let _s = Self {
             family:     core::sync::atomic::AtomicU16::new(AF_INET),
             local_port: Spinlock::new(None),
             local_ip:   Spinlock::new(Ipv4Addr::ANY),
@@ -280,7 +279,8 @@ impl InetSocket {
             poll_subs:    Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])),
             peer6:     Spinlock::new(None),
-        }
+        };
+        _s
     }
     /// `socket(AF_INET6, SOCK_DGRAM, …)`. V4 transport substrate;
     /// `family = AF_INET6` flips the ABI to the 28-byte sockaddr_in6.
