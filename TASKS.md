@@ -89,12 +89,6 @@ busybox-ash as `/bin/sh` on ARM.
   send/recv (raw/dgram ICMP socket) not yet exercised in smoke.
   Verify `ping -c1 127.0.0.1` on both arches; fix any kernel ICMP
   socket gap in the same follow-up.
-- **rootfs `pthread_socketpair_probe` not reproduced** — `xtask
-  rootfs` pthread build step emits no binary and no failure (staging
-  WARNs missing); manual `musl-gcc -static -pthread` builds it fine.
-  Pre-existing; image is reproducible without it (T14 diagnostic, not
-  boot/CI-relevant). Root-cause the silent skip in xtask main.rs.
-
 ## Notes for the next session
 
 - The kernel-side investigation paths are tracked in `state.md`
