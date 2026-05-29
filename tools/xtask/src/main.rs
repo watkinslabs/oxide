@@ -231,10 +231,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         dbg(&format!("mkdir {d}"))?;
     }
     let put = |host: &std::path::Path, target: &str| -> Result<(), u8> {
-        let cmd = format!("write {} {}", host.display(), target);
-        dbg(&cmd)?;
-        // debugfs `write` is 0o100644; stamp 0o100755 so binaries exec.
-        dbg(&format!("sif {target} mode 0100755"))
+        dbg(&format!("write {} {target}", host.display()))?;
+        dbg(&format!("sif {target} mode 0100755"))  // make executable
     };
     let user = |name: &str| user_out.join(name);
     // busybox 1.37.0 static-musl. Per-arch binary, argv[0]-dispatched.
@@ -244,35 +242,30 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         repo.join("vendor/busybox/busybox")
     };
     if bb.is_file() {
-        // Single copy of busybox at /bin/busybox; every applet path
-        // becomes a hardlink (debugfs `ln <existing> <new>`) so the
-        // ext4 image holds one inode + one set of blocks instead of
-        // ~70 duplicates. busybox routes on argv[0], so reading
-        // /bin/sh actually opens /bin/busybox and the kernel passes
-        // "/bin/sh" as argv[0].
+        // Single copy at /bin/busybox; every applet path is a hardlink
+        // (debugfs `ln`) → one inode vs ~70 dups. busybox routes on
+        // argv[0], so /bin/sh opens /bin/busybox with argv[0]="/bin/sh".
         put(&bb, "/bin/busybox")?;
         let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
             let cmd = format!("ln {} {}", target, link);
             let mut c = Command::new("debugfs");
             c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
             c.stdout(std::process::Stdio::null());
-            // Don't mute stderr — debugfs's `ln` exits 0 even when
-            // it prints `make_link: Ext2 inode is not a directory`.
-            // Without seeing the stderr we silently drop applets and
-            // ship a busted rootfs (e.g. /bin/login missing → getty
-            // can't exec it). Pipe stderr through so failures show.
+            // Don't mute stderr — debugfs `ln` exits 0 even on
+            // `make_link: Ext2 inode is not a directory`; muting it
+            // silently drops applets and ships a busted rootfs.
             run(c)
         };
         // /bin applets — every user-facing tool dispatched via argv[0].
         for applet in &[
             "ash", "hush",
             "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
-            "ps", "top", "uptime", "free", "dmesg", "mount", "umount",
+            "dmesg",
             "grep", "egrep", "fgrep", "find", "head", "tail", "wc", "sort", "uniq",
             "touch", "chmod", "chown", "ln", "test", "true", "false",
             "env", "printf", "yes", "seq", "expr", "id", "whoami",
             "tr", "cut", "sed", "awk", "date", "df", "du", "stat",
-            "kill", "sleep", "tee", "xxd", "hostname", "uname",
+            "sleep", "tee", "xxd", "hostname", "uname",
             "pwd", "basename", "dirname", "which", "clear", "reset",
             "more", "less", "vi", "tar", "gzip", "gunzip",
             "ifconfig", "route", "ping", "nc", "wget",
@@ -280,16 +273,23 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ] {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
-        // /sbin applets per FHS. D1 (F259): real util-linux replaces
-        // busybox login/agetty/mount/umount/su/kill/losetup.
+        // /sbin applets per FHS. F259 util-linux owns login/agetty/su.
+        // mount + umount stay on busybox for boot's rcS (util-linux
+        // mount on x86 was built non-PIE dynamic and won't run under
+        // our kernel's loader; revisit once we rebuild it as PIE).
         for applet in &[
             "init", "halt", "reboot", "poweroff", "shutdown",
             "mdev", "ifconfig", "route",
             "fdisk", "swapon", "swapoff",
+            "mount", "umount",
             "udhcpc", "udhcpd",
         ] {
             dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
         }
+        // /bin alias of mount + umount so rcS's `mount -t proc proc /proc`
+        // (no leading slash) still works -- /bin appears before /sbin in PATH.
+        dbg_ln("/bin/busybox", "/bin/mount")?;
+        dbg_ln("/bin/busybox", "/bin/umount")?;
         // Kernel boot path probes /sbin/init then /init.
         dbg_ln("/bin/busybox", "/init")?;
     }
@@ -311,14 +311,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("exit_test"),       "/bin/exit_test")?;
     put(&user("pthread_socketpair_probe"), "/bin/pthread_socketpair_probe")?;
     put(&user("socketpair_fork_probe"),    "/bin/socketpair_fork_probe")?;
-    // F230: real musl dynamic loader at the per-arch interp path.
-    // vendor/musl/ld-musl-<arch>.so.1 is the actual musl libc.so —
-    // x86_64 copied from the host Fedora /lib (musl 1.2.5, the one
-    // musl-gcc links against); aarch64 copied from the cross
-    // toolchain (musl 1.2.2-git, what the cross CC links against).
-    // Same binary handles DT_NEEDED + relocations + dlopen for any
-    // dynamic ELF we link. The userspace/dynlink stub is no longer
-    // staged — kept as build-only for reference.
+    // F230: musl dynamic loader → /lib/ld-musl-<arch>.so.1.
     let interp_path = if arch == "aarch64" {
         "/lib/ld-musl-aarch64.so.1"
     } else {
@@ -338,12 +331,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
 
-    // F123: vendored dhcpcd 10.3.2 — static-musl, per
-    // vendor/dhcpcd/build.sh. Real userspace DHCPv4 client. Survives
-    // the busybox→distro transition (Alpine/Gentoo default; not a
-    // busybox applet). Skipped silently if the per-arch binary
-    // hasn't been built yet — `vendor/dhcpcd/build.sh` materialises
-    // them after `tools/fetch-dhcpcd.sh` populates the source tree.
+    // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
         repo.join("vendor/dhcpcd/dhcpcd-aarch64")
     } else {
@@ -364,19 +352,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&bash_bin, "/bin/sh")?;
     }
 
-    // F259 (D1): util-linux — login, agetty, mount, umount, su, etc.
     let ln_via_debugfs = |target: &str, link: &str| -> Result<(), u8> {
-        let cmd = format!("ln {target} {link}");
         let mut c = Command::new("debugfs");
-        c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
+        c.args(["-w", "-R", &format!("ln {target} {link}"), img.to_str().unwrap()]);
         c.stdout(std::process::Stdio::null());
         run(c)
     };
+    // F259 (D1): util-linux.
     for (name, dest) in &[
         ("login",   "/bin/login"),
         ("agetty",  "/sbin/agetty"),
-        ("mount",   "/bin/mount"),
-        ("umount",  "/bin/umount"),
+        // util-linux mount is non-PIE dynamic on x86 → fails to load
+        // under our kernel; busybox mount stays at /bin/mount.
+        ("mount",   "/usr/sbin/mount.util-linux"),
+        ("umount",  "/usr/sbin/umount.util-linux"),
         ("su",      "/bin/su"),
         ("kill",    "/bin/kill"),
         ("cal",     "/usr/bin/cal"),
@@ -411,6 +400,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         }
     }
     ln_via_debugfs("/usr/bin/passwd", "/bin/passwd")?;
+
+    // F261 (D3): procps-ng — ps/top/free/etc.
+    for (name, dest) in &[
+        ("ps","/bin/ps"),("top","/usr/bin/top"),("free","/usr/bin/free"),
+        ("vmstat","/usr/bin/vmstat"),("uptime","/usr/bin/uptime"),
+        ("pgrep","/usr/bin/pgrep"),("pkill","/usr/bin/pkill"),
+        ("pmap","/usr/bin/pmap"),("tload","/usr/bin/tload"),
+        ("w","/usr/bin/w"),("watch","/usr/bin/watch"),
+        ("slabtop","/usr/bin/slabtop"),("sysctl","/sbin/sysctl"),
+    ] {
+        let host = repo.join(format!("vendor/procps-ng/{name}-{arch}"));
+        if host.is_file() {
+            put(&host, dest)?;
+        }
+    }
 
     // F262 (D4): iproute2 — ip, ss, tc, bridge, etc.
     for (name, dest) in &[
@@ -666,14 +670,7 @@ timeout 10
 ")?,
         "/etc/dhcpcd.conf")?;
 
-    // /etc/init.d/rcS — sysinit shell script per 51§5.2. Mounts
-    // virtual filesystems, sets hostname, brings up loopback, then
-    // optionally runs the kernel-acceptance smokes.
-    //
-    // F123: /var/run + /var/db are tmpfs so dhcpcd can create its
-    // lease state + control-socket dir on the (read-mostly) rootfs.
-    // dhcpcd backgrounds (-b) after 10s lease timeout so rcS keeps
-    // moving; the renewal loop respawns itself.
+    // /etc/init.d/rcS — sysinit shell script.
     put(&stage("rcS",
 b"#!/bin/sh
 mount -t proc  proc  /proc 2>/dev/null
