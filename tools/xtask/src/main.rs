@@ -288,7 +288,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         };
         // /bin applets — every user-facing tool dispatched via argv[0].
         for applet in &[
-            "sh", "ash", "hush",
+            "ash", "hush",
             "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
             "ps", "top", "uptime", "free", "dmesg", "mount", "umount",
             "grep", "egrep", "fgrep", "find", "head", "tail", "wc", "sort", "uniq",
@@ -393,6 +393,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let bash_bin = repo.join(format!("vendor/bash/bash-{}", arch));
     if bash_bin.is_file() {
         put(&bash_bin, "/bin/bash")?;
+        // F-bash-as-sh: bash IS the shell now. busybox-ash drops out
+        // of /bin/sh slot (the "sh" applet is no longer hardlinked
+        // above). Login / sshd / shebangs that resolve "/bin/sh"
+        // now hit GNU bash 5.2.
+        put(&bash_bin, "/bin/sh")?;
     }
 
     // F251: vim 9.1.0950 static-musl + vendored ncurses → /usr/bin/vim.
