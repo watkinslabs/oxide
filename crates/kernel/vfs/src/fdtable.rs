@@ -193,13 +193,6 @@ impl FdTable {
     pub fn fork_clone(&self) -> Self {
         let g = self.inner.lock();
         // F205: fire the clone hook for every duplicated File reference.
-        // Each Arc::clone is conceptually a new "open count" — pipes
-        // (and any other inode tracking per-fd state) need to know.
-        // Without this, fork_clone bumps Arc<File> refcount but pipe
-        // writers/readers stay at the pre-fork value; closing one
-        // copy drops Arc to 1 (no close hook), the surviving fd
-        // holds writers > 0 forever, and POLL_HUP never reaches the
-        // read side — breaks dropbear's shell-pipe relay on arm.
         for slot in g.files.iter() {
             if let Some(f) = slot.as_ref() {
                 crate::file::fire_clone_hook(f);

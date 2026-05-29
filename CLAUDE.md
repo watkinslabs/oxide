@@ -188,7 +188,7 @@ Examples:
 
 **Push policy.** Auto-push merged commits to `origin/main` after each merge without asking. Auto-push feature branches with `-u` on first push without asking. Force-push remains forbidden per the Never list below.
 
-**PRs (mandatory).** Every branch merges to `main` via `gh pr create` then `gh pr merge --merge --delete-branch=false`. No local `--no-ff` merges to `main`. PR-time CI per `docs/40§2` is the gate; until CI exists, manual review then merge. Branch retention rule still applies: `--delete-branch=false`.
+**PRs (mandatory).** Every branch merges to `main` via `gh pr create` then `gh pr merge --merge --delete-branch=true`. No local `--no-ff` merges to `main`. PR-time CI per `docs/40§2` is the gate; until CI exists, manual review then merge. Delete remote + local branch on merge — keeps the branch list clean. Git history (the merge commit) preserves recoverability.
 
 **Never (without explicit user confirmation):**
 - `git push --force` / `--force-with-lease` to `main`. Permitted only on explicit user instruction (e.g., history rewrite for branch-rename or trailer-strip). Default = forbidden.
@@ -207,7 +207,7 @@ Examples:
 
 **Reverting.** Always `git revert <sha>` to undo merged work. Never delete history on `main`.
 
-**Branch retention.** Do NOT delete merged branches. Keep feature branches around even after merge for recoverable history. `git branch -d`/`-D` only when user explicitly says delete. Default = preserve.
+**Branch retention.** Delete branches on PR merge (remote via `gh pr merge --delete-branch=true`, local via `git branch -D <name>`). Don't accumulate stale post-merge branches. Unmerged branches: keep until they're explicitly abandoned; never `git branch -D` an unmerged branch without confirmation.
 
 ## state.md is short-lived session memory, not history
 

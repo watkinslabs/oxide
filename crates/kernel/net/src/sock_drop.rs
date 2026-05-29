@@ -41,5 +41,15 @@ impl Drop for InetSocket {
                 stk.unbind_udp(p);
             }
         }
+        // B17 (T11): AF_UNIX peer-EOF. The original Drop comment claimed
+        // peer-EOF "rides the existing UnixPair / queue Drop" but there
+        // is no Drop on UnixPair, so `close_writer` was only invoked from
+        // tests. That left the peer's `is_eof` false forever, so poll
+        // never returned POLL_HUP and the surviving task (e.g. sshd-
+        // session waiting on its slave) blocked forever — keeping every
+        // upstream accept'd TCP socket pinned in CLOSE_WAIT.
+        if let SockKind::Unix(pair, end) = &*self.kind.lock() {
+            pair.close_writer(*end);
+        }
     }
 }
