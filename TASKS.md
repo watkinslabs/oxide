@@ -71,7 +71,7 @@ busybox-ash as `/bin/sh` on ARM.
 
 ## Recently closed
 
-- **D5 iputils 20240117** — closed by **#TBD F263**. ping, tracepath,
+- **D5 iputils 20240117** — closed by **#1347 F263**. ping, tracepath,
   clockdiff, arping; static-musl both arches (meson/ninja). busybox
   `ping` applet dropped; iputils owns /bin/ping. Follow-ups below.
 - **D4 iproute2 6.10.0** — closed by **#1346 F262**. ip/ss/tc/bridge/
