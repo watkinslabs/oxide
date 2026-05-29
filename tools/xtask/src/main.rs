@@ -242,23 +242,18 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         repo.join("vendor/busybox/busybox")
     };
     if bb.is_file() {
-        // Single copy of busybox at /bin/busybox; every applet path
-        // becomes a hardlink (debugfs `ln <existing> <new>`) so the
-        // ext4 image holds one inode + one set of blocks instead of
-        // ~70 duplicates. busybox routes on argv[0], so reading
-        // /bin/sh actually opens /bin/busybox and the kernel passes
-        // "/bin/sh" as argv[0].
+        // Single copy at /bin/busybox; every applet path is a hardlink
+        // (debugfs `ln`) → one inode vs ~70 dups. busybox routes on
+        // argv[0], so /bin/sh opens /bin/busybox with argv[0]="/bin/sh".
         put(&bb, "/bin/busybox")?;
         let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
             let cmd = format!("ln {} {}", target, link);
             let mut c = Command::new("debugfs");
             c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
             c.stdout(std::process::Stdio::null());
-            // Don't mute stderr — debugfs's `ln` exits 0 even when
-            // it prints `make_link: Ext2 inode is not a directory`.
-            // Without seeing the stderr we silently drop applets and
-            // ship a busted rootfs (e.g. /bin/login missing → getty
-            // can't exec it). Pipe stderr through so failures show.
+            // Don't mute stderr — debugfs `ln` exits 0 even on
+            // `make_link: Ext2 inode is not a directory`; muting it
+            // silently drops applets and ships a busted rootfs.
             run(c)
         };
         // /bin applets — every user-facing tool dispatched via argv[0].
@@ -284,7 +279,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         // our kernel's loader; revisit once we rebuild it as PIE).
         for applet in &[
             "init", "halt", "reboot", "poweroff", "shutdown",
-            "mdev", "ifconfig", "route", "ip",
+            "mdev", "ifconfig", "route",
             "fdisk", "swapon", "swapoff",
             "mount", "umount",
             "udhcpc", "udhcpd",
@@ -421,6 +416,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         }
     }
 
+    // F262 (D4): iproute2 — ip, ss, tc, bridge, etc.
+    for (name, dest) in &[
+        ("ip","/sbin/ip"),("ss","/sbin/ss"),("tc","/sbin/tc"),
+        ("bridge","/sbin/bridge"),("rtmon","/sbin/rtmon"),
+        ("lnstat","/usr/sbin/lnstat"),("nstat","/usr/sbin/nstat"),
+        ("ifstat","/usr/sbin/ifstat"),
+    ] {
+        let host = repo.join(format!("vendor/iproute2/{name}-{arch}"));
+        if host.is_file() {
+            put(&host, dest)?;
+        }
+    }
+    ln_via_debugfs("/sbin/ip", "/bin/ip")?;
+
     // F251: vim 9.1.0950 static-musl + vendored ncurses → /usr/bin/vim.
     let vim_bin = repo.join(format!("vendor/vim/vim-{}", arch));
     if vim_bin.is_file() {
@@ -497,11 +506,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F218: vendored GNU coreutils 8.32 — static-musl, single-binary
-    // mode. Binary at /usr/libexec/coreutils; symlinks per applet under
-    // /usr/bin so PATH lookup picks real GNU semantics over busybox.
-    // Skipping 'install' (clashes with package-manager keyword) and
-    // 'true'/'false'/'echo'/'test' (built-in to every shell). Per
+    // F218: coreutils 8.32 single-binary at /usr/libexec/coreutils.
     // vendor/coreutils/build.sh.
     let cu_bin = repo.join(format!("vendor/coreutils/coreutils-{}", arch));
     if cu_bin.is_file() {
@@ -560,11 +565,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     };
 
     put(&stage("issue", b"oxide \\s on \\l\n\n")?, "/etc/issue")?;
-    // F149-3: marker file gates init's userspace acceptance smokes.
-    // Present → init runs sem/msg/mq/ptrace/etc. before dropping to
-    // sh. Absent → init goes straight to sh (interactive boot path).
-    // Default = staged so CI keeps exercising the kernel-IPC suite.
-    // Set OXIDE_INIT_SMOKES=0 to skip the marker (interactive boot).
+    // F149-3: present → init runs kernel-acceptance smokes (set 0 to skip).
     if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
         put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
     }
@@ -580,11 +581,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if std::env::var("OXIDE_DHCPCD_ENABLE").as_deref() == Ok("1") {
         put(&stage("oxide-dhcpcd-enable", b"1\n")?, "/etc/oxide-dhcpcd-enable")?;
     }
-    // F141: udhcpc marker — opt-in busybox-based DHCP client.
-    // (F155 explored default-on; arm TCG boot doesn't reach login
-    // inside the 180s smoke window when the full DHCP + online_smoke
-    // + tcp_smoke chain runs, so DHCP stays opt-in until perf work
-    // closes that gap. x86 handles default-on fine in 16s.)
+    // F141: udhcpc marker — opt-in busybox DHCP client.
     if std::env::var("OXIDE_UDHCPC_ENABLE").as_deref() == Ok("1") {
         put(&stage("oxide-udhcpc-enable", b"1\n")?, "/etc/oxide-udhcpc-enable")?;
     }
