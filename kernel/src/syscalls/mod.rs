@@ -291,6 +291,10 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
             let task: &sched::Task = unsafe { &*raw };
             task.exit_status.store(args.a0 as i32, Ordering::Release);
             task.vfork_pending.store(false, Ordering::Release); // F156 vfork
+            // cgroup v2 (`26§4`): drop the exiting task from its
+            // cgroup so cgroup.procs / cgroup.events `populated`
+            // reflect reality — systemd keys service liveness on it.
+            cgroup::on_exit(task.tid as u64);
             // F205: drop the exiting task's fd_table Arc reference
             // BEFORE waking the parent. Linux closes a process's
             // open files at exit (do_exit → exit_files → put_files_struct);
