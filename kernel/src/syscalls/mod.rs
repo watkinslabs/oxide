@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -818,8 +818,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SYMLINKAT=> crate::syscalls::namei::sys_symlinkat(&args),
         syscall::nrs::NR_MKNOD    => crate::syscalls::namei::sys_mknod(&args),
         syscall::nrs::NR_MKNODAT  => crate::syscalls::namei::sys_mknodat(&args),
-        syscall::nrs::NR_FSTATFS | syscall::nrs::NR_STATFS
-                                 => crate::syscalls::fs::sys_statfs(&args),
+        syscall::nrs::NR_STATFS  => crate::syscalls::statfs::sys_statfs(&args),
+        syscall::nrs::NR_FSTATFS => crate::syscalls::statfs::sys_fstatfs(&args),
         syscall::nrs::NR_GETCPU        => crate::syscalls::proc::sys_getcpu(&args),
         syscall::nrs::NR_SCHED_GETPARAM => crate::syscalls::proc::sys_sched_getparam(&args),
         syscall::nrs::NR_SCHED_SETSCHEDULER | syscall::nrs::NR_SCHED_GETSCHEDULER
