@@ -1,105 +1,72 @@
 # Session hand-off — 2026-05-30
 
 ## TL;DR
-Branch `B18-login-smoke-fix`. Three commits done; one more to add (the
-TIOCSCTTY VT fix). PAM auth works end-to-end on console + SSH. Shell
-hand-off works for our own `/bin/login_sim` reproducer. util-linux
-`/sbin/login` itself still fails between `pam_setcred(REINIT)` and
-`fork_session` — root cause not yet isolated. **Do not claim "login
-works" until you see `$` and `uid=1000(alice)` after typing `id` on
-the console serial line.**
+Branch `B18-login-smoke-fix`, six commits. Console login works
+end-to-end on both arches: typing `alice`/`swordfish` at
+`oxide login:` reaches `oxide:~$` and `id` reports
+`uid=1000(alice) gid=1000`. New `make smoke-login` regression
+test guards it. PR not yet opened — open it next.
 
-## Commits on this branch
-- e5217cc1 — upstream Linux-PAM 1.7.2; deleted `userspace/pam_modules/`;
-  fixed `/dev/console::read()` to drain the ring instead of returning
-  Ok(1) (B18 input-mangling).
-- 87351ad2 — `crates/kernel/mm-vmm/src/address_space.rs::fork_cow_pages`
-  now COW-shares File-backed VMAs (was skipping them, child SIGSEGV'd
-  on first libpam.so access).
-- ad1dc5b4 — drop `-Dpam-debug=true` build flag (chore).
+## Commits
+- e5217cc1 — upstream Linux-PAM 1.7.2 ecosystem (deleted the
+  hand-rolled `userspace/pam_modules/`); `/dev/console::read`
+  drains ring instead of returning Ok(1).
+- 87351ad2 — `fork_cow_pages` COW-shares File-backed VMAs
+  (child SIGSEGV'd on first libpam.so access pre-fix).
+- ad1dc5b4 — drop `-Dpam-debug=true` build flag.
+- c9932bb2 — TIOCSCTTY VT branch seeds `foreground_pgid`;
+  ships `login_sim` reproducer.
+- f3692654 — **root cause**: SysV stack envp strings now sit
+  ABOVE argv strings (matches Linux). util-linux login's
+  `process_title_init` computed `argv_lth = envp[last] +
+  strlen - argv[0]`; with our reversed layout that underflowed
+  to ~2^63, the subsequent `memset` SIGSEGV'd login between
+  `init_environ` and `fork_session`.
+- 42e40465 — `tools/boot-smoke-login.sh` + Makefile wiring;
+  split `address_space.rs`→`mremap.rs` and `xtask/main.rs`→
+  `cmds.rs` to clear the 1000-line cap.
 
-## To commit before opening PR
-- `kernel/src/syscalls/ioctl.rs` TIOCSCTTY VT branch now sets
-  `set_foreground_pgid(vt, cur.pgid)` to mirror the PTY branch.
-  Without this, busybox `sh`'s job-control sees `tcgetpgrp(0)==0` ≠
-  its own pgrp on the freshly-controlled VT and the shell stops
-  itself before printing a prompt. Verified with login_sim.
-- `userspace/login_sim/` — the reproducer. Builds dynamic against
-  libpam.so.0, staged as `/bin/login_sim`. Runs PAM auth + acct +
-  setcred(ESTABLISH/REINIT) + open_session, then initgroups +
-  setgid + chown_tty + chmod + vhangup + TIOCNOTTY + fork →
-  child:setsid+open_tty+TIOCSCTTY+setuid+chdir+execvp /bin/sh. With
-  the TIOCSCTTY fix it gives a working `oxide:~$` prompt on the
-  console. Useful as a permanent diagnostic.
-- xtask change to build + stage login_sim.
+## How the bug was found
+Added file-logged checkpoints (`dlog` → /tmp/login.dbg with
+O_APPEND so writes survive parent close(0/1/2)) to
+vendor/util-linux/login.c, booted, ssh'd in to read the log.
+Last visible step before exit was `before process_title_update`,
+missing `before log_syslog`. Pointed at the `memset(argv0[0],
+0, argv_lth)` in `process_title_update` → traced argv_lth back
+to `process_title_init` → cross-checked our stack builder vs
+Linux `fs/binfmt_elf.c::copy_strings`. Diagnostic source was
+then deleted from the gitignored vendor tree and a pristine
+re-extract verified the kernel-only fix.
 
-## Open: util-linux login still respawns post-PAM
-Real `/sbin/login` invoked by `agetty` from inittab still fails after
-my TIOCSCTTY fix. Sequence:
+## Verified
+- `OXIDE_QEMU_KVM=1 ./tools/boot-smoke-login.sh x86 120` → PASS in 25s
+- `./tools/boot-smoke-login.sh arm 600` → PASS in 31s
+- `cargo run -p xtask --release -- spec-lint` → clean
+- Both arches build clean
 
-1. agetty prompts `oxide login:`, user types `alice`
-2. login execs, PAM auth + acct + setcred + open_session + setcred
-   all return Success
-3. login does init_environ (pam_getenvlist) — visible in serial
-4. login then does `fork_session` (with `parent: close(0/1/2) + wait`,
-   `child: setsid + open_tty(/dev/ttyS0) + TIOCSCTTY + …`)
-5. After fork_session returns in child, login does setuid + chdir +
-   pam_end + execvp `/bin/sh -sh`
-6. Shell never prints a prompt; agetty respawns after login exits
-   with status 1
-
-login_sim replicates that EXACT sequence (verified syscall-by-syscall
-including `process_title_init`/`update`, and the same parent-close +
-wait scheme) and produces a working shell prompt. So the broken
-piece is something specific to util-linux's login binary that
-login_sim isn't reproducing.
-
-Suspects to investigate next session:
-- `log_lastlog` — opens /var/log/lastlog (file doesn't exist, should
-  silently bail); but pwrite at offset `1000 * sizeof(ll) = 292000`
-  bytes creates a sparse file. Our ext4 write path for sparse holes
-  may not handle that — check `crates/kernel/ext4` for pwrite + hole
-  behavior, or just `touch` /var/log/lastlog into the rootfs.
-- `log_utmp` — opens /var/run/utmp (also missing, should silently
-  bail).
-- `display_login_messages → motd` — reads /etc/motd, silent if
-  missing.
-- The `closelog()` inside `fork_session` (before fork) — does
-  anything if /dev/log is unbound.
-- Login's actual exit code is 1 (EXIT_FAILURE), so something
-  exit()s with EXIT_FAILURE between pam_getenvlist (visible) and
-  fork_session (invisible). Likely candidates: `setgid` failure
-  path (line 1510-1513) or `chdir(/)` after home chdir failed (line
-  1542-1544). With current /home/alice mode 0755 root:root, alice
-  should chdir fine. setgid(1000) from root should succeed.
-
-Diagnostic plan: copy util-linux login.c locally, build with
-`-DDEBUG` and ship as a debug-only `/bin/login_dbg`, observe the
-exact exit point. (NOT a vendor patch — a debug build with extra
-prints, kept out of the production build.)
-
-## Other findings worth keeping
-- vhangup currently broadcasts SIGHUP to **every** task in the
-  caller's session, not just those whose controlling tty matches.
-  When login (called from rcS without a setsid'd session leader) does
-  vhangup, sshd reports `Received SIGHUP; restarting.` and re-binds
-  port 22. Cosmetic in normal use (agetty does setsid first), but
-  worth tightening: `kernel/src/syscalls/proc.rs::sys_vhangup`
-  should scope SIGHUP to processes whose ctty matches the caller's,
-  per Linux semantics.
-- `/dev/log` no longer registered in devfs — userspace syslogd is
-  expected to bind it as AF_UNIX. devtmpfs needs to actually permit
-  the bind for syslogd to start; until then, libpam's pam_syslog
-  messages disappear and rcS's `syslogd -O /var/log/messages` is
-  a no-op.
+## Open / cosmetic
+- `sh: child setpgid (62 to 62): No such process` cosmetic
+  warning from busybox after login — doesn't break the shell.
+  Worth a follow-up; not B18-blocking.
+- `vhangup` still broadcasts SIGHUP to whole session, not just
+  processes whose ctty matches. Tracked separately.
+- /dev/log AF_UNIX bind for syslogd capture of pam_syslog
+  (currently those messages drop on the floor). Tracked.
+- B18 originally asked for the smoke to also drive sshd login
+  in the same harness; sshd login works (verified manually via
+  sshpass) but isn't exercised by `boot-smoke-login.sh`. Add a
+  second smoke or extend the existing one in a follow-up.
 
 ## Run-down for next session
-1. Commit the TIOCSCTTY VT fix + login_sim + xtask change as one
-   commit (`fix(tty,xtask): TIOCSCTTY VT foreground_pgid + login_sim
-   B18 reproducer`).
-2. Investigate the remaining util-linux login post-PAM exit-1 with
-   the debug-build approach above.
-3. Add `touch`-style empty files for /var/log/lastlog + /var/run/utmp
-   in xtask staging so login's silent-bail paths don't trip on
-   anything in our ext4.
-4. Open PR after console login lands.
+1. `gh pr create` for B18-login-smoke-fix → main. Title:
+   "feat(login): B18 console login end-to-end + smoke gate".
+   Body should highlight the stack-ordering root cause and
+   the new `make smoke-login` target.
+2. After merge: pick the next phase per `docs/00§3`. The
+   distro track (phases 13–17) is what console login was
+   unblocking; phase 13 (dynamic linker) and 14 (libc/NSS/PAM)
+   are now largely done in spirit — audit and freeze the
+   corresponding specs.
+3. Optional follow-up: the cosmetic setpgid race in busybox
+   when launched as login shell, the vhangup ctty-scoping fix,
+   and AF_UNIX `/dev/log` for syslogd capture.
