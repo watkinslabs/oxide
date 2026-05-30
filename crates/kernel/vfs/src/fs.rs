@@ -25,6 +25,14 @@ pub trait FileSystem: Send + Sync {
     /// # C: O(1)
     fn name(&self) -> &str;
 
+    /// Superblock `s_magic` (linux/magic.h) reported by `statfs(2)` /
+    /// `fstatfs(2)` `f_type`. systemd & friends detect fs type by this
+    /// magic (cgroup2=0x63677270, tmpfs=0x01021994, proc=0x9fa0, …), so
+    /// every real backend must override. `0` = "no opinion": the statfs
+    /// classifier then falls through to its path-prefix table.
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0 }
+
     /// Resolve `path` (relative to this FS's mount point) to an
     /// `InodeRef`. Returns `None` if no such name exists.
     /// # C: depends on FS — typically O(path-component-count).

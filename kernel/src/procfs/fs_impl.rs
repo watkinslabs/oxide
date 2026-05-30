@@ -16,6 +16,9 @@ pub struct ProcfsFs;
 impl vfs::fs::FileSystem for ProcfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "procfs" }
+    /// PROC_SUPER_MAGIC (linux/magic.h).
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0x9fa0 }
     /// # C: O(1) for static entries, O(N_tasks) for /proc/<pid>/*.
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> {
         if let Some(i) = devfs::lookup(path) { return Some(i); }
