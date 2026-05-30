@@ -62,6 +62,23 @@ pub fn alloc_ephemeral_port() -> Result<u16, NetError> {
     Err(NetError::Eaddrinuse)
 }
 
+/// AF_INET6 ephemeral-port allocator. Binds under `Ipv6Addr::ANY` in
+/// the v6 UDP map so reply datagrams to a v6 client reach its recv
+/// queue (the v4 `alloc_ephemeral_port` would bind in the wrong map
+/// and replies via `deliver_rx_ipv6` would miss).
+/// # C: O(N tries)
+pub fn alloc_ephemeral_port6() -> Result<u16, NetError> {
+    use core::sync::atomic::Ordering;
+    for _ in 0..(65535 - 49152) {
+        let p = EPHEM_NEXT.fetch_add(1, Ordering::Relaxed);
+        let p = if p < 49152 { 49152 } else if p == 0 { 49152 } else { p };
+        if STACK.bind_udp6(crate::Ipv6Addr::ANY, p).is_ok() {
+            return Ok(p);
+        }
+    }
+    Err(NetError::Eaddrinuse)
+}
+
 /// Per-AF_INET-socket variant.
 pub enum SockKind {
     /// SOCK_DGRAM — bound port managed via NetStack's UDP map.
@@ -587,6 +604,15 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     STACK.recv_udp(port)
 }
 
+/// AF_INET6 UDP dgram receive — pops one datagram from the v6 port
+/// map. Mirror of `socket_recv` for the IPv6 family.
+/// # C: O(1)
+pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)> {
+    drain_loopback();
+    let port = (*sock.local_port.lock())?;
+    STACK.recv_udp6(port)
+}
+
 /// F150: boot-installed hook: iface primary IPv4 lookup. # C: O(1)
 static IFACE_PRIMARY_IP_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
@@ -948,53 +974,9 @@ pub fn sendto(
     socket_sendto(sock, dst_ip, dst_port, payload)
 }
 
+// P5-01: `recvfrom` work fn + `Received` result moved to sock_io.rs
+// for the 1000-line cap; re-exported here so `net::sock::recvfrom`
+// and `net::sock::Received` call sites stay unchanged.
+pub use crate::sock_io::{recvfrom, Received};
 
-/// `recvfrom` result. Caller (Tier-3 shim) copies payload into user
-/// buf, optionally writes peer sockaddr.
-pub struct Received {
-    pub payload: alloc::vec::Vec<u8>,
-    pub peer: Option<(Ipv4Addr, u16)>,
-}
 
-/// `recvfrom` per `recvfrom(2)`. Tier-2 work fn. Returns the payload
-/// and an optional peer address (None for AF_UNIX SOCK_DGRAM and
-/// for sockets without a stored peer).
-/// # C: O(payload bytes)
-pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<Received, NetError> {
-    // AF_UNIX SOCK_DGRAM.
-    if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-        let q = q.clone();
-        let msg = q.pop().ok_or(NetError::Eagain)?;
-        let take = core::cmp::min(max_len, msg.payload.len());
-        let mut out = alloc::vec::Vec::with_capacity(take);
-        out.extend_from_slice(&msg.payload[..take]);
-        return Ok(Received { payload: out, peer: None });
-    }
-    // F137: AF_PACKET. Pop one queued frame; peer = None for now
-    // (the sockaddr_ll shaping rides with sys_recvfrom's writer).
-    if let SockKind::Packet { rx, .. } = &*sock.kind.lock() {
-        let frame = {
-            let mut q = rx.lock();
-            q.pop_front().ok_or(NetError::Eagain)?
-        };
-        let take = core::cmp::min(max_len, frame.len());
-        let mut out = alloc::vec::Vec::with_capacity(take);
-        out.extend_from_slice(&frame[..take]);
-        return Ok(Received { payload: out, peer: None });
-    }
-    // TCP.
-    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        let entry = entry.clone();
-        drain_loopback();
-        let payload = stack().tcp_recv(&entry, max_len);
-        if payload.is_empty() { return Err(NetError::Eagain); }
-        let peer = *sock.peer.lock();
-        return Ok(Received { payload, peer });
-    }
-    // UDP / others.
-    let (src_ip, src_port, full) = socket_recv(sock).ok_or(NetError::Eagain)?;
-    let take = core::cmp::min(max_len, full.len());
-    let mut out = alloc::vec::Vec::with_capacity(take);
-    out.extend_from_slice(&full[..take]);
-    Ok(Received { payload: out, peer: Some((src_ip, src_port)) })
-}
