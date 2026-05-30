@@ -52,8 +52,8 @@ const PLATFORM: &[u8] = b"aarch64\0";
 ///                         │ random16 (AT_RANDOM target)
 ///                         │ platform string
 ///                         │ execfn string
-///                         │ argv[*] strings (NUL-terminated)
-///                         │ envp[*] strings (NUL-terminated)
+///                         │ envp[*] strings (NUL-terminated, higher VAs)
+///                         │ argv[*] strings (NUL-terminated, lower VAs)
 ///                         │ ── 16-byte alignment pad
 ///                         │ auxv [(AT_NULL,0)]   ← terminator
 ///                         │ auxv [...]
@@ -93,17 +93,25 @@ pub unsafe fn build_user_stack(
     // SAFETY: same as above; bytes len is bounded by caller-supplied argv slice.
     let execfn_va = unsafe { push_cstr(&mut cursor, execfn_bytes) }?;
 
-    let mut argv_vas: Heapless256 = Heapless256::new();
-    for s in argv {
-        // SAFETY: same as above; argv element pushed onto stack.
-        let va = unsafe { push_cstr(&mut cursor, s) }?;
-        argv_vas.push(va)?;
-    }
+    // Push envp strings FIRST (higher VAs) then argv strings (lower).
+    // This matches Linux fs/binfmt_elf.c copy_strings order so that
+    // envp[last] ends up at a HIGHER address than argv[0]. util-linux
+    // login's process_title_init relies on
+    //   argv_lth = envp[i-1] + strlen(envp[i-1]) - argv[0]
+    // being positive; if argv strings sit above envp strings, that
+    // subtraction underflows to a huge size_t and the subsequent
+    // memset(argv0[0], 0, argv_lth) faults the process.
     let mut envp_vas: Heapless256 = Heapless256::new();
     for s in envp {
         // SAFETY: same as above; envp element pushed onto stack.
         let va = unsafe { push_cstr(&mut cursor, s) }?;
         envp_vas.push(va)?;
+    }
+    let mut argv_vas: Heapless256 = Heapless256::new();
+    for s in argv {
+        // SAFETY: same as above; argv element pushed onto stack.
+        let va = unsafe { push_cstr(&mut cursor, s) }?;
+        argv_vas.push(va)?;
     }
 
     // 2. Compute total size of the pointer/auxv vector area, then
