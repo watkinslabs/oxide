@@ -291,10 +291,24 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let _ = crate::fire_add_cpu(x2apic_id, flags);
                 }
                 11 if elen >= 80 => {
+                    // GICC structure (ACPI 6.5 §5.2.12.14):
+                    //  off 0..3   header (type/length/reserved)
+                    //  off 4..7   cpu_interface_number
+                    //  off 8..11  acpi_processor_uid
+                    //  off 12..15 flags
+                    //  off 16..19 parking_protocol_version
+                    //  off 20..23 performance_interrupt_gsiv
+                    //  off 24..31 parked_address
+                    //  off 32..39 physical_base_address
+                    //  off 40..47 gicv
+                    //  off 48..55 gich
+                    //  off 56..59 vgic_maintenance_interrupt
+                    //  off 60..67 gicr_base_address  ← NOT mpidr
+                    //  off 68..75 mpidr
                     let cpu_iface = read_u32_le(p.add(off + 4));
                     let acpi_uid  = read_u32_le(p.add(off + 8));
                     let flags     = read_u32_le(p.add(off + 12));
-                    let mpidr     = read_u64_le(p.add(off + 60));
+                    let mpidr     = read_u64_le(p.add(off + 68));
                     alog_raw(b"[INFO]      gicc iface=");
                     alog_dec(cpu_iface as u64);
                     alog_raw(b" uid=");
