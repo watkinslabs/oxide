@@ -94,7 +94,7 @@ EOF
   ( cd "$SRC" && \
     CC="$cc" \
     CFLAGS="-Os $extra -I${pam_root} -I${zlib_root}/include -DUNSUPPORTED_POSIX_THREADS_HACK" \
-    LDFLAGS="-Wl,--export-dynamic -L${pam_root} -L${zlib_root}/lib" \
+    LDFLAGS="-L${pam_root} -L${pam_root}/lib -L${zlib_root}/lib -Wl,-rpath,/usr/lib" \
     LIBS="-lpam -lpam_misc -lz -lpthread" \
     ./configure \
       --cache-file=config.cache \
