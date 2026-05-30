@@ -8,6 +8,7 @@ pub mod fs_impl;
 pub mod proc_links;
 pub mod static_files;
 pub mod cgroup_file;
+pub mod mounts;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -321,16 +322,8 @@ procs_running 1\n\
 procs_blocked 0\n\
 softirq 0 0 0 0 0 0 0 0 0 0\n";
 pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
-pub(crate) const MOUNTS_BODY:  &[u8] = b"\
-/dev/oxide0 / ext4 rw,relatime 0 0\n\
-proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
-sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n\
-devtmpfs /dev devtmpfs rw,nosuid,relatime,size=4096k,nr_inodes=1048576,mode=755 0 0\n\
-devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=666 0 0\n\
-tmpfs /run tmpfs rw,nosuid,nodev 0 0\n\
-tmpfs /tmp tmpfs rw,nosuid,nodev,relatime 0 0\n\
-tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n";
-pub(crate) const MOUNTINFO_BODY: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n2 1 0:2 / /dev rw - devtmpfs devtmpfs rw\n3 1 0:3 / /proc rw - proc proc rw\n4 1 0:4 / /tmp rw - tmpfs tmpfs rw\n";
+// /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
+// from the live `vfs::mount` table — see `procfs::mounts`.
 pub(crate) const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
 pub(crate) const LIMITS_BODY:  &[u8] = b"\
 Limit                     Soft Limit           Hard Limit           Units\n\
@@ -666,8 +659,8 @@ impl Inode for ProcPidDirInode {
             // F158: Linux per-pid files. Most stub to plausible values;
             // tools that probe these (systemd, glibc, gdb) accept them.
             "syscall"  => Ok(StaticFileInode::new(b"running\n") as InodeRef),
-            "mounts"   => Ok(StaticFileInode::new(MOUNTS_BODY) as InodeRef),
-            "mountinfo" => Ok(StaticFileInode::new(MOUNTINFO_BODY) as InodeRef),
+            "mounts"   => Ok(Arc::new(crate::procfs::mounts::ProcMountsInode) as InodeRef),
+            "mountinfo" => Ok(Arc::new(crate::procfs::mounts::ProcMountinfoInode) as InodeRef),
             "cgroup"   => Ok(Arc::new(ProcCgroupInode { tid: Some(self.tid) }) as InodeRef),
             "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),

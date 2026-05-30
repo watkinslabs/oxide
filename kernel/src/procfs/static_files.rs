@@ -12,8 +12,8 @@ use crate::procfs::{
     ProcSelfStatusInode, ProcSelfCmdlineInode, ProcSelfStatInode,
     ProcSelfMapsInode, ProcSelfFdInode, ProcRootInode, ProcSelfCommInode,
     ProcSelfEnvironInode, ProcHostnameInode,
-    VERSION_BODY, CPUINFO_BODY, STAT_BODY, FILESYSTEMS, MOUNTS_BODY,
-    LIMITS_BODY, IO_BODY, MOUNTINFO_BODY,
+    VERSION_BODY, CPUINFO_BODY, STAT_BODY, FILESYSTEMS,
+    LIMITS_BODY, IO_BODY,
 };
 
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
@@ -54,7 +54,8 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
           memory\t0\t1\t1\npids\t0\t1\t1\n") as InodeRef);
     crate::devfs::register("/proc/self/cgroup",
         alloc::sync::Arc::new(crate::procfs::ProcCgroupInode { tid: None }) as InodeRef);
-    crate::devfs::register("/proc/mounts",      StaticFileInode::new(MOUNTS_BODY)      as InodeRef);
+    crate::devfs::register("/proc/mounts",
+        Arc::new(crate::procfs::mounts::ProcMountsInode) as InodeRef);
     // /proc root inode for getdents64 enumeration of live tids.
     crate::devfs::register("/proc",              Arc::new(ProcRootInode)        as InodeRef);
     crate::devfs::register("/proc/self/status",  Arc::new(ProcSelfStatusInode)  as InodeRef);
@@ -187,7 +188,9 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     crate::devfs::register("/proc/self/io",
         StaticFileInode::new(IO_BODY) as InodeRef);
     crate::devfs::register("/proc/self/mountinfo",
-        StaticFileInode::new(MOUNTINFO_BODY) as InodeRef);
+        Arc::new(crate::procfs::mounts::ProcMountinfoInode) as InodeRef);
+    crate::devfs::register("/proc/self/mounts",
+        Arc::new(crate::procfs::mounts::ProcMountsInode) as InodeRef);
     crate::devfs::register("/proc/sys/kernel/random/boot_id",
         StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
     crate::devfs::register("/proc/sys/kernel/pid_max",
