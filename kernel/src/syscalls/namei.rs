@@ -229,6 +229,29 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
 
+/// POSIX: mkdir of an already-existing path is EEXIST, not EROFS.
+/// Root (`/`) and mounted pseudo dirs (`/proc`, `/sys`, `/dev`,
+/// `/sys/fs/cgroup`, …) exist but live outside the ext4 writable
+/// set, so the plain Erofs fallback would mis-report them. Without
+/// this, `mkdir -p` — which walks `/` then every ancestor — prints a
+/// spurious "Read-only file system" for each existing component.
+/// # C: O(N registry)
+fn mkdir_target_exists(p: &str) -> bool {
+    p == "/"
+        || crate::devfs::lookup(p).is_some()
+        || ext4::rootfs::lookup_path(p.as_bytes()).is_some()
+}
+
+/// Strip a trailing `/` (POSIX: `mkdir /var/` ≡ `mkdir /var`). Root
+/// `/` is preserved. busybox/GNU `mkdir -p` walk ancestors with a
+/// trailing slash on each prefix; without this the ext4 backend
+/// resolves `/var/` to a missing child and returns ENOENT for a dir
+/// that exists.
+/// # C: O(1)
+fn strip_trailing_slash(p: &str) -> &str {
+    if p.len() > 1 { p.strip_suffix('/').unwrap_or(p) } else { p }
+}
+
 /// `mkdir(path, mode)` slot 83.
 /// # C: O(N parent entries)
 pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
@@ -236,10 +259,12 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
+    let p = String::from(strip_trailing_slash(&p));
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let mode = args.a1 as u16;
     if let Some(rv) = pseudo_mkdir(&p, mode as u32) { return rv; }
+    if mkdir_target_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
         Ok(())  => 0,
@@ -255,10 +280,12 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let p = resolve(&raw).unwrap_or(raw);
+    let p = String::from(strip_trailing_slash(&p));
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let mode = args.a2 as u16;
     if let Some(rv) = pseudo_mkdir(&p, mode as u32) { return rv; }
+    if mkdir_target_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
         Ok(())  => 0,
