@@ -1,97 +1,105 @@
 # Session hand-off — 2026-05-30
 
 ## TL;DR
-Branch `B18-login-smoke-fix`. **Login WORKS — both console and SSH.**
+Branch `B18-login-smoke-fix`. Three commits done; one more to add (the
+TIOCSCTTY VT fix). PAM auth works end-to-end on console + SSH. Shell
+hand-off works for our own `/bin/login_sim` reproducer. util-linux
+`/sbin/login` itself still fails between `pam_setcred(REINIT)` and
+`fork_session` — root cause not yet isolated. **Do not claim "login
+works" until you see `$` and `uid=1000(alice)` after typing `id` on
+the console serial line.**
 
-  $ sshpass -p swordfish ssh -p 2222 alice@127.0.0.1 id
-  uid=1000(alice) gid=1000 groups=1000,10(wheel),100(users)
+## Commits on this branch
+- e5217cc1 — upstream Linux-PAM 1.7.2; deleted `userspace/pam_modules/`;
+  fixed `/dev/console::read()` to drain the ring instead of returning
+  Ok(1) (B18 input-mangling).
+- 87351ad2 — `crates/kernel/mm-vmm/src/address_space.rs::fork_cow_pages`
+  now COW-shares File-backed VMAs (was skipping them, child SIGSEGV'd
+  on first libpam.so access).
+- ad1dc5b4 — drop `-Dpam-debug=true` build flag (chore).
 
-  oxide login: alice
-  Password: ........
-  pam_sm_authenticate → Success
-  pam_open_session    → Success
+## To commit before opening PR
+- `kernel/src/syscalls/ioctl.rs` TIOCSCTTY VT branch now sets
+  `set_foreground_pgid(vt, cur.pgid)` to mirror the PTY branch.
+  Without this, busybox `sh`'s job-control sees `tcgetpgrp(0)==0` ≠
+  its own pgrp on the freshly-controlled VT and the shell stops
+  itself before printing a prompt. Verified with login_sim.
+- `userspace/login_sim/` — the reproducer. Builds dynamic against
+  libpam.so.0, staged as `/bin/login_sim`. Runs PAM auth + acct +
+  setcred(ESTABLISH/REINIT) + open_session, then initgroups +
+  setgid + chown_tty + chmod + vhangup + TIOCNOTTY + fork →
+  child:setsid+open_tty+TIOCSCTTY+setuid+chdir+execvp /bin/sh. With
+  the TIOCSCTTY fix it gives a working `oxide:~$` prompt on the
+  console. Useful as a permanent diagnostic.
+- xtask change to build + stage login_sim.
 
-Two commits on this branch:
-  e5217cc1 feat(pam): upstream Linux-PAM 1.7.2 ecosystem; kernel diagnostics
-  87351ad2 fix(vmm): fork_cow_pages — share File-backed VMAs
+## Open: util-linux login still respawns post-PAM
+Real `/sbin/login` invoked by `agetty` from inittab still fails after
+my TIOCSCTTY fix. Sequence:
 
-## What broke before and how we found it
-1. **Console login mangled**: typing `alice` at the login prompt
-   then `swordfish` for the password produced `Login incorrect`,
-   then immediately re-prompted with `swordfish` as the next
-   username. Bug was `/dev/console` and `/dev/ttyS0` `read()`
-   returning `Ok(1)` per syscall; misc_conv reads `INPUTSIZE-1`
-   expecting the whole line, so it took the first byte as the
-   entire password and the rest stayed buffered as the next read.
-   Fixed in `kernel/src/dev/console.rs`: drain the ring after the
-   first byte (commit e5217cc1).
+1. agetty prompts `oxide login:`, user types `alice`
+2. login execs, PAM auth + acct + setcred + open_session + setcred
+   all return Success
+3. login does init_environ (pam_getenvlist) — visible in serial
+4. login then does `fork_session` (with `parent: close(0/1/2) + wait`,
+   `child: setsid + open_tty(/dev/ttyS0) + TIOCSCTTY + …`)
+5. After fork_session returns in child, login does setuid + chdir +
+   pam_end + execvp `/bin/sh -sh`
+6. Shell never prints a prompt; agetty respawns after login exits
+   with status 1
 
-2. **PAM auth always returned PAM_AUTH_ERR (7)**: pam_unix forks
-   a helper to run `unix_chkpwd`; child SIGSEGVs in libpam.so's
-   `pam_modutil_sanitize_helper_fds`. Bisected via `/bin/pamtest`
-   (a tiny PAM-driver test binary the rootfs ships): plain
-   `fork+pam_strerror` worked, `fork+sanitize` SIGSEGV; manual
-   reimplementation of the sanitize body in pamtest's own static
-   code from a forked child worked, only the libpam.so path
-   crashed. That isolated it to fork-time PT copying.
+login_sim replicates that EXACT sequence (verified syscall-by-syscall
+including `process_title_init`/`update`, and the same parent-close +
+wait scheme) and produces a working shell prompt. So the broken
+piece is something specific to util-linux's login binary that
+login_sim isn't reproducing.
 
-   Root cause: `crates/kernel/mm-vmm/src/address_space.rs::
-   fork_cow_pages` only copied page table entries for `Anonymous`
-   + `KernelBytes` VMA backings; File-backed VMAs (mmap'd
-   `libpam.so`, `libc.so`, …) were skipped, so the child started
-   with no PT entries for them and the first access to any
-   instruction or .data byte in those mappings was an
-   unresolvable user fault → kernel delivered SIGSEGV. Linux
-   mm/memory.c shares file-backed pages on fork via the same COW
-   pipeline; we now do the same — read-only file pages
-   (.text/.rodata) stay shared forever, writable file pages (.data)
-   get RO-remap + COW-on-first-write. Fixed in commit 87351ad2.
+Suspects to investigate next session:
+- `log_lastlog` — opens /var/log/lastlog (file doesn't exist, should
+  silently bail); but pwrite at offset `1000 * sizeof(ll) = 292000`
+  bytes creates a sparse file. Our ext4 write path for sparse holes
+  may not handle that — check `crates/kernel/ext4` for pwrite + hole
+  behavior, or just `touch` /var/log/lastlog into the rootfs.
+- `log_utmp` — opens /var/run/utmp (also missing, should silently
+  bail).
+- `display_login_messages → motd` — reads /etc/motd, silent if
+  missing.
+- The `closelog()` inside `fork_session` (before fork) — does
+  anything if /dev/log is unbound.
+- Login's actual exit code is 1 (EXIT_FAILURE), so something
+  exit()s with EXIT_FAILURE between pam_getenvlist (visible) and
+  fork_session (invisible). Likely candidates: `setgid` failure
+  path (line 1510-1513) or `chdir(/)` after home chdir failed (line
+  1542-1544). With current /home/alice mode 0755 root:root, alice
+  should chdir fine. setgid(1000) from root should succeed.
 
-3. Vendor-side wiring up:
-   - Killed `userspace/pam_modules/` (the hand-rolled minimal
-     pam_unix). Now ship upstream Linux-PAM 1.7.2 sources:
-     `libpam.so.0.85.1`, `libpam_misc.so.0.82.1`, and the upstream
-     modules (`pam_unix`, `pam_permit`, `pam_deny`, `pam_nologin`,
-     `pam_warn`, `pam_rootok`) + `unix_chkpwd` helper. All built
-     from pristine `vendor/pam/Linux-PAM-1.7.2/`.
-   - `vendor/util-linux/build.sh`, `vendor/openssh/build.sh`: link
-     against `libpam.so.0` dynamically (`-L${pam_root}/lib
-     -Wl,-rpath,/usr/lib`). No more `--export-dynamic` hack, no
-     `--whole-archive` libpam embed, no `-Bsymbolic`.
-   - `tools/xtask/src/main.rs`: stages libpam.so.0 + libpam_misc.so.0
-     at `/usr/lib/`, modules at `/usr/lib/security/`, unix_chkpwd at
-     `/usr/sbin/`. Ships `/bin/pamtest` for future PAM debugging.
+Diagnostic plan: copy util-linux login.c locally, build with
+`-DDEBUG` and ship as a debug-only `/bin/login_dbg`, observe the
+exact exit point. (NOT a vendor patch — a debug build with extra
+prints, kept out of the production build.)
 
-## Still TBD before merge / next session
-- The console prompt loops a couple times due to fifo timing in
-  my driver script — but the BOOT in `make qemu-x86` is fine when
-  you type by hand. Sanity check: open `make qemu-x86`, type
-  `alice` + Enter, then `swordfish` + Enter, then `id` + Enter
-  → should see `uid=1000(alice) ...`. Confirm before pushing PR.
-- `syslogd -O /var/log/messages` is launched by rcS but only works
-  if devtmpfs allows `bind(AF_UNIX, "/dev/log")`. /dev/log no
-  longer pre-registered in devfs (left for syslogd to create as a
-  socket). Verify devtmpfs supports the bind; if not, that's a
-  small follow-up task.
-- cgroup-smoke "echo: write error: Invalid argument" lines in
-  rcS — separate bug (cgroup v2 write semantics on
-  cgroup.subtree_control or pids.max). Doesn't block login; fix
-  in the cgroup follow-up.
-- The B18 PR title: `fix(pam,vmm): B18 console+ssh login — upstream
-  Linux-PAM + fork COW for file-backed VMAs`. Two-commit branch.
+## Other findings worth keeping
+- vhangup currently broadcasts SIGHUP to **every** task in the
+  caller's session, not just those whose controlling tty matches.
+  When login (called from rcS without a setsid'd session leader) does
+  vhangup, sshd reports `Received SIGHUP; restarting.` and re-binds
+  port 22. Cosmetic in normal use (agetty does setsid first), but
+  worth tightening: `kernel/src/syscalls/proc.rs::sys_vhangup`
+  should scope SIGHUP to processes whose ctty matches the caller's,
+  per Linux semantics.
+- `/dev/log` no longer registered in devfs — userspace syslogd is
+  expected to bind it as AF_UNIX. devtmpfs needs to actually permit
+  the bind for syslogd to start; until then, libpam's pam_syslog
+  messages disappear and rcS's `syslogd -O /var/log/messages` is
+  a no-op.
 
 ## Run-down for next session
-1. `make qemu-x86` and manually verify the login path one more
-   time (don't trust the scripted fifo driver — it has race-y
-   timing). Confirm `uid=1000(alice)` after `id`.
-2. Same on aarch64: `make qemu-arm`. Verify the same fix lands on
-   the arm side (the VMM code change is arch-agnostic).
-3. Add a login smoke test (the original B18 ask). Drive qemu via
-   socat over a unix-socket UART (set `OXIDE_QEMU_UART_SOCK=path`
-   and have the test send `alice\n` + `swordfish\n` + `id\n` and
-   grep for `uid=1000`).
-4. Disable `pam-debug` build flag once you're satisfied the auth
-   flow is solid in production (currently still on for visibility;
-   removed in working tree but not yet committed — push as a
-   tiny separate commit if you want a quiet boot).
-5. Open PR.
+1. Commit the TIOCSCTTY VT fix + login_sim + xtask change as one
+   commit (`fix(tty,xtask): TIOCSCTTY VT foreground_pgid + login_sim
+   B18 reproducer`).
+2. Investigate the remaining util-linux login post-PAM exit-1 with
+   the debug-build approach above.
+3. Add `touch`-style empty files for /var/log/lastlog + /var/run/utmp
+   in xtask staging so login's silent-bail paths don't trip on
+   anything in our ext4.
+4. Open PR after console login lands.

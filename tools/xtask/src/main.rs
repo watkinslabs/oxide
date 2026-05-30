@@ -166,10 +166,23 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // pam_get_user / pam_get_item surface that comes for free with -rdynamic.
     let pam_vendor_sec = repo.join(format!("vendor/pam/install-{arch}/modules"));
 
-    // B18 diagnostic: pamtest exercises pam_authenticate via the same
-    // libpam.so / pam_unix.so login uses. Reproduces the fork+libpam.so
-    // SIGSEGV in `pam_modutil_sanitize_helper_fds` from a forked child
-    // — see state.md and CHANGELOG for B18 follow-up.
+    // B18: login_sim — replicates util-linux login's post-PAM
+    // hand-off including the PAM session+setcred calls, so we can
+    // bisect where the actual login binary diverges. Dynamically
+    // linked against libpam.so.0 (same as login).
+    {
+        let pam_root = repo.join(format!("vendor/pam/install-{arch}"));
+        let out = user_out.join("login_sim");
+        let src = repo.join("userspace/login_sim/login_sim.c");
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-fno-stack-protector",
+                "-I", pam_root.to_str().unwrap(),
+                "-L", pam_root.to_str().unwrap(),
+                "-Wl,-rpath,/usr/lib",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+                "-lpam"]);
+        run(c)?;
+    }
     {
         let pam_root = repo.join(format!("vendor/pam/install-{arch}"));
         let out = user_out.join("pamtest");
@@ -300,6 +313,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("bare3"),        "/bin/bare3")?;
     put(&user("sptest"),       "/bin/sptest")?;
     put(&user("pamtest"),      "/bin/pamtest")?;
+    put(&user("login_sim"),    "/bin/login_sim")?;
     put(&user("sem_smoke"),    "/bin/sem_smoke")?;
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;
