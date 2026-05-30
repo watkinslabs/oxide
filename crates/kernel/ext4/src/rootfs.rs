@@ -815,6 +815,9 @@ pub struct Ext4RootfsFs;
 impl vfs::fs::FileSystem for Ext4RootfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "ext4" }
+    /// EXT4_SUPER_MAGIC (linux/magic.h).
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0xEF53 }
     /// # C: O(N_path_components)
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> {
         // `_any` so opendir on `/`, `/etc`, etc. succeeds — was

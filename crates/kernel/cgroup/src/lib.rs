@@ -34,6 +34,10 @@ pub struct CgroupFs;
 impl FileSystem for CgroupFs {
     /// # C: O(1)
     fn name(&self) -> &str { "cgroup2" }
+    /// CGROUP2_SUPER_MAGIC (linux/magic.h) — systemd's `cg_all_unified()`
+    /// detects the unified hierarchy by this `statfs` f_type.
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0x6367_7270 }
     /// # C: O(N devfs registry)
     fn lookup(&self, path: &str) -> Option<InodeRef> { devfs::lookup(path) }
     /// # C: O(1)
