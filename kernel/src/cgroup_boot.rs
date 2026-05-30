@@ -23,6 +23,26 @@ pub fn cgroup_kill_hook(pid: u64, sig: i32) {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn cgroup_kill_hook(_pid: u64, _sig: i32) {}
 
+/// vpid → canonical (global) tid resolver for `cgroup.procs`/`threads`
+/// writes. A userspace write supplies a pid in the writer's pid
+/// namespace; the cgroup tree keys on the global tid (matching
+/// `current().tid` used by `/proc/<pid>/cgroup` + fork-inheritance).
+/// Identity fallback when the vpid resolves to no live task.
+/// Registered via `cgroup::set_pid_resolve_hook`.
+/// # C: O(N tasks) registry lookup
+#[cfg(target_os = "oxide-kernel")]
+pub fn cgroup_pid_resolve_hook(vpid: u64) -> u64 {
+    match sched::live::registry::lookup_by_vpid(vpid as u32) {
+        Some(t) => t.tid as u64,
+        None => vpid,
+    }
+}
+
+/// Host-build identity for `cgroup_pid_resolve_hook`.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn cgroup_pid_resolve_hook(vpid: u64) -> u64 { vpid }
+
 /// Host-build stub for the self-test — the `debug_cgroup!` call site
 /// expands on host too when the feature is on (`cargo test --features
 /// debug-cgroup`), so a symbol must exist. No-op off-target.
