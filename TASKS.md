@@ -45,7 +45,7 @@ each subsystem needs the full Linux surface.
 
 | Id | Work | Spec | Status |
 |---|---|---|---|
-| K1 | cgroup v2 unified hierarchy: real cgroupfs at `/sys/fs/cgroup`; controllers cpu/cpuset/io/memory/pids; `cgroup.procs`/`threads`/`controllers`/`subtree_control`/`events`(populated notify)/`kill`/`freeze`/`stat`; `/proc/<pid>/cgroup` real | `26` | **next** |
+| K1 | cgroup v2 unified hierarchy: real cgroupfs at `/sys/fs/cgroup`; controllers cpu/cpuset/io/memory/pids; `cgroup.procs`/`threads`/`controllers`/`subtree_control`/`events`(populated notify)/`kill`/`freeze`/`stat`; `/proc/<pid>/cgroup` real | `26` | **done** (PR #1355) — `/bin/cgroup_smoke` exercises controllers/subtree_control/mkdir/pids.max/procs-attach/`proc/self/cgroup`/rmdir, PASS both arches. Fixed: split-newline write EINVAL, vpid→tid membership translation, unified rmdir(2)+unlinkat(AT_REMOVEDIR) core |
 | K1b | cgroup v2 controller ENFORCEMENT depth (interface is real+complete in K1; these deepen it): memory.max charge/OOM via per-cgroup page accounting; cpu.weight/cpu.max honored by scheduler; pids counts threads (not just process leaders); io controller wired to block layer; cpuset affinity applied; cgroup.freeze actually freezes (not just flag); /proc/self/mountinfo dynamic cgroup2 line | `26`,`13` | not started |
 | K2 | real mount: MS_BIND, MS_REC, MS_MOVE, propagation (SHARED/PRIVATE/SLAVE/UNBINDABLE), pivot_root; real fs types proc/sysfs/devtmpfs/tmpfs/cgroup2 | `16` | not started |
 | K3 | per-mount-namespace mount tables: CLONE_NEWNS real (copy-on-unshare, peer propagation) | `26` | not started |
@@ -98,6 +98,8 @@ each subsystem needs the full Linux surface.
 - util-linux `mount` non-PIE → fix in D7.1 / L-track.
 - T14 pam_unix nested-fork/dlopen → resolved by L2 (real shared libc) + D6.6.
 - T15 ARM dynamic bash `/bin/sh` wedge → resolved by L1 dynamic-exec path audit.
+- **bash command substitution `$(...)` yields empty at boot (rcS/init context)** — found during F266. `echo x=$(echo ok)` → `x=` in oxide-smokes, but works over ssh. Affects boot scripts + systemd generators. Investigate the fork+pipe+wait path for command-substitution subshells in the PID-1-descendant context. Not yet filed to a track; high value for distro scripts.
+- **procfs hard-coded static stubs** (`MOUNTINFO_BODY`, fixed `/proc/sys/*` sysctls, the `0::/` cgroup fallback) should become dynamic — systemd reads these expecting real state (mount tracking, sysctl apply). Folds into K-track + K1b (`/proc/self/mountinfo` dynamic). "Don't fake state with constants."
 
 ## Validation discipline
 
