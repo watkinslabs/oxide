@@ -150,7 +150,7 @@ pub fn sendmsg_unix_dgram_with_fds(
 ) -> i64 {
     // Resolve target queue: explicit `name` path or stashed peer.
     let path: alloc::string::String = if name != 0 {
-        match crate::syscalls::net::read_sockaddr_un_path(name) {
+        match crate::syscalls::net_sockaddr::read_sockaddr_un_path(name) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         }
     } else {

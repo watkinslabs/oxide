@@ -4,7 +4,7 @@
 // v1 source-address pick (LOOPBACK for ::1 else ANY).
 
 use crate::netdev::NetError;
-use crate::sock::{InetSocket, SockKind, alloc_ephemeral_port, drain_loopback, stack};
+use crate::sock::{InetSocket, SockKind, alloc_ephemeral_port, alloc_ephemeral_port6, drain_loopback, stack};
 
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
@@ -46,9 +46,17 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
 pub fn sendto_v6(sock: &alloc::sync::Arc<InetSocket>,
                   dst_ip: crate::Ipv6Addr, dst_port: u16,
                   payload: &[u8]) -> Result<usize, NetError> {
-    let src_port = match *sock.local_port.lock() {
-        Some(p) => p,
-        None    => { let p = alloc_ephemeral_port()?; *sock.local_port.lock() = Some(p); p }
+    // Lock-across-match hazard (see connect_v6): read the slot into a
+    // temporary so the guard drops before the None arm re-locks to
+    // assign — otherwise the re-lock spins against the still-held
+    // scrutinee guard. An unbound v6 sendto hits the None arm every
+    // call, so this deadlocked every first v6 send.
+    let src_port = {
+        let cur = *sock.local_port.lock();
+        match cur {
+            Some(p) => p,
+            None    => { let p = alloc_ephemeral_port6()?; *sock.local_port.lock() = Some(p); p }
+        }
     };
     let src_ip = *sock.local_ip6.lock();
     stack().send_udp6_to(src_ip, src_port, dst_ip, dst_port, payload)?;
