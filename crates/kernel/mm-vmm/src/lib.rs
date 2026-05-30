@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod address_space;
+mod mremap;
 pub mod anon_vma;
 pub mod rmap;
 pub mod vma;

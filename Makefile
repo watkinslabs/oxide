@@ -95,6 +95,17 @@ smoke-arm: arm
 
 smoke: smoke-x86 smoke-arm
 
+# B18: console-login regression. Drives `alice`/`swordfish` at the
+# oxide login: prompt and checks `id` reports uid=1000. Catches
+# SysV stack ordering, PAM, TIOCSCTTY-foreground_pgid, and shell
+# job-control regressions in one shot.
+LOGIN_SMOKE_TIMEOUT ?= 600
+smoke-login-x86: x86
+	./tools/boot-smoke-login.sh x86 $(LOGIN_SMOKE_TIMEOUT)
+smoke-login-arm: arm
+	./tools/boot-smoke-login.sh arm $(LOGIN_SMOKE_TIMEOUT)
+smoke-login: smoke-login-x86 smoke-login-arm
+
 # F155: end-to-end DHCP path smoke. Boots with OXIDE_UDHCPC_ENABLE=1
 # so udhcpc, online_smoke, tcp_smoke run from rcS; checks for the
 # lease confirmation line on serial. ARM TCG can't reach login
