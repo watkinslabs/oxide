@@ -97,7 +97,6 @@ build_one() {
       -Dpam_userdb=disabled \
       -Dpam_lastlog=disabled \
       -Dpam_unix=auto \
-      -Dpam-debug=true \
       -Dexamples=false \
       -Dxtests=false \
       --prefix=/usr \

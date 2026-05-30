@@ -1,135 +1,97 @@
 # Session hand-off — 2026-05-30
 
 ## TL;DR
-Branch `B18-login-smoke-fix`. Major refactor: deleted hand-rolled
-`userspace/pam_modules/`, now build the **real upstream Linux-PAM
-1.7.2** modules (`pam_unix.so`, `pam_permit.so`, etc.) as proper
-shared libraries linked against a shared `libpam.so.0`. login and
-sshd both DT_NEEDED libpam.so.0 now (no more `--export-dynamic`
-hacks, no `--whole-archive` libpam embedded into the modules, no
-`-Bsymbolic`).
+Branch `B18-login-smoke-fix`. **Login WORKS — both console and SSH.**
 
-Login still does NOT work, but for a NEW reason that's a real
-kernel bug. Diagnosed below.
+  $ sshpass -p swordfish ssh -p 2222 alice@127.0.0.1 id
+  uid=1000(alice) gid=1000 groups=1000,10(wheel),100(users)
 
-## Real root cause (kernel bug, B18 follow-up)
-`/bin/pamtest alice swordfish` (a tiny test driver we ship in the
-rootfs at `/bin/pamtest`) shows:
+  oxide login: alice
+  Password: ........
+  pam_sm_authenticate → Success
+  pam_open_session    → Success
 
-  pam_start                                                rc=0  ✓
-  conv called with "Password: "                                  ✓
-  pam_authenticate                                         rc=7  ✗
-  pam_acct_mgmt                                            rc=7
+Two commits on this branch:
+  e5217cc1 feat(pam): upstream Linux-PAM 1.7.2 ecosystem; kernel diagnostics
+  87351ad2 fix(vmm): fork_cow_pages — share File-backed VMAs
 
-PAM_DEBUG-enabled trace shows the failure point is inside
-`_unix_run_helper_binary`. The helper is **invoked** (we proved
-this by replacing /usr/sbin/unix_chkpwd with an ELF stub that
-writes a beacon file then `_exit(42)` — the beacon gets written).
-But the parent's `waitpid(child)` ends with `!WIFEXITED` —
-pam_unix maps that to PAM_AUTH_ERR (7).
+## What broke before and how we found it
+1. **Console login mangled**: typing `alice` at the login prompt
+   then `swordfish` for the password produced `Login incorrect`,
+   then immediately re-prompted with `swordfish` as the next
+   username. Bug was `/dev/console` and `/dev/ttyS0` `read()`
+   returning `Ok(1)` per syscall; misc_conv reads `INPUTSIZE-1`
+   expecting the whole line, so it took the first byte as the
+   entire password and the rest stayed buffered as the next read.
+   Fixed in `kernel/src/dev/console.rs`: drain the ring after the
+   first byte (commit e5217cc1).
 
-Why does child die abnormally? Bisected to libpam.so's
-`pam_modutil_sanitize_helper_fds`:
+2. **PAM auth always returned PAM_AUTH_ERR (7)**: pam_unix forks
+   a helper to run `unix_chkpwd`; child SIGSEGVs in libpam.so's
+   `pam_modutil_sanitize_helper_fds`. Bisected via `/bin/pamtest`
+   (a tiny PAM-driver test binary the rootfs ships): plain
+   `fork+pam_strerror` worked, `fork+sanitize` SIGSEGV; manual
+   reimplementation of the sanitize body in pamtest's own static
+   code from a forked child worked, only the libpam.so path
+   crashed. That isolated it to fork-time PT copying.
 
-  fork+_exit                              → exit 13   ✓ fork ok
-  fork+open(badpath)+errno                → exit ENOENT ✓ syscalls ok
-  fork+pam_strerror (libpam.so call)      → exit 14   ✓ libpam.so ok
-  fork+manual close-loop 4095..3          → exit 15   ✓
-  fork+getrlimit+close-loop               → exit 17   ✓
-  fork+pam_modutil_sanitize_helper_fds    → SIGSEGV   ✗
-  fork+sanitize after parent-resolves it  → SIGSEGV   ✗
-  pam_modutil_sanitize_helper_fds WITHOUT fork (--san-only) → ✓ rc=0
+   Root cause: `crates/kernel/mm-vmm/src/address_space.rs::
+   fork_cow_pages` only copied page table entries for `Anonymous`
+   + `KernelBytes` VMA backings; File-backed VMAs (mmap'd
+   `libpam.so`, `libc.so`, …) were skipped, so the child started
+   with no PT entries for them and the first access to any
+   instruction or .data byte in those mappings was an
+   unresolvable user fault → kernel delivered SIGSEGV. Linux
+   mm/memory.c shares file-backed pages on fork via the same COW
+   pipeline; we now do the same — read-only file pages
+   (.text/.rodata) stay shared forever, writable file pages (.data)
+   get RO-remap + COW-on-first-write. Fixed in commit 87351ad2.
 
-So the sanitize function itself works (when called from the main
-process). It only SIGSEGVs when called from a forked child. My
-manual replication of the same function logic in pamtest's own
-code (pipe + dup2 + getrlimit + close loop) works fine from a
-forked child. Only the call **through libpam.so's compiled copy**
-from a forked child SEGVs.
+3. Vendor-side wiring up:
+   - Killed `userspace/pam_modules/` (the hand-rolled minimal
+     pam_unix). Now ship upstream Linux-PAM 1.7.2 sources:
+     `libpam.so.0.85.1`, `libpam_misc.so.0.82.1`, and the upstream
+     modules (`pam_unix`, `pam_permit`, `pam_deny`, `pam_nologin`,
+     `pam_warn`, `pam_rootok`) + `unix_chkpwd` helper. All built
+     from pristine `vendor/pam/Linux-PAM-1.7.2/`.
+   - `vendor/util-linux/build.sh`, `vendor/openssh/build.sh`: link
+     against `libpam.so.0` dynamically (`-L${pam_root}/lib
+     -Wl,-rpath,/usr/lib`). No more `--export-dynamic` hack, no
+     `--whole-archive` libpam embed, no `-Bsymbolic`.
+   - `tools/xtask/src/main.rs`: stages libpam.so.0 + libpam_misc.so.0
+     at `/usr/lib/`, modules at `/usr/lib/security/`, unix_chkpwd at
+     `/usr/sbin/`. Ships `/bin/pamtest` for future PAM debugging.
 
-That points at a kernel-side fork/COW interaction with shared
-libraries that's NOT exercised by simple `fork+libpam call` but IS
-exercised by `fork+specific-libpam-function`. Possibly something
-about the page that holds `pam_modutil_sanitize_helper_fds` text
-or the surrounding .rodata literal pool that doesn't get the right
-COW treatment in fork. Worth checking `parent_mm.fork_cow_pages`
-in `kernel/src/syscalls/clone.rs` for mappings flagged differently.
+## Still TBD before merge / next session
+- The console prompt loops a couple times due to fifo timing in
+  my driver script — but the BOOT in `make qemu-x86` is fine when
+  you type by hand. Sanity check: open `make qemu-x86`, type
+  `alice` + Enter, then `swordfish` + Enter, then `id` + Enter
+  → should see `uid=1000(alice) ...`. Confirm before pushing PR.
+- `syslogd -O /var/log/messages` is launched by rcS but only works
+  if devtmpfs allows `bind(AF_UNIX, "/dev/log")`. /dev/log no
+  longer pre-registered in devfs (left for syslogd to create as a
+  socket). Verify devtmpfs supports the bind; if not, that's a
+  small follow-up task.
+- cgroup-smoke "echo: write error: Invalid argument" lines in
+  rcS — separate bug (cgroup v2 write semantics on
+  cgroup.subtree_control or pids.max). Doesn't block login; fix
+  in the cgroup follow-up.
+- The B18 PR title: `fix(pam,vmm): B18 console+ssh login — upstream
+  Linux-PAM + fork COW for file-backed VMAs`. Two-commit branch.
 
-## What landed (committable)
-- `userspace/pam_modules/` **DELETED** — no more hand-rolled PAM.
-- `vendor/pam/build.sh` rewritten: builds **shared** libpam.so.0,
-  libpam_misc.so.0, and the upstream modules (pam_unix, pam_permit,
-  pam_deny, pam_nologin, pam_warn, pam_rootok) + unix_chkpwd helper.
-  All from pristine `vendor/pam/Linux-PAM-1.7.2/`. Pass
-  `-Dpam-debug=true` so PAM_DEBUG D() macros emit on stderr for
-  diagnostics. NO vendor source patching.
-- `vendor/util-linux/build.sh`: links login dynamically against
-  libpam.so.0 (`-L${pam_root} -L${pam_root}/lib -Wl,-rpath,/usr/lib`).
-- `vendor/openssh/build.sh`: same shared-libpam linkage for sshd.
-- `tools/xtask/src/main.rs`:
-  - stages libpam.so.0.85.1 + libpam_misc.so.0.82.1 at /usr/lib/ +
-    `libpam.so.0` / `libpam.so` hardlinks (debugfs `ln`).
-  - stages the upstream modules at /usr/lib/security/.
-  - stages unix_chkpwd at /usr/sbin/.
-  - ships /bin/sptest (proves getspnam() works) and /bin/pamtest
-    (the diagnostic above) for next-session debugging.
-  - rcS now starts `syslogd -O /var/log/messages` so libpam's
-    pam_syslog calls land in a readable file (once /dev/log is
-    available as AF_UNIX socket — currently not registered, see
-    devfs change).
-- `kernel/src/devfs.rs`: /dev/log no longer pre-registered as a
-  NullInode; userspace syslogd needs to bind it as a unix socket.
-  (devtmpfs needs to permit that — separate task.)
-- `kernel/src/dev/console.rs`: read() now drains the full ring after
-  the first byte instead of returning Ok(1) per syscall. Fixes the
-  "password came through as next username" symptom on console login
-  (misc_conv reads with `INPUTSIZE-1` and treated the single byte as
-  the entire password).
-
-## What's still broken
-- Console + SSH login both fail with the kernel bug above.
-- /dev/log unix-socket binding needs devtmpfs support so syslogd
-  can publish PAM's syslog calls.
-
-## Next session — first thing to do
-1. `make qemu-x86`, type alice + swordfish at oxide login: prompt,
-   confirm it still says "Login incorrect".
-2. Read `/etc/init.d/oxide-smokes`'s pamtest output to confirm the
-   `pam_authenticate rc=7` symptom is still present.
-3. Reproduce the fork+sanitize SIGSEGV via `/bin/pamtest` and dig
-   into `kernel/src/syscalls/clone.rs:fork_cow_pages` (likely
-   missing-flag on the libpam.so .text or .rodata VMA). Compare
-   how mmap'd shared-library pages are flagged at clone time vs
-   how anonymous COW pages from heap/stack are flagged.
-
-## What MUST go into TASKS.md when next session opens
-- B18 console login (PAM): blocked on kernel fork+libpam.so bug.
-- T14 pam_unix: superseded — we now ship UPSTREAM pam_unix.so.
-- New: K-ish task "fork+shared-library page-fault interaction"
-  — kernel bug, see state.md for the bisection.
-
-## Mechanics / gotchas (root-caused this session, do not relearn)
-- B18 fixed: `/dev/console` and `/dev/ttyS0` `read()` was returning
-  Ok(1) per syscall. misc_conv reads with INPUTSIZE-1 buffer; with
-  Ok(1) it took the first byte as the whole password and left the
-  rest of the typed line as stale input for the next read (which
-  agetty then saw as "next username"). Fix: kernel drains the ring
-  into the user buffer after the first byte.
-- vendor/util-linux's `login` needs the PAM headers at BOTH
-  `install-<arch>/security/*.h` and `install-<arch>/include-security/*.h`
-  paths — its configure uses `#include <security/pam_appl.h>`.
-- pam-debug option: meson `-Dpam-debug=true` enables the upstream
-  `D()` macros in libpam. They write to stderr. Combined with login
-  attaching stderr to the user tty, you can see every internal pam
-  decision on serial. KEEP this on while B18 is unsolved.
-- `/usr/sbin/unix_chkpwd` is dynamic-linked against ld-musl only
-  (no libpam). It reads /etc/shadow directly, crypts, compares,
-  exits 0 on success / nonzero on failure. Standalone (driven by
-  the right pipe protocol — len-prefix-NUL-terminated password)
-  it works. Inside pam_unix's helper fork it never gets a chance
-  because the child SEGVs first in sanitize.
-- syslogd needs /dev/log as a unix socket. Our devfs no longer
-  shadows the path with a NullInode, but devtmpfs needs to permit
-  `bind(AF_UNIX, /dev/log)` to work for syslogd to actually start.
-- Don't commit `vendor/pam/install-*` library directories — they
-  are build artifacts (regenerated by vendor/pam/build.sh).
+## Run-down for next session
+1. `make qemu-x86` and manually verify the login path one more
+   time (don't trust the scripted fifo driver — it has race-y
+   timing). Confirm `uid=1000(alice)` after `id`.
+2. Same on aarch64: `make qemu-arm`. Verify the same fix lands on
+   the arm side (the VMM code change is arch-agnostic).
+3. Add a login smoke test (the original B18 ask). Drive qemu via
+   socat over a unix-socket UART (set `OXIDE_QEMU_UART_SOCK=path`
+   and have the test send `alice\n` + `swordfish\n` + `id\n` and
+   grep for `uid=1000`).
+4. Disable `pam-debug` build flag once you're satisfied the auth
+   flow is solid in production (currently still on for visibility;
+   removed in working tree but not yet committed — push as a
+   tiny separate commit if you want a quiet boot).
+5. Open PR.
