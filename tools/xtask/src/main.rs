@@ -82,6 +82,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/inet6_smoke/inet6_smoke",         "userspace/inet6_smoke/inet6_smoke.c"),
         ("userspace/mmsg_smoke/mmsg_smoke",           "userspace/mmsg_smoke/mmsg_smoke.c"),
         ("userspace/scm_smoke/scm_smoke",             "userspace/scm_smoke/scm_smoke.c"),
+        ("userspace/cgroup_smoke/cgroup_smoke",       "userspace/cgroup_smoke/cgroup_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
@@ -331,6 +332,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("inet6_smoke"),  "/bin/inet6_smoke")?;
     put(&user("mmsg_smoke"),   "/bin/mmsg_smoke")?;
     put(&user("scm_smoke"),    "/bin/scm_smoke")?;
+    put(&user("cgroup_smoke"), "/bin/cgroup_smoke")?;
     put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
@@ -821,15 +823,7 @@ echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
 echo pre-cgroup-smoke
-echo cgroup-ctl=$(cat /sys/fs/cgroup/cgroup.controllers)
-echo '+pids +memory' > /sys/fs/cgroup/cgroup.subtree_control
-mkdir /sys/fs/cgroup/oxide.test
-echo 7 > /sys/fs/cgroup/oxide.test/pids.max
-echo cgroup-pidsmax=$(cat /sys/fs/cgroup/oxide.test/pids.max)
-echo $$ > /sys/fs/cgroup/oxide.test/cgroup.procs
-echo cgroup-self=$(cat /proc/self/cgroup)
-echo $$ > /sys/fs/cgroup/cgroup.procs
-rmdir /sys/fs/cgroup/oxide.test
+[ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
 ")?,
         "/etc/init.d/oxide-smokes")?;

@@ -614,6 +614,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // hierarchy at /sys/fs/cgroup so the mount point exists for
     // userspace from boot. A later `mount -t cgroup2` is idempotent.
     cgroup::set_signal_hook(crate::cgroup_boot::cgroup_kill_hook);
+    cgroup::set_pid_resolve_hook(crate::cgroup_boot::cgroup_pid_resolve_hook);
     cgroup::mount_root();
     // Permanent, `debug-cgroup`-gated boot self-test (`26§8`,
     // `docs/41`): exercise the cgroup v2 VFS path end-to-end via the

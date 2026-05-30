@@ -218,15 +218,15 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
         ::security::landlock::access::REMOVE_FILE
     };
     if let Err(rv) = crate::syscalls::landlock::check(&p, op) { return rv; }
+    // AT_REMOVEDIR is rmdir — delegate to the shared core so the
+    // legacy rmdir(2) and the *at form (the only one aarch64 has)
+    // stay identical. Without this, cgroup/pseudo-fs rmdir worked on
+    // x86 (via sys_rmdir) but returned EROFS on arm.
+    if (flags & AT_REMOVEDIR) != 0 {
+        return do_rmdir(&p);
+    }
     let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
-    // AT_REMOVEDIR currently only supported on ext4 path. Other FSes
-    // get the unified unlink which they may reject as Erofs/Eisdir.
-    let r = if (flags & AT_REMOVEDIR) != 0 && is_ext4_path(&p) {
-        ext4::rootfs::rmdir_at(p.as_bytes())
-    } else {
-        mnt.fs.unlink(&rel)
-    };
-    match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
+    match mnt.fs.unlink(&rel) { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
 
 /// POSIX: mkdir of an already-existing path is EEXIST, not EROFS.
@@ -379,7 +379,24 @@ fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
     match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
 
-/// `rmdir(path)` slot 84.
+/// Single rmdir core — both `rmdir(2)` (slot 84, x86 legacy) and
+/// `unlinkat(…, AT_REMOVEDIR)` (the only form aarch64 has) delegate
+/// here so the two ABI entry points can never diverge (Linux routes
+/// both through `do_rmdirat`). `p` is the resolved absolute path;
+/// the caller has already run the landlock REMOVE_DIR check.
+/// Pseudo-fs dirs (cgroupfs, …) own their rmdir; ext4 dirs go to the
+/// ext4 backend; everything else is read-only.
+/// # C: O(1)
+fn do_rmdir(p: &str) -> i64 {
+    if let Some(rv) = pseudo_rmdir(p) { return rv; }
+    if !is_ext4_path(p) { return -(Errno::Erofs.as_i32() as i64); }
+    match ext4::rootfs::rmdir_at(p.as_bytes()) {
+        Ok(())  => 0,
+        Err(e)  => errno_from_vfs(e),
+    }
+}
+
+/// `rmdir(path)` slot 84 (x86 legacy; absent on aarch64).
 /// # C: O(1)
 pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
@@ -388,12 +405,7 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::REMOVE_DIR) { return rv; }
-    if let Some(rv) = pseudo_rmdir(&p) { return rv; }
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::rmdir_at(p.as_bytes()) {
-        Ok(())  => 0,
-        Err(e)  => errno_from_vfs(e),
-    }
+    do_rmdir(&p)
 }
 
 /// `rename(from, to)` slot 82 / `renameat(odir, from, ndir, to)`
