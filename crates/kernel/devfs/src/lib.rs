@@ -169,6 +169,9 @@ pub struct DevfsFs;
 impl vfs::fs::FileSystem for DevfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "devfs" }
+    /// TMPFS_MAGIC — devtmpfs shares the tmpfs superblock magic.
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0x0102_1994 }
     /// # C: O(N_devfs_entries)
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup(path) }
 }

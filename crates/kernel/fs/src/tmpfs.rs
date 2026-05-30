@@ -235,6 +235,9 @@ pub struct TmpfsFs;
 impl vfs::fs::FileSystem for TmpfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "tmpfs" }
+    /// TMPFS_MAGIC (linux/magic.h).
+    /// # C: O(1)
+    fn magic(&self) -> u64 { 0x0102_1994 }
     /// # C: O(N_tmpfs_entries)
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> { lookup(path) }
     /// # C: O(N_tmpfs_entries) — auto-creates regular files.

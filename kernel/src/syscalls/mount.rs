@@ -39,6 +39,15 @@ pub struct BindFs {
 
 impl FileSystem for BindFs {
     fn name(&self) -> &str { "bind" }
+    /// A bind mount reports the backing fs of its source subtree
+    /// (statfs through a bind sees the real fs, as on Linux).
+    /// # C: O(N_mounts)
+    fn magic(&self) -> u64 {
+        vfs::mount::resolve_mount(&self.source)
+            .map(|(m, _)| m.fs.magic())
+            .filter(|&m| m != 0)
+            .unwrap_or(0xEF53)
+    }
     fn lookup(&self, path: &str) -> Option<InodeRef> {
         // Rewrite the target-prefixed path onto the source subtree.
         let rel = path.strip_prefix(self.target.as_str()).unwrap_or("");
