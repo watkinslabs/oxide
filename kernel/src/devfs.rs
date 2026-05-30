@@ -51,7 +51,10 @@ pub fn init() {
     // P3-04 misc char devices.
     register("/dev/null",    Arc::new(devfs::misc::NullInode)   as InodeRef);
     register("/dev/kmsg",    Arc::new(devfs::misc::KmsgInode)   as InodeRef);
-    register("/dev/log",     Arc::new(devfs::misc::NullInode)   as InodeRef);
+    // /dev/log intentionally NOT registered as a char device: userspace
+    // syslogd (busybox or sysklogd) creates this path as an AF_UNIX
+    // SOCK_DGRAM socket at startup. Pre-registering it as a NullInode
+    // would block bind() and silently drop every syslog message.
     register("/dev/zero",    Arc::new(devfs::misc::ZeroInode)   as InodeRef);
     register("/dev/full",    Arc::new(devfs::misc::FullInode)   as InodeRef);
     let rand: InodeRef = Arc::new(devfs::misc::RandomInode);

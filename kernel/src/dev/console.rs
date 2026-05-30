@@ -53,21 +53,42 @@ impl Inode for ConsoleInode {
         Err(VfsError::Enotdir)
     }
 
-    /// Block-and-retry read from this VT's ringbuffer per
-    /// `28§3` console semantics. Returns `Ok(1)` on success
-    /// (one byte at a time — line discipline lands later).
+    /// Block-and-drain read from this VT's ringbuffer per `28§3`
+    /// console semantics. Blocks until at least one byte arrives,
+    /// then drains everything currently in the ring into `buf` (up
+    /// to `buf.len()` bytes) and returns. Returning just `Ok(1)`
+    /// here breaks any caller that reads whole lines in one syscall
+    /// — notably Linux-PAM's misc_conv, which does
+    /// `read(STDIN, line, INPUTSIZE-1)` expecting the full
+    /// password-up-to-`\n`. With one-byte returns it took the first
+    /// byte as the entire password and left the rest of the typed
+    /// line in the ring as stale input for the next reader (agetty
+    /// then saw that stale tail as the next username, producing the
+    /// "password came through as the username" symptom on B18).
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
-        loop {
-            if let Some(b) = tty::live::try_read_vt(self.vt) {
-                buf[0] = b;
-                return Ok(1);
-            }
+        // Block until at least one byte is available.
+        let first = loop {
+            if let Some(b) = tty::live::try_read_vt(self.vt) { break b; }
             // SAFETY: we are the running task on this CPU; preempt-off; park before yielding.
             unsafe { tty::live::park_current_for_tty_vt(self.vt); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is now Sleeping so schedule() won't re-enqueue us — only the wake from `tick_poll_uart` (or future kbd→VT route) will.
             unsafe { sched::live::schedule(); }
+        };
+        buf[0] = first;
+        let mut n: usize = 1;
+        // Drain whatever else is already queued. ICANON line
+        // discipline only flushes a line into the ring on `\n` /
+        // VEOF / VEOL, so what's there after the first byte IS the
+        // tail of the user's typed line — return it all in one
+        // syscall so misc_conv sees the whole line.
+        while n < buf.len() {
+            match tty::live::try_read_vt(self.vt) {
+                Some(b) => { buf[n] = b; n += 1; }
+                None    => break,
+            }
         }
+        Ok(n)
     }
 
     /// Emit `buf` via the kernel UART path. `klog::write_raw`

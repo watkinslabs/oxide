@@ -51,7 +51,7 @@ build_one() {
   ( cd "$SRC" && \
     CC="$cc" \
     CFLAGS="-Os $extra -D_GNU_SOURCE -I${pam_root}" \
-    LDFLAGS="-static -L${pam_root}" \
+    LDFLAGS="-L${pam_root} -L${pam_root}/lib -Wl,-rpath,/usr/lib" \
     LIBS="-lpam -lpam_misc" \
     ./configure \
       --host="$host" \

@@ -250,6 +250,18 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             let vt = (ino & 0xff) as u8;
             use core::sync::atomic::Ordering;
             tty::live::set_session(vt, cur.sid.load(Ordering::Acquire));
+            // B18: mirror the PTY branch above — when a session
+            // leader acquires a VT as its controlling terminal,
+            // the foreground process group MUST be seeded with
+            // the leader's pgrp. Without this, tcgetpgrp(0) on
+            // the freshly-controlled VT returns 0, busybox sh's
+            // job-control logic decides it's running in the
+            // background, every read of stdin trips SIGTTIN,
+            // and the shell stops itself the moment login's
+            // post-fork_session execvp hands off. Symptom:
+            // console login passes PAM and immediately respawns
+            // getty — never reaches a usable shell prompt.
+            tty::live::set_foreground_pgid(vt, cur.pgid.load(Ordering::Acquire));
             0
         }
         TIOCGSID => {
