@@ -313,12 +313,21 @@ impl AddressSpace {
         }
         for vma in src.iter() {
             let writable = vma.prot.contains(VmaProt::WRITE);
-            // For COW we share both Anonymous and KernelBytes frames.
-            // Only Anonymous + KernelBytes ever get faulted leaves;
-            // File / Special are is a follow-up.
+            // B18 fix: COW-share Anonymous + KernelBytes + File-backed
+            // frames. File backings are required so child processes
+            // inherit their parent's mmap'd shared-library mappings
+            // (libpam.so, libc.so, …) — Linux mm/memory.c semantic.
+            // Skipping File backings caused pam_unix's helper-fork
+            // child to SIGSEGV the moment it called any libpam.so
+            // function: child's PT had no entries for the libpam.so
+            // VMA range. Read-only File pages (.text/.rodata) stay
+            // shared forever; writable File pages (.data) get the
+            // same RO-remap + COW-on-first-write treatment as anon.
             let share_pages = matches!(
                 vma.backing,
-                VmaBacking::Anonymous | VmaBacking::KernelBytes { .. }
+                VmaBacking::Anonymous
+                | VmaBacking::KernelBytes { .. }
+                | VmaBacking::File { .. }
             );
             if !share_pages { continue; }
             let mut va = vma.start.as_u64();
