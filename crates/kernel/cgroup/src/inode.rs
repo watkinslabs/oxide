@@ -115,6 +115,17 @@ impl Inode for CgFile {
 
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         let s = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?;
+        // A cgroup control file takes ONE value per write. Userspace
+        // (bash/busybox `echo`, GNU `printf`) emits the trailing
+        // newline as a SEPARATE write() at a non-zero offset, so the
+        // kernel sees `7` then `\n` as two calls. Linux kernfs buffers
+        // the whole write and parses once; we parse per-write, so a
+        // bare-whitespace chunk would re-parse as an empty value and
+        // wrongly EINVAL. A whitespace-only chunk carries no value →
+        // no-op success, leaving the preceding value write in effect.
+        if s.trim().is_empty() {
+            return Ok(buf.len());
+        }
         crate::write_file(self.cgid, &self.file, s)?;
         Ok(buf.len())
     }
