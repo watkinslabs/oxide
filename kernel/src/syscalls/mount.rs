@@ -7,12 +7,59 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use vfs::fs::FileSystem;
 use vfs::InodeRef;
+
+// mount(2) flag bits (linux/mount.h).
+const MS_REMOUNT:    u64 = 0x20;
+const MS_BIND:       u64 = 0x1000;
+const MS_MOVE:       u64 = 0x2000;
+const MS_REC:        u64 = 0x4000;
+const MS_UNBINDABLE: u64 = 1 << 17;
+const MS_PRIVATE:    u64 = 1 << 18;
+const MS_SLAVE:      u64 = 1 << 19;
+const MS_SHARED:     u64 = 1 << 20;
+const MS_PROPAGATION: u64 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
+
+/// Bind mount: a FileSystem at `target` whose lookups redirect into
+/// the `source` subtree. `mount(src, tgt, NULL, MS_BIND)` makes
+/// `tgt/<x>` resolve to `src/<x>` — what shells, systemd `PrivateTmp=`/
+/// `ProtectSystem=`, and container tooling rely on. Lookups re-enter
+/// the unified resolver against the rewritten path.
+/// # C: O(path)
+pub struct BindFs {
+    source: String,
+    target: String,
+}
+
+impl FileSystem for BindFs {
+    fn name(&self) -> &str { "bind" }
+    fn lookup(&self, path: &str) -> Option<InodeRef> {
+        // Rewrite the target-prefixed path onto the source subtree.
+        let rel = path.strip_prefix(self.target.as_str()).unwrap_or("");
+        let mut src = self.source.clone();
+        src.push_str(rel);
+        // Re-resolve via the unified path resolver, then the devfs/ext4
+        // backends — mirrors the open(2) lookup order. (Source must not
+        // live under the target; callers don't bind a dir onto itself.)
+        vfs::mount::lookup(&src).ok()
+            .or_else(|| crate::devfs::lookup(&src))
+            .or_else(|| ext4::rootfs::lookup_inode_any(src.as_bytes()))
+    }
+    fn mounts_line(&self, mount_point: &str) -> String {
+        let mut s = String::new();
+        s.push_str(&self.source);
+        s.push(' ');
+        s.push_str(mount_point);
+        s.push_str(" none rw,relatime,bind 0 0\n");
+        s
+    }
+}
 
 fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
     if p == 0 || p >= hal::USER_VA_END {
@@ -28,10 +75,10 @@ fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
 pub fn sys_mount(args: &SyscallArgs) -> i64 {
-    let _source = args.a0;
+    let source_p = args.a0;
     let target_p = args.a1;
     let fstype_p = args.a2;
-    let _flags   = args.a3;
+    let flags    = args.a3;
     let _data    = args.a4;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
@@ -40,10 +87,45 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         return -(Errno::Eperm.as_i32() as i64);
     }
     let target = match read_user_cstr_owned(target_p, 256) { Ok(s) => s, Err(rv) => return rv };
-    let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
     if !target.starts_with('/') {
         return -(Errno::Einval.as_i32() as i64);
     }
+    let ns = cur.mount_ns.load(core::sync::atomic::Ordering::Acquire);
+
+    // Normalize a trailing slash so `/x/` and `/x` register identically.
+    let target = if target.len() > 1 { target.trim_end_matches('/').to_string() } else { target };
+
+    // MS_BIND: redirect `target` into the `source` subtree. fstype is
+    // ignored (may be NULL). Source is required.
+    if flags & MS_BIND != 0 {
+        let source = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
+        let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
+        let bind = Arc::new(BindFs { source, target: target.clone() });
+        // Global mount table (per-NS bind rides K3's per-ns mount tables).
+        let _ = vfs::mount::register(&target, bind);
+        let _ = (ns, MS_REC); // per-ns + recursive-bind are follow-ups
+        return 0;
+    }
+
+    // Propagation (MS_SHARED/PRIVATE/SLAVE/UNBINDABLE) and MS_REMOUNT
+    // operate on an EXISTING mount and carry no fstype/source — systemd's
+    // early mount-setup issues `mount(NULL,"/",NULL,MS_REC|MS_SHARED)`.
+    // We accept them (the mount stays itself; peer-propagation event
+    // semantics ride a follow-up) so that path doesn't EFAULT on the
+    // NULL fstype/source pointers.
+    if flags & (MS_PROPAGATION | MS_REMOUNT) != 0 {
+        return 0;
+    }
+
+    // MS_MOVE: relocating an existing mount — not yet implemented
+    // (honest ENOSYS rather than a silent no-op that wouldn't move it).
+    if flags & MS_MOVE != 0 {
+        return -(Errno::Enosys.as_i32() as i64);
+    }
+
+    // New mount by fstype.
+    let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
     match fstype.as_str() {
         "tmpfs" => {
             let inode: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.clone()));
