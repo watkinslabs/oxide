@@ -52,6 +52,12 @@ struct SigFrameArm {
     pc:       u64,
     sigmask:  u64,
     x30:      u64,
+    /// Interrupted syscall's return value (user x0). Saved here so
+    /// rt_sigreturn restores it — otherwise a signal delivered at the
+    /// syscall-return boundary loses the return value (x0 ends up =
+    /// rt_sigreturn's retval), e.g. a `read()` that returned N looks
+    /// like it returned 0 after a SIGCHLD handler runs.
+    x0:       u64,
 }
 
 /// User-mode signal frame on x86_64 — laid out at new_rsp by
@@ -67,6 +73,15 @@ struct SigFrameX86 {
     rsp:      u64,
     rip:      u64,
     sigmask:  u64,
+    /// Interrupted syscall's return value (user rax). Saved here so
+    /// rt_sigreturn restores it — otherwise a signal delivered at the
+    /// syscall-return boundary loses the return value (rax ends up =
+    /// rt_sigreturn's retval), e.g. a `read()` that returned N looks
+    /// like it returned 0 after a SIGCHLD handler runs. This is the
+    /// root cause of shell `$(cmd)` capturing empty: the comsub read
+    /// returned the data, but the SIGCHLD-on-child-exit handler ate
+    /// the return value, so the shell saw EOF.
+    rax:      u64,
 }
 
 /// Reserved bytes at `new_sp` for the SigFrame{Arm,X86} above. Sized
@@ -93,17 +108,17 @@ const X86_RED_ZONE: u64 = 128;
 /// active CR3/TTBR0 is the running task's user AS.
 /// # C: O(1)
 #[inline]
-pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32) -> u64 {
+pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: defers to deliver_x86 whose preconditions are exactly the caller's per fn contract.
-        unsafe { deliver_x86(handler, restorer, sig); }
+        unsafe { deliver_x86(handler, restorer, sig, saved_ret); }
         0
     }
     #[cfg(target_arch = "aarch64")]
     {
         // SAFETY: defers to deliver_arm whose preconditions are exactly the caller's per fn contract.
-        unsafe { deliver_arm(handler, restorer, sig); }
+        unsafe { deliver_arm(handler, restorer, sig, saved_ret); }
         sig as u64
     }
 }
@@ -130,7 +145,7 @@ pub unsafe fn rt_sigreturn() -> i64 {
 /// tail; user-VA writes target the active CR3 (caller's user AS).
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
-pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
+pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32, saved_ret: u64) {
     // Read the saved user context (rip, rflags, rsp).
     // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
     let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
@@ -169,6 +184,7 @@ pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32) {
         rsp:     saved_rsp,
         rip:     saved_rip,
         sigmask: old_sigmask,
+        rax:     saved_ret,
     };
     // SAFETY: new_rsp validated < saved_rsp < USER_VA_END; CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted); SigFrameX86 is repr(C) matching rt_sigreturn_x86's read.
     unsafe { core::ptr::write_volatile(new_rsp as *mut SigFrameX86, sigframe); }
@@ -238,9 +254,15 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
         klog::write_hex_u64(sf.rip);
         klog::write_raw(b" rsp=");
         klog::write_hex_u64(sf.rsp);
+        klog::write_raw(b" rax=");
+        klog::write_hex_u64(sf.rax);
         klog::write_raw(b"\n");
     }
-    0
+    // Restore the interrupted syscall's return value: this becomes the
+    // user rax after the dispatch's sysretq, so the original syscall
+    // (e.g. read) reports the value it actually produced rather than
+    // rt_sigreturn's own 0.
+    sf.rax as i64
 }
 
 // ---- aarch64 mirror ------------------------------------------------
@@ -255,7 +277,7 @@ pub unsafe fn rt_sigreturn_x86() -> i64 {
 /// TTBR0 (caller's user AS).
 /// # C: O(1)
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
+pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32, saved_ret: u64) {
     // F206: read SVC frame from per-task slot (captured at dispatch
     // entry; race-free across schedule()). Fall back to global only
     // for tasks with no slot set (kthread paths don't deliver here).
@@ -294,6 +316,7 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32) {
         pc:      saved_pc,
         sigmask: old_sigmask,
         x30:     frame.x30,
+        x0:      saved_ret,
     };
     // SAFETY: new_sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
     unsafe { core::ptr::write_volatile(new_sp as *mut SigFrameArm, sigframe); }
@@ -391,7 +414,13 @@ pub unsafe fn rt_sigreturn_arm() -> i64 {
         klog::write_hex_u64(sf.pc);
         klog::write_raw(b" sp=");
         klog::write_hex_u64(sf.sp);
+        klog::write_raw(b" x0=");
+        klog::write_hex_u64(sf.x0);
         klog::write_raw(b"\n");
     }
-    0
+    // Restore the interrupted syscall's return value into user x0: the
+    // SVC restore seeds x0 from the dispatch's retval, so returning
+    // sf.x0 makes the original syscall report the value it produced
+    // instead of rt_sigreturn's 0 (mirror of the x86 rax restore).
+    sf.x0 as i64
 }
