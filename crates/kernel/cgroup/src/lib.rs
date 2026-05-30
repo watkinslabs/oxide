@@ -57,12 +57,31 @@ static TREE: Spinlock<Tree, TaskListClass> = Spinlock::new(Tree::new());
 /// depending on `sched`.
 static SIGNAL_HOOK: Spinlock<Option<fn(u64, i32)>, TaskListClass> = Spinlock::new(None);
 
+/// vpid → canonical (global) tid resolver. `cgroup.procs`/`threads`
+/// receive a pid as seen in the writer's pid namespace; the cgroup
+/// tree keys membership on the canonical tid (matching `/proc/<pid>/
+/// cgroup` via `current().tid` and fork-inheritance). The kernel
+/// installs this so the leaf crate can translate without a `sched`
+/// dependency. Identity fallback when the pid can't be resolved.
+static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
+
 /// Mount-point of the unified hierarchy.
 pub const MOUNT: &str = "/sys/fs/cgroup";
 
 /// Install the signal hook. Boot path.
 /// # C: O(1)
 pub fn set_signal_hook(f: fn(u64, i32)) { *SIGNAL_HOOK.lock() = Some(f); }
+
+/// Install the vpid→tid resolver. Boot path.
+/// # C: O(1)
+pub fn set_pid_resolve_hook(f: fn(u64) -> u64) { *PID_RESOLVE_HOOK.lock() = Some(f); }
+
+/// Translate a userspace-written pid (writer's ns) to the canonical
+/// tid the tree keys on. Identity when no resolver / no such task.
+/// # C: O(resolver)
+fn resolve_pid(vpid: u64) -> u64 {
+    match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => vpid }
+}
 
 /// Mount the unified hierarchy: create the root node and register its
 /// directory + core control files in devfs. Idempotent (re-mount is a
@@ -97,8 +116,12 @@ pub fn read_file(cgid: u64, file: &str) -> KResult<Vec<u8>> {
 pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
     match file {
         "cgroup.procs" | "cgroup.threads" => {
-            let pid: u64 = buf.trim().parse().map_err(|_| VfsError::Einval)?;
-            TREE.lock().add_proc(cgid, pid);
+            let vpid: u64 = buf.trim().parse().map_err(|_| VfsError::Einval)?;
+            // Membership keys on the canonical tid (what `current().tid`
+            // and fork-inheritance use); the written value is a vpid in
+            // the writer's pid namespace. Translate before storing.
+            let tid = resolve_pid(vpid);
+            TREE.lock().add_proc(cgid, tid);
             Ok(())
         }
         "cgroup.subtree_control" => {
