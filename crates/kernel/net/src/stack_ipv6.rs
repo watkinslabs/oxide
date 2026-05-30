@@ -87,6 +87,16 @@ impl NetStack {
                          dst_ip: Ipv6Addr, dst_port: u16, payload: &[u8])
         -> NetResult<()>
     {
+        // Source-address selection (RFC 6724, v1 subset): an unbound
+        // socket sends with src = :: (unspecified). For a loopback
+        // destination the kernel must substitute ::1 so the peer's
+        // recvfrom sees a meaningful source. Non-loopback dsts keep
+        // :: until the v6 route table (F180c) supplies a real prefix.
+        let src_ip = if src_ip == Ipv6Addr::ANY && dst_ip == Ipv6Addr::LOOPBACK {
+            Ipv6Addr::LOOPBACK
+        } else {
+            src_ip
+        };
         let devs = self.ifaces.snapshot_devs();
         let iface_id = if dst_ip == Ipv6Addr::LOOPBACK {
             devs.iter().find(|(_, d)| d.name() == "lo")
