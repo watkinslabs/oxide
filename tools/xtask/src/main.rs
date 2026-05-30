@@ -84,6 +84,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/scm_smoke/scm_smoke",             "userspace/scm_smoke/scm_smoke.c"),
         ("userspace/cgroup_smoke/cgroup_smoke",       "userspace/cgroup_smoke/cgroup_smoke.c"),
         ("userspace/cmdsubst_probe/cmdsubst_probe",   "userspace/cmdsubst_probe/cmdsubst_probe.c"),
+        ("userspace/mount_smoke/mount_smoke",         "userspace/mount_smoke/mount_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
@@ -335,6 +336,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("scm_smoke"),    "/bin/scm_smoke")?;
     put(&user("cgroup_smoke"), "/bin/cgroup_smoke")?;
     put(&user("cmdsubst_probe"), "/bin/cmdsubst_probe")?;
+    put(&user("mount_smoke"), "/bin/mount_smoke")?;
     put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
@@ -805,7 +807,7 @@ echo init-fork-exec works
 for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \\
          /bin/inet6_smoke /bin/mmsg_smoke /bin/scm_smoke \\
-         /bin/cmdsubst_probe \\
+         /bin/cmdsubst_probe /bin/mount_smoke \\
          /bin/mmap_zero_smoke /bin/usleep_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
