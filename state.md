@@ -1,107 +1,135 @@
-# Session hand-off — 2026-05-29
+# Session hand-off — 2026-05-30
 
-## TL;DR — RESTART CLAUDE (tool-I/O corruption active)
-Autonomous production-distro build. **K1 cgroup v2 code COMPLETE**
-(branch `F265-cgroup-v2`, all staged via `git add -A`, NOT committed).
-8/8 hosted tests pass; x86 + aarch64 + host(debug-cgroup) all BUILD
-clean. BUT this session's Bash/Read/grep output is actively corrupting
-(garbled trailing bytes, duplicated lines, false-negative greps,
-deleted-then-missing logs). **Restart Claude to clear the I/O layer,
-then finish the 3 remaining steps below.** `cargo test` + builds were
-reliable; trust those, re-verify everything else with fresh tools.
+## TL;DR
+Branch `B18-login-smoke-fix`. Major refactor: deleted hand-rolled
+`userspace/pam_modules/`, now build the **real upstream Linux-PAM
+1.7.2** modules (`pam_unix.so`, `pam_permit.so`, etc.) as proper
+shared libraries linked against a shared `libpam.so.0`. login and
+sshd both DT_NEEDED libpam.so.0 now (no more `--export-dynamic`
+hacks, no `--whole-archive` libpam embedded into the modules, no
+`-Bsymbolic`).
 
-## K1 — 3 things LEFT before commit/PR (do after restart)
-1. **Two file-length cap violations** (spec-lint MUST be clean):
-   - `kernel/src/procfs/mod.rs` = 1022 lines (cap 1000). Move
-     `ProcCgroupInode` (struct + impl, ~22 lines near line 621) into a
-     new `kernel/src/procfs/cgroup_file.rs` (or append to the smaller
-     `static_files.rs`); `mod` + re-export so
-     `crate::procfs::ProcCgroupInode` path still resolves.
-   - `tools/xtask/src/main.rs` = 1006 lines (cap 1000). Trim ~6+ lines
-     (comments in the rcS/oxide-smokes heredocs) to get under 1000.
-   - Re-run `cargo run -p xtask -- spec-lint` → must print
-     `spec-lint: clean` (was 24 findings, 2 are these len caps; the
-     other 22 are PRE-EXISTING baseline — verify against `git stash`
-     if unsure, but they were there before K1).
-2. **Validate the gated boot self-test ON BOTH ARCHES** (NOT yet
-   confirmed — earlier parallel boots collided on KVM/port and I never
-   read a clean pass; my prior "validated" note was premature):
-   - `pkill -9 -f qemu-system` first (ALWAYS, between every boot).
-   - `./tools/boot-capture.sh x86 'cgroup-selftest: rmdir' 200 /tmp/cg.log`
-     then enable the feature: it's wired so
-     `make qemu-x86 FEATURES=debug-cgroup` turns it on; boot-capture.sh
-     calls plain `make qemu-x86`, so either (a) export
-     `QEMU_FEATURES_X86='debug-boot debug-cgroup'` before it, or (b)
-     temporarily add debug-cgroup to the in-guest oxide-smokes path
-     (already present — `pre-cgroup-smoke`/`post-cgroup-smoke` block).
-   - Expect klog lines: `cgroup-selftest: controllers='cpu cpuset io
-     memory pids'`, `mkdir='ok'`, `pids.max='11'`, `proc-self='0::/...'`,
-     `rmdir='ok'`. Read the log FILE directly (don't trust grep alone).
-   - Repeat for arm: `./tools/boot-capture.sh arm ... 400 /tmp/cg-arm.log`
-     (ARM TCG is slow — needs ~250-400s; x86 KVM ~30s).
-   - IF self-test values are correct: K1 done.
-   - IF the in-guest userspace `cat` showed EMPTY earlier but the
-     gated self-test shows CORRECT values → the userspace sys_read/fd
-     path for these inodes has a separate bug to chase. The gated
-     self-test (kernel-side, vfs::mount::lookup + Inode::read) is the
-     source of truth.
-3. **Commit + PR + merge** (only after 1 & 2 green):
-   - `git commit -m "feat(cgroup): F265 cgroup v2 unified hierarchy — K1 of distro roadmap"`
-     (NO Co-Authored-By trailer — CI rejects it).
-   - `git push -u origin F265-cgroup-v2`
-   - `gh pr create` + `gh pr merge --merge --delete-branch=true`
-   - `git checkout main && git pull && git branch -D F265-cgroup-v2`
+Login still does NOT work, but for a NEW reason that's a real
+kernel bug. Diagnosed below.
 
-## K1 cgroup v2 — what the code DOES (all saved)
-- New crate `crates/kernel/cgroup/` (tree/inode/lib/tests): full v2
-  hierarchy, controllers cpu/memory/io/pids/cpuset, all cgroup.* +
-  per-controller files, subtree_control delegation, kill/freeze/events,
-  pids fork enforcement. 8 hosted tests pass.
-- VFS foundational (user rule — add Linux primitives properly):
-  `Inode::mkdir`/`rmdir` (crates/kernel/vfs/src/inode.rs); added
-  VfsError + Errno `Ebusy/Enospc/Enotempty`; expanded errno_from_vfs.
-- `CgroupFs` (vfs::fs::FileSystem) registered in the unified mount
-  table at /sys/fs/cgroup by `mount_root` — REQUIRED because open()
-  resolves via vfs::mount::lookup (mounts: / dev proc tmp), not devfs
-  directly. This was the fix for /sys/fs/cgroup/* → ENOENT.
-- Kernel wiring: mount.rs cgroup2→mount_root; namei.rs sys_mkdir/
-  mkdirat/rmdir → pseudo_mkdir/pseudo_rmdir (dispatch to Inode::mkdir/
-  rmdir on the parent); procfs real /proc/<pid>/cgroup +
-  /proc/self/cgroup (ProcCgroupInode); clone.rs fork inherit + pids
-  EAGAIN; mod.rs sys_exit → cgroup::on_exit; lib.rs cgroup_kill_hook +
-  set_signal_hook + mount_root + debug_cgroup!{cgroup_selftest()}.
-- PERMANENT debug-cgroup-gated boot self-test (user rule — gate like
-  existing debug-*): cgroup_selftest in lib.rs (oxide-kernel impl +
-  host no-op stub), `debug_cgroup!` macro in debug_macros.rs,
-  `debug-cgroup` feature in kernel/Cargo.toml (→ cgroup/debug-cgroup,
-  added to debug-all). Drives the real VFS path, klogs PASS/FAIL.
-- `tools/boot-capture.sh` — reliable full-serial capture (reaps qemu by
-  NAME, waits for marker, exits 0). Use instead of boot-smoke.sh for
-  in-guest probe validation.
+## Real root cause (kernel bug, B18 follow-up)
+`/bin/pamtest alice swordfish` (a tiny test driver we ship in the
+rootfs at `/bin/pamtest`) shows:
 
-## Boot-test mechanics (root-caused this session)
-- Rootfs embedded in kernel via include_bytes! (crates/kernel/ext4/
-  src/rootfs.rs) — `make qemu-*` rebuilds + re-embeds; bare
-  `xtask rootfs` alone does NOT re-embed into the running kernel.
-- Leaked qemu holds /dev/kvm (→slow TCG, timeouts) + tcp:2222
-  (→"Could not set up host forwarding"). ALWAYS pkill -9 -f
-  qemu-system by name; setsid-group kill leaks the qemu grandchild.
-- DON'T run multiple boots in parallel — they collide on KVM/port and
-  each one's pkill kills the others. Serialize boots.
-- One simple shell cmd per Bash call; no parallel batches (one nonzero
-  exit cancels the batch); don't chain git with ; or && to non-git.
+  pam_start                                                rc=0  ✓
+  conv called with "Password: "                                  ✓
+  pam_authenticate                                         rc=7  ✗
+  pam_acct_mgmt                                            rc=7
 
-## After K1: K1b → K2 → … (see TASKS.md)
-K1b controller-enforcement depth (memory.max charge/OOM, cpu.weight/max
-in sched, pids counts threads, io→block, cpuset affinity, real freeze).
-K2 real mount (MS_BIND/REC/MOVE/propagation, pivot_root). K3 mount-ns.
-K4 rtnetlink RTM_GETLINK. Track L shared libs. D6 systemd-musl. D7 drop
-busybox. Track P (RPM/dnf, multi-user). Planning PR #1348 already merged.
+PAM_DEBUG-enabled trace shows the failure point is inside
+`_unix_run_helper_binary`. The helper is **invoked** (we proved
+this by replacing /usr/sbin/unix_chkpwd with an ELF stub that
+writes a beacon file then `_exit(42)` — the beacon gets written).
+But the parent's `waitpid(child)` ends with `!WIFEXITED` —
+pam_unix maps that to PAM_AUTH_ERR (7).
 
-## Direction
-Production drop-in Linux distro on musl. No hacks/stubs/placeholders.
-Fix each kernel gap in the SAME PR. Add missing Linux primitives
-properly (user rule). Permanent debug gates like existing debug-* (user
-rule). Each task = own PR, both-arch boot smoke, spec-lint clean, branch
-deleted on merge. Autonomous — don't stop at phase seams. Tool-I/O
-corruption is the one genuine blocker → restart Claude to clear it.
+Why does child die abnormally? Bisected to libpam.so's
+`pam_modutil_sanitize_helper_fds`:
+
+  fork+_exit                              → exit 13   ✓ fork ok
+  fork+open(badpath)+errno                → exit ENOENT ✓ syscalls ok
+  fork+pam_strerror (libpam.so call)      → exit 14   ✓ libpam.so ok
+  fork+manual close-loop 4095..3          → exit 15   ✓
+  fork+getrlimit+close-loop               → exit 17   ✓
+  fork+pam_modutil_sanitize_helper_fds    → SIGSEGV   ✗
+  fork+sanitize after parent-resolves it  → SIGSEGV   ✗
+  pam_modutil_sanitize_helper_fds WITHOUT fork (--san-only) → ✓ rc=0
+
+So the sanitize function itself works (when called from the main
+process). It only SIGSEGVs when called from a forked child. My
+manual replication of the same function logic in pamtest's own
+code (pipe + dup2 + getrlimit + close loop) works fine from a
+forked child. Only the call **through libpam.so's compiled copy**
+from a forked child SEGVs.
+
+That points at a kernel-side fork/COW interaction with shared
+libraries that's NOT exercised by simple `fork+libpam call` but IS
+exercised by `fork+specific-libpam-function`. Possibly something
+about the page that holds `pam_modutil_sanitize_helper_fds` text
+or the surrounding .rodata literal pool that doesn't get the right
+COW treatment in fork. Worth checking `parent_mm.fork_cow_pages`
+in `kernel/src/syscalls/clone.rs` for mappings flagged differently.
+
+## What landed (committable)
+- `userspace/pam_modules/` **DELETED** — no more hand-rolled PAM.
+- `vendor/pam/build.sh` rewritten: builds **shared** libpam.so.0,
+  libpam_misc.so.0, and the upstream modules (pam_unix, pam_permit,
+  pam_deny, pam_nologin, pam_warn, pam_rootok) + unix_chkpwd helper.
+  All from pristine `vendor/pam/Linux-PAM-1.7.2/`. Pass
+  `-Dpam-debug=true` so PAM_DEBUG D() macros emit on stderr for
+  diagnostics. NO vendor source patching.
+- `vendor/util-linux/build.sh`: links login dynamically against
+  libpam.so.0 (`-L${pam_root} -L${pam_root}/lib -Wl,-rpath,/usr/lib`).
+- `vendor/openssh/build.sh`: same shared-libpam linkage for sshd.
+- `tools/xtask/src/main.rs`:
+  - stages libpam.so.0.85.1 + libpam_misc.so.0.82.1 at /usr/lib/ +
+    `libpam.so.0` / `libpam.so` hardlinks (debugfs `ln`).
+  - stages the upstream modules at /usr/lib/security/.
+  - stages unix_chkpwd at /usr/sbin/.
+  - ships /bin/sptest (proves getspnam() works) and /bin/pamtest
+    (the diagnostic above) for next-session debugging.
+  - rcS now starts `syslogd -O /var/log/messages` so libpam's
+    pam_syslog calls land in a readable file (once /dev/log is
+    available as AF_UNIX socket — currently not registered, see
+    devfs change).
+- `kernel/src/devfs.rs`: /dev/log no longer pre-registered as a
+  NullInode; userspace syslogd needs to bind it as a unix socket.
+  (devtmpfs needs to permit that — separate task.)
+- `kernel/src/dev/console.rs`: read() now drains the full ring after
+  the first byte instead of returning Ok(1) per syscall. Fixes the
+  "password came through as next username" symptom on console login
+  (misc_conv reads with `INPUTSIZE-1` and treated the single byte as
+  the entire password).
+
+## What's still broken
+- Console + SSH login both fail with the kernel bug above.
+- /dev/log unix-socket binding needs devtmpfs support so syslogd
+  can publish PAM's syslog calls.
+
+## Next session — first thing to do
+1. `make qemu-x86`, type alice + swordfish at oxide login: prompt,
+   confirm it still says "Login incorrect".
+2. Read `/etc/init.d/oxide-smokes`'s pamtest output to confirm the
+   `pam_authenticate rc=7` symptom is still present.
+3. Reproduce the fork+sanitize SIGSEGV via `/bin/pamtest` and dig
+   into `kernel/src/syscalls/clone.rs:fork_cow_pages` (likely
+   missing-flag on the libpam.so .text or .rodata VMA). Compare
+   how mmap'd shared-library pages are flagged at clone time vs
+   how anonymous COW pages from heap/stack are flagged.
+
+## What MUST go into TASKS.md when next session opens
+- B18 console login (PAM): blocked on kernel fork+libpam.so bug.
+- T14 pam_unix: superseded — we now ship UPSTREAM pam_unix.so.
+- New: K-ish task "fork+shared-library page-fault interaction"
+  — kernel bug, see state.md for the bisection.
+
+## Mechanics / gotchas (root-caused this session, do not relearn)
+- B18 fixed: `/dev/console` and `/dev/ttyS0` `read()` was returning
+  Ok(1) per syscall. misc_conv reads with INPUTSIZE-1 buffer; with
+  Ok(1) it took the first byte as the whole password and left the
+  rest of the typed line as stale input for the next read (which
+  agetty then saw as "next username"). Fix: kernel drains the ring
+  into the user buffer after the first byte.
+- vendor/util-linux's `login` needs the PAM headers at BOTH
+  `install-<arch>/security/*.h` and `install-<arch>/include-security/*.h`
+  paths — its configure uses `#include <security/pam_appl.h>`.
+- pam-debug option: meson `-Dpam-debug=true` enables the upstream
+  `D()` macros in libpam. They write to stderr. Combined with login
+  attaching stderr to the user tty, you can see every internal pam
+  decision on serial. KEEP this on while B18 is unsolved.
+- `/usr/sbin/unix_chkpwd` is dynamic-linked against ld-musl only
+  (no libpam). It reads /etc/shadow directly, crypts, compares,
+  exits 0 on success / nonzero on failure. Standalone (driven by
+  the right pipe protocol — len-prefix-NUL-terminated password)
+  it works. Inside pam_unix's helper fork it never gets a chance
+  because the child SEGVs first in sanitize.
+- syslogd needs /dev/log as a unix socket. Our devfs no longer
+  shadows the path with a NullInode, but devtmpfs needs to permit
+  `bind(AF_UNIX, /dev/log)` to work for syslogd to actually start.
+- Don't commit `vendor/pam/install-*` library directories — they
+  are build artifacts (regenerated by vendor/pam/build.sh).

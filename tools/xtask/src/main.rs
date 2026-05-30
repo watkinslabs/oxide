@@ -155,28 +155,32 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F231: PAM modules as shared objects. libpam dlopens them.
-    let pam_module_srcs: &[(&str, &str)] = &[
-        ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
-        ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
-        ("pam_unix_stub.so", "userspace/pam_modules/pam_unix_stub.c"),
-    ];
-    for (out_name, src_rel) in pam_module_srcs {
-        let out = user_out.join(out_name);
-        let src = repo.join(src_rel);
-        eprintln!("xtask rootfs: {} -shared {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
-        let mut c = Command::new(&cc);
-        c.args(["-O2", "-fPIC", "-shared", "-nostdlib", "-fno-stack-protector",
-                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
-        run(c)?;
-    }
+    // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
+    // (upstream Linux-PAM 1.7.2 sources, built by vendor/pam/build.sh).
+    // Host binaries that dlopen these (login, sshd, su) must link with
+    // -Wl,--export-dynamic so pam_get_user / pam_get_item / pam_set_item
+    // resolve at runtime. The modules carry their own copies of libpam
+    // internals (pam_modutil_*, pam_prompt, pam_get_authtok, …) via the
+    // -Wl,--whole-archive libpam.a -Wl,-Bsymbolic link applied in
+    // vendor/pam/build.sh, so the host only needs to export the basic
+    // pam_get_user / pam_get_item surface that comes for free with -rdynamic.
+    let pam_vendor_sec = repo.join(format!("vendor/pam/install-{arch}/modules"));
+
+    // B18 diagnostic: pamtest exercises pam_authenticate via the same
+    // libpam.so / pam_unix.so login uses. Reproduces the fork+libpam.so
+    // SIGSEGV in `pam_modutil_sanitize_helper_fds` from a forked child
+    // — see state.md and CHANGELOG for B18 follow-up.
     {
-        // F239: pam_unix needs libc (fopen/crypt) — default crt link.
-        let out = user_out.join("pam_unix.so");
-        let src = repo.join("userspace/pam_modules/pam_unix.c");
+        let pam_root = repo.join(format!("vendor/pam/install-{arch}"));
+        let out = user_out.join("pamtest");
+        let src = repo.join("userspace/pamtest/pamtest.c");
         let mut c = Command::new(&cc);
-        c.args(["-O2", "-fPIC", "-shared", "-fno-stack-protector",
-                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        c.args(["-O2", "-fno-stack-protector",
+                "-I", pam_root.to_str().unwrap(),
+                "-L", pam_root.to_str().unwrap(),
+                "-Wl,-rpath,/usr/lib",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+                "-lpam"]);
         run(c)?;
     }
 
@@ -294,6 +298,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // Kernel-acceptance smoke binaries. Real-musl-crt1 builds; every
     // user-facing tool comes from busybox hardlinks above.
     put(&user("bare3"),        "/bin/bare3")?;
+    put(&user("sptest"),       "/bin/sptest")?;
+    put(&user("pamtest"),      "/bin/pamtest")?;
     put(&user("sem_smoke"),    "/bin/sem_smoke")?;
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;
@@ -635,13 +641,51 @@ account    required   pam_unix.so\n\
 password   required   pam_unix.so\n\
 session    required   pam_unix.so\n")?,
         "/etc/pam.d/sshd")?;
+    // B18: util-linux login(1) calls pam_start("login",...); without
+    // /etc/pam.d/login libpam aborts with PAM_ABORT before any prompt
+    // ("PAM failure, aborting: Critical error - immediate abort"), so
+    // console login was broken since util-linux landed in D1. Mirror
+    // the sshd stack: full pam_unix once T14 lands a real one; for now
+    // the stub unblocks the console.
+    put(&stage("pam_login",
+        b"# B18: console login PAM stack - mirrors the sshd stack so
+# the same pam_unix.so + /etc/shadow flow drives both login paths.
+auth       required   pam_unix.so
+account    required   pam_unix.so
+password   required   pam_unix.so
+session    required   pam_unix.so
+")?,
+        "/etc/pam.d/login")?;
     // Stage PAM modules at /usr/lib/security/ — libpam was built
     // with --prefix=/usr --libdir=lib so DEFAULT_MODULE_PATH baked
-    // into libpam.a is "/usr/lib/security/".
-    put(&user("pam_permit.so"),    "/usr/lib/security/pam_permit.so")?;
-    put(&user("pam_deny.so"),      "/usr/lib/security/pam_deny.so")?;
-    put(&user("pam_unix.so"),      "/usr/lib/security/pam_unix.so")?;
-    put(&user("pam_unix_stub.so"), "/usr/lib/security/pam_unix_stub.so")?;
+    // into libpam.a is "/usr/lib/security/". Sources are upstream
+    // Linux-PAM 1.7.2 under vendor/pam/Linux-PAM-1.7.2/modules/,
+    // built by vendor/pam/build.sh into install-<arch>/modules/.
+    let pam_vendor = |name: &str| pam_vendor_sec.join(name);
+    put(&pam_vendor("pam_permit.so"),  "/usr/lib/security/pam_permit.so")?;
+    put(&pam_vendor("pam_deny.so"),    "/usr/lib/security/pam_deny.so")?;
+    put(&pam_vendor("pam_nologin.so"), "/usr/lib/security/pam_nologin.so")?;
+    put(&pam_vendor("pam_warn.so"),    "/usr/lib/security/pam_warn.so")?;
+    put(&pam_vendor("pam_rootok.so"),  "/usr/lib/security/pam_rootok.so")?;
+    put(&pam_vendor("pam_unix.so"),    "/usr/lib/security/pam_unix.so")?;
+    // unix_chkpwd setuid helper — non-root callers (su, passwd) fork
+    // it to validate /etc/shadow without needing read access themselves.
+    // B18 diagnostic: stage the real binary at .real, install a shell
+    // wrapper at the canonical path that captures stdin + stderr to
+    // /tmp/chkpwd.* so we can see exactly what pam_unix's child reads
+    // and prints. Wrapper is staged here only — no vendor code touched.
+    let chkpwd_src = repo.join(format!("vendor/pam/install-{arch}/unix_chkpwd"));
+    put(&chkpwd_src, "/usr/sbin/unix_chkpwd")?;
+    // Shared libpam + libpam_misc — login, sshd, su DT_NEEDED them.
+    // Modules dlopen at runtime against the same libpam.so loaded in
+    // the host process; that's the standard Linux-PAM ecosystem flow.
+    let pam_lib = repo.join(format!("vendor/pam/install-{arch}/lib"));
+    put(&pam_lib.join("libpam.so.0.85.1"),         "/usr/lib/libpam.so.0.85.1")?;
+    put(&pam_lib.join("libpam_misc.so.0.82.1"),    "/usr/lib/libpam_misc.so.0.82.1")?;
+    ln_via_debugfs("/usr/lib/libpam.so.0.85.1",      "/usr/lib/libpam.so.0")?;
+    ln_via_debugfs("/usr/lib/libpam.so.0.85.1",      "/usr/lib/libpam.so")?;
+    ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so.0")?;
+    ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
@@ -677,6 +721,10 @@ mount -t tmpfs tmpfs /tmp  2>/dev/null
 mount -t tmpfs tmpfs /var/run 2>/dev/null
 mount -t tmpfs tmpfs /var/db  2>/dev/null
 mount -t devpts devpts /dev/pts 2>/dev/null
+# B18: busybox syslogd creates /dev/log socket + writes /var/log/messages.
+# Captures pam_unix's pam_syslog() so we can see why auth fails.
+mkdir -p /var/log
+syslogd -O /var/log/messages -S 2>/dev/null
 hostname -F /etc/hostname 2>/dev/null
 ifconfig lo 127.0.0.1 up 2>/dev/null
 ifconfig eth0 up 2>/dev/null
