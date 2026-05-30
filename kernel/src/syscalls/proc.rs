@@ -545,16 +545,17 @@ pub fn sys_sysinfo(args: &SyscallArgs) -> i64 {
 /// MREMAP_FIXED + new_addr requires the caller-supplied destination
 /// be cleared first (Linux semantic).
 ///
-/// MREMAP_MAYMOVE = 1; MREMAP_FIXED = 2; MREMAP_DONTUNMAP = 4 (unsup).
+/// MREMAP_MAYMOVE = 1; MREMAP_FIXED = 2; MREMAP_DONTUNMAP = 4.
 /// # C: O(K + log N) per VMA-tree op
 /// `sys_mremap(old, old_size, new_size, flags, new_addr)` slot 25.
-/// Tier-3 shim per `docs/53§4`. Work fn: `vmm::AddressSpace::mremap`.
+/// Tier-3 shim per `docs/53§4`. Work fn: `vmm::AddressSpace::mremap_full`.
 /// # C: O(min(old,new))
 pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
-    const MREMAP_MAYMOVE: u64 = 1;
-    const MREMAP_FIXED:   u64 = 2;
+    const MREMAP_MAYMOVE:   u64 = 1;
+    const MREMAP_FIXED:     u64 = 2;
+    const MREMAP_DONTUNMAP: u64 = 4;
     let old      = args.a0;
     let old_size = args.a1 as usize;
     let new_size = args.a2 as usize;
@@ -565,12 +566,23 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64) };
     let old_ua = match UserVirtAddr::new(old) { Some(u) => u, None => return -(Errno::Einval.as_i32() as i64) };
     let new_ua = if new_addr != 0 { UserVirtAddr::new(new_addr) } else { None };
-    match mm.mremap(old_ua, old_size, new_size,
+    let dontunmap = (flags & MREMAP_DONTUNMAP) != 0;
+    match mm.mremap_full(old_ua, old_size, new_size,
                     (flags & MREMAP_MAYMOVE) != 0,
                     (flags & MREMAP_FIXED) != 0,
+                    dontunmap,
                     new_ua)
     {
-        Ok(va) => va.as_u64() as i64,
+        Ok(va) => {
+            if dontunmap {
+                // mremap_full installed the new VMA + copied bytes.
+                // Drop the source range's PTEs so subsequent reads
+                // on the still-mapped source VMA refault as fresh
+                // zero pages — completes the DONTUNMAP contract.
+                let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
+            }
+            va.as_u64() as i64
+        }
         Err(_) => -(Errno::Enomem.as_i32() as i64),
     }
 }

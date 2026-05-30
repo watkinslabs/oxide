@@ -77,6 +77,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke",
                                                       "userspace/ptrace_singlestep_smoke/ptrace_singlestep_smoke.c"),
         ("userspace/mprotect_smoke/mprotect_smoke",   "userspace/mprotect_smoke/mprotect_smoke.c"),
+        ("userspace/mremap_dontunmap_smoke/mremap_dontunmap_smoke",
+                                                      "userspace/mremap_dontunmap_smoke/mremap_dontunmap_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
@@ -322,6 +324,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
     put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
+    put(&user("mremap_dontunmap_smoke"), "/bin/mremap_dontunmap_smoke")?;
     put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
@@ -790,7 +793,8 @@ b"#!/bin/sh
 [ -e /etc/oxide-init-smokes ] || exit 0
 echo init-fork-exec works
 for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
-         /bin/mprotect_smoke /bin/mmap_zero_smoke /bin/usleep_smoke \\
+         /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \\
+         /bin/mmap_zero_smoke /bin/usleep_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
 done
