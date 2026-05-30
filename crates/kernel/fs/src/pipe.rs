@@ -261,6 +261,15 @@ impl Inode for PipeInode {
             if self.writers.load(Ordering::Acquire) == 0 {
                 return Ok(0);
             }
+            // Signal-interruptible per pipe(7): a blocked read with a
+            // deliverable signal pending returns EINTR so the libc
+            // handler runs (and the caller can restart). Without this
+            // a blocked pipe read ignores signals entirely — e.g. a
+            // read under a SIGCHLD/SIGALRM handler never wakes.
+            #[cfg(target_os = "oxide-kernel")]
+            if sched::live::deliverable_signals_self() != 0 {
+                return Err(VfsError::Eintr);
+            }
             // SAFETY: caller is the running task; preempt-off; we are about to schedule. WaitList::park bumps Arc and marks Sleeping.
             unsafe { self.read_waiters.park(); }
             // SAFETY: process ctx, runqueue installed, preempt-off; current is Sleeping so schedule won't re-enqueue us — only the write-side wake or last-writer-close wake will.
@@ -286,6 +295,12 @@ impl Inode for PipeInode {
             if n > 0 {
                 self.read_waiters.wake_all();
                 return Ok(n);
+            }
+            // Signal-interruptible per pipe(7): a blocked write with a
+            // deliverable signal pending returns EINTR (Linux semantic).
+            #[cfg(target_os = "oxide-kernel")]
+            if sched::live::deliverable_signals_self() != 0 {
+                return Err(VfsError::Eintr);
             }
             // SAFETY: caller is the running task; preempt-off; WaitList::park bumps Arc and marks Sleeping before we schedule.
             unsafe { self.write_waiters.park(); }
