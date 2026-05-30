@@ -313,12 +313,21 @@ impl AddressSpace {
         }
         for vma in src.iter() {
             let writable = vma.prot.contains(VmaProt::WRITE);
-            // For COW we share both Anonymous and KernelBytes frames.
-            // Only Anonymous + KernelBytes ever get faulted leaves;
-            // File / Special are is a follow-up.
+            // B18 fix: COW-share Anonymous + KernelBytes + File-backed
+            // frames. File backings are required so child processes
+            // inherit their parent's mmap'd shared-library mappings
+            // (libpam.so, libc.so, …) — Linux mm/memory.c semantic.
+            // Skipping File backings caused pam_unix's helper-fork
+            // child to SIGSEGV the moment it called any libpam.so
+            // function: child's PT had no entries for the libpam.so
+            // VMA range. Read-only File pages (.text/.rodata) stay
+            // shared forever; writable File pages (.data) get the
+            // same RO-remap + COW-on-first-write treatment as anon.
             let share_pages = matches!(
                 vma.backing,
-                VmaBacking::Anonymous | VmaBacking::KernelBytes { .. }
+                VmaBacking::Anonymous
+                | VmaBacking::KernelBytes { .. }
+                | VmaBacking::File { .. }
             );
             if !share_pages { continue; }
             let mut va = vma.start.as_u64();
@@ -935,59 +944,3 @@ fn end_of(start: UserVirtAddr, len: u64) -> KResult<UserVirtAddr> {
 
 pub(crate) use crate::hole::{find_hole, hole_clear};
 
-impl AddressSpace {
-    /// `mremap` per `mremap(2)`. Tier-2 work fn per `docs/53§3`.
-    /// Returns the new mapping address. Behaviour:
-    ///   new_size < old_size  → shrink in place, drop tail
-    ///   new_size == old_size → no-op, return old
-    ///   new_size > old_size  → copy to a new region (MAYMOVE/FIXED)
-    /// # C: O(VMA-tree ops + min(old,new) byte copy)
-    pub fn mremap(
-        &self,
-        old: UserVirtAddr,
-        old_size: usize,
-        new_size: usize,
-        maymove: bool,
-        fixed: bool,
-        new_addr: Option<UserVirtAddr>,
-    ) -> KResult<UserVirtAddr> {
-        if old.as_u64() == 0 || (old.as_u64() & 0xFFF) != 0 || new_size == 0 {
-            return Err(Error::Inval);
-        }
-        // Shrink: drop the tail.
-        if new_size < old_size {
-            let drop_va = old.as_u64() + new_size as u64;
-            if let Some(da) = UserVirtAddr::new(drop_va) {
-                let _ = self.munmap(da, old_size - new_size);
-            }
-            return Ok(old);
-        }
-        // Same size: no-op.
-        if new_size == old_size && !fixed {
-            return Ok(old);
-        }
-        // Grow path. Need MAYMOVE or FIXED.
-        if !maymove && !fixed { return Err(Error::NoMem); }
-        let hint = if fixed { new_addr.or(Some(old)) } else { None };
-        let new_va = self.mmap(
-            hint, new_size,
-            VmaProt::READ | VmaProt::WRITE,
-            VmaFlags::ANONYMOUS | VmaFlags::PRIVATE,
-            VmaBacking::Anonymous,
-            fixed,
-        )?;
-        // Best-effort byte copy.
-        let copy_len = core::cmp::min(old_size, new_size);
-        let dst = new_va.as_u64();
-        // SAFETY: both regions live in caller's AS, validated by mmap/munmap; CPL=0 reads/writes through caller's PT.
-        unsafe {
-            for i in 0..copy_len {
-                let v = core::ptr::read_volatile((old.as_u64() + i as u64) as *const u8);
-                core::ptr::write_volatile((dst + i as u64) as *mut u8, v);
-            }
-        }
-        // Unmap the old region.
-        let _ = self.munmap(old, old_size);
-        Ok(new_va)
-    }
-}

@@ -1,21 +1,18 @@
 #!/usr/bin/sh
-# Linux-PAM 1.7.2 build recipe — produces static-musl libpam.a +
-# libpam_misc.a + PAM headers for x86_64 and aarch64.
+# Linux-PAM 1.7.2 build recipe — produces shared libpam.so.0 +
+# libpam_misc.so.0 + PAM modules + unix_chkpwd helper for x86_64
+# and aarch64. Distro layout. Login / sshd / su link against
+# libpam.so dynamically; pam_unix.so etc. resolve all libpam
+# symbols at dlopen() against the same libpam.so loaded in the
+# process — no per-module libpam state, no -Bsymbolic hacks.
 #
 # Artifacts (per arch):
-#   vendor/pam/install-<arch>/libpam.a
-#   vendor/pam/install-<arch>/libpam_misc.a
-#   vendor/pam/install-<arch>/include-security/*.h
-#
-# Re-run this to rebuild against fresh upstream (run
-# tools/fetch-pam.sh first to populate the source tree).
-#
-# Upstream switched to meson in 1.7; we sed-patch shared_library →
-# static_library in libpam/libpam_misc and strip the version-script
-# link_args (ld --version-script is shared-only). PAM modules and
-# loadable-module machinery are not built — apps that need a single
-# static binary embedding pam_unix/pam_deny/pam_permit/pam_nologin
-# link those .o files directly.
+#   install-<arch>/lib/libpam.so.0 -> libpam.so.0.85.1   (sonamed)
+#   install-<arch>/lib/libpam_misc.so.0 -> libpam_misc.so.0.82.1
+#   install-<arch>/libpam.so + libpam_misc.so            (build-time symlinks)
+#   install-<arch>/modules/{pam_unix,pam_permit,pam_deny,...}.so
+#   install-<arch>/unix_chkpwd
+#   install-<arch>/{security,include-security}/*.h
 set -e
 
 cd "$(dirname "$0")"
@@ -26,8 +23,6 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
-# musl-gcc lacks Linux UAPI headers; stage host copies into a private
-# tree and -isystem them (same approach as busybox/dropbear builds).
 HDRS_X86=/tmp/musl-hdrs-pam
 mkdir -p "$HDRS_X86"
 for d in linux asm asm-generic mtd scsi sound rdma xen misc; do
@@ -45,43 +40,11 @@ CROSS_CC="$CROSS_ROOT/bin/aarch64-linux-musl-gcc"
 CROSS_AR="$CROSS_ROOT/bin/aarch64-linux-musl-ar"
 CROSS_STRIP="$CROSS_ROOT/bin/aarch64-linux-musl-strip"
 
-# --- Patch shared_library → static_library in libpam + libpam_misc.
-# Idempotent: skip if already patched.
-patch_meson_static() {
-  local f="$1"
-  if grep -q 'shared_library' "$f"; then
-    # Drop link_args / link_depends / version kwargs which are
-    # shared-only or unsupported for static_library. Easiest: rewrite
-    # the link_args line to no-op, strip version line, swap call name.
-    sed -i \
-      -e 's/shared_library/static_library/' \
-      -e "s|link_args: libpam_link_args,|link_args: [], pic: true,|" \
-      -e "s|link_args: libpam_misc_link_args,|link_args: [], pic: true,|" \
-      -e "s|link_args: libpamc_link_args,|link_args: [], pic: true,|" \
-      -e '/^  version: libpam_version,$/d' \
-      -e '/^  version: libpam_misc_version,$/d' \
-      -e '/^  version: libpamc_version,$/d' \
-      -e '/^  link_depends: libpam_link_deps,$/d' \
-      -e '/^  link_depends: libpam_misc_link_deps,$/d' \
-      -e '/^  link_depends: libpamc_link_deps,$/d' \
-      "$f"
-  fi
-}
+# We DO NOT patch shared_library → static_library this time. We want
+# real shared libraries so login/sshd/su can dynamically link against
+# them and modules can resolve their libpam refs at dlopen against
+# the SAME copy of libpam.so loaded in the process.
 
-patch_meson_static "$SRC/libpam/meson.build"
-patch_meson_static "$SRC/libpam_misc/meson.build"
-patch_meson_static "$SRC/libpamc/meson.build"
-
-# libpam_internal needs pic:true so PAM modules (shared_module) can
-# link it. Modules themselves stay shared — we don't install them,
-# we just need configure to succeed so libpam/libpam_misc build.
-if ! grep -q "pic: true" "$SRC/libpam_internal/meson.build"; then
-  sed -i "s|dependencies: libeconf,|dependencies: libeconf, pic: true,|" \
-    "$SRC/libpam_internal/meson.build"
-fi
-
-# Disable PIE for static archives + drop b_lundef (we're not linking
-# the shared lib).
 write_cross_file() {
   local arch="$1" cc="$2" ar="$3" strip="$4" cflags="$5" out="$6"
   cat > "$out" <<EOF
@@ -93,7 +56,7 @@ pkg-config = 'false'
 
 [built-in options]
 c_args = [$cflags]
-c_link_args = ['-static']
+c_link_args = []
 
 [host_machine]
 system = 'linux'
@@ -103,7 +66,6 @@ endian = 'little'
 EOF
 }
 
-# Comma-quoted list of -isystem flags for the cross file.
 hdr_flags_x86="'-isystem', '$HDRS_X86', '-Os', '-D_GNU_SOURCE'"
 hdr_flags_arm="'-isystem', '$HDRS_ARM', '-Os', '-D_GNU_SOURCE'"
 
@@ -118,10 +80,10 @@ build_one() {
     meson setup "$build" \
       --cross-file "$cross_ini" \
       --buildtype plain \
-      --default-library static \
+      --default-library shared \
       -Db_pie=false \
       -Db_lundef=false \
-      -Db_staticpic=false \
+      -Db_staticpic=true \
       -Ddocs=disabled \
       -Daudit=disabled \
       -Dselinux=disabled \
@@ -140,25 +102,79 @@ build_one() {
       --prefix=/usr \
       --libdir=lib \
       --sysconfdir=/etc \
-    && ninja -C "$build" libpam/libpam.a libpam_misc/libpam_misc.a \
+    && ninja -C "$build" \
+        libpam/libpam.so.0.85.1 \
+        libpam_misc/libpam_misc.so.0.82.1 \
+        modules/pam_unix/pam_unix.so \
+        modules/pam_permit/pam_permit.so \
+        modules/pam_deny/pam_deny.so \
+        modules/pam_nologin/pam_nologin.so \
+        modules/pam_warn/pam_warn.so \
+        modules/pam_rootok/pam_rootok.so \
+        modules/pam_unix/unix_chkpwd \
   )
 
   local outdir="install-$arch"
   rm -rf "$outdir"
-  mkdir -p "$outdir/include-security"
-  cp "$SRC/$build/libpam/libpam.a"           "$outdir/libpam.a"
-  cp "$SRC/$build/libpam_misc/libpam_misc.a" "$outdir/libpam_misc.a"
-  # Headers live in libpam/include/security/*.h (public PAM API).
-  cp "$SRC/libpam/include/security/"*.h      "$outdir/include-security/"
-  # _pam_features.h is generated under the build tree.
-  if [ -f "$SRC/$build/libpam/include/security/_pam_features.h" ]; then
-    cp "$SRC/$build/libpam/include/security/_pam_features.h" "$outdir/include-security/"
+  mkdir -p "$outdir/include-security" "$outdir/security" "$outdir/lib" "$outdir/modules"
+
+  # Copy the versioned shared libs + their soname symlinks so that
+  # downstream linkers (util-linux configure, sshd build) can find
+  # -lpam and -lpam_misc via the unversioned .so soft links.
+  # libpam.so.0.85.1 + libpam.so.0 -> libpam.so.0.85.1 + libpam.so -> libpam.so.0
+  install_shared() {
+    local sub="$1" stem="$2"
+    local src_dir="$SRC/$build/$sub"
+    local real
+    real=$(cd "$src_dir" && ls "$stem".so* 2>/dev/null | grep -E '\.so\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+    if [ -z "$real" ]; then
+      # Some meson configurations don't generate a fully versioned filename.
+      real=$(cd "$src_dir" && ls "$stem".so* 2>/dev/null | grep -E '\.so\.[0-9]+$' | head -1)
+    fi
+    [ -z "$real" ] && real="$stem.so"
+    cp "$src_dir/$real" "$outdir/lib/$real"
+    # soname symlink (libpam.so.0)
+    local soname
+    soname=$(echo "$real" | sed -E 's/(\.so\.[0-9]+)\..*$/\1/')
+    [ "$soname" != "$real" ] && ln -sf "$real" "$outdir/lib/$soname"
+    # Linker symlink (libpam.so) at top-level for -L${pam_root} -lpam.
+    ln -sf "lib/$real" "$outdir/$stem.so"
+    [ "$soname" != "$real" ] && ln -sf "lib/$soname" "$outdir/$stem.so.0"
+    echo "  → $outdir/lib/$real ($(stat -c %s "$outdir/lib/$real") bytes)"
+  }
+  install_shared "libpam"      "libpam"
+  install_shared "libpam_misc" "libpam_misc"
+
+  # PAM modules.
+  for mod in pam_unix pam_permit pam_deny pam_nologin pam_warn pam_rootok; do
+    local msrc="$SRC/$build/modules/$mod/$mod.so"
+    if [ -f "$msrc" ]; then
+      cp "$msrc" "$outdir/modules/$mod.so"
+      "$strip" --strip-unneeded "$outdir/modules/$mod.so" 2>/dev/null || strip --strip-unneeded "$outdir/modules/$mod.so" 2>/dev/null || true
+      echo "  → $outdir/modules/$mod.so"
+    fi
+  done
+
+  # unix_chkpwd helper.
+  if [ -f "$SRC/$build/modules/pam_unix/unix_chkpwd" ]; then
+    cp "$SRC/$build/modules/pam_unix/unix_chkpwd" "$outdir/unix_chkpwd"
+    "$strip" "$outdir/unix_chkpwd" 2>/dev/null || strip "$outdir/unix_chkpwd" 2>/dev/null || true
+    echo "  → $outdir/unix_chkpwd"
   fi
-  echo "  → $outdir/libpam.a        ($(stat -c %s "$outdir/libpam.a") bytes)"
-  echo "  → $outdir/libpam_misc.a   ($(stat -c %s "$outdir/libpam_misc.a") bytes)"
+
+  # Headers — staged under TWO paths for both `#include <pam_appl.h>` (-Ifoo/include-security)
+  # and `#include <security/pam_appl.h>` (-Ifoo) include styles.
+  for hdir in "$outdir/include-security" "$outdir/security"; do
+    cp "$SRC/libpam/include/security/"*.h        "$hdir/"
+    cp "$SRC/libpam_misc/include/security/"*.h   "$hdir/"
+    cp "$SRC/libpamc/include/security/"*.h       "$hdir/"
+    if [ -f "$SRC/$build/libpam/include/security/_pam_features.h" ]; then
+      cp "$SRC/$build/libpam/include/security/_pam_features.h" "$hdir/"
+    fi
+  done
 }
 
 build_one "x86_64"  "_build-x86_64"  "cross-x86_64.ini"
 build_one "aarch64" "_build-aarch64" "cross-aarch64.ini"
 
-echo "OK — built install-{x86_64,aarch64}/libpam{,misc}.a + headers"
+echo "OK — built install-{x86_64,aarch64}/lib/libpam{,_misc}.so.0 + modules/*.so + unix_chkpwd"

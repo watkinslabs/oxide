@@ -1,8 +1,10 @@
 // xtask: CI entry, 07§8.
-use std::ffi::OsStr;
 use std::process::{Command, ExitCode};
 
+mod cmds;
 mod image_qemu;
+
+use crate::cmds::{cmd_doc_check, cmd_kernel, cmd_spec_lint, cmd_test, parse_arg, run, stub};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -155,28 +157,45 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F231: PAM modules as shared objects. libpam dlopens them.
-    let pam_module_srcs: &[(&str, &str)] = &[
-        ("pam_permit.so", "userspace/pam_modules/pam_permit.c"),
-        ("pam_deny.so",   "userspace/pam_modules/pam_deny.c"),
-        ("pam_unix_stub.so", "userspace/pam_modules/pam_unix_stub.c"),
-    ];
-    for (out_name, src_rel) in pam_module_srcs {
-        let out = user_out.join(out_name);
-        let src = repo.join(src_rel);
-        eprintln!("xtask rootfs: {} -shared {} → {}", cc.file_name().unwrap().to_string_lossy(), src.display(), out.display());
+    // F231 / B18: PAM modules come from vendor/pam/install-<arch>/modules/
+    // (upstream Linux-PAM 1.7.2 sources, built by vendor/pam/build.sh).
+    // Host binaries that dlopen these (login, sshd, su) must link with
+    // -Wl,--export-dynamic so pam_get_user / pam_get_item / pam_set_item
+    // resolve at runtime. The modules carry their own copies of libpam
+    // internals (pam_modutil_*, pam_prompt, pam_get_authtok, …) via the
+    // -Wl,--whole-archive libpam.a -Wl,-Bsymbolic link applied in
+    // vendor/pam/build.sh, so the host only needs to export the basic
+    // pam_get_user / pam_get_item surface that comes for free with -rdynamic.
+    let pam_vendor_sec = repo.join(format!("vendor/pam/install-{arch}/modules"));
+
+    // B18: login_sim — replicates util-linux login's post-PAM
+    // hand-off including the PAM session+setcred calls, so we can
+    // bisect where the actual login binary diverges. Dynamically
+    // linked against libpam.so.0 (same as login).
+    {
+        let pam_root = repo.join(format!("vendor/pam/install-{arch}"));
+        let out = user_out.join("login_sim");
+        let src = repo.join("userspace/login_sim/login_sim.c");
         let mut c = Command::new(&cc);
-        c.args(["-O2", "-fPIC", "-shared", "-nostdlib", "-fno-stack-protector",
-                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        c.args(["-O2", "-fno-stack-protector",
+                "-I", pam_root.to_str().unwrap(),
+                "-L", pam_root.to_str().unwrap(),
+                "-Wl,-rpath,/usr/lib",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+                "-lpam"]);
         run(c)?;
     }
     {
-        // F239: pam_unix needs libc (fopen/crypt) — default crt link.
-        let out = user_out.join("pam_unix.so");
-        let src = repo.join("userspace/pam_modules/pam_unix.c");
+        let pam_root = repo.join(format!("vendor/pam/install-{arch}"));
+        let out = user_out.join("pamtest");
+        let src = repo.join("userspace/pamtest/pamtest.c");
         let mut c = Command::new(&cc);
-        c.args(["-O2", "-fPIC", "-shared", "-fno-stack-protector",
-                "-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+        c.args(["-O2", "-fno-stack-protector",
+                "-I", pam_root.to_str().unwrap(),
+                "-L", pam_root.to_str().unwrap(),
+                "-Wl,-rpath,/usr/lib",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+                "-lpam"]);
         run(c)?;
     }
 
@@ -294,6 +313,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // Kernel-acceptance smoke binaries. Real-musl-crt1 builds; every
     // user-facing tool comes from busybox hardlinks above.
     put(&user("bare3"),        "/bin/bare3")?;
+    put(&user("sptest"),       "/bin/sptest")?;
+    put(&user("pamtest"),      "/bin/pamtest")?;
+    put(&user("login_sim"),    "/bin/login_sim")?;
     put(&user("sem_smoke"),    "/bin/sem_smoke")?;
     put(&user("msg_smoke"),    "/bin/msg_smoke")?;
     put(&user("mq_smoke"),     "/bin/mq_smoke")?;
@@ -635,13 +657,51 @@ account    required   pam_unix.so\n\
 password   required   pam_unix.so\n\
 session    required   pam_unix.so\n")?,
         "/etc/pam.d/sshd")?;
+    // B18: util-linux login(1) calls pam_start("login",...); without
+    // /etc/pam.d/login libpam aborts with PAM_ABORT before any prompt
+    // ("PAM failure, aborting: Critical error - immediate abort"), so
+    // console login was broken since util-linux landed in D1. Mirror
+    // the sshd stack: full pam_unix once T14 lands a real one; for now
+    // the stub unblocks the console.
+    put(&stage("pam_login",
+        b"# B18: console login PAM stack - mirrors the sshd stack so
+# the same pam_unix.so + /etc/shadow flow drives both login paths.
+auth       required   pam_unix.so
+account    required   pam_unix.so
+password   required   pam_unix.so
+session    required   pam_unix.so
+")?,
+        "/etc/pam.d/login")?;
     // Stage PAM modules at /usr/lib/security/ — libpam was built
     // with --prefix=/usr --libdir=lib so DEFAULT_MODULE_PATH baked
-    // into libpam.a is "/usr/lib/security/".
-    put(&user("pam_permit.so"),    "/usr/lib/security/pam_permit.so")?;
-    put(&user("pam_deny.so"),      "/usr/lib/security/pam_deny.so")?;
-    put(&user("pam_unix.so"),      "/usr/lib/security/pam_unix.so")?;
-    put(&user("pam_unix_stub.so"), "/usr/lib/security/pam_unix_stub.so")?;
+    // into libpam.a is "/usr/lib/security/". Sources are upstream
+    // Linux-PAM 1.7.2 under vendor/pam/Linux-PAM-1.7.2/modules/,
+    // built by vendor/pam/build.sh into install-<arch>/modules/.
+    let pam_vendor = |name: &str| pam_vendor_sec.join(name);
+    put(&pam_vendor("pam_permit.so"),  "/usr/lib/security/pam_permit.so")?;
+    put(&pam_vendor("pam_deny.so"),    "/usr/lib/security/pam_deny.so")?;
+    put(&pam_vendor("pam_nologin.so"), "/usr/lib/security/pam_nologin.so")?;
+    put(&pam_vendor("pam_warn.so"),    "/usr/lib/security/pam_warn.so")?;
+    put(&pam_vendor("pam_rootok.so"),  "/usr/lib/security/pam_rootok.so")?;
+    put(&pam_vendor("pam_unix.so"),    "/usr/lib/security/pam_unix.so")?;
+    // unix_chkpwd setuid helper — non-root callers (su, passwd) fork
+    // it to validate /etc/shadow without needing read access themselves.
+    // B18 diagnostic: stage the real binary at .real, install a shell
+    // wrapper at the canonical path that captures stdin + stderr to
+    // /tmp/chkpwd.* so we can see exactly what pam_unix's child reads
+    // and prints. Wrapper is staged here only — no vendor code touched.
+    let chkpwd_src = repo.join(format!("vendor/pam/install-{arch}/unix_chkpwd"));
+    put(&chkpwd_src, "/usr/sbin/unix_chkpwd")?;
+    // Shared libpam + libpam_misc — login, sshd, su DT_NEEDED them.
+    // Modules dlopen at runtime against the same libpam.so loaded in
+    // the host process; that's the standard Linux-PAM ecosystem flow.
+    let pam_lib = repo.join(format!("vendor/pam/install-{arch}/lib"));
+    put(&pam_lib.join("libpam.so.0.85.1"),         "/usr/lib/libpam.so.0.85.1")?;
+    put(&pam_lib.join("libpam_misc.so.0.82.1"),    "/usr/lib/libpam_misc.so.0.82.1")?;
+    ln_via_debugfs("/usr/lib/libpam.so.0.85.1",      "/usr/lib/libpam.so.0")?;
+    ln_via_debugfs("/usr/lib/libpam.so.0.85.1",      "/usr/lib/libpam.so")?;
+    ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so.0")?;
+    ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
@@ -677,6 +737,10 @@ mount -t tmpfs tmpfs /tmp  2>/dev/null
 mount -t tmpfs tmpfs /var/run 2>/dev/null
 mount -t tmpfs tmpfs /var/db  2>/dev/null
 mount -t devpts devpts /dev/pts 2>/dev/null
+# B18: busybox syslogd creates /dev/log socket + writes /var/log/messages.
+# Captures pam_unix's pam_syslog() so we can see why auth fails.
+mkdir -p /var/log
+syslogd -O /var/log/messages -S 2>/dev/null
 hostname -F /etc/hostname 2>/dev/null
 ifconfig lo 127.0.0.1 up 2>/dev/null
 ifconfig eth0 up 2>/dev/null
@@ -871,130 +935,3 @@ hosts:  files
     Ok(())
 }
 
-fn stub(name: &str, awaiting_spec: &str) -> Result<(), u8> {
-    eprintln!("xtask {name}: not yet implemented (awaiting `{awaiting_spec}` freeze + crate scaffold)");
-    Err(64)
-}
-
-// ---------------------------------------------------------------------------
-// spec-lint
-// ---------------------------------------------------------------------------
-
-fn cmd_spec_lint(rest: &[String]) -> Result<(), u8> {
-    // Pass-through to the spec-lint binary.
-    let mut c = Command::new("cargo");
-    c.args(["run", "--quiet", "-p", "spec-lint", "--", "all"]);
-    for a in rest { c.arg(a); }
-    run(c)
-}
-
-// ---------------------------------------------------------------------------
-// kernel
-// ---------------------------------------------------------------------------
-
-pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
-    let arch = parse_arg(rest, "--arch").ok_or_else(|| {
-        eprintln!("xtask kernel: --arch <x86_64|aarch64> required");
-        2u8
-    })?;
-    let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
-    let features = parse_arg(rest, "--features");
-    let target = match arch.as_str() {
-        "x86_64"  => "./targets/x86_64-unknown-oxide-kernel.json",
-        "aarch64" => "./targets/aarch64-unknown-oxide-kernel.json",
-        other => { eprintln!("xtask kernel: unsupported arch `{other}`"); return Err(2); }
-    };
-    let (boot_pkg, bin_pkg) = match arch.as_str() {
-        "x86_64"  => ("boot-x86_64",  "kernel-bin-x86_64"),
-        "aarch64" => ("boot-aarch64", "kernel-bin-aarch64"),
-        _ => unreachable!(),
-    };
-    let mut c = Command::new("cargo");
-    c.args([
-        "build",
-        "-Z", "build-std=core,compiler_builtins,alloc",
-        "-Z", "build-std-features=compiler-builtins-mem",
-        "-Z", "unstable-options",
-        "-Z", "json-target-spec",
-        "--target", target,
-        "--profile", &profile,
-        "-p", "kernel",
-        "-p", boot_pkg,
-        "-p", bin_pkg,
-    ]);
-    if let Some(f) = features.as_ref() {
-        c.args(["--features", f.as_str()]);
-    }
-    run(c)
-}
-
-
-// ---------------------------------------------------------------------------
-// test
-// ---------------------------------------------------------------------------
-
-fn cmd_test(rest: &[String]) -> Result<(), u8> {
-    let mode = rest.iter().map(|s| s.as_str()).find(|s| s.starts_with("--")).unwrap_or("--hosted");
-    match mode {
-        "--hosted" => {
-            let mut c = Command::new("cargo");
-            c.args(["test", "--workspace"]);
-            run(c)
-        }
-        "--kernel" | "--loom" | "--miri" | "--proptest" => {
-            eprintln!("xtask test {mode}: not yet implemented (awaiting `42` freeze + first kernel crate)");
-            Err(64)
-        }
-        other => { eprintln!("xtask test: unknown mode `{other}`"); Err(2) }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// doc-check
-// ---------------------------------------------------------------------------
-
-fn cmd_doc_check(_rest: &[String]) -> Result<(), u8> {
-    // Equivalent to `spec-lint manifest + xref` per 02§6 + 02§5.
-    let mut c = Command::new("cargo");
-    c.args(["run", "--quiet", "-p", "spec-lint", "--", "manifest"]);
-    run(c.clone_for_xref())?;
-    let mut c = Command::new("cargo");
-    c.args(["run", "--quiet", "-p", "spec-lint", "--", "xref"]);
-    run(c)
-}
-
-// Quick shim because Command isn't Clone. We just rebuild it.
-trait CommandExt { fn clone_for_xref(&mut self) -> Command; }
-impl CommandExt for Command {
-    fn clone_for_xref(&mut self) -> Command {
-        let mut c = Command::new(self.get_program());
-        for a in self.get_args() { c.arg(a); }
-        c
-    }
-}
-
-// ---------------------------------------------------------------------------
-// shared
-// ---------------------------------------------------------------------------
-
-pub(crate) fn run(mut c: Command) -> Result<(), u8> {
-    let status = c.status().map_err(|e| { eprintln!("xtask: spawn failed: {e}"); 1u8 })?;
-    if status.success() { Ok(()) }
-    else { Err(status.code().unwrap_or(1) as u8) }
-}
-
-pub(crate) fn parse_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut iter = args.iter().enumerate();
-    while let Some((_, a)) = iter.next() {
-        if a == flag {
-            if let Some((_, v)) = iter.next() { return Some(v.clone()); }
-        }
-        if let Some(rest) = a.strip_prefix(&format!("{flag}=")) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn _osstr_keepalive(_: &OsStr) {}
