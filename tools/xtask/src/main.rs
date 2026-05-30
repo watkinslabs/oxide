@@ -79,6 +79,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/mprotect_smoke/mprotect_smoke",   "userspace/mprotect_smoke/mprotect_smoke.c"),
         ("userspace/mremap_dontunmap_smoke/mremap_dontunmap_smoke",
                                                       "userspace/mremap_dontunmap_smoke/mremap_dontunmap_smoke.c"),
+        ("userspace/inet6_smoke/inet6_smoke",         "userspace/inet6_smoke/inet6_smoke.c"),
+        ("userspace/mmsg_smoke/mmsg_smoke",           "userspace/mmsg_smoke/mmsg_smoke.c"),
+        ("userspace/scm_smoke/scm_smoke",             "userspace/scm_smoke/scm_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
@@ -325,6 +328,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
     put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
     put(&user("mremap_dontunmap_smoke"), "/bin/mremap_dontunmap_smoke")?;
+    put(&user("inet6_smoke"),  "/bin/inet6_smoke")?;
+    put(&user("mmsg_smoke"),   "/bin/mmsg_smoke")?;
+    put(&user("scm_smoke"),    "/bin/scm_smoke")?;
     put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
     put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
@@ -794,6 +800,7 @@ b"#!/bin/sh
 echo init-fork-exec works
 for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \\
+         /bin/inet6_smoke /bin/mmsg_smoke /bin/scm_smoke \\
          /bin/mmap_zero_smoke /bin/usleep_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
