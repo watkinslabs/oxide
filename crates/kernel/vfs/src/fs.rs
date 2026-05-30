@@ -54,15 +54,17 @@ pub trait FileSystem: Send + Sync {
     }
 
     /// `/proc/mounts`-style description: `<src> <mnt> <fstype> <opts>`.
-    /// Default returns "(unknown) (unknown) <name> ro".
+    /// Default uses the fs name as the source and `rw,relatime` opts
+    /// (our boot mounts are all writable); override for richer opts.
     /// # C: O(1)
     fn mounts_line(&self, mount_point: &str) -> String {
         let mut s = String::new();
-        s.push_str("none ");
+        s.push_str(self.name());
+        s.push(' ');
         s.push_str(mount_point);
         s.push(' ');
         s.push_str(self.name());
-        s.push_str(" ro 0 0\n");
+        s.push_str(" rw,relatime 0 0\n");
         s
     }
 }
