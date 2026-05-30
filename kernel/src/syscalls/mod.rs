@@ -965,7 +965,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         }
         // SAFETY: dispatch tail; per-arch saved frame is live; the
         // helper writes only the saved-frame and user signal stack.
-        let sig_rv = unsafe { crate::syscalls::signal_dispatch::dispatch_pending(&p, &|sa| sys_exit(sa)) };
+        let sig_rv = unsafe { crate::syscalls::signal_dispatch::dispatch_pending(&p, rv as u64, &|sa| sys_exit(sa)) };
         // aarch64: SVC restore clobbers user x0 with dispatcher retval
         // — return `sig` so it seeds handler arg0. x86 injects via rdi.
         if sig_rv != 0 { return sig_rv; }

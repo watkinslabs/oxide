@@ -12,7 +12,37 @@
 
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/wait.h>
+
+// Capture WITH a SIGCHLD handler installed (as every shell does).
+// When the comsub child exits, SIGCHLD is delivered to the parent
+// mid-read; if signal delivery corrupts the interrupted register/
+// stack state, the captured bytes are lost — reproducing the
+// all-shells `$()`-empty symptom that the no-handler captures miss.
+static volatile int chld = 0;
+static void on_chld(int s) { (void)s; chld++; }
+static int sigchld_capture(char *out, int cap) {
+    struct sigaction sa; memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_chld; sa.sa_flags = SA_RESTART;
+    sigaction(SIGCHLD, &sa, 0);
+    int p[2];
+    if (pipe(p) < 0) return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        dup2(p[1], 1); close(p[0]); close(p[1]);
+        execl("/bin/echo", "echo", "SIGCHLD_OK", (char*)0);
+        _exit(127);
+    }
+    close(p[1]);
+    int t = 0, n;
+    while (t < cap - 1 && (n = read(p[0], out + t, cap - 1 - t)) > 0) t += n;
+    if (t < 0) t = 0;
+    out[t] = '\0';
+    close(p[0]); int s; waitpid(pid, &s, 0);
+    return t;
+}
 
 #define PASS "cmdsubst_probe: PASS\n"
 #define FAIL "cmdsubst_probe: FAIL\n"
@@ -60,7 +90,15 @@ static int nested(void) {
 }
 
 int main(void) {
-    if (plain() == 0 && nested() == 0) { write(1, PASS, sizeof PASS - 1); return 0; }
+    // The sigchld capture is the regression guard for the signal-
+    // return-value bug: a SIGCHLD handler interrupting the comsub read
+    // must NOT lose the read's return value.
+    char sc[64];
+    int scn = sigchld_capture(sc, sizeof sc);
+    int sigchld_ok = (scn == 11 && strncmp(sc, "SIGCHLD_OK\n", 11) == 0);
+    if (plain() == 0 && nested() == 0 && sigchld_ok) {
+        write(1, PASS, sizeof PASS - 1); return 0;
+    }
     write(1, FAIL, sizeof FAIL - 1);
     return 1;
 }
