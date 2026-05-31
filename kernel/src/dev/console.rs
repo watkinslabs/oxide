@@ -148,7 +148,10 @@ impl Inode for ConsoleInode {
 pub fn init_console_fd_table() -> Arc<FdTable> {
     let table = Arc::new(FdTable::new());
     let inode: InodeRef = Arc::new(ConsoleInode::new(0));
-    let dentry = Dentry::new(None, "console".to_string(), inode.clone());
+    // Full path so /proc/self/fd/{0,1,2} readlink to /dev/console
+    // (the Linux contract) and symlink follow (/dev/stdout → fd/1 →
+    // /dev/console) reopens the real node.
+    let dentry = Dentry::new(None, "/dev/console".to_string(), inode.clone());
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     // alloc returns the lowest-free fd; first three calls give
     // 0, 1, 2 in order.
