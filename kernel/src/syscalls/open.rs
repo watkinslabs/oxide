@@ -24,6 +24,59 @@ const O_DIRECTORY: u32 = 0o200000;
 /// O_DIRECTORY since we also accept either masking.
 const O_TMPFILE:   u32 = 0o20000000;
 
+/// Map a path that should resolve by **duplicating an existing open file
+/// description** → `(tid_opt, fd)`. Covers the standard `/dev` fd-links
+/// (`/dev/stdin`→0, `stdout`→1, `stderr`→2), `/dev/fd/<n>`, and
+/// `/proc/<pid|self>/fd/<n>`. These are symlinks for readlink/ls, but
+/// `open(2)` shares the target's fd (Linux magic fd-link semantics) — a
+/// path reopen would fail for pipes/sockets. Returns `None` otherwise.
+/// # C: O(N_path)
+fn dup_fd_target(path: &str) -> Option<(Option<u32>, i32)> {
+    match path {
+        "/dev/stdin"  => return Some((None, 0)),
+        "/dev/stdout" => return Some((None, 1)),
+        "/dev/stderr" => return Some((None, 2)),
+        _ => {}
+    }
+    if let Some(rest) = path.strip_prefix("/dev/fd/") {
+        return rest.parse::<i32>().ok().map(|n| (None, n));
+    }
+    parse_proc_fd(path)
+}
+
+/// Parse a `/proc/{self|<pid>}/fd/<n>` path → `(tid_opt, fd)` where
+/// `self` ⇒ `None`. Returns `None` for any other shape (e.g. a trailing
+/// component after `<n>`, or non-numeric fd). Used to route opens of
+/// magic fd-links to a dup of the existing open file description.
+/// # C: O(N_path)
+fn parse_proc_fd(path: &str) -> Option<(Option<u32>, i32)> {
+    let rest = path.strip_prefix("/proc/")?;
+    let mut it = rest.splitn(3, '/');
+    let who = it.next()?;
+    if it.next()? != "fd" { return None; }
+    let fd: i32 = it.next()?.parse().ok()?;
+    let tid = if who == "self" { None } else { Some(who.parse::<u32>().ok()?) };
+    Some((tid, fd))
+}
+
+/// Open `/proc/<pid>/fd/<n>` by duplicating the target fd's open file
+/// description into the caller's fd table — Linux magic-symlink reopen
+/// semantics (shares the description; not a path reopen).
+/// # C: O(1)
+fn open_proc_fd(tid_opt: Option<u32>, fd: i32) -> i64 {
+    let file = match sched::proclink::proc_fd_file(tid_opt, fd) {
+        Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    match fdt.alloc(file) { Ok(n) => n as i64, Err(e) => -(e as i64) }
+}
+
 /// Resolve a relative path against the calling task's cwd. Returns
 /// `None` for absolute paths (caller uses path_raw verbatim).
 /// Critically, the bare `.` and `..` cases must NOT be short-
@@ -64,6 +117,13 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
         if (flags & O_CREAT) != 0 { op |= la::MAKE_REG; }
         if (flags & O_TRUNC) != 0 { op |= la::TRUNCATE; }
         if let Err(rv) = crate::syscalls::landlock::check(path_str, op) { return rv; }
+    }
+    // /dev/{stdin,stdout,stderr}, /dev/fd/<n>, /proc/<pid>/fd/<n>: dup the
+    // existing open file description (Linux fd-link semantics — they are
+    // symlinks for readlink/ls, but open() shares the target's fd rather
+    // than reopening by path, which would fail for pipes/sockets).
+    if let Some((tid_opt, n)) = dup_fd_target(path_str) {
+        return open_proc_fd(tid_opt, n);
     }
     // Unified mount-table lookup (R67). Special-case /dev/ptmx since
     // it allocates a new pair per open rather than resolving to a
@@ -145,6 +205,13 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
         if (flags & O_CREAT) != 0 { op |= la::MAKE_REG; }
         if (flags & O_TRUNC) != 0 { op |= la::TRUNCATE; }
         if let Err(rv) = crate::syscalls::landlock::check(path_str, op) { return rv; }
+    }
+    // /dev/{stdin,stdout,stderr}, /dev/fd/<n>, /proc/<pid>/fd/<n>: dup the
+    // existing open file description (Linux fd-link semantics — they are
+    // symlinks for readlink/ls, but open() shares the target's fd rather
+    // than reopening by path, which would fail for pipes/sockets).
+    if let Some((tid_opt, n)) = dup_fd_target(path_str) {
+        return open_proc_fd(tid_opt, n);
     }
     // Unified mount-table lookup (R67). Special-case /dev/ptmx since
     // it allocates a new pair per open rather than resolving to a

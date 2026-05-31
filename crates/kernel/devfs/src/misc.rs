@@ -58,6 +58,23 @@ impl Inode for NullInode {
     fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 
+/// Static symlink with a fixed target — backs the standard `/dev`
+/// links `stdin`/`stdout`/`stderr`/`fd` that every Linux system
+/// carries (→ `/proc/self/fd/*`). Shells (`< /dev/stdin`,
+/// `> /dev/stdout`), bash process substitution (`/dev/fd/<n>`), and
+/// scripts depend on them.
+pub struct SymlinkInode {
+    pub target: &'static [u8],
+    pub ino:    Ino,
+}
+impl Inode for SymlinkInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Symlink }
+    fn size(&self) -> u64 { self.target.len() as u64 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn readlink(&self) -> KResult<alloc::vec::Vec<u8>> { Ok(self.target.to_vec()) }
+}
+
 /// `/dev/kmsg` — Linux kernel ring-buffer file. Reads pull bytes
 /// from `klog::ring_read` (the in-memory dmesg log); writes are
 /// discarded for v1 (no userspace kmsg-priority injection).
