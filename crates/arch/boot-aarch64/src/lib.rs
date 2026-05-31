@@ -129,6 +129,30 @@ pub static LIMINE_RSDP: limine::RequestHeader<limine::RsdpResponse>
         response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
     };
 
+/// EXECUTABLE_FILE / KERNEL_FILE — Limine 12 fills one of the two;
+/// `capture_cmdline_from_limine` consults both. Provides the bootloader-
+/// supplied cmdline (Limine config `cmdline: …` line) before falling
+/// back to DTB /chosen/bootargs.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_EXECUTABLE_FILE:
+    limine::RequestHeader<limine::ExecutableFileResponse>
+    = limine::RequestHeader {
+        id:       limine::EXECUTABLE_FILE_ID,
+        revision: limine::REVISION_0,
+        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    };
+
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_KERNEL_FILE:
+    limine::RequestHeader<limine::ExecutableFileResponse>
+    = limine::RequestHeader {
+        id:       limine::KERNEL_FILE_ID,
+        revision: limine::REVISION_0,
+        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    };
+
 // Per `04§4.0` (R06): every klog::* call site in this crate sits
 // behind `debug-boot` — UART sink install, CPU/MMU dump, byte
 // emit. Default builds emit zero log bytes; the call sites are
@@ -280,6 +304,101 @@ static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]))
 static DTB_PHYS_ADDR: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
 
+/// Bootloader cmdline storage (mirrors x86_64). Holds the FDT
+/// /chosen/bootargs bytes copied out of the bootloader region.
+const CMDLINE_BUF_LEN: usize = 4096;
+#[repr(C, align(8))]
+struct CmdlineStorage(UnsafeCell<[u8; CMDLINE_BUF_LEN]>);
+unsafe impl Sync for CmdlineStorage {}
+static CMDLINE_STORAGE: CmdlineStorage =
+    CmdlineStorage(UnsafeCell::new([0u8; CMDLINE_BUF_LEN]));
+
+/// Read Limine's EXECUTABLE_FILE (or legacy KERNEL_FILE) response and
+/// publish the cmdline via `kernel::boot_cmdline::set`. No-op if
+/// Limine didn't fill either slot — the DTB fallback runs next.
+/// # SAFETY: boot-only, single-CPU; CMDLINE_STORAGE is the sole writer.
+/// # C: O(cmdline_len)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn capture_cmdline_from_limine() {
+    let mut resp_ptr = LIMINE_EXECUTABLE_FILE
+        .response.load(core::sync::atomic::Ordering::Acquire);
+    if resp_ptr.is_null() {
+        resp_ptr = LIMINE_KERNEL_FILE
+            .response.load(core::sync::atomic::Ordering::Acquire);
+    }
+    if resp_ptr.is_null() { return; }
+    // SAFETY: bootloader wrote valid ExecutableFileResponse before
+    // handoff; pointer lives in HHDM-mapped region.
+    let resp = unsafe { &*resp_ptr };
+    if resp.executable_file.is_null() { return; }
+    // SAFETY: LimineFile valid until BootloaderReclaimable recycle;
+    // we copy out immediately.
+    let file = unsafe { &*resp.executable_file };
+    if file.cmdline.is_null() { return; }
+    // SAFETY: dst is the 'static CMDLINE_STORAGE; sole writer here.
+    let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
+    let mut n = 0usize;
+    while n < CMDLINE_BUF_LEN - 1 {
+        // SAFETY: bootloader-owned NUL-terminated C string.
+        let b = unsafe { core::ptr::read_volatile(file.cmdline.add(n)) };
+        if b == 0 { break; }
+        dst[n] = b;
+        n += 1;
+    }
+    if n == 0 { return; }
+    if n < CMDLINE_BUF_LEN - 1 { dst[n] = b'\n'; n += 1; }
+    // SAFETY: dst[..n] initialised; 'static lifetime.
+    let bytes: &'static [u8] = unsafe {
+        core::slice::from_raw_parts(dst.as_ptr(), n)
+    };
+    // SAFETY: boot_cmdline::set is boot-only single-writer.
+    unsafe { kernel::boot_cmdline::set(bytes); }
+}
+
+/// Parse the DTB blob's /chosen/bootargs property and publish it via
+/// `kernel::boot_cmdline::set`. No-op if the DTB is missing/invalid
+/// or `bootargs` is empty; the kernel then falls back to
+/// `install_arch_default`.
+/// # SAFETY: called once from boot path; reads bootloader-owned DTB
+/// at DTB_PHYS_ADDR (identity-mapped at this stage); CMDLINE_STORAGE
+/// is a single-writer 'static slot.
+/// # C: O(dtb_struct_size)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn capture_cmdline_from_dtb() {
+    // If Limine already populated the cmdline, leave it alone.
+    if !kernel::boot_cmdline::get().is_empty() { return; }
+    let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
+    if pa == 0 { return; }
+    // SAFETY: DTB pointer from bootloader x0; the header's totalsize
+    // bounds the safe read. We read 8 bytes first to learn totalsize.
+    let head: &[u8] = unsafe {
+        core::slice::from_raw_parts(pa as *const u8, 8)
+    };
+    let totalsize = match dtb::parse_header(head) {
+        Ok(h) => h.totalsize as usize,
+        Err(_) => return,
+    };
+    if totalsize == 0 || totalsize > 4 * 1024 * 1024 { return; }
+    // SAFETY: full blob bounded by the header's own totalsize.
+    let blob: &[u8] = unsafe {
+        core::slice::from_raw_parts(pa as *const u8, totalsize)
+    };
+    let args = match dtb::chosen_bootargs(blob) { Some(s) => s, None => return };
+    if args.is_empty() { return; }
+    // SAFETY: dst is the 'static CMDLINE_STORAGE; sole writer here.
+    let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
+    let n = args.len().min(CMDLINE_BUF_LEN - 1);
+    dst[..n].copy_from_slice(&args[..n]);
+    let mut total = n;
+    if total < CMDLINE_BUF_LEN - 1 { dst[total] = b'\n'; total += 1; }
+    // SAFETY: dst[..total] is initialised; 'static lifetime.
+    let bytes: &'static [u8] = unsafe {
+        core::slice::from_raw_parts(dst.as_ptr(), total)
+    };
+    // SAFETY: boot-only single-writer per boot_cmdline contract.
+    unsafe { kernel::boot_cmdline::set(bytes); }
+}
+
 /// Build a `BootInfo` from the DTB pointer. v1 validates the header
 /// only; the `/memory` property walk that fills BootMemRegions
 /// rides alongside the PMM init that consumes them.
@@ -386,6 +505,13 @@ unsafe extern "C" fn _start_rust() -> ! {
     klog::set_clock_fn(now_ns_aarch64);
     debug_boot! { log_cpu_info(); }
 
+    // SAFETY: bootloader-owned EXECUTABLE_FILE/KERNEL_FILE response
+    // populated before kernel handoff; capture_cmdline_from_limine
+    // copies the cmdline into CMDLINE_STORAGE and publishes via
+    // kernel::boot_cmdline::set. DTB fallback runs second only when
+    // the Limine response is absent (running outside Limine).
+    // SAFETY: same boot-only single-writer contract for both capture paths; capture_cmdline_from_dtb is a no-op if Limine already populated the slot.
+    unsafe { capture_cmdline_from_limine(); capture_cmdline_from_dtb(); }
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
