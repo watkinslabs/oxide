@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -606,7 +606,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_MEMBARRIER    => crate::syscalls::proc::sys_membarrier(&args),
         syscall::nrs::NR_UNSHARE       => crate::syscalls::signal::sys_unshare(&args),
         syscall::nrs::NR_SETNS         => crate::syscalls::signal::sys_setns(&args),
-        syscall::nrs::NR_PTRACE        => crate::syscalls::signal::sys_ptrace(&args),
+        syscall::nrs::NR_PTRACE        => crate::syscalls::ptrace::sys_ptrace(&args),
         syscall::nrs::NR_FANOTIFY_INIT => ::fs::inotify::sys_inotify_init1(&args),
         syscall::nrs::NR_FANOTIFY_MARK => ::fs::inotify::sys_fanotify_mark(&args),
         syscall::nrs::NR_SHMGET        => ipc::sysv_shm::sys_shmget(&args),
@@ -922,9 +922,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     crate::syscalls::proc::rseq_writeback();
     // F108: PTRACE_SYSCALL exit-stop, symmetric with the entry-stop above.
     ptrace_syscall_stop_if_armed();
-    // alarm(2) deadline check: post SIGALRM (bit 13) if the alarm_ns has passed.
+    // alarm(2) deadline check: post SIGALRM if alarm_ns has passed.
+    // Low-latency path for the running task; tasks parked in a blocking
+    // syscall are serviced by tick_wake_expired (B20). Both paths are
+    // idempotent (one-shot stores 0; interval stores now+interval).
     if let Some(cur) = sched::live::current() {
         use core::sync::atomic::Ordering;
+        use sched::live::sigpend::Signum;
         let deadline = cur.alarm_ns.load(Ordering::Acquire);
         if deadline != 0 {
             #[cfg(target_arch = "x86_64")]
@@ -937,7 +941,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                     if interval != 0 { now.saturating_add(interval) } else { 0 },
                     Ordering::Release,
                 );
-                cur.sigpending.fetch_or(1u64 << 13, Ordering::Release);
+                cur.sigpending.fetch_or(Signum::Sigalrm.bit(), Ordering::Release);
             }
         }
     }
