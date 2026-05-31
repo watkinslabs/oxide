@@ -34,8 +34,9 @@ use klog::Uart;
 use sync::{Spinlock, Tty as UartClass};
 
 use limine::{
-    HhdmResponse, MemmapResponse, RequestHeader, RsdpResponse,
-    SmpRequest, HHDM_ID, MEMMAP_ID, REQUESTS_END_MARKER,
+    ExecutableFileResponse, HhdmResponse, MemmapResponse, RequestHeader,
+    RsdpResponse, SmpRequest, EXECUTABLE_FILE_ID, HHDM_ID, KERNEL_FILE_ID,
+    MEMMAP_ID, REQUESTS_END_MARKER,
     REQUESTS_START_MARKER, REVISION_0, RSDP_ID, SMP_ID,
 };
 #[cfg(feature = "debug-boot")]
@@ -160,6 +161,33 @@ pub static LIMINE_RSDP: RequestHeader<RsdpResponse> = RequestHeader {
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
+/// `EXECUTABLE_FILE` request — fetches the bootloader-loaded
+/// kernel image descriptor, whose `cmdline` field holds whatever
+/// the Limine config passed (e.g. `cmdline: root=/dev/oxide0 …`).
+/// Without this, `/proc/cmdline` falls back to the arch-default
+/// installed by `kernel::boot_cmdline::install_arch_default`.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_EXECUTABLE_FILE: RequestHeader<ExecutableFileResponse>
+    = RequestHeader {
+        id:       EXECUTABLE_FILE_ID,
+        revision: REVISION_0,
+        response: AtomicPtr::new(core::ptr::null_mut()),
+    };
+
+/// Legacy KERNEL_FILE_REQUEST shape. Same response layout
+/// (a *const LimineFile carrying `cmdline`). Some Limine builds set
+/// this and leave EXECUTABLE_FILE null; the cmdline capture path
+/// consults whichever responded.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_KERNEL_FILE: RequestHeader<ExecutableFileResponse>
+    = RequestHeader {
+        id:       KERNEL_FILE_ID,
+        revision: REVISION_0,
+        response: AtomicPtr::new(core::ptr::null_mut()),
+    };
+
 /// SMP enumeration request — Limine starts each AP, parks it
 /// spinning on `SmpInfoX86::goto_address`, and gives us the
 /// `[*mut SmpInfoX86; cpu_count]` table via the response.
@@ -227,6 +255,71 @@ static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
     };
     MAX_BOOT_REGIONS
 ]));
+
+/// Bootloader cmdline storage. Sized for a generous Linux-style
+/// cmdline (CONFIG_CMDLINE_BOOT_MAX=2048); cmdlines that exceed
+/// this get truncated at copy time. NUL-terminated for human
+/// reading.
+const CMDLINE_BUF_LEN: usize = 4096;
+#[repr(C, align(8))]
+struct CmdlineStorage(UnsafeCell<[u8; CMDLINE_BUF_LEN]>);
+unsafe impl Sync for CmdlineStorage {}
+static CMDLINE_STORAGE: CmdlineStorage =
+    CmdlineStorage(UnsafeCell::new([0u8; CMDLINE_BUF_LEN]));
+
+/// Read the bootloader's executable-file cmdline (Limine config
+/// `cmdline: …`), copy into kernel-owned `CMDLINE_STORAGE`, and
+/// publish via `kernel::boot_cmdline::set`. No-op if the bootloader
+/// didn't fill the response or the cmdline is empty — the kernel
+/// then falls back to `install_arch_default`.
+///
+/// # SAFETY: called once from the boot path before any procfs read
+/// can race; `CMDLINE_STORAGE` is a 'static slot.
+/// # C: O(cmdline_len)
+unsafe fn capture_cmdline() {
+    let mut resp_ptr = LIMINE_EXECUTABLE_FILE
+        .response.load(core::sync::atomic::Ordering::Acquire);
+    if resp_ptr.is_null() {
+        resp_ptr = LIMINE_KERNEL_FILE
+            .response.load(core::sync::atomic::Ordering::Acquire);
+    }
+    if resp_ptr.is_null() { return; }
+    // SAFETY: bootloader wrote a valid &ExecutableFileResponse before
+    // handing control to the kernel; pointer in HHDM-mapped region.
+    let resp = unsafe { &*resp_ptr };
+    if resp.executable_file.is_null() { return; }
+    // SAFETY: bootloader-allocated LimineFile valid for the boot
+    // window (until BootloaderReclaimable pages are recycled — which
+    // happens long after we've copied the cmdline out).
+    let file = unsafe { &*resp.executable_file };
+    if file.cmdline.is_null() { return; }
+    // Copy NUL-terminated bytes (bounded by CMDLINE_BUF_LEN-1, leaves
+    // a final NUL so the slice can be safely passed to anyone treating
+    // it as a C string).
+    // SAFETY: dst is the 'static CMDLINE_STORAGE; we are the sole
+    // writer before any reader exists.
+    let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
+    let mut n = 0usize;
+    while n < CMDLINE_BUF_LEN - 1 {
+        // SAFETY: bootloader-owned C string; read one byte at a time
+        // until NUL or our cap.
+        let b = unsafe { core::ptr::read_volatile(file.cmdline.add(n)) };
+        if b == 0 { break; }
+        dst[n] = b;
+        n += 1;
+    }
+    if n == 0 { return; }
+    // Linux convention: /proc/cmdline ends with '\n'. The arch-default
+    // does the same; mirror it here for round-trip parity.
+    if n < CMDLINE_BUF_LEN - 1 { dst[n] = b'\n'; n += 1; }
+    // SAFETY: dst[..n] is initialised above; 'static lifetime.
+    let bytes: &'static [u8] = unsafe {
+        core::slice::from_raw_parts(dst.as_ptr(), n)
+    };
+    // SAFETY: kernel::boot_cmdline::set is single-writer / boot-only;
+    // bytes is a 'static slice with the captured cmdline.
+    unsafe { kernel::boot_cmdline::set(bytes); }
+}
 
 /// Build a `BootInfo` by reading the bootloader-populated Limine
 /// responses. Falls back to an empty memmap if the bootloader didn't
@@ -337,6 +430,8 @@ unsafe extern "C" fn _start_rust() -> ! {
     hal_x86_64::set_tsc_khz(2_400_000);
     klog::set_clock_fn(now_ns_x86);
     debug_boot! { log_cpu_info(); }
+    // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of kernel::boot_cmdline can race; reads bootloader-owned EXECUTABLE_FILE response then publishes the captured bytes through the AtomicPtr-backed slot.
+    unsafe { capture_cmdline(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
