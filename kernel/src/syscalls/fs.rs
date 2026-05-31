@@ -287,8 +287,11 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
             // Resolve relative path against cwd (statx semantics for AT_FDCWD).
+            // Absolute paths must also be lexically normalised so trailing
+            // slashes (`/proc/self/fd/`) and `.`/`..` collapse to the
+            // registered devfs key.
             let resolved: alloc::string::String = if raw.starts_with('/') {
-                raw.into()
+                vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
             } else if dirfd == AT_FDCWD {
                 let cur = match sched::live::current() {
                     Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
