@@ -15,9 +15,20 @@ table during transition).
   `lookup_inode_any` now builds via wrap_any_ino. Hosted tests
   `lookup_in_dir_resolves_child`/`_missing`. Additive — nothing calls
   the ext4 dir lookup yet (V2 walker will).
-- NEXT: V2 — write `path_lookup` walker in crates/kernel/vfs (new module),
-  per-component, dentry-cache (per-dentry children map), symlink/ELOOP,
-  dirfd, RESOLVE flags; validate behind sys_newfstatat first.
+- V2 path_lookup walker (F281): `vfs::namei::path_lookup(start, root, path,
+  LookupFlags)` — per-component via dentry children-cache + Inode::lookup,
+  symlink follow (rel/abs) with ELOOP+depth≤40, `.`/`..` (root-clamped),
+  O_NOFOLLOW/RESOLVE_NO_SYMLINKS/BENEATH, mount-cross via
+  `set_mount_resolver` hook (abs-path keyed during string-table
+  transition). Dentry gained children map (cached_child/cache_child/
+  forget_child). VfsError += Eloop/Enametoolong. 9 hosted tests
+  (tests/namei_walk.rs). Additive — NOT wired into any syscall yet.
+- NEXT: V3 — wire path_lookup into syscalls in clusters. Start with
+  sys_newfstatat (stat): install the mount resolver (bridge to
+  vfs::mount), build/cache a global root dentry from ext4 root, resolve
+  via path_lookup with fallback to the old vfs::mount::lookup for
+  backends without per-component lookup (procfs/sysfs). Boot-verify each
+  cluster. Then open → exec → namei mutations → real dirfd/*at.
 
 ## Last K2 work: mount-tree-ids (F279)
 vfs::mount Mount gained persistent `mnt_id` + `Propagation` (AtomicU8).

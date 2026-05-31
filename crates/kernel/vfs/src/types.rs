@@ -100,6 +100,8 @@ pub enum VfsError {
     Enospc  = 28,
     Enotempty = 39,
     Enosys  = 38,
+    Eloop   = 40,
+    Enametoolong = 36,
 }
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
