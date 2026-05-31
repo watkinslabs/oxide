@@ -11,6 +11,7 @@ pub mod cgroup_file;
 pub mod mounts;
 pub mod cmdline;
 pub mod stat;
+pub mod fdinfo;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -663,6 +664,10 @@ impl Inode for ProcPidDirInode {
               => Ok(StaticFileInode::new(b"") as InodeRef),
             "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "exe" | "cwd" | "root" => Ok(StaticFileInode::new(b"/") as InodeRef),
+            "fd"     => Ok(Arc::new(ProcSelfFdInode) as InodeRef),
+            "fdinfo" => Ok(Arc::new(crate::procfs::fdinfo::ProcFdInfoDirInode {
+                tid_opt: if self.is_self { None } else { Some(tid) }
+            }) as InodeRef),
             _         => Err(VfsError::Enoent),
         }
     }
@@ -671,7 +676,7 @@ impl Inode for ProcPidDirInode {
         off: u64,
         f: &mut dyn FnMut(u64, &str, FileType) -> bool,
     ) -> KResult<u64> {
-        const ENTRIES: &[&str] = &["status","cmdline","stat","maps","smaps","smaps_rollup","numa_maps","comm","environ","statm","wchan","oom_score","oom_score_adj","loginuid","sessionid","io","limits","personality","sched","schedstat","autogroup","uid_map","gid_map","setgroups","syscall","stack","mounts","mountinfo","mountstats","cgroup","auxv","timerslack_ns","coredump_filter","exe","cwd","root"];
+        const ENTRIES: &[&str] = &["status","cmdline","stat","maps","smaps","smaps_rollup","numa_maps","comm","environ","statm","wchan","oom_score","oom_score_adj","loginuid","sessionid","io","limits","personality","sched","schedstat","autogroup","uid_map","gid_map","setgroups","syscall","stack","mounts","mountinfo","mountstats","cgroup","auxv","timerslack_ns","coredump_filter","exe","cwd","root","fd","fdinfo"];
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
@@ -882,6 +887,7 @@ fn pid_to_kernel_tid(p: u32) -> Option<u32> {
 pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
     use procfs::paths::{parse_proc_path, ProcPath};
     if let Some(i) = crate::procfs::proc_links::lookup_fd_path(path) { return Some(i); }
+    if let Some(i) = crate::procfs::fdinfo::lookup_fdinfo_path(path) { return Some(i); }
     match parse_proc_path(path) {
         ProcPath::SelfDir =>
             Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
