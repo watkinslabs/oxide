@@ -107,3 +107,14 @@ fn symlink_loop_is_eloop() {
 fn missing_is_enoent() {
     assert_eq!(look("/etc/sub/nope", LookupFlags::default()).err(), Some(VfsError::Enoent));
 }
+
+// docs/16§2 Superblock::root — the inode a path-walk switches to when it
+// crosses into this mount (the V4 piece V5's mount-crossing uses).
+#[test]
+fn fs_root_is_root_dir() {
+    use vfs::fs::FileSystem;
+    root(); // ensure the mount is published
+    let r = ext4::rootfs::Ext4RootfsFs.root().expect("fs.root()");
+    assert_eq!(r.file_type(), FileType::Directory);
+    assert_eq!(r.ino(), whole_path_ino("/"), "fs.root() is the ino-2 root dir");
+}
