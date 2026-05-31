@@ -33,6 +33,15 @@ pub trait FileSystem: Send + Sync {
     /// # C: O(1)
     fn magic(&self) -> u64 { 0 }
 
+    /// Root inode of this mounted filesystem — the `Superblock::root`
+    /// of `docs/16§2`. A dentry path-walk (`docs/16§3`) switches to this
+    /// inode when it crosses into the mount, instead of re-doing a
+    /// whole-path `lookup(mount_point)`. Default `None` for backends
+    /// that don't expose a single root yet (the walker then falls back
+    /// to whole-path lookup during the K2V mount-tree transition).
+    /// # C: O(1)
+    fn root(&self) -> Option<InodeRef> { None }
+
     /// Resolve `path` (relative to this FS's mount point) to an
     /// `InodeRef`. Returns `None` if no such name exists.
     /// # C: depends on FS — typically O(path-component-count).
