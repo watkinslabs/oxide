@@ -61,6 +61,23 @@ pub fn live_tids() -> Vec<u32> {
     g.iter().map(|(t, _)| *t).collect()
 }
 
+/// `(total_live, runnable)` — used by `/proc/stat`'s `processes` and
+/// `procs_running` lines. Blocked = total - runnable - stopped, which
+/// callers can compute if they care; v1 procfs reports only running.
+/// # C: O(N_tasks)
+pub fn live_counts() -> (u64, u64) {
+    let mut g = REG.lock();
+    g.retain(|(_, w)| w.strong_count() > 0);
+    let mut total = 0u64; let mut runnable = 0u64;
+    for (_, w) in g.iter() {
+        if let Some(t) = w.upgrade() {
+            total += 1;
+            if matches!(t.state(), TaskState::Runnable) { runnable += 1; }
+        }
+    }
+    (total, runnable)
+}
+
 /// Snapshot live process vtgids (Linux "PIDs") for procfs readdir.
 /// Tasks without a vtgid (kernel threads pre-fork, smokes) are
 /// skipped — they don't have a `/proc/N` directory in Linux either.

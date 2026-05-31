@@ -30,6 +30,15 @@ const CLOCK_BOOTTIME:           u64 = 7;
 /// settimeofday / clock_settime overwrite it.
 static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
 
+/// Seconds since the Unix epoch at which the kernel started, derived
+/// from `REALTIME_OFFSET_NS` (set by `settimeofday` / `clock_settime`).
+/// Returns 0 until userspace seeds the wall clock — Linux's `btime`
+/// reports 0 in the same situation.
+/// # C: O(1)
+pub fn boot_unix_seconds() -> u64 {
+    REALTIME_OFFSET_NS.load(Ordering::Acquire) / 1_000_000_000
+}
+
 #[inline]
 fn monotonic_ns() -> u64 {
     #[cfg(target_arch = "x86_64")]
