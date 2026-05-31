@@ -341,6 +341,8 @@ impl NetStack {
     pub fn udp_map(&self) -> &Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass> { &self.udp }
     /// F174: expose tcp conn map for stack_icmp. # C: O(1)
     pub fn tcp_conns_map(&self) -> &Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass> { &self.tcp_conns }
+    /// # C: O(1) — caller locks before iterating
+    pub fn tcp_listens_map(&self) -> &Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass> { &self.tcp_listens }
 
     /// F161: pub send_l4_over_ipv4 wrapper. # C: O(payload + route)
     pub fn send_l4_over_ipv4_pub(&self, src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8])

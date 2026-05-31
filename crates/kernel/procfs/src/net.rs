@@ -65,12 +65,56 @@ impl vfs::Inode for ProcNetTcpInode {
 
 impl ProcNetTcpInode {
     fn body(&self) -> alloc::string::String {
-        // v1 surfaces just the header; per-connection rows ride
-        // alongside a Stack::tcp_conns_snapshot() helper. The
-        // shape lets `ss -t` parse without erroring on empty.
-        alloc::string::String::from(
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        use net::addr::IpAddr;
+        let mut s = String::from(
             "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
-        )
+        );
+        let stack = net::sock::stack();
+        let mut sl: u32 = 0;
+        // LISTEN rows from the v4 listener table.
+        let listens = stack.tcp_listens_map().lock();
+        for (key, _) in listens.iter() {
+            if let IpAddr::V4(ip) = key.local_ip {
+                let ip_be = ip.as_u32().to_be();
+                let _ = writeln!(s, "{:5}: {:08X}:{:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                    sl, ip_be, key.local_port);
+                sl += 1;
+            }
+        }
+        drop(listens);
+        // Established / other states from the conn table.
+        let conns = stack.tcp_conns_map().lock();
+        for (key, entry) in conns.iter() {
+            let (IpAddr::V4(lip), IpAddr::V4(rip)) = (key.local_ip, key.remote_ip)
+                else { continue };
+            let st = linux_tcp_state(entry.conn.lock().state);
+            let _ = writeln!(s, "{:5}: {:08X}:{:04X} {:08X}:{:04X} {:02X} 00000000:00000000 00:00000000 00000000     0        0 0 1 0000000000000000 100 0 0 10 0",
+                sl, lip.as_u32().to_be(), key.local_port,
+                rip.as_u32().to_be(), key.remote_port, st);
+            sl += 1;
+        }
+        s
+    }
+}
+
+/// Translate our internal TcpState to Linux's /proc/net/tcp values
+/// (uapi/linux/tcp.h `enum tcp_state`). `ss`/`netstat` decode this.
+fn linux_tcp_state(s: net::tcp_state::TcpState) -> u8 {
+    use net::tcp_state::TcpState::*;
+    match s {
+        Established => 1,
+        SynSent     => 2,
+        SynRecv     => 3,
+        FinWait1    => 4,
+        FinWait2    => 5,
+        TimeWait    => 6,
+        Closed      => 7,
+        CloseWait   => 8,
+        LastAck     => 9,
+        Listen      => 10,
+        Closing     => 11,
     }
 }
 
@@ -93,9 +137,23 @@ impl vfs::Inode for ProcNetUdpInode {
 
 impl ProcNetUdpInode {
     fn body(&self) -> alloc::string::String {
-        alloc::string::String::from(
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        let mut s = String::from(
             "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n",
-        )
+        );
+        let stack = net::sock::stack();
+        let map = stack.udp_map().lock();
+        let mut sl: u32 = 0;
+        // UDP local-bind table — Linux reports 0.0.0.0 for INADDR_ANY,
+        // and our table is port-keyed (no per-bind IP), so we honour
+        // the wildcard convention.
+        for (port, _) in map.iter() {
+            let _ = writeln!(s, "{:5}: 00000000:{:04X} 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 0 2 0000000000000000 0",
+                sl, port);
+            sl += 1;
+        }
+        s
     }
 }
 
