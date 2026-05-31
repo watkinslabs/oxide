@@ -130,3 +130,18 @@ fn task_fd_path(tid_opt: Option<u32>, fd_str: &str) -> Option<Vec<u8>> {
     let file = fdt.get(fd).ok()?;
     Some(file.dentry().absolute_path())
 }
+
+/// Return the open `File` behind `/proc/<pid|self>/fd/<n>` so open(2)
+/// can dup the existing open file description (Linux magic fd-link
+/// reopen) instead of reopening the underlying path. None if no such
+/// task or fd.
+/// # C: O(1)
+pub fn proc_fd_file(tid_opt: Option<u32>, fd: i32) -> Option<alloc::sync::Arc<vfs::File>> {
+    let task = match tid_opt {
+        Some(tid) => crate::live::registry::lookup(tid)?,
+        None      => crate::live::registry::lookup(crate::live::current()?.tid)?,
+    };
+    // SAFETY: fd_table slot single-mutator per `13§5`; Arc-clone snapshot.
+    let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
+    fdt.get(fd).ok()
+}

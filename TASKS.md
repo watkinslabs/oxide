@@ -53,6 +53,23 @@ each subsystem needs the full Linux surface.
 | K5 | verify/complete: SCM_CREDENTIALS/SO_PEERCRED real creds; NETLINK_KOBJECT_UEVENT broadcast (udev); `/proc/<pid>/ns/*` nodes; `/dev/kmsg` (journald); memfd F_ADD_SEALS | `24`,`19` | not started |
 | K6 | new mount API: fsopen/fsconfig/fsmount/move_mount/open_tree + mount_setattr (systemd 254+) | `16` | not started |
 
+## Track R — proc/dev/sys realness (make synthetic fses real, in importance order)
+
+Audit (2026-05-30) classified every /proc, /sys, /dev entry REAL/PARTIAL/FAKE.
+Build out the fakes, highest-impact first. Note: /proc/<pid>/{exe,cwd,root,fd,ns}
+readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
+
+| Id | Work | Status |
+|---|---|---|
+| R1 | statfs/fstatfs real per-fs `s_magic` (cgroup2/tmpfs/proc/sysfs/ext4) via `FileSystem::magic()` + mount-table classify; fix `f_namelen` offset — systemd fs-type detection | **done** (PR #1360) `/bin/statfs_smoke` |
+| R2 | standard `/dev/{stdin,stdout,stderr,fd}` symlinks → `/proc/self/fd/*` (readlink/ls) + open() fd-link **dup** semantics (`/dev/std*`, `/dev/fd/<n>`, `/proc/<pid>/fd/<n>` share the target's open file description, Linux magic fd-link); fixed init stdio dentry to real `/dev/console` (was `/console`) | **done** (F269) `/bin/dev_smoke` |
+| R2b | general open()-time symlink follow (ext4 symlinks, `/etc/localtime`, merged-usr `/bin`→`/usr/bin`): a path-walk resolver with ELOOP+O_NOFOLLOW. NOTE: a first whole-path follow loop worked on x86 but hit an undiagnosable arm-only ELOOP (arm UART drops klog mid-syscall — needs a `/proc`-based trace channel before retrying). No ext4 symlinks are opened today, so not yet blocking | not started |
+| R3 | real sysfs — `/sys` is a fake-constant devfs overlay, NOT a filesystem. `/sys/class/net/<if>/*` dynamic from netdev registry; `/sys/devices/system/cpu/{online,possible,present}` from real CPU count; register a SysfsFs backend. HIGH: udev + networkd device model | not started |
+| R4 | /proc system-wide realness: `/proc/cmdline` real boot cmdline; `/proc/stat` btime + procs from registry; `/proc/net/{tcp,udp,unix}` populated (systemd socket-activation); `/proc/<pid>/fd` inode-open + `fdinfo/` | not started |
+| R5 | `/proc/sys` writable sysctls backed by real state (hostname already real); systemd-sysctl applies `/etc/sysctl.d` | not started |
+| R6 | intermediate-directory symlink follow (merged-usr `/bin`→`/usr/bin`, `/lib`→`/usr/lib`): component-walk resolver | not started |
+| R7 | `/dev/shm` tmpfs mount point (POSIX shm, systemd runtime); /dev/ptmx+pts already real | not started |
+
 ## Track L — shared-library userspace (systemd needs dynamic linking)
 
 | Id | Work | Status |

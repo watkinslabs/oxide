@@ -61,6 +61,18 @@ pub fn init() {
     register("/dev/random",  Arc::clone(&rand));
     register("/dev/urandom", rand);
 
+    // Standard fd symlinks every Linux carries: /dev/{stdin,stdout,
+    // stderr} → /proc/self/fd/{0,1,2}, /dev/fd → /proc/self/fd.
+    // Shells (`> /dev/stdout`, `< /dev/stdin`) and bash process
+    // substitution (`/dev/fd/<n>`) rely on these.
+    let sym = |target: &'static [u8], ino: u64| -> InodeRef {
+        Arc::new(devfs::misc::SymlinkInode { target, ino }) as InodeRef
+    };
+    register("/dev/stdin",  sym(b"/proc/self/fd/0", 0x2000_0010));
+    register("/dev/stdout", sym(b"/proc/self/fd/1", 0x2000_0011));
+    register("/dev/stderr", sym(b"/proc/self/fd/2", 0x2000_0012));
+    register("/dev/fd",     sym(b"/proc/self/fd",   0x2000_0013));
+
     // Top-level directory inodes synthesised over the registry. Each
     // emits the leaf children under its own prefix. Must come AFTER
     // leaf registration so they are not themselves enumerated as
