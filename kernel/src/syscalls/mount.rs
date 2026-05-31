@@ -117,13 +117,30 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         return 0;
     }
 
-    // Propagation (MS_SHARED/PRIVATE/SLAVE/UNBINDABLE) and MS_REMOUNT
-    // operate on an EXISTING mount and carry no fstype/source — systemd's
-    // early mount-setup issues `mount(NULL,"/",NULL,MS_REC|MS_SHARED)`.
-    // We accept them (the mount stays itself; peer-propagation event
-    // semantics ride a follow-up) so that path doesn't EFAULT on the
-    // NULL fstype/source pointers.
-    if flags & (MS_PROPAGATION | MS_REMOUNT) != 0 {
+    // Propagation (MS_SHARED/PRIVATE/SLAVE/UNBINDABLE) retunes an
+    // EXISTING mount in place — systemd's early setup issues
+    // `mount(NULL,"/",NULL,MS_REC|MS_SHARED)`. Record the type on the
+    // target mount (surfaced in /proc/mountinfo); peer-propagation
+    // *event* delivery rides a follow-up. MS_REC recursive retune is
+    // also a follow-up. Changing propagation of a non-mount → EINVAL.
+    if flags & MS_PROPAGATION != 0 {
+        use vfs::mount::Propagation;
+        let kind = if flags & MS_UNBINDABLE != 0 { Propagation::Unbindable }
+            else if flags & MS_SLAVE != 0 { Propagation::Slave }
+            else if flags & MS_SHARED != 0 { Propagation::Shared }
+            else { Propagation::Private };
+        // Record on the target if it's a real entry in the unified
+        // mount table. Some mounts (tmpfs) still register via the devfs
+        // registry rather than vfs::mount::TABLE (fragmented table —
+        // unified in later K2/K3 work); for those, accept-and-noop as
+        // before rather than spuriously EINVAL and regress systemd.
+        let _ = vfs::mount::set_propagation(&target, kind);
+        return 0;
+    }
+    // MS_REMOUNT changes mount options on an existing mount; we keep no
+    // remountable options yet, so admit-and-noop (don't EFAULT on the
+    // NULL fstype/source the remount path passes).
+    if flags & MS_REMOUNT != 0 {
         return 0;
     }
 
