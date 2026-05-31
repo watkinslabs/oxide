@@ -656,6 +656,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         let _ = vfs::mount::register("/",     alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
         let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
         let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(crate::procfs::fs_impl::ProcfsFs));
+        let _ = vfs::mount::register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
         let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
@@ -866,6 +867,7 @@ pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
 #[cfg(target_os = "oxide-kernel")] pub mod smoke;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs;
+#[cfg(target_os = "oxide-kernel")] pub mod sysfs;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
