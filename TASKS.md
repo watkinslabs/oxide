@@ -69,7 +69,7 @@ readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
 | R4 | /proc system-wide realness: `/proc/cmdline` real boot cmdline; `/proc/stat` btime + procs from registry; `/proc/net/{tcp,udp,unix}` populated (systemd socket-activation); `/proc/<pid>/fd` inode-open + `fdinfo/` | **partial** — `/proc/cmdline` real via `kernel::boot_cmdline` transport, arch-correct console= (PR #1364); `/proc/stat` real btime + processes + procs_running from registry (PR #1365); `/proc/net/{tcp,udp}` populated from stack (PR #1366); `/proc/net/unix` populated from UNIX_REGISTRY (PR #1367); /proc/<pid>/fd inode-open done in R2a. REMAINING: `/proc/<pid>/fdinfo/`; real Limine KERNEL_FILE / FDT bootargs parsing replacing install_arch_default |
 | R5 | `/proc/sys` writable sysctls backed by real state (hostname already real); systemd-sysctl applies `/etc/sysctl.d` | not started |
 | R6 | intermediate-directory symlink follow (merged-usr `/bin`→`/usr/bin`, `/lib`→`/usr/lib`): component-walk resolver | not started |
-| R7 | `/dev/shm` tmpfs mount point (POSIX shm, systemd runtime); /dev/ptmx+pts already real | not started |
+| R7 | `/dev/shm` tmpfs mount point (POSIX shm, systemd runtime); /dev/ptmx+pts already real | **done** (PR #1372) — TmpfsFs mounted at /dev/shm + /run via vfs::mount; end-to-end write/read/stat verified |
 
 ## Track L — shared-library userspace (systemd needs dynamic linking)
 
