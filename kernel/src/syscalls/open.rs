@@ -77,15 +77,14 @@ fn open_proc_fd(tid_opt: Option<u32>, fd: i32) -> i64 {
     match fdt.alloc(file) { Ok(n) => n as i64, Err(e) => -(e as i64) }
 }
 
-/// Resolve a relative path against the calling task's cwd. Returns
-/// `None` for absolute paths (caller uses path_raw verbatim).
-/// Critically, the bare `.` and `..` cases must NOT be short-
-/// circuited — `ls` (no arg) sends `.` and the openat lookup
-/// otherwise tries to find a literal `.` entry in the registry,
-/// which doesn't exist.
+/// Resolve a user-supplied path for open(2)/openat(2). Absolute paths
+/// are lexically normalised (trailing slash stripped, `.`/`..`
+/// collapsed) so `open("/proc/self/fd/")` hits the same registry key
+/// as `open("/proc/self/fd")`; relative paths are joined to cwd then
+/// normalised. Bare `.`/`..` are preserved (not collapsed to "") so
+/// `ls` (no arg) sending `.` resolves against cwd correctly.
 /// # C: O(N)
 fn resolve_path_for_open(path_raw: &str) -> Option<alloc::string::String> {
-    if path_raw.starts_with('/') { return None; }
     Some(crate::syscalls::pathresolve::resolve_cwd(path_raw))
 }
 
