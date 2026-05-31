@@ -63,6 +63,24 @@ pub const SMP_ID: RequestId = RequestId([
     0x95a6_7b81_9a1b_857e, 0xa0b6_1b72_3b6a_73e0,
 ]);
 
+/// `LIMINE_EXECUTABLE_FILE_REQUEST` (was LIMINE_KERNEL_FILE_REQUEST
+/// pre-v9). The response carries the bootloader-loaded executable's
+/// LimineFile descriptor whose `cmdline` field is the command line
+/// the bootloader parsed (e.g. Limine config `cmdline` line).
+/// Magic pinned against `limine-protocol/include/limine.h` HEAD.
+pub const EXECUTABLE_FILE_ID: RequestId = RequestId([
+    LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
+    0xad97_e90e_8332_8329, 0xbafb_eef9_75c9_b6c9,
+]);
+
+/// Legacy `LIMINE_KERNEL_FILE_REQUEST` (pre-v9 naming). Some Limine
+/// builds populate this and not EXECUTABLE_FILE; emit both and the
+/// boot path consults whichever the bootloader filled.
+pub const KERNEL_FILE_ID: RequestId = RequestId([
+    LIMINE_COMMON_MAGIC_0, LIMINE_COMMON_MAGIC_1,
+    0xad97_e90e_83f1_ed67, 0x31eb_5d1c_5ff2_3b69,
+]);
+
 /// `LIMINE_REQUESTS_START_MARKER` — Limine v9+ uses these markers to
 /// bound the request-scanning region inside the kernel image.
 /// Without them v12+ may skip requests it would otherwise see via
@@ -102,6 +120,35 @@ pub struct RequestHeader<R> {
 // by default — the bootloader writes them once and the kernel reads
 // them serially, so we assert `Sync` unconditionally on the wrapper.
 unsafe impl<R> Sync for RequestHeader<R> {}
+
+/// `LimineFile` per limine-protocol/include/limine.h. Bootloader-
+/// allocated; pointers reference bootloader-owned memory that stays
+/// valid until BootloaderReclaimable regions are recycled.
+#[repr(C)]
+pub struct LimineFile {
+    pub revision:     u64,
+    pub address:      *const u8,
+    pub size:         u64,
+    pub path:         *const u8,
+    pub cmdline:      *const u8,
+    pub media_type:   u32,
+    pub _unused:      u32,
+    pub tftp_ip:      u32,
+    pub tftp_port:    u32,
+    pub partition_index: u32,
+    pub mbr_disk_id:  u32,
+    pub gpt_disk_uuid: [u64; 2],
+    pub gpt_part_uuid: [u64; 2],
+    pub part_uuid:    [u64; 2],
+}
+
+/// `EXECUTABLE_FILE` response. The `executable_file` pointer
+/// references a bootloader-allocated `LimineFile`.
+#[repr(C)]
+pub struct ExecutableFileResponse {
+    pub revision:        u64,
+    pub executable_file: *const LimineFile,
+}
 
 /// Memmap-response. Layout per Limine 6 (variable-length entries
 /// array follows pointer; we keep the pointer + count and chase the

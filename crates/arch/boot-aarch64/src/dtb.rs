@@ -78,6 +78,77 @@ pub fn parse_header(bytes: &[u8]) -> KResult<FdtHeader> {
     Ok(h)
 }
 
+// FDT struct-block tokens per devicetree-specification §5.4.
+const FDT_BEGIN_NODE: u32 = 1;
+const FDT_END_NODE:   u32 = 2;
+const FDT_PROP:       u32 = 3;
+const FDT_NOP:        u32 = 4;
+const FDT_END:        u32 = 9;
+
+/// Walk a parsed FDT blob and return the bytes of the `/chosen/bootargs`
+/// property (without the trailing NUL). Returns `None` if either the
+/// blob is malformed, the `chosen` node is missing, or `bootargs` isn't
+/// set. The returned slice borrows from `bytes` for its full lifetime.
+/// # C: O(struct_block_size)
+pub fn chosen_bootargs<'a>(bytes: &'a [u8]) -> Option<&'a [u8]> {
+    let h = parse_header(bytes).ok()?;
+    let stru = bytes.get(h.off_dt_struct as usize ..
+                         (h.off_dt_struct + h.size_dt_struct) as usize)?;
+    let strs = bytes.get(h.off_dt_strings as usize ..
+                         (h.off_dt_strings + h.size_dt_strings) as usize)?;
+    let mut i = 0usize;
+    let mut depth: i32 = -1; // -1 = before root; root push makes 0.
+    let mut in_chosen = false;
+    let mut chosen_depth: i32 = -1;
+    while i + 4 <= stru.len() {
+        let tok = read_be_u32(stru, i).ok()?;
+        i += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                depth += 1;
+                let start = i;
+                while i < stru.len() && stru[i] != 0 { i += 1; }
+                if i >= stru.len() { return None; }
+                let name = &stru[start..i];
+                i = (i + 1 + 3) & !3; // skip NUL, align to 4.
+                if depth == 1 && name == b"chosen" {
+                    in_chosen = true;
+                    chosen_depth = depth;
+                }
+            }
+            FDT_END_NODE => {
+                if in_chosen && depth == chosen_depth {
+                    in_chosen = false;
+                }
+                depth -= 1;
+            }
+            FDT_PROP => {
+                if i + 8 > stru.len() { return None; }
+                let plen  = read_be_u32(stru, i).ok()? as usize;
+                let pname = read_be_u32(stru, i + 4).ok()? as usize;
+                i += 8;
+                let pdata = stru.get(i .. i + plen)?;
+                if in_chosen {
+                    let name_end = strs[pname..].iter()
+                        .position(|&b| b == 0)?;
+                    if &strs[pname..pname + name_end] == b"bootargs" {
+                        // Trim trailing NULs that some bootloaders
+                        // include in the property length.
+                        let end = pdata.iter().rposition(|&b| b != 0)
+                            .map(|x| x + 1).unwrap_or(0);
+                        return Some(&pdata[..end]);
+                    }
+                }
+                i += (plen + 3) & !3;
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
 #[inline]
 fn read_be_u32(buf: &[u8], off: usize) -> KResult<u32> {
     let bytes: [u8; 4] = buf.get(off..off + 4)
