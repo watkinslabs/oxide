@@ -872,6 +872,10 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     /// EXT4_SUPER_MAGIC (linux/magic.h).
     /// # C: O(1)
     fn magic(&self) -> u64 { 0xEF53 }
+    /// ext4 root is always inode 2 (`docs/16§2` Superblock::root). The
+    /// dentry path-walk switches to this on crossing into the mount.
+    /// # C: O(1) inode read
+    fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
     /// # C: O(N_path_components)
     fn lookup(&self, path: &str) -> Option<vfs::InodeRef> {
         // `_any` so opendir on `/`, `/etc`, etc. succeeds — was
