@@ -26,7 +26,8 @@ pub fn register_static_files() {
     crate::devfs::register("/proc/loadavg",     Arc::new(ProcLoadavgInode)             as InodeRef);
     crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
-    crate::devfs::register("/proc/cmdline",     StaticFileInode::new(b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyS0\n") as InodeRef);
+    crate::devfs::register("/proc/cmdline",
+        Arc::new(crate::procfs::ProcCmdlineInode) as InodeRef);
     crate::devfs::register("/proc/devices",     StaticFileInode::new(b"\
 Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices:\n") as InodeRef);
     crate::devfs::register("/proc/modules",     StaticFileInode::new(b"") as InodeRef);
