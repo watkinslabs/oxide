@@ -661,6 +661,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(crate::procfs::fs_impl::ProcfsFs));
         let _ = vfs::mount::register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
         let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
+        // POSIX shm + systemd /run live on tmpfs. Longest-prefix-match
+        // gives them precedence over the /dev devfs mount, so paths
+        // resolve through the tmpfs root inode populated in
+        // `fs::tmpfs::init`. Without this `shm_open(3)` (which musl
+        // routes to `/dev/shm/<name>`) hits DevfsFs and ENOENTs.
+        let _ = vfs::mount::register("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
+        let _ = vfs::mount::register("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
         debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }

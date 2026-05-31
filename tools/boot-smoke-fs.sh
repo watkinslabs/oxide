@@ -134,6 +134,11 @@ step dev_stdout       'readlink /dev/stdout'
 step dev_stderr       'readlink /dev/stderr'
 step dev_fd           'readlink /dev/fd'
 step dev_stdout_write 'echo hello-from-dev-stdout > /dev/stdout'
+step dev_shm_ls       'ls -la /dev/shm 2>&1'
+step dev_shm_write    'echo shm-roundtrip > /dev/shm/probe'
+step dev_shm_read     'cat /dev/shm/probe'
+step dev_shm_stat     'stat -c %F:%s /dev/shm/probe'
+step dev_shm_statfs   'stat -f -c %T /dev/shm'
 
 # /sys
 step sys_ls           'ls -la /sys 2>&1 | head -20'
