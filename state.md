@@ -20,18 +20,33 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## NEXT: V4 Superblock, then V5 unified mount tree
-- V4: `Superblock` trait + inode→sb linkage (docs/16 invariant 3). Note
-  ext4 already has its own on-disk `Superblock` (ext4::Superblock) —
-  the VFS one is different (root inode / statfs / sync / umount per
-  docs/16§2). Add per-SB inode cache.
-- V5: THE foundation — one dentry-keyed mount tree spanning
-  ext4/tmpfs/devfs/proc/sys (drops string-table + devfs-registry split +
-  BindFs rewrite). Fill procfs/sysfs dir `lookup(name)`. Then
-  `path_lookup` is THE resolver.
-- V6: migrate ALL path syscalls at once (re-add symlink_probe). V7:
-  bind-as-clone/MS_MOVE/pivot_root/MS_REC/propagation/per-ns. See
-  TASKS.md Track K2V. Verify each on the hosted harness FIRST, QEMU last.
+## V3+V4 done; NEXT V5 unified mount tree
+- V3 verify-left harness merged (#1381): `crates/kernel/ext4/tests/
+  walk_image.rs` + `walk.img`. THE dev loop — extend it per stage.
+- V4 in progress (F284): `FileSystem::root()` (docs/16§2 Superblock::root)
+  — the inode the walk switches to on mount-crossing; ext4 returns ino-2.
+  Hosted test `fs_root_is_root_dir`. Additive, unused in kernel yet.
+- NEXT V5: THE foundation — unified dentry-keyed mount tree spanning
+  ext4/tmpfs/devfs/proc/sys. Install a kernel mount-resolver bridging
+  `path_lookup`'s cross-hook to the real registries via `fs.root()`;
+  add `root()` for tmpfs/devfs/procfs/sysfs; fill procfs/sysfs dir
+  `lookup(name)`. Drops the string-table + devfs-registry split +
+  BindFs rewrite. Verify crossing on the harness FIRST. Then V6 migrate
+  ALL path syscalls (re-add symlink_probe), V7 bind/MS_MOVE/pivot_root/
+  MS_REC/propagation/per-ns.
+
+## Harness gotchas (don't rediscover)
+- `boot-smoke` = login PROMPT only; `boot-smoke-login` = actual login
+  (alice/swordfish→id). Login regressions slip the prompt gate — the
+  pre-push hook only runs prompt-smoke. Consider gating on login-smoke.
+- `make qemu-x86` defaults TCG; `OXIDE_QEMU_KVM=1` for KVM (fast). Boot
+  qemu directly with `hostfwd=tcp::2299` + `vendor/firmware/ovmf-x64.fd`
+  to avoid colliding with a user's :2222 session.
+- `| tail`/`| grep` on long cmds swallow output + return nonzero under
+  the shell; REDIRECT to a file and read the file. Kill stale qemu +
+  confirm :2222 free before boots (26h orphans happen).
+- qemu MCP hangs in OVMF under TCG (never reaches kernel) — not usable
+  for full-boot repro here; use direct KVM qemu.
 
 GOTCHAS learned (don't rediscover by booting):
 - musl stat()/lstat() → `sys_stat` (slots 4/6), NOT statx/newfstatat.
