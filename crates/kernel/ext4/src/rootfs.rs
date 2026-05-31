@@ -449,7 +449,18 @@ impl vfs::Inode for Ext4StatInode {
     fn file_type(&self) -> vfs::FileType { self.ft }
     fn size(&self) -> u64 { self.size }
     fn perm(&self) -> Option<u16> { Some(self.perm) }
-    fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> { Err(vfs::VfsError::Enotdir) }
+    /// Resolve a single child `name` within this directory — the
+    /// per-component primitive the dentry path-walk (`docs/16§3`)
+    /// calls. Enotdir if this inode isn't a directory; Enoent if the
+    /// child is absent.
+    /// # C: O(N_entries in dir)
+    fn lookup(&self, name: &str) -> vfs::KResult<vfs::InodeRef> {
+        if !matches!(self.ft, vfs::FileType::Directory) {
+            return Err(vfs::VfsError::Enotdir);
+        }
+        let child = lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
+        wrap_any_ino(child).ok_or(vfs::VfsError::Enoent)
+    }
     fn read(&self, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
     fn write(&self, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Eio) }
     fn readlink(&self) -> vfs::KResult<alloc::vec::Vec<u8>> {
@@ -520,20 +531,43 @@ impl vfs::Inode for Ext4StatInode {
 /// Wrap any-type ext4 inode for stat-only consumers.
 /// # C: O(path components)
 pub fn lookup_inode_any(path: &[u8]) -> Option<vfs::InodeRef> {
+    let ino = lookup_path(path)?;
+    wrap_any_ino(ino)
+}
+
+/// Resolve a single child `name` within ext4 directory inode
+/// `dir_ino`. Returns the child's ext4 inode number, or `None` if
+/// `dir_ino` isn't a directory or `name` is absent. This is the
+/// per-component lookup the dentry path-walk (`docs/16§3`) drives
+/// via `Inode::lookup`, vs the whole-path `lookup_path`.
+/// # C: O(N_entries in dir)
+pub fn lookup_child_ino(dir_ino: u32, name: &str) -> Option<u32> {
     let p = MOUNT_PTR.load(Ordering::Acquire);
     if p.is_null() { return None; }
     // SAFETY: MOUNT_PTR published once at boot; reads stable for kernel lifetime.
     let mount = unsafe { &*p };
-    let ino = mount.lookup_path(path).ok()?;
+    let dir = mount.read_inode(dir_ino).ok()?;
+    mount.lookup_in_dir(&dir, name.as_bytes()).ok()
+}
+
+/// Wrap ext4 inode `ino` (any type) as a VFS Inode: regular files
+/// get the writeable `Ext4FileInode` (deferred bytes); everything
+/// else a stat-only `Ext4StatInode` carrying the real on-disk mode.
+/// Factored from `lookup_inode_any` so child lookups can build an
+/// inode from a number, not a path.
+/// # C: O(1) inode read
+pub fn wrap_any_ino(ino: u32) -> Option<vfs::InodeRef> {
+    let p = MOUNT_PTR.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: MOUNT_PTR published once at boot; reads stable for kernel lifetime.
+    let mount = unsafe { &*p };
     let inode = mount.read_inode(ino).ok()?;
-    if inode.is_reg() {
-        return wrap_file(ino);
-    }
+    if inode.is_reg() { return wrap_file(ino); }
     let ft = if inode.is_dir() { vfs::FileType::Directory }
              else if inode.is_link() { vfs::FileType::Symlink }
              else { vfs::FileType::Regular };
     Some(alloc::sync::Arc::new(Ext4StatInode {
-        ino, ft, size: inode.size as u64, perm: 0o755,
+        ino, ft, size: inode.size as u64, perm: (inode.mode & 0o7777) as u16,
     }) as vfs::InodeRef)
 }
 
