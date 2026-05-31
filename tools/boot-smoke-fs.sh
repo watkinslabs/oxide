@@ -137,6 +137,12 @@ step dev_stdout_write 'echo hello-from-dev-stdout > /dev/stdout'
 step sys_ls           'ls -la /sys 2>&1 | head -20'
 step sys_class_ls     'ls /sys/class 2>&1 | head -20'
 step sys_class_net    'ls /sys/class/net 2>&1'
+step sys_lo_attrs     'ls /sys/class/net/lo 2>&1'
+step sys_lo_addr      'cat /sys/class/net/lo/address'
+step sys_lo_mtu       'cat /sys/class/net/lo/mtu'
+step sys_lo_type      'cat /sys/class/net/lo/type'
+step sys_lo_operstate 'cat /sys/class/net/lo/operstate'
+step sys_lo_flags     'cat /sys/class/net/lo/flags'
 step sys_cpu_ls       'ls /sys/devices/system/cpu 2>&1 | head -20'
 
 # Cross-checks
