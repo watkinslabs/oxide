@@ -78,3 +78,13 @@ pub fn publish() {
     v.realtime_nsec.store(nsec, Ordering::Release);
     v.seq.fetch_add(1, Ordering::AcqRel);
 }
+
+/// Live monotonic clock in ns, per-arch. Shared by tick-time scanners.
+/// # C: O(1)
+pub fn monotonic_now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
