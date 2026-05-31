@@ -69,15 +69,25 @@ open-addressed hash + RCU = perf follow-up, consistent with rest of
 kernel); spinlock not RCU initially. Strictly staged, each stage a PR
 booting BOTH arches before the next.
 
+**REORDERED 2026-05-31 (user direction): foundation BEFORE wiring, and
+verify-left.** The first attempt at V3 (wire symlink-follow into stat/
+open) was a `legacy-first + walker-fallback` BOLT-ON on top of the
+fragmented string-table/devfs-registry that V5 replaces — i.e. building
+on sand and the "minimal" the project forbids. Reverted (branch F282,
+never merged). New order: build the fast hosted resolution harness, then
+the unified mount tree (the foundation), THEN migrate every path syscall
+at once so `path_lookup` is THE resolver — not a fallback. See CLAUDE.md
+"How to act on big/cross-subsystem changes".
+
 | Stage | Work | Status |
 |---|---|---|
-| V1 | ext4 (+procfs/sysfs) directory-inode `Inode::lookup(name)` — additive per-component child lookup; nothing depends on it yet | ext4 **done** (PR F280: `lookup_child_ino`/`wrap_any_ino` + `Ext4StatInode::lookup`, hosted test `lookup_in_dir_*`). procfs/sysfs synthesized dirs still mostly return Enotdir on name-lookup — fill as Stage V3 wires the walker |
-| V2 | `path_lookup(start_dentry, path, flags) → (InodeRef, Arc<Dentry>)` in vfs (new, additive) + per-dentry dcache; component walk, symlink+ELOOP+depth≤40, `..`/mount-cross (string table during transition), dirfd base, RESOLVE_BENEATH/NO_SYMLINKS/O_NOFOLLOW. Validate behind one syscall | not started |
-| V3 | migrate path syscalls to path_lookup in clusters: stat → open → exec → namei mutations (mkdir/unlink/rename/link/symlink/mknod) → real dirfd/*at → symlink-follow at open. Fill procfs/sysfs dir lookup(name) as needed | not started |
+| V1 | ext4 directory-inode `Inode::lookup(name)` — additive per-component child lookup | **done** (#1378 F280: `lookup_child_ino`/`wrap_any_ino` + `Ext4StatInode::lookup`, hosted test `lookup_in_dir_*`) |
+| V2 | `path_lookup(start, root, path, flags) → (InodeRef, Dentry)` in vfs + per-dentry dcache; component walk, symlink+ELOOP+depth≤40, `..`, mount-cross hook, RESOLVE flags | **done** (#1379 F281: `vfs::namei`, Dentry children cache, 9 hosted synthetic-tree tests) |
+| V3 | **fast hosted resolution harness** (verify-left): a rich ext4 fixture image (nested dirs, symlinks incl. abs/rel/loop, merged-usr `/bin`→`/usr/bin`) + a `cargo test` that points the ext4 global mount at it and drives `vfs::path_lookup` over the REAL ext4 Inode impls — no QEMU. Becomes the dev loop for V4–V7. Replaces the reverted bolt-on | next |
 | V4 | `Superblock` trait + inode→sb linkage (invariant 3); per-SB inode cache | not started |
-| V5 | dentry-keyed mount tree replacing the string table: Mount node attaches at a Dentry; mount crossing via dentry→mount map | not started |
-| V6 | bind-as-clone (mount root = arbitrary dentry, drop BindFs rewrite); MS_MOVE (relink); pivot_root; MS_REC; propagation peer groups (`shared:N`/`master:N`) | not started |
-| V7 | per-ns mount tree (docs/16 R01 BTreeMap<(ns,path)>) + unify tmpfs/devfs into the tree (drop the devfs-registry split) | not started |
+| V5 | **unified dentry-keyed mount tree** — one tree spanning ext4/tmpfs/devfs/proc/sys keyed by mounted-on dentry/inode (drops the string-table + devfs-registry split + BindFs path-rewrite). Fill procfs/sysfs dir `lookup(name)`. Now `path_lookup` is THE resolver | not started |
+| V6 | migrate ALL path syscalls to `path_lookup` at once: stat/lstat/statx/newfstatat/open/openat/exec/access + namei mutations + real dirfd/*at + symlink-follow + RESOLVE flags. Re-add `/bin/symlink_probe`. (musl stat()/lstat() route to `sys_stat` slots 4/6 — NOT statx/newfstatat) | not started |
+| V7 | bind-as-clone (mount root = arbitrary dentry); MS_MOVE (relink); pivot_root; MS_REC; propagation peer groups (`shared:N`/`master:N`); per-ns mount tree (docs/16 R01) | not started |
 
 ## Track R — proc/dev/sys realness (make synthetic fses real, in importance order)
 
