@@ -26,14 +26,17 @@ use crate::Mount;
 /// are aarch64 ELFs; x86_64 are x86_64 ELFs. The two can't share
 /// because load_static_blob rejects on ELF e_machine mismatch.
 /// xtask rootfs writes per-arch images at kernel/blobs/rootfs-<arch>.img.
-#[cfg(target_arch = "x86_64")]
+/// Kernel-only (embedded multi-MB boot snapshot); host resolution tests
+/// publish a fixture Mount via `set_test_mount` instead.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs-x86_64.img");
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs-aarch64.img");
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(target_os = "oxide-kernel", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs.img");
 
 /// Backing block size for the in-kernel virtual disk.
+#[cfg(target_os = "oxide-kernel")]
 const BLOCK_SIZE: u32 = 512;
 
 /// Read-write Vec-backed BlockDevice initialised from a static
@@ -42,11 +45,13 @@ const BLOCK_SIZE: u32 = 512;
 /// mutate the heap copy only — Phase 7b minimum (no persistent
 /// disk yet, swapping the heap copy back to a real disk is
 /// virtio-blk's job).
+#[cfg(target_os = "oxide-kernel")]
 pub struct ImageDisk {
     bytes:    sync::Spinlock<Vec<u8>, sync::Inode>,
     blk_size: u32,
 }
 
+#[cfg(target_os = "oxide-kernel")]
 impl ImageDisk {
     /// Initialise from a `'static` snapshot — copy bytes into
     /// the heap so writes can mutate them without violating
@@ -60,6 +65,7 @@ impl ImageDisk {
     }
 }
 
+#[cfg(target_os = "oxide-kernel")]
 impl BlockDevice for ImageDisk {
     fn block_size(&self) -> u32 { self.blk_size }
     fn capacity_blocks(&self) -> u64 {
@@ -135,6 +141,7 @@ pub fn cache_stats() -> (u64, u64) {
 /// # SAFETY: caller is the boot path post-allocator-up; no
 /// other CPU has yet seen `MOUNT_PTR`.
 /// # C: O(N_groups + 1024) one-shot
+#[cfg(target_os = "oxide-kernel")]
 pub unsafe fn init() {
     if !MOUNT_PTR.load(Ordering::Acquire).is_null() { return; }
     let disk = ImageDisk::from_static(ROOTFS, BLOCK_SIZE) as Arc<dyn BlockDevice>;
@@ -153,6 +160,19 @@ pub unsafe fn init() {
     // inode isn't an ext4 inode (via the 0x6E54 high-half marker that
     // Ext4StatInode bakes into `ino()`).
     vfs::file::set_close_hook(close_hook_free_orphan);
+}
+
+/// Test-only: publish a `Mount` (built from a fixture image via
+/// `Mount::open`) as the global rootfs, so hosted resolution tests can
+/// drive `vfs::path_lookup` over the REAL ext4 Inode impls
+/// (`Ext4StatInode::lookup` / `readlink` / `wrap_any_ino`) without a
+/// QEMU boot — the "verify-left" harness. Idempotent (no-op if already
+/// published); production uses `init()`.
+/// # C: O(1)
+pub fn set_test_mount(mount: crate::Mount) {
+    if !MOUNT_PTR.load(Ordering::Acquire).is_null() { return; }
+    let leaked = alloc::boxed::Box::leak(alloc::boxed::Box::new(mount));
+    MOUNT_PTR.store(leaked as *mut _, Ordering::Release);
 }
 
 /// Close-hook: when the last File for an ext4 inode drops AND the
