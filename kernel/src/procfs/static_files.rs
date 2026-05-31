@@ -84,9 +84,18 @@ Character devices:\n  1 mem\n  4 /dev/vc/0\n  5 /dev/tty\n136 pts\nBlock devices
         StaticFileInode::new(b"00000000-0000-0000-0000-000000000002\n") as InodeRef);
     crate::devfs::register("/sys/kernel/random/entropy_avail",
         StaticFileInode::new(b"4096\n") as InodeRef);
+    // /sys/devices/system/cpu/* — v1 is UP, so the CPU mask is "0".
+    // `offline` is empty (no CPUs ever taken offline). Same shape Linux
+    // uses; libnuma / sched_getaffinity / systemd parse these.
     crate::devfs::register("/sys/devices/system/cpu/online",
         StaticFileInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/sys/devices/system/cpu/possible",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/sys/devices/system/cpu/present",
+        StaticFileInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/sys/devices/system/cpu/offline",
+        StaticFileInode::new(b"\n") as InodeRef);
+    crate::devfs::register("/sys/devices/system/cpu/kernel_max",
         StaticFileInode::new(b"0\n") as InodeRef);
     // /sys/class/net dynamic — readdir walks the live netdev registry,
     // lookup synthesises per-iface attribute files from the NetDev trait
