@@ -641,7 +641,7 @@ pub fn sys_getpgid(args: &SyscallArgs) -> i64 {
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::lookup_by_vpid(pid)
     };
     match task {
         Some(t) => t.pgid.load(Ordering::Acquire) as i64,
@@ -657,7 +657,7 @@ pub fn sys_getsid(args: &SyscallArgs) -> i64 {
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::lookup_by_vpid(pid)
     };
     match task {
         Some(t) => t.sid.load(Ordering::Acquire) as i64,
@@ -676,10 +676,15 @@ pub fn sys_setpgid(args: &SyscallArgs) -> i64 {
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {
-        sched::live::registry::lookup(pid)
+        sched::live::registry::lookup_by_vpid(pid)
     };
     let t = match task { Some(t) => t, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64) };
-    let new_pgid = if pgid == 0 { t.tid } else { pgid };
+    let target_vpid = t.vtgid.load(Ordering::Acquire);
+    let new_pgid = if pgid == 0 {
+        if target_vpid != 0 { target_vpid } else { t.tid }
+    } else {
+        pgid
+    };
     t.pgid.store(new_pgid, Ordering::Release);
     0
 }
@@ -690,13 +695,15 @@ pub fn sys_setpgid(args: &SyscallArgs) -> i64 {
 pub fn sys_setsid(_args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     let cur = match sched::live::current() { Some(c) => c, None => return 1 };
-    cur.sid.store(cur.tid, Ordering::Release);
-    cur.pgid.store(cur.tid, Ordering::Release);
+    let vpid = cur.vtgid.load(Ordering::Acquire);
+    let id = if vpid != 0 { vpid } else { cur.tid };
+    cur.sid.store(id, Ordering::Release);
+    cur.pgid.store(id, Ordering::Release);
     // F200: setsid(2) detaches the session leader from any
     // controlling terminal it inherited.
     // SAFETY: single-mutator per `13§5` — running task on this CPU.
     unsafe { *cur.ctty.get() = None; }
-    cur.tid as i64
+    id as i64
 }
 
 /// `sys_umask(mask)` — slot 95. Swaps per-task `umask` and returns
