@@ -1,34 +1,41 @@
 # Session hand-off — 2026-05-31
 
 ## TL;DR
-Autonomous run. B20 closed (#1376), K2 mount-tree foundation (#1377).
-Now executing the "big lift": full Linux-faithful VFS dentry/mount
-rebuild — Track K2V in TASKS.md, staged V1..V7, each a PR booting both
-arches. V1 (ext4 dir-inode lookup) done on branch F280. Continue down
-the V-stages autonomously. See TASKS.md "Track K2V" for the plan +
-architecture decisions (per-dentry dcache, spinlock-not-RCU, string
-table during transition).
+Autonomous run. Merged this session: B20 (#1376), K2 mount-tree
+foundation (#1377), V1 ext4 dir lookup (#1378), V2 path_lookup walker
+(#1379). Executing the "big lift" — full Linux-faithful VFS dentry/mount
+rebuild (Track K2V). **PLAN REORDERED 2026-05-31 per user**: the first
+V3 (wire symlink-follow into stat/open) was a legacy-first+fallback
+BOLT-ON on the fragmented mount table V5 replaces — reverted (F282 never
+merged). New order = verify-left + foundation-first. Also updated
+CLAUDE.md "How to act on big/cross-subsystem changes" with the lessons.
 
-## V-stage progress
-- V1 ext4 `Inode::lookup(name)` (F280): `rootfs::lookup_child_ino` +
-  `wrap_any_ino` (real on-disk mode) + `Ext4StatInode::lookup`;
-  `lookup_inode_any` now builds via wrap_any_ino. Hosted tests
-  `lookup_in_dir_resolves_child`/`_missing`. Additive — nothing calls
-  the ext4 dir lookup yet (V2 walker will).
-- V2 path_lookup walker (F281): `vfs::namei::path_lookup(start, root, path,
-  LookupFlags)` — per-component via dentry children-cache + Inode::lookup,
-  symlink follow (rel/abs) with ELOOP+depth≤40, `.`/`..` (root-clamped),
-  O_NOFOLLOW/RESOLVE_NO_SYMLINKS/BENEATH, mount-cross via
-  `set_mount_resolver` hook (abs-path keyed during string-table
-  transition). Dentry gained children map (cached_child/cache_child/
-  forget_child). VfsError += Eloop/Enametoolong. 9 hosted tests
-  (tests/namei_walk.rs). Additive — NOT wired into any syscall yet.
-- NEXT: V3 — wire path_lookup into syscalls in clusters. Start with
-  sys_newfstatat (stat): install the mount resolver (bridge to
-  vfs::mount), build/cache a global root dentry from ext4 root, resolve
-  via path_lookup with fallback to the old vfs::mount::lookup for
-  backends without per-component lookup (procfs/sysfs). Boot-verify each
-  cluster. Then open → exec → namei mutations → real dirfd/*at.
+## NEXT: V3 = fast hosted resolution harness (verify-left)
+Build a rich ext4 fixture image (nested dirs, symlinks abs/rel/loop,
+merged-usr `/bin`→`/usr/bin`) + a `cargo test` (in the ext4 crate) that
+points the ext4 global mount (MOUNT_PTR) at it and drives
+`vfs::path_lookup` over the REAL ext4 Inode impls — milliseconds, no
+QEMU. This becomes the dev loop for V4–V7. First step: check
+`ext4::rootfs::init`/MOUNT_PTR for a test-settable entry; build the
+fixture image with mkfs+debugfs (like `crates/kernel/ext4/tests/mini.img`).
+Then V4 Superblock, V5 unified dentry-keyed mount tree (THE foundation),
+V6 migrate ALL path syscalls at once (re-add symlink_probe), V7
+bind/MS_MOVE/pivot_root/MS_REC/propagation. See TASKS.md Track K2V.
+
+GOTCHAS learned (don't rediscover by booting):
+- musl stat()/lstat() → `sys_stat` (slots 4/6), NOT statx/newfstatat.
+- ext4 symlink *create* is NOT implemented (bake fixtures via debugfs).
+- `make qemu-x86` is a cold debug-boot rebuild (~5min); warm-build once,
+  kill stale qemu + confirm port 2222 free before each boot, and don't
+  chain `cmd > file; echo >> file` under the shell's `set -e`.
+
+## V1/V2 (merged) detail
+- V1 ext4 `Inode::lookup(name)` (#1378): `rootfs::lookup_child_ino` +
+  `wrap_any_ino` (real mode) + `Ext4StatInode::lookup`.
+- V2 walker (#1379): `vfs::namei::path_lookup(start, root, path,
+  LookupFlags)` — per-component dentry-cache + Inode::lookup, symlink
+  (rel/abs) ELOOP+depth≤40, `.`/`..`, RESOLVE flags, mount-cross via
+  `set_mount_resolver`. Dentry children cache. 9 hosted tests.
 
 ## Last K2 work: mount-tree-ids (F279)
 vfs::mount Mount gained persistent `mnt_id` + `Propagation` (AtomicU8).
