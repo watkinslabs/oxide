@@ -6,10 +6,11 @@
 // the cache impl PR; this PR provides the dentry node only.
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use sync::{Inode as InodeClass, RwLock};
+use sync::{Dentry as DentryClass, Inode as InodeClass, RwLock};
 
 use crate::inode::InodeRef;
 
@@ -18,6 +19,11 @@ pub struct Dentry {
     parent: Option<Arc<Dentry>>,
     name:   String,
     inode:  RwLock<Option<InodeRef>, InodeClass>,
+    /// Resolved children by component name (`16§4` dentry cache). A
+    /// per-dentry map rather than the global open-addressed hash the
+    /// spec describes — same invariants, simpler; the global hash + RCU
+    /// is a perf follow-up. Lock class `Dentry` (`06§3.6`).
+    children: RwLock<BTreeMap<String, Arc<Dentry>>, DentryClass>,
 }
 
 impl Dentry {
@@ -28,6 +34,7 @@ impl Dentry {
             parent,
             name,
             inode: RwLock::new(Some(inode)),
+            children: RwLock::new(BTreeMap::new()),
         })
     }
 
@@ -38,6 +45,7 @@ impl Dentry {
             parent,
             name,
             inode: RwLock::new(None),
+            children: RwLock::new(BTreeMap::new()),
         })
     }
 
@@ -70,6 +78,30 @@ impl Dentry {
     /// # C: O(1)
     pub fn set_inode(&self, inode: Option<InodeRef>) {
         *self.inode.write() = inode;
+    }
+
+    /// Cached child dentry for `name`, if previously resolved. Brief
+    /// read-lock; never held across an `Inode::lookup` (lock order
+    /// Inode < Dentry per `06§3.6`).
+    /// # C: O(log N_children)
+    pub fn cached_child(&self, name: &str) -> Option<Arc<Dentry>> {
+        self.children.read().get(name).cloned()
+    }
+
+    /// Insert (or replace) a resolved child dentry under `name`.
+    /// Returns the dentry now in the cache (an existing entry wins a
+    /// race, so all walkers share one dentry per (parent,name)).
+    /// # C: O(log N_children)
+    pub fn cache_child(&self, name: &str, child: Arc<Dentry>) -> Arc<Dentry> {
+        let mut g = self.children.write();
+        g.entry(String::from(name)).or_insert(child).clone()
+    }
+
+    /// Drop a cached child (e.g. on unlink/rename so a stale positive
+    /// dentry isn't reused).
+    /// # C: O(log N_children)
+    pub fn forget_child(&self, name: &str) {
+        self.children.write().remove(name);
     }
 
     /// Absolute path for this dentry — walk the parent chain to the
