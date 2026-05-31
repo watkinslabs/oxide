@@ -645,6 +645,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: post-PMM/allocator init; no other CPU has yet observed MOUNT_PTR.
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
+        // Stand-in cmdline until real bootloader parsing lands. No-op
+        // if a Limine/DTB parser has already populated the slot.
+        crate::boot_cmdline::install_arch_default();
         ext4::rootfs::init();
         net::sock::init();
         // F150: install the iface-primary-IP hook so socket_sendto can
@@ -868,6 +871,7 @@ pub mod syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod smoke;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs;
 #[cfg(target_os = "oxide-kernel")] pub mod sysfs;
+#[cfg(target_os = "oxide-kernel")] pub mod boot_cmdline;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
 // on arm; x86 builds compile this away via a cfg gate at the call
