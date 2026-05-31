@@ -10,6 +10,7 @@ pub mod static_files;
 pub mod cgroup_file;
 pub mod mounts;
 pub mod cmdline;
+pub mod stat;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -312,16 +313,6 @@ CPU revision\t: 4\n\
 
 // Canonical static bodies retained for documentation; live impls
 // build dynamic versions above.
-pub(crate) const STAT_BODY:    &[u8] = b"\
-cpu  0 0 0 0 0 0 0 0 0 0\n\
-cpu0 0 0 0 0 0 0 0 0 0 0\n\
-intr 0\n\
-ctxt 0\n\
-btime 0\n\
-processes 1\n\
-procs_running 1\n\
-procs_blocked 0\n\
-softirq 0 0 0 0 0 0 0 0 0 0\n";
 pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
 // /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
 // from the live `vfs::mount` table — see `procfs::mounts`.
