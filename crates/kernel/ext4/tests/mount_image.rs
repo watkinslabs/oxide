@@ -87,3 +87,26 @@ fn lookup_path_missing_returns_notfound() {
     let err = m.lookup_path(b"/no-such-file").err().expect("err");
     assert_eq!(err, ext4::MountError::NotFound);
 }
+
+// Per-component child lookup — the primitive the dentry path-walk
+// (docs/16§3) drives via Inode::lookup, and which rootfs::lookup_child_ino
+// wraps. Resolving "hello.txt" within the root dir must match the
+// whole-path result; an absent child returns NotFound.
+#[test]
+fn lookup_in_dir_resolves_child() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).expect("mount");
+    let root = m.read_inode(2).expect("read root");
+    let via_dir = m.lookup_in_dir(&root, b"hello.txt").expect("child");
+    let via_path = m.lookup_path(b"/hello.txt").expect("path");
+    assert_eq!(via_dir, via_path, "per-component lookup == whole-path lookup");
+}
+
+#[test]
+fn lookup_in_dir_missing_returns_notfound() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).expect("mount");
+    let root = m.read_inode(2).expect("read root");
+    let err = m.lookup_in_dir(&root, b"no-such-child").err().expect("err");
+    assert_eq!(err, ext4::MountError::NotFound);
+}

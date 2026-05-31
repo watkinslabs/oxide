@@ -53,6 +53,32 @@ each subsystem needs the full Linux surface.
 | K5 | verify/complete: SCM_CREDENTIALS/SO_PEERCRED real creds; NETLINK_KOBJECT_UEVENT broadcast (udev); `/proc/<pid>/ns/*` nodes; `/dev/kmsg` (journald); memfd F_ADD_SEALS | `24`,`19` | not started |
 | K6 | new mount API: fsopen/fsconfig/fsmount/move_mount/open_tree + mount_setattr (systemd 254+) | `16` | not started |
 
+### Track K2V — VFS dentry/mount rebuild (the "big lift", `16§3-7`)
+
+Decided 2026-05-31: do the FULL Linux-faithful model, not a string-table
+approximation. Linux keys mounts by `(parent mount, mountpoint dentry)`,
+not path strings; per-component path walk crosses mounts via a
+dentry→mount map, follows symlinks (depth≤40), honors dirfd + RESOLVE
+flags. bind = clone (mount root = arbitrary dentry); MS_MOVE/pivot_root =
+relink; propagation = peer groups. The current string mount table +
+BindFs-path-rewrite + tmpfs-in-devfs-registry split are all artifacts of
+having no dentry cache. docs/16§3 (`path_lookup`), §4 (dcache/icache),
+§6 (mount tree), §7 (lock order MountTable<Dentry<Inode<FdTable<Superblock)
+already specify this. Decisions: per-dentry children maps (global
+open-addressed hash + RCU = perf follow-up, consistent with rest of
+kernel); spinlock not RCU initially. Strictly staged, each stage a PR
+booting BOTH arches before the next.
+
+| Stage | Work | Status |
+|---|---|---|
+| V1 | ext4 (+procfs/sysfs) directory-inode `Inode::lookup(name)` — additive per-component child lookup; nothing depends on it yet | ext4 **done** (PR F280: `lookup_child_ino`/`wrap_any_ino` + `Ext4StatInode::lookup`, hosted test `lookup_in_dir_*`). procfs/sysfs synthesized dirs still mostly return Enotdir on name-lookup — fill as Stage V3 wires the walker |
+| V2 | `path_lookup(start_dentry, path, flags) → (InodeRef, Arc<Dentry>)` in vfs (new, additive) + per-dentry dcache; component walk, symlink+ELOOP+depth≤40, `..`/mount-cross (string table during transition), dirfd base, RESOLVE_BENEATH/NO_SYMLINKS/O_NOFOLLOW. Validate behind one syscall | not started |
+| V3 | migrate path syscalls to path_lookup in clusters: stat → open → exec → namei mutations (mkdir/unlink/rename/link/symlink/mknod) → real dirfd/*at → symlink-follow at open. Fill procfs/sysfs dir lookup(name) as needed | not started |
+| V4 | `Superblock` trait + inode→sb linkage (invariant 3); per-SB inode cache | not started |
+| V5 | dentry-keyed mount tree replacing the string table: Mount node attaches at a Dentry; mount crossing via dentry→mount map | not started |
+| V6 | bind-as-clone (mount root = arbitrary dentry, drop BindFs rewrite); MS_MOVE (relink); pivot_root; MS_REC; propagation peer groups (`shared:N`/`master:N`) | not started |
+| V7 | per-ns mount tree (docs/16 R01 BTreeMap<(ns,path)>) + unify tmpfs/devfs into the tree (drop the devfs-registry split) | not started |
+
 ## Track R — proc/dev/sys realness (make synthetic fses real, in importance order)
 
 Audit (2026-05-30) classified every /proc, /sys, /dev entry REAL/PARTIAL/FAKE.

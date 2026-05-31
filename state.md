@@ -1,9 +1,23 @@
 # Session hand-off — 2026-05-31
 
 ## TL;DR
-B20 closed (PR #1376). Track K2 mount-tree foundation done (PR #1377,
-F279). Next K2: MS_MOVE, pivot_root, MS_REC recursive bind, peer
-propagation events. Working on branch F279 (push/merge pending).
+Autonomous run. B20 closed (#1376), K2 mount-tree foundation (#1377).
+Now executing the "big lift": full Linux-faithful VFS dentry/mount
+rebuild — Track K2V in TASKS.md, staged V1..V7, each a PR booting both
+arches. V1 (ext4 dir-inode lookup) done on branch F280. Continue down
+the V-stages autonomously. See TASKS.md "Track K2V" for the plan +
+architecture decisions (per-dentry dcache, spinlock-not-RCU, string
+table during transition).
+
+## V-stage progress
+- V1 ext4 `Inode::lookup(name)` (F280): `rootfs::lookup_child_ino` +
+  `wrap_any_ino` (real on-disk mode) + `Ext4StatInode::lookup`;
+  `lookup_inode_any` now builds via wrap_any_ino. Hosted tests
+  `lookup_in_dir_resolves_child`/`_missing`. Additive — nothing calls
+  the ext4 dir lookup yet (V2 walker will).
+- NEXT: V2 — write `path_lookup` walker in crates/kernel/vfs (new module),
+  per-component, dentry-cache (per-dentry children map), symlink/ELOOP,
+  dirfd, RESOLVE flags; validate behind sys_newfstatat first.
 
 ## Last K2 work: mount-tree-ids (F279)
 vfs::mount Mount gained persistent `mnt_id` + `Propagation` (AtomicU8).
