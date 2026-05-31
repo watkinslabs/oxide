@@ -279,9 +279,24 @@ impl vfs::Inode for ProcNetUnixInode {
 
 impl ProcNetUnixInode {
     fn body(&self) -> alloc::string::String {
-        alloc::string::String::from(
+        use alloc::string::String;
+        use core::fmt::Write as _;
+        let mut s = String::from(
             "Num       RefCount Protocol Flags    Type St Inode Path\n",
-        )
+        );
+        // Each entry: opaque "Num" (we use a stable per-row counter),
+        // RefCount 02, Protocol 0, Flags 0x10000 for stream listeners
+        // (LISTENING) / 0 otherwise, Type (0001 stream | 0002 dgram),
+        // St 01 (UNCONNECTED for listener / bound dgram), Inode 0
+        // (no inode table linkage), Path.
+        let mut num: u64 = 1;
+        for (kind, path) in net::sock::UNIX_REGISTRY.snapshot_paths() {
+            let flags = if kind == 0x0001 { 0x10000u32 } else { 0u32 };
+            let _ = writeln!(s, "{:016x}: 00000002 00000000 {:08x} {:04x} 01 0 {}",
+                num, flags, kind, path);
+            num += 1;
+        }
+        s
     }
 }
 
