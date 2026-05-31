@@ -76,7 +76,17 @@ impl WaitList {
         let arc = unsafe { Arc::from_raw(raw) };
         arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
         arc.set_state(TaskState::Sleeping);
-        self.waiters.lock().push(arc);
+        let mut g = self.waiters.lock();
+        // Dedup: drop any prior entry for this task before re-pushing.
+        // A signal wake / deadline scanner rouses a parked task WITHOUT
+        // popping it from the list; if the task then re-parks (its
+        // pending signal was masked, condition still unmet) it would
+        // leave two entries → wake_all double-enqueues → runqueue
+        // corruption. retain drops the stale Arc, balancing its park
+        // bump. See the Sleeping-guard in enqueue_runnable.
+        let cur = raw as *const Task;
+        g.retain(|a| Arc::as_ptr(a) != cur);
+        g.push(arc);
     }
 
     /// Wake the longest-waiting task on this list (FIFO). No-op
@@ -85,11 +95,20 @@ impl WaitList {
     /// # C: O(1)
     /// # Lk: WaitList.waiters then runqueue.inner
     pub fn wake_one(&self) {
-        let popped: Option<Arc<Task>> = {
-            let mut g = self.waiters.lock();
-            if g.is_empty() { None } else { Some(g.remove(0)) }
-        };
-        if let Some(t) = popped { Self::enqueue_runnable(t); }
+        // Pop in FIFO order until a genuinely-Sleeping waiter is
+        // enqueued. A stale entry (task already roused by a signal /
+        // deadline scanner, or exiting) is dropped without consuming
+        // the single wake — else a real sleeper could be skipped.
+        loop {
+            let popped: Option<Arc<Task>> = {
+                let mut g = self.waiters.lock();
+                if g.is_empty() { None } else { Some(g.remove(0)) }
+            };
+            match popped {
+                None => return,
+                Some(t) => if Self::enqueue_runnable(t) { return; }
+            }
+        }
     }
 
     /// Wake every task on this list. Used by IPC commit paths
@@ -104,7 +123,7 @@ impl WaitList {
             if g.is_empty() { return; }
             g.drain(..).collect()
         };
-        for t in drained { Self::enqueue_runnable(t); }
+        for t in drained { let _ = Self::enqueue_runnable(t); }
     }
 
     /// True if any task is currently parked.
@@ -114,10 +133,17 @@ impl WaitList {
     }
 
     /// Internal helper: transition a popped task to Runnable and
-    /// enqueue on the global runqueue.
-    fn enqueue_runnable(t: Arc<Task>) {
-        let rq = match super::runqueue::global() { Some(r) => r, None => return };
+    /// enqueue on the global runqueue. Returns `true` if the task was
+    /// actually enqueued, `false` if it was a stale entry (not
+    /// Sleeping — already roused by a signal/deadline wake, or
+    /// exiting/zombie) and was merely dropped. Dropping the `Arc`
+    /// balances `park`'s strong-count bump. The Sleeping check is the
+    /// systemic guard against enqueuing a dead task (corrupt context
+    /// switch) or double-enqueuing an already-runnable one.
+    fn enqueue_runnable(t: Arc<Task>) -> bool {
+        let rq = match super::runqueue::global() { Some(r) => r, None => return false };
         let mut inner = rq.inner.lock();
+        if t.state() != TaskState::Sleeping { return false; }
         t.set_state(TaskState::Runnable);
         // F169: explicit wake — the deadline scanner shouldn't
         // also re-rouse this task. Clear before enqueue.
@@ -127,6 +153,7 @@ impl WaitList {
         inner.enqueue(t);
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
         crate::preempt::set_need_resched();
+        true
     }
 }
 
