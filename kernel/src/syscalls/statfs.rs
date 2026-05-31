@@ -52,20 +52,41 @@ pub fn magic_for_path(path: &str) -> u64 {
 }
 
 /// Fill a 120-byte `struct statfs` (identical LP64 layout on x86_64
-/// and aarch64) with `magic` as `f_type`. Block/inode counts stay 0 —
-/// our synthetic fses are unsized and ext4 usage tracking is a
-/// follow-up; the f_type is what fs-type detection keys on.
+/// and aarch64). `magic` is `f_type`; `blocks`/`bfree`/`bavail`/`files`
+/// fill the usage fields so `df` keeps the entry (busybox df drops
+/// rows with f_blocks==0).
 /// # C: O(1)
-fn write_statfs(buf: u64, magic: u64) {
+fn write_statfs(buf: u64, magic: u64, blocks: u64, bfree: u64, files: u64) {
     // SAFETY: caller validated 120-byte user buf < USER_VA_END, 8-aligned; CPL=0 writes through caller's AS.
     unsafe {
         for off in (0..120u64).step_by(8) {
             core::ptr::write_volatile((buf + off) as *mut u64, 0);
         }
-        core::ptr::write_volatile( buf        as *mut u64, magic); // f_type   @0
-        core::ptr::write_volatile((buf +  8)  as *mut u64, 4096);  // f_bsize  @8
-        core::ptr::write_volatile((buf + 64)  as *mut u64, 255);   // f_namelen@64 (NAME_MAX)
-        core::ptr::write_volatile((buf + 72)  as *mut u64, 4096);  // f_frsize @72
+        core::ptr::write_volatile( buf        as *mut u64, magic);  // f_type   @0
+        core::ptr::write_volatile((buf +  8)  as *mut u64, 4096);   // f_bsize  @8
+        core::ptr::write_volatile((buf + 16)  as *mut u64, blocks); // f_blocks @16
+        core::ptr::write_volatile((buf + 24)  as *mut u64, bfree);  // f_bfree  @24
+        core::ptr::write_volatile((buf + 32)  as *mut u64, bfree);  // f_bavail @32
+        core::ptr::write_volatile((buf + 40)  as *mut u64, files);  // f_files  @40
+        core::ptr::write_volatile((buf + 48)  as *mut u64, files);  // f_ffree  @48
+        core::ptr::write_volatile((buf + 64)  as *mut u64, 255);    // f_namelen@64 (NAME_MAX)
+        core::ptr::write_volatile((buf + 72)  as *mut u64, 4096);   // f_frsize @72
+    }
+}
+
+/// Plausible (blocks, bfree, files) by magic. Real ext4 usage comes
+/// from the rootfs blob size; synthetic fses report a token nonzero
+/// so `df` doesn't drop them. v1: not real per-fs accounting.
+fn usage_for(magic: u64) -> (u64, u64, u64) {
+    match magic {
+        M_EXT4 => {
+            // Image is 32 MiB today (xtask rootfs builder); inode count
+            // matches mkfs.ext4 default. Reporting half-free is plausible
+            // until real per-fs accounting lands.
+            let blocks: u64 = 8192;
+            (blocks, blocks / 2, 8192)
+        }
+        _ => (1, 0, 1),
     }
 }
 
@@ -87,7 +108,8 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
         },
         None => return -(Errno::Efault.as_i32() as i64),
     };
-    write_statfs(buf, magic);
+    let (blocks, bfree, files) = usage_for(magic);
+    write_statfs(buf, magic, blocks, bfree, files);
     0
 }
 
@@ -109,6 +131,7 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
     // open(2) stores the full open path as the (flat) dentry name.
     let name = file.dentry().name();
     let magic = if name.starts_with('/') { magic_for_path(name) } else { M_TMPFS };
-    write_statfs(buf, magic);
+    let (blocks, bfree, files) = usage_for(magic);
+    write_statfs(buf, magic, blocks, bfree, files);
     0
 }
