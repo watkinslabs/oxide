@@ -121,6 +121,8 @@ step proc_self_root   'readlink /proc/self/root'
 step proc_self_fd0    'readlink /proc/self/fd/0'
 step proc_self_fd1    'readlink /proc/self/fd/1'
 step proc_self_fd2    'readlink /proc/self/fd/2'
+step proc_self_fdinfo_ls 'ls /proc/self/fdinfo'
+step proc_self_fdinfo_0  'cat /proc/self/fdinfo/0'
 
 # /proc/1 (init)
 step proc_1_comm      'cat /proc/1/comm'
