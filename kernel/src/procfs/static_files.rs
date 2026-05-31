@@ -12,7 +12,7 @@ use crate::procfs::{
     ProcSelfStatusInode, ProcSelfCmdlineInode, ProcSelfStatInode,
     ProcSelfMapsInode, ProcSelfFdInode, ProcRootInode, ProcSelfCommInode,
     ProcSelfEnvironInode, ProcHostnameInode,
-    VERSION_BODY, CPUINFO_BODY, STAT_BODY, FILESYSTEMS,
+    VERSION_BODY, CPUINFO_BODY, FILESYSTEMS,
     LIMITS_BODY, IO_BODY,
 };
 
@@ -24,7 +24,8 @@ pub fn register_static_files() {
     crate::devfs::register("/proc/meminfo",     Arc::new(ProcMeminfoInode)             as InodeRef);
     crate::devfs::register("/proc/uptime",      Arc::new(ProcUptimeInode)              as InodeRef);
     crate::devfs::register("/proc/loadavg",     Arc::new(ProcLoadavgInode)             as InodeRef);
-    crate::devfs::register("/proc/stat",        StaticFileInode::new(STAT_BODY)        as InodeRef);
+    crate::devfs::register("/proc/stat",
+        Arc::new(crate::procfs::stat::ProcStatInode) as InodeRef);
     crate::devfs::register("/proc/filesystems", StaticFileInode::new(FILESYSTEMS)      as InodeRef);
     crate::devfs::register("/proc/cmdline",
         Arc::new(crate::procfs::ProcCmdlineInode) as InodeRef);
