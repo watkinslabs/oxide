@@ -8,17 +8,44 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::fs::{FileSystem, KResult};
 use crate::inode::InodeRef;
 use crate::types::VfsError;
 
-/// One mount instance. Holds the FS impl and the absolute path
-/// it's rooted at. The root mount is `mount_point == "/"`.
+/// Mount propagation type per `docs/16§6` (`mount_namespaces(7)`).
+/// Stored as the u8 discriminant in `Mount.propagation` so it can be
+/// retuned in place by `mount(MS_SHARED|PRIVATE|SLAVE|UNBINDABLE)`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Propagation { Private = 0, Shared = 1, Slave = 2, Unbindable = 3 }
+
+impl Propagation {
+    /// # C: O(1)
+    pub fn from_u8(v: u8) -> Self {
+        match v { 1 => Self::Shared, 2 => Self::Slave, 3 => Self::Unbindable, _ => Self::Private }
+    }
+}
+
+/// Monotonic mount-id source. Linux assigns each mount a unique
+/// `mnt_id` (the first field of /proc/<pid>/mountinfo) that is stable
+/// for the mount's lifetime — findmnt/systemd key the mount tree on
+/// it + `parent_id`. Starts at 1 (0 means "no parent" for the root).
+static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// One mount instance. The mount *tree* (`docs/16§6`) is represented
+/// implicitly: a mount's parent is the live mount whose `mount_point`
+/// is the longest proper path-prefix of this one (see `parent_id`),
+/// so MS_MOVE is a `mount_point` change and there are no Arc cycles.
 pub struct Mount {
     pub fs: Arc<dyn FileSystem>,
     pub mount_point: String,
+    /// Stable, unique per mount lifetime. /proc mountinfo field 1.
+    pub mnt_id: u64,
+    /// Propagation type discriminant (`Propagation`). Default Private.
+    pub propagation: AtomicU8,
 }
 
 static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
@@ -34,7 +61,46 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
     t.push(Arc::new(Mount {
         fs,
         mount_point: mount_point.to_string(),
+        mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
+        propagation: AtomicU8::new(Propagation::Private as u8),
     }));
+    Ok(())
+}
+
+/// `mnt_id` of `path`'s parent mount: the live mount whose
+/// `mount_point` is the longest *proper* prefix of `path`. `0` if
+/// none (the root mount "/"). Drives /proc mountinfo's parent_id so
+/// the tree systemd/findmnt reconstruct is real (e.g. /dev/shm's
+/// parent is /dev, not "/"). `path` must be the mount's own
+/// `mount_point`.
+/// # C: O(N_mounts × max_mount_point_len)
+pub fn parent_id_of(path: &str) -> u64 {
+    let t = TABLE.lock();
+    let mut best: Option<&Arc<Mount>> = None;
+    for m in t.iter() {
+        let mp = m.mount_point.as_str();
+        // Proper prefix only: skip the mount itself and equal paths.
+        if mp == path { continue; }
+        let is_prefix = (mp == "/" && path != "/")
+            || (path.starts_with(mp) && path.as_bytes().get(mp.len()) == Some(&b'/'));
+        if !is_prefix { continue; }
+        match best {
+            None => best = Some(m),
+            Some(cur) if mp.len() > cur.mount_point.len() => best = Some(m),
+            _ => {}
+        }
+    }
+    best.map(|m| m.mnt_id).unwrap_or(0)
+}
+
+/// Retune the propagation type of the mount at `mount_point`.
+/// `mount(MS_SHARED|PRIVATE|SLAVE|UNBINDABLE)` lands here. Returns
+/// Einval if no mount is rooted exactly at `mount_point`.
+/// # C: O(N_mounts)
+pub fn set_propagation(mount_point: &str, kind: Propagation) -> KResult<()> {
+    let t = TABLE.lock();
+    let m = t.iter().find(|m| m.mount_point == mount_point).ok_or(VfsError::Einval)?;
+    m.propagation.store(kind as u8, Ordering::Release);
     Ok(())
 }
 

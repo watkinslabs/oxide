@@ -58,6 +58,25 @@ int main(void) {
     if (bn <= 0) return fail("read-bind");
     if (dn != bn || memcmp(direct, viabind, dn) != 0) return fail("bind-mismatch");
 
+    // 3. mountinfo realness: the "/" line carries our persistent mnt_id
+    // as field 1, and after MS_SHARED above it must advertise a
+    // "shared:" propagation tag. Each line's id must be unique.
+    char mi[4096];
+    int mn = slurp("/proc/self/mountinfo", mi, sizeof mi);
+    if (mn <= 0) return fail("read-mountinfo");
+    // Find the root line: " / " mountpoint (field 5) with a single-char
+    // mount point. Walk lines; the root mount renders mountpoint "/".
+    int saw_shared_root = 0, ids[64], nids = 0, dup = 0;
+    for (char *ln = strtok(mi, "\n"); ln; ln = strtok(NULL, "\n")) {
+        int id = 0, par = 0; char maj[16], root[64], mp[128];
+        if (sscanf(ln, "%d %d %15s %63s %127s", &id, &par, maj, root, mp) < 5) continue;
+        for (int i = 0; i < nids; i++) if (ids[i] == id) dup = 1;
+        if (nids < 64) ids[nids++] = id;
+        if (strcmp(mp, "/") == 0 && id > 0 && strstr(ln, "shared:")) saw_shared_root = 1;
+    }
+    if (dup) return fail("mountinfo-dup-id");
+    if (!saw_shared_root) return fail("mountinfo-shared-root");
+
     write(1, PASS, sizeof(PASS) - 1);
     return 0;
 }
