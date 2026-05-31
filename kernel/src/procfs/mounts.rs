@@ -24,22 +24,33 @@ fn build_mounts() -> Vec<u8> {
 }
 
 /// `/proc/<pid>/mountinfo` — the richer mountinfo(5) format:
-/// `<id> <parent> <maj>:<min> <root> <mp> <opts> - <fstype> <src> <super>`.
-/// IDs are synthesized from table order (root mount = id 1, parent of
-/// the rest); enough for systemd/util-linux to parse the mount set.
-/// # C: O(N_mounts)
+/// `<id> <parent> <maj>:<min> <root> <mp> <opts> [<optional>] - <fstype> <src> <super>`.
+/// `id` is the mount's persistent `mnt_id`; `parent` is the real
+/// parent mount's id (longest proper path-prefix), so the tree
+/// systemd/findmnt reconstruct is accurate. The optional field
+/// carries propagation: `shared:<id>` for a shared mount (its own
+/// peer group until propagation events land), `unbindable` for an
+/// unbindable mount, empty otherwise.
+/// # C: O(N_mounts²) (parent_id_of is O(N) per mount)
 fn build_mountinfo() -> Vec<u8> {
+    use core::sync::atomic::Ordering;
+    use vfs::mount::Propagation;
     let mounts = vfs::mount::snapshot();
-    // Find the root mount's id so non-root mounts can point at it.
-    let root_id = mounts.iter().position(|m| m.mount_point == "/").map(|i| i + 1).unwrap_or(1);
     let mut s = String::new();
-    for (i, m) in mounts.iter().enumerate() {
-        let id = i + 1;
-        let parent = if m.mount_point == "/" { 0 } else { root_id };
+    for m in mounts.iter() {
+        let id = m.mnt_id;
+        let parent = vfs::mount::parent_id_of(&m.mount_point);
         let name = m.fs.name();
+        let opt = match Propagation::from_u8(m.propagation.load(Ordering::Acquire)) {
+            Propagation::Shared => format!(" shared:{}", id),
+            Propagation::Unbindable => " unbindable".into(),
+            // A bare slave has no master id without peer groups; render
+            // as private (no tag) until propagation events land.
+            Propagation::Slave | Propagation::Private => String::new(),
+        };
         s.push_str(&format!(
-            "{} {} 0:{} / {} rw,relatime - {} {} rw\n",
-            id, parent, id, m.mount_point, name, name,
+            "{} {} 0:{} / {} rw,relatime{} - {} {} rw\n",
+            id, parent, id, m.mount_point, opt, name, name,
         ));
     }
     s.into_bytes()
