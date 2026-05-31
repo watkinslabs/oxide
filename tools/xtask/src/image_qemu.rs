@@ -183,8 +183,13 @@ fn build_disk_image(
         let _ = c.status();
     }
 
+    let console = match arch {
+        "x86_64"  => "ttyS0,115200",
+        "aarch64" => "ttyAMA0,115200",
+        _         => "ttyS0,115200",
+    };
     let cfg = format!(
-        "timeout: 0\nserial: yes\nverbose: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
+        "timeout: 0\nserial: yes\nverbose: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n    cmdline: BOOT_IMAGE=/boot/limine/{kernel_name} root=/dev/oxide0 ro quiet console={console}\n",
     );
     let cfg_path = repo.join(format!("target/oxide-{arch}.limine.conf"));
     fs::write(&cfg_path, &cfg).map_err(|_| 1u8)?;
@@ -278,8 +283,13 @@ fn build_iso(
     // that requires xorriso's `-isohybrid-gpt-basdat` to work
     // around). We boot via SeaBIOS for x86 to dodge the UEFI
     // quirk; aarch64 stays UEFI but doesn't have a BIOS path.
+    let console = match arch {
+        "x86_64"  => "ttyS0,115200",
+        "aarch64" => "ttyAMA0,115200",
+        _         => "ttyS0,115200",
+    };
     let cfg = format!(
-        "timeout: 0\nserial: yes\nverbose: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n",
+        "timeout: 0\nserial: yes\nverbose: yes\ndefault_entry: 1\n\n/oxide\n    protocol: limine\n    path: boot():/boot/limine/{kernel_name}\n    cmdline: BOOT_IMAGE=/boot/limine/{kernel_name} root=/dev/oxide0 ro quiet console={console}\n",
     );
     fs::write(stage.join("EFI/BOOT/limine.conf"),    &cfg).map_err(|_| 1u8)?;
     fs::write(stage.join("boot/limine/limine.conf"), &cfg).map_err(|_| 1u8)?;
