@@ -145,6 +145,12 @@ step sys_lo_operstate 'cat /sys/class/net/lo/operstate'
 step sys_lo_flags     'cat /sys/class/net/lo/flags'
 step sys_cpu_ls       'ls /sys/devices/system/cpu 2>&1 | head -20'
 
+# /proc/net
+step proc_net_tcp     'cat /proc/net/tcp'
+step proc_net_udp     'cat /proc/net/udp'
+step proc_net_unix    'cat /proc/net/unix'
+step proc_net_route   'cat /proc/net/route'
+
 # Cross-checks
 step df_all           'df'
 step mount_all        'mount'
