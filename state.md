@@ -20,20 +20,45 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V3+V4 done; NEXT V5 unified mount tree
-- V3 verify-left harness merged (#1381): `crates/kernel/ext4/tests/
-  walk_image.rs` + `walk.img`. THE dev loop — extend it per stage.
-- V4 in progress (F284): `FileSystem::root()` (docs/16§2 Superblock::root)
-  — the inode the walk switches to on mount-crossing; ext4 returns ino-2.
-  Hosted test `fs_root_is_root_dir`. Additive, unused in kernel yet.
-- NEXT V5: THE foundation — unified dentry-keyed mount tree spanning
-  ext4/tmpfs/devfs/proc/sys. Install a kernel mount-resolver bridging
-  `path_lookup`'s cross-hook to the real registries via `fs.root()`;
-  add `root()` for tmpfs/devfs/procfs/sysfs; fill procfs/sysfs dir
-  `lookup(name)`. Drops the string-table + devfs-registry split +
-  BindFs rewrite. Verify crossing on the harness FIRST. Then V6 migrate
-  ALL path syscalls (re-add symlink_probe), V7 bind/MS_MOVE/pivot_root/
-  MS_REC/propagation/per-ns.
+## V1–V5a all MERGED. NEXT: V6 (wire path_lookup as THE resolver)
+Merged this session: V1 ext4 dir lookup (#1378), V2 walker (#1379),
+V3 verify-left harness (#1381), V4 FileSystem::root() (#1382), V5a
+unified mount-crossing resolver (#1383). Plus B20 (#1376), K2 mount-tree
+(#1377), D07 discipline+replan (#1380).
+
+Key insight from V5a: `vfs::mount::mount_root_at` falls back to
+`fs.lookup(abs)`, so the walker ALREADY crosses into ext4/dev/proc/sys/
+tmpfs (table registers all of them). So no separate "fill backend root()"
+step is needed. The ONE remaining gap before wiring: **procfs resolves
+whole-path, not per-component** (ProcfsFs::lookup → devfs::lookup /
+lookup_dynamic on the FULL path; its dir inodes return Enotdir on
+Inode::lookup(name)). devfs/tmpfs/sysfs already do per-component lookup.
+
+### V6 plan (the big payoff + riskiest — do it verify-left)
+Make `vfs::path_lookup` THE resolver for path syscalls (stat/lstat/statx/
+newfstatat/open/openat/access/exec/namei), replacing the legacy
+`vfs::mount::lookup`+ext4 chain. Handle procfs's whole-path nature
+cleanly: when the per-component walk crosses into a mount and the next
+`Inode::lookup(name)` returns Enotdir/Eopnotsupp, delegate the in-mount
+remainder to that mount's `fs.lookup(remaining_abs)` — NOT a global
+legacy fallback (that was the reverted V3 bolt-on), but the owning
+mount resolving its own subtree. Add a `set_mount_whole_path(fn)` hook
+or pass the mount fs to the walker. Re-add `/bin/symlink_probe` +
+baked ext4 symlink fixture. Order: extend the hosted harness for the
+delegation case FIRST; then wire ONE syscall (stat), boot-login-verify
+BOTH arches; then the rest cluster by cluster. GOTCHA: musl stat()/lstat()
+→ sys_stat slots 4/6 (fs.rs), not statx/newfstatat. Then V7 bind-as-clone/
+MS_MOVE/pivot_root/MS_REC/propagation/per-ns.
+
+### Verify gates (use these, not boot-smoke-prompt)
+- `boot-smoke-login` (alice/swordfish→id) is the REAL gate; `boot-smoke`
+  only checks the prompt. The pre-push hook only runs prompt-smoke, so
+  login regressions slip — run login-smoke manually for VFS changes.
+- `OXIDE_QEMU_KVM=1 ./tools/boot-smoke-login.sh x86 200 > FILE 2>&1`
+  (KVM, ~27s). arm: `./tools/boot-smoke-login.sh arm 600 > FILE 2>&1`
+  (~33s). NO `pkill` prefix without `|| true` (set -e aborts). git push:
+  `2>FILE` (push writes stderr; bare capture mis-reports). SKIP_SMOKE=1
+  ok for additive/verified changes since the hook capture is flaky.
 
 ## Harness gotchas (don't rediscover)
 - `boot-smoke` = login PROMPT only; `boot-smoke-login` = actual login
