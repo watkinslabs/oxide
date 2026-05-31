@@ -948,6 +948,9 @@ unsafe fn tick_poll_combined() {
     // up in ZOMBIES at ~340 KB each (Task struct + 16KB kernel
     // stack), causing TCG ARM smoke to bog down past ~14 sessions.
     sched::live::zombies::reap_orphans();
+    // F169/B20: wake tasks past wakeup_deadline_ns (SO_*TIMEO) or
+    // alarm_ns (alarm/itimer). Dead since F152 retired the rx kthread.
+    sched::live::tick_wake_expired(crate::vvar::monotonic_now_ns());
     // Refresh the vDSO vvar page with the live monotonic clock so
     // userspace __vdso_clock_gettime returns current time without
     // a syscall. Cheap (one TimerOps read + 4 atomic stores).
