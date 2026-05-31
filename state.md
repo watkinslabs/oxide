@@ -10,17 +10,28 @@ BOLT-ON on the fragmented mount table V5 replaces — reverted (F282 never
 merged). New order = verify-left + foundation-first. Also updated
 CLAUDE.md "How to act on big/cross-subsystem changes" with the lessons.
 
-## NEXT: V3 = fast hosted resolution harness (verify-left)
-Build a rich ext4 fixture image (nested dirs, symlinks abs/rel/loop,
-merged-usr `/bin`→`/usr/bin`) + a `cargo test` (in the ext4 crate) that
-points the ext4 global mount (MOUNT_PTR) at it and drives
-`vfs::path_lookup` over the REAL ext4 Inode impls — milliseconds, no
-QEMU. This becomes the dev loop for V4–V7. First step: check
-`ext4::rootfs::init`/MOUNT_PTR for a test-settable entry; build the
-fixture image with mkfs+debugfs (like `crates/kernel/ext4/tests/mini.img`).
-Then V4 Superblock, V5 unified dentry-keyed mount tree (THE foundation),
-V6 migrate ALL path syscalls at once (re-add symlink_probe), V7
-bind/MS_MOVE/pivot_root/MS_REC/propagation. See TASKS.md Track K2V.
+## V3 DONE (F283): verify-left harness
+`crates/kernel/ext4/tests/walk_image.rs` + `tests/walk.img` drive
+`vfs::path_lookup` over the REAL ext4 Inode impls in `cargo test`
+(~0.6s, no QEMU) — 7 tests: descent, abs/rel/intermediate(merged-usr R6)
+symlink follow, ELOOP, O_NOFOLLOW. Enabled by `rootfs::set_test_mount`
+(publishes a fixture Mount into MOUNT_PTR) + un-gating the ext4 rootfs
+Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
+THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
+verify each stage before any QEMU boot.
+
+## NEXT: V4 Superblock, then V5 unified mount tree
+- V4: `Superblock` trait + inode→sb linkage (docs/16 invariant 3). Note
+  ext4 already has its own on-disk `Superblock` (ext4::Superblock) —
+  the VFS one is different (root inode / statfs / sync / umount per
+  docs/16§2). Add per-SB inode cache.
+- V5: THE foundation — one dentry-keyed mount tree spanning
+  ext4/tmpfs/devfs/proc/sys (drops string-table + devfs-registry split +
+  BindFs rewrite). Fill procfs/sysfs dir `lookup(name)`. Then
+  `path_lookup` is THE resolver.
+- V6: migrate ALL path syscalls at once (re-add symlink_probe). V7:
+  bind-as-clone/MS_MOVE/pivot_root/MS_REC/propagation/per-ns. See
+  TASKS.md Track K2V. Verify each on the hosted harness FIRST, QEMU last.
 
 GOTCHAS learned (don't rediscover by booting):
 - musl stat()/lstat() → `sys_stat` (slots 4/6), NOT statx/newfstatat.

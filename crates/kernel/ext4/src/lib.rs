@@ -45,7 +45,10 @@ pub mod ialloc;
 
 pub mod journal;
 
-#[cfg(target_os = "oxide-kernel")]
+// Host-compilable so the verify-left resolution harness
+// (tests/walk_image.rs) can drive the real ext4 Inode impls via
+// `set_test_mount`. The embedded-rootfs boot path (`ROOTFS`/`init`/
+// `ImageDisk`) stays kernel-only inside the module.
 pub mod rootfs;
 pub use journal::ExtentLogReader;
 pub mod jbd2;
