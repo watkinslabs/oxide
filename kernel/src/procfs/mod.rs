@@ -890,6 +890,7 @@ fn pid_to_kernel_tid(p: u32) -> Option<u32> {
 /// # C: O(N_tasks)
 pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
     use procfs::paths::{parse_proc_path, ProcPath};
+    if let Some(i) = crate::procfs::proc_links::lookup_fd_path(path) { return Some(i); }
     match parse_proc_path(path) {
         ProcPath::SelfDir =>
             Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
