@@ -620,53 +620,50 @@ impl Inode for ProcPidDirInode {
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        if self.is_self {
-            // Delegate to existing /proc/self/<name> entries.
+        // /proc/self/<file>: static-registered devfs entries (exe/cwd/
+        // root symlinks, /fd dir) take priority; else resolve `self` to
+        // the running task's tid and fall through.
+        let tid = if self.is_self {
             let mut p = alloc::string::String::with_capacity(11 + name.len());
-            p.push_str("/proc/self/");
-            p.push_str(name);
-            return crate::devfs::lookup(&p).ok_or(VfsError::Enoent);
-        }
+            p.push_str("/proc/self/"); p.push_str(name);
+            if let Some(i) = crate::devfs::lookup(&p) { return Ok(i); }
+            sched::live::current().map(|c| c.tid).ok_or(VfsError::Enoent)?
+        } else { self.tid };
         match name {
-            "status"  => Ok(Arc::new(ProcPidStatusInode  { tid: self.tid }) as InodeRef),
-            "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid: self.tid }) as InodeRef),
-            "stat"    => Ok(Arc::new(ProcPidStatInode    { tid: self.tid }) as InodeRef),
-            "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid: self.tid }) as InodeRef),
-            "smaps"   => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
-            "comm"    => Ok(Arc::new(ProcPidCommInode    { tid: self.tid }) as InodeRef),
-            "environ" => Ok(Arc::new(ProcPidEnvironInode { tid: self.tid }) as InodeRef),
-            "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid: self.tid }) as InodeRef),
+            "status"  => Ok(Arc::new(ProcPidStatusInode  { tid }) as InodeRef),
+            "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
+            "stat"    => Ok(Arc::new(ProcPidStatInode    { tid }) as InodeRef),
+            "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid }) as InodeRef),
+            "smaps"   => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid }) as InodeRef),
+            "comm"    => Ok(Arc::new(ProcPidCommInode    { tid }) as InodeRef),
+            "environ" => Ok(Arc::new(ProcPidEnvironInode { tid }) as InodeRef),
+            "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid }) as InodeRef),
             "wchan"   => Ok(StaticFileInode::new(b"0") as InodeRef),
             "oom_score" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "oom_score_adj" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "loginuid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "sessionid" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             "io"       => Ok(StaticFileInode::new(b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\n") as InodeRef),
-            "limits"   => Ok(Arc::new(ProcPidLimitsInode { tid: self.tid }) as InodeRef),
+            "limits"   => Ok(Arc::new(ProcPidLimitsInode { tid }) as InodeRef),
             "personality" => Ok(StaticFileInode::new(b"00000000\n") as InodeRef),
-            "sched"   => Ok(Arc::new(ProcPidSchedInode { tid: self.tid }) as InodeRef),
+            "sched"   => Ok(Arc::new(ProcPidSchedInode { tid }) as InodeRef),
             "schedstat" => Ok(StaticFileInode::new(b"0 0 0\n") as InodeRef),
             "autogroup" => Ok(StaticFileInode::new(b"/autogroup-1 nice 0\n") as InodeRef),
             // F117 / 26§R01: ns subdir. Lookup yields a NsDirInode
             // whose lookup(<type>) returns an NsInode with the task's
             // current id snapshot for that NS kind.
-            "ns" => Ok(Arc::new(ProcPidNsDirInode { tid: self.tid }) as InodeRef),
-            // F113: USER NS uid/gid mapping. Identity mapping is the
-            // honest answer for v1 — we don't enforce per-NS uid
-            // translation. Format: "<inside_id> <outside_id> <range>".
+            "ns" => Ok(Arc::new(ProcPidNsDirInode { tid }) as InodeRef),
             "uid_map" | "gid_map" => Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef),
             "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
-            // F158: Linux per-pid files. Most stub to plausible values;
-            // tools that probe these (systemd, glibc, gdb) accept them.
             "syscall"  => Ok(StaticFileInode::new(b"running\n") as InodeRef),
             "mounts"   => Ok(Arc::new(crate::procfs::mounts::ProcMountsInode) as InodeRef),
             "mountinfo" => Ok(Arc::new(crate::procfs::mounts::ProcMountinfoInode) as InodeRef),
-            "cgroup"   => Ok(Arc::new(ProcCgroupInode { tid: Some(self.tid) }) as InodeRef),
+            "cgroup"   => Ok(Arc::new(ProcCgroupInode { tid: Some(tid) }) as InodeRef),
             "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
-            "smaps_rollup" => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid: self.tid }) as InodeRef),
-            "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid: self.tid }) as InodeRef),
+            "smaps_rollup" => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid }) as InodeRef),
+            "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid }) as InodeRef),
             "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map"
               | "pagemap" | "kpagecount" | "kpageflags" | "attr"
               => Ok(StaticFileInode::new(b"") as InodeRef),
@@ -894,7 +891,13 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
     match parse_proc_path(path) {
         ProcPath::SelfDir =>
             Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
-        ProcPath::SelfChild(_) => None, // /proc/self/<file> served by devfs
+        ProcPath::SelfChild(leaf) => {
+            // Static devfs registrations take priority (already tried by
+            // caller). Fall back to the same per-pid synthesis as
+            // /proc/<pid>/<leaf> via the is_self dispatch.
+            let dir = ProcPidDirInode { tid: 0, is_self: true };
+            dir.lookup(leaf).ok()
+        }
         ProcPath::PidDir(name_pid) => {
             let tid = pid_to_kernel_tid(name_pid)?;
             Some(Arc::new(ProcPidDirInode { tid, is_self: false }) as InodeRef)
