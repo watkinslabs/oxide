@@ -77,3 +77,27 @@ pub fn fd_link_for_path(path: &[u8], fd: i32) -> InodeRef {
         ino:    0x3000_1600 | (fd as Ino),
     })
 }
+
+/// Path-keyed lookup for `/proc/{self|<pid>}/fd` and its `<N>` children.
+/// `/proc/self/fd` itself is statically registered as a `ProcSelfFdInode`
+/// in `static_files::init`; per-pid `/proc/<pid>/fd` and the individual
+/// fd-link inodes aren't path-keyed in devfs, so synthesise them here so
+/// stat()/readlink() resolve uniformly with open(2) which routes through
+/// `dup_fd_target`.
+/// # C: O(path_len)
+pub fn lookup_fd_path(path: &str) -> Option<InodeRef> {
+    let rest = path.strip_prefix("/proc/")?;
+    let mut it = rest.splitn(3, '/');
+    let who = it.next()?;
+    if it.next()? != "fd" { return None; }
+    let tid_opt: Option<u32> = if who == "self" { None }
+        else { Some(who.parse::<u32>().ok()?) };
+    match it.next() {
+        None => Some(Arc::new(crate::procfs::ProcSelfFdInode) as InodeRef),
+        Some(n_str) => {
+            let fd: i32 = n_str.parse().ok()?;
+            let file = sched::proclink::proc_fd_file(tid_opt, fd)?;
+            Some(fd_link_for_path(&file.dentry().absolute_path(), fd))
+        }
+    }
+}
