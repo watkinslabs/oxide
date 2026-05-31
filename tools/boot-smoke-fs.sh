@@ -144,6 +144,13 @@ step sys_lo_type      'cat /sys/class/net/lo/type'
 step sys_lo_operstate 'cat /sys/class/net/lo/operstate'
 step sys_lo_flags     'cat /sys/class/net/lo/flags'
 step sys_cpu_ls       'ls /sys/devices/system/cpu 2>&1 | head -20'
+step sys_cpu_online   'cat /sys/devices/system/cpu/online'
+step sys_cpu_possible 'cat /sys/devices/system/cpu/possible'
+step sys_cpu_present  'cat /sys/devices/system/cpu/present'
+step sys_cpu_offline  'cat /sys/devices/system/cpu/offline'
+step sys_lo_readlink  'readlink /sys/class/net/lo'
+step sys_dev_lo_addr  'cat /sys/devices/virtual/net/lo/address'
+step sys_lo_addr_thru 'cat /sys/class/net/lo/address  # via symlink follow'
 
 # /proc/net
 step proc_net_tcp     'cat /proc/net/tcp'

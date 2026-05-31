@@ -15,12 +15,72 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 const ARPHRD_LOOPBACK: u16 = 772;
 const ARPHRD_ETHER:    u16 =   1;
 
-/// `/sys/class/net` directory. `readdir` enumerates `net::sock::stack().ifaces`;
-/// `lookup(name)` yields a per-iface `SysClassNetIfaceInode`.
+/// `/sys/class/net` directory. `readdir` enumerates
+/// `net::sock::stack().ifaces` and emits each entry as a symlink per
+/// docs/19§2 invariant 2 (`/sys/class/<class>/<name>` → `/sys/devices/
+/// .../<name>`). `lookup(name)` returns a `SysClassNetSymlinkInode`
+/// whose readlink target is the canonical devices path; the real
+/// attribute set lives under `/sys/devices/virtual/net/<name>` and is
+/// served by `SysDevicesVirtualNetInode`.
 pub struct SysClassNetInode;
 
 impl Inode for SysClassNetInode {
     fn ino(&self) -> Ino { 0x5100_0001 }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        let snap = net::sock::stack().ifaces.snapshot_devs();
+        for (_, dev) in snap.iter() {
+            if dev.name() == name {
+                let mut target = alloc::string::String::from("../../devices/virtual/net/");
+                target.push_str(name);
+                return Ok(Arc::new(SysClassNetSymlinkInode {
+                    target: target.into_bytes(),
+                }) as InodeRef);
+            }
+        }
+        Err(VfsError::Enoent)
+    }
+    fn readdir(
+        &self,
+        off: u64,
+        f: &mut dyn FnMut(u64, &str, FileType) -> bool,
+    ) -> KResult<u64> {
+        let snap = net::sock::stack().ifaces.snapshot_devs();
+        let mut idx = off as usize;
+        while idx < snap.len() {
+            let next = idx as u64 + 1;
+            if !f(next, snap[idx].1.name(), FileType::Symlink) { return Ok(next); }
+            idx += 1;
+        }
+        Ok(idx as u64)
+    }
+}
+
+/// `/sys/class/net/<if>` symlink — readlink target is the canonical
+/// /sys/devices path that holds the attribute set. udev/networkd
+/// readlink this to discover the bus path; subsequent attribute
+/// reads go through the resolved /sys/devices/.../<attr> path which
+/// SysfsFs follows transparently (component-walk follows the link).
+pub struct SysClassNetSymlinkInode {
+    pub target: alloc::vec::Vec<u8>,
+}
+
+impl Inode for SysClassNetSymlinkInode {
+    fn ino(&self) -> Ino { 0x5100_0080 }
+    fn file_type(&self) -> FileType { FileType::Symlink }
+    fn size(&self) -> u64 { self.target.len() as u64 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn readlink(&self) -> KResult<alloc::vec::Vec<u8>> { Ok(self.target.clone()) }
+}
+
+/// `/sys/devices/virtual/net` directory. Same readdir/lookup as
+/// SysClassNetInode but returns the actual SysClassNetIfaceInode
+/// directory (the canonical home for per-iface attributes).
+pub struct SysDevicesVirtualNetInode;
+
+impl Inode for SysDevicesVirtualNetInode {
+    fn ino(&self) -> Ino { 0x5100_0002 }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
@@ -189,7 +249,10 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    crate::devfs::register("/sys/class/net", Arc::new(SysClassNetInode) as InodeRef);
+    crate::devfs::register("/sys/class/net",
+        Arc::new(SysClassNetInode) as InodeRef);
+    crate::devfs::register("/sys/devices/virtual/net",
+        Arc::new(SysDevicesVirtualNetInode) as InodeRef);
 }
 
 /// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult the
@@ -212,23 +275,55 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// under /sys/class/net resolve.
     /// # C: O(N_devfs_entries × N_path_components)
     fn lookup(&self, path: &str) -> Option<InodeRef> {
-        if let Some(i) = crate::devfs::lookup(path) { return Some(i); }
-        let mut tail: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
-        let mut cur = path;
-        while let Some(idx) = cur.rfind('/') {
-            if idx == 0 { return None; }
-            let (parent, child) = cur.split_at(idx);
-            tail.push(&child[1..]);
-            if let Some(parent_inode) = crate::devfs::lookup(parent) {
-                let mut node = parent_inode;
-                for name in tail.iter().rev() {
-                    node = node.lookup(name).ok()?;
+        sysfs_walk(path, 0)
+    }
+}
+
+/// SysfsFs path walk. Tries devfs::lookup first; on miss, peels one
+/// component at a time until a registered ancestor inode is found,
+/// then walks back down via `Inode::lookup`. Intermediate symlinks
+/// (the /sys/class/<class>/<name> → /sys/devices/... convention)
+/// resolve transparently: when the walk lands on a Symlink with more
+/// path left, we re-enter `sysfs_walk` against the lexically resolved
+/// target + the remaining tail. `depth` bounds symlink recursion at
+/// 8 (Linux SYMLOOP_MAX heuristic).
+/// # C: O(N_components × N_devfs_entries)
+fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
+    if depth > 8 { return None; }
+    if let Some(i) = crate::devfs::lookup(path) { return Some(i); }
+    let mut tail: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+    let mut cur = alloc::string::String::from(path);
+    loop {
+        let idx = cur.rfind('/')?;
+        if idx == 0 { return None; }
+        let child = alloc::string::String::from(&cur[idx + 1..]);
+        cur.truncate(idx);
+        tail.push(child);
+        if let Some(parent_inode) = crate::devfs::lookup(&cur) {
+            let mut node = parent_inode;
+            while let Some(name) = tail.pop() {
+                node = node.lookup(&name).ok()?;
+                if matches!(node.file_type(), FileType::Symlink) && !tail.is_empty() {
+                    let target = node.readlink().ok()?;
+                    let target = core::str::from_utf8(&target).ok()?;
+                    let mut joined = cur.clone();
+                    joined.push('/');
+                    joined.push_str(target);
+                    let resolved = vfs::path::lexical_normalize(&joined)
+                        .unwrap_or(joined);
+                    // Tail held the unconsumed sub-components in
+                    // reverse order; rebuild as path suffix and
+                    // recurse with the resolved base.
+                    let mut new_path = resolved;
+                    while let Some(seg) = tail.pop() {
+                        new_path.push('/');
+                        new_path.push_str(&seg);
+                    }
+                    return sysfs_walk(&new_path, depth + 1);
                 }
-                return Some(node);
             }
-            cur = parent;
+            return Some(node);
         }
-        None
     }
 }
 
