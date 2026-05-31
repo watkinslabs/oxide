@@ -541,6 +541,18 @@ impl UnixRegistry {
         self.dgrams.lock().contains_key(path)
     }
 
+    /// Snapshot all bound paths grouped by kind (stream listener vs
+    /// dgram queue). Used by /proc/net/unix to render one row per
+    /// bind. `(kind, path)` where kind ∈ {0001 = SOCK_STREAM,
+    /// 0002 = SOCK_DGRAM} per linux/socket.h.
+    /// # C: O(N)
+    pub fn snapshot_paths(&self) -> alloc::vec::Vec<(u16, String)> {
+        let mut out: alloc::vec::Vec<(u16, String)> = alloc::vec::Vec::new();
+        for k in self.inner.lock().keys() { out.push((0x0001, k.clone())); }
+        for k in self.dgrams.lock().keys() { out.push((0x0002, k.clone())); }
+        out
+    }
+
     /// Connect to `path`: allocate a new UnixPair; queue the A
     /// end into the listener's accept_q so the server's
     /// `accept()` retrieves it; return the B end to the client.
