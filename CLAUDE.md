@@ -150,6 +150,20 @@ A pre-push hook at `.githooks/pre-push` enforces this automatically. Install onc
 
 Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn GHA minutes. The pre-push hook runs on the dev box where KVM keeps boot under a minute.
 
+## How to act on big/cross-subsystem changes (HARD RULE — learned the hard way)
+
+When a change spans subsystems, needs many boot-test cycles, or sits on a structure a later stage will replace, follow these or you will burn hours and ship half-built bolt-ons:
+
+1. **Verify left — QEMU boot is the final gate, NOT the dev loop.** Before wiring a subsystem, build a **hosted `cargo test` harness that drives the real code against a real fixture** (e.g. drive `vfs::path_lookup` over an ext4 image via the global mount; assert resolution/symlink/ELOOP). Milliseconds, no boot, no port, no rebuild. Iterate there; boot once at the end for lockstep. A full `make qemu-x86` boot as the inner loop = wasted hours. The qemu MCP session (one warm VM, breakpoint+inspect) beats repeated cold boots when you must boot.
+
+2. **Foundation before wiring — never build on sand.** If the plan has a unification/refactor stage that replaces a fragmented structure (e.g. unified dentry-keyed mount tree replacing string-table + devfs-registry), do it **before** migrating callers, so the new primitive is THE path used uniformly — not a `legacy-first + fallback` bolt-on you'll unwind. Reorder stages to put the foundation first. A bolt-on on top of a doomed structure is the "minimal/v1-subset" the project forbids (`docs/02`, Discipline rule 3).
+
+3. **Audit constraints up front, in ONE pass — don't discover them one boot at a time.** Before touching syscalls, enumerate: which kernel handler each musl libc call actually invokes (e.g. `stat()`/`lstat()` hit `sys_stat` slots 4/6, NOT `statx`/`newfstatat`), and the real capabilities of the backends you depend on (e.g. "ext4 symlink *create* is not implemented"). Read musl/uapi and the dispatch table once; don't reverse-engineer routing by trial boot.
+
+4. **Boot-harness hygiene (the thrash sources):** warm-build the debug kernel once before iterating (cold debug-boot rebuild ≈ 5 min); ensure **exclusive** boots — kill stale `qemu-system` first and confirm port 2222 free (overlapping QEMUs from prior runs cause `Could not set up host forwarding` failures); the dev shell runs `set -e`, so `cmd > file; echo >> file` chains **lose the capture when `cmd` exits non-zero** — guard with `|| true` or split the commands.
+
+5. **When stuck thrashing: stop and fix the loop, don't repeat it.** If you've booted >2-3 times to chase one bug, the loop is the problem — build the hosted harness or add a targeted trace, rather than re-running the slow path. Surface the half-built state honestly instead of pushing a compromise.
+
 ## Git workflow (mandatory)
 
 **Branch per change.** Never commit directly to `main`. Branch names use a single-letter type + zero-padded counter + kebab-case title, sortable globally and within type:
