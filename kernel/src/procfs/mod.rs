@@ -9,6 +9,7 @@ pub mod proc_links;
 pub mod static_files;
 pub mod cgroup_file;
 pub mod mounts;
+pub mod cmdline;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -519,6 +520,8 @@ impl Inode for ProcSelfCommInode {
     }
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
+
+pub use crate::procfs::cmdline::ProcCmdlineInode;
 
 /// `/proc/self/fd` directory. Walks `current().fd_table` and emits
 /// each live fd as a decimal name. lookup(name) parses the fd back
