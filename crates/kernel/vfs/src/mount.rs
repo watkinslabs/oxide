@@ -143,6 +143,25 @@ pub fn lookup(path: &str) -> KResult<InodeRef> {
     mnt.fs.lookup(path).ok_or(VfsError::Enoent)
 }
 
+/// Mount-crossing hook for the dentry path-walk (`docs/16§3`): if a
+/// filesystem is mounted EXACTLY at `abs`, return its root inode — the
+/// inode the walk switches to on crossing. `None` if nothing is mounted
+/// there (or it's the root mount `/`, which the walk already starts at).
+/// Prefers `Superblock::root` (`fs.root()`); falls back to the
+/// whole-path `fs.lookup(abs)` for backends that don't expose `root()`
+/// yet (tmpfs/proc/sys key their tables by full path, so this returns
+/// the correct per-mount root even though the fs struct is shared).
+///
+/// Install via `crate::namei::set_mount_resolver(mount_root_at)` at boot
+/// so `path_lookup` crosses every mount uniformly — the V5 unification.
+/// # C: O(N_mounts)
+pub fn mount_root_at(abs: &str) -> Option<InodeRef> {
+    if abs == "/" { return None; }
+    let (m, _) = resolve_mount(abs)?;
+    if m.mount_point != abs { return None; }
+    m.fs.root().or_else(|| m.fs.lookup(abs))
+}
+
 /// Snapshot the mount table for `/proc/mounts`.
 /// # C: O(N_mounts)
 pub fn snapshot() -> Vec<Arc<Mount>> {
