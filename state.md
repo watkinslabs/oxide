@@ -20,8 +20,24 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 done. V7 features done. UNIFICATION: U2 per-ns + U3-a umount done
-U3-a (F300, branch): `vfs::mount::unregister(mp)` — ns-scoped detach of a
+## V6 done. V7 done. UNIFICATION: U2 per-ns + U3 tmpfs-in-table done
+U3-b (F301, branch): tmpfs `mount -t tmpfs` now registers in the unified
+per-ns vfs::mount::TABLE via `register_bind(target, TmpfsFs,
+TmpfsRootInode::new(target))` instead of `devfs::register_in_ns`. So
+userspace tmpfs mounts appear in /proc/mounts + obey MS_MOVE/MS_REC/umount
+uniformly; caller's mount-ns stamped automatically. Resolution: path_lookup
+crosses into target → TmpfsRootInode → tmpfs file store (unchanged). AUDIT
+CONFIRMED: devfs registry is the shared /dev+/proc+/sys backing store;
+only tmpfs used register_in_ns; tmpfs FILES live in the separate fs::tmpfs
+registry (untouched); boot tmpfs (/tmp,/run,/dev/shm via lib.rs register +
+TmpfsFs.lookup) already resolves via TABLE-crossing, unchanged. Both arches
+build + spec-lint clean. BOOT-RISKY (rcS/dhcpcd tmpfs) → hook is the gate.
+NEXT: optional cleanup — drop the B47 /var,/tmp,/run entries from
+is_ext4_path in namei.rs (now only used by link/linkat/rename; tmpfs in
+TABLE resolves rename via TmpfsFs::rename). THEN U4: propagation EVENT
+delivery to peer_group members, pivot_root, submount-move.
+## (history) U3-a
+U3-a (F300 #1399): `vfs::mount::unregister(mp)` — ns-scoped detach of a
 TABLE mount. Wired into sys_umount2 (removes from BOTH the unified table
 AND the devfs registry; succeed if either had it). FIXES a real bug: umount
 of a BIND mount (which lives in TABLE) was a silent no-op before — it kept
