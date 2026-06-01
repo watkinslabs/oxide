@@ -42,7 +42,9 @@ NETLINK_KOBJECT_UEVENT / /proc/<pid>/ns/* / /dev/kmsg / memfd seals), K6
 (new mount API: fsopen/fsconfig/fsmount/move_mount/open_tree — wraps the
 mount ops just built; systemd 254+). K6 is the natural continuation of the
 mount work. Smaller K2V follow-ups: link/rename → inode dispatch; tmpfs
-symlink/mknod inode methods; drop /var,/tmp,/run from is_ext4_path.
+mknod inode method (symlink DONE F307: TmpfsSymlinkInode +
+TmpfsRootInode::symlink_child, for systemd /run symlinks); drop
+/var,/tmp,/run from is_ext4_path.
 
 First command next session:
   cd /home/nd/oxide2 && git log --oneline -5 | cat   # confirm F306 merged

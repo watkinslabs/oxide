@@ -77,6 +77,30 @@ impl Inode for TmpfsFileInode {
     }
 }
 
+/// Symlink-type tmpfs inode — stores the target text; `readlink` returns
+/// it. Created by `TmpfsRootInode::symlink_child` (e.g. systemd's `/run`
+/// symlinks). The path-walk follows it like any symlink.
+pub struct TmpfsSymlinkInode {
+    target: Vec<u8>,
+    ino:    Ino,
+}
+
+impl TmpfsSymlinkInode {
+    /// # C: O(1)
+    pub fn new(target: &[u8]) -> Arc<Self> {
+        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self { target: target.to_vec(), ino })
+    }
+}
+
+impl Inode for TmpfsSymlinkInode {
+    fn ino(&self) -> Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Symlink }
+    fn size(&self) -> u64 { self.target.len() as u64 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn readlink(&self) -> KResult<Vec<u8>> { Ok(self.target.clone()) }
+}
+
 /// F152: socket-type tmpfs inode. bind(AF_UNIX, path) materialises
 /// one of these at `path` so stat() returns S_IFSOCK + chmod()
 /// flows through normal VFS (no per-call UNIX_REGISTRY override).
@@ -233,6 +257,16 @@ impl Inode for TmpfsRootInode {
         g.retain(|(p, _)| *p != path);
         if g.len() == len { Err(VfsError::Enoent) } else { Ok(()) }
     }
+
+    /// `symlink(2)` into tmpfs — registers a `TmpfsSymlinkInode` holding
+    /// `target` (e.g. systemd's `/run` symlinks). The path-walk follows it.
+    /// # C: O(N_tmpfs_entries)
+    fn symlink_child(&self, name: &str, target: &[u8]) -> KResult<()> {
+        let path = self.child_path(name);
+        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
+        register(path, TmpfsSymlinkInode::new(target) as InodeRef);
+        Ok(())
+    }
 }
 
 /// Boot-time registry seeding. Registers the `/tmp` directory inode
@@ -331,3 +365,27 @@ impl vfs::fs::FileSystem for TmpfsFs {
 /// Singleton accessor.
 /// # C: O(1)
 pub fn instance() -> &'static dyn vfs::fs::FileSystem { &TmpfsFs }
+
+#[cfg(test)]
+mod symlink_tests {
+    use super::*;
+    // tmpfs symlink inode round-trips its target (the systemd /run case).
+    #[test]
+    fn symlink_inode_readlink_roundtrips() {
+        let s = TmpfsSymlinkInode::new(b"/usr/share/zoneinfo/UTC");
+        assert_eq!(s.file_type(), FileType::Symlink);
+        assert_eq!(s.size(), 23);
+        assert_eq!(s.readlink().unwrap(), b"/usr/share/zoneinfo/UTC".to_vec());
+    }
+    // symlink_child registers a followable symlink at <mount>/<name>.
+    #[test]
+    fn root_symlink_child_creates_followable_link() {
+        let root = TmpfsRootInode::new(String::from("/run-test-xyz"));
+        root.symlink_child("tz", b"/etc/localtime").expect("create symlink");
+        let resolved = lookup("/run-test-xyz/tz").expect("symlink registered");
+        assert_eq!(resolved.file_type(), FileType::Symlink);
+        assert_eq!(resolved.readlink().unwrap(), b"/etc/localtime".to_vec());
+        // Eexist on a second create.
+        assert!(matches!(root.symlink_child("tz", b"/x"), Err(VfsError::Eexist)));
+    }
+}
