@@ -20,8 +20,14 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6e done. NEXT: readlink/namei, then V7
-V6e (F290, branch open — hosted harness PASS, qemu gate via push hook):
+## V1–V6f done. NEXT: namei mutations, then V7
+V6f (F291, branch open): readlink/readlinkat resolve via
+`pathresolve::resolve(path, no_follow_final=true)` — follows INTERMEDIATE
+symlinks, returns the FINAL link's target (never follows it), replacing
+the non-following `lookup_inode_any`+`vfs::mount::lookup` chain. proc-link
+family (/proc/self/exe…) still handled first. Exercised by symlink_probe
+readlink(/sl_link)=/sl_target. Both arches build + spec-lint clean.
+V6e (F290 #1389): execve reads ELF via path_lookup (see below).
 execve now reads the ELF via `pathresolve::read_exec` = resolve through
 `vfs::path_lookup` (follows symlinks, crosses mounts) → `inode.read` full
 contents; raw `ext4::rootfs::read_file` kept ONLY as pre-mount-early-boot
