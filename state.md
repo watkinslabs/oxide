@@ -108,11 +108,16 @@ First command next session:
    pre-push hook boots both arches as a child of git; `git push 2>FILE;
    echo PUSH_DONE rc=$?`. `PUSH_DONE rc=0` = hook passed. Doc-only pushes
    auto-skip smoke. Use the PLAIN form — no command prefix (see #4).
-3. **CAT-smoke login-hang is an intermittent FLAKE**: boot stops right
-   after `Linux version …PREEMPT` (kernel cat /proc/version smoke, tty
-   ONLCR yield gap). Hook fails `make smoke-x86 did not reach login`.
-   RETRY the push — it passes. Not a regression
-   (`project_login_hang_cat_smoke` memory).
+3. **CAT-smoke login-hang FLAKE — ROOT-CAUSED (F313)**: boot stops right
+   after `Linux version …PREEMPT`. NOT a kernel hang — the x86 UART
+   `write_byte` (boot-x86_64/uart.rs) has a spin-cap that DROPS bytes when
+   the emulated 16550's THRE lags under TCG back-pressure. The CAT smoke
+   floods /proc/version to the console right before login, so the
+   *login-prompt* bytes hit the cap + get dropped → `did not reach login`.
+   F313 raised SPIN_CAP 100K→5M (real hw sets THRE in µs so it never bites
+   there; under TCG the continuous consumer rides out the burst). If the
+   flake still recurs: RETRY the push (it passes). Proper fix = IRQ-driven
+   TX or trim the CAT-smoke console flood (boot-path surgery).
 4. **`pkill -f qemu-system` SELF-KILLS the shell**: the Bash tool wraps
    the command as `bash -c '…pkill -9 -f qemu-system…'`, whose own cmdline
    contains "qemu-system", so pkill -9 kills its parent → Exit 1, no

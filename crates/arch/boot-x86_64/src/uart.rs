@@ -130,7 +130,16 @@ impl Uart for Uart16550 {
     /// truncated dmesg lines on the host (better than a wedge).
     /// # C: O(spin up to cap)
     fn write_byte(&mut self, b: u8) {
-        const SPIN_CAP: u32 = 100_000;
+        // 100K was too eager under TCG back-pressure: the CAT-smoke
+        // /proc/version flood right before login fills the emulated 16550,
+        // THRE lags, and the *login-prompt* bytes hit the cap + get dropped
+        // → `boot-smoke did not reach login` (the intermittent CAT-smoke
+        // flake, project_login_hang_cat_smoke). Real hardware sets THRE in
+        // microseconds so a higher cap never bites there; under TCG the
+        // host pty consumer is continuous, so a larger budget rides out the
+        // burst and emits the prompt instead of truncating it. Still bounded
+        // to avoid the IRQs-disabled wedge if the consumer truly vanishes.
+        const SPIN_CAP: u32 = 5_000_000;
         let mut spins: u32 = 0;
         // SAFETY: same contract as `init`; the `inb`/`outb` wrappers
         // own the asm safety. Polling LSR until THRE is the documented
