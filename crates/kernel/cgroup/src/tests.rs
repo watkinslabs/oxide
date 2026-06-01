@@ -151,6 +151,53 @@ fn kill_lists_all_subtree_pids() {
     assert_eq!(pids, alloc::vec![1, 2, 3]);
 }
 
+// S3: cpu.max bandwidth decision (pure).
+#[test]
+fn cpu_bandwidth_throttles_over_quota() {
+    use crate::{cpu_bandwidth_decision, CpuAction};
+    // quota 50ms / period 100ms. base=0, period started at t=0.
+    let (quota, period) = (50_000_000u64, 100_000_000u64);
+    // consumed 20ms at t=30ms → under quota → Continue.
+    assert_eq!(cpu_bandwidth_decision(20_000_000, 0, quota, period, 0, 30_000_000),
+               CpuAction::Continue);
+    // consumed 50ms at t=60ms → at quota → Throttle.
+    assert_eq!(cpu_bandwidth_decision(50_000_000, 0, quota, period, 0, 60_000_000),
+               CpuAction::Throttle);
+    // t=100ms → period elapsed → Refill, re-baseline to current total.
+    assert_eq!(cpu_bandwidth_decision(50_000_000, 0, quota, period, 0, 100_000_000),
+               CpuAction::Refill { new_base_ns: 50_000_000 });
+}
+
+#[test]
+fn cpu_bandwidth_consumed_is_delta_from_base() {
+    use crate::{cpu_bandwidth_decision, CpuAction};
+    let (quota, period) = (50_000_000u64, 100_000_000u64);
+    // total 130ms but base 100ms → consumed 30ms < quota → Continue.
+    assert_eq!(cpu_bandwidth_decision(130_000_000, 100_000_000, quota, period, 0, 40_000_000),
+               CpuAction::Continue);
+    // total 160ms, base 100ms → consumed 60ms ≥ quota → Throttle.
+    assert_eq!(cpu_bandwidth_decision(160_000_000, 100_000_000, quota, period, 0, 40_000_000),
+               CpuAction::Throttle);
+}
+
+#[test]
+fn cpu_quota_groups_lists_only_capped() {
+    let mut t = Tree::new();
+    t.mount_root();
+    t.write_subtree_control(ROOT, "+cpu").unwrap();
+    let (capped, _) = t.create(ROOT, "capped").unwrap();
+    let (free, _) = t.create(ROOT, "free").unwrap();
+    t.add_proc(capped, 11);
+    t.add_proc(free, 22);
+    t.write_file(capped, "cpu.max", "50000 100000").unwrap();
+    let groups = t.cpu_quota_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].cgid, capped);
+    assert_eq!(groups[0].quota_ns, 50_000_000);  // 50000us → ns
+    assert_eq!(groups[0].period_ns, 100_000_000);
+    assert_eq!(groups[0].pids, alloc::vec![11]);
+}
+
 // S2: cgroup cpu.weight maps to CFS load weight (100 ↔ nice-0 weight 1024).
 #[test]
 fn cpu_weight_maps_to_cfs() {

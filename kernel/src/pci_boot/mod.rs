@@ -772,6 +772,9 @@ extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
             // blocking helpers can return ETIMEDOUT/EAGAIN. Same
             // cadence as retx since both are coarse-grained.
             sched::live::tick_wake_expired(now_ns);
+            // cgroup v2 cpu.max bandwidth scan: throttle (freeze) cgroups
+            // over quota this period, unthrottle on period refill (`26`).
+            crate::cgroup_cpu::tick(now_ns);
             // B14: subreap orphan zombies (parent gone, never waited).
             // Without this they accumulate in ZOMBIES holding Task
             // struct + 16KB kernel stack per orphan — sshd's per-conn
