@@ -1,10 +1,9 @@
 // xtask: CI entry, 07§8.
 use std::process::{Command, ExitCode};
-
 mod cmds;
 mod image_qemu;
 mod l2_deps;
-
+mod stats;
 use crate::cmds::{cmd_doc_check, cmd_kernel, cmd_spec_lint, cmd_test, parse_arg, run, stub};
 
 fn main() -> ExitCode {
@@ -25,6 +24,7 @@ fn main() -> ExitCode {
         "soak"      => stub("soak", "40"),
         "bench"     => stub("bench", "04"),
         "doc-check" => cmd_doc_check(rest),
+        "stats"     => stats::cmd_stats(rest),
         "-h" | "--help" => return usage(),
         _ => { eprintln!("xtask: unknown subcommand `{cmd}`"); return usage(); }
     };
@@ -35,7 +35,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|image|test|qemu|rootfs|soak|bench|spec-lint|doc-check> [args]");
+    eprintln!("usage: xtask <kernel|user|image|test|qemu|rootfs|soak|bench|spec-lint|doc-check|stats> [args]");
     ExitCode::from(2)
 }
 
