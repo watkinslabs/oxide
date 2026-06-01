@@ -20,8 +20,17 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 done. V7 done. UNIFICATION: U2 per-ns + U3 tmpfs-in-table done
-U3-b (F301, branch): tmpfs `mount -t tmpfs` now registers in the unified
+## V6 done. UNIFICATION: U2 per-ns + U3 tmpfs + U4-a subtree-move done
+U4-a (F302, branch): MS_MOVE now relocates the WHOLE subtree. move_mount
+rewrites the exact mount AND every submount nested under `from/` →
+`to/<rel>`, preserving each mnt_id/propagation/peer_group. Closes the
+documented MS_MOVE single-mount limitation. Hosted test
+move_mount_relocates_subtree (11 mount tests). Both arches build +
+spec-lint clean.
+NEXT U4-b/c: propagation EVENT delivery (replicate mount/umount to
+peer_group members in the ns) + pivot_root (swap ns root + per-proc root).
+## (history) U3-b
+U3-b (F301 #1400): tmpfs `mount -t tmpfs` now registers in the unified
 per-ns vfs::mount::TABLE via `register_bind(target, TmpfsFs,
 TmpfsRootInode::new(target))` instead of `devfs::register_in_ns`. So
 userspace tmpfs mounts appear in /proc/mounts + obey MS_MOVE/MS_REC/umount
