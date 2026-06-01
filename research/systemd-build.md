@@ -41,6 +41,27 @@ NOTE: bad option name — it's `-Dfdisk` not `-Dlibfdisk`.
   qsort_r, etc. — systemd 259 has in-tree musl shims for many; disable features / add
   shims as they surface.)
 
+## Progress (build grind toward libsystemd-shared)
+- libbasic.a BUILDS. libsystemd-shared compiling; fixed so far:
+  - lz4 full headers staged; compression (zstd/lz4/zlib/xz/bzip2) disabled for 1st milestone.
+  - gshadow disabled (musl).
+  - gcrypt disabled (systemd finds -lgcrypt via find_library → no pkg-config Cflags → gcrypt.h
+    not found; re-enable later by forcing the include, or accept FSS-off).
+  - acl/attr installed headers: stripped the leaked `EXPORT` visibility macro (EXPORT→extern)
+    in install-<arch>/include — systemd's acl-util.c now compiles. (TODO: also sed it in
+    acl/attr build.sh stage step for reproducibility; staged dirs already fixed+committed.)
+  - util-linux .pc Cflags now add the per-lib include subdir (blkid/libmount/uuid/libsmartcols)
+    so `<blkid.h>` resolves — gen-pc.sh updated. MUST wipe+re-setup meson after .pc changes
+    (meson caches dependency resolution).
+- **NEXT BLOCKER: nss.h glibc leak.** `src/shared/nss-util.c` does `#include <nss.h>`; musl has
+  no nss.h, so `-idirafter /usr/include` (needed for kernel UAPI linux/*.h) pulls the HOST glibc
+  nss.h → "expected ';' before 'enum'" (glibc-ism). FIX OPTIONS: (a) provide a minimal musl nss.h
+  shim in vendor/systemd/musl-shims/ + add `-I <that>` to c_args BEFORE the -idirafter (shadows
+  glibc's) — stub needs `enum nss_status {TRYAGAIN=-2,UNAVAIL=-1,NOTFOUND=0,SUCCESS=1,RETURN=2}`
+  + whatever nss-util.h references; OR (b) find the meson option/feature that pulls nss-util.c
+  into libsystemd-shared and disable it (nss-* are already disabled; userdb/nscd may pull it).
+  The shim dir is reusable for other glibc-only headers that leak via -idirafter.
+
 ## Next steps
 - `ninja -C build src/shared/libsystemd-shared-259.so` → fix surfaced musl issues.
 - Then vendor/systemd/build.sh (both arches, generates cross file, gen-pc, meson, ninja

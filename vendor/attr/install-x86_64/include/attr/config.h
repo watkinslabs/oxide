@@ -9,7 +9,7 @@
 /* #undef ENABLE_NLS */
 
 /* Visibility attribute for API symbols */
-#define EXPORT __attribute__ ((visibility ("default"))) extern
+#define extern __attribute__ ((visibility ("default"))) extern
 
 /* Define to 1 if you have 'alloca', as a function or macro. */
 #define HAVE_ALLOCA 1
