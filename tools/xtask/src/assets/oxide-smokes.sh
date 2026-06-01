@@ -42,6 +42,9 @@ echo post-pcre2_probe rv=$?
 echo pre-libseccomp_probe
 /bin/libseccomp_probe
 echo post-libseccomp_probe rv=$?
+echo pre-utillinux_probe
+/bin/utillinux_probe
+echo post-utillinux_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?

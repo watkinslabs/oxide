@@ -56,7 +56,9 @@ fn dyn_probe(cc: &std::path::Path, repo: &std::path::Path, arch: &str,
     // UAPI. The aarch64 cross sysroot bundles them; x86 musl-gcc doesn't, so
     // append the host kernel-headers at lowest priority (musl libc wins).
     if arch == "x86_64" { c.args(["-idirafter", "/usr/include"]); }
-    c.args(["-o", out.to_str().unwrap(), src.to_str().unwrap(), lflag]);
+    c.args(["-o", out.to_str().unwrap(), src.to_str().unwrap()]);
+    // lflag may carry several link flags (e.g. "-lmount -luuid").
+    for f in lflag.split_whitespace() { c.arg(f); }
     run(c)
 }
 
@@ -244,6 +246,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     dyn_probe(&cc, &repo, &arch, &user_out, "libxcrypt", "libxcrypt_probe", "-lcrypt")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "pcre2", "pcre2_probe", "-lpcre2-8")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "libseccomp", "libseccomp_probe", "-lseccomp")?;
+    dyn_probe(&cc, &repo, &arch, &user_out, "util-linux", "utillinux_probe", "-lmount -lblkid -luuid")?;
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -417,6 +420,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("libxcrypt_probe"), "/bin/libxcrypt_probe")?;
     put(&user("pcre2_probe"), "/bin/pcre2_probe")?;
     put(&user("libseccomp_probe"), "/bin/libseccomp_probe")?;
+    put(&user("utillinux_probe"), "/bin/utillinux_probe")?;
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -775,9 +779,7 @@ session    required   pam_unix.so
     ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so")?;
     // L2: libcap (first cross-built systemd shared dep). Real libcap.so →
     // /usr/lib + soname/linker-name symlinks; libcap_probe links it.
-    // L2 shared libs → /usr/lib. `stage_so(vendor, real, soname, linker)`
-    // puts vendor/<vendor>/install-<arch>/lib/<real> then symlinks the
-    // soname (.so.N) + linker name (.so). Each is one systemd dependency.
+    // L2 shared libs → /usr/lib: put the real .so + soname/linker symlinks.
     let stage_so = |vendor: &str, real: &str, soname: &str, linker: &str| -> Result<(), u8> {
         let dir = repo.join(format!("vendor/{vendor}/install-{arch}/lib"));
         put(&dir.join(real), &format!("/usr/lib/{real}"))?;
@@ -791,6 +793,11 @@ session    required   pam_unix.so
     stage_so("libxcrypt",  "libcrypt.so.2.0.0",   "libcrypt.so.2",    "libcrypt.so")?;
     stage_so("pcre2",      "libpcre2-8.so.0.13.0","libpcre2-8.so.0",  "libpcre2-8.so")?;
     stage_so("libseccomp", "libseccomp.so.2.5.5", "libseccomp.so.2",  "libseccomp.so")?;
+    // L2: util-linux shared libs (mandatory systemd deps).
+    stage_so("util-linux", "libmount.so.1.1.0",     "libmount.so.1",     "libmount.so")?;
+    stage_so("util-linux", "libblkid.so.1.1.0",     "libblkid.so.1",     "libblkid.so")?;
+    stage_so("util-linux", "libuuid.so.1.3.0",      "libuuid.so.1",      "libuuid.so")?;
+    stage_so("util-linux", "libsmartcols.so.1.1.0", "libsmartcols.so.1", "libsmartcols.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
