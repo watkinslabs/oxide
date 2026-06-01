@@ -124,10 +124,11 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
     };
     let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
-    let resolves = s == "/"
-        || vfs::mount::lookup(s).is_ok()
-        || matches!(ext4::rootfs::stat_path(s.as_bytes()),
-                    Some((_, vfs::FileType::Directory, _)));
+    // chdir(2) follows symlinks to a directory — resolve via the
+    // path-walk and require a directory.
+    let resolves = crate::syscalls::pathresolve::resolve(s, false)
+        .map(|i| matches!(i.file_type(), vfs::FileType::Directory))
+        .unwrap_or(false);
     if !resolves { return -(Errno::Enoent.as_i32() as i64); }
     // SAFETY: single-mutator per `13§5`; current task is sole writer.
     unsafe { *cur.cwd.get() = alloc::string::String::from(s); }
@@ -664,9 +665,9 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
     };
     let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
-    if vfs::mount::lookup(s).is_ok()
-        || ext4::rootfs::stat_path(s.as_bytes()).is_some()
-    {
+    // access(2) follows symlinks — resolve via the path-walk (crosses
+    // mounts, delegates whole-path fs). v1 checks existence only.
+    if crate::syscalls::pathresolve::resolve(s, false).is_some() {
         0
     } else {
         -(Errno::Enoent.as_i32() as i64)
