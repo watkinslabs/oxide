@@ -74,31 +74,21 @@ fn split_parent(p: &str) -> Option<(&str, &str)> {
     Some((parent, name))
 }
 
-/// Dispatch `mkdir` to the pseudo-FS inode owning the parent dir
-/// (Linux `inode_operations->mkdir`; e.g. cgroupfs). `Some(rv)` when
-/// the parent inode handled it; `None` (no such inode, or read-only
-/// `Erofs`) means fall through to the ext4 backend.
-/// # C: O(N registry)
-fn pseudo_mkdir(p: &str, mode: u32) -> Option<i64> {
-    let (parent, name) = split_parent(p)?;
-    let pino = crate::devfs::lookup(parent)?;
-    match pino.mkdir(name, mode) {
-        Ok(_) => Some(0),
-        Err(vfs::VfsError::Erofs) => None,
-        Err(e) => Some(errno_from_vfs(e)),
-    }
-}
-
-/// `rmdir` counterpart to `pseudo_mkdir`.
-/// # C: O(N registry)
-fn pseudo_rmdir(p: &str) -> Option<i64> {
-    let (parent, name) = split_parent(p)?;
-    let pino = crate::devfs::lookup(parent)?;
-    match pino.rmdir(name) {
-        Ok(()) => Some(0),
-        Err(vfs::VfsError::Erofs) => None,
-        Err(e) => Some(errno_from_vfs(e)),
-    }
+/// Resolve the PARENT directory of absolute `p` through the dentry walk
+/// (`pathresolve::resolve` = `vfs::path_lookup`; follows intermediate
+/// symlinks + crosses mounts) and return `(parent_inode, basename)` —
+/// THE resolver feeding every namespace mutation per `docs/16§3`,
+/// replacing the is_ext4_path / mount_for_write / pseudo_* string gates.
+/// The owning mount's inode then services the op (ext4 dir → ext4
+/// create/unlink; tmpfs dir → tmpfs; cgroupfs → cgroupfs; read-only
+/// pseudo-fs → Erofs), exactly as Linux `inode_operations`.
+/// # C: O(N parent components)
+fn resolve_parent(p: &str) -> Result<(vfs::InodeRef, String), i64> {
+    let p = strip_trailing_slash(p);
+    let (parent, name) = split_parent(p).ok_or(-(Errno::Einval.as_i32() as i64))?;
+    let pino = crate::syscalls::pathresolve::resolve(parent, false)
+        .ok_or(-(Errno::Enoent.as_i32() as i64))?;
+    Ok((pino, String::from(name)))
 }
 
 /// `link(target, link)` slot 86. Hardlink only — both must
@@ -198,8 +188,8 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
     let p = resolve(&raw).unwrap_or(raw);
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::REMOVE_FILE) { return rv; }
-    let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
-    match mnt.fs.unlink(&rel) { Ok(()) => 0, Err(e) => errno_from_vfs(e) }
+    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    match pino.unlink_child(&name) { Ok(()) => 0, Err(e) => errno_from_vfs(e) }
 }
 
 /// `unlinkat(dirfd, path, flags)` slot 263. We currently honour
@@ -225,21 +215,8 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     if (flags & AT_REMOVEDIR) != 0 {
         return do_rmdir(&p);
     }
-    let (mnt, rel) = match mount_for_write(&p) { Ok(x) => x, Err(rv) => return rv };
-    match mnt.fs.unlink(&rel) { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
-}
-
-/// POSIX: mkdir of an already-existing path is EEXIST, not EROFS.
-/// Root (`/`) and mounted pseudo dirs (`/proc`, `/sys`, `/dev`,
-/// `/sys/fs/cgroup`, …) exist but live outside the ext4 writable
-/// set, so the plain Erofs fallback would mis-report them. Without
-/// this, `mkdir -p` — which walks `/` then every ancestor — prints a
-/// spurious "Read-only file system" for each existing component.
-/// # C: O(N registry)
-fn mkdir_target_exists(p: &str) -> bool {
-    p == "/"
-        || crate::devfs::lookup(p).is_some()
-        || ext4::rootfs::lookup_path(p.as_bytes()).is_some()
+    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    match pino.unlink_child(&name) { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
 
 /// Strip a trailing `/` (POSIX: `mkdir /var/` ≡ `mkdir /var`). Root
@@ -263,13 +240,8 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let mode = args.a1 as u16;
-    if let Some(rv) = pseudo_mkdir(&p, mode as u32) { return rv; }
-    if mkdir_target_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
-        Ok(())  => 0,
-        Err(e)  => errno_from_vfs(e),
-    }
+    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    match pino.mkdir(&name, mode as u32) { Ok(_) => 0, Err(e) => errno_from_vfs(e) }
 }
 
 /// `mkdirat(dirfd, path, mode)` slot 258. Ignores dirfd (paths
@@ -284,13 +256,8 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let mode = args.a2 as u16;
-    if let Some(rv) = pseudo_mkdir(&p, mode as u32) { return rv; }
-    if mkdir_target_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::mkdir_at(p.as_bytes(), mode) {
-        Ok(())  => 0,
-        Err(e)  => errno_from_vfs(e),
-    }
+    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
+    match pino.mkdir(&name, mode as u32) { Ok(_) => 0, Err(e) => errno_from_vfs(e) }
 }
 
 /// `symlink(target, linkpath)` slot 88.
@@ -322,8 +289,8 @@ fn symlink_impl(target: String, link: String) -> i64 {
     let l = resolve(&link).unwrap_or(link);
     if let Err(rv) = crate::syscalls::landlock::check(&l,
         ::security::landlock::access::MAKE_SYM) { return rv; }
-    if !is_ext4_path(&l) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::symlink_at(target.as_bytes(), l.as_bytes()) {
+    let (pino, name) = match resolve_parent(&l) { Ok(x) => x, Err(rv) => return rv };
+    match pino.symlink_child(&name, target.as_bytes()) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
@@ -368,13 +335,12 @@ fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
         _        => return -(Errno::Einval.as_i32() as i64),
     };
     if let Err(rv) = crate::syscalls::landlock::check(&p, la) { return rv; }
-    if !is_ext4_path(&p) { return -(Errno::Erofs.as_i32() as i64); }
+    let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     let r = if real_ftype == S_IFREG {
         // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-        ext4::rootfs::create_at(p.as_bytes(), mode & 0x0FFF)
-            .map(|_| ()).ok_or(vfs::VfsError::Eio)
+        pino.create_child(&name, (mode & 0x0FFF) as u32).map(|_| ())
     } else {
-        ext4::rootfs::mknod_at(p.as_bytes(), (real_ftype | (mode & 0x0FFF)) as u16, dev)
+        pino.mknod_child(&name, (real_ftype | (mode & 0x0FFF)) as u16, dev)
     };
     match r { Ok(())  => 0, Err(e)  => errno_from_vfs(e) }
 }
@@ -388,9 +354,8 @@ fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
 /// ext4 backend; everything else is read-only.
 /// # C: O(1)
 fn do_rmdir(p: &str) -> i64 {
-    if let Some(rv) = pseudo_rmdir(p) { return rv; }
-    if !is_ext4_path(p) { return -(Errno::Erofs.as_i32() as i64); }
-    match ext4::rootfs::rmdir_at(p.as_bytes()) {
+    let (pino, name) = match resolve_parent(p) { Ok(x) => x, Err(rv) => return rv };
+    match pino.rmdir(&name) {
         Ok(())  => 0,
         Err(e)  => errno_from_vfs(e),
     }
