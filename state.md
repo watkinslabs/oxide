@@ -1,59 +1,47 @@
 # Session hand-off
 
 ## Headline
-L2 shared-lib tree COMPLETE (17 deps) + **arm openssl unblocked** (F347 #1459, catchable
-SIGILL). Now in **Track D6 — systemd** (kickoff done: fetched + toolchain validated).
-Branch: `main` clean @ #1459.
+**systemd 259 PID1 EXECUTES on oxide, BOTH arches** (F349 #1466: `/lib/systemd/systemd
+--version` → "systemd 259 (259) +SECCOMP +OPENSSL +ACL +BLKID +IDN2 +KMOD +PCRE2 +SYSVINIT"
+rv=0, x86 + arm). L2 tree complete (17 deps) + arm catchable-SIGILL kernel fix (F347).
+Branch: `main` clean @ #1466. Now: **F350 — run systemd AS INIT.**
 
-## Done this session (merged)
-- B51 #1447 bounded-retry boot gate; L2 deps #1448-1455 (expat,dbus,libgpg-error,libgcrypt,
-  attr,acl,kmod,openssl,libunistring,libidn2) via the C40 `l2_deps` table; rootfs 32→128 MiB
-  + disk/ESP 64→512 MiB (#1454); dyn_probe cross-vendor -rpath-link.
-- **F347 #1459 — aarch64 catchable synchronous-fault SIGILL.** arm EL0 EC=0 undefined-instr
-  → `oxide_undef_save_block` (vbar.rs, mirrors softstep) → `oxide_arm_undef_handler`
-  (fs/ptrace.rs) → `sig_dispatch::deliver` catchable SIGILL. Boot-verified: openssl_probe
-  rv=0 on arm + login. openssl_probe un-gated (both arches). Resolved the sole D6-on-arm blocker.
+## D6 systemd progress (merged)
+- #1461 scaffold, #1462 acl/util-linux .pc, #1463 x86 libs, #1464 F348 libs both arches +
+  systemd_probe rv=0, #1465 PID1+systemctl+libsystemd-core build both arches, #1466 F349
+  stage + run PID1 (--version rv=0 both arches).
+- Build: `vendor/systemd/build.sh` (meson cross, both arches). `gen-pc.sh` writes L2 .pc.
+  All musl gaps fixed (research/systemd-build.md): nss.h shim; statx backport into arm cross
+  musl sys/stat.h + statx() syscall wrapper (arm c_link_args); global L2 includes in c_args;
+  arm -rpath-link for transitive libcrypto; util-linux .pc subdirs; acl EXPORT-strip;
+  compression+gcrypt+gshadow disabled. Staged via l2_deps::SYSTEMD_STAGE + mkdir /lib/systemd.
 
-## Open work — D6 systemd (in order)
-**Kickoff DONE:** systemd 259 fetched to `vendor/systemd/systemd-259` (sha
-a84123692d1add7f9c48fd11cdf5f901393008c2d2ade667c18f25a20bf1290d, tools/fetch-systemd.sh TBD);
-host tools present (meson 1.10, ninja, gperf 3.1, python3+jinja2 3.1). `meson setup` WORKS but
-found HOST glibc libs (pkg-config leaked /usr/lib/pkgconfig) — wrong for musl target.
-1. **meson cross-file isolation** (the crux): write `vendor/systemd/cross-{x86_64,aarch64}.txt`
-   meson cross files — `[binaries]` musl-gcc / aarch64-linux-musl-*, `[built-in options]`
-   c_args+=`-idirafter /usr/include` (x86 UAPI), `[properties] pkg_config_libdir` pointing ONLY
-   at our staged L2 pkgconfig dirs (NOT host). Treat x86 as cross too (musl≠host glibc).
-2. **.pc files**: only zlib has one staged. Generate/stage pkgconfig `.pc` for the L2 libs
-   systemd needs (libcap, openssl, libgcrypt+libgpg-error, libseccomp, kmod, blkid/mount/uuid,
-   acl, attr, libidn2, pcre2, zstd, lz4) into `vendor/<v>/install-<arch>/lib/pkgconfig/` (most
-   autotools builds generate a .pc in-tree — stage it; else hand-write).
-3. **feature flags** (recipe in research/systemd-musl.md + research/arm-sigill-fix.md sibling):
-   `-Dlibc=musl -Dmode=release`; ENABLE kmod/seccomp/openssl/gcrypt/blkid/acl; DISABLE the
-   optional dlopen feats we lack (tpm2/libfido2/pwquality/p11kit/libcryptsetup/bpf-framework/
-   microhttpd/qrencode/gnutls/xkbcommon/selinux/apparmor/smack/libcurl/elfutils/...). musl
-   auto-disables nss-*/homed/userdbd/DynamicUser.
-4. Build INCREMENTALLY, land per-PR: libsystemd-shared + a systemd_probe first; then PID1
-   (/lib/systemd/systemd) + minimal units staged to rootfs. systemd is BIG → rootfs >128 MiB →
-   bump rootfs(main.rs count=)+ESP(image_qemu.rs count=) together; watch dumpe2fs free + arm
-   boot time (embedded-rootfs grows kernel/slows arm TCG → maybe bump arm smoke timeout
-   (.githooks/pre-push) or move rootfs→virtio-blk disk). Fix surfaced kernel gaps in-PR.
+## Open work
+1. **F350: systemd as init.** Stage minimal units (default.target→basic.target→sysinit.target;
+   a serial-getty@ttyS0.service or debug shell). Add a boot path to exec /lib/systemd/systemd
+   as PID1 (kernel cmdline init= OR an rcS `exec` test first). Surfaces KERNEL gaps (mount
+   cgroup2/proc/sysfs/devtmpfs, sd-event epoll, signalfd, timerfd, /dev/kmsg, /proc/1,
+   SCM_CREDENTIALS, mount propagation — most built in Track K). Fix each gap IN-PR. Incremental:
+   first get systemd PID1 to start + reach a basic target / spawn a getty.
+2. **Fix the pre-push hook gate gap (quick B-fix).** `.githooks/pre-push` skips smoke for
+   tools/xtask changes ("no kernel/userspace/arch changes"), but tools/xtask/src/* (l2_deps,
+   main.rs, oxide-smokes.sh) ALTER the rootfs → must gate. F349 pushed un-gated (verified arm
+   manually). Add `tools/xtask/` + `vendor/` to the hook's boot-relevant path set.
+3. Low-pri: x86 #UD→catchable-SIGILL parity mirror (hal-x86_64/fault.rs); no-handler SIGILL
+   wstatus 11→4.
 
 ## First command (next session)
-systemd cross-build VALIDATED (research/systemd-build.md): meson setup clean vs our
-musl libs, `src/basic/libbasic.a` builds. systemd libs build BOTH arches (libsystemd-shared + libsystemd); F348 stages libsystemd.so + systemd_probe (rv=0 both arches — first systemd code runs on oxide). PID1 /lib/systemd/systemd + systemctl + libsystemd-core BUILD both arches (vendor/systemd/install-<arch>). NEXT F349: stage PID1+core+shared+systemctl into rootfs (needs main.rs line-budget refactor, AT 1000) + verify `/lib/systemd/systemd --version` rv=0 both arches. See research/systemd-build.md.
-(fix surfaced musl gaps), then write `vendor/systemd/build.sh` (both arches: gen cross file
-+ gen-pc.sh + meson + ninja the needed targets) + stage PID1/libsystemd-shared + minimal units
-+ a systemd_probe → first gate-verifiable PR F348. `vendor/systemd/gen-pc.sh <arch>` writes the
-.pc files; exact validated meson option set is in research/systemd-build.md.
+F350: build/stage minimal systemd units + attempt `/lib/systemd/systemd` as init; OR first
+the quick pre-push hook gate-gap fix.
 
 ## CRITICAL harness rules
 - Both-arch gate via backgrounded PLAIN `git push` (run_in_background+dangerouslyDisableSandbox;
   `git push 2>FILE; echo PUSH_DONE rc=$?>>FILE`). rc=0=pass. rc=141/"closed" but gate PASSED →
-  re-push `SKIP_SMOKE=1`. "host forwarding tcp::2222" → stale qemu squats port → clear ports
-  (ss 2222/1234 + pgrep `system-aarch64`/`system-x86_64` pid; NEVER `pkill -f qemu`=self-kill).
-- ALWAYS kill local verify-boot qemu by port+pid after each boot (squatters false-fail the gate).
-- Watch rootfs free (`dumpe2fs`) as deps grow (overflow → silent file-drop → arm pre-init wedge).
-- spec-lint clean before commit/PR; `main.rs` AT 1000-line cap (refactor before edit); branch
-  per change; revert dirtied `kernel/blobs/rootfs-*.img` before commit; explicit `git add <paths>`.
-- Follow-up: x86 #UD→catchable-SIGILL parity mirror (hal-x86_64/fault.rs); refine no-handler
-  SIGILL wstatus 11→4. (x86 openssl already works; not blocking.)
+  re-push `SKIP_SMOKE=1`. **NOTE: hook skips smoke for tools/xtask-only changes** → verify both
+  arches MANUALLY (controlled boots) for rootfs-affecting tools/xtask changes until fix #2 lands.
+- "host forwarding tcp::2222" → stale qemu squats port → clear (ss 2222/1234 + pgrep
+  `system-aarch64`/`system-x86_64` pid; NEVER `pkill -f qemu`=self-kill). ALWAYS kill local
+  verify-boot qemu by port+pid after each boot.
+- Watch rootfs free (`dumpe2fs`); arm now ~68/128 MiB. spec-lint clean before commit/PR.
+  `main.rs` AT the 1000-line cap (refactor before edit). Branch per change (BRANCH FIRST, not
+  main); revert dirtied `kernel/blobs/rootfs-*.img` before commit; explicit `git add <paths>`.
