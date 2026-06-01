@@ -93,6 +93,34 @@ pub fn parent_id_of(path: &str) -> u64 {
     best.map(|m| m.mnt_id).unwrap_or(0)
 }
 
+/// `mount(MS_MOVE)`: relocate the mount rooted exactly at `from` to
+/// `to`. The tree is implicit (parent = longest path-prefix mount), so a
+/// move is a `mount_point` rewrite that preserves `mnt_id` + propagation
+/// — the new parent_id falls out of the prefix recompute automatically
+/// (`docs/16§6`). `Einval` if no mount is rooted exactly at `from`;
+/// `Ebusy` if a mount already occupies `to`. Submounts (mounts whose
+/// point is under `from`) are NOT re-pointed here — Linux moves the whole
+/// subtree; that rides the table unification (tmpfs still lives in the
+/// devfs registry). For a single real-fs mount (the pivot_root case) this
+/// is the complete operation.
+/// # C: O(N_mounts)
+pub fn move_mount(from: &str, to: &str) -> KResult<()> {
+    let mut t = TABLE.lock();
+    if t.iter().any(|m| m.mount_point == to) {
+        return Err(VfsError::Ebusy);
+    }
+    let idx = t.iter().position(|m| m.mount_point == from).ok_or(VfsError::Einval)?;
+    let old = &t[idx];
+    let moved = Arc::new(Mount {
+        fs: old.fs.clone(),
+        mount_point: to.to_string(),
+        mnt_id: old.mnt_id,
+        propagation: AtomicU8::new(old.propagation.load(Ordering::Acquire)),
+    });
+    t[idx] = moved;
+    Ok(())
+}
+
 /// Retune the propagation type of the mount at `mount_point`.
 /// `mount(MS_SHARED|PRIVATE|SLAVE|UNBINDABLE)` lands here. Returns
 /// Einval if no mount is rooted exactly at `mount_point`.

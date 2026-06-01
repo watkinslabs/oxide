@@ -20,7 +20,23 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6g done (resolver migration COMPLETE). NEXT: V7 mount tree
+## V6 COMPLETE. V7 mount tree STARTED (MS_MOVE). NEXT: more V7
+V7-a (F294, branch): MS_MOVE implemented. `vfs::mount::move_mount(from,to)`
+relocates the TABLE mount rooted at `from` to `to`, preserving mnt_id +
+propagation (tree is implicit via longest-prefix mount_point, so parent_id
+recomputes automatically); Einval if no mount at `from`, Ebusy if `to`
+occupied. sys_mount MS_MOVE branch wired (was ENOSYS). Hosted test
+move_mount_relocates_preserving_mnt_id (no qemu). Both arches build +
+spec-lint clean. LIMITATION (documented, not a hack): submounts under
+`from` aren't re-pointed, and tmpfs mounts (devfs registry, not TABLE)
+can't move — both ride the **mount-table unification** (the big V7
+prerequisite: merge devfs per-ns registry + vfs::mount::TABLE into one
+dentry-keyed per-ns mount tree). That unification is the next major V7
+lift and unblocks bind-as-clone (mount root=arbitrary dentry, drop
+BindFs path-rewrite), propagation peer groups (shared:N/master:N), MS_REC,
+pivot_root, per-ns trees (docs/16§6, R01).
+
+## (history) V6g — resolver migration COMPLETE
 V6g-b (F293, branch — boot-gated via push hook): namei mutations now
 dispatch on the PARENT inode resolved via `pathresolve::resolve` =
 path_lookup (follows intermediate symlinks + crosses mounts). Rewrote
