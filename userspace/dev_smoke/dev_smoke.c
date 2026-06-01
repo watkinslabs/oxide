@@ -50,6 +50,30 @@ int main(void) {
         close(fd);
     }
 
+    // /dev/kmsg write → readback: a message written to /dev/kmsg must land
+    // in the kernel log ring (journald/early-systemd write here).
+    int kf = open("/dev/kmsg", O_RDWR);
+    if (kf < 0) {
+        printf("dev_smoke: FAIL open(/dev/kmsg) errno=%d\n", errno);
+        fails++;
+    } else {
+        const char *km = "<6>dev_smoke-kmsg-MARK42\n";
+        write(kf, km, strlen(km));
+        close(kf);
+        int rf = open("/dev/kmsg", O_RDONLY);
+        char ring[4096];
+        int rn = rf >= 0 ? read(rf, ring, sizeof(ring) - 1) : -1;
+        if (rf >= 0) close(rf);
+        int found = 0;
+        if (rn > 0) { ring[rn] = 0; found = strstr(ring, "dev_smoke-kmsg-MARK42") != 0; }
+        if (!found) {
+            printf("dev_smoke: FAIL /dev/kmsg write not in ring (rn=%d)\n", rn);
+            fails++;
+        } else {
+            printf("dev_smoke: ok /dev/kmsg write injected into ring\n");
+        }
+    }
+
     if (fails == 0) { write(1, "dev_smoke: PASS\n", 16); return 0; }
     return 1;
 }
