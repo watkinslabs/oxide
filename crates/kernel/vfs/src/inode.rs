@@ -117,6 +117,36 @@ pub trait Inode: Send + Sync {
         Err(VfsError::Erofs)
     }
 
+    /// Create a regular child file `name` (Linux `inode_operations->
+    /// create`). Returns the new inode. Default `Erofs`. `Eexist` if
+    /// present; `Enotdir` if `self` isn't a directory.
+    /// # C: depends on FS impl
+    fn create_child(&self, _name: &str, _mode: u32) -> KResult<InodeRef> {
+        Err(VfsError::Erofs)
+    }
+
+    /// Remove the child file `name` (Linux `inode_operations->unlink`).
+    /// Default `Erofs`. `Enoent` if missing; `Eisdir` if it's a dir.
+    /// # C: depends on FS impl
+    fn unlink_child(&self, _name: &str) -> KResult<()> {
+        Err(VfsError::Erofs)
+    }
+
+    /// Create a symlink child `name` whose target text is `target`
+    /// (Linux `inode_operations->symlink`). Default `Erofs`.
+    /// # C: depends on FS impl
+    fn symlink_child(&self, _name: &str, _target: &[u8]) -> KResult<()> {
+        Err(VfsError::Erofs)
+    }
+
+    /// Create a device/FIFO/socket child `name` (Linux
+    /// `inode_operations->mknod`). `mode` carries the `S_IF*` type +
+    /// perm bits; `rdev` the packed major/minor. Default `Erofs`.
+    /// # C: depends on FS impl
+    fn mknod_child(&self, _name: &str, _mode: u16, _rdev: u32) -> KResult<()> {
+        Err(VfsError::Erofs)
+    }
+
     /// Iterate child entries of a directory. `off` is the cookie from
     /// a previous call; `0` starts from the beginning. The callback
     /// returns `false` to stop early. Default impl returns

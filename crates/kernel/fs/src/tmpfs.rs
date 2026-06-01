@@ -154,6 +154,15 @@ impl TmpfsRootInode {
     /// Construct the canonical root for the boot-time `/tmp`.
     /// # C: O(1)
     pub fn at_tmp() -> Self { Self::new(String::from("/tmp")) }
+    /// Compose `<mount_path>/<name>` — the flat-registry key for a child.
+    /// # C: O(len)
+    fn child_path(&self, name: &str) -> String {
+        let mut p = String::with_capacity(self.mount_path.len() + 1 + name.len());
+        p.push_str(&self.mount_path);
+        p.push('/');
+        p.push_str(name);
+        p
+    }
 }
 
 impl Inode for TmpfsRootInode {
@@ -185,6 +194,44 @@ impl Inode for TmpfsRootInode {
             idx += 1;
         }
         Ok(idx as u64)
+    }
+
+    /// `mkdir` — register a nested `TmpfsRootInode` at `<mp>/<name>`.
+    /// The namei walker dispatches here after resolving the parent.
+    /// # C: O(N_tmpfs_entries)
+    fn mkdir(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
+        let path = self.child_path(name);
+        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
+        let inode = Arc::new(TmpfsRootInode::new(path.clone())) as InodeRef;
+        register(path, Arc::clone(&inode));
+        Ok(inode)
+    }
+
+    /// # C: O(N_tmpfs_entries)
+    fn rmdir(&self, name: &str) -> KResult<()> {
+        let path = self.child_path(name);
+        let mut g = REGISTRY.lock();
+        let len = g.len();
+        g.retain(|(p, _)| *p != path);
+        if g.len() == len { Err(VfsError::Enoent) } else { Ok(()) }
+    }
+
+    /// # C: O(N_tmpfs_entries)
+    fn create_child(&self, name: &str, _mode: u32) -> KResult<InodeRef> {
+        let path = self.child_path(name);
+        if lookup(&path).is_some() { return Err(VfsError::Eexist); }
+        let inode = TmpfsFileInode::new() as InodeRef;
+        register(path, Arc::clone(&inode));
+        Ok(inode)
+    }
+
+    /// # C: O(N_tmpfs_entries)
+    fn unlink_child(&self, name: &str) -> KResult<()> {
+        let path = self.child_path(name);
+        let mut g = REGISTRY.lock();
+        let len = g.len();
+        g.retain(|(p, _)| *p != path);
+        if g.len() == len { Err(VfsError::Enoent) } else { Ok(()) }
     }
 }
 
