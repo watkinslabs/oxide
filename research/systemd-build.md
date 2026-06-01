@@ -79,6 +79,34 @@ NOTE: bad option name — it's `-Dfdisk` not `-Dlibfdisk`.
   shadow arch-specific headers. Then arm libsystemd-shared should build (modulo more arm gaps).
 - Until arm builds, F348 (both-arch) can't ship; x86 build + build.sh + shims are committable infra.
 
+## MILESTONE 2: PID1 + systemctl build BOTH arches
+- vendor/systemd/build.sh now builds + installs (both arches): libsystemd-shared-259.so,
+  libsystemd.so.0.42.0, libsystemd-core-259.so, /lib/systemd/systemd (PID1, ~309 KB),
+  bin/systemctl (~790 KB).
+- Two more fixes added: (a) GLOBAL L2 include dirs in c_args (meson propagates pkg-config
+  Cflags to libshared but NOT to libcore/executables — e.g. exec-credential.c includes
+  <acl/libacl.h>; so add -I<each L2 include> + util-linux subdirs globally; linking still
+  via pkg-config); (b) arm c_link_args += -Wl,-rpath-link,<each L2 libdir> so the strict
+  arm cross-ld resolves libsystemd-shared.so's transitive DT_NEEDED (libcrypto@OPENSSL_3.0.0)
+  when linking the executables.
+- PID1 DT_NEEDEDs libsystemd-core-259.so + libsystemd-shared-259.so + ld-musl. Its baked
+  RUNPATH is BUILD-TREE paths ($ORIGIN/src/core:...:vendor/openssl/.../lib) — nonexistent on
+  target, so ld-musl skips them and falls back to /usr/lib. So stage both private .so's into
+  /usr/lib (where musl ld.so + our other L2 libs already resolve).
+
+## F349 staging plan (NEXT — needs main.rs line-budget refactor; it's AT 1000)
+Stage into rootfs (dedicated systemd block, NOT l2_deps — extract a helper or add a
+l2_deps::SYSTEMD_STAGE const + loop to keep main.rs <=1000):
+  /lib/systemd/systemd            <- install-<arch>/lib/systemd/systemd
+  /usr/lib/libsystemd-core-259.so <- install-<arch>/lib/libsystemd-core-259.so
+  /usr/lib/libsystemd-shared-259.so
+  /usr/bin/systemctl
+(libsystemd.so* already staged via l2_deps F348.)
+Then F349 verify = rcS `/lib/systemd/systemd --version` → rv=0 BOTH arches (proves the big
+PID1 binary + its private libs load on musl). F350+: systemd as init reaching a target
+(surfaces kernel gaps — fix in-PR). rootfs after staging: ~+8 MB (core 6.3MB + pid1 + systemctl)
+→ check dumpe2fs; arm currently ~50/128.
+
 ## Next steps
 - `ninja -C build src/shared/libsystemd-shared-259.so` → fix surfaced musl issues.
 - Then vendor/systemd/build.sh (both arches, generates cross file, gen-pc, meson, ninja

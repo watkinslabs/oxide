@@ -58,12 +58,30 @@ build_one() {
     pcdirs="${pcdirs}:${ROOT}/${v}/install-${arch}/lib/pkgconfig"
   done
   pcdirs="${pcdirs#:}"
+  # Global L2 include dirs in c_args: meson propagates pkg-config dep
+  # Cflags to libshared but not always to libcore/executables (e.g.
+  # exec-credential.c includes <acl/libacl.h>); provide all L2 headers
+  # globally so every systemd target finds them (linking still via pkg-config).
+  l2incs=""
+  for v in libcap libseccomp kmod libgpg-error libgcrypt openssl acl attr libidn2 pcre2 zstd lz4; do
+    l2incs="${l2incs}, '-I${ROOT}/${v}/install-${arch}/include'"
+  done
+  for sub in blkid libmount uuid libsmartcols ""; do
+    l2incs="${l2incs}, '-I${ROOT}/util-linux/install-${arch}/include/${sub}'"
+  done
   # arm: the old cross musl has no statx() symbol; link a tiny syscall
   # wrapper (systemd 259 calls statx() unconditionally). x86 musl has it.
   linkargs=""
   if [ "$arch" = "aarch64" ]; then
     "$cc" -O2 -c "$SHIM/statx-wrapper.c" -o "$SHIM/statx-${arch}.o"
-    linkargs="c_link_args = ['$SHIM/statx-${arch}.o']"
+    # Strict arm cross-ld must resolve libsystemd-shared.so's transitive
+    # DT_NEEDED (libcrypto etc.) when linking the executables → -rpath-link
+    # at every L2 libdir (same pattern as dyn_probe / the libgcrypt build).
+    rpl=""
+    for v in libcap libseccomp kmod libgpg-error libgcrypt openssl util-linux acl attr libidn2 pcre2 zstd lz4 zlib; do
+      rpl="${rpl}, '-Wl,-rpath-link,${ROOT}/${v}/install-${arch}/lib'"
+    done
+    linkargs="c_link_args = ['$SHIM/statx-${arch}.o'${rpl}]"
   fi
   cross="/tmp/oxide-systemd-cross-${arch}.txt"
   cat > "$cross" <<EOF
@@ -78,22 +96,28 @@ cpu_family = '${arch}'
 cpu = '${arch}'
 endian = 'little'
 [built-in options]
-c_args = [${extra_cflags}'-I${SHIM}']
+c_args = [${extra_cflags}'-I${SHIM}'${l2incs}]
 ${linkargs}
 [properties]
 pkg_config_libdir = '${pcdirs}'
 EOF
   rm -rf "$bdir"
   ( cd "$SRC" && meson setup "build-${arch}" --cross-file "$cross" $OPTS >/dev/null )
-  ninja -C "$bdir" src/shared/libsystemd-shared-259.so libsystemd.so.0.42.0 >/dev/null
+  ninja -C "$bdir" src/shared/libsystemd-shared-259.so libsystemd.so.0.42.0 src/core/libsystemd-core-259.so systemd systemctl >/dev/null
   rm -rf "$install"; mkdir -p "$install/lib"
   cp -L "$bdir/src/shared/libsystemd-shared-259.so" "$install/lib/"
   cp -L "$bdir/libsystemd.so.0.42.0" "$install/lib/libsystemd.so.0.42.0"
   ( cd "$install/lib" && ln -sf libsystemd.so.0.42.0 libsystemd.so.0 && ln -sf libsystemd.so.0 libsystemd.so )
+  # PID1 + its private libs + systemctl. systemd binary DT_NEEDEDs
+  # libsystemd-core-259.so + libsystemd-shared-259.so (both staged here).
+  cp -L "$bdir/src/core/libsystemd-core-259.so" "$install/lib/"
+  mkdir -p "$install/lib/systemd" "$install/bin"
+  cp -L "$bdir/systemd"   "$install/lib/systemd/systemd"
+  cp -L "$bdir/systemctl" "$install/bin/systemctl"
   # public sd-*.h headers for the probe.
   mkdir -p "$install/include/systemd"
   cp "$SRC"/src/systemd/*.h "$install/include/systemd/" 2>/dev/null || true
-  echo "  → $install/lib/libsystemd-shared-259.so + libsystemd.so.0.42.0"
+  echo "  → $install: libsystemd-shared + libsystemd + libsystemd-core + /lib/systemd/systemd + systemctl"
 }
 
 # x86: musl-gcc + -idirafter for kernel UAPI. arm: cross gcc, sysroot has UAPI.
