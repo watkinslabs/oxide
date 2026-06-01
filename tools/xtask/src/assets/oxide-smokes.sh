@@ -54,6 +54,9 @@ echo post-dbus_probe rv=$?
 echo pre-libgpgerror_probe
 /bin/libgpgerror_probe
 echo post-libgpgerror_probe rv=$?
+echo pre-libgcrypt_probe
+/bin/libgcrypt_probe
+echo post-libgcrypt_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
