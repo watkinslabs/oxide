@@ -111,3 +111,21 @@ fn bind_as_clone_roots_at_source_inode() {
     let kid = r.lookup("kid").expect("child via source subtree");
     assert_eq!(kid.ino(), 0xC0DE);
 }
+
+// K2V V7-c: MS_REC recursive bind clones every submount of src to the
+// matching path under tgt as a bind-as-clone. Verified over the real
+// mount table, no QEMU.
+#[test]
+fn ms_rec_clones_submounts() {
+    // A source subtree with a nested mount: /rsrc and /rsrc/sub.
+    vfs::mount::register("/rsrc", Arc::new(TestFs { root_ino: 0x100 })).expect("src");
+    vfs::mount::register("/rsrc/sub", Arc::new(TestFs { root_ino: 0x200 })).expect("submount");
+    // Bind the top src→tgt (as sys_mount does), then recurse.
+    let r = vfs::mount::mount_root_at("/rsrc").expect("src root");
+    vfs::mount::register_bind("/rtgt", Arc::new(TestFs { root_ino: 0xDEAD }), r).expect("bind top");
+    let n = vfs::mount::bind_submounts_rec("/rsrc", "/rtgt");
+    assert_eq!(n, 1, "one submount cloned");
+    // The cloned submount resolves at the mirrored path with the source root.
+    let sub = vfs::mount::mount_root_at("/rtgt/sub").expect("cloned submount present");
+    assert_eq!(sub.ino(), 0x200, "cloned submount keeps the source fs root");
+}
