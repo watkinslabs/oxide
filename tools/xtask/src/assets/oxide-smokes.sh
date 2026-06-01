@@ -39,6 +39,9 @@ echo post-libxcrypt_probe rv=$?
 echo pre-pcre2_probe
 /bin/pcre2_probe
 echo post-pcre2_probe rv=$?
+echo pre-libseccomp_probe
+/bin/libseccomp_probe
+echo post-libseccomp_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
