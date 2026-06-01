@@ -20,7 +20,19 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6c done. NEXT: V6d (access/exec/namei)
+## V1–V6d done. NEXT: V6e (exec) then readlink/namei, then V7
+V6d (F289, both arches PASS): chmod/chown/fchmodat/fchownat
+(resolve_path_inode + follow param), access/faccessat, utimensat/utimes,
+chdir now resolve via pathresolve::resolve (path_lookup). Follow
+semantics: chmod/chown/access/utime/chdir follow; fchmodat/fchownat honor
+AT_SYMLINK_NOFOLLOW.
+NEXT V6e: exec (execve.rs path lookup → follow symlinks, e.g.
+/bin/sh→busybox); then readlink (resolve intermediate symlinks, NOT
+final — nofollow_final); then namei mutations (mkdir/unlink/rename/link/
+symlink/mknod resolve PARENT via walker). Then V7 (bind-as-clone,
+MS_MOVE, pivot_root, MS_REC, propagation, per-ns).
+
+## (history) V6c
 V6c (F288, both arches PASS): sys_open/sys_openat resolve via
 `pathresolve::resolve` honoring O_NOFOLLOW. symlink_probe extended with
 open+read-through-link. BUG fixed: O_* flag VALUES are arch-specific —
