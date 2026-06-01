@@ -147,6 +147,8 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
     const F_DUPFD_CLOEXEC: u64 = 1030;
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
+    const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
+    const F_SEAL_SEAL: u32 = 0x0001;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
     const SETTABLE_FL: u32 = 0o4_004_000 | 0o0_004_000; // O_APPEND | O_NONBLOCK
     let fd = args.a0 as i32; let cmd = args.a1; let arg = args.a2;
@@ -169,6 +171,23 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             0
         }
         F_GETPIPE_SZ | F_SETPIPE_SZ => 4096,
+        // memfd seals (`fcntl.h`, docs/19). Only a sealable memfd exposes
+        // seals; everything else → EINVAL.
+        F_GET_SEALS => match file.inode().fcntl_seals() {
+            Some(s) => s.load(core::sync::atomic::Ordering::Acquire) as i64,
+            None    => -(Errno::Einval.as_i32() as i64),
+        },
+        F_ADD_SEALS => match file.inode().fcntl_seals() {
+            Some(s) => {
+                use core::sync::atomic::Ordering;
+                let cur_seals = s.load(Ordering::Acquire);
+                // F_SEAL_SEAL already set ⇒ no further sealing (EPERM).
+                if cur_seals & F_SEAL_SEAL != 0 { return -(Errno::Eperm.as_i32() as i64); }
+                s.fetch_or(arg as u32, Ordering::AcqRel);
+                0
+            }
+            None => -(Errno::Einval.as_i32() as i64),
+        },
         F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
         F_SETOWN => { file.owner.store(arg as i32, core::sync::atomic::Ordering::Release); 0 }
         F_SETLK | F_SETLKW | F_GETLK |

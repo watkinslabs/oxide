@@ -51,7 +51,7 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     if (flags & MFD_HUGETLB) != 0 {
         return -(Errno::Enosys.as_i32() as i64);
     }
-    let _ = MFD_ALLOW_SEALING;
+    let allow_sealing = (flags & MFD_ALLOW_SEALING) != 0;
     let name: String = if name_ptr == 0 || name_ptr >= USER_VA_END {
         String::from("memfd")
     } else {
@@ -69,7 +69,11 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = ::fs::tmpfs::TmpfsFileInode::new();
+    let inode = if allow_sealing {
+        ::fs::tmpfs::TmpfsFileInode::new_sealable()
+    } else {
+        ::fs::tmpfs::TmpfsFileInode::new()
+    };
     let dentry = Dentry::new(None, name, inode.clone() as vfs::InodeRef);
     let file = File::new(inode as vfs::InodeRef, dentry, OpenFlags::O_RDWR);
     let fd = match fdt.alloc(file) {
