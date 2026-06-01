@@ -104,6 +104,39 @@ pub fn cpu_weight_to_cfs(cpu_weight: u32) -> u32 {
 /// CFS weight of a nice-0 task — kept in sync with `sched::cputime`.
 const NICE_0_CFS: u32 = 1024;
 
+/// cpu.max bandwidth-scan decision for one cgroup.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CpuAction {
+    /// Within quota this period — leave members running.
+    Continue,
+    /// Over quota this period — freeze members until the next refill.
+    Throttle,
+    /// Period elapsed — start a new period: unthrottle + re-baseline at
+    /// `new_base_ns` (the current cumulative member runtime).
+    Refill { new_base_ns: u64 },
+}
+
+/// Decide the bandwidth action for a cgroup given the cumulative member
+/// runtime `total_ns` (sum of members' sum_exec_runtime), the quota +
+/// period, the runtime `base_ns` captured at period start, the period
+/// start time, and `now_ns`. Pure — hosted-tested.
+///
+/// - period elapsed (`now - period_start >= period`) → Refill (re-baseline
+///   to `total_ns`, unthrottle).
+/// - else consumed (`total - base`) >= quota → Throttle.
+/// - else Continue.
+/// # C: O(1)
+pub fn cpu_bandwidth_decision(
+    total_ns: u64, base_ns: u64, quota_ns: u64, period_ns: u64,
+    period_start_ns: u64, now_ns: u64,
+) -> CpuAction {
+    if period_ns == 0 || now_ns.saturating_sub(period_start_ns) >= period_ns {
+        return CpuAction::Refill { new_base_ns: total_ns };
+    }
+    let consumed = total_ns.saturating_sub(base_ns);
+    if consumed >= quota_ns { CpuAction::Throttle } else { CpuAction::Continue }
+}
+
 /// Install the vpid→tid resolver. Boot path.
 /// # C: O(1)
 pub fn set_pid_resolve_hook(f: fn(u64) -> u64) { *PID_RESOLVE_HOOK.lock() = Some(f); }
@@ -297,6 +330,22 @@ pub fn try_charge(pid: u64, bytes: u64) -> bool {
 pub fn uncharge(pid: u64, bytes: u64) {
     let mut t = TREE.lock();
     if t.is_mounted() { t.uncharge_mem(pid, bytes); }
+}
+
+/// Snapshot cgroups with a cpu.max quota for the bandwidth scanner.
+/// Empty when unmounted. See `tree::Tree::cpu_quota_groups`.
+/// # C: O(N nodes + members)
+pub fn cpu_quota_groups() -> alloc::vec::Vec<tree::CpuGroup> {
+    let t = TREE.lock();
+    if !t.is_mounted() { return alloc::vec::Vec::new(); }
+    t.cpu_quota_groups()
+}
+
+/// Commit a bandwidth-scan decision (throttled flag + period re-baseline).
+/// # C: O(log n)
+pub fn set_cpu_state(cgid: u64, throttled: bool, base_ns: u64, period_start_ns: u64) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.set_cpu_state(cgid, throttled, base_ns, period_start_ns); }
 }
 
 /// Child inherits the parent's cgroup on fork.

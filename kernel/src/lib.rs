@@ -26,7 +26,7 @@ const _: () = assert!(
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 pub mod debug_macros;
-pub mod cgroup_boot;
+pub mod cgroup_boot; pub mod cgroup_cpu;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
