@@ -60,6 +60,42 @@ fn resolve_mount(abs: &str) -> Option<InodeRef> {
     f(abs)
 }
 
+/// Whole-path delegate: resolves an absolute path within its owning
+/// mount by that mount's own lookup (`vfs::mount::lookup`). Used when a
+/// per-component `Inode::lookup` returns Enotdir/Eopnotsupp because the
+/// filesystem at that point resolves whole-path, not per-component
+/// (procfs synthesises `/proc/<pid>/<file>` from the full path). This is
+/// the OWNING MOUNT resolving its own subtree — not a global legacy
+/// fallback (which would bypass per-component symlink resolution).
+type WholePath = fn(&str) -> Option<InodeRef>;
+static MOUNT_WHOLE_PATH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the whole-path in-mount delegate. Called once at boot.
+/// # C: O(1)
+pub fn set_mount_whole_path(f: WholePath) {
+    MOUNT_WHOLE_PATH.store(f as *mut (), Ordering::Release);
+}
+
+fn whole_path(abs: &str) -> Option<InodeRef> {
+    let p = MOUNT_WHOLE_PATH.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: only ever stores a `WholePath` fn pointer via the setter.
+    let f: WholePath = unsafe { core::mem::transmute(p) };
+    f(abs)
+}
+
+/// Join `base` (an absolute dir path) + `comp` + `rest` into one
+/// absolute path, for delegating the remaining walk to the owning
+/// mount's whole-path lookup.
+/// # C: O(total len)
+fn join_abs(base: &[u8], comp: &str, rest: &[String]) -> String {
+    let mut s = String::from_utf8_lossy(base).into_owned();
+    if !s.ends_with('/') { s.push('/'); }
+    s.push_str(comp);
+    for c in rest { s.push('/'); s.push_str(c); }
+    s
+}
+
 /// Split `path` into non-empty components, preserving `.`/`..` (the
 /// walker interprets them). Leading/trailing/duplicate `/` collapse.
 /// # C: O(len)
@@ -112,11 +148,27 @@ pub fn path_lookup(
         // order Inode < Dentry per 06§3.6).
         let child = match cur_dentry.cached_child(&comp) {
             Some(d) => d,
-            None => {
-                let ci = cur_inode.lookup(&comp)?;
-                let d = Dentry::new(Some(cur_dentry.clone()), comp.clone(), ci);
-                cur_dentry.cache_child(&comp, d)
-            }
+            None => match cur_inode.lookup(&comp) {
+                Ok(ci) => {
+                    let d = Dentry::new(Some(cur_dentry.clone()), comp.clone(), ci);
+                    cur_dentry.cache_child(&comp, d)
+                }
+                Err(e) => {
+                    // Per-component lookup failed. If the current
+                    // filesystem resolves whole-path (procfs synthesises
+                    // from the full path; its dir inodes return Enotdir
+                    // on Inode::lookup), delegate the remaining absolute
+                    // path to the owning mount's lookup — the mount
+                    // resolving its own subtree. A genuinely-missing name
+                    // makes the delegate also miss, so the error stands.
+                    let full = join_abs(&cur_dentry.absolute_path(), &comp, &queue[idx..]);
+                    if let Some(i) = whole_path(&full) {
+                        let d = Dentry::new(None, full, i.clone());
+                        return Ok((i, d));
+                    }
+                    return Err(e);
+                }
+            },
         };
         let mut child_inode = child.inode().ok_or(VfsError::Enoent)?;
 
