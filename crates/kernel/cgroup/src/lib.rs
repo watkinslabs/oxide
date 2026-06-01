@@ -71,6 +71,11 @@ static FREEZE_HOOK: Spinlock<Option<fn(u64, bool)>, TaskListClass> = Spinlock::n
 /// shifts CPU shares. Leaf crate stays `sched`-free.
 static WEIGHT_HOOK: Spinlock<Option<fn(u64, u32)>, TaskListClass> = Spinlock::new(None);
 
+/// `cpuset.cpus` delivery: `(pid, cpu_mask)`. The kernel installs a hook
+/// that rewrites the task's `cpus_allowed` so the cgroup cpuset restricts
+/// which CPUs its members run on.
+static CPUSET_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::new(None);
+
 /// vpid → canonical (global) tid resolver. `cgroup.procs`/`threads`
 /// receive a pid as seen in the writer's pid namespace; the cgroup
 /// tree keys membership on the canonical tid (matching `/proc/<pid>/
@@ -93,6 +98,33 @@ pub fn set_freeze_hook(f: fn(u64, bool)) { *FREEZE_HOOK.lock() = Some(f); }
 /// Install the cpu.weight hook. Boot path.
 /// # C: O(1)
 pub fn set_weight_hook(f: fn(u64, u32)) { *WEIGHT_HOOK.lock() = Some(f); }
+
+/// Install the cpuset.cpus hook. Boot path.
+/// # C: O(1)
+pub fn set_cpuset_hook(f: fn(u64, u64)) { *CPUSET_HOOK.lock() = Some(f); }
+
+/// Parse a Linux cpulist (`"0-3,7,9-11"`) into a CPU bitmask (bit N ⇔
+/// CPU N), capped at 64. Empty/whitespace → `None` (no restriction).
+/// Malformed tokens are skipped (best-effort, matching how the kernel
+/// tolerates partial writes). Pure — hosted-tested.
+/// # C: O(len)
+pub fn cpulist_to_mask(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    let mut mask = 0u64;
+    for tok in s.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() { continue; }
+        if let Some((a, b)) = tok.split_once('-') {
+            if let (Ok(lo), Ok(hi)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
+                for c in lo..=hi.min(63) { if c < 64 { mask |= 1u64 << c; } }
+            }
+        } else if let Ok(c) = tok.parse::<u32>() {
+            if c < 64 { mask |= 1u64 << c; }
+        }
+    }
+    if mask == 0 { None } else { Some(mask) }
+}
 
 /// Map cgroup v2 `cpu.weight` (1..=10000, default 100) → CFS load weight
 /// (nice-0 == cpu.weight 100 == weight 1024). Saturates to ≥1.
@@ -223,6 +255,17 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             let w = cpu_weight_to_cfs(TREE.lock().node(cgid).map(|n| n.cpu_weight).unwrap_or(100));
             if let Some(hook) = *WEIGHT_HOOK.lock() {
                 for p in pids { hook(p, w); }
+            }
+            Ok(())
+        }
+        "cpuset.cpus" => {
+            // Persist the cpulist, then push the parsed mask to every
+            // member task so the cgroup cpuset restricts their CPUs.
+            let pids = { let mut t = TREE.lock(); t.write_file(cgid, file, buf)?; t.subtree_pids(cgid) };
+            if let Some(mask) = cpulist_to_mask(buf) {
+                if let Some(hook) = *CPUSET_HOOK.lock() {
+                    for p in pids { hook(p, mask); }
+                }
             }
             Ok(())
         }
