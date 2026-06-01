@@ -156,7 +156,23 @@ fn sys_brk(args: &SyscallArgs) -> i64 {
         && req > cur_brk && req - cur_brk > rlim_data {
         return cur_brk as i64;
     }
-    mm.try_set_brk(req) as i64
+    // cgroup v2 memory.max enforcement: charge the committed delta to the
+    // process's cgroup. A growing brk that would exceed an ancestor
+    // memory.max fails (Linux returns the old brk); a shrink uncharges.
+    use core::sync::atomic::Ordering;
+    let pid = cur.tgid.load(Ordering::Acquire) as u64;
+    if req > cur_brk {
+        if !cgroup::try_charge(pid, req - cur_brk) { return cur_brk as i64; }
+        let out = mm.try_set_brk(req);
+        if out < req { cgroup::uncharge(pid, req - out); } // partial/failed grow
+        out as i64
+    } else if req < cur_brk {
+        let out = mm.try_set_brk(req);
+        if out < cur_brk { cgroup::uncharge(pid, cur_brk - out); }
+        out as i64
+    } else {
+        mm.try_set_brk(req) as i64
+    }
 }
 
 /// `sys_close(fd)` — slot 3. Tier-3 shim per `docs/53§4`.
