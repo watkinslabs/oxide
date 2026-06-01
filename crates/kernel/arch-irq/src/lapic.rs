@@ -99,24 +99,29 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
         hal_x86_64::VEC_TIMER => {
             TICK_COUNT.fetch_add(1, Ordering::Relaxed);
             sched::live::preempt::set_need_resched();
-            // TTY input poll per docs/28: scrape any pending UART RX
-            // byte into the ringbuffer + wake stdin waiters before the
-            // pre-empt-on-IRQ-exit picker runs. Boot CPU only -- APs
-            // don't own the UART.
-            // SAFETY: timer ISR ctx with IRQs masked.
-            unsafe { crate::tick_poll(); }
-            // Linux-style softirq bottom-half: drain any pending
-            // deferred work (fbcon flush, virtio-input drain, ...)
-            // with IRQs LOCALLY ENABLED so handlers that wait on
-            // device-IRQ acks (virtio used-idx) can make progress.
-            // softirq::run_pending guards re-entry; a nested timer
-            // ISR observing IN_PROGRESS=true will bail.
-            if softirq::pending() {
-                // SAFETY: EOI was issued above; the local APIC accepts the next IRQ. softirq::run_pending guards re-entry. cli on tail restores ISR-context IRQ masking before tick_pick_next.
-                unsafe {
-                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                    softirq::run_pending();
-                    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+            // UART poll + softirq drain are BSP-only: only the boot CPU
+            // owns the UART, and the shared softirq queue must be drained
+            // by one CPU to avoid cross-CPU races. APs that arm their own
+            // periodic timer (SMP) reach here too — they only resched.
+            let is_bsp = {
+                use hal::CpuOps;
+                hal_x86_64::X86CpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
+            };
+            if is_bsp {
+                // TTY input poll per docs/28: scrape pending UART RX into
+                // the ringbuffer + wake stdin waiters before the picker.
+                // SAFETY: timer ISR ctx with IRQs masked; BSP owns the UART.
+                unsafe { crate::tick_poll(); }
+                // Linux-style softirq bottom-half (fbcon flush, virtio-input
+                // drain, ...) with IRQs locally enabled so device-ack waits
+                // make progress. run_pending guards re-entry.
+                if softirq::pending() {
+                    // SAFETY: EOI issued above; LAPIC accepts next IRQ; run_pending guards re-entry; cli restores ISR masking before tick_pick_next.
+                    unsafe {
+                        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+                        softirq::run_pending();
+                        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+                    }
                 }
             }
             // SAFETY: tick_pick_next runs in IRQ context with IRQs masked.

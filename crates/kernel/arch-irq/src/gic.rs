@@ -622,15 +622,21 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         // virtual timer (INTID 27) tick. The timer-poll path mirrors
         // x86's per-tick `tick_poll_uart` so headless boots without
         // the PL011 IRQ unmasked still receive keystrokes.
-        if intid == 33 || intid == 27 {
-            // SAFETY: IRQ dispatcher context, IRQs masked; tty path is single-CPU UP.
+        // UART poll + softirq drain are BSP-only (only the boot CPU owns
+        // the PL011; the shared softirq queue is drained by one CPU). APs
+        // arm their own CNTV (above, per-CPU reload stays) and reach here
+        // too — they only resched.
+        let is_bsp = {
+            use hal::CpuOps;
+            hal_aarch64::ArmCpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
+        };
+        if is_bsp && (intid == 33 || intid == 27) {
+            // SAFETY: IRQ dispatcher context, IRQs masked; BSP owns the UART.
             unsafe { crate::tick_poll(); }
         }
         sched::live::preempt::set_need_resched();
-        // Linux-style softirq bottom-half: see lapic.rs comment.
-        // EOI'd above; unmask IRQs for the drain so virtio-gpu /
-        // virtio-input handlers that wait on device acks can run.
-        if softirq::pending() {
+        // Linux-style softirq bottom-half (BSP-only): see lapic.rs comment.
+        if is_bsp && softirq::pending() {
             // SAFETY: EOI was issued above; softirq::run_pending guards re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
             unsafe {
                 core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
