@@ -11,7 +11,7 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 const AP_STACK_BYTES: usize = 16 * 1024;
 const AP_PERCPU_BYTES: usize = 4096;
@@ -58,25 +58,68 @@ core::arch::global_asm!(
 /// CPU's published ApContext for this AP; AP is in EL1 with
 /// MMU + caches still in the boot-CPU-visible state per PSCI.
 /// # C: O(1)
+/// AP per-CPU bring-up hook, installed by the kernel (which can reach
+/// `arch_irq::gic` + `sched`, unlike this leaf HAL crate). Called from
+/// `ap_main` with the AP's affinity-0 id after TPIDR_EL1 + VBAR are set;
+/// the hook wakes the AP's GIC redistributor + CPU interface, enables the
+/// resched SGI, and installs the AP's per-CPU runqueue. `None` → the AP
+/// stays a bare idle CPU (pre-F326 behaviour).
+#[cfg(target_os = "oxide-kernel")]
+static AP_INIT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the AP per-CPU bring-up hook. Boot path, before `cpu_on`.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn set_ap_init_hook(f: unsafe fn(u32)) {
+    AP_INIT_HOOK.store(f as *mut (), Ordering::Release);
+}
+
+/// AP-side Rust entry. Sets TPIDR_EL1 to the AP's per-CPU page + VBAR,
+/// runs the kernel AP-init hook (GIC CPU-interface + runqueue), marks
+/// itself online, unmasks IRQs, then idles on `wfi` so a resched SGI
+/// (`gic::send_resched_ipi`) wakes it to run scheduled work.
+///
+/// # SAFETY: caller is the asm trampoline; `ctx` is the boot CPU's
+/// published ApContext for this AP; AP is at EL1, MMU + caches in the
+/// boot-CPU-visible state per PSCI.
+/// # C: O(1)
 #[no_mangle]
 pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     use hal::CpuOps;
+    let aff0: u32;
     // SAFETY: per fn contract — ctx is the boot CPU's published, owned ApContext for this AP; sole writer here is this AP for its own per-CPU slot.
     unsafe {
         let c = &*ctx;
-        // Stamp cpu_id (low u32 of mpidr) at percpu offset 0;
-        // boot CPU pre-populated it but be safe.
         let pc = c.percpu_base as *mut u32;
         let mpidr: u64;
         core::arch::asm!("mrs {x}, MPIDR_EL1", x = out(reg) mpidr, options(nomem, nostack));
-        core::ptr::write_volatile(pc, mpidr as u32);
+        aff0 = (mpidr & 0xff) as u32;
+        core::ptr::write_volatile(pc, aff0);
         crate::ArmCpuOps::set_percpu_base(c.percpu_base as *mut u8);
-        // Mark ourselves online via the boot CPU's cpu::smp::ap_arrived.
-        let _ = cpu::smp::ap_arrived();
     }
+    // Vector table (HAL-local) so this PE can take exceptions/IRQs.
+    // SAFETY: AP at EL1, IRQs masked; install_default writes VBAR_EL1.
+    unsafe { crate::vbar::install_default(); }
+    // Kernel AP-init hook: GIC CPU interface + resched SGI + runqueue.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let p = AP_INIT_HOOK.load(Ordering::Acquire);
+        if !p.is_null() {
+            // SAFETY: hook was installed at boot by the kernel with the exact `unsafe fn(u32)` ABI; transmute restores that fn-ptr and we invoke it on this AP for its own per-CPU GIC + runqueue state.
+            unsafe {
+                let f: unsafe fn(u32) = core::mem::transmute(p);
+                f(aff0);
+            }
+        }
+    }
+    // Mark ourselves online via the boot CPU's cpu::smp::ap_arrived.
+    let _ = cpu::smp::ap_arrived();
+    // Unmask IRQs (clear DAIF.I) so resched SGIs are delivered.
+    // SAFETY: VBAR + GIC CPU interface installed above; daifclr #2 clears the IRQ mask at EL1.
+    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
     loop {
-        // SAFETY: WFE is always legal at any EL; idle hint only.
-        unsafe { core::arch::asm!("wfe"); }
+        // SAFETY: WFI is legal at EL1; parks until an IRQ (resched SGI / timer) wakes us; the IRQ-exit picker then runs whatever this CPU's runqueue holds.
+        unsafe { core::arch::asm!("wfi"); }
     }
 }
 
