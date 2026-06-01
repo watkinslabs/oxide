@@ -25,7 +25,19 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## Open: F309 (K6 stubs replaced) pushing. K6 NEW MOUNT API NOW FULLY REAL.
+## Open: F310 (K5: /dev/kmsg write) pushing.
+/dev/kmsg WRITE now injects userspace records into the kernel log ring +
+console (was discarded). KmsgInode::write strips an optional `<N>` syslog
+priority then `klog::kmsg_write(msg)` (NEW ungated klog entry — /dev/kmsg
+is real log injection, NOT debug logging, so R06-exempt by design; the
+debug klog macros stay gated). journald/early-systemd write here. Verified
+by dev_smoke: write `<6>dev_smoke-kmsg-MARK42` to /dev/kmsg then read it
+back from the ring + find it. Both arches build + spec-lint clean.
+NEXT K5: memfd F_ADD_SEALS (fcntl seals), /proc/<pid>/ns/* nodes,
+SCM_CREDENTIALS/SO_PEERCRED. Then K4 (rtnetlink dump), K1b (cgroup enforce).
+
+## (history) K6 DONE
+## F309 (#1409): K6 new mount API NOW FULLY REAL (stubs replaced).
 F308 (#1408) made fsopen/fsconfig/fsmount/move_mount real. F309 replaces
 the LAST stubs: open_tree (OPEN_TREE_CLONE captures a mount's (fs,root)
 into a detached MountObjectInode → move_mount binds it; non-clone = O_PATH
