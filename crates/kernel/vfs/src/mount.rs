@@ -42,6 +42,13 @@ static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Mount {
     pub fs: Arc<dyn FileSystem>,
     pub mount_point: String,
+    /// Bind-as-clone root (`docs/16§6`): when `Some`, this mount's root is
+    /// an arbitrary source inode (the bound subtree's dir), not the fs's
+    /// own `root()`. The dentry walk crosses into it and mirrors the whole
+    /// source subtree per component via `Inode::lookup` — the Linux model,
+    /// replacing the old BindFs whole-path rewrite. `None` = a normal
+    /// whole-filesystem mount rooted at `fs.root()`.
+    pub root: Option<InodeRef>,
     /// Stable, unique per mount lifetime. /proc mountinfo field 1.
     pub mnt_id: u64,
     /// Propagation type discriminant (`Propagation`). Default Private.
@@ -61,6 +68,29 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
     t.push(Arc::new(Mount {
         fs,
         mount_point: mount_point.to_string(),
+        root: None,
+        mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
+        propagation: AtomicU8::new(Propagation::Private as u8),
+    }));
+    Ok(())
+}
+
+/// Bind-as-clone (`mount(src, tgt, NULL, MS_BIND)`, `docs/16§6`): register
+/// a mount at `mount_point` whose root is the already-resolved source
+/// inode `root`. The dentry walk crosses into it (`mount_root_at`) and
+/// resolves `tgt/<x>` as `root.lookup("x")...` — mirroring the source
+/// subtree with NO path rewrite (vs the old BindFs). `fs` supplies only
+/// statfs `magic()` + the mountinfo line. Eexist if `mount_point` taken.
+/// # C: O(N_mounts)
+pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    let mut t = TABLE.lock();
+    if t.iter().any(|m| m.mount_point == mount_point) {
+        return Err(VfsError::Eexist);
+    }
+    t.push(Arc::new(Mount {
+        fs,
+        mount_point: mount_point.to_string(),
+        root: Some(root),
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
     }));
@@ -114,6 +144,7 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
     let moved = Arc::new(Mount {
         fs: old.fs.clone(),
         mount_point: to.to_string(),
+        root: old.root.clone(),
         mnt_id: old.mnt_id,
         propagation: AtomicU8::new(old.propagation.load(Ordering::Acquire)),
     });
@@ -187,6 +218,9 @@ pub fn mount_root_at(abs: &str) -> Option<InodeRef> {
     if abs == "/" { return None; }
     let (m, _) = resolve_mount(abs)?;
     if m.mount_point != abs { return None; }
+    // Bind-as-clone: the mount's root is an arbitrary source inode; the
+    // walk continues into the source subtree via per-component lookup.
+    if let Some(r) = m.root.as_ref() { return Some(r.clone()); }
     m.fs.root().or_else(|| m.fs.lookup(abs))
 }
 
