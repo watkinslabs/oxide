@@ -151,6 +151,31 @@ fn kill_lists_all_subtree_pids() {
     assert_eq!(pids, alloc::vec![1, 2, 3]);
 }
 
+// S4c: io.stat accounting — charge_io rolls up the subtree.
+#[test]
+fn io_stat_accounts_and_rolls_up() {
+    let mut t = Tree::new();
+    t.mount_root();
+    t.write_subtree_control(ROOT, "+io").unwrap();
+    let (a, _) = t.create(ROOT, "a").unwrap();
+    let (b, _) = t.create(a, "b").unwrap();
+    t.add_proc(a, 10);
+    t.add_proc(b, 20);
+    t.charge_io(10, 4096, false); // read on a
+    t.charge_io(20, 8192, true);  // write on b (child)
+    t.charge_io(20, 4096, false); // read on b
+    // node a's own counters: just the read on pid 10.
+    assert_eq!(t.subtree_io(b), (4096, 8192, 1, 1));
+    // a's subtree = a's own + b's: rbytes 4096+4096, wbytes 8192.
+    assert_eq!(t.subtree_io(a), (8192, 8192, 2, 1));
+    // io.stat text reflects the subtree.
+    assert_eq!(s(&t.read_file(a, "io.stat").unwrap()),
+               "8:0 rbytes=8192 wbytes=8192 rios=2 wios=1\n");
+    // empty cgroup → empty io.stat.
+    let (c, _) = t.create(ROOT, "c").unwrap();
+    assert_eq!(s(&t.read_file(c, "io.stat").unwrap()), "");
+}
+
 // S4b: cpuset.cpus cpulist → bitmask (pure).
 #[test]
 fn cpulist_parses_ranges_and_singles() {
