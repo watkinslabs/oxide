@@ -78,6 +78,9 @@ echo post-libidn2_probe rv=$?
 echo pre-systemd_probe
 /bin/systemd_probe
 echo post-systemd_probe rv=$?
+echo pre-systemd-pid1
+/lib/systemd/systemd --version
+echo post-systemd-pid1 rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
