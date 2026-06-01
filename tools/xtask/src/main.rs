@@ -3,6 +3,7 @@ use std::process::{Command, ExitCode};
 
 mod cmds;
 mod image_qemu;
+mod l2_deps;
 
 use crate::cmds::{cmd_doc_check, cmd_kernel, cmd_spec_lint, cmd_test, parse_arg, run, stub};
 
@@ -240,13 +241,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     // L2 dynamic-link smokes — link the cross-built shared deps from
     // /usr/lib (rpath). One per (vendor, probe, -l<lib>).
-    dyn_probe(&cc, &repo, &arch, &user_out, "libcap", "libcap_probe", "-lcap")?;
-    dyn_probe(&cc, &repo, &arch, &user_out, "zstd",   "zstd_probe",   "-lzstd")?;
-    dyn_probe(&cc, &repo, &arch, &user_out, "lz4",    "lz4_probe",    "-llz4")?;
-    dyn_probe(&cc, &repo, &arch, &user_out, "libxcrypt", "libxcrypt_probe", "-lcrypt")?;
-    dyn_probe(&cc, &repo, &arch, &user_out, "pcre2", "pcre2_probe", "-lpcre2-8")?;
-    dyn_probe(&cc, &repo, &arch, &user_out, "libseccomp", "libseccomp_probe", "-lseccomp")?;
-    dyn_probe(&cc, &repo, &arch, &user_out, "util-linux", "utillinux_probe", "-lmount -lblkid -luuid")?;
+    // L2 dynamic-link probes (table in l2_deps.rs).
+    for (vendor, probe, lflag) in l2_deps::L2_PROBES {
+        dyn_probe(&cc, &repo, &arch, &user_out, vendor, probe, lflag)?;
+    }
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -414,13 +412,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
-    put(&user("libcap_probe"), "/bin/libcap_probe")?;
-    put(&user("zstd_probe"), "/bin/zstd_probe")?;
-    put(&user("lz4_probe"), "/bin/lz4_probe")?;
-    put(&user("libxcrypt_probe"), "/bin/libxcrypt_probe")?;
-    put(&user("pcre2_probe"), "/bin/pcre2_probe")?;
-    put(&user("libseccomp_probe"), "/bin/libseccomp_probe")?;
-    put(&user("utillinux_probe"), "/bin/utillinux_probe")?;
+    for (_, probe, _) in l2_deps::L2_PROBES {
+        put(&user(probe), &format!("/bin/{probe}"))?;
+    }
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -787,17 +781,9 @@ session    required   pam_unix.so
         ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{linker}"))?;
         Ok(())
     };
-    stage_so("libcap",     "libcap.so.2.69",      "libcap.so.2",      "libcap.so")?;
-    stage_so("zstd",       "libzstd.so.1.5.6",    "libzstd.so.1",     "libzstd.so")?;
-    stage_so("lz4",        "liblz4.so.1.9.4",     "liblz4.so.1",      "liblz4.so")?;
-    stage_so("libxcrypt",  "libcrypt.so.2.0.0",   "libcrypt.so.2",    "libcrypt.so")?;
-    stage_so("pcre2",      "libpcre2-8.so.0.13.0","libpcre2-8.so.0",  "libpcre2-8.so")?;
-    stage_so("libseccomp", "libseccomp.so.2.5.5", "libseccomp.so.2",  "libseccomp.so")?;
-    // L2: util-linux shared libs (mandatory systemd deps).
-    stage_so("util-linux", "libmount.so.1.1.0",     "libmount.so.1",     "libmount.so")?;
-    stage_so("util-linux", "libblkid.so.1.1.0",     "libblkid.so.1",     "libblkid.so")?;
-    stage_so("util-linux", "libuuid.so.1.3.0",      "libuuid.so.1",      "libuuid.so")?;
-    stage_so("util-linux", "libsmartcols.so.1.1.0", "libsmartcols.so.1", "libsmartcols.so")?;
+    for (vendor, real, soname, linker) in l2_deps::L2_LIBS {
+        stage_so(vendor, real, soname, linker)?;
+    }
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
