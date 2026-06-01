@@ -113,3 +113,20 @@ PID1 binary + its private libs load on musl). F350+: systemd as init reaching a 
   the needed targets) + stage /lib/systemd/systemd (PID1) + libsystemd-shared + minimal
   units into rootfs; a systemd_probe (link libsystemd) as the first gate-verifiable PR.
 - rootfs WILL exceed 128 MiB → bump rootfs(main.rs)+ESP(image_qemu.rs); watch arm boot time.
+
+## F350 recon: systemd PID1 boots into early init (hangs at mount_setup/sd-event)
+Temporarily made PID1 = /lib/systemd/systemd (kernel/src/smoke/elf.rs init lookup) +
+systemd.log_level=debug on the limine cmdline. systemd PID1 RUNS on oxide x86:
+  systemd → "[1]:" → "System time advanced to built-in epoch: 2025-12-17..." →
+  "Failed to turn off coredumps, ignoring: No such file or directory" (non-fatal:
+   missing /proc/sys/kernel/core_pattern or prctl) → garbled "P+q<hex 'name'>\" → HANG.
+So systemd PID1 starts + does time-setup + coredump-setup, then HANGS very early
+(next in src/core/main.c is mount_setup() → mounts /proc /sys /dev /run /sys/fs/cgroup;
+or the manager/sd-event init). Debug logs don't flush past the hang → stuck in a syscall.
+NEXT (F350 fix): boot systemd-PID1 with KERNEL syscall tracing (--features debug-all or a
+targeted trace) to see the exact stuck syscall (likely a mount(2) with flags/opts our mount
+mishandles, OR epoll/signalfd/timerfd for sd-event, OR a blocking read). Fix that ONE gap
+(most mount/cgroup/epoll/signalfd/timerfd machinery exists from Track K — wire/extend).
+Iterate: each gap gets systemd further. Keep busybox as the gate's default PID1 (login smoke)
+while iterating systemd-as-init via the temp elf.rs swap locally OR a init= cmdline branch.
+Recon edits (elf.rs PID1→systemd, image_qemu cmdline debug) were REVERTED — reapply locally to iterate.
