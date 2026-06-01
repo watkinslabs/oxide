@@ -103,7 +103,7 @@ pkg_config_libdir = '${pcdirs}'
 EOF
   rm -rf "$bdir"
   ( cd "$SRC" && meson setup "build-${arch}" --cross-file "$cross" $OPTS >/dev/null )
-  ninja -C "$bdir" src/shared/libsystemd-shared-259.so libsystemd.so.0.42.0 src/core/libsystemd-core-259.so systemd systemctl >/dev/null
+  ninja -C "$bdir" src/shared/libsystemd-shared-259.so libsystemd.so.0.42.0 src/core/libsystemd-core-259.so systemd systemd-executor systemctl >/dev/null
   rm -rf "$install"; mkdir -p "$install/lib"
   cp -L "$bdir/src/shared/libsystemd-shared-259.so" "$install/lib/"
   cp -L "$bdir/libsystemd.so.0.42.0" "$install/lib/libsystemd.so.0.42.0"
@@ -113,6 +113,11 @@ EOF
   cp -L "$bdir/src/core/libsystemd-core-259.so" "$install/lib/"
   mkdir -p "$install/lib/systemd" "$install/bin"
   cp -L "$bdir/systemd"   "$install/lib/systemd/systemd"
+  # systemd 259 splits service-spawning into a separate executor binary
+  # that manager_new() pins at SYSTEMD_EXECUTOR_BINARY_PATH
+  # (/usr/lib/systemd/systemd-executor); absent ⇒ "Failed to pin executor
+  # binary" ⇒ PID1 freezes. Staged to /usr/lib/systemd/ by l2_deps.
+  cp -L "$bdir/systemd-executor" "$install/lib/systemd/systemd-executor"
   cp -L "$bdir/systemctl" "$install/bin/systemctl"
   # public sd-*.h headers for the probe.
   mkdir -p "$install/include/systemd"
