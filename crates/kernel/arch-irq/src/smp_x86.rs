@@ -110,6 +110,14 @@ pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
     // Mark ourselves online.
     let _ = ::cpu::smp::ap_arrived();
 
+    // Arm THIS AP's LAPIC periodic timer so it preempts on its own tick
+    // (not just on resched IPIs from the balancer). The LAPIC timer is
+    // per-CPU; the dispatcher's UART/softirq work is BSP-gated, so an AP
+    // tick only reschedules. Same period as the BSP (`run_as_task`).
+    // SAFETY: this AP's LAPIC was enabled above; timer_periodic programs
+    // the per-CPU LAPIC timer regs; IDT[0x40] is wired to the IRQ stub.
+    unsafe { let _ = crate::lapic::timer_periodic(1_000_000); }
+
     // Unmask IRQs so this AP can take resched IPIs (and any future
     // per-AP timer ticks). Idle loop is `sti; hlt`: the hlt halts
     // until an IRQ wakes us, the dispatcher EOIs + sets
