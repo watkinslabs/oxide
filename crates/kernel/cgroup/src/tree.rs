@@ -131,6 +131,11 @@ pub struct Tree {
     proc_cg: BTreeMap<u64, u64>,
     /// thread tid → owning cgroup, for uncharge on thread exit.
     thread_cg: BTreeMap<u64, u64>,
+    /// pid → bytes currently charged to memory controller. Tracked here
+    /// (not in the VMM) so `remove_proc` can uncharge a process's whole
+    /// footprint on exit — symmetric by construction, no reliance on
+    /// every VMM free path being instrumented.
+    proc_charge: BTreeMap<u64, u64>,
     mounted: bool,
 }
 
@@ -141,7 +146,7 @@ impl Tree {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { nodes: BTreeMap::new(), next_id: ROOT, proc_cg: BTreeMap::new(),
-               thread_cg: BTreeMap::new(), mounted: false }
+               thread_cg: BTreeMap::new(), proc_charge: BTreeMap::new(), mounted: false }
     }
 
     /// True once the root cgroup exists.
@@ -229,16 +234,28 @@ impl Tree {
     /// # C: O(log n)
     pub fn add_proc(&mut self, cgid: u64, pid: u64) {
         if let Some(old) = self.proc_cg.insert(pid, cgid) {
+            if old == cgid { return; }
             if let Some(n) = self.nodes.get_mut(&old) { n.procs.remove(&pid); }
+            // Migrate the process's memory charge to the destination node
+            // so memory.current stays consistent across moves.
+            let charged = self.proc_charge.get(&pid).copied().unwrap_or(0);
+            if charged != 0 {
+                if let Some(n) = self.nodes.get_mut(&old) { n.mem_current = n.mem_current.saturating_sub(charged); }
+                if let Some(n) = self.nodes.get_mut(&cgid) { n.mem_current += charged; }
+            }
         }
         if let Some(n) = self.nodes.get_mut(&cgid) { n.procs.insert(pid); }
     }
 
-    /// Drop a process on exit.
+    /// Drop a process on exit: remove membership AND uncharge its whole
+    /// memory footprint (symmetric with `try_charge_mem`).
     /// # C: O(log n)
     pub fn remove_proc(&mut self, pid: u64) {
         if let Some(old) = self.proc_cg.remove(&pid) {
             if let Some(n) = self.nodes.get_mut(&old) { n.procs.remove(&pid); }
+            if let Some(c) = self.proc_charge.remove(&pid) {
+                if let Some(n) = self.nodes.get_mut(&old) { n.mem_current = n.mem_current.saturating_sub(c); }
+            }
         }
     }
 
@@ -295,6 +312,57 @@ impl Tree {
     /// True iff the node's subtree has any member process.
     /// # C: O(subtree)
     pub fn populated(&self, id: u64) -> bool { self.subtree_proc_count(id) > 0 }
+
+    /// memory.current for a node = bytes charged at this node plus every
+    /// descendant (hierarchical, matching cgroup v2 memcg).
+    /// # C: O(subtree)
+    pub fn subtree_mem(&self, id: u64) -> u64 {
+        let n = match self.nodes.get(&id) { Some(n) => n, None => return 0 };
+        let mut b = n.mem_current;
+        for &child in n.children.values() { b += self.subtree_mem(child); }
+        b
+    }
+
+    /// Try to charge `bytes` of memory to `pid`'s cgroup. Walks ancestors
+    /// with the memory controller enabled + a `memory.max` set; if any
+    /// would be exceeded the charge is rejected wholesale (caller returns
+    /// ENOMEM). On success the bytes land on the leaf node and the
+    /// per-pid charge record (for exit uncharge). Zero bytes always OK.
+    /// # C: O(depth · subtree)
+    pub fn try_charge_mem(&mut self, pid: u64, bytes: u64) -> bool {
+        if bytes == 0 { return true; }
+        let cg = self.cgroup_of(pid);
+        let mut cur = Some(cg);
+        while let Some(id) = cur {
+            let n = match self.nodes.get(&id) { Some(n) => n, None => break };
+            if n.avail & MEMORY != 0 {
+                if let Some(max) = n.mem_max {
+                    if self.subtree_mem(id) + bytes > max { return false; }
+                }
+            }
+            cur = n.parent;
+        }
+        if let Some(n) = self.nodes.get_mut(&cg) { n.mem_current += bytes; }
+        *self.proc_charge.entry(pid).or_insert(0) += bytes;
+        true
+    }
+
+    /// Uncharge `bytes` from `pid`'s cgroup (memory freed). Clamped at the
+    /// recorded charge so double-uncharge can't underflow.
+    /// # C: O(log n)
+    pub fn uncharge_mem(&mut self, pid: u64, bytes: u64) {
+        if bytes == 0 { return; }
+        let rec = match self.proc_charge.get_mut(&pid) { Some(r) => r, None => return };
+        let amt = bytes.min(*rec);
+        *rec -= amt;
+        if *rec == 0 { self.proc_charge.remove(&pid); }
+        let cg = self.cgroup_of(pid);
+        if let Some(n) = self.nodes.get_mut(&cg) { n.mem_current = n.mem_current.saturating_sub(amt); }
+    }
+
+    /// Bytes currently charged to `pid` (test/observability helper).
+    /// # C: O(log n)
+    pub fn charged(&self, pid: u64) -> u64 { self.proc_charge.get(&pid).copied().unwrap_or(0) }
 
     /// All member pids in a node's subtree — for cgroup.kill / freeze.
     /// # C: O(subtree)
@@ -381,7 +449,7 @@ impl Tree {
             "pids.max" => { let mut o = fmt_max(n.pids_max); o.push('\n'); o }
             "pids.peak" => format!("{}\n", self.subtree_proc_count(id)),
             "pids.events" => "max 0\n".to_string(),
-            "memory.current" => format!("{}\n", n.mem_current),
+            "memory.current" => format!("{}\n", self.subtree_mem(id)),
             "memory.max" => { let mut o = fmt_max(n.mem_max); o.push('\n'); o }
             "memory.high" => { let mut o = fmt_max(n.mem_high); o.push('\n'); o }
             "memory.low" => format!("{}\n", n.mem_low),
@@ -389,7 +457,7 @@ impl Tree {
             "memory.swap.max" => { let mut o = fmt_max(n.swap_max); o.push('\n'); o }
             "memory.swap.current" => "0\n".to_string(),
             "memory.events" => "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n".to_string(),
-            "memory.stat" => format!("anon {}\nfile 0\nkernel_stack 0\nslab 0\n", n.mem_current),
+            "memory.stat" => format!("anon {}\nfile 0\nkernel_stack 0\nslab 0\n", self.subtree_mem(id)),
             "cpu.weight" => format!("{}\n", n.cpu_weight),
             "cpu.max" => match n.cpu_quota {
                 Some(q) => format!("{} {}\n", q, n.cpu_period),
