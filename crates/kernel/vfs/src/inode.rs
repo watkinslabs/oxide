@@ -220,6 +220,15 @@ pub trait Inode: Send + Sync {
     /// `chown(2)` backend. Default `Erofs` → overlay handles it.
     /// # C: O(1)
     fn set_owner(&self, _uid: u32, _gid: u32) -> KResult<()> { Err(VfsError::Erofs) }
+
+    /// memfd file-sealing state (`fcntl(F_ADD_SEALS/F_GET_SEALS)`,
+    /// `docs/19`). `Some(&seals)` only for a sealable memfd (created with
+    /// `MFD_ALLOW_SEALING`); `None` for every other inode, where
+    /// `F_ADD_SEALS`/`F_GET_SEALS` is `EINVAL`. The bits are
+    /// `F_SEAL_{SEAL,SHRINK,GROW,WRITE,FUTURE_WRITE}`; the FS enforces
+    /// WRITE on `write`, SHRINK/GROW on `truncate`.
+    /// # C: O(1)
+    fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> { None }
 }
 
 /// `poll(2)` event bitmasks. Numeric reps match Linux exactly.

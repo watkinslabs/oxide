@@ -26,17 +26,35 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x4000_0000);
 
+/// memfd file-seal bits (`fcntl.h`).
+pub const F_SEAL_SEAL:   u32 = 0x0001;
+pub const F_SEAL_SHRINK: u32 = 0x0002;
+pub const F_SEAL_GROW:   u32 = 0x0004;
+pub const F_SEAL_WRITE:  u32 = 0x0008;
+
 /// In-memory file body.
 pub struct TmpfsFileInode {
     body: Spinlock<Vec<u8>, TaskListClass>,
     ino:  Ino,
+    /// memfd seals (0 = none). `sealable` gates `fcntl_seals`: only a
+    /// memfd created with `MFD_ALLOW_SEALING` exposes them.
+    seals:    core::sync::atomic::AtomicU32,
+    sealable: bool,
 }
 
 impl TmpfsFileInode {
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { body: Spinlock::new(Vec::new()), ino })
+        Arc::new(Self { body: Spinlock::new(Vec::new()), ino,
+                        seals: core::sync::atomic::AtomicU32::new(0), sealable: false })
+    }
+    /// A sealable memfd file (`memfd_create(MFD_ALLOW_SEALING)`).
+    /// # C: O(1)
+    pub fn new_sealable() -> Arc<Self> {
+        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self { body: Spinlock::new(Vec::new()), ino,
+                        seals: core::sync::atomic::AtomicU32::new(0), sealable: true })
     }
 }
 
@@ -57,23 +75,32 @@ impl Inode for TmpfsFileInode {
     }
 
     fn write(&self, off: u64, src: &[u8]) -> KResult<usize> {
+        let s = self.seals.load(Ordering::Acquire);
+        if s & F_SEAL_WRITE != 0 { return Err(VfsError::Eperm); }
         let mut g = self.body.lock();
         let off = off as usize;
         if off + src.len() > g.len() {
+            if s & F_SEAL_GROW != 0 { return Err(VfsError::Eperm); }
             g.resize(off + src.len(), 0);
         }
         g[off..off + src.len()].copy_from_slice(src);
         Ok(src.len())
     }
     fn truncate(&self, len: u64) -> KResult<()> {
+        let s = self.seals.load(Ordering::Acquire);
         let mut g = self.body.lock();
         let len = len as usize;
         if len < g.len() {
+            if s & F_SEAL_SHRINK != 0 { return Err(VfsError::Eperm); }
             g.truncate(len);
         } else if len > g.len() {
+            if s & F_SEAL_GROW != 0 { return Err(VfsError::Eperm); }
             g.resize(len, 0);
         }
         Ok(())
+    }
+    fn fcntl_seals(&self) -> Option<&core::sync::atomic::AtomicU32> {
+        if self.sealable { Some(&self.seals) } else { None }
     }
 }
 

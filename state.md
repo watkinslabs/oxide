@@ -25,7 +25,20 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## Open: F310 (K5: /dev/kmsg write) pushing.
+## Open: F311 (K5: memfd seals) pushing.
+memfd F_ADD_SEALS/F_GET_SEALS now real. TmpfsFileInode gains seals
+(AtomicU32) + sealable flag; memfd_create(MFD_ALLOW_SEALING) →
+new_sealable(); Inode::fcntl_seals() exposes them (None for non-memfds →
+fcntl EINVAL). sys_fcntl F_ADD_SEALS (fetch_or; EPERM if F_SEAL_SEAL set)
+/ F_GET_SEALS. write enforces F_SEAL_WRITE/GROW, truncate F_SEAL_SHRINK/
+GROW (EPERM). systemd passes sealed memfds over IPC. Verified by
+/bin/memfd_seal_probe (seal WRITE → write EPERM; non-sealable → EINVAL).
+Both arches build + spec-lint clean.
+NEXT K5: /proc/<pid>/ns/* nodes (check dev_proc_ns.rs), SCM_CREDENTIALS/
+SO_PEERCRED. Then K4 (rtnetlink dump), K1b (cgroup enforce).
+
+## (history) K5 /dev/kmsg
+## F310 (#1410): /dev/kmsg write injects into the kernel log ring.
 /dev/kmsg WRITE now injects userspace records into the kernel log ring +
 console (was discarded). KmsgInode::write strips an optional `<N>` syslog
 priority then `klog::kmsg_write(msg)` (NEW ungated klog entry — /dev/kmsg
