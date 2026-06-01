@@ -138,6 +138,13 @@ pub struct Task {
     pub frozen:   AtomicBool,
     pub cpu:      AtomicU16,
     pub vruntime: AtomicU64,
+    /// Monotonic ns at which this task last (re)started running on a CPU.
+    /// `update_curr` charges `now - exec_start` to runtime + vruntime,
+    /// then re-stamps. Set on every switch-in. 0 = never-run sentinel.
+    pub exec_start_ns: AtomicU64,
+    /// Total CPU time (ns) this task has consumed — feeds
+    /// /proc/<pid>/stat utime + the cgroup cpu controller (`13§3`).
+    pub sum_exec_runtime_ns: AtomicU64,
     pub class:    SchedClass,
 
     pub exit_status: AtomicI32,
@@ -782,6 +789,8 @@ impl Task {
             frozen:   AtomicBool::new(false),
             cpu:      AtomicU16::new(u16::MAX),
             vruntime: AtomicU64::new(0),
+            exec_start_ns: AtomicU64::new(0),
+            sum_exec_runtime_ns: AtomicU64::new(0),
             class,
             exit_status: AtomicI32::new(0),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),

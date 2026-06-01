@@ -50,19 +50,50 @@ pub struct RunStats {
     pub irq_switches:       u32,
 }
 
-/// Per docs/13§8 `update_vruntime(prev)`: advance the prev task's
-/// vruntime past the current `min_vruntime` so the next CFS pick
-/// rotates among the runnable peers per invariant 5. v1 uses a
-/// fixed delta of 1 (no real time accounting yet); a future
-/// `timer_tick` integration will scale by `wall_dt / weight` per
-/// `13§3`. The bump runs before pick + before re-enqueue so the
-/// re-keyed insert lands at the correct sorted position.
-fn update_vruntime_prev(prev: &Task, inner: &RunqueueInner) {
-    if !matches!(prev.class, SchedClass::Normal { .. }) { return; }
+/// Largest CPU-time delta charged in one `update_curr` — the scheduler
+/// tick period (10ms @ 100Hz). Caps a single charge against clock skew /
+/// a long IRQ-off window per `13§3`.
+const MAX_TICK_NS: u64 = 10_000_000;
+
+/// Live monotonic clock in ns. Host builds (unit tests) return 0 — the
+/// pure accounting math is tested directly in `cputime`.
+/// # C: O(1)
+#[inline]
+fn now_ns() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+/// `update_curr(prev)` per `13§3`/`13§8`: charge the CPU time the prev
+/// task just consumed (`now - exec_start`, clamped) to its
+/// `sum_exec_runtime`, advance its vruntime by that delta scaled by
+/// load weight (heavier/lower-nice → slower vruntime → more CPU), and
+/// re-stamp exec_start. The vruntime advance is floored at
+/// `min_vruntime + 1` so the CFS re-key always moves forward — without
+/// that, two schedules within one clock tick (delta 0) would re-insert
+/// prev at its old key and the BTreeMap tiebreak (lower tid) would
+/// re-select it, starving higher-tid peers (the F144 rotation bug).
+/// Runs before pick + re-enqueue so the re-keyed insert sorts correctly.
+fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
+    let weight = match prev.class {
+        SchedClass::Normal { weight } => weight,
+        _ => return, // RT / Idle don't use vruntime
+    };
+    let start = prev.exec_start_ns.load(Ordering::Acquire);
+    let delta = crate::cputime::clamp_delta(now, start, MAX_TICK_NS);
+    if delta != 0 {
+        prev.sum_exec_runtime_ns.fetch_add(delta, Ordering::Relaxed);
+    }
+    let vdelta = crate::cputime::vruntime_delta(delta, weight).max(1);
     let cur = prev.vruntime.load(Ordering::Acquire);
     let floor = inner.cfs.min_vruntime();
-    let new = core::cmp::max(cur, floor).saturating_add(1);
+    let new = core::cmp::max(cur, floor).saturating_add(vdelta);
     prev.vruntime.store(new, Ordering::Release);
+    prev.exec_start_ns.store(now, Ordering::Release);
 }
 
 /// Build the per-CPU idle Task per `13§2` invariant 7. v1 idle
@@ -169,6 +200,7 @@ pub unsafe fn schedule() {
     let _pg = crate::preempt::PreemptGuard::new();
 
     let rq = match global() { Some(r) => r, None => return };
+    let now = now_ns();
 
     // Pick next under the lock.
     let next_arc = {
@@ -183,7 +215,7 @@ pub unsafe fn schedule() {
         // starving a freshly-spawned child whose tid is higher.
         // Schedule_from_irq already does this; voluntary schedule
         // had been skipping it.
-        update_vruntime_prev(prev_ref, &inner);
+        update_curr(prev_ref, &inner, now);
         // Re-enqueue the current runnable task (unless it's idle
         // or marked done) so the picker can return to it later.
         if !matches!(prev_ref.class, SchedClass::Idle)
@@ -239,6 +271,10 @@ pub unsafe fn schedule() {
     // current Task's stack remains live across the asm.
     // SAFETY: caller asserts preempt-off; we are about to context-switch off this Task. Until that completes the prev Arc must remain alive — store it in a function-local where its destructor runs only on the eventual return.
     let prev_arc = unsafe { rq.swap_current(next_arc) };
+    // Stamp the now-running task's exec_start so its next update_curr
+    // charges from this instant (not from whenever it last ran).
+    // SAFETY: rq.current was just set to the new Arc by swap_current.
+    unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // If prev is heading to Zombie, the local `prev_arc` would be
     // permanently stranded on its kernel stack: the asm switch never
     // returns into this frame again. Transfer ownership into ZOMBIES
@@ -291,14 +327,15 @@ pub unsafe fn schedule() {
 /// # Ctx: IRQ
 pub unsafe fn schedule_from_irq() {
     let rq = match global() { Some(r) => r, None => return };
+    let tnow = now_ns();
 
     let next_arc = {
         let mut inner = rq.inner.lock();
         // SAFETY: holding the inner lock serialises against any other writer; current ptr is stable for this critical section per `13§2` invariant 2.
         let prev_ref = unsafe { rq.current_ref() };
-        // `update_vruntime(prev)` per `13§8` so the next CFS pick
-        // rotates rather than re-selecting `prev`.
-        update_vruntime_prev(prev_ref, &inner);
+        // `update_curr(prev)` per `13§8` so the next CFS pick rotates
+        // rather than re-selecting `prev`, charging real CPU time.
+        update_curr(prev_ref, &inner, tnow);
         if !matches!(prev_ref.class, SchedClass::Idle)
             && prev_ref.state() == TaskState::Runnable
         {
@@ -343,6 +380,9 @@ pub unsafe fn schedule_from_irq() {
     // `schedule_from_irq` callback (held by re-enqueue).
     // SAFETY: per fn contract; runqueue serial under IRQs-masked single-CPU.
     let prev_arc = unsafe { rq.swap_current(next_arc) };
+    // Stamp the now-running task's exec_start (see voluntary path).
+    // SAFETY: rq.current was just set to the new Arc by swap_current.
+    unsafe { rq.current_ref() }.exec_start_ns.store(tnow, Ordering::Release);
     drop(prev_arc);
     IRQ_SW.fetch_add(1, Ordering::Relaxed);
 

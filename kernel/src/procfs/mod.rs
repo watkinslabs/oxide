@@ -12,6 +12,7 @@ pub mod mounts;
 pub mod cmdline;
 pub mod stat;
 pub mod fdinfo;
+mod pid_sched;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -264,8 +265,10 @@ impl Inode for ProcSelfStatusInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
-fn push(v: &mut alloc::vec::Vec<u8>, s: &[u8]) { v.extend_from_slice(s); }
-fn push_u64(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
+/// # C: O(len s)
+pub(crate) fn push(v: &mut alloc::vec::Vec<u8>, s: &[u8]) { v.extend_from_slice(s); }
+/// # C: O(log10 n)
+pub(crate) fn push_u64(v: &mut alloc::vec::Vec<u8>, mut n: u64) {
     if n == 0 { v.push(b'0'); return; }
     let mut buf = [0u8; 20]; let mut i = 0;
     while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
@@ -722,7 +725,15 @@ fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
     push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") ");
     out.push(task.state().linux_char()); out.push(b' ');
     push_u64(&mut out, ppid);
-    for _ in 0..48 { push(&mut out, b" 0"); }
+    // Fields 5..52 (pgrp..). utime is field 14 → 10th of these; report
+    // the task's accounted CPU time in CLK_TCK ticks (stime field 15
+    // stays 0 — v1 doesn't split user/sys). Makes the scheduler's real
+    // runtime accounting observable via `ps`/`top`/`cat /proc/<pid>/stat`.
+    let utime = sched::clock::ns_to_clk_tck(task.sum_exec_runtime_ns.load(Ordering::Acquire));
+    for f in 5u32..=52 {
+        if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
+        else { push(&mut out, b" 0"); }
+    }
     out.push(b'\n');
     out
 }
@@ -818,24 +829,8 @@ fn pid_limits_body(tid: u32) -> alloc::vec::Vec<u8> {
     }
     out
 }
+use pid_sched::pid_sched_body;
 pid_inode_impl!(ProcPidSchedInode,   pid_sched_body,   0x3000_2700);
-
-fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
-    let mut out = alloc::vec::Vec::with_capacity(128);
-    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
-    push(&mut out, task.name.as_bytes());
-    push(&mut out, b" (");
-    push_u64(&mut out, tid as u64);
-    push(&mut out, b", #threads: 1)\n");
-    push(&mut out, b"-------------------------------------------------------------------\n");
-    push(&mut out, b"se.exec_start                                :         0.000000\n");
-    push(&mut out, b"se.vruntime                                  :         0.000000\n");
-    push(&mut out, b"se.sum_exec_runtime                          :         0.000000\n");
-    push(&mut out, b"nr_switches                                  :                0\n");
-    push(&mut out, b"prio                                         :              120\n");
-    push(&mut out, b"policy                                       :                0\n");
-    out
-}
 
 fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
     // statm fields (in pages of 4 KiB): size resident shared text lib data dt
