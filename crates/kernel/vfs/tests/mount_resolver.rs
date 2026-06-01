@@ -219,3 +219,25 @@ fn unregister_detaches_table_mount() {
     // Unmounting a non-mount removes nothing.
     assert_eq!(vfs::mount::unregister("/umnt"), 0, "second umount is a no-op");
 }
+
+// K2V V7/U4: MS_MOVE relocates the whole subtree — submounts under `from`
+// move to the mirrored path under `to`, preserving their mnt_id.
+#[test]
+fn move_mount_relocates_subtree() {
+    let _g = guard();
+    vfs::mount::register("/sm-src", Arc::new(TestFs { root_ino: 0x10 })).expect("src");
+    vfs::mount::register("/sm-src/inner", Arc::new(TestFs { root_ino: 0x20 })).expect("sub");
+    let sub_id = vfs::mount::snapshot().iter()
+        .find(|m| m.mount_point == "/sm-src/inner").unwrap().mnt_id;
+    vfs::mount::move_mount("/sm-src", "/sm-dst").expect("move subtree");
+    // Both the root and the submount relocated.
+    assert!(vfs::mount::mount_root_at("/sm-src").is_none(), "old root gone");
+    assert!(vfs::mount::mount_root_at("/sm-src/inner").is_none(), "old submount gone");
+    let r = vfs::mount::mount_root_at("/sm-dst").expect("new root");
+    assert_eq!(r.ino(), 0x10);
+    let s = vfs::mount::mount_root_at("/sm-dst/inner").expect("submount relocated");
+    assert_eq!(s.ino(), 0x20, "submount keeps its fs root");
+    let new_sub_id = vfs::mount::snapshot().iter()
+        .find(|m| m.mount_point == "/sm-dst/inner").unwrap().mnt_id;
+    assert_eq!(new_sub_id, sub_id, "submount mnt_id preserved across move");
+}
