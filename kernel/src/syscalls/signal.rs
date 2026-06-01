@@ -97,6 +97,9 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
         let new_id = NEXT_MOUNT_NS.fetch_add(1, Ordering::AcqRel);
         let parent_ns = cur.mount_ns.load(Ordering::Acquire);
         crate::devfs::snapshot_ns(parent_ns, new_id);
+        // U2-b: copy the unified mount table's entries too, so the new ns
+        // starts with a full private copy of the parent tree then diverges.
+        vfs::mount::snapshot_ns(parent_ns, new_id);
         cur.mount_ns.store(new_id, Ordering::Release);
     }
     0
