@@ -1,72 +1,69 @@
 # Session hand-off
 
 ## Headline
-**systemd 259 PID1 boots deep on oxide** — through console setup, chroot gate,
-DSR terminal probe, mount_setup, and **manager_new** (executor pinned), into
-**unit-file loading**, where it now wedges because **no systemd units are staged
-in the rootfs**. 4 F350 fixes merged this session. main clean @ #1476.
+**systemd 259 PID1 reaches "Activating default unit: default.target" on oxide** —
+it boots through console/chroot/DSR/mount_setup/manager_new, loads its unit
+name-map from the staged unit tree, and now EXECUTES its startup transaction.
+main clean @ #1479. Next: watch the transaction run (fork+exec services) and
+fix the cascade gaps to a getty, then flip default PID1 to systemd.
 
 ## F350 fixes merged this session
-| PR | Gap | systemd reaches |
-|----|-----|-----------------|
+| PR | Gap (Linux-correct fix) | systemd reaches |
+|----|----|----|
 | #1471 | /dev/console honors O_NONBLOCK | past first console read |
 | #1473 | name_to_handle_at + /proc/<pid> magic symlinks | past running_in_chroot() |
-| #1475 | /dev/console poll() real readiness | past DSR terminal-size probe |
+| #1475 | /dev/console poll() readiness | past DSR terminal probe |
 | #1476 | build + stage systemd-executor binary | past manager_new() |
-(plus #1472 xtask stats recovery, #1474/#1477-ish state docs)
+| #1478 | **EPOLLET edge-trigger** + signalfd/timerfd/eventfd poll() | sd-event loop blocks (no epoll spin) |
+| #1479 | minimal systemd unit tree (target chain + console-shell) | Activating default.target |
+(plus #1472 xtask stats recovery, #1474/#1477 doc checkpoints)
 
-## NEXT — F350 #5: stage systemd's unit tree (a MILESTONE, not a one-file fix)
-systemd PID1 reaches "Looking for unit files in (/etc/systemd/system,
-/usr/lib/systemd/system, ...)" then "Unit type .automount is not supported" and
-WEDGES — those dirs are empty/missing, so there's no default.target to load.
-Confirmed reproducible (sd11, sd12 both stop there).
+## NEXT — F350 #6+: the transaction-execution cascade (one PR each, NO HACKS)
+Re-recon (kernel/src/smoke/elf.rs PID1=/lib/systemd/systemd + SYSTEMD_LOG_LEVEL=debug
+envp ~L795), boot, watch systemd EXECUTE default.target → sysinit→basic→console-shell.
+Known/likely gaps, fix Linux-correct:
+1. **ext4 symlink-create EIO** — systemd preset/enable does symlinkat in
+   /etc/systemd/system → "I/O error". Implement real symlink-inode create in
+   crates/kernel/ext4 (was never implemented; mkdir works, symlink doesn't).
+2. **cgroup2 controller files** — systemd starts services into cgroup slices,
+   writing cgroup.subtree_control etc. syscall-anal.md flags this as the top
+   semantic gap. Make /sys/fs/cgroup a real hierarchy (crates/kernel/cgroup).
+3. **service fork+exec via systemd-executor** — double-fork through the executor,
+   cgroup attach, stdio=/dev/console. Surfaces exec/stdio paths.
+4. **5 unwired syscalls** 142/251/252/314/315 (sched_setattr/ioprio) → ENOSYS
+   today (validated). Non-fatal for systemd but real — wire them.
+5. "Too many messages being logged to kmsg, ignoring" — systemd's own debug-log
+   rate limit (non-fatal); if it hides progress, drop SYSTEMD_LOG_LEVEL.
+When systemd reaches a getty/login prompt → flip default PID1 busybox→systemd
+(elf.rs) + update the login smoke. THEN distro track: rip busybox→bash+coreutils,
+Limine→GRUB, OXIDE distro.
 
-**Plan (Linux way — use systemd's OWN units, not hand-written hacks):**
-- `ninja install` / `meson install` DON'T work: they rebuild all tests (one fails
-  to compile) or try to install unbuilt binaries (udevadm). So stage manually.
-- Source units live in `vendor/systemd/systemd-259/units/` (static `.target` text
-  + `.service.in` needing simple @path@ substitution). The `.wants/` symlink graph
-  is defined in `vendor/systemd/systemd-259/units/meson.build` ('symlinks' keys).
-- Stage the MINIMAL real chain to reach a console login:
-  default.target→multi-user.target; multi-user wants basic.target+getty.target;
-  basic wants sysinit.target (+sockets/paths/slices/timers); a console getty
-  (console-getty.service or serial-getty@ttyS0.service running agetty) OR a
-  debug-shell.service running /bin/sh on /dev/console for first light.
-- Add a staging helper (build.sh or xtask) that copies the units + creates the
-  .wants symlinks + default.target symlink, into /usr/lib/systemd/system +
-  /etc/systemd/system. mkdir those dirs in cmd_rootfs.
-- agetty/login: util-linux L2 has agetty? else busybox getty. Check before wiring.
-- EXPECT a cascade: each unit systemd STARTS exercises more kernel/syscall paths
-  (sockets, cgroup writes, fork+exec of services, dbus). Iterate one gap per PR.
-
-## Recon recipe (proven this session)
-kernel/src/smoke/elf.rs: PID1 lookup→/lib/systemd/systemd (line ~639) + argv
-(~658) + envp SYSTEMD_LOG_LEVEL=debug (build_user_stack ~line 795). Boot bare
-`OXIDE_QEMU_HEADLESS=1 make SMP=2 qemu-x86 >/tmp/sd.txt 2>&1`. REVERT before commit.
-**DO NOT klog-trace inside sys_openat — it wedges the boot under SMP (proven).**
-Trace syscall NRs at oxide_syscall_dispatch (mod.rs) gated `c.vtid==1` instead.
-
-## First command (next session)
-Re-recon, boot, confirm the wedge is "no default.target"; then write the unit
-staging helper + minimal real unit set + a console getty/debug-shell; boot;
-iterate each surfaced gap.
+## Diagnosis recipes (proven)
+- Recon: elf.rs PID1=/lib/systemd/systemd (line ~639 lookup + ~658 argv) +
+  envp SYSTEMD_LOG_LEVEL=debug (build_user_stack ~L795). REVERT before commit.
+- PID1 syscall trace: at oxide_syscall_dispatch (kernel/src/syscalls/mod.rs ~L569),
+  gate `c.vtid.load(Acquire)==1`, klog nr. SAFE. **NEVER klog in sys_openat
+  (wedges boot under SMP — PROVEN).**
+- epoll readiness: temp trace in crates/kernel/fs/src/epoll.rs scan_once (fd+ino+
+  ev+poll+rdy) — found the EPOLLET spin (mountinfo always-POLLIN + EPOLLET).
 
 ## CRITICAL harness rules
 - dev shell is `set -e`: guard EVERY pgrep/grep/ss/pkill/[ test ] with `|| true`
-  or the whole cmd aborts with NO output / no file created. Lost time to this.
-- Boots: bare `make` in run_in_background (no prefix pkill in same compound);
-  poll output-file in a SEPARATE guarded bg cmd; `pkill -9 -f qemu-system-x86_64`
-  only at END, NEVER `pkill -f qemu` (self-kill). Clear ports 2222/1234 first.
-  Rootfs rebuild runs ~90s BEFORE qemu launches — wait for systemd log lines, not
-  file existence; don't kill at the wrong moment.
-- Both-arch gate: `git push --dry-run origin <branch>` runs the pre-push hook
-  (= both-arch boot-smoke) WITHOUT pushing; on "PASS on both arches" → real-push
-  `SKIP_SMOKE=1` + `gh pr merge --merge --delete-branch=true` (that ONE cmd deletes
-  local+remote — do NOT add a separate `git branch -D`, it trips the perm prompt).
-- spec-lint clean before commit. main.rs + procfs/mod.rs at the 1000-line cap —
-  count lines after edits, trim comments to fit. Branch per change; explicit
-  git add. NEVER add vendor/*/install-*/lib/pkgconfig. A tree-wide cargo fmt is
-  NOT wanted (manual alignment per docs/08/09) — if 100s of files show fmt churn,
-  stash+drop, don't commit.
-- Default PID1 is still busybox → busybox login smoke stays green; flip default
-  PID1 to systemd only once systemd reaches a target/getty.
+  or the whole cmd aborts with NO file created. Pre-boot pkill MUST be
+  `pkill -9 -f qemu-system 2>/dev/null || true; sleep 2` — without || true the
+  boot compound dies before make.
+- Stale qemu squats port 2222 → boot dies "Could not set up host forwarding".
+  ALWAYS clear before boot; pkill -9 -f qemu-system-x86_64 only at poll END;
+  NEVER `pkill -f qemu` (self-kill).
+- Boots: bare `make` in run_in_background; poll output-file in a SEPARATE guarded
+  bg cmd; rootfs rebuild runs ~90s BEFORE qemu — wait for systemd log lines, not
+  file existence.
+- Gate: `git push --dry-run origin <branch>` runs the pre-push hook = both-arch
+  boot-smoke WITHOUT pushing; on "PASS on both arches" → SKIP_SMOKE=1 real push +
+  `gh pr merge --merge --delete-branch=true` (that ONE cmd deletes local+remote —
+  NO separate `git branch -D`).
+- spec-lint clean before commit; main.rs (999) + procfs/mod.rs near 1000-cap —
+  count after edits. Branch per change; explicit git add. NEVER add
+  vendor/*/install-*/lib/pkgconfig. Tree-wide cargo fmt NOT wanted (stash+drop).
+- Default PID1 still busybox → login smoke green; flip to systemd only at getty.
+- syscall-anal.md (root): validated broadly accurate; 5 unwired syscalls real.
