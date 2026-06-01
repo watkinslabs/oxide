@@ -70,12 +70,8 @@ echo pre-openssl_probe
 # aarch64: libcrypto.so hangs in its load-time constructor (before main)
 # under the oxide kernel — running it would wedge rcS → no login. x86 runs
 # it; arm is gated until the load hang is fixed (TASKS.md HARD blocker, D6).
-if [ "$(uname -m)" = aarch64 ]; then
-echo openssl_probe SKIP-on-arm-libcrypto-load-hang
-else
 /bin/openssl_probe
 echo post-openssl_probe rv=$?
-fi
 echo pre-libidn2_probe
 /bin/libidn2_probe
 echo post-libidn2_probe rv=$?
