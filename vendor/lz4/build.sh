@@ -17,7 +17,7 @@ build_one() {
   make -C "$SRC/lib" CC="$cc" CFLAGS="-O2 -fPIC"
   cp -L "$SRC/lib/liblz4.so.1.9.4" "$install/lib/liblz4.so.1.9.4"
   ( cd "$install/lib" && ln -sf liblz4.so.1.9.4 liblz4.so.1 && ln -sf liblz4.so.1 liblz4.so )
-  cp "$SRC/lib/lz4.h" "$install/include/"
+  cp "$SRC"/lib/lz4.h "$SRC"/lib/lz4hc.h "$SRC"/lib/lz4frame.h "$SRC"/lib/lz4file.h "$SRC"/lib/xxhash.h "$install/include/" 2>/dev/null || true
   echo "  → $install/lib/liblz4.so.1.9.4 ($(stat -c %s "$install/lib/liblz4.so.1.9.4") bytes)"
 }
 
