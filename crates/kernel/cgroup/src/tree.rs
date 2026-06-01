@@ -79,6 +79,9 @@ pub struct Node {
     pub children: BTreeMap<String, u64>,
     /// Member process pids directly in this cgroup (cgroup.procs).
     pub procs: BTreeSet<u64>,
+    /// Non-leader thread count directly in this cgroup. pids.current counts
+    /// every task (Linux pids controller), so threads charge here too.
+    pub threads: u64,
     /// Controllers this node delegates to children (cgroup.subtree_control).
     pub subtree_control: u8,
     /// Controllers available here = parent's subtree_control (root: ALL).
@@ -109,6 +112,7 @@ impl Node {
     fn new(name: String, parent: Option<u64>, avail: u8) -> Self {
         Self {
             name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
+            threads: 0,
             subtree_control: 0, avail, frozen: false,
             pids_max: None,
             mem_max: None, mem_high: None, mem_low: 0, mem_min: 0,
@@ -125,6 +129,8 @@ pub struct Tree {
     next_id: u64,
     /// pid → cgid membership index (for fork inheritance + /proc).
     proc_cg: BTreeMap<u64, u64>,
+    /// thread tid → owning cgroup, for uncharge on thread exit.
+    thread_cg: BTreeMap<u64, u64>,
     mounted: bool,
 }
 
@@ -134,7 +140,8 @@ impl Tree {
     /// Empty (unmounted) tree.
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { nodes: BTreeMap::new(), next_id: ROOT, proc_cg: BTreeMap::new(), mounted: false }
+        Self { nodes: BTreeMap::new(), next_id: ROOT, proc_cg: BTreeMap::new(),
+               thread_cg: BTreeMap::new(), mounted: false }
     }
 
     /// True once the root cgroup exists.
@@ -235,16 +242,35 @@ impl Tree {
         }
     }
 
+    /// Charge a new thread `tid` to `parent_pid`'s cgroup (pids.current
+    /// counts every task). Idempotent per tid.
+    /// # C: O(log n)
+    pub fn add_thread(&mut self, parent_pid: u64, tid: u64) {
+        if self.thread_cg.contains_key(&tid) { return; }
+        let cg = self.cgroup_of(parent_pid);
+        self.thread_cg.insert(tid, cg);
+        if let Some(n) = self.nodes.get_mut(&cg) { n.threads += 1; }
+    }
+
+    /// Uncharge a thread on exit.
+    /// # C: O(log n)
+    pub fn remove_thread(&mut self, tid: u64) {
+        if let Some(cg) = self.thread_cg.remove(&tid) {
+            if let Some(n) = self.nodes.get_mut(&cg) { n.threads = n.threads.saturating_sub(1); }
+        }
+    }
+
     /// The cgroup id a pid belongs to (root if untracked).
     /// # C: O(log n)
     pub fn cgroup_of(&self, pid: u64) -> u64 {
         self.proc_cg.get(&pid).copied().unwrap_or(ROOT)
     }
 
-    /// pids.current for a node = procs in its whole subtree.
+    /// pids.current for a node = every TASK (procs + threads) in its whole
+    /// subtree (Linux pids controller counts threads, not just leaders).
     fn subtree_proc_count(&self, id: u64) -> u64 {
         let n = match self.nodes.get(&id) { Some(n) => n, None => return 0 };
-        let mut c = n.procs.len() as u64;
+        let mut c = n.procs.len() as u64 + n.threads;
         for &child in n.children.values() { c += self.subtree_proc_count(child); }
         c
     }
