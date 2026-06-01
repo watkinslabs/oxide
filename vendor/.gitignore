@@ -107,6 +107,15 @@ lz4/lz4-1.9.4.tar.gz
 !libxcrypt/install-aarch64/**
 libxcrypt/libxcrypt-4.4.36/
 libxcrypt/libxcrypt-4.4.36.tar.xz
+# pcre2 10.44 — Track L2 systemd dep (journal pattern matching).
+!pcre2/
+!pcre2/build.sh
+!pcre2/install-x86_64/
+!pcre2/install-x86_64/**
+!pcre2/install-aarch64/
+!pcre2/install-aarch64/**
+pcre2/pcre2-10.44/
+pcre2/pcre2-10.44.tar.gz
 # GNU bash 5.2.37: per-arch static-musl binary + build recipe.
 # F216 — first GNU userspace program; sets the pattern for further
 # coreutils / util-linux / etc. cross-builds.

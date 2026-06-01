@@ -238,6 +238,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     dyn_probe(&cc, &repo, &arch, &user_out, "zstd",   "zstd_probe",   "-lzstd")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "lz4",    "lz4_probe",    "-llz4")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "libxcrypt", "libxcrypt_probe", "-lcrypt")?;
+    dyn_probe(&cc, &repo, &arch, &user_out, "pcre2", "pcre2_probe", "-lpcre2-8")?;
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -409,6 +410,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("zstd_probe"), "/bin/zstd_probe")?;
     put(&user("lz4_probe"), "/bin/lz4_probe")?;
     put(&user("libxcrypt_probe"), "/bin/libxcrypt_probe")?;
+    put(&user("pcre2_probe"), "/bin/pcre2_probe")?;
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -786,6 +788,11 @@ session    required   pam_unix.so
     put(&xc_lib.join("libcrypt.so.2.0.0"), "/usr/lib/libcrypt.so.2.0.0")?;
     ln_via_debugfs("/usr/lib/libcrypt.so.2.0.0", "/usr/lib/libcrypt.so.2")?;
     ln_via_debugfs("/usr/lib/libcrypt.so.2.0.0", "/usr/lib/libcrypt.so")?;
+    // L2: libpcre2-8 (systemd journal pattern matching).
+    let p2_lib = repo.join(format!("vendor/pcre2/install-{arch}/lib"));
+    put(&p2_lib.join("libpcre2-8.so.0.13.0"), "/usr/lib/libpcre2-8.so.0.13.0")?;
+    ln_via_debugfs("/usr/lib/libpcre2-8.so.0.13.0", "/usr/lib/libpcre2-8.so.0")?;
+    ln_via_debugfs("/usr/lib/libpcre2-8.so.0.13.0", "/usr/lib/libpcre2-8.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
