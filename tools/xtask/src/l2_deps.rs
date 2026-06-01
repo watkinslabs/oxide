@@ -60,4 +60,23 @@ pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     ("lib/libsystemd-core-259.so",     "/usr/lib/libsystemd-core-259.so"),
     ("lib/libsystemd-shared-259.so",   "/usr/lib/libsystemd-shared-259.so"),
     ("bin/systemctl",                  "/usr/bin/systemctl"),
+    // F350 #5: minimal systemd unit tree (built into install-*/usr/lib/systemd/
+    // system by build.sh). default.target → console-shell on /dev/console.
+    ("usr/lib/systemd/system/default.target",       "/usr/lib/systemd/system/default.target"),
+    ("usr/lib/systemd/system/console-shell.service", "/usr/lib/systemd/system/console-shell.service"),
+    ("usr/lib/systemd/system/sysinit.target",       "/usr/lib/systemd/system/sysinit.target"),
+    ("usr/lib/systemd/system/basic.target",         "/usr/lib/systemd/system/basic.target"),
+    ("usr/lib/systemd/system/multi-user.target",    "/usr/lib/systemd/system/multi-user.target"),
+    ("usr/lib/systemd/system/getty.target",         "/usr/lib/systemd/system/getty.target"),
+    ("usr/lib/systemd/system/getty-pre.target",     "/usr/lib/systemd/system/getty-pre.target"),
+    ("usr/lib/systemd/system/sockets.target",       "/usr/lib/systemd/system/sockets.target"),
+    ("usr/lib/systemd/system/paths.target",         "/usr/lib/systemd/system/paths.target"),
+    ("usr/lib/systemd/system/slices.target",        "/usr/lib/systemd/system/slices.target"),
+    ("usr/lib/systemd/system/timers.target",        "/usr/lib/systemd/system/timers.target"),
+    ("usr/lib/systemd/system/local-fs.target",      "/usr/lib/systemd/system/local-fs.target"),
+    ("usr/lib/systemd/system/local-fs-pre.target",  "/usr/lib/systemd/system/local-fs-pre.target"),
+    ("usr/lib/systemd/system/swap.target",          "/usr/lib/systemd/system/swap.target"),
+    ("usr/lib/systemd/system/graphical.target",     "/usr/lib/systemd/system/graphical.target"),
+    ("usr/lib/systemd/system/rescue.target",        "/usr/lib/systemd/system/rescue.target"),
+    ("usr/lib/systemd/system/emergency.target",     "/usr/lib/systemd/system/emergency.target"),
 ];
