@@ -24,6 +24,8 @@ pub const L2_LIBS: &[(&str, &str, &str, &str)] = &[
     ("kmod",       "libkmod.so.2.4.1",     "libkmod.so.2",      "libkmod.so"),
     ("openssl",    "libcrypto.so.3",       "libcrypto.so.3",    "libcrypto.so"),
     ("openssl",    "libssl.so.3",          "libssl.so.3",       "libssl.so"),
+    ("libunistring","libunistring.so.5.1.0","libunistring.so.5", "libunistring.so"),
+    ("libidn2",    "libidn2.so.0.4.0",     "libidn2.so.0",      "libidn2.so"),
 ];
 
 /// Dynamic-link probes: (vendor, probe-name, link-flags). The probe
@@ -44,4 +46,5 @@ pub const L2_PROBES: &[(&str, &str, &str)] = &[
     ("acl",        "acl_probe",        "-lacl"),
     ("kmod",       "kmod_probe",       "-lkmod"),
     ("openssl",    "openssl_probe",    "-lssl -lcrypto"),
+    ("libidn2",    "libidn2_probe",    "-lidn2"),
 ];

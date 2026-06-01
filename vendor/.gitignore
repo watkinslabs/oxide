@@ -454,3 +454,21 @@ kmod/kmod-31.tar.xz
 !openssl/install-aarch64/**
 openssl/openssl-3.0.15/
 openssl/openssl-3.0.15.tar.gz
+# libunistring 1.2 — Track L2: libidn2's dep.
+!libunistring/
+!libunistring/build.sh
+!libunistring/install-x86_64/
+!libunistring/install-x86_64/**
+!libunistring/install-aarch64/
+!libunistring/install-aarch64/**
+libunistring/libunistring-1.2/
+libunistring/libunistring-1.2.tar.gz
+# libidn2 2.3.7 — Track L2: systemd-resolved IDNA.
+!libidn2/
+!libidn2/build.sh
+!libidn2/install-x86_64/
+!libidn2/install-x86_64/**
+!libidn2/install-aarch64/
+!libidn2/install-aarch64/**
+libidn2/libidn2-2.3.7/
+libidn2/libidn2-2.3.7.tar.gz
