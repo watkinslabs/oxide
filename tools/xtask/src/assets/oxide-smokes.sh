@@ -45,6 +45,9 @@ echo post-libseccomp_probe rv=$?
 echo pre-utillinux_probe
 /bin/utillinux_probe
 echo post-utillinux_probe rv=$?
+echo pre-expat_probe
+/bin/expat_probe
+echo post-expat_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
