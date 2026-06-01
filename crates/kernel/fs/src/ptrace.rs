@@ -154,6 +154,62 @@ pub unsafe extern "C" fn oxide_arm_software_step_handler(frame_ptr: *mut u8) -> 
     orig_x0
 }
 
+/// SIGILL (signal 4) — Linux delivers a catchable SIGILL on an EL0
+/// undefined instruction. openssl 3.0's `OPENSSL_cpuid_setup`
+/// (.init_array, runs at libcrypto.so load) SIGILL-probes armv8.2
+/// crypto insns the CPU may lack; without catchable delivery the trap
+/// has no handler to run and the kernel halts → libcrypto unloadable.
+#[cfg(target_arch = "aarch64")]
+const SIGILL: u32 = 4;
+/// sa_handler SIG_DFL / SIG_IGN sentinels (Linux uapi). Per `07§5`,
+/// never inline bare 0/1.
+#[cfg(target_arch = "aarch64")]
+const SIG_DFL_H: u64 = 0;
+#[cfg(target_arch = "aarch64")]
+const SIG_IGN_H: u64 = 1;
+
+/// aarch64 undefined-instruction (EL0 ESR.EC=0) trap hook. Called from
+/// `oxide_undef_save_block` with a fully-saved 288 B SVC-shaped frame.
+/// Delivers a CATCHABLE SIGILL when the task registered a handler
+/// (rewrites the saved frame so the post-restore `eret` enters the
+/// handler; openssl's probe handler siglongjmps past the bad insn).
+/// With no handler, SIGILL's default action terminates the task.
+/// Returns the value the asm stores into the retval slot → user x0 at
+/// handler entry (= SIGILL per AAPCS64).
+///
+/// # SAFETY: caller is the undef-instruction asm; `frame_ptr` points at
+/// a fully-saved 288 B SVC frame on the current task's kernel stack.
+/// # C: O(1)
+/// # Ctx: synchronous exception, IRQs masked, single task on this CPU
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+pub unsafe extern "C" fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64 {
+    // Point the SVC-frame accessors at THIS fault frame. The per-task
+    // svc_frame slot still holds the last *syscall's* frame (F206), so
+    // deliver_arm would otherwise rewrite the wrong frame.
+    hal_aarch64::set_current_svc_frame(frame_ptr as u64);
+    let cur = match sched::current() { Some(c) => c, None => return 0 };
+    cur.svc_frame.store(frame_ptr as u64, Ordering::Release);
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the
+    // sigactions slot per the single-mutator invariant in `13§5`.
+    let sa = unsafe { (&*cur.sigactions.get())[(SIGILL - 1) as usize] };
+    if sa.handler != SIG_DFL_H && sa.handler != SIG_IGN_H {
+        // Saved user x0 at fault — restored into x0 on rt_sigreturn.
+        // SAFETY: frame_ptr is the 288 B frame; x0 slot at offset 0.
+        let saved_x0 = unsafe {
+            core::ptr::read_volatile(frame_ptr.add(FRAME_X0_OFF) as *const u64)
+        };
+        // SAFETY: dispatch from fault context; svc_frame now points at
+        // this frame; deliver rewrites only the saved frame + user sig stack.
+        unsafe { crate::sig_dispatch::deliver(sa.handler, sa.restorer, SIGILL, saved_x0); }
+        return SIGILL as u64;   // retval slot → x0 = SIGILL at handler entry
+    }
+    // No handler: SIGILL default action = terminate (core). Reuse the
+    // SIGSEGV terminator (kills the task + coredumps); the wstatus
+    // signal number refinement to 4 is a follow-up.
+    pmm::user_as::deliver_sigsegv_arm(0, 0, 0)
+}
+
 /// Install the per-arch user-trap hook so #DB / Software-Step traps
 /// from user mode route to SIGTRAP delivery instead of the silent
 /// fault halt.

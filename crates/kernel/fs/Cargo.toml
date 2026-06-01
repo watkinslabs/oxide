@@ -15,6 +15,7 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 sched    = { path = "../sched" }
+pmm      = { path = "../mm-pmm" }
 syscall  = { path = "../syscall" }
 vfs      = { path = "../vfs" }
 devfs    = { path = "../devfs" }
