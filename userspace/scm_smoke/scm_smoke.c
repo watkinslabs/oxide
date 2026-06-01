@@ -127,9 +127,11 @@ int main(void) {
     char z;
     if (read(pfd[0], &z, 1) != 1 || z != 'Z') return fail("pipe-readback");
 
-    // Credentials are best-effort (only if SO_PASSCRED took effect).
-    if (got_cred && cred.uid != 0 && cred.uid != (unsigned)getuid())
-        return fail("cred-uid");
+    // SO_PASSCRED was set on the receiver, so SCM_CREDENTIALS must be
+    // delivered carrying the sender's real {pid,uid,gid} (this process's).
+    if (!got_cred) return fail("no-cred");
+    if (cred.pid != (unsigned)getpid() || cred.uid != (unsigned)getuid())
+        return fail("cred-mismatch");
 
     write(1, PASS, sizeof(PASS) - 1);
     return 0;
