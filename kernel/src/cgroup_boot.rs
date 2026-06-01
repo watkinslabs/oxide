@@ -23,6 +23,36 @@ pub fn cgroup_kill_hook(pid: u64, sig: i32) {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn cgroup_kill_hook(_pid: u64, _sig: i32) {}
 
+/// Install all cgroup→kernel hooks at boot (signal for cgroup.kill +
+/// freeze for cgroup.freeze). One call keeps lib.rs net-zero at the cap.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn install_hooks() {
+    cgroup::set_signal_hook(cgroup_kill_hook);
+    cgroup::set_freeze_hook(cgroup_freeze_hook);
+}
+
+/// Host-build no-op for `install_hooks`.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn install_hooks() {}
+
+/// cgroup.freeze delivery hook: freeze (`v=true`) or thaw the task whose
+/// global tid is `pid` via the scheduler. Registered via
+/// `cgroup::set_freeze_hook`.
+/// # C: O(N) registry lookup + runqueue op
+#[cfg(target_os = "oxide-kernel")]
+pub fn cgroup_freeze_hook(pid: u64, v: bool) {
+    if let Some(t) = sched::live::registry::lookup_in_ns(0, pid as u32) {
+        if v { sched::live::freeze_task(&t); } else { sched::live::unfreeze_task(&t); }
+    }
+}
+
+/// Host-build no-op for `cgroup_freeze_hook`.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn cgroup_freeze_hook(_pid: u64, _v: bool) {}
+
 /// vpid → canonical (global) tid resolver for `cgroup.procs`/`threads`
 /// writes. A userspace write supplies a pid in the writer's pid
 /// namespace; the cgroup tree keys on the global tid (matching
