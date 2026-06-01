@@ -33,6 +33,9 @@ echo post-zstd_probe rv=$?
 echo pre-lz4_probe
 /bin/lz4_probe
 echo post-lz4_probe rv=$?
+echo pre-libxcrypt_probe
+/bin/libxcrypt_probe
+echo post-libxcrypt_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
