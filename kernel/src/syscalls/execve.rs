@@ -185,7 +185,8 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
     let mut blob: &[u8] = if path_owned.is_empty() {
         crate::smoke::elf::EXEC_BLOB
-    } else if let Some(v) = ext4::rootfs::read_file(&path_owned) {
+    } else if let Some(v) = crate::syscalls::pathresolve::read_exec(&path_owned)
+        .or_else(|| ext4::rootfs::read_file(&path_owned)) {
         ext4_blob = Some(v);
         // SAFETY: ext4_blob just-set; outlives the load_static_blob call below.
         ext4_blob.as_deref().expect("just set")
@@ -497,7 +498,8 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
         Some(c) => c,
         None    => return -(Errno::Einval.as_i32() as i64),
     };
-    let mut blob_vec = match ext4::rootfs::read_file(&path_owned) {
+    let mut blob_vec = match crate::syscalls::pathresolve::read_exec(&path_owned)
+        .or_else(|| ext4::rootfs::read_file(&path_owned)) {
         Some(v) => v,
         None    => return -(Errno::Enoent.as_i32() as i64),
     };
@@ -811,7 +813,8 @@ pub(crate) fn resolve_shebang_chain(
         argv_vec.extend(original_tail);
         // Update path → interp, refresh blob from ext4.
         *path_owned = interp.clone();
-        match ext4::rootfs::read_file(&interp) {
+        match crate::syscalls::pathresolve::read_exec(&interp)
+            .or_else(|| ext4::rootfs::read_file(&interp)) {
             Some(v) => *blob_owned = v,
             None    => return Err(Errno::Enoent),
         }

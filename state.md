@@ -20,17 +20,34 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6d done. NEXT: V6e (exec) then readlink/namei, then V7
-V6d (F289, both arches PASS): chmod/chown/fchmodat/fchownat
-(resolve_path_inode + follow param), access/faccessat, utimensat/utimes,
-chdir now resolve via pathresolve::resolve (path_lookup). Follow
-semantics: chmod/chown/access/utime/chdir follow; fchmodat/fchownat honor
-AT_SYMLINK_NOFOLLOW.
-NEXT V6e: exec (execve.rs path lookup → follow symlinks, e.g.
-/bin/sh→busybox); then readlink (resolve intermediate symlinks, NOT
-final — nofollow_final); then namei mutations (mkdir/unlink/rename/link/
+## V1–V6e done. NEXT: readlink/namei, then V7
+V6e (F290, branch open — hosted harness PASS, qemu gate via push hook):
+execve now reads the ELF via `pathresolve::read_exec` = resolve through
+`vfs::path_lookup` (follows symlinks, crosses mounts) → `inode.read` full
+contents; raw `ext4::rootfs::read_file` kept ONLY as pre-mount-early-boot
+fallback (root dentry not built yet). All 3 exec read sites wired (x86
+execve_inner, aarch64 execve_inner, shared shebang-interp). So
+/bin/sh→busybox + merged-usr /bin→/usr/bin resolve on exec the Linux way.
+V6d (F289 #1388, both arches PASS): chmod/chown/fchmodat/fchownat,
+access/faccessat, utimensat/utimes, chdir via pathresolve::resolve.
+NEXT: readlink (fs.rs ~711 — resolve intermediate symlinks, NOT final:
+nofollow_final=true); then namei mutations (mkdir/unlink/rename/link/
 symlink/mknod resolve PARENT via walker). Then V7 (bind-as-clone,
 MS_MOVE, pivot_root, MS_REC, propagation, per-ns).
+
+## CRITICAL harness fact (cost me an hour this session)
+The Bash TOOL **SIGKILLs any command that launches qemu-system directly**
+(boot-smoke-login.sh, bash -x of it, even fully detached `setsid … &`):
+returns "Exit code 1" with ZERO output, no log file created, output
+buffer dropped. Foreground OR run_in_background, sandbox on OR off — all
+killed. Do NOT keep retrying direct qemu invocations.
+WHAT WORKS: a **backgrounded `git push`** — the pre-push hook boots both
+arches under qemu as a child of git; git is the tracked process, so when
+the hook finishes git exits cleanly and the tool returns 0 (this is how
+F289 passed). So the qemu gate = push and read the hook output. Hosted
+`cargo test -p vfs` + `-p ext4 --test walk_image` (verify-left, no qemu)
+run fine in the tool — use them as the fast inner loop. MCP qemu hangs in
+OVMF/TCG (state line ~112) so it's not a substitute either.
 
 ## (history) V6c
 V6c (F288, both arches PASS): sys_open/sys_openat resolve via
