@@ -108,3 +108,33 @@ pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
         crate::preempt::set_need_resched();
     }
 }
+
+/// cgroup v2 freezer (`cgroup.freeze=1`): mark `task` frozen and pull it
+/// off the runqueue. A running task yields on the next `need_resched` and
+/// the enqueue chokepoint won't re-add it; a sleeping task stays parked
+/// (the chokepoint blocks its wake-enqueue) until thawed.
+/// # C: O(N) runqueue remove
+pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
+    task.frozen.store(true, Ordering::Release);
+    if let Some(rq) = super::runqueue::global() {
+        let mut inner = rq.inner.lock();
+        let _ = inner.remove(task.tid);
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    }
+    crate::preempt::set_need_resched();
+}
+
+/// cgroup v2 thaw (`cgroup.freeze=0`): clear the frozen flag and
+/// re-enqueue if the task is runnable (a still-blocked task re-enqueues on
+/// its own wake, now that the chokepoint admits it).
+/// # C: O(log N) enqueue
+pub fn unfreeze_task(task: &alloc::sync::Arc<crate::Task>) {
+    task.frozen.store(false, Ordering::Release);
+    if task.state() != crate::TaskState::Runnable { return; }
+    if let Some(rq) = super::runqueue::global() {
+        let mut inner = rq.inner.lock();
+        inner.enqueue(alloc::sync::Arc::clone(task));
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        crate::preempt::set_need_resched();
+    }
+}

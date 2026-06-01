@@ -223,6 +223,24 @@ fn rq_peek_does_not_drain() {
     assert_eq!(rq.nr_running(), 0);
 }
 
+#[test]
+fn rq_enqueue_skips_frozen_task() {
+    // cgroup v2 freezer chokepoint: a task whose `frozen` flag is set is
+    // silently dropped by enqueue, never reaching either class list. Clearing
+    // the flag and re-enqueuing admits it. (live `freeze_task`/`unfreeze_task`
+    // set the flag + drive the global runqueue; this covers the gate itself.)
+    use core::sync::atomic::Ordering;
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let t = normal(5, 100, 1024);
+    t.frozen.store(true, Ordering::Release);
+    rq.enqueue(Arc::clone(&t));
+    assert_eq!(rq.nr_running(), 0, "frozen task must not enter the runqueue");
+    t.frozen.store(false, Ordering::Release);
+    rq.enqueue(t);
+    assert_eq!(rq.nr_running(), 1, "thawed task must enqueue");
+    assert_eq!(rq.pick_next_task().tid, 5);
+}
+
 // ---------------------------------------------------------------------------
 // Task state CAS
 // ---------------------------------------------------------------------------
