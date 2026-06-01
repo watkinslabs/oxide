@@ -68,6 +68,38 @@ impl Inode for ProcSelfRootInode {
     }
 }
 
+/// Per-pid `/proc/<tid>/{exe,cwd,root}` magic symlink. Distinct from
+/// the `/proc/self/*` inodes above (which hardcode "self"): resolves
+/// for an explicit kernel tid so `/proc/1/root` etc. follow to the
+/// real target inode. MUST be a Symlink, not a regular file —
+/// systemd's `running_in_chroot()` does `inode_same("/proc/1/root",
+/// "/")`, which `openat(O_PATH)`-follows the link and compares the
+/// target inode against `/`. A regular-file placeholder resolves to a
+/// procfs inode (never matching `/`), so systemd wrongly concludes it
+/// is chrooted and freezes PID1.
+pub struct ProcPidLinkInode { pub tid: u32, pub leaf: &'static str }
+
+impl Inode for ProcPidLinkInode {
+    fn ino(&self) -> Ino {
+        let base: Ino = match self.leaf {
+            "exe" => 0x3000_1800, "cwd" => 0x3000_1900, _ => 0x3000_1A00,
+        };
+        base | self.tid as Ino
+    }
+    fn file_type(&self) -> FileType { FileType::Symlink }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _name: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn readlink(&self) -> KResult<Vec<u8>> {
+        use core::fmt::Write as _;
+        let mut p = alloc::string::String::new();
+        // `# C: O(N_leaf)` — build "/proc/<tid>/<leaf>" then resolve.
+        let _ = write!(p, "/proc/{}/{}", self.tid, self.leaf);
+        // root is always "/" even for a dead tid; exe/cwd fall back to
+        // "/" (resolve_proc_link returns None only when the tid is gone).
+        Ok(sched::proclink::resolve_proc_link(&p).unwrap_or_else(|| b"/".to_vec()))
+    }
+}
+
 /// Build a per-fd symlink inode targeting the open File's path.
 /// Used by `ProcSelfFdInode::lookup`.
 /// # C: O(target_len)
