@@ -204,3 +204,18 @@ fn per_ns_isolation_and_copy_on_unshare() {
     vfs::mount::set_current_ns_provider(|| 0);
     assert!(vfs::mount::mount_root_at("/u2b-only7").is_none(), "ns 0 can't see ns 7's new mount");
 }
+
+// K2V V7/U3-a: unregister detaches a TABLE mount (e.g. a bind) in the
+// caller's ns — before this, umount of a bind mount was a no-op.
+#[test]
+fn unregister_detaches_table_mount() {
+    let _g = guard();
+    let src: InodeRef = Arc::new(TDir { ino: 0xD00D });
+    vfs::mount::register_bind("/umnt", Arc::new(TestFs { root_ino: 1 }), src).expect("bind");
+    assert!(vfs::mount::mount_root_at("/umnt").is_some(), "bound");
+    let n = vfs::mount::unregister("/umnt");
+    assert_eq!(n, 1, "one mount detached");
+    assert!(vfs::mount::mount_root_at("/umnt").is_none(), "gone after umount");
+    // Unmounting a non-mount removes nothing.
+    assert_eq!(vfs::mount::unregister("/umnt"), 0, "second umount is a no-op");
+}

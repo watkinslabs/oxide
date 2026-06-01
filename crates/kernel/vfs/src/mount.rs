@@ -151,6 +151,21 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
     Ok(())
 }
 
+/// `umount`: remove the mount rooted exactly at `mount_point` in the
+/// caller's namespace (`docs/16§6`). Returns the count removed (0 if
+/// none — e.g. `mount_point` isn't a mount in this ns). Bind mounts and
+/// any future TABLE-resident mount detach here; before this, umount only
+/// touched the devfs registry, so unmounting a bind mount was a silent
+/// no-op that left it resolving forever.
+/// # C: O(N_mounts)
+pub fn unregister(mount_point: &str) -> usize {
+    let ns = current_ns();
+    let mut t = TABLE.lock();
+    let before = t.len();
+    t.retain(|m| !(m.mount_point == mount_point && m.ns == ns));
+    before - t.len()
+}
+
 /// Copy-on-unshare (`docs/16§6`): clone every mount in `from_ns` into
 /// `to_ns` as a fresh independent mount (new `mnt_id`, same fs/root/
 /// mount_point/propagation/peer_group). `sys_unshare(CLONE_NEWNS)` calls
