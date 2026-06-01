@@ -64,9 +64,10 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     let _ = dirfd; //  AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
     let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
-    if let Ok(i) = vfs::mount::lookup(s) { return Ok(i); }
-    if let Some(i) = ext4::rootfs::lookup_inode_any(s.as_bytes()) { return Ok(i); }
-    Err(-(Errno::Enoent.as_i32() as i64))
+    // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW handling
+    // rides the dirfd rewrite); resolve via the path-walk.
+    crate::syscalls::pathresolve::resolve(s, false)
+        .ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 
 /// `sys_utimensat(dirfd, path, times[2], flags)` — slot 280.
