@@ -85,11 +85,41 @@ pub struct UnixPair {
     /// header+payload+fds → recvmsg one header → recvmsg one payload).
     pub a_to_b_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
     pub b_to_a_fds: Spinlock<VecDeque<alloc::vec::Vec<Arc<vfs::File>>>, UnixLockClass>,
+    /// Peer credentials per end (`SO_PEERCRED`).
+    pub cred_a: EndCred,
+    pub cred_b: EndCred,
 }
 
 pub struct UnixRing {
     pub buf: VecDeque<u8>,
     pub closed_writer: bool,
+}
+
+/// Per-end peer credentials (`SO_PEERCRED`): the `{pid,uid,gid}` of the
+/// task owning that end, snapshotted at socketpair / connect / accept.
+pub struct EndCred {
+    pub pid: core::sync::atomic::AtomicU32,
+    pub uid: core::sync::atomic::AtomicU32,
+    pub gid: core::sync::atomic::AtomicU32,
+}
+impl EndCred {
+    /// # C: O(1)
+    pub fn new() -> Self {
+        use core::sync::atomic::AtomicU32;
+        Self { pid: AtomicU32::new(0), uid: AtomicU32::new(0), gid: AtomicU32::new(0) }
+    }
+    /// # C: O(1)
+    pub fn set(&self, pid: u32, uid: u32, gid: u32) {
+        use core::sync::atomic::Ordering;
+        self.pid.store(pid, Ordering::Release);
+        self.uid.store(uid, Ordering::Release);
+        self.gid.store(gid, Ordering::Release);
+    }
+    /// # C: O(1)
+    pub fn get(&self) -> (u32, u32, u32) {
+        use core::sync::atomic::Ordering;
+        (self.pid.load(Ordering::Acquire), self.uid.load(Ordering::Acquire), self.gid.load(Ordering::Acquire))
+    }
 }
 
 impl UnixPair {
@@ -107,7 +137,23 @@ impl UnixPair {
             end_b_subs: Spinlock::new(None),
             a_to_b_fds: Spinlock::new(VecDeque::new()),
             b_to_a_fds: Spinlock::new(VecDeque::new()),
+            cred_a: EndCred::new(),
+            cred_b: EndCred::new(),
         })
+    }
+
+    /// Snapshot the `{pid,uid,gid}` owning `end` (`SO_PEERCRED` source).
+    /// # C: O(1)
+    pub fn set_end_cred(&self, end: crate::UnixEnd, pid: u32, uid: u32, gid: u32) {
+        match end { crate::UnixEnd::A => self.cred_a.set(pid, uid, gid),
+                    crate::UnixEnd::B => self.cred_b.set(pid, uid, gid) }
+    }
+
+    /// The PEER's `{pid,uid,gid}` as seen from `end` (peer of A is B).
+    /// # C: O(1)
+    pub fn peer_cred(&self, end: crate::UnixEnd) -> (u32, u32, u32) {
+        match end { crate::UnixEnd::A => self.cred_b.get(),
+                    crate::UnixEnd::B => self.cred_a.get() }
     }
 
     /// Queue a SCM_RIGHTS burst from `end` for the peer to pick up

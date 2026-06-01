@@ -49,6 +49,24 @@ int main(void) {
     // Receiver opts into credential passing.
     setsockopt(sv[1], SOL_SOCKET, SO_PASSCRED, &one, sizeof one);
 
+    // SO_PEERCRED: both ends of a socketpair belong to this process, so
+    // the reported peer pid/uid/gid must be our own (real creds, not 0).
+#ifndef SO_PEERCRED
+#define SO_PEERCRED 17
+#endif
+    {
+        struct ucred pc; socklen_t pl = sizeof pc;
+        if (getsockopt(sv[0], SOL_SOCKET, SO_PEERCRED, &pc, &pl) < 0)
+            return fail("getsockopt SO_PEERCRED");
+        if (pc.pid != getpid() || pc.uid != getuid()) {
+            char b[96];
+            int n = snprintf(b, sizeof b, "scm_smoke: FAIL peercred pid=%d/%d uid=%u/%u\n",
+                             pc.pid, getpid(), pc.uid, getuid());
+            write(1, b, n);
+            return 1;
+        }
+    }
+
     int pfd[2];
     if (pipe(pfd) < 0) return fail("pipe");
 
