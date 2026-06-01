@@ -155,3 +155,22 @@ fn ms_shared_assigns_distinct_peer_groups() {
     let ga3 = vfs::mount::snapshot().iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
     assert_eq!(ga3, 0, "MS_PRIVATE clears the peer group");
 }
+
+// K2V V7/U2: mounts are stamped with the creating task's mount-ns via the
+// installed provider. No provider ⇒ ns 0. Foundation for per-ns trees.
+#[test]
+fn register_stamps_mount_ns_from_provider() {
+    // No provider installed yet for this key ⇒ ns 0.
+    vfs::mount::register("/ns-default", Arc::new(TestFs { root_ino: 1 })).expect("a");
+    let g0 = vfs::mount::snapshot();
+    let m0 = g0.iter().find(|m| m.mount_point == "/ns-default").unwrap();
+    assert_eq!(m0.ns, 0, "no provider ⇒ ns 0");
+    // Install a provider that reports ns 42; the next mount is stamped 42.
+    vfs::mount::set_current_ns_provider(|| 42);
+    vfs::mount::register("/ns-42", Arc::new(TestFs { root_ino: 2 })).expect("b");
+    let g1 = vfs::mount::snapshot();
+    let m1 = g1.iter().find(|m| m.mount_point == "/ns-42").unwrap();
+    assert_eq!(m1.ns, 42, "provider ns stamped onto the new mount");
+    // Restore so other tests see ns 0.
+    vfs::mount::set_current_ns_provider(|| 0);
+}
