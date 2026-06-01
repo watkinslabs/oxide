@@ -144,10 +144,20 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         return 0;
     }
 
-    // MS_MOVE: relocating an existing mount — not yet implemented
-    // (honest ENOSYS rather than a silent no-op that wouldn't move it).
+    // MS_MOVE: relocate the mount currently at `source` to `target`.
+    // The mount tree is implicit (parent = longest-prefix mount_point),
+    // so the move is a mount_point rewrite preserving mnt_id +
+    // propagation; the new parent_id falls out of the recompute. Source
+    // is the existing mount point (required, absolute).
     if flags & MS_MOVE != 0 {
-        return -(Errno::Enosys.as_i32() as i64);
+        let source = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
+        if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
+        let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
+        return match vfs::mount::move_mount(&source, &target) {
+            Ok(())                    => 0,
+            Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
+            Err(_)                    => -(Errno::Einval.as_i32() as i64),
+        };
     }
 
     // New mount by fstype.
