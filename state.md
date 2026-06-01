@@ -44,27 +44,36 @@ per-AP timers, balancer, resched IPI/SGI, CPU affinity. Full cgroup v2
 controller surface enforced: pids, memory.max, cpu.weight, cpu.max,
 freeze, cpuset.cpus. All hosted-tested + both-arch boot-verified.
 
-## NEXT (substantial fresh-focus efforts — not marathon-tail rushes)
-- **S4c io controller** — the last cgroup dimension. The block chokepoint
-  is `BlockDevice::submit_sync` (crates/kernel/block/blockdev.rs), a leaf
-  crate. Needs: an IO_CHARGE hook (like the cgroup signal/freeze/weight
-  hooks) so submit_sync charges the current task's cgroup bytes; io.stat
-  real; io.max bps throttle = delay/park submit when over rate (reuse the
-  freeze-style park). Verification needs a measured-io workload (a probe
-  that reads/writes N bytes under an io.max cap), not just boot. Real
-  subsystem effort.
-- least-loaded initial placement: DEEMED UNNECESSARY — spawn-local +
-  balancer-spreads is the correct Linux behaviour; don't add.
-- cpuset.mems (NUMA single-node, cosmetic).
-- **Track L** — shared-lib musl userspace + systemd cross-builds
-  (L1/L2/D6 in TASKS.md). The big distro endgame; large external-source
-  cross-build effort. Likely wants a scoping pass before diving in.
+## cgroup v2: io.stat now REAL too (F331)
+IO_CHARGE_HOOK at the page-cache submit_sync chokepoint → per-cgroup
+io_{r,w}bytes/ios; io.stat rolls up the subtree. **LESSON (important):**
+`charge_io` MUST use `TREE.try_lock` not `lock` — the cgroup TREE
+spinlock does NOT disable preemption (sync/lib.rs `lock()` just spins),
+so taking it on a hot/frequent path under F330's SMP preemption
+deadlocks (preempted holder + spinning caller). First cut wedged x86
+boot 2/2; try_lock (drop sample on contention) → 3/3 clean. ANY future
+hot-path TREE access must try_lock or move off the tree lock.
+
+## NEXT
+- **io.max throttle / io.weight** (last cgroup enforcement bits): deep +
+  hard to verify (needs a measured-io probe under a cap) + marginal for
+  systemd. Mind the preemption-lock lesson above. Lower priority.
+- least-loaded placement: UNNECESSARY (spawn-local + balance is correct).
+- cpuset.mems: cosmetic (single NUMA node).
+- **Track L — the big next phase** toward the systemd distro. Concrete
+  bounded first step = **L1**: shared-lib musl runtime + system lib tree
+  (`/lib`,`/usr/lib`, ld-musl config) + dynamic-link build policy + xtask
+  staging of `.so`s. This is kernel/build-side (no external systemd source
+  yet) so it's a clean start. Then L2 (cross-build shared deps both
+  arches), then D6 (vendor systemd). See TASKS.md L1/L2/D6.
 
 ## First task next session
-Either S4c io controller (start with the IO_CHARGE hook + io.stat
-accounting, then io.max throttle) or begin Track L L1 (shared musl
-runtime + lib tree + xtask .so staging). Both are fresh-focus; pick per
-user priority.
+Begin **Track L1**: `git checkout -b F332-shared-musl-runtime`. Audit
+docs/29a (userspace platform) + how userspace is currently statically
+linked (tools/xtask build of busybox/.c probes), then stage a shared
+ld-musl + /lib tree + a dynamic-linked "hello" to prove the loader path.
+(io.max throttle is deferred — deep + marginal; the cgroup surface is
+otherwise complete + enforced.)
 
 ## CRITICAL HARNESS RULES
 - **NEVER run `git branch -D`** (any form) — it always prompts; user
