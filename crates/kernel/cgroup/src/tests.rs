@@ -151,6 +151,21 @@ fn kill_lists_all_subtree_pids() {
     assert_eq!(pids, alloc::vec![1, 2, 3]);
 }
 
+// S4b: cpuset.cpus cpulist → bitmask (pure).
+#[test]
+fn cpulist_parses_ranges_and_singles() {
+    use crate::cpulist_to_mask;
+    assert_eq!(cpulist_to_mask("0"), Some(0b1));
+    assert_eq!(cpulist_to_mask("0-3"), Some(0b1111));
+    assert_eq!(cpulist_to_mask("0-1,3"), Some(0b1011));
+    assert_eq!(cpulist_to_mask("2,4,6"), Some(0b101_0100));
+    assert_eq!(cpulist_to_mask(" 1 - 2 , 5 "), Some(0b10_0110)); // tolerant of spaces
+    assert_eq!(cpulist_to_mask(""), None);     // empty → no restriction
+    assert_eq!(cpulist_to_mask("  "), None);
+    assert_eq!(cpulist_to_mask("63"), Some(1u64 << 63));
+    assert_eq!(cpulist_to_mask("garbage"), None);
+}
+
 // S3: cpu.max bandwidth decision (pure).
 #[test]
 fn cpu_bandwidth_throttles_over_quota() {
