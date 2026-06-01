@@ -172,6 +172,112 @@ pub unsafe fn enable(gicd_va: u64, gicr_va: u64) -> GicStatus {
     }
 }
 
+/// GICv3 redistributor stride on QEMU virt: 128 KiB per PE (RD frame at
+/// +0, SGI frame at +0x10000). CPU N's frame = base + N·stride.
+#[cfg(target_arch = "aarch64")]
+pub const GICR_STRIDE: u64 = 0x2_0000;
+
+/// CPU0's redistributor base VA (= the region base), stashed by `enable`.
+/// AP redistributor VA = `gicr_base() + cpu_idx * GICR_STRIDE`.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub fn gicr_base() -> u64 { GICR_VA.load(Ordering::Acquire) }
+
+/// SMP AP bring-up of the GICv3 CPU interface (`13§11`): wake THIS PE's
+/// redistributor at `ap_gicr_va`, then enable its system-register CPU
+/// interface (ICC_SRE/PMR/IGRPEN1). The distributor is global (already
+/// up via the BSP's `enable`), so this is the per-PE half only — it does
+/// NOT touch GICD or the GICD_VA/GICR_VA stash (those stay the BSP's).
+///
+/// # SAFETY: caller is an AP at EL1, IRQs masked; `ap_gicr_va` is this
+/// PE's redistributor frame, Device-attr mapped by the BSP before CPU_ON.
+/// # C: O(spin until ChildrenAsleep)
+/// # Ctx: AP bring-up, IRQ-off
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn ap_cpu_interface_enable(ap_gicr_va: u64) {
+    // SAFETY: per fn contract; this PE's own redistributor + CPU-interface sysregs.
+    unsafe {
+        // Wake this PE's redistributor.
+        let waker = (ap_gicr_va + GICR_WAKER as u64) as *mut u32;
+        let w = core::ptr::read_volatile(waker);
+        core::ptr::write_volatile(waker, w & !WAKER_PROCESSOR_SLEEP);
+        let mut spin = 0u32;
+        while core::ptr::read_volatile(waker) & WAKER_CHILDREN_ASLEEP != 0 {
+            spin = spin.wrapping_add(1);
+            if spin > 1_000_000 { break; }
+            core::hint::spin_loop();
+        }
+        // CPU interface: ICC_SRE_EL1.SRE=1, ICC_PMR_EL1=0xFF, ICC_IGRPEN1_EL1=1.
+        core::arch::asm!(
+            "mrs  x9,  s3_0_c12_c12_5",
+            "orr  x9,  x9,  #1",
+            "msr  s3_0_c12_c12_5, x9",   // ICC_SRE_EL1
+            "isb",
+            "mov  x9,  #0xff",
+            "msr  s3_0_c4_c6_0,   x9",   // ICC_PMR_EL1
+            "mov  x9,  #1",
+            "msr  s3_0_c12_c12_7, x9",   // ICC_IGRPEN1_EL1
+            "isb",
+            out("x9") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Enable SGI/PPI `intid` (< 32) in a specific redistributor's SGI frame
+/// (`ap_gicr_va + 0x10000`) at default priority. Per-PE, so APs call this
+/// on their own frame (the BSP's `enable_intid` only touches CPU0's).
+/// # SAFETY: caller asserts `ap_gicr_va` is a mapped redistributor; intid < 32.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn enable_sgi_on(ap_gicr_va: u64, intid: u32) {
+    let sgi = ap_gicr_va + GICR_SGI_OFFSET;
+    // SAFETY: per fn contract; ISENABLER0 + IPRIORITYR live in the SGI frame.
+    unsafe {
+        let prio = (sgi + GICR_IPRIORITYR as u64 + intid as u64) as *mut u8;
+        core::ptr::write_volatile(prio, 0xa0);
+        let isenabler = (sgi + GICR_ISENABLER0 as u64) as *mut u32;
+        core::ptr::write_volatile(isenabler, 1u32 << (intid & 31));
+    }
+}
+
+/// Send SGI `intid` (0..15) to the PE with affinity-0 == `target_aff0`
+/// (Aff1/2/3 = 0 on QEMU virt) via ICC_SGI1R_EL1. Used as the cross-CPU
+/// resched IPI (`13§9`/§11).
+/// # SAFETY: caller asserts the CPU interface is enabled; intid < 16.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn send_sgi(target_aff0: u32, intid: u32) {
+    // ICC_SGI1R_EL1: INTID[27:24], Aff1[23:16]=0, TargetList[15:0]=1<<aff0.
+    let val: u64 = ((intid as u64 & 0xf) << 24) | (1u64 << (target_aff0 & 0xf));
+    // SAFETY: ICC_SGI1R_EL1 (s3_0_c12_c11_5) is writable at EL1; generates the SGI.
+    unsafe {
+        core::arch::asm!(
+            "msr s3_0_c12_c11_5, {v:x}",
+            "isb",
+            v = in(reg) val,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+/// SGI INTID used as the cross-CPU resched IPI (`13§9`/§11).
+#[cfg(target_arch = "aarch64")]
+pub const RESCHED_SGI: u32 = 0;
+
+/// arm resched-IPI: send the resched SGI to CPU `cpu` (affinity-0 ==
+/// `cpu` on QEMU virt). Matches the `SendReschedIpiFn` ABI so it can be
+/// installed via `sched::live::set_send_resched_ipi_hook`. Always
+/// "succeeds" (SGI generation is fire-and-forget).
+/// # SAFETY: caller asserts the GIC CPU interface is enabled on the sender.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn send_resched_ipi(cpu: u32) -> bool {
+    // SAFETY: per fn contract; SGI write via ICC_SGI1R_EL1.
+    unsafe { send_sgi(cpu, RESCHED_SGI); }
+    true
+}
+
 /// Enable an SGI/PPI/SPI INTID. SGIs/PPIs (INTID < 32) live in the
 /// per-CPU Redistributor (SGI frame); SPIs (INTID >= 32) live in
 /// the Distributor and additionally need GICD_IROUTER set so the
