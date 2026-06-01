@@ -756,6 +756,12 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr) -> Result<
             // F181a: client end is B; register subscribers before
             // setting kind so peer-A writes find live subs.
             pair.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
+            // SO_PEERCRED: the connecting task owns end B.
+            if let Some(c) = sched::live::current() {
+                use core::sync::atomic::Ordering;
+                pair.set_end_cred(crate::UnixEnd::B, c.tgid.load(Ordering::Relaxed),
+                    c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
+            }
             *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::B);
             Ok(())
         }
@@ -866,6 +872,12 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         // assigning the kind so the first write from peer-B sees
         // a live subscription.
         pair.register_end_subs(crate::UnixEnd::A, &new_sock.poll_subs);
+        // SO_PEERCRED: the accepting task owns end A.
+        if let Some(c) = sched::live::current() {
+            use core::sync::atomic::Ordering;
+            pair.set_end_cred(crate::UnixEnd::A, c.tgid.load(Ordering::Relaxed),
+                c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
+        }
         *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
         return Ok(Accepted { new_sock, peer: None });
     }

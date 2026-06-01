@@ -146,6 +146,22 @@ pub(crate) fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
 /// Downcast an `Arc<dyn vfs::Inode>` to `Arc<InetSocket>` by
 /// pattern: only succeeds when the inode IS an InetSocket
 /// (vouched by the high-bit tag in `ino()`).
+/// `SO_PEERCRED` source: resolve `fd` → its AF_UNIX socket → the peer
+/// end's `{pid,uid,gid}`. `None` for non-unix / unconnected fds.
+/// # C: O(1)
+fn peercred_for_fd(fd: i32) -> Option<(u32, u32, u32)> {
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    let file = fdt.get(fd).ok()?;
+    let sock = inode_as_inet_socket(&file.inode())?;
+    let kind = sock.kind.lock();
+    match &*kind {
+        SockKind::Unix(pair, end) => Some(pair.peer_cred(*end)),
+        _ => None,
+    }
+}
+
 fn inode_as_inet_socket(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
     if (inode.ino() & 0xFFFF_FFFF_0000_0000) != 0x534F_434B_0000_0000 {
         return None;
@@ -368,6 +384,14 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // SO_PEERCRED: both ends of a socketpair belong to the caller.
+    if let Some(p) = &stream {
+        use core::sync::atomic::Ordering;
+        let (pid, uid, gid) = (cur.tgid.load(Ordering::Relaxed),
+            cur.creds.euid.load(Ordering::Relaxed), cur.creds.egid.load(Ordering::Relaxed));
+        p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
+        p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
+    }
     let a = {
         let inode = mk(net::UnixEnd::A);
         let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
@@ -791,12 +815,22 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
        && optval != 0 && optval < USER_VA_END
        && optlen_p != 0 && optlen_p < USER_VA_END
     {
-        let pid = sched::live::current().map(|c| c.tid as u32).unwrap_or(0);
+        // Real peer creds for a connected AF_UNIX fd (snapshotted at
+        // socketpair/connect/accept); falls back to the caller's own
+        // {pid,euid,egid} for non-unix/unconnected sockets.
+        let (pid, uid, gid) = peercred_for_fd(args.a0 as i32).unwrap_or_else(|| {
+            use core::sync::atomic::Ordering;
+            sched::live::current()
+                .map(|c| (c.tgid.load(Ordering::Relaxed),
+                          c.creds.euid.load(Ordering::Relaxed),
+                          c.creds.egid.load(Ordering::Relaxed)))
+                .unwrap_or((0, 0, 0))
+        });
         // SAFETY: optval+optlen_p validated < USER_VA_END; struct ucred is 12 bytes; CPL=0 writes through caller's AS.
         unsafe {
             core::ptr::write_volatile( optval        as *mut u32, pid);
-            core::ptr::write_volatile((optval +  4)  as *mut u32, 0);
-            core::ptr::write_volatile((optval +  8)  as *mut u32, 0);
+            core::ptr::write_volatile((optval +  4)  as *mut u32, uid);
+            core::ptr::write_volatile((optval +  8)  as *mut u32, gid);
             core::ptr::write_volatile(optlen_p as *mut u32, 12);
         }
         return 0;

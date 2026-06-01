@@ -25,7 +25,20 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## Open: F311 (K5: memfd seals) pushing.
+## Open: F312 (K5: SO_PEERCRED real) pushing.
+SO_PEERCRED now returns the PEER's real {pid,uid,gid} (was caller's tid +
+uid 0). UnixPair gains EndCred per end (cred_a/cred_b); snapshotted at
+socketpair (both=caller), connect (end B=client), accept (end A=server);
+`peer_cred(end)` returns the OTHER end. getsockopt SO_PEERCRED resolves
+fd→inode_as_inet_socket→kind Unix(pair,end)→peer_cred; fallback = caller's
+{tgid,euid,egid} for non-unix. dbus/systemd peer auth needs this. Verified
+by scm_smoke (socketpair peer pid==getpid, uid==getuid). Both arches build
++ spec-lint clean.
+NEXT K5: SCM_CREDENTIALS cmsg (pass creds in sendmsg/recvmsg),
+NETLINK_KOBJECT_UEVENT broadcast (udev). Then K4 (rtnetlink dump), K1b.
+
+## (history) K5 memfd seals
+## F311 (#1411): memfd F_ADD_SEALS/F_GET_SEALS real.
 memfd F_ADD_SEALS/F_GET_SEALS now real. TmpfsFileInode gains seals
 (AtomicU32) + sealable flag; memfd_create(MFD_ALLOW_SEALING) →
 new_sealable(); Inode::fcntl_seals() exposes them (None for non-memfds →
