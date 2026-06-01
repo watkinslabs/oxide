@@ -775,6 +775,14 @@ extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
             // cgroup v2 cpu.max bandwidth scan: throttle (freeze) cgroups
             // over quota this period, unthrottle on period refill (`26`).
             crate::cgroup_cpu::tick(now_ns);
+            // SMP periodic load balance per `13§11`: spread runnable tasks
+            // across online CPUs. balance_once migrates ≤1 task busiest→
+            // idlest per call; loop a bounded number so a burst converges
+            // within one tick instead of one-per-100ms. No-op with <2 CPUs.
+            for _ in 0..cpu::smp::online_count() {
+                // SAFETY: kthread context (not under any runqueue lock); global_for returns stable refs for online CPUs; balance_once takes the per-CPU inner locks in cpu-id order so no pair deadlocks.
+                if unsafe { sched::live::balance::balance_once() } == 0 { break; }
+            }
             // B14: subreap orphan zombies (parent gone, never waited).
             // Without this they accumulate in ZOMBIES holding Task
             // struct + 16KB kernel stack per orphan — sshd's per-conn
