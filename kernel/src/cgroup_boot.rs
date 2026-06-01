@@ -31,7 +31,25 @@ pub fn install_hooks() {
     cgroup::set_signal_hook(cgroup_kill_hook);
     cgroup::set_freeze_hook(cgroup_freeze_hook);
     cgroup::set_weight_hook(cgroup_weight_hook);
+    cgroup::set_cpuset_hook(cgroup_cpuset_hook);
 }
+
+/// cgroup.cpuset delivery hook: set the CPU-affinity mask of the task
+/// whose global tid is `pid`. Registered via `cgroup::set_cpuset_hook`.
+/// # C: O(N) registry lookup
+#[cfg(target_os = "oxide-kernel")]
+pub fn cgroup_cpuset_hook(pid: u64, mask: u64) {
+    use core::sync::atomic::Ordering;
+    if mask == 0 { return; }
+    if let Some(t) = sched::live::registry::lookup_in_ns(0, pid as u32) {
+        t.cpus_allowed.store(mask, Ordering::Release);
+    }
+}
+
+/// Host-build no-op for `cgroup_cpuset_hook`.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn cgroup_cpuset_hook(_pid: u64, _mask: u64) {}
 
 /// cgroup.weight delivery hook: set the live CFS load weight of the task
 /// whose global tid is `pid`. Registered via `cgroup::set_weight_hook`.
