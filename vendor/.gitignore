@@ -487,3 +487,5 @@ libidn2/libidn2-2.3.7.tar.gz
 !systemd/install-aarch64/**
 systemd/systemd-259/
 systemd/systemd-259.tar.gz
+systemd/musl-shims/linux/
+systemd/musl-shims/*.o
