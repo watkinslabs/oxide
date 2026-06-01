@@ -76,6 +76,9 @@ else
 /bin/openssl_probe
 echo post-openssl_probe rv=$?
 fi
+echo pre-libidn2_probe
+/bin/libidn2_probe
+echo post-libidn2_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
