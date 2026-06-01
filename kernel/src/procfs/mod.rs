@@ -667,7 +667,9 @@ impl Inode for ProcPidDirInode {
               | "pagemap" | "kpagecount" | "kpageflags" | "attr"
               => Ok(StaticFileInode::new(b"") as InodeRef),
             "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
-            "exe" | "cwd" | "root" => Ok(StaticFileInode::new(b"/") as InodeRef),
+            // exe/cwd/root: magic symlinks (followed by stat/O_PATH) per ProcPidLinkInode.
+            "exe" | "cwd" | "root" => Ok(Arc::new(crate::procfs::proc_links::ProcPidLinkInode {
+                tid, leaf: match name { "exe" => "exe", "cwd" => "cwd", _ => "root" } }) as InodeRef),
             "fd"     => Ok(Arc::new(ProcSelfFdInode) as InodeRef),
             "fdinfo" => Ok(Arc::new(crate::procfs::fdinfo::ProcFdInfoDirInode {
                 tid_opt: if self.is_self { None } else { Some(tid) }
@@ -684,7 +686,12 @@ impl Inode for ProcPidDirInode {
         let mut idx = off as usize;
         while idx < ENTRIES.len() {
             let next = idx as u64 + 1;
-            if !f(next, ENTRIES[idx], FileType::Regular) { return Ok(next); }
+            let ft = match ENTRIES[idx] {
+                "exe" | "cwd" | "root" => FileType::Symlink,
+                "fd" | "fdinfo"        => FileType::Directory,
+                _                      => FileType::Regular,
+            };
+            if !f(next, ENTRIES[idx], ft) { return Ok(next); }
             idx += 1;
         }
         Ok(idx as u64)
