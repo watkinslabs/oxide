@@ -316,9 +316,14 @@ unsafe fn capture_cmdline() {
     let bytes: &'static [u8] = unsafe {
         core::slice::from_raw_parts(dst.as_ptr(), n)
     };
-    // SAFETY: kernel::boot_cmdline::set is single-writer / boot-only;
-    // bytes is a 'static slice with the captured cmdline.
+    // Kernel-only: `kernel::boot_cmdline` is
+    // `#[cfg(target_os = "oxide-kernel")]`, so the host
+    // (`cargo test --workspace`) build must not reference it.
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: kernel::boot_cmdline::set is single-writer / boot-only; bytes is a 'static slice with the captured cmdline.
     unsafe { kernel::boot_cmdline::set(bytes); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = bytes;
 }
 
 /// Build a `BootInfo` by reading the bootloader-populated Limine
