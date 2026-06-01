@@ -1,68 +1,69 @@
 # Session hand-off — 2026-06-01
 
 ## TL;DR
-Autonomous run, Track K systemd-blockers. This session closed Track K's
-**foundation-sound surface**. Last 2 PRs: F319 (#1418), F320 (#1419).
+Autonomous run. Closed Track K's foundation-sound cgroup enforcement,
+then (user chose "build preemptive scheduler" at the K→L fork) shipped
+the **scheduler runtime-accounting + cgroup cpu-controller arc**.
+7 PRs this session: F319 #1418, F320 #1419, D08 #1420, F321 #1421,
+F322 #1422, F323 #1423.
 
-## Done this session (Track K1b enforcement)
-- **F319 cgroup.freeze REAL** (#1418): `cgroup.freeze=1` now actually
-  freezes member tasks, not just a tree flag. Per-task `Task::frozen`
-  AtomicBool gates the single runqueue **enqueue chokepoint**
-  (`runqueue.rs`); `freeze_task`/`unfreeze_task` (`live/sigpend.rs`,
-  re-exported at `sched::live`); boot-installed `FREEZE_HOOK` mirroring
-  cgroup.kill's SIGNAL_HOOK; `cgroup_boot::install_hooks()` (net-zero
-  lib.rs). Split `task::cap` consts → `task/cap.rs` (task.rs was >1000).
-  Hosted test: enqueue skips frozen, admits thawed.
-- **F320 memory.max REAL** (#1419): memory controller charges + enforces.
-  Per-pid charge map in cgroup tree (`try_charge_mem`/`uncharge_mem`/
-  `subtree_mem`), hierarchical ancestor-cap check, exit uncharges whole
-  footprint (symmetric by construction), charge migrates on cgroup move.
-  `memory.current`/`memory.stat` now report `subtree_mem` (were static 0).
-  Wired at `sys_brk` (grow charges delta → ENOMEM-as-old-brk on cap;
-  shrink uncharges). 7 hosted unit tests prove the lot.
+## Done this session
+- **F319 cgroup.freeze REAL**: per-task `Task::frozen` + runqueue enqueue
+  chokepoint + `freeze_task`/`unfreeze_task` + boot `FREEZE_HOOK`.
+- **F320 memory.max REAL**: per-pid charge map in cgroup tree
+  (`try_charge_mem`/`uncharge_mem`/`subtree_mem`, hierarchical cap, exit
+  uncharges whole footprint, migrates on move), wired at `sys_brk`. 7 tests.
+- **F321 sched runtime accounting (S1)**: `cputime` module (nice→weight
+  table, `vruntime_delta`, `clamp_delta`); `Task::{exec_start_ns,
+  sum_exec_runtime_ns}`; `update_curr(prev,now)` charges real elapsed
+  time weighted by load (replaced fixed +1 bump) in both schedule paths;
+  `/proc/<pid>/stat` utime + `/proc/<pid>/sched` now live. 6 tests.
+- **F322 dynamic weight (S2)**: `Task::load_weight` AtomicU32; setpriority
+  + cgroup `cpu.weight` (WEIGHT_HOOK, 100↔1024) rewrite it. 2 tests.
+- **F323 cpu.max (S3)**: `kernel::cgroup_cpu::tick` period scan (outside
+  rq lock — inline charge would deadlock on the freezer's rq lock);
+  `cpu_bandwidth_decision` pure (Continue/Throttle/Refill); throttle =
+  freeze members, refill = unfreeze + re-baseline. 3 tests.
 
-## Track K status (TASKS.md K-track)
-- K1/K2/K3/K6 + K2V VFS rebuild: done (prior sessions).
-- K1b enforcement: **foundation-sound items DONE** — freeze (F319),
-  pids-counts-threads (prior), memory.max (F320). Dynamic
-  /proc/self/mountinfo cgroup2 line already satisfied (`procfs/mounts.rs`
-  reads `vfs::mount::snapshot`; cgroup2 registers via `vfs::mount::register`).
+## State of the controllers (Track S in TASKS.md)
+cgroup v2 pids / memory / cpu(weight+max) / freeze are all REAL +
+hosted-tested + boot-clean on both arches. **S4 (io + cpuset) BLOCKED**:
+cpuset needs real SMP (AP bring-up + periodic load-balance is only a
+one-shot boot smoke today; production scheduling is single-CPU); io
+needs block-layer per-request accounting. Neither is a systemd
+hard-blocker. Revisit after a real periodic SMP balancer.
 
-## OPEN DECISION — Track K → L boundary (asked the user)
-K1b's remaining items — **cpu.weight/cpu.max, io controller, cpuset
-affinity** — are genuinely BLOCKED on a preemptive-SMP scheduler:
-- Audit confirms NO per-task runtime accounting: `timer_tick` integration
-  is stubbed (`live/preempt.rs` `tick_pick_next` no-op variant;
-  `schedule.rs:57` "timer_tick integration will scale by wall_dt/weight
-  ... subsequent P1-N"). vruntime updates deferred.
-- cpu.max needs per-tick runtime charging + deschedule-on-quota (the freeze
-  mechanism gives the deschedule half; the accounting half is missing).
-- Building these on the cooperative-with-timer-wake scheduler = bolt-on on
-  sand (CLAUDE.md "foundation before wiring"; no v1-subset).
-Fork presented to user: (A) build preemptive-SMP scheduler foundation now
-(unblocks cpu/io/cgroup enforcement; real phase-4 gap), (B) proceed to
-Track L (shared-lib userspace / systemd vendoring — distro path), (C) other.
+## Next (autonomous — do NOT ask, just build)
+The systemd-relevant kernel enforcement is complete. Next bounded,
+unblocked, systemd-relevant work is Track R remainders:
+- **R5**: writable `/proc/sys` sysctls backed by real state (systemd-sysctl
+  applies `/etc/sysctl.d`). Bounded, kernel-side, testable.
+- **R6**: merged-usr intermediate-dir symlink follow (`/bin`→`/usr/bin`).
+- **R2b**: general open()-time ext4 symlink follow.
+Then the big lift = **Track L** (shared-lib musl userspace + systemd dep
+cross-builds) — large external-source effort; approach pre-specified in
+TASKS.md L1/L2/D6.
 
 ## First task next session
-Act on the user's Track-K→L fork answer. If (B) Track L: audit TASKS.md
-L-track + `docs/29a` userspace platform for the systemd/shared-lib
-vendoring entry point. If (A) scheduler: real `timer_tick` runtime
-accounting (update_curr/delta_exec) as the foundation, then cpu.max via
-freeze-on-quota.
+Start R5 (writable sysctls). `git checkout -b F324-...`.
 
-## CRITICAL HARNESS RULES (unchanged — read before pushing)
+## CRITICAL HARNESS RULES
+- **Merge flow: do NOT run `git branch -D` after `gh pr merge
+  --delete-branch=true`** — gh already deletes the local branch; the
+  extra command is redundant AND (when chained) re-triggers permission
+  prompts. User flagged this repeatedly. Run approved git commands
+  standalone, not bundled in `;`-chains.
 - Boot gate = backgrounded PLAIN `git push` (run_in_background +
-  dangerouslyDisableSandbox), pre-push hook boots both arches under KVM.
-  `PUSH_DONE rc=0` in `.pushNNN.txt` = passed. If hook fails at
-  "make smoke-x86 did not reach login" → CAT-smoke flake, RE-PUSH plain.
-- NEVER put literal `qemu-system` in a Bash command — `pkill -f` self-kills
-  the wrapper shell.
-- `git push 2>FILE`; explicit `git add <paths>` NOT `-A`; valid-hex test
-  literals; lib.rs AT 1000-line cap (net-zero edits only).
-- After merge: `git checkout main && git pull`, `git checkout --
-  kernel/blobs/rootfs-*.img`, rm `.pushNNN.txt`.
+  dangerouslyDisableSandbox); pre-push hook boots both arches under KVM.
+  `PUSH_DONE rc=0` = passed. Hook fail at "did not reach login" =
+  CAT-smoke flake → RE-PUSH plain.
+- NEVER put literal `qemu-system` in a Bash command (pkill self-kills).
+- `git push 2>FILE`; explicit `git add <paths>` NOT `-A`; lib.rs AT
+  1000-line cap (net-zero edits — combine mod decls on one line if needed).
 - Inner loop = hosted `cargo test -p <crate>` + `cargo test --workspace`;
   `cargo run -p xtask -- spec-lint` clean before every commit AND PR.
-- Branch per stage F<NN>- (next: F321); user does NOT want me polling
-  GitHub CI ("it slows development; I'll flag problems").
-- User wants enforcement PROVABLE via hosted unit tests, not just wired.
+- User does NOT want CI polling; user does NOT want AskUserQuestion used
+  to gate progress during an autonomous run — make the call, keep shipping.
+- Enforcement must be PROVABLE via hosted unit tests, not just wired.
+- After merge: `git checkout main && git pull`, `git checkout --
+  kernel/blobs/rootfs-*.img`, rm `.pushNNN.txt`.
