@@ -241,3 +241,27 @@ fn move_mount_relocates_subtree() {
         .find(|m| m.mount_point == "/sm-dst/inner").unwrap().mnt_id;
     assert_eq!(new_sub_id, sub_id, "submount mnt_id preserved across move");
 }
+
+// K2V V7/U4-b: peer-group inheritance. join_peer_group makes a mount a
+// peer (same shared:<pg>) of a shared source — the basis for propagation.
+#[test]
+fn join_peer_group_shares_group() {
+    let _g = guard();
+    use std::sync::atomic::Ordering;
+    use vfs::mount::Propagation;
+    vfs::mount::register("/pi-src", Arc::new(TestFs { root_ino: 1 })).expect("src");
+    vfs::mount::set_propagation("/pi-src", Propagation::Shared).expect("share");
+    let pg = vfs::mount::peer_group_of("/pi-src");
+    assert!(pg != 0, "shared source has a peer group");
+    // A new mount joins that group → same shared:<pg>.
+    vfs::mount::register("/pi-dst", Arc::new(TestFs { root_ino: 2 })).expect("dst");
+    assert_eq!(vfs::mount::peer_group_of("/pi-dst"), 0, "fresh mount has no group");
+    vfs::mount::join_peer_group("/pi-dst", pg);
+    assert_eq!(vfs::mount::peer_group_of("/pi-dst"), pg, "joined the source's peer group");
+    // And it's now Shared.
+    let snap = vfs::mount::snapshot();
+    let m = snap.iter().find(|m| m.mount_point == "/pi-dst").unwrap();
+    assert_eq!(Propagation::from_u8(m.propagation.load(Ordering::Acquire)), Propagation::Shared);
+    // peer_group_of a non-mount is 0.
+    assert_eq!(vfs::mount::peer_group_of("/pi-nope"), 0);
+}
