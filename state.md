@@ -20,8 +20,40 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6f done. NEXT: namei mutations, then V7
-V6f (F291, branch open): readlink/readlinkat resolve via
+## V1–V6f done + V6g-a (foundation). NEXT: V6g-b namei switch, then V7
+V6g-a (F292, branch open): the inode-level mutation FOUNDATION for the
+namei-via-walker switch. Added to the vfs Inode trait (default Erofs):
+`create_child`, `unlink_child`, `symlink_child`, `mknod_child` (mkdir/
+rmdir already existed). Implemented on **Ext4StatInode** (keyed on
+self.ino as parent dir → existing mount.create_dir/create_file/
+create_symlink/create_mknod/unlink/dir_unlink ops) and on **tmpfs
+TmpfsRootInode** (mkdir/rmdir/create_child/unlink_child over the flat
+registry; symlink/mknod stay default-Erofs = current tmpfs capability,
+no regression). Builds both arches; 67 vfs+ext4+fs tests green. Nothing
+calls these yet → zero boot risk.
+
+### NEXT — V6g-b: switch namei.rs to parent-inode dispatch (DO CAREFULLY)
+Rewrite sys_{mkdir,mkdirat,unlink,unlinkat,rmdir,symlink,symlinkat,mknod,
+mknodat} to: read path → resolve_cwd → strip_trailing_slash → landlock
+check (KEEP) → resolve PARENT via `pathresolve::resolve(parent, false)`
+→ `parent_inode.<op>(basename)` → errno_from_vfs. Drop is_ext4_path/
+mount_for_write/pseudo_mkdir/pseudo_rmdir/mkdir_target_exists string
+gates. This follows intermediate symlinks + crosses mounts for the parent
+(the Linux model). RISK (boot-only gate, hosted harness has no tmpfs/
+mounts): (a) mkdir of a mountpoint that exists only as a mount, not an
+ext4 dir entry — but /proc,/sys,/dev,/run,/tmp ARE pre-created ext4 dirs
+so lookup_child_ino finds them → Eexist, OK; (b) cgroupfs mkdir via the
+whole-path-delegated /sys/fs/cgroup mount — verify devfs/cgroupfs parent
+inode resolves through path_lookup's whole-path delegation and has mkdir;
+(c) B47: /var,/tmp,/run currently force-routed to ext4 — after the switch
+the parent resolves to whatever path_lookup crosses into (ext4 dir or
+tmpfs mount); reads already go via path_lookup so it stays consistent.
+LEAVE link/linkat (O_TMPFILE + ext4 inode markers) and rename (EXDEV,
+cross-parent) on their existing ext4 path-based machinery for now — add
+`link_child`/cross-parent rename later. GATE: rcS does real mkdir/touch/
+rm in /var,/tmp,/run + dhcpcd; boot-login BOTH arches via the push hook
+is the only true verifier. If a boot breaks, the hook blocks the push.
+V6f (F291 #1390): readlink/readlinkat resolve via
 `pathresolve::resolve(path, no_follow_final=true)` — follows INTERMEDIATE
 symlinks, returns the FINAL link's target (never follows it), replacing
 the non-following `lookup_inode_any`+`vfs::mount::lookup` chain. proc-link
