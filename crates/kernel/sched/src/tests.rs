@@ -224,6 +224,19 @@ fn rq_peek_does_not_drain() {
 }
 
 #[test]
+fn cpus_allowed_defaults_to_any() {
+    use core::sync::atomic::Ordering;
+    // A fresh task may run on any CPU (all-ones mask); sched_setaffinity
+    // narrows it. The balancer's affinity guard reads this bit per dest CPU.
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    assert_eq!(t.cpus_allowed.load(Ordering::Acquire), u64::MAX);
+    // restrict to CPU 0 only
+    t.cpus_allowed.store(1, Ordering::Release);
+    assert_eq!(t.cpus_allowed.load(Ordering::Acquire) & (1 << 0), 1, "allowed on cpu0");
+    assert_eq!(t.cpus_allowed.load(Ordering::Acquire) & (1 << 1), 0, "not on cpu1");
+}
+
+#[test]
 fn load_weight_seeds_from_class() {
     use core::sync::atomic::Ordering;
     // A Normal task's live load_weight starts at its class weight; RT/Idle
