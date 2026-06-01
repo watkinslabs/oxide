@@ -40,7 +40,7 @@ found HOST glibc libs (pkg-config leaked /usr/lib/pkgconfig) — wrong for musl 
 
 ## First command (next session)
 systemd cross-build VALIDATED (research/systemd-build.md): meson setup clean vs our
-musl libs, `src/basic/libbasic.a` builds. x86 systemd libs BUILD (libsystemd-shared + libsystemd.so.0); vendor/systemd/build.sh does both arches. ARM BLOCKED on old-UAPI struct statx — stage modern linux/ UAPI into musl-shims + -I for arm (research/systemd-build.md). Then F348: stage libs + systemd_probe.
+musl libs, `src/basic/libbasic.a` builds. systemd libs build BOTH arches (libsystemd-shared + libsystemd); F348 stages libsystemd.so + systemd_probe (rv=0 both arches — first systemd code runs on oxide). NEXT: PID1 /lib/systemd/systemd + units (F349); libsystemd-shared built+installed, ready.
 (fix surfaced musl gaps), then write `vendor/systemd/build.sh` (both arches: gen cross file
 + gen-pc.sh + meson + ninja the needed targets) + stage PID1/libsystemd-shared + minimal units
 + a systemd_probe → first gate-verifiable PR F348. `vendor/systemd/gen-pc.sh <arch>` writes the

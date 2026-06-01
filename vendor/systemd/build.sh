@@ -11,6 +11,21 @@ ROOT="$(cd .. && pwd)"                         # vendor/
 SHIM="$(pwd)/musl-shims"
 CROSSDIR="$(cd ../cross/aarch64-linux-musl-cross/bin && pwd)"
 
+# Stage modern generic Linux UAPI (struct statx etc.) into the shim so a
+# HIGH-priority -I<shim> overrides the aarch64-linux-musl-cross sysroot's
+# pre-statx <linux/stat.h>. Generic linux/ UAPI is arch-independent; we do
+# NOT copy asm/ (arch-specific — the cross sysroot's asm/ stays correct).
+# Build-time copy from the host kernel-headers (not committed). Copy ONLY
+# the headers needed for struct statx — copying all of linux/ drags in
+# headers with glibc-context deps (e.g. vm_sockets.h needs struct sockaddr)
+# that break the musl compile.
+if [ -d /usr/include/linux ]; then
+  rm -rf "$SHIM/linux"; mkdir -p "$SHIM/linux"
+  for h in stat.h types.h posix_types.h; do
+    [ -f "/usr/include/linux/$h" ] && cp "/usr/include/linux/$h" "$SHIM/linux/"
+  done
+fi
+
 OPTS="-Dlibc=musl -Dmode=release \
 -Dkmod=enabled -Dseccomp=enabled -Dopenssl=enabled -Dblkid=enabled -Dacl=enabled -Dlibidn2=enabled \
 -Dgcrypt=disabled -Dtpm2=disabled -Dlibfido2=disabled -Dpwquality=disabled -Dp11kit=disabled \
@@ -20,6 +35,16 @@ OPTS="-Dlibc=musl -Dmode=release \
 -Dbzip2=disabled -Dlibarchive=disabled -Dxz=disabled -Dlz4=disabled -Dzlib=disabled -Dzstd=disabled \
 -Dgshadow=false -Dima=false -Defi=false -Dbootloader=disabled -Dhomed=disabled -Drepart=disabled \
 -Dsysupdate=disabled -Dukify=disabled -Dman=false -Dhtml=false"
+
+# The aarch64-linux-musl-cross toolchain's musl predates statx (musl
+# 1.2.0); systemd uses struct statx unconditionally. Backport it into the
+# toolchain's <sys/stat.h> once (reproducible; toolchain is fetched, not
+# committed).
+ARM_STAT="${CROSSDIR}/../aarch64-linux-musl/include/sys/stat.h"
+if [ -f "$ARM_STAT" ] && ! grep -q "struct statx" "$ARM_STAT"; then
+  cat "$SHIM/statx-backport.h" >> "$ARM_STAT"
+  echo "patched arm musl sys/stat.h with statx backport"
+fi
 
 build_one() {
   arch="$1"; cc="$2"; extra_cflags="$3"
@@ -33,6 +58,13 @@ build_one() {
     pcdirs="${pcdirs}:${ROOT}/${v}/install-${arch}/lib/pkgconfig"
   done
   pcdirs="${pcdirs#:}"
+  # arm: the old cross musl has no statx() symbol; link a tiny syscall
+  # wrapper (systemd 259 calls statx() unconditionally). x86 musl has it.
+  linkargs=""
+  if [ "$arch" = "aarch64" ]; then
+    "$cc" -O2 -c "$SHIM/statx-wrapper.c" -o "$SHIM/statx-${arch}.o"
+    linkargs="c_link_args = ['$SHIM/statx-${arch}.o']"
+  fi
   cross="/tmp/oxide-systemd-cross-${arch}.txt"
   cat > "$cross" <<EOF
 [binaries]
@@ -47,6 +79,7 @@ cpu = '${arch}'
 endian = 'little'
 [built-in options]
 c_args = [${extra_cflags}'-I${SHIM}']
+${linkargs}
 [properties]
 pkg_config_libdir = '${pcdirs}'
 EOF
