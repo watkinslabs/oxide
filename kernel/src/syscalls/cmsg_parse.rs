@@ -323,6 +323,34 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64) -> i64 {
             }
         }
     }
+    // SCM_CREDENTIALS: if the receiver opted in via SO_PASSCRED, append a
+    // creds cmsg carrying the sender's {pid,uid,gid} (= peer_cred of our
+    // end, snapshotted at connect/accept). dbus' EXTERNAL auth reads this.
+    if sock.opts.passcred.load(Ordering::Acquire) != 0 {
+        let off = (ctrl_written + 7) & !7u64;             // 8-byte cmsg align
+        let creds_total = 16u64 + 12;                     // hdr(16) + ucred(12)
+        if control != 0 && control < USER_VA_END && off + creds_total <= controllen {
+            let (pid, uid, gid) = {
+                let g = sock.kind.lock();
+                match &*g { SockKind::Unix(pair, end) => pair.peer_cred(*end), _ => (0, 0, 0) }
+            };
+            const SOL_SOCKET: i32 = 1;
+            const SCM_CREDENTIALS: i32 = 2;
+            let base = control + off;
+            // SAFETY: base+creds_total ≤ controllen validated < USER_VA_END; cmsghdr(u64 len, i32 level, i32 type) + struct ucred per Linux ABI.
+            unsafe {
+                core::ptr::write_volatile( base       as *mut u64, creds_total);
+                core::ptr::write_volatile((base +  8) as *mut i32, SOL_SOCKET);
+                core::ptr::write_volatile((base + 12) as *mut i32, SCM_CREDENTIALS);
+                core::ptr::write_volatile((base + 16) as *mut u32, pid);
+                core::ptr::write_volatile((base + 20) as *mut u32, uid);
+                core::ptr::write_volatile((base + 24) as *mut u32, gid);
+            }
+            ctrl_written = off + creds_total;
+        } else if controllen > 0 {
+            ctrunc = true;
+        }
+    }
     // SAFETY: msgp validated by caller; controllen at +40, flags at +48 per Linux msghdr.
     unsafe {
         core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl_written);

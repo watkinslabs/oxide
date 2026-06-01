@@ -25,7 +25,21 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## Open: F312 (K5: SO_PEERCRED real) pushing.
+## Open: F314 (K5: SCM_CREDENTIALS) pushing. K5 creds path DONE.
+recvmsg on an AF_UNIX socket with SO_PASSCRED now delivers an
+SCM_CREDENTIALS cmsg (struct ucred {pid,uid,gid}) carrying the SENDER's
+creds (= UnixPair peer_cred of the receiver's end, from F312). SockOpts
+gains `passcred`; setsockopt SO_PASSCRED(16) stores it; cmsg_parse.rs
+appends the creds cmsg after any SCM_RIGHTS cmsg (8-byte aligned;
+creds-only when no fds). dbus EXTERNAL auth reads this. scm_smoke
+STRENGTHENED: now REQUIRES got_cred + cred.pid==getpid + cred.uid==getuid
+(was best-effort). Both arches build + spec-lint clean.
+K5 creds (SO_PEERCRED + SO_PASSCRED/SCM_CREDENTIALS) + /dev/kmsg + memfd
+seals + /proc/ns DONE. REMAINING K5: NETLINK_KOBJECT_UEVENT broadcast
+(udev). Then K4 (rtnetlink dump), K1b (cgroup enforcement).
+
+## (history) SO_PEERCRED
+## F312 (#1412): SO_PEERCRED real peer credentials.
 SO_PEERCRED now returns the PEER's real {pid,uid,gid} (was caller's tid +
 uid 0). UnixPair gains EndCred per end (cred_a/cred_b); snapshotted at
 socketpair (both=caller), connect (end B=client), accept (end A=server);
