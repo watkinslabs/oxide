@@ -214,6 +214,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
                 "-lpam"]);
         run(c)?;
     }
+    // L2: libcap_probe — dynamic-link smoke for the cross-built libcap.so.
+    {
+        let cap_root = repo.join(format!("vendor/libcap/install-{arch}"));
+        let out = user_out.join("libcap_probe");
+        let src = repo.join("userspace/libcap_probe/libcap_probe.c");
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-fno-stack-protector",
+                "-I", cap_root.join("include").to_str().unwrap(),
+                "-L", cap_root.join("lib").to_str().unwrap(),
+                "-Wl,-rpath,/usr/lib",
+                "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+                "-lcap"]);
+        run(c)?;
+    }
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -381,6 +395,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
+    put(&user("libcap_probe"), "/bin/libcap_probe")?;
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -737,6 +752,12 @@ session    required   pam_unix.so
     ln_via_debugfs("/usr/lib/libpam.so.0.85.1",      "/usr/lib/libpam.so")?;
     ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so.0")?;
     ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so")?;
+    // L2: libcap (first cross-built systemd shared dep). Real libcap.so →
+    // /usr/lib + soname/linker-name symlinks; libcap_probe links it.
+    let cap_lib = repo.join(format!("vendor/libcap/install-{arch}/lib"));
+    put(&cap_lib.join("libcap.so.2.69"), "/usr/lib/libcap.so.2.69")?;
+    ln_via_debugfs("/usr/lib/libcap.so.2.69", "/usr/lib/libcap.so.2")?;
+    ln_via_debugfs("/usr/lib/libcap.so.2.69", "/usr/lib/libcap.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
@@ -847,6 +868,9 @@ echo post-socketpair-fork-probe rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
+echo pre-libcap_probe
+/bin/libcap_probe
+echo post-libcap_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
