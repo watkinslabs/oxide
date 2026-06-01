@@ -197,6 +197,50 @@ pub struct NetlinkSocket {
     pub rx_queue:  Spinlock<VecDeque<Vec<u8>>, SockLockClass>,
 }
 
+/// Live `NETLINK_KOBJECT_UEVENT` subscribers (udev/systemd-udevd). Weak so
+/// closed sockets drop out. `emit_uevent` enqueues to each.
+static UEVENT_LISTENERS: Spinlock<Vec<alloc::sync::Weak<NetlinkSocket>>, SockLockClass>
+    = Spinlock::new(Vec::new());
+/// Monotonic uevent sequence number (`SEQNUM=` in each message).
+static UEVENT_SEQNUM: AtomicU32 = AtomicU32::new(1);
+
+/// Register a `NETLINK_KOBJECT_UEVENT` socket to receive broadcast device
+/// uevents. Called when such a socket is created.
+/// # C: O(N_listeners) — prunes dead weaks.
+pub fn register_uevent_listener(sock: &alloc::sync::Arc<NetlinkSocket>) {
+    let mut g = UEVENT_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    g.push(alloc::sync::Arc::downgrade(sock));
+}
+
+/// Broadcast a kobject uevent to every live `NETLINK_KOBJECT_UEVENT`
+/// subscriber (`docs/19`). Format is the Linux raw string blob:
+/// `"<action>@<devpath>\0ACTION=<action>\0DEVPATH=<devpath>\0
+/// SUBSYSTEM=<subsystem>\0SEQNUM=<n>\0"`. udev parses these to build its
+/// device model. Returns the number of subscribers reached.
+/// # C: O(N_listeners)
+pub fn emit_uevent(action: &str, devpath: &str, subsystem: &str) -> usize {
+    let seq = UEVENT_SEQNUM.fetch_add(1, Ordering::Relaxed);
+    let mut msg: Vec<u8> = Vec::with_capacity(96);
+    let push = |m: &mut Vec<u8>, s: &str| { m.extend_from_slice(s.as_bytes()); m.push(0); };
+    // Header line "<action>@<devpath>" (no trailing NUL until the env list).
+    msg.extend_from_slice(action.as_bytes());
+    msg.push(b'@');
+    msg.extend_from_slice(devpath.as_bytes());
+    msg.push(0);
+    push(&mut msg, &alloc::format!("ACTION={}", action));
+    push(&mut msg, &alloc::format!("DEVPATH={}", devpath));
+    push(&mut msg, &alloc::format!("SUBSYSTEM={}", subsystem));
+    push(&mut msg, &alloc::format!("SEQNUM={}", seq));
+    let mut g = UEVENT_LISTENERS.lock();
+    g.retain(|w| w.strong_count() > 0);
+    let mut n = 0;
+    for w in g.iter() {
+        if let Some(s) = w.upgrade() { s.enqueue(msg.clone()); n += 1; }
+    }
+    n
+}
+
 impl NetlinkSocket {
     /// # C: O(1)
     pub fn new(protocol: u16) -> Self {
