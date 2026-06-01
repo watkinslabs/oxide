@@ -668,8 +668,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // routes to `/dev/shm/<name>`) hits DevfsFs and ENOENTs.
         let _ = vfs::mount::register("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         let _ = vfs::mount::register("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
-        // K2V V5: path_lookup mount-crossing (docs/16§3); wired in V6.
-        vfs::namei::set_mount_resolver(vfs::mount::mount_root_at);
+        // K2V V5/V6: path_lookup mount-crossing + whole-path delegation.
+        vfs::mount::install_resolvers();
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
         debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }

@@ -882,8 +882,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FINIT_MODULE  => sys_finit_module(&args),
         syscall::nrs::NR_DELETE_MODULE => sys_delete_module(&args),
         syscall::nrs::NR_NEWFSTATAT    => crate::syscalls::fs::sys_newfstatat(&args),
-        syscall::nrs::NR_STAT
-            | syscall::nrs::NR_LSTAT   => crate::syscalls::fs::sys_stat(&args),
+        syscall::nrs::NR_STAT          => crate::syscalls::fs::sys_stat(&args, true),
+        syscall::nrs::NR_LSTAT         => crate::syscalls::fs::sys_stat(&args, false),
         // Cred family: dispatched via sched::cred::cred_dispatch.
         // Handled in the fallthrough below to keep this match arm small.
         syscall::nrs::NR_SET_ROBUST_LIST => crate::syscalls::proc::sys_set_robust_list(&args),

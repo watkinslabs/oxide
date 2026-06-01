@@ -85,6 +85,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/cgroup_smoke/cgroup_smoke",       "userspace/cgroup_smoke/cgroup_smoke.c"),
         ("userspace/cmdsubst_probe/cmdsubst_probe",   "userspace/cmdsubst_probe/cmdsubst_probe.c"),
         ("userspace/alarm_probe/alarm_probe",         "userspace/alarm_probe/alarm_probe.c"),
+        ("userspace/symlink_probe/symlink_probe",     "userspace/symlink_probe/symlink_probe.c"),
         ("userspace/mount_smoke/mount_smoke",         "userspace/mount_smoke/mount_smoke.c"),
         ("userspace/statfs_smoke/statfs_smoke",       "userspace/statfs_smoke/statfs_smoke.c"),
         ("userspace/dev_smoke/dev_smoke",             "userspace/dev_smoke/dev_smoke.c"),
@@ -340,6 +341,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("cgroup_smoke"), "/bin/cgroup_smoke")?;
     put(&user("cmdsubst_probe"), "/bin/cmdsubst_probe")?;
     put(&user("alarm_probe"), "/bin/alarm_probe")?;
+    put(&user("symlink_probe"), "/bin/symlink_probe")?;
     put(&user("mount_smoke"), "/bin/mount_smoke")?;
     put(&user("statfs_smoke"), "/bin/statfs_smoke")?;
     put(&user("dev_smoke"), "/bin/dev_smoke")?;
@@ -606,6 +608,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     };
 
     put(&stage("issue", b"oxide \\s on \\l\n\n")?, "/etc/issue")?;
+    // K2V V6: symlink-follow fixture for /bin/symlink_probe (ext4 symlink
+    // CREATE isn't implemented, so bake a real ext4 symlink at build).
+    put(&stage("sl_target", b"SLOK")?, "/sl_target")?;
+    dbg("symlink /sl_link /sl_target")?;
     // F149-3: present → init runs kernel-acceptance smokes (set 0 to skip).
     if std::env::var("OXIDE_INIT_SMOKES").as_deref() != Ok("0") {
         put(&stage("oxide-init-smokes", b"1\n")?, "/etc/oxide-init-smokes")?;
@@ -813,7 +819,7 @@ echo init-fork-exec works
 for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
          /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \\
          /bin/inet6_smoke /bin/mmsg_smoke /bin/scm_smoke \\
-         /bin/cmdsubst_probe /bin/alarm_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke \\
+         /bin/cmdsubst_probe /bin/alarm_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke \\
          /bin/mmap_zero_smoke /bin/usleep_smoke \\
          /bin/af_packet_smoke /bin/hello_dyn ; do
     [ -x \"$s\" ] && \"$s\"
