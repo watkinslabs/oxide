@@ -75,9 +75,9 @@ impl Inode for SymlinkInode {
     fn readlink(&self) -> KResult<alloc::vec::Vec<u8>> { Ok(self.target.to_vec()) }
 }
 
-/// `/dev/kmsg` — Linux kernel ring-buffer file. Reads pull bytes
-/// from `klog::ring_read` (the in-memory dmesg log); writes are
-/// discarded for v1 (no userspace kmsg-priority injection).
+/// `/dev/kmsg` — Linux kernel ring-buffer file. Reads pull bytes from
+/// `klog::ring_read` (the in-memory dmesg log); writes inject a userspace
+/// record into the ring + console (early systemd / `logger` / journald).
 /// Each open's reader cursor is reset to 0 at open — repeated
 /// `cat /dev/kmsg` invocations from userspace each see the
 /// available tail of the ring.
@@ -91,7 +91,26 @@ impl Inode for KmsgInode {
         let (n, _next) = klog::ring_read(off as usize, b);
         Ok(n)
     }
-    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
+    /// `/dev/kmsg` write injects the message into the kernel log ring (the
+    /// kmsg contract: early systemd + userspace `logger`/journald-forward
+    /// write here, then it shows in `dmesg`/console). An optional leading
+    /// `<N>` syslog-priority prefix is stripped; a trailing newline is
+    /// ensured so each write is one record. Before this, writes were
+    /// silently discarded.
+    /// # C: O(len)
+    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
+        let mut msg = b;
+        if msg.first() == Some(&b'<') {
+            if let Some(gt) = msg.iter().take(6).position(|&c| c == b'>') {
+                if gt > 1 && msg[1..gt].iter().all(|c| c.is_ascii_digit()) {
+                    msg = &msg[gt + 1..];
+                }
+            }
+        }
+        klog::kmsg_write(msg);
+        if msg.last() != Some(&b'\n') { klog::kmsg_write(b"\n"); }
+        Ok(b.len())
+    }
 }
 
 /// `/dev/zero` — read fills with NUL, write discards.
