@@ -32,7 +32,25 @@ pub fn install_hooks() {
     cgroup::set_freeze_hook(cgroup_freeze_hook);
     cgroup::set_weight_hook(cgroup_weight_hook);
     cgroup::set_cpuset_hook(cgroup_cpuset_hook);
+    block::set_io_charge_hook(io_charge_hook);
 }
+
+/// Block-layer io.stat charge hook: charge `(bytes, is_write)` to the
+/// CURRENT task's process cgroup. Registered via `block::set_io_charge_hook`.
+/// # C: O(log n) cgroup lookup
+#[cfg(target_os = "oxide-kernel")]
+pub fn io_charge_hook(bytes: u64, is_write: bool) {
+    use core::sync::atomic::Ordering;
+    if let Some(t) = sched::live::current() {
+        let pid = t.tgid.load(Ordering::Acquire) as u64;
+        cgroup::charge_io(pid, bytes, is_write);
+    }
+}
+
+/// Host-build no-op for `io_charge_hook`.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn io_charge_hook(_bytes: u64, _is_write: bool) {}
 
 /// cgroup.cpuset delivery hook: set the CPU-affinity mask of the task
 /// whose global tid is `pid`. Registered via `cgroup::set_cpuset_hook`.

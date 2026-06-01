@@ -121,6 +121,12 @@ pub struct Node {
     // io controller — opaque per-device lines, stored verbatim
     pub io_max: String,
     pub io_weight: u32,
+    // io.stat accounting (`26`): cumulative bytes/ops charged to this
+    // node at block submit (read/write). io.stat reports the subtree sum.
+    pub io_rbytes: u64,
+    pub io_wbytes: u64,
+    pub io_rios: u64,
+    pub io_wios: u64,
     // cpuset controller
     pub cpuset_cpus: String,
     pub cpuset_mems: String,
@@ -138,6 +144,7 @@ impl Node {
             cpu_weight: 100, cpu_quota: None, cpu_period: 100_000,
             cpu_runtime_base_ns: 0, cpu_period_start_ns: 0, cpu_throttled: false,
             io_max: String::new(), io_weight: 100,
+            io_rbytes: 0, io_wbytes: 0, io_rios: 0, io_wios: 0,
             cpuset_cpus: String::new(), cpuset_mems: String::new(),
         }
     }
@@ -383,6 +390,31 @@ impl Tree {
     /// # C: O(log n)
     pub fn charged(&self, pid: u64) -> u64 { self.proc_charge.get(&pid).copied().unwrap_or(0) }
 
+    /// Charge a completed block I/O to `pid`'s cgroup (io.stat). `bytes`
+    /// transferred; `is_write` selects the r/w counters. Cumulative (io
+    /// is not "freed").
+    /// # C: O(log n)
+    pub fn charge_io(&mut self, pid: u64, bytes: u64, is_write: bool) {
+        let cg = self.cgroup_of(pid);
+        if let Some(n) = self.nodes.get_mut(&cg) {
+            if is_write { n.io_wbytes += bytes; n.io_wios += 1; }
+            else        { n.io_rbytes += bytes; n.io_rios += 1; }
+        }
+    }
+
+    /// Subtree io totals `(rbytes, wbytes, rios, wios)` = this node + all
+    /// descendants (io.stat rolls up hierarchically, like memory.current).
+    /// # C: O(subtree)
+    pub fn subtree_io(&self, id: u64) -> (u64, u64, u64, u64) {
+        let n = match self.nodes.get(&id) { Some(n) => n, None => return (0,0,0,0) };
+        let (mut rb, mut wb, mut ri, mut wi) = (n.io_rbytes, n.io_wbytes, n.io_rios, n.io_wios);
+        for &c in n.children.values() {
+            let (a,b,c2,d) = self.subtree_io(c);
+            rb += a; wb += b; ri += c2; wi += d;
+        }
+        (rb, wb, ri, wi)
+    }
+
     /// Snapshot of every cgroup that has a `cpu.max` quota set, for the
     /// bandwidth scanner: `(cgid, quota_ns, period_ns, base, period_start,
     /// throttled, member_pids)`. cpu.max quota/period are in microseconds
@@ -520,7 +552,13 @@ impl Tree {
                 None => format!("max {}\n", n.cpu_period),
             },
             "cpu.stat" => "usage_usec 0\nuser_usec 0\nsystem_usec 0\n".to_string(),
-            "io.stat" => String::new(),
+            "io.stat" => {
+                // Linux io.stat: one line per device. v1 has a single
+                // block device (8:0); report the subtree r/w byte+op sums.
+                let (rb, wb, ri, wi) = self.subtree_io(id);
+                if rb == 0 && wb == 0 && ri == 0 && wi == 0 { String::new() }
+                else { format!("8:0 rbytes={} wbytes={} rios={} wios={}\n", rb, wb, ri, wi) }
+            }
             "io.max" => n.io_max.clone(),
             "io.weight" => format!("default {}\n", n.io_weight),
             "cpuset.cpus" => { let mut o = n.cpuset_cpus.clone(); o.push('\n'); o }
