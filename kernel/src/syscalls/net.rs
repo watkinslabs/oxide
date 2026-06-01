@@ -752,6 +752,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (SOL_SOCKET, 6)  => if let Some(v) = read_i32(optval) { sock.opts.broadcast.store(v, Ordering::Release); },
         (SOL_SOCKET, 7)  => if let Some(v) = read_i32(optval) { sock.opts.sndbuf.store(v, Ordering::Release); },
         (SOL_SOCKET, 8)  => if let Some(v) = read_i32(optval) { sock.opts.rcvbuf.store(v, Ordering::Release); },
+        (SOL_SOCKET, 16) => if let Some(v) = read_i32(optval) { sock.opts.passcred.store(v, Ordering::Release); }, // SO_PASSCRED
         (SOL_SOCKET, 12) => priority_store(&sock, read_i32(optval)),
         (SOL_SOCKET, 36) => mark_store(&sock, read_i32(optval)),
         (SOL_SOCKET, 13) => {

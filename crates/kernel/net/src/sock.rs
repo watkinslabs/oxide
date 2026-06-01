@@ -221,6 +221,9 @@ pub struct SockOpts {
     pub mark:      core::sync::atomic::AtomicI32,
     /// IPPROTO_TCP / TCP_NODELAY round-trip cell.
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
+    /// SO_PASSCRED: when set, recvmsg on this AF_UNIX socket delivers an
+    /// SCM_CREDENTIALS cmsg with the sender's {pid,uid,gid} (dbus auth).
+    pub passcred: core::sync::atomic::AtomicI32,
 }
 
 /// F164: default SO_SNDBUF/SO_RCVBUF bytes (Linux tcp_wmem[1] = 16K).
@@ -246,6 +249,7 @@ impl Default for SockOpts {
             priority:    AtomicI32::new(0),
             mark:        AtomicI32::new(0),
             tcp_nodelay: AtomicI32::new(0),
+            passcred: AtomicI32::new(0),
         }
     }
 }
