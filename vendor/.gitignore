@@ -89,6 +89,15 @@ libcap/libcap-2.69.tar.gz
 !zstd/install-aarch64/**
 zstd/zstd-1.5.6/
 zstd/zstd-1.5.6.tar.gz
+# lz4 1.9.4 — Track L2 systemd dep (compression).
+!lz4/
+!lz4/build.sh
+!lz4/install-x86_64/
+!lz4/install-x86_64/**
+!lz4/install-aarch64/
+!lz4/install-aarch64/**
+lz4/lz4-1.9.4/
+lz4/lz4-1.9.4.tar.gz
 # GNU bash 5.2.37: per-arch static-musl binary + build recipe.
 # F216 — first GNU userspace program; sets the pattern for further
 # coreutils / util-linux / etc. cross-builds.
