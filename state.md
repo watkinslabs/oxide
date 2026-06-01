@@ -39,8 +39,12 @@ found HOST glibc libs (pkg-config leaked /usr/lib/pkgconfig) — wrong for musl 
    (.githooks/pre-push) or move rootfs→virtio-blk disk). Fix surfaced kernel gaps in-PR.
 
 ## First command (next session)
-Write the meson cross files + stage L2 .pc files, then `meson setup` with
-`--cross-file` + isolated pkg_config_libdir; iterate on the feature set.
+systemd cross-build VALIDATED (research/systemd-build.md): meson setup clean vs our
+musl libs, `src/basic/libbasic.a` builds. NEXT: `ninja -C build src/shared/libsystemd-shared-259.so`
+(fix surfaced musl gaps), then write `vendor/systemd/build.sh` (both arches: gen cross file
++ gen-pc.sh + meson + ninja the needed targets) + stage PID1/libsystemd-shared + minimal units
++ a systemd_probe → first gate-verifiable PR F348. `vendor/systemd/gen-pc.sh <arch>` writes the
+.pc files; exact validated meson option set is in research/systemd-build.md.
 
 ## CRITICAL harness rules
 - Both-arch gate via backgrounded PLAIN `git push` (run_in_background+dangerouslyDisableSandbox;
