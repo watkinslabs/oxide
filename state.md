@@ -20,7 +20,23 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6f done + V6g-a (foundation). NEXT: V6g-b namei switch, then V7
+## V1–V6g done (resolver migration COMPLETE). NEXT: V7 mount tree
+V6g-b (F293, branch — boot-gated via push hook): namei mutations now
+dispatch on the PARENT inode resolved via `pathresolve::resolve` =
+path_lookup (follows intermediate symlinks + crosses mounts). Rewrote
+sys_{mkdir,mkdirat,unlink,unlinkat,rmdir,symlink,symlinkat,mknod,mknodat}
++ do_rmdir to `resolve_parent(p)` → `parent_inode.{mkdir,rmdir,
+unlink_child,symlink_child,mknod_child,create_child}(name)`. Dropped
+is_ext4_path/mount_for_write/pseudo_mkdir/pseudo_rmdir/mkdir_target_exists
+gates for these (KEPT for link/linkat/rename — still ext4 path machinery:
+O_TMPFILE markers + EXDEV). Landlock checks + strip_trailing_slash kept.
+Both arches build + spec-lint clean. The V6 resolver migration is DONE:
+stat/lstat/statx/newfstatat/open/openat/access/chmod/chown/utime/chdir/
+exec/readlink/mkdir/unlink/rmdir/symlink/mknod all go through path_lookup.
+REMAINING namei follow-ups (TASKS): link_child + cross-parent rename via
+inode; tmpfs symlink/mknod inode methods (currently Erofs).
+
+## (history) V6g-a (foundation)
 V6g-a (F292, branch open): the inode-level mutation FOUNDATION for the
 namei-via-walker switch. Added to the vfs Inode trait (default Erofs):
 `create_child`, `unlink_child`, `symlink_child`, `mknod_child` (mkdir/
