@@ -200,3 +200,25 @@ fn delegates_whole_path_for_procfs_style_fs() {
         .expect("delegate whole-path into procfs");
     assert_eq!(i.ino(), 301, "whole-path delegate resolved /proc/123/stat");
 }
+
+// chroot confinement (the mechanism pathresolve::resolution_root uses):
+// with a sub-dentry as the resolution root + RESOLVE_BENEATH, absolute
+// paths restart at that root and `..` cannot ascend above it.
+#[test]
+fn beneath_confines_dotdot_to_root() {
+    let (root, host_ino, _) = build_root();
+    // /etc is the "chroot" root.
+    let (_, etc_d) = look(&root, "/etc", LookupFlags::default()).expect("etc");
+    let mut f = LookupFlags::default();
+    f.beneath = true;
+    // Absolute path restarts at the chroot root: "/hostname" → etc/hostname.
+    let (i, _) = vfs::path_lookup(etc_d.clone(), etc_d.clone(), "/hostname", f).expect("confined");
+    assert_eq!(i.ino(), host_ino, "absolute path confined to the chroot root");
+    // `..` cannot escape above the chroot root: "/../hostname" stays in etc.
+    let (j, _) = vfs::path_lookup(etc_d.clone(), etc_d.clone(), "/../hostname", f).expect("dotdot confined");
+    assert_eq!(j.ino(), host_ino, ".. clamped at the chroot root (no escape)");
+    // Sanity: the chroot root has no "etc" child, so "/etc/x" must NOT
+    // resolve (proves we're rooted at /etc, not the global root).
+    assert!(vfs::path_lookup(etc_d.clone(), etc_d.clone(), "/etc/hostname", f).is_err(),
+        "global tree not visible from inside the chroot");
+}

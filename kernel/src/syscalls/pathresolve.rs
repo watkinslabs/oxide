@@ -30,18 +30,37 @@ fn root_dentry() -> Option<Arc<vfs::Dentry>> {
     Some(g.get_or_insert(d).clone())
 }
 
+/// The resolution root + whether to confine `..` to it. For a non-chrooted
+/// task (`task.root == "/"`, the default) this is the global ext4 root with
+/// no `..` clamp — identical to pre-chroot behaviour. After `chroot(jail)`,
+/// it resolves `jail` to its dentry and returns `(jail_dentry, beneath=true)`
+/// so every absolute path restarts at the jail and `..` cannot ascend above
+/// it (Linux chroot confinement, `13§5`). Boot-safe: nothing chroots at boot.
+/// # C: O(1) un-chrooted; O(jail components) chrooted
+fn resolution_root() -> Option<(Arc<vfs::Dentry>, bool)> {
+    let global = root_dentry()?;
+    let Some(cur) = sched::live::current() else { return Some((global, false)); };
+    // SAFETY: task.root single-mutator per 13§5; the running task on this
+    // CPU is the sole writer (chroot only mutates the calling task's root).
+    let rp = unsafe { (*cur.root.get()).clone() };
+    if rp == "/" { return Some((global, false)); }
+    let f = vfs::LookupFlags::default();
+    let (_i, d) = vfs::path_lookup(global.clone(), global, &rp, f).ok()?;
+    Some((d, true))
+}
+
 /// Resolve absolute `abs` to its inode via the dentry path-walk
 /// (`vfs::path_lookup`) — THE resolver (`docs/16§3`): per-component,
 /// crossing mounts (`mount_root_at`) and delegating whole-path
 /// filesystems (`mount_whole_path`) to their owning mount, following
 /// symlinks (intermediate always; final unless `no_follow_final`) with
-/// ELOOP at depth>40. Returns `None` if unresolved or ext4 isn't mounted
-/// yet (very early boot). `no_follow_final` = O_NOFOLLOW /
-/// AT_SYMLINK_NOFOLLOW (lstat).
+/// ELOOP at depth>40, confined to the task's chroot root. Returns `None`
+/// if unresolved or ext4 isn't mounted yet (very early boot).
+/// `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat).
 /// # C: O(components × dir-lookup)
 pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
-    let root = root_dentry()?;
-    let flags = vfs::LookupFlags { no_follow_final, ..Default::default() };
+    let (root, beneath) = resolution_root()?;
+    let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
     vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(i, _)| i)
 }
 
