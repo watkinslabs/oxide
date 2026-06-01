@@ -708,10 +708,12 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let path_s = resolved.as_str();
     // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
+    // Otherwise resolve via the dentry walk with no_follow_final=true: Linux
+    // readlink follows INTERMEDIATE symlinks in the path but returns the FINAL
+    // component's link target itself (never follows it). EINVAL when the final
+    // isn't a symlink (Inode::readlink errors), ENOENT when it doesn't resolve.
     let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
-        else if let Some(inode) = ext4::rootfs::lookup_inode_any(path_s.as_bytes()) {
-            match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
-        } else if let Ok(inode) = vfs::mount::lookup(path_s) {
+        else if let Some(inode) = crate::syscalls::pathresolve::resolve(path_s, true) {
             match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
         } else { return -(Errno::Enoent.as_i32() as i64); };
     let n = (target.len() as u64).min(bufsize) as usize;
