@@ -62,6 +62,23 @@ NOTE: bad option name — it's `-Dfdisk` not `-Dlibfdisk`.
   into libsystemd-shared and disable it (nss-* are already disabled; userdb/nscd may pull it).
   The shim dir is reusable for other glibc-only headers that leak via -idirafter.
 
+## MILESTONE: x86 systemd core libs BUILD
+- `libsystemd-shared-259.so` (12 MB) + `libsystemd.so.0.42.0` build + link on musl x86
+  against our staged L2 libs. nss.h glibc-leak fixed via vendor/systemd/musl-shims/nss.h
+  (-I<shim> in c_args, single-token form — two-token `-I dir` breaks meson's sizeof probe).
+  vendor/systemd/build.sh does both arches (generates per-arch cross file + gen-pc + meson + ninja).
+- **ARM BLOCKER: old UAPI in the cross toolchain.** systemd's src/include/musl/sys/stat.h
+  static_asserts `struct statx` (kernel 4.11+); the aarch64-linux-musl-cross sysroot's
+  <linux/stat.h> predates statx, and `-idirafter /usr/include` is LOWER priority than the
+  sysroot system headers so it can't override. FIX (next tick): stage modern Linux generic
+  UAPI (host /usr/include/linux is arch-independent for struct statx) into a dir and add it
+  as a HIGH-priority `-I<dir>` (or -isystem before sysroot) in the ARM c_args ONLY for the
+  generic linux/ headers (NOT asm/ — that's arch-specific; the cross sysroot's asm/ is correct).
+  Simplest: `cp -r /usr/include/linux vendor/systemd/musl-shims/linux` (or just the needed
+  headers) + the existing -I<shim> picks it up (shim dir is already a -I). Verify it doesn't
+  shadow arch-specific headers. Then arm libsystemd-shared should build (modulo more arm gaps).
+- Until arm builds, F348 (both-arch) can't ship; x86 build + build.sh + shims are committable infra.
+
 ## Next steps
 - `ninja -C build src/shared/libsystemd-shared-259.so` → fix surfaced musl issues.
 - Then vendor/systemd/build.sh (both arches, generates cross file, gen-pc, meson, ninja
