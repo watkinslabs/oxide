@@ -12,6 +12,7 @@ pub mod mounts;
 pub mod cmdline;
 pub mod stat;
 pub mod fdinfo;
+pub mod sysctl;
 mod pid_sched;
 
 use alloc::sync::Arc;
