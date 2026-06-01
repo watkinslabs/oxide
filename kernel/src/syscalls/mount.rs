@@ -196,11 +196,16 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
     match fstype.as_str() {
         "tmpfs" => {
-            let inode: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.clone()));
-            // F119: register in caller's mount_ns so unshared tasks
-            // see only their own mounts.
-            let ns = cur.mount_ns.load(core::sync::atomic::Ordering::Acquire);
-            crate::devfs::register_in_ns(ns, target, inode);
+            // U3-b: tmpfs mounts live in the unified per-ns mount table,
+            // not the devfs registry. register_bind installs the
+            // TmpfsRootInode as the mount root; path_lookup crosses in and
+            // resolves files via the inode's tmpfs file store. So
+            // `mount -t tmpfs` now appears in /proc/mounts and obeys
+            // MS_MOVE/MS_REC/umount uniformly. The caller's mount-ns is
+            // stamped automatically by the register_bind ns provider.
+            let root: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.clone()));
+            let bind: Arc<dyn FileSystem> = Arc::new(::fs::tmpfs::TmpfsFs);
+            let _ = vfs::mount::register_bind(&target, bind, root);
             0
         }
         // cgroup v2 unified hierarchy per `26§4`: mount the real tree
