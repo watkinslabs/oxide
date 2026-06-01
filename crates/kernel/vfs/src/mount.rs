@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
 use crate::fs::{FileSystem, KResult};
@@ -34,6 +34,38 @@ impl Propagation {
 /// for the mount's lifetime — findmnt/systemd key the mount tree on
 /// it + `parent_id`. Starts at 1 (0 means "no parent" for the root).
 static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Mount-namespace provider (`docs/16§6`): the kernel installs a fn that
+/// reads the calling task's `mount_ns` id, so `register`/`register_bind`
+/// can stamp each new mount with the namespace that created it without
+/// every call site passing it. `null` (pre-install / hosted tests) ⇒ ns 0.
+/// The per-ns *tree* (resolution scoped to the caller's ns, copy-on-unshare
+/// divergence) builds on this stamp; today resolution stays global (ns 0
+/// base visible to all) — see `docs/16§6` + TASKS V7 stage U2.
+static CURRENT_NS_PROVIDER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Signature of the mount-ns provider.
+pub type NsProvider = fn() -> u64;
+
+/// Install the mount-ns provider (kernel boot). Idempotent (last wins).
+/// # C: O(1)
+pub fn set_current_ns_provider(f: NsProvider) {
+    CURRENT_NS_PROVIDER.store(f as *mut (), Ordering::Release);
+}
+
+/// The calling task's mount-namespace id, or 0 if no provider is installed
+/// (early boot / hosted tests / no current task).
+/// # C: O(1)
+pub fn current_ns() -> u64 {
+    let p = CURRENT_NS_PROVIDER.load(Ordering::Acquire);
+    if p.is_null() { return 0; }
+    // SAFETY: CURRENT_NS_PROVIDER only ever holds a value stored by
+    // set_current_ns_provider, which takes an `NsProvider` fn pointer; a
+    // null check above guards the un-installed case, so the transmute
+    // targets a valid `fn() -> u64`.
+    let f: NsProvider = unsafe { core::mem::transmute::<*mut (), NsProvider>(p) };
+    f()
+}
 
 /// Monotonic mount peer-group id source (`docs/16§6`). Linux assigns each
 /// *peer group* a unique id, distinct from `mnt_id`; mounts sharing
@@ -64,6 +96,11 @@ pub struct Mount {
     /// inherited by clones of a shared mount. Rendered `shared:<pg>` /
     /// `master:<pg>` in mountinfo. Distinct from `mnt_id`.
     pub peer_group: AtomicU64,
+    /// Mount-namespace id that created this mount (`docs/16§6`). Stamped
+    /// from `current_ns()` at register time (0 = the initial/boot ns).
+    /// Per-ns-scoped resolution + copy-on-unshare divergence build on this
+    /// (TASKS V7 stage U2); today resolution stays global.
+    pub ns: u64,
 }
 
 static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
@@ -83,6 +120,7 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0),
+        ns: current_ns(),
     }));
     Ok(())
 }
@@ -106,6 +144,7 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0),
+        ns: current_ns(),
     }));
     Ok(())
 }
@@ -190,6 +229,7 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
         mnt_id: old.mnt_id,
         propagation: AtomicU8::new(old.propagation.load(Ordering::Acquire)),
         peer_group: AtomicU64::new(old.peer_group.load(Ordering::Acquire)),
+        ns: old.ns,
     });
     t[idx] = moved;
     Ok(())

@@ -70,6 +70,25 @@ impl FileSystem for BindFs {
     }
 }
 
+/// The calling task's mount-namespace id (`docs/16§6`), or 0 at boot /
+/// kthread context. Installed into `vfs::mount` so `register` can stamp
+/// each mount's owning ns without threading it through every call site.
+/// # C: O(1)
+fn current_mount_ns() -> u64 {
+    use core::sync::atomic::Ordering;
+    sched::live::current().map(|c| c.mount_ns.load(Ordering::Acquire)).unwrap_or(0)
+}
+
+/// Install the VFS path-walk hooks (mount-crossing + whole-path
+/// delegation) AND the mount-ns provider at boot. Replaces the bare
+/// `vfs::mount::install_resolvers()` call so lib.rs stays net-zero at the
+/// 1000-line cap while gaining ns stamping.
+/// # C: O(1)
+pub fn install_vfs_hooks() {
+    vfs::mount::install_resolvers();
+    vfs::mount::set_current_ns_provider(current_mount_ns);
+}
+
 fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
     if p == 0 || p >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
