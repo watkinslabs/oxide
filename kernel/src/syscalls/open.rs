@@ -16,6 +16,15 @@ use vfs::{Dentry, File, OpenFlags};
 const O_CREAT:     u32 = 0o100;
 const O_TRUNC:     u32 = 0o1000;
 const O_DIRECTORY: u32 = 0o200000;
+// O_* flag VALUES are arch-specific (Linux fcntl.h per-arch overrides):
+// x86_64 = asm-generic (O_NOFOLLOW=0o400000=0x20000); aarch64 uses the
+// arm override (O_NOFOLLOW=0o100000=0x8000, while 0x20000 is O_LARGEFILE,
+// which musl-aarch64's open() sets). Using the x86 value on arm made the
+// kernel read O_LARGEFILE as O_NOFOLLOW and stop following symlinks.
+#[cfg(target_arch = "x86_64")]
+const O_NOFOLLOW:  u32 = 0o400000;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW:  u32 = 0o100000;
 /// `__O_TMPFILE` per Linux fcntl.h. The full Linux `O_TMPFILE`
 /// macro is `__O_TMPFILE | O_DIRECTORY` (0x410000) — old userspace
 /// that issues `open(path, O_TMPFILE | ...)` on a kernel without
@@ -141,12 +150,12 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Ok(i) = vfs::mount::lookup(path_str) {
-        i
-    } else if let Some(i) = ext4::rootfs::lookup_inode_any(path_str.as_bytes()) {
-        // Fallback for ext4 dirs/non-regular inodes the unified mount-
-        // table doesn't expose (e.g. /root, /etc as Directory inodes
-        // for getdents64 on open(O_DIRECTORY)).
+    } else if let Some(i) = crate::syscalls::pathresolve::resolve(path_str, (flags & O_NOFOLLOW) != 0) {
+        // THE resolver (path-walk): per-component, crosses mounts,
+        // delegates whole-path filesystems, follows symlinks unless
+        // O_NOFOLLOW. Replaces the legacy vfs::mount::lookup + ext4
+        // whole-path fallback (still reaches ext4 dirs/non-regular
+        // inodes for getdents64 on open(O_DIRECTORY)).
         i
     } else if (flags & O_CREAT) != 0 {
         // O_CREAT: ask the owning mount's FS to create with
@@ -243,12 +252,12 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Ok(i) = vfs::mount::lookup(path_str) {
-        i
-    } else if let Some(i) = ext4::rootfs::lookup_inode_any(path_str.as_bytes()) {
-        // Fallback for ext4 dirs/non-regular inodes the unified mount-
-        // table doesn't expose (e.g. /root, /etc as Directory inodes
-        // for getdents64 on open(O_DIRECTORY)).
+    } else if let Some(i) = crate::syscalls::pathresolve::resolve(path_str, (flags & O_NOFOLLOW) != 0) {
+        // THE resolver (path-walk): per-component, crosses mounts,
+        // delegates whole-path filesystems, follows symlinks unless
+        // O_NOFOLLOW. Replaces the legacy vfs::mount::lookup + ext4
+        // whole-path fallback (still reaches ext4 dirs/non-regular
+        // inodes for getdents64 on open(O_DIRECTORY)).
         i
     } else if (flags & O_CREAT) != 0 {
         // O_CREAT: ask owning mount's FS to create with the
