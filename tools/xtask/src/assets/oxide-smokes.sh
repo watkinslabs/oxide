@@ -48,6 +48,9 @@ echo post-utillinux_probe rv=$?
 echo pre-expat_probe
 /bin/expat_probe
 echo post-expat_probe rv=$?
+echo pre-dbus_probe
+/bin/dbus_probe
+echo post-dbus_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
