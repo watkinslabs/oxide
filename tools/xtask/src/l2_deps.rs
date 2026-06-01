@@ -16,6 +16,7 @@ pub const L2_LIBS: &[(&str, &str, &str, &str)] = &[
     ("util-linux", "libuuid.so.1.3.0",     "libuuid.so.1",      "libuuid.so"),
     ("util-linux", "libsmartcols.so.1.1.0","libsmartcols.so.1", "libsmartcols.so"),
     ("expat",      "libexpat.so.1.9.2",    "libexpat.so.1",     "libexpat.so"),
+    ("dbus",       "libdbus-1.so.3.32.4",  "libdbus-1.so.3",    "libdbus-1.so"),
 ];
 
 /// Dynamic-link probes: (vendor, probe-name, link-flags). The probe
@@ -29,4 +30,5 @@ pub const L2_PROBES: &[(&str, &str, &str)] = &[
     ("libseccomp", "libseccomp_probe", "-lseccomp"),
     ("util-linux", "utillinux_probe",  "-lmount -lblkid -luuid"),
     ("expat",      "expat_probe",      "-lexpat"),
+    ("dbus",       "dbus_probe",       "-ldbus-1"),
 ];

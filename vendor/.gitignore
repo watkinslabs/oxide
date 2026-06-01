@@ -388,3 +388,12 @@ libseccomp/libseccomp-2.5.5.tar.gz
 !expat/install-aarch64/**
 expat/expat-2.6.2/
 expat/expat-2.6.2.tar.gz
+# dbus 1.14.10 — Track L2: mandatory systemd bus stack (libdbus-1).
+!dbus/
+!dbus/build.sh
+!dbus/install-x86_64/
+!dbus/install-x86_64/**
+!dbus/install-aarch64/
+!dbus/install-aarch64/**
+dbus/dbus-1.14.10/
+dbus/dbus-1.14.10.tar.xz
