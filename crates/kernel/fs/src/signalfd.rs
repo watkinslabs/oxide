@@ -48,6 +48,16 @@ impl Inode for SignalfdInode {
         Ok(SIGINFO_SIZE)
     }
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+    /// POLLIN only when a signal in this fd's mask is pending for the
+    /// current task. The default Inode::poll (always-ready) made epoll
+    /// spin: systemd's sd-event registers a signalfd, so an always-ready
+    /// poll busy-looped epoll_pwait forever and PID1 never ran services.
+    /// # C: O(1)
+    fn poll(&self) -> u32 {
+        let mask = self.mask.load(Ordering::Acquire);
+        let pending = sched::current().map_or(0, |c| c.sigpending.load(Ordering::Acquire));
+        if pending & mask != 0 { vfs::POLL_IN } else { 0 }
+    }
 }
 
 /// `sys_signalfd(fd, mask, mask_size)` / `sys_signalfd4(fd, mask, sz, flags)`.

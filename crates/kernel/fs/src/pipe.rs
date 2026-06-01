@@ -153,6 +153,18 @@ impl vfs::Inode for EventfdInode {
     fn lookup(&self, _name: &str) -> vfs::KResult<vfs::InodeRef> {
         Err(vfs::VfsError::Enotdir)
     }
+    /// POLLIN when the counter is nonzero (read won't block); POLLOUT
+    /// when it can still accept a write (< u64::MAX-1). Default
+    /// always-ready poll busy-looped systemd's sd-event epoll — see
+    /// signalfd::poll.
+    /// # C: O(1)
+    fn poll(&self) -> u32 {
+        let v = self.counter.load(Ordering::Acquire);
+        let mut m = 0;
+        if v > 0 { m |= vfs::POLL_IN; }
+        if v < u64::MAX - 1 { m |= vfs::POLL_OUT; }
+        m
+    }
     fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
         let v = self.counter.swap(0, Ordering::AcqRel);
