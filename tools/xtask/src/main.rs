@@ -88,6 +88,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/symlink_probe/symlink_probe",     "userspace/symlink_probe/symlink_probe.c"),
         ("userspace/mount_smoke/mount_smoke",         "userspace/mount_smoke/mount_smoke.c"),
         ("userspace/statfs_smoke/statfs_smoke",       "userspace/statfs_smoke/statfs_smoke.c"),
+        ("userspace/fsmount_probe/fsmount_probe",     "userspace/fsmount_probe/fsmount_probe.c"),
         ("userspace/dev_smoke/dev_smoke",             "userspace/dev_smoke/dev_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
@@ -344,6 +345,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("symlink_probe"), "/bin/symlink_probe")?;
     put(&user("mount_smoke"), "/bin/mount_smoke")?;
     put(&user("statfs_smoke"), "/bin/statfs_smoke")?;
+    put(&user("fsmount_probe"), "/bin/fsmount_probe")?;
     put(&user("dev_smoke"), "/bin/dev_smoke")?;
     put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
@@ -842,6 +844,8 @@ echo post-hello_dyn_libc rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
+[ -x /bin/fsmount_probe ] && /bin/fsmount_probe
+echo post-fsmount-probe rv=$?
 ")?,
         "/etc/init.d/oxide-smokes")?;
     dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;

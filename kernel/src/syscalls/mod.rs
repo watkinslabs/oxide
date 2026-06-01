@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -648,14 +648,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // memfd-backed fds tagged with the call's identity for future
         // mount-table integration; fsconfig/move_mount/mount_setattr admit
         // (real per-NS mount-table machinery rides a follow-up).
-        syscall::nrs::NR_FSOPEN     => {
-            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscalls::anonfd::sys_memfd_create(&sa)
-        }
-        syscall::nrs::NR_FSMOUNT    => {
-            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscalls::anonfd::sys_memfd_create(&sa)
-        }
+        // New mount API (K6): real fs_context builder → detached mount →
+        // attach. fspick/open_tree/mount_setattr ride a follow-up.
+        syscall::nrs::NR_FSOPEN     => crate::syscalls::fsmount::sys_fsopen(&args),
+        syscall::nrs::NR_FSCONFIG   => crate::syscalls::fsmount::sys_fsconfig(&args),
+        syscall::nrs::NR_FSMOUNT    => crate::syscalls::fsmount::sys_fsmount(&args),
+        syscall::nrs::NR_MOVE_MOUNT => crate::syscalls::fsmount::sys_move_mount(&args),
         syscall::nrs::NR_FSPICK     => {
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
             crate::syscalls::anonfd::sys_memfd_create(&sa)
@@ -664,9 +662,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             let mut sa = args; sa.a0 = 0; sa.a1 = 1;
             crate::syscalls::anonfd::sys_memfd_create(&sa)
         }
-        // fsconfig/move_mount/mount_setattr → EOPNOTSUPP (silent-0 lied).
-        syscall::nrs::NR_FSCONFIG | syscall::nrs::NR_MOVE_MOUNT
-            | syscall::nrs::NR_MOUNT_SETATTR => -(Errno::Eopnotsupp.as_i32() as i64),
+        syscall::nrs::NR_MOUNT_SETATTR => -(Errno::Eopnotsupp.as_i32() as i64),
         syscall::nrs::NR_GETRLIMIT     => crate::syscalls::proc::sys_getrlimit(&args),
         syscall::nrs::NR_SETRLIMIT     => crate::syscalls::proc::sys_setrlimit(&args),
         syscall::nrs::NR_GETRUSAGE     => crate::syscalls::proc::sys_getrusage(&args),
