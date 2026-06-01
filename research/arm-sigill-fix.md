@@ -49,6 +49,17 @@ handler siglongjmps and continues. Mirror existing softstep (EC=0x32) plumbing.
 - Hosted test if feasible: synthetic EC=0 frame → oxide_arm_undef_handler delivers.
 
 ## Gotchas
+- **CRITICAL — stale svc_frame slot:** `deliver_arm` (sig_dispatch.rs:285) reads the
+  per-task `c.svc_frame` slot (F206), falling back to the global. On an EC=0 FAULT
+  that slot still holds the *last syscall's* SVC frame → deliver_arm would rewrite the
+  WRONG frame. So `oxide_arm_undef_handler` MUST, before calling `sig_dispatch::deliver`:
+  `cur.svc_frame.store(frame_ptr, Release)` AND `hal_aarch64::set_current_svc_frame(frame_ptr)`.
+  Then deliver_arm rewrites the EC=0 frame; the lower_sync_restore epilogue eret's to
+  the handler. (The EC=0 frame is byte-identical to the SVC frame because the save
+  block is copied from softstep, so `SvcFrame` accessors are valid on it.)
+- REJECTED shortcut: rebuilding arm openssl `no-asm` (skips cpuid SIGILL-probe) — that
+  masks a real kernel gap (Linux delivers catchable SIGILL on undefined instructions;
+  userspace relies on it). Do the kernel fix.
 - musl sets sa_restorer (`__restore_rt`); PendingSignal.restorer = h.restorer.
 - openssl's SIGILL handler siglongjmps (doesn't return) → won't re-hit the undef insn;
   but a clean impl still supports rt_sigreturn (rt_sigreturn_arm already works).
