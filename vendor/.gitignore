@@ -237,6 +237,13 @@ less/less-643.tar.gz
 # busybox versions.
 !util-linux/
 !util-linux/build.sh
+# L2: shared libs (libmount/libblkid/libuuid/libsmartcols) built by
+# build-libs.sh into install-<arch> (separate from the static programs).
+!util-linux/build-libs.sh
+!util-linux/install-x86_64/
+!util-linux/install-x86_64/**
+!util-linux/install-aarch64/
+!util-linux/install-aarch64/**
 !util-linux/login-x86_64
 !util-linux/login-aarch64
 !util-linux/agetty-x86_64
