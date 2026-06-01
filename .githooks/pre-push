@@ -53,7 +53,10 @@ while read -r f; do
         # crates/drivers/* matters too: virtio-net/blk/gpu/input/etc.
         # are part of the boot path; a regression there breaks the
         # same way a kernel-side regression does.
-        kernel/*|crates/kernel/*|crates/drivers/*|crates/arch/*|userspace/*|targets/*|vendor/*|rust-toolchain.toml|Cargo.toml|Cargo.lock)
+        # tools/xtask/* builds the rootfs (l2_deps staging, main.rs, the
+        # rcS oxide-smokes asset) — a change there alters the booted image,
+        # so it must gate too (F349 pushed un-gated otherwise).
+        kernel/*|crates/kernel/*|crates/drivers/*|crates/arch/*|userspace/*|targets/*|vendor/*|tools/xtask/*|rust-toolchain.toml|Cargo.toml|Cargo.lock)
             need_smoke=1
             break
             ;;
