@@ -807,23 +807,7 @@ pub fn sys_sched_get_priority_min(args: &SyscallArgs) -> i64 {
     match policy { 1 | 2 => 1, _ => 0 }
 }
 
-/// `sys_sched_getaffinity(pid, cpusetsize, mask)` — slot 204.
-///  writes a single-bit mask covering CPU 0; returns 8.
-/// # C: O(1)
-pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
-    let cpusetsize = args.a1;
-    let mask = args.a2;
-    if mask == 0 || mask >= hal::USER_VA_END || cpusetsize < 8 {
-        return -(syscall::errno::Errno::Einval.as_i32() as i64);
-    }
-    // SAFETY: mask validated < USER_VA_END; cpusetsize >= 8 guarantees the 8-byte write fits; CPL=0 writes through caller's AS.
-    unsafe { core::ptr::write_volatile(mask as *mut u64, 1); }
-    8
-}
-
-/// `sys_sched_setaffinity` — slot 203. v1 single-CPU → no-op.
-/// # C: O(1)
-pub fn sys_sched_setaffinity(_args: &SyscallArgs) -> i64 { 0 }
+// sched_{set,get}affinity moved to `syscalls/affinity.rs` (`08§7` cap).
 
 // `sys_prctl` real impl moved to `syscall_glue_prctl.rs` (F72).
 

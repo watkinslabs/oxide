@@ -149,6 +149,11 @@ pub struct Task {
     /// seed). `update_curr` divides by this; `setpriority`/nice and
     /// cgroup `cpu.weight` rewrite it. Seeded from `class` at creation.
     pub load_weight: AtomicU32,
+    /// CPU-affinity mask (bit N = may run on CPU N), per
+    /// `sched_setaffinity(2)` + cgroup `cpuset.cpus`. The load balancer
+    /// won't migrate a task to a CPU outside this mask. Default all-ones
+    /// (any CPU); inherited on fork.
+    pub cpus_allowed: AtomicU64,
     pub class:    SchedClass,
 
     pub exit_status: AtomicI32,
@@ -799,6 +804,7 @@ impl Task {
                 SchedClass::Normal { weight } => weight,
                 _ => crate::cputime::NICE_0_WEIGHT,
             }),
+            cpus_allowed: AtomicU64::new(u64::MAX),
             class,
             exit_status: AtomicI32::new(0),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),

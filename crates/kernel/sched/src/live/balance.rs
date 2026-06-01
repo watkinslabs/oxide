@@ -109,6 +109,14 @@ pub unsafe fn balance_once() -> u32 {
 
     let task = pop_one_cfs(busy_rq);
     let task = match task { Some(t) => t, None => return 0 };
+    // Affinity: only migrate to a CPU in the task's cpus_allowed mask
+    // (`sched_setaffinity` / cgroup cpuset.cpus). If the chosen task is
+    // pinned away from idle_cpu, put it back and skip this round rather
+    // than violate the mask (a later round may move a different task).
+    if idle_cpu < 64 && task.cpus_allowed.load(Ordering::Acquire) & (1u64 << idle_cpu) == 0 {
+        push_to(busy_rq, task);
+        return 0;
+    }
     push_to(idle_rq, task);
 
     // Wake the destination so its idle loop picks up the new task. The
