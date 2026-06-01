@@ -803,6 +803,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_CHROOT  => crate::syscalls::chroot::sys_chroot(&args),
         syscall::nrs::NR_MOUNT   => crate::syscalls::mount::sys_mount(&args),
         syscall::nrs::NR_UMOUNT2 => crate::syscalls::mount::sys_umount2(&args),
+        syscall::nrs::NR_PIVOT_ROOT => crate::syscalls::mount::sys_pivot_root(&args),
         syscall::nrs::NR_GET_MEMPOLICY => syscall::numa::sys_get_mempolicy(&args),
         syscall::nrs::NR_VHANGUP       => crate::syscalls::proc::sys_vhangup(&args),
         syscall::nrs::NR_FUTIMESAT | syscall::nrs::NR_UTIMENSAT => crate::syscalls::utime::sys_utimensat(&args),

@@ -2,7 +2,7 @@
 
 ## TL;DR
 Autonomous run, Track K2V (full Linux-faithful VFS dentry/mount rebuild).
-This session shipped 20 PRs (#1387-#1402 + U4-c open):
+This session shipped 22 PRs (#1387-#1403 + U4-d open) — Track K2V mount tree COMPLETE:
 - **V6 resolver migration COMPLETE**: every path syscall (stat/lstat/
   statx/newfstatat/open/openat/access/chmod/chown/utime/chdir/exec/
   readlink + namei mkdir/unlink/rmdir/symlink/mknod via parent-inode
@@ -15,22 +15,30 @@ This session shipped 20 PRs (#1387-#1402 + U4-c open):
   the unified per-ns table; U4-a whole-subtree MS_MOVE; U4-b peer-group
   inheritance on bind.
 
-## Open: F304 (U4-c) pushing — propagation EVENT delivery
-`vfs::mount::propagate_mount(at)` replicates a mount established under a
-SHARED parent to every peer of that parent at `<peer>/<rel>`; wired into
-sys_mount after the tmpfs + bind register paths. 13 hosted mount tests
-(incl. end-to-end propagate_mount_reaches_peers). After F304 merges:
+## Open: F305 (U4-d) pushing — pivot_root → MOUNT TREE matches docs/16§6
+`vfs::mount::pivot_root(new_root, put_old)` rewrites the per-ns table so
+new_root→`/`, old tree→under put_old (resolution reads the shared per-ns
+table, so `/` resolves to new_root for all tasks in the ns — no per-proc
+root needed). `sys_pivot_root` slot 155 (arm 41→155 already mapped),
+CAP_SYS_ADMIN. 14 hosted mount tests. **With this, Track K2V's mount tree
+is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
+MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
+unified tmpfs, umount-detach, pivot_root.
 
-## NEXT — pivot_root, then the tree fully matches docs/16§6
-- **pivot_root**: no `sys_pivot_root` (slot 155) and no per-process root
-  field exist yet — add both (Task gains a root mount ref; swap ns root +
-  move old root under put_old via move_mount/register/unregister).
-- Optional cleanup: drop `/var,/tmp,/run` from `is_ext4_path` in
-  namei.rs (now only link/linkat/rename use it; tmpfs in TABLE resolves
-  rename via TmpfsFs::rename).
+## NEXT — after F305 merges, K2V mount work is done. Pick next track:
+- Mark TASKS.md V7 row DONE.
+- Known small follow-ups (not blockers): per-process root/cwd NOT honored
+  in path_lookup yet (chroot is partial — chroot.rs mutates task.root but
+  pathresolve ignores it); link/linkat (O_TMPFILE) + rename (EXDEV/
+  cross-parent) still on ext4 path machinery (not inode dispatch); tmpfs
+  symlink/mknod inode methods are Erofs; optional drop of /var,/tmp,/run
+  from is_ext4_path in namei.rs.
+- Then AUDIT lowest unfinished phase/track (TASKS.md + 00§3 master plan):
+  likely Track K3+ (namespaces depth) or back toward the distro/systemd
+  path (Track L shared-lib userspace, D6 systemd).
 
 First command next session:
-  cd /home/nd/oxide2 && git log --oneline -5 | cat   # confirm F303 merged
+  cd /home/nd/oxide2 && git log --oneline -5 | cat   # confirm F305 merged
 
 ## CRITICAL harness rules (do NOT relearn)
 1. **Bash tool SIGKILLs any command that launches qemu directly**
