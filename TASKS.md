@@ -158,6 +158,15 @@ readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
   as O_DIRECTORY). Audit ALL O_* consts (open.rs, vfs OpenFlags) and make
   them per-arch or normalize at the arm_abi boundary. AT_* flags
   (AT_SYMLINK_NOFOLLOW=0x100 etc.) are arch-independent — fine.
+- **exec-via-walker masking risk** (V6e, F290). `execve` now reads the ELF
+  via `pathresolve::read_exec` (path_lookup → inode.read) but FALLS BACK to
+  raw `ext4::rootfs::read_file` when `read_exec` returns None. The fallback
+  is meant only for pre-mount early boot (no root dentry yet), but it would
+  ALSO silently rescue a genuine walker bug for any real binary — so a
+  broken exec-walk could still boot green. Boot reaches login (proves the
+  init→getty→login exec chain walks), but to truly prove no masking, add an
+  exec-through-symlink case to symlink_probe (bake an executable symlink
+  fixture) OR drop the fallback once confident. Revisit when touching exec.
 - iputils ping ICMP runtime path → validate under K-track socket work.
 - util-linux `mount` non-PIE → fix in D7.1 / L-track.
 - T14 pam_unix nested-fork/dlopen → resolved by L2 (real shared libc) + D6.6.
