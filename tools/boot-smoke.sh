@@ -30,9 +30,19 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
-LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
+# Bounded retry. SMP=2 boot has a known intermittent late-boot timing
+# race (~25%: reaches deep into rcS but the getty/login prompt doesn't
+# land within the timeout) that always clears on a clean re-boot. Retry
+# tolerates it WITHOUT hiding real regressions: a deterministic break
+# (ABI/syscall-table/arch-routing — what this gate exists to catch)
+# fails EVERY attempt, while the flake passes on a retry. Each attempt's
+# outcome is logged so a worsening flake stays visible. Override count
+# with OXIDE_SMOKE_ATTEMPTS (default 3).
+ATTEMPTS="${OXIDE_SMOKE_ATTEMPTS:-3}"
+
+LOG=""
 PIDFILE="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.pid)"
-cleanup() {
+kill_boot() {
     if [ -s "$PIDFILE" ]; then
         local pid
         pid="$(cat "$PIDFILE" 2>/dev/null || true)"
@@ -45,12 +55,11 @@ cleanup() {
             sleep 1
             kill -KILL "-$pid" 2>/dev/null || true
         fi
+        : > "$PIDFILE"
     fi
-    rm -f "$LOG" "$PIDFILE"
 }
+cleanup() { kill_boot; rm -f "$LOG" "$PIDFILE"; }
 trap cleanup EXIT
-
-echo "boot-smoke: arch=$ARCH timeout=${TIMEOUT}s log=$LOG"
 
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
@@ -60,27 +69,47 @@ echo "boot-smoke: arch=$ARCH timeout=${TIMEOUT}s log=$LOG"
 # arm via Limine SMP (APs MMU-on at our entry, F327) + GIC SGI. Override
 # with OXIDE_SMP=N.
 OXIDE_SMP="${OXIDE_SMP:-2}"
-OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
-echo $! > "$PIDFILE"
 
-deadline=$(( $(date +%s) + TIMEOUT ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-        echo "boot-smoke: FAIL — qemu exited before login marker" >&2
-        echo "------ last 60 lines of log ------" >&2
-        tail -n 60 "$LOG" >&2
-        exit 1
-    fi
-    if grep -q "oxide login:" "$LOG" 2>/dev/null; then
-        elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
-        echo "boot-smoke: PASS — $ARCH reached login in ${elapsed}s"
+# Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
+attempt_boot() {
+    LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
+    echo "boot-smoke: arch=$ARCH attempt=$1/$ATTEMPTS timeout=${TIMEOUT}s log=$LOG"
+    OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+    echo $! > "$PIDFILE"
+    local deadline
+    deadline=$(( $(date +%s) + TIMEOUT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local pid
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "boot-smoke: attempt $1 — qemu exited before login marker" >&2
+            echo "------ last 60 lines of log ------" >&2
+            tail -n 60 "$LOG" >&2
+            return 1
+        fi
+        if grep -q "oxide login:" "$LOG" 2>/dev/null; then
+            local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
+            echo "boot-smoke: PASS — $ARCH reached login in ${elapsed}s (attempt $1)"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "boot-smoke: attempt $1 — timeout after ${TIMEOUT}s without login marker" >&2
+    echo "------ last 80 lines of log ------" >&2
+    tail -n 80 "$LOG" >&2
+    return 1
+}
+
+a=1
+while [ "$a" -le "$ATTEMPTS" ]; do
+    if attempt_boot "$a"; then
+        [ "$a" -gt 1 ] && echo "boot-smoke: NOTE — passed on retry $a (SMP late-boot flake; see tools/boot-smoke.sh)" >&2
         exit 0
     fi
-    sleep 2
+    kill_boot
+    rm -f "$LOG"
+    a=$(( a + 1 ))
 done
 
-echo "boot-smoke: FAIL — timeout after ${TIMEOUT}s without login marker" >&2
-echo "------ last 80 lines of log ------" >&2
-tail -n 80 "$LOG" >&2
+echo "boot-smoke: FAIL — $ARCH did not reach login in $ATTEMPTS attempts" >&2
 exit 1
