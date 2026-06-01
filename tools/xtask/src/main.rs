@@ -260,7 +260,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // Rootfs 16→32(F251)→128(F345): L2 lib tree overflowed 32 MiB (arm wedged pre-init, dropped files); 128 leaves D6 headroom.
+    // Rootfs 16→32(F251)→128(F345): L2 lib tree (openssl etc.) overflowed 32 MiB → silent file drop → arm wedged pre-init. Rootfs is include_bytes!d into the kernel ELF; the ESP (image_qemu.rs) was bumped to 512 MiB to hold the bigger kernel.
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
