@@ -224,6 +224,20 @@ fn rq_peek_does_not_drain() {
 }
 
 #[test]
+fn load_weight_seeds_from_class() {
+    use core::sync::atomic::Ordering;
+    // A Normal task's live load_weight starts at its class weight; RT/Idle
+    // default to NICE_0 (they don't use vruntime but the field is valid).
+    let n = Task::new(1, "n", SchedClass::Normal { weight: 2048 });
+    assert_eq!(n.load_weight.load(Ordering::Acquire), 2048);
+    let r = Task::new(2, "r", SchedClass::Rt { prio: 50, policy: SchedPolicy::Fifo });
+    assert_eq!(r.load_weight.load(Ordering::Acquire), crate::cputime::NICE_0_WEIGHT);
+    // setpriority-style reweight is just a store; verify it sticks.
+    n.load_weight.store(crate::cputime::nice_to_weight(-20), Ordering::Release);
+    assert_eq!(n.load_weight.load(Ordering::Acquire), 88761);
+}
+
+#[test]
 fn rq_enqueue_skips_frozen_task() {
     // cgroup v2 freezer chokepoint: a task whose `frozen` flag is set is
     // silently dropped by enqueue, never reaching either class list. Clearing

@@ -79,10 +79,10 @@ fn now_ns() -> u64 {
 /// re-select it, starving higher-tid peers (the F144 rotation bug).
 /// Runs before pick + re-enqueue so the re-keyed insert sorts correctly.
 fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
-    let weight = match prev.class {
-        SchedClass::Normal { weight } => weight,
-        _ => return, // RT / Idle don't use vruntime
-    };
+    if !matches!(prev.class, SchedClass::Normal { .. }) { return; } // RT/Idle: no vruntime
+    // Live, mutable weight (nice / cgroup cpu.weight rewrite it) — not the
+    // SchedClass::Normal seed.
+    let weight = prev.load_weight.load(Ordering::Acquire);
     let start = prev.exec_start_ns.load(Ordering::Acquire);
     let delta = crate::cputime::clamp_delta(now, start, MAX_TICK_NS);
     if delta != 0 {
