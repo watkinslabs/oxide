@@ -253,11 +253,10 @@ pub fn parent_id_of(path: &str) -> u64 {
 /// move is a `mount_point` rewrite that preserves `mnt_id` + propagation
 /// — the new parent_id falls out of the prefix recompute automatically
 /// (`docs/16§6`). `Einval` if no mount is rooted exactly at `from`;
-/// `Ebusy` if a mount already occupies `to`. Submounts (mounts whose
-/// point is under `from`) are NOT re-pointed here — Linux moves the whole
-/// subtree; that rides the table unification (tmpfs still lives in the
-/// devfs registry). For a single real-fs mount (the pivot_root case) this
-/// is the complete operation.
+/// `Ebusy` if a mount already occupies `to`. Submounts (mounts nested
+/// under `from`) move WITH it — Linux relocates the whole subtree, so a
+/// mount at `<from>/<rel>` becomes `<to>/<rel>` (U4). `mnt_id` +
+/// propagation + peer_group preserved on every moved mount.
 /// # C: O(N_mounts)
 pub fn move_mount(from: &str, to: &str) -> KResult<()> {
     let ns = current_ns();
@@ -265,18 +264,32 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
     if t.iter().any(|m| m.mount_point == to && m.ns == ns) {
         return Err(VfsError::Ebusy);
     }
-    let idx = t.iter().position(|m| m.mount_point == from && m.ns == ns).ok_or(VfsError::Einval)?;
-    let old = &t[idx];
-    let moved = Arc::new(Mount {
-        fs: old.fs.clone(),
-        mount_point: to.to_string(),
-        root: old.root.clone(),
-        mnt_id: old.mnt_id,
-        propagation: AtomicU8::new(old.propagation.load(Ordering::Acquire)),
-        peer_group: AtomicU64::new(old.peer_group.load(Ordering::Acquire)),
-        ns: old.ns,
-    });
-    t[idx] = moved;
+    if !t.iter().any(|m| m.mount_point == from && m.ns == ns) {
+        return Err(VfsError::Einval);
+    }
+    // Rewrite the exact mount AND every submount nested under `from/`,
+    // re-rooting the `from` prefix onto `to`.
+    for i in 0..t.len() {
+        let m = &t[i];
+        if m.ns != ns { continue; }
+        let new_mp = if m.mount_point == from {
+            to.to_string()
+        } else if let Some(rel) = m.mount_point.strip_prefix(from)
+            .filter(|r| r.starts_with('/')) {
+            alloc::format!("{}{}", to, rel)
+        } else {
+            continue;
+        };
+        t[i] = Arc::new(Mount {
+            fs: m.fs.clone(),
+            mount_point: new_mp,
+            root: m.root.clone(),
+            mnt_id: m.mnt_id,
+            propagation: AtomicU8::new(m.propagation.load(Ordering::Acquire)),
+            peer_group: AtomicU64::new(m.peer_group.load(Ordering::Acquire)),
+            ns: m.ns,
+        });
+    }
     Ok(())
 }
 
