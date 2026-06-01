@@ -188,14 +188,53 @@ impl SysClassNetIfaceInode {
 const IFACE_ENTRIES: &[&str] = &[
     "address", "broadcast", "mtu", "operstate", "type", "flags",
     "carrier", "speed", "duplex", "ifindex", "tx_queue_len",
-    "addr_len", "name_assign_type", "dev_id",
+    "addr_len", "name_assign_type", "dev_id", "uevent",
 ];
+
+/// `/sys/class/net/<if>/uevent` — read returns the device's uevent env;
+/// write of an action ("add"/"change"/"remove") broadcasts a kobject
+/// uevent on NETLINK_KOBJECT_UEVENT (the `udevadm trigger` path → udev).
+struct UeventTriggerInode { name: alloc::string::String }
+
+impl Inode for UeventTriggerInode {
+    fn ino(&self) -> Ino { 0x5100_3000 }
+    fn file_type(&self) -> FileType { FileType::Regular }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        // uevent read yields the device's env vars (one per line).
+        let mut body: Vec<u8> = Vec::new();
+        let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
+            format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", self.name,
+                net::sock::stack().ifaces.lookup_name(&self.name).map(|(id, _)| id.raw()).unwrap_or(0)));
+        let off = off as usize;
+        if off >= body.len() { return Ok(0); }
+        let n = (body.len() - off).min(buf.len());
+        buf[..n].copy_from_slice(&body[off..off + n]);
+        Ok(n)
+    }
+    fn write(&self, _o: u64, b: &[u8]) -> KResult<usize> {
+        // First whitespace-delimited token is the action ("add"/"change"/…).
+        let action = core::str::from_utf8(b).ok()
+            .and_then(|s| s.split_whitespace().next())
+            .filter(|a| !a.is_empty())
+            .unwrap_or("change");
+        let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
+        ::netlink::emit_uevent(action, &devpath, "net");
+        Ok(b.len())
+    }
+}
 
 impl Inode for SysClassNetIfaceInode {
     fn ino(&self) -> Ino { 0x5100_1000 }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        // The `uevent` node is writable: `udevadm trigger` (and udev
+        // coldplug) write "add"/"change" to re-emit the device's uevent.
+        if name == "uevent" {
+            return Ok(Arc::new(UeventTriggerInode { name: self.name.clone() }) as InodeRef);
+        }
         if !IFACE_ENTRIES.contains(&name) { return Err(VfsError::Enoent); }
         let body = self.body(name).unwrap_or_default();
         Ok(Arc::new(BodyInode { body, ino: 0x5100_2000 }) as InodeRef)
