@@ -67,11 +67,15 @@ comma := ,
 QEMU_FEATURES_X86 := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 
+# SMP CPU count for qemu (default 1). The boot-smoke gate sets SMP=2 so
+# AP bring-up + the periodic load balancer are exercised every push.
+SMP ?= 1
+
 qemu-x86:
-	$(XTASK) qemu --arch x86_64  --features "$(QEMU_FEATURES_X86)"
+	$(XTASK) qemu --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
 
 qemu-arm:
-	$(XTASK) qemu --arch aarch64 --features "$(QEMU_FEATURES_ARM)"
+	$(XTASK) qemu --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
 
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you

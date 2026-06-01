@@ -519,6 +519,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             klog::write_dec_u64(started as u64);
             klog::write_raw(b"\n");
         }
+        // Production scheduler hooks — installed UNCONDITIONALLY (not
+        // gated on AP count): the periodic load balancer (`13§11`) sends
+        // resched IPIs cross-CPU, and coredumps need the writer hook even
+        // single-CPU. These were previously buried in the `started > 0`
+        // migration smoke, so SMP=1 boots silently lacked them.
+        // SAFETY: BSP post-init; install_default_runqueue is idempotent; the hooks swap 'static fn pointers.
+        unsafe {
+            sched::live::install_default_runqueue();
+            sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
+            pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
+        }
         // Cross-CPU IPI smoke per `13§9`. Wait for every AP to
         // come online (smp::online_count() reaches smp_count) so
         // their LAPICs are enabled + IRQs unmasked, then send a
@@ -554,37 +565,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
                 klog::write_dec_u64(arch_irq::lapic::RESCHED_IPI_COUNT.load(Ordering::Relaxed));
                 klog::write_raw(b"\n");
             }
-            // Migration smoke per `13§11`: spawn a few CFS kthreads
-            // on BSP so its runqueue has surplus, then balance_once
-            // should migrate at least one to an idle AP.
-            extern "C" fn smp_smoke_thread(_arg: usize) -> ! {
-                loop {
-                    // SAFETY: idle-equivalent loop in kthread context; pause is a hint, hlt parks until next IRQ.
-                    unsafe {
-                        core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
-                        core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-                    }
-                }
-            }
-            // SAFETY: BSP at boot post-init; allocator up; runqueue idempotent install brings up BSP slot; spawn enqueues into BSP's slot; smp_smoke_thread loops in pause/hlt forever, no shared state; balance_once is reentrant under per-rq locks.
-            let migrated = unsafe {
-                sched::live::install_default_runqueue();
-                #[cfg(target_arch = "x86_64")]
-                sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
-                pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
-                let _ = sched::live::spawn_kernel_thread(0xB1A0_0001, "smpb1", smp_smoke_thread, 0);
-                let _ = sched::live::spawn_kernel_thread(0xB1A0_0002, "smpb2", smp_smoke_thread, 0);
-                let _ = sched::live::spawn_kernel_thread(0xB1A0_0003, "smpb3", smp_smoke_thread, 0);
-                let m1 = sched::live::balance::balance_once();
-                let m2 = sched::live::balance::balance_once();
-                let m3 = sched::live::balance::balance_once();
-                m1 + m2 + m3
-            };
-            debug_boot! {
-                klog::write_raw(b"[INFO]  smp: balance_once: migrated_total=");
-                klog::write_dec_u64(migrated as u64);
-                klog::write_raw(b"\n");
-            }
+            // NOTE: the old boot-time migration smoke spawned permanent
+            // `loop { hlt }` kthreads here to exercise balance_once. They
+            // never exited, so once real scheduling started (run_as_task)
+            // the picker switched into one and boot wedged — invisible
+            // while the gate ran -smp 1 (this whole block was skipped).
+            // Removed: balance_once now runs in production from the kthread
+            // tick (F325), so no boot smoke is needed.
         }
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
