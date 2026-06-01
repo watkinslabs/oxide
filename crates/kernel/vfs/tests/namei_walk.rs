@@ -137,10 +137,32 @@ fn missing_component_enoent() {
     assert_eq!(look(&root, "/etc/nope", LookupFlags::default()).err(), Some(VfsError::Enoent));
 }
 
-// Mount crossing: a filesystem mounted at /mnt whose root holds `file`.
+// Mount crossing: /mnt whose root holds `file`; /proc is a whole-path
+// filesystem (its root rejects per-component lookup) reached via the
+// whole-path delegate. One combined resolver so the global hooks don't
+// race between parallel tests (unique paths, idempotent installs).
 static MOUNT_ROOT: OnceLock<InodeRef> = OnceLock::new();
+static PROC_ROOT: OnceLock<InodeRef> = OnceLock::new();
+static PROC_TARGET: OnceLock<InodeRef> = OnceLock::new();
 fn test_resolver(abs: &str) -> Option<InodeRef> {
-    if abs == "/mnt" { MOUNT_ROOT.get().cloned() } else { None }
+    match abs {
+        "/mnt"  => MOUNT_ROOT.get().cloned(),
+        "/proc" => PROC_ROOT.get().cloned(),
+        _ => None,
+    }
+}
+fn test_whole_path(abs: &str) -> Option<InodeRef> {
+    if abs == "/proc/123/stat" { PROC_TARGET.get().cloned() } else { None }
+}
+
+// A whole-path-only directory inode: per-component lookup is unsupported
+// (Enotdir), like procfs's synthesised dirs.
+struct WholePathDir { ino: u64 }
+impl Inode for WholePathDir {
+    fn ino(&self) -> vfs::Ino { self.ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, _n: &str) -> vfs::KResult<InodeRef> { Err(VfsError::Enotdir) }
 }
 
 #[test]
@@ -158,4 +180,23 @@ fn crosses_mount_point() {
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/mnt/file", LookupFlags::default())
         .expect("cross into mount");
     assert_eq!(i.ino(), 99, "resolved file inside the mounted fs, not the underlay");
+}
+
+// Crossing into a whole-path filesystem (procfs): per-component lookup
+// of `/proc/123` fails (Enotdir), so the walker delegates the remaining
+// absolute path to the owning mount's whole-path lookup.
+#[test]
+fn delegates_whole_path_for_procfs_style_fs() {
+    PROC_ROOT.set(Arc::new(WholePathDir { ino: 300 })).ok();
+    PROC_TARGET.set(file(301)).ok();
+    vfs::set_mount_resolver(test_resolver);
+    vfs::set_mount_whole_path(test_whole_path);
+
+    let empty_proc = dir(60, &[]);
+    let root_inode = dir(2, &[("proc", empty_proc)]);
+    let root = Dentry::new_root(root_inode);
+
+    let (i, _) = vfs::path_lookup(root.clone(), root, "/proc/123/stat", LookupFlags::default())
+        .expect("delegate whole-path into procfs");
+    assert_eq!(i.ino(), 301, "whole-path delegate resolved /proc/123/stat");
 }
