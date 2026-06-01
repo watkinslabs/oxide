@@ -67,13 +67,47 @@ hot-path TREE access must try_lock or move off the tree lock.
   yet) so it's a clean start. Then L2 (cross-build shared deps both
   arches), then D6 (vendor systemd). See TASKS.md L1/L2/D6.
 
+## Track L1 — ACCURATE SCOPING (investigated this session; NOT greenfield)
+The dynamic-link INFRASTRUCTURE is already built:
+- `crates/kernel/exec/lib.rs` `load_static_blob` DOES act on PT_INTERP
+  (loads the interp at `INTERP_LOAD_BIAS`, sets `interp_base`/
+  `interp_entry`; the stale line-14 "not acted on" comment is WRONG).
+- `crates/kernel/exec/stack.rs` builds the full auxv: AT_PHDR/PHENT/
+  PHNUM/BASE/ENTRY all populated for the dynamic linker.
+- `crates/shared/elf/` has dynamic.rs/hash.rs/relocatable.rs (reloc +
+  symbol-hash support).
+- `tools/xtask/main.rs` F230 stages vendored `ld-musl-<arch>.so.1` →
+  /lib (+ libc.so alias on arm) and builds dyn test binaries
+  (userspace/hello_dyn, hello_dyn_libc).
+GAP: no dynamic binary is exercised in-guest (hello_dyn* not in rcS/any
+smoke), and T15 flags arm dynamic `/bin/sh` (bash) wedging. So L1 =
+VERIFY + FIX the dynamic-exec path, not build it.
+
+## L1 DONE + VERIFIED this session (both arches)
+Booted -smp 2 on x86 AND arm; rcS oxide-smokes already run the dyn
+binaries — both show: `hello_dyn_libc: real-ld-musl OK rv=0` and
+`post-bash-dynamic rv=0` (dynamic BASH runs). T15 (arm dyn-bash wedge)
+RESOLVED/stale. So the shared-library runtime systemd needs WORKS.
+
+## NEXT — Track L2 (the big external cross-build effort)
+Cross-build the shared deps systemd needs, both arches, as `.so`s staged
+into /usr/lib: libcap, libxcrypt, util-linux (libmount/libblkid/libuuid/
+libsmartcols), libseccomp, kmod, pcre2, zstd, lz4, liblzma, openssl,
+libgcrypt+libgpg-error, acl/attr, libidn2, linux-pam, dbus+dbus-broker.
+This is vendoring + cross-compiling external source (musl cross toolchain
+in vendor/cross/) — large, may need fetches (possible hard-blocker if a
+source/toolchain is missing → pause + report). Approach: mirror the
+existing musl/.so vendoring + xtask put() staging pattern; one lib (or a
+small cluster) per PR; verify each loads via a dyn probe. Start with a
+leaf dep (e.g. libcap or zstd — few transitive deps) to prove the L2
+cross-build+stage+load pipeline, then fan out.
+Then D6 = vendor systemd itself (`-Dlibc=musl`), PID1 swap, units.
+
 ## First task next session
-Begin **Track L1**: `git checkout -b F332-shared-musl-runtime`. Audit
-docs/29a (userspace platform) + how userspace is currently statically
-linked (tools/xtask build of busybox/.c probes), then stage a shared
-ld-musl + /lib tree + a dynamic-linked "hello" to prove the loader path.
-(io.max throttle is deferred — deep + marginal; the cgroup surface is
-otherwise complete + enforced.)
+`git checkout -b F332-l2-<lib>`: pick a leaf dep (libcap or zstd), vendor
++ cross-build its .so both arches, stage to /usr/lib, add a dyn probe
+that links it, boot-verify both arches load it. That proves the L2
+pipeline. (io.max throttle deferred — deep + marginal.)
 
 ## CRITICAL HARNESS RULES
 - **NEVER run `git branch -D`** (any form) — it always prompts; user
