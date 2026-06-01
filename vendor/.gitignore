@@ -363,3 +363,12 @@ iputils/iputils-20240117/
 iputils/iputils-20240117.tar.gz
 iputils/build-x86_64/
 iputils/build-aarch64/
+# libseccomp 2.5.5 — Track L2 systemd dep (syscall sandboxing).
+!libseccomp/
+!libseccomp/build.sh
+!libseccomp/install-x86_64/
+!libseccomp/install-x86_64/**
+!libseccomp/install-aarch64/
+!libseccomp/install-aarch64/**
+libseccomp/libseccomp-2.5.5/
+libseccomp/libseccomp-2.5.5.tar.gz
