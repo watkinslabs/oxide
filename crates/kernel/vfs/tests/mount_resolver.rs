@@ -83,3 +83,31 @@ fn move_mount_relocates_preserving_mnt_id() {
     vfs::mount::register("/occupied", Arc::new(TestFs { root_ino: 1 })).expect("register2");
     assert!(matches!(vfs::mount::move_mount("/mv-dst", "/occupied"), Err(VfsError::Ebusy)));
 }
+
+// K2V V7-b: bind-as-clone. register_bind mounts an arbitrary source inode
+// as the mount root; mount_root_at returns THAT inode (not fs.root()), so
+// the dentry walk mirrors the source subtree via per-component lookup —
+// no path rewrite. Verified over the real mount table, no QEMU.
+struct BindChildDir;
+impl Inode for BindChildDir {
+    fn ino(&self) -> vfs::Ino { 0xB14D }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    // Source subtree: "kid" resolves to a known inode.
+    fn lookup(&self, n: &str) -> KResult<InodeRef> {
+        if n == "kid" { Ok(Arc::new(TDir { ino: 0xC0DE })) } else { Err(VfsError::Enoent) }
+    }
+}
+
+#[test]
+fn bind_as_clone_roots_at_source_inode() {
+    let bindfs = Arc::new(TestFs { root_ino: 0x9999 }); // fs.root() must NOT win
+    let src_root: InodeRef = Arc::new(BindChildDir);
+    vfs::mount::register_bind("/bnd", bindfs, src_root).expect("register_bind");
+    // Crossing into the bind returns the SOURCE inode, not fs.root().
+    let r = vfs::mount::mount_root_at("/bnd").expect("cross into bind");
+    assert_eq!(r.ino(), 0xB14D, "bind root is the source inode, not fs.root()");
+    // And the walk mirrors the source subtree per-component.
+    let kid = r.lookup("kid").expect("child via source subtree");
+    assert_eq!(kid.ino(), 0xC0DE);
+}
