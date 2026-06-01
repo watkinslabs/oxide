@@ -217,7 +217,7 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     crate::devfs::register("/proc/sys/kernel/threads-max",
         StaticFileInode::new(b"32768\n") as InodeRef);
     crate::devfs::register("/proc/sys/fs/file-max",
-        StaticFileInode::new(b"65536\n") as InodeRef);
+        crate::procfs::sysctl::SysctlInode::new(b"65536\n") as InodeRef);
     crate::devfs::register("/proc/sys/fs/file-nr",
         StaticFileInode::new(b"0\t0\t65536\n") as InodeRef);
     crate::devfs::register("/proc/sys/fs/nr_open",
@@ -229,13 +229,25 @@ ip\t0\tIP\nicmp\t1\tICMP\ntcp\t6\tTCP\nudp\t17\tUDP\n\
     crate::devfs::register("/proc/sys/fs/inotify/max_queued_events",
         StaticFileInode::new(b"16384\n") as InodeRef);
     crate::devfs::register("/proc/sys/fs/pipe-max-size",
-        StaticFileInode::new(b"4096\n") as InodeRef);
+        crate::procfs::sysctl::SysctlInode::new(b"4096\n") as InodeRef);
     crate::devfs::register("/proc/sys/vm/overcommit_memory",
-        StaticFileInode::new(b"0\n") as InodeRef);
+        crate::procfs::sysctl::SysctlInode::new(b"0\n") as InodeRef);
     crate::devfs::register("/proc/sys/vm/swappiness",
-        StaticFileInode::new(b"60\n") as InodeRef);
+        crate::procfs::sysctl::SysctlInode::new(b"60\n") as InodeRef);
     crate::devfs::register("/proc/sys/net/core/somaxconn",
-        StaticFileInode::new(b"4096\n") as InodeRef);
+        crate::procfs::sysctl::SysctlInode::new(b"4096\n") as InodeRef);
+    // Common tunables systemd-sysctl / sysctl.d write — writable so the
+    // apply step succeeds + reads reflect it (R5).
+    crate::devfs::register("/proc/sys/kernel/printk",
+        crate::procfs::sysctl::SysctlInode::new(b"4\t4\t1\t7\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/ip_forward",
+        crate::procfs::sysctl::SysctlInode::new(b"0\n") as InodeRef);
+    crate::devfs::register("/proc/sys/net/ipv4/tcp_syncookies",
+        crate::procfs::sysctl::SysctlInode::new(b"1\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/dirty_ratio",
+        crate::procfs::sysctl::SysctlInode::new(b"20\n") as InodeRef);
+    crate::devfs::register("/proc/sys/vm/max_map_count",
+        crate::procfs::sysctl::SysctlInode::new(b"65530\n") as InodeRef);
 
     // F158: /proc/net/* — Linux networking surface. v1 has loopback
     // only, no real protocol stack tables; we emit the headers + a
