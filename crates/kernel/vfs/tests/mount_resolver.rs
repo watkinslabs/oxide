@@ -129,3 +129,29 @@ fn ms_rec_clones_submounts() {
     let sub = vfs::mount::mount_root_at("/rtgt/sub").expect("cloned submount present");
     assert_eq!(sub.ino(), 0x200, "cloned submount keeps the source fs root");
 }
+
+// K2V V7-d: propagation peer-group ids. MS_SHARED assigns a fresh
+// peer_group (distinct from mnt_id); two shared mounts get distinct
+// groups; MS_PRIVATE clears it. Verified over the real mount table.
+#[test]
+fn ms_shared_assigns_distinct_peer_groups() {
+    use std::sync::atomic::Ordering;
+    use vfs::mount::Propagation;
+    vfs::mount::register("/pg-a", Arc::new(TestFs { root_ino: 1 })).expect("a");
+    vfs::mount::register("/pg-b", Arc::new(TestFs { root_ino: 2 })).expect("b");
+    vfs::mount::set_propagation("/pg-a", Propagation::Shared).expect("share a");
+    vfs::mount::set_propagation("/pg-b", Propagation::Shared).expect("share b");
+    let snap = vfs::mount::snapshot();
+    let ga = snap.iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
+    let gb = snap.iter().find(|m| m.mount_point == "/pg-b").unwrap().peer_group.load(Ordering::Acquire);
+    assert!(ga != 0 && gb != 0, "shared mounts get a peer group");
+    assert!(ga != gb, "distinct shared mounts get distinct peer groups");
+    // Re-sharing is idempotent (keeps the same group).
+    vfs::mount::set_propagation("/pg-a", Propagation::Shared).expect("reshare a");
+    let ga2 = vfs::mount::snapshot().iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
+    assert_eq!(ga, ga2, "re-MS_SHARED keeps the peer group");
+    // MS_PRIVATE drops the group.
+    vfs::mount::set_propagation("/pg-a", Propagation::Private).expect("priv a");
+    let ga3 = vfs::mount::snapshot().iter().find(|m| m.mount_point == "/pg-a").unwrap().peer_group.load(Ordering::Acquire);
+    assert_eq!(ga3, 0, "MS_PRIVATE clears the peer group");
+}

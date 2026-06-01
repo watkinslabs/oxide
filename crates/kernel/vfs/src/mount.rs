@@ -35,6 +35,13 @@ impl Propagation {
 /// it + `parent_id`. Starts at 1 (0 means "no parent" for the root).
 static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Monotonic mount peer-group id source (`docs/16§6`). Linux assigns each
+/// *peer group* a unique id, distinct from `mnt_id`; mounts sharing
+/// propagation events share one peer-group id, rendered `shared:<pg>`
+/// (a member) / `master:<pg>` (a slave of group pg) in mountinfo. Starts
+/// at 1 (0 = "not in any peer group").
+static NEXT_PEER_GROUP: AtomicU64 = AtomicU64::new(1);
+
 /// One mount instance. The mount *tree* (`docs/16§6`) is represented
 /// implicitly: a mount's parent is the live mount whose `mount_point`
 /// is the longest proper path-prefix of this one (see `parent_id`),
@@ -53,6 +60,10 @@ pub struct Mount {
     pub mnt_id: u64,
     /// Propagation type discriminant (`Propagation`). Default Private.
     pub propagation: AtomicU8,
+    /// Peer-group id (`docs/16§6`); 0 = none. Assigned on `MS_SHARED`,
+    /// inherited by clones of a shared mount. Rendered `shared:<pg>` /
+    /// `master:<pg>` in mountinfo. Distinct from `mnt_id`.
+    pub peer_group: AtomicU64,
 }
 
 static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
@@ -71,6 +82,7 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
         root: None,
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
+        peer_group: AtomicU64::new(0),
     }));
     Ok(())
 }
@@ -93,6 +105,7 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
         root: Some(root),
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
+        peer_group: AtomicU64::new(0),
     }));
     Ok(())
 }
@@ -176,6 +189,7 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
         root: old.root.clone(),
         mnt_id: old.mnt_id,
         propagation: AtomicU8::new(old.propagation.load(Ordering::Acquire)),
+        peer_group: AtomicU64::new(old.peer_group.load(Ordering::Acquire)),
     });
     t[idx] = moved;
     Ok(())
@@ -189,6 +203,20 @@ pub fn set_propagation(mount_point: &str, kind: Propagation) -> KResult<()> {
     let t = TABLE.lock();
     let m = t.iter().find(|m| m.mount_point == mount_point).ok_or(VfsError::Einval)?;
     m.propagation.store(kind as u8, Ordering::Release);
+    // Peer-group bookkeeping: making a mount shared joins it to a peer
+    // group (a fresh one if it had none); making it private/unbindable
+    // drops it from its group. Slave keeps its group as its master ref.
+    match kind {
+        Propagation::Shared => {
+            if m.peer_group.load(Ordering::Acquire) == 0 {
+                m.peer_group.store(NEXT_PEER_GROUP.fetch_add(1, Ordering::Relaxed), Ordering::Release);
+            }
+        }
+        Propagation::Private | Propagation::Unbindable => {
+            m.peer_group.store(0, Ordering::Release);
+        }
+        Propagation::Slave => {}
+    }
     Ok(())
 }
 
