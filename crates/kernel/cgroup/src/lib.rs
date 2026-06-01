@@ -66,6 +66,11 @@ static SIGNAL_HOOK: Spinlock<Option<fn(u64, i32)>, TaskListClass> = Spinlock::ne
 /// no `sched` dependency. Mirrors `SIGNAL_HOOK` for `cgroup.kill`.
 static FREEZE_HOOK: Spinlock<Option<fn(u64, bool)>, TaskListClass> = Spinlock::new(None);
 
+/// `cpu.weight` delivery: `(pid, cfs_weight)`. The kernel installs a hook
+/// that rewrites the task's live CFS load weight so the cgroup weight
+/// shifts CPU shares. Leaf crate stays `sched`-free.
+static WEIGHT_HOOK: Spinlock<Option<fn(u64, u32)>, TaskListClass> = Spinlock::new(None);
+
 /// vpid → canonical (global) tid resolver. `cgroup.procs`/`threads`
 /// receive a pid as seen in the writer's pid namespace; the cgroup
 /// tree keys membership on the canonical tid (matching `/proc/<pid>/
@@ -84,6 +89,20 @@ pub fn set_signal_hook(f: fn(u64, i32)) { *SIGNAL_HOOK.lock() = Some(f); }
 /// Install the freezer hook. Boot path.
 /// # C: O(1)
 pub fn set_freeze_hook(f: fn(u64, bool)) { *FREEZE_HOOK.lock() = Some(f); }
+
+/// Install the cpu.weight hook. Boot path.
+/// # C: O(1)
+pub fn set_weight_hook(f: fn(u64, u32)) { *WEIGHT_HOOK.lock() = Some(f); }
+
+/// Map cgroup v2 `cpu.weight` (1..=10000, default 100) → CFS load weight
+/// (nice-0 == cpu.weight 100 == weight 1024). Saturates to ≥1.
+/// # C: O(1)
+pub fn cpu_weight_to_cfs(cpu_weight: u32) -> u32 {
+    ((cpu_weight as u64 * NICE_0_CFS as u64) / 100).clamp(1, u32::MAX as u64) as u32
+}
+
+/// CFS weight of a nice-0 task — kept in sync with `sched::cputime`.
+const NICE_0_CFS: u32 = 1024;
 
 /// Install the vpid→tid resolver. Boot path.
 /// # C: O(1)
@@ -161,6 +180,16 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             // Actually freeze/thaw each member task via the scheduler.
             if let Some(hook) = *FREEZE_HOOK.lock() {
                 for p in pids { hook(p, v); }
+            }
+            Ok(())
+        }
+        "cpu.weight" => {
+            // Persist the value, then push the mapped CFS weight to every
+            // member task so the cgroup weight actually shifts CPU shares.
+            let pids = { let mut t = TREE.lock(); t.write_file(cgid, file, buf)?; t.subtree_pids(cgid) };
+            let w = cpu_weight_to_cfs(TREE.lock().node(cgid).map(|n| n.cpu_weight).unwrap_or(100));
+            if let Some(hook) = *WEIGHT_HOOK.lock() {
+                for p in pids { hook(p, w); }
             }
             Ok(())
         }
