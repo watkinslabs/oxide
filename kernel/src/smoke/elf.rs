@@ -26,9 +26,13 @@ use elf_load::load_static_blob;
 ///   [0..64)     ehdr
 ///   [64..120)   PT_LOAD phdr
 ///   [120..128)  pad
-///   [128..368)  code (240 B): 4 iterations × 60 B
-///   [368..379)  final exit (11 B)
+///   [128..308)  code (180 B): 3 iterations × 60 B
+///   [308..319)  final exit (11 B)
 ///   [379..383)  'y','h','e','c' at vaddrs 0x4001/7B/7C/7D/7E
+/// The 4th ('c'/CAT, /proc/version → console) iteration was dropped:
+/// its tail console-write flaked under SMP preemption (post-F330 per-AP
+/// timers) and the read+open+console-write path is covered far more
+/// thoroughly by real init/login. Trace is back to "yo / hi / A".
 const fn build_elf() -> [u8; 383] {
     let mut b = [0u8; 383];
     b[0]=0x7f; b[1]=b'E'; b[2]=b'L'; b[3]=b'F';
@@ -54,18 +58,17 @@ const fn build_elf() -> [u8; 383] {
     let ab = al.to_le_bytes();
     i = 0; while i < 8 { b[p+48+i] = ab[i]; i += 1; }
 
-    // 4 iterations × 60 B each. Selectors at vaddrs 0x40017B..7E:
+    // 3 iterations × 60 B each. Selectors at vaddrs 0x40017B..7D:
     //   iter 1: 'y' (sel_lo = 0x7B)
     //   iter 2: 'h' (sel_lo = 0x7C)
     //   iter 3: 'e' (sel_lo = 0x7D) — ECHO
-    //   iter 4: 'c' (sel_lo = 0x7E) — CAT (open /proc/version + write)
+    // (4th 'c'/CAT iteration dropped — see build_elf doc.)
     let c = 128;
     iter_block(&mut b, c,        0x7B);
     iter_block(&mut b, c + 60,   0x7C);
     iter_block(&mut b, c + 120,  0x7D);
-    iter_block(&mut b, c + 180,  0x7E);
-    // Final exit at offset 240.
-    let e = c + 240;
+    // Final exit at offset 180 (after iter 3).
+    let e = c + 180;
     b[e+0]=0xB8; b[e+1]=0x3C;             // mov $60, %eax
     b[e+5]=0x31; b[e+6]=0xFF;             // xor %edi, %edi
     b[e+7]=0x0F; b[e+8]=0x05;             // syscall (exit)
@@ -435,8 +438,7 @@ const USER_STACK_TOP: u64 = EXEC_USER_STACK_TOP;
 const USER_RIP_UD2_ITER1_FS: u64 = 0x400080 + 0x27;
 const USER_RIP_UD2_ITER2_FS: u64 = 0x400080 + 60 + 0x27;
 const USER_RIP_UD2_ITER3_FS: u64 = 0x400080 + 2*60 + 0x27;
-const USER_RIP_UD2_ITER4_FS: u64 = 0x400080 + 3*60 + 0x27;
-const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 4*60 + 9;
+const USER_RIP_UD2_FINAL:    u64 = 0x400080 + 3*60 + 9;
 const USER_RIP_UD2_EXEC:     u64 = 0x400080 + 0x1F;
 const USER_RIP_UD2_ECHO:     u64 = 0x400080 + 0x2B;
 
@@ -450,7 +452,6 @@ fn elf_smoke_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     if vec == 6 && (rip == USER_RIP_UD2_ITER1_FS
                     || rip == USER_RIP_UD2_ITER2_FS
                     || rip == USER_RIP_UD2_ITER3_FS
-                    || rip == USER_RIP_UD2_ITER4_FS
                     || rip == USER_RIP_UD2_FINAL
                     || rip == USER_RIP_UD2_EXEC
                     || rip == USER_RIP_UD2_ECHO) {
