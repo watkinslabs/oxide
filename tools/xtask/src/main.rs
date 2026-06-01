@@ -787,17 +787,17 @@ session    required   pam_unix.so
     let stage_so = |vendor: &str, real: &str, soname: &str, linker: &str| -> Result<(), u8> {
         let dir = repo.join(format!("vendor/{vendor}/install-{arch}/lib"));
         put(&dir.join(real), &format!("/usr/lib/{real}"))?;
-        // Some libs (e.g. openssl) name the real .so == its SONAME
-        // (libssl.so.3), so skip the self-link in that case.
-        if soname != real {
-            ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?;
-        }
+        // Skip the self-link when real == SONAME (e.g. openssl libssl.so.3).
+        if soname != real { ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?; }
         ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{linker}"))?;
         Ok(())
     };
     for (vendor, real, soname, linker) in l2_deps::L2_LIBS {
         stage_so(vendor, real, soname, linker)?;
     }
+    // Track D6: systemd PID1 + private libs + systemctl (plain copies).
+    dbg("mkdir /lib/systemd")?;
+    for (rel, tgt) in l2_deps::SYSTEMD_STAGE { put(&repo.join(format!("vendor/systemd/install-{arch}/{rel}")), tgt)?; }
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS

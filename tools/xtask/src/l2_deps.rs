@@ -50,3 +50,13 @@ pub const L2_PROBES: &[(&str, &str, &str)] = &[
     ("libidn2",    "libidn2_probe",    "-lidn2"),
     ("systemd",    "systemd_probe",    "-lsystemd"),
 ];
+
+/// Track D6: systemd PID1 + its private libs + systemctl, staged as plain
+/// file copies (install-rel-path, target). PID1's baked RUNPATH is the
+/// build tree (skipped on target); ld-musl resolves the .so's from /usr/lib.
+pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
+    ("lib/systemd/systemd",            "/lib/systemd/systemd"),
+    ("lib/libsystemd-core-259.so",     "/usr/lib/libsystemd-core-259.so"),
+    ("lib/libsystemd-shared-259.so",   "/usr/lib/libsystemd-shared-259.so"),
+    ("bin/systemctl",                  "/usr/bin/systemctl"),
+];
