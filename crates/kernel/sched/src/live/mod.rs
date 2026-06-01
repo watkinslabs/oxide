@@ -44,7 +44,7 @@ pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thr
 pub use wait_list::WaitList;
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, send_signal_self,
-    wake_if_sleeping, Signum,
+    wake_if_sleeping, freeze_task, unfreeze_task, Signum,
 };
 pub use tick_deadline::tick_wake_expired;
 pub use zombies::{enqueue_zombie, has_zombies, park_for_wait4, park_zombie, reap_one, reparent_children, signal_child_exit, unpark_self_from_wait4};
