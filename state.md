@@ -25,7 +25,22 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## Open: F317 (K4 rtnetlink RTM_GETLINK dump verify) pushing.
+## Open: F318 (K1b pids-counts-threads) pushing. Track K nearly closed.
+K1b first sub-item: the pids controller now counts THREADS, not just
+process leaders (Linux pids_can_fork). cgroup Node gains `threads: u64` +
+Tree `thread_cg` map + add_thread/remove_thread; subtree count =
+procs+threads; on_exit uncharges threads. clone.rs gates ALL clones
+(incl CLONE_THREAD) by fork_would_exceed_pids resolved against the
+process cgroup (tgid), and charges each new thread. Boot-safe (no pids.max
+at boot). Hosted test pids_limit_counts_threads (9 cgroup tests).
+REMAINING K1b sub-items (DEEP, multi-PR into PMM/sched): memory.max charge
++ memory.current real (per-cgroup page accounting), cpu.max/cpu.weight in
+scheduler, cgroup.freeze actually freezes member tasks, io controller,
+cpuset affinity. Each is a core-subsystem integration → next iterations.
+After K1b → Track K CLOSED → CHECK IN with user before Track L.
+
+## (history) K4
+## F317 (#1416): RTM_GETLINK dump verified (K4 done).
 Investigated the "ip link EOF" bug: handle_getlink (rtnetlink.rs) builds
 RTM_NEWLINK-per-iface (NLM_F_MULTI) + a well-formed NLMSG_DONE — the dump
 path is STRUCTURALLY CORRECT (the TASKS EOF note was stale). Added a hosted

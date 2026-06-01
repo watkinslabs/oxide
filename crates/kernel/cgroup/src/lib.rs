@@ -253,7 +253,15 @@ pub fn inherit(child_pid: u64, parent_pid: u64) {
 /// # C: O(log n)
 pub fn on_exit(pid: u64) {
     let mut t = TREE.lock();
-    if t.is_mounted() { t.remove_proc(pid); }
+    if t.is_mounted() { t.remove_proc(pid); t.remove_thread(pid); }
+}
+
+/// Charge a new thread (`CLONE_THREAD`) to its process's cgroup so
+/// pids.current counts it (Linux pids controller counts every task).
+/// # C: O(log n)
+pub fn charge_thread(parent_pid: u64, tid: u64) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.add_thread(parent_pid, tid); }
 }
 
 /// `/proc/<pid>/cgroup` line — `0::<path>\n` for the unified
