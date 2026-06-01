@@ -202,6 +202,11 @@ core::arch::global_asm!(
     // SS bits instead of running the syscall dispatcher).
     "    cmp x9, #0x32",
     "    b.eq oxide_softstep_save_block",
+    // EC=0x00 = "Unknown reason" from a lower EL = undefined instruction
+    // at EL0. Linux delivers a catchable SIGILL; route to the undef save
+    // block (full frame save → Rust hook builds the SIGILL handler frame).
+    "    cmp x9, #0",
+    "    b.eq oxide_undef_save_block",
     "    ldr x9, [sp]",
     "    add sp, sp, #16",
     "    b oxide_default_vector_handler",
@@ -329,6 +334,45 @@ core::arch::global_asm!(
     "    ldr  x0,       [sp, #0xc8]",
     "    add  sp, sp, #288",
     "    eret",
+    // -------- EL0 undefined-instruction (EC=0) save block ----------
+    // Reached only via the b.eq above (after the restore's eret, so no
+    // fall-through). Frame format is byte-identical to the SVC/softstep
+    // 288 B frame so SvcFrame accessors + deliver_arm work on it. The
+    // hook builds a catchable SIGILL handler frame (or terminates) and
+    // returns the value seeded into user x0 via the retval slot.
+    "oxide_undef_save_block:",
+    "    ldr  x9, [sp]",             // pop 16-B preamble, restore user x9
+    "    add  sp, sp, #16",
+    "    sub  sp, sp, #288",
+    "    stp  x0,  x1,  [sp, #0x00]",
+    "    stp  x2,  x3,  [sp, #0x10]",
+    "    stp  x4,  x5,  [sp, #0x20]",
+    "    stp  x6,  x7,  [sp, #0x30]",
+    "    stp  x8,  x9,  [sp, #0x40]",
+    "    stp  x10, x11, [sp, #0x50]",
+    "    stp  x12, x13, [sp, #0x60]",
+    "    stp  x14, x15, [sp, #0x70]",
+    "    stp  x16, x17, [sp, #0x80]",
+    "    stp  x18, x29, [sp, #0x90]",
+    "    str  x30,      [sp, #0xa0]",
+    "    mrs  x9,  elr_el1",
+    "    mrs  x10, spsr_el1",
+    "    stp  x9,  x10, [sp, #0xb0]",
+    "    mrs  x9,  sp_el0",
+    "    str  x9,       [sp, #0xc0]",
+    "    stp  x19, x20, [sp, #0xd0]",
+    "    stp  x21, x22, [sp, #0xe0]",
+    "    stp  x23, x24, [sp, #0xf0]",
+    "    stp  x25, x26, [sp, #0x100]",
+    "    stp  x27, x28, [sp, #0x110]",
+    "    adrp x9, oxide_svc_frame_base",
+    "    add  x9, x9, :lo12:oxide_svc_frame_base",
+    "    mov  x10, sp",
+    "    str  x10, [x9]",
+    "    mov  x0, sp",
+    "    bl   oxide_arm_undef_handler",
+    "    str  x0,       [sp, #0xc8]",
+    "    b    oxide_lower_sync_restore",
     ".size oxide_lower_el_sync_handler, . - oxide_lower_el_sync_handler",
 
     // IRQ entry per `22§5` + `14§R07`. Frame = 192 B = 22 × 8 GP +
