@@ -257,8 +257,13 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
         _ => {}
     }
     let ns = cur.mount_ns.load(Ordering::Acquire);
-    let removed = crate::devfs::unregister_subtree(ns, trimmed);
-    if removed == 0 {
+    // Detach from BOTH the unified mount table (bind mounts + any
+    // TABLE-resident mount) and the devfs registry (tmpfs etc). Before
+    // U3, only the registry was touched, so unmounting a bind mount was a
+    // silent no-op that left it resolving forever.
+    let removed_tab = vfs::mount::unregister(trimmed);
+    let removed_reg = crate::devfs::unregister_subtree(ns, trimmed);
+    if removed_tab == 0 && removed_reg == 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
     0
