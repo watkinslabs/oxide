@@ -375,6 +375,21 @@ pub fn uncharge(pid: u64, bytes: u64) {
     if t.is_mounted() { t.uncharge_mem(pid, bytes); }
 }
 
+/// Charge a completed block I/O of `bytes` to `pid`'s cgroup io.stat.
+/// No-op when unmounted. `is_write` selects r/w counters.
+///
+/// Uses `try_lock`, NOT `lock`: this runs on the hot page-cache io path,
+/// and `TREE`'s spinlock does not disable preemption — spinning here while
+/// a preempted task holds the lock would deadlock (esp. under SMP
+/// preemption). On contention we simply drop the sample; io.stat is
+/// approximate accounting (Linux's is too), never a correctness gate.
+/// # C: O(log n)
+pub fn charge_io(pid: u64, bytes: u64, is_write: bool) {
+    if let Some(mut t) = TREE.try_lock() {
+        if t.is_mounted() { t.charge_io(pid, bytes, is_write); }
+    }
+}
+
 /// Snapshot cgroups with a cpu.max quota for the bandwidth scanner.
 /// Empty when unmounted. See `tree::Tree::cpu_quota_groups`.
 /// # C: O(N nodes + members)

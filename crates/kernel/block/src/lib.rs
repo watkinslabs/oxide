@@ -26,6 +26,30 @@ pub use pagecache::{CachedPage, PageCache};
 pub use registry::{Disk, register, by_name, by_index, snapshot};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+/// cgroup io.stat charge hook (`26`): the kernel installs a fn that
+/// charges `(bytes, is_write)` to the *current* task's cgroup. This leaf
+/// crate stays cgroup/sched-free; the hook resolves `current()` itself.
+static IO_CHARGE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the io.stat charge hook. Boot path.
+/// # C: O(1)
+pub fn set_io_charge_hook(f: fn(u64, bool)) {
+    IO_CHARGE_HOOK.store(f as *mut (), Ordering::Release);
+}
+
+/// Charge a completed block I/O to the current task's cgroup io.stat
+/// (no-op when the hook is unset). Called from the page-cache submit path.
+/// # C: O(1) + hook
+pub fn charge_io(bytes: u64, is_write: bool) {
+    let p = IO_CHARGE_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook installed at boot with the exact `fn(u64, bool)` ABI.
+    let f: fn(u64, bool) = unsafe { core::mem::transmute(p) };
+    f(bytes, is_write);
+}
+
 #[cfg(test)]
 mod tests;
 

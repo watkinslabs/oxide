@@ -156,6 +156,7 @@ impl PageCache {
 
         let mut req = BlockRequest::new_read(start_block, blocks_per_page, dev.block_size());
         dev.submit_sync(&mut req)?;
+        crate::charge_io(PAGE_BYTES as u64, false); // cgroup io.stat (read)
 
         let p = CachedPage::new(inode, page_offset, req.buffer);
         let mut g = self.entries.lock();
@@ -212,6 +213,7 @@ impl PageCache {
             let start_block = p.offset / bs;
             let mut req = BlockRequest::new_write(start_block, blocks_per_page, payload);
             dev.submit_sync(&mut req)?;
+            crate::charge_io(PAGE_BYTES as u64, true); // cgroup io.stat (write)
             p.clear_flags(PageFlags::DIRTY);
         }
         dev.flush()?;
