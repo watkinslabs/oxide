@@ -148,6 +148,16 @@ readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
 
 ## Open follow-ups (folded into tracks above)
 
+- **O_* open-flag VALUES are arch-specific and the kernel mostly uses x86
+  values for both arches** (found in V6c, 2026-05-31). aarch64 Linux
+  overrides: O_DIRECTORY=0o40000 (x86 0o200000), O_NOFOLLOW=0o100000
+  (x86 0o400000), O_DIRECT=0o200000, O_LARGEFILE=0o400000. Fixed
+  O_NOFOLLOW per-arch in open.rs (cfg). STILL x86-valued for arm:
+  `O_DIRECTORY` (0o200000) — so open(O_DIRECTORY) detection is wrong on
+  arm (arm sends 0o40000; kernel also wrongly treats arm's 0o200000=O_DIRECT
+  as O_DIRECTORY). Audit ALL O_* consts (open.rs, vfs OpenFlags) and make
+  them per-arch or normalize at the arm_abi boundary. AT_* flags
+  (AT_SYMLINK_NOFOLLOW=0x100 etc.) are arch-independent — fine.
 - iputils ping ICMP runtime path → validate under K-track socket work.
 - util-linux `mount` non-PIE → fix in D7.1 / L-track.
 - T14 pam_unix nested-fork/dlopen → resolved by L2 (real shared libc) + D6.6.
