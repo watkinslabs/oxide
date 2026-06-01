@@ -60,6 +60,18 @@ fn ctrl_list(set: u8) -> String {
     out
 }
 
+/// One cgroup's cpu.max bandwidth state, snapshotted for the scanner.
+/// Times in ns.
+pub struct CpuGroup {
+    pub cgid: u64,
+    pub quota_ns: u64,
+    pub period_ns: u64,
+    pub base_ns: u64,
+    pub period_start_ns: u64,
+    pub throttled: bool,
+    pub pids: Vec<u64>,
+}
+
 /// "max" sentinel ↔ Option<u64>. cgroup v2 uses the literal token
 /// `max` for "no limit" across pids.max / memory.max / cpu.max.
 fn parse_max(tok: &str) -> Option<Option<u64>> {
@@ -100,6 +112,12 @@ pub struct Node {
     pub cpu_weight: u32,
     pub cpu_quota: Option<u64>,
     pub cpu_period: u64,
+    // cpu.max bandwidth runtime state (`13§3`/`26`): runtime baseline at
+    // period start, period start timestamp, and whether members are
+    // currently throttled (frozen for being over quota this period).
+    pub cpu_runtime_base_ns: u64,
+    pub cpu_period_start_ns: u64,
+    pub cpu_throttled: bool,
     // io controller — opaque per-device lines, stored verbatim
     pub io_max: String,
     pub io_weight: u32,
@@ -118,6 +136,7 @@ impl Node {
             mem_max: None, mem_high: None, mem_low: 0, mem_min: 0,
             swap_max: None, mem_current: 0,
             cpu_weight: 100, cpu_quota: None, cpu_period: 100_000,
+            cpu_runtime_base_ns: 0, cpu_period_start_ns: 0, cpu_throttled: false,
             io_max: String::new(), io_weight: 100,
             cpuset_cpus: String::new(), cpuset_mems: String::new(),
         }
@@ -363,6 +382,43 @@ impl Tree {
     /// Bytes currently charged to `pid` (test/observability helper).
     /// # C: O(log n)
     pub fn charged(&self, pid: u64) -> u64 { self.proc_charge.get(&pid).copied().unwrap_or(0) }
+
+    /// Snapshot of every cgroup that has a `cpu.max` quota set, for the
+    /// bandwidth scanner: `(cgid, quota_ns, period_ns, base, period_start,
+    /// throttled, member_pids)`. cpu.max quota/period are in microseconds
+    /// (Linux); converted to ns here so the scanner compares against
+    /// `sum_exec_runtime_ns`.
+    /// # C: O(N nodes + N members)
+    pub fn cpu_quota_groups(&self) -> Vec<CpuGroup> {
+        let mut out = Vec::new();
+        for (&id, n) in self.nodes.iter() {
+            if let Some(q_us) = n.cpu_quota {
+                let mut pids = Vec::new();
+                self.collect_pids(id, &mut pids);
+                out.push(CpuGroup {
+                    cgid: id,
+                    quota_ns: q_us.saturating_mul(1000),
+                    period_ns: n.cpu_period.saturating_mul(1000),
+                    base_ns: n.cpu_runtime_base_ns,
+                    period_start_ns: n.cpu_period_start_ns,
+                    throttled: n.cpu_throttled,
+                    pids,
+                });
+            }
+        }
+        out
+    }
+
+    /// Commit a bandwidth-scan decision: set throttled flag and, on a
+    /// period refill, re-baseline runtime + period start.
+    /// # C: O(log n)
+    pub fn set_cpu_state(&mut self, cgid: u64, throttled: bool, base_ns: u64, period_start_ns: u64) {
+        if let Some(n) = self.nodes.get_mut(&cgid) {
+            n.cpu_throttled = throttled;
+            n.cpu_runtime_base_ns = base_ns;
+            n.cpu_period_start_ns = period_start_ns;
+        }
+    }
 
     /// All member pids in a node's subtree — for cgroup.kill / freeze.
     /// # C: O(subtree)
