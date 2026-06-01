@@ -57,14 +57,15 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
             let events = unsafe { core::ptr::read_volatile((p + 4)   as *const i16) };
             let mut revents: i16 = 0;
             if let Ok(file) = fdt.get(fd) {
-                if file.inode().file_type() == vfs::FileType::CharDev {
+                if file.inode().file_type() == vfs::FileType::CharDev
+                    && (file.inode().ino() & 0xFFFF_0000) == 0x6000_0000
+                {
+                    // PTY: readability from the pair state (master/slave).
                     let ino = file.inode().ino();
-                    let pty_readable = if (ino & 0xFFFF_0000) == 0x6000_0000 {
-                        let is_master = (ino & 0x8000) == 0;
-                        crate::dev::pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
-                            pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
-                        })
-                    } else { None };
+                    let is_master = (ino & 0x8000) == 0;
+                    let pty_readable = crate::dev::pty::pair_for((ino & 0x7FFF) as u32).map(|pair| {
+                        pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
+                    });
                     let inb = match pty_readable {
                         Some(true)  => POLLIN,
                         Some(false) => 0,
@@ -72,13 +73,15 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                     };
                     revents = events & (inb | POLLOUT);
                 } else {
-                    // F146: delegate to inode.poll() for sockets, pipes,
-                    // ext4 regulars etc. The inode-side mask is bits
-                    // POLL_IN(1) / POLL_OUT(4) / POLL_HUP(0x10) — same
-                    // numeric layout as POLLIN/POLLOUT/POLLHUP so we
-                    // can intersect against `events` directly.
-                    // POSIX: POLLHUP/POLLERR/POLLNVAL are always
-                    // reported regardless of `events` (see POLL_ALWAYS).
+                    // Non-pty chardevs (e.g. /dev/console) + sockets / pipes /
+                    // ext4 regulars: delegate to inode.poll() so POLLIN
+                    // reflects real input readiness. Hardcoding POLLIN for
+                    // console made systemd's DSR `ppoll(POLLIN)` loop spin on
+                    // EAGAIN forever instead of timing out (it never reached
+                    // the timeout→fallback path). ConsoleInode::poll() returns
+                    // POLLIN only when its VT ring holds bytes. (F146: same
+                    // POLL_IN/OUT/HUP bit layout as POLLIN/OUT/HUP; POSIX
+                    // POLLHUP/ERR/NVAL always reported — see POLL_ALWAYS.)
                     let mask = file.inode().poll() as i16;
                     revents = mask & (events | POLL_ALWAYS);
                 }
