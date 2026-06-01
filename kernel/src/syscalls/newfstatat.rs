@@ -46,12 +46,13 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
                 crate::syscalls::pathresolve::resolve_cwd(raw)
             } else { raw.into() };
             let s = resolved.as_str();
-            match vfs::mount::lookup(s) {
-                Ok(i) => i,
-                Err(_) => match ext4::rootfs::lookup_inode_any(s.as_bytes()) {
-                    Some(i) => i,
-                    None    => return -(Errno::Enoent.as_i32() as i64),
-                }
+            // THE resolver (path-walk); follows symlinks unless
+            // AT_SYMLINK_NOFOLLOW. aarch64 musl routes fstatat here.
+            const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+            let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+            match crate::syscalls::pathresolve::resolve(s, nofollow) {
+                Some(i) => i,
+                None    => return -(Errno::Enoent.as_i32() as i64),
             }
         }
         _ if (flags & AT_EMPTY_PATH) != 0 => {

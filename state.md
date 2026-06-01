@@ -20,7 +20,22 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V5a all MERGED. NEXT: V6 (wire path_lookup as THE resolver)
+## V1–V6b done. NEXT: V6c (open/openat via walker)
+V6a merged (#1385). V6b (F287, verified both arches, pushing): the full
+stat family — sys_stat (slots 4/6, x86), sys_statx + sys_newfstatat
+(aarch64 musl uses these, NOT slots 4/6) — resolves via
+`pathresolve::resolve` = `vfs::path_lookup` from a global ext4-root
+dentry. THE resolver: crosses mounts + delegates procfs whole-path +
+follows symlinks. `/bin/symlink_probe` PASS both arches (ext4 symlink
+follow + stat-crossing /dev/null, /proc/version, /sys). Fixed: F286 never
+committed the `install_resolvers` swap in kernel/src/lib.rs (lib.rs:672)
+→ whole-path hook uninstalled → procfs delegation ENOENT'd. Added
+`boot-smoke-login KEEP_LOG=path` to capture probe serial.
+NEXT V6c: sys_open/sys_openat → pathresolve::resolve honoring
+O_NOFOLLOW (0o400000); then access/faccessat, exec, namei mutations.
+Then V7. lib.rs is AT the 1000-line cap — keep additions net-zero.
+
+## (history) V1–V5a
 Merged this session: V1 ext4 dir lookup (#1378), V2 walker (#1379),
 V3 verify-left harness (#1381), V4 FileSystem::root() (#1382), V5a
 unified mount-crossing resolver (#1383). Plus B20 (#1376), K2 mount-tree
