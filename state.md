@@ -20,8 +20,26 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 COMPLETE. V7: MS_MOVE/bind-clone/MS_REC/peer-groups done. NEXT: unification
-V7-d (F297, branch): propagation peer-group IDs. `Mount.peer_group:
+## V6 done. V7 features done. Mount-table UNIFICATION started (U2 foundation)
+U2-a (F298, branch): mount-ns stamping foundation. `Mount.ns: u64` stamped
+at register time from an installed provider; `vfs::mount::{NsProvider,
+set_current_ns_provider, current_ns}` (AtomicPtr fn-hook like the resolver
+hooks, null⇒0). Kernel installs `current_mount_ns` (reads
+`sched::live::current().mount_ns`) via new `syscalls::mount::install_vfs_hooks`
+— lib.rs swapped `install_resolvers()` → `install_vfs_hooks()` NET-ZERO
+(still 1000 lines, at cap). register/register_bind stamp `current_ns()`;
+move_mount preserves ns. **Resolution STILL GLOBAL** (boot-safe, zero
+behavior change) — this only records the owning ns. Hosted test
+register_stamps_mount_ns_from_provider (8 mount tests). Both arches build +
+spec-lint clean.
+NEXT U2-b: scope resolve_mount/mount_root_at/parent_id_of to `current_ns()`
+with ns-0 base visible to all + copy-on-unshare divergence in sys_unshare
+(CLONE_NEWNS) — the actual per-ns tree. THEN U3 (migrate tmpfs off devfs
+registry into the per-ns TABLE) + U4 (propagation events, pivot_root,
+submount-move). CAUTION: per-ns resolution must NOT break unshared tasks —
+they need the full inherited mount set, so unshare COPIES ns0→newns; verify
+both-arch boot + a CLONE_NEWNS probe.
+V7-d (F297 #1396): propagation peer-group IDs. `Mount.peer_group:
 AtomicU64` (0=none) + `NEXT_PEER_GROUP` source. `set_propagation(Shared)`
 assigns a fresh group (idempotent); Private/Unbindable clears it; Slave
 keeps it as master ref. mountinfo now renders real `shared:<pg>` /
