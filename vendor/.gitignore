@@ -406,3 +406,14 @@ dbus/dbus-1.14.10.tar.xz
 !libgpg-error/install-aarch64/**
 libgpg-error/libgpg-error-1.50/
 libgpg-error/libgpg-error-1.50.tar.bz2
+# libgcrypt 1.10.3 — Track L2: systemd unconditional DEPENDS (journald FSS).
+!libgcrypt/
+!libgcrypt/build.sh
+!libgcrypt/install-x86_64/
+!libgcrypt/install-x86_64/**
+!libgcrypt/install-aarch64/
+!libgcrypt/install-aarch64/**
+libgcrypt/libgcrypt-1.10.3/
+libgcrypt/libgcrypt-1.10.3.tar.bz2
+libgcrypt/gpge-prefix-x86_64/
+libgcrypt/gpge-prefix-aarch64/

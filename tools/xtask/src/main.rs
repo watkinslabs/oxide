@@ -53,6 +53,16 @@ fn dyn_probe(cc: &std::path::Path, repo: &std::path::Path, arch: &str,
             "-I", root.join("include").to_str().unwrap(),
             "-L", root.join("lib").to_str().unwrap(),
             "-Wl,-rpath,/usr/lib"]);
+    // A probe's lib may DT_NEED another L2 lib in a different vendor dir
+    // (e.g. libgcrypt.so → libgpg-error.so). The strict aarch64 cross-ld
+    // re-checks those transitive undefined symbols at probe-link time and
+    // must find the dependency .so. Point -rpath-link at every staged L2
+    // vendor libdir so any cross-vendor transitive dep resolves (no effect
+    // on the probe's own DT_NEEDED; runtime still uses /usr/lib via rpath).
+    for (v, _, _, _) in l2_deps::L2_LIBS {
+        let d = repo.join(format!("vendor/{v}/install-{arch}/lib"));
+        if d.is_dir() { c.arg(format!("-Wl,-rpath-link,{}", d.to_str().unwrap())); }
+    }
     // Some headers (e.g. libseccomp's seccomp.h → asm/unistd.h) need kernel
     // UAPI. The aarch64 cross sysroot bundles them; x86 musl-gcc doesn't, so
     // append the host kernel-headers at lowest priority (musl libc wins).
