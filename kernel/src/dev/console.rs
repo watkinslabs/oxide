@@ -91,6 +91,28 @@ impl Inode for ConsoleInode {
         Ok(n)
     }
 
+    /// Non-blocking read per `15§5` / `28§3`. systemd PID1 opens
+    /// `/dev/console` with `O_NONBLOCK` and runs a `ppoll`+`read`
+    /// loop: it expects `read` to return `EAGAIN` on an empty input
+    /// ring, NOT to park. The default `Inode::read_nonblock`
+    /// delegates to the blocking `read` above, which wedged PID1
+    /// (it slept in the console read forever — never reached the
+    /// sd-event main loop). Drain whatever is queued without ever
+    /// parking; return `Eagain` when the ring is empty.
+    /// # C: O(buf.len())
+    fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if buf.is_empty() { return Ok(0); }
+        let mut n: usize = 0;
+        while n < buf.len() {
+            match tty::live::try_read_vt(self.vt) {
+                Some(b) => { buf[n] = b; n += 1; }
+                None    => break,
+            }
+        }
+        if n == 0 { return Err(VfsError::Eagain); }
+        Ok(n)
+    }
+
     /// Emit `buf` via the kernel UART path. `klog::write_raw`
     /// only accepts `&'static str` for format strings, but
     /// raw byte writes are exactly what the UART path needs;
