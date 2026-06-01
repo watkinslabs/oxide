@@ -435,3 +435,13 @@ attr/attr-2.5.2.tar.gz
 !acl/install-aarch64/**
 acl/acl-2.3.2/
 acl/acl-2.3.2.tar.gz
+# kmod 31 — Track L2: systemd-modules-load/udev libkmod dep (minimal, no compressors).
+!kmod/
+!kmod/build.sh
+!kmod/musl-compat.h
+!kmod/install-x86_64/
+!kmod/install-x86_64/**
+!kmod/install-aarch64/
+!kmod/install-aarch64/**
+kmod/kmod-31/
+kmod/kmod-31.tar.xz

@@ -21,6 +21,7 @@ pub const L2_LIBS: &[(&str, &str, &str, &str)] = &[
     ("libgcrypt",  "libgcrypt.so.20.4.3",  "libgcrypt.so.20",   "libgcrypt.so"),
     ("attr",       "libattr.so.1.1.2502",  "libattr.so.1",      "libattr.so"),
     ("acl",        "libacl.so.1.1.2302",   "libacl.so.1",       "libacl.so"),
+    ("kmod",       "libkmod.so.2.4.1",     "libkmod.so.2",      "libkmod.so"),
 ];
 
 /// Dynamic-link probes: (vendor, probe-name, link-flags). The probe
@@ -39,4 +40,5 @@ pub const L2_PROBES: &[(&str, &str, &str)] = &[
     ("libgcrypt",  "libgcrypt_probe",  "-lgcrypt"),
     ("attr",       "attr_probe",       "-lattr"),
     ("acl",        "acl_probe",        "-lacl"),
+    ("kmod",       "kmod_probe",       "-lkmod"),
 ];
