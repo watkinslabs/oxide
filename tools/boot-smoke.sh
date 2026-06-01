@@ -53,8 +53,11 @@ trap cleanup EXIT
 echo "boot-smoke: arch=$ARCH timeout=${TIMEOUT}s log=$LOG"
 
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
-# doesn't try to read from CI's missing TTY.
-OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+# doesn't try to read from CI's missing TTY. SMP=2 so the gate boots
+# multi-CPU: AP bring-up + periodic load balancer (`13§11`) are
+# exercised on both arches every push, not just compiled.
+OXIDE_SMP="${OXIDE_SMP:-2}"
+OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 
 deadline=$(( $(date +%s) + TIMEOUT ))
