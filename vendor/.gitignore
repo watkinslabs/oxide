@@ -379,3 +379,12 @@ iputils/build-aarch64/
 !libseccomp/install-aarch64/**
 libseccomp/libseccomp-2.5.5/
 libseccomp/libseccomp-2.5.5.tar.gz
+# expat 2.6.2 — Track L2: dbus XML parser dep.
+!expat/
+!expat/build.sh
+!expat/install-x86_64/
+!expat/install-x86_64/**
+!expat/install-aarch64/
+!expat/install-aarch64/**
+expat/expat-2.6.2/
+expat/expat-2.6.2.tar.gz
