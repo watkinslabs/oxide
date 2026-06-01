@@ -143,11 +143,14 @@ fn build_disk_image(
         other => { eprintln!("xtask image: unsupported arch `{other}`"); return Err(2); }
     };
 
-    // 64 MiB image. Anything smaller and parted complains about
-    // backup-GPT placement on aarch64.
+    // 512 MiB image. The kernel ELF include_bytes!s the rootfs, so the
+    // ESP must hold a kernel as large as the rootfs + code (a 64 MiB
+    // rootfs alone overflowed the old ~62 MiB ESP → mcopy "Disk full").
+    // 512 MiB leaves room for a 128 MiB rootfs (Track D6 systemd) + code.
+    // Host disk only; not RAM.
     {
         let mut c = Command::new("dd");
-        c.args(["if=/dev/zero", "bs=1M", "count=64",
+        c.args(["if=/dev/zero", "bs=1M", "count=512",
                 &format!("of={}", img.display()), "status=none"]);
         run(c)?;
     }

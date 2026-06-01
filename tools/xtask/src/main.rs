@@ -260,14 +260,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // F251: bumped from 16 → 32 MiB to fit vim 9.1 + remaining headroom.
+    // Rootfs 16→32(F251)→128(F345): L2 lib tree (openssl etc.) overflowed 32 MiB → silent file drop → arm wedged pre-init. Rootfs is include_bytes!d into the kernel ELF; the ESP (image_qemu.rs) was bumped to 512 MiB to hold the bigger kernel.
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=32"]);
+                "bs=1M", "count=128"]);
         run(c)?;
     }
     {
@@ -787,7 +787,11 @@ session    required   pam_unix.so
     let stage_so = |vendor: &str, real: &str, soname: &str, linker: &str| -> Result<(), u8> {
         let dir = repo.join(format!("vendor/{vendor}/install-{arch}/lib"));
         put(&dir.join(real), &format!("/usr/lib/{real}"))?;
-        ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?;
+        // Some libs (e.g. openssl) name the real .so == its SONAME
+        // (libssl.so.3), so skip the self-link in that case.
+        if soname != real {
+            ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?;
+        }
         ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{linker}"))?;
         Ok(())
     };
