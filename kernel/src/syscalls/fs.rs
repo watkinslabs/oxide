@@ -301,12 +301,15 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
                 vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
             } else { raw.into() };
             let s = resolved.as_str();
-            match vfs::mount::lookup(s) {
-                Ok(i) => i,
-                Err(_) => match ext4::rootfs::lookup_inode_any(s.as_bytes()) {
-                    Some(i) => i,
-                    None    => return -(Errno::Enoent.as_i32() as i64),
-                }
+            // THE resolver (path-walk). statx(2) follows symlinks unless
+            // AT_SYMLINK_NOFOLLOW. aarch64 musl routes stat()/lstat()
+            // here (no legacy stat/lstat syscalls), so this is the arm
+            // symlink-follow path.
+            const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+            let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+            match crate::syscalls::pathresolve::resolve(s, nofollow) {
+                Some(i) => i,
+                None    => return -(Errno::Enoent.as_i32() as i64),
             }
         }
         _ if (flags & AT_EMPTY_PATH) != 0 => {
@@ -385,11 +388,12 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
 
 pub use crate::syscalls::newfstatat::sys_newfstatat;
 
-/// `sys_stat(path, statbuf)` / `sys_lstat(path, statbuf)` —
-/// slots 4/6. Resolves `path` via devfs, writes a 144-byte
-/// stat struct (same shape as sys_fstat).
-/// # C: O(N_devfs_entries)
-pub fn sys_stat(args: &SyscallArgs) -> i64 {
+/// `sys_stat(path, statbuf)` / `sys_lstat(path, statbuf)` — slots 4/6.
+/// Resolves `path` via the dentry path-walk and writes a 144-byte stat
+/// struct (same shape as sys_fstat). `follow` distinguishes stat (true)
+/// from lstat (false). musl's stat()/lstat() route here, not statx.
+/// # C: O(path components × dir-lookup)
+pub fn sys_stat(args: &SyscallArgs, follow: bool) -> i64 {
     let path_ptr = args.a0;
     let buf      = args.a1;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
@@ -406,14 +410,14 @@ pub fn sys_stat(args: &SyscallArgs) -> i64 {
     };
     let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
     let s = resolved.as_str();
-    let (ino_num, file_type, size): (u64, vfs::FileType, u64) =
-        if let Ok(i) = vfs::mount::lookup(s) {
-            (i.ino(), i.file_type(), i.size())
-        } else if let Some((ino, ft, sz)) = ext4::rootfs::stat_path(s.as_bytes()) {
-            ((0x6E54_0000u64 | ino as u64), ft, sz)
-        } else {
-            return -(Errno::Enoent.as_i32() as i64);
-        };
+    // THE resolver: the dentry path-walk (crosses mounts, delegates
+    // whole-path fs, follows symlinks). stat(2) follows a final symlink;
+    // lstat(2) does not (`follow`).
+    let inode = match crate::syscalls::pathresolve::resolve(s, !follow) {
+        Some(i) => i,
+        None    => return -(Errno::Enoent.as_i32() as i64),
+    };
+    let (ino_num, file_type, size) = (inode.ino(), inode.file_type(), inode.size());
     let (mode_type, rdev): (u32, u64) = match file_type {
         vfs::FileType::CharDev   => (0o020000, 0x0103),
         vfs::FileType::BlockDev  => (0o060000, 0),

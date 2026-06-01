@@ -45,6 +45,7 @@ cleanup() {
             kill -KILL "-$pid" 2>/dev/null || true
         fi
     fi
+    [ -n "${KEEP_LOG:-}" ] && cp -f "$LOG" "$KEEP_LOG" 2>/dev/null || true
     rm -f "$LOG" "$PIDFILE" "$QIN"
 }
 trap cleanup EXIT
