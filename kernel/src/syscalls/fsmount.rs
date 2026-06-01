@@ -48,19 +48,31 @@ impl Inode for FsContextInode {
     fn as_any(&self) -> Option<&dyn Any> { Some(self) }
 }
 
-/// Detached mount object created by `fsmount`; carries the spec until
-/// `move_mount` attaches it at a target path.
+/// Detached mount object created by `fsmount` (materialise-by-fstype at
+/// attach) or `open_tree(OPEN_TREE_CLONE)` (carries the cloned subtree's
+/// root inode + fs). `move_mount` attaches it at a target path.
 pub struct MountObjectInode {
     pub fstype: String,
     pub source: String,
+    /// Some for an `open_tree` clone: the captured (fs, root) to bind at
+    /// the target. None for `fsmount`: materialise a fresh `fstype` mount.
+    pub clone_of: Option<(Arc<dyn vfs::fs::FileSystem>, InodeRef)>,
     ino: Ino,
 }
 
 impl MountObjectInode {
+    /// `fsmount`: materialise-by-fstype at attach time.
     /// # C: O(1)
     pub fn new(fstype: String, source: String) -> Arc<Self> {
         let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Self { fstype, source, ino })
+        Arc::new(Self { fstype, source, clone_of: None, ino })
+    }
+    /// `open_tree(OPEN_TREE_CLONE)`: capture an existing mount's (fs, root).
+    /// # C: O(1)
+    pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> Arc<Self> {
+        let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self { fstype: String::new(), source: String::new(),
+                        clone_of: Some((fs, root)), ino })
     }
 }
 
@@ -177,6 +189,11 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
             Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64),
         };
         if let Some(mo) = inode.as_any().and_then(|a| a.downcast_ref::<MountObjectInode>()) {
+            // open_tree clone: bind the captured (fs, root) at the target.
+            if let Some((fs, root)) = mo.clone_of.as_ref() {
+                let _ = vfs::mount::register_bind(&target, fs.clone(), root.clone());
+                return 0;
+            }
             return attach_mount(&mo.fstype, &target);
         }
         return -(Errno::Einval.as_i32() as i64);
@@ -189,6 +206,95 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),
     }
+}
+
+/// `sys_open_tree(dirfd, path, flags)` — slot 428. `OPEN_TREE_CLONE`
+/// detaches a CLONE of the mount at `path` into an fd (the source for a
+/// later `move_mount`); without it, returns an O_PATH-like fd referring to
+/// the path. `OPEN_TREE_CLOEXEC = O_CLOEXEC`. systemd uses the clone form
+/// for `RootDirectory=`/sandbox setup.
+/// # C: O(N_mounts)
+pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
+    const OPEN_TREE_CLONE:   u64 = 1;
+    const OPEN_TREE_CLOEXEC: u64 = 0o2_000_000;     // O_CLOEXEC
+    let path = match read_cstr(args.a1, 256) {
+        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    let abs = crate::syscalls::pathresolve::resolve_cwd(&path);
+    let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
+    let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
+    if (args.a2 & OPEN_TREE_CLONE) != 0 {
+        // Capture the mount rooted at `abs` (fs + root inode) into a
+        // detached clone object.
+        let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
+            Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
+        };
+        let root = match mnt.root.clone().or_else(|| mnt.fs.root()) {
+            Some(r) => r, None => return -(Errno::Einval.as_i32() as i64),
+        };
+        let mo = MountObjectInode::new_clone(mnt.fs.clone(), root) as InodeRef;
+        return install_fd(mo, "open_tree", cloexec);
+    }
+    // Non-clone: an fd referring to the path's inode (O_PATH-ish).
+    match crate::syscalls::pathresolve::resolve(&abs, false) {
+        Some(i) => install_fd(i, "open_tree", cloexec),
+        None    => -(Errno::Enoent.as_i32() as i64),
+    }
+}
+
+/// `sys_fspick(dirfd, path, flags)` — slot 433. Opens an `fs_context` for
+/// the EXISTING mount at `path` (for reconfiguration via fsconfig). We tag
+/// it with the mount's fstype. `FSPICK_CLOEXEC = 1`.
+/// # C: O(N_mounts)
+pub fn sys_fspick(args: &SyscallArgs) -> i64 {
+    const FSPICK_CLOEXEC: u64 = 1;
+    let path = match read_cstr(args.a1, 256) {
+        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    let abs = crate::syscalls::pathresolve::resolve_cwd(&path);
+    let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
+    let (mnt, _) = match vfs::mount::resolve_mount(&abs) {
+        Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    let inode = FsContextInode::new(mnt.fs.name().to_string()) as InodeRef;
+    install_fd(inode, "fspick", (args.a2 & FSPICK_CLOEXEC) != 0)
+}
+
+/// `sys_mount_setattr(dirfd, path, flags, uattr, size)` — slot 442.
+/// Changes mount attributes on the subtree at `path`: we honour the
+/// propagation change (`mount_attr.propagation` → MS_SHARED/PRIVATE/SLAVE/
+/// UNBINDABLE) via `vfs::mount::set_propagation`; RDONLY/NOSUID/… attr bits
+/// are accepted (no per-mount flag store yet). `struct mount_attr` is
+/// `{ u64 attr_set, attr_clr, propagation, userns_fd }` (32 bytes).
+/// # C: O(N_mounts)
+pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
+    use vfs::mount::Propagation;
+    const MS_UNBINDABLE: u64 = 1 << 17;
+    const MS_PRIVATE:    u64 = 1 << 18;
+    const MS_SLAVE:      u64 = 1 << 19;
+    const MS_SHARED:     u64 = 1 << 20;
+    let path = match read_cstr(args.a1, 256) {
+        Some(s) => s, None => return -(Errno::Efault.as_i32() as i64),
+    };
+    let abs = crate::syscalls::pathresolve::resolve_cwd(&path);
+    let abs = if abs.len() > 1 { abs.trim_end_matches('/').to_string() } else { abs };
+    let uattr = args.a3;
+    let size  = args.a4 as usize;
+    if uattr == 0 || size < 24 || uattr >= USER_VA_END {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // Read mount_attr.propagation (third u64, offset 16).
+    // SAFETY: uattr+24 ≤ size and < USER_VA_END validated; CPL=0/EL1 reads the u64 through the caller's AS.
+    let propagation = unsafe { core::ptr::read_volatile((uattr + 16) as *const u64) };
+    if propagation != 0 {
+        let kind = if propagation & MS_UNBINDABLE != 0 { Propagation::Unbindable }
+            else if propagation & MS_SLAVE != 0 { Propagation::Slave }
+            else if propagation & MS_SHARED != 0 { Propagation::Shared }
+            else if propagation & MS_PRIVATE != 0 { Propagation::Private }
+            else { Propagation::Private };
+        let _ = vfs::mount::set_propagation(&abs, kind);
+    }
+    0
 }
 
 /// Materialise `fstype` as a mount at `target` (the new-API counterpart of
