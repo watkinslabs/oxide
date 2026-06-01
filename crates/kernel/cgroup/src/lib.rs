@@ -61,6 +61,11 @@ static TREE: Spinlock<Tree, TaskListClass> = Spinlock::new(Tree::new());
 /// depending on `sched`.
 static SIGNAL_HOOK: Spinlock<Option<fn(u64, i32)>, TaskListClass> = Spinlock::new(None);
 
+/// `cgroup.freeze` delivery: `(pid, frozen)`. The kernel installs a hook
+/// that freezes/thaws the task via the scheduler, so this leaf crate has
+/// no `sched` dependency. Mirrors `SIGNAL_HOOK` for `cgroup.kill`.
+static FREEZE_HOOK: Spinlock<Option<fn(u64, bool)>, TaskListClass> = Spinlock::new(None);
+
 /// vpid → canonical (global) tid resolver. `cgroup.procs`/`threads`
 /// receive a pid as seen in the writer's pid namespace; the cgroup
 /// tree keys membership on the canonical tid (matching `/proc/<pid>/
@@ -75,6 +80,10 @@ pub const MOUNT: &str = "/sys/fs/cgroup";
 /// Install the signal hook. Boot path.
 /// # C: O(1)
 pub fn set_signal_hook(f: fn(u64, i32)) { *SIGNAL_HOOK.lock() = Some(f); }
+
+/// Install the freezer hook. Boot path.
+/// # C: O(1)
+pub fn set_freeze_hook(f: fn(u64, bool)) { *FREEZE_HOOK.lock() = Some(f); }
 
 /// Install the vpid→tid resolver. Boot path.
 /// # C: O(1)
@@ -148,7 +157,11 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
         }
         "cgroup.freeze" => {
             let v = match buf.trim() { "1" => true, "0" => false, _ => return Err(VfsError::Einval) };
-            TREE.lock().set_frozen(cgid, v);
+            let pids = { let mut t = TREE.lock(); t.set_frozen(cgid, v); t.subtree_pids(cgid) };
+            // Actually freeze/thaw each member task via the scheduler.
+            if let Some(hook) = *FREEZE_HOOK.lock() {
+                for p in pids { hook(p, v); }
+            }
             Ok(())
         }
         _ => TREE.lock().write_file(cgid, file, buf),

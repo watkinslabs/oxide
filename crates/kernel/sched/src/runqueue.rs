@@ -52,6 +52,10 @@ impl RunqueueInner {
     /// `self.idle` and never appear on the RT/CFS lists per `13§2`.
     /// # C: O(log N) (CFS) / O(1) (RT)
     pub fn enqueue(&mut self, task: Arc<Task>) {
+        // cgroup v2 freezer: a frozen task is held off every runqueue here
+        // (the single enqueue chokepoint), so wake/yield/fork can't run it
+        // until `cgroup.freeze=0` thaws it + re-enqueues.
+        if task.frozen.load(core::sync::atomic::Ordering::Acquire) { return; }
         match task.class {
             SchedClass::Rt { .. }     => self.rt.enqueue(task),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
