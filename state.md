@@ -20,7 +20,19 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V1–V6b done. NEXT: V6c (open/openat via walker)
+## V1–V6c done. NEXT: V6d (access/exec/namei)
+V6c (F288, both arches PASS): sys_open/sys_openat resolve via
+`pathresolve::resolve` honoring O_NOFOLLOW. symlink_probe extended with
+open+read-through-link. BUG fixed: O_* flag VALUES are arch-specific —
+aarch64 O_NOFOLLOW=0o100000 (x86 0o400000=arm O_LARGEFILE, which musl-arm
+open() sets); x86-valued const made arm read O_LARGEFILE as O_NOFOLLOW →
+no follow. O_NOFOLLOW now per-arch (cfg). TASKS.md flags the broader O_*
+arch issue (O_DIRECTORY etc. still x86-valued) for an audit.
+NEXT V6d: wire access/faccessat (fs.rs sys_access), then exec
+(execve.rs), then namei mutations + utimensat/chmod/chown/readlink. Then
+V7 (bind-as-clone, MS_MOVE, pivot_root, MS_REC, propagation, per-ns).
+
+## (history) V6a/b
 V6a merged (#1385). V6b (F287, verified both arches, pushing): the full
 stat family — sys_stat (slots 4/6, x86), sys_statx + sys_newfstatat
 (aarch64 musl uses these, NOT slots 4/6) — resolves via

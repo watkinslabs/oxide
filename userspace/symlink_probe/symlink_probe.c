@@ -45,6 +45,14 @@ int main(void) {
     if (stat("/sys", &st) < 0) return fail("stat-sys");
     if (!S_ISDIR(st.st_mode)) return fail("sys-not-dir");
 
+    // open() follows the symlink → reads the target's bytes (V6c).
+    char buf[8];
+    int rfd = open("/sl_link", O_RDONLY);
+    if (rfd < 0) return fail("open-link");
+    int n = read(rfd, buf, sizeof buf);
+    close(rfd);
+    if (n != 4 || memcmp(buf, "SLOK", 4) != 0) return fail("read-through-link");
+
     write(1, PASS, sizeof(PASS) - 1);
     return 0;
 }
