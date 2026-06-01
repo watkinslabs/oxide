@@ -25,7 +25,26 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## Open: F314 (K5: SCM_CREDENTIALS) pushing. K5 creds path DONE.
+## Open: F316 (K5 LAST: uevent broadcast) pushing → K5 DONE.
+NETLINK_KOBJECT_UEVENT broadcast: netlink crate gains UEVENT_LISTENERS
+(Weak<NetlinkSocket>) + emit_uevent(action,devpath,subsystem) (Linux
+"<action>@<devpath>\0ACTION=…\0DEVPATH=…\0SUBSYSTEM=…\0SEQNUM=…\0" blob);
+KOBJECT_UEVENT sockets register at socket() time. Trigger = writable
+sysfs `/sys/class/net/<if>/uevent` (the udevadm-trigger path) → emit_uevent.
+udev/systemd-udevd device model needs this. Verified by /bin/uevent_probe
+(bind, write "change" to the uevent node, recv → ACTION=change). Both
+arches build + spec-lint clean + `cargo test --workspace` green.
+**K5 COMPLETE** (kmsg + memfd seals + /proc/ns + SO_PEERCRED + SCM_CREDS
++ uevent). REMAINING Track K: K4 (rtnetlink dump), K1b (cgroup enforce).
+
+## CI NOTE: GitHub CI = spec-lint + `cargo test --workspace` + kernel
+builds (NO qemu boot). It was RED on every PR (pre-existing boot_cmdline
+host-build break, fixed F315 #1414). Going forward run `cargo test
+--workspace` locally before push (catches the host-build break CI checks);
+user said don't poll GitHub CI, they'll flag problems.
+
+## (history) SCM_CREDENTIALS
+## F314 (on main via #1414): SCM_CREDENTIALS on SO_PASSCRED.
 recvmsg on an AF_UNIX socket with SO_PASSCRED now delivers an
 SCM_CREDENTIALS cmsg (struct ucred {pid,uid,gid}) carrying the SENDER's
 creds (= UnixPair peer_cred of the receiver's end, from F312). SockOpts

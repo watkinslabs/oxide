@@ -54,8 +54,13 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if typ != SOCK_DGRAM && typ != SOCK_RAW {
             return -(Errno::Esocktnosupport.as_i32() as i64);
         }
-        let sock = ::netlink::NetlinkSocket::new(proto as u16);
-        Arc::new(sock) as _
+        let sock = Arc::new(::netlink::NetlinkSocket::new(proto as u16));
+        // udev/systemd-udevd: a NETLINK_KOBJECT_UEVENT socket subscribes
+        // to broadcast device uevents.
+        if (proto as u16) == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
+            ::netlink::register_uevent_listener(&sock);
+        }
+        sock as _
     } else {
         let inet = match (domain, typ) {
             (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
