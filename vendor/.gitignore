@@ -445,3 +445,12 @@ acl/acl-2.3.2.tar.gz
 !kmod/install-aarch64/**
 kmod/kmod-31/
 kmod/kmod-31.tar.xz
+# openssl 3.0.15 — Track L2: systemd resolved DoT/DNSSEC + journal TLS.
+!openssl/
+!openssl/build.sh
+!openssl/install-x86_64/
+!openssl/install-x86_64/**
+!openssl/install-aarch64/
+!openssl/install-aarch64/**
+openssl/openssl-3.0.15/
+openssl/openssl-3.0.15.tar.gz
