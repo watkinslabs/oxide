@@ -30,6 +30,9 @@ echo post-libcap_probe rv=$?
 echo pre-zstd_probe
 /bin/zstd_probe
 echo post-zstd_probe rv=$?
+echo pre-lz4_probe
+/bin/lz4_probe
+echo post-lz4_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?

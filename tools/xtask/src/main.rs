@@ -236,6 +236,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /usr/lib (rpath). One per (vendor, probe, -l<lib>).
     dyn_probe(&cc, &repo, &arch, &user_out, "libcap", "libcap_probe", "-lcap")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "zstd",   "zstd_probe",   "-lzstd")?;
+    dyn_probe(&cc, &repo, &arch, &user_out, "lz4",    "lz4_probe",    "-llz4")?;
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -405,6 +406,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
     put(&user("libcap_probe"), "/bin/libcap_probe")?;
     put(&user("zstd_probe"), "/bin/zstd_probe")?;
+    put(&user("lz4_probe"), "/bin/lz4_probe")?;
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -772,6 +774,11 @@ session    required   pam_unix.so
     put(&zstd_lib.join("libzstd.so.1.5.6"), "/usr/lib/libzstd.so.1.5.6")?;
     ln_via_debugfs("/usr/lib/libzstd.so.1.5.6", "/usr/lib/libzstd.so.1")?;
     ln_via_debugfs("/usr/lib/libzstd.so.1.5.6", "/usr/lib/libzstd.so")?;
+    // L2: liblz4 (systemd compression).
+    let lz4_lib = repo.join(format!("vendor/lz4/install-{arch}/lib"));
+    put(&lz4_lib.join("liblz4.so.1.9.4"), "/usr/lib/liblz4.so.1.9.4")?;
+    ln_via_debugfs("/usr/lib/liblz4.so.1.9.4", "/usr/lib/liblz4.so.1")?;
+    ln_via_debugfs("/usr/lib/liblz4.so.1.9.4", "/usr/lib/liblz4.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
