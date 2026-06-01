@@ -253,6 +253,23 @@ pub fn fork_would_exceed_pids(pid: u64) -> bool {
     t.fork_would_exceed_pids(cg)
 }
 
+/// Try to charge `bytes` to `pid`'s cgroup memory controller. Returns
+/// true (charged) when unmounted or under every ancestor `memory.max`;
+/// false means the caller must fail the allocation with ENOMEM.
+/// # C: O(depth · subtree)
+pub fn try_charge(pid: u64, bytes: u64) -> bool {
+    let mut t = TREE.lock();
+    if !t.is_mounted() { return true; }
+    t.try_charge_mem(pid, bytes)
+}
+
+/// Uncharge `bytes` of freed memory from `pid`'s cgroup.
+/// # C: O(log n)
+pub fn uncharge(pid: u64, bytes: u64) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.uncharge_mem(pid, bytes); }
+}
+
 /// Child inherits the parent's cgroup on fork.
 /// # C: O(log n)
 pub fn inherit(child_pid: u64, parent_pid: u64) {
