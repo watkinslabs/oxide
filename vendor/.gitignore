@@ -98,6 +98,15 @@ zstd/zstd-1.5.6.tar.gz
 !lz4/install-aarch64/**
 lz4/lz4-1.9.4/
 lz4/lz4-1.9.4.tar.gz
+# libxcrypt 4.4.36 — Track L2: real crypt() for /etc/shadow.
+!libxcrypt/
+!libxcrypt/build.sh
+!libxcrypt/install-x86_64/
+!libxcrypt/install-x86_64/**
+!libxcrypt/install-aarch64/
+!libxcrypt/install-aarch64/**
+libxcrypt/libxcrypt-4.4.36/
+libxcrypt/libxcrypt-4.4.36.tar.xz
 # GNU bash 5.2.37: per-arch static-musl binary + build recipe.
 # F216 — first GNU userspace program; sets the pattern for further
 # coreutils / util-linux / etc. cross-builds.
