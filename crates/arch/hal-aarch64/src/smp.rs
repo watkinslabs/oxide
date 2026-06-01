@@ -32,17 +32,31 @@ pub struct ApContext {
     pub online_signal: u64,
 }
 
-/// Trampoline asm entry point. Sets up SP, calls `ap_main`.
-/// Fixed name so PSCI CPU_ON's entry_pa can be `&oxide_ap_entry_arm`.
+/// Kernel-side mirror of Limine's aarch64 `limine_smp_info`. Limine jumps
+/// the AP to `goto_address` (MMU-on, EL1, kernel page tables) with
+/// `x0 = &SmpInfoArm`; `extra_argument` (offset 0x20) carries our
+/// `ApContext` pointer. Mirrored here to avoid a cyclic dep on limine-proto.
+#[repr(C)]
+pub struct SmpInfoArm {
+    pub processor_id:   u32,   // 0x00
+    pub gic_iface_no:   u32,   // 0x04
+    pub mpidr:          u64,   // 0x08
+    pub reserved:       u64,   // 0x10
+    pub goto_address:   AtomicPtr<()>, // 0x18
+    pub extra_argument: u64,   // 0x20  (= ApContext ptr)
+}
+
+/// Trampoline asm entry. Limine enters here MMU-on with `x0 = &SmpInfoArm`.
+/// Reads `extra_argument` (our ApContext) at +0x20, sets SP from
+/// `ctx.stack_top`, then calls `ap_main(ctx)`.
 core::arch::global_asm!(
     ".global oxide_ap_entry_arm",
     ".section .text.ap_entry,\"ax\",@progbits",
     "oxide_ap_entry_arm:",
-    // x0 = context_id (the ApContext pointer per psci::cpu_on).
-    // Load stack_top, set SP, then branch to Rust ap_main with
-    // the same x0.
-    "  ldr x9, [x0, #0]",     // x9 = stack_top
+    "  ldr x1, [x0, #0x20]",  // x1 = extra_argument = ApContext*
+    "  ldr x9, [x1, #0]",     // x9 = ctx.stack_top
     "  mov sp, x9",
+    "  mov x0, x1",           // ap_main(ctx)
     "  bl  ap_main",
     // ap_main returns ! — but be defensive.
     "1: wfe",
@@ -123,18 +137,31 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     }
 }
 
-/// Boot-CPU AP startup entry. Iterates `cpu::smp::enumerate_aps()`,
-/// allocates each AP's context + stack + per-CPU page, and
-/// calls PSCI CPU_ON.
+/// Boot-CPU AP startup via Limine's SMP response (`13§11`). Walks the
+/// `[*mut SmpInfoArm; smp_count]` array Limine filled, and for each
+/// non-BSP entry allocates a stack + per-CPU page + `ApContext`, publishes
+/// `extra_argument` then stores `goto_address = oxide_ap_entry_arm`. Limine
+/// then starts the parked AP MMU-ON at our higher-half entry (no PSCI
+/// MMU-off trampoline). `bsp_aff0` is the boot CPU's affinity-0 id.
+/// Returns the number of APs released. No-op when `smp_info_array == 0`
+/// (Limine SMP absent) or `smp_count < 2` (uniprocessor).
 ///
-/// # SAFETY: caller is the boot path post-ACPI-walk; PSCI
-/// conduit is configured (EDK2 / QEMU virt expose SMC).
+/// # SAFETY: caller is the boot path; `smp_info_array` is Limine's
+/// bootloader-owned `cpus[]` (alive for the rest of boot); each pointee is
+/// a `SmpInfoArm`. Allocator up.
 /// # C: O(N_aps)
-pub unsafe fn bring_up_aps_arm() -> usize {
-    let aps = cpu::smp::enumerate_aps();
-    let mut started = 0;
-    for &mpidr in aps.iter() {
-        // Allocate stack + per-CPU page + context.
+pub unsafe fn bring_up_aps_arm(smp_info_array: u64, smp_count: u64, bsp_aff0: u32) -> usize {
+    if smp_info_array == 0 || smp_count == 0 { return 0; }
+    let table = smp_info_array as *const *mut SmpInfoArm;
+    extern "C" { fn oxide_ap_entry_arm(); }
+    let mut started = 0usize;
+    for i in 0..smp_count as usize {
+        // SAFETY: per fn contract — table is `[*mut SmpInfoArm; smp_count]`; index i in range.
+        let info_ptr = unsafe { *table.add(i) };
+        if info_ptr.is_null() { continue; }
+        // SAFETY: info_ptr is a Limine-owned SmpInfoArm alive for boot.
+        let info = unsafe { &*info_ptr };
+        if (info.mpidr & 0xff) as u32 == bsp_aff0 { continue; } // skip BSP
         let stack: Box<[u8]> = alloc::vec![0u8; AP_STACK_BYTES].into_boxed_slice();
         let stack_top = (Box::leak(stack).as_ptr() as u64) + AP_STACK_BYTES as u64;
         let percpu: Box<[u8]> = alloc::vec![0u8; AP_PERCPU_BYTES].into_boxed_slice();
@@ -144,20 +171,12 @@ pub unsafe fn bring_up_aps_arm() -> usize {
             percpu_base,
             online_signal: 0,
         }));
-        // PSCI CPU_ON jumps the target to oxide_ap_entry_arm with
-        // x0 = ctx pointer.
-        extern "C" {
-            fn oxide_ap_entry_arm();
-        }
-        let entry_pa = oxide_ap_entry_arm as usize as u64;
-        let context_id = ctx as *const ApContext as u64;
-        // SAFETY: per fn contract — secure-monitor SMC; entry_pa is a kernel-mapped function (identity-mapped via the kernel's HHDM/upper half is accessible from EL1 once PSCI gives the AP control).
-        let status = unsafe {
-            crate::psci::cpu_on(mpidr as u64, entry_pa, context_id)
-        };
-        if matches!(status, crate::psci::PsciStatus::Success) {
-            started += 1;
-        }
+        // Publish extra_argument THEN goto_address (the go signal). Limine
+        // reads them seq-cst; Release-ordered stores suffice.
+        // SAFETY: info is the AP's parked SmpInfoArm; the AP only reads after goto_address is set.
+        unsafe { (*info_ptr).extra_argument = ctx as *const ApContext as u64; }
+        info.goto_address.store(oxide_ap_entry_arm as *mut (), Ordering::Release);
+        started += 1;
     }
     started
 }

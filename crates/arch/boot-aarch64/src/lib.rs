@@ -153,6 +153,18 @@ pub static LIMINE_KERNEL_FILE:
         response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
     };
 
+/// SMP request (aarch64). Limine starts each AP at our `goto_address`
+/// MMU-on at EL1 with the kernel page tables — so APs can enter a
+/// higher-half VA directly (`13§11`), unlike a bare PSCI CPU_ON.
+#[used]
+#[link_section = ".limine_requests"]
+pub static LIMINE_SMP: limine::SmpRequestAArch64 = limine::SmpRequestAArch64 {
+    id:       limine::SMP_ID,
+    revision: limine::REVISION_0,
+    response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+    flags:    0,
+};
+
 // Per `04§4.0` (R06): every klog::* call site in this crate sits
 // behind `debug-boot` — UART sink install, CPU/MMU dump, byte
 // emit. Default builds emit zero log bytes; the call sites are
@@ -438,6 +450,19 @@ unsafe fn build_boot_info() -> BootInfo {
         // SAFETY: bootloader-owned response per `36§3` ownership
         // contract; lives for rest of boot.
         info.rsdp_pa = unsafe { (*r).address };
+    }
+
+    // SMP (aarch64): hand the kernel the Limine cpus[] array + count +
+    // bsp mpidr so `13§11` AP startup parks each AP's goto_address.
+    // smp_info_array reinterprets as `*const *mut SmpInfoAArch64` kernel-side.
+    let s = LIMINE_SMP.response.load(core::sync::atomic::Ordering::Acquire);
+    if !s.is_null() {
+        // SAFETY: bootloader-owned SMP response per `36§3`; lives for the
+        // rest of boot; cpus points at a `[*mut SmpInfoAArch64; cpu_count]`.
+        let resp = unsafe { &*s };
+        info.smp_info_array = resp.cpus as u64;
+        info.smp_count      = resp.cpu_count;
+        info.bsp_lapic_id   = (resp.bsp_mpidr & 0xff) as u32; // arm: bsp affinity-0
     }
 
     // DTB pointer is preserved for future device-tree consumers; not

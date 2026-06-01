@@ -580,8 +580,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Install the AP-init hook (per-AP GIC + runqueue, runs on the AP)
         // + the arm resched-IPI sender (GIC SGI) BEFORE bringing APs up.
         crate::smp_arm::install_hooks();
-        // SAFETY: kernel_main post-init; PSCI conduit HVC on QEMU virt (B50); cpu_topology populated by ACPI; boot CPU is sole writer.
-        let started = unsafe { hal_aarch64::smp::bring_up_aps_arm() };
+        // Limine SMP: park each AP's goto_address at our entry; Limine
+        // starts them MMU-ON at EL1 (no PSCI MMU-off trampoline). info's
+        // smp fields come from boot-aarch64's SMP response parse.
+        // SAFETY: kernel_main post-init; info.smp_info_array is Limine's bootloader-owned cpus[] alive for boot; boot CPU is sole writer of the goto_address slots.
+        let started = unsafe {
+            hal_aarch64::smp::bring_up_aps_arm(info.smp_info_array, info.smp_count, info.bsp_lapic_id)
+        };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
             klog::write_dec_u64(started as u64);
