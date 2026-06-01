@@ -151,6 +151,17 @@ fn kill_lists_all_subtree_pids() {
     assert_eq!(pids, alloc::vec![1, 2, 3]);
 }
 
+// S2: cgroup cpu.weight maps to CFS load weight (100 ↔ nice-0 weight 1024).
+#[test]
+fn cpu_weight_maps_to_cfs() {
+    use crate::cpu_weight_to_cfs;
+    assert_eq!(cpu_weight_to_cfs(100), 1024); // default ↔ nice 0
+    assert_eq!(cpu_weight_to_cfs(200), 2048); // 2× share
+    assert_eq!(cpu_weight_to_cfs(50), 512);   // half share
+    assert_eq!(cpu_weight_to_cfs(1), 10);     // min, ≥1
+    assert!(cpu_weight_to_cfs(10000) > cpu_weight_to_cfs(100));
+}
+
 // K1b: memory controller actually charges + enforces memory.max.
 #[test]
 fn memory_max_enforced_and_charged() {

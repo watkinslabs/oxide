@@ -29,7 +29,14 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
     if which > 2 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     let n = sched::rlimit::clamp_nice(prio);
     let mut touched = false;
-    for_each_target(which, who, |t| { t.nice.store(n, Ordering::Release); touched = true; });
+    // Store the nice value AND rewrite the live CFS weight so the change
+    // actually shifts CPU shares (`13§3`): nice<0 → heavier → more CPU.
+    let w = sched::cputime::nice_to_weight(n);
+    for_each_target(which, who, |t| {
+        t.nice.store(n, Ordering::Release);
+        t.load_weight.store(w, Ordering::Release);
+        touched = true;
+    });
     if touched { 0 } else { -(syscall::errno::Errno::Esrch.as_i32() as i64) }
 }
 
