@@ -111,9 +111,10 @@ pub unsafe fn balance_once() -> u32 {
     let task = match task { Some(t) => t, None => return 0 };
     push_to(idle_rq, task);
 
-    // Wake the destination so its idle loop picks up the new task.
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: LAPIC enabled on BSP; ICR write is non-blocking; idle_cpu APIC ID is from cpu_topology.
+    // Wake the destination so its idle loop picks up the new task. The
+    // hook is arch-agnostic (x86 LAPIC ICR / arm GIC SGI), installed at
+    // boot; no-op (false) when unset.
+    // SAFETY: send_resched_ipi is a non-blocking IPI/SGI to an online CPU.
     unsafe { let _ = super::send_resched_ipi(idle_cpu); }
 
     1

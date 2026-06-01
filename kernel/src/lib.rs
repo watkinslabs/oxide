@@ -27,6 +27,7 @@ const _: () = assert!(
 #[macro_use]
 pub mod debug_macros;
 pub mod cgroup_boot; pub mod cgroup_cpu;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
@@ -576,7 +577,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
-        // SAFETY: kernel_main post-init; PSCI conduit on QEMU virt is SMC #0; cpu_topology populated by ACPI; boot CPU is sole writer.
+        // Install the AP-init hook (per-AP GIC + runqueue, runs on the AP)
+        // + the arm resched-IPI sender (GIC SGI) BEFORE bringing APs up.
+        crate::smp_arm::install_hooks();
+        // SAFETY: kernel_main post-init; PSCI conduit HVC on QEMU virt (B50); cpu_topology populated by ACPI; boot CPU is sole writer.
         let started = unsafe { hal_aarch64::smp::bring_up_aps_arm() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
