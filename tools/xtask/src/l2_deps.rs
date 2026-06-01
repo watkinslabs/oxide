@@ -56,6 +56,7 @@ pub const L2_PROBES: &[(&str, &str, &str)] = &[
 /// build tree (skipped on target); ld-musl resolves the .so's from /usr/lib.
 pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     ("lib/systemd/systemd",            "/lib/systemd/systemd"),
+    ("lib/systemd/systemd-executor",   "/usr/lib/systemd/systemd-executor"),
     ("lib/libsystemd-core-259.so",     "/usr/lib/libsystemd-core-259.so"),
     ("lib/libsystemd-shared-259.so",   "/usr/lib/libsystemd-shared-259.so"),
     ("bin/systemctl",                  "/usr/bin/systemctl"),
