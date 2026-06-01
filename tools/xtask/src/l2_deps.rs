@@ -19,6 +19,8 @@ pub const L2_LIBS: &[(&str, &str, &str, &str)] = &[
     ("dbus",       "libdbus-1.so.3.32.4",  "libdbus-1.so.3",    "libdbus-1.so"),
     ("libgpg-error","libgpg-error.so.0.37.0","libgpg-error.so.0","libgpg-error.so"),
     ("libgcrypt",  "libgcrypt.so.20.4.3",  "libgcrypt.so.20",   "libgcrypt.so"),
+    ("attr",       "libattr.so.1.1.2502",  "libattr.so.1",      "libattr.so"),
+    ("acl",        "libacl.so.1.1.2302",   "libacl.so.1",       "libacl.so"),
 ];
 
 /// Dynamic-link probes: (vendor, probe-name, link-flags). The probe
@@ -35,4 +37,6 @@ pub const L2_PROBES: &[(&str, &str, &str)] = &[
     ("dbus",       "dbus_probe",       "-ldbus-1"),
     ("libgpg-error","libgpgerror_probe","-lgpg-error"),
     ("libgcrypt",  "libgcrypt_probe",  "-lgcrypt"),
+    ("attr",       "attr_probe",       "-lattr"),
+    ("acl",        "acl_probe",        "-lacl"),
 ];
