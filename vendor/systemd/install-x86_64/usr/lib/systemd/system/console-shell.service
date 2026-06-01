@@ -1,0 +1,18 @@
+[Unit]
+Description=Console Shell (oxide first light)
+DefaultDependencies=no
+ConditionPathExists=/dev/console
+[Service]
+Environment=TERM=linux
+ExecStart=/bin/sh
+Restart=always
+RestartSec=1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+TTYReset=yes
+KillMode=process
+IgnoreSIGPIPE=no
+[Install]
+WantedBy=multi-user.target
