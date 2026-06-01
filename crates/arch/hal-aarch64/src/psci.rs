@@ -87,6 +87,56 @@ pub unsafe fn smc(fn_id: u32, a1: u64, a2: u64, a3: u64) -> i64 {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub unsafe fn smc(_fn_id: u32, _a1: u64, _a2: u64, _a3: u64) -> i64 { -1 }
 
+/// HVC #0 PSCI conduit — used when there is no EL3 (QEMU `virt` default
+/// `secure=off`: guest runs at EL1, PSCI is serviced via the hypervisor
+/// call). An `smc` there is UNDEFINED → EL1 sync exception, which is
+/// exactly what wedged SMP=2 boot before B50 (BSP faulted on `smc #0` in
+/// `cpu_on`, ESR_EL1 EC=0 "unknown").
+/// # SAFETY: caller asserts the HVC conduit; x0..x3 per ARM DEN 0022D §5.1.
+/// # C: O(1) — one PSCI call.
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn hvc(fn_id: u32, a1: u64, a2: u64, a3: u64) -> i64 {
+    let ret: i64;
+    // SAFETY: `.inst 0xd4000002` = `hvc #0` (avoids the `virt` arch-extension assembler dance); x0..x3 are the PSCI args, x0 returns the status.
+    unsafe {
+        core::arch::asm!(
+            ".inst 0xd4000002",
+            inout("x0") fn_id as u64 => ret,
+            in("x1") a1,
+            in("x2") a2,
+            in("x3") a3,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    ret
+}
+
+/// Hosted stub for HVC.
+/// # SAFETY: trivially safe.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub unsafe fn hvc(_fn_id: u32, _a1: u64, _a2: u64, _a3: u64) -> i64 { -1 }
+
+/// PSCI conduit dispatch. QEMU `virt` (our only aarch64 target) runs the
+/// guest at EL1 with no EL3 → HVC. Real EL3 hardware uses SMC; the
+/// Linux-faithful selection reads the DTB `/psci` `method` or ACPI FADT
+/// ARM_BOOT_ARCH PSCI_USE_HVC bit (TASKS.md S4a-arm: wire detection when
+/// EL3 hardware is a target). Default HVC keeps the call site
+/// conduit-agnostic.
+/// # SAFETY: forwards to the conduit instruction; see `hvc`/`smc`.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+#[inline]
+pub unsafe fn conduit_call(fn_id: u32, a1: u64, a2: u64, a3: u64) -> i64 {
+    // SAFETY: HVC is the QEMU virt conduit; see `hvc`.
+    unsafe { hvc(fn_id, a1, a2, a3) }
+}
+/// Hosted stub.
+/// # SAFETY: trivially safe.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub unsafe fn conduit_call(_fn_id: u32, _a1: u64, _a2: u64, _a3: u64) -> i64 { -1 }
+
 /// PSCI_CPU_ON_64: bring up the CPU identified by `target_mpidr`,
 /// which on cold-power-on jumps to `entry_pa` with `context_id`
 /// passed in x0 (see ARM DEN 0022D §5.1.4).
@@ -97,8 +147,8 @@ pub unsafe fn smc(_fn_id: u32, _a1: u64, _a2: u64, _a3: u64) -> i64 { -1 }
 /// fetch.
 /// # C: O(SMC round-trip)
 pub unsafe fn cpu_on(target_mpidr: u64, entry_pa: u64, context_id: u64) -> PsciStatus {
-    // SAFETY: per fn contract — secure-monitor SMC; PSCI_CPU_ON_64 is the canonical bring-up call.
-    let raw = unsafe { smc(PSCI_CPU_ON_64, target_mpidr, entry_pa, context_id) };
+    // SAFETY: per fn contract — PSCI_CPU_ON_64 via the platform conduit (HVC on QEMU virt; SMC faults at EL1 there).
+    let raw = unsafe { conduit_call(PSCI_CPU_ON_64, target_mpidr, entry_pa, context_id) };
     decode_status(raw as i32)
 }
 
