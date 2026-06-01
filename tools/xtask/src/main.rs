@@ -38,6 +38,24 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Build a dynamic-link probe (`userspace/<probe>/<probe>.c`) against a
+/// cross-built L2 shared lib in `vendor/<vendor>/install-<arch>`, linking
+/// `<lflag>` (e.g. `-lcap`) with rpath /usr/lib. Track L2 helper.
+fn dyn_probe(cc: &std::path::Path, repo: &std::path::Path, arch: &str,
+             user_out: &std::path::Path, vendor: &str, probe: &str, lflag: &str)
+             -> Result<(), u8> {
+    let root = repo.join(format!("vendor/{vendor}/install-{arch}"));
+    let out = user_out.join(probe);
+    let src = repo.join(format!("userspace/{probe}/{probe}.c"));
+    let mut c = Command::new(cc);
+    c.args(["-O2", "-fno-stack-protector",
+            "-I", root.join("include").to_str().unwrap(),
+            "-L", root.join("lib").to_str().unwrap(),
+            "-Wl,-rpath,/usr/lib",
+            "-o", out.to_str().unwrap(), src.to_str().unwrap(), lflag]);
+    run(c)
+}
+
 /// Per-arch rootfs build. --arch <x86_64|aarch64>.
 pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
@@ -214,20 +232,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
                 "-lpam"]);
         run(c)?;
     }
-    // L2: libcap_probe — dynamic-link smoke for the cross-built libcap.so.
-    {
-        let cap_root = repo.join(format!("vendor/libcap/install-{arch}"));
-        let out = user_out.join("libcap_probe");
-        let src = repo.join("userspace/libcap_probe/libcap_probe.c");
-        let mut c = Command::new(&cc);
-        c.args(["-O2", "-fno-stack-protector",
-                "-I", cap_root.join("include").to_str().unwrap(),
-                "-L", cap_root.join("lib").to_str().unwrap(),
-                "-Wl,-rpath,/usr/lib",
-                "-o", out.to_str().unwrap(), src.to_str().unwrap(),
-                "-lcap"]);
-        run(c)?;
-    }
+    // L2 dynamic-link smokes — link the cross-built shared deps from
+    // /usr/lib (rpath). One per (vendor, probe, -l<lib>).
+    dyn_probe(&cc, &repo, &arch, &user_out, "libcap", "libcap_probe", "-lcap")?;
+    dyn_probe(&cc, &repo, &arch, &user_out, "zstd",   "zstd_probe",   "-lzstd")?;
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -396,6 +404,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("hello_dyn"), "/bin/hello_dyn")?;
     put(&user("hello_dyn_libc"), "/bin/hello_dyn_libc")?;
     put(&user("libcap_probe"), "/bin/libcap_probe")?;
+    put(&user("zstd_probe"), "/bin/zstd_probe")?;
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -758,6 +767,11 @@ session    required   pam_unix.so
     put(&cap_lib.join("libcap.so.2.69"), "/usr/lib/libcap.so.2.69")?;
     ln_via_debugfs("/usr/lib/libcap.so.2.69", "/usr/lib/libcap.so.2")?;
     ln_via_debugfs("/usr/lib/libcap.so.2.69", "/usr/lib/libcap.so")?;
+    // L2: libzstd (systemd journal compression).
+    let zstd_lib = repo.join(format!("vendor/zstd/install-{arch}/lib"));
+    put(&zstd_lib.join("libzstd.so.1.5.6"), "/usr/lib/libzstd.so.1.5.6")?;
+    ln_via_debugfs("/usr/lib/libzstd.so.1.5.6", "/usr/lib/libzstd.so.1")?;
+    ln_via_debugfs("/usr/lib/libzstd.so.1.5.6", "/usr/lib/libzstd.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
@@ -841,48 +855,9 @@ fi
     // /etc/init.d/oxide-smokes — kernel-acceptance smoke harness
     // (replaces the C harness from old userspace/init/init.c). Gated
     // by the marker file so OXIDE_INIT_SMOKES=0 boots skip it.
-    put(&stage("oxide-smokes",
-b"#!/bin/sh
-[ -e /etc/oxide-init-smokes ] || exit 0
-echo init-fork-exec works
-for s in /bin/bare3 /bin/vim_smoke /bin/sem_smoke /bin/msg_smoke /bin/mq_smoke \\
-         /bin/mprotect_smoke /bin/mremap_dontunmap_smoke \\
-         /bin/inet6_smoke /bin/mmsg_smoke /bin/scm_smoke \\
-         /bin/cmdsubst_probe /bin/alarm_probe /bin/symlink_probe /bin/mount_smoke /bin/statfs_smoke /bin/dev_smoke \\
-         /bin/mmap_zero_smoke /bin/usleep_smoke \\
-         /bin/af_packet_smoke /bin/hello_dyn ; do
-    [ -x \"$s\" ] && \"$s\"
-done
-echo pre-exit_test
-/bin/exit_test
-echo post-exit_test rv=$?
-echo pre-bash-dynamic
-/bin/bash --version 2>&1 | head -1
-echo post-bash-dynamic rv=$?
-echo pre-pthread-probe
-timeout 10 /bin/pthread_socketpair_probe
-echo post-pthread-probe rv=$?
-echo pre-socketpair-fork-probe
-timeout 10 /bin/socketpair_fork_probe
-echo post-socketpair-fork-probe rv=$?
-echo pre-hello_dyn_libc
-/bin/hello_dyn_libc
-echo post-hello_dyn_libc rv=$?
-echo pre-libcap_probe
-/bin/libcap_probe
-echo post-libcap_probe rv=$?
-echo pre-cgroup-smoke
-[ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
-echo post-cgroup-smoke rv=$?
-[ -x /bin/fsmount_probe ] && /bin/fsmount_probe
-echo post-fsmount-probe rv=$?
-[ -x /bin/memfd_seal_probe ] && /bin/memfd_seal_probe
-echo post-memfd-seal-probe rv=$?
-[ -x /bin/uevent_probe ] && /bin/uevent_probe
-echo post-uevent-probe rv=$?
-[ -x /bin/rtlink_probe ] && /bin/rtlink_probe
-echo post-rtlink-probe rv=$?
-")?,
+    // oxide-smokes script lives in assets/oxide-smokes.sh (kept out of
+    // this file for the 1000-line cap; edit the .sh to add probes).
+    put(&stage("oxide-smokes", include_bytes!("assets/oxide-smokes.sh"))?,
         "/etc/init.d/oxide-smokes")?;
     dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;
 
