@@ -397,3 +397,12 @@ expat/expat-2.6.2.tar.gz
 !dbus/install-aarch64/**
 dbus/dbus-1.14.10/
 dbus/dbus-1.14.10.tar.xz
+# libgpg-error 1.50 — Track L2: libgcrypt's dep.
+!libgpg-error/
+!libgpg-error/build.sh
+!libgpg-error/install-x86_64/
+!libgpg-error/install-x86_64/**
+!libgpg-error/install-aarch64/
+!libgpg-error/install-aarch64/**
+libgpg-error/libgpg-error-1.50/
+libgpg-error/libgpg-error-1.50.tar.bz2

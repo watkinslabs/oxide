@@ -51,6 +51,9 @@ echo post-expat_probe rv=$?
 echo pre-dbus_probe
 /bin/dbus_probe
 echo post-dbus_probe rv=$?
+echo pre-libgpgerror_probe
+/bin/libgpgerror_probe
+echo post-libgpgerror_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
