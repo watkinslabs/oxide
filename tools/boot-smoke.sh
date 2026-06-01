@@ -55,13 +55,11 @@ echo "boot-smoke: arch=$ARCH timeout=${TIMEOUT}s log=$LOG"
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
-# SMP default is arch-specific: x86 boots -smp 2 so AP bring-up + the
-# periodic load balancer (`13§11`) are exercised every push (KVM, ~25s).
-# arm defaults to -smp 1: arm PSCI AP bring-up at a virtual entry point
-# wedges (TASKS.md Track S S4a-arm — needs an identity-mapped AP
-# trampoline + per-AP MMU setup), and arm TCG -smp 2 is too slow for a
-# push gate regardless. Override either with OXIDE_SMP=N.
-if [ "$ARCH" = "x86" ]; then OXIDE_SMP="${OXIDE_SMP:-2}"; else OXIDE_SMP="${OXIDE_SMP:-1}"; fi
+# Boot -smp 2 on BOTH arches so AP bring-up + the periodic load balancer
+# (`13§11`) are exercised every push: x86 via Limine SMP + LAPIC IPI,
+# arm via Limine SMP (APs MMU-on at our entry, F327) + GIC SGI. Override
+# with OXIDE_SMP=N.
+OXIDE_SMP="${OXIDE_SMP:-2}"
 OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 

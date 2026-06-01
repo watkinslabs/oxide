@@ -322,6 +322,51 @@ pub struct SmpInfoX86 {
     pub extra_argument: u64,
 }
 
+// ---------------------------------------------------------------------------
+// SMP request / response (aarch64 layout). Same request id + revision as
+// x86; the response + info structs differ (mpidr/gic_iface_no instead of
+// lapic_id). Limine starts each AP at `goto_address` in the SAME state as
+// the BSP entry (EL1, MMU on, kernel page tables) with x0 = &SmpInfoArm —
+// so the AP can jump straight to a higher-half VA entry (no MMU
+// trampoline, unlike a bare PSCI CPU_ON which starts MMU-off).
+// ---------------------------------------------------------------------------
+
+/// `limine_smp_request` for aarch64 (identical shape to `SmpRequest`, but
+/// its `response` points at the aarch64 response variant).
+#[repr(C)]
+pub struct SmpRequestAArch64 {
+    pub id:       RequestId,
+    pub revision: u64,
+    pub response: AtomicPtr<SmpResponseAArch64>,
+    pub flags:    u64,
+}
+// SAFETY: bootloader writes `response` once before the kernel reads it.
+unsafe impl Sync for SmpRequestAArch64 {}
+
+/// `limine_smp_response` (aarch64) per Limine v6+. Note the 4-byte pad
+/// after `flags` before the 8-aligned `bsp_mpidr` (handled by repr(C)).
+#[repr(C)]
+pub struct SmpResponseAArch64 {
+    pub revision:  u64,
+    pub flags:     u32,
+    pub bsp_mpidr: u64,
+    pub cpu_count: u64,
+    pub cpus:      *const *mut SmpInfoAArch64,
+}
+
+/// `limine_smp_info` (aarch64). AP spinwaits on `goto_address`; when the
+/// boot CPU stores a non-null fn pointer there, the AP jumps to it with
+/// `x0 = &SmpInfoAArch64`. Entry fn: `unsafe extern "C" fn(*mut SmpInfoAArch64) -> !`.
+#[repr(C)]
+pub struct SmpInfoAArch64 {
+    pub processor_id: u32,
+    pub gic_iface_no: u32,
+    pub mpidr:        u64,
+    pub reserved:     u64,
+    pub goto_address: AtomicPtr<()>,
+    pub extra_argument: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
