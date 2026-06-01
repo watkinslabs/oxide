@@ -648,21 +648,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // memfd-backed fds tagged with the call's identity for future
         // mount-table integration; fsconfig/move_mount/mount_setattr admit
         // (real per-NS mount-table machinery rides a follow-up).
-        // New mount API (K6): real fs_context builder → detached mount →
-        // attach. fspick/open_tree/mount_setattr ride a follow-up.
-        syscall::nrs::NR_FSOPEN     => crate::syscalls::fsmount::sys_fsopen(&args),
-        syscall::nrs::NR_FSCONFIG   => crate::syscalls::fsmount::sys_fsconfig(&args),
-        syscall::nrs::NR_FSMOUNT    => crate::syscalls::fsmount::sys_fsmount(&args),
-        syscall::nrs::NR_MOVE_MOUNT => crate::syscalls::fsmount::sys_move_mount(&args),
-        syscall::nrs::NR_FSPICK     => {
-            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscalls::anonfd::sys_memfd_create(&sa)
-        }
-        syscall::nrs::NR_OPEN_TREE  => {
-            let mut sa = args; sa.a0 = 0; sa.a1 = 1;
-            crate::syscalls::anonfd::sys_memfd_create(&sa)
-        }
-        syscall::nrs::NR_MOUNT_SETATTR => -(Errno::Eopnotsupp.as_i32() as i64),
+        // New mount API (K6) — all real now.
+        syscall::nrs::NR_FSOPEN        => crate::syscalls::fsmount::sys_fsopen(&args),
+        syscall::nrs::NR_FSCONFIG      => crate::syscalls::fsmount::sys_fsconfig(&args),
+        syscall::nrs::NR_FSMOUNT       => crate::syscalls::fsmount::sys_fsmount(&args),
+        syscall::nrs::NR_MOVE_MOUNT    => crate::syscalls::fsmount::sys_move_mount(&args),
+        syscall::nrs::NR_FSPICK        => crate::syscalls::fsmount::sys_fspick(&args),
+        syscall::nrs::NR_OPEN_TREE     => crate::syscalls::fsmount::sys_open_tree(&args),
+        syscall::nrs::NR_MOUNT_SETATTR => crate::syscalls::fsmount::sys_mount_setattr(&args),
         syscall::nrs::NR_GETRLIMIT     => crate::syscalls::proc::sys_getrlimit(&args),
         syscall::nrs::NR_SETRLIMIT     => crate::syscalls::proc::sys_setrlimit(&args),
         syscall::nrs::NR_GETRUSAGE     => crate::syscalls::proc::sys_getrusage(&args),
