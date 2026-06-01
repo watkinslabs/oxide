@@ -291,3 +291,34 @@ fn propagate_mount_reaches_peers() {
     vfs::mount::register("/pp-priv/y", Arc::new(TestFs { root_ino: 0x22 })).expect("under priv");
     assert_eq!(vfs::mount::propagate_mount("/pp-priv/y"), 0, "private parent: no propagation");
 }
+
+// K2V V7/U4-d: pivot_root makes new_root the ns root and relocates the old
+// tree under put_old. Verified over the real mount table.
+#[test]
+fn pivot_root_swaps_namespace_root() {
+    let _g = guard();
+    // Isolate in a dedicated ns so pivot_root's whole-table rewrite doesn't
+    // touch mounts left by other tests (it scopes to current_ns()).
+    vfs::mount::set_current_ns_provider(|| 0x9001);
+    vfs::mount::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
+    vfs::mount::register("/nr", Arc::new(TestFs { root_ino: 0xB })).expect("newroot");
+    vfs::mount::register("/nr/sub", Arc::new(TestFs { root_ino: 0xC })).expect("newsub");
+    vfs::mount::register("/etc", Arc::new(TestFs { root_ino: 0xD })).expect("oldtree");
+    vfs::mount::pivot_root("/nr", "/nr/old").expect("pivot");
+    let snap = vfs::mount::snapshot();
+    let ino_at = |mp: &str| snap.iter().find(|m| m.mount_point == mp)
+        .and_then(|m| m.fs.root()).map(|i| i.ino());
+    assert_eq!(ino_at("/"), Some(0xB), "new_root is now /");
+    assert_eq!(ino_at("/sub"), Some(0xC), "new_root submount rebased to /sub");
+    assert_eq!(ino_at("/old"), Some(0xA), "old root relocated under put_old");
+    assert_eq!(ino_at("/old/etc"), Some(0xD), "old tree relocated under put_old");
+    assert!(ino_at("/nr").is_none(), "old new_root path gone");
+    // Errors (fresh ns): new_root not a mount → Einval; put_old not under
+    // new_root → Einval; put_old is itself a mount → Ebusy.
+    vfs::mount::set_current_ns_provider(|| 0x9002);
+    assert!(matches!(vfs::mount::pivot_root("/nope", "/nope/old"), Err(VfsError::Einval)));
+    vfs::mount::register("/e-nr", Arc::new(TestFs { root_ino: 1 })).expect("e-nr");
+    assert!(matches!(vfs::mount::pivot_root("/e-nr", "/other"), Err(VfsError::Einval)));
+    vfs::mount::register("/e-nr/m", Arc::new(TestFs { root_ino: 2 })).expect("e-m");
+    assert!(matches!(vfs::mount::pivot_root("/e-nr", "/e-nr/m"), Err(VfsError::Ebusy)));
+}
