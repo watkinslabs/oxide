@@ -151,6 +151,33 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
     Ok(())
 }
 
+/// Peer group id of the mount rooted exactly at `mount_point` in the
+/// caller's ns, or 0 if none / not a mount (`docs/16§6`).
+/// # C: O(N_mounts)
+pub fn peer_group_of(mount_point: &str) -> u64 {
+    let ns = current_ns();
+    let t = TABLE.lock();
+    t.iter().find(|m| m.mount_point == mount_point && m.ns == ns)
+        .map(|m| m.peer_group.load(Ordering::Acquire)).unwrap_or(0)
+}
+
+/// MS_SHARED peer-group inheritance (`docs/16§6`): the mount at
+/// `mount_point` joins peer group `pg` and becomes Shared. Used when
+/// binding a shared mount — Linux makes the new mount a peer of the
+/// source's group, so it renders the same `shared:<pg>` and future
+/// propagation events reach it. No-op if `mount_point` isn't a mount in
+/// this ns or `pg` is 0.
+/// # C: O(N_mounts)
+pub fn join_peer_group(mount_point: &str, pg: u64) {
+    if pg == 0 { return; }
+    let ns = current_ns();
+    let t = TABLE.lock();
+    if let Some(m) = t.iter().find(|m| m.mount_point == mount_point && m.ns == ns) {
+        m.peer_group.store(pg, Ordering::Release);
+        m.propagation.store(Propagation::Shared as u8, Ordering::Release);
+    }
+}
+
 /// `umount`: remove the mount rooted exactly at `mount_point` in the
 /// caller's namespace (`docs/16§6`). Returns the count removed (0 if
 /// none — e.g. `mount_point` isn't a mount in this ns). Bind mounts and
