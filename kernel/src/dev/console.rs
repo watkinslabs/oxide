@@ -23,7 +23,7 @@ use alloc::sync::Arc;
 // `debug-<sub>` feature because writing user TTY output is
 // the device's purpose, not diagnostic logging.
 use klog::write_raw as console_emit;
-use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, FdTable, File, FileType, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError, POLL_IN, POLL_OUT};
 
 /// `/dev/console` + `/dev/tty<N>` inode. `vt == 0` means
 /// "foreground alias" and resolves at read-time; vt 1..=N_VT
@@ -111,6 +111,18 @@ impl Inode for ConsoleInode {
         }
         if n == 0 { return Err(VfsError::Eagain); }
         Ok(n)
+    }
+
+    /// Readiness for poll/ppoll/select. POLLIN only when this VT's RX
+    /// ring actually holds input (the default Inode::poll claims always
+    /// readable, which makes a `ppoll(console, POLLIN, timeout)` loop
+    /// spin on EAGAIN instead of waiting out its deadline — systemd's
+    /// DSR terminal-size probe does exactly that). Always writable.
+    /// # C: O(1)
+    fn poll(&self) -> u32 {
+        let mut mask = POLL_OUT;
+        if tty::live::vt_has_input(self.vt) { mask |= POLL_IN; }
+        mask
     }
 
     /// Emit `buf` via the kernel UART path. `klog::write_raw`

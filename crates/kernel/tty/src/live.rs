@@ -502,6 +502,17 @@ pub fn try_read_vt(vt: u8) -> Option<u8> {
     VT_RINGS[vt_index(vt)].lock().pop()
 }
 
+/// Non-destructive readiness: true if `vt`'s RX ring holds ≥1 byte.
+/// Backs `ConsoleInode::poll()` so poll(POLLIN) reports readable only
+/// when input is actually queued — without it the default Inode::poll
+/// always claims readable, so a `ppoll(console, POLLIN, timeout)` loop
+/// (e.g. systemd's DSR terminal-size probe) spins on EAGAIN instead of
+/// waiting out its deadline.
+/// # C: O(1)
+pub fn vt_has_input(vt: u8) -> bool {
+    VT_RINGS[vt_index(vt)].lock().len > 0
+}
+
 /// Backwards-compat shim: pop from foreground VT.
 /// # C: O(1)
 pub fn try_read() -> Option<u8> { try_read_vt(0) }
