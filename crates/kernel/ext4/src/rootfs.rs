@@ -546,6 +546,91 @@ impl vfs::Inode for Ext4StatInode {
         }
         Ok(next)
     }
+
+    /// `mkdir` keyed on this directory's ino (parent) + `name` — the
+    /// per-directory primitive the namei walker dispatches after
+    /// resolving the parent. Same backend as `mkdir_at`.
+    /// # C: O(N parent entries)
+    fn mkdir(&self, name: &str, mode: u32) -> vfs::KResult<vfs::InodeRef> {
+        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published once at boot; pointer stable for the kernel lifetime.
+        let mount = unsafe { &*p };
+        if lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
+        mount.create_dir(self.ino, name.as_bytes(), mode as u16).map_err(|_| vfs::VfsError::Eio)?;
+        let child = lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Eio)?;
+        wrap_any_ino(child).ok_or(vfs::VfsError::Eio)
+    }
+
+    /// # C: O(N parent entries)
+    fn rmdir(&self, name: &str) -> vfs::KResult<()> {
+        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published once at boot; pointer stable for the kernel lifetime.
+        let mount = unsafe { &*p };
+        let target = lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
+        let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+        if !inode.is_dir() { return Err(vfs::VfsError::Enotdir); }
+        mount.dir_unlink(self.ino, name.as_bytes()).map_err(|_| vfs::VfsError::Eio)?;
+        let _ = mount.free_inode(target);
+        Ok(())
+    }
+
+    /// # C: O(N parent entries)
+    fn create_child(&self, name: &str, mode: u32) -> vfs::KResult<vfs::InodeRef> {
+        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published once at boot; pointer stable for the kernel lifetime.
+        let mount = unsafe { &*p };
+        if lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
+        let ino = mount.create_file(self.ino, name.as_bytes(), mode as u16).map_err(|_| vfs::VfsError::Eio)?;
+        PAGE_CACHE.invalidate(InodeId(ino as u64));
+        wrap_file(ino).ok_or(vfs::VfsError::Eio)
+    }
+
+    /// # C: O(N parent entries)
+    fn unlink_child(&self, name: &str) -> vfs::KResult<()> {
+        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published once at boot; pointer stable for the kernel lifetime.
+        let mount = unsafe { &*p };
+        let target = lookup_child_ino(self.ino, name).ok_or(vfs::VfsError::Enoent)?;
+        let inode = mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
+        if inode.is_dir() { return Err(vfs::VfsError::Eisdir); }
+        mount.unlink(self.ino, name.as_bytes()).map_err(|_| vfs::VfsError::Eio)?;
+        PAGE_CACHE.invalidate(InodeId(target as u64));
+        Ok(())
+    }
+
+    /// # C: O(N parent entries)
+    fn symlink_child(&self, name: &str, target: &[u8]) -> vfs::KResult<()> {
+        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published once at boot; pointer stable for the kernel lifetime.
+        let mount = unsafe { &*p };
+        if lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
+        let ino = mount.create_symlink(self.ino, name.as_bytes(), target).map_err(|_| vfs::VfsError::Eio)?;
+        PAGE_CACHE.invalidate(InodeId(ino as u64));
+        Ok(())
+    }
+
+    /// # C: O(N parent entries)
+    fn mknod_child(&self, name: &str, mode: u16, rdev: u32) -> vfs::KResult<()> {
+        if !matches!(self.ft, vfs::FileType::Directory) { return Err(vfs::VfsError::Enotdir); }
+        let p = MOUNT_PTR.load(Ordering::Acquire);
+        if p.is_null() { return Err(vfs::VfsError::Eio); }
+        // SAFETY: MOUNT_PTR published once at boot; pointer stable for the kernel lifetime.
+        let mount = unsafe { &*p };
+        if lookup_child_ino(self.ino, name).is_some() { return Err(vfs::VfsError::Eexist); }
+        let ino = mount.create_mknod(self.ino, name.as_bytes(), mode, rdev).map_err(|_| vfs::VfsError::Eio)?;
+        PAGE_CACHE.invalidate(InodeId(ino as u64));
+        Ok(())
+    }
 }
 
 /// Wrap any-type ext4 inode for stat-only consumers.
