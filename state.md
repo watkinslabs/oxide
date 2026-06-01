@@ -20,8 +20,18 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 COMPLETE. V7 mount tree STARTED (MS_MOVE). NEXT: more V7
-V7-a (F294, branch): MS_MOVE implemented. `vfs::mount::move_mount(from,to)`
+## V6 COMPLETE. V7: MS_MOVE + bind-as-clone done. NEXT: more V7
+V7-b (F295, branch): bind-as-clone. `Mount` gains `root: Option<InodeRef>`;
+`vfs::mount::register_bind(target, fs, root_inode)` mounts an arbitrary
+SOURCE inode as the mount root. `mount_root_at` returns that inode when
+set, so the dentry walk crosses into the bind and mirrors the source
+subtree via per-component `Inode::lookup` — the Linux model, NO BindFs
+path-rewrite. sys_mount MS_BIND now resolves the source via
+`pathresolve::resolve` + register_bind (BindFs kept only for statfs magic
++ mountinfo line + path-lookup fallback). move_mount preserves `root`.
+Hosted test bind_as_clone_roots_at_source_inode (5 mount tests). Both
+arches build + spec-lint clean.
+V7-a (F294 #1393): MS_MOVE implemented. `vfs::mount::move_mount(from,to)`
 relocates the TABLE mount rooted at `from` to `to`, preserving mnt_id +
 propagation (tree is implicit via longest-prefix mount_point, so parent_id
 recomputes automatically); Einval if no mount at `from`, Ebusy if `to`

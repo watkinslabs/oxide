@@ -110,10 +110,18 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         let source = match read_user_cstr_owned(source_p, 256) { Ok(s) => s, Err(rv) => return rv };
         if !source.starts_with('/') { return -(Errno::Einval.as_i32() as i64); }
         let source = if source.len() > 1 { source.trim_end_matches('/').to_string() } else { source };
+        // Bind-as-clone (docs/16§6): resolve the source subtree's root
+        // inode via the dentry walk (follows symlinks, crosses mounts) and
+        // mount it at target. The walk then mirrors the source subtree via
+        // per-component Inode::lookup — no BindFs path rewrite.
+        let root = match crate::syscalls::pathresolve::resolve(&source, false) {
+            Some(i) => i,
+            None    => return -(Errno::Enoent.as_i32() as i64),
+        };
         let bind = Arc::new(BindFs { source, target: target.clone() });
-        // Global mount table (per-NS bind rides K3's per-ns mount tables).
-        let _ = vfs::mount::register(&target, bind);
-        let _ = (ns, MS_REC); // per-ns + recursive-bind are follow-ups
+        // Global mount table (per-NS bind rides the per-ns mount tree).
+        let _ = vfs::mount::register_bind(&target, bind, root);
+        let _ = (ns, MS_REC); // recursive-bind is a follow-up
         return 0;
     }
 
