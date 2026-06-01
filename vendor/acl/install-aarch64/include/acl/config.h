@@ -9,7 +9,7 @@
 /* #undef ENABLE_NLS */
 
 /* Visibility attribute for API symbols */
-#define EXPORT __attribute__ ((visibility ("default"))) extern
+#define extern __attribute__ ((visibility ("default"))) extern
 
 /* Define to 1 if you have the <attr/error_context.h> header file. */
 #define HAVE_ATTR_ERROR_CONTEXT_H 1

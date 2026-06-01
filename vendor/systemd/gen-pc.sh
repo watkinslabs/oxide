@@ -9,9 +9,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # vendor/
 
 # emit <vendor> <pcname> <Name> <Version> <-llibs> <Requires>
 emit() {
-  vend="$1"; pc="$2"; name="$3"; ver="$4"; libs="$5"; reqs="$6"
+  vend="$1"; pc="$2"; name="$3"; ver="$4"; libs="$5"; reqs="$6"; incsub="$7"
   pfx="${ROOT}/${vend}/install-${arch}"
   dir="${pfx}/lib/pkgconfig"
+  cflags="-I\${includedir}"
+  # util-linux ships per-lib header subdirs (blkid/, libmount/, …) and
+  # consumers #include <blkid.h> etc., so add the subdir to Cflags.
+  [ -n "$incsub" ] && cflags="${cflags} -I\${includedir}/${incsub}"
   mkdir -p "$dir"
   {
     echo "prefix=${pfx}"
@@ -23,7 +27,7 @@ emit() {
     echo "Version: ${ver}"
     [ -n "$reqs" ] && echo "Requires: ${reqs}"
     echo "Libs: -L\${libdir} ${libs}"
-    echo "Cflags: -I\${includedir}"
+    echo "Cflags: ${cflags}"
   } > "${dir}/${pc}.pc"
 }
 
@@ -35,10 +39,10 @@ emit libgcrypt    libgcrypt     libgcrypt     1.10.3  "-lgcrypt"     "gpg-error"
 emit openssl      libcrypto     OpenSSL-libcrypto 3.0.15 "-lcrypto"  ""
 emit openssl      libssl        OpenSSL-libssl    3.0.15 "-lssl"     "libcrypto"
 emit openssl      openssl       OpenSSL       3.0.15  "-lssl -lcrypto" "libssl libcrypto"
-emit util-linux   blkid         blkid         2.40    "-lblkid"      ""
-emit util-linux   mount         mount         2.40    "-lmount"      "blkid"
-emit util-linux   uuid          uuid          2.40    "-luuid"       ""
-emit util-linux   smartcols     smartcols     2.40    "-lsmartcols"  ""
+emit util-linux   blkid         blkid         2.40    "-lblkid"      "" blkid
+emit util-linux   mount         mount         2.40    "-lmount"      "blkid" libmount
+emit util-linux   uuid          uuid          2.40    "-luuid"       "" uuid
+emit util-linux   smartcols     smartcols     2.40    "-lsmartcols"  "" libsmartcols
 emit acl          libacl        libacl        2.3.2   "-lacl"        ""
 emit attr         libattr       libattr       2.5.2   "-lattr"       ""
 emit libidn2      libidn2       libidn2       2.3.7   "-lidn2"       ""
