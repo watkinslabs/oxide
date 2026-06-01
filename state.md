@@ -34,21 +34,37 @@ healthy participant (online, VBAR, GIC CPU-interface, per-CPU runqueue,
 resched SGI). `balance_once` runs periodically + wakes the destination AP
 via IPI/SGI on both arches.
 
-## NEXT (established work, now UNBLOCKED by real SMP)
-- **S4b cpuset affinity** (the K1b cgroup item SMP was blocking): per-task
-  cpu-allowed mask + `sched_setaffinity`/`getaffinity`; picker + balancer
-  honor it; cgroup `cpuset.cpus`/`cpuset.mems` apply to members. Gate at
-  -smp 2 now actually exercises multi-CPU so this is testable.
-- S4a-timer: per-AP periodic timer (APs preempt on own tick, not just
-  resched SGI) + least-loaded initial placement.
-- Optional: a SAFE SMP migration smoke (short-lived tasks that EXIT +
-  a per-CPU ran-here counter) to prove a task actually executes on the AP
-  — do NOT re-add infinite-loop kthreads (that was the F325 bug).
-- S4c io controller. Then back to Track L (systemd userspace).
+## cgroup v2 controllers: COMPLETE + enforced (Track K1b closed)
+pids, memory.max, cpu.weight, cpu.max, freeze, cpuset.cpus — all real,
+hosted-tested, enforced on real SMP. (F319/F320/F322/F323/F328/F329.)
+
+## Scheduler/SMP/cgroup DOMAIN: COMPLETE (16 PRs F319-F330+B50)
+Real preemptive SMP both arches (-smp 2 every push): AP participation,
+per-AP timers, balancer, resched IPI/SGI, CPU affinity. Full cgroup v2
+controller surface enforced: pids, memory.max, cpu.weight, cpu.max,
+freeze, cpuset.cpus. All hosted-tested + both-arch boot-verified.
+
+## NEXT (substantial fresh-focus efforts — not marathon-tail rushes)
+- **S4c io controller** — the last cgroup dimension. The block chokepoint
+  is `BlockDevice::submit_sync` (crates/kernel/block/blockdev.rs), a leaf
+  crate. Needs: an IO_CHARGE hook (like the cgroup signal/freeze/weight
+  hooks) so submit_sync charges the current task's cgroup bytes; io.stat
+  real; io.max bps throttle = delay/park submit when over rate (reuse the
+  freeze-style park). Verification needs a measured-io workload (a probe
+  that reads/writes N bytes under an io.max cap), not just boot. Real
+  subsystem effort.
+- least-loaded initial placement: DEEMED UNNECESSARY — spawn-local +
+  balancer-spreads is the correct Linux behaviour; don't add.
+- cpuset.mems (NUMA single-node, cosmetic).
+- **Track L** — shared-lib musl userspace + systemd cross-builds
+  (L1/L2/D6 in TASKS.md). The big distro endgame; large external-source
+  cross-build effort. Likely wants a scoping pass before diving in.
 
 ## First task next session
-`git checkout -b F328-cpuset-affinity`; add `Task` cpu-allowed mask +
-sched_setaffinity/getaffinity, honor in pick/balance, wire cgroup cpuset.
+Either S4c io controller (start with the IO_CHARGE hook + io.stat
+accounting, then io.max throttle) or begin Track L L1 (shared musl
+runtime + lib tree + xtask .so staging). Both are fresh-focus; pick per
+user priority.
 
 ## CRITICAL HARNESS RULES
 - **NEVER run `git branch -D`** (any form) — it always prompts; user
