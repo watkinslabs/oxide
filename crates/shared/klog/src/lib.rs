@@ -290,6 +290,16 @@ pub fn write_raw(bytes: &[u8]) {
     invoke_sink(bytes);
 }
 
+/// `/dev/kmsg` write path: inject a userspace-originated record into the
+/// kernel log ring + console. UNGATED by design — unlike the debug klog
+/// macros (R06), this is the kmsg device's real write side (early systemd,
+/// `logger`, journald-forward), which must function in every build, not a
+/// per-subsystem debug trace gated to zero bytes by default.
+/// # C: O(len(bytes))
+pub fn kmsg_write(bytes: &[u8]) {
+    invoke_sink(bytes);
+}
+
 /// Emit a 64-bit value as 16 lower-case hex digits, no `0x` prefix,
 /// no surrounding whitespace. Useful inside fault printers where
 /// allocation and formatting machinery are unavailable.
