@@ -20,8 +20,26 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 done. V7 features done. Mount-table UNIFICATION started (U2 foundation)
-U2-a (F298, branch): mount-ns stamping foundation. `Mount.ns: u64` stamped
+## V6 done. V7 features done. Mount-table UNIFICATION: U2 per-ns tree done
+U2-b (F299, branch): per-ns mount resolution + copy-on-unshare (the real
+Linux model, NOT an ns-0-fallback hack). resolve_mount/parent_id_of/
+snapshot + the mutators (register/register_bind Eexist, move_mount,
+set_propagation, bind_submounts_rec) now scope STRICTLY to `current_ns()`.
+`vfs::mount::snapshot_ns(from,to)` clones every from-ns mount into to-ns
+as a fresh independent mount (new mnt_id); `sys_unshare(CLONE_NEWNS)` now
+calls it alongside the existing `devfs::snapshot_ns` — so a new ns starts
+with a full private copy of the parent tree then diverges. Added
+`snapshot_all()` for kernel audits. Boot-safe: everything is ns 0 →
+filters to ns 0 → identical resolution; unshare copies both tables.
+Hosted tests serialized on a mutex (shared global table+provider) + reset
+provider per-test; new per_ns_isolation_and_copy_on_unshare (9 tests).
+Both arches build + spec-lint clean.
+NEXT U3: migrate tmpfs sys_mount+umount off the devfs registry into the
+per-ns TABLE (kills the dual-table fragmentation + the B47 /var→ext4
+routing). THEN U4: propagation EVENT delivery to peer_group members,
+pivot_root, submount-move.
+## (history) U2-a — ns stamping
+U2-a (F298 #1397): mount-ns stamping foundation. `Mount.ns: u64` stamped
 at register time from an installed provider; `vfs::mount::{NsProvider,
 set_current_ns_provider, current_ns}` (AtomicPtr fn-hook like the resolver
 hooks, null⇒0). Kernel installs `current_mount_ns` (reads

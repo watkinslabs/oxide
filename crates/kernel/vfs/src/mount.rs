@@ -109,8 +109,9 @@ static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
 /// same mount_point already has a mount, returns Ebusy.
 /// # C: O(N_mounts) — linear scan + push.
 pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
+    let ns = current_ns();
     let mut t = TABLE.lock();
-    if t.iter().any(|m| m.mount_point == mount_point) {
+    if t.iter().any(|m| m.mount_point == mount_point && m.ns == ns) {
         return Err(VfsError::Eexist);
     }
     t.push(Arc::new(Mount {
@@ -120,7 +121,7 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0),
-        ns: current_ns(),
+        ns,
     }));
     Ok(())
 }
@@ -133,8 +134,9 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
 /// statfs `magic()` + the mountinfo line. Eexist if `mount_point` taken.
 /// # C: O(N_mounts)
 pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
+    let ns = current_ns();
     let mut t = TABLE.lock();
-    if t.iter().any(|m| m.mount_point == mount_point) {
+    if t.iter().any(|m| m.mount_point == mount_point && m.ns == ns) {
         return Err(VfsError::Eexist);
     }
     t.push(Arc::new(Mount {
@@ -144,9 +146,32 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
         mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
         propagation: AtomicU8::new(Propagation::Private as u8),
         peer_group: AtomicU64::new(0),
-        ns: current_ns(),
+        ns,
     }));
     Ok(())
+}
+
+/// Copy-on-unshare (`docs/16§6`): clone every mount in `from_ns` into
+/// `to_ns` as a fresh independent mount (new `mnt_id`, same fs/root/
+/// mount_point/propagation/peer_group). `sys_unshare(CLONE_NEWNS)` calls
+/// this so the new namespace starts with a full private copy of the
+/// parent's tree, then the two diverge independently (Linux semantics).
+/// # C: O(N_mounts in from_ns)
+pub fn snapshot_ns(from_ns: u64, to_ns: u64) {
+    let mut t = TABLE.lock();
+    let clones: Vec<Arc<Mount>> = t.iter()
+        .filter(|m| m.ns == from_ns)
+        .map(|m| Arc::new(Mount {
+            fs: m.fs.clone(),
+            mount_point: m.mount_point.clone(),
+            root: m.root.clone(),
+            mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
+            propagation: AtomicU8::new(m.propagation.load(Ordering::Acquire)),
+            peer_group: AtomicU64::new(m.peer_group.load(Ordering::Acquire)),
+            ns: to_ns,
+        }))
+        .collect();
+    t.extend(clones);
 }
 
 /// MS_REC recursive bind (`mount(src, tgt, NULL, MS_BIND|MS_REC)`,
@@ -159,9 +184,11 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
 /// devfs registry, not this TABLE).
 /// # C: O(N_mounts)
 pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
+    let ns = current_ns();
     let snap: Vec<Arc<Mount>> = TABLE.lock().clone();
     let mut n = 0;
     for m in snap.iter() {
+        if m.ns != ns { continue; }
         // Strict submount: mount_point == "<src>/<...>".
         let rel = match m.mount_point.strip_prefix(src) {
             Some(r) if r.starts_with('/') => r,
@@ -186,9 +213,11 @@ pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
 /// `mount_point`.
 /// # C: O(N_mounts × max_mount_point_len)
 pub fn parent_id_of(path: &str) -> u64 {
+    let ns = current_ns();
     let t = TABLE.lock();
     let mut best: Option<&Arc<Mount>> = None;
     for m in t.iter() {
+        if m.ns != ns { continue; }
         let mp = m.mount_point.as_str();
         // Proper prefix only: skip the mount itself and equal paths.
         if mp == path { continue; }
@@ -216,11 +245,12 @@ pub fn parent_id_of(path: &str) -> u64 {
 /// is the complete operation.
 /// # C: O(N_mounts)
 pub fn move_mount(from: &str, to: &str) -> KResult<()> {
+    let ns = current_ns();
     let mut t = TABLE.lock();
-    if t.iter().any(|m| m.mount_point == to) {
+    if t.iter().any(|m| m.mount_point == to && m.ns == ns) {
         return Err(VfsError::Ebusy);
     }
-    let idx = t.iter().position(|m| m.mount_point == from).ok_or(VfsError::Einval)?;
+    let idx = t.iter().position(|m| m.mount_point == from && m.ns == ns).ok_or(VfsError::Einval)?;
     let old = &t[idx];
     let moved = Arc::new(Mount {
         fs: old.fs.clone(),
@@ -240,8 +270,9 @@ pub fn move_mount(from: &str, to: &str) -> KResult<()> {
 /// Einval if no mount is rooted exactly at `mount_point`.
 /// # C: O(N_mounts)
 pub fn set_propagation(mount_point: &str, kind: Propagation) -> KResult<()> {
+    let ns = current_ns();
     let t = TABLE.lock();
-    let m = t.iter().find(|m| m.mount_point == mount_point).ok_or(VfsError::Einval)?;
+    let m = t.iter().find(|m| m.mount_point == mount_point && m.ns == ns).ok_or(VfsError::Einval)?;
     m.propagation.store(kind as u8, Ordering::Release);
     // Peer-group bookkeeping: making a mount shared joins it to a peer
     // group (a fresh one if it had none); making it private/unbindable
@@ -270,9 +301,14 @@ pub fn set_propagation(mount_point: &str, kind: Propagation) -> KResult<()> {
 /// stripped path.
 /// # C: O(N_mounts × max_mount_point_len)
 pub fn resolve_mount(path: &str) -> Option<(Arc<Mount>, String)> {
+    // Per-ns (`docs/16§6`): only mounts in the caller's mount namespace are
+    // visible. `unshare(CLONE_NEWNS)` copy-on-unshares the parent's set
+    // (`snapshot_ns`), so a new ns starts complete then diverges.
+    let ns = current_ns();
     let t = TABLE.lock();
     let mut best: Option<&Arc<Mount>> = None;
     for m in t.iter() {
+        if m.ns != ns { continue; }
         let mp = m.mount_point.as_str();
         let match_full = path == mp;
         let match_pref = mp.len() == 1 && mp == "/" /* root: always */
@@ -338,8 +374,16 @@ pub fn install_resolvers() {
     crate::namei::set_mount_whole_path(mount_whole_path);
 }
 
-/// Snapshot the mount table for `/proc/mounts`.
+/// Snapshot the caller's mount-namespace view of the table (for
+/// `/proc/<pid>/mounts` + mountinfo — both per-ns, `docs/16§6`).
 /// # C: O(N_mounts)
 pub fn snapshot() -> Vec<Arc<Mount>> {
+    let ns = current_ns();
+    TABLE.lock().iter().filter(|m| m.ns == ns).cloned().collect()
+}
+
+/// Snapshot ALL mounts regardless of namespace (kernel-internal audits).
+/// # C: O(N_mounts)
+pub fn snapshot_all() -> Vec<Arc<Mount>> {
     TABLE.lock().clone()
 }
