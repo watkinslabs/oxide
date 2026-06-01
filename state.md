@@ -20,8 +20,16 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 COMPLETE. V7: MS_MOVE + bind-as-clone done. NEXT: more V7
-V7-b (F295, branch): bind-as-clone. `Mount` gains `root: Option<InodeRef>`;
+## V6 COMPLETE. V7: MS_MOVE + bind-as-clone + MS_REC done. NEXT: more V7
+V7-c (F296, branch): MS_REC recursive bind. `vfs::mount::bind_submounts_rec
+(src,tgt)` clones every TABLE mount nested under `src` to the mirrored path
+under `tgt` as a bind-as-clone (reuses each submount's root inode, or
+fs.root()). sys_mount MS_BIND|MS_REC calls it after binding the top
+src→tgt. Submounts whose root can't be determined (whole-path pseudo-fs)
++ tmpfs (devfs registry) are skipped — full coverage rides the table
+unification. Hosted test ms_rec_clones_submounts (6 mount tests). Both
+arches build + spec-lint clean.
+V7-b (F295 #1394): bind-as-clone. `Mount` gains `root: Option<InodeRef>`;
 `vfs::mount::register_bind(target, fs, root_inode)` mounts an arbitrary
 SOURCE inode as the mount root. `mount_root_at` returns that inode when
 set, so the dentry walk crosses into the bind and mirrors the source

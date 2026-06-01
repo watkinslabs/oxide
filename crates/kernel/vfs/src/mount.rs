@@ -97,6 +97,35 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
     Ok(())
 }
 
+/// MS_REC recursive bind (`mount(src, tgt, NULL, MS_BIND|MS_REC)`,
+/// `docs/16§6`): after `src`→`tgt` is bound, clone every mount nested
+/// under `src` to the matching path under `tgt` as a bind-as-clone
+/// (same root inode). The caller binds the top `src`→`tgt`; this clones
+/// the submounts. Returns the count cloned. A submount whose root inode
+/// can't be determined (whole-path pseudo-fs without `root()`) is skipped
+/// — full coverage rides the mount-table unification (tmpfs lives in the
+/// devfs registry, not this TABLE).
+/// # C: O(N_mounts)
+pub fn bind_submounts_rec(src: &str, tgt: &str) -> usize {
+    let snap: Vec<Arc<Mount>> = TABLE.lock().clone();
+    let mut n = 0;
+    for m in snap.iter() {
+        // Strict submount: mount_point == "<src>/<...>".
+        let rel = match m.mount_point.strip_prefix(src) {
+            Some(r) if r.starts_with('/') => r,
+            _ => continue,
+        };
+        let new_mp = alloc::format!("{}{}", tgt, rel);
+        // bind-as-clone reuses the submount's own root; whole-fs mounts
+        // fall back to fs.root().
+        let root = m.root.clone().or_else(|| m.fs.root());
+        if let Some(r) = root {
+            if register_bind(&new_mp, m.fs.clone(), r).is_ok() { n += 1; }
+        }
+    }
+    n
+}
+
 /// `mnt_id` of `path`'s parent mount: the live mount whose
 /// `mount_point` is the longest *proper* prefix of `path`. `0` if
 /// none (the root mount "/"). Drives /proc mountinfo's parent_id so
