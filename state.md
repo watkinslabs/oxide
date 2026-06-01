@@ -20,8 +20,19 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 COMPLETE. V7: MS_MOVE + bind-as-clone + MS_REC done. NEXT: more V7
-V7-c (F296, branch): MS_REC recursive bind. `vfs::mount::bind_submounts_rec
+## V6 COMPLETE. V7: MS_MOVE/bind-clone/MS_REC/peer-groups done. NEXT: unification
+V7-d (F297, branch): propagation peer-group IDs. `Mount.peer_group:
+AtomicU64` (0=none) + `NEXT_PEER_GROUP` source. `set_propagation(Shared)`
+assigns a fresh group (idempotent); Private/Unbindable clears it; Slave
+keeps it as master ref. mountinfo now renders real `shared:<pg>` /
+`master:<pg>` (distinct from mnt_id — was faking shared:<mnt_id>). Peer
+event *delivery* (propagating mounts/umounts to group members) still needs
+the unified tree. Hosted test ms_shared_assigns_distinct_peer_groups (7
+mount tests). Both arches build + spec-lint clean.
+NEXT = the MOUNT-TABLE UNIFICATION (the big V7 foundation, docs/16§6) —
+do verify-left, staged, boot-gated; see TASKS.md V7 row. It unblocks
+propagation EVENT delivery, pivot_root, per-ns trees, submount-move.
+V7-c (F296 #1395): MS_REC recursive bind. `vfs::mount::bind_submounts_rec
 (src,tgt)` clones every TABLE mount nested under `src` to the mirrored path
 under `tgt` as a bind-as-clone (reuses each submount's root inode, or
 fs.root()). sys_mount MS_BIND|MS_REC calls it after binding the top

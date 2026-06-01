@@ -41,11 +41,14 @@ fn build_mountinfo() -> Vec<u8> {
         let id = m.mnt_id;
         let parent = vfs::mount::parent_id_of(&m.mount_point);
         let name = m.fs.name();
+        let pg = m.peer_group.load(Ordering::Acquire);
         let opt = match Propagation::from_u8(m.propagation.load(Ordering::Acquire)) {
-            Propagation::Shared => format!(" shared:{}", id),
+            // Real peer-group id (`docs/16§6`), distinct from mnt_id.
+            Propagation::Shared => format!(" shared:{}", pg),
+            // A slave of peer group `pg` reports `master:<pg>`; with no
+            // group yet it renders as private.
+            Propagation::Slave if pg != 0 => format!(" master:{}", pg),
             Propagation::Unbindable => " unbindable".into(),
-            // A bare slave has no master id without peer groups; render
-            // as private (no tag) until propagation events land.
             Propagation::Slave | Propagation::Private => String::new(),
         };
         s.push_str(&format!(
