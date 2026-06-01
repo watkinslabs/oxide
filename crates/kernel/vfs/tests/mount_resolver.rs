@@ -265,3 +265,29 @@ fn join_peer_group_shares_group() {
     // peer_group_of a non-mount is 0.
     assert_eq!(vfs::mount::peer_group_of("/pi-nope"), 0);
 }
+
+// K2V V7/U4-c: propagation event delivery. A mount established under a
+// SHARED parent propagates to every peer of that parent at the mirrored
+// relative path. End-to-end over the real mount table.
+#[test]
+fn propagate_mount_reaches_peers() {
+    let _g = guard();
+    use vfs::mount::Propagation;
+    // /pp-a shared (peer group P); /pp-b joins P (a peer of /pp-a).
+    vfs::mount::register("/pp-a", Arc::new(TestFs { root_ino: 0xA })).expect("a");
+    vfs::mount::set_propagation("/pp-a", Propagation::Shared).expect("share a");
+    let pg = vfs::mount::peer_group_of("/pp-a");
+    vfs::mount::register("/pp-b", Arc::new(TestFs { root_ino: 0xB })).expect("b");
+    vfs::mount::join_peer_group("/pp-b", pg);
+    // Establish a mount UNDER /pp-a, then propagate it.
+    vfs::mount::register("/pp-a/x", Arc::new(TestFs { root_ino: 0x11 })).expect("under a");
+    let n = vfs::mount::propagate_mount("/pp-a/x");
+    assert_eq!(n, 1, "propagated to the one peer");
+    // The peer /pp-b now has the mount at the mirrored path /pp-b/x.
+    let r = vfs::mount::mount_root_at("/pp-b/x").expect("propagated to peer");
+    assert_eq!(r.ino(), 0x11, "peer mount has the source fs root");
+    // A non-shared parent does NOT propagate.
+    vfs::mount::register("/pp-priv", Arc::new(TestFs { root_ino: 0xC })).expect("priv");
+    vfs::mount::register("/pp-priv/y", Arc::new(TestFs { root_ino: 0x22 })).expect("under priv");
+    assert_eq!(vfs::mount::propagate_mount("/pp-priv/y"), 0, "private parent: no propagation");
+}

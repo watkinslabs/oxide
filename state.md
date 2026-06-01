@@ -2,7 +2,7 @@
 
 ## TL;DR
 Autonomous run, Track K2V (full Linux-faithful VFS dentry/mount rebuild).
-This session shipped 18 PRs (#1387–#1401 + F302 #1401, F303 open):
+This session shipped 20 PRs (#1387-#1402 + U4-c open):
 - **V6 resolver migration COMPLETE**: every path syscall (stat/lstat/
   statx/newfstatat/open/openat/access/chmod/chown/utime/chdir/exec/
   readlink + namei mkdir/unlink/rmdir/symlink/mknod via parent-inode
@@ -15,16 +15,13 @@ This session shipped 18 PRs (#1387–#1401 + F302 #1401, F303 open):
   the unified per-ns table; U4-a whole-subtree MS_MOVE; U4-b peer-group
   inheritance on bind.
 
-## Open: F303 (U4-b) pushing — peer-group inheritance
-`vfs::mount::{peer_group_of, join_peer_group}`; sys_mount MS_BIND makes a
-bind of a shared source a peer (same `shared:<pg>`). 12 hosted mount
-tests. After F303 merges:
+## Open: F304 (U4-c) pushing — propagation EVENT delivery
+`vfs::mount::propagate_mount(at)` replicates a mount established under a
+SHARED parent to every peer of that parent at `<peer>/<rel>`; wired into
+sys_mount after the tmpfs + bind register paths. 13 hosted mount tests
+(incl. end-to-end propagate_mount_reaches_peers). After F304 merges:
 
-## NEXT — finish U4 then the tree matches docs/16§6
-- **U4-c propagation EVENT delivery**: `vfs::mount::propagate_mount(at)` —
-  replicate a new mount to every peer of its PARENT mount (parent's
-  peer_group members get a clone at `<peer>/<rel>`); wire into sys_mount
-  after tmpfs/bind register. Hosted test is the spec (boot-inert).
+## NEXT — pivot_root, then the tree fully matches docs/16§6
 - **pivot_root**: no `sys_pivot_root` (slot 155) and no per-process root
   field exist yet — add both (Task gains a root mount ref; swap ns root +
   move old root under put_old via move_mount/register/unregister).

@@ -150,6 +150,9 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         if flags & MS_REC != 0 {
             let _ = vfs::mount::bind_submounts_rec(&source, &target);
         }
+        // Propagation: if `target`'s parent is a shared mount, replicate
+        // this bind to the parent's peers (docs/16§6).
+        let _ = vfs::mount::propagate_mount(&target);
         let _ = ns;
         return 0;
     }
@@ -211,6 +214,8 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
             let root: InodeRef = Arc::new(::fs::tmpfs::TmpfsRootInode::new(target.clone()));
             let bind: Arc<dyn FileSystem> = Arc::new(::fs::tmpfs::TmpfsFs);
             let _ = vfs::mount::register_bind(&target, bind, root);
+            // Propagation: replicate to the parent's peers if shared.
+            let _ = vfs::mount::propagate_mount(&target);
             0
         }
         // cgroup v2 unified hierarchy per `26§4`: mount the real tree
