@@ -38,7 +38,13 @@ pub unsafe fn ap_init(aff0: u32) {
         <ArmMmu as MmuOps>::map(Va(ap_va + 0x1_0000), Pa(ap_pa + 0x1_0000), device_flags(), PageSize::P4K);
         arch_irq::gic::ap_cpu_interface_enable(ap_va);
         arch_irq::gic::enable_sgi_on(ap_va, arch_irq::gic::RESCHED_SGI);
+        // Enable this AP's CNTV virtual-timer PPI (INTID 27) + arm it
+        // periodic so the AP preempts on its own tick, not just resched
+        // SGIs. The dispatcher's UART/softirq work is BSP-gated; an AP
+        // tick only reschedules. Period matches the BSP (10_000).
+        arch_irq::gic::enable_sgi_on(ap_va, 27);
         sched::live::install_default_runqueue();
+        hal_aarch64::timer::timer_periodic(10_000);
     }
 }
 
