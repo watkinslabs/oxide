@@ -260,14 +260,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // F251: bumped from 16 → 32 MiB to fit vim 9.1 + remaining headroom.
+    // Rootfs 16→32(F251)→128(F345): L2 lib tree overflowed 32 MiB (arm wedged pre-init, dropped files); 128 leaves D6 headroom.
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=32"]);
+                "bs=1M", "count=128"]);
         run(c)?;
     }
     {
