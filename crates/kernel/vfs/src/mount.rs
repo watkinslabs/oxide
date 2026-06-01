@@ -231,6 +231,59 @@ pub fn join_peer_group(mount_point: &str, pg: u64) {
     }
 }
 
+/// `pivot_root(new_root, put_old)` (`docs/16§6`): make the mount at
+/// `new_root` the namespace root and relocate the old root tree under
+/// `put_old`. Since resolution reads the shared per-ns table, rewriting
+/// mount_points here makes `/` resolve to new_root for every task in the
+/// ns. Rules (Linux): `new_root` must be a mount; `put_old` must be under
+/// `new_root` and not itself a mount (else its subtree would collide with
+/// the relocated old root). Rewrite, all in the caller's ns:
+///   - mounts at/under `new_root` → strip the `new_root` prefix (the mount
+///     exactly at `new_root` becomes `/`);
+///   - every other mount (the old tree, incl. old `/`) → reparent under
+///     `put_old`'s post-pivot path (`put_old` with `new_root` stripped).
+/// `mnt_id`/propagation/peer_group/root preserved on every moved mount.
+/// # C: O(N_mounts)
+pub fn pivot_root(new_root: &str, put_old: &str) -> KResult<()> {
+    let ns = current_ns();
+    let mut t = TABLE.lock();
+    if !t.iter().any(|m| m.mount_point == new_root && m.ns == ns) {
+        return Err(VfsError::Einval);                 // new_root not a mount
+    }
+    let under_new = put_old.strip_prefix(new_root).filter(|r| r.starts_with('/'));
+    let old_dst = match under_new {
+        Some(r) => r.to_string(),                     // e.g. "/old"
+        None => return Err(VfsError::Einval),         // put_old not under new_root
+    };
+    if t.iter().any(|m| m.mount_point == put_old && m.ns == ns) {
+        return Err(VfsError::Ebusy);                  // put_old is itself a mount
+    }
+    for i in 0..t.len() {
+        let m = &t[i];
+        if m.ns != ns { continue; }
+        let mp = m.mount_point.as_str();
+        let new_mp = if mp == new_root {
+            String::from("/")
+        } else if let Some(rel) = mp.strip_prefix(new_root).filter(|r| r.starts_with('/')) {
+            rel.to_string()                            // new tree: drop new_root prefix
+        } else if mp == "/" {
+            old_dst.clone()                            // old root → put_old's new path
+        } else {
+            alloc::format!("{}{}", old_dst, mp)        // old tree under put_old
+        };
+        t[i] = Arc::new(Mount {
+            fs: m.fs.clone(),
+            mount_point: new_mp,
+            root: m.root.clone(),
+            mnt_id: m.mnt_id,
+            propagation: AtomicU8::new(m.propagation.load(Ordering::Acquire)),
+            peer_group: AtomicU64::new(m.peer_group.load(Ordering::Acquire)),
+            ns: m.ns,
+        });
+    }
+    Ok(())
+}
+
 /// `umount`: remove the mount rooted exactly at `mount_point` in the
 /// caller's namespace (`docs/16§6`). Returns the count removed (0 if
 /// none — e.g. `mount_point` isn't a mount in this ns). Bind mounts and
