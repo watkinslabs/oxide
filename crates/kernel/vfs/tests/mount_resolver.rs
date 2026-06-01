@@ -59,3 +59,27 @@ fn resolver_falls_back_to_whole_path_lookup() {
     let r = vfs::mount::mount_root_at("/y").expect("cross into /y via lookup");
     assert_eq!(r.ino(), 0x5678);
 }
+
+// K2V V7: MS_MOVE relocates a mount's mount_point in place, preserving
+// mnt_id + propagation; the new parent_id falls out of the prefix
+// recompute. Verified over the real mount table, no QEMU.
+#[test]
+fn move_mount_relocates_preserving_mnt_id() {
+    vfs::mount::register("/mv-src", Arc::new(TestFs { root_ino: 0xABCD })).expect("register");
+    // Capture the mnt_id assigned at register time.
+    let before = vfs::mount::snapshot();
+    let id = before.iter().find(|m| m.mount_point == "/mv-src").expect("present").mnt_id;
+    // Move it.
+    vfs::mount::move_mount("/mv-src", "/mv-dst").expect("move");
+    // Old point is gone, new point resolves to the same fs root + mnt_id.
+    assert!(vfs::mount::mount_root_at("/mv-src").is_none(), "old point cleared");
+    let r = vfs::mount::mount_root_at("/mv-dst").expect("cross into new point");
+    assert_eq!(r.ino(), 0xABCD, "same fs root after move");
+    let after = vfs::mount::snapshot();
+    let m = after.iter().find(|m| m.mount_point == "/mv-dst").expect("moved present");
+    assert_eq!(m.mnt_id, id, "mnt_id stable across MS_MOVE");
+    // Moving a non-existent mount → Einval; onto an occupied point → Ebusy.
+    assert!(matches!(vfs::mount::move_mount("/nope-mv", "/x2"), Err(VfsError::Einval)));
+    vfs::mount::register("/occupied", Arc::new(TestFs { root_ino: 1 })).expect("register2");
+    assert!(matches!(vfs::mount::move_mount("/mv-dst", "/occupied"), Err(VfsError::Ebusy)));
+}
