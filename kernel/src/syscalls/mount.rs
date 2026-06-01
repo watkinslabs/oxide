@@ -137,9 +137,14 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
             Some(i) => i,
             None    => return -(Errno::Enoent.as_i32() as i64),
         };
+        // Peer-group inheritance (docs/16§6): binding a SHARED source
+        // makes the new mount a peer of the source's group (same shared:N,
+        // future propagation events reach it). Captured before the bind.
+        let src_pg = vfs::mount::peer_group_of(&source);
         let bind = Arc::new(BindFs { source: source.clone(), target: target.clone() });
         // Global mount table (per-NS bind rides the per-ns mount tree).
         let _ = vfs::mount::register_bind(&target, bind, root);
+        vfs::mount::join_peer_group(&target, src_pg);
         // MS_REC: also clone every mount nested under `source` to the
         // matching path under `target` (recursive bind, docs/16§6).
         if flags & MS_REC != 0 {
