@@ -51,8 +51,12 @@ fn dyn_probe(cc: &std::path::Path, repo: &std::path::Path, arch: &str,
     c.args(["-O2", "-fno-stack-protector",
             "-I", root.join("include").to_str().unwrap(),
             "-L", root.join("lib").to_str().unwrap(),
-            "-Wl,-rpath,/usr/lib",
-            "-o", out.to_str().unwrap(), src.to_str().unwrap(), lflag]);
+            "-Wl,-rpath,/usr/lib"]);
+    // Some headers (e.g. libseccomp's seccomp.h → asm/unistd.h) need kernel
+    // UAPI. The aarch64 cross sysroot bundles them; x86 musl-gcc doesn't, so
+    // append the host kernel-headers at lowest priority (musl libc wins).
+    if arch == "x86_64" { c.args(["-idirafter", "/usr/include"]); }
+    c.args(["-o", out.to_str().unwrap(), src.to_str().unwrap(), lflag]);
     run(c)
 }
 
@@ -239,6 +243,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     dyn_probe(&cc, &repo, &arch, &user_out, "lz4",    "lz4_probe",    "-llz4")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "libxcrypt", "libxcrypt_probe", "-lcrypt")?;
     dyn_probe(&cc, &repo, &arch, &user_out, "pcre2", "pcre2_probe", "-lpcre2-8")?;
+    dyn_probe(&cc, &repo, &arch, &user_out, "libseccomp", "libseccomp_probe", "-lseccomp")?;
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
     // /sbin/init busybox hardlink; the kernel reads it from ext4 at
@@ -411,6 +416,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("lz4_probe"), "/bin/lz4_probe")?;
     put(&user("libxcrypt_probe"), "/bin/libxcrypt_probe")?;
     put(&user("pcre2_probe"), "/bin/pcre2_probe")?;
+    put(&user("libseccomp_probe"), "/bin/libseccomp_probe")?;
 
     // F123: dhcpcd 10.3.2 static-musl → /sbin/dhcpcd.
     let dhcpcd = if arch == "aarch64" {
@@ -769,30 +775,22 @@ session    required   pam_unix.so
     ln_via_debugfs("/usr/lib/libpam_misc.so.0.82.1", "/usr/lib/libpam_misc.so")?;
     // L2: libcap (first cross-built systemd shared dep). Real libcap.so →
     // /usr/lib + soname/linker-name symlinks; libcap_probe links it.
-    let cap_lib = repo.join(format!("vendor/libcap/install-{arch}/lib"));
-    put(&cap_lib.join("libcap.so.2.69"), "/usr/lib/libcap.so.2.69")?;
-    ln_via_debugfs("/usr/lib/libcap.so.2.69", "/usr/lib/libcap.so.2")?;
-    ln_via_debugfs("/usr/lib/libcap.so.2.69", "/usr/lib/libcap.so")?;
-    // L2: libzstd (systemd journal compression).
-    let zstd_lib = repo.join(format!("vendor/zstd/install-{arch}/lib"));
-    put(&zstd_lib.join("libzstd.so.1.5.6"), "/usr/lib/libzstd.so.1.5.6")?;
-    ln_via_debugfs("/usr/lib/libzstd.so.1.5.6", "/usr/lib/libzstd.so.1")?;
-    ln_via_debugfs("/usr/lib/libzstd.so.1.5.6", "/usr/lib/libzstd.so")?;
-    // L2: liblz4 (systemd compression).
-    let lz4_lib = repo.join(format!("vendor/lz4/install-{arch}/lib"));
-    put(&lz4_lib.join("liblz4.so.1.9.4"), "/usr/lib/liblz4.so.1.9.4")?;
-    ln_via_debugfs("/usr/lib/liblz4.so.1.9.4", "/usr/lib/liblz4.so.1")?;
-    ln_via_debugfs("/usr/lib/liblz4.so.1.9.4", "/usr/lib/liblz4.so")?;
-    // L2: libxcrypt (real crypt() for /etc/shadow — pam_unix/shadow).
-    let xc_lib = repo.join(format!("vendor/libxcrypt/install-{arch}/lib"));
-    put(&xc_lib.join("libcrypt.so.2.0.0"), "/usr/lib/libcrypt.so.2.0.0")?;
-    ln_via_debugfs("/usr/lib/libcrypt.so.2.0.0", "/usr/lib/libcrypt.so.2")?;
-    ln_via_debugfs("/usr/lib/libcrypt.so.2.0.0", "/usr/lib/libcrypt.so")?;
-    // L2: libpcre2-8 (systemd journal pattern matching).
-    let p2_lib = repo.join(format!("vendor/pcre2/install-{arch}/lib"));
-    put(&p2_lib.join("libpcre2-8.so.0.13.0"), "/usr/lib/libpcre2-8.so.0.13.0")?;
-    ln_via_debugfs("/usr/lib/libpcre2-8.so.0.13.0", "/usr/lib/libpcre2-8.so.0")?;
-    ln_via_debugfs("/usr/lib/libpcre2-8.so.0.13.0", "/usr/lib/libpcre2-8.so")?;
+    // L2 shared libs → /usr/lib. `stage_so(vendor, real, soname, linker)`
+    // puts vendor/<vendor>/install-<arch>/lib/<real> then symlinks the
+    // soname (.so.N) + linker name (.so). Each is one systemd dependency.
+    let stage_so = |vendor: &str, real: &str, soname: &str, linker: &str| -> Result<(), u8> {
+        let dir = repo.join(format!("vendor/{vendor}/install-{arch}/lib"));
+        put(&dir.join(real), &format!("/usr/lib/{real}"))?;
+        ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?;
+        ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{linker}"))?;
+        Ok(())
+    };
+    stage_so("libcap",     "libcap.so.2.69",      "libcap.so.2",      "libcap.so")?;
+    stage_so("zstd",       "libzstd.so.1.5.6",    "libzstd.so.1",     "libzstd.so")?;
+    stage_so("lz4",        "liblz4.so.1.9.4",     "liblz4.so.1",      "liblz4.so")?;
+    stage_so("libxcrypt",  "libcrypt.so.2.0.0",   "libcrypt.so.2",    "libcrypt.so")?;
+    stage_so("pcre2",      "libpcre2-8.so.0.13.0","libpcre2-8.so.0",  "libpcre2-8.so")?;
+    stage_so("libseccomp", "libseccomp.so.2.5.5", "libseccomp.so.2",  "libseccomp.so")?;
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
