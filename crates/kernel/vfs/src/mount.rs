@@ -162,6 +162,23 @@ pub fn mount_root_at(abs: &str) -> Option<InodeRef> {
     m.fs.root().or_else(|| m.fs.lookup(abs))
 }
 
+/// Whole-path in-mount resolver for the dentry walk's delegation path
+/// (`docs/16§3`): resolve a full absolute path through its owning
+/// mount's `lookup`. Used when a per-component `Inode::lookup` can't
+/// descend because the filesystem there resolves whole-path (procfs).
+/// # C: O(N_mounts) + O(FS-impl)
+pub fn mount_whole_path(abs: &str) -> Option<InodeRef> {
+    lookup(abs).ok()
+}
+
+/// Install both path-walk hooks (`mount_root_at` crossing +
+/// `mount_whole_path` delegation) into `vfs::namei`. Called once at boot.
+/// # C: O(1)
+pub fn install_resolvers() {
+    crate::namei::set_mount_resolver(mount_root_at);
+    crate::namei::set_mount_whole_path(mount_whole_path);
+}
+
 /// Snapshot the mount table for `/proc/mounts`.
 /// # C: O(N_mounts)
 pub fn snapshot() -> Vec<Arc<Mount>> {
