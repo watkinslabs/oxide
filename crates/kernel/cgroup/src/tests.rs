@@ -65,6 +65,26 @@ fn pids_limit_enforced_across_subtree() {
     assert!(!t.fork_would_exceed_pids(c));
 }
 
+// K1b: the pids controller counts THREADS too (not just process leaders).
+#[test]
+fn pids_limit_counts_threads() {
+    let mut t = Tree::new();
+    t.mount_root();
+    t.write_subtree_control(ROOT, "+pids").unwrap();
+    let (c, _) = t.create(ROOT, "svc").unwrap();
+    t.write_file(c, "pids.max", "3").unwrap();
+    t.add_proc(c, 200);              // leader → 1 task
+    t.add_thread(200, 201);          // thread → 2 tasks
+    assert!(!t.fork_would_exceed_pids(c)); // 2 -> 3 ok
+    t.add_thread(200, 202);          // 3 tasks
+    assert!(t.fork_would_exceed_pids(c));  // 3 -> 4 exceeds (threads counted)
+    // pids.current reflects every task.
+    assert_eq!(s(&t.read_file(c, "pids.current").unwrap()), "3\n");
+    t.remove_thread(202);
+    assert!(!t.fork_would_exceed_pids(c));
+    assert_eq!(s(&t.read_file(c, "pids.current").unwrap()), "2\n");
+}
+
 #[test]
 fn procs_attach_events_and_proc_path() {
     let mut t = Tree::new();
