@@ -91,6 +91,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/fsmount_probe/fsmount_probe",     "userspace/fsmount_probe/fsmount_probe.c"),
         ("userspace/memfd_seal_probe/memfd_seal_probe", "userspace/memfd_seal_probe/memfd_seal_probe.c"),
         ("userspace/uevent_probe/uevent_probe",       "userspace/uevent_probe/uevent_probe.c"),
+        ("userspace/rtlink_probe/rtlink_probe",       "userspace/rtlink_probe/rtlink_probe.c"),
         ("userspace/dev_smoke/dev_smoke",             "userspace/dev_smoke/dev_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
@@ -350,6 +351,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     put(&user("fsmount_probe"), "/bin/fsmount_probe")?;
     put(&user("memfd_seal_probe"), "/bin/memfd_seal_probe")?;
     put(&user("uevent_probe"), "/bin/uevent_probe")?;
+    put(&user("rtlink_probe"), "/bin/rtlink_probe")?;
     put(&user("dev_smoke"), "/bin/dev_smoke")?;
     put(&user("vim_smoke"),      "/bin/vim_smoke")?;
     put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
@@ -854,6 +856,8 @@ echo post-fsmount-probe rv=$?
 echo post-memfd-seal-probe rv=$?
 [ -x /bin/uevent_probe ] && /bin/uevent_probe
 echo post-uevent-probe rv=$?
+[ -x /bin/rtlink_probe ] && /bin/rtlink_probe
+echo post-rtlink-probe rv=$?
 ")?,
         "/etc/init.d/oxide-smokes")?;
     dbg("sif /etc/init.d/oxide-smokes mode 0100755")?;
