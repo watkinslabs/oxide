@@ -475,6 +475,8 @@ libidn2/libidn2-2.3.7.tar.gz
 # systemd 259 — Track D6: init/service manager (meson cross-build).
 !systemd/
 !systemd/build.sh
+!systemd/gen-pc.sh
+!systemd/cross-*.txt
 !systemd/cross-x86_64.txt
 !systemd/cross-aarch64.txt
 !systemd/install-x86_64/
