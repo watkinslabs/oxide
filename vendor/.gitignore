@@ -417,3 +417,21 @@ libgcrypt/libgcrypt-1.10.3/
 libgcrypt/libgcrypt-1.10.3.tar.bz2
 libgcrypt/gpge-prefix-x86_64/
 libgcrypt/gpge-prefix-aarch64/
+# attr 2.5.2 — Track L2: acl's dep / xattr handling.
+!attr/
+!attr/build.sh
+!attr/install-x86_64/
+!attr/install-x86_64/**
+!attr/install-aarch64/
+!attr/install-aarch64/**
+attr/attr-2.5.2/
+attr/attr-2.5.2.tar.gz
+# acl 2.3.2 — Track L2: systemd journal file ACLs.
+!acl/
+!acl/build.sh
+!acl/install-x86_64/
+!acl/install-x86_64/**
+!acl/install-aarch64/
+!acl/install-aarch64/**
+acl/acl-2.3.2/
+acl/acl-2.3.2.tar.gz

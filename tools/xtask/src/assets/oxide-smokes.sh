@@ -57,6 +57,12 @@ echo post-libgpgerror_probe rv=$?
 echo pre-libgcrypt_probe
 /bin/libgcrypt_probe
 echo post-libgcrypt_probe rv=$?
+echo pre-attr_probe
+/bin/attr_probe
+echo post-attr_probe rv=$?
+echo pre-acl_probe
+/bin/acl_probe
+echo post-acl_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?
