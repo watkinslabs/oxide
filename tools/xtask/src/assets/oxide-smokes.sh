@@ -66,6 +66,9 @@ echo post-acl_probe rv=$?
 echo pre-kmod_probe
 /bin/kmod_probe
 echo post-kmod_probe rv=$?
+echo pre-openssl_probe
+/bin/openssl_probe
+echo post-openssl_probe rv=$?
 echo pre-cgroup-smoke
 [ -x /bin/cgroup_smoke ] && /bin/cgroup_smoke
 echo post-cgroup-smoke rv=$?

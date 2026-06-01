@@ -787,7 +787,11 @@ session    required   pam_unix.so
     let stage_so = |vendor: &str, real: &str, soname: &str, linker: &str| -> Result<(), u8> {
         let dir = repo.join(format!("vendor/{vendor}/install-{arch}/lib"));
         put(&dir.join(real), &format!("/usr/lib/{real}"))?;
-        ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?;
+        // Some libs (e.g. openssl) name the real .so == its SONAME
+        // (libssl.so.3), so skip the self-link in that case.
+        if soname != real {
+            ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{soname}"))?;
+        }
         ln_via_debugfs(&format!("/usr/lib/{real}"), &format!("/usr/lib/{linker}"))?;
         Ok(())
     };
