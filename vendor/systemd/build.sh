@@ -122,7 +122,51 @@ EOF
   # public sd-*.h headers for the probe.
   mkdir -p "$install/include/systemd"
   cp "$SRC"/src/systemd/*.h "$install/include/systemd/" 2>/dev/null || true
-  echo "  → $install: libsystemd-shared + libsystemd + libsystemd-core + /lib/systemd/systemd + systemctl"
+  # F350 #5: minimal systemd unit tree so PID1 has a default.target to load
+  # (else it wedges right after unit-type enumeration). Uses systemd's own
+  # static .target units + a custom default.target that pulls the chain and
+  # a console-shell (systemd debug-shell pattern, /bin/sh on /dev/console)
+  # for first light. ninja/meson install can't be used (rebuilds broken
+  # tests / installs unbuilt udevadm), so stage the static targets directly.
+  local sysd="$install/usr/lib/systemd/system"
+  mkdir -p "$sysd"
+  for t in sysinit.target basic.target multi-user.target getty.target \
+           sockets.target paths.target slices.target timers.target \
+           local-fs.target local-fs-pre.target swap.target getty-pre.target \
+           graphical.target rescue.target emergency.target; do
+    cp -L "$SRC/units/$t" "$sysd/$t" 2>/dev/null || true
+  done
+  cat > "$sysd/console-shell.service" <<'UNIT'
+[Unit]
+Description=Console Shell (oxide first light)
+Documentation=man:systemd-debug-generator(8)
+DefaultDependencies=no
+ConditionPathExists=/dev/console
+[Service]
+Environment=TERM=linux
+ExecStart=/bin/sh
+Restart=always
+RestartSec=1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+TTYReset=yes
+KillMode=process
+IgnoreSIGPIPE=no
+[Install]
+WantedBy=multi-user.target
+UNIT
+  cat > "$sysd/default.target" <<'UNIT'
+[Unit]
+Description=Oxide Default Target
+Documentation=man:systemd.special(7)
+Requires=basic.target
+Wants=console-shell.service
+After=basic.target
+AllowIsolate=yes
+UNIT
+  echo "  → $install: libsystemd-shared + libsystemd + libsystemd-core + /lib/systemd/systemd + systemd-executor + systemctl + unit tree"
 }
 
 # x86: musl-gcc + -idirafter for kernel UAPI. arm: cross gcc, sysroot has UAPI.
