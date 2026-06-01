@@ -65,6 +65,14 @@ impl Inode for TimerfdInode {
     fn file_type(&self) -> FileType { FileType::CharDev }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
+    /// POLLIN only once the timer has expired. The default always-ready
+    /// poll made systemd's sd-event (which arms timerfds) busy-loop
+    /// epoll_pwait forever — see signalfd::poll.
+    /// # C: O(1)
+    fn poll(&self) -> u32 {
+        let expiry = self.expiry_ns.load(Ordering::Acquire);
+        if expiry != 0 && monotonic_ns() >= expiry { vfs::POLL_IN } else { 0 }
+    }
     fn read(&self, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(VfsError::Einval); }
         let now = monotonic_ns();

@@ -39,7 +39,20 @@ const EPOLL_DATA_OFF: usize = 4;
 const EPOLL_DATA_OFF: usize = 8;
 
 #[derive(Clone, Copy)]
-pub struct EpollEntry { pub fd: i32, pub events: u32, pub data: u64 }
+pub struct EpollEntry {
+    pub fd: i32,
+    pub events: u32,
+    pub data: u64,
+    /// EPOLLET edge tracking: ready bits already edge-delivered and still
+    /// ready. A level-ready fd (e.g. /proc/self/mountinfo, always POLLIN)
+    /// registered with EPOLLET must fire only on a not-ready→ready edge,
+    /// once — not every scan. Without this, systemd's sd-event (which uses
+    /// EPOLLET) busy-looped epoll_pwait forever on always-ready fds.
+    pub et_seen: u32,
+}
+
+/// EPOLLET — edge-triggered (Linux `EPOLLET` = 1<<31).
+const EPOLLET: u32 = 0x8000_0000;
 
 pub struct EpollInode {
     pub id:      u32,
@@ -187,7 +200,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             if list.iter().any(|e| e.fd == fd) {
                 return -(Errno::Eexist.as_i32() as i64);
             }
-            list.push(EpollEntry { fd, events, data });
+            list.push(EpollEntry { fd, events, data, et_seen: 0 });
             // F181: targeted-wake subscribe if the inode supports it.
             #[cfg(target_os = "oxide-kernel")]
             if let Some(inode) = target_inode.as_ref() {
@@ -201,7 +214,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
         }
         EPOLL_CTL_MOD => {
             for e in list.iter_mut() {
-                if e.fd == fd { e.events = events; e.data = data; return 0; }
+                if e.fd == fd { e.events = events; e.data = data; e.et_seen = 0; return 0; }
             }
             -(Errno::Enoent.as_i32() as i64)
         }
@@ -310,18 +323,37 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
 /// ready events into the user-supplied buffer; returns the count.
 /// # C: O(N_entries)
 fn scan_once(ep: &Arc<EpollInode>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: i32) -> i32 {
-    let snapshot: Vec<EpollEntry> = ep.entries.lock().clone();
+    // Compute readiness + apply EPOLLET edge tracking under the lock, then
+    // write results to user memory after releasing it (no user writes while
+    // holding the spinlock). For an EPOLLET entry we report only bits that
+    // newly became ready since the last edge — a perpetually-ready fd fires
+    // once, not every scan (the fix for systemd's epoll_pwait busy-loop).
+    let mut reports: Vec<(u32, u64)> = Vec::new();
+    {
+        let mut list = ep.entries.lock();
+        for e in list.iter_mut() {
+            if reports.len() as i32 >= maxevents { break; }
+            let f = match fdt.get(e.fd) { Ok(f) => f, Err(_) => continue };
+            let ready = f.inode().poll() & e.events;
+            if e.events & EPOLLET != 0 {
+                // Drop edges that went not-ready so a later re-ready re-fires.
+                e.et_seen &= ready;
+                let new_edges = ready & !e.et_seen;
+                if new_edges == 0 { continue; }
+                e.et_seen |= ready;
+            } else if ready == 0 {
+                continue;
+            }
+            reports.push((ready, e.data));
+        }
+    }
     let mut out = 0i32;
-    for e in snapshot.iter() {
-        if out >= maxevents { break; }
-        let f = match fdt.get(e.fd) { Ok(f) => f, Err(_) => continue };
-        let ready = f.inode().poll() & e.events;
-        if ready == 0 { continue; }
+    for (revents, data) in reports.iter() {
         let dst = evp + (out as u64) * (EPOLL_EVENT_SIZE as u64);
         // SAFETY: evp validated by caller; per-record stride within user buffer sized for maxevents records; CPL=0 writes through caller's AS.
         unsafe {
-            core::ptr::write_volatile(dst as *mut u32, ready);
-            core::ptr::write_volatile((dst + EPOLL_DATA_OFF as u64) as *mut u64, e.data);
+            core::ptr::write_volatile(dst as *mut u32, *revents);
+            core::ptr::write_volatile((dst + EPOLL_DATA_OFF as u64) as *mut u64, *data);
         }
         out += 1;
     }
