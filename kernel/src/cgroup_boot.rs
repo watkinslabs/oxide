@@ -30,7 +30,24 @@ pub fn cgroup_kill_hook(_pid: u64, _sig: i32) {}
 pub fn install_hooks() {
     cgroup::set_signal_hook(cgroup_kill_hook);
     cgroup::set_freeze_hook(cgroup_freeze_hook);
+    cgroup::set_weight_hook(cgroup_weight_hook);
 }
+
+/// cgroup.weight delivery hook: set the live CFS load weight of the task
+/// whose global tid is `pid`. Registered via `cgroup::set_weight_hook`.
+/// # C: O(N) registry lookup
+#[cfg(target_os = "oxide-kernel")]
+pub fn cgroup_weight_hook(pid: u64, weight: u32) {
+    use core::sync::atomic::Ordering;
+    if let Some(t) = sched::live::registry::lookup_in_ns(0, pid as u32) {
+        t.load_weight.store(weight, Ordering::Release);
+    }
+}
+
+/// Host-build no-op for `cgroup_weight_hook`.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn cgroup_weight_hook(_pid: u64, _weight: u32) {}
 
 /// Host-build no-op for `install_hooks`.
 /// # C: O(1)
