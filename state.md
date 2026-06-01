@@ -20,8 +20,23 @@ Inode layer for host (boot bits ROOTFS/init/ImageDisk stay kernel-only).
 THIS IS THE DEV LOOP for V4–V7 — extend walk.img + walk_image.rs to
 verify each stage before any QEMU boot.
 
-## V6 done. V7 features done. Mount-table UNIFICATION: U2 per-ns tree done
-U2-b (F299, branch): per-ns mount resolution + copy-on-unshare (the real
+## V6 done. V7 features done. UNIFICATION: U2 per-ns + U3-a umount done
+U3-a (F300, branch): `vfs::mount::unregister(mp)` — ns-scoped detach of a
+TABLE mount. Wired into sys_umount2 (removes from BOTH the unified table
+AND the devfs registry; succeed if either had it). FIXES a real bug: umount
+of a BIND mount (which lives in TABLE) was a silent no-op before — it kept
+resolving forever. Hosted test unregister_detaches_table_mount (10 tests).
+Both arches build + spec-lint clean.
+NEXT U3-b: migrate tmpfs sys_mount off `devfs::register_in_ns` into the
+unified TABLE via register_bind(target, TmpfsFs, TmpfsRootInode::new(target))
+— BUT first AUDIT every `crate::devfs::lookup` caller (namei B47 routing,
+BindFs fallback, open/stat fallbacks) since tmpfs mount-points currently
+resolve through the registry; the registry stays as the tmpfs FILE store
+(TmpfsRootInode.lookup keys files by path) but the MOUNT goes in TABLE.
+Then drop the B47 /var,/tmp,/run→ext4 routing in namei.rs. THEN U4
+(propagation events, pivot_root, submount-move).
+## (history) U2-b
+U2-b (F299 #1398): per-ns mount resolution + copy-on-unshare (the real
 Linux model, NOT an ns-0-fallback hack). resolve_mount/parent_id_of/
 snapshot + the mutators (register/register_bind Eexist, move_mount,
 set_propagation, bind_submounts_rec) now scope STRICTLY to `current_ns()`.
