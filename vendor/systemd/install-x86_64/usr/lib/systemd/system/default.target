@@ -1,0 +1,7 @@
+[Unit]
+Description=Oxide Default Target
+Documentation=man:systemd.special(7)
+Requires=basic.target
+Wants=console-shell.service
+After=basic.target
+AllowIsolate=yes

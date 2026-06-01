@@ -795,8 +795,7 @@ session    required   pam_unix.so
     for (vendor, real, soname, linker) in l2_deps::L2_LIBS {
         stage_so(vendor, real, soname, linker)?;
     }
-    dbg("mkdir /lib/systemd")?; // systemd PID1
-    dbg("mkdir /usr/lib/systemd")?; // systemd-executor pin path
+    for d in ["/lib/systemd", "/usr/lib/systemd", "/usr/lib/systemd/system", "/etc/systemd", "/etc/systemd/system"] { dbg(&format!("mkdir {d}"))?; }
     for (rel, tgt) in l2_deps::SYSTEMD_STAGE { put(&repo.join(format!("vendor/systemd/install-{arch}/{rel}")), tgt)?; }
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
