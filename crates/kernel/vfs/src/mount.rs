@@ -151,6 +151,59 @@ pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef)
     Ok(())
 }
 
+/// Propagation event delivery (`docs/16§6`): replicate the mount just
+/// created at `at` to every peer of its PARENT mount. If the parent mount
+/// is in peer group P, each OTHER mount in P (same ns) receives a clone of
+/// `at` at the mirrored relative path `<peer>/<rel>` — what makes a mount
+/// established under a shared directory appear in all its peers (systemd
+/// `PrivateTmp=`, container propagation). Returns the count propagated;
+/// the clones are independent private mounts (own mnt_id). No-op when the
+/// parent isn't shared.
+/// # C: O(N_mounts)
+pub fn propagate_mount(at: &str) -> usize {
+    let ns = current_ns();
+    let (fs, root, targets) = {
+        let t = TABLE.lock();
+        let newm = match t.iter().find(|m| m.mount_point == at && m.ns == ns) {
+            Some(m) => m.clone(), None => return 0,
+        };
+        // Parent = longest proper-prefix mount in this ns.
+        let mut parent: Option<&Arc<Mount>> = None;
+        for m in t.iter() {
+            if m.ns != ns { continue; }
+            let mp = m.mount_point.as_str();
+            if mp == at { continue; }
+            let is_pre = mp == "/"
+                || (at.starts_with(mp) && at.as_bytes().get(mp.len()) == Some(&b'/'));
+            if !is_pre { continue; }
+            match parent {
+                None => parent = Some(m),
+                Some(c) if mp.len() > c.mount_point.len() => parent = Some(m),
+                _ => {}
+            }
+        }
+        let parent = match parent { Some(p) => p, None => return 0 };
+        let pg = parent.peer_group.load(Ordering::Acquire);
+        if pg == 0 { return 0; }
+        let rel = at[parent.mount_point.len()..].to_string();   // e.g. "/x"
+        let root = match newm.root.clone().or_else(|| newm.fs.root()) {
+            Some(r) => r, None => return 0,
+        };
+        let targets: Vec<String> = t.iter()
+            .filter(|m| m.ns == ns
+                     && m.peer_group.load(Ordering::Acquire) == pg
+                     && m.mount_point != parent.mount_point)
+            .map(|m| alloc::format!("{}{}", m.mount_point, rel))
+            .collect();
+        (newm.fs.clone(), root, targets)
+    };
+    let mut n = 0;
+    for dst in targets {
+        if register_bind(&dst, fs.clone(), root.clone()).is_ok() { n += 1; }
+    }
+    n
+}
+
 /// Peer group id of the mount rooted exactly at `mount_point` in the
 /// caller's ns, or 0 if none / not a mount (`docs/16§6`).
 /// # C: O(N_mounts)
