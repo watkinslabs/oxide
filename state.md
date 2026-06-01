@@ -25,8 +25,22 @@ is COMPLETE**: per-ns trees + copy-on-unshare, bind-as-clone, full
 MS_MOVE(+subtree), MS_REC, peer groups + inheritance + propagation events,
 unified tmpfs, umount-detach, pivot_root.
 
-## DONE this session: K2V (mount tree) + K2/K3/V7 marked done (#1405) +
-## chroot-confines-in-path_lookup (F306 pushing).
+## Open: F308 (K6 new mount API) pushing.
+fsopen/fsconfig/fsmount/move_mount now REAL (were memfd/EOPNOTSUPP stubs):
+`kernel/src/syscalls/fsmount.rs` — fd-backed FsContextInode (fsopen tags
+fstype, fsconfig accumulates `source`) → MountObjectInode (fsmount,
+detached) → move_mount attaches via vfs::mount::register_bind (tmpfs/ramfs)
+or move_mount (existing mount). Dispatch wired both arches (slots already
+arm-mapped). fspick/open_tree/mount_setattr still stubs (follow-up).
+Verify: `/bin/fsmount_probe` (userspace/fsmount_probe.c) does the full
+fsopen→fsconfig→fsmount→move_mount(tmpfs@/run/k6mnt)+write/read flow, runs
+in rcS (oxide-smokes), prints PASS to serial. Boot-gate confirms no crash;
+PASS line is in the boot serial (a boot-smoke-login KEEP_LOG run confirms;
+can't run qemu directly — Bash tool SIGKILLs it).
+
+## (history) chroot + K2V done
+## DONE earlier: K2V (mount tree) + K2/K3/V7 marked done (#1405) +
+## chroot-confines-in-path_lookup (#1406).
 F306: `pathresolve::resolution_root()` resolves `task.root` to a dentry and
 uses it as the path_lookup start+root with RESOLVE_BENEATH when chrooted —
 so chroot now actually confines (absolute paths restart at the jail, `..`
