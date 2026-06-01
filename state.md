@@ -1,30 +1,55 @@
 # Session hand-off
 
 ## Headline
-**L2 systemd shared-lib tree COMPLETE (17 deps).** Starting **Track D6 — systemd**.
-Branch: `main` clean @ #1455. Next branch: D6 work.
+L2 shared-lib tree COMPLETE (17 deps) + **arm openssl unblocked** (F347 #1459, catchable
+SIGILL). Now in **Track D6 — systemd** (kickoff done: fetched + toolchain validated).
+Branch: `main` clean @ #1459.
 
 ## Done this session (merged)
-- B51 #1447 — bounded-retry boot gate (`tools/boot-smoke.sh`, OXIDE_SMOKE_ATTEMPTS=3) for the ~25% SMP getty/login flake; trimmed redundant CAT boot-smoke iter.
-- L2 deps (C40 `tools/xtask/src/l2_deps.rs` data-driven table — adding a dep = 1 row in L2_LIBS + 1 in L2_PROBES + build.sh/fetch/probe/rcS/gitignore):
-  expat #1448, dbus #1449, libgpg-error #1450, libgcrypt #1451, attr+acl #1452, kmod #1453, openssl #1454, libunistring+libidn2 #1455.
-  Earlier-merged: libcap, libxcrypt, util-linux libs, libseccomp, zstd, lz4, pcre2.
-- F345 also bumped rootfs 32→128 MiB (`main.rs` count=128) + disk/ESP 64→512 MiB (`image_qemu.rs` count=512): the L2 libs overflowed the embedded-rootfs kernel/ESP (rootfs is `include_bytes!`'d into the kernel → bigger rootfs = bigger kernel = bigger ESP need).
-- `dyn_probe` adds `-rpath-link` for every L2 vendor libdir (cross-vendor transitive DT_NEEDED on strict arm ld).
+- B51 #1447 bounded-retry boot gate; L2 deps #1448-1455 (expat,dbus,libgpg-error,libgcrypt,
+  attr,acl,kmod,openssl,libunistring,libidn2) via the C40 `l2_deps` table; rootfs 32→128 MiB
+  + disk/ESP 64→512 MiB (#1454); dyn_probe cross-vendor -rpath-link.
+- **F347 #1459 — aarch64 catchable synchronous-fault SIGILL.** arm EL0 EC=0 undefined-instr
+  → `oxide_undef_save_block` (vbar.rs, mirrors softstep) → `oxide_arm_undef_handler`
+  (fs/ptrace.rs) → `sig_dispatch::deliver` catchable SIGILL. Boot-verified: openssl_probe
+  rv=0 on arm + login. openssl_probe un-gated (both arches). Resolved the sole D6-on-arm blocker.
 
-## Open work — D6 systemd (do in order)
-1. **DONE (F347): aarch64 catchable synchronous-fault SIGILL** — arm EL0 EC=0 undefined-instruction → `oxide_undef_save_block`→`oxide_arm_undef_handler`→`sig_dispatch::deliver` catchable SIGILL. openssl loads on arm (`openssl_probe rv=0` + login, boot-verified); openssl_probe un-gated both arches. Follow-up: x86 #UD parity mirror (x86 openssl already worked). REMAINING old context below:
-   **(superseded)** fix aarch64 synchronous-fault catchable signals (TASKS.md BLOCKER row — ROOT-CAUSED this session). The arm "libcrypto load hang" = openssl `OPENSSL_cpuid_setup` (.init_array) SIGILL-probes armv8.2 crypto insns cortex-a72 lacks → EL0 ESR.EC=0 undefined-instruction → `user_as.rs:526 user_fault_handler` doesn't handle EC=0 → vbar HALTS → hang. Fix: (1) handle EL0 EC=0 undefined insn; (2) deliver it as a CATCHABLE SIGILL (invoke registered handler + sigreturn), NOT terminate — wire synchronous faults through the existing `sys_kill` handler-dispatch path (P3-66) instead of `sigsegv_terminate_arm`. Mirror x86. This unblocks openssl (→ systemd) on arm. (qemu-mcp can't repro interactively — arm TCG+gdb boot >120s tool timeout, only reaches UEFI; use kernel klog / a targeted EC=0 trace instead.)
-2. Vendor systemd 259: `tools/fetch-systemd.sh` + `vendor/systemd/build.sh` meson cross `-Dlibc=musl`, cross file for aarch64, disable optional dlopen feats (tpm2/libfido2/pwquality/p11kit/libcryptsetup/bpf-framework/microhttpd/qrencode/gnutls=false), enable kmod/seccomp/openssl/gcrypt/blkid/acl, pkg-config → `vendor/*/install-<arch>`, `-idirafter /usr/include` (x86 UAPI). Land incrementally (libsystemd-shared → pid1 → units).
-3. systemd is BIG → rootfs WILL exceed 128 MiB → bump rootfs(`main.rs`)+ESP(`image_qemu.rs`) together. Embedded-rootfs grows the kernel + slows arm TCG boot → if arm boot exceeds the 300s smoke timeout, bump the arm timeout (`.githooks/pre-push`) OR move rootfs off `include_bytes!` onto the attached virtio-blk disk (the proper scaling fix).
+## Open work — D6 systemd (in order)
+**Kickoff DONE:** systemd 259 fetched to `vendor/systemd/systemd-259` (sha
+a84123692d1add7f9c48fd11cdf5f901393008c2d2ade667c18f25a20bf1290d, tools/fetch-systemd.sh TBD);
+host tools present (meson 1.10, ninja, gperf 3.1, python3+jinja2 3.1). `meson setup` WORKS but
+found HOST glibc libs (pkg-config leaked /usr/lib/pkgconfig) — wrong for musl target.
+1. **meson cross-file isolation** (the crux): write `vendor/systemd/cross-{x86_64,aarch64}.txt`
+   meson cross files — `[binaries]` musl-gcc / aarch64-linux-musl-*, `[built-in options]`
+   c_args+=`-idirafter /usr/include` (x86 UAPI), `[properties] pkg_config_libdir` pointing ONLY
+   at our staged L2 pkgconfig dirs (NOT host). Treat x86 as cross too (musl≠host glibc).
+2. **.pc files**: only zlib has one staged. Generate/stage pkgconfig `.pc` for the L2 libs
+   systemd needs (libcap, openssl, libgcrypt+libgpg-error, libseccomp, kmod, blkid/mount/uuid,
+   acl, attr, libidn2, pcre2, zstd, lz4) into `vendor/<v>/install-<arch>/lib/pkgconfig/` (most
+   autotools builds generate a .pc in-tree — stage it; else hand-write).
+3. **feature flags** (recipe in research/systemd-musl.md + research/arm-sigill-fix.md sibling):
+   `-Dlibc=musl -Dmode=release`; ENABLE kmod/seccomp/openssl/gcrypt/blkid/acl; DISABLE the
+   optional dlopen feats we lack (tpm2/libfido2/pwquality/p11kit/libcryptsetup/bpf-framework/
+   microhttpd/qrencode/gnutls/xkbcommon/selinux/apparmor/smack/libcurl/elfutils/...). musl
+   auto-disables nss-*/homed/userdbd/DynamicUser.
+4. Build INCREMENTALLY, land per-PR: libsystemd-shared + a systemd_probe first; then PID1
+   (/lib/systemd/systemd) + minimal units staged to rootfs. systemd is BIG → rootfs >128 MiB →
+   bump rootfs(main.rs count=)+ESP(image_qemu.rs count=) together; watch dumpe2fs free + arm
+   boot time (embedded-rootfs grows kernel/slows arm TCG → maybe bump arm smoke timeout
+   (.githooks/pre-push) or move rootfs→virtio-blk disk). Fix surfaced kernel gaps in-PR.
 
 ## First command (next session)
-Read TASKS.md BLOCKER row, then qemu-mcp arm libcrypto-load-hang diagnosis (step 1 above).
+Write the meson cross files + stage L2 .pc files, then `meson setup` with
+`--cross-file` + isolated pkg_config_libdir; iterate on the feature set.
 
 ## CRITICAL harness rules
-- Both-arch boot gate via **backgrounded PLAIN `git push`** (run_in_background + dangerouslyDisableSandbox; `git push 2>FILE; echo PUSH_DONE rc=$?>>FILE`). PUSH_DONE rc=0 = passed.
-- rc=141 / "Connection closed" but gate PASSED both arches → re-push `SKIP_SMOKE=1` (verified commit).
-- "Could not set up host forwarding tcp::2222" → a stale qemu squats 2222 → false-fail. ALWAYS kill local verify-boot qemu after each test by **ss port (2222/1234) + pgrep `system-aarch64`/`system-x86_64` pid** — NEVER `pkill -f qemu...` (self-kills the shell).
-- Watch rootfs free with `dumpe2fs` as deps grow (silent file-drop on overflow → arm pre-init wedge).
-- spec-lint clean (`cargo run -p xtask -- spec-lint | tail -1` = "clean") before every commit/PR. `main.rs` is AT the 1000-line cap — refactor/extract before any edit.
-- Branch per change F/B/D/C-<NN>; revert dirtied `kernel/blobs/rootfs-*.img` before commit; explicit `git add <paths>`.
+- Both-arch gate via backgrounded PLAIN `git push` (run_in_background+dangerouslyDisableSandbox;
+  `git push 2>FILE; echo PUSH_DONE rc=$?>>FILE`). rc=0=pass. rc=141/"closed" but gate PASSED →
+  re-push `SKIP_SMOKE=1`. "host forwarding tcp::2222" → stale qemu squats port → clear ports
+  (ss 2222/1234 + pgrep `system-aarch64`/`system-x86_64` pid; NEVER `pkill -f qemu`=self-kill).
+- ALWAYS kill local verify-boot qemu by port+pid after each boot (squatters false-fail the gate).
+- Watch rootfs free (`dumpe2fs`) as deps grow (overflow → silent file-drop → arm pre-init wedge).
+- spec-lint clean before commit/PR; `main.rs` AT 1000-line cap (refactor before edit); branch
+  per change; revert dirtied `kernel/blobs/rootfs-*.img` before commit; explicit `git add <paths>`.
+- Follow-up: x86 #UD→catchable-SIGILL parity mirror (hal-x86_64/fault.rs); refine no-handler
+  SIGILL wstatus 11→4. (x86 openssl already works; not blocking.)
