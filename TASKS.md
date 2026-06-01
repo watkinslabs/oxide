@@ -132,7 +132,7 @@ readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
 
 | Id | Work | Status |
 |---|---|---|
-| L1 | shared musl runtime + system lib tree (`/lib`,`/usr/lib`, ldso config); dynamic-link build policy + xtask staging of `.so`s | not started |
+| L1 | shared musl runtime + system lib tree (`/lib`,`/usr/lib`, ldso config); dynamic-link build policy + xtask staging of `.so`s | **DONE + VERIFIED** (was already built; verified this session). `crates/kernel/exec` loads PT_INTERP (interp at INTERP_LOAD_BIAS, full auxv AT_BASE/PHDR/PHENT/PHNUM/ENTRY); `crates/shared/elf` reloc/hash; vendored `ld-musl-<arch>.so.1` staged to /lib (+libc.so on arm) by xtask F230. **Boot-verified BOTH arches** (-smp 2): `hello_dyn_libc: real-ld-musl OK rv=0` AND `post-bash-dynamic rv=0` (dynamic bash runs). The stale `exec/lib.rs:14` "PT_INTERP not acted on" comment is WRONG — remove on next touch. |
 | L2 | cross-build shared deps both arches: libcap, libxcrypt, util-linux libs (libmount/libblkid/libuuid/libsmartcols), libseccomp, kmod, pcre2, zstd, lz4, liblzma(xz), openssl, libgcrypt+libgpg-error, acl/attr, libidn2, linux-pam, dbus + dbus-broker | not started |
 
 ## Track D6 — systemd (multi-PR)
@@ -191,7 +191,7 @@ readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
 - iputils ping ICMP runtime path → validate under K-track socket work.
 - util-linux `mount` non-PIE → fix in D7.1 / L-track.
 - T14 pam_unix nested-fork/dlopen → resolved by L2 (real shared libc) + D6.6.
-- T15 ARM dynamic bash `/bin/sh` wedge → resolved by L1 dynamic-exec path audit.
+- T15 ARM dynamic bash `/bin/sh` wedge → **RESOLVED** (verified this session): arm `-smp 2` boot shows `post-bash-dynamic rv=0` + `hello_dyn_libc: real-ld-musl OK rv=0`. Dynamic exec works both arches; the wedge note was stale.
 - **bash command substitution `$(...)` yields empty — FIXED** (B21, PR #1357). It WAS a kernel syscall bug, not bash: signal delivery at the syscall-return boundary did not preserve the interrupted syscall's return value (rax/x0); rt_sigreturn returned 0. SIGCHLD-on-comsub-child-exit was delivered right at the comsub read's return → the read's count was clobbered to 0 → shell saw EOF → empty. Affected every shell (all install SIGCHLD handlers) and every value-returning syscall interrupted by a caught signal. Fixed by saving the return value in the signal frame and restoring it in rt_sigreturn. Regression guard: `/bin/cmdsubst_probe` sigchld case.
 - **alarm()/SIGALRM does not wake a task blocked in `read()` — FIXED** (B20, PR pending). Three layered bugs:
   1. The alarm deadline was only checked at the syscall-return tail, which a task parked in a blocking syscall never reaches. Fixed by servicing `alarm_ns` in `sched::live::tick_wake_expired`.
