@@ -91,6 +91,19 @@ fn resolve_parent(p: &str) -> Result<(vfs::InodeRef, String), i64> {
     Ok((pino, String::from(name)))
 }
 
+/// True if `p` already resolves to an existing inode (final component
+/// not followed if it's a symlink). Linux checks target existence
+/// before the fs-specific `mkdir`, returning EEXIST regardless of
+/// parent writability. Without this, `mkdir` of an existing dir whose
+/// parent is a read-only pseudo-fs leaks the parent's EROFS — e.g.
+/// systemd's `cg_create("/")` does `mkdir("/sys/fs/cgroup")` (already
+/// present), whose parent `/sys/fs` is sysfs → EROFS instead of the
+/// EEXIST systemd treats as success, aborting its cgroup setup.
+/// # C: O(N path components)
+fn path_exists(p: &str) -> bool {
+    crate::syscalls::pathresolve::resolve(p, true).is_some()
+}
+
 /// `link(target, link)` slot 86. Hardlink only — both must
 /// resolve to ext4 paths.
 /// # C: O(1)
@@ -240,6 +253,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let mode = args.a1 as u16;
+    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.mkdir(&name, mode as u32) { Ok(_) => 0, Err(e) => errno_from_vfs(e) }
 }
@@ -256,6 +270,7 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let mode = args.a2 as u16;
+    if path_exists(&p) { return -(Errno::Eexist.as_i32() as i64); }
     let (pino, name) = match resolve_parent(&p) { Ok(x) => x, Err(rv) => return rv };
     match pino.mkdir(&name, mode as u32) { Ok(_) => 0, Err(e) => errno_from_vfs(e) }
 }
