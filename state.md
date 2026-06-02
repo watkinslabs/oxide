@@ -1,72 +1,75 @@
 # Session hand-off
 
 ## Headline
-**systemd PID1 now reaches SERVICE START** — clears cgroup setup, creates
-init.scope/system.slice, runs its sd-event loop, and attempts to spawn
-console-shell.service (/bin/sh): logs "Will spawn child: /bin/sh". Next gap:
-the service spawn FAILS before forking (no clone/execve traced) — the exec
-reason was rate-limited out of the debug log. main clean @ #1484 (+ this PR).
+**systemd as PID1 boots oxide to an interactive `sh-5.2#` shell on
+/dev/console.** The entire systemd-PID1 bring-up chain is fixed — cgroup
+setup, event loop, unit transaction, service fork, and the full exec-setup
+cascade. Verified under a systemd-PID1 recon boot (x86). main @ #1486.
+Default PID1 is STILL busybox (login smoke green); the systemd path is
+recon-only until verified interactive on BOTH arches + a login smoke exists.
 
-## Merged this session
+## Merged this session (6 PRs)
 | PR | Fix |
 |----|-----|
-| #1482 | /proc/<pid> reports namespace PID (init shows 1) |
-| #1483 | first-light default.target (Wants=console-shell only) |
+| #1482 | /proc/<pid> stat+status report namespace PID (init shows 1) |
+| #1483 | first-light default.target (Wants=console-shell, no sysinit chain) |
 | #1484 | mkdir EEXIST + materialize /sys/fs,/sys/kernel → cgroup mkdir_p OK |
-| (pending) | name_to_handle_at per-fs mount_id (fsid) + inotify read=EAGAIN/poll → systemd escapes infinite mount-walk + inotify epoll-spin, reaches service start |
+| #1485 | per-fs name_to_handle_at mount_id (Inode::fsid) + inotify EAGAIN/poll → escapes mount-walk + epoll spin |
+| #1486 | service exec-setup syscalls: PR_CAP_AMBIENT, keyctl SETPERM/LINK, capget/capset vpid, PR_SET/GET_SECUREBITS → /bin/sh runs |
 
 ## The systemd-PID1 wedge chain solved (in order)
-1. cgroup root EROFS (#1484).
-2. **Infinite mount-walk**: name_to_handle_at returned a CONSTANT mount_id →
-   systemd's is_mount_point never finds a boundary. Fix: Inode::fsid() (per-fs
-   superblock id); cgroup inodes return CGROUP2 magic; handle.rs writes
-   inode.fsid() (root domain=1). [this PR]
-3. **inotify epoll-spin**: inotify read() returned Ok(0)=EOF on empty queue +
-   default poll()=always-readable → sd-event spun read(7)→0 forever. Fix:
-   read() returns EAGAIN when empty; poll() POLLIN only when events queued.
-   inotify ino base = 0x7100_0000. [this PR]
-After these, systemd reaches "Will spawn child: /bin/sh".
+1. cgroup root EROFS (#1484: mkdir EEXIST + /sys/fs dirs).
+2. Infinite mount-walk: constant name_to_handle_at mount_id (#1485: Inode::fsid).
+3. inotify epoll-spin: read=Ok(0) + poll always-ready (#1485: EAGAIN + poll).
+4. Service spawn exec-setup steps, each EINVAL/ENOTSUP/ESRCH (#1486):
+   AMBIENT (PR_CAP_AMBIENT) → KEYRING (keyctl SETPERM/LINK) →
+   CAPABILITIES (capget/capset vpid≠tid) → SECUREBITS (PR_SET_SECUREBITS).
+Result: `Started Console Shell` + `sh-5.2#` prompt.
 
-## NEXT — service spawn (one PR each, NO HACKS)
-Recon (proven): elf.rs PID1 = lookup_blob_by_path(b"/lib/systemd/systemd") +
-argv [same] (load_static_blob resolves its PT_INTERP musl loader — load
-systemd DIRECTLY, NOT ld-musl-as-argv0); build_user_stack envp +=
-SYSTEMD_LOG_LEVEL=debug. P1 syscall trace at oxide_syscall_dispatch
-(mod.rs ~L568) gated c.vtid==1. ALL REVERT before commit.
-- console-shell.service "Will spawn child: /bin/sh" → "[FAILED] Failed to
-  start". Only [P1fx] waitid traced, NO clone/fork/execve → spawn fails
-  BEFORE fork. systemd uses systemd-executor (double-fork): check executor
-  path resolution / cgroup-attach / stdio(TTYPath=/dev/console) setup.
-- The exec failure reason was hidden: "Too many messages being logged to
-  kmsg, ignoring" (systemd debug-log rate limit). To see it: drop
-  SYSTEMD_LOG_LEVEL=debug → info, OR trace the exec path. THEN fix the gap.
-- Likely next: systemd-executor invocation, or service cgroup (system.slice)
-  attach, or the 5 unwired syscalls 142/251/252/314/315.
-When systemd forks /bin/sh on console → flip default PID1 busybox→systemd
-(elf.rs L639/L658) + login smoke. THEN distro: busybox→bash+coreutils,
-Limine→GRUB, vim/python.
+## NEXT (one PR each, NO HACKS, careful)
+1. **Verify systemd→shell on aarch64** (lockstep). The x86 milestone used
+   elf.rs recon (PID1=/lib/systemd/systemd). Confirm the arm PID1 spawn
+   path reaches sh too; fix any arm-specific exec gap. (Recon, not a PR
+   unless a gap is found.)
+2. **Flip default PID1 busybox→systemd** — BIG/risky. The login smoke
+   (tools/boot-smoke.sh) waits for `oxide login:` but console-shell gives
+   `sh-5.2#`. So flipping needs EITHER (a) a getty/login service in the
+   systemd unit tree (vendor/systemd/build.sh) that prints `oxide login:`,
+   OR (b) update the smoke success marker. Do NOT flip until systemd is
+   reliably interactive on BOTH arches. Own branch, careful verification.
+3. Distro track: /bin/sh is already bash 5.2; extend to GNU coreutils;
+   Limine→GRUB; vim/python.
 
-## Diagnosis recipes (proven)
-- systemd-PID1 recon: see NEXT. Boot SMP=1 to halve trace volume + dodge the
-  cat-smoke ("A") SMP flake.
-- syscall trace: [P1nr] at dispatch gated vtid==1, klog nr+a0; decode openat
-  path by reading cstr from a1 (257/332/303) or a0 (2). Narrow to fork/exec
-  (56/57/59/322/435/247) once you know the phase. NEVER klog in sys_openat.
-- fd identity: in sys_read gate vtid==1 && fd==N, klog file.inode().ino() +
-  result, cap via a static AtomicU32. Found the inotify spin (ino 0x71000000,
-  read→0).
-- systemd[1] debug log lines split across 3 output lines; grep single tokens.
-  Debug log is RATE-LIMITED ("Too many messages...kmsg") — it drops the very
-  error you want; lower the log level to see late failures.
+## systemd-PID1 recon recipe (proven)
+- elf.rs: init_blob = lookup_blob_by_path(b"/lib/systemd/systemd") (load
+  DIRECTLY — load_static_blob resolves its PT_INTERP musl loader; NOT
+  ld-musl-as-argv0), argv=[same]; build_user_stack envp +=
+  SYSTEMD_LOG_LEVEL=info (info dodges the kmsg rate-limit that hides late
+  errors at debug). [P1fx] fork/exec trace at oxide_syscall_dispatch
+  (mod.rs ~L568) gated c.vtid==1. ALL recon REVERT before commit:
+  git checkout -- kernel/src/smoke/elf.rs kernel/src/syscalls/mod.rs.
+- Boot SMP=1 (halves trace volume; the cat-smoke 'A' can wedge pre-PID1
+  intermittently — kill+reboot if frozen at 'A').
+- grep boot log with -a (binary escape codes); systemd[1] log lines split
+  across 3 output lines — grep single tokens. Look for `Failed at step X`
+  (exec-setup gap) + `sh-5.2#` (shell reached).
+- fd identity: in sys_read gate vtid==1 && fd==N, klog file.inode().ino().
 
 ## CRITICAL harness rules
-- dev shell `set -e`: a trailing grep/pgrep returning 1 aborts the whole
-  compound → run `make ... > file` ALONE. Recurring "no file created" cause.
-- ALWAYS `pkill -9 -f qemu-system 2>/dev/null || true; sleep 2` BEFORE a boot.
-  NEVER put `&` inside a run_in_background make (breaks the redirect).
-- A wedged systemd recon explodes the log to MILLIONS of lines — kill early,
-  analyse a slice; bound pollers with a line-count break.
-- Gate: `git push --dry-run origin <branch>` = both-arch boot-smoke; PASS →
-  SKIP_SMOKE=1 push + `gh pr merge --merge --delete-branch=true`.
-- spec-lint clean; default PID1 still busybox (login smoke green); flip to
-  systemd only at a shell/login prompt.
+- dev shell `set -e`: a pkill/grep/[test] prefix in a compound aborts it →
+  the `make ... > file` never runs (empty file). Run boots ALONE:
+  bare `make SMP=1 qemu-x86 > /tmp/rN.txt 2>&1` run_in_background; clear
+  stale qemu in a SEPARATE `pkill -9 -f qemu-system 2>/dev/null||true;
+  sleep 2` first; guard EVERY grep/pgrep/pkill/[test] with ||true.
+- NO foreground sleep — use run_in_background until-loops with a line-count
+  break (a wedged systemd recon explodes the log to millions of lines).
+- Never put `&` inside a run_in_background make (breaks the redirect).
+- Gate: `git push --dry-run origin <branch>` = both-arch boot-smoke; arm
+  can flake (re-run once / `make qemu-arm` to confirm before calling it a
+  regression). PASS → SKIP_SMOKE=1 push + `gh pr merge --merge
+  --delete-branch=true` (NO separate git branch -D).
+- NEVER klog in sys_openat (wedges SMP). spec-lint clean; sched/fs/procfs
+  files near the 1000-line cap; branch per change; explicit git add; never
+  add vendor/*/install-*/lib/pkgconfig; tree-wide cargo fmt NOT wanted.
+- The `cred`/`keyring`/`prctl` syscall handlers are cfg(oxide-kernel) — NOT
+  hosted-testable (need current() + user memory); verify via the boot.
