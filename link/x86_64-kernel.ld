@@ -18,6 +18,16 @@ SECTIONS {
     . = KERNEL_BASE;
     __kernel_start = .;
 
+    /* Multiboot2 header: GRUB scans the first 32 KiB of the file for the
+     * magic, so this section comes first (right after the ELF headers).
+     * KEEP-retained against --gc-sections. The self-bootstrap path
+     * (GRUB loads our kernel directly); Limine ignores it. */
+    .multiboot2_header ALIGN(8) : {
+        __multiboot2_header_start = .;
+        KEEP(*(.multiboot2_header))
+        __multiboot2_header_end = .;
+    }
+
     .text.boot ALIGN(4K) : {
         __text_boot_start = .;
         KEEP(*(.text.boot))
