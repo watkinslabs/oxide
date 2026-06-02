@@ -636,7 +636,12 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // and image are ours, the userspace is upstream.
     // PID 1 must exist on the rootfs. Per 51§2 invariant 1 the
     // kernel does not embed a fallback init blob in v1.
-    let init_blob_opt = lookup_blob_by_path(b"/sbin/init")
+    // PID 1 = systemd (the OXIDE distro init). Falls back to busybox
+    // /sbin/init if systemd is absent. systemd is dynamically linked;
+    // load_static_blob resolves its PT_INTERP musl loader and we enter at
+    // user_ip() (the loader). console-getty.service prints `oxide login:`.
+    let init_blob_opt = lookup_blob_by_path(b"/lib/systemd/systemd")
+        .or_else(|| lookup_blob_by_path(b"/sbin/init"))
         .or_else(|| lookup_blob_by_path(b"/init"));
     hal::kassert!(init_blob_opt.is_some(),
         "no /sbin/init or /init in rootfs (51§2 invariant 1)");
@@ -655,7 +660,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
         spawn_user_blob_with_vpid(
             init_blob, "init",
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1,
-            &[b"/sbin/init" as &[u8]],
+            &[b"/lib/systemd/systemd" as &[u8]],
         );
     }
     // No second sh fallback: init→svcd→agetty→login→sh is the
@@ -792,7 +797,7 @@ unsafe fn spawn_user_blob_with_vpid(
     let new_sp = unsafe {
         elf_load::stack::build_user_stack(
             USER_STACK_TOP,
-            argv_ref, &[],
+            argv_ref, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
             argv_ref.first().copied().unwrap_or(b""),
