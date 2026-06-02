@@ -109,6 +109,32 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
         .find(|t| t.vtgid.load(Ordering::Acquire) == vpid)
 }
 
+/// Namespace PID to display for the task with internal `tid`: its vtgid,
+/// falling back to the internal tid for kernel threads / smokes that never
+/// got a vpid stamped. procfs stat/status must show this (Linux "PID"),
+/// not the opaque internal tid — PID1 is vtgid=1 but tid=0xC0DE….
+/// # C: O(1) hash-free vec scan via `lookup`.
+pub fn display_vpid(tid: u32) -> u64 {
+    use core::sync::atomic::Ordering;
+    match lookup(tid) {
+        Some(t) => { let v = t.vtgid.load(Ordering::Acquire); if v != 0 { v as u64 } else { tid as u64 } }
+        None => tid as u64,
+    }
+}
+
+/// Parent's namespace PID for the task with internal `tid`: resolve its
+/// internal parent_tid to that parent's vtgid. PID1's parent is the kernel
+/// → 0 (Linux shows PPid 0 for init).
+/// # C: O(N_tasks) — two registry lookups.
+pub fn parent_vpid(tid: u32) -> u64 {
+    use core::sync::atomic::Ordering;
+    let ptid = match lookup(tid) { Some(t) => t.parent_tid.load(Ordering::Acquire), None => return 0 };
+    lookup(ptid)
+        .map(|p| p.vtgid.load(Ordering::Acquire))
+        .filter(|&v| v != 0)
+        .unwrap_or(0) as u64
+}
+
 /// Flip `task.state` Stopped → Runnable. Returns `true` if the
 /// transition actually happened (caller is then responsible for
 /// re-enqueueing into the runqueue); `false` if the task wasn't
