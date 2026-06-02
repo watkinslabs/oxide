@@ -1,75 +1,89 @@
 # Session hand-off
 
 ## Headline
-**OXIDE distro: roadmap items 1-4 DONE.** systemd is PID1 → `oxide login:`
-on x86_64 AND aarch64; GNU /bin userland (coreutils+grep/sed/awk/find/tar+
-less/vi/gzip); and now **CPython 3.13.1 at /usr/bin/python3 on both arches**
-(static-musl, stdlib zip'd). 23 PRs this session (#1482-#1502). main @
-3f89ed82. Only roadmap item 3 (GRUB) remains, DEFERRED for user scoping.
+**OXIDE distro: roadmap items 1-4 DONE.** systemd PID1 → `oxide login:` on
+x86_64 AND aarch64; GNU /bin userland; and **CPython 3.13.1 at /usr/bin/python3
+— DYNAMIC, with ctypes + ssl + full stdlib** on both arches. 27 PRs this
+session (#1482-#1504). main @ 827d6e93. Only roadmap item 3 (GRUB) remains,
+DEFERRED for user scoping.
 
-## Python (item 4) — DONE, #1501 + #1502
+## Python — DONE (dynamic, Linux-class), #1501/#1502/#1503/#1504
 - vendor/python/{build.sh,python3-x86_64,python3-aarch64,python313.zip} +
-  tools/fetch-python.sh. CPython 3.13.1 cross-built static-musl, all stdlib
-  C extensions BUILTIN (zlib/_socket/select/hashlib/math/...). Pure-python
-  stdlib zipped (2.6M, /usr/lib/python313.zip); getpath auto-adds it →
-  `python3 -c ...` runs with NO env vars. Verified host run: print(6*7)=42,
-  imports os/json/re/zlib/_socket/hashlib/base64/datetime/struct. Both
-  arches boot-smoke PASS with python staged (x86 34s, arm 40s).
-- Build recipe: Setup.local copies configure's Setup.stdlib with
-  *shared*->*static* (a -static link can't make loadable .so) + disables
-  unvendored-dep modules. `make` (not `make python`) builds the C exts.
-- KNOWN GAPS (NOT v1-complete — fix next): **_ssl + _hashlib MISSING**
-  (configure MODULE__SSL_STATE=missing — openssl 3.0.15 IS vendored at
-  vendor/openssl/install-<arch> but CPython didn't detect it; needs
-  --with-openssl=$SSL and/or PKG_CONFIG_PATH to the vendored .pc, then the
-  _ssl/_hashlib lines drop out of the disabled stanza in build.sh). No TLS
-  / no openssl-backed hashlib until fixed. **_ctypes MISSING** (libffi not
-  vendored). **_bz2/_lzma/_curses/readline/_dbm/_tkinter** disabled.
+  tools/fetch-python.sh. CPython 3.13.1 cross-built musl, **DYNAMIC exe**
+  (PT_INTERP=/lib/ld-musl-<arch>.so.1 — same loader path as bash/sshd).
+- All stdlib C extensions BUILTIN (Setup.local *shared*->*static*); pure-py
+  stdlib zipped 2.6M at /usr/lib/python313.zip (getpath auto-adds it → no
+  env vars). **_ssl + _hashlib** via vendored static openssl .a (#1503).
+  **_ctypes** via vendored static libffi 3.4.6 (#1504 — needed DYNAMIC so
+  PyDLL/dlopen works; a static musl binary has no dynamic linker).
+- DT_NEEDED = libssl.so.3/libcrypto.so.3/ld-musl, ALL staged (/usr/lib,/lib).
+- Host-verified (exact binary + vendored ld-musl): import os/json/re/zlib/
+  socket/hashlib/ssl/ctypes; CDLL(None).strlen=5; ssl.OPENSSL_VERSION=3.0.15.
+  Both arches boot-smoke PASS with python staged (x86 34s, arm 40s).
+- Remaining stdlib gaps (low value): _curses/_dbm/_gdbm/_tkinter/_bz2/_lzma
+  (terminal/db/compression libs not vendored). _ctypes/dlopen now WORK →
+  pip + native wheels are unblocked (future).
+- NOTE: F364's static openssl .a (vendor/openssl/install-*/lib/*.a) are now
+  unused by the dynamic python (it links the .so) — harmless, left in place.
+
+## Interactive in-kernel exec is BLOCKED by 2 pre-existing harness bugs
+Could NOT drive an interactive `python3 -c` in-kernel this session (would be
+the definitive proof). Two unrelated pre-existing issues:
+1. **qemu-x86 cat-smoke wedge**: `make qemu-x86` (used by boot-smoke-login.sh)
+   stalls at the kernel-spawned CAT smoke "A" marker, never reaching login,
+   even with SMP=1. `make smoke-x86` (boot-smoke.sh) is fine — different boot
+   path. So the login harness can't reach login under qemu-x86.
+2. **console login-input flakiness**: even when login: appears, typed
+   `root`/`alice` over the FIFO→qemu-serial isn't consumed (state.md history).
+Fixing these would unblock ALL interactive in-kernel verification — high
+value (the user wants verified-not-should-work). python verification this
+session = host-exec of exact artifacts + both boot-smokes + same dynamic ELF
+class as in-kernel-proven bash. Strong, but not interactive-in-kernel.
 
 ## NEXT (one PR each, both-arch gate) — pick lowest-risk highest-value
-1. **F364 python _ssl/_hashlib** (HIGHEST value — TLS for a real distro
-   python; pip/urllib/requests need it). openssl already vendored. In
-   vendor/python/build.sh build_one: add `--with-openssl="$SSL"` to
-   configure (and maybe `PKG_CONFIG_PATH=$SSL/lib/pkgconfig` +
-   `--with-openssl-rpath=no`); REMOVE `_ssl` `_hashlib` from the
-   write_setup_local *disabled* stanza. Check config.log
-   "checking for openssl" / MODULE__SSL_STATE after. Rebuild both arches,
-   re-stage (rootfs.rs unchanged — same paths), boot-smoke. Verify host:
-   `python3 -c 'import ssl,hashlib; print(ssl.OPENSSL_VERSION)'`. NOTE the
-   static openssl link may need `-lssl -lcrypto` ordering / `-ldl`(musl has
-   no libdl, it's in libc) — iterate.
-2. **F365 python _ctypes** — vendor libffi (fetch + cross-build static like
-   zlib), add includes/libs to build.sh, remove _ctypes from disabled.
-3. **systemd sysinit chain** — build systemd-tmpfiles/-remount-fs helper
-   binaries (add ninja targets in vendor/systemd/build.sh) → clears the
-   `ask-password` watch warning + a real sysinit. Medium.
-4. **GRUB (item 3) — DEFERRED, needs user scoping.** Kernel is Limine-native
-   (crates/arch/boot-x86_64 ingests memmap/HHDM/fb/cmdline via Limine proto;
-   image_qemu.rs builds a Limine image). GRUB = Multiboot2/EFI boot-protocol
-   rewrite of the boot path on BOTH arches. High-risk, multi-PR. Advise-
-   then-act before starting.
-5. usr-merge (clears unmerged-usr taint; rootfs.rs at 991 — compact first).
+1. **pip/ensurepip** — now feasible (dynamic python + ssl + ctypes). Bundle
+   pip (CPython ensurepip _bundled wheels, currently excluded), run
+   `python -m ensurepip`, test `python3 -m pip --version` + install a
+   pure-python wheel. Native-ext wheels need a target compiler (bigger; skip).
+2. **Fix qemu-x86 cat-smoke wedge + console login-input** — unblocks
+   interactive verification (incl. the python in-kernel proof). Investigate
+   the kernel CAT smoke spin under qemu-x86 features vs smoke-x86; and the
+   tty RX path for getty (TIOCSCTTY/foreground-pgid, console.rs park/wake).
+   Could be deep — timebox.
+3. **systemd sysinit chain** — build systemd-tmpfiles/-remount-fs helpers
+   (ninja targets in vendor/systemd/build.sh) → clears the ask-password
+   watch warning + a real sysinit.
+4. **GRUB (item 3) — DEFERRED, user scoping.** Limine-native kernel
+   (crates/arch/boot-x86_64 via Limine proto); GRUB = Multiboot2/EFI boot
+   rewrite on both arches. High-risk, multi-PR. Advise-then-act first.
+5. usr-merge (clears unmerged-usr taint; rootfs.rs at 991 → compact first).
 
-## Verified-left harness rules (state.md history)
-- Build/boot cmds run_in_background ALONE. NEVER a sleep/pkill/grep PREFIX
-  in the same compound — dev shell `set -e` + BLOCKED foreground-sleep
-  aborts the redirect → empty capture file. pkill SEPARATELY, guard
-  `||true`. A trailing `&` inside orphans the redirect (qemu alive, empty).
-- Stale qemu squats :2222 → 'Could not set up host forwarding'. Clear first.
-- boot SMP=1 (x86 cat-smoke spins 100% CPU pre-PID1 under SMP=2). grep -a.
-- qemu MCP is TCG (slow) + flaky (memory qemu_mcp_unreliable): it wedged at
-  UEFI for the python in-kernel check this session — DON'T thrash it; use
+## libffi recipe (for reference; vendored #1504)
+github v3.4.6 sha256=b0dea9df23c863a7a50e825440f3ebffabd65df1497108e5d437747843895a4e;
+`./configure --host=<triple> --disable-shared --enable-static
+--disable-exec-static-tramp`; normalise x86 lib64→lib.
+
+## CRITICAL harness rules (bit me repeatedly this session)
+- Build/boot cmds run_in_background ALONE. NEVER a pkill/sleep/grep PREFIX in
+  the same compound as make — dev shell `set -e` + BLOCKED foreground-sleep +
+  pkill-returns-1-when-nothing-to-kill aborts the whole compound → missing/
+  empty capture file = FALSE "failure". pkill in its OWN separate call
+  (exit 1 = nothing running, fine). NEVER `&` inside (orphans redirect).
+- boot SMP=1 (x86 cat-smoke spins under SMP=2). grep -a. Stale qemu squats
+  :2222 → clear first.
+- qemu MCP is TCG (slow) + flaky — wedged at UEFI this session. Use
   `make smoke-x86/smoke-arm` for boot status (KVM, ~35s to login).
-- **rootfs-*.img are build artifacts** regenerated by `xtask rootfs`; the
-  git-tracked copies are stale 32MB placeholders. GitHub rejects >100MB —
-  NEVER `git add` the rebuilt 128MB imgs. Commit only rootfs.rs (the recipe).
-- Gate: both arches `make smoke-*` PASS → `SKIP_SMOKE=1 git push -u` +
-  `gh pr create` + `gh pr merge --merge --delete-branch=true` + checkout
-  main + pull. Default PID1 = systemd. spec-lint clean before commit/PR.
-- NEVER git-add vendor/python/Python-3.13.1/ (source/build, gitignored) or
-  vendor/*/install-*/lib/pkgconfig. Files <1000 lines. No Co-Authored-By.
+- **rootfs-*.img** are build artifacts regenerated by `xtask rootfs`; tracked
+  copies are stale 32M placeholders. GitHub rejects >100M — NEVER git-add the
+  rebuilt 128M imgs. Commit only recipes (rootfs.rs).
+- NEVER git-add vendor source trees (Python-3.13.1/, libffi-3.4.6/) or
+  install-*/lib/pkgconfig. NEVER `git branch -D` an unmerged branch without
+  asking (flagged this session). Gate: both `make smoke-*` PASS →
+  SKIP_SMOKE=1 push + `gh pr merge --merge --delete-branch=true`. spec-lint
+  clean before commit/PR. Files <1000 lines. No Co-Authored-By. Default PID1
+  = systemd.
 
-## DONE earlier this session (#1482-#1500)
+## DONE earlier this session
 systemd PID1 bring-up (#1482-#1491: B22 arm dyn-loader entry, F357 flip),
 xtask split (#1495), busybox→GNU /bin (#1493/#1496/#1497), run-dirs (#1499).
-See git log; don't restate.
+git log is the archaeology; don't restate.
