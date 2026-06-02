@@ -1,60 +1,51 @@
 # Session hand-off
 
 ## Headline
-**PR #1508 merged to main (97bb9e1e).** Both arches boot to `oxide login:`
-with: dentry-keyed mount crossing, real openat dirfd resolution,
-MS_REMOUNT ordering, real TSC calibration + live rdtsc/cntvct vDSO clock,
-and netlink real-state infra (rtnl async DEFERRED — open fails
-gracefully). main is clean. Two precisely-localized follow-ups below.
+main @ 0457b3b1. Both arches boot to `oxide login:` with **netlink rtnl
+fully working** (loopback comes up — no deferral). This session landed
+PRs #1508 (dentry mounts + openat + clock) and #1510 (netlink reply-pid
+fix). One pre-existing follow-up open: PID1 "Looping too fast" epoll spin.
 
-## Follow-up 1 — netlink rtnl async reply matching (re-enable lo)
-DEFERRED in #1508: getsockopt(SO_PROTOCOL)→-ENOPROTOOPT so sd_netlink_open
-fails → systemd skips rtnl → login. To re-enable: revert that gate
-(netlink_fd.rs getsockopt) and fix the real bug.
-Timing-PROVEN it is NOT clock/scheduler: SETLINK ack arrives 2 ms after
-send (ms 3219→3221), consumed, but sd_netlink `process_reply(serial)`
-finds no callback for the SETLINK reply while the two RTM_NEWADDR acks
-(consecutive serials) DO match → loopback_setup blocks to its 5 s timeout.
-Callback keyed by wire serial (sd-netlink.c call_async:579-583); our ack
-echoes that serial — yet SETLINK doesn't match. Needs gdb-on-systemd (or
-sd-netlink serial/rqueue_by_serial tracing); not kernel-side-inspectable.
-Files: vendor/systemd/.../shared/loopback-setup.c + .../sd-netlink.c
-(process_reply @332; process_running @424 runs process_timeout BEFORE
-dispatch_rqueue).
+## Netlink rtnl — FIXED (#1510)
+Root cause (proven, NOT clock/scheduler): SETLINK ack arrives 2 ms after
+send + consumed, but systemd sd-netlink DROPS any non-broadcast reply
+whose `nlmsg_pid != socket nl_pid` (netlink-socket.c parse_message_one
+:307). We echoed the request pid (often 0) into replies while getsockname
+returned current.tid — inconsistent → replies dropped → async RTM_SETLINK
+callback never fired → loopback_setup timed out.
+Fix: all three consistent on the socket's `port_id` — handle_one stamps
+nlmsg_pid=port_id into every reply nlmsghdr; getsockname(fd) returns
+port_id; getsockopt(SO_PROTOCOL) re-enabled (open succeeds). Verified
+x86(KVM)+arm(TCG): "Failed to bring loopback … timed out" GONE, login
+reached with rtnl active.
 
-## Follow-up 2 — PID1 "Looping too fast" (CPU spin, pre-existing on main)
-systemd's sd-event epoll never blocks because ONE fd is perpetually
-level-ready POLLIN. TRACED: it's a `SockKind::UnixMsgPair` (AF_UNIX
-SEQPACKET socketpair), one fd, ino_lo=437744744, reports POLLIN ~every
-scan. poll() = POLLIN when `pair.has_msg(end)` (recv-ring non-empty).
-recv path DOES drain it (net::sock::recvfrom → UnixMsgPair @sock.rs:963 →
-pair.recv pops the same ring has_msg checks). So cause is either (a)
-continuous traffic refilling the ring, or (b) systemd never reads THAT fd
-(epolls it for HUP/error, or the handler is one-shot/disabled). Needs
-gdb-on-systemd / systemd socketpair-usage analysis to confirm which.
-NB: sys_recvmsg (net.rs:622-625) special-cases UnixDgram + Unix-stream
-but NOT UnixMsgPair — it falls through to the recvfrom loop (which does
-drain via sock::recvfrom). Verify that path is what systemd uses.
-Login is reached regardless — this is CPU-efficiency, not a blocker.
+## Also landed (#1508)
+- vfs: mount crossing keyed by DENTRY IDENTITY, not path string
+- syscall: real openat dirfd resolution (`resolve_at`) + MS_REMOUNT-before-
+  MS_BIND → machine_id_setup completes
+- time: real PIT TSC calibration + LIVE rdtsc/cntvct vDSO clock (both
+  arches; replaced the stale published snapshot)
+- netlink real-state infra (mutable iface flags, MSG_PEEK recvmsg)
 
-## Proven / ruled out this session
-- Clock was NOT the loopback gate (calibration→4.2 GHz + live vDSO, still
-  timed out). Both clock fixes kept — correct + fix real userspace clock
-  staleness (the old vDSO snapshot lagged seconds under a busy boot).
-- F369 netlink commit was the ONLY boot regressor (bisected); neutralized.
-- machine-id fully works (openat-dirfd + MS_REMOUNT + dentry bind).
-
-## First task next session
-1. Pick follow-up 1 (netlink) or 2 (PID1 spin) — both need gdb-on-systemd.
-   For gdb-on-systemd: the qemu MCP attaches gdb to the KERNEL elf; to
-   debug systemd userspace, breakpoint the kernel syscall entry for the
-   relevant fd and read systemd's memory, or add gdbserver to the rootfs.
-2. Else continue the distro roadmap (vim, more programs) on a fresh branch.
+## Open follow-up — PID1 "Looping too fast" (CPU spin, pre-existing on main)
+sd-event epoll never blocks because ONE fd is perpetually level-ready
+POLLIN. TRACED: it's a `SockKind::UnixMsgPair` (AF_UNIX SEQPACKET
+socketpair), one fd, reports POLLIN ~every scan. The read path DOES drain
+it (net::sock::recvfrom → UnixMsgPair @sock.rs:963 → pair.recv pops the
+same ring has_msg checks). So cause is (a) continuous traffic, or (b)
+systemd doesn't read THAT fd. Lead: `sys_recvmsg` (net.rs:622-625)
+special-cases UnixDgram + Unix-stream but NOT UnixMsgPair — it falls
+through to the recvfrom loop that does NOT fill the returned msghdr
+(msg_flags/MSG_EOR/controllen). If systemd's recvmsg on its SEQPACKET
+socketpair needs those, its handler may not treat the read as consumed.
+Next: add a proper recvmsg_unix_msgpair (mirror recvmsg_unix_dgram in
+unix_cmsg.rs / recvmsg_unix_stream in cmsg_parse.rs) that drains AND fills
+the msghdr; wire into sys_recvmsg's special-cases. Login is reached
+regardless — CPU-efficiency, not a blocker.
 
 ## Harness notes
 - KVM (~1min): `OXIDE_QEMU_KVM=1 make SMP=2 qemu-x86`. Default TCG ~10-15min.
-  arm is TCG-only (no arm KVM on x86 host) and boots clean to login.
+  arm is TCG-only, boots clean to login (~14s startup).
 - Free :2222 first: `ss -ltnp|grep 2222 → kill -9 <pid>` (comm truncated to
   "qemu-system-x86"; pgrep -x misses it — kill the pid from ss).
-- Run boots ALONE in background; spec-lint clean before commit; netlink
-  crate has no klog dep (trace from kernel/src instead).
+- Run boots ALONE in background; spec-lint clean before commit.
