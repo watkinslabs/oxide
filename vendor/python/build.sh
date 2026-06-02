@@ -23,14 +23,13 @@ echo "host python: $($HOSTPY --version)"
 # Fully-static interpreter: every detected stdlib C extension must be
 # builtin (a -static link can't produce loadable .so). Copy configure's
 # Setup.stdlib with *shared*->*static*, and disable modules whose libs
-# aren't vendored (bz2/lzma/ctypes/curses/readline/ssl/...). _ssl/_hashlib
-# stay off until openssl cross-detection lands; hashlib md5/sha still work
-# via the builtin _md5/_sha* modules.
+# aren't vendored (bz2/lzma/ctypes/curses/readline/dbm/tkinter). _ssl +
+# _hashlib link the vendored static openssl (--with-openssl below).
 # Run with cwd == build dir (inside the configure/make subshell).
 write_setup_local() {
   { printf '*disabled*\n_bz2\n_lzma\n_ctypes\n_ctypes_test\n_curses\n'
-    printf '_curses_panel\nreadline\nnis\n_dbm\n_gdbm\n_tkinter\n_ssl\n'
-    printf '_hashlib\nossaudiodev\nspwd\n_testcapi\n_testbuffer\n'
+    printf '_curses_panel\nreadline\nnis\n_dbm\n_gdbm\n_tkinter\n'
+    printf 'ossaudiodev\nspwd\n_testcapi\n_testbuffer\n'
     printf '_testimportmultiple\nxxlimited\nxxlimited_35\n\n'
     sed 's/^\*shared\*/*static*/' Modules/Setup.stdlib
   } > Modules/Setup.local
@@ -50,6 +49,7 @@ build_one() {
       --with-build-python="$HOSTPY" \
       --disable-shared --without-ensurepip --disable-test-modules \
       --with-ensurepip=no \
+      --with-openssl="$SSL" --with-openssl-rpath=no \
       ac_cv_file__dev_ptmx=no ac_cv_file__dev_ptc=no \
       ac_cv_buggy_getaddrinfo=no \
       CFLAGS="-I$ZL/include -I$SSL/include" \

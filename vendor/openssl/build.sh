@@ -27,6 +27,10 @@ build_one() {
   for l in libssl libcrypto; do
     cp -L "$SRC/$l.so.3" "$install/lib/$l.so.3"
     ( cd "$install/lib" && ln -sf "$l.so.3" "$l.so" )
+    # Static archives too: fully-static CPython _ssl/_hashlib link against
+    # these (a -static python can't dlopen libssl.so). systemd keeps using
+    # the .so above; the .a is additive.
+    cp "$SRC/$l.a" "$install/lib/$l.a"
   done
   cp -r "$SRC/include/openssl" "$install/include/openssl"
   echo "  → $install/lib/libssl.so.3 ($(stat -c %s "$install/lib/libssl.so.3") bytes) + libcrypto.so.3"
