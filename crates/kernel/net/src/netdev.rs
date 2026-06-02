@@ -7,11 +7,23 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::string::String;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SocketLockClass};
 
 use crate::addr::{MacAddr, NetIfaceId};
 use crate::pkt::{Pkt, DEFAULT_HEADROOM};
+
+/// `IFF_*` interface flags per `linux/if.h`. Real, mutable per-iface
+/// admin/operational state — RTM_SETLINK flips them, RTM_GETLINK reports
+/// them (no hardcoded reply-time values). # C: O(1)
+pub mod iff {
+    pub const IFF_UP:        u32 = 0x0001;
+    pub const IFF_BROADCAST: u32 = 0x0002;
+    pub const IFF_LOOPBACK:  u32 = 0x0008;
+    pub const IFF_RUNNING:   u32 = 0x0040;
+    pub const IFF_MULTICAST: u32 = 0x1000;
+}
 
 /// `25§3` `KR<()>` analogue for the net subsystem.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -87,6 +99,10 @@ pub struct IfaceEntry {
     /// only entries matching their own net_ns.
     pub ns:   u64,
     pub dev:  Arc<dyn NetDev>,
+    /// Real, mutable IFF_* flags. Set at registration from the device
+    /// kind; mutated by RTM_SETLINK; read by RTM_GETLINK. Not a
+    /// reply-time fabrication.
+    pub flags: AtomicU32,
 }
 
 /// Process-global iface table. `register_netdev` pushes; `iface`
@@ -119,8 +135,35 @@ impl IfaceRegistry {
         let mut g = self.inner.lock();
         let id = NetIfaceId::from_raw(g.next);
         g.next += 1;
-        g.entries.push(IfaceEntry { id, ns, dev });
+        // Initial flags per device kind. lo: loopback, up, running. Other
+        // devices (virtio-net etc.): broadcast+multicast capable, up+running
+        // (the kernel registers them operational). These are real and
+        // RTM_SETLINK-mutable, not hardcoded at reply time.
+        let init_flags = if dev.name() == "lo" {
+            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
+        } else {
+            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
+        };
+        g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(init_flags) });
         id
+    }
+
+    /// Current IFF_* flags for `id` (init NS). # C: O(N)
+    pub fn iface_flags(&self, id: NetIfaceId) -> Option<u32> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id).map(|e| e.flags.load(Ordering::Acquire))
+    }
+
+    /// Apply an RTM_SETLINK flag change: `flags = (flags & !change) |
+    /// (new & change)`. Returns the post-change flags, or None if no
+    /// such iface. Linux ifinfomsg semantics. # C: O(N)
+    pub fn set_iface_flags(&self, id: NetIfaceId, new: u32, change: u32) -> Option<u32> {
+        let g = self.inner.lock();
+        let e = g.entries.iter().find(|e| e.id == id)?;
+        let cur = e.flags.load(Ordering::Acquire);
+        let next = (cur & !change) | (new & change);
+        e.flags.store(next, Ordering::Release);
+        Some(next)
     }
 
     /// Look up a registered iface by id, restricted to the given

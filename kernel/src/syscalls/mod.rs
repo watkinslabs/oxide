@@ -59,6 +59,11 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     };
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    // netlink sockets support read() (Linux): pop one datagram from the
+    // socket recv queue (same path as recvfrom, no peer addr).
+    if crate::syscalls::netlink_fd::is_netlink(fd as u64) {
+        return crate::syscalls::netlink_fd::read(fd as u64, buf, cnt);
+    }
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf_writable; user pages mapped via active CR3; demand-paging resolves not-present pages on first kernel-side write.
     let slice: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, cnt) };

@@ -307,6 +307,7 @@ pub fn put_nlattr_str(out: &mut Vec<u8>, ty: u16, s: &str) {
 
 /// Operational-state codes per Linux IF_OPER_* (`if_link.h`).
 const IF_OPER_UP: u8 = 6;
+const IF_OPER_DOWN: u8 = 2;
 
 /// Build a single RTM_NEWLINK reply for one iface.
 ///
@@ -320,18 +321,18 @@ fn build_newlink_reply(
     mac: [u8; 6],
     mtu: u32,
     is_loopback: bool,
+    flags: u32,
     multi: bool,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(128);
 
-    // ifinfomsg
+    // ifinfomsg — ifi_flags is the iface's REAL current flag state
+    // (from the registry), not a reply-time fabrication.
     let mut ifi = Ifinfomsg::default();
     ifi.ifi_family = 0; // AF_UNSPEC
     ifi.ifi_type   = if is_loopback { ARPHRD_LOOPBACK } else { ARPHRD_ETHER };
     ifi.ifi_index  = ifindex;
-    ifi.ifi_flags  = iff::IFF_UP | iff::IFF_RUNNING
-                   | if is_loopback { iff::IFF_LOOPBACK }
-                     else { iff::IFF_BROADCAST | iff::IFF_MULTICAST };
+    ifi.ifi_flags  = flags;
     ifi.ifi_change = 0;
     let mut ifi_buf = [0u8; Ifinfomsg::SIZE];
     ifi.write_to(&mut ifi_buf);
@@ -343,7 +344,8 @@ fn build_newlink_reply(
     put_nlattr(&mut body, ifla::IFLA_BROADCAST, &[0xFFu8; 6]);
     put_nlattr_u32(&mut body, ifla::IFLA_MTU, mtu);
     put_nlattr_u32(&mut body, ifla::IFLA_TXQLEN, 1000);
-    put_nlattr_u8(&mut body, ifla::IFLA_OPERSTATE, IF_OPER_UP);
+    let operstate = if flags & iff::IFF_UP != 0 { IF_OPER_UP } else { IF_OPER_DOWN };
+    put_nlattr_u8(&mut body, ifla::IFLA_OPERSTATE, operstate);
     put_nlattr_u8(&mut body, ifla::IFLA_LINKMODE, 0);
 
     // Now serialize the leading nlmsghdr with the full length.
@@ -373,7 +375,7 @@ fn build_newlink_reply(
 pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let entries = ifaces_snapshot();
-    for (id, name, mac, mtu, is_lo) in entries.iter() {
+    for (id, name, mac, mtu, is_lo, flags) in entries.iter() {
         let one = build_newlink_reply(
             req.nlmsg_seq, req.nlmsg_pid,
             *id as i32,
@@ -381,6 +383,7 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
             *mac,
             *mtu,
             *is_lo,
+            *flags,
             /*multi=*/true,
         );
         reply.extend_from_slice(&one);
@@ -462,8 +465,8 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     for row in addr_snapshot().iter() {
         // Resolve the iface label by ifindex; missing → "?"
         let name = ifaces.iter()
-            .find(|(id, _, _, _, _)| *id == row.ifindex)
-            .map(|(_, n, _, _, _)| n.as_str())
+            .find(|(id, _, _, _, _, _)| *id == row.ifindex)
+            .map(|(_, n, _, _, _, _)| n.as_str())
             .unwrap_or("?");
         let one = build_newaddr_reply(
             req.nlmsg_seq, req.nlmsg_pid,
@@ -830,170 +833,57 @@ const _: u16 = msg::NLMSG_DONE;
 /// return an empty list so the rtnetlink reply path is testable
 /// without dragging the runtime socket layer in.
 #[cfg(target_os = "oxide-kernel")]
-fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool)> {
+fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
     let stack = net::sock::stack();
     stack.ifaces.snapshot_devs()
         .into_iter()
         .map(|(id, dev)| {
             let is_lo = dev.name() == "lo";
+            let flags = stack.ifaces.iface_flags(id).unwrap_or(0);
             (id.0, alloc::string::String::from(dev.name()),
-             dev.mac().0, dev.mtu(), is_lo)
+             dev.mac().0, dev.mtu(), is_lo, flags)
         })
         .collect()
 }
 #[cfg(not(target_os = "oxide-kernel"))]
-fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool)> {
+fn ifaces_snapshot() -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32)> {
     alloc::vec::Vec::new()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rtm_constants_match_linux() {
-        assert_eq!(RTM_NEWLINK,  16);
-        assert_eq!(RTM_GETLINK,  18);
-        assert_eq!(RTM_NEWADDR,  20);
-        assert_eq!(RTM_GETADDR,  22);
-        assert_eq!(RTM_NEWROUTE, 24);
-        assert_eq!(RTM_GETROUTE, 26);
+/// Handle RTM_NEWLINK / RTM_SETLINK. Parses the ifinfomsg and applies the
+/// flag change to the iface's REAL flags (registry), so `ip link set X
+/// up/down` and systemd's loopback bring-up actually mutate kernel state
+/// (RTM_GETLINK then reports it). Buffer: nlmsghdr(16) | ifinfomsg(16) |
+/// attrs. Returns an NLMSG_ERROR ack (err=0 success / -ENODEV). # C: O(N)
+pub fn handle_setlink(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let off = Nlmsghdr::SIZE;
+    if full_msg.len() < off + Ifinfomsg::SIZE { return nlmsg_ack(req, -22 /* EINVAL */); }
+    let ifindex = i32::from_ne_bytes([
+        full_msg[off + 4], full_msg[off + 5], full_msg[off + 6], full_msg[off + 7],
+    ]);
+    let ifi_flags = u32::from_ne_bytes([
+        full_msg[off + 8], full_msg[off + 9], full_msg[off + 10], full_msg[off + 11],
+    ]);
+    let ifi_change = u32::from_ne_bytes([
+        full_msg[off + 12], full_msg[off + 13], full_msg[off + 14], full_msg[off + 15],
+    ]);
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if ifindex <= 0 { return nlmsg_ack(req, -19 /* ENODEV */); }
+        let id = net::addr::NetIfaceId::from_raw(ifindex as u32);
+        match net::sock::stack().ifaces.set_iface_flags(id, ifi_flags, ifi_change) {
+            Some(_) => nlmsg_ack(req, 0),
+            None    => nlmsg_ack(req, -19 /* ENODEV */),
+        }
     }
-
-    // K4: an RTM_GETLINK dump must end with a well-formed NLMSG_DONE
-    // (len=16, type=3, NLM_F_MULTI, echoing seq/pid) — absent/malformed is
-    // the "EOF on netlink" mode that breaks `ip link`. Host snapshot is
-    // empty so the whole reply IS the terminator.
-    #[test]
-    fn getlink_dump_ends_with_nlmsg_done() {
-        let req = crate::Nlmsghdr { nlmsg_len: 32, nlmsg_type: RTM_GETLINK,
-            nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 7, nlmsg_pid: 42 };
-        let reply = handle_getlink(&req);
-        let done = crate::Nlmsghdr::parse(&reply[reply.len() - crate::Nlmsghdr::SIZE..]).unwrap();
-        assert_eq!(done.nlmsg_type, crate::msg::NLMSG_DONE);
-        assert_eq!(done.nlmsg_len, crate::Nlmsghdr::SIZE as u32);
-        assert!(done.nlmsg_flags & crate::flags::NLM_F_MULTI != 0);
-        assert_eq!((done.nlmsg_seq, done.nlmsg_pid), (7, 42), "DONE echoes seq/pid");
-    }
-
-    #[test]
-    fn ifinfomsg_size_matches_linux() {
-        assert_eq!(Ifinfomsg::SIZE, 16);
-    }
-
-    #[test]
-    fn put_nlattr_pads_to_4_bytes() {
-        let mut out = Vec::new();
-        put_nlattr(&mut out, ifla::IFLA_IFNAME, b"eth0");
-        // 4-byte header + 4-byte payload, already aligned, no pad.
-        assert_eq!(out.len(), 8);
-        // header len field covers header+payload, not pad.
-        let nla_len = u16::from_ne_bytes([out[0], out[1]]) as usize;
-        assert_eq!(nla_len, 8);
-
-        let mut out2 = Vec::new();
-        put_nlattr(&mut out2, ifla::IFLA_IFNAME, b"lo");
-        // 4-byte header + 2-byte payload = 6 raw, padded to 8.
-        assert_eq!(out2.len(), 8);
-        let nla_len2 = u16::from_ne_bytes([out2[0], out2[1]]) as usize;
-        assert_eq!(nla_len2, 6);
-    }
-
-    #[test]
-    fn ifaddrmsg_size_matches_linux() {
-        assert_eq!(Ifaddrmsg::SIZE, 8);
-    }
-
-    #[test]
-    fn route_table_insert_remove_snapshot() {
-        let before = route_snapshot().len();
-        route_insert(RouteRow {
-            table: RT_TABLE_MAIN, protocol: RTPROT_STATIC,
-            scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
-            dst: Some(([192, 168, 99, 0], 24)),
-            gateway: None, oif_ifindex: 7777, prefsrc: None,
-        });
-        assert_eq!(route_snapshot().len(), before + 1);
-        let n = route_remove(RT_TABLE_MAIN, Some(([192, 168, 99, 0], 24)), 7777);
-        assert_eq!(n, 1);
-        assert_eq!(route_snapshot().len(), before);
-    }
-
-    #[test]
-    fn addr_table_insert_remove_snapshot() {
-        // Snapshot of total rows changes around our operations; we
-        // capture before/after rather than asserting absolute counts
-        // (other tests in the binary may have seeded rows).
-        let before = addr_snapshot().len();
-        addr_insert(IfaceAddr {
-            ifindex: 9999, family: AF_INET,
-            addr: [10, 9, 9, 9], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
-        });
-        let after_insert = addr_snapshot().len();
-        assert_eq!(after_insert, before + 1);
-        let n = addr_remove(9999, [10, 9, 9, 9], 32);
-        assert_eq!(n, 1);
-        assert_eq!(addr_snapshot().len(), before);
-    }
-
-    #[test]
-    fn addr_insert_dedupes_same_key() {
-        let row = IfaceAddr {
-            ifindex: 9998, family: AF_INET,
-            addr: [10, 9, 9, 8], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
-        };
-        let before = addr_snapshot().len();
-        addr_insert(row);
-        addr_insert(row); // second insert should replace, not duplicate
-        let after = addr_snapshot().len();
-        assert_eq!(after, before + 1);
-        let _ = addr_remove(9998, [10, 9, 9, 8], 32);
-    }
-
-    #[test]
-    fn rtmsg_size_matches_linux() {
-        assert_eq!(Rtmsg::SIZE, 12);
-    }
-
-    #[test]
-    fn build_newroute_reply_well_formed() {
-        let bytes = build_newroute_reply(
-            1, 42,
-            RT_TABLE_MAIN, RTPROT_KERNEL, RT_SCOPE_LINK, RTN_UNICAST,
-            Some(([10, 0, 2, 0], 24)),
-            None,
-            2, Some([10, 0, 2, 15]),
-            true,
-        );
-        let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
-        assert_eq!(ty, RTM_NEWROUTE);
-        assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);
-        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 24); // dst_len
-        assert_eq!(bytes[Nlmsghdr::SIZE + 4], RT_TABLE_MAIN);
-    }
-
-    #[test]
-    fn build_newaddr_reply_well_formed() {
-        let bytes = build_newaddr_reply(
-            1, 42, 2, "eth0", [10, 0, 2, 15], 24, RT_SCOPE_UNIVERSE, true,
-        );
-        // Header nlmsg_type == RTM_NEWADDR
-        let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
-        assert_eq!(ty, RTM_NEWADDR);
-        // ifaddrmsg right after the 16-byte header
-        assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);
-        assert_eq!(bytes[Nlmsghdr::SIZE + 1], 24); // prefixlen
-        assert_eq!(bytes[Nlmsghdr::SIZE + 3], RT_SCOPE_UNIVERSE);
-    }
-
-    #[test]
-    fn put_nlattr_str_nul_terminates() {
-        let mut out = Vec::new();
-        put_nlattr_str(&mut out, ifla::IFLA_IFNAME, "eth0");
-        // header(4) + "eth0\0"(5) = 9, padded to 12.
-        assert_eq!(out.len(), 12);
-        let nla_len = u16::from_ne_bytes([out[0], out[1]]) as usize;
-        assert_eq!(nla_len, 9);
-        assert_eq!(&out[4..9], b"eth0\0");
-    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = (ifindex, ifi_flags, ifi_change); nlmsg_ack(req, 0) }
 }
+
+/// Public NLMSG_ERROR ack (err=0) for the dispatcher's default arm.
+/// # C: O(1)
+pub fn nlmsg_ack_pub(req: &Nlmsghdr, err: i32) -> Vec<u8> { nlmsg_ack(req, err) }
+
+#[cfg(test)]
+#[path = "rtnetlink_tests.rs"]
+mod tests;
