@@ -496,5 +496,6 @@ systemd/musl-shims/*.o
 !python/build.sh
 !python/python3-x86_64
 !python/python3-aarch64
+!python/python313.zip
 python/Python-3.13.1/
 python/Python-3.13.1.tgz
