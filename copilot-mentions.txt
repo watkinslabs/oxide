@@ -1,0 +1,11 @@
+Copilot mention scan
+Generated: 2026-06-02T04:30:23.863-04:00
+
+Commits mentioning "copilot" (subject/body): 1
+PRs mentioning "copilot" (title/body): 0
+
+Commit matches:
+ee0a15b57fb03c3a6d6ef8e59b9379b33f8f06da	chore: add copilot mention scan results
+
+PR matches:
+(none)
