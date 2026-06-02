@@ -789,7 +789,15 @@ session    required   pam_unix.so
         stage_so(vendor, real, soname, linker)?;
     }
     for d in ["/lib/systemd", "/usr/lib/systemd", "/usr/lib/systemd/system", "/etc/systemd", "/etc/systemd/system"] { dbg(&format!("mkdir {d}"))?; }
-    for (rel, tgt) in l2_deps::SYSTEMD_STAGE { put(&repo.join(format!("vendor/systemd/install-{arch}/{rel}")), tgt)?; }
+    for (rel, tgt) in l2_deps::SYSTEMD_STAGE {
+        put(&repo.join(format!("vendor/systemd/install-{arch}/{rel}")), tgt)?;
+        // Unit files → 0644 (PID1 warns on exec / missing world-read,
+        // systemd fs-util.c:350/356). Keep S_IFREG (0100000) like put()'s
+        // 0100755 or debugfs sif zeroes the type → ext4 EIO.
+        if tgt.ends_with(".target") || tgt.ends_with(".service") {
+            dbg(&format!("sif {tgt} mode 0100644"))?;
+        }
+    }
     // /etc/inittab — busybox init (B39: respawn login direct, no getty).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
