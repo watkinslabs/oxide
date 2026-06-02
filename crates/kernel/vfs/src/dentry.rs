@@ -24,6 +24,15 @@ pub struct Dentry {
     /// spec describes — same invariants, simpler; the global hash + RCU
     /// is a perf follow-up. Lock class `Dentry` (`06§3.6`).
     children: RwLock<BTreeMap<String, Arc<Dentry>>, DentryClass>,
+    /// Mount link (`docs/16§3` mount crossing). `Some(root_inode)` when a
+    /// filesystem is mounted ON this dentry — the path walk switches to
+    /// that inode on reaching this node, keyed by dentry IDENTITY (not by
+    /// path string). This is the Linux `dentry → vfsmount` mountpoint
+    /// link; `vfs::mount::register` sets it after resolving the
+    /// mount-point path to its canonical dentry once. A mount stack
+    /// (mount-on-mount) chains via the mounted root inode's own dentry,
+    /// but v1 records only the topmost root here. Lock class `Dentry`.
+    mounted_root: RwLock<Option<InodeRef>, DentryClass>,
 }
 
 impl Dentry {
@@ -35,6 +44,7 @@ impl Dentry {
             name,
             inode: RwLock::new(Some(inode)),
             children: RwLock::new(BTreeMap::new()),
+            mounted_root: RwLock::new(None),
         })
     }
 
@@ -46,6 +56,7 @@ impl Dentry {
             name,
             inode: RwLock::new(None),
             children: RwLock::new(BTreeMap::new()),
+            mounted_root: RwLock::new(None),
         })
     }
 
@@ -102,6 +113,26 @@ impl Dentry {
     /// # C: O(log N_children)
     pub fn forget_child(&self, name: &str) {
         self.children.write().remove(name);
+    }
+
+    /// Mounted-fs root inode if a filesystem is mounted on this dentry,
+    /// else `None`. The path walk consults this by dentry identity to
+    /// cross into the mount (`docs/16§3`). # C: O(1)
+    pub fn mounted_root(&self) -> Option<InodeRef> {
+        self.mounted_root.read().clone()
+    }
+
+    /// Install / clear the mount link on this dentry. `Some(root)` marks
+    /// it a mount point whose contents resolve through `root`; `None`
+    /// detaches (umount). Set by `vfs::mount` after it resolves a
+    /// mount-point path to this canonical dentry. # C: O(1)
+    pub fn set_mounted_root(&self, root: Option<InodeRef>) {
+        *self.mounted_root.write() = root;
+    }
+
+    /// True iff a filesystem is mounted on this dentry. # C: O(1)
+    pub fn is_mountpoint(&self) -> bool {
+        self.mounted_root.read().is_some()
     }
 
     /// Absolute path for this dentry — walk the parent chain to the

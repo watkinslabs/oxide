@@ -2,13 +2,15 @@
 //
 // Layout of the kernel-published vvar page at `_vdso_data`:
 //   off  0  u32 seq            // seqlock (even = stable)
-//   off  4  u32 _pad
-//   off  8  u64 monotonic_ns   // kernel's latest CLOCK_MONOTONIC
-//   off 16  u64 realtime_sec   // kernel's latest CLOCK_REALTIME wall sec
-//   off 24  u64 realtime_nsec  // wall nsec
+//   off  4  u32 tsc_khz        // counter freq → compute monotonic LIVE
+//   off  8  u64 realtime_sec   // CLOCK_REALTIME wall sec (coarse snapshot)
+//   off 16  u64 realtime_nsec  // wall nsec
 //
-// __vdso_clock_gettime fast path: CLOCK_MONOTONIC and CLOCK_REALTIME
-// read vvar via a seqlock loop, no syscall. Other clocks fall back.
+// CLOCK_MONOTONIC is computed LIVE from `rdtsc` + `tsc_khz`
+// (ns = TSC * 1e6 / tsc_khz, matching the kernel's monotonic_ns) — no
+// snapshot, so no staleness/jumps that broke userspace deadline math.
+// CLOCK_REALTIME reads the coarse snapshot via a seqlock loop. Other
+// clocks fall back to the syscall.
 
 .section .text
 .balign 16
@@ -30,17 +32,17 @@ __vdso_clock_gettime:
     ret
 
 .Lct_mono:
-    // seqlock retry loop
-1:  mov     _vdso_data+0(%rip), %r8d    // seq
-    test    $1, %r8d
-    jnz     1b
-    mov     _vdso_data+8(%rip), %rax    // monotonic_ns
-    lfence                              // ensure seq re-read after data
-    mov     _vdso_data+0(%rip), %r9d
-    cmp     %r8d, %r9d
-    jne     1b
-    // ts->tv_sec  = ns / 1_000_000_000
-    // ts->tv_nsec = ns % 1_000_000_000
+    // LIVE: ns = rdtsc() * 1_000_000 / tsc_khz (matches kernel HAL).
+    mov     _vdso_data+4(%rip), %ecx    // tsc_khz (u32, zero-extended)
+    test    %ecx, %ecx
+    jz      .Lct_syscall                // not yet published → syscall
+    rdtsc                               // edx:eax = TSC hi:lo (uppers zeroed)
+    shl     $32, %rdx
+    or      %rdx, %rax                  // rax = full 64-bit TSC
+    mov     $1000000, %rdi
+    mul     %rdi                        // rdx:rax = TSC * 1e6 (128-bit)
+    div     %rcx                        // rax = ns, rdx = remainder
+    // ts->tv_sec = ns / 1e9 ; ts->tv_nsec = ns % 1e9
     mov     $1000000000, %rcx
     xor     %edx, %edx
     div     %rcx
@@ -53,8 +55,8 @@ __vdso_clock_gettime:
 1:  mov     _vdso_data+0(%rip), %r8d
     test    $1, %r8d
     jnz     1b
-    mov     _vdso_data+16(%rip), %rax   // realtime_sec
-    mov     _vdso_data+24(%rip), %rcx   // realtime_nsec
+    mov     _vdso_data+8(%rip), %rax    // realtime_sec
+    mov     _vdso_data+16(%rip), %rcx   // realtime_nsec
     lfence
     mov     _vdso_data+0(%rip), %r9d
     cmp     %r8d, %r9d

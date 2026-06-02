@@ -11,9 +11,65 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use sync::{MountTable as MountClass, Spinlock};
 
+use crate::dentry::Dentry;
 use crate::fs::{FileSystem, KResult};
 use crate::inode::InodeRef;
 use crate::types::VfsError;
+
+/// Mount-point dentry resolver (`docs/16§3`): the kernel installs a fn
+/// that resolves an absolute mount-point path to its CANONICAL dentry
+/// in the global dentry tree (following symlinks on the final
+/// component, so a bind target of `/proc/self/fd/N` lands on the file
+/// the fd points at). `register`/`register_bind` call it once at mount
+/// time to mark that dentry a mount point, so the path walk can cross
+/// by dentry identity rather than path-string prefix. `null`
+/// (pre-install / hosted tests) ⇒ resolution unavailable, crossing
+/// stays inert — those paths drive the walk with explicit dentries.
+static DENTRY_RESOLVER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Signature of the mount-point dentry resolver.
+pub type DentryResolver = fn(&str) -> Option<Arc<Dentry>>;
+
+/// Install the mount-point dentry resolver (kernel boot). Last wins.
+/// # C: O(1)
+pub fn set_dentry_resolver(f: DentryResolver) {
+    DENTRY_RESOLVER.store(f as *mut (), Ordering::Release);
+}
+
+/// Resolve a mount-point path to its canonical dentry via the installed
+/// resolver, or `None` if unavailable. # C: O(path components)
+fn resolve_dentry(path: &str) -> Option<Arc<Dentry>> {
+    let p = DENTRY_RESOLVER.load(Ordering::Acquire);
+    if p.is_null() { return None; }
+    // SAFETY: DENTRY_RESOLVER only ever holds a value stored by
+    // set_dentry_resolver, which takes a `DentryResolver` fn pointer; the
+    // round-trip through *mut () preserves the fn's address.
+    let f: DentryResolver = unsafe { core::mem::transmute::<*mut (), DentryResolver>(p) };
+    f(path)
+}
+
+/// Mark `mount_point`'s canonical dentry as a mount point carrying
+/// `root` (the mounted fs's root inode), so `path_lookup` crosses into
+/// it by dentry identity (`docs/16§3`). The root mount `/` is skipped
+/// (the walk already starts at the root inode). No-op if the resolver
+/// isn't installed or the path doesn't resolve (the mount still lives in
+/// the table for `/proc/mounts`/mnt_id bookkeeping). # C: O(path)
+fn wire_crossing(mount_point: &str, root: Option<InodeRef>) {
+    if mount_point == "/" { return; }
+    let Some(root) = root else { return; };
+    if let Some(d) = resolve_dentry(mount_point) {
+        d.set_mounted_root(Some(root));
+    }
+}
+
+/// Clear the mount link on `mount_point`'s canonical dentry (umount).
+/// # C: O(path)
+fn unwire_crossing(mount_point: &str) {
+    if mount_point == "/" { return; }
+    if let Some(d) = resolve_dentry(mount_point) {
+        d.set_mounted_root(None);
+    }
+}
 
 /// Mount propagation type per `docs/16§6` (`mount_namespaces(7)`).
 /// Stored as the u8 discriminant in `Mount.propagation` so it can be
@@ -110,19 +166,31 @@ static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
 /// # C: O(N_mounts) — linear scan + push.
 pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
     let ns = current_ns();
-    let mut t = TABLE.lock();
-    if t.iter().any(|m| m.mount_point == mount_point && m.ns == ns) {
-        return Err(VfsError::Eexist);
+    // Crossing root inode: prefer `Superblock::root`, else the backend's
+    // own whole-path lookup of its mount point (devfs/procfs/sysfs/tmpfs
+    // expose their root dir this way — they don't override `root()`). This
+    // inode is what the mount SHADOWS the underlying dir with, so the walk
+    // sees the mounted fs's contents — not the ext4 dir beneath it.
+    let root_inode = fs.root().or_else(|| fs.lookup(mount_point));
+    {
+        let mut t = TABLE.lock();
+        if t.iter().any(|m| m.mount_point == mount_point && m.ns == ns) {
+            return Err(VfsError::Eexist);
+        }
+        t.push(Arc::new(Mount {
+            fs,
+            mount_point: mount_point.to_string(),
+            root: None,
+            mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
+            propagation: AtomicU8::new(Propagation::Private as u8),
+            peer_group: AtomicU64::new(0),
+            ns,
+        }));
     }
-    t.push(Arc::new(Mount {
-        fs,
-        mount_point: mount_point.to_string(),
-        root: None,
-        mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
-        propagation: AtomicU8::new(Propagation::Private as u8),
-        peer_group: AtomicU64::new(0),
-        ns,
-    }));
+    // Wire dentry-identity crossing (`docs/16§3`) after dropping the
+    // table lock — resolve_dentry runs a path walk that may re-enter
+    // the table (resolve_mount), so it must not be held.
+    wire_crossing(mount_point, root_inode);
     Ok(())
 }
 
@@ -135,19 +203,25 @@ pub fn register(mount_point: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
 /// # C: O(N_mounts)
 pub fn register_bind(mount_point: &str, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
     let ns = current_ns();
-    let mut t = TABLE.lock();
-    if t.iter().any(|m| m.mount_point == mount_point && m.ns == ns) {
-        return Err(VfsError::Eexist);
+    {
+        let mut t = TABLE.lock();
+        if t.iter().any(|m| m.mount_point == mount_point && m.ns == ns) {
+            return Err(VfsError::Eexist);
+        }
+        t.push(Arc::new(Mount {
+            fs,
+            mount_point: mount_point.to_string(),
+            root: Some(root.clone()),
+            mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
+            propagation: AtomicU8::new(Propagation::Private as u8),
+            peer_group: AtomicU64::new(0),
+            ns,
+        }));
     }
-    t.push(Arc::new(Mount {
-        fs,
-        mount_point: mount_point.to_string(),
-        root: Some(root),
-        mnt_id: NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed),
-        propagation: AtomicU8::new(Propagation::Private as u8),
-        peer_group: AtomicU64::new(0),
-        ns,
-    }));
+    // Cross into the bound subtree's root inode by dentry identity. For a
+    // bind onto `/proc/self/fd/N` the resolver follows that magic symlink
+    // to the real target dentry (e.g. /etc/machine-id) — the Linux model.
+    wire_crossing(mount_point, Some(root));
     Ok(())
 }
 
@@ -293,10 +367,18 @@ pub fn pivot_root(new_root: &str, put_old: &str) -> KResult<()> {
 /// # C: O(N_mounts)
 pub fn unregister(mount_point: &str) -> usize {
     let ns = current_ns();
-    let mut t = TABLE.lock();
-    let before = t.len();
-    t.retain(|m| !(m.mount_point == mount_point && m.ns == ns));
-    before - t.len()
+    let removed = {
+        let mut t = TABLE.lock();
+        let before = t.len();
+        t.retain(|m| !(m.mount_point == mount_point && m.ns == ns));
+        before - t.len()
+    };
+    // Detach the dentry mount link iff no mount remains at this path in
+    // any ns (the dentry tree is global; another ns may still mount here).
+    if removed > 0 && !TABLE.lock().iter().any(|m| m.mount_point == mount_point) {
+        unwire_crossing(mount_point);
+    }
+    removed
 }
 
 /// Copy-on-unshare (`docs/16§6`): clone every mount in `from_ns` into
@@ -496,24 +578,17 @@ pub fn lookup(path: &str) -> KResult<InodeRef> {
     mnt.fs.lookup(path).ok_or(VfsError::Enoent)
 }
 
-/// Mount-crossing hook for the dentry path-walk (`docs/16§3`): if a
-/// filesystem is mounted EXACTLY at `abs`, return its root inode — the
-/// inode the walk switches to on crossing. `None` if nothing is mounted
-/// there (or it's the root mount `/`, which the walk already starts at).
-/// Prefers `Superblock::root` (`fs.root()`); falls back to the
-/// whole-path `fs.lookup(abs)` for backends that don't expose `root()`
-/// yet (tmpfs/proc/sys key their tables by full path, so this returns
-/// the correct per-mount root even though the fs struct is shared).
-///
-/// Install via `crate::namei::set_mount_resolver(mount_root_at)` at boot
-/// so `path_lookup` crosses every mount uniformly — the V5 unification.
-/// # C: O(N_mounts)
+/// QUERY: root inode of the mount rooted EXACTLY at `abs` in the
+/// caller's ns, or `None` if nothing is mounted there (or it's `/`).
+/// This is a mount-table lookup by path — used for `/proc/mounts`
+/// bookkeeping and tests, NOT the path-walk crossing mechanism (that is
+/// dentry-identity-keyed via `Dentry::mounted_root`, `docs/16§3`).
+/// Prefers the bind-clone `root`; falls back to `fs.root()` then the
+/// whole-path `fs.lookup(abs)`. # C: O(N_mounts)
 pub fn mount_root_at(abs: &str) -> Option<InodeRef> {
     if abs == "/" { return None; }
     let (m, _) = resolve_mount(abs)?;
     if m.mount_point != abs { return None; }
-    // Bind-as-clone: the mount's root is an arbitrary source inode; the
-    // walk continues into the source subtree via per-component lookup.
     if let Some(r) = m.root.as_ref() { return Some(r.clone()); }
     m.fs.root().or_else(|| m.fs.lookup(abs))
 }
@@ -527,11 +602,13 @@ pub fn mount_whole_path(abs: &str) -> Option<InodeRef> {
     lookup(abs).ok()
 }
 
-/// Install both path-walk hooks (`mount_root_at` crossing +
-/// `mount_whole_path` delegation) into `vfs::namei`. Called once at boot.
-/// # C: O(1)
+/// Install the whole-path delegation hook (`mount_whole_path`) into
+/// `vfs::namei`. Mount CROSSING is now keyed by dentry identity
+/// (`Dentry::mounted_root`, wired in `register`/`register_bind`), so the
+/// old string `mount_root_at` crossing hook is gone — only the
+/// whole-path delegate (procfs synthesising from a full path) remains.
+/// Called once at boot. # C: O(1)
 pub fn install_resolvers() {
-    crate::namei::set_mount_resolver(mount_root_at);
     crate::namei::set_mount_whole_path(mount_whole_path);
 }
 

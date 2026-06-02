@@ -45,6 +45,7 @@ pub enum Errno {
     Eidrm   = 43,
     Enomsg  = 42,
     Eoverflow         = 75,
+    Enoprotoopt       = 92,
     Eopnotsupp        = 95,
     Eafnosupport      = 97,
     Eaddrinuse        = 98,

@@ -609,6 +609,13 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let msgp   = args.a1;
     let _flags = args.a2;
+    // netlink: real netlink_recvmsg (fills the returned msghdr) — explicit,
+    // not relying on the recvfrom fall-through which left msghdr unset.
+    // MSG_PEEK (a2) must be honoured: sd-netlink peeks to size its buffer
+    // before the consuming read.
+    if crate::syscalls::netlink_fd::is_netlink(fd) {
+        return crate::syscalls::netlink_fd::recvmsg(fd, msgp, args.a2 as u32);
+    }
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // F122/F213: route to DGRAM/STREAM cmsg handlers (lock dropped before recurse).
     let sock = socket_from_fd(fd);
@@ -817,6 +824,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     let optname = args.a2;
     let optval  = args.a3;
     let optlen_p = args.a4;
+    if crate::syscalls::netlink_fd::is_netlink(_fd) {
+        return crate::syscalls::netlink_fd::getsockopt(_fd, level, optname, optval, optlen_p);
+    }
     if level == SOL_SOCKET && optname == SO_PEERCRED
        && optval != 0 && optval < USER_VA_END
        && optlen_p != 0 && optlen_p < USER_VA_END

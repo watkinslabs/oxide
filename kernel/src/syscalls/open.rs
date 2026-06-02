@@ -202,7 +202,9 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let s = match core::str::from_utf8(path) {
         Ok(s)  => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolved = resolve_path_for_open(s);
+    // openat(2): resolve relative `s` against the dirfd's directory
+    // (a0), not just cwd — real dirfd semantics (`docs/16§3`).
+    let resolved = crate::syscalls::pathresolve::resolve_at(args.a0 as i32, s);
     let path_str: &str = resolved.as_deref().unwrap_or(s);
     // Landlock check: derive requested access from open flags.
     {
