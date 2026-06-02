@@ -532,6 +532,10 @@ pub struct Creds {
     pub cap_inheritable: AtomicU64,
     pub cap_ambient:     AtomicU64,
     pub cap_bounding:    AtomicU64,
+    /// Linux securebits (SECBIT_* flags + their locks) per
+    /// `prctl(PR_SET_SECUREBITS)`. Stored so systemd's per-service
+    /// exec setup round-trips; v1 doesn't yet enforce the bits.
+    pub securebits:      AtomicU32,
 }
 
 impl Creds {
@@ -552,6 +556,7 @@ impl Creds {
             cap_inheritable: AtomicU64::new(0),
             cap_ambient:     AtomicU64::new(0),
             cap_bounding:    AtomicU64::new(Self::CAP_FULL),
+            securebits:      AtomicU32::new(0),
         }
     }
 
@@ -584,6 +589,7 @@ impl Creds {
             cap_inheritable: AtomicU64::new(self.cap_inheritable.load(Relaxed)),
             cap_ambient:     AtomicU64::new(self.cap_ambient.load(Relaxed)),
             cap_bounding:    AtomicU64::new(self.cap_bounding.load(Relaxed)),
+            securebits:      AtomicU32::new(self.securebits.load(Relaxed)),
         };
         // SAFETY: caller holds the single-mutator invariant; we just
         // built `out` and no other CPU has observed it yet, so writing
