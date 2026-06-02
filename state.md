@@ -1,139 +1,75 @@
 # Session hand-off
 
 ## Headline
-**OXIDE boots systemd as its DEFAULT init (PID 1) to `oxide login:` on BOTH
-x86_64 AND aarch64** (keystone, done+merged), with a GNU userland: /bin now
-hosts GNU coreutils + grep/sed/awk/find/tar + less/vi(vim)/gzip/gunzip (NOT
-busybox). 18 PRs this session (#1482-#1497). main @ #1497, tree clean.
+**OXIDE distro: roadmap items 1-4 DONE.** systemd is PID1 → `oxide login:`
+on x86_64 AND aarch64; GNU /bin userland (coreutils+grep/sed/awk/find/tar+
+less/vi/gzip); and now **CPython 3.13.1 at /usr/bin/python3 on both arches**
+(static-musl, stdlib zip'd). 23 PRs this session (#1482-#1502). main @
+3f89ed82. Only roadmap item 3 (GRUB) remains, DEFERRED for user scoping.
 
-## DONE this session
-- Full systemd bring-up → default PID1 → login, both arches (#1482-#1491,
-  B22 arm dynamic-loader entry, F357 flip).
-- xtask main.rs split into rootfs.rs (#1495, was at cap).
-- busybox→GNU /bin migration: coreutils (#1493), grep/sed/awk/find/tar
-  (#1496), less/vi/gzip/gunzip (#1497). Largely complete — remaining busybox
-  /bin entries (ash/hush/echo/test/which/clear/more/xxd/hostname/dmesg/net
-  tools) have no separate GNU package; leave them.
+## Python (item 4) — DONE, #1501 + #1502
+- vendor/python/{build.sh,python3-x86_64,python3-aarch64,python313.zip} +
+  tools/fetch-python.sh. CPython 3.13.1 cross-built static-musl, all stdlib
+  C extensions BUILTIN (zlib/_socket/select/hashlib/math/...). Pure-python
+  stdlib zipped (2.6M, /usr/lib/python313.zip); getpath auto-adds it →
+  `python3 -c ...` runs with NO env vars. Verified host run: print(6*7)=42,
+  imports os/json/re/zlib/_socket/hashlib/base64/datetime/struct. Both
+  arches boot-smoke PASS with python staged (x86 34s, arm 40s).
+- Build recipe: Setup.local copies configure's Setup.stdlib with
+  *shared*->*static* (a -static link can't make loadable .so) + disables
+  unvendored-dep modules. `make` (not `make python`) builds the C exts.
+- KNOWN GAPS (NOT v1-complete — fix next): **_ssl + _hashlib MISSING**
+  (configure MODULE__SSL_STATE=missing — openssl 3.0.15 IS vendored at
+  vendor/openssl/install-<arch> but CPython didn't detect it; needs
+  --with-openssl=$SSL and/or PKG_CONFIG_PATH to the vendored .pc, then the
+  _ssl/_hashlib lines drop out of the disabled stanza in build.sh). No TLS
+  / no openssl-backed hashlib until fixed. **_ctypes MISSING** (libffi not
+  vendored). **_bz2/_lzma/_curses/readline/_dbm/_tkinter** disabled.
 
-## systemd-default boot baseline (clean)
-The systemd-default boot (SMP=1) reaches `Reached target Oxide Default
-Target` + `Startup finished` (~15s userspace) + `oxide login:` cleanly.
-Only NON-FATAL cosmetic taints/warnings remain:
-- `System is tainted: unmerged-usr:unmerged-bin:var-run-bad` — /bin,/sbin
-  aren't /usr/bin,/usr/sbin symlinks (usr-merge is a big layout change), and
-  /var/run is a dir not a `/var/run`→`/run` symlink (changing it risks
-  dhcpcd's hardcoded /var/run/dhcpcd path).
-- `Failed to add a watch for /run/systemd/ask-password: No such file` — the
-  ask-password runtime dir isn't pre-created (systemd-tmpfiles not run).
-These don't affect login; low priority. A var-run symlink / usr-merge PR
-would need rootfs.rs compaction first (it's at ~998/1000).
+## NEXT (one PR each, both-arch gate) — pick lowest-risk highest-value
+1. **F364 python _ssl/_hashlib** (HIGHEST value — TLS for a real distro
+   python; pip/urllib/requests need it). openssl already vendored. In
+   vendor/python/build.sh build_one: add `--with-openssl="$SSL"` to
+   configure (and maybe `PKG_CONFIG_PATH=$SSL/lib/pkgconfig` +
+   `--with-openssl-rpath=no`); REMOVE `_ssl` `_hashlib` from the
+   write_setup_local *disabled* stanza. Check config.log
+   "checking for openssl" / MODULE__SSL_STATE after. Rebuild both arches,
+   re-stage (rootfs.rs unchanged — same paths), boot-smoke. Verify host:
+   `python3 -c 'import ssl,hashlib; print(ssl.OPENSSL_VERSION)'`. NOTE the
+   static openssl link may need `-lssl -lcrypto` ordering / `-ldl`(musl has
+   no libdl, it's in libc) — iterate.
+2. **F365 python _ctypes** — vendor libffi (fetch + cross-build static like
+   zlib), add includes/libs to build.sh, remove _ctypes from disabled.
+3. **systemd sysinit chain** — build systemd-tmpfiles/-remount-fs helper
+   binaries (add ninja targets in vendor/systemd/build.sh) → clears the
+   `ask-password` watch warning + a real sysinit. Medium.
+4. **GRUB (item 3) — DEFERRED, needs user scoping.** Kernel is Limine-native
+   (crates/arch/boot-x86_64 ingests memmap/HHDM/fb/cmdline via Limine proto;
+   image_qemu.rs builds a Limine image). GRUB = Multiboot2/EFI boot-protocol
+   rewrite of the boot path on BOTH arches. High-risk, multi-PR. Advise-
+   then-act before starting.
+5. usr-merge (clears unmerged-usr taint; rootfs.rs at 991 — compact first).
 
-## Remaining roadmap items are LARGE tracks (scope before diving in)
-- **GRUB (roadmap item 3)** is NOT a config swap. The kernel is deeply
-  Limine-native: crates/arch/boot-x86_64 ingests memmap/HHDM/framebuffer/
-  cmdline via the Limine boot protocol (LIMINE_REQUESTS, limine_proto crate;
-  image_qemu.rs builds a Limine UEFI/BIOS image). GRUB would require
-  reimplementing boot-info ingestion for Multiboot2 (or a GRUB EFI stub) —
-  a major kernel boot-path rewrite that risks the foundational boot on BOTH
-  arches. High-risk, multi-PR; warrants explicit scoping/user confirmation
-  before starting (advise-then-act). A safer interim: vendor+stage grub
-  ALONGSIDE Limine without switching, or write a boot-protocol-abstraction
-  plan doc first.
-- **python (item 4)** — vendor a static-musl CPython for both arches (deps
-  zlib/openssl/libffi/ncurses mostly vendored). Self-contained (doesn't
-  touch the boot) but a large, fiddly cross-build (host-python-then-cross).
-- **usr-merge** — clears unmerged-usr/-bin taints; /bin→/usr/bin etc.
-  symlinks + move binaries to /usr. Medium risk (everything resolves through
-  the symlinks); rootfs.rs at ~998-cap → compact/split FIRST.
-- **systemd sysinit** — needs systemd-tmpfiles/-remount-fs binaries staged
-  (check vendor/systemd build outputs).
+## Verified-left harness rules (state.md history)
+- Build/boot cmds run_in_background ALONE. NEVER a sleep/pkill/grep PREFIX
+  in the same compound — dev shell `set -e` + BLOCKED foreground-sleep
+  aborts the redirect → empty capture file. pkill SEPARATELY, guard
+  `||true`. A trailing `&` inside orphans the redirect (qemu alive, empty).
+- Stale qemu squats :2222 → 'Could not set up host forwarding'. Clear first.
+- boot SMP=1 (x86 cat-smoke spins 100% CPU pre-PID1 under SMP=2). grep -a.
+- qemu MCP is TCG (slow) + flaky (memory qemu_mcp_unreliable): it wedged at
+  UEFI for the python in-kernel check this session — DON'T thrash it; use
+  `make smoke-x86/smoke-arm` for boot status (KVM, ~35s to login).
+- **rootfs-*.img are build artifacts** regenerated by `xtask rootfs`; the
+  git-tracked copies are stale 32MB placeholders. GitHub rejects >100MB —
+  NEVER `git add` the rebuilt 128MB imgs. Commit only rootfs.rs (the recipe).
+- Gate: both arches `make smoke-*` PASS → `SKIP_SMOKE=1 git push -u` +
+  `gh pr create` + `gh pr merge --merge --delete-branch=true` + checkout
+  main + pull. Default PID1 = systemd. spec-lint clean before commit/PR.
+- NEVER git-add vendor/python/Python-3.13.1/ (source/build, gitignored) or
+  vendor/*/install-*/lib/pkgconfig. Files <1000 lines. No Co-Authored-By.
 
-STATUS: the user's keystone roadmap items 1 (systemd-as-PID1) & 2 (busybox→
-GNU userland) are DONE+MERGED (20 PRs #1482-#1499). Items 3 (GRUB) & 4
-(python) remain as the large tracks above.
-
-## NEXT (larger tracks, one PR each, both-arch gate)
-1. **systemd full sysinit chain** — default.target is first-light
-   (Wants=console-getty, DefaultDependencies=no). Expand to real distro init:
-   stage unit fragments (systemd-tmpfiles-setup, sysinit/basic/multi-user
-   deps, an fstab mount) in vendor/systemd/build.sh + install-{x86_64,
-   aarch64} + tools/xtask/src/l2_deps.rs; keep boot-smoke green (console-getty
-   prints `oxide login:`). Verify via the systemd-default boot; fix new
-   `Failed at step`/missing-unit gaps Linux-correct.
-2. **Limine→GRUB** (x86; vendor/limine present — add a grub recipe + switch
-   tools/xtask image_qemu image build). LARGE.
-3. **python** cross-build. LARGE.
-4. DEFERRED: interactive-login-completion refinement (flaky — x86 cat-smoke
-   SMP wedge; needs SMP=1 boot + serial drive; session/foreground-pgid under
-   systemd, NOT the tty since /dev/console==ttyS0==vt0).
-
-NOTE: tools/xtask/src/rootfs.rs is at ~998 lines (near 1000-cap) — compact or
-sub-split BEFORE adding more to it.
-
-## Merged this session (the full systemd bring-up)
-| PR | What |
-|----|------|
-| #1482 | /proc/<pid> namespace PID (init shows 1) |
-| #1483 | first-light default.target |
-| #1484 | mkdir EEXIST + /sys/fs,/sys/kernel dirs (cgroup mkdir_p) |
-| #1485 | per-fs name_to_handle_at mount_id (Inode::fsid) + inotify EAGAIN/poll |
-| #1486 | service exec-setup syscalls: PR_CAP_AMBIENT, keyctl SETPERM/LINK, capget/capset vpid, PR_SET/GET_SECUREBITS |
-| #1489 | console-getty.service → `oxide login:` (getty/login path) |
-| #1490 | B22: arm PID1 spawn enters dynamic-loader (user_ip) not program entry |
-| #1491 | F357: FLIP default PID1 busybox→systemd (both arches) |
-(+ #1487/#1488 state docs)
-
-## The systemd wedge chain solved (in order)
-cgroup EROFS (#1484) → infinite mount-walk from constant mount_id (#1485) →
-inotify epoll-spin (#1485) → exec-setup steps AMBIENT/KEYRING/CAPABILITIES/
-SECUREBITS (#1486) → arm dynamic-loader entry (#1490 B22, the arm-only
-blocker, found via targeted klog tracing not blind boots) → flip (#1491).
-Both arches reach `oxide login:` in the boot-smoke (x86 35s, arm 40s).
-
-## OPEN (refinement, NOT blocking — keystone is merged+green)
-**Interactive login completion under systemd UNVERIFIED.** tools/boot-smoke-
-login.sh (types alice/swordfish → checks id=uid=1000) STALLS after the
-`oxide login:` prompt. Could not capture the post-`alice` behavior — 3
-harness runs blocked by mechanics (orphaned redirects from `&`/pkill-prefix
-compounds) + the x86 cat-smoke SMP flake (boot spins 100% CPU at "A" under
-default `make qemu-x86`=SMP2). KEY: /dev/console == /dev/ttyS0 == same
-ConsoleInode vt0 (devfs.rs:37/40) → NOT the tty. So it's session/job-control:
-foreground-pgid / controlling-tty (TIOCSCTTY/TIOCSPGRP) handover under
-systemd's already-setsid'd service session vs busybox-init's getty child.
-NEXT-SESSION login diag: run the harness with KEEP_LOG=/path and SMP=1
-(`SMOKE_TIMEOUT=300` env, but the harness calls `make qemu-x86` — may need to
-pass SMP=1 via the Makefile/xtask or dodge the cat-smoke flake), read
-/tmp/login_full.log around the prompt; trace TIOCSCTTY/foreground_pgid in
-crates/kernel/tty + the console park/wake path (park_current_for_tty_vt in
-kernel/src/dev/console.rs). One PR, both-arch gate. The merged keystone is
-fine regardless (prompt appears, boot-smoke green).
-
-## NEXT roadmap (one PR each, both-arch gate)
-1. Login-completion fix (above) — makes the milestone fully usable.
-2. **Distro userland**: rip busybox → GNU coreutils. Vendor + cross-build
-   static-musl via the xtask pkg system (study how bash F216 / vim F251 /
-   nano F255 were vendored: vendor/<pkg>/build.sh + install-{x86_64,aarch64}
-   + tools/xtask l2_deps staging). Stage, switch /bin applet symlinks
-   busybox→coreutils, verify under the booted system. One program/batch/PR.
-3. Expand systemd unit tree to a real sysinit chain (mount -a, tmpfiles).
-4. Limine→GRUB bootloader. 5. vim/python cross-built.
-
-## CRITICAL harness rules
-- dev shell `set -e`: a pkill/grep/[test] prefix in a compound aborts it AND
-  a trailing `&` orphans the redirect (qemu alive, EMPTY file). Run boots/
-  harnesses ALONE: bare `make ... > /tmp/rN.txt 2>&1` run_in_background;
-  pkill SEPARATELY first (`pkill -9 -f qemu-system 2>/dev/null||true; sleep
-  2`); guard EVERY grep/pgrep/pkill/[test] with ||true.
-- Stale qemu squats :2222 → 'Could not set up host forwarding'. Always clear.
-- NO foreground sleep (bg until-loops + line-count break; qemu %cpu: 0%=idle/
-  wedged, 100%=busy/spinning/slow-TCG). arm TCG slow (qemu MCP too slow);
-  targeted klog traces work on arm. NEVER klog in sys_openat.
-- x86 cat-smoke ("A") can wedge under SMP=2 (spins 100% CPU pre-PID1) — boot
-  SMP=1 for systemd tests, or retry.
-- systemd[1] log lines split across 3 output lines; grep -a (binary escapes).
-- Gate: `git push --dry-run origin <branch>` = both-arch boot-smoke; arm
-  flakes → re-run. PASS → SKIP_SMOKE=1 push + `gh pr merge --merge
-  --delete-branch=true` (NO separate git branch -D).
-- Default PID1 is now systemd (no recon needed to test it). spec-lint clean;
-  files <1000 lines; branch per change; explicit git add; never add
-  vendor/*/install-*/lib/pkgconfig; tree-wide cargo fmt NOT wanted.
+## DONE earlier this session (#1482-#1500)
+systemd PID1 bring-up (#1482-#1491: B22 arm dyn-loader entry, F357 flip),
+xtask split (#1495), busybox→GNU /bin (#1493/#1496/#1497), run-dirs (#1499).
+See git log; don't restate.
