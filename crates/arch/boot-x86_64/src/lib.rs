@@ -23,6 +23,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod limine;
+pub mod mb2;
 pub mod uart;
 
 use core::cell::UnsafeCell;
