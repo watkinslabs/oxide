@@ -429,22 +429,30 @@ unsafe fn read_caphdr(hp: u64) -> Result<(u32, i32), i64> {
 /// Resolve a cap target by pid (0 = current) → Arc-or-stub of the
 /// task's creds. Returns the loaded triple `(eff, perm, inh)`.
 fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
+    if pid < 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    fn caps_of(c: &crate::Task) -> (u64, u64, u64) {
+        (c.creds.cap_effective.load(Ordering::Acquire),
+         c.creds.cap_permitted.load(Ordering::Acquire),
+         c.creds.cap_inheritable.load(Ordering::Acquire))
+    }
+    let esrch = -(Errno::Esrch.as_i32() as i64);
     if pid == 0 {
-        let cur = match crate::live::current() {
-            Some(c) => c, None => return Err(-(Errno::Esrch.as_i32() as i64)),
-        };
-        Ok((cur.creds.cap_effective.load(Ordering::Acquire),
-            cur.creds.cap_permitted.load(Ordering::Acquire),
-            cur.creds.cap_inheritable.load(Ordering::Acquire)))
-    } else if pid > 0 {
-        let task = match crate::live::registry::lookup(pid as u32) {
-            Some(t) => t, None => return Err(-(Errno::Esrch.as_i32() as i64)),
-        };
-        Ok((task.creds.cap_effective.load(Ordering::Acquire),
-            task.creds.cap_permitted.load(Ordering::Acquire),
-            task.creds.cap_inheritable.load(Ordering::Acquire)))
-    } else {
-        Err(-(Errno::Einval.as_i32() as i64))
+        return crate::live::current().map(caps_of).ok_or(esrch);
+    }
+    // `pid` is a namespace thread id (the caller's pid_ns) — a VPID.
+    // Resolve via lookup_by_vpid, NOT the internal-tid registry.
+    // systemd/libcap calls capget with its own getpid() (vpid 1); keying
+    // on the internal tid missed it and returned ESRCH ("No such
+    // process"), aborting every service spawn at the CAPABILITIES step.
+    let v = pid as u32;
+    if let Some(c) = crate::live::current() {
+        if v == c.vtid.load(Ordering::Acquire) || v == c.vtgid.load(Ordering::Acquire) {
+            return Ok(caps_of(c));
+        }
+    }
+    match crate::live::registry::lookup_by_vpid(v).or_else(|| crate::live::registry::lookup(v)) {
+        Some(t) => Ok(caps_of(&t)),
+        None    => Err(esrch),
     }
 }
 
@@ -515,7 +523,14 @@ pub fn sys_capset(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    if pid != 0 && pid as u32 != cur.tid {
+    // capset only targets the calling thread: pid 0, or the caller's own
+    // id by internal tid OR namespace vpid (systemd/libcap passes its
+    // getpid() vpid, not the internal tid).
+    if pid != 0
+        && pid as u32 != cur.tid
+        && pid as u32 != cur.vtid.load(Ordering::Acquire)
+        && pid as u32 != cur.vtgid.load(Ordering::Acquire)
+    {
         return -(Errno::Eperm.as_i32() as i64);
     }
     let bytes_needed = nblocks * 12;
