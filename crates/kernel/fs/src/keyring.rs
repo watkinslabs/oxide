@@ -133,8 +133,11 @@ const KEYCTL_GET_KEYRING_ID:     u64 = 0;
 const KEYCTL_JOIN_SESSION_KEYRING: u64 = 1;
 const KEYCTL_UPDATE:             u64 = 2;
 const KEYCTL_REVOKE:             u64 = 3;
+const KEYCTL_SETPERM:            u64 = 5;
 const KEYCTL_DESCRIBE:           u64 = 6;
 const KEYCTL_CLEAR:              u64 = 7;
+const KEYCTL_LINK:               u64 = 8;
+const KEYCTL_UNLINK:             u64 = 9;
 const KEYCTL_SEARCH:             u64 = 10;
 const KEYCTL_READ:               u64 = 11;
 const KEYCTL_SET_TIMEOUT:        u64 = 15;
@@ -273,6 +276,20 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             }
             -(ENOKEY as i64)
         }
+        // Permission + linking ops on our single flat keyring model.
+        // systemd's setup_keyring (run before every service exec) does
+        // SETPERM on the new session keyring then LINK; an Eopnotsupp here
+        // aborts the spawn ("Failed at step KEYRING ... Not supported").
+        // Accept them: SETPERM records perm on a real key, else succeeds;
+        // LINK/UNLINK are no-ops in a non-hierarchical keyring.
+        KEYCTL_SETPERM => {
+            let serial = args.a1 as i32;
+            let perm   = args.a2 as u32;
+            let mut g = STORE.lock();
+            if let Some(k) = g.keys.get_mut(&serial) { k.perm = perm; }
+            0
+        }
+        KEYCTL_LINK | KEYCTL_UNLINK => 0,
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
     }
 }
