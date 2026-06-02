@@ -30,8 +30,14 @@ impl CgDir {
     }
 }
 
+/// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
+/// distinct `fsid` for the unified hierarchy so mount-point detection sees
+/// the `/sys/fs/cgroup` boundary.
+const CGROUP2_FSID: u64 = 0x6367_7270;
+
 impl Inode for CgDir {
     fn ino(&self) -> Ino { (DIR_INO_BASE + self.cgid) as Ino }
+    fn fsid(&self) -> u64 { CGROUP2_FSID }
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn perm(&self) -> Option<u16> { Some(0o555) }
@@ -85,6 +91,7 @@ impl CgFile {
 
 impl Inode for CgFile {
     fn ino(&self) -> Ino { self.ino }
+    fn fsid(&self) -> u64 { CGROUP2_FSID }
     fn file_type(&self) -> FileType { FileType::Regular }
     /// Current content length. The read path bounds reads by `size()`,
     /// so dynamic control files must report their live byte count or
