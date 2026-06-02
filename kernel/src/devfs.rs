@@ -85,6 +85,13 @@ pub fn init() {
     register_dir("/usr",      0x5000_0006);
     register_dir("/usr/bin",  0x5000_0007);
     register_dir("/proc/sys", 0x5000_0008);
+    // Intermediate sysfs dirs that are real directories in Linux and
+    // host mounts/leaves below them (/sys/fs/cgroup, /sys/kernel/tracing).
+    // Without these the path doesn't resolve, so a `mkdir -p /sys/fs/cgroup`
+    // (systemd ensuring the cgroup mountpoint) fails: the read-only `/sys`
+    // parent's mkdir returns EROFS instead of the EEXIST the dir warrants.
+    register_dir("/sys/fs",     0x5000_0009);
+    register_dir("/sys/kernel", 0x5000_000a);
 }
 
 fn register_dir(path: &'static str, ino: Ino) {
