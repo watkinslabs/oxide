@@ -599,6 +599,24 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         }
     }
 
+    // Rip busybox→GNU for /bin text/archive tools staged at /usr/bin above:
+    // override the busybox /bin hardlink → the GNU binary so /bin/grep etc.
+    // is unambiguously GNU regardless of PATH order. (egrep/fgrep/gunzip stay
+    // on busybox for now.) systemd is PID1 so the boot path is unaffected.
+    for (present, tool) in &[
+        (grep_bin.is_file(), "grep"), (sed_bin.is_file(), "sed"),
+        (find_bin.is_file(), "find"), (tar_bin.is_file(), "tar"),
+        (gawk_bin.is_file(), "awk"),
+    ] {
+        if *present {
+            dbg(&format!("rm /bin/{tool}"))?;
+            let mut c = Command::new("debugfs");
+            c.args(["-w", "-R", &format!("ln /usr/bin/{tool} /bin/{tool}"), img.to_str().unwrap()]);
+            c.stdout(std::process::Stdio::null());
+            run(c)?;
+        }
+    }
+
     let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
     let sshdsess_bin = repo.join(format!("vendor/openssh/sshd-session-{}", arch));
     let sshkeygen_bin = repo.join(format!("vendor/openssh/ssh-keygen-{}", arch));
