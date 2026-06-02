@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cross-build static-musl CPython 3.13.1 for x86_64 + aarch64.
+# Cross-build CPython 3.13.1 (musl, dynamic exe) for x86_64 + aarch64.
 # Roadmap item 4. Outputs vendor/python/python3-{x86_64,aarch64}.
 # CPython cross-compile needs a host python of the same X.Y first
-# (--with-build-python). _ctypes (libffi) disabled — not vendored.
+# (--with-build-python). Dynamic so ctypes can dlopen (see write_setup_local).
 set -e
 cd "$(dirname "$0")"
 V=3.13.1
@@ -20,14 +20,17 @@ fi
 HOSTPY="$(cd "$HOSTBUILD" && pwd)/python"
 echo "host python: $($HOSTPY --version)"
 
-# Fully-static interpreter: every detected stdlib C extension must be
-# builtin (a -static link can't produce loadable .so). Copy configure's
-# Setup.stdlib with *shared*->*static*, and disable modules whose libs
-# aren't vendored (bz2/lzma/ctypes/curses/readline/dbm/tkinter). _ssl +
-# _hashlib link the vendored static openssl (--with-openssl below).
+# DYNAMIC executable (PT_INTERP=/lib/ld-musl-<arch>.so.1, same loader path
+# as bash/sshd) so ctypes can dlopen — a -static musl binary has no dynamic
+# linker, so ctypes' PyDLL(None) fails at import. libpython stays static
+# (--disable-shared) and every stdlib C extension is BUILTIN (Setup.local
+# *shared*->*static*), so the only runtime deps are libc + libssl/libcrypto
+# (all staged at /usr/lib). openssl(_ssl)/zlib link dynamically; libffi
+# (_ctypes) links static (libffi.a). Disabled: modules whose libs aren't
+# vendored (bz2/lzma/curses/readline/dbm/tkinter).
 # Run with cwd == build dir (inside the configure/make subshell).
 write_setup_local() {
-  { printf '*disabled*\n_bz2\n_lzma\n_ctypes\n_ctypes_test\n_curses\n'
+  { printf '*disabled*\n_bz2\n_lzma\n_ctypes_test\n_curses\n'
     printf '_curses_panel\nreadline\nnis\n_dbm\n_gdbm\n_tkinter\n'
     printf 'ossaudiodev\nspwd\n_testcapi\n_testbuffer\n'
     printf '_testimportmultiple\nxxlimited\nxxlimited_35\n\n'
@@ -40,6 +43,7 @@ build_one() {
   echo "=== cross python $arch ==="
   ZL="$ROOT/vendor/zlib/install-$arch"
   SSL="$ROOT/vendor/openssl/install-$arch"
+  FFI="$ROOT/vendor/libffi/install-$arch"
   bd="$SRC/build-$arch"
   rm -rf "$bd"; mkdir -p "$bd"
   ( cd "$bd" && \
@@ -52,9 +56,10 @@ build_one() {
       --with-openssl="$SSL" --with-openssl-rpath=no \
       ac_cv_file__dev_ptmx=no ac_cv_file__dev_ptc=no \
       ac_cv_buggy_getaddrinfo=no \
-      CFLAGS="-I$ZL/include -I$SSL/include" \
-      CPPFLAGS="-I$ZL/include -I$SSL/include" \
-      LDFLAGS="-static -L$ZL/lib -L$SSL/lib" \
+      CFLAGS="-I$ZL/include -I$SSL/include -I$FFI/include" \
+      CPPFLAGS="-I$ZL/include -I$SSL/include -I$FFI/include" \
+      LIBFFI_CFLAGS="-I$FFI/include" LIBFFI_LIBS="-L$FFI/lib -lffi" \
+      LDFLAGS="-L$ZL/lib -L$SSL/lib -L$FFI/lib -Wl,-rpath,/usr/lib" \
     && write_setup_local \
     && make -s -j"$JOBS" )
   cp "$bd/python" "python3-$arch"
