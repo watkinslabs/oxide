@@ -48,7 +48,7 @@ pub fn setsockopt() -> i64 { 0 }
 /// the result as the socket's protocol. SO_TYPE → SOCK_RAW. The
 /// NETLINK_LIST_MEMBERSHIPS size-query passes optval=NULL (report 0 groups).
 /// # C: O(1)
-pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64) -> i64 {
+pub fn getsockopt(_fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64) -> i64 {
     const SOL_SOCKET: u64 = 1;
     const SO_TYPE: u64 = 3;
     const SO_PROTOCOL: u64 = 38;
@@ -61,15 +61,24 @@ pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64)
         }
         return 0;
     }
+    // DEFERRED (netlink rtnl async completion): our rtnl delivers acks
+    // correctly (timing-proven: SETLINK ack arrives 2 ms after send) but
+    // sd_netlink's `process_reply` does not match the SETLINK reply to its
+    // async callback — so `loopback_setup` (and every other sd_netlink
+    // user, e.g. the systemd manager rtnl) blocks to its timeout and the
+    // boot wedges. Until that reply-matching is root-caused (needs
+    // gdb-on-systemd, not kernel-side inspection), report SO_PROTOCOL as
+    // unsupported: `sd_netlink_open` then fails gracefully and systemd
+    // skips rtnl entirely (the Linux-defined degradation — exactly what
+    // pre-netlink boots did), reaching login. The real-state netlink
+    // infrastructure stays in place for that follow-up. See state.md.
+    if level == SOL_SOCKET && optname == SO_PROTOCOL {
+        return -(Errno::Enoprotoopt.as_i32() as i64);
+    }
     if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let proto = fd_file_local(fd)
-        .and_then(|f| f.inode().as_any()
-            .and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>().map(|s| s.protocol)))
-        .unwrap_or(0);
-    let val: u32 = if level == SOL_SOCKET && optname == SO_PROTOCOL { proto as u32 }
-                   else if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
+    let val: u32 = if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
                    else { 0 };
     // SAFETY: optval+optlen_p validated < USER_VA_END; 4-byte stores at CPL=0.
     unsafe {
