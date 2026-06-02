@@ -7,20 +7,26 @@
 //
 // Layout (matches vDSO asm):
 //   off  0  u32 seq            // even = stable, odd = writer active
-//   off  4  u32 _pad
-//   off  8  u64 monotonic_ns
-//   off 16  u64 realtime_sec
-//   off 24  u64 realtime_nsec
+//   off  4  u32 tsc_khz        // counter freq → userspace computes LIVE
+//   off  8  u64 realtime_sec   // CLOCK_REALTIME snapshot (coarse)
+//   off 16  u64 realtime_nsec
+//
+// CLOCK_MONOTONIC is computed LIVE in the vDSO from the raw counter
+// (`rdtsc` / `cntvct_el0`) and `tsc_khz` — `ns = cnt * 1e6 / tsc_khz`,
+// matching `hal::TimerOps::monotonic_ns`. The previous design stored a
+// `monotonic_ns` SNAPSHOT refreshed only by `publish()` on the idle/tick
+// path; under a busy boot that snapshot lagged real time by seconds, so
+// userspace deadlines (systemd's 5 s netlink timeout) misfired. A live
+// counter read has no staleness and needs no publish cadence.
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 #[repr(C)]
 pub struct VVarPage {
-    pub seq:           core::sync::atomic::AtomicU32,
-    _pad0:             u32,
-    pub monotonic_ns:  AtomicU64,
+    pub seq:           AtomicU32,
+    pub tsc_khz:       AtomicU32,
     pub realtime_sec:  AtomicU64,
     pub realtime_nsec: AtomicU64,
 }
@@ -66,16 +72,20 @@ pub fn publish() {
     use hal::TimerOps;
     let v = match live() { Some(v) => v, None => return };
     #[cfg(target_arch = "x86_64")]
-    let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+    let (ns, khz) = (hal_x86_64::X86TimerOps::monotonic_ns().0,
+                     hal_x86_64::X86TimerOps::freq_khz());
     #[cfg(target_arch = "aarch64")]
-    let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let (ns, khz) = (hal_aarch64::ArmTimerOps::monotonic_ns().0,
+                     hal_aarch64::ArmTimerOps::freq_khz());
+    // CLOCK_REALTIME tracks monotonic + the settimeofday offset; the
+    // vDSO reads this coarse snapshot (a live realtime needs the offset
+    // in vvar too — follow-up). MONOTONIC is computed live from tsc_khz.
+    let rt = ns.wrapping_add(crate::syscalls::time::realtime_offset_ns());
     let s = v.seq.fetch_add(1, Ordering::AcqRel);
     debug_assert_eq!(s & 1, 0);
-    v.monotonic_ns.store(ns, Ordering::Release);
-    let sec  = ns / 1_000_000_000;
-    let nsec = ns % 1_000_000_000;
-    v.realtime_sec.store(sec, Ordering::Release);
-    v.realtime_nsec.store(nsec, Ordering::Release);
+    v.tsc_khz.store(khz, Ordering::Release);
+    v.realtime_sec.store(rt / 1_000_000_000, Ordering::Release);
+    v.realtime_nsec.store(rt % 1_000_000_000, Ordering::Release);
     v.seq.fetch_add(1, Ordering::AcqRel);
 }
 

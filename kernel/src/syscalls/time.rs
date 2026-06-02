@@ -39,6 +39,13 @@ pub fn boot_unix_seconds() -> u64 {
     REALTIME_OFFSET_NS.load(Ordering::Acquire) / 1_000_000_000
 }
 
+/// CLOCK_REALTIME offset (ns since the Unix epoch added to monotonic).
+/// Read by the vvar publisher so the vDSO realtime snapshot matches the
+/// syscall path. # C: O(1)
+pub fn realtime_offset_ns() -> u64 {
+    REALTIME_OFFSET_NS.load(Ordering::Acquire)
+}
+
 #[inline]
 fn monotonic_ns() -> u64 {
     #[cfg(target_arch = "x86_64")]
