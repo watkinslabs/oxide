@@ -28,6 +28,30 @@ Only NON-FATAL cosmetic taints/warnings remain:
 These don't affect login; low priority. A var-run symlink / usr-merge PR
 would need rootfs.rs compaction first (it's at ~998/1000).
 
+## Remaining roadmap items are LARGE tracks (scope before diving in)
+- **GRUB (roadmap item 3)** is NOT a config swap. The kernel is deeply
+  Limine-native: crates/arch/boot-x86_64 ingests memmap/HHDM/framebuffer/
+  cmdline via the Limine boot protocol (LIMINE_REQUESTS, limine_proto crate;
+  image_qemu.rs builds a Limine UEFI/BIOS image). GRUB would require
+  reimplementing boot-info ingestion for Multiboot2 (or a GRUB EFI stub) —
+  a major kernel boot-path rewrite that risks the foundational boot on BOTH
+  arches. High-risk, multi-PR; warrants explicit scoping/user confirmation
+  before starting (advise-then-act). A safer interim: vendor+stage grub
+  ALONGSIDE Limine without switching, or write a boot-protocol-abstraction
+  plan doc first.
+- **python (item 4)** — vendor a static-musl CPython for both arches (deps
+  zlib/openssl/libffi/ncurses mostly vendored). Self-contained (doesn't
+  touch the boot) but a large, fiddly cross-build (host-python-then-cross).
+- **usr-merge** — clears unmerged-usr/-bin taints; /bin→/usr/bin etc.
+  symlinks + move binaries to /usr. Medium risk (everything resolves through
+  the symlinks); rootfs.rs at ~998-cap → compact/split FIRST.
+- **systemd sysinit** — needs systemd-tmpfiles/-remount-fs binaries staged
+  (check vendor/systemd build outputs).
+
+STATUS: the user's keystone roadmap items 1 (systemd-as-PID1) & 2 (busybox→
+GNU userland) are DONE+MERGED (20 PRs #1482-#1499). Items 3 (GRUB) & 4
+(python) remain as the large tracks above.
+
 ## NEXT (larger tracks, one PR each, both-arch gate)
 1. **systemd full sysinit chain** — default.target is first-light
    (Wants=console-getty, DefaultDependencies=no). Expand to real distro init:
