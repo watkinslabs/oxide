@@ -257,7 +257,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     for d in &[
         "/bin", "/sbin", "/lib", "/lib64",
         "/etc", "/etc/init.d",
-        "/proc", "/sys", "/tmp", "/run",
+        "/proc", "/sys", "/tmp", "/run", "/run/systemd", "/run/systemd/ask-password", "/run/lock",
         "/dev", "/dev/pts",
         "/home", "/home/alice", "/root",
         "/var", "/var/log", "/var/db", "/var/db/dhcpcd", "/var/run", "/var/run/dhcpcd",
