@@ -157,13 +157,19 @@ IgnoreSIGPIPE=no
 [Install]
 WantedBy=multi-user.target
 UNIT
+  # First-light target: do NOT pull basic.target/sysinit.target — their
+  # Wants/After reference unit fragments we don't stage (journald.socket,
+  # etc.), and systemd aborts the transaction with "Failed to load
+  # configuration: No such file or directory". DefaultDependencies=no keeps
+  # the transaction to just console-shell.service so PID1 forks /bin/sh on
+  # /dev/console. The full target chain returns once those units are staged.
   cat > "$sysd/default.target" <<'UNIT'
 [Unit]
 Description=Oxide Default Target
 Documentation=man:systemd.special(7)
-Requires=basic.target
+DefaultDependencies=no
 Wants=console-shell.service
-After=basic.target
+After=console-shell.service
 AllowIsolate=yes
 UNIT
   echo "  → $install: libsystemd-shared + libsystemd + libsystemd-core + /lib/systemd/systemd + systemd-executor + systemctl + unit tree"
