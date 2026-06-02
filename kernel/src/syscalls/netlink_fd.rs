@@ -85,35 +85,49 @@ pub fn read(fd: u64, bufp: u64, len: usize) -> i64 {
     recvfrom(fd, bufp, len, 0)
 }
 
-/// `recvmsg(fd, msghdr, flags)` for netlink. Reads one reply into the
-/// msghdr's iovec(s) and fills the RETURNED msghdr fields — msg_namelen
-/// (sockaddr_nl, 12), msg_controllen=0, msg_flags (MSG_TRUNC if the reply
-/// exceeded the buffer). sd_netlink's recvmsg inspects these; the generic
-/// recvfrom-loop left them unset, so systemd never accepted the reply and
-/// spun on ppoll. This is the real netlink_recvmsg. # C: O(iov + len)
-pub fn recvmsg(fd: u64, msgp: u64) -> i64 {
+/// `recvmsg(fd, msghdr, flags)` for netlink. Copies ONE reply datagram
+/// into the msghdr's iovec(s) and fills the RETURNED msghdr fields —
+/// msg_namelen (sockaddr_nl, 12), msg_controllen=0, msg_flags (MSG_TRUNC
+/// when the datagram exceeds the iov space).
+///
+/// MSG_PEEK (libsystemd's sd-netlink sizes its buffer with
+/// `recvmsg(MSG_PEEK|MSG_TRUNC)` first) leaves the datagram QUEUED so the
+/// following consuming read still sees it — without this, the peek ate
+/// the ack, the real read got nothing, and sd_netlink timed out waiting
+/// ("Failed to bring loopback interface up: Operation timed out").
+/// Per Linux netlink_recvmsg, the returned length is the FULL datagram
+/// length when MSG_TRUNC is requested (so the caller sizes correctly),
+/// else the number of bytes copied. # C: O(iov + len)
+pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
+    const MSG_PEEK:  u32 = 0x2;
     const MSG_TRUNC: u32 = 0x20;
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // struct msghdr: name@0, namelen@8, iov@16, iovlen@24, control@32,
     // controllen@40, flags@48 (x86_64/aarch64 LP64 layout).
     // SAFETY: msgp validated < USER_VA_END; LP64 msghdr field offsets.
-    let (name, _namelen, iov, iovlen) = unsafe {
+    let (name, iov, iovlen) = unsafe {
         (core::ptr::read_volatile(msgp as *const u64),
-         core::ptr::read_volatile((msgp + 8) as *const u32),
          core::ptr::read_volatile((msgp + 16) as *const u64),
          core::ptr::read_volatile((msgp + 24) as *const u64))
     };
-    if iovlen == 0 { return 0; }
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // Peek the reply length so we can set MSG_TRUNC and know how much to copy.
-    let mut total: i64 = 0;
-    let mut wrote_any = false;
+    // Pull the datagram via PEEK (leave queued) or consume, per MSG_PEEK.
+    let sock = match file.inode().as_any().and_then(|a| a.downcast_ref::<::netlink::NetlinkSocket>()) {
+        Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
+    let dgram = match dgram { Some(d) if !d.is_empty() => d, _ => return -(Errno::Eagain.as_i32() as i64) };
+
+    // Scatter the one datagram across the iovecs (sd-netlink uses a single
+    // buffer; tools may use several). Track copied vs total datagram len.
+    let mut copied = 0usize;
     for i in 0..iovlen {
+        if copied >= dgram.len() { break; }
         let iov_i = iov + i * 16;
         if iov_i == 0 || iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: iov_i validated in user range above; iovec is {base@0,
-        // len@8} per the LP64 ABI; two aligned 8-byte reads through caller AS.
+        // SAFETY: iov_i validated in user range; iovec is {base@0,len@8}
+        // per the LP64 ABI; two aligned 8-byte reads through caller AS.
         let (base, blen) = unsafe {
             (core::ptr::read_volatile(iov_i as *const u64),
              core::ptr::read_volatile((iov_i + 8) as *const u64) as usize)
@@ -122,22 +136,16 @@ pub fn recvmsg(fd: u64, msgp: u64) -> i64 {
         if base == 0 || base.saturating_add(blen as u64) >= USER_VA_END {
             return -(Errno::Efault.as_i32() as i64);
         }
-        // SAFETY: base..base+blen validated < USER_VA_END; CPL=0 writes.
-        let buf = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, blen) };
-        let n = match file.inode().read(0, buf) {
-            Ok(n) => n,
-            Err(_) => return -(Errno::Eio.as_i32() as i64),
-        };
-        if n == 0 { break; }  // queue empty after first message
-        total += n as i64;
-        wrote_any = true;
-        // One netlink datagram per recvmsg (Linux semantics): stop after
-        // the first dequeued message even if more iovecs remain.
-        break;
+        let take = core::cmp::min(blen, dgram.len() - copied);
+        // SAFETY: base..base+take validated < USER_VA_END (take ≤ blen); CPL=0 writes.
+        let dst = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, take) };
+        dst.copy_from_slice(&dgram[copied..copied + take]);
+        copied += take;
     }
-    if !wrote_any { return -(Errno::Eagain.as_i32() as i64); }
+    let truncated = copied < dgram.len();
+
     // Fill the returned msghdr: sockaddr_nl source (kernel = pid 0),
-    // namelen=12, controllen=0, flags=0.
+    // namelen=12, controllen=0, msg_flags=MSG_TRUNC iff truncated.
     if name != 0 && name < USER_VA_END {
         // SAFETY: name validated < USER_VA_END; sockaddr_nl is 12 bytes.
         unsafe {
@@ -150,11 +158,12 @@ pub fn recvmsg(fd: u64, msgp: u64) -> i64 {
     // SAFETY: msgp validated; write back namelen/controllen/flags.
     unsafe {
         core::ptr::write_volatile((msgp +  8) as *mut u32, if name != 0 { 12 } else { 0 });
-        core::ptr::write_volatile((msgp + 40) as *mut u64, 0);          // msg_controllen
-        core::ptr::write_volatile((msgp + 48) as *mut u32, 0u32);       // msg_flags (no MSG_TRUNC)
-        let _ = MSG_TRUNC;
+        core::ptr::write_volatile((msgp + 40) as *mut u64, 0);
+        core::ptr::write_volatile((msgp + 48) as *mut u32, if truncated { MSG_TRUNC } else { 0 });
     }
-    total
+    // MSG_TRUNC semantics: report the real datagram length so the caller
+    // can size its buffer; otherwise report bytes actually copied.
+    if (flags & MSG_TRUNC) != 0 { dgram.len() as i64 } else { copied as i64 }
 }
 
 /// `getsockname(fd, addr, addrlen)` for netlink. Writes a sockaddr_nl
