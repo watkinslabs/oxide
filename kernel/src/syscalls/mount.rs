@@ -87,6 +87,10 @@ fn current_mount_ns() -> u64 {
 pub fn install_vfs_hooks() {
     vfs::mount::install_resolvers();
     vfs::mount::set_current_ns_provider(current_mount_ns);
+    // Mount crossing is dentry-identity-keyed (`docs/16§3`): give
+    // `vfs::mount::register*` the resolver that maps a mount-point path to
+    // its canonical dentry so it can mark that dentry a mount point.
+    vfs::mount::set_dentry_resolver(crate::syscalls::pathresolve::resolve_dentry);
 }
 
 /// `sys_pivot_root(new_root, put_old)` — slot 155. Makes the mount at
