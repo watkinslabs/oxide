@@ -1,11 +1,21 @@
 # Session hand-off
 
 ## Headline
-**systemd as PID1 boots oxide to an `oxide login:` prompt (via console-getty
-→ getty/login) on x86** — the entire systemd bring-up chain is fixed,
-including a real login path. 9 PRs merged (#1482-#1488 + F356). main near
-#1488. arm parity is the open blocker before flipping default PID1.
-Default PID1 stays busybox (login smoke green).
+**systemd as PID1 boots oxide to `oxide login:` on BOTH x86 AND aarch64.**
+The entire systemd bring-up chain is fixed, including a real getty/login
+path, on both arches. 10 PRs merged (#1482-#1489 + B22). The default-PID1
+flip (busybox→systemd) is now UNBLOCKED — that's the next PR (F357).
+Default PID1 currently still busybox.
+
+## arm-systemd root cause (B22) — FIXED
+The arm PID1 spawn (elf_arm.rs) entered at `img.entry` (the program e_entry),
+but a DYNAMIC init (systemd → ld-musl-aarch64) must enter at the INTERP/
+loader entry = `img.user_ip()`. Entering the unrelocated program entry made
+systemd fault before its first syscall (0 syscalls, kernel idle). Static
+busybox has no interp so entry==user_ip → it worked, masking the bug. x86
+already used user_ip(). One-line fix; arm now reaches `oxide login:`.
+Localized via targeted klog traces (SI-*/ARM-* markers + a capped vtid==1
+syscall trace), NOT blind boots — the qemu MCP arm boot was too slow.
 
 ## Merged this session (7 PRs)
 | PR | Fix |
