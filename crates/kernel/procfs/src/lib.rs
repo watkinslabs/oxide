@@ -66,5 +66,6 @@ pub mod meminfo;
 #[cfg(target_os = "oxide-kernel")]
 pub mod net;
 
+#[cfg(target_os = "oxide-kernel")] pub mod pid_stat;
 #[cfg(target_os = "oxide-kernel")] pub mod pid_status;
 #[cfg(target_os = "oxide-kernel")] pub mod smaps;
