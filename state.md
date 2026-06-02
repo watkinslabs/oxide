@@ -5,6 +5,23 @@
 userland, dynamic CPython 3.13.1 w/ ctypes+ssl+stdlib). systemd boot-log
 cleanup sweep cleared the meaningful noise. main @ 3641e135.
 
+## netlink+lo (user-chosen track) — BLOCKED, reverted twice
+F367 (and earlier B14) made sd_netlink_open SUCCEED (getsockopt SO_PROTOCOL
++ NETLINK_LIST_MEMBERSHIPS + as_any) AND added rtnl ack-completeness
+(NLM_F_ACK default → NLMSG_ERROR ack). Netlink warning CLEARS, but the boot
+**dies silently right after machine-id, inside systemd's loopback_setup** —
+qemu halts (no panic printed), never reaches login. Both attempts identical.
+Diagnosis: machine_id_setup is the last successful log line; loopback_setup
+runs immediately after and (with a working netlink socket) drives real RTM_*
+calls → a **kernel fault in our rtnl handler path** (crates/kernel/netlink/
+src/rtnetlink.rs handle_getlink/getaddr/newaddr) that silently halts the
+guest. The ack fix wasn't the issue. NEXT to crack it: kernel-side debug —
+klog markers (static strings, feature-gated) at each rtnl handler entry to
+find the LAST one before the halt, then bounds-harden that handler's attr
+parse (likely an index panic on systemd's exact RTM_NEWADDR/GETADDR attr
+layout). Needs a dedicated debug session; netlink stays a non-fatal
+"ignoring" warning until then. DEFERRED.
+
 ## systemd-log sweep — RESULT
 **CLEARED + MERGED (25 warning instances, both-arch, verified):**
 - #1505 fix(fstat): real kernel bug — sys_fstat hardcoded st_mode=type|0o600
