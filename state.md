@@ -1,11 +1,11 @@
 # Session hand-off
 
 ## Headline
-**systemd as PID1 boots oxide to `oxide login:` on BOTH x86 AND aarch64.**
-The entire systemd bring-up chain is fixed, including a real getty/login
-path, on both arches. 10 PRs merged (#1482-#1489 + B22). The default-PID1
-flip (busybox→systemd) is now UNBLOCKED — that's the next PR (F357).
-Default PID1 currently still busybox.
+**OXIDE now boots systemd as its DEFAULT init (PID 1) to `oxide login:` on
+BOTH x86 AND aarch64.** 10 PRs merged (#1482-#1490) brought systemd up; F357
+flips the default PID1 busybox→systemd (elf.rs + elf_arm.rs → /lib/systemd/
+systemd). The keystone OXIDE-distro milestone: real systemd init on both
+arches. NEXT: rip busybox→bash+coreutils, Limine→GRUB, vim/python.
 
 ## arm-systemd root cause (B22) — FIXED
 The arm PID1 spawn (elf_arm.rs) entered at `img.entry` (the program e_entry),

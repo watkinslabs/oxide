@@ -307,7 +307,9 @@ fn spawn_init_from_rootfs_arm() {
     // PID 1: load /sbin/init from the mounted rootfs (busybox
     // hardlinked to /sbin/init via /bin/busybox).
     let init_blob: &'static [u8] = {
-        let bytes_opt = ext4::rootfs::read_file(b"/sbin/init")
+        // PID 1 = systemd (OXIDE distro init); busybox /sbin/init fallback.
+        let bytes_opt = ext4::rootfs::read_file(b"/lib/systemd/systemd")
+            .or_else(|| ext4::rootfs::read_file(b"/sbin/init"))
             .or_else(|| ext4::rootfs::read_file(b"/init"));
         match bytes_opt {
             Some(b) => alloc::boxed::Box::leak(b.into_boxed_slice()),
@@ -394,15 +396,15 @@ fn spawn_init_from_rootfs_arm() {
         for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
         r
     };
-    let argv0: &[&[u8]] = &[b"/sbin/init"];
+    let argv0: &[&[u8]] = &[b"/lib/systemd/systemd"];
     // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
     let new_sp = unsafe {
         elf_load::stack::build_user_stack(
             INIT_STACK_TOP,
-            argv0, &[],
+            argv0, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
-            b"/sbin/init",
+            b"/lib/systemd/systemd",
             0, // smoke: no vDSO mapped
         )
     }.unwrap_or(INIT_STACK_TOP);
