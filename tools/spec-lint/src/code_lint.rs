@@ -414,12 +414,16 @@ fn check_klog_ungated(path: &Path, lines: &[&str], f: &mut Findings) {
         // appears. Required because `debug_<sub>! { klog::...; }` opens
         // and closes the gated scope on a single line — checking gated
         // state only at end-of-line would miss it.
-        let bytes = line.as_bytes();
-        let mut col = 0;
-        while col < bytes.len() {
-            let c = bytes[col] as char;
+        // `char_indices()` yields (byte_offset, char) so `col` is always a
+        // valid char boundary — slicing `&line[col..]` / `&line[..col]` is
+        // safe even when the line contains multi-byte UTF-8 (em-dash etc.).
+        // (A previous byte-index walk with `bytes[col] as char` panicked
+        // mid-`—`.) `prev_char` carries the preceding char for the
+        // ident-boundary test.
+        let mut prev_char: Option<char> = None;
+        for (col, c) in line.char_indices() {
             // klog call detection: try at every ident start.
-            if col == 0 || !is_ident_char(bytes[col - 1] as char) {
+            if prev_char.map_or(true, |p| !is_ident_char(p)) {
                 if let Some(name) = klog_call_at(&line, col) {
                     let gated = gated_stack.last().copied().unwrap_or(false);
                     if !gated {
@@ -444,7 +448,7 @@ fn check_klog_ungated(path: &Path, lines: &[&str], f: &mut Findings) {
                 }
                 _ => {}
             }
-            col += 1;
+            prev_char = Some(c);
         }
     }
 }
