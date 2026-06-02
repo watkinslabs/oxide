@@ -5,7 +5,33 @@
 userland, dynamic CPython 3.13.1 w/ ctypes+ssl+stdlib). systemd boot-log
 cleanup sweep cleared the meaningful noise. main @ 3641e135.
 
-## netlink+lo (user-chosen track) — BLOCKED, reverted twice
+## netlink+lo — DEEP-DEBUGGED, narrowed to a gdb-only fault (reverted)
+User chose "deep-debug netlink". Did 3+ instrumented boots (branch
+F367b-rtnl-debug, abandoned). FINDINGS (precise):
+- The netlink-open fix (getsockopt SO_PROTOCOL + NETLINK_LIST_MEMBERSHIPS +
+  NetlinkSocket::as_any + net.rs route + handle_one default NLM_F_ACK→ack)
+  CLEARS "Failed to open netlink". Code is correct.
+- [NLK] sendto trace proved systemd's loopback_setup issues exactly 3 ops,
+  ALL complete+"handled" cleanly: RTM_NEWADDR(IPv4 127.0.0.1, type20 len40),
+  RTM_NEWADDR(IPv6 ::1, type20 len52), RTM_SETLINK(lo up, type19 len32). So
+  the rtnl HANDLERS do NOT fault.
+- Then the guest HALTS silently (qemu exits, NO panic/fault text, log frozen)
+  with NO subsequent [NLK] recv — systemd never reads the replies. So the
+  fault is in the WAIT-or-CLOSE path AFTER the sends: sd-event is epoll-based,
+  so it's either epoll/poll on the netlink fd, the ppoll/sd_event wait, or the
+  netlink fd close when loopback_setup's _cleanup_ rtnl drops. recvfrom/poll
+  paths look correct on inspection (poll() returns POLL_IN; recvmsg routes via
+  sys_recvfrom→netlink_fd). The fault is subtle + silent → klog-bisection
+  can't pinpoint it.
+NEXT (needs interactive gdb, not klog): mcp__qemu__qemu_start arch=x86_64
+(boots PAUSED, gdb on :1234), let it run to the loopback_setup point, then
+single-step/breakpoint the epoll_wait + netlink-fd-close paths to catch the
+faulting instruction. OR add klog markers in sys_epoll_wait/sys_close for
+netlink fds (2 more boots). Until then netlink stays a NON-FATAL "ignoring"
+warning; boot reaches login fine without the open-fix. DEFERRED pending a
+gdb session.
+
+## netlink+lo — earlier attempts (superseded by above)
 F367 (and earlier B14) made sd_netlink_open SUCCEED (getsockopt SO_PROTOCOL
 + NETLINK_LIST_MEMBERSHIPS + as_any) AND added rtnl ack-completeness
 (NLM_F_ACK default → NLMSG_ERROR ack). Netlink warning CLEARS, but the boot
