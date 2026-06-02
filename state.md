@@ -1,123 +1,60 @@
 # Session hand-off
 
 ## Headline
-**OXIDE distro: roadmap items 1-4 DONE** (systemd PID1→login both arches, GNU
-userland, dynamic CPython 3.13.1 w/ ctypes+ssl+stdlib). systemd boot-log
-cleanup sweep cleared the meaningful noise. main @ 3641e135.
+Branch **F370-sched-clock-accuracy** (off F369 off main). **Both arches
+reach `oxide login:`** with real improvements active; netlink rtnl async
+deferred honestly. Mergeable once x86-TCG smoke confirms (KVM + arm-TCG
+already verified). x86 under KVM = login; aarch64 under TCG = clean login
+("Startup finished … 14s").
 
-## netlink+lo — DEEP-DEBUGGED, narrowed to a gdb-only fault (reverted)
-User chose "deep-debug netlink". Did 3+ instrumented boots (branch
-F367b-rtnl-debug, abandoned). FINDINGS (precise):
-- The netlink-open fix (getsockopt SO_PROTOCOL + NETLINK_LIST_MEMBERSHIPS +
-  NetlinkSocket::as_any + net.rs route + handle_one default NLM_F_ACK→ack)
-  CLEARS "Failed to open netlink". Code is correct.
-- [NLK] sendto trace proved systemd's loopback_setup issues exactly 3 ops,
-  ALL complete+"handled" cleanly: RTM_NEWADDR(IPv4 127.0.0.1, type20 len40),
-  RTM_NEWADDR(IPv6 ::1, type20 len52), RTM_SETLINK(lo up, type19 len32). So
-  the rtnl HANDLERS do NOT fault.
-- Then the guest HALTS silently (qemu exits, NO panic/fault text, log frozen)
-  with NO subsequent [NLK] recv — systemd never reads the replies. So the
-  fault is in the WAIT-or-CLOSE path AFTER the sends: sd-event is epoll-based,
-  so it's either epoll/poll on the netlink fd, the ppoll/sd_event wait, or the
-  netlink fd close when loopback_setup's _cleanup_ rtnl drops. recvfrom/poll
-  paths look correct on inspection (poll() returns POLL_IN; recvmsg routes via
-  sys_recvfrom→netlink_fd). The fault is subtle + silent → klog-bisection
-  can't pinpoint it.
-NEXT (needs interactive gdb, not klog): mcp__qemu__qemu_start arch=x86_64
-(boots PAUSED, gdb on :1234), let it run to the loopback_setup point, then
-single-step/breakpoint the epoll_wait + netlink-fd-close paths to catch the
-faulting instruction. OR add klog markers in sys_epoll_wait/sys_close for
-netlink fds (2 more boots). Until then netlink stays a NON-FATAL "ignoring"
-warning; boot reaches login fine without the open-fix. DEFERRED pending a
-gdb session.
+## What landed this session (commits on F370, newest first)
+- `7efe6e09` chore(netlink): defer rtnl async — getsockopt(SO_PROTOCOL)→
+  -ENOPROTOOPT so sd_netlink_open fails gracefully → systemd skips rtnl →
+  login (main's behaviour). Real-state netlink infra retained.
+- `84491d88` feat(time): real TSC calibration (PIT ch2, measured 4.20 GHz
+  under KVM) + LIVE rdtsc/cntvct vDSO clock (both arches) replacing the
+  stale published snapshot. vvar: monotonic_ns field → tsc_khz.
+- `c8ffe1b4` fix(netlink): MSG_PEEK in recvmsg (sd-netlink buffer sizing).
+- `efa06dc2` fix(syscall): real openat dirfd resolution (was IGNORED
+  kernel-wide) + MS_REMOUNT-before-MS_BIND.
+- `01d1d8cd` refactor(vfs): mount crossing keyed by DENTRY IDENTITY, not
+  path string (the user's "no strings" demand). 69 vfs hosted tests pass.
+- `5449322f` feat(netlink): real mutable iface flags + unified socket recv.
 
-## netlink+lo — earlier attempts (superseded by above)
-F367 (and earlier B14) made sd_netlink_open SUCCEED (getsockopt SO_PROTOCOL
-+ NETLINK_LIST_MEMBERSHIPS + as_any) AND added rtnl ack-completeness
-(NLM_F_ACK default → NLMSG_ERROR ack). Netlink warning CLEARS, but the boot
-**dies silently right after machine-id, inside systemd's loopback_setup** —
-qemu halts (no panic printed), never reaches login. Both attempts identical.
-Diagnosis: machine_id_setup is the last successful log line; loopback_setup
-runs immediately after and (with a working netlink socket) drives real RTM_*
-calls → a **kernel fault in our rtnl handler path** (crates/kernel/netlink/
-src/rtnetlink.rs handle_getlink/getaddr/newaddr) that silently halts the
-guest. The ack fix wasn't the issue. NEXT to crack it: kernel-side debug —
-klog markers (static strings, feature-gated) at each rtnl handler entry to
-find the LAST one before the halt, then bounds-harden that handler's attr
-parse (likely an index panic on systemd's exact RTM_NEWADDR/GETADDR attr
-layout). Needs a dedicated debug session; netlink stays a non-fatal
-"ignoring" warning until then. DEFERRED.
+## The netlink rtnl bug (DEFERRED, precisely localized — for follow-up)
+Timing-PROVEN it is NOT clock/scheduler: SETLINK ack arrives 2 ms after
+send (ms 3219→3221), is consumed, but sd_netlink's `process_reply(serial)`
+finds no callback for the SETLINK reply while the two RTM_NEWADDR acks
+(consecutive serials) DO match. So `loopback_setup` (and every sd_netlink
+user, incl. the systemd manager rtnl) blocks to its 5 s timeout and the
+boot wedges. Callback is keyed by the wire serial (sd-netlink.c
+call_async:579-583) and our ack echoes that serial — yet SETLINK doesn't
+match. Needs gdb-on-systemd (or sd-netlink serial/rqueue_by_serial
+tracing) to root-cause; not resolvable by kernel-side inspection.
+Files: vendor/systemd/systemd-259/src/shared/loopback-setup.c +
+.../libsystemd/sd-netlink/sd-netlink.c (process_reply @332; process_running
+@424 runs process_timeout BEFORE dispatch_rqueue).
 
-## systemd-log sweep — RESULT
-**CLEARED + MERGED (25 warning instances, both-arch, verified):**
-- #1505 fix(fstat): real kernel bug — sys_fstat hardcoded st_mode=type|0o600
-  + never wrote uid/gid → every fstat'd file 0600 → systemd saw all ~18 units
-  "world-inaccessible". Now uses inode.perm()/uid()/gid(). (Found via debug
-  printf in systemd stat_warn_permissions.)
-- #1506: fsconfig(SET_FD)→EINVAL (3 mount-option-probe warnings:
-  tmpfs-usrquota, cgroup memory_recursiveprot/hugetlb) + KDSIGACCEPT no-op
-  (kbrequest).
-- #1507: inotify add_watch devfs-only → full vfs::mount::lookup (timezone
-  EBADF + acquire-watch + /run/systemd/ask-password — 3 warnings).
-- (unit files staged 0644 via mode 0100644 keeping S_IFREG.)
+## Proven / ruled out this session
+- Clock was NOT the loopback gate (calibration→4.2GHz + live vDSO, still
+  timed out). Both clock fixes kept — correct regardless (live vDSO fixes
+  real userspace clock staleness: snapshot lagged seconds under busy boot).
+- KVM gated behind `OXIDE_QEMU_KVM=1` (~1min); default TCG ~10-15min.
+- main reaches login under KVM (skips rtnl). F369 netlink commit was the
+  ONLY boot regressor (bisected) — now neutralized by the open-defer.
+- machine-id fully works (openat-dirfd + MS_REMOUNT + dentry bind).
 
-**ATTEMPTED + REVERTED (2 — deeper items, not quick fixes):**
-- netlink getsockopt(SO_PROTOCOL)/LIST_MEMBERSHIPS: cleared "Failed to open
-  netlink" but made sd_netlink_open SUCCEED → systemd lo-config (RTM_NEWADDR/
-  SETLINK) our rtnl can't service → BOOT DIED before login. Needs full rtnl
-  write path. DEFERRED.
-- pidfd ioctl→EOPNOTSUPP (for "is our child ... Not a tty"): didn't clear it
-  (systemd pidfd_get_info / pidref_get_ppid still returns ENOTTY through a
-  path the EOPNOTSUPP didn't catch, or /proc/PID/stat ppid fallback also
-  fails). Reverted (no benefit).
+## First task next session
+1. Confirm x86-TCG smoke (task by833ffs6 → /tmp/fx86tcg.txt) reached login.
+   If yes: push F370 -u; gh pr create + merge --delete-branch (SKIP_SMOKE=1
+   only after both-arch local login confirmed).
+2. netlink rtnl follow-up: gdb-on-systemd at loopback_setup to see why
+   process_reply drops the SETLINK serial; re-enable SO_PROTOCOL once fixed
+   → lo comes up + all rtnl unblocks.
+3. Pre-existing (NOT this branch): x86 KVM "Looping too fast. Throttling
+   execution" (crash-looping unit) — main has it too; login still reached.
 
-## REMAINING systemd warnings — all NON-FATAL (boot reaches login)
-Diminishing returns; each is cosmetic OR a substantial/risky feature:
-1. "Can't determine if process N is our child ... Not a tty" — pidref/pidfd;
-   needs PIDFD_GET_INFO impl OR /proc/PID/stat ppid (vpid-translated like
-   #1482 did for other fields). Cosmetic.
-2. "/run/machine-id mount ... No such file" — systemd bind-mounts machine-id
-   via /proc/self/fd/4; needs /proc/self/fd magic-symlink mount target +
-   /run tmpfiles. Complex, non-fatal.
-3. "Failed to open netlink: I/O error" — needs FULL rtnl link-config (see
-   reverted above). Substantial + boot-regression-prone.
-4. "Failed to find module autofs4" — no module loader. Cosmetic.
-5. "System is tainted: unmerged-usr:unmerged-bin:var-run-bad" — usr-merge
-   (/bin→/usr/bin etc. symlinks) + /var/run→/run. Real distro-structure item,
-   MEDIUM risk (every path resolves through the symlinks). rootfs.rs at 999
-   lines → compact/split FIRST.
-
-## NEXT — real high-value items (systemd cosmetics are diminishing)
-- **python pip** — dynamic python is ready; self-contained, doesn't touch
-  boot. bundle ensurepip wheels, `python3 -m ensurepip`, stage pip. (roadmap
-  item 4 endgame). LOW risk.
-- **usr-merge** — clears the tainted line; real FHS structure. MEDIUM risk;
-  rootfs.rs compact first.
-- **systemd-tmpfiles** — build the binary (ninja target in
-  vendor/systemd/build.sh) + tmpfiles-setup unit; clears machine-id + a real
-  sysinit chain. SUBSTANTIAL.
-- **full rtnl + lo** — RTM_NEWADDR/RTM_NEWLINK so netlink-open + lo config
-  works (clears netlink warning, real net correctness). SUBSTANTIAL.
-- GRUB (roadmap item 3) still DEFERRED — Limine-native, Multiboot2/EFI rewrite.
-
-## KEY techniques + harness (cost hours; internalize)
-- Debug-print IN the failing systemd C component (vendor/systemd/.../src;
-  ninja -C build-x86_64 <targets>; cp to install-x86_64/lib + /lib/systemd/;
-  rebuild rootfs; boot; read) is how you get ground truth — kernel klog is
-  &'static-str-only so can't printf values. ALWAYS revert debug + ninja-clean
-  + `git checkout -- vendor/systemd/install-x86_64` after.
-- build/boot run_in_background ALONE; NEVER pkill/kill/sleep/grep/for-loop
-  PREFIX in the same compound, NEVER trailing `&` (set -e + blocked
-  foreground-sleep + rc1 aborts → empty capture = FALSE failure); pkill/kill
-  in OWN call ||true. Foreground sleep>~5s is BLOCKED.
-- Clear :2222 squat before each boot: `ss -ltnp|grep 2222` → kill -9 pid.
-- OXIDE_SMP=2 reaches login (SMP=1 wedges at cat-smoke "A"). make qemu-*
-  REBUILDS rootfs each run + sits at login forever (poll the >file then kill;
-  never exits on its own). TCG ~8-12min to systemd. grep -a + sed strip-ANSI.
-- console login-INPUT doesn't reach the getty (kernel console-RX gap) →
-  interactive in-kernel testing blocked; verify via boot console output.
-- debugfs `sif mode` needs FULL mode incl S_IFREG (0100644 not 0644).
-- rootfs-*.img NEVER git-add (>100MB). Never git-add vendor source trees or
-  install-*/lib/pkgconfig. NEVER `git branch -D` unmerged (rename with -m).
-  spec-lint clean before commit; files <1000 lines; SKIP_SMOKE=1 push +
-  gh pr merge --merge --delete-branch=true. default PID1 = systemd.
+## Harness notes
+- Free :2222 first: `ss -ltnp|grep 2222 → kill -9 <pid>` (comm truncated to
+  "qemu-system-x86"; pgrep -x misses it — kill the pid from ss).
+- Run boots ALONE in background; spec-lint clean; netlink crate has no klog.

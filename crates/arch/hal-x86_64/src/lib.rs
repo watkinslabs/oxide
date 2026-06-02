@@ -305,6 +305,70 @@ fn rdtsc() -> u64 {
     }
 }
 
+/// Read legacy I/O port `p` (8-bit). # SAFETY: caller asserts `p` is a
+/// real, side-effect-tolerable port (PIT 0x42/0x43, port-B 0x61).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+unsafe fn pio_in8(p: u16) -> u8 {
+    let v: u8;
+    // SAFETY: single 8-bit port read; caller asserts `p` is a real port.
+    unsafe {
+        core::arch::asm!("in al, dx", out("al") v, in("dx") p,
+            options(nomem, nostack, preserves_flags));
+    }
+    v
+}
+
+/// Write legacy I/O port `p` (8-bit). # SAFETY: as `pio_in8`.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+unsafe fn pio_out8(p: u16, v: u8) {
+    // SAFETY: single 8-bit port write; caller asserts `p` is a real port.
+    unsafe {
+        core::arch::asm!("out dx, al", in("dx") p, in("al") v,
+            options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Calibrate the TSC frequency in kHz against PIT channel 2 — the
+/// standard one-shot gate method (Linux `pit_calibrate_tsc`, `23§3`).
+/// Programs channel 2 in mode 0 for the full 65535-tick (~54.9 ms)
+/// window, brackets it with `rdtsc`, and derives
+/// `kHz = tsc_delta * PIT_HZ / count / 1000`. Replaces the boot
+/// hard-coded 2.4 GHz so CLOCK_MONOTONIC tracks real wall-clock (under
+/// KVM the host TSC rate; the hard-coded guess broke systemd's
+/// deadline math). Returns 0 if the count never elapses (caller keeps
+/// a fallback).
+/// # SAFETY: boot-only, single-CPU, IRQs masked. Legacy PIT (0x42/0x43)
+/// + port-B (0x61) are always present on PC-class (q35) machines; the
+/// speaker bit is forced off so no audible side effect.
+/// # C: O(1) — one ~55 ms PIT gate window, bounded spin.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn calibrate_tsc_khz() -> u32 {
+    const PIT_HZ: u64 = 1_193_182;
+    const COUNT:  u16 = 0xFFFF; // ~54.925 ms
+    // SAFETY: boot-only single-CPU; legacy PIT (0x42/0x43) + port-B (0x61)
+    // always present on q35; speaker-data bit forced off (no sound).
+    unsafe {
+        // Port-B (0x61): clear speaker-data (bit1), set timer-2 gate (bit0).
+        let p61 = (pio_in8(0x61) & !0x02) | 0x01;
+        pio_out8(0x61, p61);
+        // Channel 2, lobyte+hibyte, mode 0 (interrupt-on-terminal-count),
+        // binary counting: 0b1011_0000 = 0xB0.
+        pio_out8(0x43, 0xB0);
+        pio_out8(0x42, (COUNT & 0xFF) as u8);
+        pio_out8(0x42, (COUNT >> 8) as u8);    // loading count starts mode-0
+        let start = rdtsc();
+        // Mode 0 drives OUT (port-B bit5) high when the count reaches 0.
+        // Bound the spin so a non-counting PIT can't hang boot.
+        let mut guard: u64 = 0;
+        while pio_in8(0x61) & 0x20 == 0 {
+            guard += 1;
+            if guard > 1_000_000_000 { return 0; }
+        }
+        let delta = rdtsc().wrapping_sub(start);
+        (delta.saturating_mul(PIT_HZ) / COUNT as u64 / 1000) as u32
+    }
+}
+
 pub struct X86TimerOps;
 
 impl TimerOps for X86TimerOps {

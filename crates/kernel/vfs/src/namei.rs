@@ -37,29 +37,6 @@ pub struct LookupFlags {
     pub beneath: bool,
 }
 
-/// Mount-crossing hook: given the absolute path of a just-resolved
-/// directory entry, return the mounted-fs ROOT inode if a filesystem
-/// is mounted there, else `None`. Installed by the kernel to bridge to
-/// `vfs::mount`; `None` when unset (hosted tests with no mounts).
-type MountResolver = fn(&str) -> Option<InodeRef>;
-static MOUNT_RESOLVER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-/// Install the mount-crossing bridge. Called once at boot.
-/// # C: O(1)
-pub fn set_mount_resolver(f: MountResolver) {
-    MOUNT_RESOLVER.store(f as *mut (), Ordering::Release);
-}
-
-fn resolve_mount(abs: &str) -> Option<InodeRef> {
-    let p = MOUNT_RESOLVER.load(Ordering::Acquire);
-    if p.is_null() { return None; }
-    // SAFETY: MOUNT_RESOLVER only ever holds a value stored by
-    // set_mount_resolver, which takes a `MountResolver` fn pointer; the
-    // round-trip through *mut () preserves the fn's address.
-    let f: MountResolver = unsafe { core::mem::transmute(p) };
-    f(abs)
-}
-
 /// Whole-path delegate: resolves an absolute path within its owning
 /// mount by that mount's own lookup (`vfs::mount::lookup`). Used when a
 /// per-component `Inode::lookup` returns Enotdir/Eopnotsupp because the
@@ -172,11 +149,11 @@ pub fn path_lookup(
         };
         let mut child_inode = child.inode().ok_or(VfsError::Enoent)?;
 
-        // Mount crossing: if a filesystem is mounted on this entry,
-        // continue from its root inode (keep the mountpoint dentry as
-        // the path node).
-        let abs = String::from_utf8_lossy(&child.absolute_path()).into_owned();
-        if let Some(mroot) = resolve_mount(&abs) { child_inode = mroot; }
+        // Mount crossing (`docs/16§3`): keyed by dentry IDENTITY, not by
+        // path string. If a filesystem is mounted on this exact dentry,
+        // continue from its root inode (keep the mountpoint dentry as the
+        // path node so `absolute_path()` stays correct across the mount).
+        if let Some(mroot) = child.mounted_root() { child_inode = mroot; }
 
         // Symlink handling (use the pre-mount-cross inode; a mount point
         // is a directory, never a symlink).

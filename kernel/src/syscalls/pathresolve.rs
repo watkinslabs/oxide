@@ -64,6 +64,20 @@ pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
     vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(i, _)| i)
 }
 
+/// Resolve absolute `abs` to its canonical DENTRY (not just the inode)
+/// via the dentry path-walk, following the final symlink. Installed as
+/// `vfs::mount`'s mount-point dentry resolver so `register`/`register_bind`
+/// can mark the mounted-on dentry by identity (`docs/16§3`). A bind target
+/// of `/proc/self/fd/N` follows the magic symlink to the real file's
+/// dentry (e.g. /etc/machine-id) — the Linux mount-target semantics.
+/// `None` pre-mount (root dentry not built yet) or if `abs` doesn't
+/// resolve. # C: O(components × dir-lookup)
+pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
+    let (root, beneath) = resolution_root()?;
+    let flags = vfs::LookupFlags { beneath, ..Default::default() };
+    vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(_, d)| d)
+}
+
 /// Read an executable's full bytes by resolving `path` through the
 /// dentry walk (`resolve`, follows symlinks + crosses mounts), then
 /// pulling the regular-file contents via the inode's `read`. THE exec
@@ -93,6 +107,38 @@ pub fn read_exec(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
     }
     out.truncate(off);
     Some(out)
+}
+
+/// Resolve a `(dirfd, raw)` pair to an absolute, lexically-normalised
+/// path — real `openat(2)`/`*at` dirfd semantics (`docs/16§3`). THE
+/// shared dirfd resolver every `*at` syscall routes through (aarch64
+/// musl has only the `*at` forms, so this is the arm path too):
+///   - absolute `raw` → ignore dirfd, lexically normalise;
+///   - `dirfd == AT_FDCWD` → resolve against the task cwd;
+///   - a real `dirfd` → resolve against THAT fd's directory (its open
+///     File's dentry absolute path), as `openat` does.
+/// `None` on a bad dirfd / no current task.
+/// # C: O(N_path) + O(1) fd lookup
+pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
+    const AT_FDCWD: i32 = -100;
+    if raw.starts_with('/') {
+        return Some(vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into()));
+    }
+    if dirfd == AT_FDCWD {
+        return Some(resolve_cwd(raw));
+    }
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    let f = fdt.get(dirfd).ok()?;
+    let base_bytes = f.dentry().absolute_path();
+    let base = core::str::from_utf8(&base_bytes).ok()?;
+    Some(vfs::path::resolve_against_cwd(base, raw).unwrap_or_else(|| {
+        let mut s = String::from(base);
+        if !s.ends_with('/') { s.push('/'); }
+        s.push_str(raw);
+        s
+    }))
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths

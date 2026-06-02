@@ -427,12 +427,15 @@ unsafe extern "C" fn _start_rust() -> ! {
     unsafe { hal_x86_64::install_syscall_msrs(); }
     // SAFETY: single-CPU boot; CR0/CR4 writes legal at CPL=0; enables CR0.MP + clears CR0.EM + sets CR4.OSFXSR/OSXMMEXCPT so user-mode SSE/SSE2 instructions execute (musl libc startup uses SSE2 movq/punpcklqdq).
     unsafe { hal_x86_64::enable_sse(); }
-    // TSC calibration: v1 hardcodes 2.4 GHz, the steady QEMU TSC
-    // rate when running with `-cpu Haswell-v4`. Real PIT/HPET-based
-    // calibration lands with `23§3` once we have a usable HPET MMIO
-    // mapping. monotonic_ns degenerates to 0 if not set, so this is
-    // strictly an upgrade from "no time" to "approximate time".
-    hal_x86_64::set_tsc_khz(2_400_000);
+    // TSC calibration (`23§3`): measure the real TSC rate against PIT
+    // channel 2 so CLOCK_MONOTONIC tracks wall-clock (the hard-coded
+    // 2.4 GHz guess broke systemd's deadline math — its 5 s netlink
+    // timeouts misfired). Fall back to 2.4 GHz only if the PIT never
+    // counts (so monotonic_ns is never 0 = "no time").
+    // SAFETY: boot-only, single-CPU, IRQs masked; legacy PIT/port-61h
+    // I/O is always present on the q35 machine we target.
+    let tsc_khz = unsafe { hal_x86_64::calibrate_tsc_khz() };
+    hal_x86_64::set_tsc_khz(if tsc_khz >= 100_000 { tsc_khz } else { 2_400_000 });
     klog::set_clock_fn(now_ns_x86);
     debug_boot! { log_cpu_info(); }
     // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of kernel::boot_cmdline can race; reads bootloader-owned EXECUTABLE_FILE response then publishes the captured bytes through the AtomicPtr-backed slot.

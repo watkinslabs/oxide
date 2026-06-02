@@ -650,6 +650,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // pick the right outbound src IP for routed (non-loopback) dst.
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         modules::registry::init_exports();
+        // Install the VFS walk hooks + mount-ns provider + dentry resolver
+        // FIRST, so each `register` below wires its dentry-identity mount
+        // crossing (`docs/16§3`) at mount time. (Was after the mounts, which
+        // left boot mounts un-wired for dentry crossing.)
+        crate::syscalls::mount::install_vfs_hooks();
         // Register every FS backend with the unified mount table per docs/16.
         // Order matters only for human readability; lookup uses longest-prefix-match.
         let _ = vfs::mount::register("/",     alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
@@ -664,8 +669,6 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // routes to `/dev/shm/<name>`) hits DevfsFs and ENOENTs.
         let _ = vfs::mount::register("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         let _ = vfs::mount::register("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
-        // K2V V5/V6 walk hooks + V7/U2 mount-ns provider (ns stamping).
-        crate::syscalls::mount::install_vfs_hooks();
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
         debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }
