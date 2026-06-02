@@ -294,12 +294,25 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELROUTE) => {
                 rtnetlink::handle_delroute(hdr, msg)
             }
+            // RTM_NEWLINK/SETLINK: bring iface up/down — really mutates the
+            // registry's flag state (see handle_setlink).
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWLINK)
+            | (proto::NETLINK_ROUTE, rtnetlink::RTM_SETLINK) => {
+                rtnetlink::handle_setlink(hdr, msg)
+            }
             (proto::NETLINK_GENERIC, _) => genetlink::handle(msg),
             (proto::NETLINK_NETFILTER, _) => invoke_netfilter(msg),
             _ => {
-                let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
-                Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
-                done
+                // A request with NLM_F_ACK expects an NLMSG_ERROR ack, not
+                // NLMSG_DONE (which terminates a dump). Without this an
+                // ack-waiting sd_netlink_call never completes.
+                if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
+                    rtnetlink::nlmsg_ack_pub(hdr, 0)
+                } else {
+                    let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
+                    Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
+                    done
+                }
             }
         };
         self.enqueue(reply);
@@ -312,6 +325,8 @@ impl vfs::Inode for NetlinkSocket {
         // with fs / AF_INET socket inode space.
         0x4E4C_534B_0000_0000u64 | (self as *const _ as u64 & 0xFFFF_FFFF) as vfs::Ino
     }
+    // Expose the concrete socket so getsockopt(SO_PROTOCOL) reads `protocol`.
+    fn as_any(&self) -> Option<&dyn core::any::Any> { Some(self) }
     fn file_type(&self) -> vfs::FileType { vfs::FileType::Regular }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> vfs::KResult<vfs::InodeRef> {
