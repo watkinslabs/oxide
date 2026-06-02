@@ -308,6 +308,23 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
         out.extend_from_slice(&msg.payload[..take]);
         return Ok(Received { payload: out, peer: None, peer6: None });
     }
+    // AF_UNIX SOCK_SEQPACKET/DGRAM socketpair. The inode read() path
+    // drains via read_unix_msg_blocking, but recvmsg/recvfrom landed
+    // here with NO UnixMsgPair branch — so it fell through to the UDP
+    // path and returned EAGAIN, never draining. systemd reads its
+    // SEQPACKET socketpair via recvmsg, so the fd stayed perpetually
+    // POLLIN and PID1's sd-event loop span ("Looping too fast"). Pop one
+    // message (SEQPACKET per-message truncation) here too.
+    let msgpair = match &*sock.kind.lock() {
+        SockKind::UnixMsgPair(p, e) => Some((p.clone(), *e)),
+        _ => None,
+    };
+    if let Some((pair, end)) = msgpair {
+        return match pair.recv(end, max_len) {
+            Some(msg) => Ok(Received { payload: msg, peer: None, peer6: None }),
+            None => Err(NetError::Eagain),
+        };
+    }
     // F137: AF_PACKET. Pop one queued frame; peer = None for now
     // (the sockaddr_ll shaping rides with sys_recvfrom's writer).
     if let SockKind::Packet { rx, .. } = &*sock.kind.lock() {
