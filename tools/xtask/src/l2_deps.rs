@@ -64,6 +64,7 @@ pub const SYSTEMD_STAGE: &[(&str, &str)] = &[
     // system by build.sh). default.target → console-shell on /dev/console.
     ("usr/lib/systemd/system/default.target",       "/usr/lib/systemd/system/default.target"),
     ("usr/lib/systemd/system/console-shell.service", "/usr/lib/systemd/system/console-shell.service"),
+    ("usr/lib/systemd/system/console-getty.service", "/usr/lib/systemd/system/console-getty.service"),
     ("usr/lib/systemd/system/sysinit.target",       "/usr/lib/systemd/system/sysinit.target"),
     ("usr/lib/systemd/system/basic.target",         "/usr/lib/systemd/system/basic.target"),
     ("usr/lib/systemd/system/multi-user.target",    "/usr/lib/systemd/system/multi-user.target"),

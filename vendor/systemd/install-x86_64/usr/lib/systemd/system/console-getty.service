@@ -1,0 +1,18 @@
+[Unit]
+Description=Console Getty (oxide login)
+DefaultDependencies=no
+ConditionPathExists=/dev/console
+[Service]
+Environment=TERM=vt100
+ExecStart=-/sbin/getty -L 115200 console vt100
+Restart=always
+RestartSec=1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+TTYReset=yes
+KillMode=process
+IgnoreSIGPIPE=no
+[Install]
+WantedBy=multi-user.target
