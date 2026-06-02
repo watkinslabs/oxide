@@ -64,6 +64,20 @@ pub fn resolve(abs: &str, no_follow_final: bool) -> Option<vfs::InodeRef> {
     vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(i, _)| i)
 }
 
+/// Resolve absolute `abs` to its canonical DENTRY (not just the inode)
+/// via the dentry path-walk, following the final symlink. Installed as
+/// `vfs::mount`'s mount-point dentry resolver so `register`/`register_bind`
+/// can mark the mounted-on dentry by identity (`docs/16§3`). A bind target
+/// of `/proc/self/fd/N` follows the magic symlink to the real file's
+/// dentry (e.g. /etc/machine-id) — the Linux mount-target semantics.
+/// `None` pre-mount (root dentry not built yet) or if `abs` doesn't
+/// resolve. # C: O(components × dir-lookup)
+pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
+    let (root, beneath) = resolution_root()?;
+    let flags = vfs::LookupFlags { beneath, ..Default::default() };
+    vfs::path_lookup(root.clone(), root, abs, flags).ok().map(|(_, d)| d)
+}
+
 /// Read an executable's full bytes by resolving `path` through the
 /// dentry walk (`resolve`, follows symlinks + crosses mounts), then
 /// pulling the regular-file contents via the inode's `read`. THE exec
