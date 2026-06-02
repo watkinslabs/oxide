@@ -261,10 +261,34 @@ impl Mount {
         -> Result<u32, MountError>
     {
         self.run_journaled(|m| {
+            let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
             m.init_inode(new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2)?;
+            // A freshly created directory MUST have a data block holding
+            // "." (→ self) and ".." (→ parent); the ".." entry's rec_len
+            // spans the rest of the block as the free slot for future
+            // entries. Without this the dir has no block 0 and any later
+            // dir_link into it fails NotFound (systemd's enable symlink
+            // into a runtime-mkdir'd <target>.wants/ dir hit exactly this).
+            let mut blk = alloc::vec![0u8; bs];
+            // "." — inode | rec_len=12 | name_len=1 | DT_DIR | "."
+            blk[0..4].copy_from_slice(&new_ino.to_le_bytes());
+            blk[4..6].copy_from_slice(&12u16.to_le_bytes());
+            blk[6] = 1; blk[7] = dir::DT_DIR; blk[8] = b'.';
+            // ".." — inode | rec_len=bs-12 | name_len=2 | DT_DIR | ".."
+            blk[12..16].copy_from_slice(&parent_ino.to_le_bytes());
+            blk[16..18].copy_from_slice(&((bs - 12) as u16).to_le_bytes());
+            blk[18] = 2; blk[19] = dir::DT_DIR; blk[20] = b'.'; blk[21] = b'.';
+            m.append_block(new_ino, &blk)?;
+            m.set_inode_size(new_ino, bs as u64)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_DIR)?;
+            // Parent gains a subdirectory ".." backref → bump its
+            // i_links_count (inode offset 0x1A, u16), per Linux mkdir.
+            let (mut pb, poff) = m.read_inode_bytes(parent_ino)?;
+            let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1);
+            pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
+            m.metadata_write(poff, &pb)?;
             Ok(new_ino)
         })
     }

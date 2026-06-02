@@ -94,6 +94,22 @@ fn create_symlink_slow_via_data_block() {
 }
 
 #[test]
+fn create_dir_has_block_and_is_linkable() {
+    // Regression: a freshly created directory must have a data block
+    // holding "." / ".." so subsequent dir_link into it succeeds. Pre-fix
+    // create_dir left the new dir blockless (size 0) and any create inside
+    // it (e.g. systemd's enable symlink into <target>.wants/) failed NotFound.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let d = m.create_dir(2, b"subdir", 0o755).unwrap();
+    let inode = m.read_inode(d).unwrap();
+    assert!(inode.is_dir());
+    assert_eq!(inode.size, m.sb.block_size as u64, "new dir has its initial . / .. block");
+    let link = m.create_symlink(d, b"inside", b"/etc/passwd").unwrap();
+    assert_eq!(m.lookup_path(b"/subdir/inside").unwrap(), link);
+}
+
+#[test]
 fn create_mknod_char_device_persists_rdev() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
