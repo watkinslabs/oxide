@@ -374,6 +374,12 @@ fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
             }
             Some(0)
         }
+        vt::KDSIGACCEPT => {
+            // systemd (manager.c) asks the kernel to deliver a signal on the
+            // VT secure-attention keypress. We have no kbd-signal path; accept
+            // as a no-op so PID1 doesn't warn "Failed to enable kbrequest".
+            Some(0)
+        }
         vt::VT_OPENQRY => {
             let id = match vt::openqry() { Ok(n) => n as u32, Err(_) => return Some(errno(Errno::Ebusy)) };
             if arg != 0 && arg < hal::USER_VA_END {
