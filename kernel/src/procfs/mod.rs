@@ -725,25 +725,7 @@ fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
 }
 
 fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
-    use core::sync::atomic::Ordering;
-    let mut out = alloc::vec::Vec::with_capacity(192);
-    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
-    let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
-    push_u64(&mut out, tid as u64);
-    push(&mut out, b" ("); push(&mut out, task.name.as_bytes()); push(&mut out, b") ");
-    out.push(task.state().linux_char()); out.push(b' ');
-    push_u64(&mut out, ppid);
-    // Fields 5..52 (pgrp..). utime is field 14 → 10th of these; report
-    // the task's accounted CPU time in CLK_TCK ticks (stime field 15
-    // stays 0 — v1 doesn't split user/sys). Makes the scheduler's real
-    // runtime accounting observable via `ps`/`top`/`cat /proc/<pid>/stat`.
-    let utime = sched::clock::ns_to_clk_tck(task.sum_exec_runtime_ns.load(Ordering::Acquire));
-    for f in 5u32..=52 {
-        if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
-        else { push(&mut out, b" 0"); }
-    }
-    out.push(b'\n');
-    out
+    procfs::pid_stat::body(tid)
 }
 
 fn pid_maps_body(tid: u32) -> alloc::vec::Vec<u8> {

@@ -743,3 +743,41 @@ fn preempt_enable_no_check_does_not_fire_hook() {
     // Still set; only `preempt_enable()` would have cleared it.
     assert!(crate::preempt::need_resched());
 }
+
+// ---------------------------------------------------------------------------
+// procfs PID display: namespace vpid (vtgid), not internal tid (F351)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn display_vpid_resolves_vtgid_not_internal_tid() {
+    crate::registry::clear_for_tests();
+    // PID1: internal tid is opaque (0xC0DE0002 in elf.rs) but vtgid=1.
+    let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
+    init.vtgid.store(1, Ordering::Release);
+    crate::registry::insert(&init);
+    assert_eq!(crate::registry::display_vpid(0xC0DE_0002), 1,
+        "init must show namespace PID 1, not its internal tid");
+    // A task with no vtgid stamped falls back to its tid.
+    let kth = Arc::new(Task::new(42, "kworker", SchedClass::Normal { weight: 1024 }));
+    crate::registry::insert(&kth);
+    assert_eq!(crate::registry::display_vpid(42), 42);
+    // Unknown tid → echoes the tid.
+    assert_eq!(crate::registry::display_vpid(9999), 9999);
+}
+
+#[test]
+fn parent_vpid_resolves_parent_vtgid() {
+    crate::registry::clear_for_tests();
+    let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
+    init.vtgid.store(1, Ordering::Release);
+    crate::registry::insert(&init);
+    // Child: parent_tid points at init's internal tid; PPid must be 1.
+    let child = Arc::new(Task::new(0xC0DE_0050, "sh", SchedClass::Normal { weight: 1024 }));
+    child.vtgid.store(7, Ordering::Release);
+    child.parent_tid.store(0xC0DE_0002, Ordering::Release);
+    crate::registry::insert(&child);
+    assert_eq!(crate::registry::parent_vpid(0xC0DE_0050), 1,
+        "child's PPid is the parent's vtgid (1), not the internal parent tid");
+    // init's parent is the kernel (parent_tid 0 / not registered) → PPid 0.
+    assert_eq!(crate::registry::parent_vpid(0xC0DE_0002), 0);
+}
