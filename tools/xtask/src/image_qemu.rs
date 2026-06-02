@@ -556,3 +556,93 @@ fn which(prog: &str) -> Option<std::path::PathBuf> {
     }
     None
 }
+
+/// `xtask grub --arch x86_64` — build a GRUB-bootable ISO that loads our
+/// kernel DIRECTLY via Multiboot2 (the self-bootstrap path replacing
+/// Limine) and boot it under QEMU. WIP: until the 32→64-bit long-mode
+/// trampoline lands, GRUB loads the kernel and jumps to it but the
+/// kernel can't run (entry is 64-bit higher-half; GRUB hands off in
+/// 32-bit). This target lets that path be iterated.
+pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
+    let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
+    if arch != "x86_64" {
+        eprintln!("xtask grub: only x86_64 supported for now");
+        return Err(2);
+    }
+    let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
+    crate::cmd_rootfs(rest)?;
+    // debug-all by default so the kernel emits klog to serial.
+    let mut kr: Vec<String>;
+    let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
+        kr = rest.to_vec();
+        kr.push("--features".into());
+        kr.push("debug-all".into());
+        &kr[..]
+    } else { rest };
+    crate::cmd_kernel(kargs)?;
+    let repo = repo_root();
+    let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
+    let iso = build_grub_iso(&repo, &arch, &kernel_elf)?;
+    qemu_run_grub_x86_64(&repo, &iso, smp)
+}
+
+/// Stage `boot/oxide-<arch>` + a `grub.cfg` that `multiboot2`-loads it,
+/// then `grub2-mkrescue` into a hybrid BIOS+UEFI ISO.
+fn build_grub_iso(
+    repo: &std::path::Path,
+    arch: &str,
+    kernel_elf: &std::path::Path,
+) -> Result<std::path::PathBuf, u8> {
+    use std::fs;
+    let stage = repo.join(format!("target/grub-stage-{arch}"));
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
+    fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
+    let cfg = format!(
+        "set timeout=3\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
+         menuentry \"oxide (multiboot2)\" {{\n    \
+         multiboot2 /boot/oxide-{arch} root=/dev/oxide0 ro console=ttyS0,115200\n    \
+         boot\n}}\n");
+    fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
+    let iso = repo.join(format!("target/oxide-{arch}-grub.iso"));
+    let _ = fs::remove_file(&iso);
+    let mkrescue = if which("grub2-mkrescue").is_some() { "grub2-mkrescue" } else { "grub-mkrescue" };
+    let mut c = Command::new(mkrescue);
+    c.args(["-o", iso.to_str().unwrap(), stage.to_str().unwrap()]);
+    run(c)?;
+    eprintln!("xtask grub: produced {}", iso.display());
+    Ok(iso)
+}
+
+/// Boot the GRUB ISO under QEMU (SeaBIOS El Torito). Attaches the ext4
+/// rootfs as virtio-blk (/dev/oxide0) and serial→stdio for the console.
+fn qemu_run_grub_x86_64(
+    repo: &std::path::Path,
+    iso: &std::path::Path,
+    smp: u32,
+) -> Result<(), u8> {
+    let rootfs = repo.join("kernel/blobs/rootfs-x86_64.img");
+    let smp_str = smp.to_string();
+    let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
+        && std::path::Path::new("/dev/kvm").exists()
+    { "kvm" } else { "tcg" };
+    let mut c = Command::new("qemu-system-x86_64");
+    c.args([
+        "-machine", "q35",
+        "-accel", accel,
+        "-cpu", "Haswell-v4",
+        "-smp", &smp_str,
+        "-m", "1G",
+        "-cdrom", iso.to_str().unwrap(),
+        "-boot", "d",
+        "-drive", &format!("if=none,id=hd0,format=raw,file={}", rootfs.display()),
+        "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        "-serial", "mon:stdio",
+        "-display", "none",
+        "-no-reboot",
+    ]);
+    eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}");
+    run(c)
+}
