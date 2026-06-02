@@ -20,6 +20,7 @@ FEATURES ?=
         build-debug x86-debug arm-debug \
         test lint ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
+        qemu-x86-grub \
         clean help
 
 all: build
@@ -76,6 +77,11 @@ qemu-x86:
 
 qemu-arm:
 	$(XTASK) qemu --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
+
+# GRUB self-bootstrap path: build a GRUB ISO that multiboot2-loads the
+# kernel directly (replacing Limine) and boot it. WIP — see F372.
+qemu-x86-grub:
+	$(XTASK) grub --arch x86_64 --smp $(SMP)
 
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
