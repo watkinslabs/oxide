@@ -26,6 +26,17 @@ const PR_SET_THP_DISABLE:     u64 = 41;
 const PR_GET_THP_DISABLE:     u64 = 42;
 const PR_SET_CHILD_SUBREAPER: u64 = 36;
 const PR_GET_CHILD_SUBREAPER: u64 = 37;
+const PR_GET_SECUREBITS:      u64 = 27;
+const PR_SET_SECUREBITS:      u64 = 28;
+// Valid securebits: 4 SECBIT_* flags (bits 0,2,4,6) + their locks
+// (bits 1,3,5,7) = 0xff. Setting any bit outside this is EINVAL.
+const SECUREBITS_VALID:       u64 = 0xff;
+const PR_CAP_AMBIENT:         u64 = 47;
+// PR_CAP_AMBIENT sub-commands (arg2).
+const PR_CAP_AMBIENT_IS_SET:    u64 = 1;
+const PR_CAP_AMBIENT_RAISE:     u64 = 2;
+const PR_CAP_AMBIENT_LOWER:     u64 = 3;
+const PR_CAP_AMBIENT_CLEAR_ALL: u64 = 4;
 
 /// `sys_personality(persona)` — slot 135. Returns previous personality
 /// and (when `persona != 0xFFFFFFFF`) sets the new one. Per-task slot
@@ -130,6 +141,58 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
             // Modern programs use the seccomp(2) syscall directly; this
             // legacy entry stays EINVAL for now.
             -(Errno::Einval.as_i32() as i64)
+        }
+        // securebits round-trip. systemd applies per-service securebits in
+        // its exec child; an EINVAL here aborts the spawn at step SECUREBITS.
+        PR_SET_SECUREBITS => {
+            if (args.a1 & !SECUREBITS_VALID) != 0 {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            cur.creds.securebits.store(args.a1 as u32, Ordering::Release);
+            0
+        }
+        PR_GET_SECUREBITS => cur.creds.securebits.load(Ordering::Acquire) as i64,
+        // PR_CAP_AMBIENT(arg2=sub, arg3=cap): manage the per-task ambient
+        // capability set. systemd's exec path always calls CLEAR_ALL when
+        // applying a service's ambient set — an EINVAL here aborts every
+        // service spawn ("Failed to apply the starting ambient set").
+        PR_CAP_AMBIENT => {
+            match args.a1 {
+                PR_CAP_AMBIENT_CLEAR_ALL => {
+                    if args.a2 != 0 || args.a3 != 0 || args.a4 != 0 {
+                        return -(Errno::Einval.as_i32() as i64);
+                    }
+                    cur.creds.cap_ambient.store(0, Ordering::Release);
+                    0
+                }
+                PR_CAP_AMBIENT_IS_SET | PR_CAP_AMBIENT_RAISE | PR_CAP_AMBIENT_LOWER => {
+                    let cap = args.a2;
+                    if cap >= 64 || args.a3 != 0 || args.a4 != 0 {
+                        return -(Errno::Einval.as_i32() as i64);
+                    }
+                    let bit = 1u64 << cap;
+                    match args.a1 {
+                        PR_CAP_AMBIENT_IS_SET =>
+                            ((cur.creds.cap_ambient.load(Ordering::Acquire) >> cap) & 1) as i64,
+                        PR_CAP_AMBIENT_RAISE => {
+                            // Linux: the cap must be in BOTH permitted and
+                            // inheritable, else EPERM.
+                            let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
+                            let inh  = cur.creds.cap_inheritable.load(Ordering::Acquire);
+                            if (perm & bit) == 0 || (inh & bit) == 0 {
+                                return -(Errno::Eperm.as_i32() as i64);
+                            }
+                            cur.creds.cap_ambient.fetch_or(bit, Ordering::AcqRel);
+                            0
+                        }
+                        _ /* LOWER */ => {
+                            cur.creds.cap_ambient.fetch_and(!bit, Ordering::AcqRel);
+                            0
+                        }
+                    }
+                }
+                _ => -(Errno::Einval.as_i32() as i64),
+            }
         }
         _ => -(Errno::Einval.as_i32() as i64),
     }
