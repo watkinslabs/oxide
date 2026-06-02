@@ -15,6 +15,19 @@ busybox). 18 PRs this session (#1482-#1497). main @ #1497, tree clean.
   /bin entries (ash/hush/echo/test/which/clear/more/xxd/hostname/dmesg/net
   tools) have no separate GNU package; leave them.
 
+## systemd-default boot baseline (clean)
+The systemd-default boot (SMP=1) reaches `Reached target Oxide Default
+Target` + `Startup finished` (~15s userspace) + `oxide login:` cleanly.
+Only NON-FATAL cosmetic taints/warnings remain:
+- `System is tainted: unmerged-usr:unmerged-bin:var-run-bad` — /bin,/sbin
+  aren't /usr/bin,/usr/sbin symlinks (usr-merge is a big layout change), and
+  /var/run is a dir not a `/var/run`→`/run` symlink (changing it risks
+  dhcpcd's hardcoded /var/run/dhcpcd path).
+- `Failed to add a watch for /run/systemd/ask-password: No such file` — the
+  ask-password runtime dir isn't pre-created (systemd-tmpfiles not run).
+These don't affect login; low priority. A var-run symlink / usr-merge PR
+would need rootfs.rs compaction first (it's at ~998/1000).
+
 ## NEXT (larger tracks, one PR each, both-arch gate)
 1. **systemd full sysinit chain** — default.target is first-light
    (Wants=console-getty, DefaultDependencies=no). Expand to real distro init:
