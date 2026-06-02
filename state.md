@@ -2,8 +2,22 @@
 
 ## Headline
 **OXIDE boots systemd as its DEFAULT init (PID 1) to `oxide login:` on BOTH
-x86_64 AND aarch64.** The keystone OXIDE-distro milestone is done and merged.
-12 PRs this session (#1482-#1491 + B22). main @ #1491, tree clean.
+x86_64 AND aarch64** (keystone, done+merged), and the GNU userland is
+starting — /bin/ls,cat,cp,… (36 applets) are now GNU coreutils, not busybox
+(#1493). 14 PRs this session (#1482-#1493). main @ #1493, tree clean.
+
+## NEXT: GNU userland (rip busybox) — BLOCKED on a refactor
+tools/xtask/src/main.rs is AT the 1000-line cap (exactly 1000). Switching
+MORE /bin|/sbin applets to GNU (each adds an applet loop) WILL exceed the
+cap → SPLIT cmd_rootfs out of main.rs into a submodule (like the existing
+`mod image_qemu; mod l2_deps;`) FIRST, verify the rootfs build is unchanged
+(cargo run -p xtask -- rootfs --arch x86_64 + debugfs stat /bin/ls→coreutils
+inode 160, + both-arch boot-smoke), then add more GNU switches. Already-
+vendored GNU packages to switch next (check vendor/<pkg>/<pkg>-{arch} exist):
+grep/egrep/fgrep→vendor/grep, find→findutils, sed→sed, awk→gawk,
+diff→diffutils, tar→tar, gzip/gunzip→gzip. One batch per PR, both-arch gate.
+Then: systemd full sysinit chain (mount -a/tmpfiles), Limine→GRUB, vim
+(vendored F251)/python.
 
 ## Merged this session (the full systemd bring-up)
 | PR | What |
