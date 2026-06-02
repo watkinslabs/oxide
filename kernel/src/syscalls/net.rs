@@ -661,7 +661,7 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let addr_p = args.a1;
     if addr_p == 0 || addr_p >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     if crate::syscalls::netlink_fd::is_netlink(fd) {
-        return crate::syscalls::netlink_fd::getsockname(addr_p);
+        return crate::syscalls::netlink_fd::getsockname(fd, addr_p);
     }
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"getsockname"); return -(Errno::Enotsock.as_i32() as i64); }
