@@ -329,40 +329,19 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
     // Kernel-acceptance smoke binaries. Real-musl-crt1 builds; every
     // user-facing tool comes from busybox hardlinks above.
-    put(&user("bare3"),        "/bin/bare3")?;
-    put(&user("sptest"),       "/bin/sptest")?;
-    put(&user("pamtest"),      "/bin/pamtest")?;
-    put(&user("login_sim"),    "/bin/login_sim")?;
-    put(&user("sem_smoke"),    "/bin/sem_smoke")?;
-    put(&user("msg_smoke"),    "/bin/msg_smoke")?;
-    put(&user("mq_smoke"),     "/bin/mq_smoke")?;
-    put(&user("ptrace_smoke"), "/bin/ptrace_smoke")?;
-    put(&user("ptrace_singlestep_smoke"), "/bin/ptrace_singlestep_smoke")?;
-    put(&user("mprotect_smoke"), "/bin/mprotect_smoke")?;
-    put(&user("mremap_dontunmap_smoke"), "/bin/mremap_dontunmap_smoke")?;
-    put(&user("inet6_smoke"),  "/bin/inet6_smoke")?;
-    put(&user("mmsg_smoke"),   "/bin/mmsg_smoke")?;
-    put(&user("scm_smoke"),    "/bin/scm_smoke")?;
-    put(&user("cgroup_smoke"), "/bin/cgroup_smoke")?;
-    put(&user("cmdsubst_probe"), "/bin/cmdsubst_probe")?;
-    put(&user("alarm_probe"), "/bin/alarm_probe")?;
-    put(&user("symlink_probe"), "/bin/symlink_probe")?;
-    put(&user("mount_smoke"), "/bin/mount_smoke")?;
-    put(&user("statfs_smoke"), "/bin/statfs_smoke")?;
-    put(&user("fsmount_probe"), "/bin/fsmount_probe")?;
-    put(&user("memfd_seal_probe"), "/bin/memfd_seal_probe")?;
-    put(&user("uevent_probe"), "/bin/uevent_probe")?;
-    put(&user("rtlink_probe"), "/bin/rtlink_probe")?;
-    put(&user("dev_smoke"), "/bin/dev_smoke")?;
-    put(&user("vim_smoke"),      "/bin/vim_smoke")?;
-    put(&user("mmap_zero_smoke"), "/bin/mmap_zero_smoke")?;
-    put(&user("usleep_smoke"), "/bin/usleep_smoke")?;
-    put(&user("af_packet_smoke"), "/bin/af_packet_smoke")?;
-    put(&user("online_smoke"),    "/bin/online_smoke")?;
-    put(&user("tcp_smoke"),       "/bin/tcp_smoke")?;
-    put(&user("exit_test"),       "/bin/exit_test")?;
-    put(&user("pthread_socketpair_probe"), "/bin/pthread_socketpair_probe")?;
-    put(&user("socketpair_fork_probe"),    "/bin/socketpair_fork_probe")?;
+    for b in &[
+        "bare3", "sptest", "pamtest", "login_sim", "sem_smoke", "msg_smoke",
+        "mq_smoke", "ptrace_smoke", "ptrace_singlestep_smoke", "mprotect_smoke",
+        "mremap_dontunmap_smoke", "inet6_smoke", "mmsg_smoke", "scm_smoke",
+        "cgroup_smoke", "cmdsubst_probe", "alarm_probe", "symlink_probe",
+        "mount_smoke", "statfs_smoke", "fsmount_probe", "memfd_seal_probe",
+        "uevent_probe", "rtlink_probe", "dev_smoke", "vim_smoke",
+        "mmap_zero_smoke", "usleep_smoke", "af_packet_smoke", "online_smoke",
+        "tcp_smoke", "exit_test", "pthread_socketpair_probe",
+        "socketpair_fork_probe",
+    ] {
+        put(&user(b), &format!("/bin/{b}"))?;
+    }
     // F230: musl dynamic loader → /lib/ld-musl-<arch>.so.1.
     let interp_path = if arch == "aarch64" {
         "/lib/ld-musl-aarch64.so.1"
@@ -631,6 +610,20 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             c.stdout(std::process::Stdio::null());
             run(c)?;
         }
+    }
+
+    // F362: CPython 3.13.1 static-musl → /usr/bin/python3.13 (+python3
+    // symlink). All stdlib C extensions are builtin (zlib/_socket/select/
+    // hashlib); the pure-python stdlib ships zipped at /usr/lib/python313.zip
+    // (CPython getpath adds <prefix>/lib/python313.zip to sys.path, so
+    // `python3 -c ...` works with no PYTHONPATH). _ssl/_ctypes gapped until
+    // openssl/libffi cross-detection lands.
+    let py_bin = repo.join(format!("vendor/python/python3-{}", arch));
+    let py_zip = repo.join("vendor/python/python313.zip");
+    if py_bin.is_file() && py_zip.is_file() {
+        put(&py_bin, "/usr/bin/python3.13")?;
+        ln_via_debugfs("/usr/bin/python3.13", "/usr/bin/python3")?;
+        put(&py_zip, "/usr/lib/python313.zip")?;
     }
 
     let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
