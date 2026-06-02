@@ -102,7 +102,19 @@ impl Inode for InotifyInode {
             s[12..16].copy_from_slice(&ev.len.to_le_bytes());
             written += HDR;
         }
+        // An inotify fd has no EOF: an empty queue means "no events yet",
+        // which is EAGAIN (would-block), NOT 0. Returning 0 makes an
+        // epoll-driven reader (systemd's sd-event) spin forever — poll
+        // reports readable, read yields 0, repeat. Linux returns EAGAIN.
+        if written == 0 { return Err(VfsError::Eagain); }
         Ok(written)
+    }
+    /// POLLIN only when at least one event is queued. The default inode
+    /// poll() reports always-readable, which drives an inotify watcher's
+    /// event loop into a busy spin (read returns EAGAIN, poll says ready).
+    /// # C: O(1)
+    fn poll(&self) -> u32 {
+        if self.events.lock().is_empty() { 0 } else { vfs::POLL_IN }
     }
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
@@ -371,4 +383,36 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         return 0;
     }
     -(Errno::Einval.as_i32() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vfs::Inode;
+
+    // An empty inotify fd is EAGAIN (would-block), never EOF(0), and
+    // poll() reports not-readable — else an epoll-driven reader spins.
+    #[test]
+    fn empty_inotify_is_eagain_and_not_pollable() {
+        let ino = InotifyInode::new(0);
+        let mut buf = [0u8; 64];
+        assert_eq!(ino.read(0, &mut buf), Err(vfs::VfsError::Eagain));
+        assert_eq!(ino.poll(), 0);
+    }
+
+    // With an event queued, poll() is readable and read() drains a
+    // 16-byte inotify_event; a second read returns to EAGAIN.
+    #[test]
+    fn queued_event_is_readable_then_drains_to_eagain() {
+        let ino = InotifyInode::new(0);
+        ino.events.lock().push_back(Event { wd: 1, mask: IN_MODIFY, cookie: 0, len: 0 });
+        assert_eq!(ino.poll(), vfs::POLL_IN);
+        let mut buf = [0u8; 64];
+        assert_eq!(ino.read(0, &mut buf), Ok(16));
+        assert_eq!(i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 1);
+        assert_eq!(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]), IN_MODIFY);
+        // Queue now empty → back to EAGAIN / not pollable.
+        assert_eq!(ino.read(0, &mut buf), Err(vfs::VfsError::Eagain));
+        assert_eq!(ino.poll(), 0);
+    }
 }

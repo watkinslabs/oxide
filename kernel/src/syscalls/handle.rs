@@ -105,8 +105,16 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     }
     if mnt_id_ptr != 0 && mnt_id_ptr < USER_VA_END {
         if validate_user_buf_writable(mnt_id_ptr, 4, 1).is_ok() {
-            // SAFETY: mnt_id_ptr validated writable for 4 bytes; constant single-domain mount id.
-            unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, 1); }
+            // Per-filesystem mount id (Linux st_dev analog). The root/ext4
+            // domain reports a stable nonzero `1`; pseudo filesystems
+            // mounted elsewhere (cgroup2, …) report their distinct fsid so
+            // systemd's is_mount_point sees the boundary. A constant id made
+            // every path look like the same mount → systemd's cgroup walk
+            // never terminated (infinite statx+name_to_handle_at loop).
+            let fsid = inode.fsid();
+            let mid: i32 = if fsid == 0 { 1 } else { fsid as i32 };
+            // SAFETY: mnt_id_ptr validated writable for 4 bytes; single aligned i32 write of the per-fs mount id.
+            unsafe { core::ptr::write_volatile(mnt_id_ptr as *mut i32, mid); }
         }
     }
     0

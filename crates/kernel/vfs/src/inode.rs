@@ -31,6 +31,17 @@ pub trait Inode: Send + Sync {
     /// # C: O(1)
     fn ino(&self) -> Ino;
 
+    /// Superblock / mount identity (Linux `st_dev` analog). Inodes on
+    /// the same filesystem return the same value; distinct filesystems
+    /// return distinct values. Used by `name_to_handle_at`'s `mount_id`
+    /// and mount-point detection (`is_mount_point` compares a path's id
+    /// to its parent's). Default `0` = the root/ext4 domain; pseudo
+    /// filesystems mounted elsewhere (cgroup2, proc, …) override it so a
+    /// mount boundary is observable. Without this, systemd's cgroup
+    /// walk never finds the `/sys/fs/cgroup` boundary and loops forever.
+    /// # C: O(1)
+    fn fsid(&self) -> u64 { 0 }
+
     /// # C: O(1)
     fn file_type(&self) -> FileType;
 
