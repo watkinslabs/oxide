@@ -92,3 +92,7 @@ echo post-memfd-seal-probe rv=$?
 echo post-uevent-probe rv=$?
 [ -x /bin/rtlink_probe ] && /bin/rtlink_probe
 echo post-rtlink-probe rv=$?
+# F362: CPython static-musl runs in-kernel (zip'd stdlib auto-found).
+echo pre-python
+[ -x /usr/bin/python3 ] && /usr/bin/python3 -c 'print("py-smoke", 6*7)'
+echo post-python rv=$?
