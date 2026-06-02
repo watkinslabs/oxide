@@ -35,6 +35,8 @@ mod pt_regs;
 mod regs;
 pub mod vmm;
 pub use cpuid::{brand as cpuid_brand, vendor as cpuid_vendor};
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub use cpuid::tsc_khz_from_cpuid;
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use fault::{
     install_fault_handler, install_user_trap_hook, vector_stub_addr,
