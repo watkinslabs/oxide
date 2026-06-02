@@ -611,8 +611,10 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     let _flags = args.a2;
     // netlink: real netlink_recvmsg (fills the returned msghdr) — explicit,
     // not relying on the recvfrom fall-through which left msghdr unset.
+    // MSG_PEEK (a2) must be honoured: sd-netlink peeks to size its buffer
+    // before the consuming read.
     if crate::syscalls::netlink_fd::is_netlink(fd) {
-        return crate::syscalls::netlink_fd::recvmsg(fd, msgp);
+        return crate::syscalls::netlink_fd::recvmsg(fd, msgp, args.a2 as u32);
     }
     if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // F122/F213: route to DGRAM/STREAM cmsg handlers (lock dropped before recurse).

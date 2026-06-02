@@ -266,6 +266,16 @@ impl NetlinkSocket {
         self.rx_queue.lock().pop_front()
     }
 
+    /// Clone the head reply buffer WITHOUT removing it (MSG_PEEK).
+    /// libsystemd's sd-netlink sizes its receive buffer with a
+    /// `recvmsg(MSG_PEEK|MSG_TRUNC)` before the real consuming read; the
+    /// peek must leave the datagram queued or the next read sees nothing
+    /// and sd_netlink times out waiting for the ack.
+    /// # C: O(msg len) under rx_queue.lock()
+    pub fn peek_front(&self) -> Option<Vec<u8>> {
+        self.rx_queue.lock().front().cloned()
+    }
+
     /// Dispatch a single parsed request header. Routes by
     /// `(self.protocol, hdr.nlmsg_type)` into the appropriate
     /// per-protocol handler; on no match emits a NLMSG_DONE
