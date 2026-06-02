@@ -8,10 +8,12 @@
 # fork+exec patterns, /dev/tty fallback, alarm-based read timeouts);
 # every gap surfaces a kernel/libc fix that lands in the same PR.
 #
-# Build is intentionally minimal: --disable-nls, --without-bash-malloc
-# (use musl's), --disable-readline (no line editing — the rootfs is
-# headless), --disable-net-redirections (no /dev/tcp), --disable-help-builtin.
-# Static link so the binary works pre-dynamic-linker.
+# Build is minimal: --disable-nls, --without-bash-malloc (use musl's),
+# --disable-net-redirections (no /dev/tcp), --disable-help-builtin.
+# readline + history ARE enabled (interactive line editing, tab
+# completion, history, arrow keys) using bash's BUNDLED readline +
+# termcap (bash_cv_termcap_lib=gnutermcap) so the static musl link needs
+# no external libtinfo. Static link so the binary works pre-dynamic-linker.
 set -e
 
 cd "$(dirname "$0")"
@@ -71,7 +73,7 @@ bash_cv_decl_under_sys_siglist=no
 bash_cv_getcwd_malloc=yes
 bash_cv_getenv_redef=yes
 bash_cv_func_ctype_nonascii=yes
-bash_cv_termcap_lib=libtinfo
+bash_cv_termcap_lib=gnutermcap
 bash_cv_wcwidth_broken=no
 ac_cv_c_long_double=yes
 EOF
@@ -100,8 +102,8 @@ build_one() {
       --cache-file=config.cache \
       --without-bash-malloc \
       --disable-nls \
-      --disable-readline \
-      --disable-history \
+      --enable-readline \
+      --enable-history \
       --disable-net-redirections \
       --disable-help-builtin \
       --prefix=/usr \
