@@ -12,19 +12,23 @@ pub fn body(tid: u32) -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut out = Vec::with_capacity(1024);
     let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
-    let ppid = task.parent_tid.load(Ordering::Acquire) as u64;
+    // Display the namespace PID (Linux "PID" == our vtgid), not the internal
+    // kernel tid. PID1 (systemd/init) is stamped vtgid=1 but keeps an opaque
+    // internal tid; `ps` reads these fields and must show 1, not 0xC0DE….
+    let vpid = sched::live::registry::display_vpid(tid);
+    let ppid = sched::live::registry::parent_vpid(tid);
     let umask = task.umask.load(Ordering::Acquire) as u64;
     let pgid = task.pgid.load(Ordering::Acquire) as u64;
     let sid  = task.sid.load(Ordering::Acquire) as u64;
     push(&mut out, b"Name:\t"); push(&mut out, task.name.as_bytes()); push(&mut out, b"\n");
     push(&mut out, b"Umask:\t"); push_octal(&mut out, umask, 4); push(&mut out, b"\n");
     push(&mut out, b"State:\t"); push(&mut out, task.state().linux_status_label().as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"Tgid:\t"); push_u64(&mut out, tid as u64);
-    push(&mut out, b"\nNgid:\t0\nPid:\t"); push_u64(&mut out, tid as u64);
+    push(&mut out, b"Tgid:\t"); push_u64(&mut out, vpid);
+    push(&mut out, b"\nNgid:\t0\nPid:\t"); push_u64(&mut out, vpid);
     push(&mut out, b"\nPPid:\t"); push_u64(&mut out, ppid);
     push(&mut out, b"\nTracerPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t256\nGroups:\t\n");
-    push(&mut out, b"NStgid:\t"); push_u64(&mut out, tid as u64);
-    push(&mut out, b"\nNSpid:\t"); push_u64(&mut out, tid as u64);
+    push(&mut out, b"NStgid:\t"); push_u64(&mut out, vpid);
+    push(&mut out, b"\nNSpid:\t"); push_u64(&mut out, vpid);
     push(&mut out, b"\nNSpgid:\t"); push_u64(&mut out, pgid);
     push(&mut out, b"\nNSsid:\t"); push_u64(&mut out, sid);
     push(&mut out, b"\nThreads:\t1\nSigQ:\t0/0\n\
