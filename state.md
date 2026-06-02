@@ -1,75 +1,83 @@
 # Session hand-off
 
 ## Headline
-**systemd as PID1 boots oxide to an interactive `sh-5.2#` shell on
-/dev/console.** The entire systemd-PID1 bring-up chain is fixed — cgroup
-setup, event loop, unit transaction, service fork, and the full exec-setup
-cascade. Verified under a systemd-PID1 recon boot (x86). main @ #1486.
-Default PID1 is STILL busybox (login smoke green); the systemd path is
-recon-only until verified interactive on BOTH arches + a login smoke exists.
+**systemd as PID1 boots oxide to an interactive `sh-5.2#` (bash) shell on
+x86** — the entire systemd bring-up chain is fixed. 7 PRs merged this
+session (#1482-#1487). main @ #1487. arm parity is the open blocker before
+flipping default PID1. Default PID1 stays busybox (login smoke green).
 
-## Merged this session (6 PRs)
+## Merged this session (7 PRs)
 | PR | Fix |
 |----|-----|
-| #1482 | /proc/<pid> stat+status report namespace PID (init shows 1) |
-| #1483 | first-light default.target (Wants=console-shell, no sysinit chain) |
-| #1484 | mkdir EEXIST + materialize /sys/fs,/sys/kernel → cgroup mkdir_p OK |
-| #1485 | per-fs name_to_handle_at mount_id (Inode::fsid) + inotify EAGAIN/poll → escapes mount-walk + epoll spin |
+| #1482 | /proc/<pid> reports namespace PID (init shows 1) |
+| #1483 | first-light default.target (Wants=console-shell only) |
+| #1484 | mkdir EEXIST + materialize /sys/fs,/sys/kernel → cgroup mkdir_p |
+| #1485 | per-fs name_to_handle_at mount_id (Inode::fsid) + inotify EAGAIN/poll |
 | #1486 | service exec-setup syscalls: PR_CAP_AMBIENT, keyctl SETPERM/LINK, capget/capset vpid, PR_SET/GET_SECUREBITS → /bin/sh runs |
+| #1487 | state doc |
 
-## The systemd-PID1 wedge chain solved (in order)
-1. cgroup root EROFS (#1484: mkdir EEXIST + /sys/fs dirs).
-2. Infinite mount-walk: constant name_to_handle_at mount_id (#1485: Inode::fsid).
-3. inotify epoll-spin: read=Ok(0) + poll always-ready (#1485: EAGAIN + poll).
-4. Service spawn exec-setup steps, each EINVAL/ENOTSUP/ESRCH (#1486):
-   AMBIENT (PR_CAP_AMBIENT) → KEYRING (keyctl SETPERM/LINK) →
-   CAPABILITIES (capget/capset vpid≠tid) → SECUREBITS (PR_SET_SECUREBITS).
-Result: `Started Console Shell` + `sh-5.2#` prompt.
+## systemd-PID1 wedge chain solved (x86, in order)
+cgroup EROFS (#1484) → infinite mount-walk from constant mount_id (#1485
+fsid) → inotify epoll-spin (#1485) → exec-setup steps each EINVAL/ENOTSUP/
+ESRCH: AMBIENT→KEYRING→CAPABILITIES→SECUREBITS (#1486). Result: `Started
+Console Shell` + `sh-5.2#` prompt on /dev/console.
 
-## NEXT (one PR each, NO HACKS, careful)
-1. **Verify systemd→shell on aarch64** (lockstep). The x86 milestone used
-   elf.rs recon (PID1=/lib/systemd/systemd). Confirm the arm PID1 spawn
-   path reaches sh too; fix any arm-specific exec gap. (Recon, not a PR
-   unless a gap is found.)
-2. **Flip default PID1 busybox→systemd** — BIG/risky. The login smoke
-   (tools/boot-smoke.sh) waits for `oxide login:` but console-shell gives
-   `sh-5.2#`. So flipping needs EITHER (a) a getty/login service in the
-   systemd unit tree (vendor/systemd/build.sh) that prints `oxide login:`,
-   OR (b) update the smoke success marker. Do NOT flip until systemd is
-   reliably interactive on BOTH arches. Own branch, careful verification.
-3. Distro track: /bin/sh is already bash 5.2; extend to GNU coreutils;
-   Limine→GRUB; vim/python.
+## OPEN BLOCKER — arm systemd parity (critical path to PID1 flip)
+3 arm systemd-recon boots (elf_arm.rs PID1=/lib/systemd/systemd) all WEDGED
+at "keymap loaded", BEFORE the "init-fork-exec works" smoke (which runs
+before PID1 in elf_arm.rs:270). qemu idle at ~0-1% CPU = halted, not slow.
+- The wedge is at a spot my elf_arm change does NOT touch (pre-PID1 smoke),
+  and busybox arm boots fine (gate green, ~38s) → likely the INTERMITTENT
+  arm early-smoke wedge (cf. CAT-smoke wedge memory), NOT systemd. But not
+  confirmed — could be systemd-on-arm parking silently before any output.
+- arm systemd binary IS present + correct (aarch64 PIE, ld-musl-aarch64).
+- exec-setup syscalls (#1486) are arch-neutral → should cover arm too.
+- NEXT (do NOT blind-boot arm 13min at a time): use the qemu MCP
+  (mcp__qemu__qemu_start arch=aarch64, qemu_break/qemu_backtrace/qemu_regs)
+  to inspect WHERE the boot parks after "keymap loaded" — is it the smoke
+  ELF spawn, spawn_init_from_rootfs_arm (systemd load), or a console/timer
+  block? OR first reproduce the early-smoke wedge with busybox (re-boot arm
+  clean a few times) to confirm it's the known flake. If it's the flake,
+  fix THAT (separate from systemd); if systemd-on-arm parks, inspect the
+  park point.
 
-## systemd-PID1 recon recipe (proven)
-- elf.rs: init_blob = lookup_blob_by_path(b"/lib/systemd/systemd") (load
-  DIRECTLY — load_static_blob resolves its PT_INTERP musl loader; NOT
-  ld-musl-as-argv0), argv=[same]; build_user_stack envp +=
-  SYSTEMD_LOG_LEVEL=info (info dodges the kmsg rate-limit that hides late
-  errors at debug). [P1fx] fork/exec trace at oxide_syscall_dispatch
-  (mod.rs ~L568) gated c.vtid==1. ALL recon REVERT before commit:
-  git checkout -- kernel/src/smoke/elf.rs kernel/src/syscalls/mod.rs.
-- Boot SMP=1 (halves trace volume; the cat-smoke 'A' can wedge pre-PID1
-  intermittently — kill+reboot if frozen at 'A').
-- grep boot log with -a (binary escape codes); systemd[1] log lines split
-  across 3 output lines — grep single tokens. Look for `Failed at step X`
-  (exec-setup gap) + `sh-5.2#` (shell reached).
-- fd identity: in sys_read gate vtid==1 && fd==N, klog file.inode().ino().
+## NEXT increments (one PR each, NO HACKS)
+1. **Fix arm boot to reach systemd→shell** (above) — lockstep gate.
+2. **getty/login unit** (x86-verifiable now): rootfs HAS /sbin/agetty,
+   /sbin/getty, /bin/login, /usr/bin/login (busybox applets). Replace/add a
+   console-getty.service in vendor/systemd/build.sh that runs agetty on
+   /dev/console → prints `oxide login:` (matches the boot-smoke marker) →
+   login → shell. Verify via x86 systemd recon; watch for getty exec gaps
+   (TIOCSCTTY/setsid/vhangup). Prereq for the flip.
+3. **Flip default PID1 busybox→systemd** — only after 1+2 work on BOTH
+   arches. elf.rs ~L639/L658 + elf_arm.rs ~L310/L397 → /lib/systemd/systemd;
+   update boot-smoke marker. Dedicated branch, full both-arch gate.
+4. Distro: GNU coreutils (beyond bash); Limine→GRUB; vim/python.
+
+## systemd-PID1 recon recipe (proven, x86)
+elf.rs init_blob=lookup_blob_by_path(b"/lib/systemd/systemd") (load
+DIRECTLY — load_static_blob resolves PT_INTERP musl loader; NOT
+ld-musl-as-argv0), argv=[same], build_user_stack envp +=
+SYSTEMD_LOG_LEVEL=info (info dodges the kmsg rate-limit that hides late
+errors). REVERT before commit: git checkout -- kernel/src/smoke/elf.rs
+kernel/src/smoke/elf_arm.rs kernel/src/syscalls/mod.rs. Boot SMP=1. grep -a
+the log (binary escape codes); systemd[1] lines split across 3 output
+lines; `Failed at step X`=exec-setup gap, `sh-5.2#`=shell reached.
+**The [P1fx]/[P1nr] every-syscall trace may interact badly with arm — use
+narrow traces or the qemu MCP on arm.**
 
 ## CRITICAL harness rules
-- dev shell `set -e`: a pkill/grep/[test] prefix in a compound aborts it →
-  the `make ... > file` never runs (empty file). Run boots ALONE:
-  bare `make SMP=1 qemu-x86 > /tmp/rN.txt 2>&1` run_in_background; clear
-  stale qemu in a SEPARATE `pkill -9 -f qemu-system 2>/dev/null||true;
-  sleep 2` first; guard EVERY grep/pgrep/pkill/[test] with ||true.
-- NO foreground sleep — use run_in_background until-loops with a line-count
-  break (a wedged systemd recon explodes the log to millions of lines).
-- Never put `&` inside a run_in_background make (breaks the redirect).
+- dev shell `set -e`: a pkill/grep/[test] prefix aborts the compound → the
+  `make ... > file` never runs (empty file). Run boots ALONE; pkill
+  SEPARATELY first (`pkill -9 -f qemu-system 2>/dev/null||true; sleep 2`);
+  guard EVERY grep/pgrep/pkill/[test] with ||true.
+- NO foreground sleep — run_in_background until-loops with a line-count
+  break (wedged systemd recon explodes the log). Check qemu %cpu to tell
+  wedge (idle) from slow-TCG (busy). Never put `&` inside a bg make.
 - Gate: `git push --dry-run origin <branch>` = both-arch boot-smoke; arm
-  can flake (re-run once / `make qemu-arm` to confirm before calling it a
-  regression). PASS → SKIP_SMOKE=1 push + `gh pr merge --merge
-  --delete-branch=true` (NO separate git branch -D).
-- NEVER klog in sys_openat (wedges SMP). spec-lint clean; sched/fs/procfs
-  files near the 1000-line cap; branch per change; explicit git add; never
-  add vendor/*/install-*/lib/pkgconfig; tree-wide cargo fmt NOT wanted.
-- The `cred`/`keyring`/`prctl` syscall handlers are cfg(oxide-kernel) — NOT
-  hosted-testable (need current() + user memory); verify via the boot.
+  flakes — re-run / `make qemu-arm` before calling a regression. PASS →
+  SKIP_SMOKE=1 push + `gh pr merge --merge --delete-branch=true` (NO branch -D).
+- NEVER klog in sys_openat. spec-lint clean; files <1000 lines; branch per
+  change; explicit git add; never add vendor/*/install-*/lib/pkgconfig.
+- cred/keyring/prctl handlers are cfg(oxide-kernel) — NOT hosted-testable;
+  verify via boot.
