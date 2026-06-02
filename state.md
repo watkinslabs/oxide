@@ -1,10 +1,11 @@
 # Session hand-off
 
 ## Headline
-**systemd as PID1 boots oxide to an interactive `sh-5.2#` (bash) shell on
-x86** — the entire systemd bring-up chain is fixed. 7 PRs merged this
-session (#1482-#1487). main @ #1487. arm parity is the open blocker before
-flipping default PID1. Default PID1 stays busybox (login smoke green).
+**systemd as PID1 boots oxide to an `oxide login:` prompt (via console-getty
+→ getty/login) on x86** — the entire systemd bring-up chain is fixed,
+including a real login path. 9 PRs merged (#1482-#1488 + F356). main near
+#1488. arm parity is the open blocker before flipping default PID1.
+Default PID1 stays busybox (login smoke green).
 
 ## Merged this session (7 PRs)
 | PR | Fix |
@@ -23,23 +24,24 @@ ESRCH: AMBIENT→KEYRING→CAPABILITIES→SECUREBITS (#1486). Result: `Started
 Console Shell` + `sh-5.2#` prompt on /dev/console.
 
 ## OPEN BLOCKER — arm systemd parity (critical path to PID1 flip)
-3 arm systemd-recon boots (elf_arm.rs PID1=/lib/systemd/systemd) all WEDGED
-at "keymap loaded", BEFORE the "init-fork-exec works" smoke (which runs
-before PID1 in elf_arm.rs:270). qemu idle at ~0-1% CPU = halted, not slow.
-- The wedge is at a spot my elf_arm change does NOT touch (pre-PID1 smoke),
-  and busybox arm boots fine (gate green, ~38s) → likely the INTERMITTENT
-  arm early-smoke wedge (cf. CAT-smoke wedge memory), NOT systemd. But not
-  confirmed — could be systemd-on-arm parking silently before any output.
-- arm systemd binary IS present + correct (aarch64 PIE, ld-musl-aarch64).
-- exec-setup syscalls (#1486) are arch-neutral → should cover arm too.
-- NEXT (do NOT blind-boot arm 13min at a time): use the qemu MCP
-  (mcp__qemu__qemu_start arch=aarch64, qemu_break/qemu_backtrace/qemu_regs)
-  to inspect WHERE the boot parks after "keymap loaded" — is it the smoke
-  ELF spawn, spawn_init_from_rootfs_arm (systemd load), or a console/timer
-  block? OR first reproduce the early-smoke wedge with busybox (re-boot arm
-  clean a few times) to confirm it's the known flake. If it's the flake,
-  fix THAT (separate from systemd); if systemd-on-arm parks, inspect the
-  park point.
+3 arm systemd-recon boots (elf_arm.rs PID1=/lib/systemd/systemd, with AND
+without the [P1fx] trace) all WEDGED at "keymap loaded", qemu idle ~0% CPU.
+A CLEAN busybox arm boot (no recon) WORKS: init-fork-exec works / sem_smoke
+PASS / hello-from-dyn / `oxide login:` in 38s, qemu parked at login. So:
+- NOT the early-smoke flake — the smokes run fine on clean arm.
+- The wedge CORRELATES with the systemd-recon (elf_arm init blob = systemd),
+  yet that code (spawn_init_from_rootfs_arm, elf_arm.rs:303) runs AFTER the
+  smokes — so a wedge at "keymap" (before the smokes) is mechanistically
+  puzzling. Possible: (i) the 3 recon boots hit a real-but-frequent flake;
+  (ii) loading the 308KB dynamic systemd blob early perturbs timing/memory;
+  (iii) something in the rootfs/build differs. arm systemd binary IS valid
+  (aarch64 PIE, ld-musl-aarch64). exec-setup syscalls (#1486) are arch-neutral.
+- NEXT (do NOT blind-boot arm — 4 boots already): use the qemu MCP
+  (mcp__qemu__qemu_start arch=aarch64; let it reach the wedge; qemu_interrupt
+  + qemu_backtrace + qemu_regs) to see EXACTLY where the CPU parks after
+  "keymap loaded" with the systemd recon applied — that pinpoints whether
+  it's the smoke ELF, the systemd load, or a console/timer block. This is
+  the right tool vs. blind 13-min TCG boots.
 
 ## NEXT increments (one PR each, NO HACKS)
 1. **Fix arm boot to reach systemd→shell** (above) — lockstep gate.

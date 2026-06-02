@@ -157,6 +157,32 @@ IgnoreSIGPIPE=no
 [Install]
 WantedBy=multi-user.target
 UNIT
+  # console-getty: a real login path — getty prints "<hostname> login:"
+  # (the boot-smoke marker), reads /etc/issue, then execs /bin/login.
+  # Mirrors the busybox inittab `getty -L 115200 ttyS0 vt100` line but on
+  # /dev/console under systemd. The leading `-` on ExecStart lets getty
+  # respawn on exit. This is the prerequisite for flipping default PID1 to
+  # systemd (the smoke waits for "oxide login:").
+  cat > "$sysd/console-getty.service" <<'UNIT'
+[Unit]
+Description=Console Getty (oxide login)
+DefaultDependencies=no
+ConditionPathExists=/dev/console
+[Service]
+Environment=TERM=vt100
+ExecStart=-/sbin/getty -L 115200 console vt100
+Restart=always
+RestartSec=1
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+TTYReset=yes
+KillMode=process
+IgnoreSIGPIPE=no
+[Install]
+WantedBy=multi-user.target
+UNIT
   # First-light target: do NOT pull basic.target/sysinit.target — their
   # Wants/After reference unit fragments we don't stage (journald.socket,
   # etc.), and systemd aborts the transaction with "Failed to load
@@ -168,8 +194,8 @@ UNIT
 Description=Oxide Default Target
 Documentation=man:systemd.special(7)
 DefaultDependencies=no
-Wants=console-shell.service
-After=console-shell.service
+Wants=console-getty.service
+After=console-getty.service
 AllowIsolate=yes
 UNIT
   echo "  → $install: libsystemd-shared + libsystemd + libsystemd-core + /lib/systemd/systemd + systemd-executor + systemctl + unit tree"
