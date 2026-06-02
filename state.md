@@ -26,19 +26,31 @@ DEFERRED for user scoping.
 - NOTE: F364's static openssl .a (vendor/openssl/install-*/lib/*.a) are now
   unused by the dynamic python (it links the .so) — harmless, left in place.
 
-## Interactive in-kernel exec is BLOCKED by 2 pre-existing harness bugs
-Could NOT drive an interactive `python3 -c` in-kernel this session (would be
-the definitive proof). Two unrelated pre-existing issues:
-1. **qemu-x86 cat-smoke wedge**: `make qemu-x86` (used by boot-smoke-login.sh)
-   stalls at the kernel-spawned CAT smoke "A" marker, never reaching login,
-   even with SMP=1. `make smoke-x86` (boot-smoke.sh) is fine — different boot
-   path. So the login harness can't reach login under qemu-x86.
-2. **console login-input flakiness**: even when login: appears, typed
-   `root`/`alice` over the FIFO→qemu-serial isn't consumed (state.md history).
-Fixing these would unblock ALL interactive in-kernel verification — high
-value (the user wants verified-not-should-work). python verification this
-session = host-exec of exact artifacts + both boot-smokes + same dynamic ELF
-class as in-kernel-proven bash. Strong, but not interactive-in-kernel.
+## REAL BUG FOUND: kernel console-RX → getty delivery gap (login can't complete)
+Tried hard to drive an interactive `python3 -c` in-kernel (definitive proof).
+Characterised the blockers precisely:
+1. **SMP polarity (CORRECTED — stale notes had it BACKWARDS)**: SMP=2 reaches
+   `oxide login:` cleanly; SMP=1 wedges at the cat-smoke "A". boot-smoke uses
+   OXIDE_SMP=2. Use SMP=2 for any login/interactive boot.
+2. **serial input path**: piped-stdin→stdio chardev is unreliable BY DESIGN
+   (image_qemu.rs:341); canonical = OXIDE_QEMU_UART_SOCK=<path> unix socket +
+   external bridge. Built /tmp/sockdrive.py to drive it.
+3. **THE BUG**: even via the canonical UART socket at SMP=2, with the boot
+   cleanly at `oxide login:`, typed `root\n` is NOT consumed — no echo, no
+   password prompt, no shell. So it's a KERNEL console-RX→getty gap, not a
+   harness issue. tick_poll_uart IS armed during userspace (elf.rs:625) and
+   pushes COM1 bytes to the foreground VT's waiters (tty/src/live.rs:181,
+   push_and_wake_fg). Hypotheses to trace (klog, B22-style): (a) the
+   console-getty agetty reads a VT != the fg VT push_and_wake_fg targets;
+   (b) agetty's read() isn't registered as a VT waiter (poll vs blocking
+   read?); (c) systemd console-getty's TIOCSCTTY/foreground-pgid setup breaks
+   RX routing (/dev/console==/dev/ttyS0==ConsoleInode vt0 per devfs.rs:37/40,
+   so likely job-control/fg-pgid, not the device). This blocks the distro
+   endpoint ("boot→login→bash") — interactive login does not complete.
+   python itself is verified by host-exec(exact artifacts) + both boot-smokes
+   + same dynamic ELF class as in-kernel-proven bash; this bug is unrelated to
+   python. **Tools left for the next session: /tmp/sockdrive.py (UART-socket
+   driver), /tmp/py-login-proof.sh (set SMP=2).**
 
 ## NEXT (one PR each, both-arch gate) — pick lowest-risk highest-value
 1. **pip/ensurepip** — now feasible (dynamic python + ssl + ctypes). Bundle
