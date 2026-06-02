@@ -278,7 +278,11 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let s = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = match devfs::lookup(s) {
+    // Resolve via devfs first (/dev/*), then the full mount tree so watches
+    // on ext4 paths (/etc, /run/...) work. inotify previously only knew
+    // devfs → systemd's timezone (/etc) + other ext4 watches failed
+    // ("Failed to acquire watch file descriptor: No such file").
+    let inode = match devfs::lookup(s).or_else(|| vfs::mount::lookup(s).ok()) {
         Some(i) => i, None => return -(Errno::Enoent.as_i32() as i64),
     };
     let key = inode_key(&inode);
