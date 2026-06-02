@@ -434,8 +434,18 @@ unsafe extern "C" fn _start_rust() -> ! {
     // counts (so monotonic_ns is never 0 = "no time").
     // SAFETY: boot-only, single-CPU, IRQs masked; legacy PIT/port-61h
     // I/O is always present on the q35 machine we target.
-    let tsc_khz = unsafe { hal_x86_64::calibrate_tsc_khz() };
-    hal_x86_64::set_tsc_khz(if tsc_khz >= 100_000 { tsc_khz } else { 2_400_000 });
+    // TSC frequency, Linux order (`native_calibrate_tsc`): authoritative
+    // CPUID source first (hypervisor leaf 0x4000_0010 / crystal 0x15 /
+    // base 0x16 — the x86 analogue of arm's CNTFRQ_EL0), else PIT
+    // calibration, else the 2.4 GHz fallback. Sanity-clamp to a plausible
+    // 0.1–10 GHz so a bad TCG calibration can't poison the clock.
+    let cpuid_khz = hal_x86_64::tsc_khz_from_cpuid();
+    // SAFETY: boot-only, single-CPU, IRQs masked; calibrate_tsc_khz does
+    // legacy PIT/port-61h I/O that is always valid on the q35 target.
+    let cal_khz = if cpuid_khz != 0 { 0 } else { unsafe { hal_x86_64::calibrate_tsc_khz() } };
+    let mut tsc_khz = if cpuid_khz != 0 { cpuid_khz } else { cal_khz };
+    if !(100_000..=10_000_000).contains(&tsc_khz) { tsc_khz = 2_400_000; }
+    hal_x86_64::set_tsc_khz(tsc_khz);
     klog::set_clock_fn(now_ns_x86);
     debug_boot! { log_cpu_info(); }
     // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of kernel::boot_cmdline can race; reads bootloader-owned EXECUTABLE_FILE response then publishes the captured bytes through the AtomicPtr-backed slot.

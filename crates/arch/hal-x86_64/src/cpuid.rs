@@ -32,6 +32,75 @@ unsafe fn cpuid(leaf: u32) -> (u32, u32, u32, u32) {
     (a, b, c, d)
 }
 
+/// `cpuid` with an explicit subleaf in ECX; returns (eax, ebx, ecx, edx).
+/// # SAFETY: `cpuid` is unprivileged; no memory effects.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+unsafe fn cpuid_count(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
+    let (a, b, c, d): (u32, u32, u32, u32);
+    // SAFETY: cpuid reads CPU id registers; unprivileged, no memory effects.
+    unsafe {
+        asm!(
+            "push rbx",
+            "cpuid",
+            "mov {b:e}, ebx",
+            "pop rbx",
+            inout("eax") leaf => a,
+            b = out(reg) b,
+            inout("ecx") sub => c,
+            out("edx") d,
+            options(nostack, preserves_flags),
+        );
+    }
+    (a, b, c, d)
+}
+
+/// TSC frequency in kHz from an AUTHORITATIVE CPUID source, or 0 if none
+/// is available (caller then calibrates). Mirrors Linux
+/// `native_calibrate_tsc` order — this is the x86 analogue of arm's
+/// `CNTFRQ_EL0`: the value is provided, not measured.
+///   1. Hypervisor leaf 0x4000_0010 EAX = TSC kHz (KVM/Hyper-V/VMware).
+///   2. Leaf 0x15 (core-crystal): TSC_hz = crystal(ECX) * num(EBX)/den(EAX).
+///   3. Leaf 0x16 EAX = base MHz (coarse fallback).
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn tsc_khz_from_cpuid() -> u32 {
+    // 1. Hypervisor-provided TSC kHz (the VM fast path). Leaf
+    //    0x4000_0000 EAX = highest hypervisor leaf.
+    // SAFETY: cpuid unprivileged, no memory effects.
+    let (hyp_max, _, _, _) = unsafe { cpuid_count(0x4000_0000, 0) };
+    if hyp_max >= 0x4000_0010 {
+        // SAFETY: cpuid is unprivileged with no memory effects; leaf
+        // 0x4000_0010 availability is gated by hyp_max read just above.
+        let (tsc_khz, _apic_khz, _, _) = unsafe { cpuid_count(0x4000_0010, 0) };
+        if tsc_khz != 0 { return tsc_khz; }
+    }
+    // Highest standard leaf.
+    // SAFETY: cpuid is unprivileged with no memory effects; leaf 0 is
+    // present on every 64-bit-capable CPU.
+    let (max_std, _, _, _) = unsafe { cpuid_count(0, 0) };
+    // 2. Core-crystal-clock ratio (leaf 0x15).
+    if max_std >= 0x15 {
+        // SAFETY: cpuid is unprivileged with no memory effects; leaf 0x15
+        // availability is gated by max_std read just above.
+        let (den, num, crystal_hz, _) = unsafe { cpuid_count(0x15, 0) };
+        if den != 0 && num != 0 && crystal_hz != 0 {
+            // TSC_hz = crystal_hz * num / den ; → kHz.
+            let hz = (crystal_hz as u64).saturating_mul(num as u64) / den as u64;
+            let khz = (hz / 1000) as u32;
+            if khz != 0 { return khz; }
+        }
+    }
+    // 3. Base frequency MHz (leaf 0x16).
+    if max_std >= 0x16 {
+        // SAFETY: cpuid is unprivileged with no memory effects; leaf 0x16
+        // availability is gated by max_std read just above.
+        let (base_mhz, _, _, _) = unsafe { cpuid_count(0x16, 0) };
+        if base_mhz != 0 { return base_mhz.saturating_mul(1000); }
+    }
+    0
+}
+
 /// Vendor string from CPUID leaf 0 (`EBX|EDX|ECX` = 12 ASCII bytes).
 /// # C: O(1)
 pub fn vendor() -> [u8; 12] {
