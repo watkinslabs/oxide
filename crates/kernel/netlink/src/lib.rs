@@ -325,6 +325,24 @@ impl NetlinkSocket {
                 }
             }
         };
+        // Stamp the destination port (this socket's nl_pid) into every
+        // nlmsghdr in the reply. sd_netlink DROPS any non-broadcast reply
+        // whose `nlmsg_pid != nl->sockaddr.nl.nl_pid` (the port it learned
+        // via getsockname) — netlink-socket.c parse_message_one. Echoing
+        // the request's pid (often 0) mismatched the socket's port, so the
+        // reply was silently dropped and async callbacks (loopback_setup's
+        // RTM_SETLINK) never fired and blocked to their timeout. The kernel
+        // addresses a reply to the requester's port, so set nlmsg_pid to
+        // this socket's port_id (== what getsockname reports).
+        let mut reply = reply;
+        let port = self.port_id.load(Ordering::Acquire);
+        let mut off = 0usize;
+        while off + Nlmsghdr::SIZE <= reply.len() {
+            let len = u32::from_ne_bytes([reply[off], reply[off+1], reply[off+2], reply[off+3]]) as usize;
+            if len < Nlmsghdr::SIZE || off + len > reply.len() { break; }
+            reply[off + 12..off + 16].copy_from_slice(&port.to_ne_bytes());
+            off += nlmsg_align(len);
+        }
         self.enqueue(reply);
     }
 }
