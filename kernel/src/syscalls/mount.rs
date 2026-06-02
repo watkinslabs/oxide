@@ -152,6 +152,16 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
     // Normalize a trailing slash so `/x/` and `/x` register identically.
     let target = if target.len() > 1 { target.trim_end_matches('/').to_string() } else { target };
 
+    // MS_REMOUNT changes options on an EXISTING mount — it carries no
+    // source, so it MUST be handled before MS_BIND (systemd remounts the
+    // machine-id bind read-only with MS_RDONLY|MS_REMOUNT|MS_BIND; the
+    // bind branch would read a NULL source and EFAULT). We keep no
+    // remountable options yet, so admit-and-noop (don't EFAULT on the
+    // NULL fstype/source a remount passes).
+    if flags & MS_REMOUNT != 0 {
+        return 0;
+    }
+
     // MS_BIND: redirect `target` into the `source` subtree. fstype is
     // ignored (may be NULL). Source is required.
     if flags & MS_BIND != 0 {
@@ -206,13 +216,6 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         let _ = vfs::mount::set_propagation(&target, kind);
         return 0;
     }
-    // MS_REMOUNT changes mount options on an existing mount; we keep no
-    // remountable options yet, so admit-and-noop (don't EFAULT on the
-    // NULL fstype/source the remount path passes).
-    if flags & MS_REMOUNT != 0 {
-        return 0;
-    }
-
     // MS_MOVE: relocate the mount currently at `source` to `target`.
     // The mount tree is implicit (parent = longest-prefix mount_point),
     // so the move is a mount_point rewrite preserving mnt_id +
