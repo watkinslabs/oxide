@@ -105,6 +105,13 @@ smoke-arm: arm
 
 smoke: smoke-x86 smoke-arm
 
+# GRUB self-bootstrap smoke (F372). Boots the GRUB multiboot2 ISO
+# headless and waits for $SMOKE_MARKER (default `oxide login:`). During
+# bring-up, override the marker for an intermediate milestone, e.g.
+# `make smoke-grub SMOKE_MARKER='MB2' SMOKE_TIMEOUT=180`.
+smoke-grub:
+	./tools/boot-smoke.sh grub $(SMOKE_TIMEOUT)
+
 # B18: console-login regression. Drives `alice`/`swordfish` at the
 # oxide login: prompt and checks `id` reports uid=1000. Catches
 # SysV stack ordering, PAM, TIOCSCTTY-foreground_pgid, and shell
