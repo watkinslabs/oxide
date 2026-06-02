@@ -326,9 +326,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             let mut c = Command::new("debugfs");
             c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
             c.stdout(std::process::Stdio::null());
-            // Don't mute stderr — debugfs `ln` exits 0 even on
-            // `make_link: Ext2 inode is not a directory`; muting it
-            // silently drops applets and ships a busted rootfs.
+            // Don't mute stderr — debugfs `ln` exits 0 even on make_link
+            // errors; muting it silently drops applets, shipping a busted rootfs.
             run(c)
         };
         // /bin applets — every user-facing tool dispatched via argv[0].
@@ -349,19 +348,15 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
         }
         // /sbin applets per FHS. F259 util-linux owns login/agetty/su.
-        // mount/umount stay on busybox for rcS (util-linux mount on x86
-        // is non-PIE dynamic, won't load yet; rebuild as PIE later).
+        // mount/umount stay on busybox (util-linux mount is non-PIE, won't load yet).
         for applet in &[
             "init", "halt", "reboot", "poweroff", "shutdown",
-            "mdev", "ifconfig", "route",
-            "fdisk", "swapon", "swapoff",
-            "mount", "umount",
-            "udhcpc", "udhcpd",
+            "mdev", "ifconfig", "route", "fdisk", "swapon", "swapoff",
+            "mount", "umount", "udhcpc", "udhcpd",
         ] {
             dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
         }
-        // /bin alias of mount/umount so rcS's `mount -t proc proc /proc`
-        // (no leading slash) resolves -- /bin precedes /sbin in PATH.
+        // /bin alias of mount/umount (no-leading-slash resolution; /bin precedes /sbin).
         dbg_ln("/bin/busybox", "/bin/mount")?;
         dbg_ln("/bin/busybox", "/bin/umount")?;
         // Kernel boot path probes /sbin/init then /init.
@@ -601,8 +596,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         run(c)?;
     }
 
-    // F218: coreutils 8.32 single-binary at /usr/libexec/coreutils.
-    // vendor/coreutils/build.sh.
+    // F218: coreutils 8.32 single-binary (vendor/coreutils/build.sh).
     let cu_bin = repo.join(format!("vendor/coreutils/coreutils-{}", arch));
     if cu_bin.is_file() {
         put(&cu_bin, "/usr/libexec/coreutils")?;
@@ -630,6 +624,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "mkfifo", "mknod", "numfmt",
         ] {
             dbg_ln("/usr/libexec/coreutils", &format!("/usr/bin/{applet}"))?;
+        }
+        // Rip busybox→coreutils for the /bin applets coreutils owns: rm the
+        // busybox hardlink + relink to coreutils. busybox-only tools
+        // (grep/find/sed/awk/tar/vi/net) stay. systemd is PID1 (not rcS).
+        for applet in &["ls","cat","cp","mv","rm","mkdir","rmdir","ln","head","tail","wc","sort","uniq","touch","chmod","chown","env","printf","yes","seq","expr","id","whoami","tr","cut","date","df","du","stat","sleep","tee","uname","pwd","basename","dirname","mknod","tty"] {
+            dbg(&format!("rm /bin/{applet}"))?;
+            dbg_ln("/usr/libexec/coreutils", &format!("/bin/{applet}"))?;
         }
     }
 
