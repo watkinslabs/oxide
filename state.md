@@ -2,22 +2,36 @@
 
 ## Headline
 **OXIDE boots systemd as its DEFAULT init (PID 1) to `oxide login:` on BOTH
-x86_64 AND aarch64** (keystone, done+merged), and the GNU userland is
-starting — /bin/ls,cat,cp,… (36 applets) are now GNU coreutils, not busybox
-(#1493). 14 PRs this session (#1482-#1493). main @ #1493, tree clean.
+x86_64 AND aarch64** (keystone, done+merged), with a GNU userland: /bin now
+hosts GNU coreutils + grep/sed/awk/find/tar + less/vi(vim)/gzip/gunzip (NOT
+busybox). 18 PRs this session (#1482-#1497). main @ #1497, tree clean.
 
-## NEXT: GNU userland (rip busybox) — BLOCKED on a refactor
-tools/xtask/src/main.rs is AT the 1000-line cap (exactly 1000). Switching
-MORE /bin|/sbin applets to GNU (each adds an applet loop) WILL exceed the
-cap → SPLIT cmd_rootfs out of main.rs into a submodule (like the existing
-`mod image_qemu; mod l2_deps;`) FIRST, verify the rootfs build is unchanged
-(cargo run -p xtask -- rootfs --arch x86_64 + debugfs stat /bin/ls→coreutils
-inode 160, + both-arch boot-smoke), then add more GNU switches. Already-
-vendored GNU packages to switch next (check vendor/<pkg>/<pkg>-{arch} exist):
-grep/egrep/fgrep→vendor/grep, find→findutils, sed→sed, awk→gawk,
-diff→diffutils, tar→tar, gzip/gunzip→gzip. One batch per PR, both-arch gate.
-Then: systemd full sysinit chain (mount -a/tmpfiles), Limine→GRUB, vim
-(vendored F251)/python.
+## DONE this session
+- Full systemd bring-up → default PID1 → login, both arches (#1482-#1491,
+  B22 arm dynamic-loader entry, F357 flip).
+- xtask main.rs split into rootfs.rs (#1495, was at cap).
+- busybox→GNU /bin migration: coreutils (#1493), grep/sed/awk/find/tar
+  (#1496), less/vi/gzip/gunzip (#1497). Largely complete — remaining busybox
+  /bin entries (ash/hush/echo/test/which/clear/more/xxd/hostname/dmesg/net
+  tools) have no separate GNU package; leave them.
+
+## NEXT (larger tracks, one PR each, both-arch gate)
+1. **systemd full sysinit chain** — default.target is first-light
+   (Wants=console-getty, DefaultDependencies=no). Expand to real distro init:
+   stage unit fragments (systemd-tmpfiles-setup, sysinit/basic/multi-user
+   deps, an fstab mount) in vendor/systemd/build.sh + install-{x86_64,
+   aarch64} + tools/xtask/src/l2_deps.rs; keep boot-smoke green (console-getty
+   prints `oxide login:`). Verify via the systemd-default boot; fix new
+   `Failed at step`/missing-unit gaps Linux-correct.
+2. **Limine→GRUB** (x86; vendor/limine present — add a grub recipe + switch
+   tools/xtask image_qemu image build). LARGE.
+3. **python** cross-build. LARGE.
+4. DEFERRED: interactive-login-completion refinement (flaky — x86 cat-smoke
+   SMP wedge; needs SMP=1 boot + serial drive; session/foreground-pgid under
+   systemd, NOT the tty since /dev/console==ttyS0==vt0).
+
+NOTE: tools/xtask/src/rootfs.rs is at ~998 lines (near 1000-cap) — compact or
+sub-split BEFORE adding more to it.
 
 ## Merged this session (the full systemd bring-up)
 | PR | What |
