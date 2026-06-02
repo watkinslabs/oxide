@@ -423,7 +423,13 @@ fn spawn_init_from_rootfs_arm() {
     let task = match unsafe {
         sched::live::spawn_user_thread_with_vpid(
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1, "init",
-            img.entry.as_u64(),
+            // Enter at the dynamic loader (PT_INTERP) when init is dynamically
+            // linked (e.g. systemd → ld-musl-aarch64), else the program entry
+            // (static busybox). `entry` is the program's own e_entry, which for
+            // a dynamic init is unrelocated — jumping there skips ld-musl and
+            // faults before the first syscall (0 syscalls, kernel idle). x86's
+            // PID1 spawn already uses user_ip(); arm must match.
+            img.user_ip(),
             new_sp,
             mm,
         )
