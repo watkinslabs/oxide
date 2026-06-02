@@ -497,6 +497,16 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&less_bin, "/usr/bin/less")?;
     }
 
+    // GNU gzip 1.13 static-musl → /usr/bin/gzip (+gunzip via argv[0]).
+    let gzip_bin = repo.join(format!("vendor/gzip/gzip-{}", arch));
+    if gzip_bin.is_file() {
+        put(&gzip_bin, "/usr/bin/gzip")?;
+        let mut c = Command::new("debugfs");
+        c.args(["-w", "-R", "ln /usr/bin/gzip /usr/bin/gunzip", img.to_str().unwrap()]);
+        c.stdout(std::process::Stdio::null());
+        run(c)?;
+    }
+
     // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed
     // ahead of busybox's sed applet (PATH order /usr/bin before /bin).
     // Per vendor/sed/build.sh.
@@ -603,15 +613,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // override the busybox /bin hardlink → the GNU binary so /bin/grep etc.
     // is unambiguously GNU regardless of PATH order. (egrep/fgrep/gunzip stay
     // on busybox for now.) systemd is PID1 so the boot path is unaffected.
-    for (present, tool) in &[
-        (grep_bin.is_file(), "grep"), (sed_bin.is_file(), "sed"),
-        (find_bin.is_file(), "find"), (tar_bin.is_file(), "tar"),
-        (gawk_bin.is_file(), "awk"),
+    for (present, binname, target) in &[
+        (grep_bin.is_file(), "grep", "/usr/bin/grep"),
+        (sed_bin.is_file(),  "sed",  "/usr/bin/sed"),
+        (find_bin.is_file(), "find", "/usr/bin/find"),
+        (tar_bin.is_file(),  "tar",  "/usr/bin/tar"),
+        (gawk_bin.is_file(), "awk",  "/usr/bin/awk"),
+        (less_bin.is_file(), "less", "/usr/bin/less"),
+        (vim_bin.is_file(),  "vi",   "/usr/bin/vim"),
+        (gzip_bin.is_file(), "gzip",   "/usr/bin/gzip"),
+        (gzip_bin.is_file(), "gunzip", "/usr/bin/gunzip"),
     ] {
         if *present {
-            dbg(&format!("rm /bin/{tool}"))?;
+            dbg(&format!("rm /bin/{binname}"))?;
             let mut c = Command::new("debugfs");
-            c.args(["-w", "-R", &format!("ln /usr/bin/{tool} /bin/{tool}"), img.to_str().unwrap()]);
+            c.args(["-w", "-R", &format!("ln {target} /bin/{binname}"), img.to_str().unwrap()]);
             c.stdout(std::process::Stdio::null());
             run(c)?;
         }
