@@ -24,11 +24,19 @@ EOF
 
 ARCH="${1:-}"
 case "$ARCH" in
-    x86) MAKE_TARGET=qemu-x86 ;;
-    arm) MAKE_TARGET=qemu-arm ;;
-    *)   usage ;;
+    x86)  MAKE_TARGET=qemu-x86 ;;
+    arm)  MAKE_TARGET=qemu-arm ;;
+    # GRUB self-bootstrap path (F372): multiboot2-loads the kernel via a
+    # GRUB ISO instead of Limine. Same headless capture + marker grep.
+    grub) MAKE_TARGET=qemu-x86-grub ;;
+    *)    usage ;;
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
+
+# Serial marker signalling success. Defaults to the login prompt (the
+# real boot target); override e.g. SMOKE_MARKER='MB2' for incremental
+# bring-up milestones on the GRUB path.
+MARKER="${SMOKE_MARKER:-oxide login:}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
@@ -87,9 +95,9 @@ attempt_boot() {
             tail -n 60 "$LOG" >&2
             return 1
         fi
-        if grep -q "oxide login:" "$LOG" 2>/dev/null; then
+        if grep -qF "$MARKER" "$LOG" 2>/dev/null; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
-            echo "boot-smoke: PASS — $ARCH reached login in ${elapsed}s (attempt $1)"
+            echo "boot-smoke: PASS — $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
             return 0
         fi
         sleep 2

@@ -626,6 +626,12 @@ fn qemu_run_grub_x86_64(
     let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
         && std::path::Path::new("/dev/kvm").exists()
     { "kvm" } else { "tcg" };
+    // Headless (CI / boot-smoke): plain stdio so the serial log streams
+    // to stdout for capture+grep, and no GTK window. Interactive: mux=on
+    // so Ctrl-A C reaches the QEMU monitor (`mon:stdio` muxes both, which
+    // corrupts a piped/redirected capture — never use it headless).
+    let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
+    let serial = if headless { "stdio" } else { "mon:stdio" };
     let mut c = Command::new("qemu-system-x86_64");
     c.args([
         "-machine", "q35",
@@ -639,10 +645,10 @@ fn qemu_run_grub_x86_64(
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-        "-serial", "mon:stdio",
+        "-serial", serial,
         "-display", "none",
         "-no-reboot",
     ]);
-    eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}");
+    eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
     run(c)
 }
