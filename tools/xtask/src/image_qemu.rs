@@ -571,12 +571,17 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     }
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
     crate::cmd_rootfs(rest)?;
-    // debug-all by default so the kernel emits klog to serial.
+    // `debug-boot` by default — mirrors the Limine login path
+    // (`make qemu-x86`, QEMU_FEATURES_X86=debug-boot): installs the UART
+    // klog sink without the debug-sched/debug-vmm bring-up smokes. Those
+    // smokes (e.g. ksched RR) `sti; hlt` on a deliberately-disarmed timer
+    // and deadlock — a debug-all property, not a GRUB issue. Override
+    // with `--features debug-all` to run them.
     let mut kr: Vec<String>;
     let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
         kr = rest.to_vec();
         kr.push("--features".into());
-        kr.push("debug-all".into());
+        kr.push("debug-boot".into());
         &kr[..]
     } else { rest };
     crate::cmd_kernel(kargs)?;
