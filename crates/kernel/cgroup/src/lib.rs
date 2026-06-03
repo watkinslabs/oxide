@@ -84,6 +84,15 @@ static CPUSET_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::ne
 /// dependency. Identity fallback when the pid can't be resolved.
 static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
 
+/// `cgroup.events` change-notification: `fn(events_file_path)`. The
+/// kernel installs `fs::inotify::fire_modify_path` so a `populated`/
+/// `frozen` transition fires inotify `IN_MODIFY` on the node's
+/// `cgroup.events` inode (Linux `cgroup_file_notify`). Leaf crate stays
+/// `fs`-free. systemd watches this to drive empty-cgroup restart/GC —
+/// without it an emptied service cgroup is rmdir'd and never re-realized
+/// on restart (`26§4.1`).
+static NOTIFY_HOOK: Spinlock<Option<fn(&str)>, TaskListClass> = Spinlock::new(None);
+
 /// Mount-point of the unified hierarchy.
 pub const MOUNT: &str = "/sys/fs/cgroup";
 
@@ -173,6 +182,44 @@ pub fn cpu_bandwidth_decision(
 /// # C: O(1)
 pub fn set_pid_resolve_hook(f: fn(u64) -> u64) { *PID_RESOLVE_HOOK.lock() = Some(f); }
 
+/// Install the `cgroup.events` inotify hook. Boot path.
+/// # C: O(1)
+pub fn set_notify_hook(f: fn(&str)) { *NOTIFY_HOOK.lock() = Some(f); }
+
+/// Fire `cgroup.events` `IN_MODIFY` for `cgid` and every ancestor up to
+/// root. `populated` is a subtree aggregate, so a membership change in
+/// `cgid` can flip an ancestor's `populated` bit — Linux walks
+/// `cgroup_file_notify` up the chain. Paths are collected under the tree
+/// lock; the hook fires after the lock drops (it re-enters devfs/inotify
+/// locks, so must not nest under `TREE`).
+/// # C: O(depth) + O(devfs+inotify) per node
+fn notify_events_chain(cgid: u64) {
+    let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
+    let paths: Vec<String> = {
+        let t = TREE.lock();
+        let mut v = Vec::new();
+        let mut cur = Some(cgid);
+        while let Some(id) = cur {
+            let mut p = fs_path(&t, id);
+            if !p.ends_with('/') { p.push('/'); }
+            p.push_str("cgroup.events");
+            v.push(p);
+            cur = t.node(id).and_then(|n| n.parent);
+        }
+        v
+    };
+    for p in paths { hook(&p); }
+}
+
+/// Fire `cgroup.events` `IN_MODIFY` for `cgid` only (the `frozen` field
+/// is per-node, not a subtree aggregate, so no ancestor walk).
+/// # C: O(devfs+inotify)
+fn notify_events_self(cgid: u64) {
+    let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
+    let path = { let t = TREE.lock(); let mut p = fs_path(&t, cgid); if !p.ends_with('/') { p.push('/'); } p.push_str("cgroup.events"); p };
+    hook(&path);
+}
+
 /// Translate a userspace-written pid (writer's ns) to the canonical
 /// tid the tree keys on. Identity when no resolver / no such task.
 /// # C: O(resolver)
@@ -218,7 +265,12 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             // and fork-inheritance use); the written value is a vpid in
             // the writer's pid namespace. Translate before storing.
             let tid = resolve_pid(vpid);
+            // Source cgroup (before the move) may flip populated 1→0;
+            // destination may flip 0→1 — notify both chains.
+            let src = TREE.lock().cgroup_of(tid);
             TREE.lock().add_proc(cgid, tid);
+            if src != cgid { notify_events_chain(src); }
+            notify_events_chain(cgid);
             Ok(())
         }
         "cgroup.subtree_control" => {
@@ -246,6 +298,8 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
             if let Some(hook) = *FREEZE_HOOK.lock() {
                 for p in pids { hook(p, v); }
             }
+            // `frozen` field changed → cgroup.events IN_MODIFY.
+            notify_events_self(cgid);
             Ok(())
         }
         "cpu.weight" => {
@@ -418,8 +472,19 @@ pub fn inherit(child_pid: u64, parent_pid: u64) {
 /// Drop a process from its cgroup on exit.
 /// # C: O(log n)
 pub fn on_exit(pid: u64) {
-    let mut t = TREE.lock();
-    if t.is_mounted() { t.remove_proc(pid); t.remove_thread(pid); }
+    let cg = {
+        let mut t = TREE.lock();
+        if !t.is_mounted() { return; }
+        // Capture the membership cgroup BEFORE removal so the notify
+        // walk targets the chain whose `populated` may now flip to 0.
+        let cg = t.cgroup_of(pid);
+        t.remove_proc(pid);
+        t.remove_thread(pid);
+        cg
+    };
+    // Last task leaving a cgroup flips `populated` 1→0; systemd's
+    // empty-cgroup handler is driven by this inotify event (`26§4.1`).
+    notify_events_chain(cg);
 }
 
 /// Charge a new thread (`CLONE_THREAD`) to its process's cgroup so
