@@ -40,23 +40,25 @@ boot-smoke block and is where debug-all deadlocks (known artifact), so
 debug-all never reaches procfs-smoke. On the CURRENT kernel the default
 boot genuinely hangs at `procfs::smoke_test` (line 485, unconditional).
 
-**Exact symptom (per-entry breadcrumb + hexdump):** first entry
-`/proc/version` — `klog::write_raw(path.as_bytes())` emits 14 NUL bytes
-(correct LEN, ZERO data). So a stored `&'static` str's DATA pointer
-reads zeros at runtime, EVEN THOUGH: the bytes "proc/version" are in
-the flat Image (grep 3x), the string VMA is within the mapped 1 GiB
-kernel block (all sections span only ~202 MB), and there are ZERO
-relocations on either arch (no .rela.dyn / no R_AARCH64_RELATIVE — so
-not a reloc-not-applied bug). PC-relative `b"..."` klog literals work;
-only stored absolute `&'static` pointers (struct fields / const arrays
-e.g. procfs `StaticFileInode.body`, the smoke's `entries`) read zero.
-**NEXT (fresh context, needs runtime inspection):** use the qemu MCP
-(`qemu_start` the Image + `qemu_mem`/`qemu_regs`) to read the actual
-`path` pointer VALUE and the memory it targets vs where "/proc/version"
-actually loaded — determine why baked absolute pointers resolve to a
-zero region on the flat-Image boot (candidate: a section LMA/objcopy
-gap, or a const-promotion placed in a section the AT() layout
-mis-positions). Then reach login (default boot), REMOVE temp PL011 breadcrumbs
+**ROOT CAUSE (fully diagnosed via runtime HHDM probes):** the kernel
+Image is 129 MiB because the **128 MiB rootfs is embedded** (include_bytes
+→ .rodata). QEMU's `-kernel` flat-Image load does NOT make the whole
+129 MiB Image resident: runtime probes of physical RAM via HHDM showed
+`@0x40000000=0` (image start — zero despite the kernel having BOOTED
+from there), `@0x44000000=0x20ef` (has data), `@0x48000000..=0` (zero).
+So `/proc/version` (a `&str` whose data lives at ~135 MB into the image,
+present in the Image file at the right offset, VMA correctly mapped by
+the 1 GiB kernel block — verified) reads ZERO because that physical RAM
+was never loaded. NOT relocations (0 on both arches), NOT mapping (HHDM
+read of the same phys also 0), NOT objcopy (string IS in the Image).
+**THE FIX (Linux way): split the rootfs out as an initrd.** Stop
+`include_bytes`-ing the 128 MiB rootfs into the kernel; instead pass it
+via QEMU `-initrd <rootfs.img>` (and U-Boot/GRUB initrd), and have the
+kernel read the initrd phys range from the DTB `/chosen`
+(`linux,initrd-start`/`-end`) on the self-boot path (Limine path keeps
+the embedded blob, or also moves to a module). Kernel shrinks to
+~1.5 MB and loads cleanly. THEN reach login (default boot), REMOVE temp
+PL011 breadcrumbs
 (A/EL-digit/B..H in selfboot.rs + G/H in boot-aarch64/lib.rs
 `_start_rust`), wire `xtask` to objcopy the Image + a `qemu-arm`
 self-boot target, switch defaults, delete Limine, lockstep both
