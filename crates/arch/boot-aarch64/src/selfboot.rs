@@ -39,6 +39,15 @@ pub const ARM_SELFBOOT_HHDM: u64 = 0xFFFF_8000_0000_0000;
 #[no_mangle]
 pub static SB_SELFBOOT_FLAG: AtomicU64 = AtomicU64::new(0);
 
+/// Actual physical load base, recorded by the trampoline (`adrp
+/// _arm_image_start`). QEMU loads the kernel 2 MiB above the RAM base
+/// (it reserves the low 2 MiB for the DTB), so this is 0x4020_0000 on
+/// `virt`, not the 0x4000_0000 RAM base. `build_selfboot_memmap` reserves
+/// `[load_base, load_base+image_size)` so the PMM never clobbers the
+/// loaded kernel — the bug that made baked `&str` pointers read zero.
+#[no_mangle]
+pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
+
 /// True when we entered via the self-bootstrap Image trampoline.
 /// # C: O(1)
 pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
@@ -154,12 +163,33 @@ _arm_entry:
     add     x7, x7, #:lo12:_sb_l1_kernel
     orr     x8, x7, #0x3
     str     x8, [x6, #(511*8)]
-    /* l1_kernel[510] = Normal block @ KERNEL_PHYS (0x4000_0000).
-       KB=0xFFFF_FFFF_8000_0000: VA[38:30]=510 selects this entry.    */
-    movz    x3, #0x4000, lsl #16
+    /* l1_kernel[510] = l2_kernel | table. The kernel is mapped at 2 MiB
+       granularity because QEMU loads it at a 2 MiB- (not 1 GiB-) aligned
+       base — it reserves the low 2 MiB of RAM, so the kernel lands at
+       0x4020_0000, not 0x4000_0000. KB[38:30]=510 selects this entry.  */
+    adrp    x15, _sb_l2_kernel
+    add     x15, x15, #:lo12:_sb_l2_kernel
+    orr     x16, x15, #0x3
+    str     x16, [x7, #(510*8)]
+    /* Actual phys load base = adrp of the image start (PC-relative, MMU
+       off → real load addr); 2 MiB-aligned per the arm64 boot protocol.
+       Record it for build_selfboot_memmap's reservation.              */
+    adrp    x14, _arm_image_start
+    adrp    x17, SB_LOAD_BASE
+    add     x17, x17, #:lo12:SB_LOAD_BASE
+    str     x14, [x17]
+    /* l2_kernel[0..512] = (load_base + i*2MiB) | normal 2 MiB block, so
+       VMA KB+X maps to phys load_base+X (KB[29:21]=0). Covers 1 GiB.   */
+    mov     x2, #0
     movz    x4, #0x0705
-    orr     x3, x3, x4
-    str     x3, [x7, #(510*8)]
+3:
+    lsl     x5, x2, #21
+    add     x5, x5, x14
+    orr     x5, x5, x4
+    str     x5, [x15, x2, lsl #3]
+    add     x2, x2, #1
+    cmp     x2, #512
+    b.lt    3b
 
     /* MAIR: Attr0=Device-nGnRE(0x04), Attr1=Normal-WB(0xFF)          */
     movz    x0, #0xFF04
@@ -198,15 +228,15 @@ _arm_entry:
     mov     w10, #0x44
     str     w10, [x9]
 
-    /* Jump to the higher-half VMA (now mapped via TTBR1). Compute it
-       as phys(_arm_high) + (KB - KP) to avoid any literal-pool
-       placement hazard. KB-KP = 0xFFFF_FFFF_8000_0000 - 0x4000_0000
-       = 0xFFFF_FFFF_4000_0000.                                       */
+    /* Jump to the higher-half linked VMA of _arm_high. The 2 MiB blocks
+       map KB -> load_base, so the linked VMA = phys(_arm_high) -
+       load_base + KB. x14 still holds load_base.                      */
     adrp    x0, _arm_high
     add     x0, x0, #:lo12:_arm_high
-    movz    x1, #0x4000, lsl #16
+    sub     x0, x0, x14                 /* linked offset from image base */
+    movz    x1, #0x8000, lsl #16
     movk    x1, #0xFFFF, lsl #32
-    movk    x1, #0xFFFF, lsl #48
+    movk    x1, #0xFFFF, lsl #48        /* KB = 0xFFFF_FFFF_8000_0000    */
     add     x0, x0, x1
     br      x0
 
@@ -255,5 +285,6 @@ _sb_ttbr0_l0:  .skip 4096
 _sb_l1_ident:  .skip 4096
 _sb_ttbr1_l0:  .skip 4096
 _sb_l1_kernel: .skip 4096
+_sb_l2_kernel: .skip 4096
     "#,
 );

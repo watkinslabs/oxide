@@ -425,20 +425,22 @@ unsafe fn capture_cmdline_from_dtb() {
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
     const KB: u64 = 0xFFFF_FFFF_8000_0000;
-    const KP: u64 = 0x4000_0000;
     extern "C" { static __kernel_start: u8; static __kernel_end: u8; }
     info.hhdm_offset = selfboot::ARM_SELFBOOT_HHDM;
+    // Actual phys load base the trampoline recorded (QEMU loads us 2 MiB
+    // above RAM base). KB maps to this; phys = (VMA - KB) + load_base.
+    let kp = selfboot::SB_LOAD_BASE.load(core::sync::atomic::Ordering::Acquire);
 
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
     // RAM extent from the DTB /memory reg; fall back to a conservative
     // 1 GiB at the QEMU virt base if the DTB is unreadable.
     // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
-    let (base, size) = unsafe { read_dtb_memory(pa) }.unwrap_or((KP, 0x4000_0000));
+    let (base, size) = unsafe { read_dtb_memory(pa) }.unwrap_or((0x4000_0000, 0x4000_0000));
     let ram_end = base.saturating_add(size);
 
-    // Kernel image physical extent (page-rounded).
-    let kstart = (core::ptr::addr_of!(__kernel_start) as u64 - KB + KP) & !0xFFF;
-    let kend = ((core::ptr::addr_of!(__kernel_end) as u64 - KB + KP) + 0xFFF) & !0xFFF;
+    // Kernel image physical extent (page-rounded): VMA - KB + load_base.
+    let kstart = (core::ptr::addr_of!(__kernel_start) as u64 - KB + kp) & !0xFFF;
+    let kend = ((core::ptr::addr_of!(__kernel_end) as u64 - KB + kp) + 0xFFF) & !0xFFF;
     // DTB blob extent (page-rounded), if present.
     let (dstart, dend) = if pa != 0 {
         // SAFETY: pa is the bootloader DTB pointer; reads the 8-byte header.
