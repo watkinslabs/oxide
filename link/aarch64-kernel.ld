@@ -103,8 +103,12 @@ SECTIONS {
         __bss_end = .;
     }
 
+    /* 4 KiB-align the end so __image_size doubles as the PE32+ SizeOfImage
+     * (a whole number of SectionAlignment=4K pages) — the EFI PE loader
+     * (GRUB `linux` on arm64) requires it. */
+    . = ALIGN(4K);
     __kernel_end = .;
-    /* Total image size (incl. .bss) for the arm64 Image header. */
+    /* Total image size (incl. .bss): arm64 Image header AND PE SizeOfImage. */
     __image_size = __kernel_end - __kernel_start;
 
     /DISCARD/ : {

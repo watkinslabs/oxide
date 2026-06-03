@@ -52,27 +52,210 @@ pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
 /// # C: O(1)
 pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
 
+/// EFI device-tree config-table GUID (gFdtTableGuid,
+/// b1b621d5-f19c-41a5-830b-d9152c69aae0) in EFI mixed-endian byte order:
+/// Data1/2/3 little-endian, Data4 big-endian.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const FDT_TABLE_GUID: [u8; 16] = [
+    0xd5, 0x21, 0xb6, 0xb1, 0x9c, 0xf1, 0xa5, 0x41,
+    0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0,
+];
+
+/// EFI-stub bring-up, called from `_arm_entry` when entered MMU-on (GRUB
+/// `linux` / UEFI LoadImage). Walks the EFI configuration table for the
+/// flattened device tree, then sizes the memory map and calls
+/// `ExitBootServices` (retry loop — the map key goes stale if the
+/// firmware mutates the map between calls). Returns the DTB phys (== VA
+/// under the firmware's identity map) for the trampoline; the caller
+/// disables the MMU on return. Touches only its args, the stack, and the
+/// firmware tables — no kernel statics (HHDM/klog aren't up yet).
+///
+/// EFI_SYSTEM_TABLE / EFI_BOOT_SERVICES field offsets per UEFI 2.x;
+/// AArch64 UEFI uses AAPCS64 so the fn pointers are plain `extern "C"`.
+///
+/// # SAFETY: invoked once from the asm EFI entry with valid firmware
+/// `handle`/`systab`; boot services live until ExitBootServices returns.
+/// # C: O(config_entries + memmap_descriptors)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[no_mangle]
+pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
+    // SAFETY: systab is the firmware EFI_SYSTEM_TABLE; offsets 0x60/0x68/
+    // 0x70 are BootServices/NumberOfTableEntries/ConfigurationTable.
+    unsafe {
+        let boot_services = *(systab.add(0x60) as *const *const u8);
+        let num_entries   = *(systab.add(0x68) as *const u64);
+        let cfg_table     = *(systab.add(0x70) as *const *const u8);
+
+        // Find the FDT config-table entry (24 bytes each: 16-byte GUID +
+        // 8-byte VendorTable pointer).
+        let mut dtb: u64 = 0;
+        let mut i: u64 = 0;
+        while i < num_entries {
+            let ent = cfg_table.add((i * 24) as usize);
+            let mut hit = true;
+            let mut k = 0usize;
+            while k < 16 {
+                if *ent.add(k) != FDT_TABLE_GUID[k] { hit = false; break; }
+                k += 1;
+            }
+            if hit { dtb = *(ent.add(16) as *const u64); break; }
+            i += 1;
+        }
+
+        // GetMemoryMap @ bs+0x38, ExitBootServices @ bs+0xE8.
+        type GetMemoryMapFn =
+            extern "C" fn(*mut u64, *mut u8, *mut u64, *mut u64, *mut u32) -> u64;
+        type ExitBootServicesFn = extern "C" fn(u64, u64) -> u64;
+        let get_memory_map: GetMemoryMapFn =
+            core::mem::transmute(*(boot_services.add(0x38) as *const u64));
+        let exit_boot_services: ExitBootServicesFn =
+            core::mem::transmute(*(boot_services.add(0xE8) as *const u64));
+
+        // QEMU virt's map is a few KiB; 16 KiB of stack covers it.
+        let mut buf = [0u8; 16384];
+        let mut map_key: u64 = 0;
+        let mut desc_size: u64 = 0;
+        let mut desc_ver: u32 = 0;
+        let mut tries = 0;
+        loop {
+            let mut map_size: u64 = buf.len() as u64;
+            let _ = get_memory_map(
+                &mut map_size, buf.as_mut_ptr(),
+                &mut map_key, &mut desc_size, &mut desc_ver,
+            );
+            // ExitBootServices must immediately follow GetMemoryMap with
+            // the fresh key; on EFI_INVALID_PARAMETER the map changed —
+            // re-fetch and retry.
+            if exit_boot_services(handle, map_key) == 0 { break; }
+            tries += 1;
+            if tries > 8 { break; }
+        }
+        dtb
+    }
+}
+
 core::arch::global_asm!(
     r#"
-    /* ---- arm64 Image header (Linux booting.rst) -------------------- */
+    /* ---- arm64 Image header + PE32+/EFI header --------------------- */
+    /* Dual boot protocol:
+       - U-Boot `booti` / QEMU `-kernel` enter at byte 0 with MMU OFF,
+         x0 = DTB phys. code0 (the "MZ" add) is harmless; code1 branches
+         to _arm_entry.
+       - GRUB `linux` / UEFI LoadImage enter (per AddressOfEntryPoint = 0)
+         with MMU ON, x0 = EFI image handle, x1 = EFI system table. The
+         same code0/code1 run; _arm_entry reads SCTLR_EL1.M to tell the
+         two apart and runs the EFI stub (find DTB, ExitBootServices,
+         MMU off) before falling into the shared trampoline.
+       Offsets 0..63 are the arm64 Image header (Linux booting.rst);
+       offset 60 points at the PE header so GRUB accepts us as an EFI
+       application (a plain Image is rejected: "rebuild with EFI_STUB"). */
     .section .text.boot.header, "ax"
     .global _arm_image_start
 _arm_image_start:
-    b       _arm_entry            /* code0: branch to trampoline       */
-    .long   0                     /* code1: reserved (must be 0)       */
-    .quad   0                     /* text_offset = 0                   */
-    .quad   __image_size          /* image_size                        */
-    .quad   0xA                   /* flags: 4 KiB pages, anywhere, LE  */
+    add     x13, x18, #0x16       /* code0: 0x91005A4D = "MZ" + harmless */
+    b       _arm_entry            /* code1: booti / -kernel entry        */
+    .quad   0                     /* text_offset = 0                     */
+    .quad   __image_size          /* image_size                          */
+    .quad   0xA                   /* flags: 4 KiB pages, anywhere, LE    */
     .quad   0                     /* res2 */
     .quad   0                     /* res3 */
     .quad   0                     /* res4 */
-    .ascii  "ARM\x64"             /* magic 0x644d5241 @ offset 56      */
-    .long   0                     /* res5 (PE header offset)           */
+    .ascii  "ARM\x64"             /* magic 0x644d5241 @ offset 56        */
+    .long   _pe_header - _arm_image_start  /* @60: PE header RVA         */
 
-    /* ---- MMU trampoline (runs at phys KERNEL_PHYS, MMU off) -------- */
+    .balign 8
+_pe_header:
+    .ascii  "PE\0\0"              /* PE signature                        */
+_coff_header:
+    .short  0xAA64                /* Machine = IMAGE_FILE_MACHINE_ARM64  */
+    .short  1                     /* NumberOfSections                    */
+    .long   0                     /* TimeDateStamp                       */
+    .long   0                     /* PointerToSymbolTable                */
+    .long   0                     /* NumberOfSymbols                     */
+    .short  _section_table - _optional_header  /* SizeOfOptionalHeader   */
+    .short  0x0206                /* EXECUTABLE|LINE_STRIPPED|DEBUG_STRIPPED */
+_optional_header:
+    .short  0x020B                /* PE32+ magic                         */
+    .byte   0x02                  /* MajorLinkerVersion                  */
+    .byte   0x14                  /* MinorLinkerVersion                  */
+    .long   __bss_start - _arm_image_start - 0x1000  /* SizeOfCode       */
+    .long   0                     /* SizeOfInitializedData               */
+    .long   0                     /* SizeOfUninitializedData             */
+    .long   0                     /* AddressOfEntryPoint = image base    */
+    .long   0x1000                /* BaseOfCode                          */
+    .quad   0                     /* ImageBase                           */
+    .long   0x1000                /* SectionAlignment                    */
+    .long   0x200                 /* FileAlignment                       */
+    .short  0                     /* MajorOSVersion */
+    .short  0                     /* MinorOSVersion */
+    .short  0                     /* MajorImageVersion */
+    .short  0                     /* MinorImageVersion */
+    .short  0                     /* MajorSubsystemVersion */
+    .short  0                     /* MinorSubsystemVersion */
+    .long   0                     /* Win32VersionValue */
+    .long   __image_size          /* SizeOfImage (4K-aligned, incl bss)  */
+    .long   0x1000                /* SizeOfHeaders                       */
+    .long   0                     /* CheckSum                            */
+    .short  0x000A                /* Subsystem = EFI_APPLICATION         */
+    .short  0                     /* DllCharacteristics                  */
+    .quad   0                     /* SizeOfStackReserve */
+    .quad   0                     /* SizeOfStackCommit */
+    .quad   0                     /* SizeOfHeapReserve */
+    .quad   0                     /* SizeOfHeapCommit */
+    .long   0                     /* LoaderFlags                         */
+    .long   6                     /* NumberOfRvaAndSizes                 */
+    .quad   0                     /* DataDirectory[0] Export             */
+    .quad   0                     /* [1] Import                          */
+    .quad   0                     /* [2] Resource                        */
+    .quad   0                     /* [3] Exception                       */
+    .quad   0                     /* [4] Certificate                     */
+    .quad   0                     /* [5] BaseReloc                       */
+_section_table:
+    .ascii  ".text\0\0\0"
+    .long   __image_size - 0x1000             /* VirtualSize (incl bss)  */
+    .long   0x1000                            /* VirtualAddress          */
+    .long   __bss_start - _arm_image_start - 0x1000  /* SizeOfRawData    */
+    .long   0x1000                            /* PointerToRawData        */
+    .long   0                                 /* PointerToRelocations    */
+    .long   0                                 /* PointerToLinenumbers    */
+    .short  0                                 /* NumberOfRelocations     */
+    .short  0                                 /* NumberOfLinenumbers     */
+    .long   0xE0000020            /* CODE|EXECUTE|READ|WRITE             */
+    /* Pad the header region to SizeOfHeaders=0x1000 so the .text section
+       (RVA/file-offset 0x1000) starts on a SectionAlignment boundary and
+       file-offset == RVA (the flat objcopy image is loaded 1:1). */
+    .balign 0x1000
+
+    /* ---- MMU trampoline (runs MMU off; phys = wherever loaded) ----- */
     .section .text.boot, "ax"
     .global _arm_entry
 _arm_entry:
+    /* Distinguish EFI (MMU on; x0=handle, x1=systab) from booti (MMU
+       off; x0=DTB). On EFI, run the stub: it returns DTB in x0 and
+       leaves boot services exited; then drop the MMU and join booti. */
+    mrs     x9, sctlr_el1
+    tbz     x9, #0, 1f            /* M==0 -> booti, x0 already = DTB     */
+    bl      efi_stub_setup        /* (x0=handle,x1=systab) -> x0 = DTB   */
+    mov     x21, x0               /* save DTB across the cache flush     */
+    /* GRUB/UEFI copied the image into RAM with the D-cache ON, so the
+       loaded code + the page tables we are about to build can sit dirty
+       in cache. We are about to run MMU+cache OFF, where fetches/walks
+       read RAM directly — clean+invalidate the whole D-cache to PoC and
+       invalidate the I-cache first, or _arm_high faults on a stale line. */
+    bl      __efi_dcache_flush_all
+    mov     x0, x21
+    mrs     x9, sctlr_el1         /* drop MMU+caches (still identity)    */
+    bic     x9, x9, #(1 << 0)     /* M  */
+    bic     x9, x9, #(1 << 2)     /* C  */
+    bic     x9, x9, #(1 << 12)    /* I  */
+    msr     sctlr_el1, x9
+    isb
+    dsb     sy
+    tlbi    vmalle1
+    ic      iallu
+    dsb     sy
+    isb
+1:
     mov     x19, x0               /* preserve DTB phys across the dance */
 
     /* breadcrumb 'A' to PL011 DR @ 0x0900_0000 (QEMU UART, no init)   */
@@ -162,33 +345,60 @@ _arm_entry:
     add     x7, x7, #:lo12:_sb_l1_kernel
     orr     x8, x7, #0x3
     str     x8, [x6, #(511*8)]
-    /* l1_kernel[510] = l2_kernel | table. The kernel is mapped at 2 MiB
-       granularity because QEMU loads it at a 2 MiB- (not 1 GiB-) aligned
-       base — it reserves the low 2 MiB of RAM, so the kernel lands at
-       0x4020_0000, not 0x4000_0000. KB[38:30]=510 selects this entry.  */
+    /* l1_kernel[510] = l2_kernel | table. KB[38:30]=510 selects it.   */
     adrp    x15, _sb_l2_kernel
     add     x15, x15, #:lo12:_sb_l2_kernel
     orr     x16, x15, #0x3
     str     x16, [x7, #(510*8)]
     /* Actual phys load base = adrp of the image start (PC-relative, MMU
-       off → real load addr); 2 MiB-aligned per the arm64 boot protocol.
-       Record it for build_selfboot_memmap's reservation.              */
+       off → real load addr). Record it for build_selfboot_memmap.
+       booti/-kernel loads 2 MiB-aligned, but the GRUB/UEFI PE loader can
+       place us at only 4 KiB alignment, so map KB -> load_base with 4 KiB
+       L3 PAGES (valid OA for any 4K-aligned base) rather than 2 MiB
+       blocks (which need a 2 MiB-aligned OA — a 4K-aligned base corrupts
+       the block descriptor and the higher-half jump faults).           */
     adrp    x14, _arm_image_start
     adrp    x17, SB_LOAD_BASE
     add     x17, x17, #:lo12:SB_LOAD_BASE
     str     x14, [x17]
-    /* l2_kernel[0..512] = (load_base + i*2MiB) | normal 2 MiB block, so
-       VMA KB+X maps to phys load_base+X (KB[29:21]=0). Covers 1 GiB.   */
+    /* N = ceil(__image_size / 2 MiB), capped at 256 (=> <= 512 MiB).   */
+    movz    x3, #:abs_g0_nc:__image_size
+    movk    x3, #:abs_g1_nc:__image_size
+    movk    x3, #:abs_g2_nc:__image_size
+    movk    x3, #:abs_g3:__image_size
+    mov     x4, #0x200000
+    sub     x4, x4, #1                 /* 0x1F_FFFF                      */
+    add     x3, x3, x4
+    lsr     x3, x3, #21                /* x3 = N (number of 2 MiB chunks) */
+    cmp     x3, #256
+    b.ls    11f
+    mov     x3, #256
+11:
+    /* _sb_l3_kernel[k] = (load_base + k*4 KiB) | page, k in 0 .. N*512.
+       0x707 = page(0b11) | AttrIdx1(Normal) | SH-inner(0b11) | AF.      */
+    adrp    x16, _sb_l3_kernel
+    add     x16, x16, #:lo12:_sb_l3_kernel
+    lsl     x5, x3, #9                 /* total pages = N * 512          */
+    movz    x4, #0x0707
     mov     x2, #0
-    movz    x4, #0x0705
-3:
-    lsl     x5, x2, #21
-    add     x5, x5, x14
-    orr     x5, x5, x4
-    str     x5, [x15, x2, lsl #3]
+12:
+    lsl     x8, x2, #12                /* k * 4 KiB                      */
+    add     x8, x8, x14                /* + load_base                    */
+    orr     x8, x8, x4
+    str     x8, [x16, x2, lsl #3]
     add     x2, x2, #1
-    cmp     x2, #512
-    b.lt    3b
+    cmp     x2, x5
+    b.lt    12b
+    /* l2_kernel[j] = (_sb_l3_kernel + j*4 KiB) | table, j in 0 .. N.   */
+    mov     x2, #0
+13:
+    lsl     x8, x2, #12                /* j-th L3 table (4 KiB each)     */
+    add     x8, x8, x16                /* + _sb_l3_kernel base           */
+    orr     x8, x8, #0x3
+    str     x8, [x15, x2, lsl #3]
+    add     x2, x2, #1
+    cmp     x2, x3
+    b.lt    13b
 
     /* MAIR: Attr0=Device-nGnRE(0x04), Attr1=Normal-WB(0xFF)          */
     movz    x0, #0xFF04
@@ -227,7 +437,7 @@ _arm_entry:
     mov     w10, #0x44
     str     w10, [x9]
 
-    /* Jump to the higher-half linked VMA of _arm_high. The 2 MiB blocks
+    /* Jump to the higher-half linked VMA of _arm_high. The 4 KiB pages
        map KB -> load_base, so the linked VMA = phys(_arm_high) -
        load_base + KB. x14 still holds load_base.                      */
     adrp    x0, _arm_high
@@ -240,10 +450,12 @@ _arm_entry:
     br      x0
 
 _arm_high:
-    /* breadcrumb 'E' via HHDM UART (0xFFFF_8000_0900_0000)           */
+    /* breadcrumb 'E' (reached the higher-half jump). Use the LOW-identity
+       UART (0x0900_0000, still mapped via TTBR0[0] until the teardown
+       below) — NOT HHDM. HHDM-over-the-device-region is unused by the
+       real kernel (MMIO goes through KERNEL_DEVICE_BASE), and writing it
+       here faults under the GRUB/UEFI entry path.                       */
     movz    x9, #0x0900, lsl #16
-    movk    x9, #0x8000, lsl #32
-    movk    x9, #0xFFFF, lsl #48
     mov     w10, #0x45
     str     w10, [x9]
 
@@ -266,16 +478,59 @@ _arm_high:
     add     x1, x1, #:lo12:SB_SELFBOOT_FLAG
     mov     x2, #1
     str     x2, [x1]
-    /* breadcrumb 'F' via HHDM UART (post-E asm tail complete)         */
-    movz    x9, #0x0900, lsl #16
-    movk    x9, #0x8000, lsl #32
-    movk    x9, #0xFFFF, lsl #48
-    mov     w10, #0x46
-    str     w10, [x9]
     /* Hand DTB back in x0 and enter the shared bootloader-agnostic
        _start (it installs SP_EL1 and tail-calls _start_rust).        */
     mov     x0, x19
     b       _start
+
+    /* Clean+invalidate the entire data cache to PoC by set/way, then
+       invalidate the I-cache. Standard ARMv8 routine (mirrors Linux
+       __flush_dcache_all). Clobbers x0-x11; preserves nothing else.
+       Used only on the EFI-stub path before dropping MMU+caches. */
+    .global __efi_dcache_flush_all
+__efi_dcache_flush_all:
+    dsb     sy
+    mrs     x0, clidr_el1
+    and     w3, w0, #0x07000000        /* LoC                          */
+    lsr     w3, w3, #23
+    cbz     w3, 5f
+    mov     w10, #0                     /* w10 = 2*level                */
+0:
+    add     w2, w10, w10, lsr #1        /* w2 = 3*level                 */
+    lsr     w1, w0, w2                  /* cache type this level        */
+    and     w1, w1, #7
+    cmp     w1, #2
+    b.lt    4f                          /* no D-cache at this level     */
+    msr     csselr_el1, x10
+    isb
+    mrs     x1, ccsidr_el1
+    and     w2, w1, #7                  /* log2(line)-4                 */
+    add     w2, w2, #4
+    ubfx    w4, w1, #3, #10             /* ways-1                       */
+    clz     w5, w4                      /* way bit position             */
+    ubfx    w7, w1, #13, #15            /* sets-1                       */
+1:
+    mov     w9, w4
+2:
+    lsl     w6, w9, w5
+    orr     w11, w10, w6               /* level | way<<wayshift         */
+    lsl     w6, w7, w2
+    orr     w11, w11, w6               /* | set<<setshift               */
+    dc      cisw, x11                   /* clean+invalidate by set/way  */
+    subs    w9, w9, #1
+    b.ge    2b
+    subs    w7, w7, #1
+    b.ge    1b
+4:
+    add     w10, w10, #2
+    cmp     w3, w10
+    b.gt    0b
+5:
+    dsb     sy
+    ic      iallu
+    dsb     sy
+    isb
+    ret
 
     /* ---- boot page tables (zero-init BSS, 4 KiB each) ------------- */
     .section .bss
@@ -285,5 +540,11 @@ _sb_l1_ident:  .skip 4096
 _sb_ttbr1_l0:  .skip 4096
 _sb_l1_kernel: .skip 4096
 _sb_l2_kernel: .skip 4096
+    /* L3 page tables for the KB->load_base mapping: 256 tables (one per
+       2 MiB of image, up to 512 MiB) so any 4 KiB-aligned load base maps
+       with 4 KiB pages. BSS (zero-cost in the file; zeroed by the EFI PE
+       loader / unused entries never walked under booti).               */
+    .align 12
+_sb_l3_kernel: .skip 256 * 4096
     "#,
 );

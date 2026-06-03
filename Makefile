@@ -72,16 +72,24 @@ QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 # AP bring-up + the periodic load balancer are exercised every push.
 SMP ?= 1
 
+# Default boot path = GRUB on both arches (Limine removed, F376). x86:
+# multiboot2-loads the kernel ELF. arm: OVMF→GRUB→`linux` loads the EFI-
+# stub Image. The Limine path stays as `qemu-{x86,arm}-limine` fallback.
 qemu-x86:
-	$(XTASK) qemu --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
+	$(XTASK) grub --arch x86_64 --smp $(SMP)
 
 qemu-arm:
+	$(XTASK) grub --arch aarch64 --smp $(SMP)
+
+# Legacy Limine UEFI boot (pre-F376). Kept until Limine is fully removed.
+qemu-x86-limine:
+	$(XTASK) qemu --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
+qemu-arm-limine:
 	$(XTASK) qemu --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
 
-# GRUB self-bootstrap path: build a GRUB ISO that multiboot2-loads the
-# kernel directly (replacing Limine) and boot it. WIP — see F372.
-qemu-x86-grub:
-	$(XTASK) grub --arch x86_64 --smp $(SMP)
+# Aliases for the GRUB targets (back-compat with existing smoke scripts).
+qemu-x86-grub: qemu-x86
+qemu-arm-grub: qemu-arm
 
 # Limine-free aarch64 boot (F376): objcopy the kernel to a flat arm64
 # Image and boot via QEMU `-kernel` (the booti / GRUB-`linux` protocol).
