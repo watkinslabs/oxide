@@ -32,6 +32,9 @@ pub fn install_hooks() {
     cgroup::set_freeze_hook(cgroup_freeze_hook);
     cgroup::set_weight_hook(cgroup_weight_hook);
     cgroup::set_cpuset_hook(cgroup_cpuset_hook);
+    // cgroup.events IN_MODIFY on populated/frozen transitions — systemd's
+    // empty-cgroup restart/GC watch (`26§4.1`).
+    cgroup::set_notify_hook(fs::inotify::fire_modify_path);
     block::set_io_charge_hook(io_charge_hook);
 }
 
