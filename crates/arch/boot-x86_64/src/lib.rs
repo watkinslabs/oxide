@@ -23,6 +23,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod limine;
+pub mod mb2;
 pub mod uart;
 
 use core::cell::UnsafeCell;
@@ -81,6 +82,41 @@ fn boot_emit(bytes: &[u8]) {
 fn now_ns_x86() -> u64 {
     use hal::TimerOps;
     hal_x86_64::X86TimerOps::monotonic_ns().0
+}
+
+/// Remap the legacy 8259A PIC pair to vectors 0x20–0x2F and mask every
+/// line. The kernel routes interrupts through the LAPIC/IOAPIC, so the
+/// 8259 must not deliver: its default IRQ0–7 land on vectors 0x08–0x0F
+/// which alias the CPU exception vectors (0x08 = #DF). A bootloader
+/// that leaves the PIC live + a free-running PIT then vectors a timer
+/// tick into the double-fault handler at the first `sti`. Linux does
+/// the same ICW1–4 remap + mask before switching to the APIC.
+///
+/// # SAFETY: boot-only, single-CPU, IRQs masked; ports 0x20/0x21/
+/// 0xA0/0xA1 are the always-present legacy PIC registers on the q35
+/// target. # C: O(1) # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn remap_and_mask_pic() {
+    // # SAFETY: single byte `out` to a legacy PIC port; no memory effect.
+    unsafe fn outb(port: u16, val: u8) {
+        // SAFETY: port-mapped I/O to the legacy 8259 PIC during single-CPU boot with IRQs masked; the q35 machine always wires these ports.
+        unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags)); }
+    }
+    // SAFETY: ICW1-4 init the PIC pair, ICW2 sets vector bases 0x20
+    // (master) / 0x28 (slave) away from exceptions, then 0xFF masks
+    // every line. All writes are to the always-present legacy ports.
+    unsafe {
+        outb(0x20, 0x11); // master ICW1: init + ICW4 to follow
+        outb(0xA0, 0x11); // slave  ICW1
+        outb(0x21, 0x20); // master ICW2: IRQ0-7 -> 0x20-0x27
+        outb(0xA1, 0x28); // slave  ICW2: IRQ8-15 -> 0x28-0x2F
+        outb(0x21, 0x04); // master ICW3: slave on IRQ2
+        outb(0xA1, 0x02); // slave  ICW3: cascade identity
+        outb(0x21, 0x01); // master ICW4: 8086 mode
+        outb(0xA1, 0x01); // slave  ICW4
+        outb(0x21, 0xFF); // mask all master IRQs
+        outb(0xA1, 0xFF); // mask all slave IRQs
+    }
 }
 
 /// Boot-time CPU identification log. Reads CPUID leaves 0 (vendor)
@@ -277,6 +313,39 @@ static CMDLINE_STORAGE: CmdlineStorage =
 /// can race; `CMDLINE_STORAGE` is a 'static slot.
 /// # C: O(cmdline_len)
 unsafe fn capture_cmdline() {
+    // GRUB/multiboot2 path: copy the cmdline from the MB2 boot-command-
+    // line tag (type 1) instead of the Limine executable-file response.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if mb2::info::is_mb2_boot() {
+            // SAFETY: cmdline_va returns an HHDM-mapped pointer into the
+            // MB2 info struct (NUL-terminated); copy bounded by the buf.
+            if let Some(src) = unsafe { mb2::info::cmdline_va() } {
+                // SAFETY: CMDLINE_STORAGE is the 'static boot-only slot;
+                // sole writer before any reader exists.
+                let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
+                let mut n = 0usize;
+                while n < CMDLINE_BUF_LEN - 1 {
+                    // SAFETY: src[..] is a NUL-terminated C string in the
+                    // HHDM-mapped MB2 region; read one byte at a time.
+                    let b = unsafe { core::ptr::read_volatile(src.add(n)) };
+                    if b == 0 { break; }
+                    dst[n] = b;
+                    n += 1;
+                }
+                if n > 0 {
+                    if n < CMDLINE_BUF_LEN - 1 { dst[n] = b'\n'; n += 1; }
+                    // SAFETY: dst[..n] initialised above; 'static lifetime.
+                    let bytes: &'static [u8] = unsafe {
+                        core::slice::from_raw_parts(dst.as_ptr(), n)
+                    };
+                    // SAFETY: boot_cmdline::set is single-writer / boot-only.
+                    unsafe { kernel::boot_cmdline::set(bytes); }
+                }
+            }
+            return;
+        }
+    }
     let mut resp_ptr = LIMINE_EXECUTABLE_FILE
         .response.load(core::sync::atomic::Ordering::Acquire);
     if resp_ptr.is_null() {
@@ -335,6 +404,33 @@ unsafe fn capture_cmdline() {
 /// `boot_ns` slots are zero until ACPI / RTC bring-up populates them.
 /// # C: O(min(entry_count, MAX_BOOT_REGIONS))
 unsafe fn build_boot_info() -> BootInfo {
+    // GRUB/multiboot2 path: parse the MB2 info struct instead of Limine
+    // responses. Keyed on the bootloader magic the trampoline saved.
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if mb2::info::is_mb2_boot() {
+            use hal::TimerOps;
+            // SAFETY: MEMMAP_STORAGE is boot-owned; build_memmap fills it
+            // from the MB2 info struct (HHDM-mapped, parsed pre-PMM).
+            let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
+            // SAFETY: trampoline wrote a valid MB2-info ptr; build_memmap
+            // parses the HHDM-mapped struct, filling boot-owned storage.
+            let (n, rsdp_pa) = unsafe { mb2::info::build_memmap(storage) };
+            let boot_ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
+            return BootInfo {
+                memmap_count: n as u32,
+                memmap_ptr:   storage.as_ptr(),
+                seed:         [0; 32],
+                boot_ns,
+                hhdm_offset:  mb2::info::MB2_HHDM,
+                rsdp_pa,
+                smp_info_array: 0,
+                smp_count:      0,
+                bsp_lapic_id:   0,
+                _pad: 0,
+            };
+        }
+    }
     let resp_ptr = LIMINE_MEMMAP.response.load(core::sync::atomic::Ordering::Acquire);
     if resp_ptr.is_null() {
         // SAFETY: returns an owned BootInfo whose `memmap_ptr`
@@ -423,6 +519,13 @@ unsafe extern "C" fn _start_rust() -> ! {
     unsafe { hal_x86_64::install_tss(); }
     // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
     unsafe { hal_x86_64::install_default_idt(); }
+    // Remap+mask the legacy 8259 PIC away from the exception vectors.
+    // Bootloader-agnostic: Limine masks the PIC for us, GRUB/multiboot2
+    // does not — leaving IRQ0 (PIT) at vector 0x08 (the #DF slot), so the
+    // first STI vectors a PIT tick into the double-fault handler. The
+    // kernel drives the APIC, so all legacy IRQs stay masked.
+    // SAFETY: boot-only, single-CPU, IRQs masked; writes only the always-present legacy 8259 PIC ports (0x20/0x21/0xA0/0xA1) on the q35 target.
+    unsafe { remap_and_mask_pic(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT in place so STAR's kernel CS=0x28 / SS=0x30 selectors are valid; sets IA32_LSTAR to oxide_syscall_entry, EFER.SCE=1, FMASK clears IF/DF/AC on entry. User-side `syscall` becomes legal but no user task exists pre-userspace_smoke.
     unsafe { hal_x86_64::install_syscall_msrs(); }
     // SAFETY: single-CPU boot; CR0/CR4 writes legal at CPL=0; enables CR0.MP + clears CR0.EM + sets CR4.OSFXSR/OSXMMEXCPT so user-mode SSE/SSE2 instructions execute (musl libc startup uses SSE2 movq/punpcklqdq).
