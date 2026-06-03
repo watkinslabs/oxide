@@ -28,6 +28,15 @@ const GICD_IPRIORITYR: usize = 0x0400;
 const GICD_ICFGR:      usize = 0x0C00;
 #[cfg(target_arch = "aarch64")]
 const GICD_ISPENDR:    usize = 0x0200;
+/// SPI group-select (1 bit/INTID): 1 = Group 1 NS. Reset = 0 (Group 0 →
+/// FIQ). Firmware (OVMF/Limine) sets these; self-boot must do it too or
+/// every SPI is delivered as a (masked) FIQ instead of an IRQ.
+#[cfg(target_arch = "aarch64")]
+const GICD_IGROUPR:    usize = 0x0080;
+/// SPI group-modifier (with IGROUPR picks Grp0/Grp1S/Grp1NS). 0 here +
+/// IGROUPR=1 ⇒ Group 1 NS.
+#[cfg(target_arch = "aarch64")]
+const GICD_IGRPMODR:   usize = 0x0D00;
 /// GICv3-only: SPI affinity-routing register (8 bytes per INTID, base 0x6000).
 #[cfg(target_arch = "aarch64")]
 const GICD_IROUTER:    usize = 0x6000;
@@ -67,6 +76,14 @@ const GICR_ISENABLER0:  usize = 0x0100;
 const GICR_IPRIORITYR:  usize = 0x0400;
 #[cfg(target_arch = "aarch64")]
 const GICR_ICFGR1:      usize = 0x0C04;
+/// SGI/PPI group-select in the SGI frame (1 bit/INTID, INTID 0..31).
+/// 1 = Group 1 NS. Reset = 0 (Group 0 → FIQ); set it or the CNTV PPI
+/// (INTID 27) and the resched SGIs never reach the Group-1 IRQ path.
+#[cfg(target_arch = "aarch64")]
+const GICR_IGROUPR0:    usize = 0x0080;
+/// SGI/PPI group-modifier in the SGI frame. 0 + IGROUPR0=1 ⇒ Group 1 NS.
+#[cfg(target_arch = "aarch64")]
+const GICR_IGRPMODR0:   usize = 0x0D00;
 
 /// WAKER bits.
 #[cfg(target_arch = "aarch64")]
@@ -131,6 +148,20 @@ pub unsafe fn enable(gicd_va: u64, gicr_va: u64) -> GicStatus {
             cur | CTLR_ARE_NS | CTLR_ENGRP0 | CTLR_ENGRP1,
         );
 
+        // 1b. Assign every SPI to Group 1 NS (IGROUPR=1, IGRPMODR=0).
+        // Reset leaves them Group 0 → delivered as (masked) FIQ, so the
+        // kernel's Group-1 IAR1/EOIR1 path never sees them. Firmware
+        // (OVMF/Limine) does this; self-boot must replicate it. 32 words
+        // cover all 1020 possible INTIDs; writes past ITLinesNumber are
+        // RAZ/WI. Word 0 (SGI/PPI) is RES0 on the distributor under ARE —
+        // banked in the redistributor (handled in step 2b).
+        for w in 1..32u64 {
+            core::ptr::write_volatile(
+                (gicd_va + GICD_IGROUPR as u64 + w * 4) as *mut u32, 0xFFFF_FFFF);
+            core::ptr::write_volatile(
+                (gicd_va + GICD_IGRPMODR as u64 + w * 4) as *mut u32, 0);
+        }
+
         // 2. Redistributor: clear ProcessorSleep, wait ChildrenAsleep=0.
         let waker = (gicr_va + GICR_WAKER as u64) as *mut u32;
         let w = core::ptr::read_volatile(waker);
@@ -141,6 +172,13 @@ pub unsafe fn enable(gicd_va: u64, gicr_va: u64) -> GicStatus {
             if spin > 1_000_000 { break; }
             core::hint::spin_loop();
         }
+
+        // 2b. SGI/PPI (INTID 0..31) group-select lives in the SGI frame,
+        // banked per-PE. Put them all in Group 1 NS so the CNTV PPI (27)
+        // and resched SGIs reach the Group-1 IRQ path.
+        let sgi = gicr_va + GICR_SGI_OFFSET;
+        core::ptr::write_volatile((sgi + GICR_IGROUPR0  as u64) as *mut u32, 0xFFFF_FFFF);
+        core::ptr::write_volatile((sgi + GICR_IGRPMODR0 as u64) as *mut u32, 0);
 
         // 3. CPU interface via system registers.
         //    ICC_SRE_EL1.SRE=1: enable sysreg interface.
@@ -207,6 +245,10 @@ pub unsafe fn ap_cpu_interface_enable(ap_gicr_va: u64) {
             if spin > 1_000_000 { break; }
             core::hint::spin_loop();
         }
+        // This PE's SGI/PPI group-select (banked) → Group 1 NS.
+        let sgi = ap_gicr_va + GICR_SGI_OFFSET;
+        core::ptr::write_volatile((sgi + GICR_IGROUPR0  as u64) as *mut u32, 0xFFFF_FFFF);
+        core::ptr::write_volatile((sgi + GICR_IGRPMODR0 as u64) as *mut u32, 0);
         // CPU interface: ICC_SRE_EL1.SRE=1, ICC_PMR_EL1=0xFF, ICC_IGRPEN1_EL1=1.
         core::arch::asm!(
             "mrs  x9,  s3_0_c12_c12_5",

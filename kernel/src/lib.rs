@@ -232,6 +232,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
+    // Self-boot has no ACPI/MADT → cpu_topology empty → BOOT_CPU_ID stays
+    // u32::MAX → is_bsp() false → IRQ dispatcher skips UART-RX drain, so
+    // login never sees input. Boot CPU's stamped per-CPU id is 0 (above).
+    // SAFETY: boot path single-CPU; sole writer before any AP observes it.
+    if cpu::smp::boot_cpu_id() == u32::MAX { unsafe { cpu::smp::set_boot_cpu_id(0); } }
     if info.memmap_count != 0 {
         debug_boot! { klog::kinfo!("memmap: present"); }
         debug_pmm! {
@@ -921,14 +926,6 @@ pub mod syscalls;
 // dispatch). Split out of lib.rs to keep that file under cap.
 #[cfg(target_os = "oxide-kernel")]
 pub mod pci_boot;
-
-// P2-21c initial user-stack builder per docs/31§4 step 5.
-// SysV argc/argv/envp/auxv layout written at execve time.
-#[cfg(target_os = "oxide-kernel")]
-
-// Global user `AddressSpace` per `11§3` + demand-paging fault hook
-// per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
-#[cfg(target_os = "oxide-kernel")]
 
 /// Combined timer-tick hook: poll UART for input + drain any
 /// pending fbcon writes onto the GPU display.
