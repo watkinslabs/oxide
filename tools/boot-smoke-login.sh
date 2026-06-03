@@ -94,6 +94,30 @@ wait_for 'oxide:~\$' "shell prompt" "$deadline"
 printf 'id\n' >&9
 wait_for 'uid=1000(alice)' "id output" "$deadline"
 
+# Optional logout → getty-respawn check (CHECK_LOGOUT=1): exit the
+# shell and confirm a fresh `oxide login:` prompt reappears (systemd
+# Restart=always on console-getty.service). Count prompts so we don't
+# re-match the first one.
+if [ -n "${CHECK_LOGOUT:-}" ]; then
+    before=$(grep -ac 'oxide login:' "$LOG" 2>/dev/null || echo 0)
+    printf 'exit\n' >&9
+    deadline2=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$deadline2" ]; do
+        now=$(grep -ac 'oxide login:' "$LOG" 2>/dev/null || echo 0)
+        if [ "$now" -gt "$before" ]; then
+            echo "boot-smoke-login: getty respawned after logout"
+            break
+        fi
+        sleep 2
+    done
+    now=$(grep -ac 'oxide login:' "$LOG" 2>/dev/null || echo 0)
+    if [ "$now" -le "$before" ]; then
+        echo "boot-smoke-login: FAIL — getty did NOT respawn after logout" >&2
+        tail -n 40 "$LOG" >&2
+        exit 1
+    fi
+fi
+
 elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
 echo "boot-smoke-login: PASS — $ARCH console login → shell → id in ${elapsed}s"
 exit 0
