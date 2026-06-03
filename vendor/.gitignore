@@ -5,6 +5,12 @@
 *
 !.gitignore
 !README.md
+# GRUB aarch64 EFI platform modules — F376. Vendored so the ARM GRUB
+# boot ISO builds without a host grub2-efi-aa64-modules install (host
+# GRUB is x86-only here). Regenerate with tools/fetch-grub.sh.
+!grub/
+!grub/arm64-efi/
+!grub/arm64-efi/**
 # busybox vendored binaries: x86_64 already tracked; aarch64 added
 # per F148 once the cross-toolchain landed.
 !busybox/
