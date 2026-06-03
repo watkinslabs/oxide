@@ -49,6 +49,7 @@ build_one() {
   ( cd "$bd" && \
     CC="$cc" \
     ../configure \
+      --prefix=/usr \
       --host="$triple" --build="$(../config.guess)" \
       --with-build-python="$HOSTPY" \
       --disable-shared --without-ensurepip --disable-test-modules \
