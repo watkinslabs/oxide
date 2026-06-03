@@ -83,6 +83,12 @@ qemu-arm:
 qemu-x86-grub:
 	$(XTASK) grub --arch x86_64 --smp $(SMP)
 
+# Limine-free aarch64 boot (F376): objcopy the kernel to a flat arm64
+# Image and boot via QEMU `-kernel` (the booti / GRUB-`linux` protocol).
+# No Limine, no OVMF. The artifact a bootloader loads on real hardware.
+qemu-arm-self:
+	$(XTASK) selfboot --arch aarch64 --smp $(SMP)
+
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
 # want when just trying to log in and use it.
@@ -102,6 +108,10 @@ smoke-x86: x86
 
 smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+
+# Limine-free aarch64 self-boot smoke (F376): -kernel flat Image.
+smoke-arm-self:
+	./tools/boot-smoke.sh arm-self $(SMOKE_TIMEOUT)
 
 smoke: smoke-x86 smoke-arm
 

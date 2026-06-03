@@ -591,6 +591,89 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     qemu_run_grub_x86_64(&repo, &iso, smp)
 }
 
+/// Limine-free aarch64 boot: objcopy the kernel ELF to a flat arm64
+/// `Image` (the self-bootstrap trampoline owns MMU/GIC/EL setup) and
+/// boot it via QEMU `-kernel` — the same Image protocol U-Boot `booti`
+/// and GRUB `linux` use, so this artifact is what any bootloader loads.
+/// No Limine, no OVMF, no ESP.
+pub(crate) fn cmd_selfboot(rest: &[String]) -> Result<(), u8> {
+    let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "aarch64".into());
+    if arch != "aarch64" {
+        eprintln!("xtask selfboot: only aarch64 (x86 self-boot is the GRUB multiboot2 path: `xtask grub --arch x86_64`)");
+        return Err(2);
+    }
+    let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
+    crate::cmd_rootfs(rest)?;
+    // debug-boot by default — UART klog sink, no bring-up smokes (parity
+    // with `make qemu-arm` QEMU_FEATURES). Override with --features.
+    let mut kr: Vec<String>;
+    let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
+        kr = rest.to_vec();
+        kr.push("--features".into());
+        kr.push("debug-boot".into());
+        &kr[..]
+    } else { rest };
+    crate::cmd_kernel(kargs)?;
+    let repo = repo_root();
+    let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
+    let image = build_arm_image(&repo, &kernel_elf)?;
+    qemu_run_aarch64_selfboot(&repo, &image, smp)
+}
+
+/// objcopy the kernel ELF → flat arm64 `Image` (header + trampoline at
+/// byte 0). Reuses the toolchain's `rust-objcopy` (else `llvm-objcopy`).
+fn build_arm_image(
+    repo: &std::path::Path,
+    kernel_elf: &std::path::Path,
+) -> Result<std::path::PathBuf, u8> {
+    let image = repo.join("target/oxide-aarch64.Image");
+    let objcopy = if which("rust-objcopy").is_some() { "rust-objcopy" }
+                  else if which("llvm-objcopy").is_some() { "llvm-objcopy" }
+                  else {
+                      eprintln!("xtask selfboot: need rust-objcopy or llvm-objcopy on PATH");
+                      return Err(2);
+                  };
+    let mut c = Command::new(objcopy);
+    c.args(["-O", "binary", kernel_elf.to_str().unwrap(), image.to_str().unwrap()]);
+    run(c)?;
+    eprintln!("xtask selfboot: produced {}", image.display());
+    Ok(image)
+}
+
+/// Boot the flat arm64 Image directly via QEMU `-kernel` (no firmware).
+/// GIC must be v3+ITS (the kernel's GICv3 driver); rootfs is embedded in
+/// the Image, so no block device is attached.
+fn qemu_run_aarch64_selfboot(
+    _repo: &std::path::Path,
+    image: &std::path::Path,
+    smp: u32,
+) -> Result<(), u8> {
+    if which("qemu-system-aarch64").is_none() {
+        eprintln!("xtask selfboot: qemu-system-aarch64 not on PATH; install your distro's qemu-system-aarch64 package.");
+        return Err(2);
+    }
+    let smp_str = smp.to_string();
+    let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
+    let uart_chardev = if headless { "stdio,id=ser0,signal=off" }
+                       else { "stdio,id=ser0,mux=on,signal=off" };
+    let mut c = Command::new("qemu-system-aarch64");
+    c.args([
+        "-machine", "virt,gic-version=3,its=on",
+        "-cpu", "cortex-a72",
+        "-smp", &smp_str,
+        "-m", "2G",
+        "-kernel", image.to_str().unwrap(),
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        "-chardev", uart_chardev,
+        "-serial", "chardev:ser0",
+        "-display", "none",
+        "-no-reboot",
+    ]);
+    eprintln!("xtask selfboot: launching qemu-system-aarch64 (-kernel Image, no Limine/OVMF), smp={smp}, headless={headless}");
+    run(c)
+}
+
 /// Stage `boot/oxide-<arch>` + a `grub.cfg` that `multiboot2`-loads it,
 /// then `grub2-mkrescue` into a hybrid BIOS+UEFI ISO.
 fn build_grub_iso(
