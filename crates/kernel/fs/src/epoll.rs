@@ -291,17 +291,27 @@ pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
         } else {
             Some(now().saturating_add((timeout as u64).saturating_mul(1_000_000)))
         };
+        // Safety-net re-scan interval. Even with timeout < 0 (block
+        // forever), park with a bounded deadline so the per-tick
+        // `tick_wake_expired` scanner rouses us periodically to re-scan
+        // for *level-ready* fds whose readiness posts no active wake to
+        // this epoll's waitlist — notably timerfd expiry (systemd's
+        // RestartSec → getty respawn) and signalfd. Targeted fd-event /
+        // signal wakes still fire immediately; this only bounds the
+        // worst-case latency when nothing else wakes us. 20 ms is
+        // imperceptible at the console and fine for systemd's timers.
+        const RESCAN_NS: u64 = 20_000_000;
         loop {
-            // Park + wait for a wakeup. tick_yield will wake periodically
-            // on the timer IRQ even if nobody notified the wait list,
-            // which lets us re-check the deadline and any newly-ready fds.
-            // F181: park on this epoll's own waitlist; targeted
-            // wake from subscribed-fd events lands here. tick_yield
-            // also gives the timer a chance to fire so a non-event
-            // deadline still rouses us periodically for re-scan.
-            // SAFETY: process ctx; preempt-off across the syscall; WaitList::park bumps Arc + marks Sleeping; tick_yield yields. UP single-CPU.
+            // Park until the nearest of: the caller's deadline (if any)
+            // and the next safety-net re-scan.
+            let rescan_at = now().saturating_add(RESCAN_NS);
+            let park_dl = match deadline_ns {
+                Some(d) => core::cmp::min(d, rescan_at),
+                None => rescan_at,
+            };
+            // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline bumps Arc + marks Sleeping + stamps the wake deadline; tick_yield yields. UP single-CPU.
             unsafe {
-                ep.waiters.park();
+                ep.waiters.park_with_deadline(park_dl);
                 sched::live::tick_yield();
             }
             let out2 = scan_once(&ep, &fdt, evp, maxevents);
