@@ -25,9 +25,12 @@ EOF
 
 ARCH="${1:-}"
 case "$ARCH" in
-    x86) MAKE_TARGET=qemu-x86 ;;
-    arm) MAKE_TARGET=qemu-arm ;;
-    *)   usage ;;
+    x86)  MAKE_TARGET=qemu-x86 ;;
+    arm)  MAKE_TARGET=qemu-arm ;;
+    # GRUB self-bootstrap path (F372): same headless stdio serial, so
+    # the QIN fifo reaches the guest UART RX exactly as the Limine path.
+    grub) MAKE_TARGET=qemu-x86-grub ;;
+    *)    usage ;;
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
