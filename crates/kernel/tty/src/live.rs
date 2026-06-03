@@ -189,6 +189,30 @@ pub unsafe fn tick_poll_uart() {
     push_and_wake_fg(b);
 }
 
+/// COM1 RX interrupt handler — the real interrupt-driven serial-input
+/// path. Fired by the I/O APIC redirection for IRQ4 (registered as an
+/// MSI-pool vector handler); drains the whole 16550 RX FIFO into the
+/// foreground VT in one IRQ so no byte is dropped between timer ticks.
+/// The timer-tick `tick_poll_uart` is now only a safety net (it finds
+/// LSR.DR clear because this drained it). The LAPIC dispatcher EOIs.
+/// # C: O(bytes pending, ≤ FIFO depth)
+/// # Ctx: IRQ context, IRQs masked, single-CPU
+#[cfg(target_arch = "x86_64")]
+pub fn serial_rx_isr() {
+    // Drain while LSR.DR (bit 0) is set. Cap at 64 to bound the loop
+    // even under a wedged "always-ready" LSR.
+    let mut n = 0;
+    while n < 64 {
+        // SAFETY: privileged port I/O at CPL=0; COM1 LSR (0x3FD).
+        let lsr = unsafe { uart_inb(0x3FD) };
+        if lsr & 0x01 == 0 { break; }
+        // SAFETY: LSR.DR just observed set, so RBR (0x3F8) has a byte.
+        let b = unsafe { uart_inb(0x3F8) };
+        push_and_wake_fg(b);
+        n += 1;
+    }
+}
+
 /// PL011 RX poll for arm timer-tick context. Reads `FR.RXFE` to
 /// check for pending bytes; on each available byte pulls from
 /// `DR` and feeds the foreground VT's `RX_BUF` + waiters.
