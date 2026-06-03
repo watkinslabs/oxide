@@ -651,11 +651,14 @@ pub fn sys_dup3(args: &SyscallArgs) -> i64 {
 /// is accepted as a no-op (single-process v1 has nothing to unshare).
 /// # C: O(last - first)
 pub fn sys_close_range(args: &SyscallArgs) -> i64 {
-    let first = args.a0 as i32;
-    let last  = args.a1 as i32;
+    // first/last are UNSIGNED per close_range(2): close_range(3, ~0U, 0)
+    // casting last to i32 → -1 → EINVAL → callers looped close() up to
+    // RLIMIT_NOFILE (524288) → slow spawns / slow getty respawn. Clamp.
+    let first = args.a0 as u32 as i32;
+    let last  = (args.a1 as u32).min(i32::MAX as u32) as i32;
     let flags = args.a2 as u32;
     const CLOSE_RANGE_CLOEXEC:  u32 = 0x4;
-    if first < 0 || last < 0 || first > last {
+    if first > last {
         return -(Errno::Einval.as_i32() as i64);
     }
     let cur = match sched::live::current() {
