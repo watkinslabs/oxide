@@ -249,6 +249,27 @@ pub fn has_zombies(parent: u32) -> bool {
     ZOMBIES.lock().iter().any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
 }
 
+/// Peek one Zombie child whose `parent_tid == parent` WITHOUT removing
+/// it — the `waitid(2)` `WNOWAIT` contract (leave the child in a
+/// waitable state). Same filter shape as `reap_one`. systemd's SIGCHLD
+/// handler peeks with `WEXITED|WNOHANG|WNOWAIT` to learn which unit a
+/// pid belongs to, then reaps separately; if the peek reaped, that
+/// second wait would get ECHILD and systemd mis-supervises the service.
+/// # C: O(N_zombies)
+pub fn peek_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
+    use core::sync::atomic::Ordering;
+    let q = ZOMBIES.lock();
+    let t = q.iter().find(|t| {
+        if t.parent_tid.load(Ordering::Acquire) != parent { return false; }
+        match pid {
+            -1         => true,
+            p if p > 0 => t.tid == p as u32,
+            _          => false,
+        }
+    })?;
+    Some((t.tid, t.exit_status.load(Ordering::Acquire)))
+}
+
 /// # C: O(N_zombies)
 pub fn reap_one(parent: u32, pid: i32) -> Option<(u32, i32)> {
     use core::sync::atomic::Ordering;
