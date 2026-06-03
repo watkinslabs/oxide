@@ -2,6 +2,24 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 
+## Revision 2026-06-03 (R79)
+
+- Added: §4.1 cgroup-v2 directory lifecycle + the mandatory
+  `cgroup.events` inotify `IN_MODIFY`-on-transition contract
+  (Linux `cgroup_file_notify`). Userspace managers (systemd) drive
+  empty-cgroup restart/GC off this watch; without it an emptied
+  service cgroup is rmdir'd and never re-realized on restart, so the
+  restarted unit writes to a removed node (ENOENT) and is killed.
+- Changed: `cgroup.events` row now records both `populated` and
+  `frozen` fields (impl emitted `frozen` already; spec omitted it).
+- Removed: stale "cgroup v2 hierarchy walker tracked as later
+  phase" deferral notes (R02/R03) — the unified tree, controllers,
+  and scope membership are implemented (`crates/kernel/cgroup`).
+  CLONE_NEWCGROUP id-stamping vs hierarchy-view scope still PARTIAL
+  per the per-bit table; the tree itself is no longer deferred.
+- Affected code: `crates/kernel/cgroup` (`NOTIFY_HOOK` →
+  `fs::inotify` path-fire), `crates/kernel/fs/src/inotify.rs`.
+
 ## Revision 2026-05-09 (R03)
 
 - Changed: pinned the precise enforcement state of `unshare(2)` per
@@ -27,10 +45,11 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`
       `unshare_pid_pending`; the next `fork()` allocates a fresh
       pid_ns and gives the child vpid=1; pid translation across
       namespaces uses `registry::lookup_in_ns`.
-    - **CLONE_NEWCGROUP** PARTIAL — sets a fresh `cgroup_ns` id but
-      cgroup tree v2 (controllers, hierarchy walk, scope membership)
-      isn't wired; the id alone has no enforcement effect. Real
-      cgroup v2 hierarchy walker tracked as later phase.
+    - **CLONE_NEWCGROUP** PARTIAL — sets a fresh `cgroup_ns` id; the
+      unified cgroup-v2 tree (controllers, hierarchy, scope
+      membership) IS wired (`crates/kernel/cgroup`), but the
+      ns-relative `/proc/<pid>/cgroup` root-rebasing for a fresh
+      cgroup_ns is not yet applied — paths still report root-relative.
 - Why: g.md flagged "namespace partial enforcement under unshare"
   as a Linux-conformance hazard. Userspace runtimes (systemd,
   unshare(1), bwrap, runc) check membership ids AND expect the
@@ -48,7 +67,6 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`
 - Wiring: `kernel::dev_proc_ns` is a `pub use nscg::proc_ns`
   re-export so existing call sites stay stable. `kernel_main`
   calls `nscg::init()` at boot ready.
-- cgroup v2 hierarchy walker tracked as later phase.
 
 ## Revision 2026-05-09 (R01)
 
@@ -126,7 +144,7 @@ Single tree. Each node is a directory in `/sys/fs/cgroup/`. Files per node:
 | `cgroup.threads` | thread granularity |
 | `cgroup.controllers` | available controllers |
 | `cgroup.subtree_control` | controllers enabled for children (write to enable/disable) |
-| `cgroup.events` | `populated` 0/1 |
+| `cgroup.events` | `populated 0\|1` + `frozen 0\|1`; **inotify `IN_MODIFY` fires on every populated/frozen transition** (§4.1) |
 | `cgroup.type` | `domain`,`threaded`,`domain threaded`,`domain invalid` |
 | `cgroup.kill` | write 1 to SIGKILL all members |
 | `cgroup.freeze` | freezer |
@@ -138,6 +156,25 @@ Single tree. Each node is a directory in `/sys/fs/cgroup/`. Files per node:
 | `hugetlb.<size>.{current,max}` | hugetlb (later phase) |
 
 Controllers now: cpu, memory, io, pids, cpuset. (hugetlb, rdma, misc tracked as later phases.)
+
+### 4.1 Lifecycle + `cgroup.events` notification (R79)
+
+Directory lifecycle:
+
+| Op | Effect | Errors |
+|---|---|---|
+| `mkdir <dir>` | create node; child `cgroup.controllers` = parent `subtree_control`; register dir + interface files in the unified mount | parent gone → ENOENT |
+| `rmdir <dir>` | remove node + unregister its dir/files; full subtree removed atomically (no stale dirent: post-rmdir `lookup`→ENOENT, parent `readdir` omits it) | non-empty (live procs **or** child dirs) → ENOTEMPTY |
+| last member exits / migrates out | node stays; `populated`→0 | — |
+
+`cgroup.events` change-notification (Linux `cgroup_file_notify`):
+
+- A watcher (`inotify_add_watch` on `<cg>/cgroup.events`, `IN_MODIFY`) is the **canonical empty-cgroup signal**. systemd's service state machine drives restart/GC off this event, not off SIGCHLD alone.
+- `IN_MODIFY` MUST fire on the `cgroup.events` inode whenever:
+  - `populated` flips 0↔1 — i.e. the node's subtree process count crosses zero. Process exit (`on_exit`), `cgroup.procs`/`cgroup.threads` migration (source **and** destination), and `cgroup.kill` all qualify.
+  - `frozen` flips 0↔1 via `cgroup.freeze`.
+- Propagation: `populated` reflects the **subtree** count, so a transition notifies the affected node **and every ancestor up to the root** whose aggregate count crossed zero.
+- Absent this notification, a userspace manager that rmdir's an emptied cgroup never re-realizes it on restart → writes to the removed node return ENOENT → the restarted service is killed. The notification is mandatory, not advisory.
 
 ## 5 Public ifc
 
