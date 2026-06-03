@@ -87,10 +87,18 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
         // SAFETY: per fn contract, ≥36 bytes are readable at `p`.
         sig[i] = unsafe { core::ptr::read_volatile(p.add(i)) };
     }
-    if &sig != b"XSDT" {
-        alog_raw(b"[ERROR] xsdt: bad signature\n");
-        return;
-    }
+    // ACPI 1.0 systems (and QEMU via GRUB multiboot2) surface only the
+    // RSDT (32-bit entry pointers, signature "RSDT"); ACPI 2.0+ adds the
+    // XSDT (64-bit pointers, signature "XSDT"). Walk whichever we were
+    // handed — same 36-byte SDT header, only the entry width differs.
+    let entry_sz: usize = match &sig {
+        b"XSDT" => 8,
+        b"RSDT" => 4,
+        _ => {
+            alog_raw(b"[ERROR] xsdt: bad signature\n");
+            return;
+        }
+    };
     // SAFETY: caller-asserted ≥36 bytes readable; offset 4..8 well within.
     let length = unsafe { read_u32_le(p.add(4)) };
     if length < 36 || length > 4096 {
@@ -99,14 +107,19 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
         alog_raw(b"[ERROR] xsdt: implausible length\n");
         return;
     }
-    let entry_count = ((length as usize) - 36) / 8;
+    let entry_count = ((length as usize) - 36) / entry_sz;
     alog_raw(b"[INFO]  xsdt: ");
     alog_dec(entry_count as u64);
     alog_raw(b" tables\n");
     let mut i = 0usize;
     while i < entry_count {
-        // SAFETY: pointer offset is within the XSDT (length-bounded).
-        let entry_pa = unsafe { read_u64_le(p.add(36 + i * 8)) };
+        let entry_pa = if entry_sz == 8 {
+            // SAFETY: offset 36+i*8 is within the length-bounded XSDT; reads one 64-bit ACPI table pointer.
+            unsafe { read_u64_le(p.add(36 + i * 8)) }
+        } else {
+            // SAFETY: offset 36+i*4 is within the length-bounded RSDT; reads one 32-bit ACPI table pointer.
+            unsafe { read_u32_le(p.add(36 + i * 4)) as u64 }
+        };
         if entry_pa == 0 { i += 1; continue; }
         let tp = (hhdm_offset.wrapping_add(entry_pa)) as *const u8;
         let mut tsig = [0u8; 4];
@@ -204,7 +217,7 @@ unsafe fn parse_and_log_rsdp(rsdp_va: u64) -> RsdpResult {
         let v = unsafe { read_u32_le(p.add(16)) } as u64;
         alog_raw(b" rsdt=");
         alog_hex(v);
-        0  // we don't follow rev-0 RSDT in try_log_xsdt yet
+        v  // rev-0: follow the 32-bit RSDT (try_sdt handles it)
     };
     alog_raw(b"\n");
     RsdpResult::Ok { revision, xsdt_pa }
@@ -262,12 +275,32 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let ioapic_id = core::ptr::read_volatile(p.add(off + 2));
                     let addr      = read_u32_le(p.add(off + 4));
                     let gsi_base  = read_u32_le(p.add(off + 8));
+                    // Capture for the kernel's I/O APIC redirection
+                    // programming (legacy device IRQs → vectors).
+                    crate::set_ioapic(addr, gsi_base);
                     alog_raw(b"[INFO]      ioapic id=");
                     alog_dec(ioapic_id as u64);
                     alog_raw(b" pa=");
                     alog_hex(addr as u64);
                     alog_raw(b" gsi_base=");
                     alog_dec(gsi_base as u64);
+                    alog_raw(b"\n");
+                }
+                2 if elen >= 10 => {
+                    // Interrupt Source Override (ACPI 6.x §5.2.12.5):
+                    //   off+2 bus (0=ISA), off+3 source IRQ,
+                    //   off+4..8 GSI, off+8..10 flags (polarity/trigger).
+                    let source = core::ptr::read_volatile(p.add(off + 3));
+                    let gsi    = read_u32_le(p.add(off + 4));
+                    let flags  = (core::ptr::read_volatile(p.add(off + 8)) as u16)
+                        | ((core::ptr::read_volatile(p.add(off + 9)) as u16) << 8);
+                    crate::set_irq_override(source, gsi, flags);
+                    alog_raw(b"[INFO]      irq-override src=");
+                    alog_dec(source as u64);
+                    alog_raw(b" gsi=");
+                    alog_dec(gsi as u64);
+                    alog_raw(b" flags=");
+                    alog_hex(flags as u64);
                     alog_raw(b"\n");
                 }
                 5 if elen >= 12 => {

@@ -25,6 +25,7 @@ mod fault;
 mod fpu;
 mod gdt;
 mod idt;
+pub mod ioapic;
 mod syscall;
 mod tss;
 mod irq;
