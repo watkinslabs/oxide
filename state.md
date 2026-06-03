@@ -40,25 +40,37 @@ boot-smoke block and is where debug-all deadlocks (known artifact), so
 debug-all never reaches procfs-smoke. On the CURRENT kernel the default
 boot genuinely hangs at `procfs::smoke_test` (line 485, unconditional).
 
-**ROOT CAUSE (fully diagnosed via runtime HHDM probes):** the kernel
-Image is 129 MiB because the **128 MiB rootfs is embedded** (include_bytes
-→ .rodata). QEMU's `-kernel` flat-Image load does NOT make the whole
-129 MiB Image resident: runtime probes of physical RAM via HHDM showed
-`@0x40000000=0` (image start — zero despite the kernel having BOOTED
-from there), `@0x44000000=0x20ef` (has data), `@0x48000000..=0` (zero).
-So `/proc/version` (a `&str` whose data lives at ~135 MB into the image,
-present in the Image file at the right offset, VMA correctly mapped by
-the 1 GiB kernel block — verified) reads ZERO because that physical RAM
-was never loaded. NOT relocations (0 on both arches), NOT mapping (HHDM
-read of the same phys also 0), NOT objcopy (string IS in the Image).
-**THE FIX (Linux way): split the rootfs out as an initrd.** Stop
-`include_bytes`-ing the 128 MiB rootfs into the kernel; instead pass it
-via QEMU `-initrd <rootfs.img>` (and U-Boot/GRUB initrd), and have the
-kernel read the initrd phys range from the DTB `/chosen`
-(`linux,initrd-start`/`-end`) on the self-boot path (Limine path keeps
-the embedded blob, or also moves to a module). Kernel shrinks to
-~1.5 MB and loads cleanly. THEN reach login (default boot), REMOVE temp
-PL011 breadcrumbs
+**SOLVED (commit b46d1725): KB→actual-load-base mapping.** QEMU loads
+the arm64 Image 2 MiB ABOVE the RAM base (reserves low 2 MiB for the
+DTB) → kernel at phys 0x4020_0000, not 0x4000_0000. The trampoline
+hardcoded KP=0x4000_0000 + 1 GiB block, so code ran (PC-relative, offset
+self-cancelled) but baked absolute `&str` pointers resolved 2 MiB before
+the data → read zero (the procfs-smoke wedge). Fix: trampoline records
+the real load base (`adrp _arm_image_start` → `SB_LOAD_BASE`) and maps
+KB→load_base with **2 MiB L2 blocks** (load base is 2 MiB- not 1 GiB-
+aligned); high-jump = phys−load_base+KB; memmap reserves [load_base,kend).
+NOT the initrd (image loads fine — proven by an 'Y' header probe at boot).
+
+**Self-boot now boots into USERSPACE**: PMM/GICv3/timer/user-AS/all
+smokes pass, procfs-smoke ok, ext4 mounts, /bin/sh loads, **systemd
+starts, getty/agetty run** (syscall trace shows openat/ioctl(TCGETS/
+TIOCGWINSZ)/write/ppoll/clock_nanosleep + the XTGETTCAP terminfo query).
+
+**REMAINING (next): timer IRQ not firing on self-boot → no login.**
+agetty wedges in a ppoll/clock_nanosleep TIMEOUT after the terminal
+query; with the cooperative-timer-wake scheduler, a parked-with-timeout
+task only wakes on a timer IRQ (idle loop wfi's otherwise). `arm-timer:
+irq ticks=0`. We enter at **EL1** (QEMU virt, no virtualization=on), so
+the trampoline's EL2 block (CNTVOFF_EL2=0, CNTHCTL_EL2, ICC_SRE_EL2) is
+SKIPPED — Limine's OVMF sets these at EL2 before dropping. Candidates:
+CNTVOFF_EL2 nonzero (virtual-timer offset wrong) or the GICv3 timer-PPI
+enable from reset state. Can't set EL2 regs from EL1; `virtualization=on`
+makes QEMU enter at EL2 but then hangs at MMU-enable ('A2BC' — the EL2
+block leaves SCTLR/HCR in a bad state for the MMU enable; fixable). Try:
+(a) fix the EL2-block so virtualization=on works (enter EL2, set timer
+regs, drop to EL1), or (b) check whether QEMU's direct-EL1 boot leaves
+CNTVOFF_EL2 nonzero and compensate in the kernel's CNTV programming.
+THEN reach login (default boot), REMOVE temp PL011 breadcrumbs
 (A/EL-digit/B..H in selfboot.rs + G/H in boot-aarch64/lib.rs
 `_start_rust`), wire `xtask` to objcopy the Image + a `qemu-arm`
 self-boot target, switch defaults, delete Limine, lockstep both
