@@ -21,6 +21,8 @@ extern crate std;
 pub mod dtb;
 pub mod limine;
 pub mod pl011;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub mod selfboot;
 
 #[cfg(target_os = "oxide-kernel")]
 mod semihost {
@@ -381,10 +383,14 @@ unsafe fn capture_cmdline_from_dtb() {
     if !kernel::boot_cmdline::get().is_empty() { return; }
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
     if pa == 0 { return; }
+    // Self-boot cleared the low identity map (TTBR0), so the DTB blob is
+    // only reachable via HHDM; Limine identity-maps low phys, so pa works
+    // directly there.
+    let va = if selfboot::is_selfboot() { selfboot::ARM_SELFBOOT_HHDM + pa } else { pa };
     // SAFETY: DTB pointer from bootloader x0; the header's totalsize
     // bounds the safe read. We read 8 bytes first to learn totalsize.
     let head: &[u8] = unsafe {
-        core::slice::from_raw_parts(pa as *const u8, 8)
+        core::slice::from_raw_parts(va as *const u8, 8)
     };
     let totalsize = match dtb::parse_header(head) {
         Ok(h) => h.totalsize as usize,
@@ -393,7 +399,7 @@ unsafe fn capture_cmdline_from_dtb() {
     if totalsize == 0 || totalsize > 4 * 1024 * 1024 { return; }
     // SAFETY: full blob bounded by the header's own totalsize.
     let blob: &[u8] = unsafe {
-        core::slice::from_raw_parts(pa as *const u8, totalsize)
+        core::slice::from_raw_parts(va as *const u8, totalsize)
     };
     let args = match dtb::chosen_bootargs(blob) { Some(s) => s, None => return };
     if args.is_empty() { return; }
@@ -411,6 +417,95 @@ unsafe fn capture_cmdline_from_dtb() {
     unsafe { kernel::boot_cmdline::set(bytes); }
 }
 
+/// Build the self-bootstrap memmap: HHDM from the trampoline, RAM extent
+/// from the DTB `/memory` node, with the kernel image + DTB blob carved
+/// out as non-usable so the PMM never hands those pages to allocators.
+/// # SAFETY: boot path, single-CPU; sole writer of MEMMAP_STORAGE.
+/// # C: O(dtb)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
+    const KB: u64 = 0xFFFF_FFFF_8000_0000;
+    const KP: u64 = 0x4000_0000;
+    extern "C" { static __kernel_start: u8; static __kernel_end: u8; }
+    info.hhdm_offset = selfboot::ARM_SELFBOOT_HHDM;
+
+    let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
+    // RAM extent from the DTB /memory reg; fall back to a conservative
+    // 1 GiB at the QEMU virt base if the DTB is unreadable.
+    // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
+    let (base, size) = unsafe { read_dtb_memory(pa) }.unwrap_or((KP, 0x4000_0000));
+    let ram_end = base.saturating_add(size);
+
+    // Kernel image physical extent (page-rounded).
+    let kstart = (core::ptr::addr_of!(__kernel_start) as u64 - KB + KP) & !0xFFF;
+    let kend = ((core::ptr::addr_of!(__kernel_end) as u64 - KB + KP) + 0xFFF) & !0xFFF;
+    // DTB blob extent (page-rounded), if present.
+    let (dstart, dend) = if pa != 0 {
+        // SAFETY: pa is the bootloader DTB pointer; reads the 8-byte header.
+        let ts = unsafe { dtb_totalsize(pa) };
+        ((pa & !0xFFF), ((pa + ts + 0xFFF) & !0xFFF))
+    } else { (0, 0) };
+
+    // Two reserved blocks (kernel, DTB), sorted by start. Walk RAM and
+    // emit Usable for the gaps, the reserved kind for each block.
+    let mut blocks: [(u64, u64, kernel::BootMemKind); 2] = [
+        (kstart, kend, kernel::BootMemKind::KernelImage),
+        (dstart, dend, kernel::BootMemKind::Reserved),
+    ];
+    if blocks[0].0 > blocks[1].0 { blocks.swap(0, 1); }
+
+    // SAFETY: boot-only single-writer of the 'static MEMMAP_STORAGE.
+    let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
+    let mut n = 0usize;
+    let mut push = |s: u64, e: u64, k: kernel::BootMemKind, n: &mut usize| {
+        if e > s && *n < MAX_BOOT_REGIONS {
+            storage[*n] = BootMemRegion { base_pa: s, len: e - s, kind: k };
+            *n += 1;
+        }
+    };
+    let mut cur = base;
+    for &(bs, be, bk) in blocks.iter() {
+        if be == 0 || be <= base || bs >= ram_end { continue; }
+        let bs = bs.max(base);
+        let be = be.min(ram_end);
+        if bs > cur { push(cur, bs, kernel::BootMemKind::Usable, &mut n); }
+        push(bs, be, bk, &mut n);
+        cur = cur.max(be);
+    }
+    if cur < ram_end { push(cur, ram_end, kernel::BootMemKind::Usable, &mut n); }
+
+    info.memmap_count = n as u32;
+    info.memmap_ptr = storage.as_ptr();
+}
+
+/// DTB `/memory` reg → `(base, size)`. Reads the blob at phys `pa`
+/// (HHDM-mapped). `None` on invalid/missing DTB.
+/// # SAFETY: `pa` is the bootloader DTB pointer; header totalsize bounds the read.
+/// # C: O(dtb)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn read_dtb_memory(pa: u64) -> Option<(u64, u64)> {
+    if pa == 0 { return None; }
+    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
+    // SAFETY: HHDM maps phys 0.. ; read 8 bytes to learn totalsize.
+    let head = unsafe { core::slice::from_raw_parts(va as *const u8, 8) };
+    let ts = dtb::parse_header(head).ok()?.totalsize as usize;
+    if ts == 0 || ts > 4 * 1024 * 1024 { return None; }
+    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped.
+    let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
+    dtb::first_memory_region(blob)
+}
+
+/// DTB header totalsize at phys `pa` (HHDM-mapped); 0 on failure.
+/// # SAFETY: `pa` bootloader DTB pointer.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn dtb_totalsize(pa: u64) -> u64 {
+    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
+    // SAFETY: HHDM-mapped; 8-byte header read.
+    let head = unsafe { core::slice::from_raw_parts(va as *const u8, 8) };
+    dtb::parse_header(head).map(|h| h.totalsize as u64).unwrap_or(0)
+}
+
 /// Build a `BootInfo` from the DTB pointer. v1 validates the header
 /// only; the `/memory` property walk that fills BootMemRegions
 /// rides alongside the PMM init that consumes them.
@@ -423,6 +518,15 @@ unsafe fn build_boot_info() -> BootInfo {
     // SAFETY: stub returns an owned BootInfo with a static empty
     // memmap; we overlay HHDM + memmap from Limine before returning.
     let mut info = unsafe { stub_boot_info() };
+    // Self-bootstrap (no Limine): HHDM + memmap come from the trampoline
+    // + DTB instead of the (absent) Limine responses.
+    if selfboot::is_selfboot() {
+        // SAFETY: boot path; reads DTB + linker symbols, fills MEMMAP_STORAGE.
+        unsafe { build_selfboot_memmap(&mut info); }
+        use hal::TimerOps;
+        info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        return info;
+    }
     let h = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
     if !h.is_null() {
         // SAFETY: Limine wrote a non-null response pointer; backing
@@ -482,6 +586,13 @@ unsafe fn build_boot_info() -> BootInfo {
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
+    // selfboot breadcrumb 'G': proves _start -> _start_rust transition.
+    // Raw HHDM PL011 write; only on the self-boot path (Limine HHDM differs).
+    if selfboot::is_selfboot() {
+        // SAFETY: selfboot trampoline mapped HHDM (0xFFFF_8000…) device block
+        // over phys 0; UART DR is at HHDM + 0x0900_0000.
+        unsafe { core::ptr::write_volatile((selfboot::ARM_SELFBOOT_HHDM + 0x0900_0000) as *mut u32, 0x47); }
+    }
     // Install the EL1 vector table so any synchronous fault halts
     // at our default handler instead of looping on lost exceptions.
     // SAFETY: single-CPU boot, IRQs masked; install_default_vbar
@@ -500,20 +611,33 @@ unsafe extern "C" fn _start_rust() -> ! {
     // With correct request magic Limine fills this; with a typo it
     // stays null. The pinning test against upstream `limine.h` is
     // the diagnostic — there's nowhere to log a runtime warning yet.
-    let resp = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
-    let hhdm = if resp.is_null() {
-        0
+    // Self-bootstrap (Image trampoline) installs its own HHDM; Limine
+    // fills LIMINE_HHDM.response instead. Pick the right source.
+    let hhdm = if selfboot::is_selfboot() {
+        selfboot::ARM_SELFBOOT_HHDM
     } else {
-        // SAFETY: bootloader wrote a non-null response pointer; the
-        // backing struct lives for the rest of boot per `36§3`.
-        unsafe { (*resp).offset }
+        let resp = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
+        if resp.is_null() {
+            0
+        } else {
+            // SAFETY: bootloader wrote a non-null response pointer; the
+            // backing struct lives for the rest of boot per `36§3`.
+            unsafe { (*resp).offset }
+        }
     };
     pl011::set_hhdm_offset(hhdm);
 
     // Sink registration is gated behind `debug-boot` per
-    // `04§4.0` (R06): default builds emit zero klog bytes, so the
-    // semihosting sink is never installed.
-    debug_boot! { klog::set_byte_sink(boot_emit); }
+    // `04§4.0` (R06): default builds emit zero klog bytes. Self-boot
+    // (no Limine) has no semihosting host, so it routes klog through the
+    // real PL011 over HHDM; the Limine path keeps the semihosting sink.
+    debug_boot! {
+        if selfboot::is_selfboot() {
+            klog::set_byte_sink(boot_emit_pl011);
+        } else {
+            klog::set_byte_sink(boot_emit);
+        }
+    }
 
     // Generic-timer calibration: read CNTFRQ_EL0 (programmed by
     // firmware) and stash kHz so `ArmTimerOps::monotonic_ns` works.
@@ -528,6 +652,10 @@ unsafe extern "C" fn _start_rust() -> ! {
     }
     hal_aarch64::set_cntfrq_khz((cntfrq_hz / 1000) as u32);
     klog::set_clock_fn(now_ns_aarch64);
+    if selfboot::is_selfboot() {
+        // SAFETY: HHDM device block over UART; selfboot breadcrumb 'H'.
+        unsafe { core::ptr::write_volatile((selfboot::ARM_SELFBOOT_HHDM + 0x0900_0000) as *mut u32, 0x48); }
+    }
     debug_boot! { log_cpu_info(); }
 
     // SAFETY: bootloader-owned EXECUTABLE_FILE/KERNEL_FILE response

@@ -149,6 +149,68 @@ pub fn chosen_bootargs<'a>(bytes: &'a [u8]) -> Option<&'a [u8]> {
     None
 }
 
+/// First `/memory` node's first `reg` entry → `(base, size)`. Assumes
+/// the arm64 `virt` cell layout (#address-cells=2, #size-cells=2), i.e.
+/// `reg = <base_hi base_lo size_hi size_lo>` (16 bytes). Used by the
+/// self-bootstrap path to build the PMM memmap without Limine. Returns
+/// `None` if no `/memory` node / `reg` property is found.
+/// # C: O(dtb_struct_size)
+pub fn first_memory_region(bytes: &[u8]) -> Option<(u64, u64)> {
+    let h = parse_header(bytes).ok()?;
+    let stru = bytes.get(h.off_dt_struct as usize ..
+                         (h.off_dt_struct + h.size_dt_struct) as usize)?;
+    let strs = bytes.get(h.off_dt_strings as usize ..
+                         (h.off_dt_strings + h.size_dt_strings) as usize)?;
+    let mut i = 0usize;
+    let mut depth: i32 = -1;
+    let mut in_mem = false;
+    let mut mem_depth: i32 = -1;
+    while i + 4 <= stru.len() {
+        let tok = read_be_u32(stru, i).ok()?;
+        i += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                depth += 1;
+                let start = i;
+                while i < stru.len() && stru[i] != 0 { i += 1; }
+                if i >= stru.len() { return None; }
+                let name = &stru[start..i];
+                i = (i + 1 + 3) & !3;
+                // `memory` or `memory@<addr>` at depth 1.
+                if depth == 1 && name.starts_with(b"memory")
+                    && (name.len() == 6 || name.get(6) == Some(&b'@')) {
+                    in_mem = true;
+                    mem_depth = depth;
+                }
+            }
+            FDT_END_NODE => {
+                if in_mem && depth == mem_depth { in_mem = false; }
+                depth -= 1;
+            }
+            FDT_PROP => {
+                if i + 8 > stru.len() { return None; }
+                let plen  = read_be_u32(stru, i).ok()? as usize;
+                let pname = read_be_u32(stru, i + 4).ok()? as usize;
+                i += 8;
+                let pdata = stru.get(i .. i + plen)?;
+                if in_mem {
+                    let name_end = strs[pname..].iter().position(|&b| b == 0)?;
+                    if &strs[pname..pname + name_end] == b"reg" && plen >= 16 {
+                        let base = u64::from_be_bytes(pdata[0..8].try_into().ok()?);
+                        let size = u64::from_be_bytes(pdata[8..16].try_into().ok()?);
+                        return Some((base, size));
+                    }
+                }
+                i += (plen + 3) & !3;
+            }
+            FDT_NOP => {}
+            FDT_END => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
 #[inline]
 fn read_be_u32(buf: &[u8], off: usize) -> KResult<u32> {
     let bytes: [u8; 4] = buf.get(off..off + 4)
