@@ -624,16 +624,14 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va_raw); }
+            // aarch64: a demand-zero (not-present) fault needs no TLBI
+            // (hardware doesn't cache faulting translations), but a COW
+            // fault replaces a PRESENT read-only PTE with a new writable
+            // one — the old translation is live in the TLB and must be
+            // invalidated or the retry keeps writing the shared page.
+            // SAFETY: tlbi vae1is is privileged at EL1; PTE was just installed.
             #[cfg(target_arch = "aarch64")]
-            {
-                // arm needs a hal-side flush_va helper; reuse the
-                // walker's path. For v1 single-CPU, the dsb+isb
-                // sequence inside MmuOps::map already serializes
-                // the PTE write, so a separate invlpg-equivalent is
-                // optional. Leave a TODO for the proper invalidation
-                // primitive once flush_local_va is exposed for arm.
-                let _ = va_raw;
-            }
+            unsafe { hal_aarch64::flush_local_va(va_raw); }
             true
         }
         _ => false,
@@ -838,6 +836,13 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
+            // aarch64: ArmMmu::unmap issues no TLBI — without this the
+            // stale entry keeps the dropped page live, so MADV_DONTNEED's
+            // intended zero-on-refault never happens (musl mallocng relies
+            // on it; the stale page → metadata garbage → a_crash).
+            // SAFETY: tlbi vae1is is privileged at EL1; va was just unmapped.
+            #[cfg(target_arch = "aarch64")]
+            unsafe { hal_aarch64::flush_local_va(va); }
         }
         va += 0x1000;
     }
@@ -888,6 +893,15 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va); }
+            // aarch64 ArmMmu::unmap clears the PTE leaf but issues no
+            // TLBI, so without this the stale TLB entry keeps translating
+            // the VA to the freed page. musl's mallocng munmaps a group
+            // then mmaps the same address; the stale TLB served the old
+            // (now-reused) page → allocator metadata read garbage →
+            // a_crash() (NULL-write trap). Mirror the x86 per-page flush.
+            // SAFETY: tlbi vae1is is privileged at EL1; va was just unmapped.
+            #[cfg(target_arch = "aarch64")]
+            unsafe { hal_aarch64::flush_local_va(va); }
         }
         va += 0x1000;
     }
