@@ -150,6 +150,19 @@ fn fire_event(inode: &InodeRef, mask_bit: u32) {
     }
 }
 
+/// Fire `IN_MODIFY` on the inode currently registered at `path`.
+/// Leaf crates (cgroup) that mutate a synthetic file's content without
+/// going through the VFS write path use this to emit the
+/// change-notification Linux's `cgroup_file_notify` provides — e.g.
+/// `cgroup.events` when `populated`/`frozen` flips. No-op if `path`
+/// resolves to nothing (cgroup already rmdir'd).
+/// # C: O(N_inotify * N_watches) + O(N_devfs)
+pub fn fire_modify_path(path: &str) {
+    if let Some(inode) = devfs::lookup(path) {
+        fire_event(&inode, IN_MODIFY);
+    }
+}
+
 fn vfs_write_notify(inode: &InodeRef) { fire_event(inode, IN_MODIFY); }
 fn vfs_open_notify(inode: &InodeRef)  { fire_event(inode, IN_OPEN); }
 fn vfs_read_notify(inode: &InodeRef)  { fire_event(inode, IN_ACCESS); }
