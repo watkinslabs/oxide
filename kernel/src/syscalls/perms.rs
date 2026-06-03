@@ -34,6 +34,31 @@ fn resolve_path_inode(path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
         .ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 
+/// `AT_EMPTY_PATH` (uapi): operate on `dirfd` itself when `path` is "".
+/// systemd resets the console's owner/mode with `fchownat(fd, "", 0, 5,
+/// AT_EMPTY_PATH)` + the fchmodat equivalent; without this the empty path
+/// hits the EINVAL branch in `resolve_path_inode` ("Failed to reset TTY
+/// ownership/access mode of /dev/console").
+const AT_EMPTY_PATH: u32 = 0x1000;
+
+/// True when the user `path` pointer is null or the first byte is NUL.
+fn path_is_empty(path_ptr: u64) -> bool {
+    if path_ptr == 0 { return true; }
+    // SAFETY: bounded 1-byte probe via the validated cstr reader.
+    unsafe { crate::devfs::read_user_cstr(path_ptr, 1) }
+        .map(|b| b.is_empty())
+        .unwrap_or(false)
+}
+
+/// Resolve the target inode for an `*at` perms call: `dirfd` itself when
+/// `AT_EMPTY_PATH` is set and `path` is empty, else the resolved `path`.
+fn resolve_at_inode(dirfd: i32, path_ptr: u64, flags: u32, follow: bool) -> Result<InodeRef, i64> {
+    if flags & AT_EMPTY_PATH != 0 && path_is_empty(path_ptr) {
+        return resolve_fd_inode(dirfd);
+    }
+    resolve_path_inode(path_ptr, follow)
+}
+
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
     let cur = match sched::live::current() {
         Some(c) => c, None => return Err(-(Errno::Ebadf.as_i32() as i64)),
@@ -83,7 +108,8 @@ pub fn sys_fchmod(args: &SyscallArgs) -> i64 {
 /// dirfd and resolves `path` against the global devfs.
 /// # C: O(N_path)
 pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a1, (args.a3 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
+    let flags = args.a3 as u32;
+    let inode = match resolve_at_inode(args.a0 as i32, args.a1, flags, (flags & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a2 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
     0
@@ -110,7 +136,8 @@ pub fn sys_fchown(args: &SyscallArgs) -> i64 {
 /// `sys_fchownat(dirfd, path, uid, gid, flags)` — slot 260.
 /// # C: O(N_path)
 pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a1, (args.a4 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
+    let flags = args.a4 as u32;
+    let inode = match resolve_at_inode(args.a0 as i32, args.a1, flags, (flags & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a2 as u32; let g = args.a3 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
     0
