@@ -633,6 +633,16 @@ fn qemu_run_grub_x86_64(
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
     let serial = if headless { "stdio" } else { "mon:stdio" };
     let mut c = Command::new("qemu-system-x86_64");
+    // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
+    // `-d int,guest_errors -D <file>` so a boot fault's exception
+    // cascade (the #PF preceding a #DF, with CR2/error code) is
+    // captured. Routed through the make/xtask path so it survives the
+    // boot-smoke setsid wrapper (direct qemu gets sandbox-killed).
+    if let Ok(p) = std::env::var("OXIDE_QEMU_DINT") {
+        if !p.is_empty() {
+            c.args(["-d", "int,guest_errors", "-D", p.as_str()]);
+        }
+    }
     c.args([
         "-machine", "q35",
         "-accel", accel,

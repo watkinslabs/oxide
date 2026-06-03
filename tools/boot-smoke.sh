@@ -66,7 +66,16 @@ kill_boot() {
         : > "$PIDFILE"
     fi
 }
-cleanup() { kill_boot; rm -f "$LOG" "$PIDFILE"; }
+# SMOKE_KEEP_LOG=<path>: copy the last attempt's serial log there
+# before cleanup so a failed boot can be inspected (the temp log is
+# otherwise removed on exit).
+cleanup() {
+    kill_boot
+    if [ -n "${SMOKE_KEEP_LOG:-}" ] && [ -s "$LOG" ]; then
+        cp "$LOG" "$SMOKE_KEEP_LOG" 2>/dev/null || true
+    fi
+    rm -f "$LOG" "$PIDFILE"
+}
 trap cleanup EXIT
 
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
@@ -115,6 +124,9 @@ while [ "$a" -le "$ATTEMPTS" ]; do
         exit 0
     fi
     kill_boot
+    if [ -n "${SMOKE_KEEP_LOG:-}" ] && [ -s "$LOG" ]; then
+        cp "$LOG" "$SMOKE_KEEP_LOG" 2>/dev/null || true
+    fi
     rm -f "$LOG"
     a=$(( a + 1 ))
 done
