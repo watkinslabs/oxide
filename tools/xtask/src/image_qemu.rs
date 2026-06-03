@@ -680,9 +680,14 @@ fn qemu_run_aarch64_grub(
         "-semihosting-config", "enable=on,target=native",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        // virtio-gpu scanout + keyboard for the graphical console (fbcon
+        // paints here; no GOP on this path). Without them only serial gets
+        // output and the GTK window stays blank.
+        "-device", "virtio-gpu-pci,bus=pcie.0",
+        "-device", "virtio-keyboard-pci,bus=pcie.0",
         "-chardev", uart_chardev,
         "-serial", "chardev:ser0",
-        "-display", "none",
+        "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
     eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");
@@ -763,9 +768,15 @@ fn qemu_run_aarch64_selfboot(
         "-kernel", image.to_str().unwrap(),
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        // virtio-gpu scanout + keyboard for the graphical console — the
+        // kernel's dev_virtio_gpu_modern paints fbcon to this scanout
+        // (the framebuffer source on arm; there is no GOP here). Without
+        // these the only output is serial. Mirrors the Limine launcher.
+        "-device", "virtio-gpu-pci,bus=pcie.0",
+        "-device", "virtio-keyboard-pci,bus=pcie.0",
         "-chardev", uart_chardev,
         "-serial", "chardev:ser0",
-        "-display", "none",
+        "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
     eprintln!("xtask selfboot: launching qemu-system-aarch64 (-kernel Image, no Limine/OVMF), smp={smp}, headless={headless}");
