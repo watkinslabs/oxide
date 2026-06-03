@@ -102,9 +102,8 @@ _arm_entry:
     mov     x0, #0xf
     msr     S3_4_C12_C9_5, x0     /* ICC_SRE_EL2 */
     isb
-    movz    x0, #0x0800
-    movk    x0, #0x30d0, lsl #16  /* INIT_SCTLR_EL1_MMU_OFF=0x30d00800 */
-    msr     sctlr_el1, x0
+    /* (SCTLR_EL1 left at QEMU's EL1 reset value — setting it to
+       0x30d00800 here wedged the later MMU enable.) */
     movz    x0, #0x03c5           /* SPSR_EL2: EL1h, DAIF masked       */
     msr     spsr_el2, x0
     adr     x0, 1f                /* ELR_EL2 = phys label 1f           */

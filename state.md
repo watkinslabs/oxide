@@ -56,21 +56,29 @@ smokes pass, procfs-smoke ok, ext4 mounts, /bin/sh loads, **systemd
 starts, getty/agetty run** (syscall trace shows openat/ioctl(TCGETS/
 TIOCGWINSZ)/write/ppoll/clock_nanosleep + the XTGETTCAP terminfo query).
 
-**REMAINING (next): timer IRQ not firing on self-boot → no login.**
-agetty wedges in a ppoll/clock_nanosleep TIMEOUT after the terminal
-query; with the cooperative-timer-wake scheduler, a parked-with-timeout
-task only wakes on a timer IRQ (idle loop wfi's otherwise). `arm-timer:
-irq ticks=0`. We enter at **EL1** (QEMU virt, no virtualization=on), so
-the trampoline's EL2 block (CNTVOFF_EL2=0, CNTHCTL_EL2, ICC_SRE_EL2) is
-SKIPPED — Limine's OVMF sets these at EL2 before dropping. Candidates:
-CNTVOFF_EL2 nonzero (virtual-timer offset wrong) or the GICv3 timer-PPI
-enable from reset state. Can't set EL2 regs from EL1; `virtualization=on`
-makes QEMU enter at EL2 but then hangs at MMU-enable ('A2BC' — the EL2
-block leaves SCTLR/HCR in a bad state for the MMU enable; fixable). Try:
-(a) fix the EL2-block so virtualization=on works (enter EL2, set timer
-regs, drop to EL1), or (b) check whether QEMU's direct-EL1 boot leaves
-CNTVOFF_EL2 nonzero and compensate in the kernel's CNTV programming.
-THEN reach login (default boot), REMOVE temp PL011 breadcrumbs
+**REMAINING (next): NO GIC IRQs deliver on self-boot → no login.**
+agetty wedges right after its XTGETTCAP terminal query (`P+q6E616D65`).
+Root: `tick_poll_combined` (the timer-tick hook, kernel/src/lib.rs ~938)
+does BOTH the UART-RX poll AND `vvar::publish` — so when the timer IRQ
+stops, console input AND the userspace clock both freeze, and agetty's
+input+timeout loop spins forever (idle-loop probe: ~10 iters then the
+CPU never idles again → agetty is persistently runnable, looping).
+**The real problem: no interrupts fire at all** — the boot diag prints
+`uart-irq-fires before=0 after=0 delta=0` and `arm-timer: irq ticks=0`.
+The GICv3 isn't delivering ANY interrupt from its QEMU reset state on
+self-boot (Limine works because OVMF pre-configures the GIC at EL2).
+FIXED this turn: the EL2-entry path (`virtualization=on`) used to hang
+at MMU-enable; removing the `SCTLR_EL1=0x30d00800` set in the EL2 block
+fixed that (committed) — but even with the EL2 block running
+(ICC_SRE_EL2/CNTHCTL/CNTVOFF set), IRQs STILL don't fire. So it's NOT
+ICC_SRE alone — it's the GICv3 distributor/redistributor/CPU-interface
+enable sequence from reset (candidates: GICD.CTLR ARE/EnableGrp1,
+GICR per-PPI/SPI IGROUPR+ISENABLER+IROUTER, ICC_IGRPEN1_EL1, ICC_PMR,
+ICC_CTLR). NEXT: diff the kernel's GICv3 init (crates/kernel/arch-irq/
+src/gic.rs) against what a from-reset GICv3 needs; add a post-GIC-init
+breadcrumb reading ICC_IGRPEN1_EL1/ICC_SRE_EL1/GICD_CTLR to see which
+enable didn't take. Use `virtualization=on` (EL2 entry) for the repro so
+the EL2 regs are set. THEN reach login, REMOVE temp PL011 breadcrumbs
 (A/EL-digit/B..H in selfboot.rs + G/H in boot-aarch64/lib.rs
 `_start_rust`), wire `xtask` to objcopy the Image + a `qemu-arm`
 self-boot target, switch defaults, delete Limine, lockstep both
