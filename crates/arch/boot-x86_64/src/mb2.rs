@@ -424,10 +424,16 @@ pub mod info {
                     }
                 }
                 14 | 15 => {
-                    // ACPI RSDP (old/new): the RSDP bytes start at +8 of
-                    // the tag, already HHDM-mapped. Hand the kernel that
-                    // VA directly (matches Limine's RSDP-response value).
-                    if rsdp_va == 0 {
+                    // ACPI RSDP — the bytes start at +8, already HHDM-
+                    // mapped; hand the kernel that VA directly. Prefer the
+                    // ACPI 2.0+ RSDP (tag 15: revision≥2, carries the
+                    // 64-bit XSDT the kernel actually walks) over the 1.0
+                    // RSDP (tag 14: RSDT-only). Taking tag 14 left the
+                    // kernel with no XSDT → the MADT never decoded → no
+                    // I/O APIC → serial IRQ couldn't be wired.
+                    if ty == 15 {
+                        rsdp_va = p + 8;
+                    } else if rsdp_va == 0 {
                         rsdp_va = p + 8;
                     }
                 }
