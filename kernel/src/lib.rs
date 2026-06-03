@@ -762,8 +762,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if let Some((w, h)) = drv_virtio_gpu::post_init::dimensions() {
         fbcon::kernel::kernel_init(w, h, drv_virtio_gpu::post_init::fbcon_flush_pixels);
-        // fbcon klog sink disabled — fbcon_flush_pixels wedges in the
-        // virtio-gpu submit path (see state.md / project_login_hang_cat_smoke memory).
+        // Mirror every klog::write_raw byte — kernel log AND /dev/console
+        // writes (getty/shell output: console_emit IS write_raw) — to the
+        // framebuffer (fbcon renders + defers the GPU flush to a softirq).
+        klog::set_aux_sink(fbcon::kernel::klog_sink);
         let _ = w; let _ = h;
     }
     // Load the rootfs-resident keyboard layout. Linux pattern:
