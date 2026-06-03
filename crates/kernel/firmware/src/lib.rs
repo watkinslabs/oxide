@@ -57,6 +57,52 @@ pub unsafe fn fire_add_cpu(id: u32, flags: u32) -> bool {
 pub use acpi::try_log_acpi;
 pub use acpi::RsdpStatus;
 
+// ---- I/O APIC + legacy-IRQ routing captured from the MADT ----------
+// x86 only in practice; arm has no I/O APIC. Populated by decode_madt
+// (type 1 = I/O APIC, type 2 = interrupt source override). The kernel
+// reads these to program the I/O APIC redirection table for legacy
+// device IRQs (e.g. COM1 = IRQ4) — the real interrupt-driven path,
+// replacing the timer-tick UART poll.
+
+use core::sync::atomic::AtomicU32;
+
+static IOAPIC_PA: AtomicU64 = AtomicU64::new(0);
+static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
+// IRQ source override for legacy COM1 IRQ4. Defaults: identity GSI 4,
+// flags 0 = ISA bus-default (edge-triggered, active-high). QEMU q35
+// leaves IRQ4 un-overridden; we still parse type-2 in case it isn't.
+static IRQ4_GSI: AtomicU32 = AtomicU32::new(4);
+static IRQ4_FLAGS: AtomicU32 = AtomicU32::new(0);
+
+/// Physical base of the first I/O APIC (0 = none found / pre-ACPI).
+/// # C: O(1)
+pub fn ioapic_pa() -> u64 { IOAPIC_PA.load(Ordering::Acquire) }
+/// GSI base of the first I/O APIC. # C: O(1)
+pub fn ioapic_gsi_base() -> u32 { IOAPIC_GSI_BASE.load(Ordering::Acquire) }
+/// GSI that legacy COM1 IRQ4 is routed to (after source overrides).
+/// # C: O(1)
+pub fn irq4_gsi() -> u32 { IRQ4_GSI.load(Ordering::Acquire) }
+/// MADT flags (polarity/trigger) for the COM1 IRQ4 routing. # C: O(1)
+pub fn irq4_flags() -> u32 { IRQ4_FLAGS.load(Ordering::Acquire) }
+
+/// Record the first I/O APIC from the MADT (first wins). # C: O(1)
+pub(crate) fn set_ioapic(pa: u32, gsi_base: u32) {
+    if IOAPIC_PA.compare_exchange(0, pa as u64,
+        Ordering::AcqRel, Ordering::Acquire).is_ok()
+    {
+        IOAPIC_GSI_BASE.store(gsi_base, Ordering::Release);
+    }
+}
+
+/// Record a legacy-IRQ source override (MADT type 2). Only IRQ4
+/// (COM1) is tracked today. # C: O(1)
+pub(crate) fn set_irq_override(source_irq: u8, gsi: u32, flags: u16) {
+    if source_irq == 4 {
+        IRQ4_GSI.store(gsi, Ordering::Release);
+        IRQ4_FLAGS.store(flags as u32, Ordering::Release);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

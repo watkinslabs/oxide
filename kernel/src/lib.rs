@@ -69,6 +69,7 @@ pub mod devfs;
 pub mod io_uring;
 pub mod vdso;
 pub mod vvar;
+mod serial_irq;
 // seccomp + bpf moved to `crates/security` per `27§R03`.
 pub use security::seccomp;
 #[cfg(target_os = "oxide-kernel")]
@@ -504,6 +505,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     arch_irq::set_tick_poll_hook(tick_poll_combined);
 
+    // Interrupt-driven COM1 serial RX (the Linux way) — see serial_irq.
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    // SAFETY: post-ACPI (MADT captured the I/O APIC) + post-LAPIC-enable + MmuOps live; single-CPU, IRQs masked. serial_irq::setup_x86 maps the I/O APIC, registers the RX ISR, programs the redirection entry, and unmasks the UART RX interrupt.
+    unsafe { serial_irq::setup_x86(info.bsp_lapic_id as u8); }
+
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
     // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
     //   x86_64: Limine SMP request — store our entry into each
@@ -921,13 +927,6 @@ pub mod pci_boot;
 // Global user `AddressSpace` per `11§3` + demand-paging fault hook
 // per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
 #[cfg(target_os = "oxide-kernel")]
-
-// First userspace `iretq` smoke (P1-82). x86_64-only.
-/// Park the CPU forever. On the kernel target, uses the per-arch
-/// halt instruction (`hlt` / `wfi`) so the host doesn't burn 100%
-/// CPU cycling on a spin loop. Host fallback keeps `spin_loop` for
-/// hosted unit-test compatibility.
-///
 
 /// Combined timer-tick hook: poll UART for input + drain any
 /// pending fbcon writes onto the GPU display.

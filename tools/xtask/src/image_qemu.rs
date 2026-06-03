@@ -666,9 +666,17 @@ fn qemu_run_grub_x86_64(
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        // virtio-gpu scanout + virtio-keyboard for the visual console —
+        // same devices as the Limine path so fbcon renders + the GTK
+        // window takes keyboard input. Without these the GRUB path has
+        // no display/input device at all (was -display none only).
+        "-device", "virtio-gpu-pci,bus=pcie.0",
+        "-device", "virtio-keyboard-pci,bus=pcie.0",
         "-chardev", uart_chardev,
         "-serial", "chardev:ser0",
-        "-display", "none",
+        // GTK window by default so the virtio-gpu console is visible +
+        // responsive; OXIDE_QEMU_HEADLESS=1 suppresses for CI/smoke.
+        "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
     eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
