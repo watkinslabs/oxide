@@ -28,17 +28,24 @@ kernel+DTB carved. **PMM(829MiB)/GICv3/arm-timer/user-AS + all
 MMU/user smokes pass.** Linker `AT()` (KERNEL_PHYS=0x4000_0000) → flat
 Image via objcopy; Limine arm UNREGRESSED (login 49s).
 
-**REMAINING (next session, start here):** default boot hangs in LATE
-device init (after `dev-misc-smoke`, before the elf_arm smoke / init
-exec) — no `execve` syscall trace appears, so init isn't reached.
-Suspect PCI/PCIe enumeration (virt high MMIO window at 0x80_0000_0000
-= 512 GiB is BEYOND the 512 GiB HHDM; ECAM may be higher too). Next:
-localize with breadcrumbs in the lib.rs device-init region (lines
-~488–818) or extend HHDM past 512 GiB / map the virt PCIe windows
-explicitly. Then reach login, REMOVE the temp PL011 breadcrumbs
-(A/EL-digit/B..H in selfboot.rs + G/H in lib.rs `_start_rust`), wire
-`xtask` to build the Image + a `qemu-arm` self-boot path, switch
-defaults, delete Limine, lockstep both arches, PR+merge.
+**REMAINING (next session, start here):** boot stops in the boot-smoke
+block (`kernel_main`, kernel/src/lib.rs ~483-488). Breadcrumb bisect
+(`klog::write_raw(b"[BC]...")` after each smoke) showed `dev-misc-smoke:
+ok` prints but NO `[BC] post-procfs-smoke` → hangs at/around
+`procfs::smoke_test()` (line 485). BUT feature-dependent: a `debug-all`
+build progresses further (reaches the `ksched` smoke, past line 488),
+while `debug-boot,debug-syscall` hangs at procfs-smoke. So the trigger
+is a feature-gated init the smoke depends on (candidates: debug-irq
+timer-IRQ soak, debug-pmm/vmm/acpi/cgroup). `arm-timer: irq ticks=0` on
+BOTH (so not solely the soak). NEXT: re-run `debug-all` + gic-version=3
+with FULL (untruncated) capture to confirm whether procfs-smoke
+completes there + reach login; then bisect the feature delta; likely a
+real device/IRQ-init ordering dep on self-boot, not procfs itself.
+Then: reach login (default boot), REMOVE temp PL011 breadcrumbs
+(A/EL-digit/B..H in selfboot.rs + G/H in boot-aarch64/lib.rs
+`_start_rust`), wire `xtask` to objcopy the Image + a `qemu-arm`
+self-boot target, switch defaults, delete Limine, lockstep both
+arches, PR+merge.
 
 ### Repro (arm self-boot, headless)
 ```
