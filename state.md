@@ -34,14 +34,29 @@ block (`kernel_main`, kernel/src/lib.rs ~483-488). Breadcrumb bisect
 ok` prints but NO `[BC] post-procfs-smoke` → hangs at/around
 `procfs::smoke_test()` (line 485). BUT feature-dependent: a `debug-all`
 build progresses further (reaches the `ksched` smoke, past line 488),
-while `debug-boot,debug-syscall` hangs at procfs-smoke. So the trigger
-is a feature-gated init the smoke depends on (candidates: debug-irq
-timer-IRQ soak, debug-pmm/vmm/acpi/cgroup). `arm-timer: irq ticks=0` on
-BOTH (so not solely the soak). NEXT: re-run `debug-all` + gic-version=3
-with FULL (untruncated) capture to confirm whether procfs-smoke
-completes there + reach login; then bisect the feature delta; likely a
-real device/IRQ-init ordering dep on self-boot, not procfs itself.
-Then: reach login (default boot), REMOVE temp PL011 breadcrumbs
+while `debug-boot,debug-syscall` hangs — BUT that was a stale-kernel
+compare; the ksched smoke (debug-sched) runs EARLIER than the
+boot-smoke block and is where debug-all deadlocks (known artifact), so
+debug-all never reaches procfs-smoke. On the CURRENT kernel the default
+boot genuinely hangs at `procfs::smoke_test` (line 485, unconditional).
+
+**Exact symptom (per-entry breadcrumb + hexdump):** first entry
+`/proc/version` — `klog::write_raw(path.as_bytes())` emits 14 NUL bytes
+(correct LEN, ZERO data). So a stored `&'static` str's DATA pointer
+reads zeros at runtime, EVEN THOUGH: the bytes "proc/version" are in
+the flat Image (grep 3x), the string VMA is within the mapped 1 GiB
+kernel block (all sections span only ~202 MB), and there are ZERO
+relocations on either arch (no .rela.dyn / no R_AARCH64_RELATIVE — so
+not a reloc-not-applied bug). PC-relative `b"..."` klog literals work;
+only stored absolute `&'static` pointers (struct fields / const arrays
+e.g. procfs `StaticFileInode.body`, the smoke's `entries`) read zero.
+**NEXT (fresh context, needs runtime inspection):** use the qemu MCP
+(`qemu_start` the Image + `qemu_mem`/`qemu_regs`) to read the actual
+`path` pointer VALUE and the memory it targets vs where "/proc/version"
+actually loaded — determine why baked absolute pointers resolve to a
+zero region on the flat-Image boot (candidate: a section LMA/objcopy
+gap, or a const-promotion placed in a section the AT() layout
+mis-positions). Then reach login (default boot), REMOVE temp PL011 breadcrumbs
 (A/EL-digit/B..H in selfboot.rs + G/H in boot-aarch64/lib.rs
 `_start_rust`), wire `xtask` to objcopy the Image + a `qemu-arm`
 self-boot target, switch defaults, delete Limine, lockstep both
