@@ -48,14 +48,17 @@ static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
 pub fn park_zombie(task: Arc<Task>) {
     // SAFETY: task is the running task on this CPU about to Zombie; we are sole reader of parent_arc per the single-mutator-per-active-CPU invariant; child set this slot at fork time.
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
-    if let Some(p) = parent {
+    if let Some(ref p) = parent {
         // F167: typed signal bit instead of `1u64 << 16` magic.
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
-        accrue_child_time(&task, &p);
+        accrue_child_time(&task, p);
     }
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
     ZOMBIES.lock().push(task);
     wake_wait4_parent(parent_tid);
+    // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
+    // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
+    if let Some(p) = parent { wake_task_for_signal(&p); }
 }
 
 /// Add the dying child's elapsed CPU to the parent's
@@ -95,11 +98,14 @@ pub fn signal_child_exit(task: &Task) {
         klog::write_dec_u64(if parent.is_some() { 1 } else { 0 });
         klog::write_raw(b"\n");
     }
-    if let Some(p) = parent {
+    if let Some(ref p) = parent {
         // F167: typed signal bit.
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
     }
     wake_wait4_parent(parent_tid);
+    // Also wake a parent blocked in epoll_wait/poll on a SIGCHLD
+    // signalfd (systemd) — wake_wait4_parent only covers wait4 parkers.
+    if let Some(p) = parent { wake_task_for_signal(&p); }
 }
 
 /// Push `task` onto the ZOMBIES list. Used by `schedule()` when it
@@ -194,6 +200,32 @@ fn wake_wait4_parent(parent_tid: u32) {
         t.set_vruntime_to_floor(inner.cfs.min_vruntime());
         inner.enqueue(t);
     }
+    rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    crate::preempt::set_need_resched();
+}
+
+/// Wake `task` from an interruptible sleep (epoll_wait/poll on a
+/// signalfd, blocking read, etc.) because a signal was just posted to
+/// it: CAS `Sleeping → Runnable` and enqueue so its wait loop re-runs,
+/// re-scans, and observes the pending signal. Linux wakes interruptible
+/// sleeps on signal delivery; without this, PID1 (systemd) parked in
+/// `epoll_wait` on its SIGCHLD signalfd never notices a child exit while
+/// otherwise idle — so the console getty never respawns after logout.
+///
+/// No-op if the CAS fails (the task is running/runnable, or
+/// `wake_wait4_parent` already made it Runnable) — which is what keeps
+/// this from double-enqueueing a wait4-parked parent. Call AFTER
+/// `wake_wait4_parent`.
+/// # C: O(1)
+/// # Lk: runqueue inner
+fn wake_task_for_signal(task: &Arc<Task>) {
+    let rq = match super::runqueue::global() { Some(r) => r, None => return };
+    if task.cas_state(TaskState::Sleeping, TaskState::Runnable).is_err() {
+        return;
+    }
+    let mut inner = rq.inner.lock();
+    task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+    inner.enqueue(task.clone());
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
     crate::preempt::set_need_resched();
 }
