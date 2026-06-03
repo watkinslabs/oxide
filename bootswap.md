@@ -12,11 +12,20 @@ Branch `F372-grub-multiboot2`. Verify via `make smoke-grub`
 (`SMOKE_KEEP_LOG=<path>` keeps the serial log; `OXIDE_QEMU_KVM=1` for
 fast boots; `OXIDE_QEMU_DINT=<file>` adds `-d int` exception tracing).
 
-**Current status:** GRUB boots cleanly through MMU/HHDM/ACPI/memmap/PMM/
-device-map/LAPIC/mmuops/user-map/kalloc smokes and the **first kernel
-context switches** (all 4 RR kthreads enter). Hangs in the *subsequent*
-ctxsw rotation (RR yield loop) — a scheduler/context-switch issue, no
-longer a boot-handoff issue. All six handoff bugs below are resolved.
+**Current status: GRUB boots to `oxide login:`** (make smoke-grub PASS,
+34s under KVM). Full chain works: long-mode trampoline → kernel init →
+PCI enum → virtio-net eth0 → systemd → Console Getty → login prompt.
+GRUB now boots the identical kernel+userspace as Limine, replacing it.
+All six handoff bugs below are resolved.
+
+The earlier "ctxsw rotation hang" was a **red herring of the boot
+flavor**: `cmd_grub` forced `--features debug-all`, which runs the
+`debug_sched!` bring-up smokes (`smoke_rr` etc.). Those `sti; hlt` in
+`tick_yield` on a timer the device-map smoke deliberately disarmed →
+deadlock. That is a debug-all property (would hang under Limine+debug-
+all too), not a GRUB issue. The real login path (`make qemu-x86`) uses
+`debug-boot`; `cmd_grub` now matches it. Run those smokes explicitly
+with `make qemu-x86-grub FEATURES=...`/`--features debug-all` if needed.
 
 ## Boot chain
 
@@ -190,21 +199,26 @@ when missing):
 
 1. ~~RSDP as HHDM VA~~ **DONE.**
 2. ~~Identity teardown + boot stack~~ **DONE** (#3 + #7).
-3. **Debug the ctxsw rotation hang** (RR smoke: 4 kthreads enter, then
-   the yield rotation hangs before "RR done"). First context switch
-   (boot→kt) works; subsequent voluntary `tick_yield()` rotations
-   wedge. Suspect CPU state our trampoline leaves differing from
-   Limine's (callee-saved regs, GS_BASE/per-CPU, FPU/SSE area, or the
-   boot-anchor save). Next: gdb via qemu MCP on the GRUB ISO, break in
-   `ksched::schedule`/ctxsw, compare register/stack state vs a Limine
-   boot.
-4. Extend trampoline HHDM to 4 GiB (4 PDs) — robustness.
-5. `make smoke-grub` to login on x86 (TCG and KVM).
-6. ARM lockstep: GRUB path is out of scope for this branch's x86
-   milestone, but the kernel-side change (PIC mask is x86-only; no
-   ABI change) must not regress aarch64 — verify `make qemu-arm` still
-   reaches login (Limine path unchanged).
-7. Multiple GRUB menu entries / boot options once login lands.
+3. ~~ctxsw rotation hang~~ **NOT A BUG** — debug-all smoke deadlock;
+   `cmd_grub` now defaults to `debug-boot` (the login path).
+4. ~~`make smoke-grub` to login~~ **DONE** (x86 KVM PASS, 34s).
+5. **Verify interactive login** (a printed `oxide login:` ≠ a working
+   login — drive `root`/creds via the console and confirm a shell). The
+   userspace is identical to the Limine path (verified working there),
+   so this is a sanity check of the GRUB boot, not new functionality.
+6. Extend trampoline HHDM to 4 GiB (4 PDs) — robustness.
+7. ARM lockstep: verify `make qemu-arm` still reaches login (Limine
+   path; PIC mask is x86-only, no ABI change) — no regression.
+8. Multiple GRUB menu entries / boot options; then drop Limine.
+
+## Latent bug noted (not GRUB-related)
+
+`debug-all` boot deadlocks: `smoke_rr`/`smoke_preempt` run after the
+device-map smoke disarms the LAPIC periodic timer, but `tick_yield`'s
+`sti; hlt` needs a timer tick to wake. Under debug-all the RR rotation
+wedges. Pre-existing (bootloader-independent); worth a separate fix
+(re-arm a periodic tick for the duration of the sched smokes, or make
+`tick_yield` not halt when other tasks are runnable).
 
 ## Open questions
 
