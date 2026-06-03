@@ -606,7 +606,7 @@ fn build_grub_iso(
     let cfg = format!(
         "set timeout=3\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
          menuentry \"oxide (multiboot2)\" {{\n    \
-         multiboot2 /boot/oxide-{arch} root=/dev/oxide0 ro console=ttyS0,115200\n    \
+         multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 ro quiet console=ttyS0,115200\n    \
          boot\n}}\n");
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = repo.join(format!("target/oxide-{arch}-grub.iso"));
@@ -631,12 +631,18 @@ fn qemu_run_grub_x86_64(
     let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
         && std::path::Path::new("/dev/kvm").exists()
     { "kvm" } else { "tcg" };
-    // Headless (CI / boot-smoke): plain stdio so the serial log streams
-    // to stdout for capture+grep, and no GTK window. Interactive: mux=on
-    // so Ctrl-A C reaches the QEMU monitor (`mon:stdio` muxes both, which
-    // corrupts a piped/redirected capture — never use it headless).
+    // Headless (CI / boot-smoke / login-smoke): a `stdio,signal=off`
+    // chardev — same as the Limine headless path — so piped stdin
+    // reaches the guest UART RX byte-for-byte (the login-smoke feeds a
+    // FIFO this way). Plain `-serial stdio` line-buffers + handles
+    // signals and drops scripted keystrokes. Interactive: mux=on so
+    // Ctrl-A C reaches the QEMU monitor.
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
-    let serial = if headless { "stdio" } else { "mon:stdio" };
+    let uart_chardev = if headless {
+        "stdio,id=ser0,signal=off"
+    } else {
+        "stdio,id=ser0,mux=on,signal=off"
+    };
     let mut c = Command::new("qemu-system-x86_64");
     // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
     // `-d int,guest_errors -D <file>` so a boot fault's exception
@@ -660,7 +666,8 @@ fn qemu_run_grub_x86_64(
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-        "-serial", serial,
+        "-chardev", uart_chardev,
+        "-serial", "chardev:ser0",
         "-display", "none",
         "-no-reboot",
     ]);

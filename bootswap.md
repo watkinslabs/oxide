@@ -202,10 +202,21 @@ when missing):
 3. ~~ctxsw rotation hang~~ **NOT A BUG** — debug-all smoke deadlock;
    `cmd_grub` now defaults to `debug-boot` (the login path).
 4. ~~`make smoke-grub` to login~~ **DONE** (x86 KVM PASS, 34s).
-5. **Verify interactive login** (a printed `oxide login:` ≠ a working
-   login — drive `root`/creds via the console and confirm a shell). The
-   userspace is identical to the Limine path (verified working there),
-   so this is a sanity check of the GRUB boot, not new functionality.
+5. **Serial RX gap (OPEN — next task).** GRUB boots to the `oxide
+   login:` prompt and systemd runs (Console Getty started), but typed
+   serial input does NOT reach the getty: `boot-smoke-login grub` sends
+   `alice\n` and nothing echoes / no PAM start, while the identical
+   `boot-smoke-login x86` (Limine) PASSes (alice→PAM→shell→uid=1000 in
+   37s). So serial **output** works on the GRUB path but serial
+   **input** (RX) does not. Ruled out: the qemu serial chardev (now
+   identical `stdio,id=ser0,signal=off` to the Limine headless path)
+   and the kernel cmdline (`console=ttyS0,115200` identical; GRUB now
+   also passes `BOOT_IMAGE=`/`quiet`). Likely the COM1 RX IRQ (IRQ4)
+   routing through the IOAPIC, or serial-driver RX init state left by
+   GRUB's `terminal_input serial`. **A printed prompt is NOT a working
+   login — do not claim GRUB login works until RX is fixed and
+   `boot-smoke-login grub` PASSes.** Next: trace the serial-tty RX path
+   + IOAPIC redirection entry for IRQ4 under the GRUB boot vs Limine.
 6. Extend trampoline HHDM to 4 GiB (4 PDs) — robustness.
 7. ARM lockstep: verify `make qemu-arm` still reaches login (Limine
    path; PIC mask is x86-only, no ABI change) — no regression.
