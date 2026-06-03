@@ -51,6 +51,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
+    // systemd verifies a forked service is its child via this ioctl;
+    // ENOTTY makes it SIGKILL the child (console-getty respawn).
+    if let Some(id) = crate::dev::pidfd::tid_from_ino(file.inode().ino()) {
+        return crate::dev::pidfd::handle_pidfd_ioctl(id, req, arg);
+    }
     // userfaultfd / perf ioctls: route through the dedicated handlers
     // before the CharDev gate (those inodes are tagged Regular).
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5546_4644_0000_0000 {
