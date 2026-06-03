@@ -1,51 +1,52 @@
 # Session hand-off
 
 ## Headline
-main @ 0457b3b1. Both arches boot to `oxide login:` with **netlink rtnl
-fully working** (loopback comes up — no deferral). This session landed
-PRs #1508 (dentry mounts + openat + clock) and #1510 (netlink reply-pid
-fix). One pre-existing follow-up open: PID1 "Looping too fast" epoll spin.
+GRUB/Multiboot2 **self-bootstrap boots to `oxide login:`**, replacing
+Limine on x86_64. Merged: PR #1514 (the milestone), PR #1515 (login
+harness + serial-RX gap doc). On `main` @ `360e9007`. Both arches +
+Limine x86 green (no regression). Full analysis in `bootswap.md`.
 
-## Netlink rtnl — FIXED (#1510)
-Root cause (proven, NOT clock/scheduler): SETLINK ack arrives 2 ms after
-send + consumed, but systemd sd-netlink DROPS any non-broadcast reply
-whose `nlmsg_pid != socket nl_pid` (netlink-socket.c parse_message_one
-:307). We echoed the request pid (often 0) into replies while getsockname
-returned current.tid — inconsistent → replies dropped → async RTM_SETLINK
-callback never fired → loopback_setup timed out.
-Fix: all three consistent on the socket's `port_id` — handle_one stamps
-nlmsg_pid=port_id into every reply nlmsghdr; getsockname(fd) returns
-port_id; getsockopt(SO_PROTOCOL) re-enabled (open succeeds). Verified
-x86(KVM)+arm(TCG): "Failed to bring loopback … timed out" GONE, login
-reached with rtnl active.
+## What landed this session
+- Own 32→64-bit long-mode trampoline (`crates/arch/boot-x86_64/src/mb2.rs`):
+  MB2 header + entry tag, page tables (identity + higher-half VMA→LMA +
+  HHDM), EFER LME|NXE, boot stack, identity teardown, MB2-info→BootInfo
+  (memmap carve, RSDP as HHDM VA, cmdline).
+- Linker `AT()` for low LMA (`link/x86_64-kernel.ld`).
+- `remap_and_mask_pic()` in `_start_rust` (bootloader-agnostic; the
+  8259 PIC fix — IRQ0 was aliasing the #DF vector).
+- spec-lint UTF-8 char-boundary panic fixed (`tools/spec-lint`).
+- `make smoke-grub` (+ `SMOKE_KEEP_LOG`, `OXIDE_QEMU_DINT`); `cmd_grub`
+  defaults to `debug-boot` (mirrors the Limine login path).
+- Six implicit Limine→kernel handoff assumptions resolved — see
+  `bootswap.md` "implicit contract" + the per-bug table.
 
-## Also landed (#1508)
-- vfs: mount crossing keyed by DENTRY IDENTITY, not path string
-- syscall: real openat dirfd resolution (`resolve_at`) + MS_REMOUNT-before-
-  MS_BIND → machine_id_setup completes
-- time: real PIT TSC calibration + LIVE rdtsc/cntvct vDSO clock (both
-  arches; replaced the stale published snapshot)
-- netlink real-state infra (mutable iface flags, MSG_PEEK recvmsg)
+## Open work (next, in order)
+1. **Serial RX gap on the GRUB path** (`bootswap.md` #5). GRUB reaches
+   `oxide login:` + systemd Console Getty, but typed serial input does
+   NOT reach the getty. `boot-smoke-login grub` fails; identical
+   `boot-smoke-login x86` (Limine) PASSes (alice→PAM→shell→uid=1000).
+   Serial TX works, RX doesn't. Chardev + cmdline ruled out. Suspect:
+   COM1 RX IRQ (IRQ4) IOAPIC redirection, or RX init state left by
+   GRUB's `terminal_input serial`. **A printed prompt ≠ a working
+   login — don't claim GRUB login until this PASSes.**
+2. Latent (non-GRUB) bug: `debug-all` boot deadlocks in the
+   `debug_sched!` smokes — `tick_yield` `sti;hlt` on the device-map-
+   smoke-disarmed LAPIC timer. Re-arm a tick for the sched smokes, or
+   make `tick_yield` not halt when other tasks are runnable.
+3. Extend trampoline HHDM 1 GiB → 4 GiB (robustness; 1 GiB covers ACPI).
+4. Multiple GRUB menu entries / boot options; then drop Limine.
 
-## Open follow-up — PID1 "Looping too fast" (CPU spin, pre-existing on main)
-sd-event epoll never blocks because ONE fd is perpetually level-ready
-POLLIN. TRACED: it's a `SockKind::UnixMsgPair` (AF_UNIX SEQPACKET
-socketpair), one fd, reports POLLIN ~every scan. The read path DOES drain
-it (net::sock::recvfrom → UnixMsgPair @sock.rs:963 → pair.recv pops the
-same ring has_msg checks). So cause is (a) continuous traffic, or (b)
-systemd doesn't read THAT fd. Lead: `sys_recvmsg` (net.rs:622-625)
-special-cases UnixDgram + Unix-stream but NOT UnixMsgPair — it falls
-through to the recvfrom loop that does NOT fill the returned msghdr
-(msg_flags/MSG_EOR/controllen). If systemd's recvmsg on its SEQPACKET
-socketpair needs those, its handler may not treat the read as consumed.
-Next: add a proper recvmsg_unix_msgpair (mirror recvmsg_unix_dgram in
-unix_cmsg.rs / recvmsg_unix_stream in cmsg_parse.rs) that drains AND fills
-the msghdr; wire into sys_recvmsg's special-cases. Login is reached
-regardless — CPU-efficiency, not a blocker.
+## First command next session
+```
+# Reproduce the serial-RX gap, compare vs Limine:
+OXIDE_QEMU_KVM=1 KEEP_LOG=/tmp/grub-login.log ./tools/boot-smoke-login.sh grub 360
+# then trace COM1 RX IRQ4 / IOAPIC redirection in the GRUB boot vs
+# OXIDE_QEMU_KVM=1 ./tools/boot-smoke-login.sh x86 300   (PASSes)
+```
 
-## Harness notes
-- KVM (~1min): `OXIDE_QEMU_KVM=1 make SMP=2 qemu-x86`. Default TCG ~10-15min.
-  arm is TCG-only, boots clean to login (~14s startup).
-- Free :2222 first: `ss -ltnp|grep 2222 → kill -9 <pid>` (comm truncated to
-  "qemu-system-x86"; pgrep -x misses it — kill the pid from ss).
-- Run boots ALONE in background; spec-lint clean before commit.
+## Notes
+- Drive GRUB boots via `make smoke-grub` (setsid harness); direct qemu
+  from the Bash tool gets sandbox-killed (exit 144).
+- Never `git add` `rootfs-*.img` (shows as M; leave it).
+- KVM ~30s to login; TCG several min. cmd_grub rebuilds rootfs+ISO each
+  run (~1-2 min) before qemu.
