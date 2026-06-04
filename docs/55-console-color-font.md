@@ -270,9 +270,13 @@ Rules:
 
 ## 17
 
-Open questions:
+Resolved decisions (were open; closed per Linux-equivalence + `00§14`):
 
-- Complex-script shaping boundary: keep v1 to codepoint/cluster mapping + emoji sequences, or admit a minimal GSUB subset for Arabic/Indic.
-- Font-package authoring tool location: `tools/` in-tree vs external companion repo.
-- Package signing/policy: unsigned root-only load vs signed package requirement.
-- Default built-in color font: ship one tiny emoji subset or require explicit install.
+| Q | Decision | Rationale |
+|---|---|---|
+| Complex-script shaping boundary | NO in-kernel GSUB/GPOS; console resolves codepoint/cluster + combining marks + emoji ZWJ/VS sequences only. | Linux fbcon is fixed-cell and does not shape Arabic/Indic — complex shaping is the userspace text stack's job (Pango/HarfBuzz over a real compositor). Kernel console ≠ shaper. Not a deferral: this IS the Linux console contract. Bidi/Arabic display rides the userspace GUI path, not the VT. |
+| Authoring tool location | in-tree host tool `tools/kcf-mkfont/` (TTF/OTF+COLR/CPAL/CBDT → KCF). | Local-tooling principle (CLAUDE.md); mirrors `tools/spec-lint`. No external repo dep for a build-time converter. |
+| Package signing/policy | unsigned; load gated by `CAP_SYS_TTY_CONFIG` (root) only. | Linux `KD_FONT_OP_SET` is a privileged ioctl with no signature check. Font-blob trust = process privilege, same as Linux. Code signing is `18`'s module concern, orthogonal to console fonts. |
+| Default built-in color font | none built in; compiled-in default = the existing mono console font (`49§2`). RGBA/emoji KCF packages load at runtime via `KDFONTOP`. | Linux ships only a mono builtin (VGA/PSF); rich/color fonts are loaded, never baked into the kernel image. Keeps the kernel binary small and matches the Linux boot-console surface. Not a subset: full color/cluster support exists, just runtime-loaded. |
+
+Boundary note (display vs console-font): the **graphical framebuffer must be live** before any of this renders — that is the GPU/fbdev bring-up in `33`/`34`/`48` (virtio-gpu queue setup → `DRIVER_OK` → scanout), independent of `55`. `55` governs what fbcon *draws into* that framebuffer; it does not make the framebuffer appear.
