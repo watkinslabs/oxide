@@ -515,18 +515,17 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: post-ACPI (MADT captured the I/O APIC) + post-LAPIC-enable + MmuOps live; single-CPU, IRQs masked. serial_irq::setup_x86 maps the I/O APIC, registers the RX ISR, programs the redirection entry, and unmasks the UART RX interrupt.
     unsafe { serial_irq::setup_x86(info.bsp_lapic_id as u8); }
 
-    // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
-    // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
-    //   x86_64: Limine SMP request — store our entry into each
-    //           SmpInfoX86::goto_address so the parked AP jumps in.
-    //   aarch64: PSCI CPU_ON for each enumerate_aps() entry.
+    // SMP bring-up per `13§11`, Limine-free: x86 = INIT-SIPI real-mode
+    // trampoline, arm = PSCI CPU_ON. No-op at -smp 1. CPUs from ACPI-MADT/DTB.
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
-        // SAFETY: kernel_main post-init; Limine SMP response in info is bootloader-owned; boot CPU is sole writer for goto_address slots.
-        let started = unsafe { arch_irq::smp_x86::bring_up_aps_x86(info) };
+        // INIT-SIPI-SIPI (Limine-free): real-mode trampoline at PA 0x8000 +
+        // ACPI-MADT cpu_topology. No-op at -smp 1.
+        // SAFETY: kernel_main post-ACPI-walk + post-heap-init; LAPIC enabled.
+        let started = unsafe { arch_irq::ap_tramp_x86::bring_up_aps_x86_initsipi() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: cpus=");
-            klog::write_dec_u64(info.smp_count);
+            klog::write_dec_u64(::cpu::count() as u64);
             klog::write_raw(b" aps_started=");
             klog::write_dec_u64(started as u64);
             klog::write_raw(b"\n");

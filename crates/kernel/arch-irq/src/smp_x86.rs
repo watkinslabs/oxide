@@ -55,7 +55,15 @@ pub struct ApContext {
 /// # C: O(1)
 #[no_mangle]
 pub unsafe extern "C" fn oxide_ap_entry_x86(info: *mut SmpInfoX86) -> ! {
-    // SAFETY: per fn contract — `info` is the AP's own SmpInfoX86 published by Limine; sole reader/writer for its own slot from this AP.
+    // Load the kernel GDT FIRST (reloads CS=KERNEL_CS 0x28 / DS=KERNEL_DS
+    // 0x30). The INIT-SIPI trampoline brought this AP up on its own minimal
+    // GDT; the IDT we install below references KERNEL_CS, so any exception
+    // would #GP→triple-fault against the trampoline GDT. (No-op-equivalent
+    // when entered via Limine, which already left a kernel-compatible GDT.)
+    // SAFETY: AP at CPL=0, IRQs masked; install_kernel_gdt populates the
+    // shared GDT (idempotent — same values) + lgdt + far-reloads segments.
+    unsafe { hal_x86_64::install_kernel_gdt(); }
+    // SAFETY: per fn contract — `info` is the AP's own SmpInfoX86; sole reader/writer for its own slot from this AP.
     let info_ref = unsafe { &mut *info };
     let ctx_ptr  = info_ref.extra_argument as *mut ApContext;
     // SAFETY: ctx_ptr was published by `bring_up_aps_x86` via Box::leak; the box outlives boot.

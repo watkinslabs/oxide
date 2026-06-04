@@ -85,9 +85,12 @@ trap cleanup EXIT
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
-# SMP is 1 on every GRUB/self-boot path (F376): no bootloader starts
-# APs and the kernel doesn't PSCI-CPU_ON them itself yet, so all boots
-# are UP. Override with OXIDE_SMP=N.
+# Gate runs SMP=1 (reliable). The kernel CAN start APs Limine-free — x86 via
+# an INIT-SIPI real-mode trampoline, arm via PSCI CPU_ON (both reach `online`)
+# — but the AP PARTICIPATING in the scheduler during late boot races the BSP
+# (x86 PMM double-free / arm hang right after `keymap loaded`; the pre-existing
+# B51 SMP=2 late-boot race, now triggered ~always). Gate stays SMP=1 until that
+# race is fixed; test SMP=2 with OXIDE_SMP=2.
 OXIDE_SMP="${OXIDE_SMP:-1}"
 
 # Run one boot; return 0 if `oxide login:` appears within TIMEOUT.

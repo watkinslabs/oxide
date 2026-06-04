@@ -230,3 +230,6 @@ pub unsafe fn tick_poll() {
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub mod smp_x86;
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod ap_tramp_x86;
