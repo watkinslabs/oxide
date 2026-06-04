@@ -591,10 +591,11 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Install the AP-init hook (per-AP GIC + runqueue, runs on the AP)
         // + the arm resched-IPI sender (GIC SGI) BEFORE bringing APs up.
         crate::smp_arm::install_hooks();
-        // PSCI SMP (Limine-free): boot-aarch64 published the DTB /cpus MPIDR
-        // list + self-boot page-table phys addresses via set_psci_ap_params;
+        // EFI/GRUB path has no DTB → publish the ACPI-MADT GICC MPIDRs into
+        // the PSCI params (no-op on the -kernel/DTB path).
+        crate::smp_arm::publish_madt_mpidrs();
         // bring_up_aps_psci CPU_ON's each non-BSP through the MMU-off
-        // trampoline. No-op at -smp 1 (only the BSP in /cpus).
+        // trampoline. No-op when only the BSP is present (uniprocessor).
         // SAFETY: kernel_main post-heap-init on the boot CPU; the self-boot page tables named in the params stay live for the rest of boot.
         let started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
         debug_boot! {

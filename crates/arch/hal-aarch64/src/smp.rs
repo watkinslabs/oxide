@@ -129,6 +129,23 @@ pub fn set_psci_ap_params(
     PSCI_PARAMS_SET.store(1, Ordering::Release);
 }
 
+/// Override just the MPIDR list (keeping the page-table phys + load_base
+/// from `set_psci_ap_params`). The EFI/GRUB arm path has no DTB, so its DTB
+/// `/cpus` list is empty; the kernel calls this with the ACPI-MADT GICC
+/// MPIDRs (from `cpu_topology`) before `bring_up_aps_psci`. Boot CPU only.
+/// # C: O(min(mpidrs.len(), MAX_AP_CPUS))
+pub fn set_psci_ap_mpidrs(mpidrs: &[u64]) {
+    // SAFETY: sole writer is the boot CPU pre-SMP; no AP reads until
+    // bring_up_aps_psci runs after this returns.
+    unsafe {
+        let p = &mut *PSCI_PARAMS.0.get();
+        let n = mpidrs.len().min(MAX_AP_CPUS);
+        p.cpu_count = n;
+        for i in 0..n { p.mpidrs[i] = mpidrs[i]; }
+    }
+    PSCI_PARAMS_SET.store(1, Ordering::Release);
+}
+
 // PSCI AP trampoline. `CPU_ON` enters here MMU-OFF, EL2-or-EL1, with
 // x0 = phys(ApBootBlock). It reads the boot block, drops EL2->EL1, installs
 // the self-boot page tables, enables the MMU, jumps to the higher half, then

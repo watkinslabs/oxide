@@ -55,3 +55,25 @@ pub fn install_hooks() {
     hal_aarch64::smp::set_ap_init_hook(ap_init);
     sched::live::set_send_resched_ipi_hook(arch_irq::gic::send_resched_ipi);
 }
+
+/// Feed the ACPI-MADT GICC MPIDRs (already in `cpu_topology` from the ACPI
+/// walk) into the PSCI AP params. The EFI/GRUB arm path has no DTB, so its
+/// DTB `/cpus` list is empty; this overrides the MPIDR list (keeping the
+/// page-table phys `publish_psci_ap_params` set) before `bring_up_aps_psci`.
+/// No-op when `cpu_topology` is empty (the `-kernel`/DTB path keeps its list).
+/// # C: O(N_cpus)
+pub fn publish_madt_mpidrs() {
+    let n = cpu::count();
+    if n == 0 { return; }
+    let mut mpidrs = [0u64; 16];
+    let mut k = 0usize;
+    let mut i = 0u32;
+    while i < n && k < mpidrs.len() {
+        if let Some((id, _flags)) = cpu::get(i as usize) {
+            mpidrs[k] = id as u64;
+            k += 1;
+        }
+        i += 1;
+    }
+    if k > 0 { hal_aarch64::smp::set_psci_ap_mpidrs(&mpidrs[..k]); }
+}
