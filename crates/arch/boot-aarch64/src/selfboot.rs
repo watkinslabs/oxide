@@ -335,6 +335,14 @@ _arm_entry:
     add     x0, x0, #:lo12:_sb_ttbr0_l0
     orr     x5, x1, #0x3
     str     x5, [x0, #0]
+    /* ap_l0[0] = l1_ident | table — a DEDICATED low-identity L0 for PSCI
+       AP startup. _sb_ttbr0_l0[0] gets cleared at _arm_high (user-AS root),
+       so secondaries can't reuse it for their MMU-off → MMU-on jump. This
+       copy is never torn down, so each AP can use it as TTBR0 to fetch its
+       own trampoline at the physical PC until it reaches the higher half.  */
+    adrp    x6, _sb_ap_l0
+    add     x6, x6, #:lo12:_sb_ap_l0
+    str     x5, [x6, #0]
 
     /* ttbr1_l0[256] = l1_ident | table  (HHDM reuse)                 */
     adrp    x6, _sb_ttbr1_l0
@@ -533,9 +541,17 @@ __efi_dcache_flush_all:
     ret
 
     /* ---- boot page tables (zero-init BSS, 4 KiB each) ------------- */
+    /* .global the tables the PSCI AP trampoline (hal-aarch64) reaches by
+       physical address: the AP identity L0, the shared kernel high map,
+       and the (cleared-[0]) kernel user-AS root it switches to up high.  */
+    .global _sb_ap_l0
+    .global _sb_l1_ident
+    .global _sb_ttbr0_l0
+    .global _sb_ttbr1_l0
     .section .bss
     .align 12
 _sb_ttbr0_l0:  .skip 4096
+_sb_ap_l0:     .skip 4096
 _sb_l1_ident:  .skip 4096
 _sb_ttbr1_l0:  .skip 4096
 _sb_l1_kernel: .skip 4096
