@@ -3,6 +3,9 @@
 
 use super::map_mmio_pages;
 
+// Fields read only inside the `debug_boot!` block of `virtio_probe_arch`
+// (reached only via the gated `enumerate_and_log`): dead w/o debug-boot.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 struct VirtioProbe {
     cmd_orig: u16,
     cmd_new:  u16,
@@ -46,6 +49,7 @@ struct VirtioProbe {
 /// scan its queue layout. Returns Some(probe) on success.
 /// # SAFETY: caller is the boot path; PMM ready; single-CPU; IRQs masked.
 /// # C: O(BAR pages mapped + ~num_queues u32 reads)
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     if !virtio::is_modern(d.vendor_id, d.device_id) { return None; }
     let bdf = d.bdf;
@@ -353,7 +357,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
                  | (d.bdf.function as u32);
     if is_virtio_gpu && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         use core::sync::atomic::{AtomicU32, AtomicU64};
-        let card_id = drv_virtio_gpu::install_with_drm(drv_virtio_gpu::VirtioGpuDev {
+        let _card_id = drv_virtio_gpu::install_with_drm(drv_virtio_gpu::VirtioGpuDev {
             bdf: bdf_word, features_negotiated: drv_features as u64,
             display: drv_virtio_gpu::DisplayInfo::default(),
             resource_id_alloc: AtomicU32::new(1),
@@ -361,12 +365,12 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         });
         debug_boot! { klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
             klog::write_hex_u64(drv_features); klog::write_raw(b" card=");
-            klog::write_dec_u64(card_id as u64); klog::write_raw(b"\n"); }
+            klog::write_dec_u64(_card_id as u64); klog::write_raw(b"\n"); }
     }
     if is_virtio_input && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        let evdev_id = drv_virtio_input::install_default(bdf_word);
+        let _evdev_id = drv_virtio_input::install_default(bdf_word);
         debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
-            klog::write_dec_u64(evdev_id as u64); klog::write_raw(b"\n"); }
+            klog::write_dec_u64(_evdev_id as u64); klog::write_raw(b"\n"); }
     }
     if is_virtio_blk && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
@@ -763,6 +767,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
 /// + per-queue `[INFO] virtio-q ...` lines under `debug-boot`.
 /// Side-effect work runs unconditionally; only the trace is gated.
 /// # C: O(BAR pages mapped + ~num_queues u32 reads)
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code, unused_variables))]
 pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
     let p = match virtio_init_arch(d) { Some(p) => p, None => return };
     let bdf = d.bdf;

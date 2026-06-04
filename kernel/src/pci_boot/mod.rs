@@ -14,15 +14,22 @@ use hal_x86_64::mmu_ops::X86Mmu;
 
 /// Kernel VA bump-allocator base for virtio BAR mappings. Disjoint
 /// from `KERNEL_DEVICE_BASE` (low-32 PA alias) and `ECAM_BUS0_VA`.
+// Referenced only from `map_mmio_pages`, which itself is reached only
+// through the `debug_boot!`-gated `enumerate_and_log` body. Dead when
+// `debug-boot` is off; live (and type-checked) when it is on.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 const VIRTIO_BAR_VA_BASE: u64 = 0xffff_fd00_0000_0000;
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 static VIRTIO_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(VIRTIO_BAR_VA_BASE);
 
 /// F58: virtio-net's allocated MSI vector (x86) / SPI (arm). Stashed
 /// during the per-device cap-scan binding; consumed by the post-scan
 /// iface-registration site to install a per-vector handler.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 static VIRTIO_NET_MSI_ID: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 fn device_flags() -> PageFlags {
     PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
 }
@@ -33,6 +40,7 @@ fn device_flags() -> PageFlags {
 /// kernel exclusively owns, (b) PMM ready + single-CPU + IRQs masked,
 /// (c) `pa` is 4K-aligned. Used only at boot for virtio probing.
 /// # C: O(n_pages × walk depth)
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 pub(super) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
     let bytes = n_pages * 0x1000;
     let base = VIRTIO_BAR_VA_NEXT.fetch_add(bytes, Ordering::AcqRel);
@@ -55,12 +63,14 @@ pub(super) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // the external `virtio` crate dependency referenced elsewhere in this
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
 mod virtio_drv;
+#[cfg_attr(not(feature = "debug-boot"), allow(unused_imports))]
 use virtio_drv::virtio_probe_arch;
 
 /// Enable PCI command reg bits 1 (Memory Space) + 2 (Bus Master) on
 /// `bdf`. UEFI on QEMU virt leaves Memory OFF; without this any BAR
 /// MMIO read returns 0xFFFFFFFF and any write is silently dropped.
 /// # C: O(1) — one config-space R/W pair.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 fn enable_pci_mem_bm(bdf: pci::Bdf) {
     let cur = {
         #[cfg(target_arch = "x86_64")]
@@ -85,6 +95,7 @@ fn enable_pci_mem_bm(bdf: pci::Bdf) {
 
 /// Emit one `[INFO] pci-bar <bdf> N <kind>=...` line per programmed BAR.
 /// # C: O(1) — at most 6 BARs.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code, unused_variables))]
 fn bar_dump_arch(bdf: pci::Bdf) {
     debug_boot! {
         let bars = {
@@ -155,6 +166,7 @@ fn bar_dump_arch(bdf: pci::Bdf) {
 /// (vendor=0x1AF4, device>=0x1040) it also decodes each vendor cap and
 /// emits a `[INFO] virtio-cap ...` line per cfg_type.
 /// # C: O(N_caps) — typical N is 1–6.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code, unused_variables))]
 fn cap_dump_arch(d: &pci::PciDevice) {
     let bdf = d.bdf;
     debug_boot! {
@@ -742,6 +754,7 @@ pub fn enumerate_and_log() {
 /// table reaches the driver crate — for now polling is the
 /// minimum-viable correct path.
 /// # C: O(rx_drain) per iteration + O(log N) CFS pick on yield
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code))]
 extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
     use hal::TimerOps;
     let iface_id = net::NetIfaceId::from_raw((arg >> 32) as u32);

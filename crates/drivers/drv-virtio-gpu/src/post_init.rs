@@ -174,16 +174,16 @@ unsafe fn setup_scanout(
     // Helper: emit the 24-byte response type so failed commands are
     // visible. virtio-gpu acks with VIRTIO_GPU_RESP_OK_NODATA (0x1100);
     // anything else means the host rejected the request.
-    let log_resp = |tag: &[u8]| {
+    let log_resp = |_tag: &[u8]| {
         // SAFETY: cmd_buf_va is HHDM-mapped 4 KiB; response sits at
         // cmd_buf_va + 0x200 per submit_raw's descriptor layout.
-        let resp = unsafe { core::ptr::read_volatile(cmd_buf_va.add(0x200) as *const u32) };
+        let _resp = unsafe { core::ptr::read_volatile(cmd_buf_va.add(0x200) as *const u32) };
     #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[INFO]  virtio-gpu resp ");
-            klog::write_raw(tag);
+            klog::write_raw(_tag);
             klog::write_raw(b"=");
-            klog::write_hex_u64(resp as u64);
+            klog::write_hex_u64(_resp as u64);
             klog::write_raw(b"\n");
         }
     };

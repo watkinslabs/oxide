@@ -426,14 +426,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: addresses are within the user-VA range (0x1000 < USER_VA_END).
         let start = hal::UserVirtAddr::new(0x1000).expect("test addr in user range");
         let end   = hal::UserVirtAddr::new(0x2000).expect("test addr in user range");
-        let inserted = tree.insert(vmm::Vma::new(
+        let _inserted = tree.insert(vmm::Vma::new(
             start, end,
             vmm::VmaProt::READ,
             vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
             vmm::VmaBacking::Anonymous,
         )).is_ok();
         debug_boot! {
-            if inserted {
+            if _inserted {
                 klog::kinfo!("kalloc-smoke: VmaTree insert ok");
             } else {
                 klog::kerror!("kalloc-smoke: VmaTree insert failed");
@@ -597,10 +597,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // bring_up_aps_psci CPU_ON's each non-BSP through the MMU-off
         // trampoline. No-op when only the BSP is present (uniprocessor).
         // SAFETY: kernel_main post-heap-init on the boot CPU; the self-boot page tables named in the params stay live for the rest of boot.
-        let started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
+        let _started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
-            klog::write_dec_u64(started as u64);
+            klog::write_dec_u64(_started as u64);
             klog::write_raw(b"\n");
         }
     }
@@ -781,9 +781,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(target_os = "oxide-kernel")]
     if let Some(blob) = ext4::rootfs::read_file(b"/etc/keymap") {
         match drv_virtio_input::keymap::load_text(&blob) {
-            Ok(name) => { debug_boot! {
+            Ok(_name) => { debug_boot! {
                 klog::write_raw(b"[INFO]  keymap loaded: ");
-                klog::write_raw(name.as_bytes());
+                klog::write_raw(_name.as_bytes());
                 klog::write_raw(b"\n");
             } }
             Err(_) => { debug_boot! {
