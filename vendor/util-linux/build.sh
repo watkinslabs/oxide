@@ -45,6 +45,19 @@ build_one() {
   pam_root="$(pwd)/../pam/install-${arch}"
   echo "=== building util-linux for $arch ==="
   cleanup_objs
+  # statx(2): the x86 host musl implements it → force-detect (=yes) and
+  # use the libc symbol (util-linux's static-inline fallback would
+  # otherwise collide with musl's non-static declaration). The aarch64
+  # cross musl (1.2.2-git) DECLARES statx in its headers but carries no
+  # symbol in libc, so =yes link-fails and =no redeclaration-conflicts.
+  # Force configure to see NO `struct statx` there → util-linux skips
+  # statx entirely and uses its stat(2)/fstatat fallbacks.
+  extra_libs=""
+  if [ "$arch" = "x86_64" ]; then
+    statx_cache="ac_cv_func_statx=yes"
+  else
+    statx_cache="ac_cv_func_statx=no ac_cv_type_struct_statx=no"
+  fi
   # Aggressive feature pruning — no NLS, no systemd journal hook (we'll
   # bring that in with systemd-musl), no ncurses-using top-likes, no
   # libuuid bloat we don't use yet.
@@ -52,7 +65,8 @@ build_one() {
     CC="$cc" \
     CFLAGS="-Os $extra -D_GNU_SOURCE -I${pam_root}" \
     LDFLAGS="-L${pam_root} -L${pam_root}/lib -Wl,-rpath,/usr/lib" \
-    LIBS="-lpam -lpam_misc" \
+    LIBS="-lpam -lpam_misc $extra_libs" \
+    env $statx_cache \
     ./configure \
       --host="$host" \
       --build="x86_64-pc-linux-gnu" \
@@ -101,11 +115,19 @@ build_one() {
     && make -j4 \
   )
   for p in $PROGRAMS; do
-    src_path="$SRC/$p"
+    # libtool programs that link a vendored .la lib (mount/umount link
+    # libmount/libblkid/libuuid/libsmartcols) leave a SHELL-SCRIPT wrapper
+    # at $SRC/$p and the real ELF at $SRC/.libs/$p. Prefer the real binary;
+    # fall back to the top-level file for non-libtool programs.
+    if [ -f "$SRC/.libs/$p" ]; then
+      src_path="$SRC/.libs/$p"
+    else
+      src_path="$SRC/$p"
+    fi
     [ -f "$src_path" ] || continue
     cp "$src_path" "$p-$suffix"
     strip "$p-$suffix" 2>/dev/null || true
-    echo "  -> $p-$suffix ($(stat -c %s $p-$suffix) bytes)"
+    echo "  -> $p-$suffix ($(file -b "$p-$suffix" | cut -d, -f1)) $(stat -c %s $p-$suffix)B"
   done
 }
 

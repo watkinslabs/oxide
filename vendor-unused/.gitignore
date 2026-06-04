@@ -1,0 +1,4 @@
+# vendor-unused: items removed from the active build pipeline, kept for
+# reference. Track the built binaries + build recipes; ignore extracted
+# source trees (build scratch).
+busybox/busybox-1.37.0/

@@ -11,13 +11,9 @@
 !grub/
 !grub/arm64-efi/
 !grub/arm64-efi/**
-# busybox vendored binaries: x86_64 already tracked; aarch64 added
-# per F148 once the cross-toolchain landed.
-!busybox/
-!busybox/build.sh
-!busybox/busybox
-!busybox/busybox-aarch64
-busybox/busybox-1.37.0/
+# busybox removed from the build (F376): systemd is PID 1, bash is
+# /bin/sh, coreutils/util-linux own the tools. Binary moved to
+# vendor-unused/busybox (outside the active vendor pipeline).
 # vendor/cross: README tracked, toolchain blobs ignored (~370 MB).
 !cross/
 !cross/README.md

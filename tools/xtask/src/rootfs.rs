@@ -275,58 +275,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         dbg(&format!("sif {target} mode 0100755"))  // make executable
     };
     let user = |name: &str| user_out.join(name);
-    // busybox 1.37.0 static-musl. Per-arch binary, argv[0]-dispatched.
-    let bb = if arch == "aarch64" {
-        repo.join("vendor/busybox/busybox-aarch64")
-    } else {
-        repo.join("vendor/busybox/busybox")
-    };
-    if bb.is_file() {
-        // Single copy at /bin/busybox; every applet path is a hardlink
-        // (debugfs `ln`) → one inode vs ~70 dups. busybox routes on
-        // argv[0], so /bin/sh opens /bin/busybox with argv[0]="/bin/sh".
-        put(&bb, "/bin/busybox")?;
-        let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
-            let cmd = format!("ln {} {}", target, link);
-            let mut c = Command::new("debugfs");
-            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
-            c.stdout(std::process::Stdio::null());
-            // Don't mute stderr — debugfs `ln` exits 0 even on make_link
-            // errors; muting it silently drops applets, shipping a busted rootfs.
-            run(c)
-        };
-        // /bin applets — every user-facing tool dispatched via argv[0].
-        for applet in &[
-            "ash", "hush",
-            "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
-            "dmesg",
-            "grep", "egrep", "fgrep", "find", "head", "tail", "wc", "sort", "uniq",
-            "touch", "chmod", "chown", "ln", "test", "true", "false",
-            "env", "printf", "yes", "seq", "expr", "id", "whoami",
-            "tr", "cut", "sed", "awk", "date", "df", "du", "stat",
-            "sleep", "tee", "xxd", "hostname", "uname",
-            "pwd", "basename", "dirname", "which", "clear", "reset",
-            "more", "less", "vi", "tar", "gzip", "gunzip",
-            "ifconfig", "route", "ping", "nc", "wget",
-            "mknod", "stty", "tty", "mesg",
-        ] {
-            dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
-        }
-        // /sbin applets per FHS. F259 util-linux owns login/agetty/su.
-        // mount/umount stay on busybox (util-linux mount is non-PIE, won't load yet).
-        for applet in &[
-            "init", "halt", "reboot", "poweroff", "shutdown",
-            "mdev", "ifconfig", "route", "fdisk", "swapon", "swapoff",
-            "mount", "umount", "udhcpc", "udhcpd",
-        ] {
-            dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
-        }
-        // /bin alias of mount/umount (no-leading-slash resolution; /bin precedes /sbin).
-        dbg_ln("/bin/busybox", "/bin/mount")?;
-        dbg_ln("/bin/busybox", "/bin/umount")?;
-        // Kernel boot path probes /sbin/init then /init.
-        dbg_ln("/bin/busybox", "/init")?;
-    }
+    // busybox removed: PID 1 is systemd (/lib/systemd/systemd); /bin/sh is
+    // bash; coreutils/util-linux/GNU programs own the user-facing tools
+    // (installed below). The vendored busybox binary moved to
+    // `vendor-unused/busybox`. systemd mounts via the mount(2) syscall, not
+    // /bin/mount, so the non-PIE util-linux mount gap doesn't affect boot.
     // Kernel-acceptance smoke binaries. Real-musl-crt1 builds; every
     // user-facing tool comes from busybox hardlinks above.
     for b in &[
@@ -387,19 +340,25 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
 
     let ln_via_debugfs = |target: &str, link: &str| -> Result<(), u8> {
-        let mut c = Command::new("debugfs");
-        c.args(["-w", "-R", &format!("ln {target} {link}"), img.to_str().unwrap()]);
-        c.stdout(std::process::Stdio::null());
-        run(c)
+        let out = Command::new("debugfs")
+            .args(["-w", "-R", &format!("ln {target} {link}"), img.to_str().unwrap()])
+            .output().map_err(|_| 1u8)?;
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("make_link") || err.contains("not a directory") {
+            eprintln!("xtask rootfs: ln {target} -> {link} FAILED: {}", err.trim());
+        }
+        Ok(())
     };
     // F259 (D1): util-linux.
     for (name, dest) in &[
         ("login",   "/bin/login"),
         ("agetty",  "/sbin/agetty"),
-        // util-linux mount is non-PIE dynamic on x86 → fails to load
-        // under our kernel; busybox mount stays at /bin/mount.
-        ("mount",   "/usr/sbin/mount.util-linux"),
-        ("umount",  "/usr/sbin/umount.util-linux"),
+        // Real util-linux mount/umount (the .libs ELF, not the libtool
+        // wrapper script — build.sh now copies the right one). Links
+        // libmount/libblkid/libuuid/libsmartcols from /usr/lib (L2_LIBS).
+        // Replaces the dropped busybox mount.
+        ("mount",   "/bin/mount"),
+        ("umount",  "/bin/umount"),
         ("su",      "/bin/su"),
         ("kill",    "/bin/kill"),
         ("cal",     "/usr/bin/cal"),
@@ -413,6 +372,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     ln_via_debugfs("/sbin/agetty",  "/sbin/getty")?;
     ln_via_debugfs("/bin/login",    "/usr/bin/login")?;
     ln_via_debugfs("/bin/su",       "/usr/bin/su")?;
+    ln_via_debugfs("/bin/mount",    "/sbin/mount")?;
+    ln_via_debugfs("/bin/umount",   "/sbin/umount")?;
 
     // F260 (D2): shadow-utils — useradd/passwd/groupadd/etc.
     for (name, dest) in &[
@@ -554,13 +515,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let cu_bin = repo.join(format!("vendor/coreutils/coreutils-{}", arch));
     if cu_bin.is_file() {
         put(&cu_bin, "/usr/libexec/coreutils")?;
-        let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
-            let cmd = format!("ln {} {}", target, link);
-            let mut c = Command::new("debugfs");
-            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
-            c.stdout(std::process::Stdio::null());
-            run(c)
-        };
+        let dbg_ln = &ln_via_debugfs;
         for applet in &[
             "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "ln",
             "chmod", "chown", "chgrp", "touch", "stat", "dd",
@@ -574,7 +529,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
             "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum",
             "base32", "base64", "basenc", "od",
             "nl", "pr", "ptx", "tsort", "truncate", "link", "unlink",
-            "logname", "groups", "users", "who", "uptime", "hostid",
+            "logname", "groups", "users", "who", "hostid",
             "mkfifo", "mknod", "numfmt",
         ] {
             dbg_ln("/usr/libexec/coreutils", &format!("/usr/bin/{applet}"))?;
@@ -605,10 +560,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     ] {
         if *present {
             dbg(&format!("rm /bin/{binname}"))?;
-            let mut c = Command::new("debugfs");
-            c.args(["-w", "-R", &format!("ln {target} /bin/{binname}"), img.to_str().unwrap()]);
-            c.stdout(std::process::Stdio::null());
-            run(c)?;
+            ln_via_debugfs(target, &format!("/bin/{binname}"))?;
         }
     }
 
