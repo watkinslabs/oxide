@@ -1,57 +1,60 @@
 # Session hand-off
 
 ## Headline
-Branch `F376-arm-selfbootstrap` (PR #1525), autonomous loop. **Limine fully
-removed; GRUB-only; both arches reach `oxide login:` (x86 40s, arm 44s).**
-This session systematically restored everything Limine's removal silently
-regressed on arm — DTB parse, ACPI, PCI, the **graphical display**, and SMP
-— and un-gated device init so the display works in release, not just debug.
+Branch `F376-arm-selfbootstrap` (PR #1525). Limine fully removed; both arches
+boot to login at SMP=1. This session also: arm PSCI SMP=2 + x86 INIT-SIPI
+SMP=2 (APs reach `online`), ACPI/PCI/**display** restored, device-init
+un-gated, DTB-parse bug fixed. **qemu-mcp server fixed** (was broken by the
+Limine removal). TWO open bugs found via the user's live test — see below.
 
-## DONE + pushed this session (PR #1525)
-- **Limine removed entirely** (code/xtask/vendor/configs/Makefile).
-- **busybox removed** (real util-linux mount/umount; bash=/bin/sh).
-- python `lib-dynload` landmark → exec_prefix warning gone.
-- **DTB-parse bug fixed** (`81b5357b`): 8-byte header read vs ≥40 needed —
-  the arm DTB NEVER parsed; memmap ran on a 1GB fallback + cmdline on the
-  arch-default the whole project life. Now real memmap/cmdline + /cpus enum.
-- **arm PSCI SMP=2 PROVEN both paths** (`855b41ce`/`81b5357b`/`823df2c1`):
-  `oxide_ap_entry_arm_psci` MMU-off trampoline + `bring_up_aps_psci`; CPU
-  enum from DTB `/cpus` (-kernel) or ACPI-MADT GICC (EFI). `[ap] online
-  aff=1` on both. Boot-block phys via `AT S1E1R` (heap is kernel-image
-  high half, not HHDM).
-- **ACPI RSDP restored** (`3eab5591`): efi_stub grabs gEfiAcpi20TableGuid →
-  XSDT→MCFG→MADT → **`pci: devices=5` + virtio-gpu `scanout 1280x800
-  painted` + CPU enum**. All dark since Limine left (it surfaced rsdp_pa).
-- **device init un-gated** (`581f4671`): `enumerate_and_log` had wrapped PCI
-  enum + GPU install in `debug_boot!` → release = serial-only. Now device
-  init runs in every build; pure-release arm reaches login.
-- all kernel warnings hand-cleaned (`9ca7d05e`); docs/55 OQs resolved
-  (`d4f0a72a`); CHANGELOG entry (`29134415`).
+## qemu-mcp: FIXED — restart it to use it
+`c4d902c4`: the MCP built via the removed `xtask image`. Added a build-only
+`xtask image --arch X [--features Y]` (rootfs+kernel+GRUB ISO, prints
+`image=<path>`); `server.py` now boots `target/oxide-<arch>-grub.iso`
+(`-cdrom`/`-boot d` + rootfs virtio-blk + socket-serial/QMP/`-s -S`).
+**Action: restart the MCP server (or Claude) so qemu_start works.**
 
-## Open work (priority order)
-1. **x86 SMP=2 — sole remaining piece for the gate flip** (TASKS.md
-   S4a-smp-regress). x86 `bring_up_aps_x86` only parks `goto_address`
-   (Limine pattern); NO INIT-SIPI, no real-mode trampoline. Needs: 16-bit
-   AP trampoline in a low (<1MB) identity page (16→32→64-bit: GDT,
-   CR3=kernel PML4, EFER.LME, CR0.PG → `oxide_ap_entry_x86` + per-AP stack)
-   + INIT-IPI then 2×SIPI via LAPIC ICR per `cpu::get()` APIC id (x86 MADT
-   LAPIC enum already fills cpu_topology). Highest risk, no scaffolding —
-   DO WITH qemu MCP single-step. Then flip BOTH gates to -smp 2 (arm SMP=2
-   already works; held at 1 only for lockstep).
-2. **Un-gate virtio-net iface + netlink seed** (still in `debug_boot!`,
-   pci_boot/mod.rs enumerate_and_log ~583-665) → release networking. Same
-   pattern as the GPU un-gate; intricate (interleaved with F40/F45/F46
-   MSI/GIC diagnostics which stay gated).
-3. docs/55 font/cluster implementation (framebuffer is now live).
+## OPEN BUG 1 — `find /` ENOENTs into directories (dirfd-relative resolve)
+Symptom: `find / | grep No` → "No such file or directory" for many DIRS
+(/etc/init.d, /usr/share, /home/alice, …). NARROWED:
+- Image on-disk is correct (all dirs/inodes present; identical metadata).
+- Boot-time `pathresolve::resolve("/etc/init.d")` = OK (all dirs).
+- Interactive `ls /etc/init.d`, `cd /etc/init.d`, `ls /usr/share`,
+  `python3 --version` ALL WORK.
+- So ONLY `find`'s **dirfd-relative** walk fails: `openat(parent_dir_fd,
+  child)` / `fstatat(parent_dir_fd, child)` (find uses FTS_CWDFD). Absolute +
+  AT_FDCWD-relative + boot resolve all work.
+- Locus: `pathresolve::resolve_at` (kernel/src/syscalls/pathresolve.rs:122)
+  for a REAL dirfd uses `f.dentry().absolute_path()` as the base. `install_open`
+  (vfs/src/file.rs:348) stores a standalone `Dentry::new(None, full_path, inode)`;
+  `absolute_path()` (dentry.rs) special-cases that. Trace says it SHOULD give
+  the right base — but find empirically fails. NEXT: write a tiny C probe doing
+  `int d=open("/etc",O_DIRECTORY); openat(d,"init.d",O_DIRECTORY); fstatat(d,"init.d",..)`
+  and run it (shell or boot ELF) — reproduces; then trace `resolve_at` +
+  `absolute_path()` for the dir fd with the (now-fixed) qemu-mcp single-step.
+  Likely the dir fd's stored dentry path is wrong, OR a deep-traversal fd issue.
 
-## python interactive segfault — non-reproducing
-Instrumented trace shows no kernel crash; the "hang" is a CPython brute-force
-close storm. Real kernel fixes already landed (close_range, NOFILE clamp,
-aarch64 TLB flushes, prlimit pid=0). Revisit only if it reproduces.
+## OPEN BUG 2 — interactive python3 segfaults (the original item 3)
+`/usr/bin/python3 --version` / `-c` / scripts WORK; the interactive REPL
+SEGVs (musl mallocng a_crash heap corruption). Reproduces in normal use
+(earlier "non-reproducing" was instrumentation-only). NEXT: catch the
+`[FAULT] sigsegv rip=/far=` on serial when it crashes → diagnose the kernel
+MM gap (the REPL's readline/tty alloc pattern triggers it).
+
+## SMP=2 — APs start, but participation races late boot (gate stays SMP=1)
+`99c994a6` + earlier: x86 INIT-SIPI real-mode trampoline (ap_tramp_x86.rs) +
+arm PSCI both bring APs to `[ap]/[sipi] online`. 5 x86 trampoline bugs fixed
+(assembler mis-encode, identity map, kernel GDT, EFER.NXE). BUT when the AP
+then SCHEDULES during late boot it races the BSP: x86 PMM double-free, arm
+hang, both right after `keymap loaded` (the pre-existing B51 race, now ~always).
+Gate reverted to SMP=1 (reliable; AP code is no-op at -smp 1). FIX (next):
+defer AP scheduler participation (timer+runqueue) until boot is quiescent, OR
+make the boot-phase scheduler/PMM SMP-safe. TASKS.md S4a-smp-regress.
 
 ## First command next session
 ```
-cd /home/nd/oxide2 && git log --oneline -10 && sed -n '/S4a-smp-regress/,+1p' TASKS.md
+cd /home/nd/oxide2 && git log --oneline -6
 ```
-Then: x86 INIT-SIPI via qemu MCP (mcp__qemu__qemu_start arch=x86_64 smp=2,
-break at the SIPI vector, single-step the AP through each mode transition).
+Then (MCP restarted): reproduce OPEN BUG 1 with a C probe / qemu_start, fix
+`resolve_at`/`install_open` dentry-path for dir fds; then OPEN BUG 2; then the
+SMP=2 participation race.

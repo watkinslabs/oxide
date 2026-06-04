@@ -173,6 +173,23 @@ readlink ALREADY real via `sched::proclink`; many /proc files already dynamic.
 
 ## Open follow-ups (folded into tracks above)
 
+- **BUG: `find /` ENOENTs into directories** (live-test, 2026-06-04). `find`'s
+  dirfd-relative walk (`openat(parent_fd, child)` / `fstatat`, FTS_CWDFD) fails
+  ENOENT for dirs, while absolute paths, AT_FDCWD-relative, `ls`/`cd`, and
+  boot-time `pathresolve::resolve` ALL work, and the on-disk image is correct.
+  Locus: `resolve_at` (syscalls/pathresolve.rs:122) base = `f.dentry()
+  .absolute_path()` for a real dirfd; `install_open` (vfs/file.rs:348) stores a
+  standalone `Dentry::new(None, full_path, inode)`. Repro: C probe `open("/etc",
+  O_DIRECTORY)` → `openat(d,"init.d",O_DIRECTORY)`/`fstatat(d,"init.d",..)`.
+  Fix the dir-fd dentry-path (or deep-traversal fd handling). See state.md.
+- **BUG: interactive `python3` REPL segfaults** (musl mallocng a_crash; the
+  original item-3). `--version`/`-c`/scripts work; only the tty REPL crashes.
+  Reproduces in normal use. Catch the `[FAULT] sigsegv rip/far` on serial →
+  kernel MM gap in the REPL's readline/tty alloc pattern.
+- **qemu-mcp FIXED** (c4d902c4): was broken by Limine removal (`xtask image`
+  gone). Added build-only `xtask image` (GRUB ISO) + server.py boots it. Restart
+  the MCP server to use qemu_start for the two bugs above.
+
 - **O_* open-flag VALUES are arch-specific and the kernel mostly uses x86
   values for both arches** (found in V6c, 2026-05-31). aarch64 Linux
   overrides: O_DIRECTORY=0o40000 (x86 0o200000), O_NOFOLLOW=0o100000
