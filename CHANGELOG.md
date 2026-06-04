@@ -1033,3 +1033,874 @@ Open for next session 48 (with restarted qemu-mcp):
 3. **Move virtio init out of `pci_boot/virtio_drv.rs`** into a real `kernel/drivers/virtio/` module once IRQ-driven completion lands. Currently 842 lines, well under the 1000 cap but that's the right time to refactor.
 4. **`/bin/sh` interactive — TTY-input wakeup** (orthogonal): replace timer-tick polling in `tty::tick_poll_uart` with UART RX IRQ. Quality-of-life win.
 5. **`PTRACE_SINGLESTEP` real trap** (orthogonal): toggle per-arch TF/SS bit on resume.
+
+---
+
+## Backfill: PRs #728–#1524 (2026-05-08 → 2026-06-03)
+
+The per-session EOD-checkpoint practice lapsed after session 47, so these ~792 PRs went unrecorded. Reconstructed from the merged-PR history (date-grouped, PR# + title). Less curated than the session entries above, but complete.
+
+### 2026-05-08 — 31 PRs (#728–#758)
+- #728 D13: state.md + CHANGELOG.md — session 47 end + daemon-restart handoff
+- #729 F45: GIC SPI ITARGETSR+ICFGR fix + v2m self-fire diag
+- #730 F46: GICD_ISPENDR2 probe — silent-MSI is PCI routing, not GIC
+- #731 F47: PL011 RX IRQ wiring (SPI 33) — replaces timer-poll fallback
+- #732 F48: UART_IRQ_FIRES counter + diagnostic window
+- #733 F49: wire Task.singlestep flag for PTRACE_SINGLESTEP
+- #734 D14: state.md — session 48 mid checkpoint
+- #735 F50: x86_64 PTRACE_SINGLESTEP (TF + #DB→SIGTRAP)
+- #736 F51: aarch64 PTRACE_SINGLESTEP (SPSR.SS + sw-step handler)
+- #737 F52: stage ptrace_singlestep_smoke (kernel signal-default-action prereq)
+- #738 D15: state.md — session 48 end
+- #739 F53: signal default-action terminate encodes WIFSIGNALED
+- #740 F54: gate PL011 drain to SPI-33-only (remove timer-poll fallback)
+- #741 D16: state.md — session 48 final (F53/F54 + 6 smokes PASS)
+- #742 F55: aarch64 GICv3 conversion (sysreg ICC + GICR + IROUTER)
+- #743 feat(its): MADT type-15 discovery + GITS_TYPER probe (F56-01)
+- #744 feat(its): GITS_CBASER + cmd-queue allocation (F56-02)
+- #745 feat(its): GITS_BASER<n> Devices+Collections tables (F56-03)
+- #746 feat(gic): LPI prop+pend tables on boot RD (F56-04)
+- #747 feat(its): GITS_CTLR.Enabled (F56-05)
+- #748 doc: state.md — session 49 leg-1 (F56-01..05 ITS skeleton)
+- #749 feat(its): cmd-post protocol + MAPC/MAPD bring-up (F56-06)
+- #750 feat(its): MAPTI + INV + SYNC for virtio-blk LPI 8192 (F56-07)
+- #751 feat(its): LPI prop byte + virtio-blk MSI-X retarget to ITS (F56-08)
+- #752 feat(its): INT self-fire proves LPI delivery (F56-09)
+- #753 doc: state.md — session 49 leg-2 (F56 complete + silent-MSI verdict revised)
+- #754 D19: state — aarch64 MSI verified, x86 lockstep gap
+- #755 F57: x86 MSI-X bring-up — lockstep with aarch64
+- #756 D20: state — F57 landed, phase 8 next
+- #757 F58: explicit modern virtio-net launch (phase 8 prep)
+- #758 D21: state — session 50 ended, session 51 first task
+
+### 2026-05-09 — 161 PRs (#759–#919)
+- #759 F59-01: persist modern virtio-net runtime state
+- #760 F59-02: rx_poll on modern virtio-net transport
+- #761 F59-03: boot-time rx_poll exercise
+- #762 D22: state.md session 51 progress (F59-01..03)
+- #763 F59-04: harvest virtio-net MAC from device-cfg
+- #764 D23: state.md — F59-04 landed, F59-05 TX next
+- #765 F59-05: tx_frame on modern virtio-net transport
+- #766 F59-06: boot-time ARP probe via tx_frame + rx_poll
+- #767 D24: state.md — F59-06 landed, F59-07 SLIRP-reply debug next
+- #768 F59-07: tx_frame returns Confirmed vs Timeout, not always Ok
+- #769 F59-08: narrow virtio-net q1 TX bug — 3 hypotheses ruled out
+- #770 F59-09: u16-precise virtio_pci_common_cfg writes — q1 TX works
+- #771 F59-10: parse ARP reply, learn gateway, populate arp_cache
+- #772 F59-11: register virtio-net as a NetDev
+- #773 F59-12: boot ICMP echo to gateway
+- #774 D25: state.md — F59-12 ICMP echo round-trip works, F59-13 RX→stack next
+- #775 F59-13: poll_into_stack + 10.0.2.0/24 route via eth0
+- #776 F59-14: boot DHCP DISCOVER → ACK, split boot probes
+- #777 F59-15: rip kernel-resident DHCP/ICMP-request/boot-ARP — userspace's job
+- #778 D26: kernel-audit refresh — B/C/D/E/F/H done; only G (mmap) open as v1 sweep
+- #779 F60: mmap MAP_FIXED + addr hint + MAP_SHARED — closes PR-G v1 sweep
+- #780 R05: 43§2 v1 acceptance — busybox only; distro-class moves to §3 v2
+- #781 D27: drop 'actually' from 43-acceptance R05
+- #782 F62: Task::exe_path + bring-up exec smokes; busybox dispatch bug parked
+- #783 feat(syscall): clone3 parity + NUMA single-node silent-0
+- #784 feat(syscall): real POSIX credentials (Creds on Task)
+- #785 feat(syscall): real robust_list storage; rseq honest ENOSYS
+- #786 feat(syscall): real capget/capset (Creds carries cap masks)
+- #787 feat(syscall): real syslog(2) reading klog ring as dmesg
+- #788 feat(syscall): real setdomainname; uname.domainname reads it
+- #789 feat(syscall): real fallocate (extends size; ZERO_RANGE writes zeros)
+- #790 feat(syscall): real pidfd_getfd
+- #791 feat(syscall): real POSIX timers (timer_create family)
+- #792 feat(syscall): real prctl (no_new_privs, keepcaps, pdeathsig, capbset)
+- #793 feat(syscall): real utimensat/utimes/utime via inode_times overlay
+- #794 feat(syscall): real flock(2) per-inode advisory lock
+- #795 feat(syscall): real process_vm_readv/writev
+- #796 feat(syscall): real keyring (add_key/request_key/keyctl)
+- #797 feat(syscall): real mq_notify + mq_getsetattr
+- #798 feat(syscall): real personality + futimesat alias
+- #799 feat(syscall): real get_mempolicy (single-node UMA)
+- #800 fix(syscall): honest ENOSYS for futex_waitv + fanotify_mark
+- #801 doc: state.md F63..F80 syscall sweep checkpoint
+- #802 fix(syscall): honest EOPNOTSUPP for landlock add_rule/restrict_self
+- #803 fix(syscall): fsconfig/move_mount/mount_setattr → EOPNOTSUPP
+- #804 feat(syscall): real chmod/chown family (mode + uid/gid overlay)
+- #805 doc: kernel-audit.md F63..F84 syscall sweep summary
+- #806 feat(syscall): real rseq with cpu_id writeback at syscall return
+- #807 feat(syscall): real vhangup (SIGHUP to session)
+- #808 doc: state.md F82..F87 syscall sweep close-out
+- #809 feat(mm): real MAP_FIXED (munmap-then-insert)
+- #810 doc: kernel-audit PR-G closed via F89 MAP_FIXED
+- #811 feat(syscall): real xattr family via per-inode overlay
+- #812 doc: state.md F89/D29/F90 v2-rollin pass 1
+- #813 feat(syscall): cap-gated setuid/setgid/setgroups/vhangup/capbset
+- #814 feat(syscall): cap-aware kill / tgkill / pidfd_send_signal
+- #815 doc: state.md F92/F93 v2-rollin pass 2
+- #816 feat(syscall): real inotify (watch storage + IN_MODIFY firing via vfs hook)
+- #817 feat(syscall): real chroot — per-task root prefix in devfs::lookup
+- #818 doc: state.md F94/F95 v2-rollin pass 3
+- #819 feat(syscall): real fanotify_mark via inotify substrate
+- #820 feat(syscall): real UTS namespace — per-task hostname
+- #821 doc: state.md F96/F97 v2-rollin pass 4
+- #822 doc: kernel-audit.md v2-rollin F89..F97 pass
+- #823 feat(vfs): Inode trait — first-class atime/mtime/perm/uid/gid
+- #824 fix(vfs): Inode meta accessors return Option<T>
+- #825 feat(syscall): real IPC namespace via per-task ipc_ns
+- #826 doc: state.md F98/F99/F100 v2-rollin pass 5
+- #827 feat(net): IfaceRegistry NS-aware (CLONE_NEWNET substrate)
+- #828 feat(syscall): inotify IN_OPEN / IN_ACCESS / IN_CLOSE_*
+- #829 feat(exec): file capabilities at execve via security.capability xattr
+- #830 doc: state.md F101/F102/F103 v2-rollin pass 6
+- #831 feat(syscall): ptrace ATTACH posts SIGSTOP; DETACH wakes target
+- #832 doc: state.md F104 ptrace ATTACH SIGSTOP
+- #833 feat(syscall): real PID namespace substrate (CLONE_NEWPID)
+- #834 doc: state.md F105 PID NS
+- #835 feat(syscall): user_ns + cgroup_ns substrate
+- #836 feat(syscall): mount_ns substrate — completes 7-NS family for phase 21
+- #837 doc: state.md F106/F107 namespace family complete
+- #838 feat(syscall): ptrace SYSCALL stop on syscall entry + return
+- #839 doc: state.md F108 ptrace SYSCALL stop
+- #840 feat(syscall): cross-NS pid translation for kill/tgkill/pidfd_open
+- #841 feat(syscall): real mount(2) tmpfs backend
+- #842 doc: state.md F109/F110 cross-NS pid + mount tmpfs
+- #843 feat(boot): pre-mount tmpfs at /dev/shm and /run
+- #844 doc: state.md F111 boot tmpfs mounts
+- #845 feat(proc): /proc/self/ns/* dynamic readlink + /proc/self/root chroot-aware
+- #846 feat(proc): uid_map/gid_map/setgroups identity-map files
+- #847 doc: state.md F112/F113
+- #848 fix(net): socket(AF_UNIX, SOCK_STREAM) admits
+- #849 doc: state.md F114
+- #850 feat(syscall): real PTRACE_GETREGS/GETREGSET
+- #851 doc: state.md F115
+- #852 doc: v2-arch-plan.md — sized plan for remaining v2 architectural pieces
+- #853 revise: 15-syscall-abi R04 — pin v1 ptrace op disposition
+- #854 feat(syscall): real PTRACE_SETREGS/SETREGSET
+- #855 revise: 26-namespaces-cgroups R01 — setns / NsInode contract
+- #856 feat(syscall): real setns + NsInode (v2-arch-plan §1.2)
+- #857 revise: 27-security R01 — per-user-NS cap scoping
+- #858 feat(syscall): per-user-NS cap scoping via has_cap_for
+- #859 doc: state.md v2-arch-plan §1.1-1.3 landed
+- #860 revise: 16-vfs R01 — per-mount-NS table
+- #861 feat(syscall): per-mount-NS table — closes CLONE_NEWNS gap
+- #862 revise: 24-ipc R01 — AF_UNIX SOCK_DGRAM + SCM_CREDS + SCM_RIGHTS
+- #863 feat(net): AF_UNIX SOCK_DGRAM admits with per-socket queue (F120)
+- #864 doc: state.md v2-arch-plan §1.4-1.5 progress
+- #865 feat(net): AF_UNIX SOCK_DGRAM bind/sendto/recvfrom (F121)
+- #866 doc: state.md F121
+- #867 feat(net): AF_UNIX SOCK_DGRAM recvmsg SCM_CREDENTIALS writeback
+- #868 doc: state.md F122
+- #869 revise: 16-vfs R02 — dirent-mutation hooks
+- #870 doc: state.md R09 + v2-arch-plan progress summary
+- #871 feat(syscall): inotify IN_CREATE/IN_DELETE via dirent-mutation hooks
+- #872 revise: 27-security R02 — v1 BPF subset
+- #873 feat(syscall): real bpf(2) substrate — BPF_PROG_LOAD + BPF_MAP_CREATE
+- #874 revise: 37-observability R01 — tracefs root + control-file shape
+- #875 feat(observability): tracefs substrate (F125)
+- #876 revise: 35-drivers R01 — DRM + evdev v1 surface
+- #877 feat(input): /dev/input/event0 evdev substrate (F126)
+- #878 doc: state.md — v2-arch-plan §1.1–§1.9 closed (D52)
+- #879 feat: per-mm exe_path + pipe Eagain on empty (F127)
+- #880 feat: real impls for pipe EOF + pkey/kcmp/numa tail (F128)
+- #881 refactor(power): real crate impl + sys_reboot wiring (R13)
+- #882 refactor(firmware): real ACPI walker in crates/firmware (R14)
+- #883 refactor(nscg): real namespace inode crate (R15)
+- #884 refactor(security): real seccomp+bpf crate (R16)
+- #885 refactor(drv): real driver-model dispatch substrate (R17)
+- #886 spec: honest disposition labels for 15/26/30 (D53)
+- #887 feat(mount): real umount2 subtree detach (F129)
+- #888 spec: graphical-terminal arc — 6 new DRAFT specs (D54)
+- #889 spec: kill cool-off + freeze 6 graphics specs Linux-complete (D55)
+- #890 feat(drv-virtio-gpu): wire-protocol crate per docs/45 (F130)
+- #891 feat(drv-virtio-gpu): wire-encode helpers + kernel probe (F131)
+- #892 feat(drv-virtio-input): wire-protocol crate per docs/46 (F132)
+- #893 feat(drm): DRM/KMS core crate per docs/47 (F133)
+- #894 feat(fbdev): /dev/fbN compat shim crate per docs/48 (F134)
+- #895 feat(fbcon): kernel framebuffer console crate per docs/49 (F135)
+- #896 feat(vt): Virtual Terminal layer crate per docs/50 (F136)
+- #897 feat(graphics): wire crates into kernel boot (F137)
+- #898 feat(graphics): wire dev_drm + dev_fbdev through crate dispatch (F138)
+- #899 feat(fbcon): Console with backing FB + glyph blitter (F139)
+- #900 feat(virtio-gpu): real CMD_GET_DISPLAY_INFO at boot (F140)
+- #901 feat(virtio-gpu): boot-time scanout + framebuffer paint (F141)
+- #902 feat(virtio-gpu): full-resolution FB via PMM contig alloc (F142)
+- #903 feat(vt): /dev/tty1..tty63 + KD/VT ioctl dispatch (F143)
+- #904 feat(graphics): boot-time fbcon banner painted to scanout (F144)
+- #905 fix(init): bypass broken busybox /bin/echo hardlink (F145)
+- #906 fix(qemu): default -display gtk so virtio-gpu scanout is visible (F146)
+- #907 fix(busybox): disable FEATURE_INSTALLER to fix /bin/echo dispatch (F147)
+- #908 F148: aarch64 busybox cross-build with FEATURE_INSTALLER=n
+- #909 F149-4: qemu-mcp defaults to quiet boot (debug-boot)
+- #910 F149-3: gate init smokes on /etc/oxide-init-smokes
+- #911 F149-3b: OXIDE_INIT_SMOKES=0 env opt-out
+- #912 D22: state.md — session 53 (interactive shell prep)
+- #913 F150-1: build PID 1 against real musl crt1
+- #914 F151: per-syscall entry trace + busybox-ash NX fault diagnosis
+- #915 F152-3: move execve user stack to top of VA range — busybox-ash interactive
+- #916 F152-1: rip out userspace/oxide-* scaffolding (-2995 LOC)
+- #917 F152-2: drop kernel-side FS_BASE/TPIDR_EL0 hardcoding
+- #918 D51: spec userspace handoff (kernel → busybox → getty → login → shell)
+- #919 F153-1+2: PID 1 = busybox + /etc skeleton (per D51 spec, WIP)
+
+### 2026-05-10 — 77 PRs (#920–#996)
+- #920 F156: mm Linux-conformance — fs_base inherit, topdown mmap, argv/envp uncap
+- #921 D56: stage A — kernel/src ownership classification (52a)
+- #922 R01: stage B-0 foundations — extract boot-info + pmm-setup
+- #923 R02: stage B-1 partial — inode_times → vfs + syscall_nrs → syscall
+- #924 R03: stage B-1 — extract crates/pipe + crates/cpu
+- #925 R04: stage B-2 partial — sysv_shm → crates/ipc
+- #926 R05: stage B-0 partial — kthread → crates/sched
+- #927 D57: state.md after R01–R05 migration run
+- #928 R06: stage B-3 partial — pl011 + timer + psci → hal-aarch64
+- #929 R07: stage B-3 partial — smp + smp_arm → crates/smp / hal-aarch64
+- #930 R08: stage B-1 — extract epoll + signalfd + userfaultfd
+- #931 R09: stage B-1 — extract crates/flock
+- #932 R10: stage B-1 — extract crates/devfs registry
+- #933 R11: stage B-1 — extract dev-misc + keyring + xattr (post-devfs)
+- #934 R12: stage B-1 — extract inotify + perf + ptrace + timerfd
+- #935 R13: regroup all crates into 52§4 layered layout
+- #936 R14: extract tmpfs+coredump to crates/kernel
+- #937 R15: extract dev_net+dev_ext4 to crates/kernel
+- #938 R16: extract elf_load to crates/kernel
+- #939 R17: extract msi+dev_modules to crates/kernel
+- #940 R18: extract dev_fbdev/dev_input/dev_virtio_gpu_modern
+- #941 R19: kill the shim files; extract 3 more crates
+- #942 R20: group dev-* and syscall-glue-* under nested dirs
+- #943 R21: drop lib.rs shim aliases, sweep callers to bare paths
+- #944 R22: fold dev/ext4 crate into ext4::rootfs module
+- #945 R23: fold dev/net crate into net::sock module
+- #946 R24: fold dev/misc into devfs::misc module
+- #947 R25: fold dev/modules into modules::registry
+- #948 R26: fold dev/fbdev into fbdev::devfs
+- #949 R27: fold dev/input into drv-virtio-input::devfs
+- #950 R28: fold dev/virtio-gpu-modern into drv-virtio-gpu (last dev fold)
+- #951 R29: fold syscall-glue/{numa,dmesg,unix-cmsg} into syscall + net
+- #952 R30: rename syscall_glue_*.rs → syscalls/<sub>.rs
+- #953 R31: rename pmm/vmm/pmm-setup directories to mm-* prefix
+- #954 R32: fold procfs-meminfo into procfs::meminfo
+- #955 R33: fold 10 fs/fd sibling crates into fs umbrella
+- #956 R34: fold tmpfs+coredump+ptrace into fs umbrella
+- #957 R35: rename elf-load → exec, msi → arch-irq
+- #958 R36: fold mm-pmm-setup into pmm::setup
+- #959 R37: fold smp→cpu::smp, jbd2→ext4::jbd2
+- #960 R38: pull arm_abi+exec_stack+sig_dispatch into domain crates
+- #961 R39: move procfs_net into procfs crate
+- #962 R40: relocate hostname/trace/compat under syscalls/
+- #963 R41: group dev_*.rs under kernel/src/dev/
+- #964 R42: group sysv/posix_mq/futex under kernel/src/ipc/
+- #965 R43: group procfs files under kernel/src/procfs/
+- #966 R44: extract kernel/src/sched/ into sched::live (unblocks syscall fold)
+- #967 R45: drop unused vfs→syscall dep (handler fold blocked by cycle)
+- #968 R46: fold gic+its+lapic into arch-irq crate
+- #969 R47: group boot smokes under kernel/src/smoke/
+- #970 R48: delete smp.rs shim
+- #971 R49: sched_stop → sched::live::stop
+- #972 R50: smp_x86 → arch-irq::smp_x86
+- #973 R51: tty.rs → tty::live
+- #974 R52: ipc/* → ipc::live
+- #975 R53: user_as.rs → pmm::user_as
+- #976 R56: procfs body builders → procfs crate
+- #977 R57: extract virtio_net into drv-virtio-net crate
+- #978 R58: distribute sched syscall handlers → sched::syscalls
+- #979 D60: spec 53 — syscall layering (three-tier architecture)
+- #980 R60: flatten sched::syscalls::* → sched::* (spec 53§6)
+- #981 R61: sys_read pilot migration to three-tier per spec 53
+- #982 R62: migrate sys_write + sys_close per spec 53
+- #983 R63: sys_dup family + sys_lseek per spec 53
+- #984 R64: rename getpid/getppid/gettid per spec 53§11
+- #985 R65: mass-rename kernel_sys_* → sys_* per spec 53§11
+- #986 R66: vfs::fs::FileSystem trait + per-backend impls
+- #987 R67: vfs::mount table + unified vfs::lookup
+- #988 R68: collapse fs-syscall chains via vfs::mount::lookup
+- #989 R69: block device registry + ext4 rootfs registration
+- #990 R70: collapse fs.rs chains in chdir/access/statx/stat
+- #991 R71: route namei syscalls through mount-table trait
+- #992 R72: net Tier-2 pattern (sys_bind reference)
+- #993 R73: sys_connect → net::sock::connect
+- #994 R74: sys_listen + sys_accept → net::sock Tier-2
+- #995 R75: sys_sendto → net::sock::sendto
+- #996 R76: sys_recvfrom → net::sock::recvfrom
+
+### 2026-05-11 — 12 PRs (#997–#1008)
+- #997 R77: sys_mremap → vmm::AddressSpace::mremap
+- #998 R78: compress sys_fcntl to <50 LOC
+- #999 D80: refresh state.md for session end
+- #1000 B05: fix default-feature build (smoke gating + arch_irq anchor)
+- #1001 D81: bump state.md to PR #1000
+- #1002 B06: fix /dev/* and /proc/static lookup after R67 mount table
+- #1003 B07: mirror klog to virtio-gpu fbcon display
+- #1004 B08: fbcon bg-fill + try_lock so text is visible
+- #1005 F00: softirq — Linux-style deferred-work foundation
+- #1006 F01: virtio-input drain (first softirq consumer)
+- #1007 F02: runtime-loadable keymap (no hardcoded layout)
+- #1008 F03: Unicode codepoint keymap; ship UK/DE/FR/ES layouts
+
+### 2026-05-12 — 7 PRs (#1009–#1015)
+- #1009 fix(syscall-x86): preserve user-ABI args across singlestep C call
+- #1010 fix(wait4): return -ECHILD when no children; spawn serial getty
+- #1011 B13: ps shows real Linux PIDs (vtgid), not kernel TIDs
+- #1012 B14: ARM EL0 IRQ delivery — login + shell on aarch64
+- #1013 B15: ARM faccessat ABI map + sys_access fallback + ext4 perm bits
+- #1014 B16: sys_statx mask = STATX_BASIC_STATS + emit stx_blocks
+- #1015 B17: ARM statx ABI map fix (statx → statx, not openat)
+
+### 2026-05-13 — 1 PRs (#1016–#1016)
+- #1016 B19: state.md — ARM bare-name PATH exec narrowed to newfstatat ABI dispatch
+
+### 2026-05-14 — 5 PRs (#1017–#1021)
+- #1017 B21: lazy ext4 file inodes + real sys_newfstatat
+- #1018 B22: signal-dispatch — mask delivered sig + fix ARM ret offset
+- #1019 B24: Makefile — comma var must precede QEMU_FEATURES_* := expansion
+- #1020 D03: kernel-audit refresh + K1..K7 rollout plan
+- #1021 D04: sweep v1/v2/v2.x framing across remaining 26 specs
+
+### 2026-05-15 — 92 PRs (#1022–#1113)
+- #1022 feat(tty): honor ECHOE/ECHOK/ECHONL/ECHOCTL — close K1
+- #1023 feat(mm): file-backed mmap via FileBacking + per-inode page cache (K6)
+- #1024 doc(audit): mark K1/K2/K6 done after #1022 + #1023
+- #1025 feat(pipe,vfs): blocking pipe reads + O_NONBLOCK plumb (K3a)
+- #1026 feat(fcntl): POSIX + OFD record locks (K3b)
+- #1027 feat(procfs): real symlink inodes for /proc/self/{exe,cwd,root,fd} (K4)
+- #1028 feat(signal): coredump on SIG_DFL fatal signals (K5)
+- #1029 tool(accept): scenario-driven acceptance harness (K7)
+- #1030 doc: audit refresh post K3..K8 + state.md handoff
+- #1031 feat(getrandom): hardware RNG (RDRAND/RNDR) with LCG fallback
+- #1032 doc: sweep 'rides v2' framings out of code per CLAUDE.md rule 3
+- #1033 feat(ptrace): real PTRACE_SETOPTIONS + GETEVENTMSG storage
+- #1034 doc: sweep stale ptrace doc-comments + state.md K9..K15 punch list
+- #1035 feat(signal): RT signal queue (33..64) with siginfo_t multiplicity (K5)
+- #1036 feat(ptrace): real PTRACE_GETSIGINFO + SETSIGINFO (K9 tail)
+- #1037 feat(dl): IFUNC R_*_IRELATIVE relocs (K15)
+- #1038 doc(dl): mark IFUNC done; list real reloc set + open follow-ups
+- #1039 doc: audit refresh post K5/K9/K15 + session-end state.md handoff
+- #1040 feat(ptrace): real PTRACE_PEEKUSER for saved-frame regs (K9 tail)
+- #1041 feat(ptrace): SIGTRAP siginfo snapshot at syscall-stop (K9 tail)
+- #1042 feat(ptrace): per-arch PTRACE_GETFPREGS / SETFPREGS (K9 tail)
+- #1043 feat(lseek): wire vfs::File::seek through sys_lseek
+- #1044 feat(open,umask): apply umask to O_CREAT mode + honor user-supplied mode
+- #1045 feat(sched): real sched_getscheduler / sched_getparam policy + prio
+- #1046 feat(sysinfo): real RAM + procs from PMM + task registry
+- #1047 fix(open): honor O_TRUNC on the sys_open path too
+- #1048 feat(vdso): K14 substrate — per-arch ELF + map at execve + AT_SYSINFO_EHDR
+- #1049 fix(vdso): disable map until multi-PT_LOAD layout supported
+- #1050 feat(vdso): walk PT_LOAD program headers, map per-segment (K14 real)
+- #1051 feat(evdev): real /dev/input/event0 blocking reads via virtio-input queue (K13 partial)
+- #1052 feat(vdso): linker script + vvar page + fast-path clock_gettime (K14 fast)
+- #1053 feat(vvar): truly-live shared kernel frame for vDSO fast path (K14 live)
+- #1054 feat(landlock): real per-task ruleset chain + openat enforcement (K10)
+- #1055 feat(ptrace): real PTRACE_POKEUSER + extract PEEK/POKEUSER to ptrace_fpu
+- #1056 feat(time): real clock_nanosleep TIMER_ABSTIME
+- #1057 feat(dl): PT_TLS template parser + DTPMOD/DTPOFF/TPOFF relocs (K15 TLS)
+- #1058 feat(getrusage): real RUSAGE_CHILDREN via per-task cumulative_child_ns
+- #1059 feat(times): cutime from cumulative_child_ns
+- #1060 fix(proc): trim sys_times doc to keep file under cap
+- #1061 doc: sweep 'v1:' framing out of syscall docs
+- #1062 feat(poll): real timeout + ppoll timespec
+- #1063 feat(select): honor timeout via tick-yield loop with deadline
+- #1064 feat(landlock): extend check to link/linkat/rename* (K10 wider)
+- #1065 feat(landlock): TRUNCATE check on sys_truncate
+- #1066 feat(wait4): WUNTRACED/WCONTINUED stop+continue reporting
+- #1067 feat(stop): record originating stop signal
+- #1068 feat(setsockopt): real per-socket option storage
+- #1069 feat(ptrace): real INTERRUPT + LISTEN
+- #1070 feat(mincore): per-page residency via MMU translate
+- #1071 doc(state): checkpoint after F59..F64
+- #1072 feat(fcntl): real F_GETOWN/F_SETOWN
+- #1073 feat(priority): PRIO_PGRP + PRIO_USER
+- #1074 fix(proc): extract priority syscalls; restore spec-lint on main
+- #1075 feat(recvfrom): block + SO_RCVTIMEO + MSG_DONTWAIT
+- #1076 feat(accept): block + SO_RCVTIMEO + O_NONBLOCK
+- #1077 doc(state): checkpoint after F59..F68 + B25
+- #1078 feat(socket): honour SOCK_CLOEXEC + SOCK_NONBLOCK
+- #1079 feat(accept4): honour SOCK_CLOEXEC + SOCK_NONBLOCK
+- #1080 doc(audit): refresh after F59..F70 + B25
+- #1081 doc(audit): bulk-sweep stale 🟥 entries
+- #1082 doc(audit): xfer family already ✅
+- #1083 feat(sched): real sched_rr_get_interval
+- #1084 doc(audit): more 🟥 → ✅ sweep
+- #1085 doc(state): checkpoint after F59..F71 + D11..D16
+- #1086 doc(audit): threading already ✅
+- #1087 doc(audit): /proc + IPC tables already ✅
+- #1088 feat(sendto): block + SO_SNDTIMEO + MSG_DONTWAIT
+- #1089 doc(audit): K9 + K10 + K14 status roll-up
+- #1090 feat(eventfd2): honour EFD_CLOEXEC + EFD_NONBLOCK
+- #1091 feat(anon-fd): honour CLOEXEC+NONBLOCK on timerfd/signalfd/inotify
+- #1092 doc(state): checkpoint after F59..F74 + D11..D20
+- #1093 feat(dup3): honour O_CLOEXEC
+- #1094 feat(epoll_create1): honour EPOLL_CLOEXEC
+- #1095 feat(uffd+pidfd): honour create-time flags
+- #1096 feat(clone3): honour CLONE_PIDFD
+- #1097 fix(clone3): add SAFETY on clone_args read
+- #1098 feat(mq_open): honour O_CLOEXEC + O_NONBLOCK on fd
+- #1099 doc(state): checkpoint after F75..F79 + B26
+- #1100 fix(vvar): inc_ref on KernelFrame demand-page (PMM poison panic)
+- #1101 fix(stat): resolve relative paths against cwd in newfstatat/stat/statx
+- #1102 fix(sched): idle + tick_yield park via hlt/wfi (stop 100% host CPU)
+- #1103 feat(ext4): read symlink targets via Inode::readlink
+- #1104 fix(access+readlink): cwd resolve + real readlink fall-through
+- #1105 fix(chdir): resolve relative + . + .. via cwd; allow ext4 dirs
+- #1106 fix(perms): cwd resolve + ext4 fallback in chmod/chown family
+- #1107 fix(utime): cwd resolve + ext4 fallback
+- #1108 fix(openat): ext4 fallback for directory open + readlink trim
+- #1109 feat(ext4): readdir walks all directory blocks
+- #1110 refactor(syscalls): shared cwd path resolver
+- #1111 doc(state): checkpoint after shell-bringup segment
+- #1112 chore(cargo): profile.dev debug = line-tables-only (target dir 30G → 1.9G)
+- #1113 doc(state): EOD hand-off
+
+### 2026-05-16 — 9 PRs (#1114–#1123)
+- #1114 feat(ext4,syscall): mknodat + symlinkat write-side (F82)
+- #1115 feat(futex): real sys_futex_waitv (F83)
+- #1116 doc(state): checkpoint after F82 + F83
+- #1117 fix(arm-abi): *at family + chroot + utimensat shift bugs (B35)
+- #1118 fix(arm-abi): systematic rewrite of shifted/missing entries (B36)
+- #1119 fix(arm-abi): revert B36 systematic shift + re-apply only genuine fixes (B37)
+- #1120 feat(ext4): extent tree depth=1→2 promotion + depth=2 append (F84)
+- #1122 ci+disc: local pre-push boot-smoke (C74)
+- #1123 fix(x86): fork inherits live FS_BASE + hook bug (B38)
+
+### 2026-05-18 — 51 PRs (#1124–#1174)
+- #1124 fix(init): inittab uses /bin/login direct, skipping wedge'd getty (B39)
+- #1125 feat(ext4,syscall): O_TMPFILE + AT_EMPTY_PATH linkat (F85)
+- #1126 feat(net): virtio-net RX-poller kthread (F86)
+- #1127 feat(net): MSI-driven virtio-net RX via softirq (F87)
+- #1128 feat(net): netlink crate scaffold + AF_NETLINK socket (F88)
+- #1129 feat(net): netlink RTM_GETLINK for ip link show (F89)
+- #1130 feat(net): netlink RTM_GETADDR for ip addr show (F90)
+- #1131 feat(net): netlink RTM_GETROUTE for ip route show (F91)
+- #1132 feat(net): netlink iface-addr table + RTM_NEWADDR/DELADDR (F92)
+- #1133 feat(net): netlink route table + RTM_NEWROUTE/DELROUTE (F93)
+- #1134 doc(state): checkpoint after netlink trilogy (D26)
+- #1135 feat(net): genetlink (NETLINK_GENERIC) scaffold + CTRL family (F94)
+- #1136 feat(net): seed netlink table for loopback iface (F95)
+- #1137 feat(net): netfilter crate + NFNETLINK substrate (F96)
+- #1138 feat(net): nftables NEWCHAIN/GETCHAIN/DELCHAIN handlers (F97)
+- #1139 feat(net): nftables NEWRULE/GETRULE/DELRULE (F98)
+- #1140 doc(state): checkpoint after netlink+netfilter substrate (D27)
+- #1141 fix(test): serialize drv-virtio-input keymap tests (B41)
+- #1142 ci: pre-push hook gates on crates/drivers/* too (C75)
+- #1143 feat(bpf): real BPF_MAP_LOOKUP/UPDATE/DELETE_ELEM (F99)
+- #1144 doc(state): post-F99 checkpoint (D28)
+- #1145 feat(net): nftables NEWSET/GETSET/DELSET (F100)
+- #1146 feat(net): nftables NEWOBJ/GETOBJ/DELOBJ + GETGEN (F101)
+- #1147 doc(state): post-F101 checkpoint (D29)
+- #1148 feat(bpf): BPF_PROG_LOAD parses + stores insn array (F102)
+- #1149 feat(irq): per-vector MSI dispatch (F58)
+- #1150 feat(netfilter): wire eval() into net::deliver_rx (F104)
+- #1151 feat(netfilter): nft expression interpreter — immediate/cmp/payload (F105)
+- #1152 feat(netfilter): nft meta expression — LEN/NFPROTO/L4PROTO (F106)
+- #1153 feat(bpf): structural eBPF verifier — first slice (F107)
+- #1154 feat(bpf): minimal eBPF interpreter (F108)
+- #1155 feat(bpf): LDX_MEM_{B,H,W,DW} packet loads (F109)
+- #1156 feat(bpf): BPF_CALL helper dispatch (F110)
+- #1157 feat(netfilter): nft payload TRANSPORT base (F111)
+- #1158 feat(netfilter): nft set elements — NEWSETELEM/DELSETELEM/GETSETELEM (F112)
+- #1159 feat(netfilter): nft lookup expression — set-membership (F113)
+- #1160 doc(state): F104-F113 checkpoint (D30)
+- #1161 fix(netlink+netfilter): mask NLA_F_NESTED in nla_type compares (F114)
+- #1162 feat(drm): MODE_ATOMIC TEST_ONLY no-op (F115)
+- #1163 feat(drm): SET_CLIENT_CAP + master arb + auth no-ops (F116)
+- #1164 feat(drm): plane/CRTC/encoder/connector lookup stubs (F117)
+- #1165 feat(bpf): BPF_MAP_GET_NEXT_KEY (F118)
+- #1166 feat(netfilter): nft counter expression — per-rule stats (F119)
+- #1167 feat(netfilter): nft bitwise expression (F120)
+- #1168 feat(netfilter): nft byteorder expression (F121)
+- #1169 chore(netfilter): split nft_expr tests off (C76)
+- #1170 feat(net): broadcast UDP send falls back to first non-lo iface (F122)
+- #1171 doc(state): EOD checkpoint — F104-F122 (D31)
+- #1172 fix(arm-abi): rebuild aarch64→x86 syscall translation table (B42)
+- #1173 fix(execve): flag user-stack VMA GROWSDOWN per docs/31§5 (B43)
+- #1174 feat(userspace): stage dhcpcd 10.3.2 + launch from rcS (F123)
+
+### 2026-05-19 — 14 PRs (#1175–#1188)
+- #1175 feat(net): epoll waitqueue + AF_UNIX SEQPACKET socketpair (F125)
+- #1176 fix(vmm): raise GROWSDOWN auto-extend cap from 64 KiB to 8 MiB (D32)
+- #1177 doc(state): EOD hand-off — 5 PRs (B42, B43, F123, F125, D32) shipped
+- #1178 B44: deliver SIGSEGV on user-mode #GP instead of halting
+- #1179 F126: add TIOCGSID/TIOCNOTTY/TIOCM* — getty ioctl surface
+- #1180 D34: state hand-off — B44 + F126 shipped, dhcpcd hunt notes
+- #1181 B45: full-GPR dump on unhandled trap
+- #1182 F128: MADV_DONTNEED drops pages, keeps VMA
+- #1183 D35: state hand-off — 5 PRs shipped (B44, F126, B45, F128)
+- #1184 B46: execve resets caught signal handlers to SIG_DFL (root cause of dhcpcd loop)
+- #1185 F129: execve resets sigaltstack/robust_list/pdeath/itimer/posix_timers/rt_sigqueue
+- #1186 F130: tick_yield STI+HLT+CLI on x86 (fixes nanosleep alone-on-CPU hang); real getty
+- #1187 D36: state hand-off — real getty + nanosleep working
+- #1188 B47: COW-aware munmap, epoll_wait timeout, mkdir on /var+/tmp
+
+### 2026-05-23 — 10 PRs (#1189–#1198)
+- #1189 B48: SIOC* iface ioctls + AF_UNIX connect → ECONNREFUSED
+- #1190 D37: state hand-off — dhcpcd unblocked through SIOC*
+- #1191 F131: AF_PACKET / PF_PACKET SOCK_RAW (socket+bind+sendto)
+- #1192 F132: netlink fd shims + AF_UNIX chmod tolerance
+- #1193 D38: state hand-off — F131+F132 shipped
+- #1194 F133: sys_sendto netlink shim ordering + net_trace.rs debug hook
+- #1195 F134: sendto on AF_UNIX SOCK_SEQPACKET / STREAM socketpair
+- #1196 F135: NetDev::xmit_raw for L2-already-framed TX + virtio-net in qemu launcher
+- #1197 D39: state hand-off — F133/F134/F135; AF_PACKET TX MMIO hang documented
+- #1198 F136: new_user_pml4 clones from active CR3 (unblocks AF_PACKET TX)
+
+### 2026-05-24 — 23 PRs (#1199–#1221)
+- #1199 F137: AF_PACKET RX delivery into bound sockets
+- #1200 F138: SIOCSIFADDR updates virtio-net ARP responder IP
+- #1201 F139: fill sockaddr_ll in AF_PACKET recvfrom
+- #1202 F140: af_packet_smoke exercises RX path
+- #1203 F141: udhcpc as the v1 DHCP client
+- #1204 F142: AF_INET / AF_INET6 + SOCK_RAW admitted as UDP shell
+- #1205 D34: state hand-off — F137-F142 shipped, wait4 wedge next
+- #1206 F143: close wait4 missed-wakeup race
+- #1207 D35: state refresh — F137-F143 shipped, udhcpc image wedge open
+- #1208 F144: update prev vruntime in voluntary schedule() — fixes vfork/wait4 starvation
+- #1209 F145: drive virtio-net rx drain from timer tick
+- #1210 F146: DHCP end-to-end (udhcpc lease + IP)
+- #1211 F147: udhcpc lease handler script — system online after boot
+- #1212 F148: SIOCADDRT / SIOCDELRT populate kernel route table
+- #1213 F149: ARP resolver for outbound IPv4 + src-MAC snooping
+- #1214 F150: fully online — DHCP → routed UDP DNS round-trip
+- #1215 F151: TCP outbound smoke — 3WHS via eth0
+- #1216 F152: ARM lockstep — DHCP and outbound network work on aarch64
+- #1217 F153: AF_UNIX bind materialises tmpfs sock inode
+- #1218 F154: ARM tickless idle (daifclr+wfi+daifset in tick_yield)
+- #1219 F155: smoke-dhcp make target + DHCP-default opt-in retained
+- #1220 D36: hand-off — system fully online on both arches
+- #1221 D37: honest hand-off — TCP outbound not actually working
+
+### 2026-05-25 — 61 PRs (#1222–#1282)
+- #1222 F156: TCP outbound actually works (3WHS over slirp NAT)
+- #1223 F157: TCP read returns Eagain (not EOF) when buffer empty + connection live
+- #1224 D38: state.md hand-off — TCP outbound real, F156/F157 shipped
+- #1225 F158: Kernel-side blocking TCP read via per-entry waitq
+- #1226 F159: TCP retx + connect waitq + drop on max retries
+- #1227 F160: TCP accept blocking via per-listener waitq
+- #1228 F161: TCP close hook + TIME_WAIT reaper + UDP unbind
+- #1229 F162: UDP recvfrom blocking via per-port waitq
+- #1230 F163: SO_ERROR returns real per-conn errno (Errno enum, no magic ints)
+- #1231 R04 07: forbid magic numbers for typed ABI constants
+- #1232 C: spec-lint code/magic-errno (07§5 R04)
+- #1233 F164: TCP write blocking + SO_SNDBUF cap + write_nonblock
+- #1234 F165: TCP output() drains correctly + single-source retx_q
+- #1235 F166: shutdown() SHUT_RD/WR/RDWR + EPIPE on closed-side write
+- #1236 F167: SIGPIPE on closed-side write + typed Signum
+- #1237 D39: state.md hand-off — F156…F167 + R04 lint shipped
+- #1238 F168: signal-aware blocking returns -EINTR
+- #1239 F169: SO_RCVTIMEO/SO_SNDTIMEO honored via timer-wake infra
+- #1240 F170: AF_UNIX accept blocking via per-listener waitq
+- #1241 D40: state hand-off — Tier 1 network correctness complete (19 PRs)
+- #1242 F171: AF_UNIX recv per-pair waitqs
+- #1243 F172: AF_PACKET recvfrom per-socket waitq
+- #1244 F173: TCP MSS negotiation
+- #1245 F174: ICMP Dest Unreachable → SO_ERROR on UDP/TCP
+- #1246 F175: TCP_NODELAY / Nagle semantic
+- #1247 D41: state hand-off — Tier 2 substantially closed (26 PRs)
+- #1248 F176: SO_REUSEADDR honored at TCP listen
+- #1249 F177: ARP cache aging + periodic GC
+- #1250 F178: TCP window scaling (RFC 7323) + snd_wnd enforcement
+- #1251 F179: TCP out-of-order receive buffer
+- #1252 D42: state hand-off — correctness tier closed (33 PRs)
+- #1253 F183: hosted tests for F164-F179 network correctness
+- #1254 F179a: SACK option emit/consume + skip-sacked retx
+- #1255 F182: TCP Timestamps (RFC 7323) + PAWS
+- #1256 D43: state — full correctness tier + RFC 7323 + hosted tests (37 PRs)
+- #1257 F181: per-fd targeted epoll wakes
+- #1258 F180: IPv6 minimum-viable rx + ICMPv6 echo respond
+- #1259 F181a: UNIX/UDP/TCP/listener wake sites all targeted
+- #1260 F180a: IPv6 UDP binding + recv path (real, not stub)
+- #1261 F180b: TCP over IPv6
+- #1262 F180c: NDP cache + NS/NA dispatch
+- #1263 D44: state.md — F180a/b/c done
+- #1264 F184: per-iface MTU → advertised TCP MSS
+- #1265 F185: TCP Reno congestion control
+- #1266 F186: WSCALE=7 + recv-buf autotune
+- #1267 F187: CUBIC congestion control
+- #1268 F188: TCP_INFO getsockopt
+- #1269 F189: SCM_RIGHTS fd passing (AF_UNIX SOCK_DGRAM)
+- #1270 F190: ECN (RFC 3168)
+- #1271 F191: PMTUD v4 + v6
+- #1272 F192: listen backlog cap + SO_REUSEPORT
+- #1273 F193: TCP keepalive probes
+- #1274 F194: SO_LINGER abortive close
+- #1275 F195: IPv4 fragmentation reassembly
+- #1276 D45: network gap analysis
+- #1277 F196/F197: ssh path — vendor dropbear + FEAT_RNG probe + execveat AT_EMPTY_PATH
+- #1278 F198: sockets need O_RDWR so File::write doesn't EBADF
+- #1279 F199: ssh post-auth chain — ioctl sign-ext, Dentry path, fbdev precedence
+- #1280 F200: /dev/tty session-aware open + ctty tracking
+- #1281 F201 select-ready poll() on pipes and pty inodes
+- #1282 F202 sys_select consults inode.poll() — SSH exec relay works
+
+### 2026-05-26 — 4 PRs (#1283–#1286)
+- #1283 D203 state hand-off — SSH exec works after F201+F202
+- #1284 F203 trace catchable-SIGSEGV dispatch under debug-irq
+- #1285 fix(signals): place rt_sigframe above handler SP + skip x86 red zone (F203)
+- #1286 fix(arm): preserve user x9 across EL0 sync-exception dispatch (F204)
+
+### 2026-05-27 — 4 PRs (#1287–#1290)
+- #1287 F205+F206: ARM SSH channel-close end-to-end
+- #1288 C12: opt-in KVM accel for qemu x86
+- #1289 F208: PTY-mode SSH — sys_fstat aarch64 layout + /proc/self/fd absolute path
+- #1290 fix(x86): C13 KVM boot — bake RPL=3 into STAR; disarm LAPIC timer in device_map smoke
+
+### 2026-05-28 — 40 PRs (#1293–#1334)
+- #1293 feat: F210/F211 openssh-portable + CFS sleeper credit + Linux-PAM
+- #1294 feat: F213 SCM_RIGHTS over AF_UNIX SOCK_STREAM (openssh privsep PTY path)
+- #1295 fix: drop sock.kind lock before recursing into AF_UNIX cmsg handler
+- #1296 fix(pty): TIOCSCTTY seeds foreground_pgid → interactive ssh works
+- #1297 feat(bash): F216 vendor GNU bash 5.2.37 static-musl (both arches)
+- #1298 feat(sed): F217 vendor GNU sed 4.9 static-musl (both arches)
+- #1299 feat(coreutils): F218 vendor GNU coreutils 8.32 static-musl (both arches)
+- #1300 feat(grep): F219 vendor GNU grep 3.11 static-musl (both arches)
+- #1301 feat(tar): F220 vendor GNU tar 1.35 static-musl (both arches)
+- #1302 feat(make): F221 vendor GNU make 4.4.1 static-musl (both arches)
+- #1303 feat(gawk): F222 vendor GNU gawk 5.3.1 static-musl (both arches)
+- #1304 feat(findutils): F223 vendor GNU findutils 4.10.0 static-musl (both arches)
+- #1305 feat(diffutils): F224 vendor GNU diffutils 3.10 static-musl (both arches)
+- #1306 feat(patch): F225 vendor GNU patch 2.7.6 + tmpfs rename/unlink (both arches)
+- #1307 feat(bzip2): F226 vendor bzip2 1.0.8 static-musl (both arches)
+- #1308 feat(xz): F227 vendor xz-utils 5.6.3 static-musl (both arches)
+- #1309 fix(sched): B13 drop mm Arc at sys_exit (was leaked until reap)
+- #1310 fix(sched): B14 reap orphaned/abandoned zombies on every timer tick
+- #1311 fix(sched): B15 Linux-style reparent_children + drop non-Linux 500ms reap
+- #1312 feat(openssh): F229 wire PAM + zlib into openssh
+- #1313 feat(loader): F230 vendor real musl ld-musl-<arch>.so.1
+- #1314 feat(pam,ssh): F231 real PAM dlopen via dynamic sshd + pam_permit.so
+- #1315 fix(waitid): real si_status from wstat + /bin/exit_test smoke
+- #1316 feat(distro): F233 GNU bash dynamic against libc.so
+- #1319 feat(distro): F236 ARM /lib/libc.so for cross-musl DT_NEEDED
+- #1320 fix(sched): F237 clear SIGCHLD pending after wait4 last-reap
+- #1321 feat(pam): F239 ship userspace pam_unix.so (active wiring deferred)
+- #1322 doc(pam): F240 simplify pam_unix.c to PAM_AUTHTOK-only path
+- #1323 doc(pam): F241 pam_unix acct_mgmt impl + comment update
+- #1324 fix(clone,exit): F242 CLONE_SETTLS + CLONE_CHILD_CLEARTID kernel paths
+- #1325 fix(arch/x86_64): F243 wrmsr FS_BASE in context_switch — pthread works
+- #1326 doc(pam): F244 narrow task #14 to AF_UNIX privsep socketpair gap + add TASKS.md
+- #1327 feat(smoke): F245 socketpair_fork_probe — rules out basic AF_UNIX cross-process
+- #1328 F247: growable kernel heap via PMM grow hook (T16)
+- #1329 D03: close T16 (F247 vmalloc-equiv), open T17 (vim/ncurses)
+- #1330 F250: vendor ncurses 6.5 static-musl (T17 step 1)
+- #1331 F251: vim 9.1 static-musl + rootfs 16->32 MiB (T17 step 2)
+- #1332 F252: ship minimal terminfo db (T17 step 3)
+- #1333 F253: stage /bin/vim_smoke diagnostic (T17 step 4 partial)
+- #1334 F254: vendor less 643 static-musl (distro pager)
+
+### 2026-05-29 — 15 PRs (#1317–#1349)
+- #1317 feat(distro): F234 GNU coreutils/sed/grep/tar/etc all dynamic against libc.so
+- #1336 F256: wire vim_smoke into oxide-smokes harness (T17 done)
+- #1337 D04: close T17 in TASKS.md (vim end-to-end)
+- #1338 F257: sshd default PATH = /usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+- #1339 B15: NR_PIPE must not honor args.a1 as flags
+- #1340 B17: T11 ARM TCP CLOSE_WAIT leak — 3 kernel bugs in poll + AF_UNIX peer-EOF
+- #1341 F258: bash 5.2.37 as /bin/sh (drops busybox-ash)
+- #1342 D-roadmap: drop busybox, real distro programs, systemd-musl as PID 1
+- #1343 F259: util-linux 2.40.2 — D1 distro roadmap (drop busybox login/getty/mount/etc.)
+- #1344 F260: shadow-utils 4.16.0 — D2 (useradd/passwd/groupadd)
+- #1345 F261: procps-ng 4.0.5 — D3 (ps/top/free/vmstat/uptime/etc.)
+- #1346 F262: iproute2 6.10.0 — D4 (ip/ss/tc)
+- #1347 F263: iputils 20240117 — D5 (ping/tracepath/clockdiff/arping)
+- #1348 doc: production-distro plan + systemd-musl research cache
+- #1349 feat(cgroup): F265 cgroup v2 unified hierarchy (K1)
+
+### 2026-05-30 — 11 PRs (#1350–#1360)
+- #1350 feat(login): B18 console login end-to-end + smoke gate
+- #1351 feat(mm): MREMAP_DONTUNMAP (phase 14 P14-01)
+- #1352 fix(firmware): MADT GICC mpidr offset (ACPI 6.5)
+- #1353 feat(net): phase-15 acceptance smokes + AF_INET6 UDP loopback fixes
+- #1354 fix(vfs): mkdir of existing dir → EEXIST not EROFS
+- #1355 fix(cgroup): K1 cgroup v2 end-to-end + unify rmdir entry points
+- #1356 fix(pipe): signal-interruptible read/write (EINTR) + kernel pipe-capture probe
+- #1357 fix(signal): preserve interrupted syscall return value across handler (fixes $())
+- #1358 feat(procfs): dynamic /proc/mounts + /proc/<pid>/mountinfo (K2)
+- #1359 feat(mount): MS_BIND + propagation/remount flags (K2)
+- #1360 fix(statfs): real per-fs s_magic in statfs/fstatfs (systemd fs-type detection)
+
+### 2026-05-31 — 24 PRs (#1361–#1384)
+- #1361 feat(dev): standard /dev fd-link symlinks + open() dup semantics
+- #1362 feat(dev/proc): /dev fd-links + /proc/<pid>/fd realness + pgid vpid fix
+- #1363 feat(sysfs): real /sys backend + dynamic /sys/class/net (R3)
+- #1364 feat(proc): real /proc/cmdline via boot_cmdline transport (R4-1)
+- #1365 feat(proc): real /proc/stat — live processes + procs_running + btime (R4-2)
+- #1366 feat(proc): populate /proc/net/{tcp,udp} from live stack (R4-3)
+- #1367 feat(proc): populate /proc/net/unix from UNIX_REGISTRY (R4-4)
+- #1368 doc(tasks): R3+R4 progress — sysfs partial + procfs realness landed
+- #1369 feat(sysfs): /sys/class symlinks + cpu present/offline (R3 finish)
+- #1370 doc(tasks): R3 done (#1369)
+- #1371 feat(proc): /proc/<pid>/fdinfo/ — per-fd pos/flags/ino (R4-5)
+- #1372 feat(mount): /dev/shm + /run tmpfs in the unified mount table (R7)
+- #1373 doc(tasks): R7 done (#1372)
+- #1374 feat(boot): real cmdline from Limine EXECUTABLE_FILE + DTB bootargs (R4 close)
+- #1375 doc(tasks): R4 done
+- #1376 fix(sched): alarm/SIGALRM wakes a task parked in read() (B20)
+- #1377 feat(mount): mount-tree foundation — persistent mnt_id + real parent_id (K2)
+- #1378 feat(ext4): directory-inode lookup(name) — per-component child resolution (K2V stage 1)
+- #1379 feat(vfs): path_lookup component walker + dentry children cache (K2V stage 2)
+- #1380 doc: reorder K2V (foundation-first, verify-left) + working-discipline rules
+- #1381 test(ext4): verify-left resolution harness — path_lookup over a real ext4 image (K2V stage 3)
+- #1382 feat(vfs): FileSystem::root() — Superblock::root for mount-crossing (K2V stage 4)
+- #1383 feat(vfs): unified mount-crossing resolver (K2V stage 5a)
+- #1384 doc(state): V1-V5a merged; V6 plan + verify gates
+
+### 2026-06-01 — 96 PRs (#1385–#1480)
+- #1385 feat(vfs): path_lookup whole-path delegation for procfs-style fs (K2V stage 6a)
+- #1386 feat(vfs): stat family resolves via path_lookup — THE resolver (K2V stage 6b)
+- #1387 feat(vfs): open/openat resolve via path_lookup — THE resolver (K2V stage 6c)
+- #1388 feat(vfs): metadata syscalls resolve via path_lookup (K2V stage 6d)
+- #1389 feat(vfs): exec reads ELF via path_lookup (K2V stage 6e)
+- #1390 feat(vfs): readlink resolves via path_lookup (K2V stage 6f)
+- #1391 feat(vfs): inode-level mutation methods on ext4+tmpfs dirs (K2V stage 6g-a)
+- #1392 feat(vfs): namei mutations dispatch on parent inode via path_lookup (K2V stage 6g-b)
+- #1393 feat(mount): implement MS_MOVE + stage V7 plan (K2V stage 7-a)
+- #1394 feat(mount): bind-as-clone — mount root = source inode (K2V stage 7-b)
+- #1395 feat(mount): MS_REC recursive bind (K2V stage 7-c)
+- #1396 feat(mount): propagation peer-group ids (K2V stage 7-d)
+- #1397 feat(mount): stamp mounts with creating mount-ns (K2V stage 7/U2-a)
+- #1398 feat(mount): per-ns resolution + copy-on-unshare (K2V stage 7/U2-b)
+- #1399 fix(mount): umount detaches TABLE mounts; add unregister (K2V stage 7/U3-a)
+- #1400 feat(mount): tmpfs mounts into the unified per-ns table (K2V stage 7/U3-b)
+- #1401 feat(mount): MS_MOVE relocates the whole subtree (K2V stage 7/U4-a)
+- #1402 feat(mount): peer-group inheritance on bind (K2V stage 7/U4-b)
+- #1403 feat(mount): propagation event delivery (K2V stage 7/U4-c)
+- #1404 feat(mount): pivot_root — completes the docs/16§6 mount tree (K2V stage 7/U4-d)
+- #1405 doc(tasks): mark K2 + K3 + V7 DONE (completed by Track K2V)
+- #1406 fix(vfs): chroot actually confines path resolution
+- #1407 feat(tmpfs): symlink support (close K2V follow-up)
+- #1408 feat(mount): real new mount API fsopen/fsconfig/fsmount/move_mount (K6)
+- #1409 feat(mount): replace remaining new-mount-API stubs — open_tree/fspick/mount_setattr (K6)
+- #1410 feat(dev): /dev/kmsg write injects into the kernel log ring (K5)
+- #1411 feat(memfd): file sealing F_ADD_SEALS/F_GET_SEALS (K5)
+- #1412 feat(net): SO_PEERCRED returns real peer credentials (K5)
+- #1413 fix(uart): raise x86 write_byte spin-cap to ride out TCG back-pressure (CAT-smoke flake)
+- #1414 fix(ci): boot-x86_64 host build references kernel-only boot_cmdline
+- #1415 feat(netlink): NETLINK_KOBJECT_UEVENT broadcast + sysfs uevent trigger (K5)
+- #1416 test(netlink): verify RTM_GETLINK dump (K4)
+- #1417 feat(cgroup): pids controller counts threads (K1b)
+- #1418 feat(cgroup): cgroup.freeze actually freezes member tasks (K1b)
+- #1419 feat(cgroup): memory.max charges + enforces real committed memory (K1b)
+- #1420 doc(state): Track K foundation-sound surface closed; K→L fork
+- #1421 feat(sched): real timer-tick runtime accounting + weighted vruntime (S1)
+- #1422 feat(sched): dynamic per-task weight — nice + cgroup cpu.weight bite (S2)
+- #1423 feat(cgroup): cpu.max bandwidth throttling via freeze-on-quota (S3)
+- #1424 doc(state): scheduler+cgroup-cpu arc done (S1-S3); S4 SMP-blocked
+- #1425 feat(procfs): writable /proc/sys sysctls — systemd-sysctl applies (R5)
+- #1426 fix(smp): real x86 SMP=2 boot + periodic load balancer (S4a)
+- #1427 fix(arm): PSCI conduit HVC not SMC — unblocks arm SMP=2 (B50)
+- #1428 doc(state): SMP arc hand-off — x86 SMP=2 fixed, arm AP-start fixed; next arm AP participation
+- #1429 feat(arm): SMP AP scheduling-participation plumbing + GIC SGI (F326)
+- #1430 feat(arm): Limine aarch64 SMP — APs MMU-on, both arches gate at -smp 2 (F327)
+- #1431 doc(state): SMP done both arches; next cpuset
+- #1432 feat(sched): real CPU affinity — sched_setaffinity + balancer honors it (S4b)
+- #1433 feat(cgroup): cpuset.cpus applies CPU affinity to members (S4b)
+- #1434 feat(sched): per-AP periodic timer — APs preempt on own tick (S4a)
+- #1435 doc(state): scheduler/SMP/cgroup domain complete; next io controller or Track L
+- #1436 feat(cgroup): real io.stat accounting at the block layer (S4c)
+- #1437 doc(state): cgroup v2 complete; next Track L1 shared musl
+- #1438 doc: Track L1 done+verified (dynamic linking works both arches); next L2
+- #1439 feat(L2): cross-build libcap.so — first systemd shared dep
+- #1440 feat(L2): cross-build libzstd.so — systemd journal-compression dep
+- #1441 feat(L2): cross-build liblz4.so — systemd compression dep
+- #1442 feat(L2): cross-build libcrypt.so (libxcrypt) — real crypt() for shadow
+- #1443 feat(L2): cross-build libpcre2-8.so — systemd journal regex dep
+- #1444 feat(L2): cross-build libseccomp.so + kernel-header support
+- #1445 feat(L2): util-linux shared libs (libmount/libblkid/libuuid) — mandatory
+- #1446 refactor(xtask): data-driven L2 dep table (l2_deps.rs)
+- #1447 fix(smoke): bounded-retry boot gate for SMP=2 late-boot flake
+- #1448 feat(L2): cross-build libexpat.so — dbus XML parser dep
+- #1449 feat(L2): cross-build libdbus-1.so — mandatory systemd bus stack
+- #1450 feat(L2): cross-build libgpg-error.so — libgcrypt's dep
+- #1451 feat(L2): cross-build libgcrypt.so — systemd unconditional DEPENDS
+- #1452 feat(L2): cross-build libattr.so + libacl.so — xattr/ACL deps
+- #1453 feat(L2): cross-build libkmod.so — systemd-modules-load/udev dep
+- #1454 feat(L2): cross-build libssl + libcrypto (openssl 3.0.15) + rootfs/ESP bump
+- #1455 feat(L2): cross-build libunistring + libidn2 — systemd-resolved IDNA
+- #1456 doc(state): L2 complete (17 deps) — D6 systemd next
+- #1457 doc(blocker): root-cause arm openssl load-hang (synchronous-fault signals)
+- #1458 doc: impl recipe for catchable arm/x86 fault SIGILL (D6 blocker fix)
+- #1459 feat(arm): catchable SIGILL on EL0 undefined instruction — unblocks openssl on arm
+- #1460 doc(D6): systemd kickoff — fetch 259, validate toolchain, cross-file plan
+- #1461 build(D6): validated systemd 259 musl cross-build scaffold (libbasic builds)
+- #1462 build(D6): acl/attr EXPORT-strip + util-linux .pc include subdirs
+- #1463 build(D6): systemd core libs build on musl x86 (libsystemd-shared + libsystemd)
+- #1464 feat(D6): cross-build systemd libsystemd + libsystemd-shared, both arches
+- #1465 build(D6): systemd PID1 + systemctl + libsystemd-core cross-build both arches
+- #1466 feat(D6): stage + run systemd PID1 — systemd 259 executes on oxide both arches
+- #1467 doc(state): systemd PID1 executes both arches; next F350 init
+- #1468 fix(ci): pre-push gate tools/xtask changes (rebuild the rootfs)
+- #1469 chore: Cargo.lock pmm dep catch-up + arm-sigill recipe note
+- #1470 doc(D6): F350 recon — systemd PID1 boots into early init, hangs at mount_setup
+- #1471 fix(tty): /dev/console honors O_NONBLOCK on read (F350)
+- #1472 chore(xtask): add `xtask stats` code-metrics subcommand
+- #1473 feat(procfs,syscall): name_to_handle_at + /proc/<pid> magic symlinks (F350)
+- #1474 doc(state): F350 chroot gate passed
+- #1475 fix(tty,poll): /dev/console poll() reflects real input readiness (F350)
+- #1476 feat(systemd): build + stage systemd-executor binary (F350)
+- #1477 doc(state): F350 #5 hand-off — systemd needs unit tree staged
+- #1478 fix(epoll,fs): EPOLLET edge-triggering + signalfd/timerfd/eventfd poll() (F350)
+- #1479 feat(systemd): stage minimal unit tree so PID1 can load default.target (F350)
+- #1480 doc(state): F350 #5 done — systemd activating default.target
+
+### 2026-06-02 — 33 PRs (#1481–#1513)
+- #1481 fix(ext4): create_dir writes the new dir's . / .. block (F350)
+- #1482 fix(procfs): /proc/<pid> shows namespace PID not internal tid
+- #1483 feat(systemd): first-light default.target (drop basic.target requirement)
+- #1484 fix(vfs): mkdir EEXIST for existing path + materialize /sys/fs (systemd cgroup unblock)
+- #1485 fix(systemd): per-fs mount_id + inotify EAGAIN/poll — systemd reaches service start
+- #1486 feat(exec): systemd service exec-setup syscalls — PID1 boots to a shell
+- #1487 doc(state): systemd-PID1-to-shell milestone hand-off
+- #1488 doc(state): arm-systemd blocker + getty/login next
+- #1489 feat(systemd): console-getty.service — systemd PID1 reaches `oxide login:`
+- #1490 fix(boot/arm): enter PID1 at the dynamic-loader entry (systemd boots on arm)
+- #1491 feat(boot): systemd is now PID 1 — OXIDE boots its real init on both arches
+- #1492 doc(state): systemd-as-PID1 keystone milestone + open login-completion refinement
+- #1493 feat(rootfs): /bin coreutils applets are GNU coreutils, not busybox
+- #1494 doc(state): GNU coreutils /bin + next steps
+- #1495 refactor(xtask): split cmd_rootfs into rootfs.rs (main.rs was at 1000-cap)
+- #1496 feat(rootfs): /bin grep/sed/awk/find/tar are GNU, not busybox
+- #1497 feat(rootfs): /bin less/vi/gzip/gunzip are GNU/vim, not busybox
+- #1498 doc(state): GNU /bin userland + next tracks
+- #1499 feat(rootfs): pre-create /run/systemd runtime dirs for systemd
+- #1500 doc(state): keystone+GNU done; GRUB/python large-track assessment
+- #1501 build(python): vendor static-musl CPython 3.13.1 (both arches)
+- #1502 feat(python): stage CPython 3.13.1 at /usr/bin/python3 (both arches)
+- #1503 feat(python): _ssl + _hashlib via vendored static openssl (both arches)
+- #1504 feat(python): dynamic build → ctypes works (both arches)
+- #1505 fix(fstat): return real perms + uid/gid (clears systemd world-inaccessible spam)
+- #1506 fix(systemd): clear mount-option-probe + kbrequest boot warnings
+- #1507 fix(inotify): resolve watch paths via full VFS (clears 3 systemd warnings)
+- #1508 VFS dentry-keyed mounts + openat dirfd + live vDSO clock; netlink rtnl deferred (both arches reach login)
+- #1509 doc(state): post-#1508 hand-off + follow-ups
+- #1510 fix(netlink): reply nlmsg_pid = socket port_id — rtnl works, lo comes up (both arches login)
+- #1511 doc(state): netlink fixed + PID1-spin follow-up
+- #1512 fix: drain UnixMsgPair in recvfrom (stops PID1 spin) + x86 CPUID TSC freq — both arches reach usable login
+- #1513 build(bash): enable readline + history — interactive tab completion / line editing
+
+### 2026-06-03 — 11 PRs (#1514–#1524)
+- #1514 feat(boot): GRUB/Multiboot2 self-bootstrap boots to login (replaces Limine on x86_64)
+- #1515 chore(grub): login-smoke harness + serial-RX gap documented
+- #1516 doc(state): session hand-off — GRUB boots to login
+- #1517 feat(console): real fbcon font + interrupt-driven serial RX (I/O APIC)
+- #1518 fix(sched): wake idle epoll_wait on SIGCHLD + timerfd (getty respawn)
+- #1519 feat(fbcon): route console output to the framebuffer (visual console)
+- #1520 revise: 26 R79 — cgroup.events IN_MODIFY notification contract + lifecycle
+- #1521 feat(cgroup): cgroup.events IN_MODIFY on populated/frozen transitions (26§4.1)
+- #1522 fix(sched): honor WNOWAIT in waitid — stop reaping on peek
+- #1523 fix(pidfd): implement PIDFD_GET_INFO — getty respawn works on both arches
+- #1524 doc(state): getty respawn fixed; limine+display next
+
+---
+
+## Session — GRUB-on-both-arches (PR #1525, branch `F376-arm-selfbootstrap`) — 2026-06-03
+
+**Subject**: Limine-free GRUB boot on aarch64 (arm64 EFI stub) + a sweep of userspace/syscall/MM correctness bugs surfaced by running real distro programs (systemd, PAM, CPython, bash) on both arches; all compiler warnings to zero.
+
+### Boot — GRUB on both arches
+- **arm64 EFI stub** (`crates/arch/boot-aarch64/src/selfboot.rs`): the kernel Image is now a dual **booti + PE32+** artifact (code0 = `add x13,x18,#0x16` ≡ "MZ"; offset 60 → PE header). GRUB's `linux` loads it under OVMF; `efi_stub_setup` finds the DTB via `gFdtTableGuid`, GetMemoryMap + ExitBootServices, drops the MMU, joins the trampoline. `_arm_entry` discriminates EFI (MMU-on) vs booti (MMU-off) via `SCTLR_EL1.M`.
+- GIC **Group-1** programming (reset leaves SPIs/PPIs Group 0 → masked FIQ; firmware used to set it), **boot-cpu-id** fallback when ACPI/MADT absent (was gating off all UART-RX drain → no login input), **4 KiB-page KB→load_base mapping** (GRUB loads at 4 KiB alignment, not 2 MiB), D-cache PoC flush before MMU drop (GRUB copies the image cached).
+- Vendored `arm64-efi` GRUB modules into `vendor/grub/` (`tools/fetch-grub.sh`); `xtask grub --arch aarch64` builds the EFI ISO. `make qemu-{arm,x86}` default to GRUB; Limine demoted to `qemu-*-limine`.
+- Verified: `make smoke-x86` / `smoke-arm` both reach `oxide login:` via GRUB; interactive login (alice → uid=1000) on the self-boot path.
+
+### Userspace / syscall / MM fixes
+- **`close_range`** parsed first/last as `i32` → `close_range(3, ~0U)` returned EINVAL → systemd/bash looped `close()` up to RLIMIT_NOFILE (524288) per fork-exec → slow/"broken" getty respawn + sluggish spawns. Now unsigned.
+- `AT_EMPTY_PATH` honored in `fchmodat`/`fchownat` (systemd's `/dev/console` ownership reset; was "Invalid argument" every boot).
+- aarch64 **TLB flush on munmap/madvise/COW** (was `#[cfg(x86_64)]`-only → stale entries; COW silently broken on arm).
+- CPython rebuilt `--prefix=/usr` (stdlib zip resolves; `python3 -c`/scripts run); libpam rebuilt without `PAM_DEBUG` (console trace flood gone).
+- Restored virtio-gpu/gtk on the arm launchers (had regressed to serial-only).
+
+### Hygiene
+- **All compiler warnings → 0 on both arches**, by hand (arch-conditional symbols cfg-gated, not deleted); declared the undeclared `hosted`/`debug-modules` Cargo features.
+- Per-arch rootfs disk images gitignored (32 MiB committed / ~128 MiB rebuilt — over GitHub's 100 MiB limit; regenerated by `xtask rootfs`).
+
+### Open (queued, not in this PR)
+- Interactive `python3` segfault — musl mallocng `a_crash` (heap corruption from a kernel MM gap); scripts/`-c`/piped all work, only the tty REPL crashes.
+- busybox removal, full Limine removal, docs/55 display.
