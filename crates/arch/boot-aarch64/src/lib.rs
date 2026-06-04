@@ -445,8 +445,14 @@ unsafe fn build_boot_info() -> BootInfo {
     unsafe { build_selfboot_memmap(&mut info); }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    // SMP=1: no Limine SMP response; leave smp_info_array/smp_count/
-    // bsp affinity at 0 (the no-Limine UP state).
+    // ACPI RSDP from the EFI config table (efi_stub) → the kernel decodes
+    // MCFG (PCI ECAM → virtio-gpu/display) + MADT. 0 on the booti/-kernel
+    // path (which uses the DTB instead). The kernel reads `rsdp_pa` AS A VA
+    // (only the XSDT walk re-adds HHDM), so surface the HHDM-mapped VA, not
+    // the raw physical — else it faults reading the bare PA. Legacy smp_*
+    // fields stay 0 (APs start via PSCI in bring_up_aps_psci).
+    let efi_rsdp = selfboot::EFI_RSDP_PA.load(core::sync::atomic::Ordering::Acquire);
+    info.rsdp_pa = if efi_rsdp != 0 { selfboot::ARM_SELFBOOT_HHDM + efi_rsdp } else { 0 };
     info
 }
 

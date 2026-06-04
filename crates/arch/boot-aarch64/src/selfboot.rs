@@ -48,6 +48,15 @@ pub static SB_SELFBOOT_FLAG: AtomicU64 = AtomicU64::new(0);
 #[no_mangle]
 pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
 
+/// ACPI RSDP physical address found in the EFI configuration table by
+/// `efi_stub_setup` (gEfiAcpi20TableGuid), or 0 (booti/`-kernel` path, or no
+/// ACPI). `build_boot_info` surfaces it as `BootInfo.rsdp_pa` so the kernel
+/// decodes RSDP→XSDT→MCFG (PCI ECAM) + MADT — without it the EFI/GRUB arm
+/// path has neither DTB nor ACPI, so PCI never enumerates (no GPU/display)
+/// and CPUs can't be counted. Limine used to surface this; we lost it.
+#[no_mangle]
+pub static EFI_RSDP_PA: AtomicU64 = AtomicU64::new(0);
+
 /// True when we entered via the self-bootstrap Image trampoline.
 /// # C: O(1)
 pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
@@ -59,6 +68,15 @@ pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
 const FDT_TABLE_GUID: [u8; 16] = [
     0xd5, 0x21, 0xb6, 0xb1, 0x9c, 0xf1, 0xa5, 0x41,
     0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0,
+];
+
+/// EFI ACPI 2.0 config-table GUID (gEfiAcpi20TableGuid,
+/// 8868e871-e4f1-11d3-bc22-0080c73c8881) in EFI mixed-endian byte order.
+/// Its VendorTable pointer is the ACPI RSDP physical address.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const ACPI_20_TABLE_GUID: [u8; 16] = [
+    0x71, 0xe8, 0x68, 0x88, 0xf1, 0xe4, 0xd3, 0x11,
+    0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81,
 ];
 
 /// EFI-stub bring-up, called from `_arm_entry` when entered MMU-on (GRUB
@@ -86,21 +104,29 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         let num_entries   = *(systab.add(0x68) as *const u64);
         let cfg_table     = *(systab.add(0x70) as *const *const u8);
 
-        // Find the FDT config-table entry (24 bytes each: 16-byte GUID +
-        // 8-byte VendorTable pointer).
+        // Walk the config table (24 bytes each: 16-byte GUID + 8-byte
+        // VendorTable pointer) for BOTH the FDT and the ACPI 2.0 RSDP. Don't
+        // break early — UEFI may carry either or both, and we want each.
         let mut dtb: u64 = 0;
+        let mut rsdp: u64 = 0;
         let mut i: u64 = 0;
         while i < num_entries {
             let ent = cfg_table.add((i * 24) as usize);
-            let mut hit = true;
+            let mut fdt_hit = true;
+            let mut acpi_hit = true;
             let mut k = 0usize;
             while k < 16 {
-                if *ent.add(k) != FDT_TABLE_GUID[k] { hit = false; break; }
+                let b = *ent.add(k);
+                if b != FDT_TABLE_GUID[k]  { fdt_hit = false; }
+                if b != ACPI_20_TABLE_GUID[k] { acpi_hit = false; }
                 k += 1;
             }
-            if hit { dtb = *(ent.add(16) as *const u64); break; }
+            if fdt_hit  { dtb  = *(ent.add(16) as *const u64); }
+            if acpi_hit { rsdp = *(ent.add(16) as *const u64); }
             i += 1;
         }
+        // Publish the RSDP for build_boot_info (FDT goes back in x0).
+        EFI_RSDP_PA.store(rsdp, core::sync::atomic::Ordering::Release);
 
         // GetMemoryMap @ bs+0x38, ExitBootServices @ bs+0xE8.
         type GetMemoryMapFn =
