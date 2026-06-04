@@ -32,12 +32,33 @@ pub struct ApContext {
     pub online_signal: u64,
 }
 
-/// HHDM offset (`_sb_ttbr1_l0[256]` identity-maps phys 0..512 GiB here) and
-/// kernel-image base. The PSCI driver uses HHDM to turn a kernel-heap VA
-/// into the physical address an AP reads MMU-off; KERNEL_BASE turns a
-/// linked code VA into its load-time physical address.
-const HHDM_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+/// Kernel-image base: turns a linked code VA into its load-time physical
+/// address (`phys = VA - KERNEL_BASE + load_base`, image maps KB→load_base).
 const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+
+/// Translate a kernel VA to its physical address via the MMU (AT S1E1R +
+/// PAR_EL1). Robust regardless of which kernel mapping (image-linear, HHDM,
+/// vmalloc) backs the VA — the boot CPU asks the page tables. Returns 0 on
+/// a translation fault.
+/// # SAFETY: `va` is a mapped kernel VA; `at s1e1r` + `mrs par_el1` only read
+/// translation state.
+/// # C: O(1)
+unsafe fn va_to_pa(va: u64) -> u64 {
+    let par: u64;
+    // SAFETY: AT S1E1R does a stage-1 EL1 read translation of `va` into
+    // PAR_EL1; no memory is accessed. isb orders the AT before the PAR read.
+    unsafe {
+        core::arch::asm!(
+            "at s1e1r, {v}",
+            "isb",
+            "mrs {p}, par_el1",
+            v = in(reg) va, p = out(reg) par,
+            options(nostack, preserves_flags),
+        );
+    }
+    if par & 1 != 0 { return 0; } // PAR_EL1.F: translation fault
+    (par & 0x000F_FFFF_FFFF_F000) | (va & 0xFFF)
+}
 /// MPIDR_EL1 affinity mask (Aff0..Aff3), for BSP-vs-AP identity compares.
 const MPIDR_AFF_MASK: u64 = 0xFF_00FF_FFFF;
 
@@ -231,6 +252,12 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
         core::ptr::write_volatile(pc, aff0);
         crate::ArmCpuOps::set_percpu_base(c.percpu_base as *mut u8);
     }
+    #[cfg(feature = "debug-irq")]
+    {
+        klog::write_raw(b"[ap] entered ap_main aff=");
+        klog::write_dec_u64(aff0 as u64);
+        klog::write_raw(b"\n");
+    }
     // Vector table (HAL-local) so this PE can take exceptions/IRQs.
     // SAFETY: AP at EL1, IRQs masked; install_default writes VBAR_EL1.
     unsafe { crate::vbar::install_default(); }
@@ -248,6 +275,12 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     }
     // Mark ourselves online via the boot CPU's cpu::smp::ap_arrived.
     let _ = cpu::smp::ap_arrived();
+    #[cfg(feature = "debug-irq")]
+    {
+        klog::write_raw(b"[ap] online aff=");
+        klog::write_dec_u64(aff0 as u64);
+        klog::write_raw(b"\n");
+    }
     // Unmask IRQs (clear DAIF.I) so resched SGIs are delivered.
     // SAFETY: VBAR + GIC CPU interface installed above; daifclr #2 clears the IRQ mask at EL1.
     unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)); }
@@ -339,9 +372,12 @@ pub unsafe fn bring_up_aps_psci() -> usize {
         // SAFETY: bb is a fresh heap allocation; clean its bytes to PoC so the
         // AP (caches off) reads the boot block from RAM.
         unsafe { clean_dcache_to_poc(bb_va, core::mem::size_of::<ApBootBlock>()); }
-        // Heap is HHDM-linear (PMM pool VA = hhdm + base_pa), so the block's
-        // physical address — what the AP reads MMU-off — is VA - HHDM_OFFSET.
-        let bb_pa = bb_va - HHDM_OFFSET;
+        // The kernel heap lives in the kernel-image high half (not HHDM), so
+        // VA-HHDM gives garbage. Translate the boot block's kernel VA to its
+        // physical address via the MMU (AT S1E1R) — what the AP reads MMU-off
+        // through the identity map.
+        // SAFETY: bb_va is a live mapped kernel VA; AT s1e1r reads PAR_EL1 only.
+        let bb_pa = unsafe { va_to_pa(bb_va) };
         // SAFETY: PSCI conduit configured (HVC on QEMU virt); entry_pa is the
         // trampoline's load-time phys; bb_pa is cleaned and identity-mapped.
         let st = unsafe { crate::psci::cpu_on(mpidr, entry_pa, bb_pa) };

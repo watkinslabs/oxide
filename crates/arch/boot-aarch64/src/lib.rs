@@ -347,24 +347,31 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 unsafe fn read_dtb_memory(pa: u64) -> Option<(u64, u64)> {
     if pa == 0 { return None; }
     let va = selfboot::ARM_SELFBOOT_HHDM + pa;
-    // SAFETY: HHDM maps phys 0.. ; read 8 bytes to learn totalsize.
-    let head = unsafe { core::slice::from_raw_parts(va as *const u8, 8) };
-    let ts = dtb::parse_header(head).ok()?.totalsize as usize;
-    if ts == 0 || ts > 4 * 1024 * 1024 { return None; }
-    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped.
+    // SAFETY: dtb_totalsize reads magic+totalsize from the HHDM-mapped header.
+    let ts = unsafe { dtb_totalsize(pa) } as usize;
+    if ts < 40 || ts > 4 * 1024 * 1024 { return None; }
+    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped. The full
+    // blob (not an 8-byte prefix) is what dtb::parse_header needs to pass its
+    // length checks inside first_memory_region.
     let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
     dtb::first_memory_region(blob)
 }
 
-/// DTB header totalsize at phys `pa` (HHDM-mapped); 0 on failure.
-/// # SAFETY: `pa` bootloader DTB pointer.
+/// DTB `totalsize` at phys `pa` (HHDM-mapped); 0 if the magic is wrong.
+/// Reads magic (offset 0) + totalsize (offset 4) directly — `dtb::parse_header`
+/// can't be used here because it requires the FULL blob (its `totalsize <=
+/// len` check rejects a header-only slice), and we need the size to know how
+/// much to map. 8 bytes is enough for magic+totalsize.
+/// # SAFETY: `pa` is the bootloader DTB pointer; the 8-byte read is HHDM-mapped.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn dtb_totalsize(pa: u64) -> u64 {
     let va = selfboot::ARM_SELFBOOT_HHDM + pa;
-    // SAFETY: HHDM-mapped; 8-byte header read.
+    // SAFETY: HHDM-mapped; read the 8-byte magic+totalsize prefix.
     let head = unsafe { core::slice::from_raw_parts(va as *const u8, 8) };
-    dtb::parse_header(head).map(|h| h.totalsize as u64).unwrap_or(0)
+    let magic = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+    if magic != dtb::FDT_MAGIC { return 0; }
+    u32::from_be_bytes([head[4], head[5], head[6], head[7]]) as u64
 }
 
 /// Publish the PSCI AP-startup parameters to `hal_aarch64::smp` before
