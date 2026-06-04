@@ -59,33 +59,22 @@ ci: lint test build build-debug
 
 # `debug-boot` is required for the boot UART sink to install (without
 # it, klog drops everything — including /dev/console writes from
-# userspace, so login never appears). It also enables operational-
-# pulse log lines like `[INFO] boot: kernel ready, halting` so you
-# can tell the kernel is alive while waiting for the login prompt.
-# `debug-sched` is intentionally excluded — that's the per-syscall
-# trace flood. FEATURES=... appends extras (e.g. FEATURES=debug-irq).
-comma := ,
-QEMU_FEATURES_X86 := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
-QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
+# userspace, so login never appears). The GRUB targets (`xtask grub`)
+# force `debug-boot` themselves; the `qemu-*-debug` targets pass
+# `--features debug-all` directly.
 
-# SMP CPU count for qemu (default 1). The boot-smoke gate sets SMP=2 so
-# AP bring-up + the periodic load balancer are exercised every push.
+# SMP CPU count for qemu (default 1). The GRUB/self-boot paths are UP
+# (no bootloader starts APs and the kernel doesn't PSCI-CPU_ON them
+# yet), so SMP stays 1; bump explicitly once AP bring-up lands.
 SMP ?= 1
 
-# Default boot path = GRUB on both arches (Limine removed, F376). x86:
-# multiboot2-loads the kernel ELF. arm: OVMF→GRUB→`linux` loads the EFI-
-# stub Image. The Limine path stays as `qemu-{x86,arm}-limine` fallback.
+# Boot path = GRUB on both arches (F376). x86: multiboot2-loads the
+# kernel ELF. arm: OVMF→GRUB→`linux` loads the EFI-stub Image.
 qemu-x86:
 	$(XTASK) grub --arch x86_64 --smp $(SMP)
 
 qemu-arm:
 	$(XTASK) grub --arch aarch64 --smp $(SMP)
-
-# Legacy Limine UEFI boot (pre-F376). Kept until Limine is fully removed.
-qemu-x86-limine:
-	$(XTASK) qemu --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
-qemu-arm-limine:
-	$(XTASK) qemu --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
 
 # Aliases for the GRUB targets (back-compat with existing smoke scripts).
 qemu-x86-grub: qemu-x86

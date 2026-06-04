@@ -18,8 +18,7 @@ KERNEL_BASE = 0xFFFFFFFF80000000;
  * trips "segment crosses 4 GiB border". AT() below pins every section's
  * LMA to KERNEL_PHYS + (VMA - KERNEL_BASE) — a low, under-4-GiB image
  * GRUB can load. 2 MiB clears the low 1 MiB BIOS/legacy region and the
- * GRUB-occupied area below it. Limine ignores p_paddr (it maps by VMA),
- * so this is invisible to the Limine path. */
+ * GRUB-occupied area below it. */
 KERNEL_PHYS = 0x200000;
 
 SECTIONS {
@@ -28,8 +27,8 @@ SECTIONS {
 
     /* Multiboot2 header: GRUB scans the first 32 KiB of the file for the
      * magic, so this section comes first (right after the ELF headers).
-     * KEEP-retained against --gc-sections. The self-bootstrap path
-     * (GRUB loads our kernel directly); Limine ignores it. */
+     * KEEP-retained against --gc-sections. GRUB loads the kernel
+     * directly via this header. */
     .multiboot2_header ALIGN(8) : AT(ADDR(.multiboot2_header) - KERNEL_BASE + KERNEL_PHYS) {
         __multiboot2_header_start = .;
         KEEP(*(.multiboot2_header))
@@ -53,21 +52,6 @@ SECTIONS {
         __rodata_start = .;
         *(.rodata .rodata.*)
         __rodata_end = .;
-    }
-
-    /* Limine protocol request markers per `36§3`. Bootloader scans
-     * for magic header words before kernel entry; section must be
-     * KEEP-retained even with --gc-sections. ALIGN(4K) so this
-     * section starts a fresh PT_LOAD page — Limine rejects ELFs
-     * whose PT_LOADs share a page across permission classes
-     * (`.rodata` is R-only; this lives with `.data` in RW). */
-    .limine_requests ALIGN(4K) : AT(ADDR(.limine_requests) - KERNEL_BASE + KERNEL_PHYS) {
-        __limine_requests_start = .;
-        KEEP(*(.limine_requests.start))
-        KEEP(*(.limine_requests))
-        KEEP(*(.limine_requests.end))
-        KEEP(*(.limine_requests.*))
-        __limine_requests_end = .;
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_BASE + KERNEL_PHYS) {

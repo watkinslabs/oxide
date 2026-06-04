@@ -6,7 +6,8 @@ publish = false
 license = "MPL-2.0"
 
 # Boot-stub → kernel handoff types per `36`. Parsed by per-arch boot
-# stubs (Limine on x86_64, EDK2/U-Boot DTB on aarch64) and consumed
+# stubs (GRUB multiboot2 on x86_64, GRUB EFI-stub / U-Boot DTB on
+# aarch64) and consumed
 # by the kernel + every domain crate that needs the memmap, HHDM
 # offset, RSDP, SMP info, or boot-time entropy. Pure types — no
 # allocator, no syscall, no logging — so it sits at the shared

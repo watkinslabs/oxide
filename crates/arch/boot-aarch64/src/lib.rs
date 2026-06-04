@@ -19,7 +19,6 @@ extern crate alloc;
 extern crate std;
 
 pub mod dtb;
-pub mod limine;
 pub mod pl011;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub mod selfboot;
@@ -74,99 +73,6 @@ mod semihost {
     }
 }
 
-/// Limine base-revision marker per Limine v12 protocol. Limine scans
-/// `.limine_requests` for this 3-word magic and requires revision ≥ 6
-/// on aarch64; revision 0 is rejected. Values are protocol-stable
-/// across Limine 9..12. The marker MUST appear at the very start of
-/// `.limine_requests`; we land it via the `.start` subname which the
-/// linker places before the rest.
-#[used]
-#[link_section = ".limine_requests.start"]
-static LIMINE_BASE_REVISION: [u64; 3] = [
-    0xf9562b2d5c95a6c8,
-    0x6a7b384944536bdc,
-    6,
-];
-
-/// Limine v9+ requests-region markers. Without these v12+ may
-/// silently skip request scanning. Mirror the x86_64 boot crate.
-#[used]
-#[link_section = ".limine_requests.start"]
-static LIMINE_REQUESTS_START: [u64; 4] = limine::REQUESTS_START_MARKER;
-
-#[used]
-#[link_section = ".limine_requests.end"]
-static LIMINE_REQUESTS_END: [u64; 2] = limine::REQUESTS_END_MARKER;
-
-/// HHDM request slot per `36§3`. The bootloader writes a non-null
-/// response pointer here before kernel handoff; `_start_rust` reads
-/// `(*response).offset` to learn where Limine mapped phys memory.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_HHDM: limine::RequestHeader<limine::HhdmResponse>
-    = limine::RequestHeader {
-        id:       limine::HHDM_ID,
-        revision: limine::REVISION_0,
-        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-/// MEMMAP request slot per `36§3`.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_MEMMAP: limine::RequestHeader<limine::MemmapResponse>
-    = limine::RequestHeader {
-        id:       limine::MEMMAP_ID,
-        revision: limine::REVISION_0,
-        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-/// RSDP request slot per `36§3`. ACPI may not be present on every
-/// arm platform; the response stays null in that case.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_RSDP: limine::RequestHeader<limine::RsdpResponse>
-    = limine::RequestHeader {
-        id:       limine::RSDP_ID,
-        revision: limine::REVISION_0,
-        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-/// EXECUTABLE_FILE / KERNEL_FILE — Limine 12 fills one of the two;
-/// `capture_cmdline_from_limine` consults both. Provides the bootloader-
-/// supplied cmdline (Limine config `cmdline: …` line) before falling
-/// back to DTB /chosen/bootargs.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_EXECUTABLE_FILE:
-    limine::RequestHeader<limine::ExecutableFileResponse>
-    = limine::RequestHeader {
-        id:       limine::EXECUTABLE_FILE_ID,
-        revision: limine::REVISION_0,
-        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_KERNEL_FILE:
-    limine::RequestHeader<limine::ExecutableFileResponse>
-    = limine::RequestHeader {
-        id:       limine::KERNEL_FILE_ID,
-        revision: limine::REVISION_0,
-        response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-/// SMP request (aarch64). Limine starts each AP at our `goto_address`
-/// MMU-on at EL1 with the kernel page tables — so APs can enter a
-/// higher-half VA directly (`13§11`), unlike a bare PSCI CPU_ON.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_SMP: limine::SmpRequestAArch64 = limine::SmpRequestAArch64 {
-    id:       limine::SMP_ID,
-    revision: limine::REVISION_0,
-    response: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    flags:    0,
-};
-
 // Per `04§4.0` (R06): every klog::* call site in this crate sits
 // behind `debug-boot` — UART sink install, CPU/MMU dump, byte
 // emit. Default builds emit zero log bytes; the call sites are
@@ -185,15 +91,11 @@ use sync::{Spinlock, Tty as UartClass};
 use pl011::{Pl011, PL011_VIRT_BASE};
 
 // ---------------------------------------------------------------------------
-// Boot-time klog sink. v1: ARM semihosting putc.
-//
-// Limine v12 with base revision ≥ 6 maps only RAM into HHDM, not
-// device MMIO (`common/protos/limine.c` line ~205, "Map 0->4GiB to
-// HHDM if base revision < 3"). So PL011 phys `0x0900_0000` has no
-// kernel-VA mapping at handoff. Real PL011 access requires our own
-// device-page mapping, which is VMM territory and waits on specs
-// `06`/`13`/`21` freezing. Until then, semihosting is the only
-// sink that works regardless of paging state.
+// Boot-time klog sink. The self-bootstrap trampoline maps an HHDM
+// device block over phys 0, so the PL011 at `0x0900_0000` is reachable
+// at `ARM_SELFBOOT_HHDM + 0x0900_0000`; `boot_emit_pl011` drives it.
+// ARM semihosting putc (`boot_emit`) remains as a paging-agnostic
+// fallback sink for environments where the device block is absent.
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "debug-boot")]
@@ -239,7 +141,7 @@ fn now_ns_aarch64() -> u64 {
 }
 
 /// Boot-time CPU identification log. Reads MIDR_EL1 and the MMU
-/// control registers Limine programmed before handoff.
+/// control registers the boot trampoline programmed before handoff.
 /// # C: O(1)
 #[cfg(feature = "debug-boot")]
 fn log_cpu_info() {
@@ -262,7 +164,7 @@ fn log_cpu_info() {
 use core::cell::UnsafeCell;
 use kernel::{BootInfo, BootMemRegion};
 
-/// BSS-resident storage for the parsed Limine memmap. ~6 KiB cost
+/// BSS-resident storage for the parsed DTB memmap. ~6 KiB cost
 /// (256 entries × 24 B); QEMU virt rarely exceeds 16 entries.
 const MAX_BOOT_REGIONS: usize = 256;
 #[repr(C, align(8))]
@@ -327,48 +229,6 @@ unsafe impl Sync for CmdlineStorage {}
 static CMDLINE_STORAGE: CmdlineStorage =
     CmdlineStorage(UnsafeCell::new([0u8; CMDLINE_BUF_LEN]));
 
-/// Read Limine's EXECUTABLE_FILE (or legacy KERNEL_FILE) response and
-/// publish the cmdline via `kernel::boot_cmdline::set`. No-op if
-/// Limine didn't fill either slot — the DTB fallback runs next.
-/// # SAFETY: boot-only, single-CPU; CMDLINE_STORAGE is the sole writer.
-/// # C: O(cmdline_len)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn capture_cmdline_from_limine() {
-    let mut resp_ptr = LIMINE_EXECUTABLE_FILE
-        .response.load(core::sync::atomic::Ordering::Acquire);
-    if resp_ptr.is_null() {
-        resp_ptr = LIMINE_KERNEL_FILE
-            .response.load(core::sync::atomic::Ordering::Acquire);
-    }
-    if resp_ptr.is_null() { return; }
-    // SAFETY: bootloader wrote valid ExecutableFileResponse before
-    // handoff; pointer lives in HHDM-mapped region.
-    let resp = unsafe { &*resp_ptr };
-    if resp.executable_file.is_null() { return; }
-    // SAFETY: LimineFile valid until BootloaderReclaimable recycle;
-    // we copy out immediately.
-    let file = unsafe { &*resp.executable_file };
-    if file.cmdline.is_null() { return; }
-    // SAFETY: dst is the 'static CMDLINE_STORAGE; sole writer here.
-    let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
-    let mut n = 0usize;
-    while n < CMDLINE_BUF_LEN - 1 {
-        // SAFETY: bootloader-owned NUL-terminated C string.
-        let b = unsafe { core::ptr::read_volatile(file.cmdline.add(n)) };
-        if b == 0 { break; }
-        dst[n] = b;
-        n += 1;
-    }
-    if n == 0 { return; }
-    if n < CMDLINE_BUF_LEN - 1 { dst[n] = b'\n'; n += 1; }
-    // SAFETY: dst[..n] initialised; 'static lifetime.
-    let bytes: &'static [u8] = unsafe {
-        core::slice::from_raw_parts(dst.as_ptr(), n)
-    };
-    // SAFETY: boot_cmdline::set is boot-only single-writer.
-    unsafe { kernel::boot_cmdline::set(bytes); }
-}
-
 /// Parse the DTB blob's /chosen/bootargs property and publish it via
 /// `kernel::boot_cmdline::set`. No-op if the DTB is missing/invalid
 /// or `bootargs` is empty; the kernel then falls back to
@@ -379,13 +239,12 @@ unsafe fn capture_cmdline_from_limine() {
 /// # C: O(dtb_struct_size)
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn capture_cmdline_from_dtb() {
-    // If Limine already populated the cmdline, leave it alone.
+    // If something already populated the cmdline, leave it alone.
     if !kernel::boot_cmdline::get().is_empty() { return; }
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
     if pa == 0 { return; }
     // Self-boot cleared the low identity map (TTBR0), so the DTB blob is
-    // only reachable via HHDM; Limine identity-maps low phys, so pa works
-    // directly there.
+    // only reachable via HHDM.
     let va = if selfboot::is_selfboot() { selfboot::ARM_SELFBOOT_HHDM + pa } else { pa };
     // SAFETY: DTB pointer from bootloader x0; the header's totalsize
     // bounds the safe read. We read 8 bytes first to learn totalsize.
@@ -508,72 +367,28 @@ unsafe fn dtb_totalsize(pa: u64) -> u64 {
     dtb::parse_header(head).map(|h| h.totalsize as u64).unwrap_or(0)
 }
 
-/// Build a `BootInfo` from the DTB pointer. v1 validates the header
-/// only; the `/memory` property walk that fills BootMemRegions
-/// rides alongside the PMM init that consumes them.
+/// Build a `BootInfo` from the self-bootstrap trampoline + DTB. HHDM
+/// comes from the trampoline; the memmap is carved from the DTB
+/// `/memory` node. Both live arm boot paths (GRUB EFI-stub `linux` and
+/// QEMU `-kernel` flat Image) enter via the Image trampoline, so
+/// `is_selfboot()` is always true here. SMP stays at the UP state
+/// (`smp_info_array=0`): no bootloader starts APs and the kernel does
+/// not PSCI-CPU_ON them yet, so the kernel's `bring_up_aps_*` no-ops.
 ///
 /// # SAFETY: caller is the boot path; DTB_PHYS_ADDR was written by
 /// `_start` from the bootloader-provided x0 register.
-/// # C: O(1)
+/// # C: O(dtb)
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn build_boot_info() -> BootInfo {
     // SAFETY: stub returns an owned BootInfo with a static empty
-    // memmap; we overlay HHDM + memmap from Limine before returning.
+    // memmap; build_selfboot_memmap overlays HHDM + memmap.
     let mut info = unsafe { stub_boot_info() };
-    // Self-bootstrap (no Limine): HHDM + memmap come from the trampoline
-    // + DTB instead of the (absent) Limine responses.
-    if selfboot::is_selfboot() {
-        // SAFETY: boot path; reads DTB + linker symbols, fills MEMMAP_STORAGE.
-        unsafe { build_selfboot_memmap(&mut info); }
-        use hal::TimerOps;
-        info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-        return info;
-    }
-    let h = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
-    if !h.is_null() {
-        // SAFETY: Limine wrote a non-null response pointer; backing
-        // struct lives for the rest of boot per `36§3`.
-        info.hhdm_offset = unsafe { (*h).offset };
-    }
-    let m = LIMINE_MEMMAP.response.load(core::sync::atomic::Ordering::Acquire);
-    if !m.is_null() {
-        // SAFETY: bootloader-owned response per `36§3` ownership
-        // contract; lives for rest of boot.
-        let resp = unsafe { &*m };
-        // SAFETY: MEMMAP_STORAGE is owned by this CPU during boot;
-        // no other path mutates it before kernel_main returns.
-        let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
-        // SAFETY: limine::populate_memmap_into walks resp.entries
-        // per its contract, which the bootloader guarantees.
-        let n = unsafe { limine::populate_memmap_into(storage, resp) };
-        info.memmap_count = n as u32;
-        info.memmap_ptr   = storage.as_ptr();
-    }
+    // SAFETY: boot path; reads DTB + linker symbols, fills MEMMAP_STORAGE.
+    unsafe { build_selfboot_memmap(&mut info); }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    let r = LIMINE_RSDP.response.load(core::sync::atomic::Ordering::Acquire);
-    if !r.is_null() {
-        // SAFETY: bootloader-owned response per `36§3` ownership
-        // contract; lives for rest of boot.
-        info.rsdp_pa = unsafe { (*r).address };
-    }
-
-    // SMP (aarch64): hand the kernel the Limine cpus[] array + count +
-    // bsp mpidr so `13§11` AP startup parks each AP's goto_address.
-    // smp_info_array reinterprets as `*const *mut SmpInfoAArch64` kernel-side.
-    let s = LIMINE_SMP.response.load(core::sync::atomic::Ordering::Acquire);
-    if !s.is_null() {
-        // SAFETY: bootloader-owned SMP response per `36§3`; lives for the
-        // rest of boot; cpus points at a `[*mut SmpInfoAArch64; cpu_count]`.
-        let resp = unsafe { &*s };
-        info.smp_info_array = resp.cpus as u64;
-        info.smp_count      = resp.cpu_count;
-        info.bsp_lapic_id   = (resp.bsp_mpidr & 0xff) as u32; // arm: bsp affinity-0
-    }
-
-    // DTB pointer is preserved for future device-tree consumers; not
-    // wired into BootInfo yet.
-    let _ = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
+    // SMP=1: no Limine SMP response; leave smp_info_array/smp_count/
+    // bsp affinity at 0 (the no-Limine UP state).
     info
 }
 
@@ -589,7 +404,7 @@ unsafe fn build_boot_info() -> BootInfo {
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
     // selfboot breadcrumb 'G': proves _start -> _start_rust transition.
-    // Raw HHDM PL011 write; only on the self-boot path (Limine HHDM differs).
+    // Raw HHDM PL011 write on the self-boot path.
     if selfboot::is_selfboot() {
         // SAFETY: selfboot trampoline mapped HHDM (0xFFFF_8000…) device block
         // over phys 0; UART DR is at HHDM + 0x0900_0000.
@@ -608,31 +423,20 @@ unsafe extern "C" fn _start_rust() -> ! {
     // intrinsics (busybox memcpy, glibc strxx, etc.) don't trap.
     hal_aarch64::fpu_enable();
 
-    // Capture the HHDM offset Limine wrote so the PL011 driver has
-    // it ready for when a future VMM PR installs the device mapping.
-    // With correct request magic Limine fills this; with a typo it
-    // stays null. The pinning test against upstream `limine.h` is
-    // the diagnostic — there's nowhere to log a runtime warning yet.
-    // Self-bootstrap (Image trampoline) installs its own HHDM; Limine
-    // fills LIMINE_HHDM.response instead. Pick the right source.
+    // The self-bootstrap Image trampoline installs the HHDM; hand its
+    // offset to the PL011 driver so the UART is reachable after the MMU
+    // is on. (A non-selfboot fallback keeps offset 0.)
     let hhdm = if selfboot::is_selfboot() {
         selfboot::ARM_SELFBOOT_HHDM
     } else {
-        let resp = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
-        if resp.is_null() {
-            0
-        } else {
-            // SAFETY: bootloader wrote a non-null response pointer; the
-            // backing struct lives for the rest of boot per `36§3`.
-            unsafe { (*resp).offset }
-        }
+        0
     };
     pl011::set_hhdm_offset(hhdm);
 
     // Sink registration is gated behind `debug-boot` per
     // `04§4.0` (R06): default builds emit zero klog bytes. Self-boot
-    // (no Limine) has no semihosting host, so it routes klog through the
-    // real PL011 over HHDM; the Limine path keeps the semihosting sink.
+    // routes klog through the real PL011 over HHDM; the fallback uses
+    // the paging-agnostic semihosting sink.
     debug_boot! {
         if selfboot::is_selfboot() {
             klog::set_byte_sink(boot_emit_pl011);
@@ -660,13 +464,11 @@ unsafe extern "C" fn _start_rust() -> ! {
     }
     debug_boot! { log_cpu_info(); }
 
-    // SAFETY: bootloader-owned EXECUTABLE_FILE/KERNEL_FILE response
-    // populated before kernel handoff; capture_cmdline_from_limine
-    // copies the cmdline into CMDLINE_STORAGE and publishes via
-    // kernel::boot_cmdline::set. DTB fallback runs second only when
-    // the Limine response is absent (running outside Limine).
-    // SAFETY: same boot-only single-writer contract for both capture paths; capture_cmdline_from_dtb is a no-op if Limine already populated the slot.
-    unsafe { capture_cmdline_from_limine(); capture_cmdline_from_dtb(); }
+    // SAFETY: boot-only single-writer; capture_cmdline_from_dtb reads
+    // the DTB /chosen/bootargs and publishes it via
+    // kernel::boot_cmdline::set, or no-ops if the DTB lacks bootargs
+    // (the kernel then falls back to install_arch_default).
+    unsafe { capture_cmdline_from_dtb(); }
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
@@ -695,7 +497,7 @@ pub unsafe extern "C" fn _start(dtb_phys: u64) -> ! {
     let stack_top = unsafe {
         (KERNEL_STACK.0.get() as *mut u8).add(STACK_SIZE)
     };
-    // SAFETY: stack_top is one past KERNEL_STACK; we force SPSel=1 so SP_EL1 (auto-selected on EL1 exception entry) points at our kernel stack — Limine v12 aarch64 may hand off with SPSel=0; `_start_rust` is extern "C" + noreturn; `brk` hard-guards accidental return.
+    // SAFETY: stack_top is one past KERNEL_STACK; we force SPSel=1 so SP_EL1 (auto-selected on EL1 exception entry) points at our kernel stack — the boot handoff may arrive with SPSel=0; `_start_rust` is extern "C" + noreturn; `brk` hard-guards accidental return.
     unsafe {
         core::arch::asm!(
             "msr spsel, #1",

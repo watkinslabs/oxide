@@ -31,10 +31,7 @@ case "$ARCH" in
     # Back-compat aliases for the GRUB path (== x86/arm now).
     grub) MAKE_TARGET=qemu-x86-grub ;;
     arm-grub) MAKE_TARGET=qemu-arm-grub ;;
-    # Legacy Limine UEFI boot (kept until Limine is removed).
-    x86-limine) MAKE_TARGET=qemu-x86-limine ;;
-    arm-limine) MAKE_TARGET=qemu-arm-limine ;;
-    # Limine-free aarch64 self-boot (F376): -kernel flat Image, no OVMF.
+    # aarch64 self-boot (F376): -kernel flat Image, no OVMF.
     arm-self) MAKE_TARGET=qemu-arm-self ;;
     *)    usage ;;
 esac
@@ -88,18 +85,10 @@ trap cleanup EXIT
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
-# Boot -smp 2 on BOTH arches so AP bring-up + the periodic load balancer
-# (`13§11`) are exercised every push: x86 via Limine SMP + LAPIC IPI,
-# arm via Limine SMP (APs MMU-on at our entry, F327) + GIC SGI. Override
-# with OXIDE_SMP=N.
-# The Limine-free arm paths (GRUB EFI-stub + -kernel self-boot) have no
-# bootloader to start APs and the kernel doesn't PSCI-CPU_ON them itself
-# yet, so they are UP — default SMP=1. Everything else (x86 GRUB, all
-# Limine paths) exercises SMP=2.
-case "$ARCH" in
-    arm|arm-grub|arm-self) OXIDE_SMP="${OXIDE_SMP:-1}" ;;
-    *)                     OXIDE_SMP="${OXIDE_SMP:-2}" ;;
-esac
+# SMP is 1 on every GRUB/self-boot path (F376): no bootloader starts
+# APs and the kernel doesn't PSCI-CPU_ON them itself yet, so all boots
+# are UP. Override with OXIDE_SMP=N.
+OXIDE_SMP="${OXIDE_SMP:-1}"
 
 # Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
 attempt_boot() {

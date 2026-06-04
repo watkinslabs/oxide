@@ -12,20 +12,17 @@ ENTRY(_start)
 OUTPUT_FORMAT(elf64-littleaarch64)
 OUTPUT_ARCH(aarch64)
 
-/* High kernel base; mirrors the x86_64 linker script. Limine ≥ 9
- * classifies anything below `0xFFFF_FFFF_8000_0000` as "lower half"
- * on aarch64 and rejects it ("Lower half PHDRs are not allowed").
- * Using the same -2 GiB region as x86 lets `-mcmodel=kernel` work
- * uniformly across arches. */
+/* High kernel base; mirrors the x86_64 linker script. Using the same
+ * -2 GiB region as x86 lets `-mcmodel=kernel` work uniformly across
+ * arches. */
 KERNEL_BASE = 0xFFFFFFFF80000000;
 
-/* Physical load address for the self-bootstrap (non-Limine) path. QEMU
- * `virt` RAM base is 0x4000_0000; the arm64 Image protocol loads us at
+/* Physical load address for the self-bootstrap path. QEMU `virt` RAM
+ * base is 0x4000_0000; the arm64 Image protocol loads us at
  * RAM_base + text_offset (text_offset=0). AT() pins every section's LMA
  * to KERNEL_PHYS + (VMA - KERNEL_BASE) so `objcopy -O binary` yields a
  * flat Image whose byte 0 is the Image header at phys KERNEL_PHYS. The
- * MMU trampoline (`selfboot.rs`) maps VMA KERNEL_BASE -> phys KERNEL_PHYS.
- * Limine ignores p_paddr (maps by p_vaddr), so AT() is inert there. */
+ * MMU trampoline (`selfboot.rs`) maps VMA KERNEL_BASE -> phys KERNEL_PHYS. */
 KERNEL_PHYS = 0x40000000;
 
 SECTIONS {
@@ -51,21 +48,6 @@ SECTIONS {
         __rodata_start = .;
         *(.rodata .rodata.*)
         __rodata_end = .;
-    }
-
-    /* Limine protocol request markers per `36§3` (mirror of x86_64-
-     * kernel.ld §43). ALIGN(4K) so this section starts a fresh
-     * PT_LOAD page — Limine rejects ELFs whose PT_LOADs share a
-     * page across permission classes. Limine v12 also requires the
-     * base-revision tag to appear FIRST inside the section; we
-     * place it via the `.limine_requests.start` subname. */
-    .limine_requests ALIGN(4K) : AT(ADDR(.limine_requests) - KERNEL_BASE + KERNEL_PHYS) {
-        __limine_requests_start = .;
-        KEEP(*(.limine_requests.start))
-        KEEP(*(.limine_requests))
-        KEEP(*(.limine_requests.end))
-        KEEP(*(.limine_requests.*))
-        __limine_requests_end = .;
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_BASE + KERNEL_PHYS) {

@@ -18,15 +18,14 @@ use sync::{Spinlock, Tty as UartClass};
 
 /// Default PL011 *physical* base on the QEMU `virt` machine. Real
 /// MMIO goes through `HHDM_OFFSET + base + reg`; with `HHDM_OFFSET
-/// == 0` (test fallback or no Limine handoff) it degenerates to the
-/// raw PA, which is what host tests assert against.
+/// == 0` (test fallback) it degenerates to the raw PA, which is what
+/// host tests assert against.
 pub const PL011_VIRT_BASE: usize = 0x0900_0000;
 
-/// Limine HHDM (higher-half direct-map) offset per `36§3`. After
-/// handoff Limine maps all physical memory at this VA offset; the
-/// kernel can't dereference raw phys addresses without it. Boot
-/// writes this once from the LIMINE_HHDM response before the first
-/// MMIO access.
+/// HHDM (higher-half direct-map) offset per `36§3`. The self-boot
+/// trampoline maps all physical memory at this VA offset; the kernel
+/// can't dereference raw phys addresses without it. Boot writes this
+/// once (`ARM_SELFBOOT_HHDM`) before the first MMIO access.
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// One-shot setter; boot calls after parsing the HHDM response.

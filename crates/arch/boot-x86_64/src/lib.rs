@@ -1,18 +1,13 @@
 // x86_64 bootloader handoff per docs/36 + docs/20.
 //
-// Limine bootloader reads request markers from `.limine_reqs` (custom
-// linker section) and writes responses, then jumps to the kernel
-// entry. Our `_start` lives in `.text.boot` (per linker script
-// 07§6), runs with paging set up by Limine to identity-map the
-// kernel image at the upper-half virtual address.
-//
-// Phase 0 scope: get a `_start` symbol that runs cleanly in QEMU under
-// Limine, sets up the kernel stack, parses Limine memmap into our
-// `BootInfo`, and tail-calls `kernel::kernel_main`. UART driver
-// (16550A on QEMU `-serial stdio`) lands here so klog has a sink.
-//
-// Real Limine integration + 16550 driver land in P0-07 follow-ups;
-// this is the typed shell.
+// GRUB loads the kernel ELF directly via multiboot2: it scans the
+// first 32 KiB of the file for the MB2 header (`mb2.rs`), copies each
+// PT_LOAD by physical address, and jumps to the MB2 entry. The MB2
+// trampoline sets up long mode + paging itself, swaps to
+// `KERNEL_STACK`, and tail-calls `_start_rust`, which parses the MB2
+// info struct into our `BootInfo` and tail-calls `kernel::kernel_main`.
+// UART driver (16550A on QEMU `-serial stdio`) lands here so klog has
+// a sink.
 
 #![no_std]
 #![cfg_attr(target_os = "oxide-kernel", no_main)]
@@ -22,24 +17,16 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
-pub mod limine;
 pub mod mb2;
 pub mod uart;
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::AtomicPtr;
 use kernel::{BootInfo, BootMemRegion};
 #[cfg(feature = "debug-boot")]
 use klog::Uart;
 #[cfg(feature = "debug-boot")]
 use sync::{Spinlock, Tty as UartClass};
 
-use limine::{
-    ExecutableFileResponse, HhdmResponse, MemmapResponse, RequestHeader,
-    RsdpResponse, SmpRequest, EXECUTABLE_FILE_ID, HHDM_ID, KERNEL_FILE_ID,
-    MEMMAP_ID, REQUESTS_END_MARKER,
-    REQUESTS_START_MARKER, REVISION_0, RSDP_ID, SMP_ID,
-};
 #[cfg(feature = "debug-boot")]
 use uart::{Uart16550, COM1};
 
@@ -142,104 +129,9 @@ fn log_cpu_info() {
     klog::write_raw(b"\n");
 }
 
-// ---------------------------------------------------------------------------
-// Limine request slots — bootloader scans `.limine_requests` for these
-// markers and writes responses before jumping to `_start`.
-// ---------------------------------------------------------------------------
-
-/// Base-revision marker per Limine v12 protocol. Required ≥ 6 on
-/// modern Limine; older protocols reject revision 0. Values are
-/// stable across Limine 9..12. MUST appear at the start of
-/// `.limine_requests`; we land it via the `.start` subname which
-/// the linker places before the rest.
-#[used]
-#[link_section = ".limine_requests.start"]
-static LIMINE_BASE_REVISION: [u64; 3] = [
-    0xf9562b2d5c95a6c8,
-    0x6a7b384944536bdc,
-    6,
-];
-
-/// Limine v9+ requires explicit markers around the request region;
-/// v12 falls back to a slower full-image scan without them but our
-/// SMP request was missed in that fallback path. The linker places
-/// `.limine_requests.start` first and `.limine_requests.end` last
-/// per the link script.
-#[used]
-#[link_section = ".limine_requests.start"]
-static LIMINE_REQUESTS_START: [u64; 4] = REQUESTS_START_MARKER;
-
-#[used]
-#[link_section = ".limine_requests.end"]
-static LIMINE_REQUESTS_END: [u64; 2] = REQUESTS_END_MARKER;
-
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_MEMMAP: RequestHeader<MemmapResponse> = RequestHeader {
-    id:       MEMMAP_ID,
-    revision: REVISION_0,
-    response: AtomicPtr::new(core::ptr::null_mut()),
-};
-
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_HHDM: RequestHeader<HhdmResponse> = RequestHeader {
-    id:       HHDM_ID,
-    revision: REVISION_0,
-    response: AtomicPtr::new(core::ptr::null_mut()),
-};
-
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_RSDP: RequestHeader<RsdpResponse> = RequestHeader {
-    id:       RSDP_ID,
-    revision: REVISION_0,
-    response: AtomicPtr::new(core::ptr::null_mut()),
-};
-
-/// `EXECUTABLE_FILE` request — fetches the bootloader-loaded
-/// kernel image descriptor, whose `cmdline` field holds whatever
-/// the Limine config passed (e.g. `cmdline: root=/dev/oxide0 …`).
-/// Without this, `/proc/cmdline` falls back to the arch-default
-/// installed by `kernel::boot_cmdline::install_arch_default`.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_EXECUTABLE_FILE: RequestHeader<ExecutableFileResponse>
-    = RequestHeader {
-        id:       EXECUTABLE_FILE_ID,
-        revision: REVISION_0,
-        response: AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-/// Legacy KERNEL_FILE_REQUEST shape. Same response layout
-/// (a *const LimineFile carrying `cmdline`). Some Limine builds set
-/// this and leave EXECUTABLE_FILE null; the cmdline capture path
-/// consults whichever responded.
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_KERNEL_FILE: RequestHeader<ExecutableFileResponse>
-    = RequestHeader {
-        id:       KERNEL_FILE_ID,
-        revision: REVISION_0,
-        response: AtomicPtr::new(core::ptr::null_mut()),
-    };
-
-/// SMP enumeration request — Limine starts each AP, parks it
-/// spinning on `SmpInfoX86::goto_address`, and gives us the
-/// `[*mut SmpInfoX86; cpu_count]` table via the response.
-/// `flags=0` keeps APs in xAPIC mode (sufficient for QEMU virt
-/// CPU counts; X2APIC mode lands when we add x2APIC support).
-#[used]
-#[link_section = ".limine_requests"]
-pub static LIMINE_SMP: SmpRequest = SmpRequest {
-    id:       SMP_ID,
-    revision: REVISION_0,
-    response: AtomicPtr::new(core::ptr::null_mut()),
-    flags:    0,
-};
-
-/// Build a hard-coded minimal `BootInfo` for compile-test purposes.
-/// Real impl reads Limine's memmap + module list.
+/// Build a hard-coded minimal `BootInfo` for the not-MB2 safety
+/// fallback (e.g. host-test builds). The live x86 boot path is GRUB
+/// multiboot2, which fills `BootInfo` from the MB2 info struct.
 ///
 /// # SAFETY: caller must own the returned `BootInfo`'s pointed-to
 /// regions (currently a static empty slice; safe).
@@ -275,8 +167,8 @@ unsafe impl Sync for KernelStack {}
 #[cfg(target_os = "oxide-kernel")]
 static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]));
 
-/// Storage for `BootInfo`'s memmap slice — populated from Limine's
-/// memmap response by `_start_rust` before `kernel_main` runs.
+/// Storage for `BootInfo`'s memmap slice — populated from the MB2
+/// memory-map tag by `_start_rust` before `kernel_main` runs.
 /// `MemmapStorage` lives in `.bss` so the cost is N entries × 24 B
 /// = ~6 KiB; QEMU rarely exceeds 32 entries.
 const MAX_BOOT_REGIONS: usize = 256;
@@ -303,11 +195,11 @@ unsafe impl Sync for CmdlineStorage {}
 static CMDLINE_STORAGE: CmdlineStorage =
     CmdlineStorage(UnsafeCell::new([0u8; CMDLINE_BUF_LEN]));
 
-/// Read the bootloader's executable-file cmdline (Limine config
-/// `cmdline: …`), copy into kernel-owned `CMDLINE_STORAGE`, and
-/// publish via `kernel::boot_cmdline::set`. No-op if the bootloader
-/// didn't fill the response or the cmdline is empty — the kernel
-/// then falls back to `install_arch_default`.
+/// Read the GRUB multiboot2 boot-command-line tag, copy into
+/// kernel-owned `CMDLINE_STORAGE`, and publish via
+/// `kernel::boot_cmdline::set`. No-op if the cmdline is empty or this
+/// is not an MB2 boot — the kernel then falls back to
+/// `install_arch_default`.
 ///
 /// # SAFETY: called once from the boot path before any procfs read
 /// can race; `CMDLINE_STORAGE` is a 'static slot.
@@ -346,62 +238,17 @@ unsafe fn capture_cmdline() {
             return;
         }
     }
-    let mut resp_ptr = LIMINE_EXECUTABLE_FILE
-        .response.load(core::sync::atomic::Ordering::Acquire);
-    if resp_ptr.is_null() {
-        resp_ptr = LIMINE_KERNEL_FILE
-            .response.load(core::sync::atomic::Ordering::Acquire);
-    }
-    if resp_ptr.is_null() { return; }
-    // SAFETY: bootloader wrote a valid &ExecutableFileResponse before
-    // handing control to the kernel; pointer in HHDM-mapped region.
-    let resp = unsafe { &*resp_ptr };
-    if resp.executable_file.is_null() { return; }
-    // SAFETY: bootloader-allocated LimineFile valid for the boot
-    // window (until BootloaderReclaimable pages are recycled — which
-    // happens long after we've copied the cmdline out).
-    let file = unsafe { &*resp.executable_file };
-    if file.cmdline.is_null() { return; }
-    // Copy NUL-terminated bytes (bounded by CMDLINE_BUF_LEN-1, leaves
-    // a final NUL so the slice can be safely passed to anyone treating
-    // it as a C string).
-    // SAFETY: dst is the 'static CMDLINE_STORAGE; we are the sole
-    // writer before any reader exists.
-    let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
-    let mut n = 0usize;
-    while n < CMDLINE_BUF_LEN - 1 {
-        // SAFETY: bootloader-owned C string; read one byte at a time
-        // until NUL or our cap.
-        let b = unsafe { core::ptr::read_volatile(file.cmdline.add(n)) };
-        if b == 0 { break; }
-        dst[n] = b;
-        n += 1;
-    }
-    if n == 0 { return; }
-    // Linux convention: /proc/cmdline ends with '\n'. The arch-default
-    // does the same; mirror it here for round-trip parity.
-    if n < CMDLINE_BUF_LEN - 1 { dst[n] = b'\n'; n += 1; }
-    // SAFETY: dst[..n] is initialised above; 'static lifetime.
-    let bytes: &'static [u8] = unsafe {
-        core::slice::from_raw_parts(dst.as_ptr(), n)
-    };
-    // Kernel-only: `kernel::boot_cmdline` is
-    // `#[cfg(target_os = "oxide-kernel")]`, so the host
-    // (`cargo test --workspace`) build must not reference it.
-    #[cfg(target_os = "oxide-kernel")]
-    // SAFETY: kernel::boot_cmdline::set is single-writer / boot-only; bytes is a 'static slice with the captured cmdline.
-    unsafe { kernel::boot_cmdline::set(bytes); }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let _ = bytes;
+    // No MB2 boot (e.g. host-test build): nothing to capture. The only
+    // x86 boot path is GRUB multiboot2; the kernel falls back to
+    // `install_arch_default` for `/proc/cmdline`.
 }
 
-/// Build a `BootInfo` by reading the bootloader-populated Limine
-/// responses. Falls back to an empty memmap if the bootloader didn't
-/// fill the response slot (e.g. running outside Limine).
+/// Build a `BootInfo` by parsing the GRUB multiboot2 info struct.
+/// Falls back to an empty memmap on the not-MB2 path (host-test build).
 ///
-/// # SAFETY: caller is the boot path; the bootloader has either
-/// written real response pointers or left them null; the `seed` /
-/// `boot_ns` slots are zero until ACPI / RTC bring-up populates them.
+/// # SAFETY: caller is the boot path; the MB2 trampoline saved a valid
+/// info-struct pointer; the `seed` slot is zero until ACPI / RTC
+/// bring-up populates it.
 /// # C: O(min(entry_count, MAX_BOOT_REGIONS))
 unsafe fn build_boot_info() -> BootInfo {
     // GRUB/multiboot2 path: parse the MB2 info struct instead of Limine
@@ -431,71 +278,14 @@ unsafe fn build_boot_info() -> BootInfo {
             };
         }
     }
-    let resp_ptr = LIMINE_MEMMAP.response.load(core::sync::atomic::Ordering::Acquire);
-    if resp_ptr.is_null() {
-        // SAFETY: returns an owned BootInfo whose `memmap_ptr`
-        // references a `&'static` empty slice.
-        return unsafe { stub_boot_info() };
-    }
-    // SAFETY: bootloader wrote a non-null response pointer; the
-    // backing struct lives for the rest of boot per Limine's
-    // memory-map ownership contract (`36§3`).
-    let resp = unsafe { &*resp_ptr };
-    // SAFETY: MEMMAP_STORAGE is owned by this CPU during boot; no
-    // other path mutates it before kernel_main returns.
-    let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
-    use hal::TimerOps;
-    // SAFETY: limine::populate_memmap_into expects a valid response
-    // table per its own contract, which the bootloader guarantees.
-    let n = unsafe { limine::populate_memmap_into(storage, resp) };
-    let boot_ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
-    let hhdm = {
-        let p = LIMINE_HHDM.response.load(core::sync::atomic::Ordering::Acquire);
-        if p.is_null() {
-            0
-        } else {
-            // SAFETY: Limine wrote a non-null response pointer; backing
-            // struct lives for the rest of boot per `36§3`.
-            unsafe { (*p).offset }
-        }
-    };
-    let rsdp_pa = {
-        let p = LIMINE_RSDP.response.load(core::sync::atomic::Ordering::Acquire);
-        if p.is_null() {
-            0
-        } else {
-            // SAFETY: Limine wrote a non-null response pointer; backing
-            // struct lives for the rest of boot per `36§3`.
-            unsafe { (*p).address }
-        }
-    };
-    let (smp_info_array, smp_count, bsp_lapic_id) = {
-        let p = LIMINE_SMP.response.load(core::sync::atomic::Ordering::Acquire);
-        if p.is_null() {
-            (0u64, 0u64, 0u32)
-        } else {
-            // SAFETY: Limine wrote a non-null response pointer; backing
-            // struct + cpus array live for the rest of boot per `36§3`.
-            let r = unsafe { &*p };
-            (r.cpus as u64, r.cpu_count, r.bsp_lapic_id)
-        }
-    };
-    BootInfo {
-        memmap_count: n as u32,
-        memmap_ptr:   storage.as_ptr(),
-        seed:         [0; 32],
-        boot_ns:      boot_ns,
-        hhdm_offset:  hhdm,
-        rsdp_pa:      rsdp_pa,
-        smp_info_array,
-        smp_count,
-        bsp_lapic_id,
-        _pad: 0,
-    }
+    // No Limine: the only x86 boot path is GRUB multiboot2.
+    // SAFETY: returns an owned BootInfo whose `memmap_ptr` references a
+    // `&'static` empty slice; reached only on the not-MB2 fallback.
+    unsafe { stub_boot_info() }
 }
 
 /// Rust-side boot continuation. Runs on the kernel stack we
-/// installed in `_start`. Reads Limine responses, builds a
+/// installed in `_start`. Parses the MB2 info struct, builds a
 /// `BootInfo`, and tail-calls `kernel_main`.
 ///
 /// # SAFETY: called only from the asm `_start` after `rsp` has
@@ -562,12 +352,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     unsafe { kernel::kernel_main(&info) }
 }
 
-/// Entry point invoked by Limine. Swaps to `KERNEL_STACK` and tail-calls
+/// Entry point invoked by the MB2 trampoline (`mb2.rs`) after it has
+/// set up long mode + paging. Swaps to `KERNEL_STACK` and tail-calls
 /// `_start_rust`.
 ///
-/// # SAFETY: caller is the bootloader; runs single-CPU with IRQs
-/// masked, paging on, kernel image mapped at upper-half linker base,
-/// bootloader's stack still active.
+/// # SAFETY: caller is the MB2 trampoline; runs single-CPU with IRQs
+/// masked, paging on, kernel image mapped at upper-half linker base.
 /// # C: not measured
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]

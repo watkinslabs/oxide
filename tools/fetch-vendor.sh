@@ -4,8 +4,10 @@
 # already exist with matching checksums. Run once at workspace setup
 # and after edits to the pinned versions below.
 #
-# Per `36§3` (Limine, x86_64) + `36§4` (UEFI / DTB, aarch64) + this
-# repo's no-vendored-binaries-in-git policy (see vendor/README.md).
+# Per `36§4` (UEFI / DTB) + this repo's no-vendored-binaries-in-git
+# policy (see vendor/README.md). Boot is GRUB on both arches (F376):
+# x86 multiboot2, arm OVMF→GRUB→EFI-stub; only OVMF firmware is fetched
+# here. GRUB modules are vendored separately under vendor/grub.
 
 set -euo pipefail
 
@@ -15,10 +17,6 @@ VENDOR="$REPO_ROOT/vendor"
 # ---------------------------------------------------------------------------
 # Pinned versions. Bump together with the corresponding sha256.
 # ---------------------------------------------------------------------------
-
-LIMINE_VERSION="12.1.0"
-LIMINE_URL="https://github.com/Limine-Bootloader/Limine/releases/download/v${LIMINE_VERSION}/limine-binary.tar.xz"
-LIMINE_SHA256="237840cdc127bf6a93df9e1b236add9fff15b11a0253af18815e090d9ebc170f"
 
 # OVMF nightlies move; pin the *current* sha so fetches verify, but
 # expect to bump on every refresh. Long-term we should mirror these
@@ -31,7 +29,7 @@ OVMF_AA64_SHA256="403fd8ae69c1c42764a383f0917cc249df2caeb06a789c9f0ca231b9427ef5
 
 # ---------------------------------------------------------------------------
 
-mkdir -p "$VENDOR/limine" "$VENDOR/firmware"
+mkdir -p "$VENDOR/firmware"
 
 verify_or_warn() {
     local file="$1" expected="$2" label="$3"
@@ -61,33 +59,6 @@ fetch() {
     curl -fL --retry 3 --retry-delay 2 -o "$dest" "$url"
     verify_or_warn "$dest" "$sha" "$label"
 }
-
-# ---------------------------------------------------------------------------
-# Limine (binary release: x86 BIOS bins + UEFI loaders for x64/aa64/ia32)
-# ---------------------------------------------------------------------------
-
-if [ ! -f "$VENDOR/limine/BOOTX64.EFI" ]; then
-    echo "limine v${LIMINE_VERSION}:"
-    tmp="$(mktemp -u)"
-    curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$LIMINE_URL"
-    verify_or_warn "$tmp" "$LIMINE_SHA256" "limine.tar.xz"
-    tar xJf "$tmp" -C "$VENDOR/limine" --strip-components=1
-    rm -f "$tmp"
-else
-    echo "limine v${LIMINE_VERSION}: present (skip)"
-fi
-
-# The Limine binary release ships `limine.c`, the host tool that
-# writes the BIOS boot record into a hybrid ISO via `bios-install`.
-# Compile it once at fetch time.
-if [ ! -x "$VENDOR/limine/limine" ]; then
-    echo "  building limine host tool from limine.c..."
-    (cd "$VENDOR/limine" && make >/dev/null)
-    [ -x "$VENDOR/limine/limine" ] || { echo "limine host tool build failed" >&2; exit 1; }
-    echo "  limine host tool: ok"
-else
-    echo "  limine host tool: present (skip)"
-fi
 
 # ---------------------------------------------------------------------------
 # OVMF firmware (EDK2 nightly snapshots)
