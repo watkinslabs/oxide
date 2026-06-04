@@ -38,7 +38,7 @@ const MQ_PRIO_MAX:        u32   = 32_768;
 const O_NONBLOCK_BIT: u64 = 0o4000;
 
 #[derive(Clone)]
-struct MqMsg {
+pub(crate) struct MqMsg {
     priority: u32,
     bytes:    Vec<u8>,
 }
@@ -52,7 +52,7 @@ pub struct MqQueue {
     pub ns:          u64,
     pub max_msgs:    usize,
     pub max_msgsize: usize,
-    pub msgs:        Spinlock<Vec<MqMsg>, MqLockClass>,
+    pub(crate) msgs: Spinlock<Vec<MqMsg>, MqLockClass>,
     pub wait_send:   sched::live::WaitList,
     pub wait_recv:   sched::live::WaitList,
     pub notifier_tid:   core::sync::atomic::AtomicU32,

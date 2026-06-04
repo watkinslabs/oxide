@@ -89,9 +89,9 @@ pub fn module_name(_idx: usize) -> Option<String> { Some(String::from("module"))
 /// # C: O(1)
 pub unsafe fn init_exports() {
     use crate::symtab::export;
-    export("klog_write_raw",     klog_write_raw_thunk     as usize, false);
-    export("klog_write_dec_u64", klog_write_dec_u64_thunk as usize, false);
-    export("kassert_thunk",      kassert_thunk            as usize, false);
+    export("klog_write_raw",     klog_write_raw_thunk     as extern "C" fn(*const u8, usize) as usize, false);
+    export("klog_write_dec_u64", klog_write_dec_u64_thunk as extern "C" fn(u64) as usize, false);
+    export("kassert_thunk",      kassert_thunk            as extern "C" fn(u64, *const u8, usize) as usize, false);
 }
 
 extern "C" fn klog_write_raw_thunk(p: *const u8, len: usize) {

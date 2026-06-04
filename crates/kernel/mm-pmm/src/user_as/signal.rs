@@ -116,16 +116,16 @@ pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
 /// zombie registry, `schedule()` away. Diverges. Parent's
 /// `wait4` reaps the corpse.
 #[cfg(target_arch = "x86_64")]
-fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
+fn sigsegv_terminate_x86(_vec: u64, _err: u64, _rip: u64, _cr2: u64) -> ! {
     use core::sync::atomic::Ordering;
     #[cfg(feature = "debug-irq")]
     {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
-        klog::write_raw(b" vec=");      klog::write_hex_u64(vec);
-        klog::write_raw(b" err=");      klog::write_hex_u64(err);
-        klog::write_raw(b" rip=");      klog::write_hex_u64(rip);
-        klog::write_raw(b" cr2=");      klog::write_hex_u64(cr2);
+        klog::write_raw(b" vec=");      klog::write_hex_u64(_vec);
+        klog::write_raw(b" err=");      klog::write_hex_u64(_err);
+        klog::write_raw(b" rip=");      klog::write_hex_u64(_rip);
+        klog::write_raw(b" cr2=");      klog::write_hex_u64(_cr2);
         klog::write_raw(b"\n");
         // B45: dump every general-purpose register the stub captured.
         // Lets us name the bad register on a #GP without re-attaching
@@ -208,15 +208,15 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
 
 /// arm minimal SIGSEGV delivery — same shape as x86 path.
 #[cfg(target_arch = "aarch64")]
-fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
+fn sigsegv_terminate_arm(_esr: u64, _far: u64, _elr: u64) -> ! {
     use core::sync::atomic::Ordering;
     #[cfg(feature = "debug-irq")]
     {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
-        klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
-        klog::write_raw(b" far=");      klog::write_hex_u64(far);
-        klog::write_raw(b" elr=");      klog::write_hex_u64(elr);
+        klog::write_raw(b" esr=");      klog::write_hex_u64(_esr);
+        klog::write_raw(b" far=");      klog::write_hex_u64(_far);
+        klog::write_raw(b" elr=");      klog::write_hex_u64(_elr);
         // Dump user SP_EL0 (= user SP at fault). EL1 fault context
         // preserves SP_EL0 — `mrs` reads it directly without
         // touching any per-task save area. Catches stack-corruption

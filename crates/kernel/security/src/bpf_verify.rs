@@ -42,7 +42,6 @@ const BPF_EXIT: u8 = 0x95;
 const BPF_JA:   u8 = 0x05; // BPF_JMP | BPF_JA  = 0x05<<4 | 0x05 ? — see notes below
 // In Linux: opcode = (BPF_JMP << 0) | (op << 4) | (src << 8?). We
 // match the raw byte. JA = 0x05, EXIT = 0x95, CALL = 0x85.
-const BPF_OP_JA:   u8 = 0x05;
 const BPF_OP_EXIT: u8 = 0x95;
 const BPF_OP_CALL: u8 = 0x85;
 

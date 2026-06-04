@@ -13,6 +13,7 @@
 extern crate alloc;
 
 use klog::Uart;
+#[cfg(any(test, not(target_os = "oxide-kernel")))]
 use sync::{Spinlock, Tty as UartClass};
 
 /// COM1 base I/O port — fixed on PC platforms.

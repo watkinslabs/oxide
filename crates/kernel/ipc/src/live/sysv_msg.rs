@@ -45,7 +45,7 @@ const MSG_MAX_SIZE:    usize = 4096;
 const MSG_MAX_PER_Q:   usize = 16;
 
 #[derive(Clone)]
-struct Msg {
+pub(crate) struct Msg {
     pub mtype: i64,
     pub data:  Vec<u8>,
 }
@@ -59,7 +59,7 @@ pub struct MsgQueue {
     pub key:       i32,
     /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
     pub ns:        u64,
-    pub q:         Spinlock<VecDeque<Msg>, MsgLockClass>,
+    pub(crate) q:  Spinlock<VecDeque<Msg>, MsgLockClass>,
     pub wait_send: sched::live::WaitList,
     pub wait_recv: sched::live::WaitList,
 }

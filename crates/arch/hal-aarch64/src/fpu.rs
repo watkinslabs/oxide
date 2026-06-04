@@ -8,7 +8,9 @@
 // v1 lands the data + asm primitives. The actual FP-disabled trap
 // handler rides alongside the EL1 vector-table setup in `22§*`.
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::AtomicPtr;
+#[cfg(test)]
+use core::sync::atomic::Ordering;
 
 /// FP/SIMD state size per `14§7.2`: 32 × 16 B vec + 32-bit FPCR +
 /// 32-bit FPSR + padding to 16-byte alignment = 528 B.

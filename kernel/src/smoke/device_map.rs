@@ -160,8 +160,6 @@ fn log_cmd_status(s: arch_irq::its::CmdStatus) {
         }
     }
 }
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", not(feature = "debug-irq")))]
-fn log_cmd_status(_s: arch_irq::its::CmdStatus) {}
 
 /// GIC distributor base on QEMU virt (matches MADT log; same address
 /// for v2 and v3).
@@ -194,7 +192,9 @@ const PL011_VA: u64 = KERNEL_DEVICE_BASE | (PL011_PHYS & 0xFFFF_FFFF);
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 pub fn smoke_device_map_arm(_hhdm: u64) {
     use arch_irq::gic;
-use hal_aarch64::{timer as arm_timer, pl011};
+    use hal_aarch64::pl011;
+    #[cfg(feature = "debug-irq")]
+    use hal_aarch64::timer as arm_timer;
     use hal_aarch64::mmu_ops::ArmMmu;
     // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active,
     // single-CPU, IRQs off; mmu_ops state initialised.
@@ -417,22 +417,22 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // virtio-blk; QEMU virt's IORT does identity BDF→DeviceID
             // mapping). Verifies the cmd-post protocol: CREADR
             // catches up to CWRITER without ITS errors.
-            for (label, cmd) in [
+            for (_label, cmd) in [
                 (b"mapc-icid0" as &[u8],
                  arch_irq::its::cmd_mapc(0, 0)),
             ] {
                 // SAFETY: ITS enabled; HHDM live; single-CPU pre-init; pre-issue barrier inside cmd_post.
-                let s = unsafe { arch_irq::its::cmd_post(hhdm, cmd) };
+                let _s = unsafe { arch_irq::its::cmd_post(hhdm, cmd) };
                 debug_irq! {
                     klog::write_raw(b"[INFO]  its-cmd ");
-                    klog::write_raw(label);
+                    klog::write_raw(_label);
                     klog::write_raw(b" ");
-                    log_cmd_status(s);
+                    log_cmd_status(_s);
                 }
             }
             // Allocate one ITT per virtio device. 4 KiB / 12B-entry
             // = 341 events; plenty for ≤4-vector virtio MSI-X.
-            for (label, did) in [
+            for (_label, did) in [
                 (b"mapd-net" as &[u8], 0x08u32),
                 (b"mapd-blk" as &[u8], 0x10u32),
             ] {
@@ -449,16 +449,16 @@ use hal_aarch64::{timer as arm_timer, pl011};
                     // Size=4 → 32 EventIDs supported by this device.
                     let cmd = arch_irq::its::cmd_mapd(did, itt_pa, 4);
                     // SAFETY: ITS enabled; ITT freshly zeroed and 4 KiB-aligned.
-                    let s = unsafe { arch_irq::its::cmd_post(hhdm, cmd) };
+                    let _s = unsafe { arch_irq::its::cmd_post(hhdm, cmd) };
                     debug_irq! {
                         klog::write_raw(b"[INFO]  its-cmd ");
-                        klog::write_raw(label);
+                        klog::write_raw(_label);
                         klog::write_raw(b" did=");
                         klog::write_hex_u64(did as u64);
                         klog::write_raw(b" itt_pa=");
                         klog::write_hex_u64(itt_pa);
                         klog::write_raw(b" ");
-                        log_cmd_status(s);
+                        log_cmd_status(_s);
                     }
                 }
             }
@@ -468,30 +468,30 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // configuration byte (priority 0xA0, Group1, Enable=1)
             // BETWEEN MAPTI and INV so the ITS re-reads it on INV.
             // SAFETY: ITS enabled; MAPC + MAPD posted above.
-            let s_mapti = unsafe {
+            let _s_mapti = unsafe {
                 arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_mapti(0x10, 0, 8192, 0))
             };
             // SAFETY: lpis_enable published LPI_PROP_PA; HHDM live; LPI 8192 within table bounds.
-            let lpi_set = unsafe {
+            let _lpi_set = unsafe {
                 arch_irq::gic::lpi_set_config(hhdm, 8192, arch_irq::gic::LPI_PROP_DEFAULT)
             };
             // SAFETY: MAPTI just posted; cmd queue protocol per F56-06.
-            let s_inv = unsafe {
+            let _s_inv = unsafe {
                 arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_inv(0x10, 0))
             };
             // SAFETY: ITS enabled and queue protocol per F56-06; SYNC barriers against the boot RD's processor number.
-            let s_sync = unsafe {
+            let _s_sync = unsafe {
                 arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(0))
             };
             debug_irq! {
-                klog::write_raw(b"[INFO]  its-cmd mapti-blk "); log_cmd_status(s_mapti);
+                klog::write_raw(b"[INFO]  its-cmd mapti-blk "); log_cmd_status(_s_mapti);
                 klog::write_raw(b"[INFO]  lpi-prop[8192]=");
                 klog::write_hex_u64(arch_irq::gic::LPI_PROP_DEFAULT as u64);
                 klog::write_raw(b" set=");
-                klog::write_dec_u64(lpi_set as u64);
+                klog::write_dec_u64(_lpi_set as u64);
                 klog::write_raw(b"\n");
-                klog::write_raw(b"[INFO]  its-cmd inv-blk ");  log_cmd_status(s_inv);
-                klog::write_raw(b"[INFO]  its-cmd sync ");      log_cmd_status(s_sync);
+                klog::write_raw(b"[INFO]  its-cmd inv-blk ");  log_cmd_status(_s_inv);
+                klog::write_raw(b"[INFO]  its-cmd sync ");      log_cmd_status(_s_sync);
             }
             // F56-09: kernel-side self-test of the ITS → LPI →
             // dispatcher path. Post INT(DeviceID=0x10, EventID=0)
@@ -501,9 +501,9 @@ use hal_aarch64::{timer as arm_timer, pl011};
             // and bump MSI_FIRES. If this counter increments, the
             // ITS-side plumbing is correct and any later silent-
             // MSI is the device's fault, not ours.
-            let pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            let _pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
             // SAFETY: ITS enabled, MAPD+MAPC+MAPTI posted above, LPI 8192 enabled in PROPBASER; cmd_post follows the F56-06 protocol.
-            let s_int = unsafe {
+            let _s_int = unsafe {
                 arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_int(0x10, 0))
             };
             // SAFETY: clear DAIF.I momentarily so a pending LPI
@@ -514,15 +514,15 @@ use hal_aarch64::{timer as arm_timer, pl011};
                 for _ in 0..2_000_000 { core::hint::spin_loop(); }
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
             }
-            let post = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
+            let _post = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Relaxed);
             debug_irq! {
-                klog::write_raw(b"[INFO]  its-cmd int-self ");  log_cmd_status(s_int);
+                klog::write_raw(b"[INFO]  its-cmd int-self ");  log_cmd_status(_s_int);
                 klog::write_raw(b"[INFO]  its-self-fire pre=");
-                klog::write_dec_u64(pre as u64);
+                klog::write_dec_u64(_pre as u64);
                 klog::write_raw(b" post=");
-                klog::write_dec_u64(post as u64);
+                klog::write_dec_u64(_post as u64);
                 klog::write_raw(b" delta=");
-                klog::write_dec_u64(post.saturating_sub(pre) as u64);
+                klog::write_dec_u64(_post.saturating_sub(_pre) as u64);
                 klog::write_raw(b" last_intid=");
                 klog::write_hex_u64(arch_irq::gic::LAST_INTID
                     .load(core::sync::atomic::Ordering::Relaxed) as u64);

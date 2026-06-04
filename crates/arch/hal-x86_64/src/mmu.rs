@@ -11,7 +11,6 @@ use hal::{PageFlags, PageSize};
 
 /// 4-level paging per `20§5`. Each table holds 512 entries × 8 B = 4 KiB.
 pub const ENTRIES_PER_TABLE: usize = 512;
-pub const PAGE_SHIFT_4K: u32 = 12;
 pub const PT_SHIFT:   u32 = 12; // PT entry covers 4 KiB
 pub const PD_SHIFT:   u32 = 21; // PD entry covers 2 MiB
 pub const PDPT_SHIFT: u32 = 30; // PDPT entry covers 1 GiB

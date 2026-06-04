@@ -74,7 +74,7 @@ pub unsafe fn enable_sse() {
         let mut cr0: u64;
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         cr0 &= !(1u64 << 2); // clear EM
-        cr0 |=  (1u64 << 1); // set MP
+        cr0 |=  1u64 << 1; // set MP
         asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));

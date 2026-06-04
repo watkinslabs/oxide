@@ -11,7 +11,6 @@ use syscall::errno::Errno;
 /// req is the relative sleep duration.
 /// # C: O(1) + sleep cost
 pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
-    use hal::TimerOps;
     const TIMER_ABSTIME: u64 = 0x1;
     let flags = args.a1;
     let req   = args.a2;

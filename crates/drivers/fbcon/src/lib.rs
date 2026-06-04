@@ -753,7 +753,6 @@ mod tests {
 #[cfg(target_os = "oxide-kernel")]
 pub mod kernel {
     extern crate alloc;
-    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
     use sync::{Spinlock, Tty as TtyClass};
     use super::Console;

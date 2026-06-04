@@ -173,7 +173,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 #[cfg(target_arch = "x86_64")]
 fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
-    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use vmm::{AddressSpace, VmaBacking, VmaProt};
     use hal::UserVirtAddr;
 
     let cur = match sched::live::current() {
@@ -301,12 +301,12 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     let exec_user_stack_top_u: u64 = stack_top;
     let exec_user_stack_len_u: usize = rlim_stack as usize;
     // Local re-binds keep the rest of this fn (which references
-    // EXEC_USER_STACK_* by name) unchanged.
-    let EXEC_USER_STACK_VA  = exec_user_stack_va_u;
-    let EXEC_USER_STACK_TOP = exec_user_stack_top_u;
-    let EXEC_USER_STACK_LEN = exec_user_stack_len_u;
-    let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
-        .expect("EXEC_USER_STACK_VA in user range");
+    // the stack-region locals by name) unchanged.
+    let exec_user_stack_va  = exec_user_stack_va_u;
+    let exec_user_stack_top = exec_user_stack_top_u;
+    let exec_user_stack_len = exec_user_stack_len_u;
+    let stack_hint = UserVirtAddr::new(exec_user_stack_va)
+        .expect("exec_user_stack_va in user range");
     // GROWSDOWN flag wires the stack VMA into the page-fault
     // auto-extend path: any write below the current `vma.start`
     // within 64 KiB extends the VMA downward (Linux's
@@ -317,7 +317,7 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     // shipping PRIVATE|ANONYMOUS without GROWSDOWN, leaving
     // try_grow_stack with no VMA to extend.
     if new_as.mmap(
-        Some(stack_hint), EXEC_USER_STACK_LEN,
+        Some(stack_hint), exec_user_stack_len,
         VmaProt::READ | VmaProt::WRITE,
         vmm::EXEC_STACK_VMA_FLAGS,
         VmaBacking::Anonymous,
@@ -327,7 +327,7 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     }
     // Linux `arch_pick_mmap_base`: anon-mmap arena top sits
     // MMAP_BASE_GAP (128 MiB) below the stack reservation bottom.
-    new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
+    new_as.set_mmap_base(exec_user_stack_va.saturating_sub(vmm::MMAP_BASE_GAP));
 
     // 3. Replace `current.mm` with the new AS and activate it.
     //    Order: activate BEFORE replace_mm so CR3 doesn't dangle
@@ -419,7 +419,7 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         elf_load::stack::build_user_stack(
-            EXEC_USER_STACK_TOP,
+            exec_user_stack_top,
             &argv_slices[..argc],
             &envp_slices[..envc],
             &img,
@@ -491,7 +491,7 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
 #[cfg(target_arch = "aarch64")]
 fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 {
     use core::sync::atomic::Ordering;
-    use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+    use vmm::{AddressSpace, VmaBacking, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
     let cur = match sched::live::current() {
@@ -587,13 +587,13 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
         ((rc + 0xfff) & !0xfff).min(0x4000_0000)
     };
     let stack_top: u64 = hal::USER_VA_END - 0x10000;
-    let EXEC_USER_STACK_VA:  u64   = stack_top - rlim_stack;
-    let EXEC_USER_STACK_TOP: u64   = stack_top;
-    let EXEC_USER_STACK_LEN: usize = rlim_stack as usize;
-    let stack_hint = UserVirtAddr::new(EXEC_USER_STACK_VA)
-        .expect("EXEC_USER_STACK_VA in user range");
+    let exec_user_stack_va:  u64   = stack_top - rlim_stack;
+    let exec_user_stack_top: u64   = stack_top;
+    let exec_user_stack_len: usize = rlim_stack as usize;
+    let stack_hint = UserVirtAddr::new(exec_user_stack_va)
+        .expect("exec_user_stack_va in user range");
     if new_as.mmap(
-        Some(stack_hint), EXEC_USER_STACK_LEN,
+        Some(stack_hint), exec_user_stack_len,
         VmaProt::READ | VmaProt::WRITE,
         vmm::EXEC_STACK_VMA_FLAGS,
         VmaBacking::Anonymous,
@@ -601,7 +601,7 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
     ).is_err() {
         return -(Errno::Enomem.as_i32() as i64);
     }
-    new_as.set_mmap_base(EXEC_USER_STACK_VA.saturating_sub(vmm::MMAP_BASE_GAP));
+    new_as.set_mmap_base(exec_user_stack_va.saturating_sub(vmm::MMAP_BASE_GAP));
 
     // 3. Replace cur.mm + activate the new AS.
     // SAFETY: new_root carries kernel-half cloned from master at new_user_l0; activate writes TTBR0_EL1 + flushes user TLB; preempt-off; single-CPU.
@@ -671,7 +671,7 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
     // SAFETY: we activated new_root above, so user-VA writes from the kernel target the new AS; user_fault_handler will demand-fault the stack page.
     let new_sp = match unsafe {
         elf_load::stack::build_user_stack(
-            EXEC_USER_STACK_TOP,
+            exec_user_stack_top,
             &argv_slices[..argc],
             &envp_slices[..envc],
             &img,

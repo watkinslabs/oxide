@@ -34,11 +34,6 @@ pub struct WaitQueueInner {
 
 impl WaitQueueInner {
     /// # C: O(1)
-    fn new() -> Self {
-        Self { queue: VecDeque::new() }
-    }
-
-    /// # C: O(1)
     pub fn len(&self) -> usize { self.queue.len() }
 
     /// # C: O(1)

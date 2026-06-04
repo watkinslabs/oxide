@@ -6,7 +6,6 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use alloc::vec;
 
 use crate::{flags, msg, nlmsg_align, Nlmsghdr};
 use sync::{Spinlock, Socket as SockLockClass};

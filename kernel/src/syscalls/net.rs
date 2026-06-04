@@ -5,7 +5,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use vfs::{Dentry, File, OpenFlags};
-use net::sock::{InetSocket, SockKind, socket_sendto, socket_recv, drain_loopback};
+use net::sock::{InetSocket, SockKind, drain_loopback};
 use crate::syscalls::net_trace::trace_enotsock_at;
 use crate::syscalls::net_sockaddr::*;
 
@@ -670,13 +670,6 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let ip   = *sock.local_ip.lock();
     write_sockaddr_for_socket(addr_p, &sock, ip, port);
     0
-}
-
-fn fd_file(fd: u64) -> Option<Arc<vfs::File>> {
-    let cur = sched::live::current()?;
-    // SAFETY: running task on this CPU; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    fdt.get(fd as i32).ok()
 }
 
 /// `getpeername(fd, addr, addrlen)` slot 52.

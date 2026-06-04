@@ -25,6 +25,7 @@ pub static GICV2M_SPI_FIRST: AtomicU32 = AtomicU32::new(0);
 pub static GICV2M_SPI_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Bump cursor for SPI allocation. Initialised lazily from
 /// `GICV2M_SPI_FIRST` on the first call.
+#[cfg(target_arch = "aarch64")]
 static SPI_NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// Count of MSI deliveries observed by the IRQ dispatcher, per arch.

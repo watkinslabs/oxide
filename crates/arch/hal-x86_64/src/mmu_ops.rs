@@ -135,8 +135,7 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     // gives the new AS every kernel-half mapping the calling
     // context already has (including PCI MMIO BARs the device
     // drivers will reach for from syscall context).
-    // SAFETY: CR3 read is privileged; legal at CPL=0; pure read.
-    let src_pa = unsafe { crate::regs::read_cr3() } & !0xfff;
+    let src_pa = crate::regs::read_cr3() & !0xfff;
     if src_pa == 0 { return None; }
     let pa = alloc_frame()?;
     // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at

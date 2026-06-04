@@ -39,6 +39,7 @@ pub fn sys_clone_dispatch(
     const CLONE_FILES:     u64 = 0x400;
     const CLONE_SIGHAND:   u64 = 0x800;
     const CLONE_THREAD:    u64 = 0x10000;
+    #[cfg(target_arch = "x86_64")]
     const CLONE_SETTLS:    u64 = 0x80000;
     const CLONE_PARENT_SETTID: u64 = 0x100000;
     const CLONE_CHILD_CLEARTID: u64 = 0x200000;
@@ -312,8 +313,7 @@ fn clone_spawn_arch(
     // racing on the parent's. fork(2) leaves child_stack=0 and the
     // child resumes on the parent's RSP after the COW copy.
     let user_rsp = if child_stack != 0 { child_stack } else { frame[2] };
-    // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
-    let full = unsafe { hal_x86_64::current_user_full_frame() };
+    let full = hal_x86_64::current_user_full_frame();
     // SAFETY: full points to the 15-quadword saved area at top-0x78..top of the kernel stack for the current user task; layout is fixed by syscall entry asm.
     let pregs = unsafe {
         hal_x86_64::ForkRegs {

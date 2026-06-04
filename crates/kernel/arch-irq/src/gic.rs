@@ -74,8 +74,6 @@ const GICR_SGI_OFFSET:  u64   = 0x10000;
 const GICR_ISENABLER0:  usize = 0x0100;
 #[cfg(target_arch = "aarch64")]
 const GICR_IPRIORITYR:  usize = 0x0400;
-#[cfg(target_arch = "aarch64")]
-const GICR_ICFGR1:      usize = 0x0C04;
 /// SGI/PPI group-select in the SGI frame (1 bit/INTID, INTID 0..31).
 /// 1 = Group 1 NS. Reset = 0 (Group 0 → FIQ); set it or the CNTV PPI
 /// (INTID 27) and the resched SGIs never reach the Group-1 IRQ path.

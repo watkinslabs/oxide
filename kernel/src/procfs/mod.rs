@@ -437,17 +437,6 @@ impl Inode for ProcMeminfoInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
-fn pmm_kb_stats() -> (u64, u64) {
-    match pmm::setup::pmm_static() {
-        Some(p) => {
-            let free  = p.free_pages() * 4; // 4 KiB pages
-            let alloc = p.allocated_pages() * 4;
-            (free, alloc)
-        }
-        None => (0, 0),
-    }
-}
-
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
 /// Reports the kernel's monotonic clock in seconds; idle is the
 /// same value (v1 has no separate idle accounting yet).
@@ -923,7 +912,6 @@ pub fn init() { crate::procfs::static_files::register_static_files(); }
 /// # SAFETY: caller is the boot path; pre-init.
 /// # C: O(N)
 pub fn smoke_test() {
-    use vfs::Inode;
     use hal::kassert;
     let entries: &[(&str, &[u8])] = &[
         ("/proc/version", b"Linux"),

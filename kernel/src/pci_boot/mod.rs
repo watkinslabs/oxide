@@ -62,7 +62,6 @@ use virtio_drv::virtio_probe_arch;
 /// MMIO read returns 0xFFFFFFFF and any write is silently dropped.
 /// # C: O(1) — one config-space R/W pair.
 fn enable_pci_mem_bm(bdf: pci::Bdf) {
-    use pci::ConfigSpaceReader as _;
     let cur = {
         #[cfg(target_arch = "x86_64")]
         { let r = hal_x86_64::pci::LegacyPci;
@@ -349,7 +348,6 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             // INTx and ignores table entries.
                             #[cfg(target_arch = "aarch64")]
                             { if let Some(rr) = hal_aarch64::pci::EcamPci::from_published() {
-                                use pci::ConfigSpaceReader as _;
                                 let off = c.cfg_off & 0xFC;
                                 let cur = <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&rr, bdf, off);
                                 let new = cur | (1u32 << 31); // MC bit 15 -> dword bit 31
@@ -357,7 +355,6 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                             } }
                             #[cfg(target_arch = "x86_64")]
                             { let rr = hal_x86_64::pci::LegacyPci;
-                              use pci::ConfigSpaceReader as _;
                               let off = c.cfg_off & 0xFC;
                               let cur = <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&rr, bdf, off);
                               let new = cur | (1u32 << 31);
@@ -372,14 +369,12 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                                 #[cfg(target_arch = "aarch64")]
                                 { match hal_aarch64::pci::EcamPci::from_published() {
                                     Some(rr) => {
-                                        use pci::ConfigSpaceReader as _;
                                         <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&rr, bdf, c.cfg_off & 0xFC) >> 16
                                     }
                                     None => 0,
                                 } }
                                 #[cfg(target_arch = "x86_64")]
                                 { let rr = hal_x86_64::pci::LegacyPci;
-                                  use pci::ConfigSpaceReader as _;
                                   <hal_x86_64::pci::LegacyPci as pci::ConfigSpaceReader>::read32(&rr, bdf, c.cfg_off & 0xFC) >> 16 }
                             };
                             klog::write_raw(b"[INFO]  msix-en ");

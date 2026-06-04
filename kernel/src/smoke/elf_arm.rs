@@ -362,7 +362,7 @@ fn spawn_init_from_rootfs_arm() {
     // stack into the global AS); arm uses a fresh per-task L0 so we
     // walk + install leaves explicitly.
     {
-        use hal::{Pa, PageFlags, PageSize, Va};
+        use hal::{Pa, PageSize, Va};
         let prot = (VmaProt::READ | VmaProt::WRITE).to_page_flags();
         let mut va = INIT_STACK_VA;
         while va < INIT_STACK_TOP {

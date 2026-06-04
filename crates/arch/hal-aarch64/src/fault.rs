@@ -98,6 +98,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
 /// Map an `ESR_EL1.EC` value to a short label per ARM ARM
 /// D17.2.36 Tab. D17-2 (the cases we expect in v1; other classes
 /// fall through to `"unknown"`).
+#[cfg(any(test, feature = "debug-irq"))]
 const fn ec_label(ec: u32) -> &'static [u8] {
     match ec {
         0x00 => b"unknown",
@@ -127,6 +128,7 @@ const fn ec_label(ec: u32) -> &'static [u8] {
 /// Decode the Data/Instruction-abort `DFSC` (ESR.ISS bits 0..5)
 /// per ARM ARM D17.2.40 Tab. D17-22. Only the cases we expect are
 /// listed; the rest fall through to `"other"`.
+#[cfg(any(test, feature = "debug-irq"))]
 const fn decode_dfsc(iss: u64) -> &'static [u8] {
     match iss & 0x3f {
         0b000000 => b"address-size-l0",

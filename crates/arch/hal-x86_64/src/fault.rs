@@ -477,6 +477,7 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
 /// Map an Intel-SDM exception vector to a short label (Vol. 3
 /// Tab. 6-1). Returns a static byte slice; unknown vectors fall
 /// through to `"reserved"`.
+#[cfg(any(test, feature = "debug-irq"))]
 const fn vector_label(vec: u64) -> &'static [u8] {
     match vec {
          0 => b"#DE",        1 => b"#DB",        2 => b"NMI",        3 => b"#BP",
@@ -492,6 +493,7 @@ const fn vector_label(vec: u64) -> &'static [u8] {
 /// §6.15. Returns a fixed label encoding the four bits we care
 /// about: P/!P (present?), W/R (write?), U/K (user/kernel?), I
 /// (instruction fetch). Sixteen possible labels statically.
+#[cfg(any(test, feature = "debug-irq"))]
 const fn decode_pfec(err: u64) -> &'static [u8] {
     let p   = (err & (1 << 0)) != 0;     // 1 = protection violation, 0 = not present
     let w   = (err & (1 << 1)) != 0;     // 1 = write, 0 = read

@@ -823,6 +823,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { crate::smoke::elf_arm::run(); }
     }
 
+    // oxide-kernel: a diverging smoke block above runs (`-> !`); only
+    // host builds (no oxide-kernel cfg blocks) reach this fallback.
+    #[cfg(not(target_os = "oxide-kernel"))]
     halt_forever()
 }
 

@@ -134,7 +134,7 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         // SAFETY: same window; per Virtio 1.2 §4.1.4.3 the field at `off` is u16-aligned.
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u16, v); }
     };
-    let w8 = |off: u64, v: u8| {
+    let _w8 = |off: u64, v: u8| {
         // SAFETY: same window; per Virtio 1.2 §4.1.4.3 device_status is a u8 at +0x14.
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
     };

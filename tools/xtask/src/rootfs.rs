@@ -54,7 +54,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         let cross = repo.join("vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc");
         if !cross.is_file() {
             eprintln!("xtask rootfs: aarch64 toolchain missing — running tools/fetch-cross.sh");
-            let mut c = Command::new(repo.join("tools/fetch-cross.sh").to_str().unwrap());
+            let c = Command::new(repo.join("tools/fetch-cross.sh").to_str().unwrap());
             run(c)?;
         }
         cross

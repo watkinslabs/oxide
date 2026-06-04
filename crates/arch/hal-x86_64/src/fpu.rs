@@ -9,7 +9,9 @@
 // FXSAVE-shaped (512 B) — XSAVE / AVX expansion to ~832 B comes
 // once the boot path enables CR4.OSXSAVE + queries XCR0.
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::AtomicPtr;
+#[cfg(test)]
+use core::sync::atomic::Ordering;
 
 /// FXSAVE area size per Intel SDM Vol. 1 Tab. 10-2.
 pub const FPU_STATE_BYTES: usize = 512;

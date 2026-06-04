@@ -46,9 +46,9 @@ pub struct SmpInfoArm {
     pub extra_argument: u64,   // 0x20  (= ApContext ptr)
 }
 
-/// Trampoline asm entry. Limine enters here MMU-on with `x0 = &SmpInfoArm`.
-/// Reads `extra_argument` (our ApContext) at +0x20, sets SP from
-/// `ctx.stack_top`, then calls `ap_main(ctx)`.
+// Trampoline asm entry. Limine enters here MMU-on with `x0 = &SmpInfoArm`.
+// Reads `extra_argument` (our ApContext) at +0x20, sets SP from
+// `ctx.stack_top`, then calls `ap_main(ctx)`.
 core::arch::global_asm!(
     ".global oxide_ap_entry_arm",
     ".section .text.ap_entry,\"ax\",@progbits",

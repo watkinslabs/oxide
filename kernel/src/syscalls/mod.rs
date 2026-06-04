@@ -8,8 +8,6 @@ pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod
 use syscall::{dispatch, SyscallArgs};
 use syscall::errno::Errno;
 use hal::{USER_VA_END};
-#[cfg(target_arch = "x86_64")]
-use hal::TimerOps;
 
 fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd     = args.a4 as i64;
@@ -435,8 +433,7 @@ fn ptrace_syscall_stop_if_armed() {
     });
     crate::syscalls::ptrace_fpu::snapshot_current();
     cur.sigpending.fetch_or(1u64 << 4, Ordering::Release); // SIGTRAP
-    // SAFETY: process ctx; runqueue installed; preempt-off; immediate self-park via stop_until_cont matches the SIGSTOP path.
-    unsafe { sched::live::stop::stop_until_cont_sig(5); }
+    sched::live::stop::stop_until_cont_sig(5);
     // Wake: SETFPREGS-modified snapshot → restore before returning
     // to user mode so the new state takes effect.
     crate::syscalls::ptrace_fpu::restore_if_dirty();

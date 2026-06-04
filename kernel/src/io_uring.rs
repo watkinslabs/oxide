@@ -49,7 +49,7 @@
 #![allow(dead_code)]
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 
 use sync::{Spinlock, TaskList as RingLockClass};
 

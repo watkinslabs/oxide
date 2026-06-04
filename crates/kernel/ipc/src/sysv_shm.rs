@@ -108,7 +108,6 @@ fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
 /// `shmat(shmid, shmaddr, shmflg)` — slot 30.
 /// # C: O(N_segments) lookup
 pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
-    use hal::UserVirtAddr;
     use syscall::errno::Errno;
     use vmm::{VmaProt, VmaFlags, VmaBacking};
     let shmid = args.a0 as i32;

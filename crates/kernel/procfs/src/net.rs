@@ -5,8 +5,6 @@
 
 
 
-use alloc::sync::Arc;
-use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
 pub struct ProcNetDevInode;

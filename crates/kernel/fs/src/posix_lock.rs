@@ -29,7 +29,6 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{InodeRef, KResult, VfsError};

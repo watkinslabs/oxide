@@ -11,7 +11,6 @@
 // sched_switch / sys_enter / sys_exit per `37§6`.
 
 
-use alloc::sync::Arc;
 use vfs::InodeRef;
 
 use crate::procfs::StaticFileInode;

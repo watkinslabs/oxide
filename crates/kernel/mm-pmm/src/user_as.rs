@@ -576,7 +576,7 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
             |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
             // SAFETY: inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference.
-            |pa| unsafe { crate::setup::inc_ref(pa); });
+            |pa| { crate::setup::inc_ref(pa); });
         #[cfg(target_arch = "aarch64")]
         let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _>(
             uva, fault, hhdm,
@@ -586,7 +586,7 @@ fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
             // SAFETY: inc_ref for KernelFrame (vvar); balances AS-drop dec.
-            |pa| unsafe { crate::setup::inc_ref(pa); });
+            |pa| { crate::setup::inc_ref(pa); });
         r
     }
 }

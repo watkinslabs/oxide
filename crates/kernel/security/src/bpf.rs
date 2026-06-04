@@ -63,8 +63,6 @@ const BPF_MAP_GET_NEXT_KEY: u64 = 4;
 /// `sys_bpf(cmd, attr, size)` — slot 321.
 /// # C: O(1) for admit; O(log N) for map ops
 pub fn sys_bpf(args: &SyscallArgs) -> i64 {
-    use alloc::string::ToString;
-    use vfs::{Dentry, File, OpenFlags};
     let cmd = args.a0;
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),

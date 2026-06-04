@@ -35,7 +35,6 @@
 //   4. Plain               →  plain layer
 //   5. Alt held            →  prepend ESC (xterm Meta convention)
 
-#![cfg_attr(not(test), no_std)]
 #![allow(unused_macros, unused_imports)]
 
 extern crate alloc;

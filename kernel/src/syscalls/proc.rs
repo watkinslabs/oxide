@@ -178,7 +178,7 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
-    let ua = match UserVirtAddr::new(addr) {
+    let _ua = match UserVirtAddr::new(addr) {
         Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
     };
     match advice {

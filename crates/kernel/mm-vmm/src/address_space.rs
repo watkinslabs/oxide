@@ -14,9 +14,7 @@
 // - per-AS PT spinlock + page-fault handler + COW + TLB shootdown all
 //   land in subsequent P1-N branches alongside HAL `MmuOps`.
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES, USER_VA_END};
 use sync::{AddressSpace as AddressSpaceClass, RwLock, RwReadGuard, Spinlock};
@@ -334,7 +332,7 @@ impl AddressSpace {
             let end = vma.end.as_u64();
             while va < end {
                 // SAFETY: M::translate reads the active PT for the parent.
-                if let Some((src_pa, _)) = unsafe { Some(M::translate(Va(va))).flatten() } {
+                if let Some((src_pa, _)) = Some(M::translate(Va(va))).flatten() {
                     let pa = src_pa.0 & !0xfff;
                     // Bump per-page refcount: child + parent both ref it.
                     inc_ref(pa);
@@ -748,7 +746,7 @@ impl AddressSpace {
             }
             let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
             // SAFETY: va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
-            let cur = unsafe { M::translate(Va(va_page)) };
+            let cur = M::translate(Va(va_page));
             // COW fast path: if we're the sole owner of the frame
             // (refcount==1), no copy needed — flip the W bit in
             // place. Linux `mm/memory.c` `wp_page_copy` short-circuit.

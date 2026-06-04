@@ -16,3 +16,6 @@ vfs   = { path = "../vfs" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+hosted = []

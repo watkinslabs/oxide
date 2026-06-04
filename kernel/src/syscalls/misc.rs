@@ -19,9 +19,6 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 const MPOL_DEFAULT:    u32 = 0;
-const MPOL_PREFERRED:  u32 = 1;
-const MPOL_BIND:       u32 = 2;
-const MPOL_INTERLEAVE: u32 = 3;
 const MPOL_LOCAL:      u32 = 4;
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }

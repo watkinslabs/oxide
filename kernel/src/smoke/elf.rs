@@ -693,31 +693,15 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
 
 /// Spawn a static-PIE musl blob as a user task with /dev/console
 /// fd 0/1/2, schedule into it, return when it exits via sys_exit.
-/// Reused by P5-01 (real-init), P5-02 (tiny sh), and future
-/// userspace smokes.
-///
-/// # SAFETY: caller is post-elf-smoke; user_as installed;
-/// runqueue installed; allocator up; per-CPU page set.
-/// # C: O(phdrs) parse + O(log N) enqueue
-/// # Ctx: post-elf-smoke; preempt-off
-unsafe fn spawn_user_blob_smoke(
-    blob:    &'static [u8],
-    name:    &'static str,
-    tid:     u32,
-    argv:    &[&[u8]],
-) {
-    // SAFETY: vpid_tgid=0 / vpid_tid=0 means "no namespace remap" — equivalent to the bare spawn_user_thread the elf-smoke and dynlink callers used historically.
-    unsafe { spawn_user_blob_with_vpid(blob, name, tid, 0, 0, argv) }
-}
-
-/// Variant of `spawn_user_blob_smoke` that stamps explicit
-/// `vtgid` / `vtid` on the spawned task before it's enqueued.
+/// Stamps explicit `vtgid` / `vtid` on the spawned task before
+/// it's enqueued.
 /// Used by the PID 1 spawn path to make `getpid()` /
 /// `set_tid_address()` report Linux PID 1 from the very first
 /// syscall (musl crt1's `__init_main_thread` caches the
 /// set_tid_address return as `__libc.tid`).
 ///
-/// # SAFETY: same preconditions as `spawn_user_blob_smoke`.
+/// # SAFETY: caller is post-elf-smoke; user_as installed;
+/// runqueue installed; allocator up; per-CPU page set.
 /// # C: O(phdrs) parse + O(log N) enqueue
 unsafe fn spawn_user_blob_with_vpid(
     blob:      &'static [u8],

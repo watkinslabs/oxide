@@ -11,13 +11,12 @@ use sync::{Spinlock, Socket as StackLockClass};
 use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::icmp::{self, ICMP_TYPE_ECHO_REQUEST};
 use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN, push_ipv4_header};
-use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
 use crate::loopback::LoopbackDev;
 use crate::netdev::{IfaceRegistry, NetDev, NetError, NetResult};
 use crate::pkt::Pkt;
 use crate::route::RouteTable;
 use crate::udp::UdpHdr;
-use crate::tcp_hdr::{TcpHdr, flags as tcp_flags, TCP_HDR_MIN_LEN};
+use crate::tcp_hdr::{flags as tcp_flags, TCP_HDR_MIN_LEN};
 use crate::tcp_conn::{TcpConn, Endpoint};
 
 /// Netfilter verdict callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.

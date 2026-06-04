@@ -68,7 +68,7 @@ fn handle_modifier(keycode: u16, pressed: bool) -> bool {
 /// `install_q0`; consumed by the softirq drain.
 struct QueueCtx {
     hhdm:        u64,
-    desc_pa:     u64,
+    _desc_pa:    u64,
     driver_pa:   u64,    // avail ring base
     device_pa:   u64,    // used  ring base
     notify_va:   u64,
@@ -153,7 +153,7 @@ pub unsafe fn install_q0(
         for slot in g.iter_mut() {
             if slot.is_none() {
                 *slot = Some(QueueCtx {
-                    hhdm, desc_pa, driver_pa, device_pa, notify_va,
+                    hhdm, _desc_pa: desc_pa, driver_pa, device_pa, notify_va,
                     qsize, buf_pa, last_used: 0, avail_idx: qsize,
                 });
                 break;

@@ -16,3 +16,4 @@ elf  = { path = "../../shared/elf" }
 [features]
 default = []
 hosted  = []
+debug-modules = []

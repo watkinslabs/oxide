@@ -10,7 +10,6 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::vec;
 
 use sync::{Spinlock, Socket as SockLockClass};
 

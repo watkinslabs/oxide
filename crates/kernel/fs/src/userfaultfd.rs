@@ -37,7 +37,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::AtomicU16;
 
 use sync::{Spinlock, TaskList as UffdLockClass};
 

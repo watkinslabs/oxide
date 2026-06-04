@@ -104,7 +104,7 @@ impl Mount {
                 let leaf_lba = self.alloc_block(hint_group)?;
                 let mut leaf_buf = alloc::vec![0u8; bs];
                 let leaf_max = ((bs - 12) / 12) as u16;
-                let mut leaf_hdr = inode::ExtentHeader {
+                let leaf_hdr = inode::ExtentHeader {
                     magic: inode::EXT4_EXT_MAGIC,
                     entries: 5, max: leaf_max, depth: 0, generation: 0,
                 };
@@ -133,7 +133,6 @@ impl Mount {
                     _unused: 0,
                 };
                 inode::write_extent_idx(i_block, 0, &idx0);
-                hdr.depth = 1;
             }
         }
 
