@@ -44,6 +44,16 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "aarch64" => ("boot-aarch64", "kernel-bin-aarch64"),
         _ => unreachable!(),
     };
+    // The per-arch rootfs disk image is `include_bytes!`'d into the
+    // kernel but is gitignored (too big for the repo — regenerated, not
+    // source). Regenerate it on demand so a bare `xtask kernel --arch X`
+    // on a fresh checkout doesn't fail with a missing-include_bytes error.
+    let rootfs_img = std::path::Path::new("kernel/blobs")
+        .join(format!("rootfs-{arch}.img"));
+    if !rootfs_img.exists() {
+        eprintln!("xtask kernel: {} missing — regenerating", rootfs_img.display());
+        crate::rootfs::cmd_rootfs(rest)?;
+    }
     let mut c = Command::new("cargo");
     c.args([
         "build",
