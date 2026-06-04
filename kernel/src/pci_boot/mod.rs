@@ -476,23 +476,37 @@ fn cap_dump_arch(d: &pci::PciDevice) {
 /// + `ECAM_BASE_VA` published on aarch64).
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
+    // DEVICE INIT runs in EVERY build (not just debug). Per `04§4.0` R06 only
+    // the *log bytes* gate on `debug-boot`, not the bring-up itself — gating
+    // the whole thing left release builds with no PCI, no virtio-gpu
+    // framebuffer, and a serial-only console (the "display only on serial"
+    // regression). Enumerate, enable BAR/BusMaster, then install drivers
+    // (virtio-gpu scanout, virtio-input) for every device, unconditionally.
+    let devs = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let r = hal_x86_64::pci::LegacyPci;
+            pci::enumerate(&r)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            match hal_aarch64::pci::EcamPci::from_published() {
+                // ECAM mapping is bus 0 only on aarch64 v1 (1 MiB
+                // device-mapped at boot); enumerate cap matches.
+                Some(r) => pci::enumerate_buses(&r, 1),
+                None    => alloc::vec::Vec::new(),
+            }
+        }
+    };
+    // BAR/BusMaster enable must precede any MSI-X/cap access (F38); do it for
+    // every device first, then install drivers.
+    for d in devs.iter() {
+        enable_pci_mem_bm(d.bdf);
+    }
+    for d in devs.iter() {
+        virtio_probe_arch(d);
+    }
     debug_boot! {
-        let devs = {
-            #[cfg(target_arch = "x86_64")]
-            {
-                let r = hal_x86_64::pci::LegacyPci;
-                pci::enumerate(&r)
-            }
-            #[cfg(target_arch = "aarch64")]
-            {
-                match hal_aarch64::pci::EcamPci::from_published() {
-                    // ECAM mapping is bus 0 only on aarch64 v1 (1 MiB
-                    // device-mapped at boot); enumerate cap matches.
-                    Some(r) => pci::enumerate_buses(&r, 1),
-                    None    => alloc::vec::Vec::new(),
-                }
-            }
-        };
         klog::write_raw(b"[INFO]  pci: devices=");
         klog::write_dec_u64(devs.len() as u64);
         klog::write_raw(b"\n");
@@ -510,18 +524,10 @@ pub fn enumerate_and_log() {
             klog::write_raw(b" class=");
             klog::write_hex_u64(d.class_code as u64);
             klog::write_raw(b"\n");
-            // F38 ordering fix: enable Memory + BusMaster bits in the
-            // PCI command reg BEFORE cap_dump_arch tries to read or
-            // write the MSI-X table BAR. Previously this only happened
-            // inside virtio_probe_arch (which runs LAST), so MSI-X
-            // table writes from cap_dump bounced as 0xFF reads.
-            enable_pci_mem_bm(d.bdf);
-            // Capability list — modern devices always advertise MSI-X
-            // + (for virtio) vendor-specific virtio-pci caps. Foundation
-            // for upcoming MSI-X routing + virtio modern-transport work.
+            // Capability/BAR diagnostic dumps (log-only; enable_pci_mem_bm
+            // above already ran so MSI-X BAR reads don't bounce as 0xFF).
             bar_dump_arch(d.bdf);
             cap_dump_arch(d);
-            virtio_probe_arch(d);
         }
         // F40 + F57: brief IRQ unmask window so any MSIs queued
         // during the closed-loop drain through the per-arch IRQ
