@@ -141,6 +141,25 @@ pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
     }))
 }
 
+/// Read the user path C-string at `path_ptr` and resolve it to an
+/// absolute, normalised path under full `*at` dirfd semantics
+/// ([`resolve_at`]). THE shared front door for every `*at` syscall that
+/// resolves a user path — collapses the per-site "absolute / AT_FDCWD /
+/// real-dirfd" branching that several handlers got wrong (a real dirfd
+/// with a relative path used to fall through to the bare relative name,
+/// so `find`'s `FTS_CWDFD` walk ENOENT'd into every subdirectory).
+/// `None` ⇒ null/out-of-range ptr, empty/non-UTF8 path, or bad dirfd.
+/// # C: O(N_path) + O(1) fd lookup
+pub fn resolve_at_user(dirfd: i32, path_ptr: u64) -> Option<String> {
+    if path_ptr == 0 || path_ptr >= hal::USER_VA_END { return None; }
+    // SAFETY: ptr range-checked above; read_user_cstr bounds the read to 256
+    // bytes through the caller's address space; sole reader this CPU.
+    let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) }?;
+    if bytes.is_empty() { return None; }
+    let raw = core::str::from_utf8(bytes).ok()?;
+    resolve_at(dirfd, raw)
+}
+
 /// Resolve `raw` against the running task's cwd. Absolute paths
 /// short-circuit through the lexical normalizer (collapses `.` /
 /// `..`); relative paths are joined to cwd then normalized.

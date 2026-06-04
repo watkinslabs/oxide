@@ -56,7 +56,12 @@ fn resolve_at_inode(dirfd: i32, path_ptr: u64, flags: u32, follow: bool) -> Resu
     if flags & AT_EMPTY_PATH != 0 && path_is_empty(path_ptr) {
         return resolve_fd_inode(dirfd);
     }
-    resolve_path_inode(path_ptr, follow)
+    // Full dirfd semantics (absolute / AT_FDCWD / real dirfd): a relative
+    // path against a real directory fd must resolve against that fd's dir.
+    let s = crate::syscalls::pathresolve::resolve_at_user(dirfd, path_ptr)
+        .ok_or(-(Errno::Einval.as_i32() as i64))?;
+    crate::syscalls::pathresolve::resolve(&s, !follow)
+        .ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 
 fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {

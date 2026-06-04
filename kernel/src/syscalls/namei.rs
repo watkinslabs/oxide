@@ -11,6 +11,7 @@ use syscall::errno::Errno;
 use hal::USER_VA_END;
 
 const AT_REMOVEDIR: u32 = 0x200;
+const AT_FDCWD: i32 = -100;
 
 fn read_path(ptr: u64) -> Option<String> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
@@ -139,10 +140,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
     let link_p   = args.a3;
     let flags    = args.a4;
 
-    let link = match read_path(link_p) {
+    // newpath (a3) resolves against newdirfd (a2); full dirfd semantics.
+    let l = match crate::syscalls::pathresolve::resolve_at_user(args.a2 as i32, link_p) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let l = resolve(&link).unwrap_or(link);
     if let Err(rv) = crate::syscalls::landlock::check(&l,
         ::security::landlock::access::MAKE_REG) { return rv; }
     if !is_ext4_path(&l) { return -(Errno::Erofs.as_i32() as i64); }
@@ -180,11 +181,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         };
     }
 
-    // Classic path→path linkat.
-    let target = match read_path(target_p) {
+    // Classic path→path linkat: oldpath (a1) resolves against olddirfd (a0).
+    let t = match crate::syscalls::pathresolve::resolve_at_user(odir_fd, target_p) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let t = resolve(&target).unwrap_or(target);
     if !is_ext4_path(&t) { return -(Errno::Erofs.as_i32() as i64); }
     match ext4::rootfs::link_at(t.as_bytes(), l.as_bytes()) {
         Ok(())  => 0,
@@ -205,15 +205,14 @@ pub fn sys_unlink(args: &SyscallArgs) -> i64 {
     match pino.unlink_child(&name) { Ok(()) => 0, Err(e) => errno_from_vfs(e) }
 }
 
-/// `unlinkat(dirfd, path, flags)` slot 263. We currently honour
-/// the `AT_REMOVEDIR` flag → rmdir; ignore dirfd (no per-fd
-/// directory state yet — paths are absolute or cwd-relative).
+/// `unlinkat(dirfd, path, flags)` slot 263. Honours `AT_REMOVEDIR`
+/// (→ rmdir) and `dirfd` (absolute / AT_FDCWD / real dirfd).
 /// # C: O(N parent entries)
 pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a1) {
+    // path (a1) resolves against dirfd (a0); full dirfd semantics.
+    let p = match crate::syscalls::pathresolve::resolve_at_user(args.a0 as i32, args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let p = resolve(&raw).unwrap_or(raw);
     let flags = args.a2 as u32;
     let op = if (flags & AT_REMOVEDIR) != 0 {
         ::security::landlock::access::REMOVE_DIR
@@ -258,14 +257,13 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     match pino.mkdir(&name, mode as u32) { Ok(_) => 0, Err(e) => errno_from_vfs(e) }
 }
 
-/// `mkdirat(dirfd, path, mode)` slot 258. Ignores dirfd (paths
-/// resolved absolute or cwd-relative).
+/// `mkdirat(dirfd, path, mode)` slot 258. Honours `dirfd` (absolute /
+/// AT_FDCWD / real dirfd).
 /// # C: O(1)
 pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a1) {
+    let p = match crate::syscalls::pathresolve::resolve_at_user(args.a0 as i32, args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let p = resolve(&raw).unwrap_or(raw);
     let p = String::from(strip_trailing_slash(&p));
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
@@ -284,24 +282,25 @@ pub fn sys_symlink(args: &SyscallArgs) -> i64 {
     let link = match read_path(args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    symlink_impl(target, link)
+    let l = resolve(&link).unwrap_or(link);
+    symlink_impl(target, l)
 }
 
-/// `symlinkat(target, newdirfd, linkpath)` slot 266. Ignores newdirfd
-/// (paths resolved absolute or cwd-relative).
+/// `symlinkat(target, newdirfd, linkpath)` slot 266. `target` is the
+/// literal link content (not resolved); `linkpath` (a2) resolves against
+/// `newdirfd` (a1) — full dirfd semantics.
 /// # C: O(N parent entries)
 pub fn sys_symlinkat(args: &SyscallArgs) -> i64 {
     let target = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let link = match read_path(args.a2) {
+    let l = match crate::syscalls::pathresolve::resolve_at_user(args.a1 as i32, args.a2) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    symlink_impl(target, link)
+    symlink_impl(target, l)
 }
 
-fn symlink_impl(target: String, link: String) -> i64 {
-    let l = resolve(&link).unwrap_or(link);
+fn symlink_impl(target: String, l: String) -> i64 {
     if let Err(rv) = crate::syscalls::landlock::check(&l,
         ::security::landlock::access::MAKE_SYM) { return rv; }
     let (pino, name) = match resolve_parent(&l) { Ok(x) => x, Err(rv) => return rv };
@@ -317,20 +316,21 @@ pub fn sys_mknod(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a0) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    mknod_impl(raw, args.a1 as u16, args.a2 as u32)
+    let p = resolve(&raw).unwrap_or(raw);
+    mknod_impl(p, args.a1 as u16, args.a2 as u32)
 }
 
-/// `mknodat(dirfd, path, mode, dev)` slot 259. Ignores dirfd.
+/// `mknodat(dirfd, path, mode, dev)` slot 259. Honours `dirfd`
+/// (absolute / AT_FDCWD / real dirfd).
 /// # C: O(N parent entries)
 pub fn sys_mknodat(args: &SyscallArgs) -> i64 {
-    let raw = match read_path(args.a1) {
+    let p = match crate::syscalls::pathresolve::resolve_at_user(args.a0 as i32, args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    mknod_impl(raw, args.a2 as u16, args.a3 as u32)
+    mknod_impl(p, args.a2 as u16, args.a3 as u32)
 }
 
-fn mknod_impl(raw: String, mode: u16, dev: u32) -> i64 {
-    let p = resolve(&raw).unwrap_or(raw);
+fn mknod_impl(p: String, mode: u16, dev: u32) -> i64 {
     // Map mode's type bits to the Landlock access needed.
     const S_IFMT:  u16 = 0xF000;
     const S_IFREG: u16 = 0x8000;
@@ -393,17 +393,17 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
 /// link-then-unlink against the ext4 mount.
 /// # C: O(1)
 pub fn sys_rename(args: &SyscallArgs) -> i64 {
-    rename_impl(args.a0, args.a1)
+    rename_impl(AT_FDCWD, args.a0, AT_FDCWD, args.a1)
 }
 
 /// # C: O(1)
 pub fn sys_renameat(args: &SyscallArgs) -> i64 {
-    rename_impl(args.a1, args.a3)
+    rename_impl(args.a0 as i32, args.a1, args.a2 as i32, args.a3)
 }
 
 /// # C: O(1)
 pub fn sys_renameat2(args: &SyscallArgs) -> i64 {
-    rename_impl(args.a1, args.a3)
+    rename_impl(args.a0 as i32, args.a1, args.a2 as i32, args.a3)
 }
 
 
@@ -415,15 +415,14 @@ fn mount_for_write(path: &str) -> Result<(alloc::sync::Arc<vfs::mount::Mount>, a
     vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 
-fn rename_impl(from_ptr: u64, to_ptr: u64) -> i64 {
-    let from_raw = match read_path(from_ptr) {
+fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr: u64) -> i64 {
+    // from (a1) resolves against from_dirfd (a0); to (a3) against to_dirfd (a2).
+    let f = match crate::syscalls::pathresolve::resolve_at_user(from_dirfd, from_ptr) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let to_raw = match read_path(to_ptr) {
+    let t = match crate::syscalls::pathresolve::resolve_at_user(to_dirfd, to_ptr) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let f = resolve(&from_raw).unwrap_or(from_raw);
-    let t = resolve(&to_raw).unwrap_or(to_raw);
     // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
     // to-side needs MAKE_REG. Approximate as REMOVE_FILE+MAKE_REG.
     let la = ::security::landlock::access::REMOVE_FILE

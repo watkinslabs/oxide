@@ -56,17 +56,12 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     if path_ptr >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
-    // SAFETY: path_ptr in user range; bounded read via devfs::read_user_cstr.
-    let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
-    let raw = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
-        Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
-    };
-    let _ = dirfd; //  AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
-    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
-    let s = resolved.as_str();
+    // Full dirfd semantics (absolute / AT_FDCWD / real dirfd).
+    let s = crate::syscalls::pathresolve::resolve_at_user(dirfd, path_ptr)
+        .ok_or(-(Errno::Einval.as_i32() as i64))?;
     // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW handling
     // rides the dirfd rewrite); resolve via the path-walk.
-    crate::syscalls::pathresolve::resolve(s, false)
+    crate::syscalls::pathresolve::resolve(&s, false)
         .ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 

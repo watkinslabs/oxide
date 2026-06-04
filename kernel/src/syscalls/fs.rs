@@ -314,26 +314,19 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     }
     // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
     let path_opt = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
-    const AT_FDCWD: i32 = -100;
     let inode = match path_opt {
         Some(p) if !p.is_empty() => {
             let raw = match core::str::from_utf8(p) {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
-            // Resolve relative path against cwd (statx semantics for AT_FDCWD).
-            // Absolute paths must also be lexically normalised so trailing
-            // slashes (`/proc/self/fd/`) and `.`/`..` collapse to the
-            // registered devfs key.
-            let resolved: alloc::string::String = if raw.starts_with('/') {
-                vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
-            } else if dirfd == AT_FDCWD {
-                let cur = match sched::live::current() {
-                    Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-                };
-                // SAFETY: cwd slot single-mutator per `13§5`.
-                let cwd = unsafe { (*cur.cwd.get()).clone() };
-                vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-            } else { raw.into() };
+            // Full dirfd semantics (absolute / AT_FDCWD / real dirfd).
+            // resolve_at lexically normalises absolute paths too, so
+            // trailing slashes (`/proc/self/fd/`) and `.`/`..` collapse
+            // to the registered devfs key; a real dirfd + relative path
+            // resolves against the dirfd's directory (find's FTS_CWDFD).
+            let resolved: alloc::string::String =
+                crate::syscalls::pathresolve::resolve_at(dirfd, raw)
+                    .unwrap_or_else(|| raw.into());
             let s = resolved.as_str();
             // THE resolver (path-walk). statx(2) follows symlinks unless
             // AT_SYMLINK_NOFOLLOW. aarch64 musl routes stat()/lstat()
@@ -710,68 +703,32 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1
-/// ignores `dirfd` + `flags`; same semantics as `sys_access`.
-/// # C: O(N_devfs_entries)
+/// `sys_faccessat(dirfd, path, mode, flags)` — slot 269. v1 ignores
+/// `flags`; honours `dirfd` (absolute / AT_FDCWD / real dirfd) so a
+/// relative probe against an open directory fd resolves correctly.
+/// Existence check only (mode ignored), like `sys_access`.
+/// # C: O(N_path)
 pub fn sys_faccessat(args: &SyscallArgs) -> i64 {
-    let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
-    sys_access(&inner)
-}
-
-/// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
-/// procfs symlinks `/proc/self/{exe,cwd,root}` and per-pid
-/// `/proc/<tid>/{exe,cwd,root}`. `exe` reports argv[0] from the
-/// task's cmdline snapshot (`/init` when unset). All other paths
-/// return -EINVAL.
-/// # C: O(1) + O(N_tasks) for per-pid lookup
-pub fn sys_readlink(args: &SyscallArgs) -> i64 {
-    let path_ptr = args.a0;
-    let buf_ptr  = args.a1;
-    let bufsize  = args.a2;
+    let dirfd    = args.a0 as i32;
+    let path_ptr = args.a1;
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf(buf_ptr, bufsize, 1) { return rv; }
-    // SAFETY: ptr in user range; user page mapped (caller already executed user code from this AS); bounded read.
-    let path = match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
-        Some(p) if !p.is_empty() => p,
-        _                        => return -(Errno::Einval.as_i32() as i64),
+    let s = match crate::syscalls::pathresolve::resolve_at_user(dirfd, path_ptr) {
+        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let raw = match core::str::from_utf8(path) {
-        Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-    };
-    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
-    let path_s = resolved.as_str();
-    // proc-link family first (/proc/self/exe etc) — not backed by Inode::readlink.
-    // Otherwise resolve via the dentry walk with no_follow_final=true: Linux
-    // readlink follows INTERMEDIATE symlinks in the path but returns the FINAL
-    // component's link target itself (never follows it). EINVAL when the final
-    // isn't a symlink (Inode::readlink errors), ENOENT when it doesn't resolve.
-    let target: alloc::vec::Vec<u8> = if let Some(t) = sched::proclink::resolve_proc_link(path_s) { t }
-        else if let Some(inode) = crate::syscalls::pathresolve::resolve(path_s, true) {
-            match inode.readlink() { Ok(v) => v, Err(_) => return -(Errno::Einval.as_i32() as i64) }
-        } else { return -(Errno::Enoent.as_i32() as i64); };
-    let n = (target.len() as u64).min(bufsize) as usize;
-    // SAFETY: buf range validated < USER_VA_END; CPL=0 writes through caller's AS.
-    unsafe {
-        for i in 0..n {
-            core::ptr::write_volatile((buf_ptr + i as u64) as *mut u8, target[i]);
-        }
+    if s == "/" { return 0; }
+    // access(2) follows symlinks; v1 checks existence only.
+    if crate::syscalls::pathresolve::resolve(&s, false).is_some() {
+        0
+    } else {
+        -(Errno::Enoent.as_i32() as i64)
     }
-    n as i64
 }
 
-// proc-link helpers (exe/cwd/root/fd/ns) moved to syscall_glue_proclink.rs (F112).
-
-/// `sys_readlinkat(dirfd, path, buf, bufsize)` — slot 267.
-/// v1 ignores `dirfd` (no real cwd resolution) and routes
-/// through `sys_readlink`.
-/// # C: O(1)
-pub fn sys_readlinkat(args: &SyscallArgs) -> i64 {
-    let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: args.a3, a3: 0, a4: 0, a5: 0 };
-    sys_readlink(&inner)
-}
+// readlink / readlinkat moved to readlink.rs (1000-line cap). proc-link
+// helpers (exe/cwd/root/fd/ns) live in syscall_glue_proclink.rs (F112).
+pub use crate::syscalls::readlink::{sys_readlink, sys_readlinkat};
 
 /// `sys_poll(fds, nfds, timeout)` — slot 7. v1 non-blocking:
 /// reports POLLIN|POLLOUT for CharDev fds (always ready in v1
