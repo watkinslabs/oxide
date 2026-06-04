@@ -211,6 +211,89 @@ pub fn first_memory_region(bytes: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
+/// Enumerate `/cpus/cpu@*` nodes → each CPU's `reg` value, which on arm64
+/// is the MPIDR_EL1 affinity the PSCI `CPU_ON` call targets. Fills `out`
+/// with up to `out.len()` MPIDRs (in DTB order; index 0 is typically the
+/// boot CPU) and returns the total cpu-node count seen. The `/cpus`
+/// `#address-cells` (FDT default 2; arm64 QEMU `virt` uses 1) governs how
+/// many big-endian cells each `reg` occupies; cells are folded low-order
+/// into the u64. Used by the self-bootstrap SMP path to drive `CPU_ON`.
+/// # C: O(dtb_struct_size)
+pub fn enum_cpus(bytes: &[u8], out: &mut [u64]) -> usize {
+    let h = match parse_header(bytes) { Ok(h) => h, Err(_) => return 0 };
+    let stru = match bytes.get(h.off_dt_struct as usize ..
+                              (h.off_dt_struct + h.size_dt_struct) as usize) {
+        Some(s) => s, None => return 0,
+    };
+    let strs = match bytes.get(h.off_dt_strings as usize ..
+                              (h.off_dt_strings + h.size_dt_strings) as usize) {
+        Some(s) => s, None => return 0,
+    };
+    let mut i = 0usize;
+    let mut depth: i32 = -1;
+    let mut cpus_depth: i32 = -1;       // depth of the /cpus node (-1 = outside)
+    let mut addr_cells: u32 = 2;        // /cpus #address-cells (FDT default)
+    let mut in_cpu = false;             // inside a /cpus/cpu@* child
+    let mut count = 0usize;
+    while i + 4 <= stru.len() {
+        let tok = match read_be_u32(stru, i) { Ok(t) => t, Err(_) => return count };
+        i += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                depth += 1;
+                let start = i;
+                while i < stru.len() && stru[i] != 0 { i += 1; }
+                if i >= stru.len() { return count; }
+                let name = &stru[start..i];
+                i = (i + 1 + 3) & !3;
+                if depth == 1 && name == b"cpus" {
+                    cpus_depth = depth;
+                } else if cpus_depth >= 0 && depth == cpus_depth + 1
+                    && (name == b"cpu" || name.starts_with(b"cpu@")) {
+                    in_cpu = true;
+                }
+            }
+            FDT_END_NODE => {
+                if in_cpu && depth == cpus_depth + 1 { in_cpu = false; }
+                if depth == cpus_depth { cpus_depth = -1; }
+                depth -= 1;
+            }
+            FDT_PROP => {
+                if i + 8 > stru.len() { return count; }
+                let plen  = match read_be_u32(stru, i)     { Ok(v) => v as usize, Err(_) => return count };
+                let pname = match read_be_u32(stru, i + 4) { Ok(v) => v as usize, Err(_) => return count };
+                i += 8;
+                let pdata = match stru.get(i .. i + plen) { Some(d) => d, None => return count };
+                let name_end = match strs.get(pname..).and_then(|s| s.iter().position(|&b| b == 0)) {
+                    Some(e) => e, None => return count,
+                };
+                let pname_str = &strs[pname..pname + name_end];
+                // #address-cells on /cpus itself governs each cpu reg width.
+                if cpus_depth >= 0 && depth == cpus_depth && !in_cpu
+                    && pname_str == b"#address-cells" && plen >= 4 {
+                    if let Ok(v) = read_be_u32(pdata, 0) {
+                        if v >= 1 && v <= 2 { addr_cells = v; }
+                    }
+                }
+                if in_cpu && pname_str == b"reg" && plen >= 4 * addr_cells as usize {
+                    let mut mpidr = 0u64;
+                    for c in 0..addr_cells as usize {
+                        let cell = read_be_u32(pdata, c * 4).unwrap_or(0) as u64;
+                        mpidr = (mpidr << 32) | cell;
+                    }
+                    if count < out.len() { out[count] = mpidr; }
+                    count += 1;
+                }
+                i += (plen + 3) & !3;
+            }
+            FDT_NOP => {}
+            FDT_END => return count,
+            _ => return count,
+        }
+    }
+    count
+}
+
 #[inline]
 fn read_be_u32(buf: &[u8], off: usize) -> KResult<u32> {
     let bytes: [u8; 4] = buf.get(off..off + 4)
@@ -239,6 +322,96 @@ mod tests {
         v[32..36].copy_from_slice(&8u32.to_be_bytes());
         v[36..40].copy_from_slice(&8u32.to_be_bytes());
         v
+    }
+
+    // Assemble a minimal FDT: root → /cpus(#address-cells=ac) → N cpu@i
+    // nodes each with reg = its index. Returns the full blob.
+    fn build_cpus_dtb(ac: u32, mpidrs: &[u64]) -> alloc::vec::Vec<u8> {
+        use alloc::vec::Vec;
+        // strings block
+        let mut strs: Vec<u8> = Vec::new();
+        let off_ac = strs.len() as u32; strs.extend_from_slice(b"#address-cells\0");
+        let off_reg = strs.len() as u32; strs.extend_from_slice(b"reg\0");
+        // struct block
+        let mut s: Vec<u8> = Vec::new();
+        let tok = |s: &mut Vec<u8>, t: u32| s.extend_from_slice(&t.to_be_bytes());
+        let node = |s: &mut Vec<u8>, name: &[u8]| {
+            s.extend_from_slice(&FDT_BEGIN_NODE.to_be_bytes());
+            s.extend_from_slice(name); s.push(0);
+            while s.len() % 4 != 0 { s.push(0); }
+        };
+        let prop = |s: &mut Vec<u8>, noff: u32, data: &[u8]| {
+            s.extend_from_slice(&FDT_PROP.to_be_bytes());
+            s.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            s.extend_from_slice(&noff.to_be_bytes());
+            s.extend_from_slice(data);
+            while s.len() % 4 != 0 { s.push(0); }
+        };
+        node(&mut s, b"");                       // root
+        node(&mut s, b"cpus");                   // /cpus
+        prop(&mut s, off_ac, &ac.to_be_bytes()); // #address-cells
+        for (idx, m) in mpidrs.iter().enumerate() {
+            let mut nm = alloc::format!("cpu@{idx}").into_bytes();
+            node(&mut s, &nm);
+            nm.clear();
+            // reg = ac big-endian cells holding the low bits of mpidr
+            let mut reg: Vec<u8> = Vec::new();
+            for c in (0..ac).rev() {
+                reg.extend_from_slice(&(((*m >> (c * 32)) & 0xffff_ffff) as u32).to_be_bytes());
+            }
+            prop(&mut s, off_reg, &reg);
+            tok(&mut s, FDT_END_NODE);           // end cpu@i
+        }
+        tok(&mut s, FDT_END_NODE);               // end /cpus
+        tok(&mut s, FDT_END_NODE);               // end root
+        tok(&mut s, FDT_END);
+        // header
+        let off_struct = 40u32;
+        let off_strings = off_struct + s.len() as u32;
+        let total = off_strings + strs.len() as u32;
+        let mut v = alloc::vec![0u8; 40];
+        v[0..4]  .copy_from_slice(&FDT_MAGIC.to_be_bytes());
+        v[4..8]  .copy_from_slice(&total.to_be_bytes());
+        v[8..12] .copy_from_slice(&off_struct.to_be_bytes());
+        v[12..16].copy_from_slice(&off_strings.to_be_bytes());
+        v[16..20].copy_from_slice(&total.to_be_bytes()); // off_mem_rsvmap (empty)
+        v[20..24].copy_from_slice(&17u32.to_be_bytes());
+        v[24..28].copy_from_slice(&FDT_LAST_COMPAT_VERSION.to_be_bytes());
+        v[28..32].copy_from_slice(&0u32.to_be_bytes());
+        v[32..36].copy_from_slice(&(strs.len() as u32).to_be_bytes());
+        v[36..40].copy_from_slice(&(s.len() as u32).to_be_bytes());
+        v.extend_from_slice(&s);
+        v.extend_from_slice(&strs);
+        v
+    }
+
+    #[test]
+    fn enum_cpus_single_cell() {
+        let dtb = build_cpus_dtb(1, &[0, 1, 2, 3]);
+        let mut out = [0u64; 8];
+        let n = enum_cpus(&dtb, &mut out);
+        assert_eq!(n, 4);
+        assert_eq!(&out[..4], &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn enum_cpus_two_cell_affinity() {
+        // Aff1=1 → MPIDR 0x1_0000_0000 in a 2-cell reg.
+        let dtb = build_cpus_dtb(2, &[0x0000_0000, 0x1_0000_0001]);
+        let mut out = [0u64; 4];
+        let n = enum_cpus(&dtb, &mut out);
+        assert_eq!(n, 2);
+        assert_eq!(out[0], 0);
+        assert_eq!(out[1], 0x1_0000_0001);
+    }
+
+    #[test]
+    fn enum_cpus_counts_beyond_out_capacity() {
+        let dtb = build_cpus_dtb(1, &[0, 1, 2, 3]);
+        let mut out = [0u64; 2];
+        let n = enum_cpus(&dtb, &mut out);
+        assert_eq!(n, 4);                 // total seen
+        assert_eq!(&out[..2], &[0, 1]);   // only first 2 stored
     }
 
     #[test]
