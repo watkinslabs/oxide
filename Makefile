@@ -90,10 +90,10 @@ qemu-arm-self:
 # tick + boot-pulse log). Useful for kernel debugging; not what you
 # want when just trying to log in and use it.
 qemu-x86-debug:
-	$(XTASK) qemu --arch x86_64  --features debug-all
+	$(XTASK) grub --arch x86_64  --features debug-all
 
 qemu-arm-debug:
-	$(XTASK) qemu --arch aarch64 --features debug-all
+	$(XTASK) grub --arch aarch64 --features debug-all
 
 # Boot-smoke gates — run kernel under qemu headless and wait for
 # `oxide login:` on serial within SMOKE_TIMEOUT seconds (default

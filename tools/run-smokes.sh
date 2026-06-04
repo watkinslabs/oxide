@@ -20,7 +20,7 @@ run_one() {
   local repo; repo="$(cd "$(dirname "$0")/.." && pwd)"
   local img="$repo/target/oxide-$arch.img"
   if [ ! -f "$img" ]; then
-    echo "no image at $img — run 'cargo run -p xtask -- image --arch $arch' or 'make qemu-$( [ "$arch" = x86_64 ] && echo x86 || echo arm)' first" >&2
+    echo "no image at $img — run 'make qemu-$( [ "$arch" = x86_64 ] && echo x86 || echo arm)' first" >&2
     return 2
   fi
 
