@@ -367,13 +367,64 @@ unsafe fn dtb_totalsize(pa: u64) -> u64 {
     dtb::parse_header(head).map(|h| h.totalsize as u64).unwrap_or(0)
 }
 
+/// Publish the PSCI AP-startup parameters to `hal_aarch64::smp` before
+/// `kernel_main` brings APs up. Computes the physical addresses of the
+/// self-boot page tables (`phys = VA - KERNEL_BASE + load_base`, since the
+/// image maps KB→load_base linearly) and enumerates the DTB `/cpus` MPIDR
+/// list. No-op (→ SMP=1) when the load base is unknown or the DTB has no
+/// secondary CPUs.
+/// # SAFETY: boot path, single-CPU, pre-SMP; reads `.global` self-boot page
+/// table symbols + the HHDM-mapped DTB; `set_psci_ap_params` copies into a
+/// boot-owned static.
+/// # C: O(dtb)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn publish_psci_ap_params() {
+    extern "C" {
+        static _sb_ap_l0: u8;
+        static _sb_ttbr0_l0: u8;
+        static _sb_ttbr1_l0: u8;
+    }
+    const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+    let load_base = selfboot::SB_LOAD_BASE.load(core::sync::atomic::Ordering::Acquire);
+    if load_base == 0 { return; }
+    let to_pa = |va: u64| va - KERNEL_BASE + load_base;
+    // The symbols are `.global` self-boot BSS page tables, mapped at their
+    // linked high VA (the primary accesses them post-MMU); addr_of! only
+    // takes their address (no read), so it needs no unsafe.
+    let ap_l0_pa = to_pa(core::ptr::addr_of!(_sb_ap_l0) as u64);
+    let ttbr1_pa = to_pa(core::ptr::addr_of!(_sb_ttbr1_l0) as u64);
+    let ttbr0_kernel_pa = to_pa(core::ptr::addr_of!(_sb_ttbr0_l0) as u64);
+    let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
+    let mut mpidrs = [0u64; 16];
+    // SAFETY: header read bounds the blob; HHDM-mapped DTB (0 if no DTB).
+    let ts = if pa != 0 { (unsafe { dtb_totalsize(pa) }) as usize } else { 0 };
+    let n = if pa != 0 && ts != 0 && ts <= 4 * 1024 * 1024 {
+        let va = selfboot::ARM_SELFBOOT_HHDM + pa;
+        // SAFETY: blob bounded by its own totalsize; HHDM-mapped.
+        let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
+        dtb::enum_cpus(blob, &mut mpidrs)
+    } else { 0 };
+    let n = n.min(mpidrs.len());
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[smp-psci-pub] dtb_pa=");
+        klog::write_hex_u64(pa);
+        klog::write_raw(b" ts=");
+        klog::write_hex_u64(ts as u64);
+        klog::write_raw(b" n=");
+        klog::write_hex_u64(n as u64);
+        klog::write_raw(b"\n");
+    }
+    hal_aarch64::smp::set_psci_ap_params(ap_l0_pa, ttbr1_pa, ttbr0_kernel_pa, load_base, &mpidrs[..n]);
+}
+
 /// Build a `BootInfo` from the self-bootstrap trampoline + DTB. HHDM
 /// comes from the trampoline; the memmap is carved from the DTB
 /// `/memory` node. Both live arm boot paths (GRUB EFI-stub `linux` and
 /// QEMU `-kernel` flat Image) enter via the Image trampoline, so
-/// `is_selfboot()` is always true here. SMP stays at the UP state
-/// (`smp_info_array=0`): no bootloader starts APs and the kernel does
-/// not PSCI-CPU_ON them yet, so the kernel's `bring_up_aps_*` no-ops.
+/// `is_selfboot()` is always true here. APs are started by the kernel via
+/// PSCI (`bring_up_aps_psci`) using params published by
+/// `publish_psci_ap_params`; BootInfo's legacy smp_* fields stay 0.
 ///
 /// # SAFETY: caller is the boot path; DTB_PHYS_ADDR was written by
 /// `_start` from the bootloader-provided x0 register.
@@ -469,6 +520,9 @@ unsafe extern "C" fn _start_rust() -> ! {
     // kernel::boot_cmdline::set, or no-ops if the DTB lacks bootargs
     // (the kernel then falls back to install_arch_default).
     unsafe { capture_cmdline_from_dtb(); }
+    // SAFETY: boot path, pre-SMP; publishes the PSCI AP-startup params (page
+    // table phys + DTB /cpus MPIDRs) for the kernel's bring_up_aps_psci.
+    unsafe { publish_psci_ap_params(); }
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
