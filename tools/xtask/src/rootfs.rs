@@ -576,6 +576,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&py_bin, "/usr/bin/python3.13")?;
         ln_via_debugfs("/usr/bin/python3.13", "/usr/bin/python3")?;
         put(&py_zip, "/usr/lib/python313.zip")?;
+        // CPython getpath probes <exec_prefix>/lib/python3.13/lib-dynload as
+        // the platform-stdlib landmark; absent it prints "Could not find
+        // platform dependent libraries <exec_prefix>" on every start. All our
+        // C extensions are statically linked into the interpreter, so the dir
+        // is legitimately empty — create it so getpath resolves exec_prefix.
+        dbg("mkdir /usr/lib/python3.13")?;
+        dbg("mkdir /usr/lib/python3.13/lib-dynload")?;
     }
 
     let sshd_bin = repo.join(format!("vendor/openssh/sshd-{}", arch));
