@@ -174,7 +174,8 @@ def _build_image(arch: str, features: str = "debug-boot") -> Path:
     when debugging kernel internals."""
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
-    # Build the kernel + boot artifact + GPT disk image.
+    # Build the kernel + rootfs + bootable GRUB ISO (Limine removed, F376).
+    # `xtask image` is build-only (no qemu launch) and prints `image=<path>`.
     cmd = [
         "cargo", "run", "--quiet", "-p", "xtask", "--",
         "image", "--arch", arch, "--features", features,
@@ -185,9 +186,9 @@ def _build_image(arch: str, features: str = "debug-boot") -> Path:
             f"image build failed (exit {proc.returncode})\n"
             f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
-    img = REPO_ROOT / "target" / f"oxide-{arch}.img"
+    img = REPO_ROOT / "target" / f"oxide-{arch}-grub.iso"
     if not img.is_file():
-        raise RuntimeError(f"expected image at {img} but it isn't there")
+        raise RuntimeError(f"expected GRUB ISO at {img} but it isn't there")
     return img
 
 
@@ -245,45 +246,33 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
         sock_dir = tempfile.mkdtemp(prefix="oxide-qemu-")
         sock_path = os.path.join(sock_dir, "serial.sock")
 
+        # GRUB-ISO boot (Limine removed, F376): OVMF → GRUB → kernel. `img` is
+        # the GRUB ISO (`-cdrom` + `-boot d`); the rootfs is a separate
+        # virtio-blk drive, mirroring `xtask grub`. Plus the MCP bits: a
+        # socket serial bridge, QMP for screendump, and `-s -S` (gdb paused).
         if arch == "x86_64":
             ovmf = REPO_ROOT / "vendor/firmware/ovmf-x64.fd"
+            rootfs = REPO_ROOT / "kernel/blobs/rootfs-x86_64.img"
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "q35",
                 "-cpu", "Haswell-v4",
-                "-m", "256M",
+                "-m", "1G",
                 "-bios", str(ovmf),
-                # Boot drive as virtio-blk-pci (modern transport) so the
-                # F19-F30 stack runs lockstep with aarch64. The legacy
-                # `-drive format=raw,file=...` default attached as IDE,
-                # which left no virtio device on the bus.
-                "-drive", f"if=none,id=hd0,format=raw,file={img}",
-                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
-                # Phase 8 prep: explicit modern virtio-net so the
-                # kernel sees device 0x1041 (not the QEMU-default
-                # transitional 0x1000) and can DHCP/ARP through
-                # SLIRP. `-nic none` suppresses the default e1000.
+                "-cdrom", str(img),
+                "-boot", "d",
+                "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
+                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
                 "-nic", "none",
                 "-netdev", "user,id=net0",
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-                # F59-09: dump every frame on/off net0 to pcap so we can
-                # see whether the guest's TX kicks reach SLIRP at all.
-                "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
-                # `-vga none` disables QEMU's default stdvga
-                # (bochs-display, vendor 1234:1111). Without it,
-                # QMP screendump captures that empty stdvga frame
-                # instead of virtio-gpu's scanout — and the GTK
-                # window in the xtask path renders the wrong head.
+                # `-vga none` so QMP screendump captures virtio-gpu's scanout,
+                # not QEMU's empty default stdvga head.
                 "-vga", "none",
-                # virtio-gpu modern PCI for `45` graphical-terminal arc.
-                "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
-                # virtio-input keyboard + mouse for `46`.
-                "-device", "virtio-keyboard-pci,bus=pcie.0,disable-legacy=on",
-                "-device", "virtio-mouse-pci,bus=pcie.0,disable-legacy=on",
+                "-device", "virtio-gpu-pci,bus=pcie.0",
+                "-device", "virtio-keyboard-pci,bus=pcie.0",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
-                # QMP socket so qemu_screen() can issue `screendump`
-                # to capture the framebuffer (VGA / virtio-gpu).
                 "-qmp", f"unix:{sock_dir}/qmp.sock,server=on,wait=off",
                 "-display", "none",
                 "-no-reboot",
@@ -292,33 +281,22 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
             ]
         else:
             ovmf = REPO_ROOT / "vendor/firmware/ovmf-aarch64.fd"
+            rootfs = REPO_ROOT / "kernel/blobs/rootfs-aarch64.img"
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "virt,gic-version=3,its=on",
                 "-cpu", "cortex-a72",
-                "-m", "256M",
+                "-m", "1G",
                 "-bios", str(ovmf),
-                "-drive", f"if=none,id=hd0,format=raw,file={img}",
-                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
-                # Phase 8 prep: explicit modern virtio-net (0x1041)
-                # symmetric with x86; aarch64 virt has no
-                # default-NIC so `-nic none` is unnecessary.
+                "-cdrom", str(img),
+                "-boot", "d",
+                "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
+                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
                 "-netdev", "user,id=net0",
                 "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-                # F59-09: dump every frame on/off net0 to pcap so we can
-                # see whether the guest's TX kicks reach SLIRP at all.
-                "-object", "filter-dump,id=f0,netdev=net0,file=/tmp/oxide-slirp.pcap",
-                # `-vga none` disables QEMU's default stdvga
-                # (bochs-display, vendor 1234:1111). Without it,
-                # QMP screendump captures that empty stdvga frame
-                # instead of virtio-gpu's scanout — and the GTK
-                # window in the xtask path renders the wrong head.
                 "-vga", "none",
-                # virtio-gpu modern PCI for `45` graphical-terminal arc.
-                "-device", "virtio-gpu-pci,bus=pcie.0,disable-legacy=on",
-                # virtio-input keyboard + mouse for `46`.
-                "-device", "virtio-keyboard-pci,bus=pcie.0,disable-legacy=on",
-                "-device", "virtio-mouse-pci,bus=pcie.0,disable-legacy=on",
+                "-device", "virtio-gpu-pci,bus=pcie.0",
+                "-device", "virtio-keyboard-pci,bus=pcie.0",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-qmp", f"unix:{sock_dir}/qmp.sock,server=on,wait=off",

@@ -96,6 +96,38 @@ fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     qemu_run_aarch64_grub(&repo, &iso, smp)
 }
 
+/// Build-only: produce the bootable GRUB ISO (rootfs + kernel + ISO) WITHOUT
+/// launching qemu, and print `image=<path>` on stdout. The qemu-mcp server
+/// (`tools/qemu-mcp/server.py`) builds via this, then spawns its own
+/// gdb-paused qemu against the ISO. Replaces the removed Limine `image` path.
+/// # C: O(kernel build + mkrescue)
+pub(crate) fn cmd_image(rest: &[String]) -> Result<(), u8> {
+    let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
+    if arch != "x86_64" && arch != "aarch64" {
+        eprintln!("xtask image: arch must be x86_64 or aarch64");
+        return Err(2);
+    }
+    crate::cmd_rootfs(rest)?;
+    let mut kr: Vec<String>;
+    let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
+        kr = rest.to_vec();
+        kr.push("--features".into());
+        kr.push("debug-boot".into());
+        &kr[..]
+    } else { rest };
+    crate::cmd_kernel(kargs)?;
+    let repo = repo_root();
+    let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
+    let iso = if arch == "aarch64" {
+        let image = build_arm_image(&repo, &kernel_elf)?;
+        build_grub_arm_iso(&repo, &image)?
+    } else {
+        build_grub_iso(&repo, &arch, &kernel_elf)?
+    };
+    println!("image={}", iso.display());
+    Ok(())
+}
+
 /// Stage the EFI-stub Image + a grub.cfg (`linux /boot/oxide-aarch64.Image`)
 /// and grub2-mkrescue an EFI ISO with the vendored arm64-efi modules.
 fn build_grub_arm_iso(

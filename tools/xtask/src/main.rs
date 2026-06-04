@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         "user"      => stub("user", "29a"),
         "rootfs"    => cmd_rootfs(rest),
         "grub"      => image_qemu::cmd_grub(rest),
+        "image"     => image_qemu::cmd_image(rest),
         "selfboot"  => image_qemu::cmd_selfboot(rest),
         "soak"      => stub("soak", "40"),
         "bench"     => stub("bench", "04"),
@@ -37,6 +38,6 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|test|grub|selfboot|rootfs|soak|bench|spec-lint|doc-check|stats> [args]");
+    eprintln!("usage: xtask <kernel|user|test|grub|image|selfboot|rootfs|soak|bench|spec-lint|doc-check|stats> [args]");
     ExitCode::from(2)
 }
