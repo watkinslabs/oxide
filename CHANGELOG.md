@@ -1904,3 +1904,32 @@ The per-session EOD-checkpoint practice lapsed after session 47, so these ~792 P
 ### Open (queued, not in this PR)
 - Interactive `python3` segfault — musl mallocng `a_crash` (heap corruption from a kernel MM gap); scripts/`-c`/piped all work, only the tty REPL crashes.
 - busybox removal, full Limine removal, docs/55 display.
+
+---
+
+## Session — autonomous loop: Limine-out + arm SMP/ACPI/display restore (PR #1525, branch `F376-arm-selfbootstrap`) — 2026-06-04
+
+**Subject**: closed the three queued items (busybox removal, full Limine removal, docs/55) and, in doing so, systematically restored everything Limine's removal had silently regressed on arm — DTB parsing, ACPI, PCI, the graphical display, and SMP.
+
+### Limine removed entirely
+- Deleted `limine-proto` crate, `boot-*/src/limine.rs`, every `LIMINE_*` request static, the `.limine_requests` linker sections, `vendor/limine`, `*.limine.conf`, the `qemu-*-limine` Makefile targets, and the dead Limine ISO/UEFI plumbing in `xtask` (`image_qemu.rs` 876→353). x86 boots via MB2 tags; arm via the DTB / self-boot trampoline. spec-lint clean, both arches login.
+
+### busybox removed
+- Ship the real **util-linux** `mount`/`umount` (real ELF from `.libs/`, per-arch `statx` cache); `/bin/sh` = bash; coreutils own the applets. No busybox in the active pipeline (moved to `vendor-unused/`).
+
+### arm: restore what Limine used to provide
+- **DTB never parsed** (project-life latent bug): `dtb_totalsize`/`read_dtb_memory` read 8 bytes then called `parse_header` (needs ≥40) → arm memmap silently ran on a 1 GB fallback + cmdline on the arch-default the whole time. Fixed → real DTB memmap/cmdline + working `/cpus` enum.
+- **ACPI RSDP restored**: `efi_stub_setup` now grabs `gEfiAcpi20TableGuid` and surfaces it (HHDM-mapped) as `BootInfo.rsdp_pa`. Cascade: XSDT→MCFG (PCI ECAM)→MADT. This **restored `pci: devices=5`, the virtio-gpu framebuffer (`scanout 1280x800 painted`), and ACPI CPU enumeration** — all dark since Limine left (Limine had surfaced `rsdp_pa`).
+- **PSCI CPU_ON SMP=2 — proven on BOTH paths**: new `oxide_ap_entry_arm_psci` MMU-off trampoline (EL2→EL1, install self-boot page tables via a physical boot-block read through the identity map, MMU enable, higher-half jump → `ap_main`); `bring_up_aps_psci` drives `cpu_on` per CPU. CPU enum from DTB `/cpus` (`-kernel`) or ACPI-MADT GICC (EFI). Verified `[ap] online aff=1` on both; gates stay `-smp 1` until x86 INIT-SIPI lands (no lockstep skew). Boot-block phys via hardware `AT S1E1R` (heap is kernel-image high half, not HHDM).
+
+### display / device init façade fixed
+- `pci_boot::enumerate_and_log` wrapped its **whole body** (PCI enum + driver install incl. the virtio-gpu) in `debug_boot!` → release builds did NO device init → serial-only console. Un-gated the bring-up (R06: only log *bytes* gate); a pure-release arm build now reaches `oxide login:` with device init live.
+
+### python / docs / hygiene
+- python: `/usr/lib/python3.13/lib-dynload` landmark → silences the `<exec_prefix>` warning. (Interactive REPL segfault investigated: non-reproducing under instrumentation; the "hang" is a CPython brute-force close storm, not a kernel crash.)
+- docs/55: §17 open questions resolved (Linux-equivalence: no in-kernel GSUB, in-tree `kcf-mkfont`, unsigned root-only load, mono builtin default).
+- All kernel build warnings → 0 by hand (no `cargo fix`, no deletions — items live under `debug-boot` cfg-gated).
+
+### Open (queued, not in this PR)
+- x86 SMP via ACPI-MADT LAPIC + INIT-SIPI + real-mode AP trampoline (no INIT-SIPI in kernel; Limine did it) — sole remaining piece for the SMP=2 gate flip.
+- Un-gate the virtio-net iface registration + netlink seed (still under `debug_boot!`).
