@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -725,8 +725,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SETPGID       => crate::syscalls::proc::sys_setpgid(&args),
         syscall::nrs::NR_SETSID        => crate::syscalls::proc::sys_setsid(&args),
         syscall::nrs::NR_UMASK         => crate::syscalls::proc::sys_umask(&args),
-        syscall::nrs::NR_ACCESS        => crate::syscalls::fs::sys_access(&args),
-        syscall::nrs::NR_FACCESSAT     => crate::syscalls::fs::sys_faccessat(&args),
+        syscall::nrs::NR_ACCESS        => crate::syscalls::fs_access::sys_access(&args),
+        syscall::nrs::NR_FACCESSAT     => crate::syscalls::fs_access::sys_faccessat(&args),
         syscall::nrs::NR_EVENTFD | syscall::nrs::NR_EVENTFD2
                                  => crate::syscalls::anonfd::sys_eventfd2(&args),
         syscall::nrs::NR_GETDENTS | syscall::nrs::NR_GETDENTS64
@@ -777,7 +777,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             }
             crate::syscalls::open::sys_openat(&sa)
         }
-        syscall::nrs::NR_FACCESSAT2    => crate::syscalls::fs::sys_faccessat(&args),
+        syscall::nrs::NR_FACCESSAT2    => crate::syscalls::fs_access::sys_faccessat(&args),
         syscall::nrs::NR_SYNC => 0,
         syscall::nrs::NR_REBOOT => crate::syscalls::misc::sys_reboot(&args),
         nr if matches!(nr, syscall::nrs::NR_FSYNC | syscall::nrs::NR_FDATASYNC

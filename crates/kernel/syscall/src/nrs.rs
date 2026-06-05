@@ -359,5 +359,47 @@ pub const NR_FUTEX_WAITV:         u64 = 449;
 pub const NR_SET_MEMPOLICY_HOME_NODE: u64 = 450;
 pub const NR_CACHESTAT:           u64 = 451;
 
+// R06 (docs/15): numbers previously absent from this table — registered so the
+// dispatcher routes them (IMPL to be filled per syscal_anal.md; the OBSOLETE
+// set deliberately returns ENOSYS to match modern Linux). Out of numeric order
+// here only because they were back-filled; the value is what's authoritative.
+// OBSOLETE (Linux itself ENOSYS — see docs/15 legend):
+pub const NR_CREATE_MODULE:       u64 = 174;
+pub const NR_GET_KERNEL_SYMS:     u64 = 177;
+pub const NR_QUERY_MODULE:        u64 = 178;
+pub const NR_NFSSERVCTL:          u64 = 180;
+pub const NR_GETPMSG:             u64 = 181;
+pub const NR_PUTPMSG:             u64 = 182;
+pub const NR_AFS_SYSCALL:         u64 = 183;
+pub const NR_TUXCALL:             u64 = 184;
+pub const NR_SECURITY:            u64 = 185;
+pub const NR_SET_THREAD_AREA:     u64 = 205;
+pub const NR_GET_THREAD_AREA:     u64 = 211;
+pub const NR_EPOLL_CTL_OLD:       u64 = 214;
+pub const NR_EPOLL_WAIT_OLD:      u64 = 215;
+// IMPL (to be implemented per the completeness sweep):
+pub const NR_URETPROBE:           u64 = 335;
+pub const NR_UPROBE:              u64 = 336;
+pub const NR_FCHMODAT2:           u64 = 452;
+pub const NR_MAP_SHADOW_STACK:    u64 = 453;
+pub const NR_FUTEX_WAKE:          u64 = 454;
+pub const NR_FUTEX_WAIT:          u64 = 455;
+pub const NR_FUTEX_REQUEUE:       u64 = 456;
+pub const NR_STATMOUNT:           u64 = 457;
+pub const NR_LISTMOUNT:           u64 = 458;
+pub const NR_LSM_GET_SELF_ATTR:   u64 = 459;
+pub const NR_LSM_SET_SELF_ATTR:   u64 = 460;
+pub const NR_LSM_LIST_MODULES:    u64 = 461;
+pub const NR_MSEAL:               u64 = 462;
+pub const NR_SETXATTRAT:          u64 = 463;
+pub const NR_GETXATTRAT:          u64 = 464;
+pub const NR_LISTXATTRAT:         u64 = 465;
+pub const NR_REMOVEXATTRAT:       u64 = 466;
+pub const NR_OPEN_TREE_ATTR:      u64 = 467;
+pub const NR_FILE_GETATTR:        u64 = 468;
+pub const NR_FILE_SETATTR:        u64 = 469;
+pub const NR_LISTNS:              u64 = 470;
+pub const NR_RSEQ_SLICE_YIELD:    u64 = 471;
+
 pub const ARCH_SET_FS: u64 = 0x1002;
 pub const ARCH_GET_FS: u64 = 0x1003;
