@@ -1,85 +1,78 @@
 # Session hand-off
 
 ## Headline
-Working the 3 live-test bugs (A/B/C). **B FIXED + shipped.** A in progress
-(proven userspace readline, kernel exonerated). C needs a verdict. Plus two
-cleanups (Limine arm remnant, libpam debug). Active branch: `B57-readline-echo`.
+Bug-sweep session. 7 PRs merged to main. Live-test bugs A/B/C plus new ones
+found while testing (D/E/F/G/H). B + D + D-followup shipped; A needs white-box;
+C/E/F/G/H tracked with findings. Merge-as-you-go cadence.
 
-## PRs / branches
-- **#1529** (`B56-mremap-source-leak` → main, OPEN): BUG B fix, standalone off
-  main. Replaces the stacked #1527 (closed).
-- **#1528** (`C76-block-ai-attribution` → main, OPEN): commit-msg hook banning
-  AI/tool attribution (Claude/Copilot/Codex/…). 62 PR bodies already stripped.
-- **`B57-readline-echo`** (current, off main, NOT pushed): 2 commits —
-  `841b0d8a` make qemu-x86{,-debug}→GRUB (kill dead Limine target),
-  `56b37f15` select/poll/pselect/ppoll block on a wait queue (Linux way, not
-  busy-yield). Both validated; neither fixes the echo.
-- F376 #1525 (arm GRUB) + F377 #1526 still open (pre-existing).
+## Merged to main this session
+- #1529 BUG B — mremap source-PTE leak (python import SIGSEGV) + 10 regression probes
+- #1528 — commit-msg hook banning AI/tool attribution (Claude/Copilot/Codex/…)
+- #1530 — `make qemu-x86{,-debug}`→GRUB (kill dead Limine target) + Linux-way
+  select/poll/pselect/ppoll blocking (POLL_WAIT, park not busy-yield)
+- #1531 BUG D — find/ls ENOENT recursing into subdirs: fstatat/statx/fchmodat/
+  fchownat/utimensat now route through resolve_at(dirfd)
+- #1532 BUG D follow-up — faccessat + unlinkat/mkdirat/symlinkat/mknodat/renameat honor dirfd
+- #1533 — rebuild libpam clean (drop stale PAM_DEBUG console spam)
 
-## BUG B — python `import` SIGSEGV → FIXED (#1529)
-mremap normal move/shrink removed the source VMA but left its PTEs+frames
-mapped → vacated VA recycled by a later mmap → stale-frame alias → musl
-mallocng `a_crash()`. Fix: `sys_mremap` evicts the source range's PTEs+frames
-on move (`va!=old`) and shrink. Verified x86+arm (python import + 400MB
-bytearray stress PASS; negative control `mremap_alias_smoke` FAIL→PASS).
-10 mm/tty regression probes in `userspace/*_smoke`.
+## OPEN BUGS (tracked, with findings)
 
-## BUG A — no echo at bash prompt → IN PROGRESS (kernel exonerated)
-NOT a bash bug — readline works everywhere, so oxide violates a contract it
-relies on. Established:
-- readline reads each keystroke (1-byte `read`, confirmed) but emits the
-  **prompt** and suppresses the **per-keystroke redisplay** until Enter.
-- Every kernel tty contract verified correct: raw per-char RX, blocking read,
-  `poll()` readiness (p=empty/P=ready), termios get/set round-trip, winsize
-  24×80, isatty 0/1/2, writev, canonical kernel echo (`cat` echoes), cooked
-  lflag reads ECHO=on. `bash --noediting` (kernel canonical echo) works.
-- Ruled out: terminfo `linux` (present, byte-identical to host), /etc/termcap
-  (added, no effect), all TERM values, select/poll busy-poll (fixed in B57 —
-  echo still broken, so the wait model was NOT the cause).
-- **NEXT (the only path left):** white-box readline — build a readline-linked
-  binary WITH symbols from `vendor/bash/bash-5.2.37` sources, run on oxide,
-  gdb/trace `rl_redisplay` to find which oxide syscall return it reacts to.
-  bash's bundled readline is stripped+static, so can't gdb it directly.
+### BUG A — no echo at bash prompt (task #6)
+NOT bash (works everywhere) → oxide breaks a readline contract. Kernel tty all
+verified correct (raw RX, blocking read, poll, termios, winsize, isatty, writev,
+canonical echo via `cat`). readline reads each char but suppresses per-keystroke
+redisplay (prompt shows, incremental doesn't). select/poll busy-poll fixed
+(#1530) — echo still broken, so wait-model wasn't it. NEXT: white-box readline —
+build a readline binary WITH symbols from vendor/bash sources, gdb rl_redisplay.
 
-## BUG C — cgroup ENOTEMPTY on destroy → PENDING VERDICT
-systemd SIGKILLs a service's procs then rmdir's its cgroup; killed procs leave
-the cgroup async via `cgroup::on_exit` (sys_exit) → rmdir races → ENOTEMPTY,
-systemd logs "ignoring". UNKNOWN: benign transient (self-heals, matches Linux)
-vs real leak (cgroup never reaped). NEXT: reproduce on an isolated rootfs —
-does SIGKILL promptly kill a blocked proc, and does the cgroup eventually get
-removed? No façade (don't yank live tasks from the cgroup).
+### BUG C — cgroup ENOTEMPTY on destroy (task #7)
+systemd SIGKILLs procs then rmdir's the cgroup; rmdir races the async on_exit
+removal → ENOTEMPTY. Verdict (transient vs real leak) still pending. LIKELY
+shares root with BUG G. cgroup::on_exit (kernel/src/syscalls/mod.rs:318) fires
+at task-exit (not reap) + notify_events_chain → IN_MODIFY on cgroup.events.
 
-## BUG D — find/ls ENOENT recursing into ANY subdir → LIVE on main (fix unmerged)
-`find .` from `/` lists top-level dirs but ENOENTs going one level deeper
-(`./lib/systemd`, `./etc/ssh`, `./var/log`, `./home/alice`, `./usr/share`,
-`./proc/self`, `./sys/fs`, `./run/systemd`, `./dev/pts` — ext4 + procfs/sysfs/
-tmpfs/devpts all hit). Dirs EXIST in the image (`debugfs stat` OK) → runtime
-VFS bug, not a build bug. Cause: `pathresolve.rs resolve_at()` resolves a real
-dirfd by string-joining `dentry().absolute_path()`, which is wrong/empty for
-`openat`-derived dirfds → `fstatat(dir_fd, name)` ENOENT. **Fix exists: F377
-#1526 "unify *at dirfd resolution behind one lookupat" — OPEN, stacked on F376,
-not on main.** ACTION: unstack the F377 namei commits onto main as a standalone
-PR (same as the mremap B56 unstack) + verify `find /` recursion clean both arches.
+### BUG G — login respawn ~19-21s after exiting bash (task #13)  [user-emphasized]
+exit→Deactivated = 0.2s (systemd notices FAST), RestartSec=1, but total ~19s.
+systemd debug shows the window is cgroup work for the NEW getty: ~15 'Failed to
+set memory.swap.max/pids.max/zswap/oom.group' + xattr set/remove on
+/system.slice/console-getty.service. CAVEAT: systemd.log_level=debug inflates
+total to 120s (console-write overhead), so it can't localize the 19s cleanly.
+NEXT: non-distorting kernel trace (dtrace!/COM2 timestamps) of syscalls systemd
+issues between getty-exit and getty-exec → find the slow op (suspect cgroup
+setxattr / control-file write slow path). Driver: /tmp/run_respawn.py (phase-split).
 
-## Cleanups (task #8)
-- Limine: x86 default targets now GRUB; dead `cmd_image`/`cmd_qemu`/
-  `check_vendor` Limine code + the aarch64 Limine boot path remain. aarch64
-  needs a GRUB/EFI-stub path (F376) before the Limine code deletes lockstep.
-- libpam prints `[../libpam/...]` debug to stderr on login (pam.d configs are
-  clean → debug-compiled libpam). Rebuild `vendor/pam` without debug to silence.
-- rootfs build prints `make_link: Ext2 inode is not a directory` — pre-existing
-  on clean main, NON-fatal (build rc=0, image boots). A debugfs `ln` ordering
-  wart, never cleaned up. Cosmetic; chase only if it ever drops a real link.
+### BUG E — /dev/console fchown/fchmod EINVAL (task #11)
+systemd "Failed to reset TTY ownership/access mode of /dev/console to 0:5,
+ignoring: Invalid argument". ConsoleInode has no set_owner/set_perm; the
+fchown/fchmod path should accept it (overlay) and return 0, not EINVAL. Find the
+EINVAL source for an fd-backed chardev.
 
-## Environment gotchas (cost hours this session)
-- NEVER build/copy the shared `kernel/blobs/rootfs-x86_64.img` while a qemu has
-  it open (write-lock) — corrupts the running guest. Use a /tmp rootfs copy +
-  the shared `-cdrom` ISO (read-only) for test boots. Driver: `/tmp/oxide_drive.py`.
-- `make qemu-x86` now = GRUB (was stale-Limine). `make qemu-arm` still Limine
-  (broken until F376). Build via `cargo run -p xtask -- grub --arch x86_64`.
+### BUG F — systemd SCM_CREDENTIALS handoff (task #12)
+"Received handoff timestamp message without valid credentials. Ignoring." AF_UNIX
+sendmsg/recvmsg doesn't attach/deliver SCM_CREDENTIALS (ucred). Implement it.
+
+### BUG H — rm -rf of a tmpfs dir returns rc=1 (task #14)
+`rm -rf /tmp/regd` fails though mkdir/touch/mv/ls on the same /tmp path work
+(path resolution fine) → tmpfs unlink/rmdir backend quirk. Orthogonal to BUG D.
+
+### Cleanups (task #8)
+libpam debug DONE (#1533). REMAINING: Limine removal for aarch64 (dead
+cmd_image/cmd_qemu/check_vendor + arm Limine boot) — blocked on arm GRUB/EFI-stub
+(F376 #1525, open). x86 already on GRUB.
+
+## Env / test harness (cost hours)
+- NEVER build/copy shared kernel/blobs/rootfs-x86_64.img while a qemu has it open
+  — corrupts the guest. Use /tmp/rootfs-*.img copies. Driver: /tmp/oxide_drive.py.
+- Boot/iterate: `cargo run -p xtask -- grub --arch x86_64 --features debug-boot`
+  builds the ISO (it also launches a qemu that fails headless — ignore; ISO is built).
+- `set -e` in the dev shell: guard `pkill ... || true`. Write driver .py with the
+  Write tool, not heredocs.
+- systemd.log_level=debug DISTORTS timing (console-write overhead) — use only for
+  state-machine ordering, not wall-clock.
 
 ## First command next session
 ```
-cd /home/nd/oxide2 && git log --oneline -6 && git branch --show-current
-# echo white-box: build a readline test binary w/ symbols, boot, gdb rl_redisplay
+cd /home/nd/oxide2 && git checkout main && git pull && git log --oneline -8
+# BUG G: kernel COM2/dtrace timestamp trace on the cgroup write/setxattr path,
+# boot, exit bash, find the slow op in the 19s respawn window.
 ```
