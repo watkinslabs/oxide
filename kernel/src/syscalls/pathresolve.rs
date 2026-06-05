@@ -143,11 +143,10 @@ pub fn resolve_at(dirfd: i32, raw: &str) -> Option<String> {
 
 /// Read the user path C-string at `path_ptr` and resolve it to an
 /// absolute, normalised path under full `*at` dirfd semantics
-/// ([`resolve_at`]). THE shared front door for every `*at` syscall that
-/// resolves a user path — collapses the per-site "absolute / AT_FDCWD /
-/// real-dirfd" branching that several handlers got wrong (a real dirfd
-/// with a relative path used to fall through to the bare relative name,
-/// so `find`'s `FTS_CWDFD` walk ENOENT'd into every subdirectory).
+/// ([`resolve_at`]). Shared front door for `*at` syscalls that genuinely
+/// need the absolute STRING (namei parent/leaf split, readlink proc-links).
+/// Inode-resolving `*at` syscalls should prefer [`lookupat`], which walks
+/// the raw path from the dirfd's dentry with no stringify round-trip.
 /// `None` ⇒ null/out-of-range ptr, empty/non-UTF8 path, or bad dirfd.
 /// # C: O(N_path) + O(1) fd lookup
 pub fn resolve_at_user(dirfd: i32, path_ptr: u64) -> Option<String> {
@@ -158,6 +157,74 @@ pub fn resolve_at_user(dirfd: i32, path_ptr: u64) -> Option<String> {
     if bytes.is_empty() { return None; }
     let raw = core::str::from_utf8(bytes).ok()?;
     resolve_at(dirfd, raw)
+}
+
+/// THE dirfd-aware resolver. Reads the user path at `path_ptr`, picks the
+/// start dentry from `dirfd` ([`start_dentry`]: AT_FDCWD → cwd, real fd →
+/// its open File's dentry, absolute path → root), and walks the RAW
+/// relative path component-by-component (`vfs::path_lookup`) — the Linux
+/// `nameidata` model. One front door for every inode-resolving `*at`
+/// syscall, with no stringify-then-rewalk: the dirfd base is honored
+/// structurally (find's `FTS_CWDFD` walk), and `..` ascends because open(2)
+/// stores the canonical parent-linked walk dentry in the File.
+/// `no_follow_final` = O_NOFOLLOW / AT_SYMLINK_NOFOLLOW (lstat semantics).
+/// `None` ⇒ bad ptr/path, bad dirfd, or unresolved.
+/// # C: O(N_path components × dir-lookup)
+pub fn lookupat(dirfd: i32, path_ptr: u64, no_follow_final: bool)
+    -> Option<(vfs::InodeRef, Arc<vfs::Dentry>)>
+{
+    if path_ptr == 0 || path_ptr >= hal::USER_VA_END { return None; }
+    // SAFETY: ptr range-checked above; read_user_cstr bounds the read to
+    // 256 bytes through the caller's address space; sole reader this CPU.
+    let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) }?;
+    if bytes.is_empty() { return None; }
+    let raw = core::str::from_utf8(bytes).ok()?;
+    let (root, beneath) = resolution_root()?;
+    let start = start_dentry(dirfd, &root, raw)?;
+    let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
+    vfs::path_lookup(start, root, raw, flags).ok()
+}
+
+/// `lookupat` returning just the inode (the common case).
+/// # C: O(N_path components × dir-lookup)
+pub fn lookupat_inode(dirfd: i32, path_ptr: u64, no_follow_final: bool) -> Option<vfs::InodeRef> {
+    lookupat(dirfd, path_ptr, no_follow_final).map(|(i, _)| i)
+}
+
+/// Pick the start dentry for a `*at` walk. Absolute `raw` ⇒ root
+/// (`path_lookup` restarts there anyway). `AT_FDCWD` ⇒ the task cwd
+/// resolved to its dentry. A real `dirfd` ⇒ that fd's open File's dentry
+/// (the canonical parent-linked tree node stored at open(2) time).
+/// # C: O(1) for absolute/dirfd; O(cwd components) for AT_FDCWD
+fn start_dentry(dirfd: i32, root: &Arc<vfs::Dentry>, raw: &str) -> Option<Arc<vfs::Dentry>> {
+    const AT_FDCWD: i32 = -100;
+    if raw.starts_with('/') { return Some(root.clone()); }
+    if dirfd == AT_FDCWD {
+        let cur = sched::live::current()?;
+        // SAFETY: cwd slot single-mutator per 13§5; running task is sole writer.
+        let cwd = unsafe { (*cur.cwd.get()).clone() };
+        if cwd == "/" { return Some(root.clone()); }
+        let f = vfs::LookupFlags::default();
+        return vfs::path_lookup(root.clone(), root.clone(), &cwd, f).ok().map(|(_, d)| d);
+    }
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    let f = fdt.get(dirfd).ok()?;
+    Some(f.dentry().clone())
+}
+
+/// Like [`resolve`] but also returns the canonical walk DENTRY (the
+/// parent-linked tree node from `path_lookup`) so open(2) can store it in
+/// the File — making the fd a real dirfd base for later relative `*at`
+/// walks (including `..`). `None` pre-mount or if `abs` doesn't resolve.
+/// # C: O(components × dir-lookup)
+pub fn resolve_full(abs: &str, no_follow_final: bool)
+    -> Option<(vfs::InodeRef, Arc<vfs::Dentry>)>
+{
+    let (root, beneath) = resolution_root()?;
+    let flags = vfs::LookupFlags { no_follow_final, beneath, ..Default::default() };
+    vfs::path_lookup(root.clone(), root, abs, flags).ok()
 }
 
 /// Resolve `raw` against the running task's cwd. Absolute paths

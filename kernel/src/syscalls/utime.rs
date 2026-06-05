@@ -56,12 +56,9 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     if path_ptr >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
-    // Full dirfd semantics (absolute / AT_FDCWD / real dirfd).
-    let s = crate::syscalls::pathresolve::resolve_at_user(dirfd, path_ptr)
-        .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW handling
-    // rides the dirfd rewrite); resolve via the path-walk.
-    crate::syscalls::pathresolve::resolve(&s, false)
+    // THE dirfd-aware resolver (absolute / AT_FDCWD / real dirfd).
+    // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW rides later).
+    crate::syscalls::pathresolve::lookupat_inode(dirfd, path_ptr, false)
         .ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 

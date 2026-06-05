@@ -33,42 +33,35 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
-    let path_opt = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
-    let inode = match path_opt {
-        Some(p) if !p.is_empty() => {
-            let raw = match core::str::from_utf8(p) {
-                Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-            };
-            // Full dirfd semantics: absolute / AT_FDCWD / real dirfd.
-            // A real dirfd + relative path (find's FTS_CWDFD walk) must
-            // resolve against the dirfd's directory, not the bare name.
-            let resolved = crate::syscalls::pathresolve::resolve_at(dirfd, raw)
-                .unwrap_or_else(|| raw.into());
-            let s = resolved.as_str();
-            // THE resolver (path-walk); follows symlinks unless
-            // AT_SYMLINK_NOFOLLOW. aarch64 musl routes fstatat here.
-            const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-            let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-            match crate::syscalls::pathresolve::resolve(s, nofollow) {
-                Some(i) => i,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
+    // SAFETY: ptr in user range; user page mapped under caller's AS on the
+    // syscall path; read_user_cstr bounds the probe to 1 byte.
+    let probe = unsafe { crate::devfs::read_user_cstr(path_ptr, 1) };
+    let path_empty = path_ptr != 0 && matches!(probe, Some(b) if b.is_empty());
+    const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+    let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+    let inode = if !path_empty {
+        // THE dirfd-aware resolver: walks the raw path from the dirfd's
+        // dentry (absolute / AT_FDCWD / real dirfd — find's FTS_CWDFD).
+        // Follows symlinks unless AT_SYMLINK_NOFOLLOW. aarch64 musl routes
+        // fstatat here.
+        match crate::syscalls::pathresolve::lookupat_inode(dirfd, path_ptr, nofollow) {
+            Some(i) => i,
+            None    => return -(Errno::Enoent.as_i32() as i64),
         }
-        _ if (flags & AT_EMPTY_PATH) != 0 => {
-            let cur = match sched::live::current() {
-                Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot per 13§5.
-            let fdt = match unsafe { cur.fd_table_ref() } {
-                Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            let f = match fdt.get(dirfd) {
-                Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            f.inode().clone()
-        }
-        _ => return -(Errno::Enoent.as_i32() as i64),
+    } else if (flags & AT_EMPTY_PATH) != 0 {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot per 13§5.
+        let fdt = match unsafe { cur.fd_table_ref() } {
+            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let f = match fdt.get(dirfd) {
+            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        f.inode().clone()
+    } else {
+        return -(Errno::Enoent.as_i32() as i64);
     };
 
     let (mode_type, rdev): (u32, u64) = match inode.file_type() {

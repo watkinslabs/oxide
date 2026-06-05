@@ -541,3 +541,83 @@ fn dentry_absolute_path_deep_chain() {
     let leaf = Dentry::new(Some(Arc::clone(&c)),  String::from("UTC"),   Arc::clone(&i));
     assert_eq!(leaf.absolute_path(), b"/usr/share/zoneinfo/UTC");
 }
+
+// ---- F377: dirfd-relative path_lookup (structural namei contract) ----
+//
+// These lock the property the unified `lookupat` glue relies on: a walk
+// started from a deep `start` dentry resolves a RELATIVE path against
+// THAT directory (no stringify-then-rewalk), and `..` ascends only when
+// the start dentry carries parent links. This is why open() must store
+// the canonical walk dentry, not a standalone full-path dentry.
+
+/// Directory mock: name → child inode. `lookup` reads the map; everything
+/// else is a directory's defaults.
+struct MemDir {
+    ino:      u64,
+    children: RwLock<alloc::collections::BTreeMap<String, InodeRef>, InodeClass>,
+}
+impl MemDir {
+    fn new(ino: u64) -> Arc<Self> {
+        Arc::new(Self { ino, children: RwLock::new(alloc::collections::BTreeMap::new()) })
+    }
+    fn add(&self, name: &str, child: InodeRef) {
+        self.children.write().insert(String::from(name), child);
+    }
+}
+impl Inode for MemDir {
+    fn ino(&self) -> u64 { self.ino }
+    fn file_type(&self) -> FileType { FileType::Directory }
+    fn size(&self) -> u64 { 0 }
+    fn lookup(&self, name: &str) -> KResult<InodeRef> {
+        self.children.read().get(name).cloned().ok_or(VfsError::Enoent)
+    }
+    fn read(&self, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Err(VfsError::Eisdir) }
+    fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Eisdir) }
+}
+
+/// Build `/` → `etc` → `init.d` (each a MemDir). Returns the root and the
+/// `etc` dentry (the canonical tree node, with a parent link to root).
+fn build_etc_tree() -> (Arc<Dentry>, Arc<Dentry>) {
+    let root_i = MemDir::new(1);
+    let etc_i  = MemDir::new(2);
+    let initd_i = MemDir::new(3);
+    etc_i.add("init.d", Arc::clone(&initd_i) as InodeRef);
+    root_i.add("etc", Arc::clone(&etc_i) as InodeRef);
+    let root = Dentry::new_root(Arc::clone(&root_i) as InodeRef);
+    let etc  = Dentry::new(Some(Arc::clone(&root)), String::from("etc"),
+                           Arc::clone(&etc_i) as InodeRef);
+    (root, etc)
+}
+
+#[test]
+fn path_lookup_relative_from_dirfd_base() {
+    // find's FTS_CWDFD pattern: openat(etc_fd, "init.d") — a RELATIVE
+    // path resolved against a real directory dentry, not root.
+    let (root, etc) = build_etc_tree();
+    let (ino, d) = path_lookup(etc, root, "init.d", LookupFlags::default())
+        .expect("init.d resolves from the etc base");
+    assert_eq!(ino.ino(), 3);
+    assert_eq!(d.absolute_path(), b"/etc/init.d");
+}
+
+#[test]
+fn path_lookup_dotdot_needs_parent_link() {
+    // A canonical tree node (parent-linked) ascends with `..`.
+    let (root, etc) = build_etc_tree();
+    let (ino, _) = path_lookup(etc, root, "..", LookupFlags::default())
+        .expect("`..` from /etc ascends to /");
+    assert_eq!(ino.ino(), 1); // back at root
+
+    // A standalone full-path dentry (the install_open shape) has no
+    // parent, so `..` cannot ascend — it stays put. This is the gap that
+    // motivates open() storing the canonical walk dentry (follow-up):
+    // until then, `..` relative to a real dirfd is a no-op (find's
+    // FTS_CWDFD walk only descends, so it is unaffected).
+    let etc_i = MemDir::new(2);
+    let root_i: InodeRef = MemDir::new(1);
+    let standalone = Dentry::new(None, String::from("/etc"), Arc::clone(&etc_i) as InodeRef);
+    let root2 = Dentry::new_root(root_i);
+    let (ino2, _) = path_lookup(standalone, root2, "..", LookupFlags::default())
+        .expect("`..` on a parentless dentry is a no-op, not an error");
+    assert_eq!(ino2.ino(), 2); // stuck at /etc — no parent to ascend to
+}

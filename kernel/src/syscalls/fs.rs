@@ -312,47 +312,35 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); bounded read.
-    let path_opt = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
-    let inode = match path_opt {
-        Some(p) if !p.is_empty() => {
-            let raw = match core::str::from_utf8(p) {
-                Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
-            };
-            // Full dirfd semantics (absolute / AT_FDCWD / real dirfd).
-            // resolve_at lexically normalises absolute paths too, so
-            // trailing slashes (`/proc/self/fd/`) and `.`/`..` collapse
-            // to the registered devfs key; a real dirfd + relative path
-            // resolves against the dirfd's directory (find's FTS_CWDFD).
-            let resolved: alloc::string::String =
-                crate::syscalls::pathresolve::resolve_at(dirfd, raw)
-                    .unwrap_or_else(|| raw.into());
-            let s = resolved.as_str();
-            // THE resolver (path-walk). statx(2) follows symlinks unless
-            // AT_SYMLINK_NOFOLLOW. aarch64 musl routes stat()/lstat()
-            // here (no legacy stat/lstat syscalls), so this is the arm
-            // symlink-follow path.
-            const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-            let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
-            match crate::syscalls::pathresolve::resolve(s, nofollow) {
-                Some(i) => i,
-                None    => return -(Errno::Enoent.as_i32() as i64),
-            }
+    // SAFETY: ptr range-checked above; user page mapped under caller's AS on
+    // the syscall path; read_user_cstr bounds the probe to 1 byte.
+    let probe = unsafe { crate::devfs::read_user_cstr(path_ptr, 1) };
+    let path_empty = matches!(probe, Some(b) if b.is_empty());
+    const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+    let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
+    let inode = if !path_empty {
+        // THE dirfd-aware resolver: walks the raw path from the dirfd's
+        // dentry (absolute / AT_FDCWD / real dirfd — find's FTS_CWDFD).
+        // statx(2) follows symlinks unless AT_SYMLINK_NOFOLLOW; aarch64
+        // musl routes stat()/lstat() here (no legacy stat/lstat syscalls).
+        match crate::syscalls::pathresolve::lookupat_inode(dirfd, path_ptr, nofollow) {
+            Some(i) => i,
+            None    => return -(Errno::Enoent.as_i32() as i64),
         }
-        _ if (flags & AT_EMPTY_PATH) != 0 => {
-            let cur = match sched::live::current() {
-                Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-            let fdt = match unsafe { cur.fd_table_ref() } {
-                Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            let f = match fdt.get(dirfd) {
-                Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-            };
-            f.inode().clone()
-        }
-        _ => return -(Errno::Einval.as_i32() as i64),
+    } else if (flags & AT_EMPTY_PATH) != 0 {
+        let cur = match sched::live::current() {
+            Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+        let fdt = match unsafe { cur.fd_table_ref() } {
+            Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        let f = match fdt.get(dirfd) {
+            Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        };
+        f.inode().clone()
+    } else {
+        return -(Errno::Einval.as_i32() as i64);
     };
 
     let (mode_type, rdev): (u16, u32) = match inode.file_type() {
@@ -714,12 +702,18 @@ pub fn sys_faccessat(args: &SyscallArgs) -> i64 {
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let s = match crate::syscalls::pathresolve::resolve_at_user(dirfd, path_ptr) {
-        Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    if s == "/" { return 0; }
-    // access(2) follows symlinks; v1 checks existence only.
-    if crate::syscalls::pathresolve::resolve(&s, false).is_some() {
+    // Empty path ⇒ EINVAL (NOT ENOENT). systemd probes fd accessibility
+    // with faccessat(fd, "", AT_EMPTY_PATH); it treats EINVAL as "kernel
+    // lacks AT_EMPTY_PATH, fall back" but ENOENT as "target absent" → it
+    // aborts manager init. Match the legacy resolve_at_user semantics.
+    // SAFETY: ptr range-checked above; read_user_cstr bounds the read to 256.
+    match unsafe { crate::devfs::read_user_cstr(path_ptr, 256) } {
+        Some(b) if !b.is_empty() => {}
+        _ => return -(Errno::Einval.as_i32() as i64),
+    }
+    // access(2) follows symlinks; v1 checks existence only. lookupat walks
+    // the raw path from the dirfd's dentry (real dirfd base honored).
+    if crate::syscalls::pathresolve::lookupat_inode(dirfd, path_ptr, false).is_some() {
         0
     } else {
         -(Errno::Enoent.as_i32() as i64)
