@@ -135,7 +135,10 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     }
     // Unified mount-table lookup (R67). Special-case /dev/ptmx since
     // it allocates a new pair per open rather than resolving to a
-    // pre-registered inode.
+    // pre-registered inode. `walk_dentry` captures the canonical
+    // parent-linked dentry so the fd is a real dirfd base for later
+    // relative `*at` resolution (including `..`).
+    let mut walk_dentry: Option<Arc<vfs::Dentry>> = None;
     let inode = if path_str == "/dev/ptmx" {
         let (master, _n) = crate::dev::pty::allocate_pair();
         master
@@ -150,12 +153,12 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Some(i) = crate::syscalls::pathresolve::resolve(path_str, (flags & O_NOFOLLOW) != 0) {
+    } else if let Some((i, d)) = crate::syscalls::pathresolve::resolve_full(path_str, (flags & O_NOFOLLOW) != 0) {
         // THE resolver (path-walk): per-component, crosses mounts,
         // delegates whole-path filesystems, follows symlinks unless
-        // O_NOFOLLOW. Replaces the legacy vfs::mount::lookup + ext4
-        // whole-path fallback (still reaches ext4 dirs/non-regular
-        // inodes for getdents64 on open(O_DIRECTORY)).
+        // O_NOFOLLOW. Returns the canonical walk dentry so this fd can
+        // serve as a dirfd base for later relative `*at` resolution.
+        walk_dentry = Some(d);
         i
     } else if (flags & O_CREAT) != 0 {
         // O_CREAT: ask the owning mount's FS to create with
@@ -179,7 +182,7 @@ pub fn sys_open(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags)) {
+    match vfs::file::install_open(&fdt, inode, path_str, OpenFlags::from_bits_truncate(flags), walk_dentry) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
@@ -227,6 +230,13 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     // it allocates a new pair per open rather than resolving to a
     // pre-registered inode. O_TMPFILE short-circuits to anonymous
     // inode creation (no path lookup, no dir entry).
+    //
+    // `walk_dentry` captures the canonical parent-linked dentry from the
+    // path-walk for the normal filesystem branch, so the resulting fd is
+    // a real dirfd base for later relative `*at` walks (`..` included).
+    // The synthetic branches (ptmx/tty/tmpfile/create) keep a standalone
+    // full-path dentry — they have no tree node.
+    let mut walk_dentry: Option<Arc<vfs::Dentry>> = None;
     let inode = if (flags & O_TMPFILE) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -254,12 +264,12 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
             },
             None => return -(Errno::Enxio.as_i32() as i64),
         }
-    } else if let Some(i) = crate::syscalls::pathresolve::resolve(path_str, (flags & O_NOFOLLOW) != 0) {
+    } else if let Some((i, d)) = crate::syscalls::pathresolve::resolve_full(path_str, (flags & O_NOFOLLOW) != 0) {
         // THE resolver (path-walk): per-component, crosses mounts,
         // delegates whole-path filesystems, follows symlinks unless
-        // O_NOFOLLOW. Replaces the legacy vfs::mount::lookup + ext4
-        // whole-path fallback (still reaches ext4 dirs/non-regular
-        // inodes for getdents64 on open(O_DIRECTORY)).
+        // O_NOFOLLOW. Returns the canonical walk dentry so this fd can
+        // serve as a dirfd base for later relative `*at` resolution.
+        walk_dentry = Some(d);
         i
     } else if (flags & O_CREAT) != 0 {
         // O_CREAT: ask owning mount's FS to create with the
@@ -296,7 +306,8 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let dentry = Dentry::new(None, path_str.to_string(), Arc::clone(&inode));
+    let dentry = walk_dentry
+        .unwrap_or_else(|| Dentry::new(None, path_str.to_string(), Arc::clone(&inode)));
     let oflags = OpenFlags::from_bits_truncate(flags);
     let file = File::new(inode, dentry, oflags);
     match fdt.alloc(file) {

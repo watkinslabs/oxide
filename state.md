@@ -24,15 +24,13 @@ absent" → it aborts with "Failed to allocate manager object: No such
 file or directory" and **freezes PID1**. The errno delta was the entire
 boot regression; resolution logic was equivalent throughout.
 
-## Follow-up (staged, NOT done): open(2) walk-dentry for `..`-from-dirfd
-`lookupat` from a real dirfd starts at that fd's File dentry. open(2)
-still stores the standalone full-path dentry (parent=None), so `..`
-relative to a dir fd is a no-op (find only descends → unaffected).
-`pathresolve::resolve_full` + the `install_open(walk_dentry)` signature
-exist for this; wiring open(2) to store the `path_lookup` dentry was
-reverted during bring-up (highest blast radius — touches every
-`f.dentry()`). Hosted test `path_lookup_dotdot_needs_parent_link`
-documents the gap. Re-attempt as its own small PR, boot-verify both arches.
+## open(2) walk-dentry — DONE (`..`-from-dirfd works)
+open(2)/openat(2) now store the canonical parent-linked walk dentry from
+`path_lookup` (via `resolve_full` + `install_open(walk_dentry)`), so a fd
+used as a dirfd base carries parent links and `..` relative to it ascends
+(FTS_CWDFD's `openat(fd, "..")`). This also dropped `find /` from
+FIND_NOENT=1 → **0** on both arches (the lone error was find's `..`
+ascension hitting the old parentless-dentry no-op).
 
 ## STILL OPEN (from F376 session)
 - **OPEN BUG 2 — interactive python3 REPL segfaults** (musl mallocng

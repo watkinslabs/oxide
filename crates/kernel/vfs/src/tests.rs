@@ -608,11 +608,10 @@ fn path_lookup_dotdot_needs_parent_link() {
         .expect("`..` from /etc ascends to /");
     assert_eq!(ino.ino(), 1); // back at root
 
-    // A standalone full-path dentry (the install_open shape) has no
-    // parent, so `..` cannot ascend — it stays put. This is the gap that
-    // motivates open() storing the canonical walk dentry (follow-up):
-    // until then, `..` relative to a real dirfd is a no-op (find's
-    // FTS_CWDFD walk only descends, so it is unaffected).
+    // A standalone full-path dentry (parent=None) cannot ascend with
+    // `..` — it stays put. This is why open(2) stores the canonical
+    // parent-linked walk dentry (install_open's `walk_dentry`): a fd used
+    // as a dirfd base must carry parent links for `..` to resolve.
     let etc_i = MemDir::new(2);
     let root_i: InodeRef = MemDir::new(1);
     let standalone = Dentry::new(None, String::from("/etc"), Arc::clone(&etc_i) as InodeRef);

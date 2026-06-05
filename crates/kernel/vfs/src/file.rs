@@ -333,6 +333,7 @@ pub fn install_open(
     inode: InodeRef,
     path: &str,
     flags: OpenFlags,
+    walk_dentry: Option<alloc::sync::Arc<crate::dentry::Dentry>>,
 ) -> Result<i32, VfsError> {
     use alloc::sync::Arc;
     use alloc::string::ToString;
@@ -345,7 +346,12 @@ pub fn install_open(
     if flags.contains(OpenFlags::O_TRUNC) {
         let _ = inode.truncate(0);
     }
-    let dentry = Dentry::new(None, path.to_string(), Arc::clone(&inode));
+    // Prefer the canonical parent-linked walk dentry (so the fd is a real
+    // dirfd base for later relative `*at` resolution, including `..`); fall
+    // back to a standalone full-path dentry for synthetic inodes (ptmx/tty/
+    // tmpfile/created) that have no tree node.
+    let dentry = walk_dentry
+        .unwrap_or_else(|| Dentry::new(None, path.to_string(), Arc::clone(&inode)));
     let file = File::new(inode, dentry, flags);
     fdt.alloc(file).map_err(|_| VfsError::Emfile)
 }
