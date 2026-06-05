@@ -74,6 +74,29 @@ Bounded-blast-radius procedure (strangler; keep it compiling + booting every ste
    to the table install only.
 Gate each batch: `cargo build` both arches + `make smoke` (boot to login).
 
+### Full crate decomposition (kernel = pure glue; every concern is a crate)
+
+Execute in dependency order; build both arches + `make smoke` after each.
+
+1. **`kmacros`** (crates/shared) — the `debug_pmm/vmm/irq/acpi/sched/boot/cgroup/
+   syscall/ssh` + `dtrace` gating macros (from kernel/src/debug_macros.rs). No
+   deps. `#[macro_export]` each; users do `#[macro_use] extern crate kmacros`.
+   Features: `debug-pmm/...` (10). Kernel forwards its `debug-*` → `kmacros/*`.
+2. **`smoke`** (crates/kernel) — kernel/src/smoke/* (elf/ksched/mmuops/preempt/
+   canary/device_map/pf_recover/user_map/elf_arm) + per-subsystem boot smokes
+   (pty/etc.). Deps: the subsystems it tests + kmacros. Kernel calls
+   `smoke::run_*()` at boot (glue).
+3. **`devpts`** — kernel/src/dev/pty.rs (/dev/ptmx + /dev/pts). Deps: tty, vfs,
+   devfs, sched, hal, kmacros. Its smokes live in the `smoke` crate.
+4. **`pidfd`→`fs`**, **drm node→`drm`** — kernel/src/dev/{pidfd,drm}.rs.
+5. **`syscalls`** (crates/kernel) — kernel/src/syscalls/* → one file per syscall
+   (`NNN_name.rs`). `vdso`+`vvar` move INTO it (syscall/time-area). Deps: syscall,
+   sched, vfs, vmm, net, ipc, devfs, security, nscg, kmacros, devpts, drm, fs.
+   Kernel: `pub use syscalls;` for call-site compat.
+
+After this the kernel binary holds only: boot/init bring-up, the dev-node
+registration glue, the dispatch-table install, and `vvar` publish — pure glue.
+
 ### Coupling map (the only real blockers — measured)
 
 Across `kernel/src/syscalls/` the only `crate::` refs that are NOT already
