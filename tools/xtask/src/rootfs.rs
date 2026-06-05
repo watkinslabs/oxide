@@ -94,6 +94,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/rtlink_probe/rtlink_probe",       "userspace/rtlink_probe/rtlink_probe.c"),
         ("userspace/dev_smoke/dev_smoke",             "userspace/dev_smoke/dev_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
+        ("userspace/mmchurn_smoke/mmchurn_smoke",     "userspace/mmchurn_smoke/mmchurn_smoke.c"),
+        ("userspace/mallocstress_smoke/mallocstress_smoke", "userspace/mallocstress_smoke/mallocstress_smoke.c"),
+        ("userspace/sigmalloc_smoke/sigmalloc_smoke", "userspace/sigmalloc_smoke/sigmalloc_smoke.c"),
+        ("userspace/mremap_alias_smoke/mremap_alias_smoke", "userspace/mremap_alias_smoke/mremap_alias_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
         ("userspace/online_smoke/online_smoke",       "userspace/online_smoke/online_smoke.c"),
@@ -118,6 +122,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let pthread_bins: &[(&str, &str)] = &[
         ("userspace/pthread_socketpair_probe/pthread_socketpair_probe",
          "userspace/pthread_socketpair_probe/pthread_socketpair_probe.c"),
+        ("userspace/mtmalloc_smoke/mtmalloc_smoke",
+         "userspace/mtmalloc_smoke/mtmalloc_smoke.c"),
     ];
     for (out_rel, src_rel) in pthread_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -161,6 +167,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let dyn_libc_bins: &[(&str, &str)] = &[
         ("userspace/hello_dyn_libc/hello_dyn_libc",
          "userspace/hello_dyn_libc/hello_dyn_libc.c"),
+        // B53: dynamic build of the mallocng-churn probe (same source as
+        // the static mallocstress_smoke) — isolates whether the python
+        // a_crash is mallocng-generic or specific to the dynamic layout.
+        ("userspace/mallocstress_smoke/mallocstress_dyn",
+         "userspace/mallocstress_smoke/mallocstress_smoke.c"),
     ];
     for (out_rel, src_rel) in dyn_libc_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -336,7 +347,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "cgroup_smoke", "cmdsubst_probe", "alarm_probe", "symlink_probe",
         "mount_smoke", "statfs_smoke", "fsmount_probe", "memfd_seal_probe",
         "uevent_probe", "rtlink_probe", "dev_smoke", "vim_smoke",
-        "mmap_zero_smoke", "usleep_smoke", "af_packet_smoke", "online_smoke",
+        "mmap_zero_smoke", "mmchurn_smoke", "mallocstress_smoke", "mallocstress_dyn",
+        "mtmalloc_smoke", "sigmalloc_smoke", "mremap_alias_smoke",
+        "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
         "socketpair_fork_probe",
     ] {
