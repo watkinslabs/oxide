@@ -1,42 +1,10 @@
 // xtask rootfs build — extracted from main.rs to keep both files
-// under the 1000-line cap (08§7).
+// under the 1000-line cap (08§7). The dynamic-link probe builder lives
+// in `rootfs_dynprobe` (same cap reason).
 use std::process::Command;
 use crate::cmds::{parse_arg, run};
 use crate::{l2_deps, image_qemu};
-
-/// Build a dynamic-link probe (`userspace/<probe>/<probe>.c`) against a
-/// cross-built L2 shared lib in `vendor/<vendor>/install-<arch>`, linking
-/// `<lflag>` (e.g. `-lcap`) with rpath /usr/lib. Track L2 helper.
-fn dyn_probe(cc: &std::path::Path, repo: &std::path::Path, arch: &str,
-             user_out: &std::path::Path, vendor: &str, probe: &str, lflag: &str)
-             -> Result<(), u8> {
-    let root = repo.join(format!("vendor/{vendor}/install-{arch}"));
-    let out = user_out.join(probe);
-    let src = repo.join(format!("userspace/{probe}/{probe}.c"));
-    let mut c = Command::new(cc);
-    c.args(["-O2", "-fno-stack-protector",
-            "-I", root.join("include").to_str().unwrap(),
-            "-L", root.join("lib").to_str().unwrap(),
-            "-Wl,-rpath,/usr/lib"]);
-    // A probe's lib may DT_NEED another L2 lib in a different vendor dir
-    // (e.g. libgcrypt.so → libgpg-error.so). The strict aarch64 cross-ld
-    // re-checks those transitive undefined symbols at probe-link time and
-    // must find the dependency .so. Point -rpath-link at every staged L2
-    // vendor libdir so any cross-vendor transitive dep resolves (no effect
-    // on the probe's own DT_NEEDED; runtime still uses /usr/lib via rpath).
-    for (v, _, _, _) in l2_deps::L2_LIBS {
-        let d = repo.join(format!("vendor/{v}/install-{arch}/lib"));
-        if d.is_dir() { c.arg(format!("-Wl,-rpath-link,{}", d.to_str().unwrap())); }
-    }
-    // Some headers (e.g. libseccomp's seccomp.h → asm/unistd.h) need kernel
-    // UAPI. The aarch64 cross sysroot bundles them; x86 musl-gcc doesn't, so
-    // append the host kernel-headers at lowest priority (musl libc wins).
-    if arch == "x86_64" { c.args(["-idirafter", "/usr/include"]); }
-    c.args(["-o", out.to_str().unwrap(), src.to_str().unwrap()]);
-    // lflag may carry several link flags (e.g. "-lmount -luuid").
-    for f in lflag.split_whitespace() { c.arg(f); }
-    run(c)
-}
+use crate::rootfs_dynprobe::dyn_probe;
 
 /// Per-arch rootfs build. --arch <x86_64|aarch64>.
 pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
@@ -94,6 +62,14 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/rtlink_probe/rtlink_probe",       "userspace/rtlink_probe/rtlink_probe.c"),
         ("userspace/dev_smoke/dev_smoke",             "userspace/dev_smoke/dev_smoke.c"),
         ("userspace/mmap_zero_smoke/mmap_zero_smoke", "userspace/mmap_zero_smoke/mmap_zero_smoke.c"),
+        ("userspace/mmchurn_smoke/mmchurn_smoke",     "userspace/mmchurn_smoke/mmchurn_smoke.c"),
+        ("userspace/mallocstress_smoke/mallocstress_smoke", "userspace/mallocstress_smoke/mallocstress_smoke.c"),
+        ("userspace/sigmalloc_smoke/sigmalloc_smoke", "userspace/sigmalloc_smoke/sigmalloc_smoke.c"),
+        ("userspace/rawecho_smoke/rawecho_smoke", "userspace/rawecho_smoke/rawecho_smoke.c"),
+        ("userspace/termios_rt_smoke/termios_rt_smoke", "userspace/termios_rt_smoke/termios_rt_smoke.c"),
+        ("userspace/isatty_smoke/isatty_smoke", "userspace/isatty_smoke/isatty_smoke.c"),
+        ("userspace/pollecho_smoke/pollecho_smoke", "userspace/pollecho_smoke/pollecho_smoke.c"),
+        ("userspace/mremap_alias_smoke/mremap_alias_smoke", "userspace/mremap_alias_smoke/mremap_alias_smoke.c"),
         ("userspace/usleep_smoke/usleep_smoke",       "userspace/usleep_smoke/usleep_smoke.c"),
         ("userspace/af_packet_smoke/af_packet_smoke", "userspace/af_packet_smoke/af_packet_smoke.c"),
         ("userspace/online_smoke/online_smoke",       "userspace/online_smoke/online_smoke.c"),
@@ -118,6 +94,8 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let pthread_bins: &[(&str, &str)] = &[
         ("userspace/pthread_socketpair_probe/pthread_socketpair_probe",
          "userspace/pthread_socketpair_probe/pthread_socketpair_probe.c"),
+        ("userspace/mtmalloc_smoke/mtmalloc_smoke",
+         "userspace/mtmalloc_smoke/mtmalloc_smoke.c"),
     ];
     for (out_rel, src_rel) in pthread_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -161,6 +139,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let dyn_libc_bins: &[(&str, &str)] = &[
         ("userspace/hello_dyn_libc/hello_dyn_libc",
          "userspace/hello_dyn_libc/hello_dyn_libc.c"),
+        // B53: dynamic build of the mallocng-churn probe (same source as
+        // the static mallocstress_smoke) — isolates whether the python
+        // a_crash is mallocng-generic or specific to the dynamic layout.
+        ("userspace/mallocstress_smoke/mallocstress_dyn",
+         "userspace/mallocstress_smoke/mallocstress_smoke.c"),
     ];
     for (out_rel, src_rel) in dyn_libc_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -336,7 +319,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "cgroup_smoke", "cmdsubst_probe", "alarm_probe", "symlink_probe",
         "mount_smoke", "statfs_smoke", "fsmount_probe", "memfd_seal_probe",
         "uevent_probe", "rtlink_probe", "dev_smoke", "vim_smoke",
-        "mmap_zero_smoke", "usleep_smoke", "af_packet_smoke", "online_smoke",
+        "mmap_zero_smoke", "mmchurn_smoke", "mallocstress_smoke", "mallocstress_dyn",
+        "mtmalloc_smoke", "sigmalloc_smoke", "mremap_alias_smoke", "rawecho_smoke", "termios_rt_smoke", "isatty_smoke", "pollecho_smoke",
+        "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
         "socketpair_fork_probe",
     ] {

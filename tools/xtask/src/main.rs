@@ -5,6 +5,7 @@ mod image_qemu;
 mod l2_deps;
 mod stats;
 mod rootfs;
+mod rootfs_dynprobe;
 use crate::cmds::{cmd_doc_check, cmd_kernel, cmd_spec_lint, cmd_test, parse_arg, run, stub};
 use crate::rootfs::cmd_rootfs;
 

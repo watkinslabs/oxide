@@ -580,6 +580,24 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
                 // on the still-mapped source VMA refault as fresh
                 // zero pages — completes the DONTUNMAP contract.
                 let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
+            } else if va.as_u64() != old {
+                // B53: MOVE (grow, or FIXED to a new addr). mremap_full
+                // copied old→new and removed the *VMA* for the source via
+                // AddressSpace::munmap — but that is VMA-bookkeeping only:
+                // the source range's PTEs stay mapped and its frames stay
+                // allocated (refcount>0, off the buddy free-list). The now
+                // VMA-less source VA becomes an allocatable hole; a later
+                // mmap reusing it hits the stale PTE (no demand-fault) and
+                // silently aliases the *old* frame's contents — musl
+                // mallocng then reads non-zero where a fresh group must be
+                // zero and trips a_crash() (the python `import` SIGSEGV).
+                // Tear the source PTEs + frames down to match Linux mremap.
+                let _ = pmm::user_as::evict_pages_in_range(old, old_size as u64);
+            } else if new_size < old_size {
+                // SHRINK in place: mremap_full dropped the tail VMA only;
+                // free the tail's PTEs + frames for the same reason.
+                let drop = old.wrapping_add(new_size as u64);
+                let _ = pmm::user_as::evict_pages_in_range(drop, (old_size - new_size) as u64);
             }
             va.as_u64() as i64
         }
