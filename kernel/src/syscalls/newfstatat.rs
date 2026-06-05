@@ -40,11 +40,14 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
             let raw = match core::str::from_utf8(p) {
                 Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
             };
-            // AT_FDCWD: resolve against cwd; fd-relative dirfd best-effort raw.
-            const AT_FDCWD: i32 = -100;
-            let resolved = if raw.starts_with('/') || dirfd == AT_FDCWD {
-                crate::syscalls::pathresolve::resolve_cwd(raw)
-            } else { raw.into() };
+            // BUG D: resolve the path against the dirfd's directory for a
+            // real fd-relative dirfd — real `*at` semantics, same as openat.
+            // The old `else { raw.into() }` ignored dirfd and resolved the
+            // relative name against cwd, so `find`/`ls` fstatat(dir_fd, name)
+            // looked under / instead of dir_fd → ENOENT recursing into any
+            // subdir. resolve_at handles absolute / AT_FDCWD / real dirfd.
+            let resolved = crate::syscalls::pathresolve::resolve_at(dirfd, raw)
+                .unwrap_or_else(|| crate::syscalls::pathresolve::resolve_cwd(raw));
             let s = resolved.as_str();
             // THE resolver (path-walk); follows symlinks unless
             // AT_SYMLINK_NOFOLLOW. aarch64 musl routes fstatat here.

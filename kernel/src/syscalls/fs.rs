@@ -324,16 +324,14 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
             // Absolute paths must also be lexically normalised so trailing
             // slashes (`/proc/self/fd/`) and `.`/`..` collapse to the
             // registered devfs key.
-            let resolved: alloc::string::String = if raw.starts_with('/') {
-                vfs::path::lexical_normalize(raw).unwrap_or_else(|| raw.into())
-            } else if dirfd == AT_FDCWD {
-                let cur = match sched::live::current() {
-                    Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-                };
-                // SAFETY: cwd slot single-mutator per `13§5`.
-                let cwd = unsafe { (*cur.cwd.get()).clone() };
-                vfs::path::resolve_against_cwd(&cwd, raw).unwrap_or_else(|| raw.into())
-            } else { raw.into() };
+            // BUG D: route through resolve_at so a real fd-relative dirfd
+            // resolves against the dirfd's directory (statx(dirfd, name) from
+            // `ls`/`find`), not cwd. resolve_at handles absolute / AT_FDCWD /
+            // real dirfd; the old `else { raw.into() }` ignored the dirfd.
+            let _ = AT_FDCWD;
+            let resolved: alloc::string::String =
+                crate::syscalls::pathresolve::resolve_at(dirfd, raw)
+                    .unwrap_or_else(|| crate::syscalls::pathresolve::resolve_cwd(raw));
             let s = resolved.as_str();
             // THE resolver (path-walk). statx(2) follows symlinks unless
             // AT_SYMLINK_NOFOLLOW. aarch64 musl routes stat()/lstat()
