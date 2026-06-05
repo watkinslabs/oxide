@@ -1,0 +1,20 @@
+[package]
+name = "kmacros"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+debug-pmm = []
+debug-vmm = []
+debug-irq = []
+debug-acpi = []
+debug-sched = []
+debug-boot = []
+debug-cgroup = []
+debug-syscall = []
+debug-ssh = []
+debug-trace = []
