@@ -18,7 +18,11 @@ fn now_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
-fn resolve_path_inode(path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
+/// AT_FDCWD sentinel — legacy (non-*at) callers pass this so the path
+/// resolves against cwd; *at callers pass the real dirfd.
+const AT_FDCWD: i32 = -100;
+
+fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
     if path_ptr == 0 || path_ptr >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
@@ -26,7 +30,11 @@ fn resolve_path_inode(path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
     let bytes = unsafe { crate::devfs::read_user_cstr(path_ptr, 256) };
     let raw = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
         .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
+    // BUG D: resolve against the dirfd's directory for a real fd-relative
+    // dirfd (fchmodat/fchownat); resolve_at(AT_FDCWD, raw) == resolve_cwd(raw)
+    // so legacy chmod/chown are unchanged.
+    let resolved = crate::syscalls::pathresolve::resolve_at(dirfd, raw)
+        .unwrap_or_else(|| crate::syscalls::pathresolve::resolve_cwd(raw));
     let s = resolved.as_str();
     // THE resolver (path-walk): crosses mounts, follows symlinks unless
     // `!follow` (chmod/chown follow; AT_SYMLINK_NOFOLLOW / lchown don't).
@@ -64,7 +72,7 @@ pub fn sys_chmod(args: &SyscallArgs) -> i64 {
             if net::sock::UNIX_REGISTRY.is_bound(s) { return 0; }
         }
     }
-    let inode = match resolve_path_inode(args.a0, true) { Ok(i) => i, Err(rv) => return rv };
+    let inode = match resolve_path_inode(AT_FDCWD, args.a0, true) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a1 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
     0
@@ -83,7 +91,7 @@ pub fn sys_fchmod(args: &SyscallArgs) -> i64 {
 /// dirfd and resolves `path` against the global devfs.
 /// # C: O(N_path)
 pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a1, (args.a3 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
+    let inode = match resolve_path_inode(args.a0 as i32, args.a1, (args.a3 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a2 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
     0
@@ -92,7 +100,7 @@ pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
 /// `sys_chown(path, uid, gid)` / `sys_lchown(path, uid, gid)` — slots 92/94.
 /// # C: O(N_path)
 pub fn sys_chown(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0, true) { Ok(i) => i, Err(rv) => return rv };
+    let inode = match resolve_path_inode(AT_FDCWD, args.a0, true) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a1 as u32; let g = args.a2 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
     0
@@ -110,7 +118,7 @@ pub fn sys_fchown(args: &SyscallArgs) -> i64 {
 /// `sys_fchownat(dirfd, path, uid, gid, flags)` — slot 260.
 /// # C: O(N_path)
 pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a1, (args.a4 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
+    let inode = match resolve_path_inode(args.a0 as i32, args.a1, (args.a4 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a2 as u32; let g = args.a3 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
     0

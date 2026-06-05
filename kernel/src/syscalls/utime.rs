@@ -61,8 +61,11 @@ fn resolve_inode(dirfd: i32, path_ptr: u64) -> Result<InodeRef, i64> {
     let raw = match bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() }) {
         Some(s) => s, None => return Err(-(Errno::Einval.as_i32() as i64)),
     };
-    let _ = dirfd; //  AT_FDCWD assumed; full dirfd-relative resolution rides namei rewrite.
-    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
+    // BUG D: resolve against the dirfd's directory for a real fd-relative
+    // dirfd; resolve_at(AT_FDCWD, raw) == resolve_cwd(raw) so the common
+    // AT_FDCWD/absolute callers are unchanged.
+    let resolved = crate::syscalls::pathresolve::resolve_at(dirfd, raw)
+        .unwrap_or_else(|| crate::syscalls::pathresolve::resolve_cwd(raw));
     let s = resolved.as_str();
     // utimensat/utimes follow symlinks (AT_SYMLINK_NOFOLLOW handling
     // rides the dirfd rewrite); resolve via the path-walk.
