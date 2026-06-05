@@ -95,6 +95,25 @@ pub mod stop;
 /// hook without dragging sched into vfs.
 pub static EPOLL_GLOBAL_WAIT: WaitList = WaitList::new();
 
+/// B57: wait queue for tasks blocked in `select`/`poll`/`ppoll`/
+/// `pselect`. The Linux way: those syscalls register here, sleep
+/// (zero CPU), and a data-ready site wakes them — instead of the old
+/// busy-yield re-poll loop. Mirrors `EPOLL_GLOBAL_WAIT`. Level-
+/// triggered: woken pollers re-scan and re-park if still not ready.
+/// A bounded re-scan deadline in the syscall caps worst-case latency
+/// for any fd type whose ready-site doesn't (yet) call
+/// `notify_poll_waiters`, so a missing wake degrades to latency, not
+/// a hang.
+pub static POLL_WAIT: WaitList = WaitList::new();
+
+/// Wake every task parked in `select`/`poll`. Call from any fd-state-
+/// change site after committing a transition that flips a poll bit
+/// (tty RX byte queued, pipe write, socket recv, …). Spurious calls
+/// are safe. # C: O(N_pollers)
+pub fn notify_poll_waiters() {
+    POLL_WAIT.wake_all();
+}
+
 /// Wake every task parked in `sys_epoll_wait`. Call from any fd-
 /// state-change site after committing the transition that would
 /// flip a poll bit (POLL_IN became readable, POLL_HUP set, ...).
