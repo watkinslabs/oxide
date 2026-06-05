@@ -50,10 +50,15 @@ state.md's old klog_sink-byte-drop hypothesis is **DISPROVEN**.
   /dev/tty, stdio line-buffering+fflush. cooked lflag readline reads = 0x3b
   (ECHO ON) so `readline_echoing_p` should be TRUE.
 - **Reproduces identically on serial and gtk** → not fbcon-specific.
+- **Ruled out (don't re-try):** terminfo `linux` entry present + byte-identical
+  to host; `/etc/termcap` (bash uses bundled gnutermcap) was MISSING — adding it
+  (infocmp -C linux/vt100/xterm/dumb) did NOT fix echo; TERM=linux/xterm/vt100/
+  dumb/unset all defer echo to accept; `bash --noediting` (kernel canonical echo)
+  works perfectly; cooked lflag readline reads = 0x3b (ECHO on).
 - **Next step (userspace):** white-box readline (gdb on the bash binary with
-  readline symbols) to find why incremental redisplay is deferred despite
-  echoing_p TRUE + correct input-availability; OR rebuild bash/readline. NOT a
-  kernel fix — do not fabricate one.
+  readline symbols, or rebuild bash 5.2.37 from vendor/bash/build.sh with a
+  fixed config.cache) to find why rl_redisplay emits nothing per keystroke
+  despite echoing_p TRUE. NOT a kernel fix — do not fabricate one.
 
 ## BUG C — cgroup ENOTEMPTY on destroy → cosmetic, lowest priority
 systemd kills cgroup procs then rmdirs; SIGKILL'd procs leave the cgroup
