@@ -174,20 +174,26 @@ def _build_image(arch: str, features: str = "debug-boot") -> Path:
     when debugging kernel internals."""
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
-    # Build the kernel + boot artifact + GPT disk image.
-    cmd = [
-        "cargo", "run", "--quiet", "-p", "xtask", "--",
-        "image", "--arch", arch, "--features", features,
-    ]
+    # x86: Limine is gone — build the GRUB multiboot2 ISO (matches `make
+    # qemu-x86`/`xtask grub`). `--build-only` produces the ISO + rootfs without
+    # launching qemu, so the MCP can spawn its own gdb-paused one. arm still
+    # uses the Limine disk image until its GRUB/EFI-stub path lands (F376).
+    if arch == "x86_64":
+        cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
+               "grub", "--arch", "x86_64", "--features", features, "--build-only"]
+    else:
+        cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
+               "image", "--arch", arch, "--features", features]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
             f"image build failed (exit {proc.returncode})\n"
             f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
-    img = REPO_ROOT / "target" / f"oxide-{arch}.img"
+    img = (REPO_ROOT / "target" / "oxide-x86_64-grub.iso") if arch == "x86_64" \
+        else (REPO_ROOT / "target" / f"oxide-{arch}.img")
     if not img.is_file():
-        raise RuntimeError(f"expected image at {img} but it isn't there")
+        raise RuntimeError(f"expected boot artifact at {img} but it isn't there")
     return img
 
 
@@ -246,18 +252,22 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
         sock_path = os.path.join(sock_dir, "serial.sock")
 
         if arch == "x86_64":
-            ovmf = REPO_ROOT / "vendor/firmware/ovmf-x64.fd"
+            # GRUB ISO boots under SeaBIOS (qemu default — NO `-bios OVMF`),
+            # exactly as `make qemu-x86`/`xtask grub`. The hybrid GRUB ISO is
+            # BIOS-bootable; forcing OVMF made GRUB fail to set a video mode
+            # ("no suitable video mode found") and OVMF #PF'd before the kernel
+            # ran, so qemu_screen never captured the virtio-gpu fbcon scanout.
+            # `img` is the GRUB ISO (-cdrom + -boot d); the rootfs is a
+            # separate modern virtio-blk-pci drive (lockstep with aarch64).
+            rootfs = REPO_ROOT / "kernel/blobs/rootfs-x86_64.img"
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "q35",
                 "-cpu", "Haswell-v4",
-                "-m", "256M",
-                "-bios", str(ovmf),
-                # Boot drive as virtio-blk-pci (modern transport) so the
-                # F19-F30 stack runs lockstep with aarch64. The legacy
-                # `-drive format=raw,file=...` default attached as IDE,
-                # which left no virtio device on the bus.
-                "-drive", f"if=none,id=hd0,format=raw,file={img}",
+                "-m", "1G",
+                "-cdrom", str(img),
+                "-boot", "d",
+                "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
                 "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
                 # Phase 8 prep: explicit modern virtio-net so the
                 # kernel sees device 0x1041 (not the QEMU-default

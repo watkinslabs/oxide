@@ -588,6 +588,13 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     let repo = repo_root();
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
     let iso = build_grub_iso(&repo, &arch, &kernel_elf)?;
+    // `--build-only`: produce the GRUB ISO + rootfs but skip the qemu launch.
+    // The qemu-mcp uses this to build the boot artifact, then spawns its own
+    // gdb-paused qemu against it.
+    if rest.iter().any(|a| a == "--build-only") {
+        println!("xtask grub: built {} (--build-only, not launching qemu)", iso.display());
+        return Ok(());
+    }
     qemu_run_grub_x86_64(&repo, &iso, smp)
 }
 
