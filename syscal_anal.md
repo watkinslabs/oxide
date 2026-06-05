@@ -41,6 +41,39 @@ This file is the live tracker — tick items off here as the sweep lands.
 Method: per syscall, a hosted test over a real fixture where possible, then a
 boot verify; flip its matrix row to "done" here. No stubs — `IMPL` means done.
 
+## Crate extraction design (own crate, one file per syscall)
+
+Goal: syscalls live in their **own crate** `crates/kernel/syscalls` (pkg
+`syscalls`), NOT in the `kernel` crate — kernel is a hollow shell. One file per
+syscall, named **`NNN_name.rs`** (e.g. `000_read.rs`, `002_open.rs`,
+`452_fchmodat2.rs`); since a Rust module can't start with a digit, each is wired
+in `lib.rs` via `#[path="NNN_name.rs"] pub mod sNNN_name;` so the **filename
+keeps the number+name**. Each file: one `pub fn sys_<name>(args:&SyscallArgs)
+-> i64` — parse/validate/fetch/call-one-Tier-2-fn/encode, zero work logic.
+
+Why feasible: `kernel/src/syscalls/` is already inside the `kernel` crate (which
+depends on every Tier-2 crate). The Tier-3 helpers it uses
+(`validate_user_buf[_writable]`, `read_user_cstr`, `pathresolve`, `netlink_fd`)
+use only crate deps (hal/vmm/sched/vfs) — so they move into the new crate too.
+
+Bounded-blast-radius procedure (strangler; keep it compiling + booting every step):
+1. Create `crates/kernel/syscalls` (deps: syscall, sched, vfs, vmm, hal, klog,
+   net, ipc, devfs, …). Add to workspace `members`.
+2. Move the shared Tier-3 helpers in first (`userptr` validators, `pathresolve`,
+   `read_user_cstr`, `netlink_fd`). For anything still kernel-side, install a
+   `fn`-pointer hook at boot (e.g. netlink is_netlink/read) so the crate stays
+   decoupled.
+3. `kernel`'s `Cargo.toml` gains `syscalls = { path = ... }`. `kernel/src/
+   syscalls/mod.rs` **re-exports** the crate's items (`pub use syscalls::*`) so
+   existing `crate::syscalls::X` call sites compile unchanged during migration.
+4. Migrate syscalls 0→end: move each shim into `NNN_name.rs`, fix to full Linux
+   (close its `syscal_anal.md` gap), repoint its dispatch arm at
+   `syscalls::sNNN_name::sys_<name>`, delete the old inline/per-sub copy.
+5. When the last syscall is migrated: delete the dead
+   `crates/kernel/syscall/src/dispatch.rs`; `kernel/src/syscalls/mod.rs` shrinks
+   to the table install only.
+Gate each batch: `cargo build` both arches + `make smoke` (boot to login).
+
 ## Summary
 
 | Metric | Count |
