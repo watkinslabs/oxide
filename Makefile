@@ -21,6 +21,7 @@ FEATURES ?=
         test lint ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
+        vendor-rebuild \
         clean help
 
 all: build
@@ -42,6 +43,28 @@ x86-debug:
 
 arm-debug:
 	$(XTASK) kernel --arch aarch64 --features debug-all
+
+# ---- vendor (L2 userspace deps: pam, coreutils, util-linux, bash, …) ------
+# qemu-x86/qemu-arm do NOT rebuild vendor deps — they copy the prebuilt blobs
+# committed under vendor/<dep>/install-<arch>/ (rebuilding all 46 deps from
+# source every boot would be brutal). This is the explicit trigger to force a
+# from-scratch rebuild when you change a dep's source or its build.sh; commit
+# the regenerated install-<arch> blobs afterward.
+#   make vendor-rebuild DEP=pam   — rebuild one dep (both arches), then re-run qemu-x86
+#   make vendor-rebuild           — rebuild ALL vendor deps (very slow)
+# Each vendor/<dep>/build.sh produces vendor/<dep>/install-{x86_64,aarch64}/.
+vendor-rebuild:
+	@if [ -n "$(DEP)" ]; then \
+	  test -f vendor/$(DEP)/build.sh || { echo "no vendor/$(DEP)/build.sh"; exit 1; }; \
+	  echo "=== rebuild vendor/$(DEP) (from scratch) ==="; \
+	  rm -rf vendor/$(DEP)/*/[_]build-* 2>/dev/null; \
+	  bash vendor/$(DEP)/build.sh; \
+	else \
+	  for d in vendor/*/build.sh; do \
+	    echo "=== rebuild $$d ==="; bash "$$d" || exit 1; \
+	  done; \
+	fi
+	@echo "vendor-rebuild done — rebuilt install-<arch> blobs; re-run 'make qemu-x86' to pick them up."
 
 # ---- checks ---------------------------------------------------------------
 
