@@ -1,88 +1,75 @@
 # Session hand-off
 
 ## Headline
-Two things shipped this session; three live-test bugs diagnosed (NOT fixed),
-all PRE-EXISTING (not caused by the namei work).
+Branch `B53-python-script-segfault` (stacked on F377 #1526 / F376 #1525).
+Of the 3 pre-existing live-test bugs: **BUG B FIXED + verified both arches**;
+**BUG A root-caused to userspace bash/readline (kernel exonerated)**;
+**BUG C confirmed cosmetic**. Net new: 1 real kernel fix + 10 regression probes.
 
-- **PR #1526** `F377-namei-unified-walk` (stacked on F376/#1525): unified
-  every `*at` syscall behind one `pathresolve::lookupat` (Linux nameidata)
-  + open(2) stores the canonical walk dentry. **Fixes `find /` ENOENT
-  (OPEN BUG 1) → FIND_NOENT=0 on both arches.** Boots both arches, make
-  test green, spec-lint clean.
-- **C14** `C14-qemu-mcp-x86-seabios` (pushed, no PR yet): MCP x86 boots via
-  SeaBIOS (dropped `-bios OVMF`, which crashed "no suitable video mode").
-  **Needs an MCP/Claude restart to take effect** — then `qemu_screen`
-  (framebuffer) + gdb memory inspection work again.
+## BUG B — python `import` SIGSEGV → **FIXED** (commit e27a7986)
+- **Root cause:** `sys_mremap` (kernel/src/syscalls/proc.rs) only evicted the
+  source range on the MREMAP_DONTUNMAP path. The normal **move/grow** and
+  **shrink** paths removed the source *VMA* via `AddressSpace::munmap`
+  (VMA-bookkeeping only) but left the old VA's **PTEs mapped + frames
+  allocated**. The vacated VA became an allocatable hole; a later mmap reused
+  it, hit the stale PTE (no demand-fault), and aliased the old frame's stale
+  contents. musl mallocng read non-zero where a fresh group must be zero →
+  `a_crash()` (#GP vec 0x0d at ld-musl, rip in a_crash/hlt).
+- **Fix:** evict source PTEs+frames (`pmm::user_as::evict_pages_in_range`) on
+  the move (`va != old`) and shrink (`new_size < old_size`) paths too.
+- **Why C probes initially passed:** the bug needs mremap (mallocng realloc of
+  large blocks). Single-allocator churn never recycled the leaked VA.
+- **Diagnosis path (reusable):** see `/tmp/oxide_drive.py` — self-contained
+  QEMU driver (SeaBIOS x86 / OVMF arm, KVM, serial-socket expect/send, QMP
+  screendump, optional gdb). Vendored python+musl run PERFECTLY on the host
+  kernel (differential test) → proved it was an oxide kernel bug. sigsegv
+  handler stack-scan (commit 16192c28) recovered the mallocng call chain.
 
-## CRITICAL gotcha (cost ~8 boots): faccessat empty-path errno
-`faccessat` MUST return **EINVAL, not ENOENT**, for an empty path. systemd
-probes fds with `faccessat(fd,"",AT_EMPTY_PATH)`; EINVAL = "fall back",
-ENOENT = "target gone" → PID1 aborts ("Failed to allocate manager object").
-Already handled in #1526; don't regress it.
+### BUG B metrics (x86_64 + aarch64, 0 SIGSEGV after fix)
+| test | pre-fix | post-fix |
+|---|---|---|
+| `python3 -c "import json,re,enum,collections"` | SEGV(139) | PASS |
+| `[bytearray(2000) for _ in range(200000)]` (400MB) | SEGV(139) | PASS |
+| PYTHONMALLOC={malloc,pymalloc,*_debug} import | SEGV | PASS |
+| `/bin/mremap_alias_smoke` (negative control) | FAIL rc=1 STALE | PASS |
+| mmchurn/mallocstress(static+dyn)/mtmalloc/sigmalloc | PASS | PASS |
+- **Negative control proven:** with the fix reverted, mremap_alias_smoke
+  FAIL(rc=1) + python SEGV(139); with fix, all PASS. The test has teeth.
 
-## THREE OPEN BUGS (live-test; user wants all fixed; pre-existing)
+## BUG A — no echo at bash prompt → **userspace readline, NOT kernel**
+state.md's old klog_sink-byte-drop hypothesis is **DISPROVEN**.
+- `/bin/sh` is **bash 5.2** (readline → raw mode → self-echo). At the prompt
+  bash **reads each char per-char** (`read(,1)` returns immediately, proven via
+  COM2 trace) but issues **zero echo writes until Enter**, then echoes the whole
+  line. So readline suppresses incremental echo.
+- **Kernel exonerated** — every tty mechanism readline uses is verified correct
+  via probes (commit 154916b9): rawecho (raw blocking-read+write echo 14/14),
+  pollecho (poll(POLLIN)+read 8/8), termios_rt (ICANON|ECHO clear round-trips),
+  isatty(0/1/2)=1, kernel canonical echo works (cat echoes on serial+fbcon),
+  raw per-char RX delivery to VT_RINGS, TIOCGWINSZ=24×80, writev to console,
+  /dev/tty, stdio line-buffering+fflush. cooked lflag readline reads = 0x3b
+  (ECHO ON) so `readline_echoing_p` should be TRUE.
+- **Reproduces identically on serial and gtk** → not fbcon-specific.
+- **Next step (userspace):** white-box readline (gdb on the bash binary with
+  readline symbols) to find why incremental redisplay is deferred despite
+  echoing_p TRUE + correct input-availability; OR rebuild bash/readline. NOT a
+  kernel fix — do not fabricate one.
 
-### BUG A — no input echo at shell prompt (gtk console)
-- Username echoes; password doesn't (correct); shell prompt: typed chars
-  invisible, program output renders fine.
-- Shell prompt termios = `c_lflag=0x8a31` (raw, ICANON off, ECHO off) →
-  readline self-echoes. **Echo WORKS on serial/UART** (proven: injected
-  `qwer` echoes). gtk renders program output but NOT echo.
-- Both echo (`tty_emit`) and output (`console_emit`) = `klog::write_raw`
-  → `invoke_sink` → AUX_SINK = `fbcon::kernel::klog_sink`
-  (crates/drivers/fbcon/src/lib.rs:821). klog_sink does `CONSOLE.try_lock()`
-  (DROPS byte on contention) + defers GPU flush to softirq FbconFlush;
-  old timer `tick_drain` is a NO-OP. Suspect: echo (IRQ/softirq ctx) byte
-  dropped, or flush not landing on fbcon while output's does.
-- **BLOCKER: can't see the framebuffer.** Boot harness is headless (UART
-  only). Need MCP `qemu_screen` (post C14 restart) to watch fbcon while
-  typing, then fix klog_sink/flush + verify visually.
-
-### BUG B — python `import` segfaults
-- `python3 -c "print(1)"` + `--version` WORK. `import json` (script OR
-  REPL) → **SIGSEGV (PYRC=139)**. Proven pre-existing on base 6b53cd21.
-- Kernel fault (debug-irq): **#GP vec=0x0d**, err=0, `rip=0x4003c02c`
-  (a lib mmap'd ~0x40000000). bytes@rip = `f4 4c 63 ca 4c 39 cf 73 ...`
-  → first byte **0xf4 = HLT** (privileged → #GP). Bytes after are valid
-  code ⇒ an **indirect transfer (GOT/PLT/fnptr/ret) jumped to a bad
-  address** in a DYNAMICALLY-linked lib. python3-x86_64 is dynamic
-  (interp /lib/ld-musl), NOT static despite rootfs.rs comment.
-- Likely a **dynamic-linker relocation/GOT bug** (dyn linker = phase 13);
-  `import` hits a reloc path `-c print` doesn't.
-- **NEXT:** gdb the GOT/call site at the fault (needs MCP, post-restart),
-  OR pragmatic fix = ship a genuinely STATIC python (rootfs.rs intent).
-
-### BUG C — cgroup "Directory not empty" on destroy (non-fatal)
-- systemd: "Failed to destroy cgroup /system.slice/console-getty.service,
-  ignoring: Directory not empty". `cgroup/tree.rs:244` remove()=ENOTEMPTY
-  while procs/children remain. `cgroup_kill_hook` (cgroup_boot.rs:12) only
-  POSTS the signal; the task leaves the cgroup later via sys_exit→
-  `cgroup::on_exit` (mod.rs:316) → kill→rmdir RACE. systemd ignores it.
-- Correct fix needs systemd reproduction; the "yank not-yet-dead task from
-  cgroup" quick fix is a façade (project forbids). Lowest priority.
-
-## Diagnostic recipes that worked (avoid re-discovering)
-- Boot alongside the user's live qemu WITHOUT conflict (rootfs write-lock
-  + port 2222 collide): `cp kernel/blobs/rootfs-x86_64.img
-  /tmp/rootfs-test-x86.img`; sed `tools/xtask/src/image_qemu.rs` hostfwd
-  2222→2223 AND the x86 rootfs path → the /tmp copy. REVERT before commit.
-- `[FAULT]` rip/cr2/PFEC + GPR dump: build `--features debug-boot,debug-irq`.
-  User #GP/#PF prints "sigsegv: kill" via
-  crates/kernel/mm-pmm/src/user_as/signal.rs `sigsegv_terminate_x86`.
-- bytes@rip (decode faulting insn w/o gdb): temporary read_volatile loop
-  over `_rip` in that fn's debug-irq block.
-- per-keystroke echo lflag: temporary NON-locking `out dx,al` to COM2
-  (0x2F8) in crates/kernel/tty/src/live.rs `push_and_wake_fg`; add
-  `-serial file:/tmp/oxide-com2.log` to qemu. (COM1 dtrace! pollutes the
-  console parse; COM2 keeps it clean. push_and_wake_fg runs in IRQ ctx —
-  do NOT call locking klog there or you deadlock the boot.)
+## BUG C — cgroup ENOTEMPTY on destroy → cosmetic, lowest priority
+systemd kills cgroup procs then rmdirs; SIGKILL'd procs leave the cgroup
+asynchronously via `cgroup::on_exit` (sys_exit), so rmdir races and gets
+ENOTEMPTY — which systemd logs as "ignoring" (non-fatal, matches Linux's own
+transient). The "yank live task from cgroup" quick fix is a façade (forbidden).
+A correct fix = synchronous kill-drain or systemd cgroup.events polling; needs
+systemd-side repro. Left as-is.
 
 ## First commands next session
 ```
 cd /home/nd/oxide2 && git log --oneline -6 && git branch
 ```
-1. After restart (C14 loaded), MCP works: `qemu_start arch=x86_64` →
-   `qemu_screen` for BUG A; gdb the GOT for BUG B.
-2. Branches: F377 (#1526) + C14 pushed; B53-python-script-segfault is an
-   empty placeholder. F376/#1525 still open (base of #1526).
-3. Decide on BUG B: static python vs implement the dynamic-linker reloc.
+1. BUG B commits: e27a7986 (fix) + 1835bb61 (mm probes) + 16192c28 (diag) +
+   154916b9 (tty probes), on B53 (stacked on F377 #1526 / F376 #1525).
+   Push + PR base=F377 once F376/F377 merge, or rebase onto main after.
+2. BUG A: attach gdb to the bash binary (readline) to finish the readline
+   echo-defer root cause; kernel side is done.
+3. Driver harness `/tmp/oxide_drive.py` + probes in `userspace/*_smoke/`.
