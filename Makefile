@@ -72,8 +72,12 @@ QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 # AP bring-up + the periodic load balancer are exercised every push.
 SMP ?= 1
 
+# Limine is gone — x86 boots via the GRUB multiboot2 path (`xtask grub`).
+# The old `xtask qemu` (Limine ISO + check_vendor for vendor/limine/*) is
+# dead and only kept around for aarch64 until its GRUB/EFI-stub path lands
+# (F376). `cmd_grub` takes --arch/--smp/--features just like the old path.
 qemu-x86:
-	$(XTASK) qemu --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
+	$(XTASK) grub --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
 
 qemu-arm:
 	$(XTASK) qemu --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
@@ -87,7 +91,7 @@ qemu-x86-grub:
 # tick + boot-pulse log). Useful for kernel debugging; not what you
 # want when just trying to log in and use it.
 qemu-x86-debug:
-	$(XTASK) qemu --arch x86_64  --features debug-all
+	$(XTASK) grub --arch x86_64  --features debug-all
 
 qemu-arm-debug:
 	$(XTASK) qemu --arch aarch64 --features debug-all
