@@ -87,11 +87,26 @@ pub fn sys_fchmod(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_fchmodat(dirfd, path, mode, flags)` — slot 268. v1 ignores
-/// dirfd and resolves `path` against the global devfs.
+/// BUG E: resolve the `*at` target. `AT_EMPTY_PATH` (0x1000) with an empty
+/// path means "operate on the dirfd itself" — i.e. fchmodat/fchownat with `""`
+/// == fchmod/fchown on the open fd. systemd uses this to reset /dev/console's
+/// ownership/mode; without it the empty path resolved to EINVAL. Mirrors
+/// `newfstatat`'s AT_EMPTY_PATH handling.
+const AT_EMPTY_PATH: u32 = 0x1000;
+fn resolve_at_target(dirfd: i32, path_ptr: u64, flags: u32, follow: bool) -> Result<InodeRef, i64> {
+    if (flags & AT_EMPTY_PATH) != 0 {
+        // SAFETY: bounded 1-byte probe via the validated helper; only checks emptiness.
+        let empty = unsafe { crate::devfs::read_user_cstr(path_ptr, 1) }
+            .map_or(true, |b| b.is_empty());
+        if empty { return resolve_fd_inode(dirfd); }
+    }
+    resolve_path_inode(dirfd, path_ptr, follow)
+}
+
+/// `sys_fchmodat(dirfd, path, mode, flags)` — slot 268.
 /// # C: O(N_path)
 pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0 as i32, args.a1, (args.a3 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
+    let inode = match resolve_at_target(args.a0 as i32, args.a1, args.a3 as u32, (args.a3 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
     let m = args.a2 as u16;
     if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
     0
@@ -118,7 +133,7 @@ pub fn sys_fchown(args: &SyscallArgs) -> i64 {
 /// `sys_fchownat(dirfd, path, uid, gid, flags)` — slot 260.
 /// # C: O(N_path)
 pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(args.a0 as i32, args.a1, (args.a4 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
+    let inode = match resolve_at_target(args.a0 as i32, args.a1, args.a4 as u32, (args.a4 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
     let u = args.a2 as u32; let g = args.a3 as u32;
     if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
     0
