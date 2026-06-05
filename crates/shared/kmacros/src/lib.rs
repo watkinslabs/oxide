@@ -1,54 +1,75 @@
+#![no_std]
+// kmacros: per-subsystem debug-trace gating macros (docs/04§3 R05/R06).
+// Moved out of the kernel binary so any crate can gate trace call sites.
+// Users: `#[macro_use] extern crate kmacros;`. Each macro expands to its body
+// only when the matching feature is on (forwarded from the kernel's debug-*).
+
 // Per-subsystem debug-trace gates per `04§3` (R05) + `04§4.0` (R06).
 //
 // Each `debug_<sub>!` macro expands to its body when the matching
 // `debug-<sub>` Cargo feature is on, else to nothing — the call
 // site is absent from the binary, not "filtered at runtime".
 //
-// Defined in this dedicated module + declared `#[macro_use] mod
-// debug_macros;` in lib.rs so the macros are available to every
-// sibling module without per-call `use` (`macro_rules!` doesn't
-// have proper visibility; `#[macro_use]` is the canonical way to
-// hoist them crate-wide for kernel-internal use).
+// Each macro is `#[macro_export]`; consumers do
+// `#[macro_use] extern crate kmacros;` to use them unqualified.
 
 #[cfg(feature = "debug-pmm")]
+#[macro_export]
 macro_rules! debug_pmm  { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-pmm"))]
+#[macro_export]
 macro_rules! debug_pmm  { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-vmm")]
+#[macro_export]
 macro_rules! debug_vmm  { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-vmm"))]
+#[macro_export]
 macro_rules! debug_vmm  { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-irq")]
+#[macro_export]
 macro_rules! debug_irq  { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-irq"))]
+#[macro_export]
 macro_rules! debug_irq  { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-acpi")]
+#[macro_export]
 macro_rules! debug_acpi { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-acpi"))]
+#[macro_export]
 macro_rules! debug_acpi { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-sched")]
+#[macro_export]
 macro_rules! debug_sched { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-sched"))]
+#[macro_export]
 macro_rules! debug_sched { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-boot")]
+#[macro_export]
 macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-boot"))]
+#[macro_export]
 macro_rules! debug_boot { ($($t:tt)*) => {} }
 // cgroup v2 boot self-test + charge/uncharge trace (`26§10`).
 #[cfg(feature = "debug-cgroup")]
+#[macro_export]
 macro_rules! debug_cgroup { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-cgroup"))]
+#[macro_export]
 macro_rules! debug_cgroup { ($($t:tt)*) => {} }
 #[cfg(feature = "debug-syscall")]
+#[macro_export]
 macro_rules! debug_syscall { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-syscall"))]
+#[macro_export]
 macro_rules! debug_syscall { ($($t:tt)*) => {} }
 // F205: targeted trace inside select/wait4/exit/signal-child paths.
 // Narrower than debug-sched so the kernel can be built with trace
 // active without flooding the PL011 UART past its drain rate on ARM.
 #[cfg(feature = "debug-ssh")]
+#[macro_export]
 macro_rules! debug_ssh { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-ssh"))]
+#[macro_export]
 macro_rules! debug_ssh { ($($t:tt)*) => {} }
 
 // dtrace: structured trace probes that bypass the BOOT_UART lock.
@@ -100,11 +121,13 @@ pub fn __dtrace_kv(tag: &[u8], val: u64) {
 }
 
 #[cfg(feature = "debug-trace")]
+#[macro_export]
 macro_rules! dtrace {
-    ($tag:expr) => { $crate::debug_macros::__dtrace_tag($tag) };
-    ($tag:expr, $val:expr) => { $crate::debug_macros::__dtrace_kv($tag, $val as u64) };
+    ($tag:expr) => { $crate::__dtrace_tag($tag) };
+    ($tag:expr, $val:expr) => { $crate::__dtrace_kv($tag, $val as u64) };
 }
 #[cfg(not(feature = "debug-trace"))]
+#[macro_export]
 macro_rules! dtrace {
     ($($t:tt)*) => {}
 }

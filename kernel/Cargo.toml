@@ -24,6 +24,7 @@ virtio  = { path = "../crates/drivers/virtio" }
 ext4    = { path = "../crates/kernel/ext4" }
 hal     = { path = "../crates/arch/hal" }
 klog    = { path = "../crates/shared/klog" }
+kmacros   = { path = "../crates/shared/kmacros" }
 kalloc  = { path = "../crates/shared/kalloc" }
 pmm     = { path = "../crates/kernel/mm-pmm" }
 procfs  = { path = "../crates/kernel/procfs" }
@@ -62,16 +63,16 @@ default = []
 # Per `docs/04§3` (rev R05): per-subsystem debug features. Off = call
 # sites absent from the binary; the hot path emits zero bytes. Names
 # match the spec's bucket list 1:1 — independence guarantee in §3.
-debug-pmm  = []  # PMM smoke + stress + memmap dump
-debug-vmm  = ["pmm/debug-vmm"]  # device-map MMIO sanity reads (HPET cap, GICD typer)
-debug-irq  = ["pmm/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
-debug-acpi = ["firmware/debug-acpi"]  # forwarded; impl in crates/firmware
-debug-sched = ["sched/debug-sched","fs/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
-debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
-debug-cgroup = ["cgroup/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
+debug-pmm  = ["kmacros/debug-pmm"]  # PMM smoke + stress + memmap dump
+debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm"]  # device-map MMIO sanity reads (HPET cap, GICD typer)
+debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
+debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi"]  # forwarded; impl in crates/firmware
+debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
+debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
 debug-modules = []  # kmod thunk write_raw / kassert traces
-debug-syscall = ["sched/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
-debug-ssh = ["sched/debug-ssh","fs/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
-debug-trace = []  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
+debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
+debug-ssh = ["sched/debug-ssh","fs/debug-ssh", "kmacros/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
+debug-trace = ["kmacros/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]
 

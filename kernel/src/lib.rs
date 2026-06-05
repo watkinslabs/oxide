@@ -25,7 +25,7 @@ const _: () = assert!(
 
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
-pub mod debug_macros;
+extern crate kmacros;
 pub mod cgroup_boot; pub mod cgroup_cpu;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
