@@ -1,60 +1,51 @@
 # Session hand-off
 
 ## Headline
-Branch `F376-arm-selfbootstrap` (PR #1525). Limine fully removed; both arches
-boot to login at SMP=1. This session also: arm PSCI SMP=2 + x86 INIT-SIPI
-SMP=2 (APs reach `online`), ACPI/PCI/**display** restored, device-init
-un-gated, DTB-parse bug fixed. **qemu-mcp server fixed** (was broken by the
-Limine removal). TWO open bugs found via the user's live test — see below.
+Branch `F377-namei-unified-walk` (stacked on `F376-arm-selfbootstrap`,
+PR #1525). **OPEN BUG 1 (find / ENOENTs) FIXED.** Root cause: nearly
+every `*at` syscall re-derived dirfd handling and several used the
+AT_FDCWD-only path, so a relative path against a real dir fd (find's
+FTS_CWDFD: openat/fstatat(parent_dir_fd, child)) fell through to the bare
+name and ENOENT'd. Unified all `*at` resolution behind one
+`pathresolve::lookupat(dirfd, ptr, nofollow)` (Linux nameidata: pick
+start dentry from dirfd, walk raw path via `vfs::path_lookup`).
+Both arches boot to login; `find /` clean (1 benign /proc transient).
 
-## qemu-mcp: FIXED — restart it to use it
-`c4d902c4`: the MCP built via the removed `xtask image`. Added a build-only
-`xtask image --arch X [--features Y]` (rootfs+kernel+GRUB ISO, prints
-`image=<path>`); `server.py` now boots `target/oxide-<arch>-grub.iso`
-(`-cdrom`/`-boot d` + rootfs virtio-blk + socket-serial/QMP/`-s -S`).
-**Action: restart the MCP server (or Claude) so qemu_start works.**
+## What landed (3 commits on F377, atop F376)
+- `4280a9e9` front-door fix: route every `*at` through `resolve_at`.
+- `d69774a1` netfilter test: `use alloc::vec` (pre-existing `make test` red).
+- `6a1dade7` the unify-behind-lookupat refactor + hosted tests.
 
-## OPEN BUG 1 — `find /` ENOENTs into directories (dirfd-relative resolve)
-Symptom: `find / | grep No` → "No such file or directory" for many DIRS
-(/etc/init.d, /usr/share, /home/alice, …). NARROWED:
-- Image on-disk is correct (all dirs/inodes present; identical metadata).
-- Boot-time `pathresolve::resolve("/etc/init.d")` = OK (all dirs).
-- Interactive `ls /etc/init.d`, `cd /etc/init.d`, `ls /usr/share`,
-  `python3 --version` ALL WORK.
-- So ONLY `find`'s **dirfd-relative** walk fails: `openat(parent_dir_fd,
-  child)` / `fstatat(parent_dir_fd, child)` (find uses FTS_CWDFD). Absolute +
-  AT_FDCWD-relative + boot resolve all work.
-- Locus: `pathresolve::resolve_at` (kernel/src/syscalls/pathresolve.rs:122)
-  for a REAL dirfd uses `f.dentry().absolute_path()` as the base. `install_open`
-  (vfs/src/file.rs:348) stores a standalone `Dentry::new(None, full_path, inode)`;
-  `absolute_path()` (dentry.rs) special-cases that. Trace says it SHOULD give
-  the right base — but find empirically fails. NEXT: write a tiny C probe doing
-  `int d=open("/etc",O_DIRECTORY); openat(d,"init.d",O_DIRECTORY); fstatat(d,"init.d",..)`
-  and run it (shell or boot ELF) — reproduces; then trace `resolve_at` +
-  `absolute_path()` for the dir fd with the (now-fixed) qemu-mcp single-step.
-  Likely the dir fd's stored dentry path is wrong, OR a deep-traversal fd issue.
+## CRITICAL gotcha learned (cost ~8 boot cycles)
+`faccessat` MUST return **EINVAL (not ENOENT)** for an empty path.
+systemd probes fd accessibility via `faccessat(fd, "", AT_EMPTY_PATH)`
+and treats EINVAL as "no AT_EMPTY_PATH, fall back" but ENOENT as "target
+absent" → it aborts with "Failed to allocate manager object: No such
+file or directory" and **freezes PID1**. The errno delta was the entire
+boot regression; resolution logic was equivalent throughout.
 
-## OPEN BUG 2 — interactive python3 segfaults (the original item 3)
-`/usr/bin/python3 --version` / `-c` / scripts WORK; the interactive REPL
-SEGVs (musl mallocng a_crash heap corruption). Reproduces in normal use
-(earlier "non-reproducing" was instrumentation-only). NEXT: catch the
-`[FAULT] sigsegv rip=/far=` on serial when it crashes → diagnose the kernel
-MM gap (the REPL's readline/tty alloc pattern triggers it).
+## Follow-up (staged, NOT done): open(2) walk-dentry for `..`-from-dirfd
+`lookupat` from a real dirfd starts at that fd's File dentry. open(2)
+still stores the standalone full-path dentry (parent=None), so `..`
+relative to a dir fd is a no-op (find only descends → unaffected).
+`pathresolve::resolve_full` + the `install_open(walk_dentry)` signature
+exist for this; wiring open(2) to store the `path_lookup` dentry was
+reverted during bring-up (highest blast radius — touches every
+`f.dentry()`). Hosted test `path_lookup_dotdot_needs_parent_link`
+documents the gap. Re-attempt as its own small PR, boot-verify both arches.
 
-## SMP=2 — APs start, but participation races late boot (gate stays SMP=1)
-`99c994a6` + earlier: x86 INIT-SIPI real-mode trampoline (ap_tramp_x86.rs) +
-arm PSCI both bring APs to `[ap]/[sipi] online`. 5 x86 trampoline bugs fixed
-(assembler mis-encode, identity map, kernel GDT, EFER.NXE). BUT when the AP
-then SCHEDULES during late boot it races the BSP: x86 PMM double-free, arm
-hang, both right after `keymap loaded` (the pre-existing B51 race, now ~always).
-Gate reverted to SMP=1 (reliable; AP code is no-op at -smp 1). FIX (next):
-defer AP scheduler participation (timer+runqueue) until boot is quiescent, OR
-make the boot-phase scheduler/PMM SMP-safe. TASKS.md S4a-smp-regress.
+## STILL OPEN (from F376 session)
+- **OPEN BUG 2 — interactive python3 REPL segfaults** (musl mallocng
+  a_crash). `--version`/`-c`/scripts work; REPL SEGVs. Catch the
+  `[FAULT] sigsegv rip=/far=` on serial → diagnose the MM gap.
+- **SMP=2 participation race** — APs reach `online` both arches but race
+  the BSP late boot (x86 PMM double-free / arm hang after `keymap
+  loaded`). Gate stays SMP=1. Defer AP sched participation until boot
+  quiescent, OR make boot-phase sched/PMM SMP-safe. TASKS.md S4a.
+- **PR #1525 (F376)** still open — GRUB both arches, Limine-free.
 
 ## First command next session
 ```
-cd /home/nd/oxide2 && git log --oneline -6
+cd /home/nd/oxide2 && git log --oneline -5
 ```
-Then (MCP restarted): reproduce OPEN BUG 1 with a C probe / qemu_start, fix
-`resolve_at`/`install_open` dentry-path for dir fds; then OPEN BUG 2; then the
-SMP=2 participation race.
+Then: push F377 / open its PR if not done; then OPEN BUG 2 (python REPL).
