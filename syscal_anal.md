@@ -74,6 +74,28 @@ Bounded-blast-radius procedure (strangler; keep it compiling + booting every ste
    to the table install only.
 Gate each batch: `cargo build` both arches + `make smoke` (boot to login).
 
+### Coupling map (the only real blockers — measured)
+
+Across `kernel/src/syscalls/` the only `crate::` refs that are NOT already
+crates (so they block a clean lift) are 7 kernel-local modules (~23 refs).
+Move each into a crate ("all the shit in crates"), then the syscall layer lifts
+wholesale:
+
+| kernel-local | used by | target crate |
+|---|---|---|
+| `rlimit::DEFAULT_RLIMITS` | getrlimit/prlimit | `sched` |
+| `seccomp::{check,sys_seccomp}` | dispatch gate, seccomp(2) | `security` |
+| `dev_bpf::sys_bpf` | bpf(2) | new `bpf` crate |
+| `vdso::map_into_current` | execve/clone | `exec` |
+| `dev_proc_ns::{NsInode,setns_apply,user_ns_record,has_cap_for}` | setns/unshare | `nscg` |
+| `dev::{drm,pidfd,pty}` | ioctl/pidfd_open | `drm`/`fs`/`tty` |
+| `smoke::elf` | test-only | stays kernel-side via boot-installed hook |
+
+Everything else (`devfs`,`sched`,`vfs`,`vmm`,`net`,`ipc`,`netlink`,`security`,…)
+is already a crate. `crate::syscalls::*` (306) are self-refs → internal to the
+new crate. `kernel/src/lib.rs`: `pub use syscalls;` keeps every external
+`crate::syscalls::X` call site compiling.
+
 ## Summary
 
 | Metric | Count |
