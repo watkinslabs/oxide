@@ -2,6 +2,35 @@
 
 FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 
+## Revision 2026-06-05 (R06)
+
+- Changed: abolished the `V1`/`V2`/`STUB`/`NEVER` status labels. Every syscall
+  is now `IMPL` (full Linux semantics, mandatory) or one of 17 `OBSOLETE`
+  numbers (modern Linux itself returns `ENOSYS`). See the §2 legend.
+- Why: `V2` meant "tracked as a later phase; currently returns `ENOSYS`; number
+  reserved" — a deferral license that violated `02§9` rule 8 ("no v2; every
+  spec describes the full Linux surface"). The labels also drifted from the
+  live dispatcher: `stat`/`lstat`/`select`/`shm*` tagged `NEVER` yet live-
+  mapped; `dup2`/`alarm`/`getitimer` tagged `V2` yet live-mapped (`syscal_anal.md`).
+  The ambiguity produced subset/strawman bodies and ENOSYS gaps on real paths.
+- **Supersedes R05's deferral dispositions.** R05's "silent-0 admit", "EPERM
+  (privileged refuse)", and "ENOSYS" slot classes are retired: every slot R05
+  parked there is now `IMPL` and must reach full Linux semantics — `swapon`/
+  `swapoff`, the libaio `io_*` family, `ustat`, `sysfs`, `modify_ldt`,
+  `quotactl[_fd]`, `acct`, `remap_file_pages`, `cachestat`, `mq_notify`/
+  `mq_getsetattr`, `pivot_root`, the module loader (`init_module`/`finit_module`/
+  `delete_module`), `kexec_*`, `iopl`/`ioperm`, `adjtimex`/`clock_adjtime`,
+  `name_to_handle_at`/`open_by_handle_at`, `fanotify_mark`, `io_uring_register`.
+  Only the 17 genuinely-OBSOLETE numbers keep `ENOSYS` (see legend).
+- Added: every Linux x86_64 number through 6.x that lacked a row — incl.
+  `uretprobe`(335), `uprobe`(336), `fchmodat2`(452), the futex2 family
+  (454-456), `statmount`/`listmount` (457-458), LSM-attr (459-461), `mseal`(462),
+  the `*xattrat` family (463-466), `open_tree_attr`(467), `file_getattr`/
+  `file_setattr` (468-469), `listns`(470) — all `IMPL`. Numbers added to
+  `crates/kernel/syscall/src/nrs.rs`.
+- Code follow-up tracked in `syscal_anal.md` (directed completeness sweep) and
+  `53` (Tier-3 shim holds zero work logic).
+
 ## Revision 2026-05-09 (R05)
 
 - Changed: explicit disposition rows for every syscall slot that
@@ -88,389 +117,416 @@ User ptr args wrapped in `UserPtr<T>` at dispatch:
 
 ## 2 Full table
 
-Legend:
-- **V1**: implemented now, on must-run-binary path.
-- **V2**: tracked as a later phase per `00§3`; currently returns `ENOSYS`; number reserved.
-- **STUB**: number reserved, always returns `ENOSYS` (we will never implement, but the number is ABI).
-- **NEVER**: same as STUB but explicitly because the syscall is legacy. Linux still exposes some of these; we never will.
+Legend (disposition). Per `02§9` rule 8 there is no "later version" — every
+syscall in the Linux contract is built to full semantics. Exactly two states:
 
-Where a syscall has a "modern replacement," we point to it.
+- **IMPL**: implemented to full Linux x86_64/aarch64 semantics. The default for
+  every syscall. Mandatory — no stubs, no subsets, no "minimal"/"strawman"
+  bodies, no `ENOSYS` placeholders, no "rides a later phase". If a program can
+  call it, it behaves the way Linux behaves.
+- **OBSOLETE**: modern Linux **itself** returns `ENOSYS` for this number on
+  x86_64 (removed upstream, or never implemented upstream) — so matching Linux
+  *means* returning `ENOSYS`. The number stays reserved. This is the **only**
+  non-IMPL disposition; each such row cites the reason. Complete set:
+  `uselib`(134), `_sysctl`(156), `create_module`(174), `get_kernel_syms`(177),
+  `query_module`(178), `nfsservctl`(180), `getpmsg`(181), `putpmsg`(182),
+  `afs_syscall`(183), `tuxcall`(184), `security`(185), `set_thread_area`(205),
+  `get_thread_area`(211), `lookup_dcookie`(212), `epoll_ctl_old`(214),
+  `epoll_wait_old`(215), `vserver`(236). Nothing else is OBSOLETE.
+
+There is no `V1`/`V2`/`STUB`/`NEVER` any more — those licensed deferral and
+drifted from the live dispatcher (see `syscal_anal.md`). A syscall is `IMPL`
+or it is one of the 17 `OBSOLETE` numbers above. Where a syscall has a modern
+replacement libc prefers, Notes points to it, but the legacy entry is still
+`IMPL` (real programs and older libcs call it directly).
 
 | Nr | Name | Status | Notes |
 |---|---|---|---|
-| 0 | read | V1 | |
-| 1 | write | V1 | |
-| 2 | open | V2 | Prefer `openat`/`openat2`; libc wraps. |
-| 3 | close | V1 | |
-| 4 | stat | NEVER | Use `statx`. Linux still has it; we don't. |
-| 5 | fstat | V1 | Kept for fd-only metadata, libc compat. |
-| 6 | lstat | NEVER | Use `statx` with `AT_SYMLINK_NOFOLLOW`. |
-| 7 | poll | V2 | Prefer `ppoll`. |
-| 8 | lseek | V1 | |
-| 9 | mmap | V1 | |
-| 10 | mprotect | V1 | |
-| 11 | munmap | V1 | |
-| 12 | brk | V1 | Thin shim for libc heap; not preferred. |
-| 13 | rt_sigaction | V1 | |
-| 14 | rt_sigprocmask | V1 | |
-| 15 | rt_sigreturn | V1 | Internal; called from userspace signal trampoline. |
-| 16 | ioctl | V1 | Per-driver opcode dispatch. |
-| 17 | pread64 | V1 | |
-| 18 | pwrite64 | V1 | |
-| 19 | readv | V1 | |
-| 20 | writev | V1 | |
-| 21 | access | V2 | Prefer `faccessat2`. |
-| 22 | pipe | V2 | Prefer `pipe2`. |
-| 23 | select | NEVER | Use `epoll`/`ppoll`. |
-| 24 | sched_yield | V1 | |
-| 25 | mremap | V1 | |
-| 26 | msync | V1 | |
-| 27 | mincore | V1 | |
-| 28 | madvise | V1 | Modern flags only (`MADV_FREE`, `MADV_COLD`, `MADV_PAGEOUT`, etc.). |
-| 29 | shmget | NEVER | SysV shm dropped. Use `memfd_create` + `mmap`. |
-| 30 | shmat | NEVER | SysV shm dropped. |
-| 31 | shmctl | NEVER | SysV shm dropped. |
-| 32 | dup | V1 | |
-| 33 | dup2 | V2 | Prefer `dup3`. |
-| 34 | pause | V1 | |
-| 35 | nanosleep | V1 | |
-| 36 | getitimer | V2 | Use `timerfd_*`. |
-| 37 | alarm | V2 | Use `timerfd_*`. |
-| 38 | setitimer | V2 | Use `timerfd_*`. |
-| 39 | getpid | V1 | vDSO-served. |
-| 40 | sendfile | V1 | |
-| 41 | socket | V1 | |
-| 42 | connect | V1 | |
-| 43 | accept | V2 | Prefer `accept4`. |
-| 44 | sendto | V1 | |
-| 45 | recvfrom | V1 | |
-| 46 | sendmsg | V1 | |
-| 47 | recvmsg | V1 | |
-| 48 | shutdown | V1 | |
-| 49 | bind | V1 | |
-| 50 | listen | V1 | |
-| 51 | getsockname | V1 | |
-| 52 | getpeername | V1 | |
-| 53 | socketpair | V1 | |
-| 54 | setsockopt | V1 | Modern options only; legacy options return `ENOPROTOOPT`. |
-| 55 | getsockopt | V1 | |
-| 56 | clone | V2 | Prefer `clone3`; libc wraps. |
-| 57 | fork | V2 | Implemented as `clone3` with the right flags; libc wraps. |
-| 58 | vfork | NEVER | Replaced by `posix_spawn` userspace pattern. |
-| 59 | execve | V1 | |
-| 60 | exit | V1 | |
-| 61 | wait4 | V2 | Prefer `waitid`. |
-| 62 | kill | V1 | |
-| 63 | uname | V1 | Returns a fixed modern-looking string. |
-| 64 | semget | NEVER | SysV IPC dropped. |
-| 65 | semop | NEVER | |
-| 66 | semctl | NEVER | |
-| 67 | shmdt | NEVER | |
-| 68 | msgget | NEVER | |
-| 69 | msgsnd | NEVER | |
-| 70 | msgrcv | NEVER | |
-| 71 | msgctl | NEVER | |
-| 72 | fcntl | V1 | Modern subset: `F_GETFD/F_SETFD`, `F_GETFL/F_SETFL`, `F_DUPFD_CLOEXEC`, `F_SETLK/F_GETLK/F_OFD_*`, `F_SETOWN`, `F_SETPIPE_SZ`. |
-| 73 | flock | V1 | |
-| 74 | fsync | V1 | |
-| 75 | fdatasync | V1 | |
-| 76 | truncate | V1 | |
-| 77 | ftruncate | V1 | |
-| 78 | getdents | NEVER | Use `getdents64`. |
-| 79 | getcwd | V1 | |
-| 80 | chdir | V1 | |
-| 81 | fchdir | V1 | |
-| 82 | rename | V2 | Prefer `renameat2`. |
-| 83 | mkdir | V2 | Prefer `mkdirat`. |
-| 84 | rmdir | V2 | Prefer `unlinkat(AT_REMOVEDIR)`. |
-| 85 | creat | NEVER | Use `openat`. |
-| 86 | link | V2 | Prefer `linkat`. |
-| 87 | unlink | V2 | Prefer `unlinkat`. |
-| 88 | symlink | V2 | Prefer `symlinkat`. |
-| 89 | readlink | V2 | Prefer `readlinkat`. |
-| 90 | chmod | V2 | Prefer `fchmodat2`. |
-| 91 | fchmod | V1 | |
-| 92 | chown | V2 | Prefer `fchownat`. |
-| 93 | fchown | V1 | |
-| 94 | lchown | V2 | Prefer `fchownat(AT_SYMLINK_NOFOLLOW)`. |
-| 95 | umask | V1 | |
-| 96 | gettimeofday | V2 | vDSO-served when present; syscall path mostly for fallback. Prefer `clock_gettime`. |
-| 97 | getrlimit | V1 | |
-| 98 | getrusage | V1 | |
-| 99 | sysinfo | V1 | |
-| 100 | times | V1 | |
-| 101 | ptrace | V1 | Real: TRACEME/ATTACH/SEIZE/DETACH/CONT/SYSCALL/SINGLESTEP/KILL/PEEK{TEXT,DATA}/POKE{TEXT,DATA}/GETREGS/GETREGSET(NT_PRSTATUS). Silent-0 admit: PEEKUSER/SETREGS/SETREGSET/GETFPREGS/SETFPREGS/SETOPTIONS/GETEVENTMSG/{GET,SET}SIGINFO. Per R04. |
-| 102 | getuid | V1 | |
-| 103 | syslog | V1 | Reads `/dev/kmsg` ring; subset of actions. |
-| 104 | getgid | V1 | |
-| 105 | setuid | V1 | |
-| 106 | setgid | V1 | |
-| 107 | geteuid | V1 | |
-| 108 | getegid | V1 | |
-| 109 | setpgid | V1 | |
-| 110 | getppid | V1 | |
-| 111 | getpgrp | V1 | |
-| 112 | setsid | V1 | |
-| 113 | setreuid | V1 | |
-| 114 | setregid | V1 | |
-| 115 | getgroups | V1 | |
-| 116 | setgroups | V1 | |
-| 117 | setresuid | V1 | |
-| 118 | getresuid | V1 | |
-| 119 | setresgid | V1 | |
-| 120 | getresgid | V1 | |
-| 121 | getpgid | V1 | |
-| 122 | setfsuid | V1 | |
-| 123 | setfsgid | V1 | |
-| 124 | getsid | V1 | |
-| 125 | capget | V1 | v3 only; v1/v2 header magic returns `EINVAL`. |
-| 126 | capset | V1 | v3 only. |
-| 127 | rt_sigpending | V1 | |
-| 128 | rt_sigtimedwait | V1 | |
-| 129 | rt_sigqueueinfo | V1 | |
-| 130 | rt_sigsuspend | V1 | |
-| 131 | sigaltstack | V1 | |
-| 132 | utime | V2 | Prefer `utimensat`. |
-| 133 | mknod | V2 | Prefer `mknodat`. |
-| 134 | uselib | NEVER | Legacy a.out shared-lib loading. |
-| 135 | personality | V1 | Only `PER_LINUX` and `ADDR_NO_RANDOMIZE` honored. |
-| 136 | ustat | NEVER | Use `statfs`/`fstatfs`. |
-| 137 | statfs | V1 | |
-| 138 | fstatfs | V1 | |
-| 139 | sysfs | NEVER | Use `/proc/filesystems`. |
-| 140 | getpriority | V1 | |
-| 141 | setpriority | V1 | |
-| 142 | sched_setparam | V1 | |
-| 143 | sched_getparam | V1 | |
-| 144 | sched_setscheduler | V1 | |
-| 145 | sched_getscheduler | V1 | |
-| 146 | sched_get_priority_max | V1 | |
-| 147 | sched_get_priority_min | V1 | |
-| 148 | sched_rr_get_interval | V1 | |
-| 149 | mlock | V1 | |
-| 150 | munlock | V1 | |
-| 151 | mlockall | V1 | |
-| 152 | munlockall | V1 | |
-| 153 | vhangup | V1 | |
-| 154 | modify_ldt | NEVER | No segmented memory tricks. |
-| 155 | pivot_root | V1 | Required for containers. |
-| 156 | _sysctl | NEVER | Removed in modern Linux (5.5). Use `/proc/sys/`. |
-| 157 | prctl | V1 | Modern subset: `PR_SET_NAME`, `PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE`, `PR_CAP_AMBIENT`, `PR_SET_CHILD_SUBREAPER`, `PR_SET_THP_DISABLE`, `PR_SET_VMA`, `PR_SET_TIMERSLACK`, `PR_SET_SECCOMP`, `PR_GET_KEEPCAPS`, `PR_SET_KEEPCAPS`. Legacy `PR_*` return `EINVAL`. |
-| 158 | arch_prctl | V1 | `ARCH_SET_FS`, `ARCH_GET_FS`, `ARCH_SET_GS`, `ARCH_GET_GS`. Used by libc TLS init. |
-| 159 | adjtimex | V2 | Subset for NTP daemons. |
-| 160 | setrlimit | V1 | |
-| 161 | chroot | V1 | |
-| 162 | sync | V1 | |
-| 163 | acct | V2 | Process accounting; tracked as later phase. |
-| 164 | settimeofday | V2 | Prefer `clock_settime`. |
-| 165 | mount | V2 | Implemented as compat shim over the new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`). |
-| 166 | umount2 | V1 | |
-| 167 | swapon | NEVER | No swap to disk. |
-| 168 | swapoff | NEVER | |
-| 169 | reboot | V1 | UEFI Runtime Services / platform reset. |
-| 170 | sethostname | V1 | |
-| 171 | setdomainname | V1 | |
-| 172 | iopl | NEVER | No raw port I/O for userspace. |
-| 173 | ioperm | NEVER | |
-| 174 | create_module | NEVER | Legacy module loading. |
-| 175 | init_module | NEVER | Use `finit_module`. |
-| 176 | delete_module | V1 | |
-| 177 | get_kernel_syms | NEVER | Use `/proc/kallsyms` (gated). |
-| 178 | query_module | NEVER | Removed in Linux 2.6. |
-| 179 | quotactl | V2 | Use `quotactl_fd` when xattr/quota work lands (phase 18). |
-| 180 | nfsservctl | NEVER | Removed in Linux 3.1. |
-| 181 | getpmsg | NEVER | STREAMS, never implemented in mainline Linux. |
-| 182 | putpmsg | NEVER | |
-| 183 | afs_syscall | NEVER | |
-| 184 | tuxcall | NEVER | |
-| 185 | security | NEVER | |
-| 186 | gettid | V1 | |
-| 187 | readahead | V1 | |
-| 188 | setxattr | V1 | |
-| 189 | lsetxattr | V1 | |
-| 190 | fsetxattr | V1 | |
-| 191 | getxattr | V1 | |
-| 192 | lgetxattr | V1 | |
-| 193 | fgetxattr | V1 | |
-| 194 | listxattr | V1 | |
-| 195 | llistxattr | V1 | |
-| 196 | flistxattr | V1 | |
-| 197 | removexattr | V1 | |
-| 198 | lremovexattr | V1 | |
-| 199 | fremovexattr | V1 | |
-| 200 | tkill | V2 | Prefer `tgkill`. |
-| 201 | time | NEVER | Use `clock_gettime(CLOCK_REALTIME)`. |
-| 202 | futex | V1 | Classic futex required for libc compat. New code should use `futex_waitv` / `futex_wake`. |
-| 203 | sched_setaffinity | V1 | |
-| 204 | sched_getaffinity | V1 | |
-| 205 | set_thread_area | NEVER | x86_32 legacy. |
-| 206 | io_setup | NEVER | POSIX AIO. Use `io_uring`. |
-| 207 | io_destroy | NEVER | |
-| 208 | io_getevents | NEVER | |
-| 209 | io_submit | NEVER | |
-| 210 | io_cancel | NEVER | |
-| 211 | get_thread_area | NEVER | x86_32 legacy. |
-| 212 | lookup_dcookie | NEVER | oprofile legacy. |
-| 213 | epoll_create | V2 | Prefer `epoll_create1`. |
-| 214 | epoll_ctl_old | NEVER | |
-| 215 | epoll_wait_old | NEVER | |
-| 216 | remap_file_pages | V2 | Deprecated; nontrivial to implement; not on must-run-binary path. |
-| 217 | getdents64 | V1 | |
-| 218 | set_tid_address | V1 | |
-| 219 | restart_syscall | V1 | Internal; signal restart. |
-| 220 | semtimedop | NEVER | SysV IPC dropped. |
-| 221 | fadvise64 | V1 | |
-| 222 | timer_create | V1 | POSIX timers. |
-| 223 | timer_settime | V1 | |
-| 224 | timer_gettime | V1 | |
-| 225 | timer_getoverrun | V1 | |
-| 226 | timer_delete | V1 | |
-| 227 | clock_settime | V1 | |
-| 228 | clock_gettime | V1 | vDSO-served. |
-| 229 | clock_getres | V1 | vDSO-served. |
-| 230 | clock_nanosleep | V1 | |
-| 231 | exit_group | V1 | |
-| 232 | epoll_wait | V2 | Prefer `epoll_pwait2`. |
-| 233 | epoll_ctl | V1 | |
-| 234 | tgkill | V1 | |
-| 235 | utimes | V2 | Prefer `utimensat`. |
-| 236 | vserver | NEVER | |
-| 237 | mbind | V2 | NUMA memory policy. |
-| 238 | set_mempolicy | V2 | |
-| 239 | get_mempolicy | V2 | |
-| 240 | mq_open | V2 | POSIX mqueue; tracked as phase 24. |
-| 241 | mq_unlink | V2 | |
-| 242 | mq_timedsend | V2 | |
-| 243 | mq_timedreceive | V2 | |
-| 244 | mq_notify | V2 | |
-| 245 | mq_getsetattr | V2 | |
-| 246 | kexec_load | V2 | |
-| 247 | waitid | V1 | |
-| 248 | add_key | V2 | Kernel keyring. |
-| 249 | request_key | V2 | |
-| 250 | keyctl | V2 | |
-| 251 | ioprio_set | V2 | |
-| 252 | ioprio_get | V2 | |
-| 253 | inotify_init | V2 | Prefer `inotify_init1`. |
-| 254 | inotify_add_watch | V1 | |
-| 255 | inotify_rm_watch | V1 | |
-| 256 | migrate_pages | V2 | NUMA. |
-| 257 | openat | V1 | |
-| 258 | mkdirat | V1 | |
-| 259 | mknodat | V1 | |
-| 260 | fchownat | V1 | |
-| 261 | futimesat | NEVER | Use `utimensat`. |
-| 262 | newfstatat | V1 | (a.k.a. `fstatat`) |
-| 263 | unlinkat | V1 | |
-| 264 | renameat | V2 | Prefer `renameat2`. |
-| 265 | linkat | V1 | |
-| 266 | symlinkat | V1 | |
-| 267 | readlinkat | V1 | |
-| 268 | fchmodat | V2 | Prefer `fchmodat2`. |
-| 269 | faccessat | V2 | Prefer `faccessat2`. |
-| 270 | pselect6 | NEVER | Use `ppoll`/`epoll`. |
-| 271 | ppoll | V1 | |
-| 272 | unshare | V1 | |
-| 273 | set_robust_list | V1 | |
-| 274 | get_robust_list | V1 | |
-| 275 | splice | V1 | |
-| 276 | tee | V1 | |
-| 277 | sync_file_range | V1 | |
-| 278 | vmsplice | V2 | |
-| 279 | move_pages | V2 | NUMA. |
-| 280 | utimensat | V1 | |
-| 281 | epoll_pwait | V1 | |
-| 282 | signalfd | V2 | Prefer `signalfd4`. |
-| 283 | timerfd_create | V1 | |
-| 284 | eventfd | V2 | Prefer `eventfd2`. |
-| 285 | fallocate | V1 | |
-| 286 | timerfd_settime | V1 | |
-| 287 | timerfd_gettime | V1 | |
-| 288 | accept4 | V1 | |
-| 289 | signalfd4 | V1 | |
-| 290 | eventfd2 | V1 | |
-| 291 | epoll_create1 | V1 | |
-| 292 | dup3 | V1 | |
-| 293 | pipe2 | V1 | |
-| 294 | inotify_init1 | V1 | |
-| 295 | preadv | V1 | |
-| 296 | pwritev | V1 | |
-| 297 | rt_tgsigqueueinfo | V1 | |
-| 298 | perf_event_open | V2 | Hardware PMU access for `perf`; tracked as phase 25. |
-| 299 | recvmmsg | V1 | |
-| 300 | fanotify_init | V2 | |
-| 301 | fanotify_mark | V2 | |
-| 302 | prlimit64 | V1 | |
-| 303 | name_to_handle_at | V2 | NFS-style file handles. |
-| 304 | open_by_handle_at | V2 | |
-| 305 | clock_adjtime | V2 | |
-| 306 | syncfs | V1 | |
-| 307 | sendmmsg | V1 | |
-| 308 | setns | V1 | |
-| 309 | getcpu | V1 | vDSO-served. |
-| 310 | process_vm_readv | V1 | |
-| 311 | process_vm_writev | V1 | |
-| 312 | kcmp | V2 | Used by CRIU; tracked as later phase. |
-| 313 | finit_module | V1 | Modular kernel: load `.ko` from fd, signature-checked. |
-| 314 | sched_setattr | V1 | |
-| 315 | sched_getattr | V1 | |
-| 316 | renameat2 | V1 | Adds `RENAME_NOREPLACE`, `RENAME_EXCHANGE`, `RENAME_WHITEOUT`. |
-| 317 | seccomp | V1 | `SECCOMP_SET_MODE_STRICT` and `SECCOMP_SET_MODE_FILTER`. Filter requires the BPF verifier (phase 23). Strict mode ships now; filter mode returns `ENOSYS` until BPF lands. |
-| 318 | getrandom | V1 | |
-| 319 | memfd_create | V1 | |
-| 320 | kexec_file_load | V2 | |
-| 321 | bpf | V2 | Tracked as phase 23 (bpf + seccomp + landlock). |
-| 322 | execveat | V1 | |
-| 323 | userfaultfd | V1 | Required by Go runtime, CRIU. |
-| 324 | membarrier | V1 | |
-| 325 | mlock2 | V1 | |
-| 326 | copy_file_range | V1 | |
-| 327 | preadv2 | V1 | |
-| 328 | pwritev2 | V1 | |
-| 329 | pkey_mprotect | V2 | Memory protection keys. |
-| 330 | pkey_alloc | V2 | |
-| 331 | pkey_free | V2 | |
-| 332 | statx | V1 | Modern stat. |
-| 333 | io_pgetevents | NEVER | POSIX AIO. |
-| 334 | rseq | V1 | Restartable sequences; required by glibc/musl. |
-| 424 | pidfd_send_signal | V1 | |
-| 425 | io_uring_setup | V2 | Tracked as phase 22; currently stubs. |
-| 426 | io_uring_enter | V2 | |
-| 427 | io_uring_register | V2 | |
-| 428 | open_tree | V1 | New mount API. |
-| 429 | move_mount | V1 | New mount API. |
-| 430 | fsopen | V1 | New mount API. |
-| 431 | fsconfig | V1 | New mount API. |
-| 432 | fsmount | V1 | New mount API. |
-| 433 | fspick | V1 | New mount API. |
-| 434 | pidfd_open | V1 | |
-| 435 | clone3 | V1 | The modern clone. Primary process/thread create syscall. |
-| 436 | close_range | V1 | |
-| 437 | openat2 | V1 | With `RESOLVE_*` flags for safe path resolution. |
-| 438 | pidfd_getfd | V1 | |
-| 439 | faccessat2 | V1 | |
-| 440 | process_madvise | V2 | Required by some modern OOM-killer userspace. |
-| 441 | epoll_pwait2 | V1 | |
-| 442 | mount_setattr | V1 | New mount API. |
-| 443 | quotactl_fd | V2 | |
-| 444 | landlock_create_ruleset | V2 | Landlock sandboxing primitive; tracked as phase 23. May stub until then. |
-| 445 | landlock_add_rule | V2 | |
-| 446 | landlock_restrict_self | V2 | |
-| 447 | memfd_secret | V1 | |
-| 448 | process_mrelease | V2 | |
-| 449 | futex_waitv | V1 | Modern futex; vector wait. |
-| 450 | set_mempolicy_home_node | V2 | NUMA. |
-| 451 | cachestat | V1 | Page-cache visibility. |
-| 452 | fchmodat2 | V1 | |
-| 453 | map_shadow_stack | V2 | CET shadow-stack. |
-| 454 | futex_wake | V1 | |
-| 455 | futex_wait | V1 | |
-| 456 | futex_requeue | V1 | |
-| 457 | statmount | V1 | |
-| 458 | listmount | V1 | |
-| 459 | lsm_get_self_attr | V2 | LSM stacking tracked as phase 38. |
-| 460 | lsm_set_self_attr | V2 | |
-| 461 | lsm_list_modules | V2 | |
+| 0 | read | IMPL | |
+| 1 | write | IMPL | |
+| 2 | open | IMPL | Prefer `openat`/`openat2`; libc wraps. |
+| 3 | close | IMPL | |
+| 4 | stat | IMPL | Full `stat`; libc may prefer `statx`. |
+| 5 | fstat | IMPL | Kept for fd-only metadata, libc compat. |
+| 6 | lstat | IMPL | Use `statx` with `AT_SYMLINK_NOFOLLOW`. |
+| 7 | poll | IMPL | Prefer `ppoll`. |
+| 8 | lseek | IMPL | |
+| 9 | mmap | IMPL | |
+| 10 | mprotect | IMPL | |
+| 11 | munmap | IMPL | |
+| 12 | brk | IMPL | Thin shim for libc heap; not preferred. |
+| 13 | rt_sigaction | IMPL | |
+| 14 | rt_sigprocmask | IMPL | |
+| 15 | rt_sigreturn | IMPL | Internal; called from userspace signal trampoline. |
+| 16 | ioctl | IMPL | Per-driver opcode dispatch. |
+| 17 | pread64 | IMPL | |
+| 18 | pwrite64 | IMPL | |
+| 19 | readv | IMPL | |
+| 20 | writev | IMPL | |
+| 21 | access | IMPL | Prefer `faccessat2`. |
+| 22 | pipe | IMPL | Prefer `pipe2`. |
+| 23 | select | IMPL | Use `epoll`/`ppoll`. |
+| 24 | sched_yield | IMPL | |
+| 25 | mremap | IMPL | |
+| 26 | msync | IMPL | |
+| 27 | mincore | IMPL | |
+| 28 | madvise | IMPL | Modern flags only (`MADV_FREE`, `MADV_COLD`, `MADV_PAGEOUT`, etc.). |
+| 29 | shmget | IMPL | Full SysV shared memory (real shared frames). |
+| 30 | shmat | IMPL | Full SysV shared memory. |
+| 31 | shmctl | IMPL | Full SysV shared memory control. |
+| 32 | dup | IMPL | |
+| 33 | dup2 | IMPL | Prefer `dup3`. |
+| 34 | pause | IMPL | |
+| 35 | nanosleep | IMPL | |
+| 36 | getitimer | IMPL | Use `timerfd_*`. |
+| 37 | alarm | IMPL | Use `timerfd_*`. |
+| 38 | setitimer | IMPL | Use `timerfd_*`. |
+| 39 | getpid | IMPL | vDSO-served. |
+| 40 | sendfile | IMPL | |
+| 41 | socket | IMPL | |
+| 42 | connect | IMPL | |
+| 43 | accept | IMPL | Prefer `accept4`. |
+| 44 | sendto | IMPL | |
+| 45 | recvfrom | IMPL | |
+| 46 | sendmsg | IMPL | |
+| 47 | recvmsg | IMPL | |
+| 48 | shutdown | IMPL | |
+| 49 | bind | IMPL | |
+| 50 | listen | IMPL | |
+| 51 | getsockname | IMPL | |
+| 52 | getpeername | IMPL | |
+| 53 | socketpair | IMPL | |
+| 54 | setsockopt | IMPL | Modern options only; legacy options return `ENOPROTOOPT`. |
+| 55 | getsockopt | IMPL | |
+| 56 | clone | IMPL | Prefer `clone3`; libc wraps. |
+| 57 | fork | IMPL | Implemented as `clone3` with the right flags; libc wraps. |
+| 58 | vfork | IMPL | Replaced by `posix_spawn` userspace pattern. |
+| 59 | execve | IMPL | |
+| 60 | exit | IMPL | |
+| 61 | wait4 | IMPL | Prefer `waitid`. |
+| 62 | kill | IMPL | |
+| 63 | uname | IMPL | Returns a fixed modern-looking string. |
+| 64 | semget | IMPL | Full SysV semaphores. |
+| 65 | semop | IMPL | |
+| 66 | semctl | IMPL | |
+| 67 | shmdt | IMPL | |
+| 68 | msgget | IMPL | |
+| 69 | msgsnd | IMPL | |
+| 70 | msgrcv | IMPL | |
+| 71 | msgctl | IMPL | |
+| 72 | fcntl | IMPL | Modern subset: `F_GETFD/F_SETFD`, `F_GETFL/F_SETFL`, `F_DUPFD_CLOEXEC`, `F_SETLK/F_GETLK/F_OFD_*`, `F_SETOWN`, `F_SETPIPE_SZ`. |
+| 73 | flock | IMPL | |
+| 74 | fsync | IMPL | |
+| 75 | fdatasync | IMPL | |
+| 76 | truncate | IMPL | |
+| 77 | ftruncate | IMPL | |
+| 78 | getdents | IMPL | Use `getdents64`. |
+| 79 | getcwd | IMPL | |
+| 80 | chdir | IMPL | |
+| 81 | fchdir | IMPL | |
+| 82 | rename | IMPL | Prefer `renameat2`. |
+| 83 | mkdir | IMPL | Prefer `mkdirat`. |
+| 84 | rmdir | IMPL | Prefer `unlinkat(AT_REMOVEDIR)`. |
+| 85 | creat | IMPL | Use `openat`. |
+| 86 | link | IMPL | Prefer `linkat`. |
+| 87 | unlink | IMPL | Prefer `unlinkat`. |
+| 88 | symlink | IMPL | Prefer `symlinkat`. |
+| 89 | readlink | IMPL | Prefer `readlinkat`. |
+| 90 | chmod | IMPL | Prefer `fchmodat2`. |
+| 91 | fchmod | IMPL | |
+| 92 | chown | IMPL | Prefer `fchownat`. |
+| 93 | fchown | IMPL | |
+| 94 | lchown | IMPL | Prefer `fchownat(AT_SYMLINK_NOFOLLOW)`. |
+| 95 | umask | IMPL | |
+| 96 | gettimeofday | IMPL | vDSO-served when present; syscall path mostly for fallback. Prefer `clock_gettime`. |
+| 97 | getrlimit | IMPL | |
+| 98 | getrusage | IMPL | |
+| 99 | sysinfo | IMPL | |
+| 100 | times | IMPL | |
+| 101 | ptrace | IMPL | Full ptrace op set (every request real, incl. PEEKUSER/SET{REGS,REGSET,FPREGS}/SETOPTIONS/GETEVENTMSG/{GET,SET}SIGINFO). |
+| 102 | getuid | IMPL | |
+| 103 | syslog | IMPL | Reads `/dev/kmsg` ring; subset of actions. |
+| 104 | getgid | IMPL | |
+| 105 | setuid | IMPL | |
+| 106 | setgid | IMPL | |
+| 107 | geteuid | IMPL | |
+| 108 | getegid | IMPL | |
+| 109 | setpgid | IMPL | |
+| 110 | getppid | IMPL | |
+| 111 | getpgrp | IMPL | |
+| 112 | setsid | IMPL | |
+| 113 | setreuid | IMPL | |
+| 114 | setregid | IMPL | |
+| 115 | getgroups | IMPL | |
+| 116 | setgroups | IMPL | |
+| 117 | setresuid | IMPL | |
+| 118 | getresuid | IMPL | |
+| 119 | setresgid | IMPL | |
+| 120 | getresgid | IMPL | |
+| 121 | getpgid | IMPL | |
+| 122 | setfsuid | IMPL | |
+| 123 | setfsgid | IMPL | |
+| 124 | getsid | IMPL | |
+| 125 | capget | IMPL | v3 only; v1/v2 header magic returns `EINVAL`. |
+| 126 | capset | IMPL | v3 only. |
+| 127 | rt_sigpending | IMPL | |
+| 128 | rt_sigtimedwait | IMPL | |
+| 129 | rt_sigqueueinfo | IMPL | |
+| 130 | rt_sigsuspend | IMPL | |
+| 131 | sigaltstack | IMPL | |
+| 132 | utime | IMPL | Prefer `utimensat`. |
+| 133 | mknod | IMPL | Prefer `mknodat`. |
+| 134 | uselib | OBSOLETE | Legacy a.out shared-lib loading. |
+| 135 | personality | IMPL | Only `PER_LINUX` and `ADDR_NO_RANDOMIZE` honored. |
+| 136 | ustat | IMPL | Use `statfs`/`fstatfs`. |
+| 137 | statfs | IMPL | |
+| 138 | fstatfs | IMPL | |
+| 139 | sysfs | IMPL | Use `/proc/filesystems`. |
+| 140 | getpriority | IMPL | |
+| 141 | setpriority | IMPL | |
+| 142 | sched_setparam | IMPL | |
+| 143 | sched_getparam | IMPL | |
+| 144 | sched_setscheduler | IMPL | |
+| 145 | sched_getscheduler | IMPL | |
+| 146 | sched_get_priority_max | IMPL | |
+| 147 | sched_get_priority_min | IMPL | |
+| 148 | sched_rr_get_interval | IMPL | |
+| 149 | mlock | IMPL | |
+| 150 | munlock | IMPL | |
+| 151 | mlockall | IMPL | |
+| 152 | munlockall | IMPL | |
+| 153 | vhangup | IMPL | |
+| 154 | modify_ldt | IMPL | No segmented memory tricks. |
+| 155 | pivot_root | IMPL | Required for containers. |
+| 156 | _sysctl | OBSOLETE | Removed in modern Linux (5.5). Use `/proc/sys/`. |
+| 157 | prctl | IMPL | Modern subset: `PR_SET_NAME`, `PR_SET_PDEATHSIG`, `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE`, `PR_CAP_AMBIENT`, `PR_SET_CHILD_SUBREAPER`, `PR_SET_THP_DISABLE`, `PR_SET_VMA`, `PR_SET_TIMERSLACK`, `PR_SET_SECCOMP`, `PR_GET_KEEPCAPS`, `PR_SET_KEEPCAPS`. Legacy `PR_*` return `EINVAL`. |
+| 158 | arch_prctl | IMPL | `ARCH_SET_FS`, `ARCH_GET_FS`, `ARCH_SET_GS`, `ARCH_GET_GS`. Used by libc TLS init. |
+| 159 | adjtimex | IMPL | Subset for NTP daemons. |
+| 160 | setrlimit | IMPL | |
+| 161 | chroot | IMPL | |
+| 162 | sync | IMPL | |
+| 163 | acct | IMPL | Process accounting; tracked as later phase. |
+| 164 | settimeofday | IMPL | Prefer `clock_settime`. |
+| 165 | mount | IMPL | Implemented as compat shim over the new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`). |
+| 166 | umount2 | IMPL | |
+| 167 | swapon | IMPL | No swap to disk. |
+| 168 | swapoff | IMPL | |
+| 169 | reboot | IMPL | UEFI Runtime Services / platform reset. |
+| 170 | sethostname | IMPL | |
+| 171 | setdomainname | IMPL | |
+| 172 | iopl | IMPL | No raw port I/O for userspace. |
+| 173 | ioperm | IMPL | |
+| 174 | create_module | OBSOLETE | Legacy module loading. |
+| 175 | init_module | IMPL | Use `finit_module`. |
+| 176 | delete_module | IMPL | |
+| 177 | get_kernel_syms | OBSOLETE | Use `/proc/kallsyms` (gated). |
+| 178 | query_module | OBSOLETE | Removed in Linux 2.6. |
+| 179 | quotactl | IMPL | Use `quotactl_fd` when xattr/quota work lands (phase 18). |
+| 180 | nfsservctl | OBSOLETE | Removed in Linux 3.1. |
+| 181 | getpmsg | OBSOLETE | STREAMS, never implemented in mainline Linux. |
+| 182 | putpmsg | OBSOLETE | |
+| 183 | afs_syscall | OBSOLETE | |
+| 184 | tuxcall | OBSOLETE | |
+| 185 | security | OBSOLETE | |
+| 186 | gettid | IMPL | |
+| 187 | readahead | IMPL | |
+| 188 | setxattr | IMPL | |
+| 189 | lsetxattr | IMPL | |
+| 190 | fsetxattr | IMPL | |
+| 191 | getxattr | IMPL | |
+| 192 | lgetxattr | IMPL | |
+| 193 | fgetxattr | IMPL | |
+| 194 | listxattr | IMPL | |
+| 195 | llistxattr | IMPL | |
+| 196 | flistxattr | IMPL | |
+| 197 | removexattr | IMPL | |
+| 198 | lremovexattr | IMPL | |
+| 199 | fremovexattr | IMPL | |
+| 200 | tkill | IMPL | Prefer `tgkill`. |
+| 201 | time | IMPL | Use `clock_gettime(CLOCK_REALTIME)`. |
+| 202 | futex | IMPL | Classic futex required for libc compat. New code should use `futex_waitv` / `futex_wake`. |
+| 203 | sched_setaffinity | IMPL | |
+| 204 | sched_getaffinity | IMPL | |
+| 205 | set_thread_area | OBSOLETE | x86_32 legacy. |
+| 206 | io_setup | IMPL | POSIX AIO. Use `io_uring`. |
+| 207 | io_destroy | IMPL | |
+| 208 | io_getevents | IMPL | |
+| 209 | io_submit | IMPL | |
+| 210 | io_cancel | IMPL | |
+| 211 | get_thread_area | OBSOLETE | x86_32 legacy. |
+| 212 | lookup_dcookie | OBSOLETE | oprofile legacy. |
+| 213 | epoll_create | IMPL | Prefer `epoll_create1`. |
+| 214 | epoll_ctl_old | OBSOLETE | |
+| 215 | epoll_wait_old | OBSOLETE | |
+| 216 | remap_file_pages | IMPL | Deprecated; nontrivial to implement; not on must-run-binary path. |
+| 217 | getdents64 | IMPL | |
+| 218 | set_tid_address | IMPL | |
+| 219 | restart_syscall | IMPL | Internal; signal restart. |
+| 220 | semtimedop | IMPL | Full SysV semaphore timed-op. |
+| 221 | fadvise64 | IMPL | |
+| 222 | timer_create | IMPL | POSIX timers. |
+| 223 | timer_settime | IMPL | |
+| 224 | timer_gettime | IMPL | |
+| 225 | timer_getoverrun | IMPL | |
+| 226 | timer_delete | IMPL | |
+| 227 | clock_settime | IMPL | |
+| 228 | clock_gettime | IMPL | vDSO-served. |
+| 229 | clock_getres | IMPL | vDSO-served. |
+| 230 | clock_nanosleep | IMPL | |
+| 231 | exit_group | IMPL | |
+| 232 | epoll_wait | IMPL | Prefer `epoll_pwait2`. |
+| 233 | epoll_ctl | IMPL | |
+| 234 | tgkill | IMPL | |
+| 235 | utimes | IMPL | Prefer `utimensat`. |
+| 236 | vserver | OBSOLETE | |
+| 237 | mbind | IMPL | NUMA memory policy. |
+| 238 | set_mempolicy | IMPL | |
+| 239 | get_mempolicy | IMPL | |
+| 240 | mq_open | IMPL | POSIX mqueue; tracked as phase 24. |
+| 241 | mq_unlink | IMPL | |
+| 242 | mq_timedsend | IMPL | |
+| 243 | mq_timedreceive | IMPL | |
+| 244 | mq_notify | IMPL | |
+| 245 | mq_getsetattr | IMPL | |
+| 246 | kexec_load | IMPL | |
+| 247 | waitid | IMPL | |
+| 248 | add_key | IMPL | Kernel keyring. |
+| 249 | request_key | IMPL | |
+| 250 | keyctl | IMPL | |
+| 251 | ioprio_set | IMPL | |
+| 252 | ioprio_get | IMPL | |
+| 253 | inotify_init | IMPL | Prefer `inotify_init1`. |
+| 254 | inotify_add_watch | IMPL | |
+| 255 | inotify_rm_watch | IMPL | |
+| 256 | migrate_pages | IMPL | NUMA. |
+| 257 | openat | IMPL | |
+| 258 | mkdirat | IMPL | |
+| 259 | mknodat | IMPL | |
+| 260 | fchownat | IMPL | |
+| 261 | futimesat | IMPL | Use `utimensat`. |
+| 262 | newfstatat | IMPL | (a.k.a. `fstatat`) |
+| 263 | unlinkat | IMPL | |
+| 264 | renameat | IMPL | Prefer `renameat2`. |
+| 265 | linkat | IMPL | |
+| 266 | symlinkat | IMPL | |
+| 267 | readlinkat | IMPL | |
+| 268 | fchmodat | IMPL | Prefer `fchmodat2`. |
+| 269 | faccessat | IMPL | Prefer `faccessat2`. |
+| 270 | pselect6 | IMPL | Use `ppoll`/`epoll`. |
+| 271 | ppoll | IMPL | |
+| 272 | unshare | IMPL | |
+| 273 | set_robust_list | IMPL | |
+| 274 | get_robust_list | IMPL | |
+| 275 | splice | IMPL | |
+| 276 | tee | IMPL | |
+| 277 | sync_file_range | IMPL | |
+| 278 | vmsplice | IMPL | |
+| 279 | move_pages | IMPL | NUMA. |
+| 280 | utimensat | IMPL | |
+| 281 | epoll_pwait | IMPL | |
+| 282 | signalfd | IMPL | Prefer `signalfd4`. |
+| 283 | timerfd_create | IMPL | |
+| 284 | eventfd | IMPL | Prefer `eventfd2`. |
+| 285 | fallocate | IMPL | |
+| 286 | timerfd_settime | IMPL | |
+| 287 | timerfd_gettime | IMPL | |
+| 288 | accept4 | IMPL | |
+| 289 | signalfd4 | IMPL | |
+| 290 | eventfd2 | IMPL | |
+| 291 | epoll_create1 | IMPL | |
+| 292 | dup3 | IMPL | |
+| 293 | pipe2 | IMPL | |
+| 294 | inotify_init1 | IMPL | |
+| 295 | preadv | IMPL | |
+| 296 | pwritev | IMPL | |
+| 297 | rt_tgsigqueueinfo | IMPL | |
+| 298 | perf_event_open | IMPL | Hardware PMU access for `perf`; tracked as phase 25. |
+| 299 | recvmmsg | IMPL | |
+| 300 | fanotify_init | IMPL | |
+| 301 | fanotify_mark | IMPL | |
+| 302 | prlimit64 | IMPL | |
+| 303 | name_to_handle_at | IMPL | NFS-style file handles. |
+| 304 | open_by_handle_at | IMPL | |
+| 305 | clock_adjtime | IMPL | |
+| 306 | syncfs | IMPL | |
+| 307 | sendmmsg | IMPL | |
+| 308 | setns | IMPL | |
+| 309 | getcpu | IMPL | vDSO-served. |
+| 310 | process_vm_readv | IMPL | |
+| 311 | process_vm_writev | IMPL | |
+| 312 | kcmp | IMPL | Used by CRIU; tracked as later phase. |
+| 313 | finit_module | IMPL | Modular kernel: load `.ko` from fd, signature-checked. |
+| 314 | sched_setattr | IMPL | |
+| 315 | sched_getattr | IMPL | |
+| 316 | renameat2 | IMPL | Adds `RENAME_NOREPLACE`, `RENAME_EXCHANGE`, `RENAME_WHITEOUT`. |
+| 317 | seccomp | IMPL | Full: STRICT + FILTER (BPF verifier). |
+| 318 | getrandom | IMPL | |
+| 319 | memfd_create | IMPL | |
+| 320 | kexec_file_load | IMPL | |
+| 321 | bpf | IMPL | Tracked as phase 23 (bpf + seccomp + landlock). |
+| 322 | execveat | IMPL | |
+| 323 | userfaultfd | IMPL | Required by Go runtime, CRIU. |
+| 324 | membarrier | IMPL | |
+| 325 | mlock2 | IMPL | |
+| 326 | copy_file_range | IMPL | |
+| 327 | preadv2 | IMPL | |
+| 328 | pwritev2 | IMPL | |
+| 329 | pkey_mprotect | IMPL | Memory protection keys. |
+| 330 | pkey_alloc | IMPL | |
+| 331 | pkey_free | IMPL | |
+| 332 | statx | IMPL | Modern stat. |
+| 333 | io_pgetevents | IMPL | POSIX AIO. |
+| 334 | rseq | IMPL | Restartable sequences; required by glibc/musl. |
+| 335 | uretprobe | IMPL | uprobe return trampoline (kernel-internal, 6.11+). |
+| 336 | uprobe | IMPL | uprobe trap entry (kernel-internal). |
+| 424 | pidfd_send_signal | IMPL | |
+| 425 | io_uring_setup | IMPL | Full io_uring per `docs/30`. |
+| 426 | io_uring_enter | IMPL | |
+| 427 | io_uring_register | IMPL | |
+| 428 | open_tree | IMPL | New mount API. |
+| 429 | move_mount | IMPL | New mount API. |
+| 430 | fsopen | IMPL | New mount API. |
+| 431 | fsconfig | IMPL | New mount API. |
+| 432 | fsmount | IMPL | New mount API. |
+| 433 | fspick | IMPL | New mount API. |
+| 434 | pidfd_open | IMPL | |
+| 435 | clone3 | IMPL | The modern clone. Primary process/thread create syscall. |
+| 436 | close_range | IMPL | |
+| 437 | openat2 | IMPL | With `RESOLVE_*` flags for safe path resolution. |
+| 438 | pidfd_getfd | IMPL | |
+| 439 | faccessat2 | IMPL | |
+| 440 | process_madvise | IMPL | Required by some modern OOM-killer userspace. |
+| 441 | epoll_pwait2 | IMPL | |
+| 442 | mount_setattr | IMPL | New mount API. |
+| 443 | quotactl_fd | IMPL | |
+| 444 | landlock_create_ruleset | IMPL | Full Landlock ruleset creation. |
+| 445 | landlock_add_rule | IMPL | |
+| 446 | landlock_restrict_self | IMPL | |
+| 447 | memfd_secret | IMPL | |
+| 448 | process_mrelease | IMPL | |
+| 449 | futex_waitv | IMPL | Modern futex; vector wait. |
+| 450 | set_mempolicy_home_node | IMPL | NUMA. |
+| 451 | cachestat | IMPL | Page-cache visibility. |
+| 452 | fchmodat2 | IMPL | |
+| 453 | map_shadow_stack | IMPL | CET shadow-stack. |
+| 454 | futex_wake | IMPL | |
+| 455 | futex_wait | IMPL | |
+| 456 | futex_requeue | IMPL | |
+| 457 | statmount | IMPL | |
+| 458 | listmount | IMPL | |
+| 459 | lsm_get_self_attr | IMPL | LSM stacking tracked as phase 38. |
+| 460 | lsm_set_self_attr | IMPL | |
+| 461 | lsm_list_modules | IMPL | |
+| 462 | mseal | IMPL | Seal VMA against further mprotect/munmap/mremap. |
+| 463 | setxattrat | IMPL | dirfd-relative setxattr. |
+| 464 | getxattrat | IMPL | dirfd-relative getxattr. |
+| 465 | listxattrat | IMPL | dirfd-relative listxattr. |
+| 466 | removexattrat | IMPL | dirfd-relative removexattr. |
+| 467 | open_tree_attr | IMPL | open_tree + mount-attr set in one call. |
+| 468 | file_getattr | IMPL | extended file attributes (statx successor surface). |
+| 469 | file_setattr | IMPL | set extended file attributes. |
+| 470 | listns | IMPL | enumerate a task's namespaces. |
+| 471 | rseq_slice_yield | IMPL | rseq time-slice extension yield. |
 
 Numbers 335..423 = gaps (Linux x86_64 arch-specific / aarch64-only ranges). Treated **STUB** (`ENOSYS`); reserved.
 

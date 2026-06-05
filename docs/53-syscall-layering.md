@@ -106,13 +106,39 @@ Allowed deps in `kernel/src/syscalls/`:
 - Every Tier-2 work crate
 - `hal` for user/kernel boundary
 
+## 4.1 Hard rule: Tier-3 holds ZERO work logic
+
+The 10–30 LOC target is a **hard rule**, not a guideline: a shim parses,
+validates, fetches task state, calls **one** Tier-2 work fn, encodes. Any
+policy, allocation, fs/mm/ipc/net mutation, loop over work, or "special case"
+in a shim = a layering violation. Each syscall's work lives in **exactly one**
+Tier-2 fn — never duplicated in the shim, never split across shim + crate.
+
+**Current violations (must-fix; from `syscal_anal.md`):** work has leaked into
+Tier 3 and must move down to a Tier-2 crate fn —
+- `read`/`write` core path lives in `kernel/src/syscalls/mod.rs`; belongs in `vfs`.
+- `brk` carries cgroup `memory.max` charge/uncharge **policy** in the shim → `mm`/`cgroup`.
+- `pipe` creates the pipe inode + writes the fd pair to user memory from the shim → `fs`.
+- `getpid` PID-namespace visibility logic in the shim → `sched`.
+- `socket`/`sendto`/`recvfrom`/`sendmsg`/`recvmsg` special-case netlink/AF_PACKET/cmsg in the shim → `net`.
+Closing these is part of making each `IMPL` syscall correct, not a separate effort.
+
 ## 5 Dispatch table
 
-Lives in `crates/kernel/syscall/dispatch.rs` per `15§1.3`. Static `[SyscallFn; 462]` array indexed by `nrs::NR_*`.
+**Single source of truth: the live dispatcher in `kernel/src/syscalls/mod.rs`**
+(plus the per-subsystem helper dispatchers it calls). Static `[SyscallFn; N]`
+indexed by `nrs::NR_*`, where `N` covers every number in `15§2` (≥ 472 now that
+335/336 and 452–471 are registered — size tracks the highest `NR_*`, never a
+hardcoded stale bound).
 
-Population: kernel binary at boot installs a default table where every slot points to `sys_enosys`, then registers Tier-3 shims by NR. Per `15§4` table-build.
+Population: the kernel installs a default table where every slot is
+`sys_enosys`, then registers Tier-3 shims by NR. OBSOLETE numbers (`15` legend)
+register a deliberate `sys_enosys` to match Linux; every other number registers
+a real shim.
 
-Alternative: const-fn table assembly. Tier-3 shims live in `kernel/src/syscalls/<sub>.rs`; the dispatch table imports each `sys_X` directly and lists them by NR.
+The older `crates/kernel/syscall/src/dispatch.rs` table is **dead** — it
+diverged from the live path and makes audits land on the wrong surface. It is
+to be deleted so there is one dispatcher. Do not add routes there.
 
 ## 6 No `syscalls/` submodule inside subsystem crates
 
