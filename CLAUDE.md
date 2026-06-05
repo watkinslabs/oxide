@@ -166,6 +166,8 @@ When a change spans subsystems, needs many boot-test cycles, or sits on a struct
 
 ## Git workflow (mandatory)
 
+**Commit author (HARD RULE).** Every commit + PR is authored by **`Chris Watkins <chris@watkinslabs.com>`** — period. This is the only valid author identity. Before committing in any clone, ensure `git config user.name "Chris Watkins"` and `git config user.email "chris@watkinslabs.com"` are set (a fresh clone may have `user.name` unset, which produces garbage authors like "Ablative Personality" — fix it first). Never let any other name/email land on a commit or PR.
+
 **Branch per change.** Never commit directly to `main`. Branch names use a single-letter type + zero-padded counter + kebab-case title, sortable globally and within type:
 
 | Prefix | Use | Example |
