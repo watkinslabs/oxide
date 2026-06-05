@@ -96,6 +96,27 @@ is already a crate. `crate::syscalls::*` (306) are self-refs → internal to the
 new crate. `kernel/src/lib.rs`: `pub use syscalls;` keeps every external
 `crate::syscalls::X` call site compiling.
 
+### Refined (measured 2026-06-05) — the work is small
+
+- **Already crates, zero move:** `crate::seccomp`=`security::seccomp`,
+  `crate::dev_bpf`=`security::bpf`, `crate::dev_proc_ns`=`nscg::proc_ns`,
+  `crate::rlimit`→`sched::rlimit` (DEFAULT_RLIMITS lives in `sched`). The
+  syscalls crate just depends on `security`/`nscg`/`sched`.
+- **Move INTO the syscalls crate (syscall-area, not separate crates):**
+  `vdso` (kernel/src/vdso.rs, 121L) and `vvar` (kernel/src/vvar.rs, 100L).
+  vvar↔`syscalls::time` is a cycle ONLY across crates — with both inside the
+  syscalls crate it's intra-crate, no untangle. Kernel boot's `crate::vvar::
+  {publish,monotonic_now_ns}` → `syscalls::vvar::*`. `dev::pidfd` (fd-area, 221L)
+  also moves into the syscalls crate.
+- **Relocate to existing device crates:** `dev::pty` (351L, only dep `devfs` —
+  a crate) → `tty`; `dev::drm` (269L) → `drm`. Update the ~4 syscall + lib.rs
+  refs.
+- **Hook (test-only):** `smoke::elf` (2 refs) — kernel installs a fn-ptr at boot.
+
+So the genuine external moves are just pty→tty and drm→drm; everything else is
+either already a crate or rides into the syscalls crate. Execute as one focused
+run gated on `cargo build` (both arches) + `make smoke`.
+
 ## Summary
 
 | Metric | Count |
