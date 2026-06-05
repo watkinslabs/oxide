@@ -49,12 +49,27 @@ vs real leak (cgroup never reaped). NEXT: reproduce on an isolated rootfs —
 does SIGKILL promptly kill a blocked proc, and does the cgroup eventually get
 removed? No façade (don't yank live tasks from the cgroup).
 
+## BUG D — find/ls ENOENT recursing into ANY subdir → LIVE on main (fix unmerged)
+`find .` from `/` lists top-level dirs but ENOENTs going one level deeper
+(`./lib/systemd`, `./etc/ssh`, `./var/log`, `./home/alice`, `./usr/share`,
+`./proc/self`, `./sys/fs`, `./run/systemd`, `./dev/pts` — ext4 + procfs/sysfs/
+tmpfs/devpts all hit). Dirs EXIST in the image (`debugfs stat` OK) → runtime
+VFS bug, not a build bug. Cause: `pathresolve.rs resolve_at()` resolves a real
+dirfd by string-joining `dentry().absolute_path()`, which is wrong/empty for
+`openat`-derived dirfds → `fstatat(dir_fd, name)` ENOENT. **Fix exists: F377
+#1526 "unify *at dirfd resolution behind one lookupat" — OPEN, stacked on F376,
+not on main.** ACTION: unstack the F377 namei commits onto main as a standalone
+PR (same as the mremap B56 unstack) + verify `find /` recursion clean both arches.
+
 ## Cleanups (task #8)
 - Limine: x86 default targets now GRUB; dead `cmd_image`/`cmd_qemu`/
   `check_vendor` Limine code + the aarch64 Limine boot path remain. aarch64
   needs a GRUB/EFI-stub path (F376) before the Limine code deletes lockstep.
 - libpam prints `[../libpam/...]` debug to stderr on login (pam.d configs are
   clean → debug-compiled libpam). Rebuild `vendor/pam` without debug to silence.
+- rootfs build prints `make_link: Ext2 inode is not a directory` — pre-existing
+  on clean main, NON-fatal (build rc=0, image boots). A debugfs `ln` ordering
+  wart, never cleaned up. Cosmetic; chase only if it ever drops a real link.
 
 ## Environment gotchas (cost hours this session)
 - NEVER build/copy the shared `kernel/blobs/rootfs-x86_64.img` while a qemu has
