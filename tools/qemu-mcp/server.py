@@ -246,19 +246,23 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
         sock_dir = tempfile.mkdtemp(prefix="oxide-qemu-")
         sock_path = os.path.join(sock_dir, "serial.sock")
 
-        # GRUB-ISO boot (Limine removed, F376): OVMF → GRUB → kernel. `img` is
-        # the GRUB ISO (`-cdrom` + `-boot d`); the rootfs is a separate
-        # virtio-blk drive, mirroring `xtask grub`. Plus the MCP bits: a
-        # socket serial bridge, QMP for screendump, and `-s -S` (gdb paused).
+        # GRUB-ISO boot (Limine removed, F376). `img` is the GRUB ISO
+        # (`-cdrom` + `-boot d`); the rootfs is a separate virtio-blk drive,
+        # mirroring `xtask grub`. Plus the MCP bits: a socket serial bridge,
+        # QMP for screendump, and `-s -S` (gdb paused).
+        #
+        # x86: boot via SeaBIOS (qemu default — NO `-bios OVMF`), exactly as
+        # `make qemu-x86`/`xtask grub` does. The hybrid GRUB ISO is BIOS-
+        # bootable (boot_hybrid.img). Forcing OVMF here made GRUB fail to set
+        # a video mode ("no suitable video mode found") and OVMF page-faulted
+        # before the kernel ran, so the screendump never saw the fbcon.
         if arch == "x86_64":
-            ovmf = REPO_ROOT / "vendor/firmware/ovmf-x64.fd"
             rootfs = REPO_ROOT / "kernel/blobs/rootfs-x86_64.img"
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "q35",
                 "-cpu", "Haswell-v4",
                 "-m", "1G",
-                "-bios", str(ovmf),
                 "-cdrom", str(img),
                 "-boot", "d",
                 "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
