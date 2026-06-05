@@ -78,6 +78,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("userspace/socketpair_fork_probe/socketpair_fork_probe",
                                                       "userspace/socketpair_fork_probe/socketpair_fork_probe.c"),
         ("userspace/vim_smoke/vim_smoke",             "userspace/vim_smoke/vim_smoke.c"),
+        ("userspace/tty_reset_probe/tty_reset_probe", "userspace/tty_reset_probe/tty_reset_probe.c"),
     ];
     for (out_rel, src_rel) in crt_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -323,7 +324,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "mtmalloc_smoke", "sigmalloc_smoke", "mremap_alias_smoke", "rawecho_smoke", "termios_rt_smoke", "isatty_smoke", "pollecho_smoke",
         "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
-        "socketpair_fork_probe",
+        "socketpair_fork_probe", "tty_reset_probe",
     ] {
         put(&user(b), &format!("/bin/{b}"))?;
     }
