@@ -105,8 +105,20 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         if pending & !mask != 0 {
             return -(Errno::Eintr.as_i32() as i64);
         }
-        // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield returns to loop recheck.
-        unsafe { sched::live::tick_yield(); }
+        // B57: sleep on the poll wait queue (Linux way) instead of busy-
+        // yield. Woken by `notify_poll_waiters`; bounded re-scan caps
+        // worst-case latency for not-yet-wired ready-sites.
+        const RESCAN_NS: u64 = 20_000_000;
+        let rescan_at = monotonic_ns().saturating_add(RESCAN_NS);
+        let park_dl = match deadline {
+            Some(d) => core::cmp::min(d, rescan_at),
+            None    => rescan_at,
+        };
+        // SAFETY: process ctx; preempt-off across the syscall; park marks Sleeping + stamps deadline; tick_yield yields; re-scan on wake.
+        unsafe {
+            sched::live::POLL_WAIT.park_with_deadline(park_dl);
+            sched::live::tick_yield();
+        }
     }
 }
 

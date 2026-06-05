@@ -123,19 +123,33 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
             }
             return -(Errno::Eintr.as_i32() as i64);
         }
-        // Check deadline / non-block.
+        // Deadline / non-block check + Linux-way block.
+        #[cfg(target_arch = "x86_64")]
+        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         if let Some(dl) = deadline_ns {
-            #[cfg(target_arch = "x86_64")]
-            let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
-            #[cfg(target_arch = "aarch64")]
-            let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
             if now >= dl {
                 debug_ssh! { klog::write_raw(b"[INFO]  ssh-trace: select timeout\n"); }
                 return 0;
             }
         }
-        // SAFETY: process ctx; runqueue installed; tick_yield reschedules and returns.
-        unsafe { sched::live::tick_yield(); }
+        // B57: sleep on the poll wait queue (zero CPU) instead of the old
+        // busy-yield re-poll. A data-ready site (`notify_poll_waiters`)
+        // wakes us; the bounded re-scan deadline caps worst-case latency
+        // for fd types whose ready-site doesn't post a wake yet. Matches
+        // the epoll_wait blocking model.
+        const RESCAN_NS: u64 = 20_000_000;
+        let rescan_at = now.saturating_add(RESCAN_NS);
+        let park_dl = match deadline_ns {
+            Some(d) => core::cmp::min(d, rescan_at),
+            None    => rescan_at,
+        };
+        // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline bumps Arc + marks Sleeping + stamps the wake deadline; tick_yield yields into the scheduler. Re-scan on the next loop after wake.
+        unsafe {
+            sched::live::POLL_WAIT.park_with_deadline(park_dl);
+            sched::live::tick_yield();
+        }
     }
 }
 
