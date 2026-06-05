@@ -1,4 +1,5 @@
 use super::*;
+use alloc::vec; // `vec!` macro (the lib re-exports only the Vec type)
 
 
     #[test]
