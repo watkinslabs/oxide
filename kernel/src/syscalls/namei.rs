@@ -213,7 +213,10 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let p = resolve(&raw).unwrap_or(raw);
+    // BUG D follow-up: resolve against the real dirfd (a0).
+    let p = match crate::syscalls::pathresolve::resolve_at(args.a0 as i32, &raw) {
+        Some(rp) => rp, None => resolve(&raw).unwrap_or(raw),
+    };
     let flags = args.a2 as u32;
     let op = if (flags & AT_REMOVEDIR) != 0 {
         ::security::landlock::access::REMOVE_DIR
@@ -265,7 +268,10 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let p = resolve(&raw).unwrap_or(raw);
+    // BUG D follow-up: resolve against the real dirfd (a0).
+    let p = match crate::syscalls::pathresolve::resolve_at(args.a0 as i32, &raw) {
+        Some(rp) => rp, None => resolve(&raw).unwrap_or(raw),
+    };
     let p = String::from(strip_trailing_slash(&p));
     if let Err(rv) = crate::syscalls::landlock::check(&p,
         ::security::landlock::access::MAKE_DIR) { return rv; }
@@ -297,6 +303,9 @@ pub fn sys_symlinkat(args: &SyscallArgs) -> i64 {
     let link = match read_path(args.a2) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
+    // BUG D follow-up: resolve linkpath against newdirfd (a1). The symlink
+    // target is stored verbatim (never resolved at creation).
+    let link = crate::syscalls::pathresolve::resolve_at(args.a1 as i32, &link).unwrap_or(link);
     symlink_impl(target, link)
 }
 
@@ -326,6 +335,8 @@ pub fn sys_mknodat(args: &SyscallArgs) -> i64 {
     let raw = match read_path(args.a1) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
+    // BUG D follow-up: resolve against the real dirfd (a0).
+    let raw = crate::syscalls::pathresolve::resolve_at(args.a0 as i32, &raw).unwrap_or(raw);
     mknod_impl(raw, args.a2 as u16, args.a3 as u32)
 }
 
@@ -393,17 +404,18 @@ pub fn sys_rmdir(args: &SyscallArgs) -> i64 {
 /// link-then-unlink against the ext4 mount.
 /// # C: O(1)
 pub fn sys_rename(args: &SyscallArgs) -> i64 {
-    rename_impl(args.a0, args.a1)
+    rename_impl(-100, args.a0, -100, args.a1)
 }
 
 /// # C: O(1)
 pub fn sys_renameat(args: &SyscallArgs) -> i64 {
-    rename_impl(args.a1, args.a3)
+    // renameat(olddirfd, from, newdirfd, to): resolve each against its dirfd.
+    rename_impl(args.a0 as i32, args.a1, args.a2 as i32, args.a3)
 }
 
 /// # C: O(1)
 pub fn sys_renameat2(args: &SyscallArgs) -> i64 {
-    rename_impl(args.a1, args.a3)
+    rename_impl(args.a0 as i32, args.a1, args.a2 as i32, args.a3)
 }
 
 
@@ -415,15 +427,20 @@ fn mount_for_write(path: &str) -> Result<(alloc::sync::Arc<vfs::mount::Mount>, a
     vfs::mount::resolve_mount(path).ok_or(-(Errno::Enoent.as_i32() as i64))
 }
 
-fn rename_impl(from_ptr: u64, to_ptr: u64) -> i64 {
+fn rename_impl(from_dirfd: i32, from_ptr: u64, to_dirfd: i32, to_ptr: u64) -> i64 {
     let from_raw = match read_path(from_ptr) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
     let to_raw = match read_path(to_ptr) {
         Some(s) => s, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let f = resolve(&from_raw).unwrap_or(from_raw);
-    let t = resolve(&to_raw).unwrap_or(to_raw);
+    // BUG D follow-up: resolve each side against its dirfd (renameat).
+    let f = match crate::syscalls::pathresolve::resolve_at(from_dirfd, &from_raw) {
+        Some(rp) => rp, None => resolve(&from_raw).unwrap_or(from_raw),
+    };
+    let t = match crate::syscalls::pathresolve::resolve_at(to_dirfd, &to_raw) {
+        Some(rp) => rp, None => resolve(&to_raw).unwrap_or(to_raw),
+    };
     // Landlock: from-side needs REMOVE_FILE | REMOVE_DIR | REFER;
     // to-side needs MAKE_REG. Approximate as REMOVE_FILE+MAKE_REG.
     let la = ::security::landlock::access::REMOVE_FILE

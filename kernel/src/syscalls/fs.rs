@@ -681,7 +681,14 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
 /// check (mode ignored).
 /// # C: O(N_devfs_entries)
 pub fn sys_access(args: &SyscallArgs) -> i64 {
-    let path_ptr = args.a0;
+    // access(2): no dirfd — resolve against cwd (resolve_at(AT_FDCWD,..)).
+    do_access(-100, args.a0)
+}
+
+/// access existence check resolving `path_ptr` against `dirfd` (real
+/// `faccessat(2)` dirfd semantics; AT_FDCWD = -100 → cwd).
+/// # C: O(N_path)
+fn do_access(dirfd: i32, path_ptr: u64) -> i64 {
     if path_ptr == 0 || path_ptr >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
@@ -694,7 +701,10 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
     let raw = match core::str::from_utf8(path) {
         Ok(s) => s, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let resolved = crate::syscalls::pathresolve::resolve_cwd(raw);
+    // BUG D follow-up: honor a real fd-relative dirfd; resolve_at(AT_FDCWD,raw)
+    // == resolve_cwd(raw) so plain access(2) is unchanged.
+    let resolved = crate::syscalls::pathresolve::resolve_at(dirfd, raw)
+        .unwrap_or_else(|| crate::syscalls::pathresolve::resolve_cwd(raw));
     let s = resolved.as_str();
     // access(2) follows symlinks — resolve via the path-walk (crosses
     // mounts, delegates whole-path fs). v1 checks existence only.
@@ -709,8 +719,8 @@ pub fn sys_access(args: &SyscallArgs) -> i64 {
 /// ignores `dirfd` + `flags`; same semantics as `sys_access`.
 /// # C: O(N_devfs_entries)
 pub fn sys_faccessat(args: &SyscallArgs) -> i64 {
-    let inner = SyscallArgs { a0: args.a1, a1: args.a2, a2: 0, a3: 0, a4: 0, a5: 0 };
-    sys_access(&inner)
+    // faccessat(dirfd, path, mode, flags): resolve path against dirfd.
+    do_access(args.a0 as i32, args.a1)
 }
 
 /// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
