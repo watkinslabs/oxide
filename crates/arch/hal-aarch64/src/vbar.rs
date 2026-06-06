@@ -410,18 +410,17 @@ core::arch::global_asm!(
     "    mrs  x9,  sp_el0",
     "    str  x9,       [sp, #192]",
     "    bl   oxide_arm_irq_dispatch",
-    // -- schedule-on-exit per `14§R07`. Rust dispatcher writes
-    //    `oxide_preempt_next_ctx` if a switch is wanted; null = stay.
-    "    adrp x9,  oxide_preempt_next_ctx",
-    "    add  x9,  x9, :lo12:oxide_preempt_next_ctx",
-    "    ldr  x10, [x9]",
+    // -- schedule-on-exit per `14§R07`. The dispatcher staged this CPU's
+    //    (cur,next) in its per-CPU area; read base-relative (SMP-safe — no
+    //    shared global the other CPU could clobber). NEXT@8, CUR@16 must
+    //    match PERCPU_{NEXT,CUR}_CTX_OFF in sched/live/preempt.rs.
+    "    mrs  x9,  tpidr_el1",              // per-CPU area base
+    "    ldr  x10, [x9, #8]",               // NEXT-ctx staging slot
     "    cbz  x10, 1f",
-    "    adrp x11, oxide_preempt_cur_ctx",
-    "    add  x11, x11, :lo12:oxide_preempt_cur_ctx",
-    "    ldr  x0,  [x11]",
+    "    ldr  x0,  [x9, #16]",              // CUR-ctx staging slot (prev)
     "    mov  x1,  x10",
-    "    str  x10, [x11]",                 // CUR := NEXT (commit)
-    "    str  xzr, [x9]",                  // clear NEXT slot
+    "    str  x10, [x9, #16]",              // CUR := NEXT (commit)
+    "    str  xzr, [x9, #8]",               // clear NEXT slot
     "    bl   oxide_context_switch",
     "    b    oxide_irq_resume_user",      // shared epilogue
     "1:  b    oxide_irq_resume_user",

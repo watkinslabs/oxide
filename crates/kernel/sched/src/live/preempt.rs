@@ -14,7 +14,6 @@
 // NEXT_CTX = pick_next_task(); else leaves NEXT_CTX null. The asm
 // then either context-switches or drops straight into the epilogue.
 
-use core::sync::atomic::AtomicPtr;
 
 // `NEED_RESCHED` lives in `crate::preempt` per `13§9` so the
 // preempt-enable check and IRQ-tail check share one flag. The
@@ -30,23 +29,81 @@ pub fn set_need_resched() { crate::preempt::set_need_resched() }
 /// # C: O(1)
 pub fn clear_need_resched() -> bool { crate::preempt::take_need_resched() }
 
-/// Currently-running task's `Context` record. The IRQ epilogue
-/// passes this as `prev` to `oxide_context_switch` when a switch
-/// is wanted. Updated by the dispatcher (or the boot edge) when a
-/// switch is committed.
-///
-/// `*mut u8` rather than `*mut ArchCtx` to keep the symbol arch-
-/// agnostic from the linker's view; the asm side reads it as an
-/// 8-byte raw pointer.
-#[no_mangle]
-pub static oxide_preempt_cur_ctx: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+// Per-CPU IRQ-exit context-switch staging (`13§9` / `14§R07`), SMP-safe.
+//
+// The staging pointer pair lives in THIS CPU's per-CPU area (the page the
+// per-CPU base register points at — `gs` on x86, `TPIDR_EL1` on arm), not
+// in a shared global, so two CPUs taking IRQs concurrently never clobber
+// each other's switch and resume into the wrong task. Layout (offsets from
+// the per-CPU base; `cpu_id` is the existing u32 at offset 0):
+//
+//   [0]  u32   cpu_id              (set by boot / ap_main)
+//   [8]  *mut  PERCPU_NEXT_CTX_OFF — next task's Context*, or null = no switch
+//   [16] *mut  PERCPU_CUR_CTX_OFF  — current task's Context* (prev → switch arg)
+//
+// The IRQ-exit asm epilogue (hal-x86_64/irq.rs, hal-aarch64/vbar.rs) reads
+// these base-relative; `stage_switch` is the only writer, on the same CPU
+// from `schedule_from_irq`. No swapgs on x86 (GS_BASE is always the kernel
+// per-CPU base; user TLS uses FS), so the gs-relative read is valid at IRQ
+// time exactly as `current_cpu()`'s `gs:0` read already relies on.
 
-/// Scratch slot the dispatcher writes when it wants a switch on
-/// IRQ exit. Null = no switch (asm drops straight into the
-/// epilogue). The asm clears this slot after consuming it so the
-/// next IRQ starts from a clean baseline.
-#[no_mangle]
-pub static oxide_preempt_next_ctx: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+/// Per-CPU-area byte offset of the NEXT-context staging slot. Must match
+/// the literal `#8` / `[8]` in the IRQ-exit asm epilogues.
+pub const PERCPU_NEXT_CTX_OFF: usize = 8;
+/// Per-CPU-area byte offset of the CURRENT-context staging slot. Must match
+/// the literal `#16` / `[16]` in the IRQ-exit asm epilogues.
+pub const PERCPU_CUR_CTX_OFF: usize = 16;
+
+/// Read this CPU's per-CPU base pointer (the per-CPU base register value).
+/// Host builds have no per-CPU area → null (stage_switch no-ops there; the
+/// staging is only consumed by kernel asm).
+/// # C: O(1)
+#[inline]
+fn percpu_base() -> *mut u8 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let b: u64;
+        // SAFETY: rdgsbase reads the kernel GS_BASE (CR4.FSGSBASE enabled at
+        // boot; GS_BASE is always the kernel per-CPU area — no swapgs model).
+        unsafe { core::arch::asm!("rdgsbase {b}", b = out(reg) b, options(nomem, nostack, preserves_flags)); }
+        b as *mut u8
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let b: u64;
+        // SAFETY: mrs tpidr_el1 reads this CPU's per-CPU area base (set by
+        // boot / ap_main); EL1-only register, never touched at EL0.
+        unsafe { core::arch::asm!("mrs {b}, tpidr_el1", b = out(reg) b, options(nomem, nostack, preserves_flags)); }
+        b as *mut u8
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { core::ptr::null_mut() }
+}
+
+/// Stage `(cur, next)` for the IRQ-exit asm to context-switch into on this
+/// CPU. Writes the per-CPU area's CUR/NEXT slots; `next = null` means "no
+/// switch" (the asm drops straight to the resume epilogue). Sole writer,
+/// called from `schedule_from_irq` on the same CPU with IRQs masked.
+/// # SAFETY: caller is in IRQ context, IRQs masked; `cur`/`next` alias live
+/// `Context` buffers for this CPU's prev/next task.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn stage_switch(cur: *mut u8, next: *mut u8) {
+    let base = percpu_base();
+    if base.is_null() { return; }
+    // SAFETY: base is this CPU's per-CPU area (≥4 KiB; offsets 8/16 reserved
+    // for staging per the layout above); single-CPU writer, IRQs masked.
+    unsafe {
+        core::ptr::write_volatile(base.add(PERCPU_CUR_CTX_OFF)  as *mut *mut u8, cur);
+        core::ptr::write_volatile(base.add(PERCPU_NEXT_CTX_OFF) as *mut *mut u8, next);
+    }
+}
+
+/// Host stub — no per-CPU area / asm epilogue off-kernel.
+/// # SAFETY: trivially safe; no state touched.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub unsafe fn stage_switch(_cur: *mut u8, _next: *mut u8) {}
 
 /// IRQ-exit hook: dispatcher calls this after EOI to ask the
 /// scheduler to pick the next task and stage it in

@@ -34,13 +34,13 @@ core::arch::global_asm!(
     "    call oxide_irq_dispatch",
     // -- schedule-on-exit per `14§R07`. Rust dispatcher writes
     //    `oxide_preempt_next_ctx` if a switch is wanted; null = stay.
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax",
     "    jz   2f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     // -- shared resume label. Both the no-switch path (jz 2f) and
     //    the post-switch path (oxide_context_switch's `ret` land
@@ -62,13 +62,13 @@ core::arch::global_asm!(
     "    cld",
     "    mov rdi, rsp",
     "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax",
     "    jz   3f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "3:  jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_41, . - oxide_irq_vec_41",
@@ -87,13 +87,13 @@ core::arch::global_asm!(
     "    cld",
     "    mov rdi, rsp",
     "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax",
     "    jz   4f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "4:  jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_50, . - oxide_irq_vec_50",
@@ -110,12 +110,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 51f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "51: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_51, . - oxide_irq_vec_51",
@@ -128,12 +128,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 52f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "52: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_52, . - oxide_irq_vec_52",
@@ -146,12 +146,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 53f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "53: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_53, . - oxide_irq_vec_53",
@@ -164,12 +164,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 54f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "54: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_54, . - oxide_irq_vec_54",
@@ -182,12 +182,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 55f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "55: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_55, . - oxide_irq_vec_55",
@@ -200,12 +200,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 56f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "56: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_56, . - oxide_irq_vec_56",
@@ -218,12 +218,12 @@ core::arch::global_asm!(
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rax, qword ptr [rip + oxide_preempt_next_ctx]",
+    "    mov  rax, gs:[8]",   // per-CPU NEXT-ctx staging slot
     "    test rax, rax", "    jz 57f",
-    "    mov  rdi, qword ptr [rip + oxide_preempt_cur_ctx]",
+    "    mov  rdi, gs:[16]",  // per-CPU CUR-ctx staging slot (prev)
     "    mov  rsi, rax",
-    "    mov  qword ptr [rip + oxide_preempt_cur_ctx], rax",
-    "    mov  qword ptr [rip + oxide_preempt_next_ctx], 0",
+    "    mov  gs:[16], rax",  // CUR := NEXT (commit)
+    "    mov  qword ptr gs:[8], 0",  // clear NEXT slot
     "    call oxide_context_switch",
     "57: jmp oxide_irq_resume_user",
     ".size oxide_irq_vec_57, . - oxide_irq_vec_57",

@@ -418,9 +418,11 @@ pub unsafe fn schedule_from_irq() {
         }
     }
 
-    // Stage the pointer pair for the asm IRQ epilogue.
-    super::preempt::oxide_preempt_cur_ctx.store(prev_ctx_ptr, Ordering::Release);
-    super::preempt::oxide_preempt_next_ctx.store(next_ctx_ptr, Ordering::Release);
+    // Stage the pointer pair in THIS CPU's per-CPU area for the asm IRQ
+    // epilogue (SMP-safe — no shared global the other CPU could clobber).
+    // SAFETY: IRQ context, IRQs masked; ptrs alias this CPU's prev/next
+    // Context buffers, kept alive by the runqueue + swap_current above.
+    unsafe { super::preempt::stage_switch(prev_ctx_ptr, next_ctx_ptr); }
 }
 
 /// Cooperative voluntary yield. Calls `schedule()` then parks the
