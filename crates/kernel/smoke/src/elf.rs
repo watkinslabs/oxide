@@ -86,11 +86,18 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
             &[b"/lib/systemd/systemd" as &[u8]],
         );
     }
-    // Schedule forever with IRQs on so the timer-tick UART poll drains bytes
-    // into the tty rx ringbuffer (what wakes login/sh from sys_read).
+    // Idle anchor. schedule() runs any runnable task (diverging into it); it
+    // returns here only when nothing is runnable — then sti+hlt parks the CPU
+    // with IRQs ENABLED so the periodic timer keeps firing. The tick drains
+    // UART RX and runs tick_wake_expired, which rouses a task parked on a
+    // poll/select deadline (e.g. systemd's terminal-query ppoll) or on stdin.
+    // A bare `loop { schedule() }` spins with IF=0 after the first switch-back,
+    // so no timer IRQ fires and deadline waits hang forever.
     loop {
         // SAFETY: dispatch ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
+        // SAFETY: STI+HLT at CPL=0 idles with IRQs on until the next IRQ.
+        unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack, preserves_flags)); }
     }
 }
 
