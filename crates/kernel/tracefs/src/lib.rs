@@ -1,3 +1,6 @@
+#![no_std]
+extern crate alloc;
+
 // Boot-time tracefs registration per `37§R01` and v2-arch-plan §1.8.
 //
 // V1: static directory at /sys/kernel/tracing whose readdir +
@@ -14,7 +17,7 @@
 use alloc::sync::Arc;
 use vfs::InodeRef;
 
-use crate::procfs::StaticFileInode;
+use vfs::StaticFileInode;
 
 /// Boot-time tracefs population. Called from kernel_main after
 /// devfs::init.
@@ -22,24 +25,24 @@ use crate::procfs::StaticFileInode;
 /// # C: O(1)
 pub fn init() {
     // Empty-trace defaults — match Linux's "no tracer attached" state.
-    crate::devfs::register("/sys/kernel/tracing/tracing_on",
+    devfs::register("/sys/kernel/tracing/tracing_on",
         StaticFileInode::new(b"0\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/current_tracer",
+    devfs::register("/sys/kernel/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/available_tracers",
+    devfs::register("/sys/kernel/tracing/available_tracers",
         StaticFileInode::new(b"nop\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/available_events",
+    devfs::register("/sys/kernel/tracing/available_events",
         StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/trace",
+    devfs::register("/sys/kernel/tracing/trace",
         StaticFileInode::new(b"# tracer: nop\n#\n") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/trace_pipe",
+    devfs::register("/sys/kernel/tracing/trace_pipe",
         StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/trace_options",
+    devfs::register("/sys/kernel/tracing/trace_options",
         StaticFileInode::new(b"") as InodeRef);
-    crate::devfs::register("/sys/kernel/tracing/buffer_size_kb",
+    devfs::register("/sys/kernel/tracing/buffer_size_kb",
         StaticFileInode::new(b"1408\n") as InodeRef);
     // Per-event control directory placeholder. Real per-event
     // enable is a follow-up.
-    crate::devfs::register("/sys/kernel/tracing/events/header_event",
+    devfs::register("/sys/kernel/tracing/events/header_event",
         StaticFileInode::new(b"") as InodeRef);
 }

@@ -26,6 +26,7 @@ hal     = { path = "../crates/arch/hal" }
 klog    = { path = "../crates/shared/klog" }
 console   = { path = "../crates/kernel/console" }
 devpts    = { path = "../crates/kernel/devpts" }
+tracefs   = { path = "../crates/kernel/tracefs" }
 kmacros   = { path = "../crates/shared/kmacros" }
 kalloc  = { path = "../crates/shared/kalloc" }
 pmm     = { path = "../crates/kernel/mm-pmm" }
