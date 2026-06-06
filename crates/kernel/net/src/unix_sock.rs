@@ -223,6 +223,18 @@ impl UnixPair {
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
         {
+            // SCM_CREDENTIALS: stamp the writing end with the live
+            // sender creds so the peer's SO_PASSCRED recvmsg delivers
+            // the real sender {pid,uid,gid}. Socketpair() seeds both
+            // ends with the creator's creds; after fork the child's
+            // write must re-stamp its end with the child's pid, else
+            // systemd's handoff-timestamp check sees stale/creator
+            // creds. peer_cred(reader_end) reads this end's value.
+            if let Some(c) = sched::live::current() {
+                use core::sync::atomic::Ordering::Relaxed;
+                self.set_end_cred(end, c.tgid.load(Relaxed),
+                    c.creds.euid.load(Relaxed), c.creds.egid.load(Relaxed));
+            }
             // Writer on `end` feeds the ring the OTHER end reads from.
             let waiters = match end {
                 UnixEnd::A => &self.a_to_b_waiters,
@@ -304,6 +316,10 @@ pub struct UnixMsgPair {
     /// F181a: per-end epoll subscribers — see UnixPair.
     pub end_a_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    /// Per-end creds for SO_PEERCRED / SCM_CREDENTIALS — re-stamped at
+    /// each `send` with the live sender creds (see UnixPair).
+    pub cred_a: EndCred,
+    pub cred_b: EndCred,
 }
 
 pub struct UnixMsgRing {
@@ -323,7 +339,23 @@ impl UnixMsgPair {
             b_to_a_waiters: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
+            cred_a: EndCred::new(),
+            cred_b: EndCred::new(),
         })
+    }
+
+    /// Stamp `end`'s creds (socketpair creation + each send).
+    /// # C: O(1)
+    pub fn set_end_cred(&self, end: crate::UnixEnd, pid: u32, uid: u32, gid: u32) {
+        match end { crate::UnixEnd::A => self.cred_a.set(pid, uid, gid),
+                    crate::UnixEnd::B => self.cred_b.set(pid, uid, gid) }
+    }
+
+    /// Peer (sender) creds for the reader on `end`: the OTHER end's.
+    /// # C: O(1)
+    pub fn peer_cred(&self, end: crate::UnixEnd) -> (u32, u32, u32) {
+        match end { crate::UnixEnd::A => self.cred_b.get(),
+                    crate::UnixEnd::B => self.cred_a.get() }
     }
 
     /// F181a: register an end's subscribers (mirrors UnixPair).
@@ -353,6 +385,16 @@ impl UnixMsgPair {
         drop(g);
         #[cfg(target_os = "oxide-kernel")]
         {
+            // SCM_CREDENTIALS: stamp the writing end with the live
+            // sender creds (mirror of UnixPair::write). systemd's
+            // handoff-timestamp uses a SOCK_DGRAM socketpair and
+            // verifies the sender via SO_PASSCRED — the child's send
+            // must carry the child's pid, not the creator's.
+            if let Some(c) = sched::live::current() {
+                use core::sync::atomic::Ordering::Relaxed;
+                self.set_end_cred(end, c.tgid.load(Relaxed),
+                    c.creds.euid.load(Relaxed), c.creds.egid.load(Relaxed));
+            }
             let waiters = match end {
                 UnixEnd::A => &self.a_to_b_waiters,
                 UnixEnd::B => &self.b_to_a_waiters,
