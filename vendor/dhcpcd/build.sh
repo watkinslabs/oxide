@@ -19,6 +19,8 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
+. "$(dirname "$0")/../lib/uapi-stage.sh"
+
 CONF="--prefix=/ --sbindir=/sbin --sysconfdir=/etc \
   --dbdir=/var/db/dhcpcd --libexecdir=/lib/dhcpcd \
   --disable-inet6 --disable-dhcp6 --disable-auth \
@@ -31,14 +33,9 @@ CONF="--prefix=/ --sbindir=/sbin --sysconfdir=/etc \
 # interrupted run in place, so asm/types.h was never copied and the build
 # died on it. `cp -rL` dereferences any symlinked uapi dirs.
 build_x86() {
-  HDRS=/tmp/musl-hdrs-dhcpcd
-  rm -rf "$HDRS"; mkdir -p "$HDRS"
-  for d in linux asm asm-generic mtd scsi sound rdma xen misc; do
-    cp -rL "/usr/include/$d" "$HDRS/$d" 2>/dev/null || true
-  done
   ( cd "$SRC"
     make distclean >/dev/null 2>&1 || true
-    CC=musl-gcc CFLAGS="-Os -static -no-pie -fno-pie -isystem $HDRS" \
+    CC=musl-gcc CFLAGS="-Os -static -no-pie -fno-pie $(uapi_cflags x86_64)" \
       LDFLAGS="-static -no-pie" ./configure $CONF >/dev/null
     make -j8 -C src dhcpcd
     cp -f src/dhcpcd ../dhcpcd-x86_64
