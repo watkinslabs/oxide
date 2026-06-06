@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Fast smoke runner. Boots QEMU directly (bypassing xtask qemu's
-# rebuild step), watches serial stdio for PASS/FAIL markers, kills
-# QEMU as soon as the last expected smoke reports.
+# Fast smoke runner. Boots the prebuilt GRUB ISO directly (bypassing
+# xtask's rebuild step), watches serial stdio for PASS/FAIL markers,
+# kills QEMU as soon as the last expected smoke reports.
 #
 # Usage:
 #   tools/run-smokes.sh x86_64
@@ -18,9 +18,9 @@ run_one() {
   case "$arch" in x86_64|aarch64) ;; *) echo "arch must be x86_64 or aarch64"; return 2;; esac
 
   local repo; repo="$(cd "$(dirname "$0")/.." && pwd)"
-  local img="$repo/target/oxide-$arch.img"
+  local img="$repo/target/oxide-$arch-grub.iso"
   if [ ! -f "$img" ]; then
-    echo "no image at $img — run 'cargo run -p xtask -- image --arch $arch' or 'make qemu-$( [ "$arch" = x86_64 ] && echo x86 || echo arm)' first" >&2
+    echo "no boot ISO at $img — run 'cargo run -p xtask -- image --arch $arch --features debug-all' first" >&2
     return 2
   fi
 
@@ -36,19 +36,24 @@ run_one() {
   }
   trap cleanup RETURN
 
+  # Limine is gone: $img is the GRUB boot ISO. x86 = SeaBIOS El Torito
+  # (qemu default, no -bios) + multiboot2 kernel + ext4 rootfs on
+  # virtio-blk; arm = OVMF→GRUB→EFI-stub `linux` with the rootfs embedded
+  # in the kernel Image (no block device) + semihosting for early UART.
   local qemu_args
   if [ "$arch" = "x86_64" ]; then
     qemu_args=(qemu-system-x86_64
-      -machine q35 -cpu Haswell-v4 -m 256M
-      -bios "$repo/vendor/firmware/ovmf-x64.fd"
-      -drive "format=raw,file=$img"
+      -machine q35 -cpu Haswell-v4 -m 1G
+      -cdrom "$img" -boot d
+      -drive "if=none,id=hd0,format=raw,file=$repo/kernel/blobs/rootfs-x86_64.img"
+      -device "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0"
       -display none -no-reboot -no-shutdown
       -serial stdio)
   else
     qemu_args=(qemu-system-aarch64
-      -machine virt,gic-version=3,its=on -cpu cortex-a72 -m 256M
+      -machine virt,gic-version=3,its=on -cpu cortex-a72 -m 2G
       -bios "$repo/vendor/firmware/ovmf-aarch64.fd"
-      -drive "format=raw,file=$img,if=virtio"
+      -cdrom "$img" -boot d
       -display none -no-reboot
       # Semihosting required: boot-aarch64 uses `hlt #0xf000`
       # for early-boot UART output before pl011 is set up;

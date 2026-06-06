@@ -175,23 +175,19 @@ def _build_image(arch: str, features: str = "debug-boot") -> Path:
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
     # x86: Limine is gone — build the GRUB multiboot2 ISO (matches `make
-    # qemu-x86`/`xtask grub`). `--build-only` produces the ISO + rootfs without
-    # launching qemu, so the MCP can spawn its own gdb-paused one. arm still
-    # uses the Limine disk image until its GRUB/EFI-stub path lands (F376).
-    if arch == "x86_64":
-        cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
-               "grub", "--arch", "x86_64", "--features", features, "--build-only"]
-    else:
-        cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
-               "image", "--arch", arch, "--features", features]
+    # qemu-x86`/`xtask grub`). `--build-only` produces the ISO + rootfs
+    # without launching qemu, so the MCP can spawn its own gdb-paused one.
+    # Limine is gone on both arches: `xtask grub --arch <arch> --build-only`
+    # yields target/oxide-<arch>-grub.iso (x86 multiboot2; arm EFI-stub).
+    cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
+           "grub", "--arch", arch, "--features", features, "--build-only"]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
             f"image build failed (exit {proc.returncode})\n"
             f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
-    img = (REPO_ROOT / "target" / "oxide-x86_64-grub.iso") if arch == "x86_64" \
-        else (REPO_ROOT / "target" / f"oxide-{arch}.img")
+    img = REPO_ROOT / "target" / f"oxide-{arch}-grub.iso"
     if not img.is_file():
         raise RuntimeError(f"expected boot artifact at {img} but it isn't there")
     return img
@@ -220,7 +216,7 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
     per-syscall trace flood). Pass "debug-all" for the full firehose
     when debugging kernel internals.
 
-    Re-uses the same QEMU args as `xtask qemu --arch <arch>`
+    Re-uses the same QEMU args as `xtask grub --arch <arch>`
     (q35 + Haswell-v4 + OVMF on x86; virt + cortex-a72 + OVMF on
     arm) plus `-s -S` for the gdb-stub-paused mode.
 
@@ -306,10 +302,13 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 qemu_bin,
                 "-machine", "virt,gic-version=3,its=on",
                 "-cpu", "cortex-a72",
-                "-m", "256M",
+                "-m", "2G",
                 "-bios", str(ovmf),
-                "-drive", f"if=none,id=hd0,format=raw,file={img}",
-                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
+                # Limine-free: `img` is the GRUB EFI-stub ISO. OVMF→GRUB→
+                # `linux` boots our arm64 Image; the ext4 rootfs is embedded
+                # in the kernel (include_bytes!), so no virtio-blk drive.
+                "-cdrom", str(img),
+                "-boot", "d",
                 # Phase 8 prep: explicit modern virtio-net (0x1041)
                 # symmetric with x86; aarch64 virt has no
                 # default-NIC so `-nic none` is unnecessary.
