@@ -86,7 +86,7 @@ non-overlapping phases land in parallel once their deps are green.
 | 11 | PCI / PCIe enumeration | done | `34` |
 | 12 | virtio shared infrastructure (split virtqueue, status bits, feature negotiation) | done | `34`,`35` |
 | 13 | Real virtio-net live driver (tx/rx ring service, link-state, feature negotiation) | done | `25`,`35` |
-| 14 | mremap real (MREMAP_MAYMOVE) + per-PTE mprotect with TLB shootdown + MADV_DONTNEED zero-fill + file-backed mmap | open | `11`,`20§7` |
+| 14 | mremap real (MREMAP_MAYMOVE) + per-PTE mprotect with TLB shootdown + MADV_DONTNEED zero-fill + file-backed mmap | done — `mm-vmm` (`mremap_full`/`mprotect_pages`/madvise-drop/`VmaBacking::File`) + `syscalls` `kernel_mmap` (fd→`InodeFileBacking`); 108 vmm hosted tests; both arches boot real userspace mmap/fork/exec | `11`,`20§7` |
 | 15 | AF_INET6 socket layer + DHCP client + DNS resolver + sendmmsg/recvmmsg + AF_UNIX SCM_CREDS | open | `25` |
 | 16 | Namespaces: unshare/setns/pivot_root + per-NS mount/uts/pid/user/net | open | `13`,`16`,`26` |
 | 17 | Modern mount API (fsopen/fsconfig/fsmount/fspick + mount_setattr) + real mount/umount/chroot | open | `16` |
