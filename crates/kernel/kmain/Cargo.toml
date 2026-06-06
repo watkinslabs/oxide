@@ -1,0 +1,88 @@
+[package]
+name = "kmain"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "kmain"
+path = "src/kmain.rs"
+
+[dependencies]
+block   = { path = "../block" }
+boot-info = { path = "../../shared/boot-info" }
+cpu       = { path = "../cpu" }
+devfs     = { path = "../devfs" }
+elf-load  = { path = "../exec" }
+arch-irq  = { path = "../arch-irq" }
+ipc       = { path = "../ipc" }
+elf     = { path = "../../shared/elf" }
+net     = { path = "../net" }
+modules = { path = "../modules" }
+pci     = { path = "../../drivers/pci" }
+virtio  = { path = "../../drivers/virtio" }
+ext4    = { path = "../ext4" }
+hal     = { path = "../../arch/hal" }
+klog    = { path = "../../shared/klog" }
+console   = { path = "../console" }
+cmdline   = { path = "../cmdline" }
+smoke     = { path = "../smoke" }
+timer     = { path = "../timer" }
+sysfs     = { path = "../sysfs" }
+syscalls  = { path = "../syscalls" }
+pci-boot  = { path = "../pci-boot" }
+devpts    = { path = "../devpts" }
+tracefs   = { path = "../tracefs" }
+kmacros   = { path = "../../shared/kmacros" }
+kalloc  = { path = "../../shared/kalloc" }
+pmm     = { path = "../mm-pmm" }
+procfs  = { path = "../procfs" }
+sched   = { path = "../sched" }
+softirq = { path = "../softirq" }
+netlink = { path = "../netlink" }
+netfilter = { path = "../netfilter" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+tty     = { path = "../tty" }
+vfs     = { path = "../vfs" }
+fs      = { path = "../fs" }
+vmm     = { path = "../mm-vmm" }
+power    = { path = "../power" }
+firmware = { path = "../firmware" }
+nscg     = { path = "../nscg" }
+cgroup   = { path = "../cgroup" }
+security = { path = "../security" }
+drv             = { path = "../../drivers/drv" }
+drv-virtio-gpu    = { path = "../../drivers/drv-virtio-gpu" }
+drv-virtio-input  = { path = "../../drivers/drv-virtio-input" }
+drv-virtio-net    = { path = "../../drivers/drv-virtio-net" }
+drv-serial        = { path = "../../drivers/drv-serial" }
+drm               = { path = "../../drivers/drm" }
+fbdev             = { path = "../../drivers/fbdev" }
+fbcon             = { path = "../../drivers/fbcon" }
+vt                = { path = "../../drivers/vt" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+# Per `docs/04§3` (rev R05): per-subsystem debug features. Off = call
+# sites absent from the binary; the hot path emits zero bytes. Names
+# match the spec's bucket list 1:1 — independence guarantee in §3.
+debug-pmm  = ["kmacros/debug-pmm", "smoke/debug-pmm", "pmm/debug-pmm"]  # PMM smoke + stress + memmap dump
+debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm", "smoke/debug-vmm"]  # device-map MMIO sanity reads (HPET cap, GICD typer)
+debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
+debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi", "smoke/debug-acpi"]  # forwarded; impl in crates/firmware
+debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smoke/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
+debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup", "syscalls/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
+debug-modules = []  # kmod thunk write_raw / kassert traces
+debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall", "syscalls/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
+debug-ssh = ["sched/debug-ssh","fs/debug-ssh", "kmacros/debug-ssh", "syscalls/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
+debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]
+

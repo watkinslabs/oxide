@@ -199,10 +199,10 @@ impl MemmapKind {
     }
 
     /// Map Limine's `MemmapKind` to our generic `BootMemKind` per
-    /// `kernel::BootMemKind`. Unknown kinds are treated as Reserved.
+    /// `boot_info::BootMemKind`. Unknown kinds are treated as Reserved.
     /// # C: O(1)
-    pub fn to_kernel_kind(self) -> kernel::BootMemKind {
-        use kernel::BootMemKind as K;
+    pub fn to_kernel_kind(self) -> boot_info::BootMemKind {
+        use boot_info::BootMemKind as K;
         match self {
             Self::Usable                => K::Usable,
             Self::Reserved              => K::Reserved,
@@ -238,7 +238,7 @@ pub struct HhdmResponse {
 /// pointer table from a stack-local Vec so the lifetime is the test.
 /// # C: O(min(entry_count, out.len()))
 pub unsafe fn populate_memmap_into(
-    out: &mut [kernel::BootMemRegion],
+    out: &mut [boot_info::BootMemRegion],
     resp: &MemmapResponse,
 ) -> usize {
     let n = (resp.entry_count as usize).min(out.len());
@@ -250,8 +250,8 @@ pub unsafe fn populate_memmap_into(
         let entry = unsafe { &**(resp.entries.add(i)) };
         let kind = MemmapKind::from_u64(entry.kind)
             .map(|k| k.to_kernel_kind())
-            .unwrap_or(kernel::BootMemKind::Reserved);
-        out[i] = kernel::BootMemRegion {
+            .unwrap_or(boot_info::BootMemKind::Reserved);
+        out[i] = boot_info::BootMemRegion {
             base_pa: entry.base,
             len:     entry.length,
             kind,
@@ -465,12 +465,12 @@ mod tests {
 
     #[test]
     fn memmap_kind_to_kernel_kind_maps_usable() {
-        assert_eq!(MemmapKind::Usable.to_kernel_kind(),    kernel::BootMemKind::Usable);
-        assert_eq!(MemmapKind::Reserved.to_kernel_kind(),  kernel::BootMemKind::Reserved);
+        assert_eq!(MemmapKind::Usable.to_kernel_kind(),    boot_info::BootMemKind::Usable);
+        assert_eq!(MemmapKind::Reserved.to_kernel_kind(),  boot_info::BootMemKind::Reserved);
         assert_eq!(MemmapKind::AcpiReclaimable.to_kernel_kind(),
-                   kernel::BootMemKind::AcpiReclaim);
-        assert_eq!(MemmapKind::AcpiNvs.to_kernel_kind(),   kernel::BootMemKind::AcpiNvs);
-        assert_eq!(MemmapKind::BadMemory.to_kernel_kind(), kernel::BootMemKind::BadMem);
+                   boot_info::BootMemKind::AcpiReclaim);
+        assert_eq!(MemmapKind::AcpiNvs.to_kernel_kind(),   boot_info::BootMemKind::AcpiNvs);
+        assert_eq!(MemmapKind::BadMemory.to_kernel_kind(), boot_info::BootMemKind::BadMem);
     }
 
     extern crate alloc;
@@ -500,16 +500,16 @@ mod tests {
             entry_count: ptrs.len() as u64,
             entries:     ptrs.as_ptr(),
         };
-        let mut out = [kernel::BootMemRegion {
-            base_pa: 0, len: 0, kind: kernel::BootMemKind::Reserved,
+        let mut out = [boot_info::BootMemRegion {
+            base_pa: 0, len: 0, kind: boot_info::BootMemKind::Reserved,
         }; 8];
         // SAFETY: hosted test; ptrs/backing live across this call.
         let n = unsafe { populate_memmap_into(&mut out, &resp) };
         assert_eq!(n, 3);
         assert_eq!(out[0].base_pa, 0);
-        assert_eq!(out[0].kind,    kernel::BootMemKind::Usable);
-        assert_eq!(out[1].kind,    kernel::BootMemKind::Reserved);
-        assert_eq!(out[2].kind,    kernel::BootMemKind::BootloaderUsed);
+        assert_eq!(out[0].kind,    boot_info::BootMemKind::Usable);
+        assert_eq!(out[1].kind,    boot_info::BootMemKind::Reserved);
+        assert_eq!(out[2].kind,    boot_info::BootMemKind::BootloaderUsed);
         assert_eq!(out[2].len,     0x4000_0000);
     }
 
@@ -522,8 +522,8 @@ mod tests {
         let resp = MemmapResponse {
             revision: 0, entry_count: 4, entries: ptrs.as_ptr(),
         };
-        let mut out = [kernel::BootMemRegion {
-            base_pa: 0, len: 0, kind: kernel::BootMemKind::Reserved,
+        let mut out = [boot_info::BootMemRegion {
+            base_pa: 0, len: 0, kind: boot_info::BootMemKind::Reserved,
         }; 2];
         // SAFETY: hosted test; pointers live across the call.
         let n = unsafe { populate_memmap_into(&mut out, &resp) };
@@ -538,13 +538,13 @@ mod tests {
         let resp = MemmapResponse {
             revision: 0, entry_count: 1, entries: ptrs.as_ptr(),
         };
-        let mut out = [kernel::BootMemRegion {
-            base_pa: 0, len: 0, kind: kernel::BootMemKind::Usable,
+        let mut out = [boot_info::BootMemRegion {
+            base_pa: 0, len: 0, kind: boot_info::BootMemKind::Usable,
         }; 1];
         // SAFETY: hosted test; pointers live across the call.
         let n = unsafe { populate_memmap_into(&mut out, &resp) };
         assert_eq!(n, 1);
-        assert_eq!(out[0].kind, kernel::BootMemKind::Reserved,
+        assert_eq!(out[0].kind, boot_info::BootMemKind::Reserved,
             "unknown kind must fall back to Reserved");
     }
 }

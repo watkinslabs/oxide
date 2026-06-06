@@ -53,7 +53,7 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "-Z", "json-target-spec",
         "--target", target,
         "--profile", &profile,
-        "-p", "kernel",
+        "-p", "kmain",
         "-p", boot_pkg,
         "-p", bin_pkg,
     ]);
