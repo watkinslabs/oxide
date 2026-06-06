@@ -1,0 +1,18 @@
+[package]
+name = "devpts"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+sync    = { path = "../../shared/sync" }
+tty     = { path = "../tty" }
+vfs     = { path = "../vfs" }
+devfs   = { path = "../devfs" }
+sched   = { path = "../sched" }
+hal     = { path = "../../arch/hal" }
+klog    = { path = "../../shared/klog" }
+kmacros = { path = "../../shared/kmacros" }
+[features]
+debug-boot = ["kmacros/debug-boot"]
