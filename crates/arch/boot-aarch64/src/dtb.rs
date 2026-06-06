@@ -220,6 +220,89 @@ pub fn first_memory_region(bytes: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
+/// Enumerate `/cpus/cpu@*` nodes → each CPU's `reg` value, which on arm64
+/// is the MPIDR_EL1 affinity the PSCI `CPU_ON` call targets. Fills `out`
+/// with up to `out.len()` MPIDRs (DTB order; index 0 is typically the boot
+/// CPU) and returns the total cpu-node count seen. `/cpus` `#address-cells`
+/// (FDT default 2; arm64 QEMU `virt` uses 1) governs how many big-endian
+/// cells each `reg` occupies; cells fold low-order into the u64. Drives the
+/// PSCI SMP bring-up (`set_psci_ap_params`).
+/// # C: O(struct_block_size)
+pub fn enum_cpus(bytes: &[u8], out: &mut [u64]) -> usize {
+    let h = match parse_header(bytes) { Ok(h) => h, Err(_) => return 0 };
+    let stru = match bytes.get(h.off_dt_struct as usize ..
+                              (h.off_dt_struct + h.size_dt_struct) as usize) {
+        Some(s) => s, None => return 0,
+    };
+    let strs = match bytes.get(h.off_dt_strings as usize ..
+                              (h.off_dt_strings + h.size_dt_strings) as usize) {
+        Some(s) => s, None => return 0,
+    };
+    let mut i = 0usize;
+    let mut depth: i32 = -1;
+    let mut cpus_depth: i32 = -1;       // depth of the /cpus node (-1 = outside)
+    let mut addr_cells: u32 = 2;        // /cpus #address-cells (FDT default)
+    let mut in_cpu = false;             // inside a /cpus/cpu@* child
+    let mut count = 0usize;
+    while i + 4 <= stru.len() {
+        let tok = match read_be_u32(stru, i) { Ok(t) => t, Err(_) => return count };
+        i += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                depth += 1;
+                let start = i;
+                while i < stru.len() && stru[i] != 0 { i += 1; }
+                if i >= stru.len() { return count; }
+                let name = &stru[start..i];
+                i = (i + 1 + 3) & !3;
+                if depth == 1 && name == b"cpus" {
+                    cpus_depth = depth;
+                } else if cpus_depth >= 0 && depth == cpus_depth + 1
+                    && (name == b"cpu" || name.starts_with(b"cpu@")) {
+                    in_cpu = true;
+                }
+            }
+            FDT_END_NODE => {
+                if in_cpu && depth == cpus_depth + 1 { in_cpu = false; }
+                if depth == cpus_depth { cpus_depth = -1; }
+                depth -= 1;
+            }
+            FDT_PROP => {
+                if i + 8 > stru.len() { return count; }
+                let plen  = match read_be_u32(stru, i)     { Ok(v) => v as usize, Err(_) => return count };
+                let pname = match read_be_u32(stru, i + 4) { Ok(v) => v as usize, Err(_) => return count };
+                i += 8;
+                let pdata = match stru.get(i .. i + plen) { Some(d) => d, None => return count };
+                let name_end = match strs.get(pname..).and_then(|s| s.iter().position(|&b| b == 0)) {
+                    Some(e) => e, None => return count,
+                };
+                let pname_str = &strs[pname..pname + name_end];
+                // #address-cells on /cpus itself governs each cpu reg width.
+                if cpus_depth >= 0 && depth == cpus_depth && !in_cpu
+                    && pname_str == b"#address-cells" && plen >= 4 {
+                    if let Ok(v) = read_be_u32(pdata, 0) {
+                        if v >= 1 && v <= 2 { addr_cells = v; }
+                    }
+                }
+                if in_cpu && pname_str == b"reg" && plen >= 4 * addr_cells as usize {
+                    let mut mpidr = 0u64;
+                    for c in 0..addr_cells as usize {
+                        let cell = read_be_u32(pdata, c * 4).unwrap_or(0) as u64;
+                        mpidr = (mpidr << 32) | cell;
+                    }
+                    if count < out.len() { out[count] = mpidr; }
+                    count += 1;
+                }
+                i += (plen + 3) & !3;
+            }
+            FDT_NOP => {}
+            FDT_END => return count,
+            _ => return count,
+        }
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

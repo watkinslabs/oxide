@@ -48,9 +48,32 @@ pub unsafe fn ap_init(aff0: u32) {
 }
 
 /// Install the AP-init hook + the arm resched-IPI sender. Boot path,
-/// before `bring_up_aps_arm`.
+/// before `bring_up_aps_psci`.
 /// # C: O(1)
 pub fn install_hooks() {
     hal_aarch64::smp::set_ap_init_hook(ap_init);
     sched::live::set_send_resched_ipi_hook(crate::gic::send_resched_ipi);
+}
+
+/// Feed the ACPI-MADT GICC MPIDRs (already in `cpu` from the ACPI walk)
+/// into the PSCI AP params. The EFI/GRUB arm path has no DTB `/cpus` list,
+/// so `boot-aarch64`'s `publish_psci_ap_params` enumerated zero secondaries;
+/// this overrides just the MPIDR list (keeping the self-boot page-table phys
+/// it set) before `bring_up_aps_psci`. No-op when `cpu` is empty (the
+/// `-kernel`/DTB path keeps its own list).
+/// # C: O(N_cpus)
+pub fn publish_madt_mpidrs() {
+    let n = cpu::count();
+    if n == 0 { return; }
+    let mut mpidrs = [0u64; 16];
+    let mut k = 0usize;
+    let mut i = 0u32;
+    while i < n && k < mpidrs.len() {
+        if let Some((id, _flags)) = cpu::get(i as usize) {
+            mpidrs[k] = id as u64;
+            k += 1;
+        }
+        i += 1;
+    }
+    if k > 0 { hal_aarch64::smp::set_psci_ap_mpidrs(&mpidrs[..k]); }
 }
