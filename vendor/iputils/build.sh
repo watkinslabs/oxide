@@ -6,6 +6,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="iputils-20240117"
 if [ ! -d "$SRC" ]; then
   echo "missing $SRC -- run tools/fetch-iputils.sh first" >&2

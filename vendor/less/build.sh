@@ -4,6 +4,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="less-643"
 
 if [ ! -d "$SRC" ]; then
@@ -55,11 +56,11 @@ build_one() {
 }
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "x86_64" "$NC_X86" "x86_64-linux-musl"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "aarch64" "$NC_ARM" "aarch64-linux-musl"
 
 echo "OK -- built less for {x86_64, aarch64}"

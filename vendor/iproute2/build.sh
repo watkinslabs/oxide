@@ -5,6 +5,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="iproute2-6.10.0"
 if [ ! -d "$SRC" ]; then
   echo "missing $SRC -- run tools/fetch-iproute2.sh first" >&2
@@ -66,11 +67,11 @@ build_one() {
 }
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "x86_64" "ar"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "aarch64" "$CROSS_AR"
 
 echo "OK -- built iproute2 for {x86_64, aarch64}"

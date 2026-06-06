@@ -5,6 +5,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="shadow-4.16.0"
 if [ ! -d "$SRC" ]; then
   echo "missing $SRC -- run tools/fetch-shadow.sh first" >&2
@@ -75,11 +76,11 @@ build_one() {
 }
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "x86_64" "x86_64-linux-musl"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "aarch64" "aarch64-linux-musl"
 
 echo "OK -- built shadow for {x86_64, aarch64}"

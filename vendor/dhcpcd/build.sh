@@ -19,7 +19,7 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
-. "$(dirname "$0")/../lib/uapi-stage.sh"
+. ../lib/uapi-stage.sh
 
 CONF="--prefix=/ --sbindir=/sbin --sysconfdir=/etc \
   --dbdir=/var/db/dhcpcd --libexecdir=/lib/dhcpcd \
