@@ -20,6 +20,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="dropbear-2024.86"
 
 if [ ! -d "$SRC" ]; then
@@ -114,11 +115,11 @@ build_one() {
 }
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "dropbearmulti-x86_64"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "dropbearmulti-aarch64"
 
 echo "OK — built dropbearmulti-{x86_64,aarch64}"

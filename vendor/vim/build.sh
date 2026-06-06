@@ -10,6 +10,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="vim-9.1.0950"
 
 if [ ! -d "$SRC" ]; then
@@ -106,11 +107,11 @@ EOF
 }
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "x86_64" "$NC_X86"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "aarch64" "$NC_ARM"
 
 echo "OK -- built vim for {x86_64, aarch64}"

@@ -607,16 +607,16 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
     // new AS, not the boot global). With `Task.mm` wrapped in
     // UnsafeCell we read via `mm_ref` under the single-mutator
     // invariant (preempt-off, single-CPU UP).
-    let r = if let Some(cur) = sched::live::current() {
-        // SAFETY: caller is the fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
-        if let Some(mm) = unsafe { cur.mm_ref() } {
-            Some(do_handle(mm, uva, fault, hhdm))
-        } else {
-            // kthread; no user AS — fall back to global.
-            with(|as_| do_handle(as_, uva, fault, hhdm))
-        }
-    } else {
-        with(|as_| do_handle(as_, uva, fault, hhdm))
+    // Resolve against the running task's mm only. There is no global address
+    // space: every user fault belongs to the current task's AS. A user-VA
+    // fault with no current user task (boot context before PID 1, or a kthread)
+    // is a kernel bug, not something to paper over against a shared AS — return
+    // unhandled so it surfaces. The boot PID-1 stack is mapped eagerly via
+    // `prefault_stack` (setup_arg_pages), so no boot-context user fault occurs.
+    let r = match sched::live::current() {
+        // SAFETY: fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
+        Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm)),
+        None => None,
     };
     match r {
         Some(Ok(())) => {
@@ -914,5 +914,23 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         Some(Ok(()))  => 0,
         Some(Err(_))  => -(Errno::Einval.as_i32() as i64),
         None          => -(Errno::Enosys.as_i32() as i64),
+    }
+}
+
+/// setup_arg_pages: eagerly map the anonymous stack pages of `as_` covering
+/// `[top-len, top)` into `as_`'s own page table. The boot PID-1 spawn calls
+/// this before `build_user_stack` (which runs in boot context, `current()==
+/// None`) so the stack writes hit mapped pages instead of demand-faulting —
+/// Linux maps the initial stack into the new mm at execve time, never lazily.
+/// # C: O(pages)
+#[cfg(target_arch = "x86_64")]
+pub fn prefault_stack(as_: &AddressSpace, top: u64, len: u64) {
+    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    let mut va = top.saturating_sub(len) & !0xfff;
+    while va < top {
+        if let Some(uva) = UserVirtAddr::new(va) {
+            let _ = do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm);
+        }
+        va += 4096;
     }
 }

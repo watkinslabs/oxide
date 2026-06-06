@@ -6,6 +6,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="iputils-20240117"
 if [ ! -d "$SRC" ]; then
   echo "missing $SRC -- run tools/fetch-iputils.sh first" >&2
@@ -61,7 +62,7 @@ ar = '$CROSS_AR'
 strip = '$CROSS_STRIP'
 
 [built-in options]
-c_args = ['-Os', '-isystem', '$HDRS_ARM']
+c_args = ['-Os']
 c_link_args = ['-static']
 
 [host_machine]

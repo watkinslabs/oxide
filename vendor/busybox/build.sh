@@ -18,6 +18,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 test -d busybox-1.37.0 || {
   curl -sL https://busybox.net/downloads/busybox-1.37.0.tar.bz2 -o bb.tar.bz2
   tar xjf bb.tar.bz2
@@ -41,7 +42,7 @@ sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
 # rootfs-setup operation, not a runtime requirement, so leaving
 # INSTALLER off permanently is safe.
 sed -i 's/^CONFIG_FEATURE_INSTALLER=y/# CONFIG_FEATURE_INSTALLER is not set/' .config
-make CC=musl-gcc HOSTCC=gcc EXTRA_CFLAGS="-isystem /tmp/musl-hdrs" -j8 LDFLAGS=--static
+make CC=musl-gcc HOSTCC=gcc EXTRA_CFLAGS="$(uapi_cflags x86_64)" -j8 LDFLAGS=--static
 cp -f busybox ../busybox
 strip ../busybox
 echo "vendor/busybox/busybox (x86_64): built"
@@ -65,7 +66,7 @@ if test -d "$ARM_TC"; then
   sed -i 's/^CONFIG_SHA1_HWACCEL=y/# CONFIG_SHA1_HWACCEL is not set/' .config
   sed -i 's/^CONFIG_SHA256_HWACCEL=y/# CONFIG_SHA256_HWACCEL is not set/' .config
   make ARCH=arm64 CROSS_COMPILE=aarch64-linux-musl- HOSTCC=gcc \
-       EXTRA_CFLAGS="-isystem /tmp/musl-hdrs-arm" -j8 LDFLAGS=--static
+       EXTRA_CFLAGS="$(uapi_cflags aarch64)" -j8 LDFLAGS=--static
   cp -f busybox ../busybox-aarch64
   aarch64-linux-musl-strip ../busybox-aarch64 2>/dev/null || true
   echo "vendor/busybox/busybox-aarch64: built"
