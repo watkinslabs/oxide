@@ -81,10 +81,26 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   inspection didn't explain. Abandoned per discipline. If retried: boot-verify
   before/after; investigate Task::new_user ns-field init.
 
-## Open / next — arm SMP=2 boot (DEEP; REDIRECTED — NOT the AP/scheduler)
-FOUR SMP fixes landed, all correct + UP-safe, NONE unblock SMP=2:
+## Open / next — arm SMP=2 boot (DEEP; root = unmapped memcpy src)
+FIVE SMP fixes landed, all correct + UP-safe, NONE unblock SMP=2:
 #1552 PSCI AP bring-up; #1554 per-CPU preempt+ctxsw-staging; #1556 per-CPU
-SVC-frame base; #1557 on_rq dedup guard (Linux `p->on_rq`).
+SVC-frame base; #1557 on_rq dedup guard; #1560 clear SCTLR_EL1.A (firmware
+left A=1 w/ >1 vCPU → EL0 unaligned access trapped; real latent bug, Linux
+always clears A — but NOT the smp2 root).
+**ROOT (gdb-pinned):** at -smp 2 PID1(systemd) faults in EL0 right after
+readlinkat at systemd `0x40016f88: ldr x6,[x1]` — a 10-byte memcpy
+(dst=0x10034b70, src=x1=0x10004322, len=x2=10; caller x30=systemd 0x40063bc4
+where x1=x22). **src=0x10004322 is UNMAPPED** (faults regardless of A: DFSC=0x21
+align w/ A=1, translation w/ A=0) → systemd's memcpy is handed a WRONG src
+pointer. PID1's syscall stream is BYTE-IDENTICAL SMP=1/2 through readlinkat
+(19,218,brk→0x10035000 ×2,mmap→0x10035000,readlinkat→5); SMP=1 then does openat,
+SMP=2 dies. So the divergence comes from NON-syscall input — leading hypothesis:
+vDSO/CNTVCT **time** differs under 2-vCPU TCG (guest-time advances per total
+icount), and systemd uses a time value to compute the bad src pointer (no
+syscall → invisible in the stream). NEXT: (1) check oxide vvar/vDSO time page
++ whether systemd reads it pre-fault; (2) aarch64-objdump systemd around
+0x63bc4/0x16f00 to see how x22 (src) is computed; (3) trace x1's origin.
+**KEY: the wedge is the 2-vCPU ENVIRONMENT, not the AP.** Bisected:
 **KEY FINDING — the wedge is the 2-vCPU ENVIRONMENT, not the AP.** Bisected:
 (a) ap_init no-op, (b) bring_up_aps_psci no-op, (c) cpu-enum capped to 1 — ALL
 still wedge at qemu `-smp 2`; `-accel tcg,thread=multi` also wedges; `-smp 1`
