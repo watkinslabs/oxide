@@ -81,11 +81,16 @@ trap cleanup EXIT
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
-# Boot -smp 2 on BOTH arches so AP bring-up + the periodic load balancer
-# (`13§11`) are exercised every push: x86 via Limine SMP + LAPIC IPI,
-# arm via Limine SMP (APs MMU-on at our entry, F327) + GIC SGI. Override
-# with OXIDE_SMP=N.
-OXIDE_SMP="${OXIDE_SMP:-2}"
+# SMP per arch. x86 boots -smp 2 so AP bring-up + the periodic load
+# balancer (`13§11`) are exercised every push (LAPIC IPI). arm is UP-only
+# since Limine was dropped — the GRUB EFI-stub path does no PSCI AP
+# bring-up yet, so a 2nd vCPU never starts and late-boot wedges; it also
+# ~halves single-threaded-TCG throughput by emulating an idle AP. Boot arm
+# -smp 1 until PSCI AP startup lands. Override with OXIDE_SMP=N.
+case "$ARCH" in
+    arm) OXIDE_SMP="${OXIDE_SMP:-1}" ;;
+    *)   OXIDE_SMP="${OXIDE_SMP:-2}" ;;
+esac
 
 # Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
 attempt_boot() {
