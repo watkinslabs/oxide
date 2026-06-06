@@ -16,8 +16,6 @@ kernel/blobs/*.so
 *.iso
 *.bin
 *.elf
-# kernel/blobs/*.elf are hand-rolled smoke fixtures with no source — keep tracked.
-!kernel/blobs/*.elf
 *.efi
 *.zst
 initramfs.cpio*
