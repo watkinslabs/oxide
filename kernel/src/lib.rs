@@ -27,7 +27,6 @@ const _: () = assert!(
 #[macro_use]
 extern crate kmacros;
 #[cfg(target_os = "oxide-kernel")] mod periodic;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
@@ -585,7 +584,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         // Install the AP-init hook (per-AP GIC + runqueue, runs on the AP)
         // + the arm resched-IPI sender (GIC SGI) BEFORE bringing APs up.
-        crate::smp_arm::install_hooks();
+        arch_irq::smp_arm::install_hooks();
         // Limine SMP: park each AP's goto_address at our entry; Limine
         // starts them MMU-ON at EL1 (no PSCI MMU-off trampoline). info's
         // smp fields come from boot-aarch64's SMP response parse.

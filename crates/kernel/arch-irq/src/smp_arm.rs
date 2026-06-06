@@ -1,12 +1,11 @@
-// aarch64 SMP AP per-CPU bring-up (`13§11`). The arm AP entry (`ap_main`)
-// lives in the leaf `hal-aarch64` crate, which can't depend on `sched` /
-// `arch_irq`; this kernel-side hook does the parts that need them. It
+// aarch64 SMP AP per-CPU bring-up (`13§11`), the arm peer of `smp_x86`.
+// The low-level AP entry (`ap_main`) lives in `hal-aarch64`; this module
+// does the per-AP GIC + runqueue parts that need `sched` + the GIC driver. It
 // runs ON the AP (called from `ap_main` after VBAR is set): maps + wakes
 // the AP's own GICv3 redistributor, enables the resched SGI + CPU
 // interface, and installs the AP's per-CPU runqueue. Installed at boot
 // via `hal_aarch64::smp::set_ap_init_hook`.
 
-#![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 use hal_aarch64::mmu_ops::ArmMmu;
@@ -25,9 +24,9 @@ fn device_flags() -> PageFlags {
 /// tables (TTBR1) tolerate the device map (own TLB flushed by `map`).
 /// # C: O(map depth) + O(spin until ChildrenAsleep)
 pub unsafe fn ap_init(aff0: u32) {
-    let base_va = arch_irq::gic::gicr_base();
+    let base_va = crate::gic::gicr_base();
     if base_va == 0 { return; } // GIC not up (shouldn't happen post-boot)
-    let stride = arch_irq::gic::GICR_STRIDE;
+    let stride = crate::gic::GICR_STRIDE;
     let ap_va = base_va + aff0 as u64 * stride;
     let ap_pa = (base_va & 0xFFFF_FFFF) + aff0 as u64 * stride;
     // SAFETY: ap_va/ap_pa name this PE's redistributor frames (RD at +0,
@@ -36,13 +35,13 @@ pub unsafe fn ap_init(aff0: u32) {
     unsafe {
         <ArmMmu as MmuOps>::map(Va(ap_va), Pa(ap_pa), device_flags(), PageSize::P4K);
         <ArmMmu as MmuOps>::map(Va(ap_va + 0x1_0000), Pa(ap_pa + 0x1_0000), device_flags(), PageSize::P4K);
-        arch_irq::gic::ap_cpu_interface_enable(ap_va);
-        arch_irq::gic::enable_sgi_on(ap_va, arch_irq::gic::RESCHED_SGI);
+        crate::gic::ap_cpu_interface_enable(ap_va);
+        crate::gic::enable_sgi_on(ap_va, crate::gic::RESCHED_SGI);
         // Enable this AP's CNTV virtual-timer PPI (INTID 27) + arm it
         // periodic so the AP preempts on its own tick, not just resched
         // SGIs. The dispatcher's UART/softirq work is BSP-gated; an AP
         // tick only reschedules. Period matches the BSP (10_000).
-        arch_irq::gic::enable_sgi_on(ap_va, 27);
+        crate::gic::enable_sgi_on(ap_va, 27);
         sched::live::install_default_runqueue();
         hal_aarch64::timer::timer_periodic(10_000);
     }
@@ -53,5 +52,5 @@ pub unsafe fn ap_init(aff0: u32) {
 /// # C: O(1)
 pub fn install_hooks() {
     hal_aarch64::smp::set_ap_init_hook(ap_init);
-    sched::live::set_send_resched_ipi_hook(arch_irq::gic::send_resched_ipi);
+    sched::live::set_send_resched_ipi_hook(crate::gic::send_resched_ipi);
 }
