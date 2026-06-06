@@ -8,7 +8,7 @@
 
 use alloc::sync::Arc;
 
-use drm::{
+use crate::{
     DRM_IOCTL_VERSION, DRM_IOCTL_GET_CAP, DRM_IOCTL_GET_UNIQUE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC, DRM_MODE_ATOMIC_TEST_ONLY,
@@ -85,11 +85,11 @@ impl vfs::Inode for EvdevInode {
 /// Register DRM card / render / evdev / input-devices nodes.
 /// # C: O(1)
 pub fn register() {
-    crate::devfs::register("/dev/dri/card0",     Arc::new(DrmCardInode)   as vfs::InodeRef);
-    crate::devfs::register("/dev/dri/renderD128", Arc::new(DrmRenderInode) as vfs::InodeRef);
-    crate::devfs::register("/dev/input/event0",  Arc::new(EvdevInode)     as vfs::InodeRef);
-    crate::devfs::register("/proc/bus/input/devices",
-        crate::procfs::StaticFileInode::new(b"\
+    devfs::register("/dev/dri/card0",     Arc::new(DrmCardInode)   as vfs::InodeRef);
+    devfs::register("/dev/dri/renderD128", Arc::new(DrmRenderInode) as vfs::InodeRef);
+    devfs::register("/dev/input/event0",  Arc::new(EvdevInode)     as vfs::InodeRef);
+    devfs::register("/proc/bus/input/devices",
+        vfs::StaticFileInode::new(b"\
 I: Bus=0019 Vendor=0000 Product=0000 Version=0000\n\
 N: Name=\"Oxide synthetic evdev\"\n\
 P: Phys=oxide/input0\n\
@@ -116,7 +116,7 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         DRM_IOCTL_VERSION => {
             // Look up the registered DrmDriver (card 0); fall back
             // to "oxide / no-GPU" strings when none registered.
-            let cards = drm::cards();
+            let cards = crate::cards();
             let (name, date, desc, ver) = match cards.first() {
                 Some(d) => (d.name(), d.date(), d.desc(), d.version()),
                 None    => (FALLBACK_NAME, FALLBACK_DATE, FALLBACK_DESC, (1, 6, 0)),
@@ -156,13 +156,13 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
         }
         DRM_IOCTL_GET_CAP => {
             // struct drm_get_cap { capability u64; value u64; }.
-            // Delegate to driver.cap(); fall back to drm::default_cap.
+            // Delegate to driver.cap(); fall back to crate::default_cap.
             // SAFETY: arg validated < USER_VA_END; aligned u64 read of capability + write of value.
             let cap = unsafe { core::ptr::read_volatile(arg as *const u64) };
-            let cards = drm::cards();
+            let cards = crate::cards();
             let val = match cards.first() {
                 Some(d) => d.cap(cap),
-                None    => drm::default_cap(cap),
+                None    => crate::default_cap(cap),
             };
             // SAFETY: arg validated; cap struct is 16 bytes; value at +8.
             unsafe { core::ptr::write_volatile((arg + 8) as *mut u64, val); }
@@ -174,7 +174,7 @@ pub fn handle_drm_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64
             // drm_mode_card_res: 4 ptrs (32 B) + count_fbs/crtcs/
             // connectors/encoders (4×u32) + min/max width/height
             // (4×u32). Total 64 B.
-            let cards = drm::cards();
+            let cards = crate::cards();
             let (count_fbs, count_crtcs, count_conns, count_encs) = match cards.first() {
                 Some(d) => d.resource_counts(),
                 None    => (0, 0, 0, 0),
