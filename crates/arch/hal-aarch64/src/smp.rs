@@ -191,10 +191,13 @@ core::arch::global_asm!(
     "  tlbi vmalle1",
     "  dsb sy",
     "  isb",
-    // Enable MMU + caches: SCTLR_EL1 M(0)|C(2)|I(12).
+    // Enable MMU + caches: SCTLR_EL1 M(0)|C(2)|I(12). CLEAR A(1)+SA0(4)
+    // so EL0 unaligned Normal-memory access is hardware-handled (match
+    // the BSP in selfboot.rs; firmware can leave A=1 at handoff).
     "  mrs x9, sctlr_el1",
     "  movz x10, #0x1005",
     "  orr x9, x9, x10",
+    "  bic x9, x9, #(1 << 1)",   // A — alignment check off (match BSP/Linux)
     "  msr sctlr_el1, x9",
     "  isb",
     // Jump to the higher-half label via its absolute linked VA.
