@@ -99,8 +99,24 @@ registration glue, the dispatch-table install, and `vvar` publish — pure glue.
 
 ### Execution progress (2026-06-05)
 
-DONE (committed+pushed, branch green): **kmacros**, **console**, **devpts** crates.
-Each: kernel re-exports for call-site compat; builds clean both envelopes.
+DONE (committed, branch green, all build clean): **kmacros** (debug macros),
+**console** (/dev/console), **devpts** (/dev/ptmx,pts), **StaticFileInode→vfs**
+(generic read-only inode; procfs re-exports it), **drm** node (/dev/dri →
+drm crate `node`), **tracefs** (/sys/kernel/tracing). Each: kernel re-exports
+for call-site compat.
+
+REMAINING, fully dep-mapped (zero archaeology left — next run is pure execution):
+- **smoke crate** (`kernel/src/smoke/` → crates/kernel/smoke). Deps: sched, hal,
+  hal_x86_64, hal_aarch64, kmacros (macro_use), klog, sync, console, firmware,
+  pmm, vmm, vfs, and **`elf-load`** (the crate at `crates/kernel/exec`, imported
+  as `elf_load`). Ref fixes: `crate::dev::console`→`console::`, `crate::acpi`→
+  `firmware::acpi`, `crate::smoke`→`crate::`. Repoint ~15 `crate::smoke::X` boot
+  calls in kernel/src/lib.rs → `smoke::X`; drop `pub mod smoke;`.
+- **pidfd**: MIXED (pidfd inode + the pidfd_open/send_signal syscall handlers
+  that call `crate::syscalls::signal`). Split during the syscalls lift: inode →
+  fs, handlers → syscalls crate. Do NOT dump whole thing in fs (cycle).
+- **syscalls crate** (the finale): kernel/src/syscalls/* → one file per syscall
+  (NNN_name.rs), vdso+vvar inside it, pidfd handlers fold in. `pub use syscalls;`.
 
 Prerequisites discovered while executing (do before the named dep can lift):
 - **drm + tracefs**: both register `/proc/...` via `StaticFileInode`, which lives
