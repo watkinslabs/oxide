@@ -116,6 +116,8 @@ mod stub_tests {
 }
 
 #[cfg(target_os = "oxide-kernel")]
+pub mod cpu_cgroup;
+#[cfg(target_os = "oxide-kernel")]
 pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;

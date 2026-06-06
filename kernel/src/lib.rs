@@ -26,7 +26,7 @@ const _: () = assert!(
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 extern crate kmacros;
-pub mod cgroup_boot; pub mod cgroup_cpu; #[cfg(target_os = "oxide-kernel")] mod periodic;
+pub mod cgroup_boot; #[cfg(target_os = "oxide-kernel")] mod periodic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
@@ -471,6 +471,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot, syscalls::hostname::set);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
+        ::devfs::set_current_hooks(|| sched::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0), || sched::current().and_then(|c| { let r = unsafe { (*c.root.get()).clone() }; (r != "/").then_some(r) }));
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();

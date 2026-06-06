@@ -4,11 +4,10 @@
 // Reuses the F319 freeze mechanism: a cgroup over its quota this period
 // has every member frozen until the next period refill unthrottles it.
 //
-// Lives in the kernel crate because it bridges two leaf crates the
-// cgroup crate can't depend on: `sched` (per-task sum_exec_runtime +
-// freeze) and the cgroup tree.
+// The cpu cgroup controller (CFS bandwidth) lives in `sched` — the
+// scheduler owns cpu.max enforcement, reading quota groups from the leaf
+// `cgroup` crate (sched->cgroup, no cycle). Linux: kernel/sched cfs_bandwidth.
 
-#![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::Ordering;
 
@@ -18,7 +17,7 @@ use core::sync::atomic::Ordering;
 fn members_runtime_ns(pids: &[u64]) -> u64 {
     let mut total = 0u64;
     for &p in pids {
-        if let Some(t) = sched::live::registry::lookup_in_ns(0, p as u32) {
+        if let Some(t) = crate::live::registry::lookup_in_ns(0, p as u32) {
             total = total.saturating_add(t.sum_exec_runtime_ns.load(Ordering::Acquire));
         }
     }
@@ -40,8 +39,8 @@ pub fn tick(now_ns: u64) {
             cgroup::CpuAction::Throttle => {
                 if !g.throttled {
                     for &p in &g.pids {
-                        if let Some(t) = sched::live::registry::lookup_in_ns(0, p as u32) {
-                            sched::live::freeze_task(&t);
+                        if let Some(t) = crate::live::registry::lookup_in_ns(0, p as u32) {
+                            crate::live::freeze_task(&t);
                         }
                     }
                     // base + period_start unchanged; only the flag flips.
@@ -51,8 +50,8 @@ pub fn tick(now_ns: u64) {
             cgroup::CpuAction::Refill { new_base_ns } => {
                 if g.throttled {
                     for &p in &g.pids {
-                        if let Some(t) = sched::live::registry::lookup_in_ns(0, p as u32) {
-                            sched::live::unfreeze_task(&t);
+                        if let Some(t) = crate::live::registry::lookup_in_ns(0, p as u32) {
+                            crate::live::unfreeze_task(&t);
                         }
                     }
                 }

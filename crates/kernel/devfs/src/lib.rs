@@ -38,6 +38,36 @@ static REGISTRY: Spinlock<Vec<Row>, TaskListClass> = Spinlock::new(Vec::new());
 
 /// Register `path` → `inode` in the init namespace (`ns == 0`).
 /// Used by the boot bootstrap; takes a `'static` path so we don't
+
+// Current-task context hooks (mount-ns + chroot root). devfs is a
+// filesystem; it must not depend on the scheduler — the kernel installs
+// these at boot so device visibility/chroot resolve against the running
+// task without a devfs->sched edge (which would cycle cgroup->devfs->sched).
+use core::sync::atomic::{AtomicU64, Ordering as HookOrdering};
+static MOUNT_NS_HOOK: AtomicU64 = AtomicU64::new(0);
+static CHROOT_ROOT_HOOK: AtomicU64 = AtomicU64::new(0);
+
+/// Install the current-task context hooks (boot, once).
+/// # C: O(1)
+pub fn set_current_hooks(mount_ns: fn() -> u64, chroot_root: fn() -> Option<String>) {
+    MOUNT_NS_HOOK.store(mount_ns as usize as u64, HookOrdering::Release);
+    CHROOT_ROOT_HOOK.store(chroot_root as usize as u64, HookOrdering::Release);
+}
+fn current_mount_ns() -> u64 {
+    let p = MOUNT_NS_HOOK.load(HookOrdering::Acquire);
+    if p == 0 { return 0; }
+    // SAFETY: p was stored from a `fn() -> u64` via set_current_hooks.
+    let f: fn() -> u64 = unsafe { core::mem::transmute(p as usize) };
+    f()
+}
+fn current_chroot_root() -> Option<String> {
+    let p = CHROOT_ROOT_HOOK.load(HookOrdering::Acquire);
+    if p == 0 { return None; }
+    // SAFETY: p was stored from a `fn() -> Option<String>` via set_current_hooks.
+    let f: fn() -> Option<String> = unsafe { core::mem::transmute(p as usize) };
+    f()
+}
+
 /// clone for the common case.
 /// # C: O(1) push
 pub fn register(path: &'static str, inode: InodeRef) {
@@ -63,9 +93,7 @@ pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
 /// # C: O(N)
 pub fn lookup(path: &str) -> Option<InodeRef> {
     let resolved = chroot_resolve(path);
-    let cur_ns = sched::current()
-        .map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire))
-        .unwrap_or(0);
+    let cur_ns = current_mount_ns();
     let g = REGISTRY.lock();
     if cur_ns != 0 {
         if let Some((_, _, i)) = g.iter().find(|(n, p, _)| *n == cur_ns && p.as_str() == resolved.as_str()) {
@@ -111,9 +139,7 @@ pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
 /// callback. Caller filters by prefix.
 /// # C: O(N)
 pub fn snapshot_visible_to_current() -> Vec<(String, InodeRef)> {
-    let cur_ns = sched::current()
-        .map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire))
-        .unwrap_or(0);
+    let cur_ns = current_mount_ns();
     let g = REGISTRY.lock();
     g.iter()
         .filter(|(n, _, _)| *n == cur_ns || *n == 0)
@@ -127,10 +153,7 @@ pub fn snapshot_visible_to_current() -> Vec<(String, InodeRef)> {
 /// # C: O(len)
 fn chroot_resolve(path: &str) -> String {
     if !path.starts_with('/') { return String::from(path); }
-    let cur = match sched::current() { Some(c) => c, None => return String::from(path) };
-    // SAFETY: task.root single-mutator per `13§5`; running task on this CPU is the sole writer (sys_chroot updates only on the calling task).
-    let root = unsafe { (*cur.root.get()).clone() };
-    if root == "/" { return String::from(path); }
+    let root = match current_chroot_root() { Some(r) => r, None => return String::from(path) };
     let mut out = root;
     if out.ends_with('/') { out.pop(); }
     out.push_str(path);
