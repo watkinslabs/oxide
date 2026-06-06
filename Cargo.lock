@@ -106,6 +106,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmdline"
+version = "0.1.0"
+
+[[package]]
 name = "console"
 version = "0.1.0"
 dependencies = [
@@ -187,6 +191,17 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+]
+
+[[package]]
+name = "drv-serial"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "firmware",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
 ]
 
 [[package]]
@@ -503,12 +518,14 @@ dependencies = [
  "block",
  "boot-info",
  "cgroup",
+ "cmdline",
  "console",
  "cpu",
  "devfs",
  "devpts",
  "drm",
  "drv",
+ "drv-serial",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
