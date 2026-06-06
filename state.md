@@ -81,20 +81,38 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   inspection didn't explain. Abandoned per discipline. If retried: boot-verify
   before/after; investigate Task::new_user ns-field init.
 
-## Open / next (lowest-risk first)
-1. **arm SMP=2 boot-stability** — chain of gaps; AP comes online (#1552) and
-   per-CPU preempt state is fixed (#1554, was a global wrong-task-switch race).
-   REMAINING (gdb-confirmed at the wedge): a task woken on one CPU but queued
-   on another CPU's runqueue is never picked — no cross-CPU **wakeup→resched
-   -IPI** is sent, and the AP idle loop (`ap_main`) is pure `wfi` (IRQ-driven
-   only). Both CPUs end up `wfi` with PID1 unrunnable → boot wedges at the
-   systemd handoff (BSP stuck in elf_arm.rs:291 wfi-loop; AP in smp.rs:306).
-   Fix = `try_to_wake_up`-style enqueue-to-target-CPU + resched IPI on the
-   wake path (wait_list.rs). Then SMP=2 arm smoke + `-accel tcg,thread=multi`.
-   Also note: `spawn_timer_driver`/load-balancer is UNREACHABLE on arm
-   (elf_arm::run loops forever before it) — balancer never runs.
-   (debug-irq-only `[FAULT] sigsegv` in elf/init-arm at SMP=2 — investigate
-   alongside; not in the debug-boot path.)
+## Open / next — arm SMP=2 boot (DEEP; REDIRECTED — NOT the AP/scheduler)
+FOUR SMP fixes landed, all correct + UP-safe, NONE unblock SMP=2:
+#1552 PSCI AP bring-up; #1554 per-CPU preempt+ctxsw-staging; #1556 per-CPU
+SVC-frame base; #1557 on_rq dedup guard (Linux `p->on_rq`).
+**KEY FINDING — the wedge is the 2-vCPU ENVIRONMENT, not the AP.** Bisected:
+(a) ap_init no-op, (b) bring_up_aps_psci no-op, (c) cpu-enum capped to 1 — ALL
+still wedge at qemu `-smp 2`; `-accel tcg,thread=multi` also wedges; `-smp 1`
+boots. So NOT the AP, NOT scheduler, NOT cpu::count(), NOT TCG round-robin.
+EVIDENCE (debug-boot, fresh builds — beware STALE ISO: always check ELF mtime
+≥ edit time, `xtask grub --build-only` can silently reuse a stale kernel):
+- PID1(systemd) syscall stream is BYTE-IDENTICAL SMP=1 vs SMP=2 through
+  readlinkat: 19, 218(set_tid_addr→1), 12(brk→0x10035000), 12(brk→0x10037000),
+  9(mmap→0x10035000), 267(readlinkat→5). SMP=1 then does 257(openat); SMP=2
+  DIES in the EL0 window between readlinkat-return and openat.
+- Death = EL0 ALIGNMENT data abort (ESR=0x92000021 EC=0x24 DFSC=0x21,
+  FAR=0x10004322). `[noenq tid=c0de0002 st=3]` ⇒ PID1→Zombie (SIGSEGV); the
+  "wedge" is just init-dead aftermath. sp_el0 AT the fault is GOOD (0x7fff…) —
+  earlier "SP_EL0 poison" reading was WRONG; a non-sp reg holds 0x10004322
+  (x19=0x100042d9, a VALID systemd mmap ptr, identical SMP=1/2).
+- readlinkat dispatch-exit SVC frame byte-identical SMP=1/2. Syscalls run
+  IRQ-MASKED (SVC entry daifset #0xf, no unmask) → no mid-syscall preempt.
+- Verified CORRECT: EL0-IRQ save/restore offsets (x0-x18,x29,x30,elr,spsr,
+  sp_el0 @ matching slots); oxide_context_switch (x19-x30,sp,tpidr_el0).
+So: identical inputs+state, PID1 erets after readlinkat and dies in EL0 only at
+-smp 2. Only async difference = an EL0 timer tick in that window. But no-switch
+re-pick is transparent and all reg paths check out → mechanism still UNKNOWN.
+NEXT EXPERIMENTS (do in order): (1) dump ALL x0-x30 at the EL0 alignment fault
+(hook deliver_sigsegv_arm, debug-boot) + `qemu_disasm` the faulting insn at elr
+to see which reg = 0x10004322 and what op faults; (2) `its=off` to isolate
+ITS/LPI routing with 2 redistributors; (3) diff GIC init (GICR count / IROUTER)
+1 vs 2 redistributors; (4) confirm whether UP-kernel-smp2 FAULTS vs STALLS (may
+be a 2nd distinct bug — lost IRQ). Gate stays `-smp 1`.
 2. python3 encodings/stdlib path fix (distro; verify-left-able).
 3. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
 4. Phase 16 real namespace isolation (currently id-substrate, F100-F107).
