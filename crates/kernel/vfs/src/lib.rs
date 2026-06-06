@@ -17,6 +17,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+pub mod static_file;
+pub use static_file::StaticFileInode;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
