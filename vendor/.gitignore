@@ -5,6 +5,9 @@
 *
 !.gitignore
 !README.md
+# Shared build helpers sourced by per-package build.sh's (uapi-stage.sh).
+!lib/
+!lib/*.sh
 # busybox vendored binaries: x86_64 already tracked; aarch64 added
 # per F148 once the cross-toolchain landed.
 !busybox/
