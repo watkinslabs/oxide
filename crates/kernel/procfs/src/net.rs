@@ -1,6 +1,6 @@
 // /proc/net/* + /proc/modules inode impls split out of procfs.rs
 // to keep that file under the 1000-line cap (docs/08§7). The
-// dispatch inside procfs::lookup_dynamic remains there; only the
+// dispatch inside crate::lookup_dynamic remains there; only the
 // per-file Inode impls live here.
 
 

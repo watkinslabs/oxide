@@ -25,8 +25,8 @@ const _: () = assert!(
 
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
-pub mod debug_macros;
-pub mod cgroup_boot; pub mod cgroup_cpu;
+extern crate kmacros;
+pub mod cgroup_boot; pub mod cgroup_cpu; #[cfg(target_os = "oxide-kernel")] mod periodic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
@@ -66,9 +66,6 @@ pub mod devfs;
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
-pub mod io_uring;
-pub mod vdso;
-pub mod vvar;
 mod serial_irq;
 // seccomp + bpf moved to `crates/security` per `27§R03`.
 pub use security::seccomp;
@@ -386,19 +383,19 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // forever (B14: login prompt wedge — getty spun in user mode
         // between stdio writevs because the scheduler never preempted).
         #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-        crate::smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
+        smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-        crate::smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
+        smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
 
         // MmuOps end-to-end smoke: map/write/translate/unmap a fresh
         // PMM frame at a scratch VA. Per-arch wrapper picks the
         // marker type implementing `MmuOps`.
         #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
-        unsafe { crate::smoke::mmuops::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        unsafe { smoke::mmuops::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; SCRATCH_VA disjoint from existing kernel mappings; single-CPU pre-init.
-        unsafe { crate::smoke::mmuops::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+        unsafe { smoke::mmuops::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
 
         // User-page mapping smoke (P1-95 fix validation): map a 4 KiB
         // user VA with USER|EXEC|READ, verify translate round-trips
@@ -406,10 +403,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // propagation. CPL=3 access lands with P1-82.
         #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; USER_VA disjoint from kernel-half mappings; single-CPU pre-init.
-        unsafe { crate::smoke::user_map::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        unsafe { smoke::user_map::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
         #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-vmm"))]
         // SAFETY: PMM + MmuOps state initialised above; USER_VA disjoint from kernel-half mappings; single-CPU pre-init.
-        unsafe { crate::smoke::user_map::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+        unsafe { smoke::user_map::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
     }
 
 
@@ -443,18 +440,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe {
             kthread::smoke();
             kthread::smoke_yield();
-            crate::smoke::ksched::smoke_rr(4);
+            smoke::ksched::smoke_rr(4);
             #[cfg(target_arch = "x86_64")]
-            crate::smoke::preempt::smoke_preempt_x86(4, 1_000_000);
+            smoke::preempt::smoke_preempt_x86(4, 1_000_000);
             #[cfg(target_arch = "aarch64")]
-            crate::smoke::preempt::smoke_preempt_arm(4, 50_000);
+            smoke::preempt::smoke_preempt_arm(4, 50_000);
             // 64-task ctxsw register-canary per `14§8`. Bounded
             // version (CANARY_N × CANARY_ITERS); the 1h soak rides
             // background CI per `40§3`.
             #[cfg(target_arch = "x86_64")]
-            crate::smoke::canary::smoke_canary_x86(1_000_000);
+            smoke::canary::smoke_canary_x86(1_000_000);
             #[cfg(target_arch = "aarch64")]
-            crate::smoke::canary::smoke_canary_arm(50_000);
+            smoke::canary::smoke_canary_arm(50_000);
         }
     }
 
@@ -465,7 +462,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         // SAFETY: PMM + MmuOps initialised; FAULT_VA in the smoke's
         // private kernel-half slot; single-CPU; IRQs masked.
-        unsafe { crate::smoke::pf_recover::run(); }
+        unsafe { smoke::pf_recover::run(); }
     }
 
     // user AS + demand-paging fault hook per 11§3/11§5; must run
@@ -475,7 +472,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { pmm::user_as::init(info.hhdm_offset); }
         // SAFETY: PMM up; HHDM offset just published; one-shot.
-        unsafe { crate::vvar::init(); }
+        unsafe { syscalls::vvar::init(); }
+        procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
+        procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot, syscalls::hostname::set);
+        procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
@@ -491,7 +491,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
         // P3-56 path-string lookup smoke for the execve resolver.
         #[cfg(target_arch = "x86_64")]
-        crate::smoke::elf::lookup_smoke();
+        smoke::elf::lookup_smoke();
     }
 
 
@@ -665,7 +665,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Order matters only for human readability; lookup uses longest-prefix-match.
         let _ = vfs::mount::register("/",     alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
         let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
-        let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(crate::procfs::fs_impl::ProcfsFs));
+        let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(procfs::fs_impl::ProcfsFs));
         let _ = vfs::mount::register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
         let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         // POSIX shm + systemd /run live on tmpfs. Longest-prefix-match
@@ -804,7 +804,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // GDT (P1-93), TSS+ltr (P1-94), interior-U=1 walker (P1-95),
         // PMM + MmuOps + per-AS PT root (P2-19) + ELF loader (P2-16)
         // + runqueue (P2-13b) initialised; single-CPU; IRQs masked.
-        unsafe { crate::smoke::elf::run_as_task(info.hhdm_offset); }
+        unsafe { smoke::elf::run_as_task(info.hhdm_offset); }
     }
 
     // First ELF-loaded userspace per docs/31 (P2-16c) on aarch64.
@@ -815,9 +815,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     {
         // SAFETY: PMM + MmuOps + VBAR_EL1 + per-AS PT root (P2-19) +
         // SVC dispatch all initialised; single-CPU; DAIF.I masked.
-        unsafe { crate::smoke::elf_arm::run(); }
+        unsafe { smoke::elf_arm::run(); }
     }
 
+    #[cfg(target_os = "oxide-kernel")] periodic::spawn();
     halt_forever()
 }
 
@@ -882,11 +883,10 @@ fn log_memmap(regions: &[BootMemRegion]) {
 // `syscall::dispatch`. arch-specific interceptions live behind cfg
 // gates inside the module.
 #[cfg(target_os = "oxide-kernel")]
-pub mod syscalls;
+#[cfg(target_os = "oxide-kernel")] pub use syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
-#[cfg(target_os = "oxide-kernel")] pub mod smoke;
-#[cfg(target_os = "oxide-kernel")] pub mod procfs;
-#[cfg(target_os = "oxide-kernel")] pub mod sysfs;
+#[cfg(target_os = "oxide-kernel")] pub use procfs;
+#[cfg(target_os = "oxide-kernel")] pub use sysfs;
 #[cfg(target_os = "oxide-kernel")] pub mod boot_cmdline;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only
@@ -920,7 +920,7 @@ pub mod syscalls;
 // PCI bus enumeration boot helper (per-arch ConfigSpaceReader
 // dispatch). Split out of lib.rs to keep that file under cap.
 #[cfg(target_os = "oxide-kernel")]
-pub mod pci_boot;
+#[cfg(target_os = "oxide-kernel")] pub use pci_boot;
 
 // P2-21c initial user-stack builder per docs/31§4 step 5.
 // SysV argc/argv/envp/auxv layout written at execve time.
@@ -952,11 +952,11 @@ unsafe fn tick_poll_combined() {
     sched::live::zombies::reap_orphans();
     // F169/B20: wake tasks past wakeup_deadline_ns (SO_*TIMEO) or
     // alarm_ns (alarm/itimer). Dead since F152 retired the rx kthread.
-    sched::live::tick_wake_expired(crate::vvar::monotonic_now_ns());
+    sched::live::tick_wake_expired(syscalls::vvar::monotonic_now_ns());
     // Refresh the vDSO vvar page with the live monotonic clock so
     // userspace __vdso_clock_gettime returns current time without
     // a syscall. Cheap (one TimerOps read + 4 atomic stores).
-    crate::vvar::publish();
+    syscalls::vvar::publish();
 }
 
 /// Boot anchor / idle loop. Calls `schedule()` (so a freshly-runnable

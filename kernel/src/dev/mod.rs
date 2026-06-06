@@ -6,8 +6,12 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod console;
-pub mod drm;
-pub mod pidfd;
-pub mod pty;
-pub mod tracefs;
+// console char device (/dev/console,/dev/tty[N]) → `console` crate (docs/53)
+pub use console;
+// DRM device node (/dev/dri) → `drm` crate node module (docs/53)
+pub use drm::node as drm;
+// pidfd moved into the syscalls crate (docs/53)
+// pty (/dev/ptmx,/dev/pts) → `devpts` crate (docs/53)
+pub use devpts as pty;
+// tracefs (/sys/kernel/tracing) → `tracefs` crate (docs/53)
+pub use tracefs;

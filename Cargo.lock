@@ -106,6 +106,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.1.0"
+dependencies = [
+ "klog",
+ "kmacros",
+ "sched",
+ "tty",
+ "vfs",
+]
+
+[[package]]
 name = "cpio"
 version = "0.1.0"
 
@@ -136,6 +147,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "devpts"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "hal",
+ "klog",
+ "kmacros",
+ "sched",
+ "sync",
+ "tty",
+ "vfs",
+]
+
+[[package]]
 name = "dl"
 version = "0.1.0"
 dependencies = [
@@ -147,9 +172,12 @@ dependencies = [
 name = "drm"
 version = "0.1.0"
 dependencies = [
+ "devfs",
  "hal",
  "klog",
  "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
@@ -475,8 +503,10 @@ dependencies = [
  "block",
  "boot-info",
  "cgroup",
+ "console",
  "cpu",
  "devfs",
+ "devpts",
  "drm",
  "drv",
  "drv-virtio-gpu",
@@ -495,20 +525,26 @@ dependencies = [
  "ipc",
  "kalloc",
  "klog",
+ "kmacros",
  "modules",
  "net",
  "netfilter",
  "netlink",
  "nscg",
  "pci",
+ "pci-boot",
  "pmm",
  "power",
  "procfs",
  "sched",
  "security",
+ "smoke",
  "softirq",
  "sync",
  "syscall",
+ "syscalls",
+ "sysfs",
+ "tracefs",
  "tty",
  "vfs",
  "virtio",
@@ -533,6 +569,10 @@ dependencies = [
 
 [[package]]
 name = "klog"
+version = "0.1.0"
+
+[[package]]
+name = "kmacros"
 version = "0.1.0"
 
 [[package]]
@@ -671,6 +711,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "pci-boot"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "drv-virtio-gpu",
+ "drv-virtio-input",
+ "drv-virtio-net",
+ "firmware",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "kmacros",
+ "net",
+ "netlink",
+ "pci",
+ "pmm",
+ "softirq",
+ "sync",
+ "virtio",
+]
+
+[[package]]
 name = "pkg"
 version = "0.1.0"
 dependencies = [
@@ -736,13 +799,20 @@ dependencies = [
 name = "procfs"
 version = "0.1.0"
 dependencies = [
+ "cgroup",
+ "devfs",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
+ "kmacros",
  "modules",
  "net",
+ "nscg",
  "pmm",
  "sched",
  "sync",
+ "sysfs",
  "vfs",
  "vmm",
 ]
@@ -953,6 +1023,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "smoke"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "console",
+ "elf-load",
+ "ext4",
+ "firmware",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "kmacros",
+ "pmm",
+ "sched",
+ "sync",
+ "tty",
+ "vfs",
+ "vmm",
+]
+
+[[package]]
 name = "softirq"
 version = "0.1.0"
 
@@ -991,6 +1083,71 @@ dependencies = [
 ]
 
 [[package]]
+name = "syscalls"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "block",
+ "boot-info",
+ "cgroup",
+ "console",
+ "cpu",
+ "devfs",
+ "devpts",
+ "drm",
+ "drv",
+ "drv-virtio-gpu",
+ "drv-virtio-input",
+ "drv-virtio-net",
+ "elf",
+ "elf-load",
+ "ext4",
+ "fbcon",
+ "fbdev",
+ "firmware",
+ "fs",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "iouring",
+ "ipc",
+ "kalloc",
+ "klog",
+ "kmacros",
+ "modules",
+ "net",
+ "netfilter",
+ "netlink",
+ "nscg",
+ "pci",
+ "pmm",
+ "power",
+ "procfs",
+ "sched",
+ "security",
+ "smoke",
+ "softirq",
+ "sync",
+ "syscall",
+ "tracefs",
+ "tty",
+ "vfs",
+ "virtio",
+ "vmm",
+ "vt",
+]
+
+[[package]]
+name = "sysfs"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "net",
+ "netlink",
+ "vfs",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1001,6 +1158,14 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "tracefs"
+version = "0.1.0"
+dependencies = [
+ "devfs",
+ "vfs",
 ]
 
 [[package]]

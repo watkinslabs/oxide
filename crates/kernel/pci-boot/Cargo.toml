@@ -1,0 +1,35 @@
+[package]
+name = "pci-boot"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+klog    = { path = "../../shared/klog" }
+kmacros = { path = "../../shared/kmacros" }
+sync    = { path = "../../shared/sync" }
+hal     = { path = "../../arch/hal" }
+pmm     = { path = "../mm-pmm" }
+pci     = { path = "../../drivers/pci" }
+virtio  = { path = "../../drivers/virtio" }
+arch-irq = { path = "../arch-irq" }
+softirq = { path = "../softirq" }
+net     = { path = "../net" }
+netlink = { path = "../netlink" }
+firmware = { path = "../firmware" }
+drv-virtio-net   = { path = "../../drivers/drv-virtio-net" }
+drv-virtio-gpu   = { path = "../../drivers/drv-virtio-gpu" }
+drv-virtio-input = { path = "../../drivers/drv-virtio-input" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+debug-boot  = ["kmacros/debug-boot"]
+debug-trace = ["kmacros/debug-trace"]
