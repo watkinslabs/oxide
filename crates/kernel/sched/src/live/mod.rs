@@ -37,7 +37,7 @@ pub mod tick_deadline;
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
-    current, mark_done, schedule, schedule_from_irq, tick_yield,
+    current, current_mount_ns, current_chroot_root, mark_done, schedule, schedule_from_irq, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};

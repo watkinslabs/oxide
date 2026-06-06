@@ -60,3 +60,64 @@ pub fn tick(now_ns: u64) {
         }
     }
 }
+
+// ---- cgroup controllers that manipulate task scheduling state ----
+// freezer / cpuset / cpu.weight / cgroup.kill / pid-resolve. Linux keeps
+// these in the scheduler (kernel/sched, kernel/cgroup/freezer); they read
+// the leaf `cgroup` crate's hierarchy and act on tasks via the runqueue.
+use core::sync::atomic::Ordering as CgOrd;
+
+/// cgroup.kill: post `sig` to the global-tid `pid` task and wake it.
+/// # C: O(N) registry lookup
+pub fn kill_hook(pid: u64, sig: i32) {
+    if !(1..=64).contains(&sig) { return; }
+    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+        t.sigpending.fetch_or(1u64 << (sig - 1), CgOrd::Release);
+        crate::live::wake_if_sleeping(&t);
+    }
+}
+
+/// cgroup.freeze: freeze (`v`) / thaw the global-tid `pid` task.
+/// # C: O(N) registry lookup + runqueue op
+pub fn freeze_hook(pid: u64, v: bool) {
+    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+        if v { crate::live::freeze_task(&t); } else { crate::live::unfreeze_task(&t); }
+    }
+}
+
+/// cpuset.cpus: set the CPU-affinity mask of the global-tid `pid` task.
+/// # C: O(N) registry lookup
+pub fn cpuset_hook(pid: u64, mask: u64) {
+    if mask == 0 { return; }
+    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+        t.cpus_allowed.store(mask, CgOrd::Release);
+    }
+}
+
+/// cpu.weight: set the live CFS load weight of the global-tid `pid` task.
+/// # C: O(N) registry lookup
+pub fn weight_hook(pid: u64, weight: u32) {
+    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+        t.load_weight.store(weight, CgOrd::Release);
+    }
+}
+
+/// vpid → global tid for cgroup.procs/threads writes (identity fallback).
+/// # C: O(N) registry lookup
+pub fn pid_resolve_hook(vpid: u64) -> u64 {
+    match crate::live::registry::lookup_by_vpid(vpid as u32) {
+        Some(t) => t.tid as u64,
+        None => vpid,
+    }
+}
+
+/// Register the scheduler's cgroup controllers with the cgroup crate.
+/// Called once at boot.
+/// # C: O(1)
+pub fn install() {
+    cgroup::set_signal_hook(kill_hook);
+    cgroup::set_freeze_hook(freeze_hook);
+    cgroup::set_weight_hook(weight_hook);
+    cgroup::set_cpuset_hook(cpuset_hook);
+    cgroup::set_pid_resolve_hook(pid_resolve_hook);
+}

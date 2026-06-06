@@ -26,7 +26,7 @@ const _: () = assert!(
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 extern crate kmacros;
-pub mod cgroup_boot; #[cfg(target_os = "oxide-kernel")] mod periodic;
+#[cfg(target_os = "oxide-kernel")] mod periodic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
@@ -471,7 +471,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot, syscalls::hostname::set);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
-        ::devfs::set_current_hooks(|| sched::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0), || sched::current().and_then(|c| { let r = unsafe { (*c.root.get()).clone() }; (r != "/").then_some(r) }));
+        ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
@@ -615,8 +615,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // `cgroup.kill` can SIGKILL members, then mount the unified
     // hierarchy at /sys/fs/cgroup so the mount point exists for
     // userspace from boot. A later `mount -t cgroup2` is idempotent.
-    crate::cgroup_boot::install_hooks();
-    cgroup::set_pid_resolve_hook(crate::cgroup_boot::cgroup_pid_resolve_hook);
+    sched::cgroup::install();
+    cgroup::set_notify_hook(fs::inotify::fire_modify_path); // cgroup.events → inotify
     cgroup::mount_root();
     // Permanent, `debug-cgroup`-gated boot self-test (`26§8`,
     // `docs/41`): exercise the cgroup v2 VFS path end-to-end via the
@@ -624,7 +624,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // uses, klogging PASS/FAIL. Deterministic early-boot validation
     // that doesn't depend on flaky userspace serial capture. Zero
     // codegen when the feature is off, like every other debug gate.
-    debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }
+    debug_cgroup! { cgroup::selftest::run(); }
     // SAFETY: kernel_main runs single-CPU pre-init; security::init reports ready (per-task seccomp slot is None until prctl/seccomp installs).
     let _ = unsafe { security::init() };
     // SAFETY: kernel_main runs single-CPU pre-init; drv::init reports ready; per-driver register() happens during PCI enumeration.
@@ -677,7 +677,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         let _ = vfs::mount::register("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
-        debug_cgroup! { crate::cgroup_boot::cgroup_selftest(); }
+        debug_cgroup! { cgroup::selftest::run(); }
     }
     #[cfg(target_os = "oxide-kernel")]
     {
