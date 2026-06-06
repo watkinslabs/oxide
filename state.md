@@ -40,19 +40,32 @@ real block. Pure qemu/build/cargo-test commands work.
   pivot_root + nscg crate already implemented — verify + close like Phase 14.
 - Pattern: phase statuses LAG the code; audit before building (verify-left).
 
-## Open / next (pick one, ship one PR)
-1. **arm `smoke::ksched::smoke_rr(4)` debug-all hang** (debug-only; production/
-   debug-boot arm boots fine). 4 kthreads "enter", none "done" — hangs on the
-   first RESUME of a yielded kthread (5th switch). HYPOTHESIS (unconfirmed):
-   arm gen-timer fires during the cooperative no-IRQ smoke because kthreads are
-   spawned via new_kernel_with_irq_frame (SPSR 0x145 = IRQ UNMASKED) and the arm
-   timer is armed early (x86 LAPIC is armed AFTER the smokes in run_as_task, so
-   x86 stays clean). CONFIRM via qemu-MCP: qemu_start arch=aarch64
-   features=debug-all; break schedule_from_irq (does it fire during smoke_rr?)
-   + inspect kthread SPSR/DAIF; then fix (mask IRQs for the smoke, or arm the
-   arm timer after the smokes to match x86). context_switch asm itself is correct.
-2. Phase 15 acceptance (nginx/curl) or close Phase 16 after verifying.
-3. console/devpts are kernel-only by design (no host tests) — NOT bugs.
+## System health: x86 boot log is CLEAN
+Only warning is `Failed to find module 'autofs4'` (systemd automount; benign,
+handled gracefully — do NOT stub it, that'd be a façade). Both arches boot →
+login → shell. The quick-win bug surface is exhausted; remaining work is feature
+development (multi-session), not bug-fixing.
+
+## qemu-MCP arm GOTCHA (cost me an iteration)
+`mcp__qemu__qemu_start arch=aarch64` boots **target/oxide-aarch64-grub.iso**,
+which is STALE (xtask grub --arch aarch64 is unsupported, so it's never rebuilt)
+→ the MCP boots a pre-current kernel. Its results are INVALID for current main.
+For current-main arm debug use the DISK path: `xtask qemu --arch aarch64
+--features <set>` rebuilds target/oxide-aarch64.img, then arm_login3.py (or add
+-s -S to a direct qemu on the disk for gdb). x86 MCP is fine (ISO rebuilds).
+
+## Open / next — all are multi-session FEATURE work, not quick fixes
+1. **arm `smoke_rr(4)` debug-all hang** — debug-only (production+debug-boot arm
+   boot to login+shell fine). MCP can't debug it (stale arm ISO, above). Needs a
+   disk+gdb arm-debug setup. Hypothesis: arm timer IRQ fires during the no-IRQ
+   cooperative smoke (kthreads SPSR 0x145 IRQ-unmasked). LOW priority (debug-only).
+2. **Phase 15 acceptance**: nginx/curl over loopback (the `net udp lo round-trip`
+   smoke already passes; 171 net oracle tests pass). Needs the userspace bins in
+   the rootfs + a boot/network run. Close Phase 15 only after this.
+3. **Phase 16 real isolation**: unshare/setns handle all CLONE_NEW* but the impl
+   is id-tracking "substrate" (F100-F107), NOT full isolation (separate mount
+   tables / pid translation / net stacks). Genuinely OPEN — real multi-session work.
+4. console/devpts kernel-only by design (no host tests) — NOT bugs.
 
 ## Stale BUG tasks (re-audit; several no longer repro)
 - BUG H (rm -rf tmpfs rc=1): does NOT repro (rm -rf returns 0). Minor: tmpfs `ls`
