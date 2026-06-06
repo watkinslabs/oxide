@@ -73,6 +73,14 @@ static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
 // leaves IRQ4 un-overridden; we still parse type-2 in case it isn't.
 static IRQ4_GSI: AtomicU32 = AtomicU32::new(4);
 static IRQ4_FLAGS: AtomicU32 = AtomicU32::new(0);
+// ACPI SPCR (Serial Port Console Redirection) — the firmware-elected
+// serial console. Absent ⇒ no firmware serial console (a driver may
+// still legacy-probe COM1). `addr_space`: 0=SystemMemory (MMIO),
+// 1=SystemIO (x86 port). docs/35 / Microsoft SPCR 4.0.
+static SPCR_PRESENT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static SPCR_BASE: AtomicU64 = AtomicU64::new(0);
+static SPCR_ADDR_SPACE: AtomicU32 = AtomicU32::new(0);
+static SPCR_GSI: AtomicU32 = AtomicU32::new(0);
 
 /// Physical base of the first I/O APIC (0 = none found / pre-ACPI).
 /// # C: O(1)
@@ -84,6 +92,21 @@ pub fn ioapic_gsi_base() -> u32 { IOAPIC_GSI_BASE.load(Ordering::Acquire) }
 pub fn irq4_gsi() -> u32 { IRQ4_GSI.load(Ordering::Acquire) }
 /// MADT flags (polarity/trigger) for the COM1 IRQ4 routing. # C: O(1)
 pub fn irq4_flags() -> u32 { IRQ4_FLAGS.load(Ordering::Acquire) }
+/// True if firmware published an SPCR serial console. # C: O(1)
+pub fn spcr_present() -> bool { SPCR_PRESENT.load(Ordering::Acquire) }
+/// SPCR console UART base (MMIO PA or x86 I/O port per `spcr_addr_space`). # C: O(1)
+pub fn spcr_base() -> u64 { SPCR_BASE.load(Ordering::Acquire) }
+/// SPCR address space: 0=SystemMemory (MMIO), 1=SystemIO (port). # C: O(1)
+pub fn spcr_addr_space() -> u32 { SPCR_ADDR_SPACE.load(Ordering::Acquire) }
+/// SPCR console interrupt GSI (0 = none / poll-only). # C: O(1)
+pub fn spcr_gsi() -> u32 { SPCR_GSI.load(Ordering::Acquire) }
+/// Record the firmware-elected SPCR serial console (first wins). # C: O(1)
+pub(crate) fn set_spcr(base: u64, addr_space: u8, gsi: u32) {
+    if SPCR_PRESENT.swap(true, Ordering::AcqRel) { return; }
+    SPCR_BASE.store(base, Ordering::Release);
+    SPCR_ADDR_SPACE.store(addr_space as u32, Ordering::Release);
+    SPCR_GSI.store(gsi, Ordering::Release);
+}
 
 /// Record the first I/O APIC from the MADT (first wins). # C: O(1)
 pub(crate) fn set_ioapic(pa: u32, gsi_base: u32) {
