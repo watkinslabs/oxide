@@ -25,6 +25,7 @@ ext4    = { path = "../crates/kernel/ext4" }
 hal     = { path = "../crates/arch/hal" }
 klog    = { path = "../crates/shared/klog" }
 console   = { path = "../crates/kernel/console" }
+devpts    = { path = "../crates/kernel/devpts" }
 kmacros   = { path = "../crates/shared/kmacros" }
 kalloc  = { path = "../crates/shared/kalloc" }
 pmm     = { path = "../crates/kernel/mm-pmm" }
@@ -69,7 +70,7 @@ debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm"]  # device-map MMIO sanity re
 debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
-debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
 debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)

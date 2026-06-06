@@ -1,3 +1,7 @@
+#![no_std]
+#[macro_use] extern crate kmacros;
+extern crate alloc;
+
 // /dev/ptmx + /dev/pts/<n> per `28§5`. Each open of /dev/ptmx
 // allocates a fresh `tty::Pair`, registers a slave inode at
 // /dev/pts/<n> in the devfs registry, and returns the master fd.
@@ -181,7 +185,7 @@ pub fn allocate_pair() -> (InodeRef, u32) {
     let master: InodeRef = Arc::new(PtyMasterInode { pair: Arc::clone(&pair) });
     let slave:  InodeRef = Arc::new(PtySlaveInode  { pair });
     let path = format!("/dev/pts/{}", n);
-    crate::devfs::register_owned(path, slave);
+    devfs::register_owned(path, slave);
     (master, n)
 }
 
@@ -201,7 +205,7 @@ impl LockedPair {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    crate::devfs::register("/dev/ptmx", Arc::new(PtmxSentinelInode) as InodeRef);
+    devfs::register("/dev/ptmx", Arc::new(PtmxSentinelInode) as InodeRef);
 }
 
 /// Boot-time smoke for the PTY pair surface. Allocates a fresh
@@ -223,7 +227,7 @@ pub fn smoke_test() {
     let mut path: alloc::string::String = alloc::string::String::with_capacity(16);
     path.push_str("/dev/pts/");
     push_dec(&mut path, n);
-    let slave = crate::devfs::lookup(&path).expect("pts slave registered");
+    let slave = devfs::lookup(&path).expect("pts slave registered");
     kassert!(slave.file_type() == FileType::CharDev, "pts slave is chardev");
 
     // Master write → slave read (cooked: needs trailing \n; ECHO

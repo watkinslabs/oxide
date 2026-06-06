@@ -10,5 +10,6 @@
 pub use console;
 pub mod drm;
 pub mod pidfd;
-pub mod pty;
+// pty (/dev/ptmx,/dev/pts) → `devpts` crate (docs/53)
+pub use devpts as pty;
 pub mod tracefs;
