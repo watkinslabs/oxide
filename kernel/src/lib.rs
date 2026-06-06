@@ -108,13 +108,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // vfs hooks: flock release-on-close + inotify IN_MODIFY-on-write
     // + pipe reader/writer close tracking (must register before any
     // pipe File can be dropped).
-    #[cfg(target_os = "oxide-kernel")]
-    {
-        fs::flock::install_drop_hook();
-        fs::inotify::install_write_hook();
-        fs::pipe::install_close_hook();
-        fs::epoll::install_epoll_broadcast();
-    }
+    #[cfg(target_os = "oxide-kernel")] fs::init();
     // Bring up the kernel heap before any subsystem that allocates.
     // SAFETY: kernel_main is called once per boot from a single CPU
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
@@ -201,90 +195,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // machinery works after init. Removed once a real consumer
     // (slab) wires in.
     if let Ok(p) = pmm {
-        debug_pmm! {
-            match p.alloc(pmm::Order(0)) {
-                Ok(pfn) => {
-                    klog::kinfo!("pmm-smoke: alloc(0) ok");
-                    // SAFETY: pfn was just returned by alloc(0); free is
-                    // the matching counterpart and is single-threaded
-                    // here per pre-init contract.
-                    unsafe { p.free(pfn, pmm::Order(0)); }
-                    klog::kinfo!("pmm-smoke: free(0) ok");
-                }
-                Err(_) => klog::kerror!("pmm-smoke: alloc(0) failed"),
-            }
-            // Memory summary: `pmm: <free_mib> MiB free, <alloc> page(s) reserved`.
-            let free_pages = p.free_pages();
-            let alloc_pages = p.allocated_pages();
-            // 4 KiB pages -> MiB: pages * 4096 / (1024*1024) = pages / 256.
-            let free_mib = free_pages / 256;
-            klog::write_raw(b"[INFO]  pmm: ");
-            klog::write_dec_u64(free_mib);
-            klog::write_raw(b" MiB free, ");
-            klog::write_dec_u64(alloc_pages);
-            klog::write_raw(b" page(s) reserved\n");
-
-            // PMM stress: alloc 64 order-0 pages, free in reverse, verify
-            // free_pages count matches the baseline. Catches simple
-            // bookkeeping bugs the single-page smoke can't.
-            const STRESS_N: usize = 64;
-            let baseline = p.free_pages();
-            let mut buf: [hal::Pfn; STRESS_N] = [hal::Pfn(0); STRESS_N];
-            let mut got = 0usize;
-            while got < STRESS_N {
-                match p.alloc(pmm::Order(0)) {
-                    Ok(pfn) => { buf[got] = pfn; got += 1; }
-                    Err(_)  => break,
-                }
-            }
-            // SAFETY: every pfn in `buf[..got]` was returned by alloc(0)
-            // above and not yet freed; reverse-order frees match the
-            // alloc count exactly.
-            unsafe {
-                while got > 0 {
-                    got -= 1;
-                    p.free(buf[got], pmm::Order(0));
-                }
-            }
-            let after = p.free_pages();
-            if after == baseline {
-                klog::kinfo!("pmm-stress: 64x alloc/free balanced");
-            } else {
-                klog::kerror!("pmm-stress: free_pages drift");
-            }
-
-            // Multi-order stress: one alloc/free per order 0..=10. Exercises
-            // the split-and-merge paths the single-order stress can't.
-            let baseline_mo = p.free_pages();
-            let mut order_buf: [(hal::Pfn, u8); 11] = [(hal::Pfn(0), 0); 11];
-            let mut got_mo = 0usize;
-            for o in 0u8..=10 {
-                match p.alloc(pmm::Order(o)) {
-                    Ok(pfn) => { order_buf[got_mo] = (pfn, o); got_mo += 1; }
-                    Err(_)  => break,
-                }
-            }
-            // SAFETY: each pair in `order_buf[..got_mo]` came from a matching
-            // `alloc(o)` above; we free with the same order, single-threaded.
-            unsafe {
-                while got_mo > 0 {
-                    got_mo -= 1;
-                    let (pfn, o) = order_buf[got_mo];
-                    p.free(pfn, pmm::Order(o));
-                }
-            }
-            if p.free_pages() == baseline_mo {
-                klog::kinfo!("pmm-stress: orders 0..=10 balanced");
-            } else {
-                klog::kerror!("pmm-stress: multi-order drift");
-            }
-            // Re-emit the summary to make the round-trip visible in the trace.
-            klog::write_raw(b"[INFO]  pmm: ");
-            klog::write_dec_u64(p.free_pages() / 256);
-            klog::write_raw(b" MiB free post-stress, ");
-            klog::write_dec_u64(p.allocated_pages());
-            klog::write_raw(b" page(s) reserved\n");
-        }
+        debug_pmm! { smoke::pmm::run(p); }
 
         // Wire MmuOps for this arch: stash HHDM + bare-fn frame
         // allocator. After this point the trait surface is live.
@@ -344,22 +255,15 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // the global allocator's `BTreeMap` path.
     #[cfg(target_os = "oxide-kernel")]
     {
-        let mut tree = vmm::VmaTree::new();
-        // SAFETY: addresses are within the user-VA range (0x1000 < USER_VA_END).
-        let start = hal::UserVirtAddr::new(0x1000).expect("test addr in user range");
-        let end   = hal::UserVirtAddr::new(0x2000).expect("test addr in user range");
-        let inserted = tree.insert(vmm::Vma::new(
-            start, end,
-            vmm::VmaProt::READ,
-            vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
-            vmm::VmaBacking::Anonymous,
-        )).is_ok();
         debug_boot! {
-            if inserted {
-                klog::kinfo!("kalloc-smoke: VmaTree insert ok");
-            } else {
-                klog::kerror!("kalloc-smoke: VmaTree insert failed");
-            }
+            let mut tree = vmm::VmaTree::new();
+            // SAFETY: addresses within user-VA range (0x1000 < USER_VA_END).
+            let start = hal::UserVirtAddr::new(0x1000).expect("test addr");
+            let end   = hal::UserVirtAddr::new(0x2000).expect("test addr");
+            let inserted = tree.insert(vmm::Vma::new(start, end, vmm::VmaProt::READ,
+                vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS, vmm::VmaBacking::Anonymous)).is_ok();
+            if inserted { klog::kinfo!("kalloc-smoke: VmaTree insert ok"); }
+            else { klog::kerror!("kalloc-smoke: VmaTree insert failed"); }
         }
     }
 
@@ -411,18 +315,20 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         drm::node::register();
         fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
         fbdev::devfs::init(); devpts::init();
-        // boot smokes:
-        ::devfs::misc::smoke_test();
-        procfs::smoke_test();
-        fs::pipe::smoke_test();
-        fs::tmpfs::smoke_test();
-        devpts::smoke_test();
+        // boot smokes (debug-boot gated):
+        debug_boot! {
+            ::devfs::misc::smoke_test();
+            procfs::smoke_test();
+            fs::pipe::smoke_test();
+            fs::tmpfs::smoke_test();
+            devpts::smoke_test();
+        }
         // P3-49 syscall coverage banner. Kept in sync by hand —
         // bumped whenever a new arm or compat-table entry lands.
         debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
         // P3-56 path-string lookup smoke for the execve resolver.
         #[cfg(target_arch = "x86_64")]
-        smoke::elf::lookup_smoke();
+        debug_boot! { smoke::elf::lookup_smoke(); }
     }
 
 
