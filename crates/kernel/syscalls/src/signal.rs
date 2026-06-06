@@ -1,0 +1,634 @@
+// Signal/namespace/ptrace/kill family extracted from
+// syscall_glue_proc.rs to keep that file under the 1000-line cap
+// per `08§7`. The dispatch in `syscall_glue.rs` calls into this
+// module by name; everything here is single-mutator-per-active-CPU.
+
+#![cfg(target_os = "oxide-kernel")]
+
+use syscall::SyscallArgs;
+
+const CLONE_NEWNS:    u64 = 0x00020000;
+const CLONE_NEWCGROUP:u64 = 0x02000000;
+const CLONE_NEWUTS:   u64 = 0x04000000;
+const CLONE_NEWIPC:   u64 = 0x08000000;
+const CLONE_NEWUSER:  u64 = 0x10000000;
+const CLONE_NEWPID:   u64 = 0x20000000;
+const CLONE_NEWNET:   u64 = 0x40000000;
+
+#[inline]
+fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
+    Some(match clone_flag {
+        CLONE_NEWNS      => 0,
+        CLONE_NEWUTS     => 1,
+        CLONE_NEWIPC     => 2,
+        CLONE_NEWUSER    => 3,
+        CLONE_NEWPID     => 4,
+        CLONE_NEWNET     => 5,
+        CLONE_NEWCGROUP  => 6,
+        _ => return None,
+    })
+}
+
+/// `sys_unshare(flags)` — slot 272. Detach the calling task from
+/// the named namespaces. v1 honors CLONE_NEWUTS by snapshotting the
+/// current global hostname into a per-task UTS slot. Other CLONE_NEW*
+/// bits set the membership bit but per-NS isolation isn't enforced.
+/// # C: O(1)
+pub fn sys_unshare(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let flags = args.a0;
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    let mut bits: u64 = 0;
+    for clone_flag in [
+        CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
+        CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWCGROUP,
+    ] {
+        if (flags & clone_flag) != 0 {
+            if let Some(b) = ns_bit_for_clone(clone_flag) {
+                bits |= 1u64 << b;
+            }
+        }
+    }
+    if bits == 0 { return 0; }
+    cur.ns_membership.fetch_or(bits, Ordering::Release);
+    if (bits & (1u64 << 1)) != 0 {
+        let snap_bytes = crate::hostname::snapshot();
+        let snap = alloc::string::String::from_utf8(snap_bytes).unwrap_or_default();
+        // SAFETY: per-task slot single-mutator per `13§5`; running task on this CPU is the sole writer of uts_hostname.
+        unsafe { *cur.uts_hostname.get() = snap; }
+    }
+    if (bits & (1u64 << 2)) != 0 {
+        // CLONE_NEWIPC — fresh ipc_ns id (F100).
+        static NEXT_IPC_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_IPC_NS.fetch_add(1, Ordering::AcqRel);
+        cur.ipc_ns.store(id, Ordering::Release);
+    }
+    if (bits & (1u64 << 5)) != 0 {
+        // CLONE_NEWNET — fresh net_ns id (F101).
+        static NEXT_NET_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_NET_NS.fetch_add(1, Ordering::AcqRel);
+        cur.net_ns.store(id, Ordering::Release);
+    }
+    if (bits & (1u64 << 4)) != 0 {
+        // CLONE_NEWPID — pending bit; fork dispatcher allocates ns (F105).
+        cur.unshare_pid_pending.store(true, Ordering::Release);
+    }
+    if (bits & (1u64 << 3)) != 0 {
+        // CLONE_NEWUSER — fresh user_ns id (F106 substrate).
+        // F118: also record (new, parent) so has_cap_for can walk
+        // ancestors per `27§R01`.
+        static NEXT_USER_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let new_id = NEXT_USER_NS.fetch_add(1, Ordering::AcqRel);
+        let parent = cur.user_ns.load(Ordering::Acquire);
+        nscg::proc_ns::user_ns_record(new_id, parent);
+        cur.parent_user_ns.store(parent, Ordering::Release);
+        cur.user_ns.store(new_id, Ordering::Release);
+    }
+    if (bits & (1u64 << 6)) != 0 {
+        // CLONE_NEWCGROUP — fresh cgroup_ns id (F106 substrate).
+        static NEXT_CGROUP_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_CGROUP_NS.fetch_add(1, Ordering::AcqRel);
+        cur.cgroup_ns.store(id, Ordering::Release);
+    }
+    if (bits & (1u64 << 0)) != 0 {
+        // CLONE_NEWNS — fresh mount_ns id (F107 substrate) + snapshot
+        // parent's NS-tagged mount entries into the new id (F119).
+        static NEXT_MOUNT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let new_id = NEXT_MOUNT_NS.fetch_add(1, Ordering::AcqRel);
+        let parent_ns = cur.mount_ns.load(Ordering::Acquire);
+        devfs::snapshot_ns(parent_ns, new_id);
+        // U2-b: copy the unified mount table's entries too, so the new ns
+        // starts with a full private copy of the parent tree then diverges.
+        vfs::mount::snapshot_ns(parent_ns, new_id);
+        cur.mount_ns.store(new_id, Ordering::Release);
+    }
+    0
+}
+
+/// `sys_setns(fd, nstype)` — slot 308. F117: real downcast of fd's
+/// inode to NsInode (per `26§R01`); validates kind, writes the
+/// captured ns id into the calling task's matching slot.
+/// # C: O(1)
+pub fn sys_setns(args: &SyscallArgs) -> i64 {
+    use syscall::errno::Errno;
+    let fd     = args.a0 as i32;
+    let nstype = args.a1;
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = match fdt.get(fd) {
+        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let inode = file.inode();
+    let any = match inode.as_any() {
+        Some(a) => a, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let ns = match any.downcast_ref::<nscg::proc_ns::NsInode>() {
+        Some(n) => n, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    nscg::proc_ns::setns_apply(ns, nstype, cur)
+}
+
+/// `sys_kill(pid, sig)` — slot 62. pgrp-aware per `28§4`:
+///   pid > 0 — signal that tid via the registry.
+///   pid == 0 — fan to caller's pgrp.
+///   pid == -1 — not implemented; -EPERM.
+///   pid <  -1 — fan to pgrp `(-pid)`.
+/// `sig == 0` is a permission probe.
+/// # C: O(N_tasks) on pgrp fan; O(N_tasks) lookup for non-self pid
+pub fn sys_kill(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    let pid = args.a0 as i32;
+    let sig = args.a1 as i32;
+    if !(0..=64).contains(&sig) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    };
+    let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
+    if pid > 0 {
+        if pid as u32 == cur.tid {
+            if sig != 0 { cur.sigpending.fetch_or(bit, Ordering::Release); }
+            return 0;
+        }
+        // F109: cross-NS pid translation. Caller in non-init pid_ns
+        // means `pid` is a vpid in their NS, not a global tid.
+        let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+        match sched::live::registry::lookup_in_ns(cur_ns, pid as u32) {
+            Some(t) => {
+                if !sig_perm_check(cur, &t, sig) {
+                    return -(syscall::errno::Errno::Eperm.as_i32() as i64);
+                }
+                if sig != 0 {
+                    t.sigpending.fetch_or(bit, Ordering::Release);
+                    if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+                    // F168: a signal raised on a Sleeping task must
+                    // wake it so the parked helper can observe the
+                    // bit and return -EINTR (Linux semantic). No-op
+                    // for any other task state.
+                    sched::live::wake_if_sleeping(&t);
+                }
+                0
+            }
+            None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
+        }
+    } else if pid == 0 {
+        let pgid = cur.pgid.load(Ordering::Acquire);
+        let n = post_pgrp(pgid, bit, sig);
+        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
+    } else if pid == -1 {
+        -(syscall::errno::Errno::Eperm.as_i32() as i64)
+    } else {
+        let n = post_pgrp((-pid) as u32, bit, sig);
+        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
+    }
+}
+
+fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
+    use core::sync::atomic::Ordering;
+    let tasks = sched::live::registry::tasks_in_pgrp(pgid);
+    let mut n = 0usize;
+    let cur = sched::live::current();
+    for t in &tasks {
+        let allowed = match cur {
+            Some(c) => sig_perm_check(c, t, sig),
+            None    => true,
+        };
+        if !allowed { continue; }
+        if sig != 0 {
+            t.sigpending.fetch_or(bit, Ordering::Release);
+            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
+            // Mirror sys_kill: a signal posted to a pgrp member that is
+            // parked (Sleeping) must wake it so its blocking helper
+            // observes the bit and returns -EINTR. Without this,
+            // kill(pgid=0, sig) cannot interrupt a parked group member.
+            sched::live::wake_if_sleeping(t);
+        }
+        n += 1;
+    }
+    n
+}
+
+/// Linux signal-permission check per `kill(2)`: sender may signal
+/// receiver if sender holds CAP_KILL OR sender's real/effective uid
+/// matches receiver's real or saved-set uid. SIGCONT is additionally
+/// allowed within the same session (so `kill -CONT 0` from a parent
+/// shell works even after setuid drops).
+/// # C: O(1)
+pub fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
+    use core::sync::atomic::Ordering;
+    if cur.tid == target.tid { return true; }
+    // F118: CAP_KILL must be held in a NS that's an ancestor of (or
+    // equal to) the target's user_ns. Init-NS callers pass through.
+    let target_ns = target.user_ns.load(Ordering::Acquire);
+    if nscg::proc_ns::has_cap_for(cur, target_ns, sched::cap::KILL) { return true; }
+    let ce = cur.creds.euid.load(Ordering::Acquire);
+    let cr = cur.creds.ruid.load(Ordering::Acquire);
+    let tr = target.creds.ruid.load(Ordering::Acquire);
+    let ts = target.creds.suid.load(Ordering::Acquire);
+    if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
+    // SIGCONT (18) — same session bypass.
+    if sig == 18 && cur.sid.load(Ordering::Acquire) == target.sid.load(Ordering::Acquire) {
+        return true;
+    }
+    false
+}
+
+/// `sys_rt_sigaction(sig, act, oldact, sz)` — slot 13. Reads + stores
+/// the user-supplied `struct sigaction` into the per-task `sigactions`
+/// array; writes the prior to `oldact` if non-NULL. Layout:
+///   { sa_handler: u64, sa_flags: u64, sa_restorer: u64, sa_mask: u64 }
+/// # C: O(1)
+pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
+    use sched::SaHandler;
+    use syscall::errno::Errno;
+    let sig = args.a0 as usize;
+    let act    = args.a1;
+    let oldact = args.a2;
+    let _sz    = args.a3;
+    if sig == 0 || sig > 64 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return 0,
+    };
+    let idx = sig - 1;
+    // SAFETY: running task on this CPU; preempt-off; sole writer to sigactions slot per single-mutator invariant.
+    let table = unsafe { &mut *cur.sigactions.get() };
+    let prior = table[idx];
+    if oldact != 0 && oldact < hal::USER_VA_END {
+        // SAFETY: oldact validated < USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe {
+            core::ptr::write_volatile( oldact         as *mut u64, prior.handler);
+            core::ptr::write_volatile((oldact +   8)  as *mut u64, prior.flags);
+            core::ptr::write_volatile((oldact +  16)  as *mut u64, prior.restorer);
+            core::ptr::write_volatile((oldact +  24)  as *mut u64, prior.mask);
+        }
+    }
+    if act != 0 {
+        if act >= hal::USER_VA_END {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        // SAFETY: act validated < USER_VA_END; user page mapped via active CR3 (caller's AS); CPL=0 reads through user mapping per `15§3`; 8-byte aligned per Linux ABI.
+        let (h, f, r, m) = unsafe { (
+            core::ptr::read_volatile( act         as *const u64),
+            core::ptr::read_volatile((act +   8)  as *const u64),
+            core::ptr::read_volatile((act +  16)  as *const u64),
+            core::ptr::read_volatile((act +  24)  as *const u64),
+        ) };
+        table[idx] = SaHandler { handler: h, flags: f, restorer: r, mask: m };
+        debug_ssh! { crate::signal_trace::sigaction(cur.tid, sig as u64, h, f, r); }
+    }
+    0
+}
+
+/// `sys_rt_sigprocmask(how, set, oldset, sz)` — slot 14.
+/// # C: O(1)
+pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    const SIG_BLOCK:   u64 = 0;
+    const SIG_UNBLOCK: u64 = 1;
+    const SIG_SETMASK: u64 = 2;
+    let how    = args.a0;
+    let set    = args.a1;
+    let oldset = args.a2;
+    let sz     = args.a3;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return 0,
+    };
+    let prior = cur.sigmask.load(Ordering::Acquire);
+    if oldset != 0 && oldset < hal::USER_VA_END {
+        // SAFETY: oldset validated < USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe { core::ptr::write_volatile(oldset as *mut u64, prior); }
+    }
+    if set == 0 { return 0; }
+    if set >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    // SAFETY: set validated < USER_VA_END; CPL=0 reads through caller's AS.
+    let new_set = unsafe { core::ptr::read_volatile(set as *const u64) };
+    let new_mask = match how {
+        SIG_BLOCK   => prior | new_set,
+        SIG_UNBLOCK => prior & !new_set,
+        SIG_SETMASK => new_set,
+        _           => return -(Errno::Einval.as_i32() as i64),
+    };
+    let new_mask = new_mask & !(1u64 << 8) & !(1u64 << 18);
+    cur.sigmask.store(new_mask, Ordering::Release);
+    debug_ssh! { crate::signal_trace::sigprocmask(cur.tid, how, prior, new_mask); }
+    0
+}
+
+/// `sys_sigaltstack(ss, oldss)` — slot 131.
+/// # C: O(1)
+pub fn sys_sigaltstack(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let ss    = args.a0;
+    let oldss = args.a1;
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
+    };
+    if oldss != 0 {
+        if oldss >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        let sp    = cur.sigaltstack_sp.load(Ordering::Acquire);
+        let size  = cur.sigaltstack_size.load(Ordering::Acquire);
+        let flags = cur.sigaltstack_flags.load(Ordering::Acquire);
+        // SAFETY: oldss validated < USER_VA_END; CPL=0 writes through caller's AS.
+        unsafe {
+            core::ptr::write_volatile(oldss        as *mut u64, sp);
+            core::ptr::write_volatile((oldss + 8)  as *mut i32, flags as i32);
+            core::ptr::write_volatile((oldss + 16) as *mut u64, size);
+        }
+    }
+    if ss != 0 {
+        if ss >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: ss validated < USER_VA_END; struct sigaltstack layout {sp, flags, size}; CPL=0 reads through caller's AS.
+        let sp:    u64 = unsafe { core::ptr::read_volatile(ss as *const u64) };
+        // SAFETY: ss+8 still inside 24-byte struct sigaltstack; aligned i32 read.
+        let flags: i32 = unsafe { core::ptr::read_volatile((ss + 8) as *const i32) };
+        // SAFETY: ss+16 still inside 24-byte struct sigaltstack; aligned u64 read.
+        let size:  u64 = unsafe { core::ptr::read_volatile((ss + 16) as *const u64) };
+        cur.sigaltstack_sp.store(sp, Ordering::Release);
+        cur.sigaltstack_size.store(size, Ordering::Release);
+        cur.sigaltstack_flags.store(flags as u32, Ordering::Release);
+    }
+    0
+}
+
+/// `sys_rt_sigpending(set, sz)` — slot 127.
+/// # C: O(1)
+pub fn sys_rt_sigpending(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let set = args.a0;
+    let sz  = args.a1;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if set == 0 || set >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    let p = cur.sigpending.load(Ordering::Acquire);
+    // SAFETY: set validated < USER_VA_END; CPL=0 writes through caller's AS.
+    unsafe { core::ptr::write_volatile(set as *mut u64, p); }
+    0
+}
+
+/// `sys_rt_sigsuspend(mask, sz)` — slot 130.
+/// # C: O(yields until signal)
+pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let mask = args.a0;
+    let sz   = args.a1;
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if mask == 0 || mask >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
+    };
+    // SAFETY: mask validated < USER_VA_END; CPL=0 reads through caller's AS.
+    let m = unsafe { core::ptr::read_volatile(mask as *const u64) };
+    let new_mask = m & !(1u64 << 8) & !(1u64 << 18);
+    let old_mask = cur.sigmask.swap(new_mask, Ordering::AcqRel);
+    loop {
+        let pending = cur.sigpending.load(Ordering::Acquire);
+        if (pending & !cur.sigmask.load(Ordering::Acquire)) != 0 { break; }
+        // SAFETY: brief IRQ-on window so timer + IPI signal-raise can land; preempt-off through tick_yield.
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: process ctx; runqueue installed; preempt-off until tick_yield's Context::switch.
+        unsafe { sched::live::tick_yield(); }
+    }
+    cur.sigmask.store(old_mask, Ordering::Release);
+    -(Errno::Eintr.as_i32() as i64)
+}
+
+/// `sys_rt_sigtimedwait(set, info, timeout, sz)` — slot 128.
+/// # C: O(yields until signal or timeout)
+pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use hal::TimerOps;
+    use syscall::errno::Errno;
+    let set     = args.a0;
+    let info    = args.a1;
+    let timeout = args.a2;
+    let sz      = args.a3;
+    debug_ssh! {
+        klog::write_raw(b"[INFO]  ssh-trace: rt_sigtimedwait set_ptr=");
+        klog::write_hex_u64(set);
+        klog::write_raw(b" timeout_ptr=");
+        klog::write_hex_u64(timeout);
+        klog::write_raw(b"\n");
+    }
+    if sz != 8 { return -(Errno::Einval.as_i32() as i64); }
+    if set == 0 || set >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    // SAFETY: set validated < USER_VA_END; CPL=0 reads via active CR3.
+    let wanted = unsafe { core::ptr::read_volatile(set as *const u64) };
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
+    };
+    let deadline = if timeout != 0 && timeout < hal::USER_VA_END {
+        // SAFETY: timeout validated < USER_VA_END; struct timespec layout {tv_sec, tv_nsec}; CPL=0 reads.
+        let secs = unsafe { core::ptr::read_volatile(timeout as *const i64) };
+        // SAFETY: timeout+8 inside the 16-byte timespec; aligned i64 read.
+        let nsec = unsafe { core::ptr::read_volatile((timeout + 8) as *const i64) };
+        if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        let total = (secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
+        #[cfg(target_arch = "x86_64")]
+        let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        #[cfg(target_arch = "aarch64")]
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        Some(now.saturating_add(total))
+    } else { None };
+    loop {
+        let pending = cur.sigpending.load(Ordering::Acquire);
+        let arrived = pending & wanted;
+        if arrived != 0 {
+            let sig = arrived.trailing_zeros() + 1;
+            let popped: Option<sched::SigInfo> = if sig >= 33 && sig <= 64 {
+                let (rec, empty) = cur.rt_pop(sig);
+                if empty {
+                    cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+                }
+                rec
+            } else {
+                cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+                None
+            };
+            if info != 0 && info < hal::USER_VA_END {
+                // SAFETY: info validated < USER_VA_END; siginfo_t is 128 bytes; CPL=0 writes through caller's AS.
+                unsafe {
+                    for i in 0..128usize {
+                        core::ptr::write_volatile((info + i as u64) as *mut u8, 0);
+                    }
+                    core::ptr::write_volatile(info as *mut i32, sig as i32);
+                    if let Some(rec) = popped {
+                        // si_errno=0; si_code at +8; si_pid at +16; si_uid at +20; si_value at +24.
+                        core::ptr::write_volatile((info +  8) as *mut i32, rec.code);
+                        core::ptr::write_volatile((info + 16) as *mut u32, rec.pid);
+                        core::ptr::write_volatile((info + 20) as *mut u32, rec.uid);
+                        core::ptr::write_volatile((info + 24) as *mut u64, rec.value);
+                    }
+                }
+            }
+            return sig as i64;
+        }
+        if let Some(dl) = deadline {
+            #[cfg(target_arch = "x86_64")]
+            let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+            #[cfg(target_arch = "aarch64")]
+            let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+            if now >= dl { return -(Errno::Eagain.as_i32() as i64); }
+        }
+        // SAFETY: brief IRQ-on window so timer + IPI signal-raise can land; preempt-off through tick_yield.
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
+        // SAFETY: process ctx; runqueue installed; preempt-off until tick_yield's Context::switch.
+        unsafe { sched::live::tick_yield(); }
+    }
+}
+
+/// `sys_rt_sigqueueinfo(pid, sig, info)` — slot 129. RT signals
+/// (33..=64) push the user-supplied siginfo_t onto the target's
+/// per-signal RT queue; standard signals fall through to sys_kill
+/// (which collapses to the bitmap).
+/// # C: O(N_tasks)
+pub fn sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
+    let pid = args.a0 as u32;
+    let sig = args.a1 as u32;
+    let info_ptr = args.a2;
+    if sig < 33 || sig > 64 {
+        let kill_args = SyscallArgs {
+            a0: args.a0, a1: args.a1, a2: 0, a3: 0, a4: 0, a5: 0,
+        };
+        return sys_kill(&kill_args);
+    }
+    rt_sigqueue_to(pid, sig, info_ptr)
+}
+
+/// `sys_rt_tgsigqueueinfo(tgid, tid, sig, info)` — slot 297.
+/// # C: O(1)
+pub fn sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
+    let _tgid = args.a0 as u32;
+    let tid   = args.a1 as u32;
+    let sig   = args.a2 as u32;
+    let info_ptr = args.a3;
+    if sig < 33 || sig > 64 {
+        let tgkill_args = SyscallArgs {
+            a0: args.a0, a1: args.a1, a2: args.a2, a3: 0, a4: 0, a5: 0,
+        };
+        return sys_tgkill(&tgkill_args);
+    }
+    rt_sigqueue_to(tid, sig, info_ptr)
+}
+
+/// Internal helper: decode the user `siginfo_t` (first 32 bytes
+/// — signo/errno/code/pid/uid/value), enqueue on the target's RT
+/// queue, set the pending bit. Wakes if stopped.
+fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let target = match sched::live::registry::lookup(tid) {
+        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let info = if info_ptr != 0 && info_ptr < hal::USER_VA_END {
+        // SAFETY: info_ptr validated < USER_VA_END; siginfo_t leading fields are signo/errno/code/pid/uid/value (lay-of-the-land Linux x86_64); CPL=0 reads through caller's AS.
+        unsafe {
+            let signo_u = core::ptr::read_volatile(info_ptr as *const i32) as u32;
+            let _errno = core::ptr::read_volatile((info_ptr + 4) as *const i32);
+            let code   = core::ptr::read_volatile((info_ptr + 8) as *const i32);
+            let pid    = core::ptr::read_volatile((info_ptr + 16) as *const u32);
+            let uid    = core::ptr::read_volatile((info_ptr + 20) as *const u32);
+            let value  = core::ptr::read_volatile((info_ptr + 24) as *const u64);
+            sched::SigInfo { signo: signo_u, code, pid, uid, value }
+        }
+    } else {
+        sched::SigInfo { signo: sig, code: 0, pid: 0, uid: 0, value: 0 }
+    };
+    target.rt_push(info);
+    target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+    sched::live::registry::wake_if_stopped(&target);
+    0
+}
+
+/// One signal ready for delivery.
+#[derive(Copy, Clone, Debug)]
+pub struct PendingSignal {
+    pub sig:      u32,
+    pub handler:  u64,
+    pub flags:    u64,
+    pub restorer: u64,
+}
+
+/// Inspect `current.sigpending & !current.sigmask`; if non-zero,
+/// take the lowest pending. For RT signals (33..=64) also pop one
+/// siginfo from the per-signal queue and only clear the bitmap bit
+/// when the queue drains (POSIX RT semantics — bit stays set while
+/// records remain). Standard signals always clear the bit on take.
+/// # C: O(1)
+pub fn take_lowest_pending() -> Option<PendingSignal> {
+    use core::sync::atomic::Ordering;
+    let cur = sched::live::current()?;
+    let pending = cur.sigpending.load(Ordering::Acquire);
+    let masked  = cur.sigmask.load(Ordering::Acquire);
+    let deliver = pending & !masked;
+    if deliver == 0 { return None; }
+    let sig = deliver.trailing_zeros() + 1;
+    if sig >= 33 && sig <= 64 {
+        let (_info, empty) = cur.rt_pop(sig);
+        if empty {
+            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+        }
+    } else {
+        cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+    }
+    // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
+    let table = unsafe { &*cur.sigactions.get() };
+    let h = table[(sig - 1) as usize];
+    Some(PendingSignal { sig, handler: h.handler, flags: h.flags, restorer: h.restorer })
+}
+
+/// `sys_tgkill(tgid, tid, sig)` — slot 234. Validates that the
+/// target tid belongs to the named tgid before delivering.
+/// # C: O(N_tasks) lookup
+pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
+    use core::sync::atomic::Ordering;
+    use syscall::errno::Errno;
+    let tgid = args.a0 as i32;
+    let tid  = args.a1 as i32;
+    let sig  = args.a2 as i32;
+    if tgid <= 0 || tid <= 0 { return -(Errno::Esrch.as_i32() as i64); }
+    if !(0..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+    // F109: in non-init pid_ns, `tid` is a vtid in caller's NS.
+    match sched::live::registry::lookup_in_ns(cur_ns, tid as u32) {
+        Some(t) => {
+            // Validate the tgid matches as well (vtgid in NS, real otherwise).
+            let want_tgid = tgid as u32;
+            let got_tgid = if cur_ns == 0 { t.tgid.load(Ordering::Acquire) }
+                           else { t.vtgid.load(Ordering::Acquire) };
+            if got_tgid != want_tgid {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
+            if !sig_perm_check(cur, &t, sig) {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            if sig != 0 {
+                t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+                if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+            }
+            0
+        }
+        None => -(Errno::Esrch.as_i32() as i64),
+    }
+}

@@ -1,0 +1,70 @@
+[package]
+name = "syscalls"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+block   = { path = "../block" }
+boot-info = { path = "../../shared/boot-info" }
+cpu       = { path = "../cpu" }
+devfs     = { path = "../devfs" }
+elf-load  = { path = "../exec" }
+arch-irq  = { path = "../arch-irq" }
+ipc       = { path = "../ipc" }
+elf     = { path = "../../shared/elf" }
+net     = { path = "../net" }
+modules = { path = "../modules" }
+pci     = { path = "../../drivers/pci" }
+virtio  = { path = "../../drivers/virtio" }
+ext4    = { path = "../ext4" }
+hal     = { path = "../../arch/hal" }
+klog    = { path = "../../shared/klog" }
+console   = { path = "../console" }
+smoke     = { path = "../smoke" }
+devpts    = { path = "../devpts" }
+tracefs   = { path = "../tracefs" }
+kmacros   = { path = "../../shared/kmacros" }
+kalloc  = { path = "../../shared/kalloc" }
+pmm     = { path = "../mm-pmm" }
+procfs  = { path = "../procfs" }
+sched   = { path = "../sched" }
+softirq = { path = "../softirq" }
+netlink = { path = "../netlink" }
+netfilter = { path = "../netfilter" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+tty     = { path = "../tty" }
+vfs     = { path = "../vfs" }
+fs      = { path = "../fs" }
+vmm     = { path = "../mm-vmm" }
+power    = { path = "../power" }
+firmware = { path = "../firmware" }
+nscg     = { path = "../nscg" }
+cgroup   = { path = "../cgroup" }
+security = { path = "../security" }
+drv             = { path = "../../drivers/drv" }
+drv-virtio-gpu    = { path = "../../drivers/drv-virtio-gpu" }
+drv-virtio-input  = { path = "../../drivers/drv-virtio-input" }
+drv-virtio-net    = { path = "../../drivers/drv-virtio-net" }
+drm               = { path = "../../drivers/drm" }
+fbdev             = { path = "../../drivers/fbdev" }
+fbcon             = { path = "../../drivers/fbcon" }
+vt                = { path = "../../drivers/vt" }
+iouring = { path = "../iouring" }
+
+[features]
+debug-boot = ["kmacros/debug-boot"]
+debug-trace = ["kmacros/debug-trace"]
+debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
+debug-ssh = ["kmacros/debug-ssh"]
+debug-cgroup = ["kmacros/debug-cgroup"]
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
