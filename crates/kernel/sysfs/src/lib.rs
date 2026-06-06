@@ -1,11 +1,13 @@
+#![no_std]
+#![cfg(target_os = "oxide-kernel")]
+extern crate alloc;
+
 // Dynamic sysfs surface synthesised from live kernel state. v1
 // scope: /sys/class/net (per-iface dir reflecting the netdev
 // registry — address, mtu, operstate, type, flags, carrier, speed,
 // duplex). Static /sys/kernel/* and tracefs entries still live as
 // devfs key registrations; this module owns the entries whose
 // content depends on runtime state.
-
-#![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -288,9 +290,9 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 pub fn init() {
-    crate::devfs::register("/sys/class/net",
+    devfs::register("/sys/class/net",
         Arc::new(SysClassNetInode) as InodeRef);
-    crate::devfs::register("/sys/devices/virtual/net",
+    devfs::register("/sys/devices/virtual/net",
         Arc::new(SysDevicesVirtualNetInode) as InodeRef);
 }
 
@@ -329,7 +331,7 @@ impl vfs::fs::FileSystem for SysfsFs {
 /// # C: O(N_components × N_devfs_entries)
 fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
     if depth > 8 { return None; }
-    if let Some(i) = crate::devfs::lookup(path) { return Some(i); }
+    if let Some(i) = devfs::lookup(path) { return Some(i); }
     let mut tail: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
     let mut cur = alloc::string::String::from(path);
     loop {
@@ -338,7 +340,7 @@ fn sysfs_walk(path: &str, depth: u32) -> Option<InodeRef> {
         let child = alloc::string::String::from(&cur[idx + 1..]);
         cur.truncate(idx);
         tail.push(child);
-        if let Some(parent_inode) = crate::devfs::lookup(&cur) {
+        if let Some(parent_inode) = devfs::lookup(&cur) {
             let mut node = parent_inode;
             while let Some(name) = tail.pop() {
                 node = node.lookup(&name).ok()?;
