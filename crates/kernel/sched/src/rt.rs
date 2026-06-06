@@ -9,6 +9,7 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 
 use crate::task::{SchedClass, Task};
 
@@ -65,6 +66,7 @@ impl RtRunqueue {
             self.nonempty &= !(1u128 << prio);
         }
         self.nr_running -= 1;
+        t.on_rq.store(false, Ordering::Release);
         Some(t)
     }
 
@@ -87,6 +89,7 @@ impl RtRunqueue {
                     self.nonempty &= !(1u128 << prio);
                 }
                 self.nr_running -= 1;
+                t.on_rq.store(false, Ordering::Release);
                 return Some(t);
             }
         }
