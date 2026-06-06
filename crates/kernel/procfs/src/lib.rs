@@ -7,6 +7,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+pub use vfs::StaticFileInode;  // generic inode lives in vfs
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 

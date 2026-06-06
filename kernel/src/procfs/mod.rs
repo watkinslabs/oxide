@@ -24,35 +24,9 @@ static NEXT_INO: AtomicU64 = AtomicU64::new(0x3000_0000);
 
 /// Static-body procfs file. `read(off, buf)` returns the window
 /// `body[off..off+buf.len()]` clamped to body length.
-pub struct StaticFileInode {
-    body: &'static [u8],
-    ino:  Ino,
-}
-
-impl StaticFileInode {
-    /// # C: O(1)
-    pub fn new(body: &'static [u8]) -> Arc<Self> {
-        Arc::new(Self { body, ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) })
-    }
-}
-
-impl Inode for StaticFileInode {
-    fn ino(&self) -> Ino { self.ino }
-    fn file_type(&self) -> FileType { FileType::Regular }
-    fn size(&self) -> u64 { self.body.len() as u64 }
-    fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
-    fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let off = off as usize;
-        if off >= self.body.len() { return Ok(0); }
-        let avail = &self.body[off..];
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        Ok(n)
-    }
-    fn write(&self, _off: u64, _buf: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
-    }
-}
+// StaticFileInode now lives in the `procfs` crate (docs/53); re-export so
+// kernel-local `crate::procfs::StaticFileInode` users keep working.
+pub use ::procfs::StaticFileInode;
 
 /// `/proc/self/maps` per `19§4`. Walks the current task's
 /// AddressSpace VMA tree and emits one line per VMA in
