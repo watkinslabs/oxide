@@ -459,10 +459,16 @@ _arm_entry:
     mov     w10, #0x43
     str     w10, [x9]
 
-    /* SCTLR_EL1: enable M(0)|C(2)|I(12)                              */
+    /* SCTLR_EL1: enable M(0)|C(2)|I(12); CLEAR A(1)+SA0(4) so EL0
+       unaligned Normal-memory access is hardware-handled, not trapped.
+       Firmware (OVMF w/ >1 vCPU) can leave A=1 at handoff; ORing M|C|I
+       without clearing A let that leak through → musl memcpy's `ldr`
+       on a misaligned ptr faulted (DFSC=0x21) only at -smp 2. Linux
+       always sets SCTLR explicitly; mirror that.                     */
     mrs     x0, sctlr_el1
     mov     x1, #0x1005
     orr     x0, x0, x1
+    bic     x0, x0, #(1 << 1)     /* A — alignment check off (Linux)    */
     msr     sctlr_el1, x0
     isb
 
