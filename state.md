@@ -111,8 +111,11 @@ NEXT EXPERIMENTS (do in order): (1) dump ALL x0-x30 at the EL0 alignment fault
 (hook deliver_sigsegv_arm, debug-boot) + `qemu_disasm` the faulting insn at elr
 to see which reg = 0x10004322 and what op faults; (2) `its=off` to isolate
 ITS/LPI routing with 2 redistributors; (3) diff GIC init (GICR count / IROUTER)
-1 vs 2 redistributors; (4) confirm whether UP-kernel-smp2 FAULTS vs STALLS (may
-be a 2nd distinct bug — lost IRQ). Gate stays `-smp 1`.
+1 vs 2 redistributors. (4) CONFIRMED this session: UP-kernel-smp2 FAULTS
+(PID1→Zombie st=3, same readlinkat window) — NOT a stall, so ONE corruption
+bug, not lost-IRQ/GIC-routing. boot-and-trace exhausted (~40 boots); right next
+tool is a focused gdb hw-watchpoint at the deterministic fault (far=0x10004322,
+EL0, right after readlinkat n=6). Gate stays `-smp 1`; distro fully works there.
 2. python3 encodings/stdlib path fix (distro; verify-left-able).
 3. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
 4. Phase 16 real namespace isolation (currently id-substrate, F100-F107).
