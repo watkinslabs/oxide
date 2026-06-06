@@ -41,7 +41,7 @@ build_one() {
   ( cd "$SRC" && \
     CC="$cc" \
     CFLAGS="-Os $extra -D_GNU_SOURCE -I${pam_root} -Wno-implicit-function-declaration -Wno-incompatible-pointer-types" \
-    LDFLAGS="-static -L${pam_root}" \
+    LDFLAGS="-L${pam_root} -Wl,-rpath-link,${pam_root}" \
     LIBS="-lpam -lpam_misc" \
     ./configure \
       --host="$host" \
@@ -62,6 +62,7 @@ build_one() {
       --without-attr \
       --without-su \
       --with-libpam \
+      --disable-logind \
       --disable-account-tools-setuid \
       --enable-shadowgrp \
     && make -j4 \
