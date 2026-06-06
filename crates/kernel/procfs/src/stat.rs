@@ -25,7 +25,7 @@ pub struct ProcStatInode;
 impl ProcStatInode {
     fn body() -> Vec<u8> {
         let (total, running) = sched::live::registry::live_counts();
-        let btime = crate::syscalls::time::boot_unix_seconds();
+        let btime = crate::hooks::boot_unix_seconds();
         let mut out: Vec<u8> = Vec::with_capacity(192);
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
             "cpu  0 0 0 0 0 0 0 0 0 0\n\

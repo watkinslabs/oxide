@@ -7,7 +7,7 @@
 
 use core::sync::atomic::Ordering;
 
-use super::{push, push_u64};
+use crate::live::{push, push_u64};
 
 /// # C: O(1) registry lookup
 pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {

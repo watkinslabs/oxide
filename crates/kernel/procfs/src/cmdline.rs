@@ -1,6 +1,6 @@
 // /proc/cmdline backed by the kernel's boot-cmdline slot.
 //
-// `crate::boot_cmdline::get` returns the bytes the bootloader passed
+// `crate::hooks::cmdline` returns the bytes the bootloader passed
 // (Limine `cmdline` on x86, FDT `/chosen/bootargs` on aarch64) or an
 // arch-default until those parsers land.
 
@@ -16,7 +16,7 @@ impl Inode for ProcCmdlineInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = crate::boot_cmdline::get();
+        let body = crate::hooks::cmdline();
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
         let n = (body.len() - off).min(buf.len());
