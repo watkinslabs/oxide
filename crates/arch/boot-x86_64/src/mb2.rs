@@ -274,7 +274,7 @@ _mb2_high:
 // reachable via the HHDM the trampoline installed (`MB2_HHDM`).
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub mod info {
-    use kernel::{BootMemKind, BootMemRegion};
+    use boot_info::{BootMemKind, BootMemRegion};
 
     /// Value a multiboot2-compliant loader leaves in EAX at handoff.
     pub const MB2_BOOTLOADER_MAGIC: u32 = 0x36d7_6289;
