@@ -21,6 +21,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+pub mod boot;
 
 use alloc::string::String;
 use alloc::sync::Arc;

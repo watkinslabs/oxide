@@ -988,3 +988,4 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
 /// Singleton accessor.
 /// # C: O(1)
 pub fn instance() -> &'static dyn vfs::fs::FileSystem { &Ext4RootfsFs }
+

@@ -142,3 +142,23 @@ pub fn register_timers() {
     timer::register_periodic(P, cgroup::tick);
     timer::register_periodic(P, live::balance::balance_tick);
 }
+
+/// Boot anchor / idle loop: `schedule()` (so an IRQ-woken task runs) then
+/// hlt/wfi until the next IRQ. The kernel jumps here at the end of boot.
+/// # C: O(∞)
+#[cfg(target_os = "oxide-kernel")]
+pub fn halt_forever() -> ! {
+    loop {
+        if live::global().is_some() {
+            // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
+            unsafe { live::schedule(); }
+        }
+        #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
+        #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
+    }
+}
+
+/// Hosted-test fallback (never reached in tests).
+/// # C: O(∞)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn halt_forever() -> ! { core::hint::spin_loop(); loop {} }

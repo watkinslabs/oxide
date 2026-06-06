@@ -41,6 +41,8 @@ pub use schedule::{
     install_default_runqueue, runqueue_active, RunStats,
 };
 pub use spawn::{next_tid, spawn_kernel_thread, spawn_user_thread, spawn_user_thread_for_fork, spawn_user_thread_with_vpid};
+pub mod timer_driver;
+pub use timer_driver::spawn_timer_driver;
 pub use wait_list::WaitList;
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, send_signal_self,
