@@ -26,7 +26,7 @@ const _: () = assert!(
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 extern crate kmacros;
-pub mod cgroup_boot; pub mod cgroup_cpu;
+pub mod cgroup_boot; pub mod cgroup_cpu; #[cfg(target_os = "oxide-kernel")] mod periodic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod smp_arm;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
@@ -818,6 +818,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { smoke::elf_arm::run(); }
     }
 
+    #[cfg(target_os = "oxide-kernel")] periodic::spawn();
     halt_forever()
 }
 
