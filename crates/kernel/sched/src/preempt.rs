@@ -1,10 +1,11 @@
-// Preempt-count machinery per `13§9`. v1 stores the count in a
-// single global AtomicU32 — UP only. When SMP arrives the storage
-// moves to `PerCpu<AtomicU32>` without changing the public API, so
-// callers stay correct across the transition.
+// Preempt-count machinery per `13§9`. Per-CPU: `preempt_count` and
+// `need_resched` are each a `[_; MAX_CPUS]` slot indexed by the current
+// CPU (`13§9`/`06§4`), so two CPUs never clobber each other's count or
+// resched flag. The public API is unchanged — callers operate on "this
+// CPU" implicitly, exactly as Linux's `__preempt_count` / `TIF_NEED_RESCHED`.
 //
 // Discipline (`13§9`):
-//   - `preempt_count > 0` ⇒ no schedule() may run.
+//   - `preempt_count > 0` ⇒ no schedule() may run on this CPU.
 //   - Hits zero only at well-defined release sites: kernel-return-
 //     to-user, idle, end-of-softirq, voluntary yield.
 //   - `need_resched=true` is set by wakeup / tick; checked at every
@@ -15,8 +16,39 @@
 
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
-static PREEMPT_COUNT: AtomicU32  = AtomicU32::new(0);
-static NEED_RESCHED:  AtomicBool = AtomicBool::new(false);
+use cpu::MAX_CPUS;
+
+/// Cacheline-padded per-CPU slot so adjacent CPUs' preempt state never
+/// shares a cache line (`04§6` / `06§4`).
+#[repr(C, align(64))]
+struct Pcpu<T>(T);
+
+const PC_ZERO: Pcpu<AtomicU32>  = Pcpu(AtomicU32::new(0));
+const NR_ZERO: Pcpu<AtomicBool> = Pcpu(AtomicBool::new(false));
+
+static PREEMPT_COUNT: [Pcpu<AtomicU32>;  MAX_CPUS] = [PC_ZERO; MAX_CPUS];
+static NEED_RESCHED:  [Pcpu<AtomicBool>; MAX_CPUS] = [NR_ZERO; MAX_CPUS];
+
+/// Current CPU index, clamped to `MAX_CPUS`. Reads the per-CPU base
+/// register (`gs:0` on x86, `TPIDR_EL1` on arm); host builds are UP→0.
+/// Callers index a per-CPU slot with this; the brief read→use window is
+/// safe because the running task is never migrated off its CPU mid-flight
+/// (only queued tasks migrate, via the balancer).
+/// # C: O(1)
+#[inline]
+fn this_cpu() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+#[inline]
+fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
+#[inline]
+fn need_resched_slot() -> &'static AtomicBool { &NEED_RESCHED[this_cpu()].0 }
 
 /// Hook installed by the kernel side so `preempt_enable` can call
 /// `schedule()` when discipline allows. v1 single fn pointer; SMP
@@ -35,30 +67,30 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 
 /// Current preempt count on this CPU.
 /// # C: O(1)
-pub fn preempt_count() -> u32 { PREEMPT_COUNT.load(Ordering::Acquire) }
+pub fn preempt_count() -> u32 { preempt_count_slot().load(Ordering::Acquire) }
 
 /// True iff a reschedule has been requested (set by wake_up / tick).
 /// # C: O(1)
-pub fn need_resched() -> bool { NEED_RESCHED.load(Ordering::Acquire) }
+pub fn need_resched() -> bool { need_resched_slot().load(Ordering::Acquire) }
 
 /// Set `need_resched`. Called from wake_up paths and the tick when
 /// the running task should yield (CFS slice expired, RT preempts
 /// Normal, etc.). Idempotent.
 /// # C: O(1)
-pub fn set_need_resched() { NEED_RESCHED.store(true, Ordering::Release); }
+pub fn set_need_resched() { need_resched_slot().store(true, Ordering::Release); }
 
 /// Atomically take + clear `need_resched`. Returns the prior value.
 /// Used by the schedule path so a single tick→wake→schedule cycle
 /// doesn't loop on a stuck flag.
 /// # C: O(1)
-pub fn take_need_resched() -> bool { NEED_RESCHED.swap(false, Ordering::AcqRel) }
+pub fn take_need_resched() -> bool { need_resched_slot().swap(false, Ordering::AcqRel) }
 
 /// Bump the preempt count. Pairs with `preempt_enable` /
 /// `preempt_enable_no_check`. Prefer the `PreemptGuard` RAII form
 /// to keep pairs balanced.
 /// # C: O(1)
 pub fn preempt_disable() {
-    PREEMPT_COUNT.fetch_add(1, Ordering::AcqRel);
+    preempt_count_slot().fetch_add(1, Ordering::AcqRel);
 }
 
 /// Decrement without the resched check. Used at sites that must
@@ -66,7 +98,7 @@ pub fn preempt_disable() {
 /// switching back into a preempt-off region).
 /// # C: O(1)
 pub fn preempt_enable_no_check() {
-    let prev = PREEMPT_COUNT.fetch_sub(1, Ordering::AcqRel);
+    let prev = preempt_count_slot().fetch_sub(1, Ordering::AcqRel);
     // Underflow check in debug; in release the saturating_sub
     // semantics on AtomicU32::fetch_sub wrap, which would surface
     // as a wedged scheduler — so refuse in debug.
@@ -82,7 +114,7 @@ pub fn preempt_enable_no_check() {
 /// task's stack is suitable for a context switch.
 /// # C: O(1) + O(log N) iff schedule fires
 pub unsafe fn preempt_enable() {
-    let prev = PREEMPT_COUNT.fetch_sub(1, Ordering::AcqRel);
+    let prev = preempt_count_slot().fetch_sub(1, Ordering::AcqRel);
     debug_assert!(prev != 0, "preempt_enable underflow");
     if prev == 1 && take_need_resched() {
         let raw = SCHEDULE_HOOK.load(Ordering::Acquire);
@@ -133,6 +165,6 @@ impl Drop for PreemptGuard {
 /// # C: O(1)
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
-    PREEMPT_COUNT.store(0, Ordering::Release);
-    NEED_RESCHED.store(false, Ordering::Release);
+    for slot in PREEMPT_COUNT.iter() { slot.0.store(0, Ordering::Release); }
+    for slot in NEED_RESCHED.iter()  { slot.0.store(false, Ordering::Release); }
 }
