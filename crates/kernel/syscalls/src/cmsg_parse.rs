@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use hal::USER_VA_END;
 use net::sock::{InetSocket, SockKind, SenderCreds};
 use syscall::errno::Errno;
+use syscall::SyscallArgs;
 use vfs::File;
 use core::sync::atomic::Ordering;
 
@@ -361,5 +362,72 @@ pub fn recvmsg_unix_stream(sock: &Arc<InetSocket>, msgp: u64) -> i64 {
         core::ptr::write_volatile(flags_at, new);
     }
     let _ = Ordering::Acquire;
+    total
+}
+
+/// recvmsg(2) for AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET socketpair
+/// (`UnixMsgPair`). Reads one message via the shared recvfrom path
+/// (blocking semantics preserved), then — when the receiver set
+/// SO_PASSCRED — appends an SCM_CREDENTIALS cmsg carrying
+/// `peer_cred(end)` (the sender's {pid,uid,gid}, stamped into the
+/// writing end at `UnixMsgRing::send`). systemd's handoff-timestamp
+/// uses a SOCK_DGRAM socketpair with SO_PASSCRED and rejects messages
+/// "without valid credentials" — this delivers them. SCM_RIGHTS over
+/// a msgpair is a follow-up (same as the pre-existing generic path,
+/// which dropped fds here too).
+/// # C: O(iov + payload)
+pub fn recvmsg_unix_msgpair(sock: &Arc<InetSocket>, fd: u64, msgp: u64, args: &SyscallArgs) -> i64 {
+    // SAFETY: msgp validated < USER_VA_END by sys_recvmsg; reads msghdr fields.
+    let (name, iov, iovlen, control, controllen) = unsafe {
+        (core::ptr::read_volatile( msgp        as *const u64),
+         core::ptr::read_volatile((msgp + 16)  as *const u64),
+         core::ptr::read_volatile((msgp + 24)  as *const u64),
+         core::ptr::read_volatile((msgp + 32)  as *const u64),
+         core::ptr::read_volatile((msgp + 40)  as *const u64))
+    };
+    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
+    let mut total: i64 = 0;
+    for i in 0..iovlen {
+        let iov_i = iov + i * 16;
+        if iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+        // SAFETY: iov_i validated < USER_VA_END; iovec base/len are 8-byte-aligned u64 fields per the Linux struct iovec ABI.
+        let (base, len) = unsafe {
+            (core::ptr::read_volatile( iov_i      as *const u64),
+             core::ptr::read_volatile((iov_i + 8) as *const u64))
+        };
+        if len == 0 { continue; }
+        let mut sa = *args;
+        sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = 0;
+        let r = crate::net_recv::sys_recvfrom(&sa);
+        if r < 0 { if total > 0 { break; } return r; }
+        if r == 0 { break; }
+        total += r;
+        if (r as u64) < len { break; }  // SEQPACKET/DGRAM: one message per recvmsg
+    }
+    // SCM_CREDENTIALS writeback when the receiver opted in (SO_PASSCRED).
+    let mut ctrl_written: u64 = 0;
+    if sock.opts.passcred.load(Ordering::Acquire) != 0
+        && control != 0 && control < USER_VA_END && controllen >= 28
+    {
+        let (pid, uid, gid) = {
+            let g = sock.kind.lock();
+            match &*g { SockKind::UnixMsgPair(p, e) => p.peer_cred(*e), _ => (0, 0, 0) }
+        };
+        const SOL_SOCKET: i32 = 1;
+        const SCM_CREDENTIALS: i32 = 2;
+        // SAFETY: control..control+28 ≤ controllen, validated < USER_VA_END;
+        // cmsghdr(u64 len, i32 level, i32 type) + struct ucred(pid,uid,gid) per Linux ABI.
+        unsafe {
+            core::ptr::write_volatile( control        as *mut u64, 28u64);
+            core::ptr::write_volatile((control +  8)  as *mut i32, SOL_SOCKET);
+            core::ptr::write_volatile((control + 12)  as *mut i32, SCM_CREDENTIALS);
+            core::ptr::write_volatile((control + 16)  as *mut u32, pid);
+            core::ptr::write_volatile((control + 20)  as *mut u32, uid);
+            core::ptr::write_volatile((control + 24)  as *mut u32, gid);
+        }
+        ctrl_written = 28;
+    }
+    // SAFETY: msg_controllen at msgp+40 per Linux msghdr; msgp validated.
+    unsafe { core::ptr::write_volatile((msgp + 40) as *mut u64, ctrl_written); }
     total
 }

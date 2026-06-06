@@ -397,6 +397,13 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
         p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
         p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
     }
+    if let Some(p) = &msg {
+        use core::sync::atomic::Ordering;
+        let (pid, uid, gid) = (cur.tgid.load(Ordering::Relaxed),
+            cur.creds.euid.load(Ordering::Relaxed), cur.creds.egid.load(Ordering::Relaxed));
+        p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
+        p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
+    }
     let a = {
         let inode = mk(net::UnixEnd::A);
         let dentry = vfs::Dentry::new(None, alloc::string::String::from("[unix]"), Arc::clone(&inode));
@@ -622,6 +629,9 @@ pub fn sys_recvmsg(args: &SyscallArgs) -> i64 {
     if let Some(s) = &sock {
         if matches!(*s.kind.lock(), SockKind::UnixDgram(_)) { return net::unix_cmsg::recvmsg_unix_dgram(s, msgp); }
         if matches!(*s.kind.lock(), SockKind::Unix(_, _))   { return crate::cmsg_parse::recvmsg_unix_stream(s, msgp); }
+        // SOCK_DGRAM/SOCK_SEQPACKET socketpair: deliver SCM_CREDENTIALS
+        // (systemd handoff-timestamp pair). Generic path below dropped creds.
+        if matches!(*s.kind.lock(), SockKind::UnixMsgPair(_, _)) { return crate::cmsg_parse::recvmsg_unix_msgpair(s, fd, msgp, args); }
     }
     // SAFETY: msgp range validated; user page mapped under caller's AS.
     let (name, _namelen, iov, iovlen) = unsafe {
