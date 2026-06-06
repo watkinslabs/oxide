@@ -13,4 +13,5 @@ pub use drm::node as drm;
 pub mod pidfd;
 // pty (/dev/ptmx,/dev/pts) → `devpts` crate (docs/53)
 pub use devpts as pty;
-pub mod tracefs;
+// tracefs (/sys/kernel/tracing) → `tracefs` crate (docs/53)
+pub use tracefs;
