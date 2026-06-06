@@ -99,4 +99,13 @@ fetch "$OVMF_X64_URL"   "$VENDOR/firmware/ovmf-x64.fd"     "$OVMF_X64_SHA256"  "
 echo "ovmf aarch64:"
 fetch "$OVMF_AA64_URL"  "$VENDOR/firmware/ovmf-aarch64.fd" "$OVMF_AA64_SHA256" "ovmf-aarch64.fd"
 
+# ---------------------------------------------------------------------------
+# GRUB arm64-efi modules — the aarch64 boot path is GRUB EFI-stub `linux`
+# (Limine-free, replaces the old Limine BOOTAA64.EFI). The host's GRUB is
+# x86-only, so vendor the arm64-efi platform modules for `grub2-mkrescue
+# -d vendor/grub/arm64-efi`. Delegated to fetch-grub.sh (Fedora RPM).
+# ---------------------------------------------------------------------------
+echo "grub arm64-efi:"
+sh "$(dirname "$0")/fetch-grub.sh"
+
 echo "vendor/ ready under $VENDOR"
