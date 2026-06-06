@@ -2,31 +2,18 @@
 //! crates/kernel/procfs (target-clean); the kernel-side mounting
 //! and per-pid wiring stays here.
 
-#![cfg(target_os = "oxide-kernel")]
 
-pub mod fs_impl;
-pub mod proc_links;
-pub mod static_files;
-pub mod cgroup_file;
-pub mod mounts;
-pub mod cmdline;
-pub mod stat;
-pub mod fdinfo;
-pub mod sysctl;
-mod pid_sched;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
-static NEXT_INO: AtomicU64 = AtomicU64::new(0x3000_0000);
+pub static NEXT_INO: AtomicU64 = AtomicU64::new(0x3000_0000);
 
 /// Static-body procfs file. `read(off, buf)` returns the window
 /// `body[off..off+buf.len()]` clamped to body length.
-// StaticFileInode now lives in the `procfs` crate (docs/53); re-export so
-// kernel-local `crate::procfs::StaticFileInode` users keep working.
-pub use ::procfs::StaticFileInode;
+use crate::StaticFileInode;
 
 /// `/proc/self/maps` per `19§4`. Walks the current task's
 /// AddressSpace VMA tree and emits one line per VMA in
@@ -294,7 +281,7 @@ CPU revision\t: 4\n\
 // build dynamic versions above.
 pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
 // /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
-// from the live `vfs::mount` table — see `procfs::mounts`.
+// from the live `vfs::mount` table — see `crate::mounts`.
 pub(crate) const IO_BODY:      &[u8] = b"rchar: 0\nwchar: 0\nsyscr: 0\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n";
 pub(crate) const LIMITS_BODY:  &[u8] = b"\
 Limit                     Soft Limit           Hard Limit           Units\n\
@@ -349,7 +336,7 @@ impl Inode for ProcHostnameInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let mut body = crate::syscalls::hostname::snapshot();
+        let mut body = crate::hooks::hostname();
         body.push(b'\n');
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
@@ -358,7 +345,7 @@ impl Inode for ProcHostnameInode {
         Ok(n)
     }
     fn write(&self, _off: u64, src: &[u8]) -> KResult<usize> {
-        crate::syscalls::hostname::set(src);
+        crate::hooks::set_hostname(src);
         Ok(src.len())
     }
 }
@@ -401,7 +388,7 @@ impl Inode for ProcMeminfoInode {
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, _n: &str) -> KResult<InodeRef> { Err(VfsError::Enotdir) }
     fn read(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let body = procfs::meminfo::build();
+        let body = crate::meminfo::build();
         let off = off as usize;
         if off >= body.len() { return Ok(0); }
         let n = (body.len() - off).min(buf.len());
@@ -491,7 +478,7 @@ impl Inode for ProcSelfCommInode {
     fn write(&self, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
 }
 
-pub use crate::procfs::cmdline::ProcCmdlineInode;
+pub use crate::cmdline::ProcCmdlineInode;
 
 /// `/proc/self/fd` directory. Walks `current().fd_table` and emits
 /// each live fd as a decimal name. lookup(name) parses the fd back
@@ -510,7 +497,7 @@ impl Inode for ProcSelfFdInode {
         let file = fdt.get(fd).map_err(|_| VfsError::Enoent)?;
         // Linux: /proc/<pid>/fd/<n> readlink → file's ABSOLUTE path
         // (ttyname requires /dev/pts/<n>, not the basename "<n>").
-        Ok(crate::procfs::proc_links::fd_link_for_path(
+        Ok(crate::proc_links::fd_link_for_path(
             &file.dentry().absolute_path(), fd))
     }
     fn readdir(
@@ -543,7 +530,7 @@ impl Inode for ProcSelfFdInode {
 
 /// `/proc` root directory inode. readdir emits live tids (decimal
 /// names) plus `self`. lookup parses tids and returns a per-pid dir.
-pub use crate::procfs::proc_links::{ProcFdLinkInode, ProcSelfCwdInode, ProcSelfExeInode, ProcSelfRootInode};
+pub use crate::proc_links::{ProcFdLinkInode, ProcSelfCwdInode, ProcSelfExeInode, ProcSelfRootInode};
 
 pub struct ProcRootInode;
 
@@ -584,7 +571,7 @@ impl Inode for ProcRootInode {
         Ok(idx as u64)
     }
 }
-pub use crate::procfs::cgroup_file::ProcCgroupInode;
+pub use crate::cgroup_file::ProcCgroupInode;
 /// Per-pid `/proc/<tid>` directory. Synthesises status/cmdline/stat/maps.
 pub struct ProcPidDirInode { pub tid: u32, pub is_self: bool }
 
@@ -599,7 +586,7 @@ impl Inode for ProcPidDirInode {
         let tid = if self.is_self {
             let mut p = alloc::string::String::with_capacity(11 + name.len());
             p.push_str("/proc/self/"); p.push_str(name);
-            if let Some(i) = crate::devfs::lookup(&p) { return Ok(i); }
+            if let Some(i) = devfs::lookup(&p) { return Ok(i); }
             sched::live::current().map(|c| c.tid).ok_or(VfsError::Enoent)?
         } else { self.tid };
         match name {
@@ -607,7 +594,7 @@ impl Inode for ProcPidDirInode {
             "cmdline" => Ok(Arc::new(ProcPidCmdlineInode { tid }) as InodeRef),
             "stat"    => Ok(Arc::new(ProcPidStatInode    { tid }) as InodeRef),
             "maps"    => Ok(Arc::new(ProcPidMapsInode    { tid }) as InodeRef),
-            "smaps"   => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid }) as InodeRef),
+            "smaps"   => Ok(Arc::new(crate::smaps::ProcPidSmapsInode { tid }) as InodeRef),
             "comm"    => Ok(Arc::new(ProcPidCommInode    { tid }) as InodeRef),
             "environ" => Ok(Arc::new(ProcPidEnvironInode { tid }) as InodeRef),
             "statm"   => Ok(Arc::new(ProcPidStatmInode   { tid }) as InodeRef),
@@ -629,23 +616,23 @@ impl Inode for ProcPidDirInode {
             "uid_map" | "gid_map" => Ok(StaticFileInode::new(b"         0          0 4294967295\n") as InodeRef),
             "setgroups" => Ok(StaticFileInode::new(b"allow\n") as InodeRef),
             "syscall"  => Ok(StaticFileInode::new(b"running\n") as InodeRef),
-            "mounts"   => Ok(Arc::new(crate::procfs::mounts::ProcMountsInode) as InodeRef),
-            "mountinfo" => Ok(Arc::new(crate::procfs::mounts::ProcMountinfoInode) as InodeRef),
+            "mounts"   => Ok(Arc::new(crate::mounts::ProcMountsInode) as InodeRef),
+            "mountinfo" => Ok(Arc::new(crate::mounts::ProcMountinfoInode) as InodeRef),
             "cgroup"   => Ok(Arc::new(ProcCgroupInode { tid: Some(tid) }) as InodeRef),
             "auxv"     => Ok(StaticFileInode::new(&[0u8; 16]) as InodeRef),
             "timerslack_ns" => Ok(StaticFileInode::new(b"50000\n") as InodeRef),
             "coredump_filter" => Ok(StaticFileInode::new(b"00000033\n") as InodeRef),
-            "smaps_rollup" => Ok(Arc::new(procfs::smaps::ProcPidSmapsInode { tid }) as InodeRef),
+            "smaps_rollup" => Ok(Arc::new(crate::smaps::ProcPidSmapsInode { tid }) as InodeRef),
             "numa_maps" => Ok(Arc::new(ProcPidMapsInode { tid }) as InodeRef),
             "stack" | "mountstats" | "make-it-fail" | "fail-nth" | "projid_map"
               | "pagemap" | "kpagecount" | "kpageflags" | "attr"
               => Ok(StaticFileInode::new(b"") as InodeRef),
             "wakeups_count" => Ok(StaticFileInode::new(b"0\n") as InodeRef),
             // exe/cwd/root: magic symlinks (followed by stat/O_PATH) per ProcPidLinkInode.
-            "exe" | "cwd" | "root" => Ok(Arc::new(crate::procfs::proc_links::ProcPidLinkInode {
+            "exe" | "cwd" | "root" => Ok(Arc::new(crate::proc_links::ProcPidLinkInode {
                 tid, leaf: match name { "exe" => "exe", "cwd" => "cwd", _ => "root" } }) as InodeRef),
             "fd"     => Ok(Arc::new(ProcSelfFdInode) as InodeRef),
-            "fdinfo" => Ok(Arc::new(crate::procfs::fdinfo::ProcFdInfoDirInode {
+            "fdinfo" => Ok(Arc::new(crate::fdinfo::ProcFdInfoDirInode {
                 tid_opt: if self.is_self { None } else { Some(tid) }
             }) as InodeRef),
             _         => Err(VfsError::Enoent),
@@ -685,7 +672,7 @@ pub struct ProcPidLimitsInode { pub tid: u32 }
 pub struct ProcPidSchedInode { pub tid: u32 }
 
 fn pid_status_body(tid: u32) -> alloc::vec::Vec<u8> {
-    procfs::pid_status::body(tid)
+    crate::pid_status::body(tid)
 }
 
 fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -699,7 +686,7 @@ fn pid_cmdline_body(tid: u32) -> alloc::vec::Vec<u8> {
 }
 
 fn pid_stat_body(tid: u32) -> alloc::vec::Vec<u8> {
-    procfs::pid_stat::body(tid)
+    crate::pid_stat::body(tid)
 }
 
 fn pid_maps_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -793,7 +780,7 @@ fn pid_limits_body(tid: u32) -> alloc::vec::Vec<u8> {
     }
     out
 }
-use pid_sched::pid_sched_body;
+use crate::pid_sched::pid_sched_body;
 pid_inode_impl!(ProcPidSchedInode,   pid_sched_body,   0x3000_2700);
 
 fn pid_statm_body(tid: u32) -> alloc::vec::Vec<u8> {
@@ -835,7 +822,7 @@ fn pid_environ_body(tid: u32) -> alloc::vec::Vec<u8> {
 
 /// Resolve dynamic `/proc/<tid>[/<file>]` paths. Returns `None` for
 /// non-procfs paths; callers fall back to the static devfs registry.
-/// Path-shape parsing lives in `crates/procfs::paths` (hosted-tested).
+/// Path-shape parsing lives in `crates/crate::paths` (hosted-tested).
 /// Linux-visible PID (vtgid) → kernel TID; falls back to raw-tid.
 fn pid_to_kernel_tid(p: u32) -> Option<u32> {
     use sched::live::registry::{lookup, lookup_by_vpid};
@@ -844,9 +831,9 @@ fn pid_to_kernel_tid(p: u32) -> Option<u32> {
 
 /// # C: O(N_tasks)
 pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
-    use procfs::paths::{parse_proc_path, ProcPath};
-    if let Some(i) = crate::procfs::proc_links::lookup_fd_path(path) { return Some(i); }
-    if let Some(i) = crate::procfs::fdinfo::lookup_fdinfo_path(path) { return Some(i); }
+    use crate::paths::{parse_proc_path, ProcPath};
+    if let Some(i) = crate::proc_links::lookup_fd_path(path) { return Some(i); }
+    if let Some(i) = crate::fdinfo::lookup_fdinfo_path(path) { return Some(i); }
     match parse_proc_path(path) {
         ProcPath::SelfDir =>
             Some(Arc::new(ProcPidDirInode { tid: 0, is_self: true }) as InodeRef),
@@ -873,15 +860,15 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
         }
         ProcPath::NotProc => {
             match path {
-                "/proc/net/dev"  => Some(Arc::new(procfs::net::ProcNetDevInode)  as InodeRef),
-                "/proc/net/tcp"  => Some(Arc::new(procfs::net::ProcNetTcpInode)  as InodeRef),
-                "/proc/net/udp"  => Some(Arc::new(procfs::net::ProcNetUdpInode)  as InodeRef),
-                "/proc/modules"  => Some(Arc::new(procfs::net::ProcModulesInode) as InodeRef),
-                "/proc/net/route" => Some(Arc::new(procfs::net::ProcNetRouteInode) as InodeRef),
-                "/proc/net/arp"   => Some(Arc::new(procfs::net::ProcNetArpInode)   as InodeRef),
-                "/proc/net/unix"  => Some(Arc::new(procfs::net::ProcNetUnixInode)  as InodeRef),
-                "/proc/net/if_inet6" => Some(Arc::new(procfs::net::ProcNetIfInet6Inode) as InodeRef),
-                "/proc/net/snmp"  => Some(Arc::new(procfs::net::ProcNetSnmpInode)  as InodeRef),
+                "/proc/net/dev"  => Some(Arc::new(crate::net::ProcNetDevInode)  as InodeRef),
+                "/proc/net/tcp"  => Some(Arc::new(crate::net::ProcNetTcpInode)  as InodeRef),
+                "/proc/net/udp"  => Some(Arc::new(crate::net::ProcNetUdpInode)  as InodeRef),
+                "/proc/modules"  => Some(Arc::new(crate::net::ProcModulesInode) as InodeRef),
+                "/proc/net/route" => Some(Arc::new(crate::net::ProcNetRouteInode) as InodeRef),
+                "/proc/net/arp"   => Some(Arc::new(crate::net::ProcNetArpInode)   as InodeRef),
+                "/proc/net/unix"  => Some(Arc::new(crate::net::ProcNetUnixInode)  as InodeRef),
+                "/proc/net/if_inet6" => Some(Arc::new(crate::net::ProcNetIfInet6Inode) as InodeRef),
+                "/proc/net/snmp"  => Some(Arc::new(crate::net::ProcNetSnmpInode)  as InodeRef),
                 _ => None,
             }
         }
@@ -891,7 +878,7 @@ pub fn lookup_dynamic(path: &str) -> Option<InodeRef> {
 /// Register the v1 procfs entries (delegated to procfs_static).
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
-pub fn init() { crate::procfs::static_files::register_static_files(); }
+pub fn init() { crate::static_files::register_static_files(); }
 
 /// Boot-time smoke for the registered files.
 /// # SAFETY: caller is the boot path; pre-init.
@@ -910,7 +897,7 @@ pub fn smoke_test() {
         ("/etc/os-release",          b"NAME=oxide"),
     ];
     for (path, prefix) in entries {
-        let inode = crate::devfs::lookup(path).expect("procfs lookup");
+        let inode = devfs::lookup(path).expect("procfs lookup");
         let mut buf = [0u8; 32];
         let n = inode.read(0, &mut buf).expect("procfs read");
         kassert!(n >= prefix.len(), "procfs read short");
@@ -929,13 +916,13 @@ impl Inode for ProcPidNsDirInode {
     fn file_type(&self) -> FileType { FileType::Directory }
     fn size(&self) -> u64 { 0 }
     fn lookup(&self, name: &str) -> KResult<InodeRef> {
-        let kind = match crate::dev_proc_ns::NsKind::from_leaf(name) {
+        let kind = match nscg::proc_ns::NsKind::from_leaf(name) {
             Some(k) => k, None => return Err(VfsError::Enoent),
         };
         let task = match sched::live::registry::lookup(self.tid) {
             Some(t) => t, None => return Err(VfsError::Enoent),
         };
-        Ok(crate::dev_proc_ns::ns_inode_for(&task, kind))
+        Ok(nscg::proc_ns::ns_inode_for(&task, kind))
     }
     fn readdir(
         &self,

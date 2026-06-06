@@ -2,13 +2,13 @@
 //! kernel/ because `lookup_dynamic` reaches into sched + the
 //! kernel's per-pid inode table.
 
-use super::lookup_dynamic;
+use crate::live::lookup_dynamic;
 
 /// FileSystem trait impl. Read-only.
 ///
 /// Static /proc files (`/proc/version`, `/proc/cpuinfo`,
 /// `/proc/sys/...`) are registered into the unified devfs key/value
-/// table at boot by `procfs::static_files::init`. We check that
+/// table at boot by `crate::static_files::init`. We check that
 /// first, then fall back to `lookup_dynamic` for per-pid
 /// `/proc/<pid>/*` synthesis.
 pub struct ProcfsFs;

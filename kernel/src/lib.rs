@@ -473,6 +473,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { pmm::user_as::init(info.hhdm_offset); }
         // SAFETY: PMM up; HHDM offset just published; one-shot.
         unsafe { syscalls::vvar::init(); }
+        procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
+        procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot, syscalls::hostname::set);
+        procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
@@ -662,7 +665,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Order matters only for human readability; lookup uses longest-prefix-match.
         let _ = vfs::mount::register("/",     alloc::sync::Arc::new(ext4::rootfs::Ext4RootfsFs));
         let _ = vfs::mount::register("/dev",  alloc::sync::Arc::new(::devfs::DevfsFs));
-        let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(crate::procfs::fs_impl::ProcfsFs));
+        let _ = vfs::mount::register("/proc", alloc::sync::Arc::new(procfs::fs_impl::ProcfsFs));
         let _ = vfs::mount::register("/sys",  alloc::sync::Arc::new(crate::sysfs::SysfsFs));
         let _ = vfs::mount::register("/tmp",  alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         // POSIX shm + systemd /run live on tmpfs. Longest-prefix-match
@@ -881,7 +884,7 @@ fn log_memmap(regions: &[BootMemRegion]) {
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")] pub use syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
-#[cfg(target_os = "oxide-kernel")] pub mod procfs;
+#[cfg(target_os = "oxide-kernel")] pub use procfs;
 #[cfg(target_os = "oxide-kernel")] pub use sysfs;
 #[cfg(target_os = "oxide-kernel")] pub mod boot_cmdline;
 

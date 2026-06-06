@@ -16,7 +16,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 
 use core::sync::atomic::Ordering;
-use super::NEXT_INO;
+use crate::live::NEXT_INO;
 
 /// A mutable sysctl value. Stored verbatim (callers write e.g. "1\n" or
 /// "1"); reads return exactly the stored bytes.
