@@ -362,7 +362,6 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
         b"/bin/hi" | b"/usr/bin/hi"         => Some(HI_BLOB),
         b"/bin/echo" | b"/usr/bin/echo"     => Some(ECHO_BLOB),
         b"/bin/cat"  | b"/usr/bin/cat"      => Some(CAT_BLOB),
-        b"/bin/hello" | b"/usr/bin/hello"   => Some(HELLO_BLOB),
         _ => None,
     }
 }
@@ -371,47 +370,6 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
 /// can't be `pub` directly without touching the existing access
 /// patterns; this wrapper exposes it under a dedicated name.
 pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
-
-/// musl static-PIE helloworld blob (P3-59 / M1). Built with
-/// `musl-gcc -static-pie -fPIE -O2`. First non-hand-rolled binary
-/// the kernel executes — validates the ELF loader against a real
-/// toolchain output (DT_RELA self-relocs, .text/.rodata/.data
-/// segments, real auxv consumption).
-pub const HELLO_BLOB: &'static [u8] = include_bytes!("../../../../kernel/blobs/hello.elf");
-
-/// P3-66 sa_handler dispatch smoke. Hand-rolled static-PIE ELF
-/// that registers a SIGUSR1 handler, raises SIGUSR1 to itself
-/// via sys_kill, and verifies the handler ran + rt_sigreturn
-/// restored execution. Boot trace shows "before h after" if the
-/// signal-dispatch chain works end-to-end.
-pub const SIGTEST_BLOB: &'static [u8] = include_bytes!("../../../../kernel/blobs/sigtest.elf");
-
-/// P3-77 tmpfs end-to-end smoke. Hand-rolled static-PIE ELF that
-/// open(O_CREAT)+write+close /tmp/x then open(RD)+read+write(1)
-/// to validate the tmpfs path through `sys_open` + `fs::tmpfs::lookup_or_create`.
-pub const TMPFSTEST_BLOB: &'static [u8] = include_bytes!("../../../../kernel/blobs/tmpfstest.elf");
-
-/// Boot-time smoke: kassert each registered path resolves to a
-/// non-empty ELF blob with the expected magic bytes.
-/// # SAFETY: caller is the boot path; pre-init.
-/// # C: O(N_paths)
-pub fn lookup_smoke() {
-    use hal::kassert;
-    let paths: &[&[u8]] = &[
-        b"/init", b"/sbin/init",
-        b"/bin/yo", b"/bin/hi", b"/bin/echo", b"/bin/cat",
-        b"/usr/bin/yo", b"/usr/bin/hi", b"/usr/bin/echo", b"/usr/bin/cat",
-    ];
-    for &p in paths {
-        let b = lookup_blob_by_path(p).expect("lookup_blob_by_path");
-        kassert!(b.len() >= 4, "blob too short");
-        kassert!(b[0] == 0x7F && b[1] == b'E' && b[2] == b'L' && b[3] == b'F',
-                 "blob ELF magic");
-    }
-    let miss = lookup_blob_by_path(b"/nonexistent");
-    kassert!(miss.is_none(), "negative lookup should miss");
-    debug_boot! { klog::write_raw(b"[INFO]  exec-path-smoke: ok\n"); }
-}
 
 /// Default blob for the `path = NULL` legacy path (P2-21 v0).
 /// Retained so older test paths keep working.
