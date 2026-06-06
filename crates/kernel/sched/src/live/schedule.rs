@@ -141,6 +141,7 @@ pub unsafe fn install_default_runqueue() {
     // preempt_enable hook is read at every decrement-to-zero with
     // appropriate barriers via the count atomic.
     unsafe { crate::preempt::set_schedule_hook(schedule_hook_trampoline); }
+    crate::register_timers(); // sched self-registers cpu.max + load-balance timers
 }
 
 /// Trampoline matching the `unsafe fn()` shape `crate::preempt`

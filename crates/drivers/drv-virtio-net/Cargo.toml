@@ -10,6 +10,7 @@ license = "MPL-2.0"
 # the live RX/TX paths + net stack integration.
 
 [dependencies]
+timer = { path = "../../kernel/timer" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 net      = { path = "../../kernel/net" }

@@ -129,3 +129,16 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod timers;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
 #[cfg(target_os = "oxide-kernel")] pub mod xfer;
+
+/// Register the scheduler's periodic timers (cpu.max bandwidth enforcement +
+/// SMP load balance) with the timer subsystem. Boot, once.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn register_timers() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) { return; }
+    const P: u64 = 100_000_000; // 100 ms
+    timer::register_periodic(P, cgroup::tick);
+    timer::register_periodic(P, live::balance::balance_tick);
+}

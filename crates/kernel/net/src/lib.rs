@@ -108,3 +108,16 @@ mod stub_tests {
 
 
 #[cfg(target_os = "oxide-kernel")] pub mod unix_cmsg;
+
+/// TCP retransmit / RTO + connection-abort timer for the timer driver.
+/// # C: O(open connections)
+fn tcp_retx_timer(now_ns: u64) { sock::stack().tcp_retx_tick(now_ns); }
+
+/// Register net's periodic timers (TCP retransmit). Boot, once.
+/// # C: O(1)
+pub fn register_timers() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) { return; }
+    timer::register_periodic(100_000_000, tcp_retx_timer);
+}
