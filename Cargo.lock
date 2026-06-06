@@ -57,8 +57,10 @@ name = "block"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "cgroup",
  "hal",
  "klog",
+ "sched",
  "sync",
 ]
 
@@ -66,10 +68,12 @@ dependencies = [
 name = "boot-aarch64"
 version = "0.1.0"
 dependencies = [
+ "boot-info",
+ "cmdline",
  "hal",
  "hal-aarch64",
- "kernel",
  "klog",
+ "kmain",
  "limine-proto",
  "sync",
 ]
@@ -82,10 +86,12 @@ version = "0.1.0"
 name = "boot-x86_64"
 version = "0.1.0"
 dependencies = [
+ "boot-info",
+ "cmdline",
  "hal",
  "hal-x86_64",
- "kernel",
  "klog",
+ "kmain",
  "limine-proto",
  "sync",
 ]
@@ -101,6 +107,7 @@ name = "cgroup"
 version = "0.1.0"
 dependencies = [
  "devfs",
+ "klog",
  "sync",
  "vfs",
 ]
@@ -113,6 +120,7 @@ version = "0.1.0"
 name = "console"
 version = "0.1.0"
 dependencies = [
+ "devfs",
  "klog",
  "kmacros",
  "sched",
@@ -145,7 +153,6 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
- "sched",
  "sync",
  "vfs",
 ]
@@ -252,6 +259,7 @@ dependencies = [
  "pci",
  "pmm",
  "sync",
+ "timer",
  "virtio",
 ]
 
@@ -511,7 +519,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "kernel"
+name = "kernel-bin-aarch64"
+version = "0.1.0"
+dependencies = [
+ "boot-aarch64",
+]
+
+[[package]]
+name = "kernel-bin-x86_64"
+version = "0.1.0"
+dependencies = [
+ "boot-x86_64",
+ "klog",
+]
+
+[[package]]
+name = "klog"
+version = "0.1.0"
+
+[[package]]
+name = "kmacros"
+version = "0.1.0"
+
+[[package]]
+name = "kmain"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
@@ -561,6 +592,7 @@ dependencies = [
  "syscall",
  "syscalls",
  "sysfs",
+ "timer",
  "tracefs",
  "tty",
  "vfs",
@@ -568,29 +600,6 @@ dependencies = [
  "vmm",
  "vt",
 ]
-
-[[package]]
-name = "kernel-bin-aarch64"
-version = "0.1.0"
-dependencies = [
- "boot-aarch64",
-]
-
-[[package]]
-name = "kernel-bin-x86_64"
-version = "0.1.0"
-dependencies = [
- "boot-x86_64",
- "klog",
-]
-
-[[package]]
-name = "klog"
-version = "0.1.0"
-
-[[package]]
-name = "kmacros"
-version = "0.1.0"
 
 [[package]]
 name = "leb128fmt"
@@ -608,7 +617,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 name = "limine-proto"
 version = "0.1.0"
 dependencies = [
- "kernel",
+ "boot-info",
 ]
 
 [[package]]
@@ -651,6 +660,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "timer",
  "vfs",
 ]
 
@@ -957,6 +967,7 @@ dependencies = [
 name = "sched"
 version = "0.1.0"
 dependencies = [
+ "cgroup",
  "cpu",
  "hal",
  "hal-aarch64",
@@ -964,6 +975,7 @@ dependencies = [
  "klog",
  "sync",
  "syscall",
+ "timer",
  "vfs",
  "vmm",
 ]
@@ -1175,6 +1187,13 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "timer"
+version = "0.1.0"
+dependencies = [
+ "sync",
 ]
 
 [[package]]
