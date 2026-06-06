@@ -1,3 +1,4 @@
+#![no_std]
 // Boot cmdline transport. The bootloader's command line lives here so
 // `/proc/cmdline` and any kernel parameter parser read from a single
 // global. v1: arch defaults installed early in boot reflect what the

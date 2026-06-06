@@ -25,6 +25,7 @@ ext4    = { path = "../crates/kernel/ext4" }
 hal     = { path = "../crates/arch/hal" }
 klog    = { path = "../crates/shared/klog" }
 console   = { path = "../crates/kernel/console" }
+cmdline   = { path = "../crates/kernel/cmdline" }
 smoke     = { path = "../crates/kernel/smoke" }
 sysfs     = { path = "../crates/kernel/sysfs" }
 syscalls  = { path = "../crates/kernel/syscalls" }
