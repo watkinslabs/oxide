@@ -56,6 +56,14 @@ impl RunqueueInner {
         // (the single enqueue chokepoint), so wake/yield/fork can't run it
         // until `cgroup.freeze=0` thaws it + re-enqueues.
         if task.frozen.load(core::sync::atomic::Ordering::Acquire) { return; }
+        // SMP on-rq guard (Linux `p->on_rq`): a task's Arc lives in exactly
+        // one runqueue's class tree at a time. If it's already queued (a
+        // concurrent waker on another CPU requeued it, or the schedule path
+        // re-enqueues a task a remote wake already enqueued), skip — else the
+        // same Arc lands in two trees, two CPUs run it, and its resumed user
+        // context (SP_EL0 / callee-saved regs) is corrupted. Cleared when the
+        // task is picked/removed off the tree (cfs/rt `pick_*` + `remove`).
+        if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
         match task.class {
             SchedClass::Rt { .. }     => self.rt.enqueue(task),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
