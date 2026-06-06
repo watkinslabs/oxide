@@ -4,6 +4,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="diffutils-3.10"
 
 if [ ! -d "$SRC" ]; then
@@ -56,7 +57,7 @@ build_one() {
   echo "  → cmp-$suffix   ($(stat -c %s "cmp-$suffix") bytes)"
 }
 
-build_one "x86_64"  "musl-gcc"  "-isystem $HDRS_X86" "x86_64"
-build_one "aarch64" "$CROSS_CC" "-isystem $HDRS_ARM" "aarch64"
+build_one "x86_64"  "musl-gcc"  "$(uapi_cflags x86_64)" "x86_64"
+build_one "aarch64" "$CROSS_CC" "$(uapi_cflags aarch64)" "aarch64"
 
 echo "OK — built diffutils for {x86_64, aarch64}"

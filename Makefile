@@ -21,7 +21,7 @@ FEATURES ?=
         test lint ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
-        vendor-rebuild \
+        vendor-rebuild vendor-x86 vendor-arm \
         clean help
 
 all: build
@@ -56,15 +56,22 @@ arm-debug:
 vendor-rebuild:
 	@if [ -n "$(DEP)" ]; then \
 	  test -f vendor/$(DEP)/build.sh || { echo "no vendor/$(DEP)/build.sh"; exit 1; }; \
-	  echo "=== rebuild vendor/$(DEP) (from scratch) ==="; \
+	  echo "=== rebuild vendor/$(DEP) $(ARCH) (from scratch) ==="; \
 	  rm -rf vendor/$(DEP)/*/[_]build-* 2>/dev/null; \
-	  bash vendor/$(DEP)/build.sh; \
+	  bash vendor/$(DEP)/build.sh $(ARCH); \
 	else \
 	  for d in vendor/*/build.sh; do \
-	    echo "=== rebuild $$d ==="; bash "$$d" || exit 1; \
+	    echo "=== rebuild $$d $(ARCH) ==="; bash "$$d" $(ARCH) || exit 1; \
 	  done; \
 	fi
 	@echo "vendor-rebuild done — rebuilt install-<arch> blobs; re-run 'make qemu-x86' to pick them up."
+
+# Per-arch convenience: build.sh accepts x86|arm|all, so a dep can be rebuilt
+# for one arch. E.g. `make vendor-arm DEP=dhcpcd` or `make vendor-x86 DEP=dhcpcd`.
+vendor-x86:
+	@$(MAKE) vendor-rebuild ARCH=x86 DEP=$(DEP)
+vendor-arm:
+	@$(MAKE) vendor-rebuild ARCH=arm DEP=$(DEP)
 
 # ---- checks ---------------------------------------------------------------
 

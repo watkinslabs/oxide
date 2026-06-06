@@ -1,78 +1,50 @@
 # Session hand-off
 
-## Headline
-Bug-sweep session. 7 PRs merged to main. Live-test bugs A/B/C plus new ones
-found while testing (D/E/F/G/H). B + D + D-followup shipped; A needs white-box;
-C/E/F/G/H tracked with findings. Merge-as-you-go cadence.
+Branch: **B54-pid1-real-execve-path** (5 commits ahead of main, unpushed).
+Autonomous high-priority run: (1) all vendor **arm** cross-builds work, (2) arm
+branch at par with x86 (B54 boots arm→login), (3) continue the distribution +
+kernel=glue syscall work. Loop armed (ScheduleWakeup).
 
-## Merged to main this session
-- #1529 BUG B — mremap source-PTE leak (python import SIGSEGV) + 10 regression probes
-- #1528 — commit-msg hook banning AI/tool attribution (Claude/Copilot/Codex/…)
-- #1530 — `make qemu-x86{,-debug}`→GRUB (kill dead Limine target) + Linux-way
-  select/poll/pselect/ppoll blocking (POLL_WAIT, park not busy-yield)
-- #1531 BUG D — find/ls ENOENT recursing into subdirs: fstatat/statx/fchmodat/
-  fchownat/utimensat now route through resolve_at(dirfd)
-- #1532 BUG D follow-up — faccessat + unlinkat/mkdirat/symlinkat/mknodat/renameat honor dirfd
-- #1533 — rebuild libpam clean (drop stale PAM_DEBUG console spam)
+## Done + verified this run
+- **kernel = pure glue** (PR #1540 on main): kernel crate eliminated → `kmain`
+  (`crates/kernel/kmain/src/kmain.rs`); subsystems/devices in crates; timers
+  self-register (docs/56); blobs gitignored + built on demand (`ensure_blobs`).
+- **B54 (x86, VERIFIED):** PID 1 boots the Linux way — synthetic bringup init
+  (ELF_BLOB + yo/hi/echo) deleted; real `/lib/systemd/systemd` loaded; eager
+  stack map (`pmm::user_as::prefault_stack` = setup_arg_pages); **no global-AS
+  fallback** (fault handler resolves current->mm only). Root-cause fix: idle
+  loop must `sti; hlt` so the timer fires → deadline waits (systemd terminal
+  ppoll) resolve. systemd → `oxide login:` → shell, 0 panics.
+- **Vendor arm cross-build fix:** `vendor/lib/uapi-stage.sh` (x86 stages host
+  UAPI fresh + -isystem; aarch64 uses cross sysroot, no host headers). Swept 23
+  build.sh's onto it (dhcpcd + coreutils verified building both arches). dhcpcd
+  per-arch (`build.sh x86|arm|all`); Makefile `vendor-x86`/`vendor-arm` +
+  `vendor-rebuild ARCH=`.
 
-## OPEN BUGS (tracked, with findings)
+## OPEN
+1. **Vendor sweep unfinished:**
+   - meson pkgs (pam, systemd, dbus, …) use cross-file `'-isystem','$HDRS_ARM'`
+     — the sweep regex MISSED them; fix to use cross sysroot for arm.
+   - **pam ships shared-only**; shadow links `-static -lpam` → needs libpam.a.
+     Per-package static-vs-shared decision.
+   - make every build.sh arch-aware (only dhcpcd is); dep-ordered rebuild.
+   - then `make vendor-rebuild` green BOTH arches. Verify each: `bash
+     vendor/<pkg>/build.sh` FOREGROUND (background stdout is dropped here).
+2. **arm boot-verify HARD-BLOCKED in this dev shell:**
+   - `xtask rootfs --arch aarch64` + `xtask qemu --arch aarch64` get the whole
+     command KILLED silently (heavy cross-compile / ext4 image / TCG). `xtask
+     kernel --arch aarch64` builds fine; a *direct* qemu-system-aarch64 runs.
+   - `vendor/limine/` is EMPTY → no `BOOTAA64.EFI`; `xtask grub --arch aarch64`
+     unsupported (grub bootstrap x86-only). So no arm boot image can be
+     assembled here. Needs `tools/fetch-vendor.sh` (limine) + a host that can
+     run xtask rootfs/qemu arm (or CI smoke-arm).
+   - arm CODE is sound: elf_arm already real-init+prefault+wfi-idle; my only arm
+     change = shared global-AS-fallback removal (safe, arm prefaults).
+3. **Merge B54 → main** once arm confirmed (or via CI). x86 already verified.
 
-### BUG A — no echo at bash prompt (task #6)
-NOT bash (works everywhere) → oxide breaks a readline contract. Kernel tty all
-verified correct (raw RX, blocking read, poll, termios, winsize, isatty, writev,
-canonical echo via `cat`). readline reads each char but suppresses per-keystroke
-redisplay (prompt shows, incremental doesn't). select/poll busy-poll fixed
-(#1530) — echo still broken, so wait-model wasn't it. NEXT: white-box readline —
-build a readline binary WITH symbols from vendor/bash sources, gdb rl_redisplay.
-
-### BUG C — cgroup ENOTEMPTY on destroy (task #7)
-systemd SIGKILLs procs then rmdir's the cgroup; rmdir races the async on_exit
-removal → ENOTEMPTY. Verdict (transient vs real leak) still pending. LIKELY
-shares root with BUG G. cgroup::on_exit (kernel/src/syscalls/mod.rs:318) fires
-at task-exit (not reap) + notify_events_chain → IN_MODIFY on cgroup.events.
-
-### BUG G — login respawn ~19-21s after exiting bash (task #13)  [user-emphasized]
-exit→Deactivated = 0.2s (systemd notices FAST), RestartSec=1, but total ~19s.
-systemd debug shows the window is cgroup work for the NEW getty: ~15 'Failed to
-set memory.swap.max/pids.max/zswap/oom.group' + xattr set/remove on
-/system.slice/console-getty.service. CAVEAT: systemd.log_level=debug inflates
-total to 120s (console-write overhead), so it can't localize the 19s cleanly.
-NEXT: non-distorting kernel trace (dtrace!/COM2 timestamps) of syscalls systemd
-issues between getty-exit and getty-exec → find the slow op (suspect cgroup
-setxattr / control-file write slow path). Driver: /tmp/run_respawn.py (phase-split).
-
-### BUG E — /dev/console fchown/fchmod EINVAL (task #11)
-systemd "Failed to reset TTY ownership/access mode of /dev/console to 0:5,
-ignoring: Invalid argument". ConsoleInode has no set_owner/set_perm; the
-fchown/fchmod path should accept it (overlay) and return 0, not EINVAL. Find the
-EINVAL source for an fd-backed chardev.
-
-### BUG F — systemd SCM_CREDENTIALS handoff (task #12)
-"Received handoff timestamp message without valid credentials. Ignoring." AF_UNIX
-sendmsg/recvmsg doesn't attach/deliver SCM_CREDENTIALS (ucred). Implement it.
-
-### BUG H — rm -rf of a tmpfs dir returns rc=1 (task #14)
-`rm -rf /tmp/regd` fails though mkdir/touch/mv/ls on the same /tmp path work
-(path resolution fine) → tmpfs unlink/rmdir backend quirk. Orthogonal to BUG D.
-
-### Cleanups (task #8)
-libpam debug DONE (#1533). REMAINING: Limine removal for aarch64 (dead
-cmd_image/cmd_qemu/check_vendor + arm Limine boot) — blocked on arm GRUB/EFI-stub
-(F376 #1525, open). x86 already on GRUB.
-
-## Env / test harness (cost hours)
-- NEVER build/copy shared kernel/blobs/rootfs-x86_64.img while a qemu has it open
-  — corrupts the guest. Use /tmp/rootfs-*.img copies. Driver: /tmp/oxide_drive.py.
-- Boot/iterate: `cargo run -p xtask -- grub --arch x86_64 --features debug-boot`
-  builds the ISO (it also launches a qemu that fails headless — ignore; ISO is built).
-- `set -e` in the dev shell: guard `pkill ... || true`. Write driver .py with the
-  Write tool, not heredocs.
-- systemd.log_level=debug DISTORTS timing (console-write overhead) — use only for
-  state-machine ordering, not wall-clock.
-
-## First command next session
-```
-cd /home/nd/oxide2 && git checkout main && git pull && git log --oneline -8
-# BUG G: kernel COM2/dtrace timestamp trace on the cgroup write/setxattr path,
-# boot, exit bash, find the slow op in the 19s respawn window.
-```
+## First task next iteration
+Goal 1: fix meson cross-file -isystem in vendor/{pam,dbus,systemd,...}/build.sh
+(use cross sysroot for arm), verify FOREGROUND. Then pam-static for shadow.
+Then merge B54 (x86-verified) so main has the boot fix. Goal 2 arm-boot: try
+`tools/fetch-vendor.sh` for limine; if xtask rootfs/qemu still get killed, it's
+a host limit — report to user.
