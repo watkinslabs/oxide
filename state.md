@@ -43,7 +43,25 @@ block. **Never put pkill/rm -rf in a command.** Pure qemu/build commands work.
 - BUG H (rm -rf tmpfs rc=1): does NOT repro — rm -rf returns 0. Stale task.
   (Minor: tmpfs `ls` didn't show a mkdir-ed subdir — readdir nit.)
 
+## Master-plan progress
+- **Phase 14 (VMM advanced) — DONE** (status corrected in 00§3). All 4 features
+  already implemented + wired: `mm-vmm` mremap_full(MAYMOVE)/mprotect_pages(+TLB)/
+  madvise-drop(zero-refault)/`VmaBacking::File`; `syscalls` kernel_mmap routes
+  fd→`InodeFileBacking` (demand-paged at address_space.rs:885). 108 vmm hosted
+  tests pass; both arches boot real userspace mmap/fork/exec. Test contract
+  (docs/11§11: hosted-unit + property + QEMU-integration) met.
+- **Lowest unfinished phase is now 15**: AF_INET6 + DHCP client + DNS resolver +
+  sendmmsg/recvmmsg + AF_UNIX SCM_CREDS (docs/25). NOTE: BUG F (systemd
+  SCM_CREDENTIALS "without valid credentials") is the AF_UNIX SCM_CREDS slice of
+  phase 15 — fixing it advances the phase.
+
 ## Next
-Fix arm smoke_rr voluntary-yield hang (so debug-all/`make qemu-arm` works on
-arm = true lockstep). Then BUG F, distro/syscall work. Author = Chris Watkins,
-no AI trailers. Don't use pkill/rm -rf in commands.
+1. Phase 15 / BUG F: AF_UNIX SCM_CREDENTIALS — systemd's handoff-timestamp needs
+   valid SO_PASSCRED creds; audit crates/kernel/net (af_unix) ancillary-data path.
+2. arm smoke_rr voluntary-yield hang (debug-all only; debug-boot fine) — needs
+   qemu-MCP runtime debug (mcp__qemu__qemu_start arch=aarch64 features=debug-all,
+   break oxide_context_switch, step the 5th switch / first kthread RESUME).
+3. Then phases 15→17→… per 00§3.
+Author = Chris Watkins, no AI trailers. NEVER put pkill/rm -rf in a command
+(autonomous-denied → aborts whole command). Boot harnesses in /tmp/run_login.py
+(x86) + /tmp/arm_login3.py (arm, needs debug-boot disk built first).
