@@ -382,6 +382,46 @@ unsafe fn build_boot_info() -> BootInfo {
     info
 }
 
+/// Publish the PSCI AP-startup parameters to `hal_aarch64::smp` before
+/// `kernel_main` brings APs up. Computes the physical addresses of the
+/// self-boot page tables (`phys = VA - KERNEL_BASE + load_base`, since the
+/// image maps KB→load_base linearly) and enumerates the DTB `/cpus` MPIDR
+/// list. No-op (→ SMP=1) when the load base is unknown or the DTB has no
+/// secondary CPUs.
+/// # SAFETY: boot path, single-CPU, pre-SMP; reads `.global` self-boot page
+/// table symbols + the HHDM-mapped DTB; `set_psci_ap_params` copies into a
+/// boot-owned static.
+/// # C: O(dtb)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn publish_psci_ap_params() {
+    extern "C" {
+        static _sb_ap_l0: u8;
+        static _sb_ttbr0_l0: u8;
+        static _sb_ttbr1_l0: u8;
+    }
+    const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+    let load_base = selfboot::SB_LOAD_BASE.load(core::sync::atomic::Ordering::Acquire);
+    if load_base == 0 { return; }
+    let to_pa = |va: u64| va - KERNEL_BASE + load_base;
+    // `.global` self-boot BSS page tables, mapped at their linked high VA;
+    // addr_of! only takes the address (no read), so it needs no unsafe.
+    let ap_l0_pa = to_pa(core::ptr::addr_of!(_sb_ap_l0) as u64);
+    let ttbr1_pa = to_pa(core::ptr::addr_of!(_sb_ttbr1_l0) as u64);
+    let ttbr0_kernel_pa = to_pa(core::ptr::addr_of!(_sb_ttbr0_l0) as u64);
+    let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
+    let mut mpidrs = [0u64; 16];
+    // SAFETY: header read bounds the blob; HHDM-mapped DTB (0 if no DTB).
+    let ts = if pa != 0 { (unsafe { dtb_totalsize(pa) }) as usize } else { 0 };
+    let n = if pa != 0 && ts != 0 && ts <= 4 * 1024 * 1024 {
+        let va = selfboot::ARM_SELFBOOT_HHDM + pa;
+        // SAFETY: blob bounded by its own totalsize; HHDM-mapped.
+        let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
+        dtb::enum_cpus(blob, &mut mpidrs)
+    } else { 0 };
+    let n = n.min(mpidrs.len());
+    hal_aarch64::smp::set_psci_ap_params(ap_l0_pa, ttbr1_pa, ttbr0_kernel_pa, load_base, &mpidrs[..n]);
+}
+
 /// Rust-side boot continuation. Runs on the kernel stack we
 /// installed in `_start`; reads the DTB pointer stashed in
 /// `DTB_PHYS_ADDR`, builds a `BootInfo`, tail-calls `kernel_main`.
@@ -463,6 +503,9 @@ unsafe extern "C" fn _start_rust() -> ! {
     // no-ops if the DTB lacks bootargs (the kernel then falls back to
     // install_arch_default).
     unsafe { capture_cmdline_from_dtb(); }
+    // SAFETY: boot path, pre-SMP; publishes the PSCI AP-startup params (page
+    // table phys + DTB /cpus MPIDRs) for the kernel's bring_up_aps_psci.
+    unsafe { publish_psci_ap_params(); }
     // SAFETY: boot path; build_boot_info reads bootloader-owned
     // static state and produces an owned BootInfo.
     let info = unsafe { build_boot_info() };
