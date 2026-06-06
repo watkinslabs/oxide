@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Acceptance harness for tests/acceptance/<name>/scenario.sh per
-docs/43§5. Spawns QEMU with the disk image produced by `xtask
-qemu`, parses the scenario file (`>` = send, `<` = expect, others
+docs/43§5. Spawns QEMU with the GRUB boot ISO produced by `xtask
+image`, parses the scenario file (`>` = send, `<` = expect, others
 = comment), and reports pass / fail.
 
 Usage:
@@ -9,9 +9,10 @@ Usage:
 
 Exit code 0 = pass, 1 = fail, 2 = setup error.
 
-Per CLAUDE.md: drives QEMU directly, no human-in-the-loop. Builds
-the image via `make x86` or `make arm` first; assumes the
-toolchain is already present.
+Per CLAUDE.md: drives QEMU directly, no human-in-the-loop. Build the
+boot ISO via `cargo run -p xtask -- image --arch <arch>` first
+(Limine is gone — x86 SeaBIOS+multiboot2, arm OVMF+GRUB EFI-stub);
+assumes the toolchain is already present.
 """
 
 import argparse
@@ -55,14 +56,22 @@ def parse_scenario(path: Path):
             yield ("comment", line)
 
 def qemu_cmd(arch: str, image: Path) -> list[str]:
+    # `image` is the GRUB boot ISO (Limine is gone). x86 boots via SeaBIOS
+    # El Torito (qemu default, no -bios) + the multiboot2 kernel, with the
+    # ext4 rootfs on virtio-blk. arm boots OVMF→GRUB→EFI-stub `linux`; the
+    # rootfs is embedded in the kernel Image so no block device is needed,
+    # and semihosting carries early-boot UART before pl011 is up.
     if arch == "x86_64":
+        rootfs = REPO / "kernel/blobs/rootfs-x86_64.img"
         return [
             "qemu-system-x86_64",
             "-machine", "q35,accel=tcg",
             "-cpu", "Haswell-v4",
-            "-m", "256",
-            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_X86}",
-            "-drive", f"format=raw,file={image}",
+            "-m", "1G",
+            "-cdrom", str(image),
+            "-boot", "d",
+            "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
+            "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
             "-display", "none",
             "-serial", "stdio",
             "-no-reboot",
@@ -70,11 +79,13 @@ def qemu_cmd(arch: str, image: Path) -> list[str]:
     elif arch == "aarch64":
         return [
             "qemu-system-aarch64",
-            "-machine", "virt",
+            "-machine", "virt,gic-version=3,its=on",
             "-cpu", "cortex-a72",
-            "-m", "256",
-            "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_ARM}",
-            "-drive", f"format=raw,file={image}",
+            "-m", "2G",
+            "-bios", str(OVMF_ARM),
+            "-cdrom", str(image),
+            "-boot", "d",
+            "-semihosting-config", "enable=on,target=native",
             "-display", "none",
             "-serial", "stdio",
             "-no-reboot",
@@ -88,13 +99,15 @@ def run(name: str, arch: str, timeout: int) -> int:
     if not scenario.exists():
         print(f"accept: no scenario at {scenario}", file=sys.stderr)
         return 2
-    image = REPO / f"target/oxide-{arch}.img"
+    image = REPO / f"target/oxide-{arch}-grub.iso"
     if not image.exists():
-        print(f"accept: build the image first (make {('x86' if arch=='x86_64' else 'arm')})",
+        print(f"accept: build the boot ISO first "
+              f"(cargo run -p xtask -- image --arch {arch})",
               file=sys.stderr)
         return 2
-    if not OVMF_X86.exists() or not OVMF_ARM.exists():
-        print("accept: vendor/firmware/ovmf-*.fd missing; run tools/fetch-vendor.sh",
+    # Only arm needs OVMF now (x86 GRUB ISO boots under SeaBIOS).
+    if arch == "aarch64" and not OVMF_ARM.exists():
+        print("accept: vendor/firmware/ovmf-aarch64.fd missing; run tools/fetch-vendor.sh",
               file=sys.stderr)
         return 2
 
