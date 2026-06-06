@@ -8,7 +8,8 @@
 
 // console char device (/dev/console,/dev/tty[N]) → `console` crate (docs/53)
 pub use console;
-pub mod drm;
+// DRM device node (/dev/dri) → `drm` crate node module (docs/53)
+pub use drm::node as drm;
 pub mod pidfd;
 // pty (/dev/ptmx,/dev/pts) → `devpts` crate (docs/53)
 pub use devpts as pty;
