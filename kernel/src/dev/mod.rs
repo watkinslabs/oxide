@@ -6,7 +6,8 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-pub mod console;
+// console char device (/dev/console,/dev/tty[N]) → `console` crate (docs/53)
+pub use console;
 pub mod drm;
 pub mod pidfd;
 pub mod pty;
