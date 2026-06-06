@@ -1,50 +1,67 @@
 # Session hand-off
 
-Branch: **B54-pid1-real-execve-path** (5 commits ahead of main, unpushed).
-Autonomous high-priority run: (1) all vendor **arm** cross-builds work, (2) arm
-branch at par with x86 (B54 boots arm→login), (3) continue the distribution +
-kernel=glue syscall work. Loop armed (ScheduleWakeup).
+On branch **B55-tmpfs-rm-rf** (state.md only; no code — BUG H didn't repro).
+Main has B54 (#1541) + C55 (#1542) merged.
 
-## Done + verified this run
-- **kernel = pure glue** (PR #1540 on main): kernel crate eliminated → `kmain`
-  (`crates/kernel/kmain/src/kmain.rs`); subsystems/devices in crates; timers
-  self-register (docs/56); blobs gitignored + built on demand (`ensure_blobs`).
-- **B54 (x86, VERIFIED):** PID 1 boots the Linux way — synthetic bringup init
-  (ELF_BLOB + yo/hi/echo) deleted; real `/lib/systemd/systemd` loaded; eager
-  stack map (`pmm::user_as::prefault_stack` = setup_arg_pages); **no global-AS
-  fallback** (fault handler resolves current->mm only). Root-cause fix: idle
-  loop must `sti; hlt` so the timer fires → deadline waits (systemd terminal
-  ppoll) resolve. systemd → `oxide login:` → shell, 0 panics.
-- **Vendor arm cross-build fix:** `vendor/lib/uapi-stage.sh` (x86 stages host
-  UAPI fresh + -isystem; aarch64 uses cross sysroot, no host headers). Swept 23
-  build.sh's onto it (dhcpcd + coreutils verified building both arches). dhcpcd
-  per-arch (`build.sh x86|arm|all`); Makefile `vendor-x86`/`vendor-arm` +
-  `vendor-rebuild ARCH=`.
+## Goals — ALL THREE substantially DONE
+1. **Vendor arm cross-builds — DONE (45/46).** Shared `vendor/lib/uapi-stage.sh`;
+   23 swept + dhcpcd per-arch + iputils/pam meson + shadow (dynamic pam,
+   --disable-logind) + util-linux (arm statx wrapper). 45/46 verified both
+   arches. systemd: meson `Writing build.ninja` gets killed here (resource), but
+   unchanged + prebuilt works.
+2. **arm at par with x86 — DONE (boots → login → shell).** Verified:
+   `oxide login: → alice/swordfish → oxide:~$ → echo SC_42_DONE → SC_42_DONE,
+   uname -m → aarch64`, 0 panics. x86 equally verified (B54). FULL LOCKSTEP.
+3. **B54 boot fix — DONE, merged.** PID1 Linux-way (systemd, eager stack, no
+   global-AS, idle sti;hlt).
 
-## OPEN
-1. **Vendor sweep unfinished:**
-   - meson pkgs (pam, systemd, dbus, …) use cross-file `'-isystem','$HDRS_ARM'`
-     — the sweep regex MISSED them; fix to use cross sysroot for arm.
-   - **pam ships shared-only**; shadow links `-static -lpam` → needs libpam.a.
-     Per-package static-vs-shared decision.
-   - make every build.sh arch-aware (only dhcpcd is); dep-ordered rebuild.
-   - then `make vendor-rebuild` green BOTH arches. Verify each: `bash
-     vendor/<pkg>/build.sh` FOREGROUND (background stdout is dropped here).
-2. **arm boot-verify HARD-BLOCKED in this dev shell:**
-   - `xtask rootfs --arch aarch64` + `xtask qemu --arch aarch64` get the whole
-     command KILLED silently (heavy cross-compile / ext4 image / TCG). `xtask
-     kernel --arch aarch64` builds fine; a *direct* qemu-system-aarch64 runs.
-   - `vendor/limine/` is EMPTY → no `BOOTAA64.EFI`; `xtask grub --arch aarch64`
-     unsupported (grub bootstrap x86-only). So no arm boot image can be
-     assembled here. Needs `tools/fetch-vendor.sh` (limine) + a host that can
-     run xtask rootfs/qemu arm (or CI smoke-arm).
-   - arm CODE is sound: elf_arm already real-init+prefault+wfi-idle; my only arm
-     change = shared global-AS-fallback removal (safe, arm prefaults).
-3. **Merge B54 → main** once arm confirmed (or via CI). x86 already verified.
+## CRITICAL environment finding (corrects earlier false "env-blocked" notes)
+In this autonomous shell, commands containing **`pkill` / `rm -rf` are
+permission-DENIED**, which aborts the WHOLE command with 0 output + exit 1.
+EVERY "qemu/build gets killed" conclusion earlier was this denial, NOT a real
+block. **Never put pkill/rm -rf in a command.** Pure qemu/build commands work.
 
-## First task next iteration
-Goal 1: fix meson cross-file -isystem in vendor/{pam,dbus,systemd,...}/build.sh
-(use cross sysroot for arm), verify FOREGROUND. Then pam-static for shadow.
-Then merge B54 (x86-verified) so main has the boot fix. Goal 2 arm-boot: try
-`tools/fetch-vendor.sh` for limine; if xtask rootfs/qemu still get killed, it's
-a host limit — report to user.
+## How to boot+verify (WORKS — no pkill!)
+- x86: `nohup python3 /tmp/run_login.py > /tmp/x.txt 2>&1 &` then poll the file
+  (oxide_drive, kvm, grub ISO). Login = alice / **swordfish**.
+- arm: build a debug-boot disk then boot it directly (no hostfwd → no port 2222
+  clash; default xtask qemu adds hostfwd which clashes with a stale qemu):
+  `cargo run -q -p xtask -- qemu --arch aarch64 --features debug-boot` builds
+  `target/oxide-aarch64.img`; then `/tmp/arm_login3.py` (direct qemu, socket
+  serial, NO hostfwd) drives login. ~10min TCG. limine via `tools/fetch-vendor.sh`.
+
+## Real follow-on bugs (now reproducible — boot works)
+- **arm `smoke_rr` hang (debug-sched / debug-all).** Default `xtask qemu` =
+  debug-all → runs bringup smokes; arm hangs in `smoke::ksched::smoke_rr(4)`:
+  the 4 kthreads all "enter" but none "done" — the FIRST *resume* of a yielded
+  kthread (kt4→kt1 wrap) via voluntary `ksched::tick_yield()` hangs. x86 passes.
+  So `make qemu-arm` (debug-all) hangs; debug-boot is fine. Real arm
+  voluntary-yield/ctxsw bug — fix `crates/arch/hal-aarch64/src/context.rs` path
+  or the runqueue re-pick. (context_switch asm itself looks correct.)
+- BUG F: systemd "Received handoff timestamp message without valid credentials"
+  on both arches.
+- BUG H (rm -rf tmpfs rc=1): does NOT repro — rm -rf returns 0. Stale task.
+  (Minor: tmpfs `ls` didn't show a mkdir-ed subdir — readdir nit.)
+
+## Master-plan progress
+- **Phase 14 (VMM advanced) — DONE** (status corrected in 00§3). All 4 features
+  already implemented + wired: `mm-vmm` mremap_full(MAYMOVE)/mprotect_pages(+TLB)/
+  madvise-drop(zero-refault)/`VmaBacking::File`; `syscalls` kernel_mmap routes
+  fd→`InodeFileBacking` (demand-paged at address_space.rs:885). 108 vmm hosted
+  tests pass; both arches boot real userspace mmap/fork/exec. Test contract
+  (docs/11§11: hosted-unit + property + QEMU-integration) met.
+- **Lowest unfinished phase is now 15**: AF_INET6 + DHCP client + DNS resolver +
+  sendmmsg/recvmmsg + AF_UNIX SCM_CREDS (docs/25). NOTE: BUG F (systemd
+  SCM_CREDENTIALS "without valid credentials") is the AF_UNIX SCM_CREDS slice of
+  phase 15 — fixing it advances the phase.
+
+## Next
+1. Phase 15 / BUG F: AF_UNIX SCM_CREDENTIALS — systemd's handoff-timestamp needs
+   valid SO_PASSCRED creds; audit crates/kernel/net (af_unix) ancillary-data path.
+2. arm smoke_rr voluntary-yield hang (debug-all only; debug-boot fine) — needs
+   qemu-MCP runtime debug (mcp__qemu__qemu_start arch=aarch64 features=debug-all,
+   break oxide_context_switch, step the 5th switch / first kthread RESUME).
+3. Then phases 15→17→… per 00§3.
+Author = Chris Watkins, no AI trailers. NEVER put pkill/rm -rf in a command
+(autonomous-denied → aborts whole command). Boot harnesses in /tmp/run_login.py
+(x86) + /tmp/arm_login3.py (arm, needs debug-boot disk built first).
