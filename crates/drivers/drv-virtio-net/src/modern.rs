@@ -503,6 +503,7 @@ static SOFTIRQ_IFACE_AND_IP: core::sync::atomic::AtomicU64 =
 pub fn set_softirq_iface(id: net::NetIfaceId, ip: [u8; 4]) {
     let v = ((id.0 as u64) << 32) | (u32::from_be_bytes(ip) as u64);
     SOFTIRQ_IFACE_AND_IP.store(v, Ordering::Release);
+    register_timers(); // driver self-registers its ARP-GC timer on probe
 }
 
 /// F138: update only the IP slot (preserves iface id). SIOCSIFADDR
@@ -721,4 +722,17 @@ pub fn rx_poll<F: FnMut(&[u8])>(mut cb: F) -> usize {
         cb(&f);
     }
     delivered
+}
+
+/// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
+/// # C: O(N entries)
+fn arp_gc_timer(now_ns: u64) { arp_cache().gc(now_ns); }
+
+/// Register this driver's periodic timers (ARP GC). Boot, once.
+/// # C: O(1)
+pub fn register_timers() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) { return; }
+    timer::register_periodic(100_000_000, arp_gc_timer);
 }

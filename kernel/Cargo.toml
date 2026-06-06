@@ -27,6 +27,7 @@ klog    = { path = "../crates/shared/klog" }
 console   = { path = "../crates/kernel/console" }
 cmdline   = { path = "../crates/kernel/cmdline" }
 smoke     = { path = "../crates/kernel/smoke" }
+timer     = { path = "../crates/kernel/timer" }
 sysfs     = { path = "../crates/kernel/sysfs" }
 syscalls  = { path = "../crates/kernel/syscalls" }
 pci-boot  = { path = "../crates/kernel/pci-boot" }

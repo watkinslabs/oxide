@@ -127,3 +127,14 @@ pub unsafe fn balance_once() -> u32 {
 
     1
 }
+
+/// Periodic load-balance pass for the timer driver: migrate up to one task
+/// busiest→idlest per CPU, bounded by online count so a burst converges in
+/// one tick. No-op with <2 CPUs. Process context (takes per-CPU rq locks).
+/// # C: O(online_cpus · migrate)
+pub fn balance_tick(_now_ns: u64) {
+    for _ in 0..cpu::smp::online_count() {
+        // SAFETY: timer-driver kthread (process ctx), not under any runqueue lock; balance_once takes the per-CPU inner locks in cpu-id order so no pair deadlocks.
+        if unsafe { balance_once() } == 0 { break; }
+    }
+}

@@ -13,6 +13,7 @@ klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 vfs  = { path = "../../kernel/vfs" }
 cgroup = { path = "../cgroup" }
+timer = { path = "../timer" }
 vmm  = { path = "../../kernel/mm-vmm" }
 syscall = { path = "../syscall" }
 
