@@ -19,12 +19,16 @@ rule + boot-verify recipes.
 ## Done (later sessions)
 - [x] #8 Limine removal (arm) — DONE #1549 (F378). arm boots GRUB EFI-stub
       `linux` → arm64 Image + PE header + self-boot MMU trampoline → login.
-      Limine gone on both arches. Boots UP (see follow-on below).
+      Limine gone on both arches.
+- [x] xtask de-Limine — DONE #1551 (C80). Dropped cmd_qemu + Limine launchers;
+      `xtask image`=`grub --build-only`; accept.py/run-smokes/mcp → GRUB ISO.
+- [x] arm PSCI AP bring-up — DONE #1552 (F379). PSCI CPU_ON + DTB/MADT MPIDR
+      enumeration; AP boots → `[ap] online aff=1`. SMP=1 default (stable).
 
 ## Open
-- [ ] arm SMP via PSCI CPU_ON (follow-on to #1549) — Limine used to start the
-      secondaries; GRUB path does no AP bring-up. selfboot.rs lays `_sb_ap_l0`;
-      wire publish_psci_ap_params + bring_up_aps_psci + DTB /cpus. Then SMP=2
+- [ ] arm SMP=2 boot-stability (follow-on to #1552) — AP comes online but
+      can't run migrated user tasks → `-smp 2` boot wedges at systemd handoff.
+      Wire per-CPU active-AS + arm ctxsw-to-EL0 on the AP; then re-enable SMP=2
       arm smoke + `-accel tcg,thread=multi`.
 - [ ] python3 broken in rootfs: "No module named 'encodings'" (stdlib path).
       NEW finding; distro completeness; verify-left-able.

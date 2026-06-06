@@ -43,10 +43,17 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   trampoline builds identity+HHDM+kernel-high tables → kmain. `make qemu-arm`
   = `xtask grub --arch aarch64`. Old `xtask qemu` Limine launchers are dead
   code (not on any live path) — a tidy-up could delete them + vendor/limine.
-- **arm is UP-only now**: Limine used to START the secondary CPUs; the GRUB
-  path does no AP bring-up yet. PSCI `CPU_ON` replacement is the follow-on
-  (selfboot.rs already lays down `_sb_ap_l0` + there's a DTB `/cpus` walker;
-  wire publish_psci_ap_params + bring_up_aps_psci). arm smoke runs `-smp 1`.
+- **xtask de-Limined (#1551)**: dropped cmd_qemu + build_disk_image + the
+  Limine launchers; `xtask image` = `grub --build-only`; accept.py /
+  run-smokes.sh / qemu-mcp boot the GRUB ISO; fetch-vendor stopped fetching
+  Limine.
+- **arm PSCI AP bring-up (#1552)**: kernel now PSCI `CPU_ON`s secondaries
+  (MMU-off trampoline `oxide_ap_entry_arm_psci`); CPUs enumerated from DTB
+  `/cpus` (-kernel) or ACPI-MADT GICC (GRUB/EFI). Verified `-smp 2`: AP boots
+  → `[ap] online aff=1`. **But `-smp 2` full boot is NOT stable**: once the
+  load balancer lands a user task on the fresh AP the boot wedges at the
+  systemd handoff (AP can't EL0-return a migrated task; per-CPU active-AS +
+  arm ctxsw-to-EL0-on-AP incomplete). Gate stays `-smp 1`.
 
 ## ARM is slow because TCG, not a bug
 - No `/dev/kvm` for aarch64 on an x86 host → QEMU TCG (software JIT), ~30-40x
@@ -75,14 +82,16 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   before/after; investigate Task::new_user ns-field init.
 
 ## Open / next (lowest-risk first)
-1. **arm SMP via PSCI CPU_ON** (follow-on to #1549) — restore SMP>1 on arm
-   without Limine; then re-enable SMP=2 arm smoke + thread=multi TCG.
+1. **arm SMP=2 boot-stability** (follow-on to #1552) — AP comes online but
+   can't run migrated user tasks. Wire per-CPU active-AS + arm ctxsw-to-EL0
+   on the AP, then re-enable SMP=2 arm smoke + `-accel tcg,thread=multi`.
+   Also: `[FAULT] sigsegv` in the debug-irq-only elf-smoke-arm/init-arm at
+   SMP=2 (far=0x10004322) — investigate alongside.
 2. python3 encodings/stdlib path fix (distro; verify-left-able).
 3. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
 4. Phase 16 real namespace isolation (currently id-substrate, F100-F107).
-5. tidy-up: delete dead `xtask qemu` Limine launchers + vendor/limine.
-6. smoke_rr arm debug-all hang (debug-only; needs disk+gdb, MCP can't — stale ISO).
-7. phases 17–35 — deep feature work, best with user prioritization.
+5. smoke_rr arm debug-all hang (debug-only; needs disk+gdb, MCP can't — stale ISO).
+6. phases 17–35 — deep feature work, best with user prioritization.
 
 ## Discipline
 Author = Chris Watkins, no AI/Co-Authored-By trailers. spec-lint clean + both
