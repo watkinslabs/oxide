@@ -29,13 +29,28 @@ rule + boot-verify recipes.
       need_resched / preempt_count). Now per-CPU (gs:0 / TPIDR_EL1). UP-safe.
 
 ## Open
-- [ ] arm SMP=2 boot-stability — REMAINING gap (gdb-confirmed): no cross-CPU
-      wakeup→resched-IPI. A task woken on CPU A but queued on CPU B's runqueue
-      is never picked (AP idle loop is pure wfi/IRQ-driven), so both CPUs wfi
-      with PID1 unrunnable → wedge at systemd handoff. Fix = try_to_wake_up-
-      style enqueue-to-target + resched IPI in the wake path (wait_list.rs).
-      Then SMP=2 arm smoke + `-accel tcg,thread=multi`. (Also: load balancer is
-      unreachable on arm — elf_arm::run loops forever before spawn_timer_driver.)
+- [ ] arm SMP=2 boot-stability — DEEP, REDIRECTED. 3 correct SMP fixes landed:
+      per-CPU preempt (#1554), per-CPU SVC frame (#1556), on_rq dedup guard
+      (#1557). NONE unblock SMP=2. **KEY FINDING (this session): SMP=2 wedges
+      even with a FULLY-UP kernel** — bisected by (a) ap_init no-op, (b)
+      bring_up_aps_psci no-op, (c) capping cpu enumeration to 1: all still wedge
+      at qemu `-smp 2`; `-accel tcg,thread=multi` also wedges; `-smp 1` boots.
+      So it is NOT the AP, NOT the scheduler, NOT cpu::count(), NOT TCG
+      round-robin timing. It is something a UP kernel does differently when the
+      GIC/firmware present a 2nd vCPU. Symptom: PID1(systemd) runs ~6 syscalls
+      (last = readlinkat n=6), then dies — `[noenq tid=c0de0002 st=3]` = Zombie
+      (SIGSEGV'd), wedge is just init-dead aftermath. The kill is an EL0
+      ALIGNMENT data abort (esr=0x92000021 EC=0x24 DFSC=0x21, far=0x10004322),
+      but sp_el0 at the fault is GOOD (0x7fff…) and the readlinkat dispatch-exit
+      frame is byte-identical SMP=1 vs SMP=2 (x19=0x100042d9 a valid systemd
+      mmap ptr). Syscalls run IRQ-masked (no mid-syscall preempt). NEXT
+      EXPERIMENTS: (1) full syscall arg+result trace SMP=1 vs SMP=2 for PID1's
+      first 6 (does mmap/brk return a different addr at -smp 2?); (2) dump ALL
+      x0-x30 at the EL0 alignment fault (which reg holds 0x10004322 + disasm the
+      faulting insn at elr); (3) `its=off` to isolate ITS/LPI routing with 2
+      redistributors; (4) compare GIC init path (GICR/IROUTER) at 1 vs 2
+      redistributors. Gate stays `-smp 1`. (Load balancer unreachable on arm —
+      elf_arm::run loops before spawn_timer_driver — secondary.)
 - [ ] python3 broken in rootfs: "No module named 'encodings'" (stdlib path).
       NEW finding; distro completeness; verify-left-able.
 - [ ] Phase 15 acceptance: clean loopback nc/ping test (net bins present, 171
