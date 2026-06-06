@@ -59,6 +59,9 @@ impl CfsRunqueue {
         let (&k, _) = self.tree.iter().next()?;
         let t = self.tree.remove(&k).expect("leftmost key just observed");
         self.nr_running -= 1;
+        // Off the tree → clear on-rq so a later enqueue (re-queue / migrate)
+        // passes the guard in RunqueueInner::enqueue (Linux `p->on_rq`).
+        t.on_rq.store(false, Ordering::Release);
         Some(t)
     }
 
@@ -76,6 +79,7 @@ impl CfsRunqueue {
             .map(|(k, _)| *k)?;
         let t = self.tree.remove(&key)?;
         self.nr_running -= 1;
+        t.on_rq.store(false, Ordering::Release);
         Some(t)
     }
 }
