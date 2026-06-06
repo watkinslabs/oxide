@@ -102,15 +102,15 @@ QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 # AP bring-up + the periodic load balancer are exercised every push.
 SMP ?= 1
 
-# Limine is gone — x86 boots via the GRUB multiboot2 path (`xtask grub`).
-# The old `xtask qemu` (Limine ISO + check_vendor for vendor/limine/*) is
-# dead and only kept around for aarch64 until its GRUB/EFI-stub path lands
-# (F376). `cmd_grub` takes --arch/--smp/--features just like the old path.
+# Limine is gone on BOTH arches — x86 boots via the GRUB multiboot2 path
+# and aarch64 via the GRUB EFI-stub `linux` path (`xtask grub` dispatches
+# on --arch). The old `xtask qemu` (Limine ISO + check_vendor for
+# vendor/limine/*) is dead. `cmd_grub` takes --arch/--smp/--features.
 qemu-x86:
 	$(XTASK) grub --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
 
 qemu-arm:
-	$(XTASK) qemu --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
+	$(XTASK) grub --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
 
 # GRUB self-bootstrap path: build a GRUB ISO that multiboot2-loads the
 # kernel directly (replacing Limine) and boot it. WIP — see F372.
@@ -124,7 +124,7 @@ qemu-x86-debug:
 	$(XTASK) grub --arch x86_64  --features debug-all
 
 qemu-arm-debug:
-	$(XTASK) qemu --arch aarch64 --features debug-all
+	$(XTASK) grub --arch aarch64 --features debug-all
 
 # Boot-smoke gates — run kernel under qemu headless and wait for
 # `oxide login:` on serial within SMOKE_TIMEOUT seconds (default

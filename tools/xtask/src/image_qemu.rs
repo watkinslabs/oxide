@@ -565,8 +565,11 @@ fn which(prog: &str) -> Option<std::path::PathBuf> {
 /// 32-bit). This target lets that path be iterated.
 pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
+    if arch == "aarch64" {
+        return cmd_grub_aarch64(rest);
+    }
     if arch != "x86_64" {
-        eprintln!("xtask grub: only x86_64 supported for now");
+        eprintln!("xtask grub: arch must be x86_64 or aarch64");
         return Err(2);
     }
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -596,6 +599,150 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
         return Ok(());
     }
     qemu_run_grub_x86_64(&repo, &iso, smp)
+}
+
+/// GRUB on aarch64 (Limine-free): build the EFI-stub flat Image, stage it
+/// + a grub.cfg that `linux`-boots it, `grub2-mkrescue` an EFI ISO using
+/// the vendored arm64-efi GRUB modules (no host grub2-efi-aa64 install
+/// needed — see tools/fetch-grub.sh), then boot under OVMF. OVMF loads
+/// GRUB, GRUB's `linux` loads our PE Image, the kernel's EFI stub exits
+/// boot services + drops the MMU and joins the self-boot trampoline. The
+/// rootfs is embedded in the kernel (ext4::rootfs `include_bytes!`), so
+/// root mounts without a block device; the EFI stub's ACPI RSDP brings up
+/// PCI (virtio-net/gpu).
+fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
+    let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
+    crate::cmd_rootfs(rest)?;
+    // debug-boot by default — UART klog sink, no bring-up smokes (parity
+    // with the x86 grub path). Override with --features debug-all.
+    let mut kr: Vec<String>;
+    let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
+        kr = rest.to_vec();
+        kr.push("--features".into());
+        kr.push("debug-boot".into());
+        &kr[..]
+    } else { rest };
+    crate::cmd_kernel(kargs)?;
+    let repo = repo_root();
+    let kernel_elf = kernel_elf_path(&repo, "aarch64", rest)?;
+    let image = build_arm_image(&repo, &kernel_elf)?;
+    let iso = build_grub_arm_iso(&repo, &image)?;
+    // `--build-only`: produce the ISO but skip the qemu launch (qemu-mcp /
+    // boot-smoke build the artifact then spawn their own qemu).
+    if rest.iter().any(|a| a == "--build-only") {
+        println!("xtask grub: built {} (--build-only, not launching qemu)", iso.display());
+        return Ok(());
+    }
+    qemu_run_aarch64_grub(&repo, &iso, smp)
+}
+
+/// objcopy the aarch64 kernel ELF → flat arm64 `Image` (arm64 Image
+/// header + PE32+/EFI header + MMU trampoline at byte 0). The artifact is
+/// what GRUB `linux`, UEFI LoadImage, U-Boot `booti`, and QEMU `-kernel`
+/// all load.
+fn build_arm_image(
+    repo: &std::path::Path,
+    kernel_elf: &std::path::Path,
+) -> Result<std::path::PathBuf, u8> {
+    let image = repo.join("target/oxide-aarch64.Image");
+    let objcopy = if which("rust-objcopy").is_some() { "rust-objcopy" }
+                  else if which("llvm-objcopy").is_some() { "llvm-objcopy" }
+                  else {
+                      eprintln!("xtask grub: need rust-objcopy or llvm-objcopy on PATH");
+                      return Err(2);
+                  };
+    let mut c = Command::new(objcopy);
+    c.args(["-O", "binary", kernel_elf.to_str().unwrap(), image.to_str().unwrap()]);
+    run(c)?;
+    eprintln!("xtask grub: produced {}", image.display());
+    Ok(image)
+}
+
+/// Stage the EFI-stub Image + a grub.cfg (`linux /boot/oxide-aarch64.Image`)
+/// and grub2-mkrescue an EFI ISO with the vendored arm64-efi modules.
+fn build_grub_arm_iso(
+    repo: &std::path::Path,
+    image: &std::path::Path,
+) -> Result<std::path::PathBuf, u8> {
+    use std::fs;
+    let mods = repo.join("vendor/grub/arm64-efi");
+    if !mods.join("modinfo.sh").exists() {
+        eprintln!("xtask grub: vendored arm64-efi modules missing — run tools/fetch-grub.sh");
+        return Err(2);
+    }
+    let stage = repo.join("target/grub-stage-aarch64");
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
+    fs::copy(image, stage.join("boot/oxide-aarch64.Image")).map_err(|_| 1u8)?;
+    // GRUB's arm64 serial console differs from x86; use the firmware
+    // console (OVMF routes it to the PL011 → -serial). `linux` boots our
+    // PE Image as an EFI application.
+    let cfg = "set timeout=1\nset default=0\nterminal_input console\nterminal_output console\n\n\
+               menuentry \"oxide (EFI-stub)\" {\n    \
+               linux /boot/oxide-aarch64.Image\n    \
+               boot\n}\n";
+    fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
+    let iso = repo.join("target/oxide-aarch64-grub.iso");
+    let _ = fs::remove_file(&iso);
+    let mkrescue = if which("grub2-mkrescue").is_some() { "grub2-mkrescue" } else { "grub-mkrescue" };
+    let mut c = Command::new(mkrescue);
+    c.args(["-d", mods.to_str().unwrap(), "-o", iso.to_str().unwrap(), stage.to_str().unwrap()]);
+    run(c)?;
+    eprintln!("xtask grub: produced {}", iso.display());
+    Ok(iso)
+}
+
+/// Boot the aarch64 GRUB EFI ISO under QEMU with OVMF. Semihosting is on
+/// (the kernel's early klog uses it until device_map remaps PL011); GIC
+/// v3+ITS as the kernel expects; rootfs embedded in the Image (no block
+/// device). OXIDE_QEMU_UART_SOCK routes serial to a unix socket (the
+/// boot-smoke/login scripts feed scripted keystrokes that way); else
+/// headless stdio for CI or a muxed stdio + GTK display interactively.
+fn qemu_run_aarch64_grub(
+    repo: &std::path::Path,
+    iso: &std::path::Path,
+    smp: u32,
+) -> Result<(), u8> {
+    if which("qemu-system-aarch64").is_none() {
+        eprintln!("xtask grub: qemu-system-aarch64 not on PATH; install qemu-system-aarch64.");
+        return Err(2);
+    }
+    let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
+    let smp_str = smp.to_string();
+    let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
+    // Same OXIDE_QEMU_UART_SOCK plumbing as the x86/arm disk launchers.
+    let uart_chardev: String = match std::env::var("OXIDE_QEMU_UART_SOCK") {
+        Ok(p) if !p.is_empty() => {
+            let _ = std::fs::remove_file(&p);
+            format!("socket,id=ser0,path={},server=on,wait=off", p)
+        }
+        _ => if headless { "stdio,id=ser0,signal=off".to_string() }
+             else { "stdio,id=ser0,mux=on,signal=off".to_string() },
+    };
+    let mut c = Command::new("qemu-system-aarch64");
+    c.args([
+        "-machine", "virt,gic-version=3,its=on",
+        "-cpu", "cortex-a72",
+        "-smp", &smp_str,
+        "-m", "2G",
+        "-bios", ovmf.to_str().unwrap(),
+        "-cdrom", iso.to_str().unwrap(),
+        "-boot", "d",
+        "-semihosting-config", "enable=on,target=native",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        // virtio-gpu scanout + keyboard for the graphical console (fbcon
+        // paints here; no GOP on this path). Without them only serial gets
+        // output and the GTK window stays blank.
+        "-device", "virtio-gpu-pci,bus=pcie.0",
+        "-device", "virtio-keyboard-pci,bus=pcie.0",
+        "-chardev", uart_chardev.as_str(),
+        "-serial", "chardev:ser0",
+        "-display", if headless { "none" } else { "gtk" },
+        "-no-reboot",
+    ]);
+    eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");
+    run(c)
 }
 
 /// Stage `boot/oxide-<arch>` + a `grub.cfg` that `multiboot2`-loads it,
