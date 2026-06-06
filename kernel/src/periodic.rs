@@ -21,7 +21,7 @@ extern "C" fn periodic_kthread(_arg: usize) -> ! {
         // TCP retransmit / RTO + connection-abort timers (RFC 6298).
         net::sock::stack().tcp_retx_tick(now);
         // cgroup v2 cpu.max: throttle over-quota cgroups, refill on period (`26`).
-        sched::cpu_cgroup::tick(now);
+        sched::cgroup::tick(now);
         // SMP load balance per `13§11` (no-op with <2 CPUs).
         for _ in 0..cpu::smp::online_count() {
             // SAFETY: kthread (process) context, not under any runqueue lock; balance_once takes the per-CPU inner locks in cpu-id order so no pair deadlocks.

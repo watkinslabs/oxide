@@ -28,26 +28,19 @@ pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-/// cgroup io.stat charge hook (`26`): the kernel installs a fn that
-/// charges `(bytes, is_write)` to the *current* task's cgroup. This leaf
-/// crate stays cgroup/sched-free; the hook resolves `current()` itself.
-static IO_CHARGE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-/// Install the io.stat charge hook. Boot path.
-/// # C: O(1)
-pub fn set_io_charge_hook(f: fn(u64, bool)) {
-    IO_CHARGE_HOOK.store(f as *mut (), Ordering::Release);
-}
-
-/// Charge a completed block I/O to the current task's cgroup io.stat
-/// (no-op when the hook is unset). Called from the page-cache submit path.
-/// # C: O(1) + hook
+/// Charge a completed block I/O to the current task's cgroup io.stat.
+/// The io controller lives in block (Linux: blk-cgroup) — block reads the
+/// current task (sched) + charges the cgroup tree directly. Called from the
+/// page-cache submit path. No-op on host builds (no live scheduler).
+/// # C: O(1) + cgroup lookup
 pub fn charge_io(bytes: u64, is_write: bool) {
-    let p = IO_CHARGE_HOOK.load(Ordering::Acquire);
-    if p.is_null() { return; }
-    // SAFETY: hook installed at boot with the exact `fn(u64, bool)` ABI.
-    let f: fn(u64, bool) = unsafe { core::mem::transmute(p) };
-    f(bytes, is_write);
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(t) = sched::live::current() {
+        let pid = t.tgid.load(Ordering::Acquire) as u64;
+        cgroup::charge_io(pid, bytes, is_write);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let _ = (bytes, is_write);
 }
 
 #[cfg(test)]

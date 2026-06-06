@@ -116,7 +116,7 @@ mod stub_tests {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub mod cpu_cgroup;
+pub mod cgroup;
 #[cfg(target_os = "oxide-kernel")]
 pub mod live;
 

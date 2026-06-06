@@ -9,6 +9,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+#[cfg(feature = "debug-cgroup")]
+pub mod selftest;
 
 pub mod inode;
 pub mod tree;

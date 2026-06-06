@@ -170,6 +170,21 @@ pub fn current() -> Option<&'static Task> {
     Some(unsafe { rq.current_ref() })
 }
 
+/// Current task's mount-namespace id (0 if no current task).
+/// # C: O(1)
+pub fn current_mount_ns() -> u64 {
+    current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0)
+}
+
+/// Current task's chroot root path, or None when it is "/" or no current.
+/// # C: O(1) + clone
+pub fn current_chroot_root() -> Option<alloc::string::String> {
+    let c = current()?;
+    // SAFETY: Task.root single-mutator per 13§5; the running task on this CPU is the sole writer (sys_chroot updates only the calling task).
+    let r = unsafe { (*c.root.get()).clone() };
+    if r == "/" { None } else { Some(r) }
+}
+
 /// Counters incremented by the schedule paths. Hosted-test access
 /// via the `RunStats` snapshot returned from teardown.
 static VOLUNTARY: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
