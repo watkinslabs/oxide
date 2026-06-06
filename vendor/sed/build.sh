@@ -11,6 +11,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="sed-4.9"
 
 if [ ! -d "$SRC" ]; then
@@ -62,7 +63,7 @@ build_one() {
   echo "  → sed-$suffix  ($(stat -c %s "sed-$suffix") bytes)"
 }
 
-build_one "x86_64"  "musl-gcc"  "-isystem $HDRS_X86" "x86_64"
-build_one "aarch64" "$CROSS_CC" "-isystem $HDRS_ARM" "aarch64"
+build_one "x86_64"  "musl-gcc"  "$(uapi_cflags x86_64)" "x86_64"
+build_one "aarch64" "$CROSS_CC" "$(uapi_cflags aarch64)" "aarch64"
 
 echo "OK — built sed for {x86_64, aarch64}"

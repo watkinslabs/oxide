@@ -16,6 +16,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="Linux-PAM-1.7.2"
 
 if [ ! -d "$SRC" ]; then

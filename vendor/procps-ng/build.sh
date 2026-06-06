@@ -5,6 +5,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="procps-ng-4.0.5"
 if [ ! -d "$SRC" ]; then
   echo "missing $SRC -- run tools/fetch-procps-ng.sh first" >&2
@@ -90,11 +91,11 @@ NC_X86="$(cd ../ncurses/install-x86_64 && pwd)"
 NC_ARM="$(cd ../ncurses/install-aarch64 && pwd)"
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "x86_64" "$NC_X86" "x86_64-linux-musl" "ar" "ranlib"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "aarch64" "$NC_ARM" "aarch64-linux-musl" "$CROSS_AR" "$CROSS_RANLIB"
 
 echo "OK -- built procps-ng for {x86_64, aarch64}"

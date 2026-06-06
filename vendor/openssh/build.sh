@@ -23,6 +23,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ../lib/uapi-stage.sh
 SRC="openssh-9.9p2"
 
 if [ ! -d "$SRC" ]; then
@@ -125,11 +126,11 @@ EOF
 }
 
 build_one "x86_64"  "musl-gcc" \
-  "-isystem $HDRS_X86" \
+  "$(uapi_cflags x86_64)" \
   "x86_64"
 
 build_one "aarch64" "$CROSS_CC" \
-  "-isystem $HDRS_ARM" \
+  "$(uapi_cflags aarch64)" \
   "aarch64"
 
 echo "OK — built sshd/ssh/ssh-keygen for {x86_64, aarch64}"
