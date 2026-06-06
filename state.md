@@ -1,50 +1,40 @@
 # Session hand-off
 
-Branch: **B54-pid1-real-execve-path** (5 commits ahead of main, unpushed).
-Autonomous high-priority run: (1) all vendor **arm** cross-builds work, (2) arm
-branch at par with x86 (B54 boots arm→login), (3) continue the distribution +
-kernel=glue syscall work. Loop armed (ScheduleWakeup).
+On **main** (B54 + C55 merged). Autonomous high-priority loop running.
 
-## Done + verified this run
-- **kernel = pure glue** (PR #1540 on main): kernel crate eliminated → `kmain`
-  (`crates/kernel/kmain/src/kmain.rs`); subsystems/devices in crates; timers
-  self-register (docs/56); blobs gitignored + built on demand (`ensure_blobs`).
-- **B54 (x86, VERIFIED):** PID 1 boots the Linux way — synthetic bringup init
-  (ELF_BLOB + yo/hi/echo) deleted; real `/lib/systemd/systemd` loaded; eager
-  stack map (`pmm::user_as::prefault_stack` = setup_arg_pages); **no global-AS
-  fallback** (fault handler resolves current->mm only). Root-cause fix: idle
-  loop must `sti; hlt` so the timer fires → deadline waits (systemd terminal
-  ppoll) resolve. systemd → `oxide login:` → shell, 0 panics.
-- **Vendor arm cross-build fix:** `vendor/lib/uapi-stage.sh` (x86 stages host
-  UAPI fresh + -isystem; aarch64 uses cross sysroot, no host headers). Swept 23
-  build.sh's onto it (dhcpcd + coreutils verified building both arches). dhcpcd
-  per-arch (`build.sh x86|arm|all`); Makefile `vendor-x86`/`vendor-arm` +
-  `vendor-rebuild ARCH=`.
+## Goals status
+1. **Vendor arm cross-builds — DONE (45/46).** Shared `vendor/lib/uapi-stage.sh`
+   (x86 stages host UAPI fresh + -isystem; aarch64 uses cross sysroot). 23 swept
+   + dhcpcd per-arch + iputils/pam meson fix + shadow (dynamic pam, --disable-
+   logind) + util-linux (arm statx wrapper). All verified building BOTH arches.
+   PRs #1541 (B54), #1542 (C55) merged.
+   - **systemd** is the only one not rebuilt: its meson `Writing build.ninja`
+     gets KILLED (~83%) in this dev shell — a resource/OOM kill (no error), same
+     class as below. systemd is UNCHANGED + its prebuilt install works.
+2. **B54 boot fix — DONE (x86 verified, merged).** PID 1 the Linux way: deleted
+   synthetic bringup init + yo/hi/echo; real /lib/systemd/systemd; eager stack
+   map (setup_arg_pages); no global-AS fallback; idle loop `sti;hlt` so the timer
+   fires (deadline waits resolve). systemd → oxide login → shell, 0 panics.
+   - arm CODE sound (elf_arm real-init+prefault+wfi). arm BOOT-verify is
+     ENV-BLOCKED here: `xtask rootfs/qemu aarch64` get the whole command KILLED
+     (heavy cross-compile/ext4/TCG); `vendor/limine/` empty (no BOOTAA64.EFI);
+     `xtask grub --arch aarch64` unsupported. Needs CI smoke-arm or a host that
+     can run those. `xtask kernel --arch aarch64` builds fine.
+3. **Distribution + kernel=glue syscall work — ongoing.** kernel=glue structural
+   refactor done (kmain crate, syscalls crate). Next: x86-verifiable distro
+   improvements / open bugs.
 
-## OPEN
-1. **Vendor sweep unfinished:**
-   - meson pkgs (pam, systemd, dbus, …) use cross-file `'-isystem','$HDRS_ARM'`
-     — the sweep regex MISSED them; fix to use cross sysroot for arm.
-   - **pam ships shared-only**; shadow links `-static -lpam` → needs libpam.a.
-     Per-package static-vs-shared decision.
-   - make every build.sh arch-aware (only dhcpcd is); dep-ordered rebuild.
-   - then `make vendor-rebuild` green BOTH arches. Verify each: `bash
-     vendor/<pkg>/build.sh` FOREGROUND (background stdout is dropped here).
-2. **arm boot-verify HARD-BLOCKED in this dev shell:**
-   - `xtask rootfs --arch aarch64` + `xtask qemu --arch aarch64` get the whole
-     command KILLED silently (heavy cross-compile / ext4 image / TCG). `xtask
-     kernel --arch aarch64` builds fine; a *direct* qemu-system-aarch64 runs.
-   - `vendor/limine/` is EMPTY → no `BOOTAA64.EFI`; `xtask grub --arch aarch64`
-     unsupported (grub bootstrap x86-only). So no arm boot image can be
-     assembled here. Needs `tools/fetch-vendor.sh` (limine) + a host that can
-     run xtask rootfs/qemu arm (or CI smoke-arm).
-   - arm CODE is sound: elf_arm already real-init+prefault+wfi-idle; my only arm
-     change = shared global-AS-fallback removal (safe, arm prefaults).
-3. **Merge B54 → main** once arm confirmed (or via CI). x86 already verified.
+## Environment limits (this dev shell)
+- Heavy processes get KILLED silently (whole bash command, 0 output): `xtask
+  rootfs/qemu aarch64`, qemu-system-aarch64 emulation under load, systemd meson.
+- Background-task **stdout is dropped** — run builds FOREGROUND or read the
+  build's own logfile. x86 `qemu-system-x86_64` via oxide_drive WORKS (run_login).
+
+## Open distro bugs (x86-verifiable via run_login)
+BUG A no-echo at prompt; C cgroup ENOTEMPTY on destroy; F systemd SCM_CREDENTIALS
+"without valid credentials"; G login/getty respawn delay; H `rm -rf` tmpfs rc=1.
 
 ## First task next iteration
-Goal 1: fix meson cross-file -isystem in vendor/{pam,dbus,systemd,...}/build.sh
-(use cross sysroot for arm), verify FOREGROUND. Then pam-static for shadow.
-Then merge B54 (x86-verified) so main has the boot fix. Goal 2 arm-boot: try
-`tools/fetch-vendor.sh` for limine; if xtask rootfs/qemu still get killed, it's
-a host limit — report to user.
+Pick one contained, x86-verifiable distro item (e.g. BUG H tmpfs delete backend),
+fix on a fresh branch, verify via run_login, PR+merge. Keep both arches building.
+Author = Chris Watkins, no AI trailers.
