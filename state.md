@@ -1,8 +1,9 @@
 # Session hand-off
 
-On **main**, HEALTHY: both arches boot → systemd → `oxide login:` → shell
-(x86 verified LOGIN_OK+SC_42 this session; arm verified aarch64 shell). Loop
-STOPPED (user exited). 9 PRs merged this session.
+On **main**, HEALTHY: both arches boot → systemd → `oxide login:` → shell.
+**Limine is now fully removed from BOTH arches** (#1549, F378): x86 = GRUB
+multiboot2, arm = GRUB EFI-stub `linux` (arm64 Image + PE header, self-boot
+MMU trampoline). arm verified to `oxide login:` in 48s (TCG, SMP=1).
 
 ## CRITICAL environment rule
 Any command containing **`pkill` / `rm -rf` is permission-DENIED** in the
@@ -37,11 +38,25 @@ recvmsg_unix_msgpair). "without valid credentials" gone both arches.
 distro advanced; both arches boot CLEAN (only benign autofs4 warning).
 
 ## Bootloader status (answers "is Limine removed from arm?")
-- **NO — arm still uses Limine.** build_disk_image stages vendor/limine/
-  BOOTAA64.EFI + limine.conf (image_qemu.rs:142,183). `xtask grub` is x86-only
-  ("only x86_64 supported for now", :569). x86 has the GRUB self-bootstrap;
-  arm Limine removal is **open** (task #8). To do: add an aarch64 grub path to
-  xtask grub, then switch qemu_run_aarch64 off the Limine ESP.
+- **YES — removed both arches (#1549).** arm boots OVMF→GRUB→`linux`→our PE
+  Image; EFI stub finds DTB+ACPI-RSDP, ExitBootServices, the selfboot.rs MMU
+  trampoline builds identity+HHDM+kernel-high tables → kmain. `make qemu-arm`
+  = `xtask grub --arch aarch64`. Old `xtask qemu` Limine launchers are dead
+  code (not on any live path) — a tidy-up could delete them + vendor/limine.
+- **arm is UP-only now**: Limine used to START the secondary CPUs; the GRUB
+  path does no AP bring-up yet. PSCI `CPU_ON` replacement is the follow-on
+  (selfboot.rs already lays down `_sb_ap_l0` + there's a DTB `/cpus` walker;
+  wire publish_psci_ap_params + bring_up_aps_psci). arm smoke runs `-smp 1`.
+
+## ARM is slow because TCG, not a bug
+- No `/dev/kvm` for aarch64 on an x86 host → QEMU TCG (software JIT), ~30-40x
+  vs x86-under-KVM. Steady state is clean (idle=`wfi`, 10 Hz tick). Levers:
+  arm SMP=1 (done; SMP=2 wedged UP-kernel + halved single-thread TCG), boot
+  without debug-boot (kills the per-byte PL011 MMIO klog flood), and the real
+  fix for parallel arm = land PSCI AP bring-up then `-accel tcg,thread=multi`.
+- Harness hygiene: kill stray qemus + free :2222 before smoke (overlapping
+  qemus from manual boots cause false hostfwd failures). Pre-push hook runs
+  `make smoke` both arches; set OXIDE_QEMU_KVM=1 so x86 smoke isn't TCG-slow.
 
 ## This-iteration findings (Phase 15 net acceptance, verification-only)
 - Net bins present in rootfs: ping nc wget ip ifconfig hostname ss dhcpcd udhcpc
@@ -60,12 +75,14 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   before/after; investigate Task::new_user ns-field init.
 
 ## Open / next (lowest-risk first)
-1. python3 encodings/stdlib path fix (distro; verify-left-able).
-2. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
-3. arm Limine removal (task #8) — bootloader work, boot-regression risk.
+1. **arm SMP via PSCI CPU_ON** (follow-on to #1549) — restore SMP>1 on arm
+   without Limine; then re-enable SMP=2 arm smoke + thread=multi TCG.
+2. python3 encodings/stdlib path fix (distro; verify-left-able).
+3. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
 4. Phase 16 real namespace isolation (currently id-substrate, F100-F107).
-5. smoke_rr arm debug-all hang (debug-only; needs disk+gdb, MCP can't — stale ISO).
-6. phases 17–35 — deep feature work, best with user prioritization.
+5. tidy-up: delete dead `xtask qemu` Limine launchers + vendor/limine.
+6. smoke_rr arm debug-all hang (debug-only; needs disk+gdb, MCP can't — stale ISO).
+7. phases 17–35 — deep feature work, best with user prioritization.
 
 ## Discipline
 Author = Chris Watkins, no AI/Co-Authored-By trailers. spec-lint clean + both
