@@ -24,3 +24,15 @@ pub mod tmpfs;
 pub mod coredump;
 pub mod ptrace;
 pub mod sig_dispatch;
+
+/// Install fs runtime hooks: flock release-on-close, inotify
+/// IN_MODIFY-on-write, pipe reader/writer close tracking, epoll broadcast.
+/// Boot, once, before any File can be dropped.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn init() {
+    flock::install_drop_hook();
+    inotify::install_write_hook();
+    pipe::install_close_hook();
+    epoll::install_epoll_broadcast();
+}

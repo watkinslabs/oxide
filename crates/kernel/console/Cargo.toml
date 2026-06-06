@@ -12,6 +12,7 @@ klog    = { path = "../../shared/klog" }
 kmacros = { path = "../../shared/kmacros" }
 vfs     = { path = "../vfs" }
 tty     = { path = "../tty" }
+devfs   = { path = "../devfs" }
 sched   = { path = "../sched" }
 
 [features]

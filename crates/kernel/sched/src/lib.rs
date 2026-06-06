@@ -116,6 +116,8 @@ mod stub_tests {
 }
 
 #[cfg(target_os = "oxide-kernel")]
+pub mod cgroup;
+#[cfg(target_os = "oxide-kernel")]
 pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
@@ -127,3 +129,36 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod timers;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
 #[cfg(target_os = "oxide-kernel")] pub mod xfer;
+
+/// Register the scheduler's periodic timers (cpu.max bandwidth enforcement +
+/// SMP load balance) with the timer subsystem. Boot, once.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn register_timers() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) { return; }
+    const P: u64 = 100_000_000; // 100 ms
+    timer::register_periodic(P, cgroup::tick);
+    timer::register_periodic(P, live::balance::balance_tick);
+}
+
+/// Boot anchor / idle loop: `schedule()` (so an IRQ-woken task runs) then
+/// hlt/wfi until the next IRQ. The kernel jumps here at the end of boot.
+/// # C: O(∞)
+#[cfg(target_os = "oxide-kernel")]
+pub fn halt_forever() -> ! {
+    loop {
+        if live::global().is_some() {
+            // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
+            unsafe { live::schedule(); }
+        }
+        #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
+        #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
+    }
+}
+
+/// Hosted-test fallback (never reached in tests).
+/// # C: O(∞)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn halt_forever() -> ! { core::hint::spin_loop(); loop {} }

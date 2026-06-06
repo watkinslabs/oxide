@@ -8,7 +8,7 @@
 //
 // Phase 0 scope: get a `_start` symbol that runs cleanly in QEMU under
 // Limine, sets up the kernel stack, parses Limine memmap into our
-// `BootInfo`, and tail-calls `kernel::kernel_main`. UART driver
+// `BootInfo`, and tail-calls `kmain::kernel_main`. UART driver
 // (16550A on QEMU `-serial stdio`) lands here so klog has a sink.
 //
 // Real Limine integration + 16550 driver land in P0-07 follow-ups;
@@ -28,7 +28,7 @@ pub mod uart;
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicPtr;
-use kernel::{BootInfo, BootMemRegion};
+use boot_info::{BootInfo, BootMemRegion};
 #[cfg(feature = "debug-boot")]
 use klog::Uart;
 #[cfg(feature = "debug-boot")]
@@ -201,7 +201,7 @@ pub static LIMINE_RSDP: RequestHeader<RsdpResponse> = RequestHeader {
 /// kernel image descriptor, whose `cmdline` field holds whatever
 /// the Limine config passed (e.g. `cmdline: root=/dev/oxide0 …`).
 /// Without this, `/proc/cmdline` falls back to the arch-default
-/// installed by `kernel::boot_cmdline::install_arch_default`.
+/// installed by `cmdline::install_arch_default`.
 #[used]
 #[link_section = ".limine_requests"]
 pub static LIMINE_EXECUTABLE_FILE: RequestHeader<ExecutableFileResponse>
@@ -287,7 +287,7 @@ static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
     BootMemRegion {
         base_pa: 0,
         len:     0,
-        kind:    kernel::BootMemKind::Reserved,
+        kind:    boot_info::BootMemKind::Reserved,
     };
     MAX_BOOT_REGIONS
 ]));
@@ -305,7 +305,7 @@ static CMDLINE_STORAGE: CmdlineStorage =
 
 /// Read the bootloader's executable-file cmdline (Limine config
 /// `cmdline: …`), copy into kernel-owned `CMDLINE_STORAGE`, and
-/// publish via `kernel::boot_cmdline::set`. No-op if the bootloader
+/// publish via `cmdline::set`. No-op if the bootloader
 /// didn't fill the response or the cmdline is empty — the kernel
 /// then falls back to `install_arch_default`.
 ///
@@ -340,7 +340,7 @@ unsafe fn capture_cmdline() {
                         core::slice::from_raw_parts(dst.as_ptr(), n)
                     };
                     // SAFETY: boot_cmdline::set is single-writer / boot-only.
-                    unsafe { kernel::boot_cmdline::set(bytes); }
+                    unsafe { cmdline::set(bytes); }
                 }
             }
             return;
@@ -385,12 +385,12 @@ unsafe fn capture_cmdline() {
     let bytes: &'static [u8] = unsafe {
         core::slice::from_raw_parts(dst.as_ptr(), n)
     };
-    // Kernel-only: `kernel::boot_cmdline` is
+    // Kernel-only: `cmdline` is
     // `#[cfg(target_os = "oxide-kernel")]`, so the host
     // (`cargo test --workspace`) build must not reference it.
     #[cfg(target_os = "oxide-kernel")]
-    // SAFETY: kernel::boot_cmdline::set is single-writer / boot-only; bytes is a 'static slice with the captured cmdline.
-    unsafe { kernel::boot_cmdline::set(bytes); }
+    // SAFETY: cmdline::set is single-writer / boot-only; bytes is a 'static slice with the captured cmdline.
+    unsafe { cmdline::set(bytes); }
     #[cfg(not(target_os = "oxide-kernel"))]
     let _ = bytes;
 }
@@ -551,7 +551,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     hal_x86_64::set_tsc_khz(tsc_khz);
     klog::set_clock_fn(now_ns_x86);
     debug_boot! { log_cpu_info(); }
-    // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of kernel::boot_cmdline can race; reads bootloader-owned EXECUTABLE_FILE response then publishes the captured bytes through the AtomicPtr-backed slot.
+    // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of cmdline can race; reads bootloader-owned EXECUTABLE_FILE response then publishes the captured bytes through the AtomicPtr-backed slot.
     unsafe { capture_cmdline(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
@@ -559,7 +559,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // SAFETY: kernel_main's safety contract is satisfied by the
     // boot environment we just established (kernel stack installed,
     // IRQs masked, single CPU, `info` valid).
-    unsafe { kernel::kernel_main(&info) }
+    unsafe { kmain::kernel_main(&info) }
 }
 
 /// Entry point invoked by Limine. Swaps to `KERNEL_STACK` and tail-calls
@@ -600,7 +600,7 @@ pub unsafe extern "C" fn _start() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::BootMemKind;
+    use boot_info::BootMemKind;
 
     #[test]
     fn stub_boot_info_is_empty() {

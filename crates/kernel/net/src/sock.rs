@@ -26,6 +26,7 @@ pub unsafe fn init() {
     if g.is_some() { return; }
     let (id, lo) = STACK.register_loopback();
     *g = Some((id, lo));
+    crate::register_timers(); // net self-registers its periodic timers
 }
 
 /// `&'static` ref to the global stack; lookups miss until `init()`.

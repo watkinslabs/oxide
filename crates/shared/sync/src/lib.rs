@@ -49,6 +49,7 @@ macro_rules! decl_lock_class {
 
 decl_lock_class! {
     Buddy        =  0,
+    Timer        =  5,
     Slab         = 10,
     PageTable    = 20,
     AnonVma      = 25,
