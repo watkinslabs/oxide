@@ -184,14 +184,14 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     // lifetime extends across `load_static_blob` and drops at fn end.
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
     let mut blob: &[u8] = if path_owned.is_empty() {
-        crate::smoke::elf::EXEC_BLOB
+        smoke::elf::EXEC_BLOB
     } else if let Some(v) = crate::syscalls::pathresolve::read_exec(&path_owned)
         .or_else(|| ext4::rootfs::read_file(&path_owned)) {
         ext4_blob = Some(v);
         // SAFETY: ext4_blob just-set; outlives the load_static_blob call below.
         ext4_blob.as_deref().expect("just set")
     } else {
-        match crate::smoke::elf::lookup_blob(path_owned[0]) {
+        match smoke::elf::lookup_blob(path_owned[0]) {
             Some(b) => b,
             None    => return -(Errno::Enoent.as_i32() as i64),
         }
