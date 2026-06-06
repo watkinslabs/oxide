@@ -23,7 +23,6 @@ fn main() -> ExitCode {
         "user"      => stub("user", "29a"),
         "rootfs"    => cmd_rootfs(rest),
         "image"     => image_qemu::cmd_image(rest),
-        "qemu"      => image_qemu::cmd_qemu(rest),
         "grub"      => image_qemu::cmd_grub(rest),
         "soak"      => stub("soak", "40"),
         "bench"     => stub("bench", "04"),
