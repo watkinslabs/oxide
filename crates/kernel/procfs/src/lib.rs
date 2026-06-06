@@ -7,6 +7,23 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+#[macro_use] extern crate kmacros;
+pub use vfs::StaticFileInode;  // generic inode lives in vfs
+// Consolidated kernel-side procfs (was kernel/src/procfs/), docs/53.
+#[cfg(target_os = "oxide-kernel")] pub mod live;
+#[cfg(target_os = "oxide-kernel")] pub use live::*;
+#[cfg(target_os = "oxide-kernel")] pub mod fs_impl;
+#[cfg(target_os = "oxide-kernel")] pub mod proc_links;
+#[cfg(target_os = "oxide-kernel")] pub mod static_files;
+#[cfg(target_os = "oxide-kernel")] pub mod cgroup_file;
+#[cfg(target_os = "oxide-kernel")] pub mod mounts;
+#[cfg(target_os = "oxide-kernel")] pub mod cmdline;
+#[cfg(target_os = "oxide-kernel")] pub mod stat;
+#[cfg(target_os = "oxide-kernel")] pub mod fdinfo;
+#[cfg(target_os = "oxide-kernel")] pub mod sysctl;
+#[cfg(target_os = "oxide-kernel")] mod pid_sched;
+pub mod hooks;
+
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
@@ -34,31 +51,9 @@ pub enum Error {
 #[allow(dead_code)]
 pub(crate) type StubResult<T> = core::result::Result<T, Error>;
 
-/// Initialization entry; called by the kernel boot phase per `00§3` /
-/// `boot-flow.md`. v1 returns `NotImplemented`; bodies in P1-N.
-///
-/// # SAFETY: caller is the boot path, runs single-CPU with IRQs off
-/// per `boot-flow.md`. Subsystem-specific preconditions documented at
-/// the implementation site.
-///
-/// # C: O(N_pfn) once at boot
-/// # Ctx: pre-init, IRQ-off, single-CPU
-pub unsafe fn init() -> StubResult<()> {
-    Err(Error::NotImplemented)
-}
-
-#[cfg(test)]
-mod stub_tests {
-    use super::*;
-
-    #[test]
-    fn init_returns_not_implemented() {
-        // SAFETY: hosted-test entry; nothing else has touched the subsystem; init's preconditions trivially hold.
-        let r = unsafe { init() };
-        assert_eq!(r, Err(Error::NotImplemented));
-    }
-}
-
+// The real boot init is `live::init` (registers all /proc + /sys + /etc
+// static files), re-exported via `pub use live::*` above. The old stub
+// `init` skeleton was deleted with the consolidation (docs/53).
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod meminfo;

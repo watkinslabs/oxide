@@ -19,7 +19,7 @@ pub(crate) unsafe fn setup_x86(bsp_apic: u8) {
     let pa = firmware::ioapic_pa();
     if pa == 0 { return; } // no I/O APIC → keep the timer-poll fallback
     // Map the I/O APIC MMIO Device-attr at the kernel device window.
-    let va = crate::smoke::device_map::KERNEL_DEVICE_BASE | (pa & 0xffff_ffff);
+    let va = smoke::device_map::KERNEL_DEVICE_BASE | (pa & 0xffff_ffff);
     let pflags = PageFlags::READ | PageFlags::WRITE
         | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH;
     // SAFETY: device-window VA disjoint from RAM mappings; pa is the MADT I/O APIC base; single-CPU pre-init.
