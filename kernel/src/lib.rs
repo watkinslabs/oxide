@@ -66,7 +66,6 @@ pub mod devfs;
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
-mod serial_irq;
 // seccomp + bpf moved to `crates/security` per `27§R03`.
 pub use security::seccomp;
 #[cfg(target_os = "oxide-kernel")]
@@ -127,13 +126,9 @@ fn kalloc_grow_from_pmm(min_extra: usize) -> Option<(usize, usize)> {
 pub use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 
 /// Kernel entry. Called by per-arch boot stub after low-level setup.
-///
-/// # SAFETY: caller has set up a valid kernel stack, mapped the kernel
-/// image at the upper-half virtual address per the linker script, set
-/// per-CPU base register, and disabled interrupts. `info` points to a
-/// valid `BootInfo` whose `memmap_ptr` references valid memory for at
-/// least `memmap_count` entries.
-///
+/// # SAFETY: caller set up a valid kernel stack, mapped the kernel image
+/// upper-half per the linker script, set the per-CPU base, disabled IRQs;
+/// `info` is a valid `BootInfo` with `memmap_count` entries at `memmap_ptr`.
 /// # C: not measured (one-shot init)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn kernel_main(info: &BootInfo) -> ! {
@@ -505,10 +500,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     arch_irq::set_tick_poll_hook(tick_poll_combined);
 
-    // Interrupt-driven COM1 serial RX (the Linux way) — see serial_irq.
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    // SAFETY: post-ACPI (MADT captured the I/O APIC) + post-LAPIC-enable + MmuOps live; single-CPU, IRQs masked. serial_irq::setup_x86 maps the I/O APIC, registers the RX ISR, programs the redirection entry, and unmasks the UART RX interrupt.
-    unsafe { serial_irq::setup_x86(info.bsp_lapic_id as u8); }
+    // Wire the UART RX sink (tty line discipline), then probe + bring up
+    // the serial console. drv_serial::init detects the UART (ACPI SPCR,
+    // else legacy 8250 scratch-probe on x86) and only registers as the
+    // console (TX via klog sink + RX IRQ) if one responds — a machine
+    // with no serial keeps the framebuffer/VT console.
+    drv_serial::set_rx_sink(tty::live::push_and_wake_fg);
+    // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init probes the UART; on detection serial becomes the primary console (klog sink + RX IRQ). No serial → the fb/VT console (set_aux_sink below) is the default active console.
+    if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } { klog::set_byte_sink(drv_serial::emit); }
 
     // SMP bring-up per `13§11`. With -smp 1 (default) the per-arch
     // path is a no-op. With -smp N>=2 the boot CPU starts each AP:
@@ -936,8 +935,8 @@ fn log_memmap(regions: &[BootMemRegion]) {
 /// # C: O(1) typical; O(xres*yres) on dirty fbcon repaint.
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn tick_poll_combined() {
-    // SAFETY: deferred to the underlying hooks; tty::live::tick_poll_uart owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
-    unsafe { tty::live::tick_poll_uart(); }
+    // SAFETY: deferred to the underlying hooks; drv_serial::poll owns the UART RX drain invariants; fbcon::kernel::tick_drain is a no-op when no GPU flush is pending.
+    unsafe { drv_serial::poll(); }
     fbcon::kernel::tick_drain();
     // F145: poll virtio-net rx from the timer tick as a fallback for
     // missed MSI-X edges. Real MSI handler still calls rx_drain_softirq

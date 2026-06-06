@@ -55,6 +55,7 @@ drv             = { path = "../crates/drivers/drv" }
 drv-virtio-gpu    = { path = "../crates/drivers/drv-virtio-gpu" }
 drv-virtio-input  = { path = "../crates/drivers/drv-virtio-input" }
 drv-virtio-net    = { path = "../crates/drivers/drv-virtio-net" }
+drv-serial        = { path = "../crates/drivers/drv-serial" }
 drm               = { path = "../crates/drivers/drm" }
 fbdev             = { path = "../crates/drivers/fbdev" }
 fbcon             = { path = "../crates/drivers/fbcon" }

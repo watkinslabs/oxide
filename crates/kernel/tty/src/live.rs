@@ -12,7 +12,7 @@
 // switching (Ctrl-Alt-F<n> equivalent) rides a follow-up.
 //
 // Flow:
-//   timer IRQ → eoi → tick_pick_next → crate::tick_poll_uart
+//   timer IRQ → eoi → tick_pick_next → drv_serial::poll
 //     ↓
 //     UART LSR.DR set?  → read RBR byte, push to VT[fg].rx
 //     buffer non-empty?  → wake all VT[fg].waiters
@@ -146,101 +146,6 @@ fn vt_index(vt: u8) -> usize {
     n
 }
 
-/// Read one COM1 byte non-blocking via I/O ports. Used by
-/// `tick_poll_uart` (timer ISR ctx) and `sys_read`
-/// (process ctx).
-/// # SAFETY: privileged port I/O legal at CPL=0.
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn uart_inb(port: u16) -> u8 {
-    let v: u8;
-    // SAFETY: port I/O instruction at CPL=0; no memory effect.
-    unsafe {
-        core::arch::asm!(
-            "in al, dx",
-            out("al") v,
-            in("dx") port,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    v
-}
-
-/// Timer-tick callback per `13§9` / docs/28. Polls COM1 LSR for
-/// RX-data-ready; if set, reads one byte from RBR and pushes to
-/// the ringbuffer. After a successful push, walks WAITERS:
-/// transitions each Sleeping task to Runnable + enqueues on the
-/// global runqueue's CFS class so the next schedule() picks it.
-///
-/// # SAFETY: caller is the timer IRQ dispatcher running with
-/// IRQs masked; single-CPU UP. Reads two bytes max from the
-/// COM1 port range.
-/// # C: O(W) waiter wake — bounded by the small set of tasks
-/// blocked on stdin
-#[cfg(target_arch = "x86_64")]
-pub unsafe fn tick_poll_uart() {
-    // SAFETY: per fn contract — privileged port I/O.
-    let lsr = unsafe { uart_inb(0x3FD) };
-    if lsr & 0x01 == 0 {
-        return;
-    }
-    // SAFETY: per fn contract — privileged port I/O at CPL=0; LSR.DR was just observed set so RBR has a byte.
-    let b = unsafe { uart_inb(0x3F8) };
-    push_and_wake_fg(b);
-}
-
-/// COM1 RX interrupt handler — the real interrupt-driven serial-input
-/// path. Fired by the I/O APIC redirection for IRQ4 (registered as an
-/// MSI-pool vector handler); drains the whole 16550 RX FIFO into the
-/// foreground VT in one IRQ so no byte is dropped between timer ticks.
-/// The timer-tick `tick_poll_uart` is now only a safety net (it finds
-/// LSR.DR clear because this drained it). The LAPIC dispatcher EOIs.
-/// # C: O(bytes pending, ≤ FIFO depth)
-/// # Ctx: IRQ context, IRQs masked, single-CPU
-#[cfg(target_arch = "x86_64")]
-pub fn serial_rx_isr() {
-    // Drain while LSR.DR (bit 0) is set. Cap at 64 to bound the loop
-    // even under a wedged "always-ready" LSR.
-    let mut n = 0;
-    while n < 64 {
-        // SAFETY: privileged port I/O at CPL=0; COM1 LSR (0x3FD).
-        let lsr = unsafe { uart_inb(0x3FD) };
-        if lsr & 0x01 == 0 { break; }
-        // SAFETY: LSR.DR just observed set, so RBR (0x3F8) has a byte.
-        let b = unsafe { uart_inb(0x3F8) };
-        push_and_wake_fg(b);
-        n += 1;
-    }
-}
-
-/// PL011 RX poll for arm timer-tick context. Reads `FR.RXFE` to
-/// check for pending bytes; on each available byte pulls from
-/// `DR` and feeds the foreground VT's `RX_BUF` + waiters.
-///
-/// # SAFETY: caller is the timer IRQ dispatcher running with
-/// IRQs masked; single-CPU UP. Reads through the published
-/// PL011_BASE_VA Device-attr mapping.
-/// # C: O(N_bytes_drained × W_waiters)
-#[cfg(target_arch = "aarch64")]
-pub unsafe fn tick_poll_uart() {
-    const PL011_DR: u64 = 0x00;
-    const PL011_FR: u64 = 0x18;
-    const FR_RXFE:  u32 = 1 << 4;
-    let va = hal_aarch64::pl011::base_va();
-    if va == 0 { return; }
-    // Drain up to 16 bytes per tick (one full PL011 RX FIFO).
-    let mut n = 0;
-    while n < 16 {
-        // SAFETY: va is a published Device-nGnRnE 4 KiB mapping over the PL011 register page; FR/DR offsets sit inside it.
-        let fr = unsafe { core::ptr::read_volatile((va + PL011_FR) as *const u32) };
-        if (fr & FR_RXFE) != 0 { break; }
-        // SAFETY: same Device mapping; DR low byte is the received byte.
-        let b = unsafe { core::ptr::read_volatile((va + PL011_DR) as *const u32) } as u8;
-        push_and_wake_fg(b);
-        n += 1;
-    }
-}
-
 /// Push `b` through the foreground VT's line discipline. Called
 /// from each arch's timer-tick poller. The discipline consults the
 /// VT's per-fd termios image to decide:
@@ -262,7 +167,8 @@ pub unsafe fn tick_poll_uart() {
 ///
 /// In raw mode (ICANON off) every byte goes straight to RX_BUF so
 /// programs like bash + vim see the keystrokes one at a time.
-fn push_and_wake_fg(b: u8) {
+/// # C: O(W) — W tasks woken when a cooked line completes
+pub fn push_and_wake_fg(b: u8) {
     let idx = vt_index(0);
     let term = *VT_TERMIOS[idx].lock();
     let iflag = crate::pty::read_iflag(&term);
