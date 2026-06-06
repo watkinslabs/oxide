@@ -246,10 +246,13 @@ core::arch::global_asm!(
     // for syscalls that need to redirect the post-eret state
     // (sys_execve overwrites ELR_EL1 + SP_EL0 to land at the new
     //  program; sys_fork copies parent regs into the child frame).
-    "    adrp x9, oxide_svc_frame_base",
-    "    add  x9, x9, :lo12:oxide_svc_frame_base",
+    // Per-CPU SVC-frame base: store SP into THIS CPU's per-CPU area
+    // (TPIDR_EL1 + 24), not a shared global — two CPUs in `svc` at once
+    // must not clobber each other's frame pointer (SP_EL0 poison on the
+    // wrong-frame restore). Slot @24: cpu_id@0, preempt_next@8, cur@16.
+    "    mrs  x9, tpidr_el1",
     "    mov  x10, sp",
-    "    str  x10, [x9]",
+    "    str  x10, [x9, #24]",
     // Shuffle Linux SVC args (x8=nr, x0..x4=a0..a4) into Rust SysV
     // (x0=nr, x1..x5=a0..a4). Bottom-up so we don't clobber sources.
     "    mov  x5, x4",
@@ -292,10 +295,13 @@ core::arch::global_asm!(
     "    stp  x23, x24, [sp, #0xf0]",
     "    stp  x25, x26, [sp, #0x100]",
     "    stp  x27, x28, [sp, #0x110]",
-    "    adrp x9, oxide_svc_frame_base",
-    "    add  x9, x9, :lo12:oxide_svc_frame_base",
+    // Per-CPU SVC-frame base: store SP into THIS CPU's per-CPU area
+    // (TPIDR_EL1 + 24), not a shared global — two CPUs in `svc` at once
+    // must not clobber each other's frame pointer (SP_EL0 poison on the
+    // wrong-frame restore). Slot @24: cpu_id@0, preempt_next@8, cur@16.
+    "    mrs  x9, tpidr_el1",
     "    mov  x10, sp",
-    "    str  x10, [x9]",
+    "    str  x10, [x9, #24]",
     "    mov  x0, sp",
     "    bl   oxide_arm_software_step_handler",
     "    str  x0,       [sp, #0xc8]",
@@ -365,10 +371,13 @@ core::arch::global_asm!(
     "    stp  x23, x24, [sp, #0xf0]",
     "    stp  x25, x26, [sp, #0x100]",
     "    stp  x27, x28, [sp, #0x110]",
-    "    adrp x9, oxide_svc_frame_base",
-    "    add  x9, x9, :lo12:oxide_svc_frame_base",
+    // Per-CPU SVC-frame base: store SP into THIS CPU's per-CPU area
+    // (TPIDR_EL1 + 24), not a shared global — two CPUs in `svc` at once
+    // must not clobber each other's frame pointer (SP_EL0 poison on the
+    // wrong-frame restore). Slot @24: cpu_id@0, preempt_next@8, cur@16.
+    "    mrs  x9, tpidr_el1",
     "    mov  x10, sp",
-    "    str  x10, [x9]",
+    "    str  x10, [x9, #24]",
     "    mov  x0, sp",
     "    bl   oxide_arm_undef_handler",
     "    str  x0,       [sp, #0xc8]",
@@ -483,13 +492,29 @@ extern "C" {
 /// program entry; sys_fork copies the parent's saved regs into the
 /// child's iretq-equivalent frame).
 ///
-/// Single global is fine for v1 single-CPU UP; per-CPU once SMP
-/// arrives in `04§4`. Stored as a raw u64 (sp value at SVC entry).
-/// Atomic so the `static mut`-via-asm-store/Rust-load pattern is
-/// expressed without `static mut` (forbidden by docs/07§5).
-#[no_mangle]
-pub static oxide_svc_frame_base: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+/// Per-CPU SVC-frame base offset within the per-CPU area (the page
+/// `TPIDR_EL1` points at). Must match the `[x9, #24]` stores in the SVC
+/// save blocks above. Per-CPU area layout: `cpu_id@0`, preempt
+/// `next@8`/`cur@16` (sched/live/preempt.rs), SVC frame `@24`. SMP-safe:
+/// each CPU stores/reads its own slot, so concurrent syscalls on two CPUs
+/// never clobber each other's frame pointer (the SP_EL0-poison bug).
+const PERCPU_SVC_FRAME_OFF: usize = 24;
+
+/// Read this CPU's per-CPU area base (`TPIDR_EL1`).
+/// # SAFETY: boot/ap_main set TPIDR_EL1 to a ≥4 KiB per-CPU page; EL1-only.
+/// # C: O(1)
+#[inline]
+fn percpu_base() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let b: u64;
+        // SAFETY: mrs tpidr_el1 reads this CPU's per-CPU area base.
+        unsafe { core::arch::asm!("mrs {b}, tpidr_el1", b = out(reg) b, options(nomem, nostack, preserves_flags)); }
+        b
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { 0 }
+}
 
 /// Layout of the saved SVC frame at `oxide_svc_frame_base` per the
 /// asm in `oxide_lower_el_sync_handler`. Offsets in u64 words from
@@ -528,7 +553,11 @@ const _: () = assert!(core::mem::size_of::<SvcFrame>() == 288,
 /// `oxide_svc_frame_base` before the dispatcher's `bl`. Single-CPU UP.
 /// # C: O(1)
 pub fn current_svc_frame() -> *mut SvcFrame {
-    oxide_svc_frame_base.load(core::sync::atomic::Ordering::Acquire) as *mut SvcFrame
+    let base = percpu_base();
+    if base == 0 { return core::ptr::null_mut(); }
+    // SAFETY: per-CPU area is ≥4 KiB; slot @24 holds this CPU's live SVC
+    // frame base (stored by the SVC asm save block on entry).
+    unsafe { core::ptr::read_volatile((base as usize + PERCPU_SVC_FRAME_OFF) as *const u64) as *mut SvcFrame }
 }
 
 /// F205: explicitly restore the per-CPU SVC-frame pointer. The
@@ -541,7 +570,10 @@ pub fn current_svc_frame() -> *mut SvcFrame {
 /// stored at entry).
 /// # C: O(1)
 pub fn set_current_svc_frame(frame_base: u64) {
-    oxide_svc_frame_base.store(frame_base, core::sync::atomic::Ordering::Release);
+    let base = percpu_base();
+    if base == 0 { return; }
+    // SAFETY: per-CPU area slot @24; sole writer is this CPU.
+    unsafe { core::ptr::write_volatile((base as usize + PERCPU_SVC_FRAME_OFF) as *mut u64, frame_base); }
 }
 
 /// Address of the vector table, or 0 on host where the asm symbol
