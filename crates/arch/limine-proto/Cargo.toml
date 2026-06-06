@@ -8,6 +8,6 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-kernel = { path = "../../../kernel" }
+boot-info = { path = "../../shared/boot-info" }
 
 [dev-dependencies]

@@ -372,7 +372,9 @@ fn is_pub_fn(t: &str) -> bool {
 // Per `04§4.0` (R06).
 //
 // Detected names (from spec §4.0):
-//   klog::write_raw / write_hex_u64 / write_dec_u64 / set_byte_sink
+//   klog::write_raw / write_hex_u64 / write_dec_u64 (emits). The sink
+//   REGISTRATION fns (set_byte_sink/set_aux_sink) are the console destination,
+//   not emits — always-on, exempt (a machine's default active console).
 //   klog::kinfo!   / kdebug! / kerror! / kfatal! / klog!
 //
 // Gating recognised:
@@ -460,7 +462,6 @@ fn klog_call_at(line: &str, col: usize) -> Option<&'static str> {
         ("klog::write_raw(",     "klog::write_raw"),
         ("klog::write_hex_u64(", "klog::write_hex_u64"),
         ("klog::write_dec_u64(", "klog::write_dec_u64"),
-        ("klog::set_byte_sink(", "klog::set_byte_sink"),
     ];
     const MAC_NAMES: &[(&str, &str)] = &[
         ("klog::kinfo!",  "klog::kinfo!"),

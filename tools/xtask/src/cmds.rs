@@ -27,11 +27,48 @@ pub(crate) fn cmd_spec_lint(rest: &[String]) -> Result<(), u8> {
 // kernel
 // ---------------------------------------------------------------------------
 
+/// True if `out` is missing or older than any of `srcs`.
+fn is_stale(out: &str, srcs: &[&str]) -> bool {
+    let ot = match std::fs::metadata(out).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return true,
+    };
+    srcs.iter().any(|s| {
+        std::fs::metadata(s)
+            .and_then(|m| m.modified())
+            .map(|st| st > ot)
+            .unwrap_or(false)
+    })
+}
+
+/// Build phase: ensure the `include_bytes!`-consumed blobs exist + are fresh
+/// before the kernel compiles. These are gitignored build artifacts: the
+/// vDSO is assembled from `vdso/*.S` (vdso/build.sh); the rootfs is generated
+/// by `xtask rootfs`. (The hand-rolled smoke ELFs have no source and stay
+/// tracked.) docs/53.
+pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
+    let vso = format!("kernel/blobs/vdso-{arch}.so");
+    let vsrc = format!("vdso/vdso-{arch}.S");
+    if is_stale(&vso, &[&vsrc, "vdso/vdso.lds", "vdso/build.sh"]) {
+        eprintln!("xtask: vdso ({arch}) missing/stale -> vdso/build.sh");
+        let mut c = Command::new("sh");
+        c.arg("vdso/build.sh");
+        run(c)?;
+    }
+    let img = format!("kernel/blobs/rootfs-{arch}.img");
+    if !std::path::Path::new(&img).exists() {
+        eprintln!("xtask: rootfs ({arch}) missing -> xtask rootfs");
+        crate::cmd_rootfs(rest)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").ok_or_else(|| {
         eprintln!("xtask kernel: --arch <x86_64|aarch64> required");
         2u8
     })?;
+    ensure_blobs(&arch, rest)?;
     let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
     let features = parse_arg(rest, "--features");
     let target = match arch.as_str() {
@@ -53,7 +90,7 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         "-Z", "json-target-spec",
         "--target", target,
         "--profile", &profile,
-        "-p", "kernel",
+        "-p", "kmain",
         "-p", boot_pkg,
         "-p", bin_pkg,
     ]);

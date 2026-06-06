@@ -498,6 +498,8 @@ pub unsafe fn decode_spcr(pa: u64, hhdm_offset: u64) {
         alog_raw(b" baud=");
         alog_dec(baud as u64);
         alog_raw(b"\n");
+        // addr_space: ACPI GAS 0=SystemMemory, 1=SystemIO.
+        if base != 0 { crate::set_spcr(base, addr_space, gsi); }
     }
 }
 

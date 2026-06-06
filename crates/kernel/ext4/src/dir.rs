@@ -424,3 +424,22 @@ mod tests {
         assert_eq!(DT_LNK,  7);
     }
 }
+
+/// As `crate::rootfs::read_dir`, but maps the on-disk d_type to
+/// `vfs::FileType` and feeds a type-erased callback — the shape
+/// `devfs::boot::set_dir_overlay` wants, so the kernel can wire the rootfs
+/// overlay into the synthetic /dev directory without devfs depending on
+/// this fs driver (docs/56).
+/// # C: O(entries)
+pub fn read_dir_overlay(prefix: &[u8], emit: &mut dyn FnMut(&[u8], vfs::FileType)) {
+    let _ = crate::rootfs::read_dir(prefix, |name, dt| {
+        let ft = match dt {
+            DT_DIR => vfs::FileType::Directory,
+            DT_LNK => vfs::FileType::Symlink,
+            DT_CHR => vfs::FileType::CharDev,
+            DT_BLK => vfs::FileType::BlockDev,
+            _      => vfs::FileType::Regular,
+        };
+        emit(name, ft);
+    });
+}

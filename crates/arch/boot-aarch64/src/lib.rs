@@ -4,7 +4,7 @@
 // EL2 or EL1 with MMU off; boot stub drops to EL1 (if needed), sets
 // up identity + upper-half mapping, installs `SP_EL1` to our kernel
 // stack, parses DTB or EDK2 system table into `BootInfo`, then
-// tail-calls `kernel::kernel_main`. UART = PL011 at the QEMU `virt`
+// tail-calls `kmain::kernel_main`. UART = PL011 at the QEMU `virt`
 // machine's 0x09000000.
 //
 // Phase 0 scope: typed shell. Real `_start` asm + DTB parser + PL011
@@ -258,7 +258,7 @@ fn log_cpu_info() {
 }
 
 use core::cell::UnsafeCell;
-use kernel::{BootInfo, BootMemRegion};
+use boot_info::{BootInfo, BootMemRegion};
 
 /// BSS-resident storage for the parsed Limine memmap. ~6 KiB cost
 /// (256 entries × 24 B); QEMU virt rarely exceeds 16 entries.
@@ -270,7 +270,7 @@ static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
     BootMemRegion {
         base_pa: 0,
         len:     0,
-        kind:    kernel::BootMemKind::Reserved,
+        kind:    boot_info::BootMemKind::Reserved,
     };
     MAX_BOOT_REGIONS
 ]));
@@ -326,7 +326,7 @@ static CMDLINE_STORAGE: CmdlineStorage =
     CmdlineStorage(UnsafeCell::new([0u8; CMDLINE_BUF_LEN]));
 
 /// Read Limine's EXECUTABLE_FILE (or legacy KERNEL_FILE) response and
-/// publish the cmdline via `kernel::boot_cmdline::set`. No-op if
+/// publish the cmdline via `cmdline::set`. No-op if
 /// Limine didn't fill either slot — the DTB fallback runs next.
 /// # SAFETY: boot-only, single-CPU; CMDLINE_STORAGE is the sole writer.
 /// # C: O(cmdline_len)
@@ -364,11 +364,11 @@ unsafe fn capture_cmdline_from_limine() {
         core::slice::from_raw_parts(dst.as_ptr(), n)
     };
     // SAFETY: boot_cmdline::set is boot-only single-writer.
-    unsafe { kernel::boot_cmdline::set(bytes); }
+    unsafe { cmdline::set(bytes); }
 }
 
 /// Parse the DTB blob's /chosen/bootargs property and publish it via
-/// `kernel::boot_cmdline::set`. No-op if the DTB is missing/invalid
+/// `cmdline::set`. No-op if the DTB is missing/invalid
 /// or `bootargs` is empty; the kernel then falls back to
 /// `install_arch_default`.
 /// # SAFETY: called once from boot path; reads bootloader-owned DTB
@@ -378,7 +378,7 @@ unsafe fn capture_cmdline_from_limine() {
 #[cfg(target_os = "oxide-kernel")]
 unsafe fn capture_cmdline_from_dtb() {
     // If Limine already populated the cmdline, leave it alone.
-    if !kernel::boot_cmdline::get().is_empty() { return; }
+    if !cmdline::get().is_empty() { return; }
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
     if pa == 0 { return; }
     // SAFETY: DTB pointer from bootloader x0; the header's totalsize
@@ -408,7 +408,7 @@ unsafe fn capture_cmdline_from_dtb() {
         core::slice::from_raw_parts(dst.as_ptr(), total)
     };
     // SAFETY: boot-only single-writer per boot_cmdline contract.
-    unsafe { kernel::boot_cmdline::set(bytes); }
+    unsafe { cmdline::set(bytes); }
 }
 
 /// Build a `BootInfo` from the DTB pointer. v1 validates the header
@@ -533,7 +533,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // SAFETY: bootloader-owned EXECUTABLE_FILE/KERNEL_FILE response
     // populated before kernel handoff; capture_cmdline_from_limine
     // copies the cmdline into CMDLINE_STORAGE and publishes via
-    // kernel::boot_cmdline::set. DTB fallback runs second only when
+    // cmdline::set. DTB fallback runs second only when
     // the Limine response is absent (running outside Limine).
     // SAFETY: same boot-only single-writer contract for both capture paths; capture_cmdline_from_dtb is a no-op if Limine already populated the slot.
     unsafe { capture_cmdline_from_limine(); capture_cmdline_from_dtb(); }
@@ -542,7 +542,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     let info = unsafe { build_boot_info() };
     // SAFETY: kernel_main's contract is satisfied by the boot env
     // we just established (kernel stack installed, IRQs masked).
-    unsafe { kernel::kernel_main(&info) }
+    unsafe { kmain::kernel_main(&info) }
 }
 
 /// Entry. Bootloader convention: `x0..x3` carry handoff blob pointers
