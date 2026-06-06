@@ -919,7 +919,7 @@ fn log_memmap(regions: &[BootMemRegion]) {
 // PCI bus enumeration boot helper (per-arch ConfigSpaceReader
 // dispatch). Split out of lib.rs to keep that file under cap.
 #[cfg(target_os = "oxide-kernel")]
-pub mod pci_boot;
+#[cfg(target_os = "oxide-kernel")] pub use pci_boot;
 
 // P2-21c initial user-stack builder per docs/31§4 step 5.
 // SysV argc/argv/envp/auxv layout written at execve time.

@@ -28,6 +28,7 @@ console   = { path = "../crates/kernel/console" }
 smoke     = { path = "../crates/kernel/smoke" }
 sysfs     = { path = "../crates/kernel/sysfs" }
 syscalls  = { path = "../crates/kernel/syscalls" }
+pci-boot  = { path = "../crates/kernel/pci-boot" }
 devpts    = { path = "../crates/kernel/devpts" }
 tracefs   = { path = "../crates/kernel/tracefs" }
 kmacros   = { path = "../crates/shared/kmacros" }
@@ -74,11 +75,11 @@ debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm", "smoke/debug-vmm"]  # device
 debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi", "smoke/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smoke/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
-debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "syscalls/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["fs/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
 debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup", "syscalls/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall", "syscalls/debug-syscall"]  # per-syscall trace (nr, sys_clone/execve/exit/wait4 lines)
 debug-ssh = ["sched/debug-ssh","fs/debug-ssh", "kmacros/debug-ssh", "syscalls/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
-debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
+debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","sched/debug-syscall"]
 
