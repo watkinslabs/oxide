@@ -17,6 +17,28 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
+# statx (arm): the aarch64 cross musl lacks statx; systemd's backport appended
+# struct statx + a non-static `int statx(...)` decl to the toolchain's
+# <sys/stat.h> (guard __OXIDE_STATX_BACKPORT). util-linux's fileutils.h adds a
+# `static inline statx` → "static declaration follows non-static" on arm. Skip
+# util-linux's static wrapper when the backport is present + provide a matching
+# non-static wrapper (arm only; x86 musl 1.2.5 has statx natively).
+FU_H="$SRC/include/fileutils.h"; FU_C="$SRC/lib/fileutils.c"
+if [ -f "$FU_H" ] && ! grep -q __OXIDE_STATX_BACKPORT "$FU_H"; then
+  sed -i 's/!defined(HAVE_STATX) \&\& defined(HAVE_STRUCT_STATX)/!defined(HAVE_STATX) \&\& !defined(__OXIDE_STATX_BACKPORT) \&\& defined(HAVE_STRUCT_STATX)/' "$FU_H"
+fi
+if [ -f "$FU_C" ] && ! grep -q __OXIDE_STATX_BACKPORT "$FU_C"; then
+  cat >> "$FU_C" <<'STATX_WRAP'
+
+#ifdef __OXIDE_STATX_BACKPORT
+#include <unistd.h>
+#include <sys/syscall.h>
+int statx(int fd, const char *path, int flags, unsigned int mask, struct statx *stx)
+{ return syscall(SYS_statx, fd, path, flags, mask, stx); }
+#endif
+STATX_WRAP
+fi
+
 HDRS_X86=/tmp/musl-hdrs-util-linux
 mkdir -p "$HDRS_X86"
 for d in linux asm asm-generic mtd scsi sound rdma xen misc; do
