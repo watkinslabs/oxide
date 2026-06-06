@@ -10,7 +10,7 @@
 pub use console;
 // DRM device node (/dev/dri) → `drm` crate node module (docs/53)
 pub use drm::node as drm;
-pub mod pidfd;
+// pidfd moved into the syscalls crate (docs/53)
 // pty (/dev/ptmx,/dev/pts) → `devpts` crate (docs/53)
 pub use devpts as pty;
 // tracefs (/sys/kernel/tracing) → `tracefs` crate (docs/53)

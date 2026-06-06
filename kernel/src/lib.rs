@@ -66,9 +66,6 @@ pub mod devfs;
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")]
-pub mod io_uring;
-pub mod vdso;
-pub mod vvar;
 mod serial_irq;
 // seccomp + bpf moved to `crates/security` per `27§R03`.
 pub use security::seccomp;
@@ -475,7 +472,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
         unsafe { pmm::user_as::init(info.hhdm_offset); }
         // SAFETY: PMM up; HHDM offset just published; one-shot.
-        unsafe { crate::vvar::init(); }
+        unsafe { syscalls::vvar::init(); }
         devfs::init(); procfs::init();
         crate::dev::drm::register();
         fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
@@ -882,7 +879,7 @@ fn log_memmap(regions: &[BootMemRegion]) {
 // `syscall::dispatch`. arch-specific interceptions live behind cfg
 // gates inside the module.
 #[cfg(target_os = "oxide-kernel")]
-pub mod syscalls;
+#[cfg(target_os = "oxide-kernel")] pub use syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs;
 #[cfg(target_os = "oxide-kernel")] pub mod sysfs;
@@ -951,11 +948,11 @@ unsafe fn tick_poll_combined() {
     sched::live::zombies::reap_orphans();
     // F169/B20: wake tasks past wakeup_deadline_ns (SO_*TIMEO) or
     // alarm_ns (alarm/itimer). Dead since F152 retired the rx kthread.
-    sched::live::tick_wake_expired(crate::vvar::monotonic_now_ns());
+    sched::live::tick_wake_expired(syscalls::vvar::monotonic_now_ns());
     // Refresh the vDSO vvar page with the live monotonic clock so
     // userspace __vdso_clock_gettime returns current time without
     // a syscall. Cheap (one TimerOps read + 4 atomic stores).
-    crate::vvar::publish();
+    syscalls::vvar::publish();
 }
 
 /// Boot anchor / idle loop. Calls `schedule()` (so a freshly-runnable
