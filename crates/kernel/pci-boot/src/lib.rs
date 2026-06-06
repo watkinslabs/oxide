@@ -1,9 +1,13 @@
+#![no_std]
+#![cfg(target_os = "oxide-kernel")]
+#[macro_use] extern crate kmacros;
+extern crate alloc;
+
 // PCI enumeration boot helper — wraps `pci::enumerate` with per-arch
 // `ConfigSpaceReader` selection (x86 LegacyPci CF8/CFC, aarch64
 // EcamPci MMIO seeded by `device_map_smoke_arm`). Split out of
 // `lib.rs` to keep that file under the 1000-line cap (08§7).
 
-#![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
@@ -33,7 +37,7 @@ fn device_flags() -> PageFlags {
 /// kernel exclusively owns, (b) PMM ready + single-CPU + IRQs masked,
 /// (c) `pa` is 4K-aligned. Used only at boot for virtio probing.
 /// # C: O(n_pages × walk depth)
-pub(super) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
+pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
     let bytes = n_pages * 0x1000;
     let base = VIRTIO_BAR_VA_NEXT.fetch_add(bytes, Ordering::AcqRel);
     for i in 0..n_pages {
@@ -303,7 +307,7 @@ fn cap_dump_arch(d: &pci::PciDevice) {
                                 } else if let Some(spi) = arch_irq::alloc_arm_spi() {
                                     // SAFETY: SPI freshly allocated, range owned by msi.rs; gic was enabled by smoke_device_map_arm; single-CPU pre-init context for boot probe.
                                     unsafe { arch_irq::gic::enable_intid(spi); }
-                                    let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
+                                    let v2m_pa = firmware::acpi::GIC_MSI_FRAME_PA
                                         .load(core::sync::atomic::Ordering::Acquire);
                                     Some((spi, v2m_pa + 0x40, spi))
                                 } else {
@@ -638,18 +642,10 @@ pub fn enumerate_and_log() {
                     );
                 }
                 let our_ip_be = u32::from_be_bytes(our_ip);
-                let arg = ((id.0 as usize) << 32) | (our_ip_be as usize);
-                // SAFETY: runqueue installed by smoke_install_runqueue
-                // earlier in lib.rs; PMM up; spawn_kernel_thread takes
-                // an extern "C" fn ptr — virtio_net_rx_kthread is one.
-                // F152: kthread retired. F145's tick_poll_combined →
-                // rx_drain_softirq pumps the rx ring from every timer
-                // tick on both arches; the kthread was just a spinner
-                // that hogged CPU on arm (where tick_yield is a true
-                // spin_loop, not a hlt-wait). MSI handler still fires
-                // rx_drain_softirq directly when an edge arrives.
-                let _ = arg;
-                let _ = virtio_net_rx_kthread;
+                // F152: RX poller kthread retired — tick_poll_combined →
+                // rx_drain_softirq pumps the rx ring every timer tick, and
+                // the MSI handler fires rx_drain_softirq on each edge.
+                let _ = our_ip_be;
             }
         }
 
@@ -736,64 +732,5 @@ pub fn enumerate_and_log() {
             klog::write_dec_u64((uart_after - uart_before) as u64);
             klog::write_raw(b"\n");
         }
-    }
-}
-
-/// F86 RX-poller kthread. Loops calling `poll_into_stack` and
-/// `tick_yield`ing so user tasks (init, login, sh) still get
-/// scheduled. arg layout: high 32 bits = `NetIfaceId.0`,
-/// low 32 bits = our IPv4 in big-endian. Replaceable by an
-/// MSI-X-driven interrupt handler once the vector-dispatch
-/// table reaches the driver crate — for now polling is the
-/// minimum-viable correct path.
-/// # C: O(rx_drain) per iteration + O(log N) CFS pick on yield
-extern "C" fn virtio_net_rx_kthread(arg: usize) -> ! {
-    use hal::TimerOps;
-    let iface_id = net::NetIfaceId::from_raw((arg >> 32) as u32);
-    let our_ip   = (arg as u32).to_be_bytes();
-    let mut last_retx_ns: u64 = 0;
-    loop {
-        drv_virtio_net::modern::poll_into_stack(iface_id, our_ip);
-        // F159: drive TCP retransmission + connection-abort timers.
-        // Cadence is ~100 ms — coarser than the RFC 6298 minimum RTO
-        // (200 ms) so a single timer-tick window is enough to observe
-        // an expired RTO; finer than the typical Linux 200 ms periodic
-        // tcp_write_timer. Per-conn lock + per-iface xmit happens here
-        // in process context so we don't have to make rx_poll's
-        // MODERN_DEV lock IRQ-safe.
-        #[cfg(target_arch = "x86_64")]
-        let now_ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
-        #[cfg(target_arch = "aarch64")]
-        let now_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-        if now_ns.saturating_sub(last_retx_ns) >= 100_000_000 {
-            net::sock::stack().tcp_retx_tick(now_ns);
-            // F169: scan parked tasks for SO_RCVTIMEO / SO_SNDTIMEO
-            // deadlines that expired — wakes them with Eagain so the
-            // blocking helpers can return ETIMEDOUT/EAGAIN. Same
-            // cadence as retx since both are coarse-grained.
-            sched::live::tick_wake_expired(now_ns);
-            // cgroup v2 cpu.max bandwidth scan: throttle (freeze) cgroups
-            // over quota this period, unthrottle on period refill (`26`).
-            crate::cgroup_cpu::tick(now_ns);
-            // SMP periodic load balance per `13§11`: spread runnable tasks
-            // across online CPUs. balance_once migrates ≤1 task busiest→
-            // idlest per call; loop a bounded number so a burst converges
-            // within one tick instead of one-per-100ms. No-op with <2 CPUs.
-            for _ in 0..cpu::smp::online_count() {
-                // SAFETY: kthread context (not under any runqueue lock); global_for returns stable refs for online CPUs; balance_once takes the per-CPU inner locks in cpu-id order so no pair deadlocks.
-                if unsafe { sched::live::balance::balance_once() } == 0 { break; }
-            }
-            // B14: subreap orphan zombies (parent gone, never waited).
-            // Without this they accumulate in ZOMBIES holding Task
-            // struct + 16KB kernel stack per orphan — sshd's per-conn
-            // churn was leaking ~340 KB per ssh connection.
-            sched::live::zombies::reap_orphans();
-            // F177: garbage-collect stale ARP neighbor entries
-            // (older than 60s). Same cadence; cheap O(N) scan.
-            drv_virtio_net::modern::arp_cache().gc(now_ns);
-            last_retx_ns = now_ns;
-        }
-        // SAFETY: process ctx; runqueue installed; preempt-off through the kthread frame; tick_yield saves into current.arch_ctx and switches.
-        unsafe { sched::live::tick_yield(); }
     }
 }
