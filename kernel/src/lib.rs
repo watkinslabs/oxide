@@ -882,7 +882,7 @@ fn log_memmap(regions: &[BootMemRegion]) {
 #[cfg(target_os = "oxide-kernel")] pub use syscalls;
 #[cfg(target_os = "oxide-kernel")] pub mod dev;
 #[cfg(target_os = "oxide-kernel")] pub mod procfs;
-#[cfg(target_os = "oxide-kernel")] pub mod sysfs;
+#[cfg(target_os = "oxide-kernel")] pub use sysfs;
 #[cfg(target_os = "oxide-kernel")] pub mod boot_cmdline;
 
 // aarch64 → x86 syscall-nr translation per docs/15§3. Active only

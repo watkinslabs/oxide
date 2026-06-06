@@ -26,6 +26,7 @@ hal     = { path = "../crates/arch/hal" }
 klog    = { path = "../crates/shared/klog" }
 console   = { path = "../crates/kernel/console" }
 smoke     = { path = "../crates/kernel/smoke" }
+sysfs     = { path = "../crates/kernel/sysfs" }
 syscalls  = { path = "../crates/kernel/syscalls" }
 devpts    = { path = "../crates/kernel/devpts" }
 tracefs   = { path = "../crates/kernel/tracefs" }
