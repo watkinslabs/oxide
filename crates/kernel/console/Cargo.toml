@@ -1,0 +1,18 @@
+[package]
+name = "console"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+klog    = { path = "../../shared/klog" }
+kmacros = { path = "../../shared/kmacros" }
+vfs     = { path = "../vfs" }
+tty     = { path = "../tty" }
+sched   = { path = "../sched" }
+
+[features]
+debug-trace = ["kmacros/debug-trace"]

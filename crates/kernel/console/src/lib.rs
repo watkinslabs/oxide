@@ -1,3 +1,7 @@
+#![no_std]
+#[macro_use] extern crate kmacros;
+extern crate alloc;
+
 // `/dev/console` + `/dev/tty<N>` char-devices per docs/16 + docs/28.
 // Multi-VT layout (post-B07):
 //   - `/dev/tty1`..`/dev/tty6` each carry a distinct VT id and
