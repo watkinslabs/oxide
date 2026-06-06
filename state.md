@@ -82,11 +82,19 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   before/after; investigate Task::new_user ns-field init.
 
 ## Open / next (lowest-risk first)
-1. **arm SMP=2 boot-stability** (follow-on to #1552) — AP comes online but
-   can't run migrated user tasks. Wire per-CPU active-AS + arm ctxsw-to-EL0
-   on the AP, then re-enable SMP=2 arm smoke + `-accel tcg,thread=multi`.
-   Also: `[FAULT] sigsegv` in the debug-irq-only elf-smoke-arm/init-arm at
-   SMP=2 (far=0x10004322) — investigate alongside.
+1. **arm SMP=2 boot-stability** — chain of gaps; AP comes online (#1552) and
+   per-CPU preempt state is fixed (#1554, was a global wrong-task-switch race).
+   REMAINING (gdb-confirmed at the wedge): a task woken on one CPU but queued
+   on another CPU's runqueue is never picked — no cross-CPU **wakeup→resched
+   -IPI** is sent, and the AP idle loop (`ap_main`) is pure `wfi` (IRQ-driven
+   only). Both CPUs end up `wfi` with PID1 unrunnable → boot wedges at the
+   systemd handoff (BSP stuck in elf_arm.rs:291 wfi-loop; AP in smp.rs:306).
+   Fix = `try_to_wake_up`-style enqueue-to-target-CPU + resched IPI on the
+   wake path (wait_list.rs). Then SMP=2 arm smoke + `-accel tcg,thread=multi`.
+   Also note: `spawn_timer_driver`/load-balancer is UNREACHABLE on arm
+   (elf_arm::run loops forever before it) — balancer never runs.
+   (debug-irq-only `[FAULT] sigsegv` in elf/init-arm at SMP=2 — investigate
+   alongside; not in the debug-boot path.)
 2. python3 encodings/stdlib path fix (distro; verify-left-able).
 3. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
 4. Phase 16 real namespace isolation (currently id-substrate, F100-F107).
