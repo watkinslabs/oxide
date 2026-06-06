@@ -198,3 +198,24 @@ pub fn init_console_fd_table() -> Arc<FdTable> {
     let _fd2 = table.alloc(file);
     table
 }
+
+/// Register the console/tty char-device nodes into devfs (self-registration
+/// per docs/56). /dev/{console,tty,tty0,ttyS0} alias the foreground VT (vt=0);
+/// /dev/tty1..N each carry their own VT id. Boot, once.
+/// # C: O(N_VT)
+pub fn register_devnodes() {
+    use alloc::sync::Arc;
+    use alloc::string::String;
+    let fg: vfs::InodeRef = Arc::new(ConsoleInode::new(0));
+    devfs::register("/dev/console", Arc::clone(&fg));
+    devfs::register("/dev/tty",     Arc::clone(&fg));
+    devfs::register("/dev/tty0",    Arc::clone(&fg));
+    devfs::register("/dev/ttyS0",   fg);
+    for vt in 1..=tty::live::N_VT as u8 {
+        let mut path = String::with_capacity(10);
+        path.push_str("/dev/tty");
+        if vt >= 10 { path.push((b'0' + (vt / 10)) as char); }
+        path.push((b'0' + (vt % 10)) as char);
+        devfs::register_owned(path, Arc::new(ConsoleInode::new(vt)) as vfs::InodeRef);
+    }
+}

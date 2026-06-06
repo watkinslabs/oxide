@@ -26,7 +26,7 @@ const _: () = assert!(
 // Per-subsystem debug-trace gates per `04§3` R05 + R06.
 #[macro_use]
 extern crate kmacros;
-#[cfg(target_os = "oxide-kernel")] mod periodic;
+
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
 // ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
@@ -36,47 +36,9 @@ pub use firmware::acpi;
 pub use nscg::proc_ns as dev_proc_ns;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub use ::sched::kthread;
-/// Real per-CPU runqueue + `schedule()` per `13§6`/§8 (P2-13b).
-/// Replaces the prior `kernel/src/ksched.rs` Vec-shim. Always-on
-/// (not gated on `debug-sched`) so the runqueue is available to
-/// production paths (preempt-on-IRQ-exit, future user-task switch).
-#[cfg(target_os = "oxide-kernel")]
-// kernel-side sched runtime now lives in `crates/kernel/sched/src/live`
-
-/// ELF loader glue per docs/31. PT_LOADs → KernelBytes (P2-17).
-
-/// TTY input per docs/28. timer-poll + ringbuffer + waitqueue.
-/// `/dev/console` char-device per docs/16 + docs/28.
-/// F158: /proc/meminfo body builder (split out of procfs.rs).
-
-/// F158: /proc/<pid>/smaps detailed per-VMA memory stats.
-/// F158: /proc/<pid>/status body builder (Linux-conformant fields).
-
-/// Minimal devfs registry per docs/16 + docs/19. Path → InodeRef
-/// table for `/dev/console` + `/dev/tty*`. Resolved by `sys_open`.
-#[cfg(target_os = "oxide-kernel")]
-pub mod devfs;
-
-/// Anonymous pipe per docs/16 + docs/24. PipeInode + sys_pipe2
-/// glue for the canonical `cmd1 | cmd2` shell IPC pattern.
-/// ext4 RO root fs: real driver from `crates/ext4` mounted at
-/// boot from a kernel-embedded image. Linux's CONFIG_EXT4_FS=y
-/// equivalent (built-in, not a module).
-#[cfg(target_os = "oxide-kernel")]
-#[cfg(target_os = "oxide-kernel")]
-#[cfg(target_os = "oxide-kernel")]
-// seccomp + bpf moved to `crates/security` per `27§R03`.
-pub use security::seccomp;
-#[cfg(target_os = "oxide-kernel")]
-pub use security::bpf as dev_bpf;
-#[cfg(target_os = "oxide-kernel")]
-
-
-
-
-#[cfg(target_os = "oxide-kernel")]
-#[cfg(target_os = "oxide-kernel")]
-
+#[cfg(target_os = "oxide-kernel")] pub use devfs;
+#[cfg(target_os = "oxide-kernel")] pub use security::seccomp;
+#[cfg(target_os = "oxide-kernel")] pub use security::bpf as dev_bpf;
 
 /// Kernel-wide heap allocator per `12§2`. Fixed-size BSS heap for v1;
 /// replaced by PMM-backed slab routing once a binary stage exists.
@@ -91,32 +53,6 @@ pub use security::bpf as dev_bpf;
 #[global_allocator]
 static GLOBAL_ALLOC: kalloc::KAlloc = kalloc::KAlloc::new();
 
-/// F247 (T16): grow callback the kalloc fallback path invokes when
-/// the static heap runs dry. Asks the PMM for a contiguous run of
-/// pages large enough to cover `min_extra` and returns its HHDM-
-/// mapped VA + size. Returns `None` if the PMM can't satisfy.
-/// Mirrors the Linux vmalloc / `__get_free_pages(GFP_KERNEL)` shape.
-/// # C: O(MAX_ORDER) bounded
-#[cfg(target_os = "oxide-kernel")]
-fn kalloc_grow_from_pmm(min_extra: usize) -> Option<(usize, usize)> {
-    let pmm = pmm::setup::pmm_static()?;
-    let hhdm = pmm::user_as::hhdm_offset();
-    if hhdm == 0 { return None; }
-    // Round up to a power-of-two number of pages so the buddy allocator
-    // can satisfy in a single block; bump to at least 1 MiB to amortise.
-    const PAGE_SIZE: usize = hal::PAGE_SIZE_BYTES as usize;
-    const PAGES_PER_MIB: usize = kalloc::MIB / PAGE_SIZE;
-    let mut pages = min_extra.div_ceil(PAGE_SIZE);
-    if pages == 0 { pages = 1; }
-    if !pages.is_power_of_two() { pages = pages.next_power_of_two(); }
-    if pages < PAGES_PER_MIB { pages = PAGES_PER_MIB; }
-    let order = pages.trailing_zeros() as u8;
-    let pfn = pmm.alloc(pmm::Order(order)).ok()?;
-    let pa  = (pfn.0 as usize) * PAGE_SIZE;
-    let va  = hhdm.wrapping_add(pa as u64) as usize;
-    let size = pages * PAGE_SIZE;
-    Some((va, size))
-}
 
 // Boot-stub → kernel handoff types now live in `crates/boot-info`
 // per the `52§3` shared layer. Re-exported here so existing
@@ -231,7 +167,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             let regions: &[BootMemRegion] = unsafe {
                 core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
             };
-            log_memmap(regions);
+            pmm::boot::log_memmap(regions);
         }
     } else {
         debug_boot! { klog::kinfo!("memmap: absent"); }
@@ -247,7 +183,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // here on routes through PMM-allocated pages mapped via HHDM.
     #[cfg(target_os = "oxide-kernel")]
     if pmm.is_ok() {
-        GLOBAL_ALLOC.set_grow_hook(kalloc_grow_from_pmm);
+        GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
     }
     debug_boot! {
         match &pmm {
@@ -471,16 +407,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot, syscalls::hostname::set);
         procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
         ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
-        devfs::init(); procfs::init();
-        crate::dev::drm::register();
-        fs::tmpfs::init(); crate::dev::tracefs::init(); drv_virtio_input::devfs::init();
-        fbdev::devfs::init(); crate::dev::pty::init();
+        console::register_devnodes(); ::devfs::boot::set_dir_overlay(ext4::dir::read_dir_overlay); ::devfs::boot::populate_defaults(); procfs::init();
+        drm::node::register();
+        fs::tmpfs::init(); tracefs::init(); drv_virtio_input::devfs::init();
+        fbdev::devfs::init(); devpts::init();
         // boot smokes:
         ::devfs::misc::smoke_test();
         procfs::smoke_test();
         fs::pipe::smoke_test();
         fs::tmpfs::smoke_test();
-        crate::dev::pty::smoke_test();
+        devpts::smoke_test();
         // P3-49 syscall coverage banner. Kept in sync by hand —
         // bumped whenever a new arm or compat-table entry lands.
         debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
@@ -817,117 +753,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         unsafe { smoke::elf_arm::run(); }
     }
 
-    #[cfg(target_os = "oxide-kernel")] periodic::spawn();
-    halt_forever()
+    #[cfg(target_os = "oxide-kernel")] sched::live::spawn_timer_driver();
+    sched::halt_forever()
 }
 
-/// Map `BootMemKind` to a short ASCII tag for memmap dumps.
-#[cfg(feature = "debug-pmm")]
-fn kind_tag(k: BootMemKind) -> &'static [u8] {
-    match k {
-        BootMemKind::Usable         => b"USABLE",
-        BootMemKind::Reserved       => b"RESV  ",
-        BootMemKind::AcpiReclaim    => b"ACPI-R",
-        BootMemKind::AcpiNvs        => b"ACPI-N",
-        BootMemKind::BadMem         => b"BAD   ",
-        BootMemKind::BootloaderUsed => b"BL-USE",
-        BootMemKind::KernelImage    => b"KERNEL",
-        BootMemKind::Initramfs      => b"INITRD",
-    }
-}
 
-/// Emit one line per memmap region. Cheap O(N) at boot.
-#[cfg(feature = "debug-pmm")]
-fn log_memmap(regions: &[BootMemRegion]) {
-    let mut usable_bytes: u64 = 0;
-    let mut reserved_bytes: u64 = 0;
-    let mut bootloader_bytes: u64 = 0;
-    for r in regions {
-        klog::write_raw(b"[INFO]    ");
-        klog::write_raw(kind_tag(r.kind));
-        klog::write_raw(b" base=");
-        klog::write_hex_u64(r.base_pa);
-        klog::write_raw(b" len=");
-        klog::write_hex_u64(r.len);
-        klog::write_raw(b"\n");
-        match r.kind {
-            BootMemKind::Usable         => usable_bytes     = usable_bytes.saturating_add(r.len),
-            BootMemKind::BootloaderUsed => bootloader_bytes = bootloader_bytes.saturating_add(r.len),
-            BootMemKind::Reserved
-            | BootMemKind::AcpiNvs
-            | BootMemKind::AcpiReclaim
-            | BootMemKind::BadMem
-            | BootMemKind::KernelImage
-            | BootMemKind::Initramfs    => reserved_bytes   = reserved_bytes.saturating_add(r.len),
-        }
-    }
-    klog::write_raw(b"[INFO]    memmap totals: ");
-    klog::write_dec_u64(usable_bytes / (1024 * 1024));
-    klog::write_raw(b" MiB usable, ");
-    klog::write_dec_u64(bootloader_bytes / (1024 * 1024));
-    klog::write_raw(b" MiB bootloader-reclaim, ");
-    klog::write_dec_u64(reserved_bytes / (1024 * 1024));
-    klog::write_raw(b" MiB reserved\n");
-}
 
-// Per-arch device-MMIO bring-up smokes live in `device_map_smoke.rs`
-// (extracted to keep lib.rs under the 500-line soft cap).
-
-// MmuOps end-to-end map/translate/unmap roundtrip smoke.
-
-// User-page mapping smoke validating the P1-95 interior-U=1 fix.
-
-// Syscall dispatch glue: kernel-side `oxide_syscall_dispatch` symbol
-// both arches' asm stubs reference by name. Binds the asm path to
-// `syscall::dispatch`. arch-specific interceptions live behind cfg
-// gates inside the module.
-#[cfg(target_os = "oxide-kernel")]
+// Subsystem crates re-exported so `crate::*` call sites resolve.
 #[cfg(target_os = "oxide-kernel")] pub use syscalls;
-#[cfg(target_os = "oxide-kernel")] pub mod dev;
 #[cfg(target_os = "oxide-kernel")] pub use procfs;
 #[cfg(target_os = "oxide-kernel")] pub use sysfs;
 #[cfg(target_os = "oxide-kernel")] pub use cmdline as boot_cmdline;
-
-// aarch64 → x86 syscall-nr translation per docs/15§3. Active only
-// on arm; x86 builds compile this away via a cfg gate at the call
-// site in `syscalls::oxide_syscall_dispatch`.
-
-// P3-03 fs-shaped syscalls split out of `syscalls` to keep that
-// file under the 1000-line cap per `08§7`.
-#[cfg(target_os = "oxide-kernel")]
-#[cfg(target_os = "oxide-kernel")]
-
-// P3-08 process-shaped syscalls (sched_yield, gettid, set_tid_address).
-#[cfg(target_os = "oxide-kernel")]
-
-// Linux x86_64 syscall number table per `15§5`. One canonical
-// place — `syscalls` references `syscall_nrs::NR_*`.
-
-// P3-46 compat-stub dispatch table — pulls the broad
-// accept-and-no-op + ENOSYS + EPERM tail out of `syscalls`.
-#[cfg(target_os = "oxide-kernel")]
-
-// P3-30 time-shaped syscalls (clock_gettime + family).
-
-// P3a futex — process-private FUTEX_WAIT/WAKE per docs/24.
-
-// P3-65 signal dispatch (build user-stack frame + jump to sa_handler).
-// Arch-portable since F16 — x86 + aarch64 paths share the wire frame
-// shape; only the saved-state register set differs.
-#[cfg(target_os = "oxide-kernel")]
-
-// PCI bus enumeration boot helper (per-arch ConfigSpaceReader
-// dispatch). Split out of lib.rs to keep that file under cap.
-#[cfg(target_os = "oxide-kernel")]
 #[cfg(target_os = "oxide-kernel")] pub use pci_boot;
-
-// P2-21c initial user-stack builder per docs/31§4 step 5.
-// SysV argc/argv/envp/auxv layout written at execve time.
-#[cfg(target_os = "oxide-kernel")]
-
-// Global user `AddressSpace` per `11§3` + demand-paging fault hook
-// per `11§5`. v1 single-task; per-task lifecycle lands with P2-13.
-#[cfg(target_os = "oxide-kernel")]
 
 /// Combined timer-tick hook: poll UART for input + drain any
 /// pending fbcon writes onto the GPU display.
@@ -958,28 +795,7 @@ unsafe fn tick_poll_combined() {
     syscalls::vvar::publish();
 }
 
-/// Boot anchor / idle loop. Calls `schedule()` (so a freshly-runnable
-/// task picked up by an IRQ wake hook can run) then `hlt`/`wfi` until
-/// the next IRQ. Without the schedule step the CPU would hlt forever
-/// even when a parked task became runnable.
-/// # C: O(∞)
-#[cfg(target_os = "oxide-kernel")]
-pub fn halt_forever() -> ! {
-    loop {
-        if sched::live::global().is_some() {
-            // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
-            unsafe { sched::live::schedule(); }
-        }
-        #[cfg(target_arch = "x86_64")]
-        hal_x86_64::halt();
-        #[cfg(target_arch = "aarch64")]
-        hal_aarch64::halt();
-    }
-}
 
-/// # C: O(∞) — hosted-test fallback (never hit in tests).
-#[cfg(not(target_os = "oxide-kernel"))]
-pub fn halt_forever() -> ! { core::hint::spin_loop(); loop {} }
 
 #[cfg(test)]
 mod tests {
