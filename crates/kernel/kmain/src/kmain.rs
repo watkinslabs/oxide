@@ -424,13 +424,18 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // Install the AP-init hook (per-AP GIC + runqueue, runs on the AP)
         // + the arm resched-IPI sender (GIC SGI) BEFORE bringing APs up.
         arch_irq::smp_arm::install_hooks();
-        // Limine SMP: park each AP's goto_address at our entry; Limine
-        // starts them MMU-ON at EL1 (no PSCI MMU-off trampoline). info's
-        // smp fields come from boot-aarch64's SMP response parse.
-        // SAFETY: kernel_main post-init; info.smp_info_array is Limine's bootloader-owned cpus[] alive for boot; boot CPU is sole writer of the goto_address slots.
-        let started = unsafe {
-            hal_aarch64::smp::bring_up_aps_arm(info.smp_info_array, info.smp_count, info.bsp_lapic_id)
-        };
+        // EFI/GRUB path has no DTB /cpus → feed the ACPI-MADT GICC MPIDRs
+        // (from the ACPI walk) into the PSCI params (no-op on the -kernel/DTB
+        // path, which already has its MPIDR list).
+        arch_irq::smp_arm::publish_madt_mpidrs();
+        // PSCI SMP (Limine-free): boot-aarch64 published the self-boot page
+        // tables + DTB `/cpus` MPIDRs via `set_psci_ap_params`. For each
+        // non-BSP MPIDR we `CPU_ON` the AP into the MMU-off trampoline
+        // `oxide_ap_entry_arm_psci`, which installs the kernel page tables
+        // and reaches `ap_main`. No-op (SMP=1) when only the BSP is present.
+        // SAFETY: kernel_main post-heap-init on the boot CPU; the self-boot
+        // page tables named in the published params are live for boot.
+        let started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
             klog::write_dec_u64(started as u64);
