@@ -97,6 +97,23 @@ Execute in dependency order; build both arches + `make smoke` after each.
 After this the kernel binary holds only: boot/init bring-up, the dev-node
 registration glue, the dispatch-table install, and `vvar` publish — pure glue.
 
+### Execution progress (2026-06-05)
+
+DONE (committed+pushed, branch green): **kmacros**, **console**, **devpts** crates.
+Each: kernel re-exports for call-site compat; builds clean both envelopes.
+
+Prerequisites discovered while executing (do before the named dep can lift):
+- **drm + tracefs**: both register `/proc/...` via `StaticFileInode`, which lives
+  in the **kernel-local `kernel/src/procfs/` module**, NOT the `procfs` crate
+  (the repo has both — a real duplication). Move `StaticFileInode` (vfs-only,
+  self-contained) into the `procfs` crate first; kernel-local procfs re-exports
+  it. Then drm→drm-crate `node` module, tracefs→procfs/tracefs crate.
+- **pidfd**: uses `crate::dev` (3) + `crate::syscalls` (1). The syscalls ref =
+  cycle if pidfd lands in `fs` (fs←syscalls). Either pidfd rides into the
+  syscalls crate, or that one ref becomes a boot-installed hook.
+- **smoke crate**: `console` (done) unblocks the ELF smokes; still needs the
+  `acpi`(=firmware crate, fine) refs and the boot-call repoint in lib.rs.
+
 ### Coupling map (the only real blockers — measured)
 
 Across `kernel/src/syscalls/` the only `crate::` refs that are NOT already
