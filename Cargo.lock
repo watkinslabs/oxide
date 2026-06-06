@@ -532,6 +532,7 @@ dependencies = [
  "netlink",
  "nscg",
  "pci",
+ "pci-boot",
  "pmm",
  "power",
  "procfs",
@@ -707,6 +708,29 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "klog",
+]
+
+[[package]]
+name = "pci-boot"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "drv-virtio-gpu",
+ "drv-virtio-input",
+ "drv-virtio-net",
+ "firmware",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "kmacros",
+ "net",
+ "netlink",
+ "pci",
+ "pmm",
+ "softirq",
+ "sync",
+ "virtio",
 ]
 
 [[package]]
