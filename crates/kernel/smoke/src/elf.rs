@@ -377,19 +377,19 @@ pub const ELF_BLOB_PUB: &'static [u8] = ELF_BLOB;
 /// the kernel executes — validates the ELF loader against a real
 /// toolchain output (DT_RELA self-relocs, .text/.rodata/.data
 /// segments, real auxv consumption).
-pub const HELLO_BLOB: &'static [u8] = include_bytes!("../../blobs/hello.elf");
+pub const HELLO_BLOB: &'static [u8] = include_bytes!("../../../../kernel/blobs/hello.elf");
 
 /// P3-66 sa_handler dispatch smoke. Hand-rolled static-PIE ELF
 /// that registers a SIGUSR1 handler, raises SIGUSR1 to itself
 /// via sys_kill, and verifies the handler ran + rt_sigreturn
 /// restored execution. Boot trace shows "before h after" if the
 /// signal-dispatch chain works end-to-end.
-pub const SIGTEST_BLOB: &'static [u8] = include_bytes!("../../blobs/sigtest.elf");
+pub const SIGTEST_BLOB: &'static [u8] = include_bytes!("../../../../kernel/blobs/sigtest.elf");
 
 /// P3-77 tmpfs end-to-end smoke. Hand-rolled static-PIE ELF that
 /// open(O_CREAT)+write+close /tmp/x then open(RD)+read+write(1)
 /// to validate the tmpfs path through `sys_open` + `fs::tmpfs::lookup_or_create`.
-pub const TMPFSTEST_BLOB: &'static [u8] = include_bytes!("../../blobs/tmpfstest.elf");
+pub const TMPFSTEST_BLOB: &'static [u8] = include_bytes!("../../../../kernel/blobs/tmpfstest.elf");
 
 /// Boot-time smoke: kassert each registered path resolves to a
 /// non-empty ELF blob with the expected magic bytes.
@@ -575,7 +575,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     };
 
     // Install init's fd table — fd 0/1/2 → /dev/console (P2-30a).
-    let fdt = crate::dev::console::init_console_fd_table();
+    let fdt = console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled (we just spawned it); we are sole writer.
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;
@@ -815,7 +815,7 @@ unsafe fn spawn_user_blob_with_vpid(
         Err(_) => { debug_irq! { klog::kerror!("user-blob: spawn failed"); } return; }
     };
 
-    let fdt = crate::dev::console::init_console_fd_table();
+    let fdt = console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled; we are sole writer.
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;
@@ -908,7 +908,7 @@ pub unsafe fn run(hhdm_offset: u64) -> ! {
     //    real demand-page path the spec wants.
     // SAFETY: GDT/TSS/IDT/syscall MSRs initialised by kernel_main; entry & stack VMAs registered above; CPL=0; IRQs masked.
     unsafe {
-        crate::smoke::userspace::drop_to_ring3(
+        crate::userspace::drop_to_ring3(
             img.user_ip(),
             USER_STACK_TOP,
             hhdm_offset,

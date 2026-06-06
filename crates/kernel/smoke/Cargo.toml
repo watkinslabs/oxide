@@ -1,0 +1,39 @@
+[package]
+name = "smoke"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sched   = { path = "../sched" }
+hal     = { path = "../../arch/hal" }
+klog    = { path = "../../shared/klog" }
+kmacros = { path = "../../shared/kmacros" }
+sync    = { path = "../../shared/sync" }
+pmm     = { path = "../mm-pmm" }
+vmm     = { path = "../mm-vmm" }
+vfs     = { path = "../vfs" }
+firmware = { path = "../firmware" }
+console  = { path = "../console" }
+elf-load = { path = "../exec" }
+arch-irq = { path = "../arch-irq" }
+ext4     = { path = "../ext4" }
+tty      = { path = "../tty" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+debug-boot   = ["kmacros/debug-boot"]
+debug-trace  = ["kmacros/debug-trace"]
+debug-sched  = ["kmacros/debug-sched"]
+debug-pmm    = ["kmacros/debug-pmm"]
+debug-vmm    = ["kmacros/debug-vmm"]
+debug-irq    = ["kmacros/debug-irq"]
+debug-acpi   = ["kmacros/debug-acpi"]

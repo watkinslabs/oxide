@@ -117,7 +117,7 @@ const USER_STACK_VA:  u64 = 0x501_000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 
 /// 64 KiB stack for the busybox /sbin/init spawn — identical layout
-/// to the x86 init path (`crate::smoke::elf::EXEC_USER_STACK_VA/_LEN`).
+/// to the x86 init path (`crate::elf::EXEC_USER_STACK_VA/_LEN`).
 /// busybox + child fork+exec chains overrun a 4 KiB stack on the
 /// first wide musl frame; with the prior 0x501000/4 KiB layout the
 /// fork child SIGSEGV'd at far=0x500f70 (one page below the stack
@@ -152,7 +152,7 @@ fn elf_smoke_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
 }
 
 /// Parse + load + drop to EL0. Diverges. Replaces
-/// `crate::smoke::userspace_arm::run` for the aarch64 boot path.
+/// `crate::userspace_arm::run` for the aarch64 boot path.
 ///
 /// # SAFETY: caller is the boot path; pmm::user_as::init has run; PMM
 /// + MmuOps + VBAR_EL1 + SVC dispatch all initialised; single-
@@ -263,7 +263,7 @@ pub unsafe fn run() -> ! {
 
     // ARM lockstep with x86: after the smoke ELF exits, spawn
     // /sbin/init from the mounted ext4 rootfs and run the
-    // init→svcd→agetty→login chain. Mirrors `crate::smoke::elf::run_as_task`
+    // init→svcd→agetty→login chain. Mirrors `crate::elf::run_as_task`
     // post-smoke behavior. Without this the arm boot path halted
     // forever right here, leaving the user staring at a kernel-only
     // log with no way to interact (`make qemu-arm` was useless).
@@ -293,7 +293,7 @@ pub unsafe fn run() -> ! {
     }
 }
 
-/// aarch64 mirror of `crate::smoke::elf::spawn_user_blob_smoke` for the
+/// aarch64 mirror of `crate::elf::spawn_user_blob_smoke` for the
 /// init blob. Looks up /sbin/init (then /init) in the mounted ext4
 /// rootfs, allocates a fresh per-task L0 page table, builds an
 /// AddressSpace, activates it (TTBR0 swap), loads the static-PIE
@@ -445,10 +445,10 @@ fn spawn_init_from_rootfs_arm() {
 
     // Wire fd 0/1/2 to the console so busybox-as-shell (and any
     // child after fork+exec) has working stdin/stdout/stderr —
-    // mirrors crate::smoke::elf::spawn_user_blob_smoke on x86. Without this
+    // mirrors crate::elf::spawn_user_blob_smoke on x86. Without this
     // a forked child running real-libc /bin/sh hits EBADF on its
     // first write to stderr and exits without printing anything.
-    let fdt = crate::dev::console::init_console_fd_table();
+    let fdt = console::init_console_fd_table();
     // SAFETY: task isn't yet scheduled; we are sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
     unsafe { task.replace_fd_table(Some(fdt)); }
     let _task = task;

@@ -292,7 +292,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
     // No enable yet — subsequent F56 PRs add command queue, tables,
     // LPI prop/pend, GITS_CTLR.Enabled.
     {
-        let its_pa = crate::acpi::GIC_ITS_PA
+        let its_pa = firmware::acpi::GIC_ITS_PA
             .load(core::sync::atomic::Ordering::Acquire);
         if its_pa != 0 {
             let its_va = KERNEL_DEVICE_BASE | (its_pa & 0xFFFF_FFFF);
@@ -631,7 +631,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
     // the per-BDF config space. v1 only enumerates bus 0 (one
     // segment, one bus is enough for QEMU virt's host + virtio
     // devices); higher buses fault if probed and need a follow-up.
-    let ecam_pa = crate::acpi::ECAM_BASE_PA
+    let ecam_pa = firmware::acpi::ECAM_BASE_PA
         .load(core::sync::atomic::Ordering::Acquire);
     if ecam_pa != 0 {
         // Disjoint VA from KERNEL_DEVICE_BASE so the (pa & 0xffff_ffff)
@@ -653,7 +653,7 @@ use hal_aarch64::{timer as arm_timer, pl011};
     // Bits[25:16] = first SPI; bits[9:0] = SPI count. Together with the
     // frame base PA published by F35, this lets F37+ MSI wiring allocate
     // SPIs and encode MSI message addr/data correctly.
-    let v2m_pa = crate::acpi::GIC_MSI_FRAME_PA
+    let v2m_pa = firmware::acpi::GIC_MSI_FRAME_PA
         .load(core::sync::atomic::Ordering::Acquire);
     if v2m_pa != 0 {
         const V2M_VA: u64 = 0xffff_fc00_0000_0000;

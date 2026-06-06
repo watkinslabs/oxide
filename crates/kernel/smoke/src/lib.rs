@@ -1,7 +1,9 @@
+#![no_std]
+#![cfg(target_os = "oxide-kernel")]
 //! Boot-time integration smoke tests per `42`. Per-submodule
 //! debug-* feature gates externalize R06 klog gating.
-
-#![cfg(target_os = "oxide-kernel")]
+#[macro_use] extern crate kmacros;
+extern crate alloc;
 
 #[cfg(feature = "debug-sched")]
 pub mod canary;
