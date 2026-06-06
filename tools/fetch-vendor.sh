@@ -16,10 +16,6 @@ VENDOR="$REPO_ROOT/vendor"
 # Pinned versions. Bump together with the corresponding sha256.
 # ---------------------------------------------------------------------------
 
-LIMINE_VERSION="12.1.0"
-LIMINE_URL="https://github.com/Limine-Bootloader/Limine/releases/download/v${LIMINE_VERSION}/limine-binary.tar.xz"
-LIMINE_SHA256="237840cdc127bf6a93df9e1b236add9fff15b11a0253af18815e090d9ebc170f"
-
 # OVMF nightlies move; pin the *current* sha so fetches verify, but
 # expect to bump on every refresh. Long-term we should mirror these
 # under our own ghcr.io / S3 to detach from upstream rotation.
@@ -31,7 +27,7 @@ OVMF_AA64_SHA256="403fd8ae69c1c42764a383f0917cc249df2caeb06a789c9f0ca231b9427ef5
 
 # ---------------------------------------------------------------------------
 
-mkdir -p "$VENDOR/limine" "$VENDOR/firmware"
+mkdir -p "$VENDOR/firmware"
 
 verify_or_warn() {
     local file="$1" expected="$2" label="$3"
@@ -62,32 +58,9 @@ fetch() {
     verify_or_warn "$dest" "$sha" "$label"
 }
 
-# ---------------------------------------------------------------------------
-# Limine (binary release: x86 BIOS bins + UEFI loaders for x64/aa64/ia32)
-# ---------------------------------------------------------------------------
-
-if [ ! -f "$VENDOR/limine/BOOTX64.EFI" ]; then
-    echo "limine v${LIMINE_VERSION}:"
-    tmp="$(mktemp -u)"
-    curl -fL --retry 3 --retry-delay 2 -o "$tmp" "$LIMINE_URL"
-    verify_or_warn "$tmp" "$LIMINE_SHA256" "limine.tar.xz"
-    tar xJf "$tmp" -C "$VENDOR/limine" --strip-components=1
-    rm -f "$tmp"
-else
-    echo "limine v${LIMINE_VERSION}: present (skip)"
-fi
-
-# The Limine binary release ships `limine.c`, the host tool that
-# writes the BIOS boot record into a hybrid ISO via `bios-install`.
-# Compile it once at fetch time.
-if [ ! -x "$VENDOR/limine/limine" ]; then
-    echo "  building limine host tool from limine.c..."
-    (cd "$VENDOR/limine" && make >/dev/null)
-    [ -x "$VENDOR/limine/limine" ] || { echo "limine host tool build failed" >&2; exit 1; }
-    echo "  limine host tool: ok"
-else
-    echo "  limine host tool: present (skip)"
-fi
+# Limine is gone — both arches boot via GRUB now (x86 multiboot2, arm
+# EFI-stub `linux`). x86 GRUB uses the host grub2-mkrescue; arm GRUB uses
+# the vendored arm64-efi modules fetched below.
 
 # ---------------------------------------------------------------------------
 # OVMF firmware (EDK2 nightly snapshots)
