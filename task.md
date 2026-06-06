@@ -24,12 +24,18 @@ rule + boot-verify recipes.
       `xtask image`=`grub --build-only`; accept.py/run-smokes/mcp → GRUB ISO.
 - [x] arm PSCI AP bring-up — DONE #1552 (F379). PSCI CPU_ON + DTB/MADT MPIDR
       enumeration; AP boots → `[ap] online aff=1`. SMP=1 default (stable).
+- [x] per-CPU preempt state + IRQ-exit ctxsw staging — DONE #1554 (F380). Was
+      a global wrong-task-switch race (two CPUs clobbering ctxsw staging /
+      need_resched / preempt_count). Now per-CPU (gs:0 / TPIDR_EL1). UP-safe.
 
 ## Open
-- [ ] arm SMP=2 boot-stability (follow-on to #1552) — AP comes online but
-      can't run migrated user tasks → `-smp 2` boot wedges at systemd handoff.
-      Wire per-CPU active-AS + arm ctxsw-to-EL0 on the AP; then re-enable SMP=2
-      arm smoke + `-accel tcg,thread=multi`.
+- [ ] arm SMP=2 boot-stability — REMAINING gap (gdb-confirmed): no cross-CPU
+      wakeup→resched-IPI. A task woken on CPU A but queued on CPU B's runqueue
+      is never picked (AP idle loop is pure wfi/IRQ-driven), so both CPUs wfi
+      with PID1 unrunnable → wedge at systemd handoff. Fix = try_to_wake_up-
+      style enqueue-to-target + resched IPI in the wake path (wait_list.rs).
+      Then SMP=2 arm smoke + `-accel tcg,thread=multi`. (Also: load balancer is
+      unreachable on arm — elf_arm::run loops forever before spawn_timer_driver.)
 - [ ] python3 broken in rootfs: "No module named 'encodings'" (stdlib path).
       NEW finding; distro completeness; verify-left-able.
 - [ ] Phase 15 acceptance: clean loopback nc/ping test (net bins present, 171
