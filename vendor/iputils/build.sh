@@ -62,7 +62,7 @@ ar = '$CROSS_AR'
 strip = '$CROSS_STRIP'
 
 [built-in options]
-c_args = ['-Os', '-isystem', '$HDRS_ARM']
+c_args = ['-Os']
 c_link_args = ['-static']
 
 [host_machine]

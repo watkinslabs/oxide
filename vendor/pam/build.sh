@@ -68,7 +68,7 @@ EOF
 }
 
 hdr_flags_x86="'-isystem', '$HDRS_X86', '-Os', '-D_GNU_SOURCE'"
-hdr_flags_arm="'-isystem', '$HDRS_ARM', '-Os', '-D_GNU_SOURCE'"
+hdr_flags_arm="'-Os', '-D_GNU_SOURCE'"
 
 write_cross_file "x86_64"  "musl-gcc"   "ar"        "strip"        "$hdr_flags_x86" "$SRC/cross-x86_64.ini"
 write_cross_file "aarch64" "$CROSS_CC"  "$CROSS_AR" "$CROSS_STRIP" "$hdr_flags_arm" "$SRC/cross-aarch64.ini"
