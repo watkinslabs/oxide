@@ -313,6 +313,12 @@ fn qemu_run_grub_x86_64(
         "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        // -vga none: q35 otherwise adds a default std-VGA that becomes the
+        // PRIMARY display, so the GTK window shows that (blank — we never
+        // drive it) and the virtio-gpu console is a hidden secondary. Removing
+        // it makes virtio-gpu THE display, so fbcon's rendered console is what
+        // the window shows. (Verified: virtio-gpu fb carries the glyphs.)
+        "-vga", "none",
         // virtio-gpu scanout + virtio-keyboard for the visual console so
         // fbcon renders + the GTK window takes keyboard input.
         "-device", "virtio-gpu-pci,bus=pcie.0",
