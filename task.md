@@ -17,12 +17,19 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
       to confirm no per-char write(), or inspect the vendored bash/readline build
       config (vendor/bash/build.sh) — readline incremental-redisplay path. Also
       noticed: `stty` is missing from the rootfs (coreutils applet not staged).
-      LEAD: vendor/bash/build.sh compiles with `-std=gnu89
-      -Wno-implicit-function-declaration -Wno-incompatible-pointer-types` —
-      suppressing implicit-function-declaration on a 64-bit musl cross-build is a
-      correctness hazard (a fn that really returns a pointer gets truncated to
-      int). Likely fix: re-vendor bash with -std=gnu11 + proper headers, NO
-      suppression, and resolve the real missing declarations. (userspace rebuild.)
+      LEAD RULED OUT: compiled ALL lib/readline/*.c under -std=gnu89 with
+      warnings ON → ZERO implicit-declaration warnings. So readline has no
+      pointer-truncation hazard and a bash rebuild would NOT fix the echo
+      (do not rebuild — bash is the shell; risky + pointless here). The
+      -Wno-* suppressions only hide warnings in OTHER bash dirs, not readline.
+      REMAINING: a subtle readline RUNTIME behavior on our terminal — readline
+      reads the char (tab completion proves it) but doesn't emit the per-char
+      echo write. Kernel verified correct (os.write/cat echo per-char; select
+      correct; winsize 80x24; fails under all TERM + sh/bash). Needs runtime
+      tracing of bash/readline (ltrace/strace-equivalent or an RL_TRACE debug
+      build) to see why rl_redisplay doesn't flush the incremental echo —
+      a focused deep-dive, not a loop-sized fix. Lower priority than shipping
+      features (console + login now resolved; this is cosmetic on serial).
 - [x] **Console/GPU — RESOLVED** (verified both arches): the entire kernel-side
       graphical console WORKS — virtio-gpu scanout (1280x800), fbcon glyph
       rendering (screendump: 4480 white glyph px on the FB), klog+/dev/console
