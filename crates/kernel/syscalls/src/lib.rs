@@ -19,6 +19,11 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get;
 #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "461_lsm_list_modules.rs"]  pub mod s461_lsm_list;
+#[path = "318_getrandom.rs"]   pub mod s318_getrandom;
+#[path = "463_setxattrat.rs"]  pub mod s463_setxattrat;
+#[path = "464_getxattrat.rs"]  pub mod s464_getxattrat;
+#[path = "465_listxattrat.rs"] pub mod s465_listxattrat;
+#[path = "466_removexattrat.rs"] pub mod s466_removexattrat;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
@@ -361,27 +366,6 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
 /// RNG (RDRAND on x86_64, RNDR on aarch64); falls back to a
 /// per-boot LCG if HW RNG returns failure (CF=0 on RDRAND;
 /// NZCV.V=1 on RNDR).
-fn sys_getrandom(args: &SyscallArgs) -> i64 {
-    let buf  = args.a0;
-    let len  = args.a1;
-    let _fl  = args.a2;
-    if len == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(buf, len, 1) { return rv; }
-    let mut written: u64 = 0;
-    while written < len {
-        let v = hwrng::hw_random_u64().unwrap_or_else(devfs::misc::lcg_next).to_le_bytes();
-        let n = (len - written).min(8);
-        // SAFETY: validated [buf, buf+len) below USER_VA_END; CPL=0 writes through caller's AS.
-        unsafe {
-            for i in 0..n {
-                core::ptr::write_volatile((buf + written + i) as *mut u8, v[i as usize]);
-            }
-        }
-        written += n;
-    }
-    written as i64
-}
-
 
 use crate::signal::{sys_kill, sys_tgkill};
 
@@ -596,7 +580,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FCHDIR        => crate::fs::sys_fchdir(&args),
         syscall::nrs::NR_KILL          => sys_kill(&args),
         syscall::nrs::NR_TGKILL        => sys_tgkill(&args),
-        syscall::nrs::NR_GETRANDOM     => sys_getrandom(&args),
+        syscall::nrs::NR_GETRANDOM     => s318_getrandom::sys_getrandom(&args),
         syscall::nrs::NR_SCHED_RR_GET_INTERVAL => sys_sched_rr_get_interval(&args),
         syscall::nrs::NR_SCHED_YIELD   => crate::proc::sys_sched_yield(&args),
         syscall::nrs::NR_GETTID        => crate::proc::sys_gettid(&args),
@@ -899,6 +883,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_LSM_LIST_MODULES  => s461_lsm_list::sys_lsm_list_modules(&args),
         syscall::nrs::NR_FUTEX_WAKE       => s454_futex_wake::sys_futex_wake(&args),
         syscall::nrs::NR_FUTEX_WAIT       => s455_futex_wait::sys_futex_wait(&args),
+        syscall::nrs::NR_SETXATTRAT      => s463_setxattrat::sys_setxattrat(&args),
+        syscall::nrs::NR_GETXATTRAT      => s464_getxattrat::sys_getxattrat(&args),
+        syscall::nrs::NR_LISTXATTRAT     => s465_listxattrat::sys_listxattrat(&args),
+        syscall::nrs::NR_REMOVEXATTRAT   => s466_removexattrat::sys_removexattrat(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),

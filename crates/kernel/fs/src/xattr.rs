@@ -258,3 +258,50 @@ pub fn xattr_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     };
     Some(rv)
 }
+
+// --- *xattrat (slots 463-466): the dirfd-relative xattr family (Linux 6.13).
+// The path/dirfd resolution happens in the syscall shim (syscalls crate, which
+// owns pathresolve); these take the already-resolved inode + the user pointers.
+// xattr_args (uapi): { __u64 value; __u32 size; __u32 flags; } = 16 bytes.
+
+/// Read a `struct xattr_args` from user → (value_ptr, size, flags).
+/// # C: O(1)
+fn read_xattr_args(args_ptr: u64, args_size: usize) -> Result<(u64, u32, u32), i64> {
+    if args_size < 16 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    let b = read_user_bytes(args_ptr, 16)?;
+    let value = u64::from_le_bytes(b[0..8].try_into().unwrap());
+    let size  = u32::from_le_bytes(b[8..12].try_into().unwrap());
+    let flags = u32::from_le_bytes(b[12..16].try_into().unwrap());
+    Ok((value, size, flags))
+}
+
+/// setxattrat work — read xattr_args + name + value, set on `inode`.
+/// # C: O(N_xattrs)
+pub fn setxattrat_on(inode: &InodeRef, name_ptr: u64, args_ptr: u64, args_size: usize) -> i64 {
+    let (value_ptr, size, flags) = match read_xattr_args(args_ptr, args_size) { Ok(t) => t, Err(e) => return e };
+    let name  = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
+    let value = match read_user_bytes(value_ptr, size as usize) { Ok(v) => v, Err(rv) => return rv };
+    do_set(inode, name, value, flags)
+}
+
+/// getxattrat work — read into xattr_args.value (size buffer).
+/// # C: O(N_xattrs)
+pub fn getxattrat_on(inode: &InodeRef, name_ptr: u64, args_ptr: u64, args_size: usize) -> i64 {
+    let (value_ptr, size, _flags) = match read_xattr_args(args_ptr, args_size) { Ok(t) => t, Err(e) => return e };
+    let name = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
+    do_get(inode, &name, value_ptr, size as usize)
+}
+
+/// listxattrat work — list names into xattr_args.value (size buffer). No name arg.
+/// # C: O(N_xattrs)
+pub fn listxattrat_on(inode: &InodeRef, args_ptr: u64, args_size: usize) -> i64 {
+    let (value_ptr, size, _flags) = match read_xattr_args(args_ptr, args_size) { Ok(t) => t, Err(e) => return e };
+    do_list(inode, value_ptr, size as usize)
+}
+
+/// removexattrat work — remove `name`. No xattr_args.
+/// # C: O(N_xattrs)
+pub fn removexattrat_on(inode: &InodeRef, name_ptr: u64) -> i64 {
+    let name = match read_user_cstr_owned(name_ptr, 256) { Ok(s) => s, Err(rv) => return rv };
+    do_remove(inode, &name)
+}
