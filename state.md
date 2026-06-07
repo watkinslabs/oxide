@@ -81,85 +81,32 @@ distro advanced; both arches boot CLEAN (only benign autofs4 warning).
   inspection didn't explain. Abandoned per discipline. If retried: boot-verify
   before/after; investigate Task::new_user ns-field init.
 
-## Open / next — arm SMP=2 boot (DEEP; root = unmapped memcpy src)
-FIVE SMP fixes landed, all correct + UP-safe, NONE unblock SMP=2:
-#1552 PSCI AP bring-up; #1554 per-CPU preempt+ctxsw-staging; #1556 per-CPU
-SVC-frame base; #1557 on_rq dedup guard; #1560 clear SCTLR_EL1.A (firmware
-left A=1 w/ >1 vCPU → EL0 unaligned access trapped; real latent bug, Linux
-always clears A — but NOT the smp2 root).
-**x86 SMP is UNPORTED (not working):** bring_up_aps_x86 returns 0 on the MB2/GRUB
-path (BootInfo smp_info_array/smp_count/bsp_lapic_id all 0 — boot-x86_64 lib.rs
-~411-431); smp_x86.rs is Limine-only (parked APs + goto_address). x86 never
-sends INIT/SIPI → runs UP regardless of -smp. LAPIC INIT/SIPI plumbing EXISTS
-(lapic.rs icr_lo_init_assert/icr_lo_sipi/write_icr/wait_icr_idle); MISSING = a
-real-mode AP trampoline (16→32→64, GDT, identity-map the trampoline page in
-kernel CR3, per-AP stack) + a bring-up loop off cpu-topology MADT APIC IDs +
-kmain using cpu::get not BootInfo.smp_*. (Also fix bsp_lapic_id=0 vs cpu::get(0).)
-**ARM SMP=2 ROOT — refined via running-memory disasm (NOT the static binary):**
-fault = musl memcpy `ldr x6,[x1]` @0x40016f88; caller systemd 0x40063bc0
-`bl memcpy(dst=x25, src=x4=[x29,#112]=0x10004322, len=x5-x4=10)`. src is a
-VALID-looking heap ptr (heap 0x10000000-0x10035000) whose PAGE (0x10004000) is
-unmapped at -smp 2 → it's a demand-paging/MM/TLB miss, NOT a garbage pointer.
-Upstream: `cbnz x0,0x40063bb0` @0x40063b84 is a CONTROL-FLOW divergence — smp2
-x0!=0 takes the memcpy path; smp1 goes the other way and reaches openat. All
-syscall I/O + x0-x30 at readlinkat-exit are identical, so x0 derives from
-MEMORY that differs at arm-smp2. RULED OUT: AP bring-up (cap-1/no-AP still
-fail), vDSO/time (disabled, no clock syscall, still fails), AT_RANDOM (fixed
-const, still fails), preemption (tick_pick_next no-op on arm), SCTLR.A (fixed
-#1560, was masking align→translation). NEXT: trace what sets x0 at 0x40063b84
-(running disasm backward) + audit arm demand-paging/TLB (tlbi) under qemu -smp 2
-— why a valid heap page fails to map / a heap value differs only at smp2.
-[OLD note below partly superseded:]
-**ROOT (gdb-pinned):** at -smp 2 PID1(systemd) faults in EL0 right after
-readlinkat at systemd `0x40016f88: ldr x6,[x1]` — a 10-byte memcpy
-(dst=0x10034b70, src=x1=0x10004322, len=x2=10; caller x30=systemd 0x40063bc4
-where x1=x22). **src=0x10004322 is UNMAPPED** (faults regardless of A: DFSC=0x21
-align w/ A=1, translation w/ A=0) → systemd's memcpy is handed a WRONG src
-pointer. PID1's syscall stream is BYTE-IDENTICAL SMP=1/2 through readlinkat
-(19,218,brk→0x10035000 ×2,mmap→0x10035000,readlinkat→5); SMP=1 then does openat,
-SMP=2 dies. So the divergence comes from NON-syscall input — leading hypothesis:
-vDSO/CNTVCT **time** differs under 2-vCPU TCG (guest-time advances per total
-icount), and systemd uses a time value to compute the bad src pointer (no
-syscall → invisible in the stream). NEXT: (1) check oxide vvar/vDSO time page
-+ whether systemd reads it pre-fault; (2) aarch64-objdump systemd around
-0x63bc4/0x16f00 to see how x22 (src) is computed; (3) trace x1's origin.
-**KEY: the wedge is the 2-vCPU ENVIRONMENT, not the AP.** Bisected:
-**KEY FINDING — the wedge is the 2-vCPU ENVIRONMENT, not the AP.** Bisected:
-(a) ap_init no-op, (b) bring_up_aps_psci no-op, (c) cpu-enum capped to 1 — ALL
-still wedge at qemu `-smp 2`; `-accel tcg,thread=multi` also wedges; `-smp 1`
-boots. So NOT the AP, NOT scheduler, NOT cpu::count(), NOT TCG round-robin.
-EVIDENCE (debug-boot, fresh builds — beware STALE ISO: always check ELF mtime
-≥ edit time, `xtask grub --build-only` can silently reuse a stale kernel):
-- PID1(systemd) syscall stream is BYTE-IDENTICAL SMP=1 vs SMP=2 through
-  readlinkat: 19, 218(set_tid_addr→1), 12(brk→0x10035000), 12(brk→0x10037000),
-  9(mmap→0x10035000), 267(readlinkat→5). SMP=1 then does 257(openat); SMP=2
-  DIES in the EL0 window between readlinkat-return and openat.
-- Death = EL0 ALIGNMENT data abort (ESR=0x92000021 EC=0x24 DFSC=0x21,
-  FAR=0x10004322). `[noenq tid=c0de0002 st=3]` ⇒ PID1→Zombie (SIGSEGV); the
-  "wedge" is just init-dead aftermath. sp_el0 AT the fault is GOOD (0x7fff…) —
-  earlier "SP_EL0 poison" reading was WRONG; a non-sp reg holds 0x10004322
-  (x19=0x100042d9, a VALID systemd mmap ptr, identical SMP=1/2).
-- readlinkat dispatch-exit SVC frame byte-identical SMP=1/2. Syscalls run
-  IRQ-MASKED (SVC entry daifset #0xf, no unmask) → no mid-syscall preempt.
-- Verified CORRECT: EL0-IRQ save/restore offsets (x0-x18,x29,x30,elr,spsr,
-  sp_el0 @ matching slots); oxide_context_switch (x19-x30,sp,tpidr_el0).
-So: identical inputs+state, PID1 erets after readlinkat and dies in EL0 only at
--smp 2. Only async difference = an EL0 timer tick in that window. But no-switch
-re-pick is transparent and all reg paths check out → mechanism still UNKNOWN.
-NEXT EXPERIMENTS (do in order): (1) dump ALL x0-x30 at the EL0 alignment fault
-(hook deliver_sigsegv_arm, debug-boot) + `qemu_disasm` the faulting insn at elr
-to see which reg = 0x10004322 and what op faults; (2) `its=off` to isolate
-ITS/LPI routing with 2 redistributors; (3) diff GIC init (GICR count / IROUTER)
-1 vs 2 redistributors. (4) CONFIRMED this session: UP-kernel-smp2 FAULTS
-(PID1→Zombie st=3, same readlinkat window) — NOT a stall, so ONE corruption
-bug, not lost-IRQ/GIC-routing. boot-and-trace exhausted (~40 boots); right next
-tool is a focused gdb hw-watchpoint at the deterministic fault (far=0x10004322,
-EL0, right after readlinkat n=6). Gate stays `-smp 1`; distro fully works there.
-2. python3 encodings/stdlib path fix (distro; verify-left-able).
-3. Phase 15 acceptance: clean loopback nc/ping test → close Phase 15 if green.
-4. Phase 16 real namespace isolation (currently id-substrate, F100-F107).
-5. smoke_rr arm debug-all hang (debug-only; needs disk+gdb, MCP can't — stale ISO).
-6. phases 17–35 — deep feature work, best with user prioritization.
+## SMP status — arm SMP=2 FIXED (#1564); x86 SMP unported (next)
+**arm -smp 2 now boots → systemd → login (fault=0), same as -smp 1.** ROOT was
+an aarch64 page-attr bug (#1564): vmm.rs `ATTR1=1<<3` is descriptor bit 3 =
+AttrIdx **2**, but AttrIndx is bits[4:2] so AttrIdx1=1<<2. Self-boot
+MAIR=0xFF04 puts Normal-WB at AttrIdx1; with the wrong bit no mapping could
+select Normal → every demand-faulted user page was Device → first EL0 unaligned
+read (musl memcpy) took a DFSC=0x21 alignment abort → PID1 SIGSEGV. Latent since
+the Limine removal (Limine MAIR=0xff had Normal@AttrIdx0, so the wrong const was
+harmless). Fix: ATTR1=1<<2. The 5 earlier SMP fixes (#1552 PSCI AP, #1554
+per-CPU preempt, #1556 per-CPU SVC, #1557 on_rq guard, #1560 SCTLR.A, #1563
+demand-fault tlbi) are all correct + still wanted; none alone unblocked it.
+Methodology gotcha that cost time: per-crate debug features differ (syscalls has
+`debug-boot`, sched has `debug-sched`, mm-pmm has `debug-irq`) — a
+`#[cfg(feature="debug-boot")]` trace in sched/mm-pmm is silently compiled out;
+verify traces with `strings <elf> | grep`. Also: editing a low-level crate
+(hal-aarch64) can leave a stale cached build — confirm "Compiling hal-aarch64".
+
+**x86 SMP is UNPORTED (next for multi-cpu-across-the-board):** bring_up_aps_x86
+returns 0 on MB2/GRUB (BootInfo smp_* all 0; smp_x86.rs is Limine-only,
+parked-AP + goto_address). x86 never sends INIT/SIPI → runs UP regardless of
+-smp. LAPIC INIT/SIPI plumbing EXISTS (lapic.rs icr_lo_init_assert/icr_lo_sipi/
+write_icr/wait_icr_idle); MISSING = a real-mode AP trampoline (16→32→64, GDT,
+identity-map the trampoline page in kernel CR3, per-AP stack) + a bring-up loop
+off cpu-topology MADT APIC IDs + kmain using cpu::get not BootInfo.smp_*. Also
+fix bsp_lapic_id=0 vs cpu::get(0). Consider bumping the arm smoke gate to -smp 2
+now that it boots.
 
 ## Discipline
 Author = Chris Watkins, no AI/Co-Authored-By trailers. spec-lint clean + both
