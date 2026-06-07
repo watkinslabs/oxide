@@ -8,8 +8,11 @@
   kmain `#![cfg(oxide-kernel)]`, dropped a stray `use crate::live::*` in procfs tests;
   (b) build-kernel jobs needed musl-gcc/cross-toolchain → added `OXIDE_STUB_BLOBS=1`
   compile-check mode (xtask writes empty placeholder rootfs/vDSO blobs; CI never boots).
-- **Userspace tooling backlog: 13 vendored + boot-verified** — rg, fd, bat, eza, jq,
-  tldr, hyperfine, dust, sd, btm, procs, zoxide, ncdu (#1604-1608, F399-F402).
+- **Userspace tooling backlog: 18 vendored + boot-verified** — rg, fd, bat, eza, jq,
+  tldr, hyperfine, dust, sd, btm, procs, zoxide, ncdu, htop, tree, dos2unix(+unix2dos),
+  curl, wget (#1604-1610, F399-F403). curl/wget link vendored openssl+zlib static
+  (libtool needs `-all-static` injected at make, not configure; wget needs openssl `-L`
+  in both OPENSSL_LIBS and global LDFLAGS for its separate MD5 crypto probe).
 - Earlier this session: syscalls 345→381; full one-file-per-syscall migration (224
   `<NNN>_<name>.rs` modules, lib.rs 967→114, dispatch in dispatch.rs); console/GPU,
   login-shell, arm SMP=2 all resolved. All merged.
@@ -33,11 +36,10 @@ rootfs.rs staging loop (`("<dir>","<bin>","/usr/bin/<name>")`).
   files — agents must NOT touch them). Then boot-test the batch + commit.
 
 ## Open — tooling backlog (continue)
-- C (autotools-musl): htop (ncurses✓), tree, dos2unix, curl (openssl✓+zlib✓), wget
-  (openssl✓), rsync, dialog (ncurses✓), man-db (needs gdbm). tmux needs libevent (vendor
-  first). mc needs glib (hard). C++: btop, lnav (musl+libstdc++ finicky).
+- C (autotools-musl): rsync, dialog (ncurses✓), man-db (needs gdbm). tmux needs libevent
+  (vendor first). mc needs glib (hard). C++: btop, lnav (musl+libstdc++ finicky). neovim (C).
 - Go (need Go toolchain set up first): lazygit, fzf, yq.
-- More Rust (cargo-musl, easy): delta, choose, yazi (heavy). neovim is C.
+- More Rust (cargo-musl, easy): delta, choose, yazi (heavy).
 
 ## First task next session
 ```
@@ -51,5 +53,5 @@ gh run list --limit 3   # confirm main still green
 - CI build-kernel uses `OXIDE_STUB_BLOBS=1` (compile-check only; doesn't build the real
   rootfs). Real build+boot is the LOCAL pre-push smoke. Don't "fix" CI to build the real
   rootfs unless you also add musl-gcc + cross-toolchain to pr.yml.
-- Branch numbers: derive from git log every time. Max F=402, B=62.
+- Branch numbers: derive from git log every time. Max F=403, B=62.
 - alice/swordfish is a working login for boot-tests (root's password differs).
