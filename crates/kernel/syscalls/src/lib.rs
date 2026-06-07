@@ -40,6 +40,10 @@ mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path 
 #[path = "424_pidfd_send_signal.rs"] pub mod s424_pidfd_send_signal; #[path = "434_pidfd_open.rs"] pub mod s434_pidfd_open; #[path = "438_pidfd_getfd.rs"] pub mod s438_pidfd_getfd;
 #[path = "444_landlock_create_ruleset.rs"] pub mod s444_landlock_create_ruleset; #[path = "445_landlock_add_rule.rs"] pub mod s445_landlock_add_rule; #[path = "446_landlock_restrict_self.rs"] pub mod s446_landlock_restrict_self;
 mod fs_access_common; #[path = "021_access.rs"] pub mod s021_access; #[path = "269_faccessat.rs"] pub mod s269_faccessat; #[path = "307_sendmmsg.rs"] pub mod s307_sendmmsg; #[path = "299_recvmmsg.rs"] pub mod s299_recvmmsg;
+#[path = "290_eventfd2.rs"] pub mod s290_eventfd2; #[path = "319_memfd_create.rs"] pub mod s319_memfd_create;
+mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;
+mod execve_common; #[path = "059_execve.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
+#[path = "425_io_uring_setup.rs"] pub mod s425_io_uring_setup; #[path = "426_io_uring_enter.rs"] pub mod s426_io_uring_enter; #[path = "427_io_uring_register.rs"] pub mod s427_io_uring_register;
 #[path = "462_mseal.rs"]     pub mod s462_mseal;
 #[path = "039_getpid.rs"]    pub mod s039_getpid;
 #[path = "003_close.rs"]     pub mod s003_close;
