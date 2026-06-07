@@ -10,6 +10,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
 // under an `sNNN_` alias (a module name can't start with a digit).
 #[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2; #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set; #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
+#[path = "090_chmod.rs"] pub mod s090_chmod; #[path = "091_fchmod.rs"] pub mod s091_fchmod; #[path = "268_fchmodat.rs"] pub mod s268_fchmodat; #[path = "092_chown.rs"] pub mod s092_chown; #[path = "093_fchown.rs"] pub mod s093_fchown; #[path = "260_fchownat.rs"] pub mod s260_fchownat;
 #[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr; #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get; #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "465_listxattrat.rs"] pub mod s465_listxattrat; #[path = "466_removexattrat.rs"] pub mod s466_removexattrat; #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
 #[path = "468_file_getattr.rs"] pub mod s468_file_getattr; #[path = "469_file_setattr.rs"] pub mod s469_file_setattr; #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
@@ -34,6 +35,8 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "201_time.rs"] pub mod s201_time; #[path = "137_statfs.rs"] pub mod s137_statfs; #[path = "138_fstatfs.rs"] pub mod s138_fstatfs;
 #[path = "001_write.rs"] pub mod s001_write; #[path = "257_openat.rs"] pub mod s257_openat; #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
+#[path = "132_utime.rs"] pub mod s132_utime; #[path = "235_utimes.rs"] pub mod s235_utimes; #[path = "280_utimensat.rs"] pub mod s280_utimensat;
+mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path = "165_mount.rs"] pub mod s165_mount; #[path = "166_umount2.rs"] pub mod s166_umount2;
 #[path = "462_mseal.rs"]     pub mod s462_mseal;
 #[path = "039_getpid.rs"]    pub mod s039_getpid;
 #[path = "003_close.rs"]     pub mod s003_close;
@@ -88,4 +91,4 @@ mod open_common;
 mod userbuf;
 pub mod dispatch;
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod perms; pub mod perms_common;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime_common; pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
