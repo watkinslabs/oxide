@@ -27,7 +27,7 @@ DISPATCH_FILES = [
     "crates/kernel/syscalls/src/misc.rs",
     "crates/kernel/syscalls/src/perms.rs",
     "crates/kernel/syscalls/src/select.rs",
-    "crates/kernel/syscalls/src/net_recv.rs",
+    "crates/kernel/syscalls/src/045_recvfrom.rs",
     "crates/kernel/syscalls/src/clone.rs",
     "crates/kernel/syscalls/src/signal_dispatch.rs",
     "crates/kernel/syscalls/src/signal_trace.rs",
