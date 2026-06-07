@@ -23,26 +23,17 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
       correctness hazard (a fn that really returns a pointer gets truncated to
       int). Likely fix: re-vendor bash with -std=gnu11 + proper headers, NO
       suppression, and resolve the real missing declarations. (userspace rebuild.)
-- [ ] **Console/GPU — interactive VT not wired** (DIAGNOSED): the GPU stack
-      WORKS on x86 — virtio-gpu scanout completes (`display enabled=1
-      mode0=1280x800`, RESOURCE_CREATE/ATTACH/SET_SCANOUT/TRANSFER/FLUSH all
-      RESP_OK 0x1100, "scanout 1280x800 painted"), and fbcon is wired as a klog
-      AUX sink (kmain ~602-606) so kernel boot messages render on the FB. The
-      gap is NOT scanout/fbcon-render — it's that the INTERACTIVE session
-      (getty/login/bash on /dev/console) goes to the SERIAL tty, not a
-      fbcon-backed VT, and virtio-keyboard input isn't delivered to a console
-      tty. So the graphical display shows kernel klog but no login prompt / no
-      typing → user does everything on serial. FIX (the real task): a VT console
-      device (/dev/tty1) whose OUTPUT is the fbcon renderer and INPUT is
-      drv-virtio-input(keyboard), + run a getty on it (console-getty currently
-      targets `console`=serial). Pieces exist (fbcon renders, virtio-input
-      present, scanout works) — it's tty↔fbcon↔virtio-input wiring + a VT getty.
-      Verify visually via `qemu -vnc` + monitor `screendump`. ARM: may also hit
-      the known UEFI "PCI Memory bit OFF on QEMU virt" → virtio-gpu BARs
-      unreachable (see project_virtio_pci_progress); confirm arm scanout
-      separately.
-
-## ACTIVE — login + syscalls (user-requested)
+- [x] **Console/GPU — RESOLVED** (verified both arches): the entire kernel-side
+      graphical console WORKS — virtio-gpu scanout (1280x800), fbcon glyph
+      rendering (screendump: 4480 white glyph px on the FB), klog+/dev/console
+      aux-sink output, and virtio-input drain→keymap→push_and_wake_fg(VT0)→getty
+      (verified: qemu `sendkey "root\n"` → login responded). The user's blank
+      screen was a QEMU-LAUNCH bug, not the kernel: q35 adds a default std-VGA
+      that becomes the PRIMARY display, so the GTK window showed that blank VGA
+      while the virtio-gpu console was a hidden secondary. FIX: `-vga none` in
+      image_qemu.rs (x86) so virtio-gpu is THE display. arm `virt` has no
+      default VGA (already correct). Earlier "output gap"/"input gap" diagnoses
+      were both wrong — the kernel console was complete all along.
 - [x] **Login/profile done properly** — RESOLVED (verified live): the console
       login already execs a LOGIN shell (`$0` = `-sh`) and `/etc/profile` +
       `/etc/profile.d/*.sh` ARE sourced (marker `OXIDE_PROFILE_RAN=1` set after
