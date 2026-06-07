@@ -635,3 +635,40 @@ curl/config.cache
 wget/wget-1.21.4/
 wget/wget-1.21.4.tar.gz
 wget/config.cache
+# libevent 2.1.12 — vendored static lib (dependency of tmux). install-<arch> only.
+!libevent/
+!libevent/build.sh
+!libevent/install-x86_64/
+!libevent/install-x86_64/**
+!libevent/install-aarch64/
+!libevent/install-aarch64/**
+libevent/libevent-2.1.12-stable/
+libevent/libevent-2.1.12-stable.tar.gz
+# fzf 0.55.0 — Go tool, static (CGO_ENABLED=0) via vendored Go SDK. /usr/bin/fzf.
+!fzf/
+!fzf/build.sh
+!fzf/fzf-x86_64
+!fzf/fzf-aarch64
+fzf/fzf-0.55.0/
+fzf/fzf-0.55.0.tar.gz
+# tmux 3.5a — terminal multiplexer. C, static-musl + vendored libevent+ncurses. /usr/bin/tmux.
+!tmux/
+!tmux/build.sh
+!tmux/tmux-x86_64
+!tmux/tmux-aarch64
+tmux/tmux-3.5a/
+tmux/tmux-3.5a.tar.gz
+# lazygit 0.44.1 — git TUI. Go, static (CGO_ENABLED=0). /usr/bin/lazygit.
+!lazygit/
+!lazygit/build.sh
+!lazygit/lazygit-x86_64
+!lazygit/lazygit-aarch64
+lazygit/lazygit-0.44.1/
+lazygit/lazygit-0.44.1.tar.gz
+# yq 4.44.3 — YAML processor. Go, static (CGO_ENABLED=0). /usr/bin/yq.
+!yq/
+!yq/build.sh
+!yq/yq-x86_64
+!yq/yq-aarch64
+yq/yq-4.44.3/
+yq/yq-4.44.3.tar.gz

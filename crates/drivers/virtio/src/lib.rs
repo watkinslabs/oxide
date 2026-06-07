@@ -32,6 +32,17 @@ pub use net::{VirtioNet, VirtioNetHdr, VIRTIO_NET_HDR_LEN_V1,
               VIRTIO_NET_F_CSUM, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MRG_RXBUF,
               VIRTIO_NET_F_STATUS};
 
+pub mod blk;
+pub use blk::{
+    DescSpec, build_chain, encode_header, decode_status, pack_desc,
+    VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID,
+    VIRTIO_BLK_S_OK, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_UNSUPP,
+    VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH,
+    VIRTIO_BLK_SECTOR_BYTES, BLK_CFG_OFF_CAPACITY, BLK_CFG_OFF_BLK_SIZE,
+    BLK_SERIAL_LEN, validate_blk_size, capacity_blocks, trim_serial, vd_name,
+    sector_plan,
+};
+
 /// Virtio device IDs per spec §5.1.
 pub const VIRTIO_DEV_NET:     u16 = 1;
 pub const VIRTIO_DEV_BLOCK:   u16 = 2;

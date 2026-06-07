@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/kmod/install-x86_64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libkmod
+Description: oxide L2 staged libkmod
+Version: 31
+Libs: -L${libdir} -lkmod
+Cflags: -I${includedir}

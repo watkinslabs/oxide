@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/util-linux/install-x86_64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: uuid
+Description: oxide L2 staged uuid
+Version: 2.40
+Libs: -L${libdir} -luuid
+Cflags: -I${includedir} -I${includedir}/uuid

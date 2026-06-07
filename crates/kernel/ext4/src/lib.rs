@@ -47,8 +47,8 @@ pub mod journal;
 
 // Host-compilable so the verify-left resolution harness
 // (tests/walk_image.rs) can drive the real ext4 Inode impls via
-// `set_test_mount`. The embedded-rootfs boot path (`ROOTFS`/`init`/
-// `ImageDisk`) stays kernel-only inside the module.
+// `set_test_mount`. The boot path mounts a real virtio-blk disk via
+// `init_from_dev` (serial `oxide-root`); no embedded image.
 pub mod rootfs;
 pub use journal::ExtentLogReader;
 pub mod jbd2;
