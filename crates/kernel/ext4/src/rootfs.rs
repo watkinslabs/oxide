@@ -337,8 +337,8 @@ pub fn write_file(path: &[u8], data: &[u8]) -> Option<()> {
 /// VFS Inode wrapping a regular ext4 file. Bytes are lazy: stat
 /// (size/perm/etc) doesn't pull file contents. The first read or
 /// write that actually needs bytes loads them; later writes refresh
-/// the cache. Without this, every stat() on /bin/<applet> (a hardlink
-/// to the 1.2 MiB busybox) read 1.2 MiB end-to-end — busybox-init's
+/// the cache. Without this, every stat() on a large /bin binary
+/// read it end-to-end — the shell's
 /// PATH search hits dozens of these per command, and ARM boot tipped
 /// over a timing edge that looked like a kernel hang at "keymap loaded".
 struct Ext4FileInode {
@@ -379,7 +379,7 @@ impl vfs::Inode for Ext4FileInode {
         // Read i_mode (low 12 bits = perms) from the ext4 inode. Falls
         // back to 0o755 if the lookup fails so executables stay
         // executable — sys_statx defaults to 0o600 (no x bit) when
-        // perm() returns None, breaking ARM busybox's PATH search.
+        // perm() returns None, breaking the shell's PATH search on ARM.
         let p = MOUNT_PTR.load(Ordering::Acquire);
         if p.is_null() { return Some(0o755); }
         // SAFETY: MOUNT_PTR published once at boot; reads stable for kernel lifetime.
@@ -391,8 +391,8 @@ impl vfs::Inode for Ext4FileInode {
     }
     fn read(&self, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         // Load on first access. Without this, every stat() of a
-        // hardlinked busybox applet under /bin would not pay the
-        // 1.2 MiB scan, but every real read still does.
+        // large binary under /bin would not pay the
+        // full-file scan, but every real read still does.
         let bytes_owned = self.ensure_bytes();
         let g = self.bytes.lock();
         let slice: &[u8] = match g.as_ref() {

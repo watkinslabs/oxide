@@ -26,7 +26,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     const TIOCGSID:   u64 = 0x5429;
     // Modem-control bits (DTR/RTS/CD/RI/DSR/CTS). For our v1 console
     // alias these are nominal — report all signals asserted on GET,
-    // accept and ignore SETs / BISs / BICs. busybox getty issues a
+    // accept and ignore SETs / BISs / BICs. getty issues a
     // TIOCMGET to confirm carrier-detect before the login banner.
     const TIOCMGET:   u64 = 0x5415;
     const TIOCMBIS:   u64 = 0x5416;
@@ -242,7 +242,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 // terminal, the foreground process group is set to
                 // the leader's process group. Without this,
                 // tcgetpgrp(slave) returns 0 on the very first call
-                // and any job-control shell (busybox sh, bash, dash)
+                // and any job-control shell (bash, dash)
                 // kills itself with SIGTTIN before reading any input.
                 use core::sync::atomic::Ordering;
                 let pgid = cur.pgid.load(Ordering::Acquire);
@@ -260,7 +260,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             // leader acquires a VT as its controlling terminal,
             // the foreground process group MUST be seeded with
             // the leader's pgrp. Without this, tcgetpgrp(0) on
-            // the freshly-controlled VT returns 0, busybox sh's
+            // the freshly-controlled VT returns 0, the shell's
             // job-control logic decides it's running in the
             // background, every read of stdin trips SIGTTIN,
             // and the shell stops itself the moment login's
@@ -271,7 +271,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             0
         }
         TIOCGSID => {
-            // B40: busybox getty calls `tcgetsid(STDIN_FILENO)` to
+            // B40: getty calls `tcgetsid(STDIN_FILENO)` to
             // decide whether to TIOCSCTTY-steal. Linux returns the
             // session id that owns the tty, or ENOTTY when none does.
             // We track sid per VT (set on TIOCSCTTY); pty pairs track
@@ -292,7 +292,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         TIOCNOTTY => {
             // B40: detach controlling tty for the calling session.
             // v1 clears the per-VT sid slot when the calling task
-            // matches; ignored otherwise. busybox getty issues this
+            // matches; ignored otherwise. getty issues this
             // to drop inherited ctty before its TIOCSCTTY-steal so a
             // real session leader doesn't already own the line.
             if pty_pair.is_some() { return 0; }

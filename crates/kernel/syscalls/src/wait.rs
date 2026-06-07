@@ -41,7 +41,7 @@ pub fn sys_wait4(args: &SyscallArgs) -> i64 {
             // F237: if no more zombies for this parent, clear the
             // SIGCHLD pending bit. Without this, the bit stays set
             // and signal_dispatch fires a SIGCHLD handler AFTER
-            // wait4 already reaped — busybox-ash's handler then
+            // wait4 already reaped — the shell's handler then
             // calls waitpid(-1, WNOHANG) which returns -1/ECHILD
             // and corrupts the shell's $? to 255.
             if !sched::live::has_zombies(parent_tid) {

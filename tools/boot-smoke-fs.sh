@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Post-login filesystem sweep. Reuses the B18 console-login path,
-# then drives the busybox shell through a curated ls/cat/readlink
+# then drives the bash shell through a curated ls/cat/readlink
 # sweep of /proc, /dev, /sys in lockstep: one command at a time,
 # each followed by `echo ===DONE_<tag>===`. The harness waits for
 # that exact marker before sending the next command, so any hang

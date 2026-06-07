@@ -76,7 +76,7 @@ non-overlapping phases land in parallel once their deps are green.
 | 2 | VMM + MMU bring-up + per-CPU areas + TLB shootdown | done | `11`,`20`,`21` |
 | 3 | Slab + GlobalAlloc | done | `12` |
 | 4 | Sched + ctxsw + preempt + SMP | done (UP; SMP cooperative-with-timer-wake) | `13`,`14` |
-| 5 | Syscalls + ELF loader + init + busybox-sh | done — 134 syscall handlers, kernel-completeness sweep PR-A..U | `15`,`31`,`29` |
+| 5 | Syscalls + ELF loader + init + bash | done — 134 syscall handlers, kernel-completeness sweep PR-A..U | `15`,`31`,`29` |
 | 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | done | `16`,`19` |
 | 7a | Block layer + page cache | done | `17` |
 | 7b | ext4 RW + JBD2 (depth ≤2; small files) | done | `17` |
@@ -118,7 +118,7 @@ non-overlapping phases land in parallel once their deps are green.
 ### 3.1 Status snapshot
 
 **Done:** phases 0-13 fully landed. Boot + login + interactive
-busybox green on both arches.
+bash green on both arches.
 **Open:** phases 14-41. No phase is "deferred"; ordering is
 dependency-driven only.
 
@@ -270,7 +270,7 @@ See `MANIFEST.md`.
 ## 17 Changelog
 
 - 2026-05-14: v1/v2/v2.x framing deleted wholesale. Single phase ladder; every Linux subsystem in scope. `docs/00-v2.md` and `docs/v2/` deleted. `§9 non-goals` collapsed to two architectural exclusions (32-bit, big-endian). `§15` re-framed as a generic release criterion that fires per tag, not a one-shot `v1.0` gate.
-- 2026-05-08: `43§2` acceptance shrunk to busybox-only (R05).
+- 2026-05-08: `43§2` acceptance shrunk to a minimal userspace set (R05).
 - 2026-05-06: phase ladder gains explicit rows 10/11/12 for modules loader, PCI enumeration, virtio common infra. Spun out from "phase 9 + driver work backing phase 8" because each turned out to be a multi-PR slug deserving its own gate.
 - 2026-05-06: phases 13–17 added covering the Linux-userspace integration arc — dynamic linker, libc/NSS/PAM, system manager, RPM toolchain, agetty/login flow. Each phase is a usable milestone (e.g. phase 13 alone unlocks running unmodified Fedora binaries with a small set of .so files staged).
 

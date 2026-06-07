@@ -510,7 +510,7 @@ impl Mount {
     /// Look `name` up in the directory. Walks all data blocks
     /// covered by the inode's `i_size`, not just the first —
     /// rootfs `/bin` overflows one 1 KiB block once we stage
-    /// more than ~25 hardlinks alongside the busybox applets.
+    /// more than ~25 hardlinks alongside the coreutils binaries.
     /// # C: O(N_entries)
     pub fn lookup_in_dir(&self, dir_inode: &Inode, name: &[u8]) -> Result<u32, MountError> {
         if !dir_inode.is_dir() { return Err(MountError::NotDir); }

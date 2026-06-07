@@ -46,7 +46,7 @@ oxide2/
 │   ├── init/                     # PID 1
 │   ├── libc/musl/                # vendored fork
 │   ├── dynlink/                  # ld-oxide
-│   ├── busybox-vendored/ or coreutils-{ls,cat,...}/
+│   ├── coreutils-{ls,cat,...}/ + bash/ + util-linux/
 │   └── apps/                     # acceptance binaries (curl, redis built against our libc)
 ├── tools/
 │   ├── xtask/
@@ -84,7 +84,7 @@ xtask sign-cert <key.pem>             # generate `OXIDE_TRUSTED_KEYS` for module
 Initramfs structure:
 ```
 /init                # PID 1 binary
-/bin/{busybox,sh}    # static or dynlinked
+/bin/{bash,sh}       # sh→bash; static or dynlinked
 /lib/ld-oxide.so.1
 /lib/libc.so
 /etc/{passwd,shadow,group,hosts,resolv.conf,init.conf,fstab,os-release}
@@ -94,7 +94,7 @@ Initramfs structure:
 ```
 
 Built by `tools/img-builder/`:
-- `cargo build --release -p init -p ld-oxide -p libc-shim -p busybox`.
+- `cargo build --release -p init -p ld-oxide -p libc-shim`; cross-build bash + coreutils + util-linux into the rootfs.
 - Strip binaries.
 - Compose initramfs cpio with deterministic timestamps (SOURCE_DATE_EPOCH).
 - zstd-compress.

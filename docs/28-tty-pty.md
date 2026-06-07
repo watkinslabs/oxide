@@ -74,7 +74,7 @@ Hangup: `vhangup`/loss-of-carrier → SIGHUP to session leader and fg pgrp; tty 
 - Canonical mode: send "hello\b\b\b\bworld\n"; reader sees `held world\n` after edits.
 - Ctrl-C: write 0x03 to PTY master; SIGINT delivered to slave's pgrp.
 - Background read: bg pgrp reads → SIGTTIN; resumes with SIGCONT.
-- `bash` interactive in QEMU+busybox image: history, line-editing, signals all work.
+- `bash` interactive in QEMU rootfs image: history, line-editing, signals all work.
 - openssh-server (when integrated v1): `ssh user@host` returns interactive shell.
 - Coverage ≥85%.
 
