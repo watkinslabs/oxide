@@ -12,7 +12,13 @@ use hal::pt_walker::{self, PtWalker, WalkErr};
 
 const VALID:    u64 = 1 << 0;
 const TABLE:    u64 = 1 << 1;       // also "PAGE" at L3
-const ATTR1:    u64 = 1 << 3;       // AttrIdx[1]
+// AttrIndx is descriptor bits[4:2], so AttrIdx 1 = bit 2 (1<<2). The old
+// value (1<<3) is bit 3 = AttrIdx **2**, which only happened to work under
+// Limine's MAIR=0xff (Normal@0, Device@2). Self-boot MAIR=0xFF04 puts Normal
+// at AttrIdx1 (=0xFF) and Device at AttrIdx0 (=0x04); selecting AttrIdx2 there
+// (=0x00) is Device too, so every page came out Device → EL0 unaligned reads
+// took a DFSC=0x21 alignment abort. Use the real AttrIdx1 bit.
+const ATTR1:    u64 = 1 << 2;       // AttrIdx 1 = Normal-WB under MAIR=0xFF04
 const SH0:      u64 = 1 << 8;
 const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
@@ -117,15 +123,24 @@ impl PtWalker for PtWalkerArm {
     }
 
     fn pack_device_leaf(pa: u64) -> u64 {
-        // VALID|PAGE, AttrIdx=1, Inner-Shareable, AF, PXN+UXN.
-        (pa & Self::PHYS_MASK) | VALID | TABLE | ATTR1 | SH0 | SH1 | AF | PXN | UXN
+        // Device MMIO. Self-boot MAIR_EL1=0xFF04: Attr0=Device-nGnRE,
+        // Attr1=Normal-WB → Device uses AttrIdx0 (no ATTR1 bit). The old
+        // Limine MAIR (0xff) had Device at AttrIdx1; Limine is gone, so
+        // this matches the self-boot asm page tables (Device blocks =
+        // 0x0401 → AttrIdx0). Mapping device as AttrIdx1 here = Normal-WB
+        // (wrong; only TCG-tolerated).
+        (pa & Self::PHYS_MASK) | VALID | TABLE | SH0 | SH1 | AF | PXN | UXN
     }
 
     fn pack_4k_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
         // L3 page leaf: VALID|TABLE always; AF set so the CPU
-        // doesn't trap on first access. Inner-Shareable. AttrIdx
-        // picks the MAIR_EL1 byte: byte 0 = Normal WB-cacheable,
-        // byte 1 = Device-nGnRnE. NO_CACHE → Device (AttrIdx=1).
+        // doesn't trap on first access. Inner-Shareable. AttrIdx picks
+        // the MAIR_EL1 byte. Self-boot MAIR=0xFF04: Attr0=Device-nGnRE,
+        // Attr1=Normal-WB. So cached(Normal) → AttrIdx1 (ATTR1 set),
+        // NO_CACHE(Device) → AttrIdx0. (Limine's 0xff had these swapped;
+        // Limine is gone.) Mapping Normal as AttrIdx0 = Device made every
+        // demand-faulted user page Device → unaligned reads took a DFSC
+        // 0x21 alignment abort (the arm -smp 2 crash).
         let mut e = (pa & Self::PHYS_MASK) | VALID | TABLE | AF | SH0 | SH1;
         // AP[2:1] in bits 6:7. AP=0b00 = EL1 RW. AP=0b01 = EL0/EL1 RW.
         // AP=0b10 = EL1 RO. AP=0b11 = EL0/EL1 RO.
@@ -138,7 +153,7 @@ impl PtWalker for PtWalkerArm {
             (true,  false) => 0b11, // user RO
         };
         e |= (ap as u64) << 6;
-        if flags.contains(hal::PageFlags::NO_CACHE) { e |= ATTR1; }
+        if !flags.contains(hal::PageFlags::NO_CACHE) { e |= ATTR1; }
         // Execute permission. UXN/PXN per `21§5`. Layout per
         // PageFlags::USER:
         //   USER=1, EXEC=1: user-executable.   PXN=1, UXN=0.
