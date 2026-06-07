@@ -13,16 +13,19 @@ Limine fully removed (x86 GRUB-MB2, arm GRUB EFI-stub self-boot).
   GATED OFF (`bring_up_aps_x86` returns 0) pending 2 fixes (see fn): (1) reserve
   the low trampoline page from the PMM; (2) AP scheduling integration (runqueue
   +timer+sti wedges boot). Flip `if true { return 0; }` to resume.
-- **Distro /etc profiles + skel** (#1569): shells, hosts, environment, motd,
-  bash.bashrc, inputrc, profile.d/*.sh (sourced by /etc/profile), skel dotfiles
-  + seeded root/alice. Verified live (alice login): motd, prompt, aliases, PATH,
-  bracketed-paste. (rootfs_etc.rs split keeps rootfs.rs ≤1000.)
+- **Distro /etc profiles + skel** (#1569, locale #1571): shells, hosts,
+  environment, motd, bash.bashrc (+ LANG=C.UTF-8), inputrc, profile.d/*.sh,
+  skel dotfiles + seeded root/alice. Verified live (alice login): motd, prompt,
+  aliases, PATH, $LANG, bracketed-paste. (rootfs_etc.rs split keeps rootfs.rs
+  ≤1000. NOTE: after editing rootfs, re-run `xtask grub --build-only` to
+  re-embed it in the ISO — the .img alone isn't what boots.)
 
 ## Open distro/SMP follow-ups
 - **Login shell ≠ login shell:** getty/util-linux-login launches the user shell
   as interactive-NON-login → sources ~/.bashrc but NOT /etc/profile, so
-  /etc/profile.d env (LANG etc) doesn't reach the shell. Fix login to exec a
-  login shell (argv[0]="-bash"), or set LANG in /etc/bash.bashrc as a stopgap.
+  /etc/profile.d env doesn't reach the shell. Worked around for LANG via
+  /etc/bash.bashrc (#1571). Proper fix: make login exec a login shell
+  (argv[0]="-bash") so /etc/profile + profile.d apply to login shells.
 - x86 SMP integration (the 2 gated fixes above).
 - More distro standard items as desired.
 
