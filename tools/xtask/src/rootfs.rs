@@ -430,6 +430,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("hyperfine", "hyperfine", "/usr/bin/hyperfine"),
         ("dust", "dust", "/usr/bin/dust"),
         ("sd", "sd", "/usr/bin/sd"),
+        ("bottom", "btm", "/usr/bin/btm"),
+        ("procs", "procs", "/usr/bin/procs"),
+        ("zoxide", "zoxide", "/usr/bin/zoxide"),
+        ("ncdu", "ncdu", "/usr/bin/ncdu"),
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
