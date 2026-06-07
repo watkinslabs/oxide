@@ -32,6 +32,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
 #[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam;
 #[path = "314_sched_setattr.rs"]  pub mod s314_sched_setattr;
+#[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
@@ -903,6 +904,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_RSEQ_SLICE_YIELD => s471_rseq_slice_yield::sys_rseq_slice_yield(&args),
         syscall::nrs::NR_SCHED_SETPARAM   => s142_sched_setparam::sys_sched_setparam(&args),
         syscall::nrs::NR_SCHED_SETATTR    => s314_sched_setattr::sys_sched_setattr(&args),
+        syscall::nrs::NR_OPEN_TREE_ATTR   => s467_open_tree_attr::sys_open_tree_attr(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
