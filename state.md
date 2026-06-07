@@ -10,9 +10,9 @@
 - **rootfs is a 1 GiB virtio-blk disk** (rootfs.rs count=1024) — grows freely, zero
   kernel cost (read on demand). home-<arch>.img is a separate /home disk.
 - **x86_64-musl-g++ C++ toolchain** (fetch-cross.sh; gitignored) — enables C++ apps.
-- **35 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
+- **38 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
   zoxide ncdu htop tree dos2unix curl wget fzf tmux lazygit yq delta choose hexyl rsync
-  nano tokei grex xh yazi(+ya) dialog btop dua.
+  nano tokei grex xh yazi(+ya) dialog btop dua gron pv entr.
 
 ## KEY OPEN ITEM — TUI startup-hang gap (4 tools built+de-staged)
 starship, glow, micro, duf are BUILT (recipes in tools/fetch-*.sh + vendor/*/build.sh,
@@ -57,7 +57,7 @@ Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in ev
   GitHub idle-closes it so the push dies AFTER the hook passes ("Connection closed by
   remote host"). If the smoke PASSED but the branch isn't on origin, re-push the SAME
   commit with `SKIP_SMOKE=1` (already verified). Seen on B63.
-- Branch counters: max F=407, B=63. Author Chris Watkins. CI = compile-check (stub-blobs;
+- Branch counters: max F=408, B=64. Author Chris Watkins. CI = compile-check (stub-blobs;
   no rootfs blob needed since the embed is gone).
 
 ## Resume
