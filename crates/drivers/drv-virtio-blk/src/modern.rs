@@ -366,8 +366,14 @@ pub fn init_blk(init: BlkInit) -> u32 {
     // separate identity label, accessible via `BlkState::serial()`.
     let disk_index = NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed);
     let name = disk_name(disk_index);
+    // Capture the trimmed serial as a String BEFORE coercing to
+    // `Arc<dyn BlockDevice>` (which erases `BlkState::serial()`), so the
+    // registry can bind named volumes (oxide-root/oxide-home) by serial.
+    let serial_len = state.serial.iter().position(|&b| b == 0).unwrap_or(state.serial.len());
+    let serial_str = String::from_utf8_lossy(&state.serial[..serial_len]).into_owned();
     let state: Arc<dyn BlockDevice> = Arc::new(state);
-    let idx = block::registry::register(&name, state);
+    let serial_opt = if serial_str.is_empty() { None } else { Some(serial_str.as_str()) };
+    let idx = block::registry::register_with_serial(&name, serial_opt, state);
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-blk-modern ");

@@ -485,16 +485,31 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Spawns the user task with mm=Arc<AddressSpace>, schedule()'s
     // into it via the IRQ-tail iretq path. Diverges at the ud2
     // landmark after sys_exit's sysretq.
-    // Mount the embedded ext4 root fs (P6-07). Linux's
-    // CONFIG_EXT4_FS=y equivalent: real driver from crates/ext4
-    // built into the kernel binary. No-op if already mounted.
-    // SAFETY: post-PMM/allocator init; no other CPU has yet observed MOUNT_PTR.
+    // PCI bus enumeration FIRST — both arches via `pci::enumerate`;
+    // per-arch `ConfigSpaceReader` differs (x86 CF8/CFC, aarch64 ECAM
+    // MMIO). This brings up virtio-blk (drv-virtio-blk registers each
+    // device into `block::registry`, tagged with its GET_ID serial), so
+    // the ext4 root mount below can bind the real `oxide-root` disk. The
+    // root mount used to run ~100 lines before enumeration and consumed
+    // a 256 MiB embedded blob; now the disk comes from virtio-blk.
+    #[cfg(target_os = "oxide-kernel")]
+    { crate::pci_boot::enumerate_and_log(); }
+
+    // Mount the ext4 root fs from the virtio-blk disk (serial
+    // `oxide-root`). Linux's CONFIG_EXT4_FS=y equivalent: real driver
+    // from crates/ext4 built into the kernel, backed by a real disk.
+    // No-op if already mounted.
+    // SAFETY: post-PMM/allocator init; PCI enumeration above registered
+    // the virtio-blk devices; no other CPU has yet observed ROOT.
     #[cfg(target_os = "oxide-kernel")]
     unsafe {
         // Stand-in cmdline until real bootloader parsing lands. No-op
         // if a Limine/DTB parser has already populated the slot.
         crate::boot_cmdline::install_arch_default();
-        ext4::rootfs::init();
+        let root_dev = block::registry::by_serial("oxide-root")
+            .expect("root disk (virtio-blk serial=oxide-root) not found");
+        ext4::rootfs::init_from_dev(root_dev)
+            .expect("ext4 root mount (oxide-root) failed to open");
         net::sock::init();
         // F150: install the iface-primary-IP hook so socket_sendto can
         // pick the right outbound src IP for routed (non-loopback) dst.
@@ -519,6 +534,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         // routes to `/dev/shm/<name>`) hits DevfsFs and ENOENTs.
         let _ = vfs::mount::register("/dev/shm", alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
         let _ = vfs::mount::register("/run",     alloc::sync::Arc::new(fs::tmpfs::TmpfsFs));
+        // /home from its own virtio-blk disk (serial `oxide-home`), as a
+        // self-contained `Ext4Mount` (own device/cache/orphan set, never
+        // aliasing the root). Graceful: a missing home disk leaves /home
+        // resolving through the root fs rather than panicking, since it's
+        // not required for login.
+        if let Some(home_dev) = block::registry::by_serial("oxide-home") {
+            if let Ok(home_fs) = ext4::rootfs::Ext4Mount::open(home_dev) {
+                let _ = vfs::mount::register("/home", home_fs);
+            }
+        }
         // cgroup v2 self-test runs here — after /proc + /sys/fs/cgroup
         // are in the mount table so `/proc/self/cgroup` resolves.
         debug_cgroup! { cgroup::selftest::run(); }
@@ -540,7 +565,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
             }
             // P7b-01 RW smoke: overwrite the start of /hello.txt,
             // read it back, verify the write hit the disk through
-            // ext4's extent walker + the writable ImageDisk backing.
+            // ext4's extent walker + the virtio-blk write path.
             if ext4::rootfs::write_file(b"/hello.txt", b"WRITTEN-BY-OXIDE\n").is_some() {
                 if let Some(bytes) = ext4::rootfs::read_file(b"/hello.txt") {
                     klog::write_raw(b"[INFO]  ext4 RW smoke /hello.txt = ");
@@ -595,10 +620,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         }
     }
 
-    // PCI bus enumeration — both arches via `pci::enumerate`; per-arch
-    // `ConfigSpaceReader` differs (x86 CF8/CFC, aarch64 ECAM MMIO).
-    #[cfg(target_os = "oxide-kernel")]
-    { crate::pci_boot::enumerate_and_log(); }
+    // (PCI enumeration moved earlier — before the ext4 root mount —
+    // so virtio-blk is up to back the root disk.)
 
     // virtio-gpu scanout is up after pci enumerate. Wire the
     // kernel-side fbcon driver so every klog event also lands on

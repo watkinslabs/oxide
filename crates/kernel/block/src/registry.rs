@@ -13,10 +13,15 @@ use crate::blockdev::BlockDevice;
 
 /// One registered block device. Holds the driver impl + a stable
 /// name and a 1-based disk index used by /dev/disk/by-* and the
-/// gendisk-equivalent in future PRs.
+/// gendisk-equivalent in future PRs. `serial` is the device identity
+/// label (`-device …,serial=oxide-root`) read by the driver via
+/// GET_ID; used to bind a named volume (root/home) to its mount
+/// regardless of probe-order name (vda/vdb/…). `None` for devices
+/// with no serial (e.g. the test/loop disks).
 pub struct Disk {
     pub name: String,
     pub index: u32,
+    pub serial: Option<String>,
     pub dev: Arc<dyn BlockDevice>,
 }
 
@@ -27,6 +32,14 @@ static TABLE: Spinlock<Vec<Arc<Disk>>, DevicesClass> = Spinlock::new(Vec::new())
 /// present (driver hot-replug not supported in v1).
 /// # C: O(N_disks)
 pub fn register(name: &str, dev: Arc<dyn BlockDevice>) -> u32 {
+    register_with_serial(name, None, dev)
+}
+
+/// Register a block device with an identity `serial` (`Some("oxide-root")`
+/// etc.). Empty/`None` serial = no by-serial binding. Same idempotency
+/// on `name` as `register`.
+/// # C: O(N_disks)
+pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn BlockDevice>) -> u32 {
     let mut t = TABLE.lock();
     if let Some(d) = t.iter().find(|d| d.name == name) {
         return d.index;
@@ -35,6 +48,7 @@ pub fn register(name: &str, dev: Arc<dyn BlockDevice>) -> u32 {
     t.push(Arc::new(Disk {
         name: name.to_string(),
         index,
+        serial: serial.filter(|s| !s.is_empty()).map(|s| s.to_string()),
         dev,
     }));
     index
@@ -51,6 +65,18 @@ pub fn by_name(name: &str) -> Option<Arc<Disk>> {
 pub fn by_index(index: u32) -> Option<Arc<Disk>> {
     let t = TABLE.lock();
     t.iter().find(|d| d.index == index).cloned()
+}
+
+/// Find a registered device by its identity `serial` (e.g. `"oxide-root"`).
+/// Used by the boot path to bind the named root/home volume to its mount
+/// independent of probe-order naming (vda/vdb/…).
+/// # C: O(N_disks)
+pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
+    TABLE
+        .lock()
+        .iter()
+        .find(|d| d.serial.as_deref() == Some(serial))
+        .map(|d| d.dev.clone())
 }
 
 /// Snapshot the disk table for /proc/partitions, /sys/block, etc.

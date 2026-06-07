@@ -10,12 +10,10 @@
 // root, so existing callers (smoke/elf.rs, kmain) need no edits during
 // the transition.
 
-mod disk;
 mod state;
 mod inode;
 mod ops;
 
-pub use disk::ImageDisk;
 pub use state::RootfsState;
 pub use inode::{Ext4FileInode, Ext4StatInode, EXT4_INO_MARK, EXT4_INO_MASK,
     ext4_wrap_ino, is_ext4_ino, ext4_unwrap_ino};
@@ -28,17 +26,6 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(target_os = "oxide-kernel")]
 use block::BlockDevice;
 use block::types::InodeId;
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs-x86_64.img");
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs-aarch64.img");
-#[cfg(all(target_os = "oxide-kernel", not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
-const ROOTFS: &'static [u8] = include_bytes!("../../../../../kernel/blobs/rootfs.img");
-
-/// Backing block size for the in-kernel virtual disk.
-#[cfg(target_os = "oxide-kernel")]
-const BLOCK_SIZE: u32 = 512;
 
 /// Published root `RootfsState` (leaked `&'static`, filled by
 /// `init`/`set_test_mount`). The free-fn API + `Ext4RootfsFs` resolve
@@ -70,22 +57,21 @@ fn publish_root(st: Arc<RootfsState>) {
     }
 }
 
-/// Initialise the embedded ext4 root mount. Idempotent.
+/// Mount `dev` as the ext4 ROOT filesystem + publish it for the free-fn
+/// API. Idempotent (first ROOT publisher wins). Returns the opened
+/// `RootfsState` so the caller can also build the VFS FileSystem object.
+/// `Err` if the ext4 superblock fails to open.
 ///
 /// # SAFETY: caller is the boot path post-allocator-up; no other CPU
 /// has yet seen ROOT.
 /// # C: O(N_groups + 1024) one-shot
 #[cfg(target_os = "oxide-kernel")]
-pub unsafe fn init() {
-    if root().is_some() { return; }
-    let disk = ImageDisk::from_static(ROOTFS, BLOCK_SIZE) as Arc<dyn BlockDevice>;
-    let _idx = block::registry::register("rootfs", disk.clone());
-    let st = match RootfsState::open(disk) {
-        Ok(s)  => s,
-        Err(_) => return,
-    };
+pub unsafe fn init_from_dev(dev: Arc<dyn BlockDevice>) -> Result<(), block::types::BlockError> {
+    if root().is_some() { return Ok(()); }
+    let st = RootfsState::open(dev)?;
     publish_root(st);
     vfs::file::set_close_hook(close_hook_free_orphan);
+    Ok(())
 }
 
 /// Test-only: publish a `Mount` (fixture image) as the ROOT mount, so
