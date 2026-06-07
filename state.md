@@ -1,9 +1,30 @@
 # Session hand-off
 
 On **main**, HEALTHY: both arches boot → systemd → `oxide login:` → shell.
-**Limine is now fully removed from BOTH arches** (#1549, F378): x86 = GRUB
-multiboot2, arm = GRUB EFI-stub `linux` (arm64 Image + PE header, self-boot
-MMU trampoline). arm verified to `oxide login:` in 48s (TCG, SMP=1).
+Limine fully removed (x86 GRUB-MB2, arm GRUB EFI-stub self-boot).
+
+## This session (all merged)
+- **arm SMP=2 FIXED** (#1564): vmm.rs `ATTR1=1<<3`→`1<<2` (AttrIdx bug — user
+  pages were mapped Device under self-boot MAIR=0xFF04 → unaligned musl read
+  alignment-aborted → PID1 SIGSEGV). arm -smp 1 AND 2 → login. Gate now -smp 2
+  both arches (#1566).
+- **x86 AP INIT/SIPI bring-up** (#1567): real-mode→long-mode trampoline
+  (PAE+LME+**NXE**), MADT INIT/SIPI; AP reaches online (verified online_count→2).
+  GATED OFF (`bring_up_aps_x86` returns 0) pending 2 fixes (see fn): (1) reserve
+  the low trampoline page from the PMM; (2) AP scheduling integration (runqueue
+  +timer+sti wedges boot). Flip `if true { return 0; }` to resume.
+- **Distro /etc profiles + skel** (#1569): shells, hosts, environment, motd,
+  bash.bashrc, inputrc, profile.d/*.sh (sourced by /etc/profile), skel dotfiles
+  + seeded root/alice. Verified live (alice login): motd, prompt, aliases, PATH,
+  bracketed-paste. (rootfs_etc.rs split keeps rootfs.rs ≤1000.)
+
+## Open distro/SMP follow-ups
+- **Login shell ≠ login shell:** getty/util-linux-login launches the user shell
+  as interactive-NON-login → sources ~/.bashrc but NOT /etc/profile, so
+  /etc/profile.d env (LANG etc) doesn't reach the shell. Fix login to exec a
+  login shell (argv[0]="-bash"), or set LANG in /etc/bash.bashrc as a stopgap.
+- x86 SMP integration (the 2 gated fixes above).
+- More distro standard items as desired.
 
 ## CRITICAL environment rule
 Any command containing **`pkill` / `rm -rf` is permission-DENIED** in the
