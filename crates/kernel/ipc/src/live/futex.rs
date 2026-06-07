@@ -170,6 +170,44 @@ fn wake_key(key: Key, n_target: usize) -> usize {
     woken.len()
 }
 
+/// Requeue (slot 456): wake up to `nr_wake` waiters on `src_uaddr`, then move
+/// up to `nr_requeue` of the REMAINING `src` waiters onto `dst_uaddr` (re-key,
+/// no wake). Returns the number of waiters woken (Linux futex-requeue
+/// semantics). Single-key waiters only — waitv groups are left untouched.
+/// # C: O(W)
+pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: usize, nr_requeue: usize) -> i64 {
+    let src = match current_key(src_uaddr) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
+    let dst = match current_key(dst_uaddr) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
+    let mut woken: Vec<Arc<Task>> = Vec::new();
+    {
+        let mut w = WAITERS.lock();
+        // Phase 1: collect up to nr_wake src waiters to wake.
+        let mut i = 0;
+        while i < w.len() && woken.len() < nr_wake {
+            if w[i].key == src { woken.push(w.swap_remove(i).task); } else { i += 1; }
+        }
+        // Phase 2: re-key up to nr_requeue remaining src waiters → dst.
+        let mut moved = 0;
+        for waiter in w.iter_mut() {
+            if moved >= nr_requeue { break; }
+            if waiter.key == src { waiter.key = dst; moved += 1; }
+        }
+    }
+    if !woken.is_empty() {
+        if let Some(rq) = sched::live::global() {
+            let mut inner = rq.inner.lock();
+            for t in &woken {
+                t.set_state(TaskState::Runnable);
+                t.lift_vruntime(inner.cfs.min_vruntime());
+                inner.enqueue(t.clone());
+            }
+            rq.nr_running.store(inner.nr_running(), Ordering::Release);
+            sched::live::preempt::set_need_resched();
+        }
+    }
+    woken.len() as i64
+}
+
 /// Multi-futex wait: park current task on N keys; resume when ANY
 /// of them is woken (returns the index that woke). Pre-flight
 /// check: if any `*uaddr != val` at entry, return -EAGAIN
