@@ -1,70 +1,145 @@
 # Tasks
 
-Snapshot at session exit. Primary goals (vendor arm builds, arm lockstep, distro
-progress) all DONE. See state.md for full hand-off + the critical pkill/rm-rf
-rule + boot-verify recipes.
+Living work list. See state.md for the session hand-off + boot-verify recipes.
 
-## Done this session (merged)
-- [x] GOAL: all vendor arm cross-builds work — 45/46 both arches (#1541/#1542).
-      systemd not rebuilt (meson resource-killed) but unchanged + prebuilt works.
-- [x] GOAL: arm at par with x86 — boots→systemd→login→shell, uname=aarch64.
-- [x] Boot PID 1 via real execve path (B54) — systemd as PID1, no smoke/global-AS.
-- [x] Delete synthetic bringup smoke + global-AS fallback.
-- [x] Extract syscalls into own crate (kernel = glue).
-- [x] Phase 14 (VMM advanced) closed (#1543) — mremap/mprotect/madvise/file-mmap.
-- [x] BUG F: AF_UNIX SCM_CREDENTIALS over socketpairs (#1544) — systemd handoff.
-- [x] net host-buildability restored (#1545) — 171 net oracle tests unlocked.
-- [x] BUG D/E (find/ls *at dirfd; /dev/console fchown) — prior sessions.
+## ACTIVE — user-reported blockers (top priority)
+- [ ] **BUG A — bash echo on serial**: typed characters do NOT display while
+      typing in bash; they appear only when readline redisplays the whole line
+      (e.g. on TAB completion). So per-char echo is lost but full-line writes
+      show. Hypothesis: serial TX single-byte flush, or readline raw-mode echo
+      vs the tty output path. Affects the serial workflow the user is forced to
+      use. Files: crates/kernel/tty/src/live.rs, the serial driver TX path,
+      termios ECHO/OPOST. (Was parked as "stale BUG A"; now confirmed live.)
+- [ ] **Console/GPU display dead**: the graphical console shows NOTHING — no
+      login banner, no typed input; the user must do everything over serial.
+      Likely virtio-gpu scanout + fbcon not rendering, AND virtio-keyboard input
+      not wired to the console tty. Needs: virtio-gpu 2D scanout + framebuffer
+      console glyph rendering + virtio-input(keyboard)→tty. Big driver task.
 
-## Done (later sessions)
-- [x] #8 Limine removal (arm) — DONE #1549 (F378). arm boots GRUB EFI-stub
-      `linux` → arm64 Image + PE header + self-boot MMU trampoline → login.
-      Limine gone on both arches.
-- [x] xtask de-Limine — DONE #1551 (C80). Dropped cmd_qemu + Limine launchers;
-      `xtask image`=`grub --build-only`; accept.py/run-smokes/mcp → GRUB ISO.
-- [x] arm PSCI AP bring-up — DONE #1552 (F379). PSCI CPU_ON + DTB/MADT MPIDR
-      enumeration; AP boots → `[ap] online aff=1`. SMP=1 default (stable).
-- [x] per-CPU preempt state + IRQ-exit ctxsw staging — DONE #1554 (F380). Was
-      a global wrong-task-switch race (two CPUs clobbering ctxsw staging /
-      need_resched / preempt_count). Now per-CPU (gs:0 / TPIDR_EL1). UP-safe.
+## ACTIVE — login + syscalls (user-requested)
+- [ ] **Login/profile done properly, Linux-style**: make login exec a LOGIN
+      shell (argv[0]="-bash") so /etc/profile + /etc/profile.d/*.sh apply to
+      login sessions (currently only ~/.bashrc runs — LANG was worked around in
+      bash.bashrc). Wire it through getty/agetty/login. Result: a login session
+      has the full, correct environment exactly like a real distro. Any missing
+      piece on the KERNEL side is built Linux-style; the login/profile USERSPACE
+      (login, agetty, PAM, bash) stays from real vendor sources — no custom shims.
+- [ ] **Syscall audit + complete coverage**: drive off `syscal_anal.md` (the
+      existing syscall analysis) + build a coverage checker that enumerates the
+      implemented dispatch (`syscall::nrs` + per-arch dispatch) vs the full Linux
+      syscall set, flagging every slot that is missing, `ENOSYS`/stub/strawman,
+      or semantically wrong. Then per docs/15 implement or fix EVERY flagged
+      syscall to full Linux semantics (only the 17 OBSOLETE numbers keep ENOSYS).
+- [ ] **One syscall = one file** (docs/53 §0 spec): split the grouped handler
+      files (`crates/kernel/syscalls/src/{fs,net,…}.rs`) into per-syscall
+      `<NNN>_<name>.rs` files (x86_64 number + Linux name). Move existing; create
+      for missing. FILES, not crates. Fold into the syscall audit work.
+- [ ] **Drop "Tier 1/2/3" vocabulary** from docs/53 + CLAUDE.md (user: "there are
+      no tiers"). Keep the real structure (ABI types crate / subsystem work fns /
+      per-syscall handler files), just remove the tier labels/jargon.
 
-## Open
-- [ ] arm SMP=2 boot-stability — DEEP, REDIRECTED. 3 correct SMP fixes landed:
-      per-CPU preempt (#1554), per-CPU SVC frame (#1556), on_rq dedup guard
-      (#1557). NONE unblock SMP=2. **KEY FINDING (this session): SMP=2 wedges
-      even with a FULLY-UP kernel** — bisected by (a) ap_init no-op, (b)
-      bring_up_aps_psci no-op, (c) capping cpu enumeration to 1: all still wedge
-      at qemu `-smp 2`; `-accel tcg,thread=multi` also wedges; `-smp 1` boots.
-      So it is NOT the AP, NOT the scheduler, NOT cpu::count(), NOT TCG
-      round-robin timing. It is something a UP kernel does differently when the
-      GIC/firmware present a 2nd vCPU. Symptom: PID1(systemd) runs ~6 syscalls
-      (last = readlinkat n=6), then dies — `[noenq tid=c0de0002 st=3]` = Zombie
-      (SIGSEGV'd), wedge is just init-dead aftermath. The kill is an EL0
-      ALIGNMENT data abort (esr=0x92000021 EC=0x24 DFSC=0x21, far=0x10004322),
-      but sp_el0 at the fault is GOOD (0x7fff…) and the readlinkat dispatch-exit
-      frame is byte-identical SMP=1 vs SMP=2 (x19=0x100042d9 a valid systemd
-      mmap ptr). Syscalls run IRQ-masked (no mid-syscall preempt). NEXT
-      EXPERIMENTS: (1) full syscall arg+result trace SMP=1 vs SMP=2 for PID1's
-      first 6 (does mmap/brk return a different addr at -smp 2?); (2) dump ALL
-      x0-x30 at the EL0 alignment fault (which reg holds 0x10004322 + disasm the
-      faulting insn at elr); (3) `its=off` to isolate ITS/LPI routing with 2
-      redistributors; (4) compare GIC init path (GICR/IROUTER) at 1 vs 2
-      redistributors. Gate stays `-smp 1`. (Load balancer unreachable on arm —
-      elf_arm::run loops before spawn_timer_driver — secondary.)
-- [ ] python3 broken in rootfs: "No module named 'encodings'" (stdlib path).
-      NEW finding; distro completeness; verify-left-able.
-- [ ] Phase 15 acceptance: clean loopback nc/ping test (net bins present, 171
-      oracle tests pass, lo in /proc/net/dev) → close Phase 15 if green.
+## Policy (user, this session)
+- Missing SYSTEMS get built **kernel-side, Linux-style** (real subsystem, not a
+  shim/façade — per feedback_never_fake_build_real).
+- All USERSPACE comes from **real vendor sources** (bash, coreutils, util-linux,
+  systemd, …) — never custom/hand-rolled replacements.
+
+## ACTIVE — busybox removal (in progress)
+- [x] busybox functionally gone (vendor binary deleted; rootfs uses real
+      coreutils/bash/util-linux/systemd; /bin/busybox absent from image).
+- [x] rootfs.rs: deleted the dead busybox install block (was skipped anyway).
+- [ ] Scrub ALL remaining "busybox" mentions repo-wide (docs/*.md, kernel
+      comments, tools/*.sh, research, CHANGELOG; delete tests/acceptance/busybox/).
+      Background agent running; verify ZERO mentions remain outside vendor/.git,
+      build + spec-lint clean, then commit. CLAUDE.md handled separately.
+
+## Done — this SMP + distro session (merged)
+- [x] **arm SMP=2 FIXED** (#1564): root cause was vmm.rs `ATTR1=1<<3` (AttrIdx 2)
+      vs `1<<2` (AttrIdx 1). Under self-boot MAIR=0xFF04, Normal-WB is AttrIdx 1,
+      so every demand-faulted user page was mapped Device → first unaligned musl
+      read took DFSC=0x21 alignment abort → PID1 SIGSEGV. arm -smp 1 AND 2 boot.
+      (Supersedes the long "arm SMP=2 wedge" investigation.)
+- [x] boot-smoke gate now runs BOTH arches at -smp 2 (#1566).
+- [x] **x86 AP INIT/SIPI bring-up** (#1567): real-mode→long-mode trampoline
+      (PAE+LME+NXE) + MADT INIT/SIPI; AP reaches long mode + LAPIC + online.
+      GATED OFF pending 2 integration fixes (below).
+- [x] Distro /etc profiles + skel (#1569) + locale (#1571): shells, hosts,
+      environment, motd, bash.bashrc(+LANG), inputrc, profile.d, skel + root/alice.
+
+## Open — SMP / distro follow-ups
+- [ ] **x86 SMP integration** (the 2 gated fixes in bring_up_aps_x86): (1)
+      PMM-reserve the trampoline low page (TRAMP_PA=0x8000 copy corrupts live
+      RAM); (2) AP scheduling participation (per-CPU runqueue + LAPIC-timer
+      preempt + sti idle wedges the BSP boot). Flip `if true { return 0; }`.
+- [ ] **Login-shell sourcing**: getty/util-linux-login launches the user shell
+      as interactive-NON-login → ~/.bashrc runs but /etc/profile + profile.d do
+      not. LANG worked around via /etc/bash.bashrc (#1571). Proper fix: make
+      login exec a login shell (argv[0]="-bash").
+- [ ] python3 in rootfs: "No module named 'encodings'" (stdlib path / zip).
+- [ ] Phase 15 acceptance: loopback nc/ping clean (net bins + 171 oracle tests
+      pass, lo in /proc/net/dev) → close Phase 15.
 - [ ] Phase 16 real namespace isolation — unshare/setns are id-tracking substrate
-      (F100-F107), NOT real isolation. (P16-01 UTS-fork-inherit attempt ABANDONED:
-      regressed the boot; unmerged; do NOT merge.)
+      (F100-F107), NOT real isolation. (P16-01 UTS attempt abandoned; do not merge.)
+- [ ] More distro standard items / cross-built programs toward the GNOME endgame
+      (vendor real musl + distro programs; see project_distro_goal memory).
+
+## Open — deferred / lower priority
 - [ ] smoke_rr arm debug-all hang (debug-only; production/debug-boot arm fine).
-      Needs disk+gdb arm-debug — qemu-MCP can't (boots stale arm grub ISO).
 - [ ] BUG C cgroup ENOTEMPTY on destroy; BUG G getty respawn delay — re-verify on
-      current build (may no longer repro, like BUG H rm-rf-tmpfs which did NOT).
-- [ ] phases 17–35 (docs/00§3): dynamic linker, libc/NSS/PAM, system manager,
-      RPM, tty+login, io_uring, ptrace, bpf/seccomp, etc. — deep feature work.
+      current build (may no longer repro, like BUG H which did not).
+- [ ] phases 17–35 (docs/00§3): dynamic linker polish, libc/NSS/PAM, system
+      manager, RPM, tty+login, io_uring, ptrace, bpf/seccomp — deep feature work.
+
+## Userspace tooling backlog — vendor + install (userspace = REAL vendor sources)
+Cross-build each per-arch (x86_64 + aarch64 musl) via a `tools/fetch-<tool>.sh`,
+stage into the rootfs (`rootfs.rs`/`l2_deps.rs`). NEVER hand-roll a replacement.
+
+### Already vendored / present (verify staged in rootfs)
+- [x] bash, coreutils (cat/tac/head/tail/wc/sort/uniq/cut/paste/tr/tee/split/
+      join/comm/nl/fmt/fold/expand/unexpand/pr/base64/od/…), grep, sed,
+      gawk(awk), findutils(find/xargs), diffutils(diff/cmp), patch, tar, gzip,
+      xz, zstd, bzip2, less, ncurses(tput/clear/reset), util-linux(script/
+      hexdump/cal/…), procps-ng(ps/top/watch/free/uptime/pgrep/pkill), shadow
+      (passwd), iproute2(ip/ss), iputils(ping), openssh(ssh/scp/sshd), vim/vi
+      (+xxd), python3, make, openssl, dbus, expat, pcre2.
+
+### Default base install — vendor NEXT (user's priority set)
+- [ ] tmux, htop or btop, ncdu, lazygit, fzf, nmtui (NetworkManager),
+      alsamixer (alsa-utils), lnav, yazi, dialog, whiptail (newt), mc,
+      ripgrep(rg), fd, jq, yq, curl, wget, rsync, man-db(man/whatis/apropos),
+      tldr, dos2unix, bat, eza.
+
+### TUI apps (full list)
+- [ ] File managers: mc, nnn, ranger, lf, yazi
+- [ ] Monitors: htop, btop, atop, iotop, bottom(btm), k9s, lazydocker
+- [ ] Disk: ncdu, dua-cli, dust, duf
+- [ ] Network: nethogs, iftop, bmon, nmtui
+- [ ] Git: lazygit, tig
+- [ ] Editors: vim✓, neovim, micro, ed/ex
+- [ ] Multiplexers: tmux, screen, zellij
+- [ ] Sysadmin: alsamixer, systemd-analyze, visudo (sudo), passwd✓
+- [ ] Logs: lnav, journalctl(systemd✓), less✓
+- [ ] Mail: neomutt, aerc          
+- [ ] RSS: newsboat
+- [ ] DB clients: sqlite3, psql(libpq), mysql, litecli
+- [ ] Transfer: lftp, rsync        
+- [ ] Install/recovery: dialog, whiptail, fzf, peco, skim
+
+### CLI text-processing (full list)
+- [ ] Search: ripgrep(rg), ack, ag(silver-searcher)
+- [ ] Lang: perl, awk✓, sed✓, python3✓
+- [ ] Find: fd, locate(mlocate/plocate)
+- [ ] Diff: sdiff, colordiff
+- [ ] Editors: ed, ex
+- [ ] Term utils: script✓, scriptreplay, watch✓, tput✓
+- [ ] Structured: jq, yq, xq, xmlstarlet, dasel
+- [ ] Modern: bat, eza, dust, duf, procs, bottom, zoxide, hyperfine, sd, choose
+- [ ] Archive: zip, unzip, cpio (tar/gzip/bzip2/xz/zstd ✓)
+- [ ] Encoding: iconv, recode, dos2unix, unix2dos, hexdump✓ (base64/od/xxd ✓)
+- [ ] Docs: man-db, texinfo(info), tldr
+- [ ] Build: cmake, pkg-config, gettext, m4 (make✓)
+- [ ] Shells: dash, zsh, fish (bash✓); which, whereis
+- [ ] Net: curl, wget, socat, nc (ssh/scp ✓ via openssh); rsync
 
 ## Stale / not-reproducing
 - BUG H (rm -rf tmpfs rc=1): does NOT repro (returns 0). Closed.
-- BUG A (no echo): re-verify on current build before working.
