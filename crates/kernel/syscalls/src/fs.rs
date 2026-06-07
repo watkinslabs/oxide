@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-use crate::{validate_user_buf, validate_user_buf_writable};
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// `sys_fstat(fd, statbuf)` — slot 5. 144-byte Linux x86_64 struct stat.
 /// # C: O(1)

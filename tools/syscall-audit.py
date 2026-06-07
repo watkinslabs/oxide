@@ -21,6 +21,7 @@ NRS = REPO / "crates/kernel/syscall/src/nrs.rs"
 # Files that carry `NR_X =>` dispatch arms (the live chain).
 DISPATCH_FILES = [
     "crates/kernel/syscalls/src/lib.rs",
+    "crates/kernel/syscalls/src/dispatch.rs",
     "crates/kernel/syscalls/src/proc.rs",
     "crates/kernel/syscalls/src/time.rs",
     "crates/kernel/syscalls/src/misc.rs",

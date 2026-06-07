@@ -38,7 +38,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let bytes = match nfds.checked_mul(8) {
         Some(v) => v, None => return -(Errno::Efault.as_i32() as i64),
     };
-    if let Err(rv) = crate::validate_user_buf(fds_ptr, bytes, 4) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(fds_ptr, bytes, 4) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
