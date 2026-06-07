@@ -161,6 +161,41 @@ pub struct Mount {
 
 static TABLE: Spinlock<Vec<Arc<Mount>>, MountClass> = Spinlock::new(Vec::new());
 
+/// Snapshot of all registered mounts (cheap Arc clones). Backs the
+/// statmount/listmount(2) mount-introspection syscalls.
+/// # C: O(N_mounts)
+pub fn all_mounts() -> Vec<Arc<Mount>> { TABLE.lock().clone() }
+
+/// Find a mount by its stable `mnt_id`.
+/// # C: O(N_mounts)
+pub fn mount_by_id(id: u64) -> Option<Arc<Mount>> {
+    TABLE.lock().iter().find(|m| m.mnt_id == id).cloned()
+}
+
+/// `mnt_id` of the mount that is `m`'s parent — the registered mount whose
+/// `mount_point` is the longest strict path-prefix of `m`'s. The root mount
+/// (no strict-prefix parent) reports itself, matching Linux.
+/// # C: O(N_mounts)
+pub fn parent_mnt_id(m: &Mount) -> u64 {
+    let mut best: Option<&Arc<Mount>> = None;
+    let table = TABLE.lock();
+    for cand in table.iter() {
+        if cand.mnt_id == m.mnt_id { continue; }
+        let cp = cand.mount_point.as_str();
+        let mp = m.mount_point.as_str();
+        // cp must be a path-prefix of mp ("/" prefixes everything; "/a" prefixes "/a/b").
+        let is_prefix = mp == cp
+            || (mp.starts_with(cp) && (cp == "/" || mp.as_bytes().get(cp.len()) == Some(&b'/')));
+        if is_prefix {
+            match best {
+                Some(b) if b.mount_point.len() >= cp.len() => {}
+                _ => best = Some(cand),
+            }
+        }
+    }
+    best.map(|b| b.mnt_id).unwrap_or(m.mnt_id)
+}
+
 /// Register a FileSystem at `mount_point`. Idempotent: if the
 /// same mount_point already has a mount, returns Ebusy.
 /// # C: O(N_mounts) — linear scan + push.
