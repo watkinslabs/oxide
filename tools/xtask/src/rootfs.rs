@@ -240,7 +240,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /home /root for login shells, /var/log for syslog.
     for d in &[
         "/bin", "/sbin", "/lib", "/lib64",
-        "/etc", "/etc/init.d",
+        "/etc", "/etc/init.d", "/etc/profile.d", "/etc/skel",
         "/proc", "/sys", "/tmp", "/run", "/run/systemd", "/run/systemd/ask-password", "/run/lock",
         "/dev", "/dev/pts",
         "/home", "/home/alice", "/root",
@@ -907,11 +907,20 @@ exit 0
         "/usr/share/udhcpc/default.script")?;
     dbg("sif /usr/share/udhcpc/default.script mode 0100755")?;
 
-    // /etc/profile — login-shell environment.
+    // /etc/profile — login-shell environment. Sources /etc/profile.d/*.sh
+    // and a per-user ~/.bashrc, like a real distro.
     put(&stage("profile",
 b"export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PS1='\\h:\\w\\$ '
 export TERM=linux
+umask 022
+if [ -d /etc/profile.d ]; then
+  for _f in /etc/profile.d/*.sh; do
+    [ -r \"$_f\" ] && . \"$_f\"
+  done
+  unset _f
+fi
+if [ -n \"$BASH\" ] && [ -r ~/.bashrc ]; then . ~/.bashrc; fi
 ")?,
         "/etc/profile")?;
 
@@ -977,6 +986,11 @@ hosts:  files
         let host = repo.join(format!("kernel/blobs/terminfo/{sub}/{name}"));
         put(&host, &format!("/usr/share/terminfo/{sub}/{name}"))?;
     }
+
+    // Standard distro /etc items (shells, hosts, environment, motd,
+    // bash.bashrc, inputrc, profile.d/*, skel + dotfiles) — split out to
+    // keep this file under the 1000-line cap (`docs/08§7`).
+    crate::rootfs_etc::write_standard_etc(&stage, &put)?;
 
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
