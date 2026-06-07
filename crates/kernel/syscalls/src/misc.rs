@@ -12,19 +12,35 @@
 //   - process_madvise(iov, advice): walk the iov, validate each
 //     segment is in user range; same advise semantics as madvise.
 //   - process_mrelease(pidfd, flags): validate pidfd, return 0.
+//
+// Sub-dispatcher + the OBSOLETE-number predicate stay here; every
+// `pub fn sys_X` handler now lives in its own per-syscall file
+// (docs/53 §0). Shared helpers live in `misc_common`.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-const MPOL_DEFAULT:    u32 = 0;
-const MPOL_PREFERRED:  u32 = 1;
-const MPOL_BIND:       u32 = 2;
-const MPOL_INTERLEAVE: u32 = 3;
-const MPOL_LOCAL:      u32 = 4;
+#[path = "misc_common.rs"]                  pub mod misc_common;
+#[path = "330_pkey_alloc.rs"]               pub mod s330_pkey_alloc;
+#[path = "331_pkey_free.rs"]                pub mod s331_pkey_free;
+#[path = "329_pkey_mprotect.rs"]            pub mod s329_pkey_mprotect;
+#[path = "312_kcmp.rs"]                     pub mod s312_kcmp;
+#[path = "238_set_mempolicy.rs"]            pub mod s238_set_mempolicy;
+#[path = "239_get_mempolicy.rs"]            pub mod s239_get_mempolicy;
+#[path = "237_mbind.rs"]                    pub mod s237_mbind;
+#[path = "450_set_mempolicy_home_node.rs"]  pub mod s450_set_mempolicy_home_node;
+#[path = "256_migrate_pages.rs"]            pub mod s256_migrate_pages;
+#[path = "279_move_pages.rs"]               pub mod s279_move_pages;
+#[path = "440_process_madvise.rs"]          pub mod s440_process_madvise;
+#[path = "448_process_mrelease.rs"]         pub mod s448_process_mrelease;
+#[path = "074_fsync.rs"]                    pub mod s074_fsync;
+#[path = "169_reboot.rs"]                   pub mod s169_reboot;
 
-fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
+// dispatch.rs calls these via `crate::misc::sys_fsync` / `sys_reboot`.
+pub use s074_fsync::sys_fsync;
+pub use s169_reboot::sys_reboot;
 
 /// Tail dispatch for the previously-compat tail (pkey, kcmp, NUMA,
 /// process_madvise/mrelease).
@@ -32,266 +48,20 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 pub fn dispatch(nr: u64, args: &SyscallArgs) -> i64 {
     use syscall::nrs::*;
     match nr {
-        NR_PKEY_ALLOC                => sys_pkey_alloc(args),
-        NR_PKEY_FREE                 => sys_pkey_free(args),
-        NR_PKEY_MPROTECT             => sys_pkey_mprotect(args),
-        NR_KCMP                      => sys_kcmp(args),
-        NR_SET_MEMPOLICY             => sys_set_mempolicy(args),
-        NR_GET_MEMPOLICY             => sys_get_mempolicy(args),
-        NR_MBIND                     => sys_mbind(args),
-        NR_SET_MEMPOLICY_HOME_NODE   => sys_set_mempolicy_home_node(args),
-        NR_MIGRATE_PAGES             => sys_migrate_pages(args),
-        NR_MOVE_PAGES                => sys_move_pages(args),
-        NR_PROCESS_MADVISE           => sys_process_madvise(args),
-        NR_PROCESS_MRELEASE          => sys_process_mrelease(args),
+        NR_PKEY_ALLOC                => s330_pkey_alloc::sys_pkey_alloc(args),
+        NR_PKEY_FREE                 => s331_pkey_free::sys_pkey_free(args),
+        NR_PKEY_MPROTECT             => s329_pkey_mprotect::sys_pkey_mprotect(args),
+        NR_KCMP                      => s312_kcmp::sys_kcmp(args),
+        NR_SET_MEMPOLICY             => s238_set_mempolicy::sys_set_mempolicy(args),
+        NR_GET_MEMPOLICY             => s239_get_mempolicy::sys_get_mempolicy(args),
+        NR_MBIND                     => s237_mbind::sys_mbind(args),
+        NR_SET_MEMPOLICY_HOME_NODE   => s450_set_mempolicy_home_node::sys_set_mempolicy_home_node(args),
+        NR_MIGRATE_PAGES             => s256_migrate_pages::sys_migrate_pages(args),
+        NR_MOVE_PAGES                => s279_move_pages::sys_move_pages(args),
+        NR_PROCESS_MADVISE           => s440_process_madvise::sys_process_madvise(args),
+        NR_PROCESS_MRELEASE          => s448_process_mrelease::sys_process_mrelease(args),
         _                            => -(Errno::Enosys.as_i32() as i64),
     }
-}
-
-/// Per-process pkey bitmap. Linux MPK has 16 keys; key 0 is the
-/// always-permitted default. Allocation tracked as a 16-bit
-/// bitmap so glibc/musl probes get unique ids; PKRU enforcement
-/// is a follow-up.
-static PKEY_BITMAP: core::sync::atomic::AtomicU16
-    = core::sync::atomic::AtomicU16::new(1);
-
-/// # C: O(1)
-pub fn sys_pkey_alloc(_args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let mut cur = PKEY_BITMAP.load(Ordering::Acquire);
-    loop {
-        let i = match (1..16).find(|i| cur & (1u16 << i) == 0) {
-            Some(i) => i, None => return errno(Errno::Enospc),
-        };
-        let next = cur | (1u16 << i);
-        match PKEY_BITMAP.compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_)    => return i as i64,
-            Err(now) => cur = now,
-        }
-    }
-}
-/// # C: O(1)
-pub fn sys_pkey_free(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let key = args.a0 as i32;
-    if !(1..16).contains(&key) { return errno(Errno::Einval); }
-    let mut cur = PKEY_BITMAP.load(Ordering::Acquire);
-    loop {
-        if cur & (1u16 << key) == 0 { return errno(Errno::Einval); }
-        let next = cur & !(1u16 << key);
-        match PKEY_BITMAP.compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_)    => return 0,
-            Err(now) => cur = now,
-        }
-    }
-}
-/// # C: O(1) + mprotect cost
-pub fn sys_pkey_mprotect(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let key = args.a3 as i32;
-    if key < 0 || key >= 16 { return errno(Errno::Einval); }
-    if PKEY_BITMAP.load(Ordering::Acquire) & (1u16 << key) == 0 {
-        return errno(Errno::Einval);
-    }
-    crate::s010_mprotect::sys_mprotect(args)
-}
-
-/// fsync / fdatasync / syncfs / sync_file_range — validate fd then
-/// no-op (RAM-backed v1 fs is always sync; phase 7b adds JBD2).
-/// # C: O(1)
-pub fn sys_fsync(args: &SyscallArgs) -> i64 {
-    let fd = args.a0 as i32;
-    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
-    // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
-    if fdt.get(fd).is_err() { return errno(Errno::Ebadf); }
-    0
-}
-
-/// kcmp(2): compare two tasks' resources by pointer identity.
-/// Returns 0/1/-1 (equal/greater/less); ESRCH for missing pids;
-/// EINVAL for unknown type.
-/// # C: O(1)
-pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
-    let pid1 = args.a0 as u32;
-    let pid2 = args.a1 as u32;
-    let ty   = args.a2 as u32;
-    let idx1 = args.a3 as u64;
-    let idx2 = args.a4 as u64;
-    if ty > 7 { return errno(Errno::Einval); }
-    let t1 = match sched::live::registry::lookup(pid1) {
-        Some(t) => t, None => return errno(Errno::Esrch),
-    };
-    let t2 = match sched::live::registry::lookup(pid2) {
-        Some(t) => t, None => return errno(Errno::Esrch),
-    };
-    // KCMP_FILE = 0: compare File at fd idx1 in t1 vs fd idx2 in t2.
-    let cmp = match ty {
-        0 => {
-            // SAFETY: fd_table slot single-mutator per `13§5`; snapshot via Arc clone.
-            unsafe {
-                let f1 = (*t1.fd_table.get()).as_ref().and_then(|t| t.get(idx1 as i32).ok());
-                let f2 = (*t2.fd_table.get()).as_ref().and_then(|t| t.get(idx2 as i32).ok());
-                ptr_cmp(f1.map(|f| alloc::sync::Arc::as_ptr(&f) as usize),
-                        f2.map(|f| alloc::sync::Arc::as_ptr(&f) as usize))
-            }
-        },
-        // KCMP_FILES = 1: compare fd_table identity.
-        1 => {
-            // SAFETY: fd_table slot single-mutator per `13§5`; pointer identity is the resource id.
-            unsafe {
-                let p1 = (*t1.fd_table.get()).as_ref().map(|t| alloc::sync::Arc::as_ptr(t) as usize);
-                let p2 = (*t2.fd_table.get()).as_ref().map(|t| alloc::sync::Arc::as_ptr(t) as usize);
-                ptr_cmp(p1, p2)
-            }
-        },
-        // KCMP_VM = 2: address-space identity.
-        2 => {
-            // SAFETY: mm slot single-mutator per `13§5`; pointer identity = AS resource id.
-            unsafe {
-                let p1 = t1.mm_ref().map(|m| alloc::sync::Arc::as_ptr(m) as usize);
-                let p2 = t2.mm_ref().map(|m| alloc::sync::Arc::as_ptr(m) as usize);
-                ptr_cmp(p1, p2)
-            }
-        },
-        // KCMP_FS=3 / KCMP_SIGHAND=4 / KCMP_IO=5 / KCMP_SYSVSEM=6:
-        // v1 ties these to the task identity since we don't yet
-        // share these resources across CLONE_FS / CLONE_SIGHAND.
-        _ => ptr_cmp(Some(pid1 as usize), Some(pid2 as usize)),
-    };
-    cmp as i64
-}
-
-fn ptr_cmp(a: Option<usize>, b: Option<usize>) -> i64 {
-    match (a, b) {
-        (Some(x), Some(y)) if x == y => 0,
-        (Some(x), Some(y)) if x  < y => -1,
-        (Some(_), Some(_))           => 1,
-        (None,    None)              => 0,
-        (None,    Some(_))           => -1,
-        (Some(_), None)              => 1,
-    }
-}
-
-/// set_mempolicy(mode, nodemask, maxnode).
-/// # C: O(1)
-pub fn sys_set_mempolicy(args: &SyscallArgs) -> i64 {
-    let mode = args.a0 as u32;
-    if mode > MPOL_LOCAL { return errno(Errno::Einval); }
-    0
-}
-
-/// get_mempolicy(mode_out, nodemask_out, maxnode, addr, flags).
-/// # C: O(1)
-pub fn sys_get_mempolicy(args: &SyscallArgs) -> i64 {
-    let mode_out = args.a0;
-    if mode_out != 0 {
-        if mode_out >= hal::USER_VA_END { return errno(Errno::Efault); }
-        // SAFETY: validated < USER_VA_END; aligned u32 store.
-        unsafe { core::ptr::write_volatile(mode_out as *mut u32, MPOL_DEFAULT); }
-    }
-    0
-}
-
-/// mbind(addr, len, mode, nodemask, maxnode, flags).
-/// # C: O(1)
-pub fn sys_mbind(args: &SyscallArgs) -> i64 {
-    let mode = args.a2 as u32;
-    if mode > MPOL_LOCAL { return errno(Errno::Einval); }
-    0
-}
-
-/// set_mempolicy_home_node(start, len, home_node, flags).
-/// # C: O(1)
-pub fn sys_set_mempolicy_home_node(args: &SyscallArgs) -> i64 {
-    let home = args.a2 as i32;
-    if home != 0 && home != -1 { return errno(Errno::Einval); }
-    0
-}
-
-/// migrate_pages(pid, maxnode, old, new).
-/// # C: O(1)
-pub fn sys_migrate_pages(args: &SyscallArgs) -> i64 {
-    let pid = args.a0 as u32;
-    if pid != 0 && sched::live::registry::lookup(pid).is_none() {
-        return errno(Errno::Esrch);
-    }
-    0
-}
-
-/// move_pages(pid, count, pages, nodes, status, flags).
-/// # C: O(N=count, capped 4096)
-pub fn sys_move_pages(args: &SyscallArgs) -> i64 {
-    let pid = args.a0 as u32;
-    if pid != 0 && sched::live::registry::lookup(pid).is_none() {
-        return errno(Errno::Esrch);
-    }
-    let count = args.a1 as usize;
-    let status = args.a4;
-    if status != 0 && count > 0 {
-        if status >= hal::USER_VA_END { return errno(Errno::Efault); }
-        // Each page is "on node 0" in our single-node world.
-        for i in 0..count.min(4096) {
-            // SAFETY: status validated < USER_VA_END; bounded count loop; aligned i32 store into caller's AS.
-            unsafe {
-                core::ptr::write_volatile((status + (i*4) as u64) as *mut i32, 0);
-            }
-        }
-    }
-    0
-}
-
-/// process_madvise(pidfd, iov, iovcnt, advice, flags).
-/// # C: O(N=iovcnt, capped 64)
-pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
-    let iov = args.a1;
-    let cnt = args.a2 as usize;
-    if cnt == 0 { return 0; }
-    if iov == 0 || iov >= hal::USER_VA_END { return errno(Errno::Efault); }
-    // Validate first iovec entry's pointer falls in user range; same
-    // advise-only semantics as madvise once validated.
-    for i in 0..cnt.min(64) {
-        let p = iov + (i as u64) * 16;
-        if p >= hal::USER_VA_END { return errno(Errno::Efault); }
-        // SAFETY: validated p < USER_VA_END; 8-byte aligned read of iovec.iov_base from caller's AS.
-        let base = unsafe { core::ptr::read_volatile(p as *const u64) };
-        if base != 0 && base >= hal::USER_VA_END { return errno(Errno::Efault); }
-    }
-    0
-}
-
-/// reboot(magic1, magic2, cmd, arg) per Linux reboot(2).
-/// Validates magic numbers, requires CAP_SYS_BOOT, then dispatches
-/// through the `power` crate. RESTART/POWER_OFF/HALT are irreversible
-/// and never return; CAD_ON/CAD_OFF return 0; KEXEC returns EINVAL.
-/// # C: O(1)
-pub fn sys_reboot(args: &SyscallArgs) -> i64 {
-    let magic1 = args.a0 as u32;
-    let magic2 = args.a1 as u32;
-    let c      = args.a2 as u32;
-    if !power::check_magic(magic1, magic2) { return errno(Errno::Einval); }
-    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Eperm) };
-    use core::sync::atomic::Ordering;
-    if (cur.creds.cap_effective.load(Ordering::Acquire) >> sched::cap::SYS_BOOT) & 1 == 0 {
-        return errno(Errno::Eperm);
-    }
-    // SAFETY: capability + magic validated above; cmd is irreversible per power(2) contract.
-    match unsafe { power::cmd(c) } {
-        Ok(())                       => 0,
-        Err(power::Error::Inval)     => errno(Errno::Einval),
-        Err(power::Error::Perm)      => errno(Errno::Eperm),
-        Err(power::Error::Io)        => errno(Errno::Eio),
-    }
-}
-
-/// process_mrelease(pidfd, flags).
-/// # C: O(1)
-pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
-    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
-    // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
-    if fdt.get(args.a0 as i32).is_err() { return errno(Errno::Ebadf); }
-    0
 }
 
 /// docs/15 §2 OBSOLETE numbers — modern Linux x86_64 itself returns ENOSYS for

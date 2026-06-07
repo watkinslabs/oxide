@@ -11,5 +11,5 @@ use syscall::SyscallArgs;
 /// `sys_fchmodat2(dirfd, path, mode, flags)` — slot 452.
 /// # C: O(N_path)
 pub fn sys_fchmodat2(args: &SyscallArgs) -> i64 {
-    crate::perms::sys_fchmodat(args)
+    crate::s268_fchmodat::sys_fchmodat(args)
 }
