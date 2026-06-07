@@ -33,6 +33,27 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam;
 #[path = "314_sched_setattr.rs"]  pub mod s314_sched_setattr;
 #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr;
+mod signal_common;
+mod fsmount_common;
+#[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
+#[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask;
+#[path = "062_kill.rs"] pub mod s062_kill;
+#[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
+#[path = "128_rt_sigtimedwait.rs"] pub mod s128_rt_sigtimedwait;
+#[path = "129_rt_sigqueueinfo.rs"] pub mod s129_rt_sigqueueinfo;
+#[path = "130_rt_sigsuspend.rs"] pub mod s130_rt_sigsuspend;
+#[path = "131_sigaltstack.rs"] pub mod s131_sigaltstack;
+#[path = "234_tgkill.rs"] pub mod s234_tgkill;
+#[path = "272_unshare.rs"] pub mod s272_unshare;
+#[path = "297_rt_tgsigqueueinfo.rs"] pub mod s297_rt_tgsigqueueinfo;
+#[path = "308_setns.rs"] pub mod s308_setns;
+#[path = "428_open_tree.rs"] pub mod s428_open_tree;
+#[path = "429_move_mount.rs"] pub mod s429_move_mount;
+#[path = "430_fsopen.rs"] pub mod s430_fsopen;
+#[path = "431_fsconfig.rs"] pub mod s431_fsconfig;
+#[path = "432_fsmount.rs"] pub mod s432_fsmount;
+#[path = "433_fspick.rs"] pub mod s433_fspick;
+#[path = "442_mount_setattr.rs"] pub mod s442_mount_setattr;
 #[path = "000_read.rs"]  pub mod s000_read;
 #[path = "001_write.rs"] pub mod s001_write;
 mod open_common;
@@ -329,7 +350,8 @@ fn sys_exit(args: &SyscallArgs) -> i64 {
 /// per-boot LCG if HW RNG returns failure (CF=0 on RDRAND;
 /// NZCV.V=1 on RNDR).
 
-use crate::signal::{sys_kill, sys_tgkill};
+use crate::s062_kill::sys_kill;
+use crate::s234_tgkill::sys_tgkill;
 
 /// `sys_sched_rr_get_interval(pid, tp)` — slot 148. Writes the SCHED_RR
 /// timeslice (100 ms = 100_000_000 ns) into the user `struct timespec`.
@@ -561,8 +583,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FCNTL         => crate::fs::sys_fcntl(&args),
         syscall::nrs::NR_RSEQ          => crate::proc::sys_rseq(&args),
         syscall::nrs::NR_MEMBARRIER    => crate::proc::sys_membarrier(&args),
-        syscall::nrs::NR_UNSHARE       => crate::signal::sys_unshare(&args),
-        syscall::nrs::NR_SETNS         => crate::signal::sys_setns(&args),
+        syscall::nrs::NR_UNSHARE       => s272_unshare::sys_unshare(&args),
+        syscall::nrs::NR_SETNS         => s308_setns::sys_setns(&args),
         syscall::nrs::NR_PTRACE        => crate::ptrace::sys_ptrace(&args),
         syscall::nrs::NR_FANOTIFY_INIT => ::fs::inotify::sys_inotify_init1(&args),
         syscall::nrs::NR_FANOTIFY_MARK => ::fs::inotify::sys_fanotify_mark(&args),
@@ -606,13 +628,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // mount-table integration; fsconfig/move_mount/mount_setattr admit
         // (real per-NS mount-table machinery rides a follow-up).
         // New mount API (K6) — all real now.
-        syscall::nrs::NR_FSOPEN        => crate::fsmount::sys_fsopen(&args),
-        syscall::nrs::NR_FSCONFIG      => crate::fsmount::sys_fsconfig(&args),
-        syscall::nrs::NR_FSMOUNT       => crate::fsmount::sys_fsmount(&args),
-        syscall::nrs::NR_MOVE_MOUNT    => crate::fsmount::sys_move_mount(&args),
-        syscall::nrs::NR_FSPICK        => crate::fsmount::sys_fspick(&args),
-        syscall::nrs::NR_OPEN_TREE     => crate::fsmount::sys_open_tree(&args),
-        syscall::nrs::NR_MOUNT_SETATTR => crate::fsmount::sys_mount_setattr(&args),
+        syscall::nrs::NR_FSOPEN        => s430_fsopen::sys_fsopen(&args),
+        syscall::nrs::NR_FSCONFIG      => s431_fsconfig::sys_fsconfig(&args),
+        syscall::nrs::NR_FSMOUNT       => s432_fsmount::sys_fsmount(&args),
+        syscall::nrs::NR_MOVE_MOUNT    => s429_move_mount::sys_move_mount(&args),
+        syscall::nrs::NR_FSPICK        => s433_fspick::sys_fspick(&args),
+        syscall::nrs::NR_OPEN_TREE     => s428_open_tree::sys_open_tree(&args),
+        syscall::nrs::NR_MOUNT_SETATTR => s442_mount_setattr::sys_mount_setattr(&args),
         syscall::nrs::NR_GETRLIMIT     => crate::proc::sys_getrlimit(&args),
         syscall::nrs::NR_SETRLIMIT     => crate::proc::sys_setrlimit(&args),
         syscall::nrs::NR_GETRUSAGE     => crate::proc::sys_getrusage(&args),
@@ -755,7 +777,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FUTIMESAT | syscall::nrs::NR_UTIMENSAT => crate::utime::sys_utimensat(&args),
         syscall::nrs::NR_MQ_NOTIFY     => ::ipc::live::posix_mq::sys_mq_notify(&args),
         syscall::nrs::NR_MQ_GETSETATTR => ::ipc::live::posix_mq::sys_mq_getsetattr(&args),
-        syscall::nrs::NR_PROCESS_VM_READV  => crate::pvmrw::sys_process_vm_readv(&args), syscall::nrs::NR_PROCESS_VM_WRITEV => crate::pvmrw::sys_process_vm_writev(&args),
+        syscall::nrs::NR_PROCESS_VM_READV  => crate::pvmrw::sys_process_vm_readv(&args), 
+        syscall::nrs::NR_PROCESS_VM_WRITEV => crate::pvmrw::sys_process_vm_writev(&args),
         syscall::nrs::NR_UTIMES | syscall::nrs::NR_UTIME
             => crate::utime::sys_utime_dispatch(nr, &args),
         // link/symlink/mknod family.
@@ -786,9 +809,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_MPROTECT      => crate::proc::sys_mprotect(&args),
         syscall::nrs::NR_MADVISE       => crate::proc::sys_madvise(&args),
         syscall::nrs::NR_PRLIMIT64     => crate::proc::sys_prlimit64(&args),
-        syscall::nrs::NR_RT_SIGACTION  => crate::signal::sys_rt_sigaction(&args),
-        syscall::nrs::NR_RT_SIGPROCMASK => crate::signal::sys_rt_sigprocmask(&args),
-        syscall::nrs::NR_SIGALTSTACK   => crate::signal::sys_sigaltstack(&args),
+        syscall::nrs::NR_RT_SIGACTION  => s013_rt_sigaction::sys_rt_sigaction(&args),
+        syscall::nrs::NR_RT_SIGPROCMASK => s014_rt_sigprocmask::sys_rt_sigprocmask(&args),
+        syscall::nrs::NR_SIGALTSTACK   => s131_sigaltstack::sys_sigaltstack(&args),
         syscall::nrs::NR_NANOSLEEP     => crate::proc::sys_nanosleep(&args),
         syscall::nrs::NR_CLOCK_NANOSLEEP => crate::proc::sys_clock_nanosleep(&args),
         syscall::nrs::NR_CLOSE         => s003_close::sys_close(&args),
@@ -807,11 +830,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_WAIT4         => sys_wait4(&args),
         syscall::nrs::NR_WAITID        => sys_waitid(&args),
         syscall::nrs::NR_TKILL         => sys_kill(&args),
-        syscall::nrs::NR_RT_SIGPENDING => crate::signal::sys_rt_sigpending(&args),
-        syscall::nrs::NR_RT_SIGSUSPEND => crate::signal::sys_rt_sigsuspend(&args),
-        syscall::nrs::NR_RT_SIGTIMEDWAIT  => crate::signal::sys_rt_sigtimedwait(&args),
-        syscall::nrs::NR_RT_SIGQUEUEINFO  => crate::signal::sys_rt_sigqueueinfo(&args),
-        syscall::nrs::NR_RT_TGSIGQUEUEINFO => crate::signal::sys_rt_tgsigqueueinfo(&args),
+        syscall::nrs::NR_RT_SIGPENDING => s127_rt_sigpending::sys_rt_sigpending(&args),
+        syscall::nrs::NR_RT_SIGSUSPEND => s130_rt_sigsuspend::sys_rt_sigsuspend(&args),
+        syscall::nrs::NR_RT_SIGTIMEDWAIT  => s128_rt_sigtimedwait::sys_rt_sigtimedwait(&args),
+        syscall::nrs::NR_RT_SIGQUEUEINFO  => s129_rt_sigqueueinfo::sys_rt_sigqueueinfo(&args),
+        syscall::nrs::NR_RT_TGSIGQUEUEINFO => s297_rt_tgsigqueueinfo::sys_rt_tgsigqueueinfo(&args),
         // Real-impl arms that overlap with compat-stub categories.
         syscall::nrs::NR_PIPE          => {
             // pipe(int[2]) — legacy, no flag argument. Mask args.a1 so
