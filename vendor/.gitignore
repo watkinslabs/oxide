@@ -539,3 +539,31 @@ eza/eza-0.20.24.tar.gz
 !jq/jq-aarch64
 jq/jq-1.7.1/
 jq/jq-1.7.1.tar.gz
+# tealdeer 1.7.1 — tldr client. Rust, static-musl. /usr/bin/tldr.
+!tealdeer/
+!tealdeer/build.sh
+!tealdeer/tldr-x86_64
+!tealdeer/tldr-aarch64
+tealdeer/tealdeer-1.7.1/
+tealdeer/tealdeer-1.7.1.tar.gz
+# hyperfine 1.19.0 — benchmarking. Rust, static-musl. /usr/bin/hyperfine.
+!hyperfine/
+!hyperfine/build.sh
+!hyperfine/hyperfine-x86_64
+!hyperfine/hyperfine-aarch64
+hyperfine/hyperfine-1.19.0/
+hyperfine/hyperfine-1.19.0.tar.gz
+# dust 1.1.1 — du replacement. Rust, static-musl. /usr/bin/dust.
+!dust/
+!dust/build.sh
+!dust/dust-x86_64
+!dust/dust-aarch64
+dust/dust-1.1.1/
+dust/dust-1.1.1.tar.gz
+# sd 1.0.0 — sed alternative. Rust, static-musl. /usr/bin/sd.
+!sd/
+!sd/build.sh
+!sd/sd-x86_64
+!sd/sd-aarch64
+sd/sd-1.0.0/
+sd/sd-1.0.0.tar.gz
