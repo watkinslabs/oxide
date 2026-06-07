@@ -44,7 +44,7 @@ impl CfsRunqueue {
     /// snapshot.
     /// # C: O(log N)
     pub fn enqueue(&mut self, task: Arc<Task>) {
-        debug_assert!(matches!(task.class, SchedClass::Normal { .. }),
+        debug_assert!(matches!(task.sched_class(), SchedClass::Normal { .. }),
             "CfsRunqueue::enqueue: non-Normal task");
         let v = task.vruntime.load(Ordering::Acquire);
         let key = (v, task.tid);

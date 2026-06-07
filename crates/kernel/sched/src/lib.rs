@@ -24,6 +24,7 @@ pub mod rlimit;
 pub mod rt;
 pub mod runqueue;
 pub mod task;
+mod sched_enc;
 
 pub use cfs::CfsRunqueue;
 pub use cmdline::argv_to_cmdline;

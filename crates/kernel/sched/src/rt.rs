@@ -45,7 +45,7 @@ impl RtRunqueue {
     /// semantics (`13§3`).
     /// # C: O(1)
     pub fn enqueue(&mut self, task: Arc<Task>) {
-        let prio = match task.class {
+        let prio = match task.sched_class() {
             SchedClass::Rt { prio, .. } => prio as usize,
             _ => panic!("RtRunqueue::enqueue: non-RT task"),
         };

@@ -203,3 +203,28 @@ pub unsafe fn uninstall_global() -> Option<Runqueue> {
     // SAFETY: this CPU is the sole writer for its own slot.
     unsafe { (*GLOBALS[cpu].0.get()).take() }
 }
+
+/// Change a task's scheduling class at runtime (sched_setattr/setparam).
+/// If the task is currently queued it is removed from its present rt/cfs tree,
+/// its class updated, then re-enqueued into the new class's tree — so the
+/// trees stay consistent (changing class while queued would otherwise dequeue
+/// the task from the wrong tree). Idle is never re-enqueued.
+/// # C: O(log N) — dequeue + enqueue
+pub fn set_class(task: &Arc<Task>, new: crate::SchedClass) {
+    match global() {
+        Some(rq) => {
+            let mut inner = rq.inner.lock();
+            let was_queued = task.on_rq.load(Ordering::Acquire);
+            if was_queued {
+                inner.remove(task.tid);
+                task.on_rq.store(false, Ordering::Release);
+            }
+            task.set_sched_class(new);
+            if was_queued && !matches!(new, crate::SchedClass::Idle) {
+                inner.enqueue(task.clone());
+            }
+            rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        }
+        None => task.set_sched_class(new),
+    }
+}
