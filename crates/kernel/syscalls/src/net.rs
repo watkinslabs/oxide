@@ -6,7 +6,8 @@
 // mmsg pair) so callers keep using `crate::net::sys_*`.
 #![cfg(target_os = "oxide-kernel")]
 
-pub use crate::mmsg::{sys_sendmmsg, sys_recvmmsg};
+pub use crate::s299_recvmmsg::sys_recvmmsg;
+pub use crate::s307_sendmmsg::sys_sendmmsg;
 
 // F162: sys_recvfrom lives in net_recv.rs. Re-exported via the
 // syscalls module.
