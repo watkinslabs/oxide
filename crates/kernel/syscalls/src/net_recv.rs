@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
-use crate::net::{
+use crate::net_common::{
     errno_from_neterr, file_is_nonblock, socket_from_fd,
 };
 use crate::net_sockaddr::{write_sockaddr_for_socket, write_sockaddr_in6_peer};
