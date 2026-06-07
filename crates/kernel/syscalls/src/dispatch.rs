@@ -146,9 +146,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         // verifier + JIT ride a follow-up. Other cmds → -ENOSYS so
         // userspace doesn't think it has a working bpf() world.
         syscall::nrs::NR_BPF           => security::bpf::sys_bpf(&args),
-        syscall::nrs::NR_LANDLOCK_CREATE_RULESET => crate::landlock::sys_landlock_create_ruleset(&args),
-        syscall::nrs::NR_LANDLOCK_ADD_RULE       => crate::landlock::sys_landlock_add_rule(&args),
-        syscall::nrs::NR_LANDLOCK_RESTRICT_SELF  => crate::landlock::sys_landlock_restrict_self(&args),
+        syscall::nrs::NR_LANDLOCK_CREATE_RULESET => crate::s444_landlock_create_ruleset::sys_landlock_create_ruleset(&args),
+        syscall::nrs::NR_LANDLOCK_ADD_RULE       => crate::s445_landlock_add_rule::sys_landlock_add_rule(&args),
+        syscall::nrs::NR_LANDLOCK_RESTRICT_SELF  => crate::s446_landlock_restrict_self::sys_landlock_restrict_self(&args),
         // perf_event_open: real PerfEventInode whose read returns the
         // monotonic-ns sample since open; ioctl handles ENABLE/DISABLE/
         // RESET/REFRESH. PMU hardware sampling + ring-buffer mmap
@@ -184,10 +184,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PAUSE     => crate::s034_pause::sys_pause(&args),
         syscall::nrs::NR_GETITIMER => crate::s036_getitimer::sys_getitimer(&args),
         syscall::nrs::NR_SETITIMER => crate::s038_setitimer::sys_setitimer(&args),
-        syscall::nrs::NR_PIDFD_OPEN  => crate::pidfd::sys_pidfd_open(&args),
-        syscall::nrs::NR_PIDFD_GETFD => crate::pidfd::sys_pidfd_getfd(&args),
+        syscall::nrs::NR_PIDFD_OPEN  => crate::s434_pidfd_open::sys_pidfd_open(&args),
+        syscall::nrs::NR_PIDFD_GETFD => crate::s438_pidfd_getfd::sys_pidfd_getfd(&args),
         syscall::nrs::NR_PIDFD_SEND_SIGNAL
-                                 => crate::pidfd::sys_pidfd_send_signal(&args),
+                                 => crate::s424_pidfd_send_signal::sys_pidfd_send_signal(&args),
         syscall::nrs::NR_INOTIFY_INIT | syscall::nrs::NR_INOTIFY_INIT1
                                  => ::fs::inotify::sys_inotify_init1(&args),
         syscall::nrs::NR_INOTIFY_ADD_WATCH
