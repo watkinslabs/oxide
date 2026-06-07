@@ -293,3 +293,16 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     if fdt.get(args.a0 as i32).is_err() { return errno(Errno::Ebadf); }
     0
 }
+
+/// docs/15 §2 OBSOLETE numbers — modern Linux x86_64 itself returns ENOSYS for
+/// these reserved slots, so matching Linux means a deliberate enosys (not the
+/// accidental dispatch fall-through). The main match routes them here.
+/// # C: O(1)
+pub fn is_obsolete(nr: u64) -> bool {
+    use syscall::nrs::*;
+    matches!(nr,
+        NR_CREATE_MODULE | NR_GET_KERNEL_SYMS | NR_QUERY_MODULE | NR_NFSSERVCTL
+        | NR_GETPMSG | NR_PUTPMSG | NR_AFS_SYSCALL | NR_TUXCALL | NR_SECURITY
+        | NR_SET_THREAD_AREA | NR_GET_THREAD_AREA | NR_EPOLL_CTL_OLD
+        | NR_EPOLL_WAIT_OLD)
+}
