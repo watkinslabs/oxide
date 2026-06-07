@@ -35,11 +35,14 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr;
 #[path = "000_read.rs"]  pub mod s000_read;
 #[path = "001_write.rs"] pub mod s001_write;
+mod open_common;
+#[path = "002_open.rs"]   pub mod s002_open;
+#[path = "257_openat.rs"] pub mod s257_openat;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
 
-pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
+pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
 
 
 use syscall::{dispatch, SyscallArgs};
@@ -529,7 +532,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_GETPPID       => s110_getppid::sys_getppid(&args),
         syscall::nrs::NR_READ          => s000_read::sys_read(&args),
         syscall::nrs::NR_WRITE         => s001_write::sys_write(&args),
-        syscall::nrs::NR_OPEN          => crate::open::sys_open(&args),
+        syscall::nrs::NR_OPEN          => s002_open::sys_open(&args),
         syscall::nrs::NR_BRK           => sys_brk(&args),
         syscall::nrs::NR_PIPE2         => sys_pipe2(&args),
         syscall::nrs::NR_FSTAT         => crate::fs::sys_fstat(&args),
@@ -694,7 +697,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SPLICE     => sched::xfer::sys_splice(&args),
         syscall::nrs::NR_TEE        => sched::xfer::sys_tee(&args),
         syscall::nrs::NR_VMSPLICE   => sched::xfer::sys_vmsplice(&args),
-        syscall::nrs::NR_OPENAT        => crate::open::sys_openat(&args),
+        syscall::nrs::NR_OPENAT        => s257_openat::sys_openat(&args),
         // openat2: read flags+mode from open_how, route through openat.
         syscall::nrs::NR_OPENAT2       => {
             let how = args.a2;
@@ -707,7 +710,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                     sa.a3 = core::ptr::read_volatile((how + 8) as *const u64);
                 }
             }
-            crate::open::sys_openat(&sa)
+            s257_openat::sys_openat(&sa)
         }
         syscall::nrs::NR_FACCESSAT2    => crate::fs_access::sys_faccessat(&args),
         syscall::nrs::NR_SYNC => 0,
@@ -820,7 +823,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             a.a1 = 0;
             sys_pipe2(&a)
         }
-        syscall::nrs::NR_CREAT         => crate::open::sys_open(&args),
+        syscall::nrs::NR_CREAT         => s002_open::sys_open(&args),
         syscall::nrs::NR_EXIT_GROUP    => sys_exit(&args),
         syscall::nrs::NR_INIT_MODULE   => sys_init_module(&args),
         syscall::nrs::NR_FINIT_MODULE  => sys_finit_module(&args),
