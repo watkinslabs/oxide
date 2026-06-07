@@ -5,5 +5,5 @@ use syscall::SyscallArgs;
 /// `sys_rseq_slice_yield()` — slot 471.
 /// # C: O(1)
 pub fn sys_rseq_slice_yield(args: &SyscallArgs) -> i64 {
-    crate::proc::sys_sched_yield(args)
+    crate::s024_sched_yield::sys_sched_yield(args)
 }

@@ -273,10 +273,10 @@ fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
     };
     match opcode {
         IORING_OP_NOP    => 0,
-        IORING_OP_READ   => crate::fs::sys_pread64(&sa),
-        IORING_OP_WRITE  => crate::fs::sys_pwrite64(&sa),
-        IORING_OP_READV  => crate::fs::sys_readv(&sa),
-        IORING_OP_WRITEV => crate::fs::sys_writev(&sa),
+        IORING_OP_READ   => crate::s017_pread64::sys_pread64(&sa),
+        IORING_OP_WRITE  => crate::s018_pwrite64::sys_pwrite64(&sa),
+        IORING_OP_READV  => crate::s019_readv::sys_readv(&sa),
+        IORING_OP_WRITEV => crate::s020_writev::sys_writev(&sa),
         IORING_OP_FSYNC  => 0,
         IORING_OP_CLOSE  => crate::s003_close::sys_close(&sa),
         IORING_OP_OPENAT => crate::s257_openat::sys_openat(&sa),
