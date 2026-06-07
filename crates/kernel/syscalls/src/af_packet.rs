@@ -59,7 +59,7 @@ pub fn write_sockaddr_ll(src_p: u64, sock: &Arc<InetSocket>, frame: &[u8]) {
 /// header. SOCK_DGRAM (2) — kernel prepends an ethernet header
 /// using `dest_mac` (from sendto's sockaddr_ll.sll_addr if
 /// supplied; broadcast otherwise) and the socket's stored
-/// protocol as ethertype. busybox udhcpc opens SOCK_DGRAM.
+/// protocol as ethertype. A SOCK_DGRAM DHCP client uses this.
 ///
 /// # SAFETY: `bufp..bufp+len` validated < USER_VA_END by caller.
 /// # C: O(len) — single copy into a fresh Vec.

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Fetch + verify util-linux source tarball. D1 of the distro roadmap:
-# drop busybox in favor of real distro programs (login, agetty,
-# mount, su, umount, losetup, etc.). Static-musl cross-build via
-# vendor/util-linux/build.sh.
+# real distro programs (login, agetty, mount, su, umount, losetup,
+# etc.). Static-musl cross-build via vendor/util-linux/build.sh.
 set -euo pipefail
 
 VERSION="2.40.2"

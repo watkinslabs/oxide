@@ -75,8 +75,8 @@ Mostly disk-bound; budget is non-disk overhead.
 
 ## 9 Test contract (frozen)
 
-- Static busybox loads + runs.
-- Dyn busybox + ld-oxide loads + runs.
+- Static binary loads + runs.
+- Dyn binary + ld-oxide loads + runs.
 - Bad e_machine: ENOEXEC.
 - Both W&X segment: ENOEXEC.
 - PT_INTERP not found: ELIBBAD.

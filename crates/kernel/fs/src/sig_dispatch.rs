@@ -300,7 +300,7 @@ pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32, saved_ret: u64)
     let new_sp = saved_sp.saturating_sub(SIG_FRAME_BYTES) & !0xfu64;
     // Block the delivered signal during its handler (POSIX
     // SA_NODEFER-off). Prevents the syscall-return path from
-    // re-entering deliver_arm for SIGCHLD while busybox-init is
+    // re-entering deliver_arm for SIGCHLD while init is
     // still inside its SIGCHLD handler; each nested frame would
     // otherwise stomp on the outer handler's saved-callee area.
     use core::sync::atomic::Ordering;

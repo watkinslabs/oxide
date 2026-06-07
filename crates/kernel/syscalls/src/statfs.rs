@@ -53,7 +53,7 @@ pub fn magic_for_path(path: &str) -> u64 {
 
 /// Fill a 120-byte `struct statfs` (identical LP64 layout on x86_64
 /// and aarch64). `magic` is `f_type`; `blocks`/`bfree`/`bavail`/`files`
-/// fill the usage fields so `df` keeps the entry (busybox df drops
+/// fill the usage fields so `df` keeps the entry (df drops
 /// rows with f_blocks==0).
 /// # C: O(1)
 fn write_statfs(buf: u64, magic: u64, blocks: u64, bfree: u64, files: u64) {

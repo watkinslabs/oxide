@@ -118,7 +118,7 @@ PMU access: per-CPU MSR; group locking when multiple counters share a group.
 - `klog::trace!` with level `info`: zero-cost (verified via `cargo asm` snapshot).
 - `dmesg` output matches expected substrings on a known boot.
 - Tracepoint enable: `echo 1 > /sys/kernel/tracing/events/sched/sched_switch/enable`; pipe contains records.
-- `perf stat busybox echo` reports nonzero cycles + instructions.
+- `perf stat echo` reports nonzero cycles + instructions.
 - Coverage ≥80%.
 
 ## 14 Failure modes

@@ -12,10 +12,10 @@ use hal::{USER_VA_END, TimerOps};
 /// "All signals that were being caught by the calling thread (set
 /// to a value other than SIG_DFL and SIG_IGN) are reset to the
 /// default disposition." Without this, a SIGCHLD handler installed
-/// by busybox-init at e.g. 0x4925f9 leaks into every execve'd
+/// by init at e.g. 0x4925f9 leaks into every execve'd
 /// child — when the child later forks its own grandchild and the
 /// grandchild exits, SIGCHLD fires with handler=0x4925f9, but that
-/// address is in busybox's text not the child's, so iretq lands
+/// address is in init's text not the child's, so iretq lands
 /// on an unmapped page and the child silently SIGSEGVs in its
 /// waitpid path.
 /// # SAFETY: running task on this CPU; preempt-off; sole writer
@@ -276,7 +276,7 @@ fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
-    // 64 KiB stack — busybox + glibc/musl static binaries routinely
+    // 64 KiB stack — glibc/musl static binaries routinely
     // use >4 KiB through SIGCHLD handlers, /proc parsers, and stdio
     // init. A single 4 KiB page underflows on the first wide musl
     // F230: real Linux layout. The stack reservation is RLIMIT_STACK
@@ -573,7 +573,7 @@ fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 
         Ok(i)  => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
-    // 64 KiB stack — busybox + glibc/musl static binaries (Go later)
+    // 64 KiB stack — glibc/musl static binaries (Go later)
     // F230: real Linux layout (matches x86_64 path above). Stack
     // reservation = RLIMIT_STACK (8 MiB default), allocated up-front
     // per Linux's setup_arg_pages(); mmap_base = stack_bottom -

@@ -36,7 +36,7 @@ FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
 - Changed: explicit disposition rows for every syscall slot that
   is admit / silent-0 / EPERM / ENOSYS instead of full Linux
   semantics. Previously the table left these as ambiguous "V1"
-  rows; userspace consumers (musl, busybox, distro programs)
+  rows; userspace consumers (musl, distro programs)
   could not predict whether a return code reflected real work.
 - Disposition labels and where each slot lives:
     - **REAL (Linux semantics)** — most slots; see syscall_glue.rs

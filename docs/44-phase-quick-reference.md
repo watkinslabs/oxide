@@ -18,7 +18,7 @@ DRAFT 2026-05-14. Dep:`00`,`40`,`43`.
 | 2 | VMM + MMU bring-up, per-CPU areas, TLB shootdown | `11`,`20`,`21` |
 | 3 | Slab allocator + `GlobalAlloc` wiring | `12` |
 | 4 | Scheduler, context switch, preemption, SMP | `13`,`14` |
-| 5 | Syscalls, ELF loader, init, busybox shell path | `15`,`31`,`29` |
+| 5 | Syscalls, ELF loader, init, bash shell path | `15`,`31`,`29` |
 | 6 | VFS + tmpfs + procfs + sysfs + devtmpfs + ext4 RO | `16`,`19` |
 | 7a | Block layer + page cache | `17` |
 | 7b | ext4 RW + JBD2 | `17` |
@@ -61,7 +61,7 @@ DRAFT 2026-05-14. Dep:`00`,`40`,`43`.
 
 | Bucket | Binaries |
 |---|---|
-| Substrate (phases 0–9) | busybox shell/core tools, static Go binary, static Rust+tokio binary, redis, nginx (no io_uring), openssh-server, chrony/ntpd (`43§2`) |
+| Substrate (phases 0–9) | bash + coreutils + util-linux, static Go binary, static Rust+tokio binary, redis, nginx (no io_uring), openssh-server, chrony/ntpd (`43§2`) |
 | Async + container (phases 22–26) | nginx with io_uring, runc privileged OCI bundle, bpftrace probe, perf record/report, cri-o or containerd minimal (`43§3`) |
 | Distro endgame (phases 27–32) | systemd as PID 1, Wayland GUI path, full Docker/Moby path, KVM backend (`43§4`) |
 

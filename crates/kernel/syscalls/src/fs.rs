@@ -389,7 +389,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         // blocks) are valid. Pre-fix mask omitted NLINK/UID/GID/SIZE,
         // which broke ARM musl's stat() wrapper: it returned a struct
         // stat with st_uid/st_gid/st_size synthesised from the
-        // unmasked fields, and busybox-ash's perm check rejected the
+        // unmasked fields, and the shell's perm check rejected the
         // file as \"not executable for caller\" → \"Permission denied\".
         const STATX_BASIC_STATS: u32 = 0x7ff;
         core::ptr::write_volatile(buf as *mut u32, STATX_BASIC_STATS);

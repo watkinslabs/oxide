@@ -215,7 +215,7 @@ impl ContextAArch64 {
             base.add(22).write(user_ip);          // ELR_EL1 = user entry
             // SPSR_EL1 = 0: M=EL0t (0b0000), DAIF all clear so EL0
             // accepts IRQ delivery — without this PL011 RX (SPI 33)
-            // never wakes the kernel while busybox is blocked on
+            // never wakes the kernel while the shell is blocked on
             // read(stdin), and the login prompt accepts no input.
             base.add(23).write(0);
             base.add(24).write(user_sp);          // sp_el0

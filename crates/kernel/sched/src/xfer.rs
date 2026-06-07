@@ -107,7 +107,7 @@ pub fn sys_splice(args: &SyscallArgs) -> i64 {
 /// behaves like splice (read-and-consume from in_fd, write to
 /// out_fd). The semantic difference matters only when both ends
 /// of the pipe are still open + the caller intended to consume
-/// elsewhere, which v1 callers (busybox tee, dd) tolerate.
+/// elsewhere, which v1 callers (tee, dd) tolerate.
 /// # C: O(len)
 pub fn sys_tee(args: &SyscallArgs) -> i64 {
     let mut sa = *args;

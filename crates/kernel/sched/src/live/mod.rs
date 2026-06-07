@@ -92,7 +92,7 @@ pub mod stop;
 ///
 /// Single global vs per-EpollInode: v1 simplification. Spurious
 /// wakeups are correct (level-triggered semantics) and cheap when
-/// N_epolls is small (busybox+dhcpcd boot has <5). Per-fd targeted
+/// N_epolls is small (a boot has <5). Per-fd targeted
 /// wakeups are a follow-up once the Inode trait grows a poll-wait
 /// hook without dragging sched into vfs.
 pub static EPOLL_GLOBAL_WAIT: WaitList = WaitList::new();

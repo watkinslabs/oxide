@@ -3,11 +3,11 @@
 # Idempotent: skips download/extract if target tree already exists.
 #
 # F216: first GNU userspace program cross-built into the rootfs as a
-# distro-pathway shakedown — bash exercises a much wider libc and
-# kernel surface than busybox ash (job control, signal handling,
-# fork+exec patterns, /dev/tty redirection, large readline-free
-# command line), so each gap surfaces a kernel/libc fix to land in
-# the same PR per CLAUDE.md no-deferrals rule.
+# distro-pathway shakedown — bash exercises a wide libc and kernel
+# surface (job control, signal handling, fork+exec patterns,
+# /dev/tty redirection, large readline-free command line), so each
+# gap surfaces a kernel/libc fix to land in the same PR per
+# CLAUDE.md no-deferrals rule. bash is the shell.
 set -euo pipefail
 
 VERSION="5.2.37"

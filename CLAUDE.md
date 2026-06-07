@@ -22,7 +22,7 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
    - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
    - Any aarch64 gap exposed by the work (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain, missing register save/restore, etc.) closes in the SAME PR — never deferred to a later session
    - Userspace `.c` sources must compile on both arches via musl libc wrappers, not raw `syscall` inline asm. Use `userspace/shared/oxide_start.h` for the portable `_start` shim
-   - The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`; vendored aarch64 busybox lives at `vendor/busybox/busybox-aarch64`
+   - The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`. Userspace comes from real vendor cross-builds (bash, coreutils, util-linux, systemd, …) — never hand-rolled minimal replacements.
 
    **No "x86 first, ARM later" anywhere in the phase ladder.** Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5; lockstep gaps go in the same PR or block phase exit.
 
@@ -144,7 +144,7 @@ Bare integer literals in any of these positions = silent bug bait
 
 ## Boot smoke before push (mandatory for kernel changes)
 
-Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real userspace (init, musl, busybox) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
+Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real userspace (systemd, musl, bash) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
 
 **Rule:** before `git push` on a branch that touches `kernel/`, `crates/kernel/`, `crates/drivers/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`, `rust-toolchain.toml`, `Cargo.toml`, or `Cargo.lock` — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach login.
 
@@ -184,7 +184,7 @@ When a change spans subsystems, needs many boot-test cycles, or sits on a struct
 
 Counter is per-type, monotonically increasing, never reused. Two-digit minimum (`NN`); widen to three (`NNN`) once any single type passes 99. Title is kebab-case, ≤40 chars, no trailing slashes. Old `feature/`, `fix/`, etc. branches predate this scheme and are kept as-is for history.
 
-**Phase prefix MUST match `00§3` master-plan phase.** `P<n>-` means phase-`n` per the master-plan §3 table (0=build infra, 1=PMM, 2=VMM+MMU, 3=slab, 4=sched+ctxsw+preempt+SMP, 5=syscalls+ELF+init+busybox-sh, 6=VFS+ext4 RO, 7a=block+pagecache, 7b=ext4 RW, 8=net, 9=hardening, 10=modules loader, 11=PCI enumeration, 12=virtio common, 13=dynamic linker, 14=libc/NSS/PAM, 15=system manager, 16=RPM toolchain, 17=tty + login). Rotate the prefix when crossing a phase boundary; do **not** keep using the old phase number as a generic counter. Counter resets to `01` per phase. Example: when phase 4 work begins, branches restart at `P4-01-...`, regardless of how high the `P3-` counter went.
+**Phase prefix MUST match `00§3` master-plan phase.** `P<n>-` means phase-`n` per the master-plan §3 table (0=build infra, 1=PMM, 2=VMM+MMU, 3=slab, 4=sched+ctxsw+preempt+SMP, 5=syscalls+ELF+init+bash, 6=VFS+ext4 RO, 7a=block+pagecache, 7b=ext4 RW, 8=net, 9=hardening, 10=modules loader, 11=PCI enumeration, 12=virtio common, 13=dynamic linker, 14=libc/NSS/PAM, 15=system manager, 16=RPM toolchain, 17=tty + login). Rotate the prefix when crossing a phase boundary; do **not** keep using the old phase number as a generic counter. Counter resets to `01` per phase. Example: when phase 4 work begins, branches restart at `P4-01-...`, regardless of how high the `P3-` counter went.
 
 **Phases are sequential (`00§3`, `00§14` rule 3): no parallel-across-gate.** Don't start phase-`n+1` work while phase-`n` exit gates aren't met. Phase exit = PR-time CI green + canary 1h + bench within budget + coverage met + the per-spec §Test-contract gate. Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5. Auditing "what phase are we actually in" before starting a branch is mandatory; pick the lowest unfinished phase.
 

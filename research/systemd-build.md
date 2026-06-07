@@ -127,6 +127,6 @@ NEXT (F350 fix): boot systemd-PID1 with KERNEL syscall tracing (--features debug
 targeted trace) to see the exact stuck syscall (likely a mount(2) with flags/opts our mount
 mishandles, OR epoll/signalfd/timerfd for sd-event, OR a blocking read). Fix that ONE gap
 (most mount/cgroup/epoll/signalfd/timerfd machinery exists from Track K — wire/extend).
-Iterate: each gap gets systemd further. Keep busybox as the gate's default PID1 (login smoke)
-while iterating systemd-as-init via the temp elf.rs swap locally OR a init= cmdline branch.
+Iterate: each gap gets systemd further. Keep the prior minimal-init as the gate's default PID1
+(login smoke) while iterating systemd-as-init via the temp elf.rs swap locally OR a init= cmdline branch.
 Recon edits (elf.rs PID1→systemd, image_qemu cmdline debug) were REVERTED — reapply locally to iterate.

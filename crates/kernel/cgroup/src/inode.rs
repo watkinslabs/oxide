@@ -123,7 +123,7 @@ impl Inode for CgFile {
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         let s = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?;
         // A cgroup control file takes ONE value per write. Userspace
-        // (bash/busybox `echo`, GNU `printf`) emits the trailing
+        // (bash `echo`, GNU `printf`) emits the trailing
         // newline as a SEPARATE write() at a non-zero offset, so the
         // kernel sees `7` then `\n` as two calls. Linux kernfs buffers
         // the whole write and parses once; we parse per-write, so a

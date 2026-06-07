@@ -81,7 +81,7 @@ pub fn resolve_dentry(abs: &str) -> Option<Arc<vfs::Dentry>> {
 /// Read an executable's full bytes by resolving `path` through the
 /// dentry walk (`resolve`, follows symlinks + crosses mounts), then
 /// pulling the regular-file contents via the inode's `read`. THE exec
-/// loader path (`docs/16§3`, `31§4`): `/bin/sh`→`busybox` symlinks and
+/// loader path (`docs/16§3`, `31§4`): `/bin/sh`→`bash` symlinks and
 /// merged-usr `/bin`→`/usr/bin` resolve here exactly as Linux's
 /// `do_open_execat` walks the path. Returns `None` when the root dentry
 /// isn't built yet (pre-mount early boot — caller falls back to the raw
