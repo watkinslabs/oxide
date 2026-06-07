@@ -297,6 +297,12 @@ pub struct Task {
     /// /proc/<pid>/stat field 19.
     pub nice: AtomicI8,
 
+    /// Per-task I/O priority per ioprio_set/get(2). Packed: class =
+    /// `ioprio >> 13` (0=NONE, 1=RT, 2=BE, 3=IDLE), level = low 13 bits.
+    /// 0 = IOPRIO_CLASS_NONE (kernel derives from nice). Inherited on
+    /// fork; honored by a priority-aware I/O scheduler when present.
+    pub ioprio: AtomicU16,
+
     /// Monotonic ns at spawn; getrusage/times/proc-stat utime
     /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
     pub spawn_ns: AtomicU64,
@@ -845,6 +851,7 @@ impl Task {
             environ:    UnsafeCell::new(None),
             rlimits:    UnsafeCell::new(crate::rlimit::DEFAULT_RLIMITS),
             nice:       AtomicI8::new(0),
+            ioprio:     AtomicU16::new(0),
             spawn_ns:   AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
             cumulative_child_ns: AtomicU64::new(0),

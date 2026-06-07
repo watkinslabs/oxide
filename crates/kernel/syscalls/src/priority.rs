@@ -40,7 +40,12 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
     if touched { 0 } else { -(syscall::errno::Errno::Esrch.as_i32() as i64) }
 }
 
-fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sync::Arc<sched::Task>)) {
+/// Resolve a `which`/`who` target set (0=PROCESS, 1=PGRP, 2=USER — the
+/// getpriority(2) base) and call `f` for each task. Shared with ioprio_set/get
+/// (slots 251/252), which pass `which-1` to map IOPRIO_WHO_PROCESS=1/PGRP=2/
+/// USER=3 onto the same resolution.
+/// # C: O(N_tasks) for PGRP/USER; O(1) for PROCESS
+pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sync::Arc<sched::Task>)) {
     use core::sync::atomic::Ordering;
     match which {
         0 => {
