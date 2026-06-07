@@ -415,6 +415,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         put(&less_bin, "/usr/bin/less")?;
     }
 
+    // ripgrep 14.1.1 static-musl (Rust) → /usr/bin/rg.
+    let rg_bin = repo.join(format!("vendor/ripgrep/rg-{}", arch));
+    if rg_bin.is_file() {
+        put(&rg_bin, "/usr/bin/rg")?;
+    }
+
     // GNU gzip 1.13 static-musl → /usr/bin/gzip (+gunzip via argv[0]).
     let gzip_bin = repo.join(format!("vendor/gzip/gzip-{}", arch));
     if gzip_bin.is_file() {

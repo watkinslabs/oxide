@@ -504,3 +504,10 @@ python/Python-3.13.1.tgz
 !libffi/install-aarch64/**
 libffi/libffi-3.4.6/
 libffi/libffi-3.4.6.tar.gz
+# ripgrep 14.1.1 — F399. Rust tool, static-musl via cargo. /usr/bin/rg.
+!ripgrep/
+!ripgrep/build.sh
+!ripgrep/rg-x86_64
+!ripgrep/rg-aarch64
+ripgrep/ripgrep-14.1.1/
+ripgrep/ripgrep-14.1.1.tar.gz
