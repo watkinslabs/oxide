@@ -19,6 +19,8 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get;
 #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "461_lsm_list_modules.rs"]  pub mod s461_lsm_list;
+#[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
+#[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
 
 pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
@@ -895,6 +897,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_LSM_GET_SELF_ATTR => s459_lsm_get::sys_lsm_get_self_attr(&args),
         syscall::nrs::NR_LSM_SET_SELF_ATTR => s460_lsm_set::sys_lsm_set_self_attr(&args),
         syscall::nrs::NR_LSM_LIST_MODULES  => s461_lsm_list::sys_lsm_list_modules(&args),
+        syscall::nrs::NR_FUTEX_WAKE       => s454_futex_wake::sys_futex_wake(&args),
+        syscall::nrs::NR_FUTEX_WAIT       => s455_futex_wait::sys_futex_wait(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
