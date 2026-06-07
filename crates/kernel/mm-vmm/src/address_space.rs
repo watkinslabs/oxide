@@ -597,6 +597,29 @@ impl AddressSpace {
         tree.mprotect_range(addr, end, prot)
     }
 
+    /// True if any VMA in `[addr, addr+len)` is mseal'd. The syscall layer
+    /// (sys_mprotect/munmap/mremap) checks this and returns EPERM when true,
+    /// per mseal(2). Kernel-internal teardown (exec/exit) bypasses it — only
+    /// userspace ops are sealed, matching Linux.
+    /// # C: O(K)
+    pub fn range_sealed(&self, addr: UserVirtAddr, len: usize) -> bool {
+        match end_of(addr, len as u64) {
+            Ok(end) => self.vmas.read().any_sealed(addr, end),
+            Err(_)  => false,
+        }
+    }
+
+    /// mseal(2): seal `[addr, addr+len)` so later userspace mprotect/munmap/
+    /// mremap fail with EPERM. Full coverage required (hole → Inval, which the
+    /// shim maps to ENOMEM). Idempotent.
+    /// # C: O(K log N)
+    pub fn mseal(&self, addr: UserVirtAddr, len: usize) -> KResult<()> {
+        validate_len(len)?;
+        validate_aligned(addr)?;
+        let end = end_of(addr, len as u64)?;
+        self.vmas.write().seal_range(addr, end)
+    }
+
     /// Audit hook: invariant 1 (non-overlap, `11§2`). Used by tests
     /// and by `debug-vmm` per `11§13`.
     /// # C: O(N)
