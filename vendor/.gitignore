@@ -567,3 +567,31 @@ dust/dust-1.1.1.tar.gz
 !sd/sd-aarch64
 sd/sd-1.0.0/
 sd/sd-1.0.0.tar.gz
+# bottom 0.10.2 — system monitor btm. Rust, static-musl. /usr/bin/btm.
+!bottom/
+!bottom/build.sh
+!bottom/btm-x86_64
+!bottom/btm-aarch64
+bottom/bottom-0.10.2/
+bottom/bottom-0.10.2.tar.gz
+# procs 0.14.10 — modern ps. Rust, static-musl. /usr/bin/procs.
+!procs/
+!procs/build.sh
+!procs/procs-x86_64
+!procs/procs-aarch64
+procs/procs-0.14.10/
+procs/procs-0.14.10.tar.gz
+# zoxide 0.9.6 — smarter cd. Rust, static-musl. /usr/bin/zoxide.
+!zoxide/
+!zoxide/build.sh
+!zoxide/zoxide-x86_64
+!zoxide/zoxide-aarch64
+zoxide/zoxide-0.9.6/
+zoxide/zoxide-0.9.6.tar.gz
+# ncdu 1.21 — disk-usage TUI. C, static-musl + vendored ncursesw. /usr/bin/ncdu.
+!ncdu/
+!ncdu/build.sh
+!ncdu/ncdu-x86_64
+!ncdu/ncdu-aarch64
+ncdu/ncdu-1.21/
+ncdu/ncdu-1.21.tar.gz
