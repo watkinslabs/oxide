@@ -463,6 +463,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("yazi", "ya", "/usr/bin/ya"),
         ("dialog", "dialog", "/usr/bin/dialog"),
         ("btop", "btop", "/usr/bin/btop"),
+        ("dua", "dua", "/usr/bin/dua"),
+        // starship/glow/micro/duf built (recipes vendored) but NOT staged: they
+        // hang on startup under oxide (not a tty-read block — persists with stdin
+        // redirected). Likely an async-runtime/thread or syscall gap. Re-add here
+        // once that startup-hang is diagnosed (debug-all syscall trace).
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
