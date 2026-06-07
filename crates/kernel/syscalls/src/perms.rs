@@ -1,162 +1,24 @@
-// Real `chmod` / `fchmod` / `fchmodat` / `chown` / `fchown` /
-// `lchown` / `fchownat` (slots 90/91/268/92/93/94/260). v1 stores
-// the mode + owner overlay in `inode_times` so statx surfaces them
-// back to userspace. Real per-inode metadata (Inode trait extension
-// or per-FS storage) rides a follow-up that touches every Inode impl.
+// chmod/chown family dispatch arm. Per docs/53 §0 each handler now lives
+// in its own per-syscall file (090_chmod, 091_fchmod, 268_fchmodat,
+// 092_chown, 093_fchown, 260_fchownat); shared resolver helpers + AT_*
+// consts live in perms_common.rs. This file retains only the single-arm
+// dispatch helper consumed by dispatch.rs.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
-use vfs::InodeRef;
-
-fn now_ns() -> u64 {
-    use hal::TimerOps;
-    #[cfg(target_arch = "x86_64")]
-    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
-    #[cfg(target_arch = "aarch64")]
-    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-}
-
-/// AT_FDCWD sentinel — legacy (non-*at) callers pass this so the path
-/// resolves against cwd; *at callers pass the real dirfd.
-const AT_FDCWD: i32 = -100;
-
-/// `AT_SYMLINK_NOFOLLOW` (uapi): when set in a *at `at_flags`, operate on the
-/// symlink itself rather than its target. Shared by the *at families.
-pub(crate) const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-
-/// Resolve a dirfd-relative path to its inode (shared by chmod/chown *at and
-/// the *xattrat family). `follow` controls symlink-following (AT_SYMLINK_NOFOLLOW).
-/// # C: O(N_path)
-pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
-    if path_ptr == 0 || path_ptr >= hal::USER_VA_END {
-        return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: path_ptr in user range; bounded read via existing helper.
-    let bytes = unsafe { devfs::read_user_cstr(path_ptr, 256) };
-    let raw = bytes.and_then(|b| if b.is_empty() { None } else { core::str::from_utf8(b).ok() })
-        .ok_or(-(Errno::Einval.as_i32() as i64))?;
-    // BUG D: resolve against the dirfd's directory for a real fd-relative
-    // dirfd (fchmodat/fchownat); resolve_at(AT_FDCWD, raw) == resolve_cwd(raw)
-    // so legacy chmod/chown are unchanged.
-    let resolved = crate::pathresolve::resolve_at(dirfd, raw)
-        .unwrap_or_else(|| crate::pathresolve::resolve_cwd(raw));
-    let s = resolved.as_str();
-    // THE resolver (path-walk): crosses mounts, follows symlinks unless
-    // `!follow` (chmod/chown follow; AT_SYMLINK_NOFOLLOW / lchown don't).
-    crate::pathresolve::resolve(s, !follow)
-        .ok_or(-(Errno::Enoent.as_i32() as i64))
-}
-
-fn resolve_fd_inode(fd: i32) -> Result<InodeRef, i64> {
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return Err(-(Errno::Ebadf.as_i32() as i64)),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return Err(-(Errno::Ebadf.as_i32() as i64)),
-    };
-    let f = match fdt.get(fd) {
-        Ok(f) => f, Err(_) => return Err(-(Errno::Ebadf.as_i32() as i64)),
-    };
-    Ok(f.inode().clone())
-}
-
-/// `sys_chmod(path, mode)` — slot 90.
-/// # C: O(N_path)
-pub fn sys_chmod(args: &SyscallArgs) -> i64 {
-    // F132: AF_UNIX socket paths don't have backing filesystem
-    // entries in v1 — the UnixRegistry tracks them by string key.
-    // Linux's bind(AF_UNIX) materialises a socket-type inode at the
-    // path; chmod on it succeeds. Until we materialise socket-type
-    // tmpfs inodes, accept chmod on any known UnixRegistry path
-    // so dhcpcd's control-socket setup (bind → chmod → listen)
-    // doesn't bail at the chmod step.
-    // SAFETY: read_user_cstr does its own ptr-range + bounded-read validation.
-    if let Some(bytes) = unsafe { devfs::read_user_cstr(args.a0, 108) } {
-        if let Ok(s) = core::str::from_utf8(bytes) {
-            if net::sock::UNIX_REGISTRY.is_bound(s) { return 0; }
-        }
-    }
-    let inode = match resolve_path_inode(AT_FDCWD, args.a0, true) { Ok(i) => i, Err(rv) => return rv };
-    let m = args.a1 as u16;
-    if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
-    0
-}
-
-/// `sys_fchmod(fd, mode)` — slot 91.
-/// # C: O(1)
-pub fn sys_fchmod(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
-    let m = args.a1 as u16;
-    if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
-    0
-}
-
-/// BUG E: resolve the `*at` target. `AT_EMPTY_PATH` (0x1000) with an empty
-/// path means "operate on the dirfd itself" — i.e. fchmodat/fchownat with `""`
-/// == fchmod/fchown on the open fd. systemd uses this to reset /dev/console's
-/// ownership/mode; without it the empty path resolved to EINVAL. Mirrors
-/// `newfstatat`'s AT_EMPTY_PATH handling.
-const AT_EMPTY_PATH: u32 = 0x1000;
-fn resolve_at_target(dirfd: i32, path_ptr: u64, flags: u32, follow: bool) -> Result<InodeRef, i64> {
-    if (flags & AT_EMPTY_PATH) != 0 {
-        // SAFETY: bounded 1-byte probe via the validated helper; only checks emptiness.
-        let empty = unsafe { devfs::read_user_cstr(path_ptr, 1) }
-            .map_or(true, |b| b.is_empty());
-        if empty { return resolve_fd_inode(dirfd); }
-    }
-    resolve_path_inode(dirfd, path_ptr, follow)
-}
-
-/// `sys_fchmodat(dirfd, path, mode, flags)` — slot 268.
-/// # C: O(N_path)
-pub fn sys_fchmodat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_at_target(args.a0 as i32, args.a1, args.a3 as u32, (args.a3 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
-    let m = args.a2 as u16;
-    if inode.set_perm(m).is_err() { vfs::inode_times::set_mode(&inode, m, now_ns()); }
-    0
-}
-
-/// `sys_chown(path, uid, gid)` / `sys_lchown(path, uid, gid)` — slots 92/94.
-/// # C: O(N_path)
-pub fn sys_chown(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_path_inode(AT_FDCWD, args.a0, true) { Ok(i) => i, Err(rv) => return rv };
-    let u = args.a1 as u32; let g = args.a2 as u32;
-    if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
-    0
-}
-
-/// `sys_fchown(fd, uid, gid)` — slot 93.
-/// # C: O(1)
-pub fn sys_fchown(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_fd_inode(args.a0 as i32) { Ok(i) => i, Err(rv) => return rv };
-    let u = args.a1 as u32; let g = args.a2 as u32;
-    if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
-    0
-}
-
-/// `sys_fchownat(dirfd, path, uid, gid, flags)` — slot 260.
-/// # C: O(N_path)
-pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_at_target(args.a0 as i32, args.a1, args.a4 as u32, (args.a4 as u32 & 0x100) == 0) { Ok(i) => i, Err(rv) => return rv };
-    let u = args.a2 as u32; let g = args.a3 as u32;
-    if inode.set_owner(u, g).is_err() { vfs::inode_times::set_owner(&inode, u, g, now_ns()); }
-    0
-}
 
 /// Single-arm dispatch helper for syscall_glue.rs.
 /// # C: O(1)
 pub fn perms_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     use syscall::nrs::*;
     let rv = match nr {
-        NR_CHMOD     => sys_chmod(args),
-        NR_FCHMOD    => sys_fchmod(args),
-        NR_FCHMODAT  => sys_fchmodat(args),
-        NR_CHOWN | NR_LCHOWN => sys_chown(args),
-        NR_FCHOWN    => sys_fchown(args),
-        NR_FCHOWNAT  => sys_fchownat(args),
+        NR_CHMOD     => crate::s090_chmod::sys_chmod(args),
+        NR_FCHMOD    => crate::s091_fchmod::sys_fchmod(args),
+        NR_FCHMODAT  => crate::s268_fchmodat::sys_fchmodat(args),
+        NR_CHOWN | NR_LCHOWN => crate::s092_chown::sys_chown(args),
+        NR_FCHOWN    => crate::s093_fchown::sys_fchown(args),
+        NR_FCHOWNAT  => crate::s260_fchownat::sys_fchownat(args),
         _ => return None,
     };
     Some(rv)
