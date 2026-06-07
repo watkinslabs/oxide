@@ -420,6 +420,16 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if rg_bin.is_file() {
         put(&rg_bin, "/usr/bin/rg")?;
     }
+    // Tooling backlog (static-musl): fd, bat, eza (Rust); jq (C).
+    for (dir, file, dest) in [
+        ("fd", "fd", "/usr/bin/fd"),
+        ("bat", "bat", "/usr/bin/bat"),
+        ("eza", "eza", "/usr/bin/eza"),
+        ("jq", "jq", "/usr/bin/jq"),
+    ] {
+        let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
+        if b.is_file() { put(&b, dest)?; }
+    }
 
     // GNU gzip 1.13 static-musl → /usr/bin/gzip (+gunzip via argv[0]).
     let gzip_bin = repo.join(format!("vendor/gzip/gzip-{}", arch));
