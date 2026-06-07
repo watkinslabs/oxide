@@ -32,10 +32,10 @@ use sync::{KMalloc, Spinlock};
 mod holes;
 pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
-/// Heap size carved out of BSS for the kernel's static heap. 16 MiB is
-/// generous for early-boot subsystems (vmm VMA tree, sched runqueues,
-/// vfs dentry cache); replaced by PMM-backed slab routing per `12§2`
-/// once a binary stage exists.
+/// Heap size carved out of BSS for the kernel's static heap. 64 MiB
+/// covers early-boot subsystems (vmm VMA tree, sched runqueues, vfs
+/// dentry cache) BEFORE the PMM grow hook is wired (kmain); after that,
+/// overflow routes to PMM-backed pages via `set_grow_hook` per `12§2`.
 pub const STATIC_HEAP_SIZE: usize = 64 * MIB;
 
 /// Bytes in 1 MiB.

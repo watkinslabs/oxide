@@ -23,9 +23,11 @@
 //                                  offset is the crux — GRUB loaded us
 //                                  at KP, so VMA must map to LMA, NOT
 //                                  phys 0.
-//   - HHDM 0xFFFF8000_0000_0000.. -> phys 0..1 GiB (identity direct
-//                                  map; matches the BootInfo.hhdm the
-//                                  MB2-info parsing will report).
+//   - HHDM 0xFFFF8000_0000_0000.. -> phys 0..4 GiB (identity direct
+//                                  map via 4 PDs; matches BootInfo.hhdm
+//                                  and aarch64's 0..4 GiB HHDM. The PMM
+//                                  derefs hhdm+pfn*4096 for every usable
+//                                  page; 1 GiB faulted at -m 2G.).
 
 #![allow(dead_code)]
 
@@ -82,6 +84,13 @@ mb2_pdpt_high: .skip 4096
 mb2_pdpt_hhdm: .skip 4096
 mb2_pd_low:    .skip 4096
 mb2_pd_high:   .skip 4096
+    /* HHDM page directories: 4 contiguous PDs = 4 GiB of 2 MiB identity
+       mappings (phys 0..4 GiB), matching aarch64's 0..4 GiB HHDM
+       (selfboot.rs). The PMM dereferences hhdm+pfn*4096 for EVERY usable
+       page during seed_range; a 1 GiB HHDM faulted at -m 2G. Still 2 MiB
+       pages — no PDPE1GB. >4 GiB RAM needs more PDs (or a post-boot HHDM
+       rebuild). */
+mb2_pd_hhdm:   .skip 16384
     .global mb2_saved_magic
     .global mb2_saved_info
 mb2_saved_magic: .skip 8
@@ -124,10 +133,11 @@ _mb2_entry:
     mov $0x0A, %al
     out %al, %dx
 
-    /* Zero the 6 contiguous page-table pages (not-present by default). */
+    /* Zero the 10 contiguous page-table pages (not-present by default):
+       pml4, pdpt_low, pdpt_high, pdpt_hhdm, pd_low, pd_high, pd_hhdm[0..3]. */
     mov $(mb2_pml4 - KB + KP), %edi
     xor %eax, %eax
-    mov $(6 * 4096 / 4), %ecx
+    mov $(10 * 4096 / 4), %ecx
     rep stosl
 
     /* pd_low: identity, entry[i] = (i*2MiB) | P|W|PS. */
@@ -157,13 +167,37 @@ _mb2_entry:
     cmp $(mb2_pd_high - KB + KP + 4096), %edi
     jne 2b
 
-    /* pdpt_low[0] = pd_low | P|W; pdpt_hhdm[0] = pd_low | P|W. */
+    /* pd_hhdm: 2048 identity 2 MiB entries = phys 0..4 GiB, entry[i] =
+       (i*2MiB) | P|W|PS. eax wraps to 0 after the last (entry 2047 =
+       0xFFE00000) write; the edi bound ends the loop before that matters. */
+    mov $(mb2_pd_hhdm - KB + KP), %edi
+    xor %eax, %eax
+3:
+    mov %eax, %edx
+    or  $0x83, %edx
+    mov %edx, (%edi)
+    movl $0, 4(%edi)
+    add $0x200000, %eax
+    add $8, %edi
+    cmp $(mb2_pd_hhdm - KB + KP + 16384), %edi
+    jne 3b
+
+    /* pdpt_low[0] = pd_low | P|W (trampoline low identity, 0..1 GiB). */
     mov $(mb2_pd_low - KB + KP), %eax
     or  $3, %eax
     mov $(mb2_pdpt_low - KB + KP), %edi
     mov %eax, (%edi)
+    /* pdpt_hhdm[0..3] = pd_hhdm pages | P|W → HHDM covers phys 0..4 GiB. */
+    mov $(mb2_pd_hhdm - KB + KP), %eax
+    or  $3, %eax
     mov $(mb2_pdpt_hhdm - KB + KP), %edi
-    mov %eax, (%edi)
+    mov %eax, 0x00(%edi)
+    add $0x1000, %eax
+    mov %eax, 0x08(%edi)
+    add $0x1000, %eax
+    mov %eax, 0x10(%edi)
+    add $0x1000, %eax
+    mov %eax, 0x18(%edi)
 
     /* pdpt_high[510] = pd_high | P|W  (0xFFFFFFFF80000000 >> 30 & 511 = 510). */
     mov $(mb2_pd_high - KB + KP), %eax
