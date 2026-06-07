@@ -33,6 +33,18 @@ pub const VIRTIO_BLK_F_FLUSH:    u64 = 1 << 9;
 /// addressing (the `sector` header field counts 512-byte units).
 pub const VIRTIO_BLK_SECTOR_BYTES: u32 = 512;
 
+/// Engine bounce-buffer data-region size. One virtio request carries up
+/// to this many bytes of payload in a single device-contiguous data
+/// descriptor, so a `submit_sync` of N 512B sectors collapses to
+/// `ceil(N / BOUNCE_DATA_SECTORS)` round-trips instead of N. Sized at
+/// 128 KiB so the common ext4 readahead window (≤128 KiB) is a single
+/// request; backed by a 256 KiB-aligned PMM region in the engine.
+pub const BOUNCE_DATA_BYTES: usize = 128 * 1024;
+/// 128 KiB / 512 = 256 virtio sectors per chunk (max sectors one chain
+/// transfers). The chunk loop in the engine steps by this.
+pub const BOUNCE_DATA_SECTORS: u64 =
+    BOUNCE_DATA_BYTES as u64 / VIRTIO_BLK_SECTOR_BYTES as u64;
+
 /// `virtio_blk_config` device-cfg offsets (spec §5.2.4).
 pub const BLK_CFG_OFF_CAPACITY: u64 = 0;   // le64 sectors (512B units)
 pub const BLK_CFG_OFF_BLK_SIZE: u64 = 20;  // le32, valid iff F_BLK_SIZE
@@ -165,6 +177,38 @@ pub fn sector_plan(
     let base = start_block.checked_mul(per)?;
     let total = (len_blocks as u64).checked_mul(per)?;
     Some((base, total))
+}
+
+/// Per-chunk plan for the engine's multi-sector loop. Given a sector
+/// run `(base_sector, total_sectors)` (from `sector_plan`) and a step
+/// index `chunk_idx` (0-based), return the next chunk as
+/// `(chunk_base_sector, chunk_sectors, byte_offset)`:
+///   * `chunk_base_sector` = base + chunk_idx*max — virtio sector the
+///     chunk header addresses,
+///   * `chunk_sectors` = min(max, remaining) — sectors this chunk moves,
+///     so the data descriptor length is `chunk_sectors*512`,
+///   * `byte_offset` = chunk_idx*max*512 — offset into the request
+///     buffer where this chunk's bytes start.
+/// `None` once the run is exhausted (`chunk_idx*max ≥ total_sectors`),
+/// terminating the loop. `max` is `BOUNCE_DATA_SECTORS` in the engine;
+/// passed in so the math is testable with small windows. `max == 0`
+/// guards to `None`.
+/// # C: O(1)
+pub fn chunk_plan(
+    base_sector: u64,
+    total_sectors: u64,
+    chunk_idx: u64,
+    max: u64,
+) -> Option<(u64, u64, usize)> {
+    if max == 0 { return None; }
+    let done = chunk_idx.checked_mul(max)?;
+    if done >= total_sectors { return None; }
+    let remaining = total_sectors - done;
+    let chunk_sectors = core::cmp::min(max, remaining);
+    let chunk_base = base_sector.checked_add(done)?;
+    let byte_offset =
+        done.checked_mul(VIRTIO_BLK_SECTOR_BYTES as u64)? as usize;
+    Some((chunk_base, chunk_sectors, byte_offset))
 }
 
 /// Linux virtio-blk disk name for a 0-based registration order index:

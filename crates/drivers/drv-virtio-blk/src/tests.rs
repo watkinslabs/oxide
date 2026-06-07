@@ -285,6 +285,169 @@ fn multi_sector_4k_block_roundtrip() {
     assert_eq!(got[5 * 512] >> 4, 5);
 }
 
+// ---- multi-sector chunking (the perf fix) -----------------------------
+
+#[test]
+fn chunk_plan_steps_and_terminates() {
+    // max=4 sectors/chunk; a 10-sector run from base 100.
+    let plan = |i| blk::chunk_plan(100, 10, i, 4);
+    // chunk 0: sectors 100..104, off 0
+    assert_eq!(plan(0), Some((100, 4, 0)));
+    // chunk 1: sectors 104..108, off 4*512
+    assert_eq!(plan(1), Some((104, 4, 4 * 512)));
+    // chunk 2: tail of 2 sectors (10 - 8), off 8*512
+    assert_eq!(plan(2), Some((108, 2, 8 * 512)));
+    // chunk 3: run exhausted
+    assert_eq!(plan(3), None);
+    // exact multiple terminates cleanly (8 sectors, max 4 → 2 chunks).
+    assert_eq!(blk::chunk_plan(0, 8, 0, 4), Some((0, 4, 0)));
+    assert_eq!(blk::chunk_plan(0, 8, 1, 4), Some((4, 4, 4 * 512)));
+    assert_eq!(blk::chunk_plan(0, 8, 2, 4), None);
+    // max=0 guard
+    assert_eq!(blk::chunk_plan(0, 8, 0, 0), None);
+}
+
+/// FakeMem with a larger scratch region so a multi-sector data desc
+/// (up to `max_sectors*512`) fits, plus a larger backing disk.
+struct FakeMemBig {
+    region: Vec<u8>,
+    disk:   Vec<u8>,
+}
+impl FakeMemBig {
+    fn new(region_bytes: usize, disk_bytes: usize) -> Self {
+        FakeMemBig { region: vec![0u8; region_bytes], disk: vec![0u8; disk_bytes] }
+    }
+    fn w(&mut self, pa: u64, bytes: &[u8]) {
+        let off = pa as usize;
+        self.region[off..off + bytes.len()].copy_from_slice(bytes);
+    }
+    fn r(&self, pa: u64, len: usize) -> Vec<u8> {
+        let off = pa as usize;
+        self.region[off..off + len].to_vec()
+    }
+    /// Same chain semantics as FakeMem::process but the data desc may
+    /// span many sectors: device moves `data.len` bytes starting at
+    /// `sector*512` of the disk, honoring the F_WRITE direction.
+    fn process(&mut self, descs: &[blk::DescSpec], n: usize) {
+        let hdr = self.r(descs[0].addr, 16);
+        let type_ = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let sector = u64::from_le_bytes([
+            hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
+        ]);
+        let status_desc = descs[n - 1];
+        assert_eq!(status_desc.flags & VRING_DESC_F_WRITE, VRING_DESC_F_WRITE);
+        if n == 3 {
+            let data = descs[1];
+            let dlen = data.len as usize;
+            let dsec = (sector as usize) * 512;
+            if type_ == blk::VIRTIO_BLK_T_IN {
+                assert_eq!(data.flags & VRING_DESC_F_WRITE, VRING_DESC_F_WRITE,
+                           "read data desc must be device-writable");
+                let src = self.disk[dsec..dsec + dlen].to_vec();
+                self.w(data.addr, &src);
+            } else {
+                assert_eq!(data.flags & VRING_DESC_F_WRITE, 0,
+                           "write data desc must be device-readable");
+                let src = self.r(data.addr, dlen);
+                self.disk[dsec..dsec + dlen].copy_from_slice(&src);
+            }
+        }
+        self.w(status_desc.addr, &[blk::VIRTIO_BLK_S_OK]);
+    }
+}
+
+/// Drive the EXACT chunk loop submit_sync runs (sector_plan → chunk_plan
+/// → build_chain per chunk), for a request SPANNING MORE than the bounce
+/// window (forces ≥2 chunks) AND for a request of EXACTLY bounce size
+/// (single full chunk). Asserts every sector lands at the right buffer
+/// offset and disk sector, both directions, with a small `max` standing
+/// in for BOUNCE_DATA_SECTORS so the loop is exercised cheaply.
+#[test]
+fn submit_sync_chunk_loop_roundtrip() {
+    // Small window to force chunking without 128 KiB of scratch.
+    const MAX: u64 = 4;          // sectors per chunk (stand-in)
+    const BLK_SIZE: u32 = 4096;  // 8 virtio sectors / block
+    // Header @0x0, status @0x10, data @0x1000 (mirrors modern.rs layout).
+    let (hdr_pa, status_pa, data_pa) = (0x0u64, 0x10u64, 0x1000u64);
+    let region_bytes = data_pa as usize + (MAX as usize) * 512;
+
+    // Cases: span > bounce window (3 blocks = 24 sectors → 6 chunks of
+    // max 4) AND exactly bounce window (one chunk == MAX sectors).
+    for &(start_block, len_blocks) in &[(2u64, 3u32), (0u64, 1u32 /*=8sec=2 chunks*/), (5u64, 1u32)] {
+        // Buffer: distinct byte per (sector,offset) so a wrong sector or
+        // byte offset is caught. Disk big enough for the addressed range.
+        let (base, total) = blk::sector_plan(start_block, len_blocks, BLK_SIZE).unwrap();
+        let nbytes = total as usize * 512;
+        let disk_bytes = (base as usize + total as usize + 4) * 512;
+        let mut mem = FakeMemBig::new(region_bytes, disk_bytes);
+
+        let mut payload = vec![0u8; nbytes];
+        for (i, b) in payload.iter_mut().enumerate() {
+            let sec = base + (i / 512) as u64;
+            *b = (sec as u8).wrapping_mul(7).wrapping_add((i % 512) as u8);
+        }
+
+        // WRITE: chunk loop (T_OUT, device-readable data desc).
+        let mut idx = 0u64;
+        let mut chunks_w = 0u32;
+        while let Some((cbase, csec, off)) = blk::chunk_plan(base, total, idx, MAX) {
+            let clen = csec as usize * 512;
+            mem.w(data_pa, &payload[off..off + clen]);
+            let mut hdr = [0u8; 16];
+            blk::encode_header(&mut hdr, blk::VIRTIO_BLK_T_OUT, cbase);
+            mem.w(hdr_pa, &hdr);
+            let (descs, n) = blk::build_chain(false, hdr_pa, data_pa, clen as u32, status_pa);
+            assert_eq!(descs[1].len as usize, clen, "data desc len = chunk_sectors*512");
+            mem.process(&descs, n);
+            assert_eq!(mem.r(status_pa, 1)[0], blk::VIRTIO_BLK_S_OK);
+            idx += 1;
+            chunks_w += 1;
+        }
+
+        // READ back via the same chunk loop (T_IN, device-writable).
+        let mut got = vec![0u8; nbytes];
+        idx = 0;
+        let mut chunks_r = 0u32;
+        while let Some((cbase, csec, off)) = blk::chunk_plan(base, total, idx, MAX) {
+            let clen = csec as usize * 512;
+            mem.w(data_pa, &vec![0u8; clen]);
+            let mut hdr = [0u8; 16];
+            blk::encode_header(&mut hdr, blk::VIRTIO_BLK_T_IN, cbase);
+            mem.w(hdr_pa, &hdr);
+            let (descs, n) = blk::build_chain(true, hdr_pa, data_pa, clen as u32, status_pa);
+            mem.process(&descs, n);
+            got[off..off + clen].copy_from_slice(&mem.r(data_pa, clen));
+            idx += 1;
+            chunks_r += 1;
+        }
+
+        assert_eq!(got, payload, "every sector reconstructs at its buffer offset");
+        assert_eq!(chunks_w, chunks_r);
+        // ceil(total / MAX) chunks expected.
+        let expect = (total + MAX - 1) / MAX;
+        assert_eq!(chunks_w as u64, expect, "chunk count = ceil(total/max)");
+    }
+}
+
+/// At the real BOUNCE_DATA_SECTORS window, a request EXACTLY one chunk
+/// wide is a SINGLE round-trip, and one sector larger is two — proving
+/// the round-trip collapse the perf fix delivers.
+#[test]
+fn bounce_window_single_vs_multi_roundtrip() {
+    let max = blk::BOUNCE_DATA_SECTORS;
+    // exactly one chunk
+    assert_eq!(blk::chunk_plan(0, max, 0, max), Some((0, max, 0)));
+    assert_eq!(blk::chunk_plan(0, max, 1, max), None);
+    // one sector over → two chunks (1 round-trip → 2)
+    assert_eq!(blk::chunk_plan(0, max + 1, 0, max), Some((0, max, 0)));
+    assert_eq!(blk::chunk_plan(0, max + 1, 1, max),
+               Some((max, 1, max as usize * 512)));
+    assert_eq!(blk::chunk_plan(0, max + 1, 2, max), None);
+    // a 4 KiB ext4 block (8 sectors) is one chunk → 8 round-trips → 1.
+    assert_eq!(blk::chunk_plan(0, 8, 0, max), Some((0, 8, 0)));
+    assert_eq!(blk::chunk_plan(0, 8, 1, max), None);
+}
+
 #[test]
 fn roundtrip_write_then_read() {
     let mut mem = FakeMem::new();
