@@ -22,7 +22,10 @@ fn now_ns() -> u64 {
 /// resolves against cwd; *at callers pass the real dirfd.
 const AT_FDCWD: i32 = -100;
 
-fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
+/// Resolve a dirfd-relative path to its inode (shared by chmod/chown *at and
+/// the *xattrat family). `follow` controls symlink-following (AT_SYMLINK_NOFOLLOW).
+/// # C: O(N_path)
+pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
     if path_ptr == 0 || path_ptr >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
