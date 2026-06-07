@@ -298,6 +298,37 @@ fn split_at_both_ends() {
     assert_eq!(a.vma_count(), 0);
 }
 
+#[test]
+fn mseal_marks_whole_vma() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    assert!(!a.range_sealed(h, 4 * PAGE));
+    a.mseal(h, 4 * PAGE).unwrap();
+    assert!(a.range_sealed(h, 4 * PAGE));
+    a.audit().unwrap();
+}
+
+#[test]
+fn mseal_partial_range_splits_and_seals_middle_only() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.mmap(Some(h), 4 * PAGE, r_w(), priv_anon(),
+        VmaBacking::Anonymous, true).unwrap();
+    a.mseal(uva(0x4000_1000), 2 * PAGE).unwrap();      // seal middle 2 pages
+    assert!(a.range_sealed(uva(0x4000_1000), 2 * PAGE));
+    assert!(!a.range_sealed(h, PAGE));                 // first page unsealed
+    assert!(!a.range_sealed(uva(0x4000_3000), PAGE));  // last page unsealed
+    a.audit().unwrap();
+}
+
+#[test]
+fn mseal_hole_rejected() {
+    let a = AddressSpace::new(0).unwrap();
+    assert!(a.mseal(uva(0x4000_0000), PAGE).is_err());  // unmapped → ENOMEM
+}
+
 // ---------------------------------------------------------------
 // Fragmentation + topdown stress
 // ---------------------------------------------------------------
