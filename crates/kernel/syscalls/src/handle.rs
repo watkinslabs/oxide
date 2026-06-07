@@ -18,7 +18,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-use crate::{validate_user_buf, validate_user_buf_writable};
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 // struct file_handle { __u32 handle_bytes; int handle_type; unsigned char f_handle[]; }
 // f_handle starts at offset 8; we write an 8-byte inode FID there.

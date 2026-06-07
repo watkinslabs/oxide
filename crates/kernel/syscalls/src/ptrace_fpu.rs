@@ -103,7 +103,7 @@ pub fn get_fpregs(pid: u32, data: u64) -> i64 {
     let n: usize = 512;
     #[cfg(target_arch = "aarch64")]
     let n: usize = 528;
-    if let Err(rv) = crate::validate_user_buf(data, n as u64, 16) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(data, n as u64, 16) { return rv; }
     // SAFETY: target parked under ptrace; fpu_state single-mutator per `13§5`; CPL=0 copies 512/528B into a validated user buffer.
     unsafe {
         let src = (*target.fpu_state.get()).0.as_ptr();
@@ -129,7 +129,7 @@ pub fn set_fpregs(pid: u32, data: u64) -> i64 {
     let n: usize = 512;
     #[cfg(target_arch = "aarch64")]
     let n: usize = 528;
-    if let Err(rv) = crate::validate_user_buf(data, n as u64, 16) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(data, n as u64, 16) { return rv; }
     // SAFETY: target parked under ptrace; fpu_state single-mutator per `13§5`; CPL=0 reads from a validated user buffer into the per-task FPU slot.
     unsafe {
         let dst = (*target.fpu_state.get()).0.as_mut_ptr();

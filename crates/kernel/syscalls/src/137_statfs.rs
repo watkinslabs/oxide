@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 use crate::statfs_common::{magic_for_path, usage_for, write_statfs};
 
 /// `sys_statfs(path, buf)` — slot 137. Reports the `f_type` magic of

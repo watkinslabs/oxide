@@ -6,7 +6,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_ioctl(fd, request, arg)` — slot 16.
 /// # C: O(1)
