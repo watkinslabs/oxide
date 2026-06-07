@@ -280,10 +280,10 @@ fn dispatch_op(opcode: u8, fd: i32, off: u64, addr: u64, len: u32) -> i64 {
         IORING_OP_FSYNC  => 0,
         IORING_OP_CLOSE  => crate::s003_close::sys_close(&sa),
         IORING_OP_OPENAT => crate::s257_openat::sys_openat(&sa),
-        IORING_OP_SEND   => crate::net::sys_sendto(&sa),
+        IORING_OP_SEND   => crate::s044_sendto::sys_sendto(&sa),
         IORING_OP_RECV   => crate::net_recv::sys_recvfrom(&sa),
-        IORING_OP_ACCEPT => crate::net::sys_accept(&sa),
-        IORING_OP_CONNECT => crate::net::sys_connect(&sa),
+        IORING_OP_ACCEPT => crate::s043_accept::sys_accept(&sa),
+        IORING_OP_CONNECT => crate::s042_connect::sys_connect(&sa),
         _ => -(syscall::errno::Errno::Einval.as_i32() as i64),
     }
 }

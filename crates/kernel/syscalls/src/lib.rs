@@ -9,58 +9,50 @@ extern crate alloc;
 pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
 // under an `sNNN_` alias (a module name can't start with a digit).
-#[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2;
+#[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2; #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set; #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
+#[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr; #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get; #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
+#[path = "465_listxattrat.rs"] pub mod s465_listxattrat; #[path = "466_removexattrat.rs"] pub mod s466_removexattrat; #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
+#[path = "468_file_getattr.rs"] pub mod s468_file_getattr; #[path = "469_file_setattr.rs"] pub mod s469_file_setattr; #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
+#[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam; #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr; #[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
+#[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask; #[path = "062_kill.rs"] pub mod s062_kill; #[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
+#[path = "128_rt_sigtimedwait.rs"] pub mod s128_rt_sigtimedwait; #[path = "129_rt_sigqueueinfo.rs"] pub mod s129_rt_sigqueueinfo; #[path = "130_rt_sigsuspend.rs"] pub mod s130_rt_sigsuspend;
+#[path = "131_sigaltstack.rs"] pub mod s131_sigaltstack; #[path = "234_tgkill.rs"] pub mod s234_tgkill; #[path = "272_unshare.rs"] pub mod s272_unshare;
+#[path = "297_rt_tgsigqueueinfo.rs"] pub mod s297_rt_tgsigqueueinfo; #[path = "308_setns.rs"] pub mod s308_setns; #[path = "428_open_tree.rs"] pub mod s428_open_tree;
+#[path = "429_move_mount.rs"] pub mod s429_move_mount; #[path = "430_fsopen.rs"] pub mod s430_fsopen; #[path = "431_fsconfig.rs"] pub mod s431_fsconfig;
+#[path = "432_fsmount.rs"] pub mod s432_fsmount; #[path = "433_fspick.rs"] pub mod s433_fspick; #[path = "442_mount_setattr.rs"] pub mod s442_mount_setattr;
+#[path = "041_socket.rs"] pub mod s041_socket; #[path = "042_connect.rs"] pub mod s042_connect; #[path = "043_accept.rs"] pub mod s043_accept;
+#[path = "044_sendto.rs"] pub mod s044_sendto; #[path = "046_sendmsg.rs"] pub mod s046_sendmsg; #[path = "047_recvmsg.rs"] pub mod s047_recvmsg;
+#[path = "048_shutdown.rs"] pub mod s048_shutdown; #[path = "049_bind.rs"] pub mod s049_bind; #[path = "050_listen.rs"] pub mod s050_listen;
+#[path = "051_getsockname.rs"] pub mod s051_getsockname; #[path = "052_getpeername.rs"] pub mod s052_getpeername; #[path = "053_socketpair.rs"] pub mod s053_socketpair;
+#[path = "054_setsockopt.rs"] pub mod s054_setsockopt; #[path = "055_getsockopt.rs"] pub mod s055_getsockopt; #[path = "082_rename.rs"] pub mod s082_rename;
+#[path = "083_mkdir.rs"] pub mod s083_mkdir; #[path = "084_rmdir.rs"] pub mod s084_rmdir; #[path = "086_link.rs"] pub mod s086_link;
+#[path = "087_unlink.rs"] pub mod s087_unlink; #[path = "088_symlink.rs"] pub mod s088_symlink; #[path = "133_mknod.rs"] pub mod s133_mknod;
+#[path = "258_mkdirat.rs"] pub mod s258_mkdirat; #[path = "259_mknodat.rs"] pub mod s259_mknodat; #[path = "263_unlinkat.rs"] pub mod s263_unlinkat;
+#[path = "264_renameat.rs"] pub mod s264_renameat; #[path = "265_linkat.rs"] pub mod s265_linkat; #[path = "266_symlinkat.rs"] pub mod s266_symlinkat;
+#[path = "316_renameat2.rs"] pub mod s316_renameat2; #[path = "228_clock_gettime.rs"] pub mod s228_clock_gettime; #[path = "229_clock_getres.rs"] pub mod s229_clock_getres;
+#[path = "227_clock_settime.rs"] pub mod s227_clock_settime; #[path = "096_gettimeofday.rs"] pub mod s096_gettimeofday; #[path = "164_settimeofday.rs"] pub mod s164_settimeofday;
+#[path = "201_time.rs"] pub mod s201_time; #[path = "137_statfs.rs"] pub mod s137_statfs; #[path = "138_fstatfs.rs"] pub mod s138_fstatfs;
+#[path = "001_write.rs"] pub mod s001_write; #[path = "257_openat.rs"] pub mod s257_openat; #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
+#[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "462_mseal.rs"]     pub mod s462_mseal;
 #[path = "039_getpid.rs"]    pub mod s039_getpid;
-#[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set;
-#[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
-#[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr;
 #[path = "003_close.rs"]     pub mod s003_close;
-#[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get;
-#[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "461_lsm_list_modules.rs"]  pub mod s461_lsm_list;
 #[path = "318_getrandom.rs"]   pub mod s318_getrandom;
 #[path = "463_setxattrat.rs"]  pub mod s463_setxattrat;
 #[path = "464_getxattrat.rs"]  pub mod s464_getxattrat;
-#[path = "465_listxattrat.rs"] pub mod s465_listxattrat;
-#[path = "466_removexattrat.rs"] pub mod s466_removexattrat;
-#[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
 #[path = "457_statmount.rs"]   pub mod s457_statmount;
 #[path = "458_listmount.rs"]   pub mod s458_listmount;
-#[path = "468_file_getattr.rs"] pub mod s468_file_getattr;
-#[path = "469_file_setattr.rs"] pub mod s469_file_setattr;
-#[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
-#[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam;
 #[path = "314_sched_setattr.rs"]  pub mod s314_sched_setattr;
-#[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr;
 mod signal_common;
 mod fsmount_common;
-#[path = "013_rt_sigaction.rs"] pub mod s013_rt_sigaction;
-#[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask;
-#[path = "062_kill.rs"] pub mod s062_kill;
-#[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
-#[path = "128_rt_sigtimedwait.rs"] pub mod s128_rt_sigtimedwait;
-#[path = "129_rt_sigqueueinfo.rs"] pub mod s129_rt_sigqueueinfo;
-#[path = "130_rt_sigsuspend.rs"] pub mod s130_rt_sigsuspend;
-#[path = "131_sigaltstack.rs"] pub mod s131_sigaltstack;
-#[path = "234_tgkill.rs"] pub mod s234_tgkill;
-#[path = "272_unshare.rs"] pub mod s272_unshare;
-#[path = "297_rt_tgsigqueueinfo.rs"] pub mod s297_rt_tgsigqueueinfo;
-#[path = "308_setns.rs"] pub mod s308_setns;
-#[path = "428_open_tree.rs"] pub mod s428_open_tree;
-#[path = "429_move_mount.rs"] pub mod s429_move_mount;
-#[path = "430_fsopen.rs"] pub mod s430_fsopen;
-#[path = "431_fsconfig.rs"] pub mod s431_fsconfig;
-#[path = "432_fsmount.rs"] pub mod s432_fsmount;
-#[path = "433_fspick.rs"] pub mod s433_fspick;
-#[path = "442_mount_setattr.rs"] pub mod s442_mount_setattr;
+mod net_common;
+mod namei_common;
+mod time_common;
+mod statfs_common;
 #[path = "000_read.rs"]  pub mod s000_read;
-#[path = "001_write.rs"] pub mod s001_write;
 mod open_common;
 #[path = "002_open.rs"]   pub mod s002_open;
-#[path = "257_openat.rs"] pub mod s257_openat;
-#[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
-#[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
 
 pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
@@ -703,14 +695,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
             let mut sa = args; sa.a0 = 0; sa.a1 = args.a0;
             crate::anonfd::sys_memfd_create(&sa)
         }
-        syscall::nrs::NR_MKDIR    => crate::namei::sys_mkdir(&args),
-        syscall::nrs::NR_MKDIRAT  => crate::namei::sys_mkdirat(&args),
-        syscall::nrs::NR_RMDIR    => crate::namei::sys_rmdir(&args),
-        syscall::nrs::NR_UNLINK   => crate::namei::sys_unlink(&args),
-        syscall::nrs::NR_UNLINKAT => crate::namei::sys_unlinkat(&args),
-        syscall::nrs::NR_RENAME   => crate::namei::sys_rename(&args),
-        syscall::nrs::NR_RENAMEAT => crate::namei::sys_renameat(&args),
-        syscall::nrs::NR_RENAMEAT2 => crate::namei::sys_renameat2(&args),
+        syscall::nrs::NR_MKDIR    => crate::s083_mkdir::sys_mkdir(&args),
+        syscall::nrs::NR_MKDIRAT  => crate::s258_mkdirat::sys_mkdirat(&args),
+        syscall::nrs::NR_RMDIR    => crate::s084_rmdir::sys_rmdir(&args),
+        syscall::nrs::NR_UNLINK   => crate::s087_unlink::sys_unlink(&args),
+        syscall::nrs::NR_UNLINKAT => crate::s263_unlinkat::sys_unlinkat(&args),
+        syscall::nrs::NR_RENAME   => crate::s082_rename::sys_rename(&args),
+        syscall::nrs::NR_RENAMEAT => crate::s264_renameat::sys_renameat(&args),
+        syscall::nrs::NR_RENAMEAT2 => crate::s316_renameat2::sys_renameat2(&args),
         syscall::nrs::NR_TRUNCATE  => crate::fs::sys_truncate(&args),
         syscall::nrs::NR_FTRUNCATE => crate::fs::sys_ftruncate(&args),
         syscall::nrs::NR_FALLOCATE => sched::falloc::sys_fallocate(&args),
@@ -748,22 +740,22 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
                        | syscall::nrs::NR_PROCESS_MADVISE | syscall::nrs::NR_PROCESS_MRELEASE)
                                  => crate::misc::dispatch(nr, &args),
         // AF_INET dgram (UDP) per `25§3`.
-        syscall::nrs::NR_SOCKET   => crate::net::sys_socket(&args),
-        syscall::nrs::NR_BIND     => crate::net::sys_bind(&args),
-        syscall::nrs::NR_SENDTO   => crate::net::sys_sendto(&args),
+        syscall::nrs::NR_SOCKET   => crate::s041_socket::sys_socket(&args),
+        syscall::nrs::NR_BIND     => crate::s049_bind::sys_bind(&args),
+        syscall::nrs::NR_SENDTO   => crate::s044_sendto::sys_sendto(&args),
         syscall::nrs::NR_RECVFROM => crate::net_recv::sys_recvfrom(&args),
-        syscall::nrs::NR_LISTEN  => crate::net::sys_listen(&args),
+        syscall::nrs::NR_LISTEN  => crate::s050_listen::sys_listen(&args),
         syscall::nrs::NR_ACCEPT | syscall::nrs::NR_ACCEPT4
-                                       => crate::net::sys_accept(&args),
-        syscall::nrs::NR_CONNECT => crate::net::sys_connect(&args),
-        syscall::nrs::NR_SOCKETPAIR => crate::net::sys_socketpair(&args),
-        syscall::nrs::NR_GETSOCKNAME => crate::net::sys_getsockname(&args),
-        syscall::nrs::NR_GETPEERNAME => crate::net::sys_getpeername(&args),
-        syscall::nrs::NR_SHUTDOWN    => crate::net::sys_shutdown(&args),
-        syscall::nrs::NR_SETSOCKOPT  => crate::net::sys_setsockopt(&args),
-        syscall::nrs::NR_GETSOCKOPT  => crate::net::sys_getsockopt(&args),
-        syscall::nrs::NR_SENDMSG => crate::net::sys_sendmsg(&args),
-        syscall::nrs::NR_RECVMSG => crate::net::sys_recvmsg(&args),
+                                       => crate::s043_accept::sys_accept(&args),
+        syscall::nrs::NR_CONNECT => crate::s042_connect::sys_connect(&args),
+        syscall::nrs::NR_SOCKETPAIR => crate::s053_socketpair::sys_socketpair(&args),
+        syscall::nrs::NR_GETSOCKNAME => crate::s051_getsockname::sys_getsockname(&args),
+        syscall::nrs::NR_GETPEERNAME => crate::s052_getpeername::sys_getpeername(&args),
+        syscall::nrs::NR_SHUTDOWN    => crate::s048_shutdown::sys_shutdown(&args),
+        syscall::nrs::NR_SETSOCKOPT  => crate::s054_setsockopt::sys_setsockopt(&args),
+        syscall::nrs::NR_GETSOCKOPT  => crate::s055_getsockopt::sys_getsockopt(&args),
+        syscall::nrs::NR_SENDMSG => crate::s046_sendmsg::sys_sendmsg(&args),
+        syscall::nrs::NR_RECVMSG => crate::s047_recvmsg::sys_recvmsg(&args),
         syscall::nrs::NR_SENDMMSG => crate::net::sys_sendmmsg(&args),
         syscall::nrs::NR_RECVMMSG => crate::net::sys_recvmmsg(&args),
         syscall::nrs::NR_FLOCK         => ::fs::flock::sys_flock(&args),
@@ -782,12 +774,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_UTIMES | syscall::nrs::NR_UTIME
             => crate::utime::sys_utime_dispatch(nr, &args),
         // link/symlink/mknod family.
-        syscall::nrs::NR_LINK     => crate::namei::sys_link(&args),
-        syscall::nrs::NR_LINKAT   => crate::namei::sys_linkat(&args),
-        syscall::nrs::NR_SYMLINK  => crate::namei::sys_symlink(&args),
-        syscall::nrs::NR_SYMLINKAT=> crate::namei::sys_symlinkat(&args),
-        syscall::nrs::NR_MKNOD    => crate::namei::sys_mknod(&args),
-        syscall::nrs::NR_MKNODAT  => crate::namei::sys_mknodat(&args),
+        syscall::nrs::NR_LINK     => crate::s086_link::sys_link(&args),
+        syscall::nrs::NR_LINKAT   => crate::s265_linkat::sys_linkat(&args),
+        syscall::nrs::NR_SYMLINK  => crate::s088_symlink::sys_symlink(&args),
+        syscall::nrs::NR_SYMLINKAT=> crate::s266_symlinkat::sys_symlinkat(&args),
+        syscall::nrs::NR_MKNOD    => crate::s133_mknod::sys_mknod(&args),
+        syscall::nrs::NR_MKNODAT  => crate::s259_mknodat::sys_mknodat(&args),
         syscall::nrs::NR_STATFS  => crate::statfs::sys_statfs(&args),
         syscall::nrs::NR_FSTATFS => crate::statfs::sys_fstatfs(&args),
         syscall::nrs::NR_GETCPU        => crate::proc::sys_getcpu(&args),

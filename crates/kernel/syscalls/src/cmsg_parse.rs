@@ -26,7 +26,7 @@ pub fn try_sendmsg_with_fds(
     control: u64, controllen: u64,
 ) -> Option<i64> {
     if controllen < 16 || control == 0 || control >= USER_VA_END { return None; }
-    let s = crate::net::socket_from_fd(fd)?;
+    let s = crate::net_common::socket_from_fd(fd)?;
     let kind_kind = {
         let g = s.kind.lock();
         match &*g {
