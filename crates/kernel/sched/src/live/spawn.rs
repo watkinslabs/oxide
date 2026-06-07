@@ -310,7 +310,7 @@ pub unsafe fn spawn_user_thread_for_fork(
     // F156 + B38: inherit parent's fs_base so CLONE_VM children see the
     // same TLS that musl/glibc set up via arch_prctl(ARCH_SET_FS).
     // Without this, all %fs:offs reads in the child go to
-    // (fs_base=0)+offs and hit unmapped/wrong memory — busybox getty's
+    // (fs_base=0)+offs and hit unmapped/wrong memory — getty's
     // argv-from-TLS path ends up reading code-segment bytes as paths.
     //
     // B38 fix: read the LIVE IA32_FS_BASE MSR rather than the saved

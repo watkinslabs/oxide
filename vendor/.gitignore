@@ -8,13 +8,6 @@
 # Shared build helpers sourced by per-package build.sh's (uapi-stage.sh).
 !lib/
 !lib/*.sh
-# busybox vendored binaries: x86_64 already tracked; aarch64 added
-# per F148 once the cross-toolchain landed.
-!busybox/
-!busybox/build.sh
-!busybox/busybox
-!busybox/busybox-aarch64
-busybox/busybox-1.37.0/
 # vendor/cross: README tracked, toolchain blobs ignored (~370 MB).
 !cross/
 !cross/README.md
@@ -236,8 +229,7 @@ vim/vim-9.1.0950.tar.gz
 less/less-643/
 less/less-643.tar.gz
 # util-linux 2.40.2 -- F259 (D1). Static-musl: login, agetty, mount,
-# umount, su, kill, cal, losetup -- distro programs that replace
-# busybox versions.
+# umount, su, kill, cal, losetup -- distro programs.
 !util-linux/
 !util-linux/build.sh
 # L2: shared libs (libmount/libblkid/libuuid/libsmartcols) built by

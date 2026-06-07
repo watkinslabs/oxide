@@ -28,7 +28,7 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
 /// User stack length for boot-spawned user blobs. 64 KiB matches
 /// the execve path; the prior 4 KiB underflowed in the first wide
 /// musl init frame and the prior VA (0x501_000) collided with
-/// busybox's 1 MiB .text segment, chopping a hole in code while
+/// a large init's .text segment, chopping a hole in code while
 /// giving init no room. Place near the top of user-half VA so we
 /// stay disjoint from any reasonable ELF text.
 pub const EXEC_USER_STACK_LEN: u64 = 0x10000;
@@ -68,7 +68,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     // PID 1 = systemd (oxide distro init), loaded from the rootfs; falls back
-    // to busybox /sbin/init then /init. Dynamically linked — load_static_blob
+    // to /sbin/init then /init. Dynamically linked — load_static_blob
     // resolves PT_INTERP (musl loader); we enter at user_ip().
     let init_blob_opt = lookup_blob_by_path(b"/lib/systemd/systemd")
         .or_else(|| lookup_blob_by_path(b"/sbin/init"))
@@ -76,7 +76,7 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     hal::kassert!(init_blob_opt.is_some(),
         "no /lib/systemd/systemd, /sbin/init or /init in rootfs (51§2 invariant 1)");
     let init_blob = init_blob_opt.unwrap_or(b"");
-    // busybox/systemd init require getpid()==1: stamp vtgid=1/vtid=1 before the
+    // systemd init requires getpid()==1: stamp vtgid=1/vtid=1 before the
     // task is registry/runqueue-visible.
     // SAFETY: boot-path discipline; user_as / runqueue installed.
     unsafe {

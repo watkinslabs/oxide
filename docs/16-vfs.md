@@ -143,7 +143,7 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 - Path resolution unit tests on synthetic tree: `..`, symlinks, depth limit, BENEATH, mount transitions, cross-mount `..`.
 - Property: random tree + random ops; verify dentry/inode invariants 2,3,4.
 - Loom dentry-cache lookup-vs-insert: RCU correctness; depth 6.
-- QEMU: mount tmpfs + ext4 image, busybox `find /` + `cp -a` between them; no errors.
+- QEMU: mount tmpfs + ext4 image, `find /` + `cp -a` between them; no errors.
 - PR-time gate uses `paranoid-ci` (`debug-vfs`) per `41§3`. Randomized fs_mark + find + concurrent touch/unlink workloads run in proptest harness; static counter reconciliation enforced at end.
 - Coverage ≥95%.
 

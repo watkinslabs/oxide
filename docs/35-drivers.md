@@ -148,7 +148,7 @@ No IOMMU yet: coherent uses uncached mapping (x86) / non-cacheable attr (arm). S
 ## 8 Test contract (frozen)
 
 - All mandatory drivers probe successfully under QEMU.
-- `lspci` (busybox or our impl reading `/sys/bus/pci/`) shows expected devices.
+- `lspci` (reading `/sys/bus/pci/`) shows expected devices.
 - virtio-blk: read+write 1 GiB; verify SHA-256.
 - virtio-net: ping loopback through L3.
 - nvme: read+write 1 GiB to a QEMU-emulated NVMe controller.

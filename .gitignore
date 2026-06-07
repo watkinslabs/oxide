@@ -136,7 +136,6 @@ vmcore*
 # /tools/docker/Dockerfile.* — image source
 # /.github/workflows/*.yml — CI source
 # /rust-toolchain.toml     — toolchain pin
-vendor/busybox/busybox-1.37.0/
 vendor/dhcpcd/dhcpcd-*.tar.*
 vendor/dhcpcd/dhcpcd-10.3.2/
 vendor/dropbear/dropbear-*.tar.*

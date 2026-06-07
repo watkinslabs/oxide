@@ -26,7 +26,7 @@ Fix: split phases — block+pagecache (own); ext4 RO (own); JBD2+ext4 RW (own). 
 
 ### A5 Acceptance binary list mis-sorted
 Tiered per `43§2-4`:
-- Smoke: busybox, bash 5, coreutils 9, redis 7 (epoll/eventfd/signalfd/accept4/SO_REUSEPORT), Go≥1.22 + Rust≥1.75 statically-linked, openssh 9 (PTYs+modern crypto), nginx (without io_uring), sqlite 3.45.
+- Smoke: bash 5, coreutils 9, util-linux 2.40, systemd, redis 7 (epoll/eventfd/signalfd/accept4/SO_REUSEPORT), Go≥1.22 + Rust≥1.75 statically-linked, openssh 9 (PTYs+modern crypto), nginx (without io_uring), sqlite 3.45.
 - Dynamic-userspace: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
 - Distro: systemd≥254 PID1 (~150 syscalls + BPF + cgroup subtree + sd_notify + journald + 100s of unit-file edges); rootless runc; Wayland GUI.
 
@@ -110,7 +110,7 @@ Fix: driver list amended (`35§4`). First-rung: virtio-{blk,net,console,rng,vsoc
 Fix: `29§4` musl vendored fork.
 
 ### F2 init / PID 1
-Phase 5 says "musl busybox sh runs"; doesn't say *who runs sh*. PID 1 is special: kernel hands initial AS, ignores most signals, reaps orphan zombies. Need minimal init (10–50 lines Rust) before busybox useful.
+Phase 5 says "musl bash runs"; doesn't say *who runs sh*. PID 1 is special: kernel hands initial AS, ignores most signals, reaps orphan zombies. Need minimal init before the shell is useful.
 Fix: `29§3`.
 
 ### F3 Image pipeline

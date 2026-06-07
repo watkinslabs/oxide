@@ -11,20 +11,20 @@ FROZEN 2026-05-02. Dep:every spec above.
 
 Enumerate the binary-level acceptance tests. Each binary listed is the *contract*: if a stock build from upstream against our libc/syscall ABI fails to run, the gating phase is not done.
 
-## 2 Smoke tier — busybox
+## 2 Smoke tier — bash + coreutils + util-linux
 
 Linked against our static musl. Smoke target is the first thing
-acceptance fires.
+acceptance fires. bash is the shell.
 
 | Binary | Why | Tests covered |
 |---|---|---|
-| `busybox sh` | basic shell | tty, pipe, signals, fork+exec |
-| `busybox ls/cat/echo/cp/mv/rm/mkdir/...` | core fs ops | VFS, file I/O, dir |
-| `busybox ps/top/uptime/free` | proc/sys reads | `/proc`, `/sys` |
-| `busybox dmesg` | log access | `/dev/kmsg` |
-| `busybox mount/umount` | mount API | `16`,`19` |
+| `bash` | basic shell | tty, pipe, signals, fork+exec |
+| coreutils `ls/cat/echo/cp/mv/rm/mkdir/...` | core fs ops | VFS, file I/O, dir |
+| `ps/top/uptime/free` | proc/sys reads | `/proc`, `/sys` |
+| `dmesg` | log access | `/dev/kmsg` |
+| util-linux `mount/umount` | mount API | `16`,`19` |
 
-PR-time smoke: `busybox sh -c 'echo hello | wc -c'` returns `6\n`
+PR-time smoke: `bash -c 'echo hello | wc -c'` returns `6\n`
 end-to-end (boot → execve sh → pipe → wc → exit) plus the 6 user
 smokes (sem/msg/mq/ptrace/mprotect/dyn).
 
@@ -60,7 +60,7 @@ Adds dynamic linking + libc-with-NSS-PAM + a real PID 1 + agetty.
 For each acceptance binary:
 1. Build from source against our toolchain into the rootfs image.
 2. `xtask qemu` boot.
-3. Run a scripted scenario (e.g., `busybox ls /; busybox cat /proc/cpuinfo > /tmp/c; busybox grep -c processor /tmp/c`).
+3. Run a scripted scenario (e.g., `ls /; cat /proc/cpuinfo > /tmp/c; grep -c processor /tmp/c`).
 4. Capture serial; assert expected substrings.
 5. Daemons run end-to-end (start, accept connection, serve test request, clean shutdown) — no duration-based stress.
 

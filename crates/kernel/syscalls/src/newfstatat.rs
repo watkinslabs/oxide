@@ -13,7 +13,7 @@ use crate::validate_user_buf;
 /// `sys_newfstatat(dirfd, path, statbuf, flags)` — x86_64 slot 262.
 /// Previously this was routed to sys_statx, which mis-reads args
 /// (statx's a2=flags is newfstatat's a2=statbuf) and corrupted
-/// userspace memory; ARM busybox's PATH search printed
+/// userspace memory; the shell's PATH search on ARM printed
 /// "Permission denied" for every probe.
 /// # C: O(1)
 pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {

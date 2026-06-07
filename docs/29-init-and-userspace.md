@@ -51,7 +51,7 @@ Userspace bring-up follows the LFS pattern (cross-toolchain → kernel-headers �
 | 2 | UAPI export | `xtask uapi-export` → `userspace/uapi/` | `15§6.7` |
 | 3 | musl fork | `userspace/libc/musl/` → `libc.{so,a}` + `usr/include/` | step 2 |
 | 4 | `ld-oxide.so.1` | `userspace/dynlink/` | step 3 |
-| 5 | coreutils / busybox / `init` | `userspace/{apps,init}/` | steps 3 + 4 |
+| 5 | coreutils / bash / `init` | `userspace/{apps,init}/` | steps 3 + 4 |
 | 6 | initramfs + image | `xtask image` (§5) | kernel binary + step 5 |
 
 Kernel binary is independent of steps 2–5: built off step 1 only per `07§3.4`. Step 6 (image assembly) joins kernel binary + userspace artifacts into `boot.img`.
@@ -66,7 +66,7 @@ Kernel binary is independent of steps 2–5: built off step 1 only per `07§3.4`
 5. (Optional) extra rootfs partition with ext4.
 
 `xtask user --arch <a>` builds userspace:
-- All of `userspace/coreutils-{ls,cat,cp,...}`, `userspace/sh` (busybox-equivalent or actual busybox built against our libc), `userspace/init`.
+- All of `userspace/coreutils-{ls,cat,cp,...}`, `userspace/sh` (bash built against our libc), `userspace/init`.
 - Statically linked or against our libc.
 - Stripped, packed into cpio.
 
@@ -116,7 +116,7 @@ Init is single-threaded. Reaps via `waitid(P_ALL, WEXITED|WNOHANG, &si)` in a SI
 - `init` exit ⇒ kernel panic with "init exited" message.
 - Service restart on failure: kill a service, verify restart per policy.
 - Mount sequence: every mount in `init.conf` succeeds before service spawn.
-- Acceptance: run `busybox sh -c "ls /; cat /proc/cpuinfo; uptime"` from boot; output matches expected substrings.
+- Acceptance: run `bash -c "ls /; cat /proc/cpuinfo; uptime"` from boot; output matches expected substrings.
 
 ## 11 Failure modes
 

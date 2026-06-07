@@ -116,9 +116,9 @@ const ELF_BLOB: &'static [u8] = &ELF_BLOB_BYTES;
 const USER_STACK_VA:  u64 = 0x501_000;
 const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 
-/// 64 KiB stack for the busybox /sbin/init spawn — identical layout
+/// 64 KiB stack for the /sbin/init spawn — identical layout
 /// to the x86 init path (`crate::elf::EXEC_USER_STACK_VA/_LEN`).
-/// busybox + child fork+exec chains overrun a 4 KiB stack on the
+/// init + child fork+exec chains overrun a 4 KiB stack on the
 /// first wide musl frame; with the prior 0x501000/4 KiB layout the
 /// fork child SIGSEGV'd at far=0x500f70 (one page below the stack
 /// base) when init walked deeper than the page boundary.
@@ -304,10 +304,9 @@ fn spawn_init_from_rootfs_arm() {
     use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
     use hal::{MmuOps, UserVirtAddr};
 
-    // PID 1: load /sbin/init from the mounted rootfs (busybox
-    // hardlinked to /sbin/init via /bin/busybox).
+    // PID 1: load /sbin/init from the mounted rootfs.
     let init_blob: &'static [u8] = {
-        // PID 1 = systemd (OXIDE distro init); busybox /sbin/init fallback.
+        // PID 1 = systemd (OXIDE distro init); /sbin/init fallback.
         let bytes_opt = ext4::rootfs::read_file(b"/lib/systemd/systemd")
             .or_else(|| ext4::rootfs::read_file(b"/sbin/init"))
             .or_else(|| ext4::rootfs::read_file(b"/init"));
@@ -386,9 +385,8 @@ fn spawn_init_from_rootfs_arm() {
         }
     }
 
-    // F153-1: build a real SysV initial stack with argv[0]=/sbin/init
-    // so busybox dispatches the `init` applet. Same shape as the
-    // x86 spawn_user_blob_smoke path.
+    // F153-1: build a real SysV initial stack with argv[0]=/sbin/init.
+    // Same shape as the x86 spawn_user_blob_smoke path.
     let random16 = {
         use hal::TimerOps;
         let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
@@ -421,13 +419,13 @@ fn spawn_init_from_rootfs_arm() {
         );
     }
 
-    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off; vpid stamped pre-enqueue so busybox-init's first syscall sees PID 1.
+    // SAFETY: runqueue installed; PMM up; mm matches active TTBR0; per-arch HAL initialised; preempt-off; vpid stamped pre-enqueue so init's first syscall sees PID 1.
     let task = match unsafe {
         sched::live::spawn_user_thread_with_vpid(
             0xC0DE_0002, /* vtgid */ 1, /* vtid */ 1, "init",
             // Enter at the dynamic loader (PT_INTERP) when init is dynamically
             // linked (e.g. systemd → ld-musl-aarch64), else the program entry
-            // (static busybox). `entry` is the program's own e_entry, which for
+            // (statically linked init). `entry` is the program's own e_entry, which for
             // a dynamic init is unrelocated — jumping there skips ld-musl and
             // faults before the first syscall (0 syscalls, kernel idle). x86's
             // PID1 spawn already uses user_ip(); arm must match.
@@ -443,7 +441,7 @@ fn spawn_init_from_rootfs_arm() {
         }
     };
 
-    // Wire fd 0/1/2 to the console so busybox-as-shell (and any
+    // Wire fd 0/1/2 to the console so the shell (and any
     // child after fork+exec) has working stdin/stdout/stderr —
     // mirrors crate::elf::spawn_user_blob_smoke on x86. Without this
     // a forked child running real-libc /bin/sh hits EBADF on its

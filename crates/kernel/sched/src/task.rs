@@ -268,9 +268,9 @@ pub struct Task {
     /// per Linux `/proc/<pid>/exe`. Distinct from `cmdline` (which
     /// stores argv[0..]; argv[0] is conventionally the basename
     /// the program was invoked as, not its filesystem path).
-    /// Busybox + glibc readlink `/proc/self/exe` to discover their
-    /// own binary path; without the real exec path here, busybox
-    /// falls into help-dump mode. Single-mutator per `13§5`.
+    /// Programs readlink `/proc/self/exe` to discover their
+    /// own binary path; without the real exec path here, multi-call
+    /// binaries misbehave. Single-mutator per `13§5`.
     pub exe_path: UnsafeCell<Option<alloc::string::String>>,
 
     /// Current working directory per POSIX getcwd(3) / chdir(2).

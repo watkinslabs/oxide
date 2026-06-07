@@ -1,6 +1,6 @@
 # Real systemd on musl — build research
 
-Goal: build **real systemd** (PID1 + manager + journald + networkd + resolved + logind + systemctl + udevd) against **musl libc**, cross-compiled for `x86_64` and `aarch64`, to run as PID 1 on a from-scratch Linux-compatible kernel. No stubs, no busybox-init substitution. Drop-in RedHat/systemd replacement.
+Goal: build **real systemd** (PID1 + manager + journald + networkd + resolved + logind + systemctl + udevd) against **musl libc**, cross-compiled for `x86_64` and `aarch64`, to run as PID 1 on a from-scratch Linux-compatible kernel. No stubs, no minimal-init substitution. Drop-in RedHat/systemd replacement.
 
 ## Headline (read first)
 
@@ -25,7 +25,7 @@ Verified release tags (live): `v255.21`, `v257.9`, `v258.8`, **`v259`** … **`v
 | **postmarketOS** | **Yes — in production as PID1** | Alpine-based (musl). Merged systemd into `edge` Jan 2025; shipped in **v25.06**. Tracks systemd-stable — **257.8** as of late 2025. This is the most-exercised *running* musl systemd as PID1 on real hardware. Patches: the OE/Yocto set + pmOS integration, now converging on upstream-native as 259 lands. |
 | **OpenEmbedded / Yocto (poky)** | **Yes — reference patch series** | `meta/recipes-core/systemd/`. Real upstream systemd built `libc-musl`, musl patches applied via `SRC_URI_MUSL`. **The canonical, best-maintained out-of-tree musl patch source** for pre-259. Versions: scarthgap=255.21, styhead=256.5, walnascar=257.6. |
 | **Adélie Linux** | No (ships s6+OpenRC) | But: Adélie maintainer **A. Wilcox (awilfox)** wrote a *separate, more-upstreamable* musl port targeting recent systemd/musl (the "Cat Fox Life" / catfox.life port). Distinct from the OE patchset; much of that effort fed the eventual upstream 259 support. Adélie itself uses musl + s6 + OpenRC, not systemd. |
-| **Alpine (upstream)** | No (policy: OpenRC + busybox-init) | musl origin, but no systemd in main. Alpine devs contributed to the upstream musl effort though. |
+| **Alpine (upstream)** | No (policy: OpenRC) | musl origin, but no systemd in main. Alpine devs contributed to the upstream musl effort though. |
 | **Void Linux** | No (runit, both variants) | Originally offered systemd, **dropped it because it didn't work on musl**; committed to runit. Void's musl flavor has no systemd. |
 | **Chimera Linux** | No (dinit) | musl (patched for mimalloc) + dinit + FreeBSD userland + LLVM. Deliberately no systemd. |
 | **Gentoo musl** | No (masked on musl profiles) | musl profiles force OpenRC; systemd masked. The third-party **`12101111` overlay** carries a systemd-on-musl-clang ebuild using the **OpenEmbedded patches** (clang/musl/arm64 profile) — a working community example but maintainer-specific. |

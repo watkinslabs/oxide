@@ -13,7 +13,7 @@ End-to-end userspace runtime story. Resolves the Rust-std question. Names target
 
 ## 1 Filter
 
-Substrate = kernel + minimal userspace (init, libc, ld, busybox) that runs unmodified Linux/musl binaries. Pkg mgr, GUI, distro identity, system updater land in their own phases per `00§3` (phases 28–32).
+Substrate = kernel + minimal userspace (systemd, libc, ld, bash, coreutils, util-linux) that runs unmodified Linux/musl binaries. Pkg mgr, GUI, distro identity, system updater land in their own phases per `00§3` (phases 28–32).
 
 ## 2 Target triples (RESOLVED — supersedes `07§3.3-3.4` `os=oxide`)
 
@@ -105,7 +105,7 @@ No oxide-specific SDK. The dev environment is "Linux cross-compile target." This
 | Node.js | 30 (pkg mgr lands first) |
 | Java (OpenJDK) | 30 |
 
-C++ waits because no current acceptance binary needs it (busybox, redis, nginx, openssh, sqlite are all C). Python via stock CPython musl-static build; lands with the libc+NSS+PAM phase since modern distros ship it.
+C++ waits because no current acceptance binary needs it (bash, coreutils, redis, nginx, openssh, sqlite are all C). Python via stock CPython musl-static build; lands with the libc+NSS+PAM phase since modern distros ship it.
 
 ## 7 Package distribution
 

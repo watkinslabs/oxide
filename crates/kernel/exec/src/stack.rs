@@ -86,7 +86,7 @@ pub unsafe fn build_user_stack(
     let platform_va = unsafe { push_bytes(&mut cursor, PLATFORM) }?;
 
     // F62 attempted to set AT_EXECFN to the real exec path — but that
-    // broke busybox's startup path. Revert to the legacy argv[0]
+    // broke the shell's startup path. Revert to the legacy argv[0]
     // value while we investigate.
     let _ = exec_path;
     let execfn_bytes: &[u8] = if !argv.is_empty() { argv[0] } else { b"\0" };
@@ -211,7 +211,7 @@ unsafe fn write_u64(w: &mut u64, val: u64) {
 /// Stack-allocated Vec<u64, CAP>. Avoids alloc::Vec inside the
 /// no_std stack builder (we run pre-`activate` and want zero
 /// alloc-side faults). CAP=256 covers normal-process argv+envp;
-/// 8 was a stub that broke real busybox sessions whose env is
+/// 8 was a stub that broke real shell sessions whose env is
 /// PATH/HOME/USER/LOGNAME/SHELL/PWD/TERM/MAIL/PS1/... > 8.
 struct Heapless256 { items: [u64; 256], len: usize }
 

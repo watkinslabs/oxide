@@ -108,7 +108,7 @@ Per-pid (`/proc/<pid>/`,`/proc/self`,`/proc/thread-self`): `cmdline`,`comm`,`env
 
 Global: `cpuinfo`,`meminfo`,`stat`,`loadavg`,`uptime`,`version`,`cmdline`,`mounts`,`filesystems`,`partitions`,`devices`,`kallsyms` (kptr_restrict-gated),`modules`,`interrupts`,`softirqs`,`self`,`thread-self`,`sys/` (sparse subset; legacy → `ENOENT`).
 
-Linux fmt compat verified by busybox `ps`,`top`,`free`,`uptime`.
+Linux fmt compat verified by `ps`,`top`,`free`,`uptime`.
 
 ### 5.3 `/sys`
 
@@ -188,7 +188,7 @@ Crypto deny: MD2/4/5, SHA-1, RIPEMD, RC2/4/5, DES, 3DES, Blowfish, CAST, Skipjac
 
 ## 11 Acceptance binaries (split per `43`)
 
-Now: busybox, bash 5, coreutils 9, redis 7, sqlite 3.45, openssh 9, statically-linked Go≥1.22 + Rust≥1.75 binaries, nginx 1.25 (without io_uring).
+Now: bash 5, coreutils 9, util-linux 2.40, systemd, redis 7, sqlite 3.45, openssh 9, statically-linked Go≥1.22 + Rust≥1.75 binaries, nginx 1.25 (without io_uring).
 Per phase 22+: nginx + io_uring; runc + privileged OCI bundle; bpftrace; perf record/report.
 Per phase 29+: systemd≥254 PID1; rootless runc; Wayland GUI app.
 

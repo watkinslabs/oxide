@@ -120,7 +120,7 @@ procfs is not on hot paths; budgets are loose.
 ## 9 Test contract (frozen)
 
 - Build a fixture: spawn 8 tasks, each opens 4 files, mmaps anon, sleeps. Read every `/proc/<pid>/*` file from another task; assert no panics, all files parse with regex matching Linux's format.
-- Run `busybox ps`,`top`,`free`,`uptime`,`mount`,`lsmod`. Each must produce well-formed output (validated by output-comparison against expected substrings, not byte-for-byte).
+- Run `ps`,`top`,`free`,`uptime`,`mount`,`lsmod`. Each must produce well-formed output (validated by output-comparison against expected substrings, not byte-for-byte).
 - Run `udevadm trigger` equivalent (we have our own minimal initramfs walker); assert `/dev/disk/by-*` symlinks present.
 - Stress: 4 readers concurrently `find /proc -type f -exec cat {} +` while workload runs; zero panics, zero corrupt reads.
 - Coverage ≥85% (lots of sparse pseudo-files; pure coverage less informative).

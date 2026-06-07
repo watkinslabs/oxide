@@ -120,7 +120,7 @@ run_pty() {
     # Keep PTY workload light — ARM TCG sshd-session+shell is slow,
     # and we already cover coreutils exec-mode with cp/mv/wc/rm above.
     out="$(printf 'echo OXIDE_PTY_OK\nexit\n' | timeout 60 sshpass -p swordfish ssh -tt "${SSH_OPTS[@]}" alice@127.0.0.1 2>&1)"
-    # ssh -tt frequently surfaces busybox exit code as 255 even on a
+    # ssh -tt frequently surfaces the shell exit code as 255 even on a
     # clean session; accept 0 OR 255 as long as the expected output
     # made it through the PTY relay.
     if ! grep -q "OXIDE_PTY_OK" <<<"$out"; then
