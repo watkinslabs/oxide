@@ -1,14 +1,19 @@
 # Syscall Audit
 
-**Live coverage tool: `tools/syscall-audit.py`** — run it to refresh these
-numbers (exits non-zero while any non-OBSOLETE number is unrouted, so it can
-gate CI once coverage is complete). Current: **385** `NR_` constants, **345
-ROUTED** to a real handler, **40 UNROUTED** (≈13 OBSOLETE + ~27 real modern
-gaps still to implement: `sched_setparam`, `ioprio_get/set`, `sched_setattr/
-getattr`, `fchmodat2`, futex2 `futex_wake/wait/requeue`, `statmount/listmount`,
-`mseal`, `*xattrat`, `open_tree_attr`, `file_get/setattr`, `listns`,
-`map_shadow_stack`, `uprobe/uretprobe`, LSM `lsm_*`). Tick these off as the
-sweep + the one-file split (docs/53 §0) lands.
+**Live coverage tool: `tools/syscall-audit.py`** — run it to refresh these.
+CURRENT (post-sweep): **385** `NR_`, **368 ROUTED**, **17 UNROUTED**, split into:
+- **Medium, lower-priority** (real, each a sizable PR; deferred behind the
+  distro-functional items — login/console/tooling): statmount/listmount 457-458
+  (~512-byte mask-driven `struct statmount` + mnt_id_req + mount parent/child
+  derivation), *xattrat 463-466 (`struct xattr_args` ABI), file_getattr/setattr
+  468-469 (statx-via-fd + ext-attr set).
+- **Infra-blocked** (need a real subsystem first — legit defers, NOT shims):
+  sched_setparam/sched_setattr 142/314 (mutable `SchedClass` + runqueue
+  migration), uprobe/uretprobe 335/336, map_shadow_stack 453 (CET),
+  futex_requeue 456 (requeue op), open_tree_attr 467, listns 470,
+  rseq_slice_yield 471.
+Done this sweep (each its own `<NNN>_<name>.rs`, docs/53 §0): fchmodat2, mseal,
+ioprio_get/set, sched_getattr, LSM trio, futex2 wake/wait, 13 OBSOLETE→ENOSYS.
 
 Sources of truth: Linux x86_64 syscall table (`arch/x86/entry/syscalls/syscall_64.tbl` from Linux mainline), repo constants in `crates/kernel/syscall/src/nrs.rs`, and the live dispatcher rooted at `crates/kernel/syscalls/src/lib.rs` plus helper dispatchers in `crates/kernel/syscalls/src/{misc,perms}.rs`, `crates/kernel/sched/src/{cred,timers,compat}.rs`, and `crates/kernel/fs/src/{xattr,keyring}.rs`.
 
