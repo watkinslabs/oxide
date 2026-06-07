@@ -93,7 +93,7 @@ pub fn sys_pkey_mprotect(args: &SyscallArgs) -> i64 {
     if PKEY_BITMAP.load(Ordering::Acquire) & (1u16 << key) == 0 {
         return errno(Errno::Einval);
     }
-    crate::proc::sys_mprotect(args)
+    crate::s010_mprotect::sys_mprotect(args)
 }
 
 /// fsync / fdatasync / syncfs / sync_file_range — validate fd then
