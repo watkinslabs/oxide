@@ -25,11 +25,9 @@ struct VirtioProbe {
     avail_idx_posted: u16,
     used_idx_observed: u16,
     isr_status: u8,
-    blk_id: [u8; 20],
     tx_used_idx: u16,
     q1_notify_va: u64,
     q1_notify_off: u16,
-    blk_status: u8,
     q0_size: u16,
     q1_size: u16,
     q1_desc_pa:   u64,
@@ -40,6 +38,12 @@ struct VirtioProbe {
     mac:       [u8; 6],
     mac_valid: bool,
     tx0_buf_pa: u64,
+    // virtio-blk device-cfg harvest (Stage 1): capacity (512B sectors)
+    // + logical block size. Valid iff blk_cfg_valid (device-cfg BAR
+    // decoded). The serial is NOT here — the engine reads it via GET_ID.
+    blk_capacity: u64,
+    blk_blk_size: u32,
+    blk_cfg_valid: bool,
 }
 
 /// Drive one modern virtio-pci device through FEATURES_OK and
@@ -323,14 +327,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
     } else {
         (0, 0, 0, post_status as u8)
     };
-    //: for virtio-blk (transitional 0x1001 or modern 0x1042),
-    // issue a VIRTIO_BLK_T_IN read of sector 1 — the GPT primary
-    // header on a GPT-partitioned disk. Header (16B) + data (512B) +
-    // status (1B) in a 3-descriptor chain. Proves bidirectional DMA
-    // roundtrip with real disk content; first 8 bytes of the data
-    // buffer should be the ASCII "EFI PART" GPT signature.
-    let mut blk_id = [0u8; 20];
-    let mut blk_status: u8 = 0xFF;
+    // virtio-blk (transitional 0x1001 or modern 0x1042) — device-cfg
+    // is harvested below; the persistent engine (drv-virtio-blk) owns
+    // all reads/writes once registered.
     let is_virtio_blk = d.vendor_id == 0x1AF4
         && (d.device_id == 0x1001 || d.device_id == 0x1042);
 
@@ -368,73 +367,11 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         debug_boot! { klog::write_raw(b"[INFO]  virtio-input installed evdev_id=");
             klog::write_dec_u64(evdev_id as u64); klog::write_raw(b"\n"); }
     }
-    if is_virtio_blk && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        if let Some(buf_pa) = pmm::setup::alloc_one_frame() {
-            if hhdm != 0 {
-                let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
-                // SAFETY: HHDM-mapped frame; aligned writes within 4 KiB.
-                unsafe {
-                    // Zero the buf first.
-                    for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
-                    //: VIRTIO_BLK_T_IN read of sector 1 (GPT primary
-                    // header). Header layout (16B):
-                    //   le32 type=0 (IN/read)
-                    //   le32 reserved=0
-                    //   le64 sector=1
-                    core::ptr::write_volatile(buf_va.add(0) as *mut u32, 0);
-                    core::ptr::write_volatile(buf_va.add(8) as *mut u64, 1u64);
-                    // Pre-fill status byte at +0x600 with sentinel 0xFF.
-                    core::ptr::write_volatile(buf_va.add(0x600), 0xFFu8);
-                }
-                // 3 descriptors at desc table:
-                //   d0: { addr=buf+0x000, len=16,  flags=NEXT(1),       next=1 }
-                //   d1: { addr=buf+0x200, len=512, flags=WRITE|NEXT(3), next=2 }
-                //   d2: { addr=buf+0x600, len=1,   flags=WRITE(2),      next=0 }
-                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *mut u64;
-                // SAFETY: HHDM-mapped virtio queue-0 descriptor table; aligned u64 stores within the frame the driver owns.
-                unsafe {
-                    // Descriptor 0
-                    core::ptr::write_volatile(desc0.add(0), buf_pa);
-                    let d0_lo = 16u64;
-                    let d0_flags = (virtio::VRING_DESC_F_NEXT as u64) << 32;
-                    let d0_next = 1u64 << 48;
-                    core::ptr::write_volatile(desc0.add(1), d0_lo | d0_flags | d0_next);
-                    // Descriptor 1: data buffer for the device's sector
-                    // payload (512 bytes), positioned at buf+0x200 to
-                    // leave header room at +0x000..+0x010.
-                    core::ptr::write_volatile(desc0.add(2), buf_pa + 0x200);
-                    let d1_lo = 512u64;
-                    let d1_flags = ((virtio::VRING_DESC_F_NEXT
-                                   | virtio::VRING_DESC_F_WRITE) as u64) << 32;
-                    let d1_next = 2u64 << 48;
-                    core::ptr::write_volatile(desc0.add(3), d1_lo | d1_flags | d1_next);
-                    // Descriptor 2 — status byte at buf+0x600 (after the
-                    // 512-byte sector payload at +0x200..+0x600).
-                    core::ptr::write_volatile(desc0.add(4), buf_pa + 0x600);
-                    let d2_lo = 1u64;
-                    let d2_flags = (virtio::VRING_DESC_F_WRITE as u64) << 32;
-                    core::ptr::write_volatile(desc0.add(5), d2_lo | d2_flags);
-                }
-                // avail.ring[0] = 0; avail.idx = 1.
-                let avail = (hhdm.wrapping_add(q0_driver_pa)) as *mut u16;
-                // SAFETY: HHDM-mapped virtio queue-0 avail ring; aligned u16 stores within the driver-owned frame.
-                unsafe {
-                    core::ptr::write_volatile(avail.add(2), 0u16); // ring[0]
-                }
-                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                // SAFETY: same ring; idx at u16 offset 1.
-                unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
-                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                avail_idx_posted = 1;
-            }
-        }
-    } else if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
+    // Stage 1: the persistent virtio-blk engine (drv-virtio-blk) owns
+    // all blk reads now — the boot probe no longer issues a throwaway
+    // sector-1 diagnostic. The device registers via `register_blk`
+    // below and ext4 mounts through `BlockDevice::submit_sync`.
+    if is_virtio_net && q0_desc_pa != 0 && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
         let hhdm = {
             #[cfg(target_arch = "x86_64")]
             { hal_x86_64::mmu_ops::hhdm_offset() }
@@ -663,45 +600,25 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         }
     }
 
-    //: harvest virtio-blk GET_ID result if we issued one. The data
-    // descriptor's buffer pa = q0_desc_pa is encoded in desc[2*1+0] but
-    // we already know it's `buf_pa+0x100`; rather than read the desc
-    // back, walk the used ring to find the chain head, then dereference.
-    if is_virtio_blk && avail_idx_posted > 0 {
-        let hhdm = {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::mmu_ops::hhdm_offset() }
-            #[cfg(target_arch = "aarch64")]
-            { hal_aarch64::mmu_ops::hhdm_offset() }
-        };
-        if hhdm != 0 {
-            // Read used.idx at q0_device_pa+0x02 to confirm completion;
-            // used.ring[0].id is at +0x04..+0x08 (le32 = chain head idx),
-            // which we can use to recover the buffer PA via desc table.
-            let used = (hhdm.wrapping_add(q0_device_pa)) as *const u16;
-            // SAFETY: HHDM-mapped virtio queue-0 used ring; aligned u16 load at the idx field.
-            let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-            if uidx > 0 {
-                // descriptor-table is HHDM-mapped at q0_desc_pa
-                let desc0 = (hhdm.wrapping_add(q0_desc_pa)) as *const u64;
-                // SAFETY: HHDM-mapped virtio queue-0 descriptor table; aligned u64 load of the chain head's addr field.
-                let d0_addr = unsafe { core::ptr::read_volatile(desc0.add(0)) };
-                let buf_pa = d0_addr; // descriptor 0's addr is buf_pa + 0
-                let buf_va = hhdm.wrapping_add(buf_pa) as *const u8;
-                // SAFETY: HHDM-mapped data buf within the same page.
-                unsafe {
-                    //: data is at buf+0x200 (sector 1 contents).
-                    // Capture first 20 bytes — first 8 are the GPT
-                    // signature "EFI PART" if this is a GPT-partitioned
-                    // disk. blk_id reuses the array for the dump.
-                    for i in 0..20 {
-                        blk_id[i] = core::ptr::read_volatile(buf_va.add(0x200 + i));
-                    }
-                    blk_status = core::ptr::read_volatile(buf_va.add(0x600));
-                }
-            }
+    // Stage 1: harvest virtio_blk_config (spec §5.2.4) from the
+    // device-cfg cap. capacity = le64 sectors (512B units) at offset 0;
+    // blk_size = le32 at offset 20 iff VIRTIO_BLK_F_BLK_SIZE negotiated,
+    // else the wire default 512. The serial is read later by the engine
+    // via GET_ID, not from device-cfg. Same window pattern as the MAC
+    // harvest above.
+    let mut blk_capacity_local: u64 = 0;
+    let mut blk_blk_size_local: u32 = virtio::VIRTIO_BLK_SECTOR_BYTES;
+    let mut blk_cfg_valid_local: bool = false;
+    if is_virtio_blk {
+        if let Some(devcfg_cap) = vcaps.find(virtio::VIRTIO_PCI_CAP_DEVICE_CFG) {
+            let (cap, bs, valid) =
+                super::virtio_blk_cfg::harvest(&devcfg_cap, &bars, drv_features);
+            blk_capacity_local = cap;
+            blk_blk_size_local = bs;
+            blk_cfg_valid_local = valid;
         }
     }
+
 
     //: read used.idx after the kick.
     let used_idx_observed = if avail_idx_posted > 0 && q0_device_pa != 0 {
@@ -741,8 +658,6 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         avail_idx_posted,
         used_idx_observed,
         isr_status,
-        blk_id,
-        blk_status,
         tx_used_idx: tx_used_idx_local,
         q1_notify_va: q1_notify_va_local,
         q1_notify_off: q1_notify_off_local,
@@ -756,6 +671,9 @@ fn virtio_init_arch(d: &pci::PciDevice) -> Option<VirtioProbe> {
         mac:       mac_local,
         mac_valid: mac_valid_local,
         tx0_buf_pa: tx0_buf_pa_local,
+        blk_capacity:  blk_capacity_local,
+        blk_blk_size:  blk_blk_size_local,
+        blk_cfg_valid: blk_cfg_valid_local,
     })
 }
 
@@ -814,25 +732,6 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
             klog::write_raw(b" size=");
             klog::write_dec_u64(qsz as u64);
             klog::write_raw(b"\n");
-        }
-        if p.blk_status != 0xFF {
-            klog::write_raw(b"[INFO]  virtio-blk-rd ");
-            klog::write_dec_u64(bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(bdf.function as u64);
-            klog::write_raw(b" status=");
-            klog::write_hex_u64(p.blk_status as u64);
-            klog::write_raw(b" id=\"");
-            // Render printable bytes; replace non-printables with '.'
-            let mut buf = [b'.'; 20];
-            for i in 0..20 {
-                let b = p.blk_id[i];
-                buf[i] = if b >= 0x20 && b < 0x7f { b } else if b == 0 { b'.' } else { b'?' };
-            }
-            klog::write_raw(&buf);
-            klog::write_raw(b"\"\n");
         }
         if p.avail_idx_posted > 0 {
             klog::write_raw(b"[INFO]  virtio-rx-post ");
@@ -970,6 +869,25 @@ pub(super) fn virtio_probe_arch(d: &pci::PciDevice) {
                 mac_valid:     p.mac_valid,
                 tx0_buf_pa:    p.tx0_buf_pa,
             },
+        );
+    }
+
+    // Stage 1: register the virtio-blk device as a `BlockDevice` so
+    // ext4 can mount a real disk. The persistent engine (drv-virtio-blk)
+    // reads the serial via GET_ID and owns all I/O. Gated on
+    // blk_cfg_valid — a device whose device-cfg BAR never decoded
+    // reports capacity=0; registering it would hand ext4 a phantom
+    // zero-capacity disk to fail mounting. Helper keeps this file under
+    // the line cap.
+    if d.vendor_id == 0x1AF4 && (d.device_id == 0x1001 || d.device_id == 0x1042)
+        && (p.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
+        && p.q0_desc_pa != 0 && p.q0_notify_va != 0
+        && p.blk_cfg_valid
+    {
+        super::virtio_blk_cfg::register_blk(
+            bdf.bus, bdf.device, bdf.function,
+            p.q0_desc_pa, p.q0_driver_pa, p.q0_device_pa,
+            p.q0_notify_va, p.q0_size, p.blk_capacity, p.blk_blk_size,
         );
     }
 
