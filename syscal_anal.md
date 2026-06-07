@@ -1,6 +1,16 @@
 # Syscall Audit
 
-Sources of truth: Linux x86_64 syscall table (`arch/x86/entry/syscalls/syscall_64.tbl` from Linux mainline), repo constants in `crates/kernel/syscall/src/nrs.rs`, and the live dispatcher rooted at `kernel/src/syscalls/mod.rs` plus helper dispatchers in `kernel/src/syscalls/{misc,perms}.rs`, `crates/kernel/sched/src/{cred,timers,compat}.rs`, and `crates/kernel/fs/src/{xattr,keyring}.rs`.
+**Live coverage tool: `tools/syscall-audit.py`** — run it to refresh these
+numbers (exits non-zero while any non-OBSOLETE number is unrouted, so it can
+gate CI once coverage is complete). Current: **385** `NR_` constants, **345
+ROUTED** to a real handler, **40 UNROUTED** (≈13 OBSOLETE + ~27 real modern
+gaps still to implement: `sched_setparam`, `ioprio_get/set`, `sched_setattr/
+getattr`, `fchmodat2`, futex2 `futex_wake/wait/requeue`, `statmount/listmount`,
+`mseal`, `*xattrat`, `open_tree_attr`, `file_get/setattr`, `listns`,
+`map_shadow_stack`, `uprobe/uretprobe`, LSM `lsm_*`). Tick these off as the
+sweep + the one-file split (docs/53 §0) lands.
+
+Sources of truth: Linux x86_64 syscall table (`arch/x86/entry/syscalls/syscall_64.tbl` from Linux mainline), repo constants in `crates/kernel/syscall/src/nrs.rs`, and the live dispatcher rooted at `crates/kernel/syscalls/src/lib.rs` plus helper dispatchers in `crates/kernel/syscalls/src/{misc,perms}.rs`, `crates/kernel/sched/src/{cred,timers,compat}.rs`, and `crates/kernel/fs/src/{xattr,keyring}.rs`.
 
 **Numbering result:** existing `NR_*` constants are correctly numbered against Linux mainline (`0` misnumbered). Missing support is split between **35** Linux syscalls with no `NR_*` constant in this repo and **26** syscalls that have a correctly numbered constant but no live route in the current dispatcher/helper chain.
 
