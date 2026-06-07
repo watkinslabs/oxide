@@ -511,3 +511,31 @@ libffi/libffi-3.4.6.tar.gz
 !ripgrep/rg-aarch64
 ripgrep/ripgrep-14.1.1/
 ripgrep/ripgrep-14.1.1.tar.gz
+# fd 10.2.0 — Rust tool, static-musl via cargo. /usr/bin/fd.
+!fd/
+!fd/build.sh
+!fd/fd-x86_64
+!fd/fd-aarch64
+fd/fd-10.2.0/
+fd/fd-10.2.0.tar.gz
+# bat 0.24.0 — Rust tool, static-musl via cargo (regex-fancy, no onig C dep). /usr/bin/bat.
+!bat/
+!bat/build.sh
+!bat/bat-x86_64
+!bat/bat-aarch64
+bat/bat-0.24.0/
+bat/bat-0.24.0.tar.gz
+# eza 0.20.24 — modern ls. Rust tool, static-musl via cargo. /usr/bin/eza.
+!eza/
+!eza/build.sh
+!eza/eza-x86_64
+!eza/eza-aarch64
+eza/eza-0.20.24/
+eza/eza-0.20.24.tar.gz
+# jq 1.7.1 — C, static-musl (bundled oniguruma, -std=gnu11). /usr/bin/jq.
+!jq/
+!jq/build.sh
+!jq/jq-x86_64
+!jq/jq-aarch64
+jq/jq-1.7.1/
+jq/jq-1.7.1.tar.gz
