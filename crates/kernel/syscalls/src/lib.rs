@@ -11,6 +11,9 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 // under an `sNNN_` alias (a module name can't start with a digit).
 #[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2;
 #[path = "462_mseal.rs"]     pub mod s462_mseal;
+#[path = "039_getpid.rs"]    pub mod s039_getpid;
+#[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set;
+#[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
 
 pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
@@ -214,18 +217,6 @@ pub fn sys_close(args: &SyscallArgs) -> i64 {
         Ok(())  => 0,
         Err(e)  => -(e as i64),
     }
-}
-
-fn sys_getpid(_args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current()
-        .map(|c| {
-            // F105: PID NS — return virtualized vtgid if non-zero,
-            // else real tgid. Init NS tasks have vtgid=0 → real tgid.
-            let v = c.vtgid.load(Ordering::Acquire);
-            if v != 0 { v as i64 } else { c.tgid.load(Ordering::Acquire) as i64 }
-        })
-        .unwrap_or(1)
 }
 
 fn sys_waitid(args: &SyscallArgs) -> i64 { crate::waitid::sys_waitid(args) }
@@ -598,7 +589,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_MMAP          => kernel_mmap(&args),
         syscall::nrs::NR_MUNMAP        => kernel_munmap(&args),
         syscall::nrs::NR_EXIT          => sys_exit(&args),
-        syscall::nrs::NR_GETPID        => sys_getpid(&args),
+        syscall::nrs::NR_GETPID        => s039_getpid::sys_getpid(&args),
         syscall::nrs::NR_GETPPID       => s110_getppid::sys_getppid(&args),
         syscall::nrs::NR_READ          => sys_read(&args),
         syscall::nrs::NR_WRITE         => sys_write(&args),
@@ -907,6 +898,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_GET_ROBUST_LIST => crate::proc::sys_get_robust_list(&args),
         syscall::nrs::NR_FCHMODAT2       => s452_fchmodat2::sys_fchmodat2(&args),
         syscall::nrs::NR_MSEAL           => s462_mseal::sys_mseal(&args),
+        syscall::nrs::NR_IOPRIO_SET      => s251_ioprio_set::sys_ioprio_set(&args),
+        syscall::nrs::NR_IOPRIO_GET      => s252_ioprio_get::sys_ioprio_get(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // SAFETY: dispatch tail runs on cur's per-task syscall/SVC stack; the per-arch saved frame is live; ::fs::sig_dispatch::rt_sigreturn dispatches to the matching x86/arm helper which only reads/writes saved-frame slots and user-stack frame the dispatcher previously installed via `deliver`.
         syscall::nrs::NR_RT_SIGRETURN  => unsafe { ::fs::sig_dispatch::rt_sigreturn() },

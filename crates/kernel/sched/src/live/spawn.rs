@@ -277,6 +277,8 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator
         // invariant per `13§5`); `task` is local and not yet scheduled.
         unsafe { task.creds = parent.creds.snapshot(); }
+        // ioprio_set/get(2): I/O priority is inherited across fork.
+        task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
         // F105: PID NS inheritance. If parent's unshare_pid_pending
         // is set, allocate a fresh pid_ns for the child + give it
         // vtgid=1 (it becomes the NS's "init"). Else inherit parent's
