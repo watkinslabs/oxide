@@ -779,3 +779,26 @@ micro/micro-2.0.14.tar.gz
 !duf/build.sh
 duf/duf-0.8.1/
 duf/duf-0.8.1.tar.gz
+# gron 0.7.1 — JSON greppable. Go, static. /usr/bin/gron.
+!gron/
+!gron/build.sh
+!gron/gron-x86_64
+!gron/gron-aarch64
+gron/gron-0.7.1/
+gron/gron-0.7.1.tar.gz
+# pv 1.8.5 — pipe viewer. C, static-musl. /usr/bin/pv.
+!pv/
+!pv/build.sh
+!pv/pv-x86_64
+!pv/pv-aarch64
+pv/pv-1.8.5/
+pv/pv-1.8.5.tar.gz
+pv/config.cache
+# entr 5.6 — run cmds on file change. C, static-musl. /usr/bin/entr.
+!entr/
+!entr/build.sh
+!entr/entr-x86_64
+!entr/entr-aarch64
+entr/entr-5.6/
+entr/entr-5.6.tar.gz
+entr/entr-5.6.tar.gz.sha256
