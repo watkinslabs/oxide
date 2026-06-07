@@ -98,15 +98,19 @@ Methodology gotcha that cost time: per-crate debug features differ (syscalls has
 verify traces with `strings <elf> | grep`. Also: editing a low-level crate
 (hal-aarch64) can leave a stale cached build — confirm "Compiling hal-aarch64".
 
-**x86 SMP is UNPORTED (next for multi-cpu-across-the-board):** bring_up_aps_x86
-returns 0 on MB2/GRUB (BootInfo smp_* all 0; smp_x86.rs is Limine-only,
-parked-AP + goto_address). x86 never sends INIT/SIPI → runs UP regardless of
--smp. LAPIC INIT/SIPI plumbing EXISTS (lapic.rs icr_lo_init_assert/icr_lo_sipi/
-write_icr/wait_icr_idle); MISSING = a real-mode AP trampoline (16→32→64, GDT,
-identity-map the trampoline page in kernel CR3, per-AP stack) + a bring-up loop
-off cpu-topology MADT APIC IDs + kmain using cpu::get not BootInfo.smp_*. Also
-fix bsp_lapic_id=0 vs cpu::get(0). Consider bumping the arm smoke gate to -smp 2
-now that it boots.
+**x86 AP INIT/SIPI bring-up: IMPLEMENTED + merged (#1567), GATED OFF.** Replaced
+the dead Limine parked-AP path with a real-mode→long-mode trampoline
+(global_asm 16→32→64; PAE+LME+**NXE** — kernel PTEs are NX, NXE-off makes bit63
+reserved → AP #PF'd reading LAPIC MMIO, the key diagnosis) copied to a low phys
+page + identity-mapped in the master PML4, INIT→SIPI→SIPI off the ACPI MADT
+(cpu::get). AP reaches long mode + LAPIC enable + online (verified -smp 2:
+online_count→2). `bring_up_aps_x86` returns 0 (x86 runs UP, no regression)
+pending TWO integration fixes (documented in the fn): (1) TRAMP_PA=0x8000 is not
+PMM-reserved → the copy corrupts live RAM; needs a boot-carved low page. (2) AP
+scheduling participation (per-CPU runqueue + LAPIC-timer preempt + sti idle)
+wedges the BSP boot — x86 AP scheduling integration (arm's equivalent works).
+Flip the `if true { return 0; }` gate to resume. lapic::local_apic_id +
+busy_wait_us added.
 
 ## Discipline
 Author = Chris Watkins, no AI/Co-Authored-By trailers. spec-lint clean + both
