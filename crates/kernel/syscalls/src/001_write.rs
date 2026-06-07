@@ -8,7 +8,7 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     let buf = args.a1;
     let cnt = args.a2 as usize;
     if cnt == 0 { return 0; }
-    if let Err(rv) = crate::validate_user_buf(buf, cnt as u64, 1) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(buf, cnt as u64, 1) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };

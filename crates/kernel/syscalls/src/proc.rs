@@ -853,7 +853,7 @@ pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
     let ptr = args.a0;
     let len = args.a1 as usize;
     if len > crate::hostname::HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = crate::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(ptr, len as u64, 1) { return rv; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     if !cur.has_cap(sched::cap::SYS_ADMIN) { return -(Errno::Eperm.as_i32() as i64); }
     let mut buf = [0u8; crate::hostname::HOST_NAME_MAX];

@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_newfstatat(dirfd, path, statbuf, flags)` — x86_64 slot 262.
 /// Previously this was routed to sys_statx, which mis-reads args

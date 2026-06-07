@@ -3,7 +3,7 @@
 
 use syscall::SyscallArgs;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 
 /// `sys_clock_getres(clk_id, res)` — slot 229. v1 reports 1 ns
 /// resolution (the precision of the monotonic counter).

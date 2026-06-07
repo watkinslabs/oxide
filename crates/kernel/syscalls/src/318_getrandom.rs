@@ -9,7 +9,7 @@ pub fn sys_getrandom(args: &SyscallArgs) -> i64 {
     let buf = args.a0;
     let len = args.a1;
     if len == 0 { return 0; }
-    if let Err(rv) = crate::validate_user_buf(buf, len, 1) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(buf, len, 1) { return rv; }
     let mut written: u64 = 0;
     while written < len {
         let v = crate::hwrng::hw_random_u64().unwrap_or_else(::devfs::misc::lcg_next).to_le_bytes();
