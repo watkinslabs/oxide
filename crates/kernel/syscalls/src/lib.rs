@@ -15,6 +15,10 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set;
 #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
 #[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr;
+#[path = "003_close.rs"]     pub mod s003_close;
+#[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get;
+#[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
+#[path = "461_lsm_list_modules.rs"]  pub mod s461_lsm_list;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
 
 pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
@@ -203,20 +207,6 @@ fn sys_brk(args: &SyscallArgs) -> i64 {
         out as i64
     } else {
         mm.try_set_brk(req) as i64
-    }
-}
-
-/// `sys_close(fd)` — slot 3. Tier-3 shim per `docs/53§4`.
-/// Work fn: `vfs::FdTable::close` (Tier 2).
-/// # C: O(1)
-pub fn sys_close(args: &SyscallArgs) -> i64 {
-    let fd = args.a0 as i32;
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    match fdt.close(fd) {
-        Ok(())  => 0,
-        Err(e)  => -(e as i64),
     }
 }
 
@@ -853,7 +843,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SIGALTSTACK   => crate::signal::sys_sigaltstack(&args),
         syscall::nrs::NR_NANOSLEEP     => crate::proc::sys_nanosleep(&args),
         syscall::nrs::NR_CLOCK_NANOSLEEP => crate::proc::sys_clock_nanosleep(&args),
-        syscall::nrs::NR_CLOSE         => sys_close(&args),
+        syscall::nrs::NR_CLOSE         => s003_close::sys_close(&args),
         syscall::nrs::NR_CLOSE_RANGE   => crate::fs::sys_close_range(&args),
         syscall::nrs::NR_DUP           => crate::fs::sys_dup(&args),
         syscall::nrs::NR_DUP2          => crate::fs::sys_dup2(&args),
@@ -902,6 +892,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_IOPRIO_SET      => s251_ioprio_set::sys_ioprio_set(&args),
         syscall::nrs::NR_IOPRIO_GET      => s252_ioprio_get::sys_ioprio_get(&args),
         syscall::nrs::NR_SCHED_GETATTR   => s315_sched_getattr::sys_sched_getattr(&args),
+        syscall::nrs::NR_LSM_GET_SELF_ATTR => s459_lsm_get::sys_lsm_get_self_attr(&args),
+        syscall::nrs::NR_LSM_SET_SELF_ATTR => s460_lsm_set::sys_lsm_set_self_attr(&args),
+        syscall::nrs::NR_LSM_LIST_MODULES  => s461_lsm_list::sys_lsm_list_modules(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
