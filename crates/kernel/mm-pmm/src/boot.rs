@@ -2,7 +2,7 @@
 //! callback (pages from the buddy allocator when the static heap dries)
 //! and the memmap dump. The logic lives here in the memory manager; the
 //! kernel only installs/calls it.
-use crate::{setup, user_as, Order};
+use crate::{setup, Order};
 
 const MIB: usize = 1024 * 1024;
 
@@ -10,9 +10,10 @@ const MIB: usize = 1024 * 1024;
 /// power-of-two run (≥1 MiB) from the buddy allocator, return its HHDM VA
 /// + size, else None. Mirrors Linux `__get_free_pages(GFP_KERNEL)`.
 /// # C: O(MAX_ORDER) bounded
+#[cfg(target_os = "oxide-kernel")]
 pub fn kalloc_grow(min_extra: usize) -> Option<(usize, usize)> {
     let pmm = setup::pmm_static()?;
-    let hhdm = user_as::hhdm_offset();
+    let hhdm = crate::user_as::hhdm_offset();
     if hhdm == 0 { return None; }
     const PAGE_SIZE: usize = hal::PAGE_SIZE_BYTES as usize;
     const PAGES_PER_MIB: usize = MIB / PAGE_SIZE;
