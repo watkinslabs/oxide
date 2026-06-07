@@ -595,3 +595,43 @@ zoxide/zoxide-0.9.6.tar.gz
 !ncdu/ncdu-aarch64
 ncdu/ncdu-1.21/
 ncdu/ncdu-1.21.tar.gz
+# htop 3.3.0 — process TUI. C, static-musl + vendored ncursesw. /usr/bin/htop.
+!htop/
+!htop/build.sh
+!htop/htop-x86_64
+!htop/htop-aarch64
+htop/htop-3.3.0/
+htop/htop-3.3.0.tar.xz
+# tree 2.2.1 — directory lister. C, static-musl. /usr/bin/tree.
+!tree/
+!tree/build.sh
+!tree/tree-x86_64
+!tree/tree-aarch64
+tree/unix-tree-2.2.1/
+tree/unix-tree-2.2.1.tar.gz
+# dos2unix 7.5.2 — line-ending converter (+unix2dos). C, static-musl.
+!dos2unix/
+!dos2unix/build.sh
+!dos2unix/dos2unix-x86_64
+!dos2unix/dos2unix-aarch64
+!dos2unix/unix2dos-x86_64
+!dos2unix/unix2dos-aarch64
+dos2unix/dos2unix-7.5.2/
+dos2unix/dos2unix-7.5.2.tar.gz
+dos2unix/dos2unix-7.5.2.tar.gz.sha256
+# curl 8.11.0 — C, static-musl + vendored openssl+zlib. /usr/bin/curl.
+!curl/
+!curl/build.sh
+!curl/curl-x86_64
+!curl/curl-aarch64
+curl/curl-8.11.0/
+curl/curl-8.11.0.tar.gz
+curl/config.cache
+# wget 1.21.4 — C, static-musl + vendored openssl+zlib. /usr/bin/wget.
+!wget/
+!wget/build.sh
+!wget/wget-x86_64
+!wget/wget-aarch64
+wget/wget-1.21.4/
+wget/wget-1.21.4.tar.gz
+wget/config.cache

@@ -434,6 +434,12 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("procs", "procs", "/usr/bin/procs"),
         ("zoxide", "zoxide", "/usr/bin/zoxide"),
         ("ncdu", "ncdu", "/usr/bin/ncdu"),
+        ("htop", "htop", "/usr/bin/htop"),
+        ("tree", "tree", "/usr/bin/tree"),
+        ("dos2unix", "dos2unix", "/usr/bin/dos2unix"),
+        ("dos2unix", "unix2dos", "/usr/bin/unix2dos"),
+        ("curl", "curl", "/usr/bin/curl"),
+        ("wget", "wget", "/usr/bin/wget"),
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
