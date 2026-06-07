@@ -33,13 +33,26 @@ fn hhdm() -> u64 {
     { 0 }
 }
 
-/// Bounce-frame layout inside one 4 KiB PMM page. Three disjoint
-/// regions, each ≥512B-spaced so the device's separate descriptors
-/// never alias: header @0, data @0x200 (one 512B sector, also the
-/// 20-byte GET_ID payload), status @0x600.
-const HDR_OFF:    usize = 0x000; // 16-byte virtio_blk_req header
-const DATA_OFF:   usize = 0x200; // up to one 512-byte sector / GET_ID id
-const STATUS_OFF: usize = 0x600; // 1-byte device status
+/// Bounce-frame layout. Three disjoint regions inside one contiguous
+/// PMM allocation so the device's separate descriptors never alias and
+/// the data descriptor addresses one physically-contiguous run:
+///   header @0 (16B), status @0x10 (1B), data @0x1000 (page-aligned,
+///   `BOUNCE_DATA_BYTES` = 128 KiB).
+/// The data region holds up to `BOUNCE_DATA_SECTORS` (256) 512B sectors
+/// in ONE virtio request, collapsing an N-sector transfer from N
+/// round-trips to `ceil(N/256)`.
+const HDR_OFF:    usize = 0x000;  // 16-byte virtio_blk_req header
+const STATUS_OFF: usize = 0x010;  // 1-byte device status (after header)
+const DATA_OFF:   usize = 0x1000; // 128 KiB data, page-aligned
+
+/// Bytes the bounce frame must span: data region end. Rounded up to a
+/// page for the contiguous PMM order below.
+const BOUNCE_BYTES: usize = DATA_OFF + blk::BOUNCE_DATA_BYTES;
+/// Contiguous PMM buddy order covering `BOUNCE_BYTES`. 0x1000 + 128 KiB
+/// = 132 KiB → 33 pages → order 6 (64 pages = 256 KiB). One physically
+/// contiguous region; base PA is region-aligned so the data descriptor
+/// (one device-contiguous range) is valid.
+const BOUNCE_ORDER: u8 = 6;
 
 /// Global registration-order counter for disk naming (vda, vdb, …).
 /// Each successfully-registered virtio-blk device claims the next
@@ -63,7 +76,8 @@ pub struct BlkState {
     /// label for root/home/tools-disk matching (`-device …,serial=…`);
     /// read by `serial()` — distinct from the registry name.
     serial:       [u8; blk::BLK_SERIAL_LEN],
-    /// 4 KiB bounce frame PA (header + data + status), allocated once.
+    /// Contiguous bounce-region base PA (header + status + 128 KiB
+    /// data), allocated once at init via the buddy at `BOUNCE_ORDER`.
     bounce_pa:    u64,
     /// Driver-side avail.idx shadow + used.idx last-seen, under lock.
     inflight:     Spinlock<RingShadow, DriverLockClass>,
@@ -104,8 +118,9 @@ impl BlkState {
         let is_in = type_ == blk::VIRTIO_BLK_T_IN
             || type_ == blk::VIRTIO_BLK_T_GET_ID;
         let data_len: u32 = if is_flush { 0 } else { data.len() as u32 };
-        // Data region is STATUS_OFF - DATA_OFF bytes wide.
-        if data_len as usize > STATUS_OFF - DATA_OFF {
+        // Data region is BOUNCE_DATA_BYTES wide (128 KiB). One chunk per
+        // submit must fit; the caller (submit_sync) splits larger runs.
+        if data_len as usize > blk::BOUNCE_DATA_BYTES {
             return Err(BlockError::Einval);
         }
 
@@ -116,9 +131,9 @@ impl BlkState {
         let mut hdr = [0u8; 16];
         blk::encode_header(&mut hdr, type_, sector);
         // SAFETY: HHDM-mapped bounce frame owned by this device for its
-        // lifetime; writes stay within the 4 KiB page (header 16B at 0,
-        // data ≤512B at 0x200, status 1B at 0x600); single in-flight
-        // request held under the inflight lock.
+        // lifetime; writes stay within the BOUNCE_BYTES contiguous region
+        // (header at 0, status at 0x10, data_len-bounded run at 0x1000);
+        // single in-flight request held under the inflight lock.
         unsafe {
             for (i, b) in hdr.iter().enumerate() {
                 core::ptr::write_volatile(bounce.add(HDR_OFF + i), *b);
@@ -246,22 +261,30 @@ impl BlockDevice for BlkState {
                 let (base_sector, total_sectors) =
                     blk::sector_plan(req.start_block, req.len_blocks, self.blk_size)
                         .ok_or(BlockError::Einval)?;
-                let total_sectors = total_sectors as usize;
                 let type_ = if req.op == BlockOp::Read {
                     blk::VIRTIO_BLK_T_IN
                 } else {
                     blk::VIRTIO_BLK_T_OUT
                 };
-                let mut tmp = [0u8; 512];
-                for s in 0..total_sectors {
-                    let off = s * sec;
+                // Chunk the run into ≤BOUNCE_DATA_SECTORS-sector requests;
+                // each chunk = ONE virtio request (header + one data desc
+                // of chunk_sectors*512 B + status), ONE used-ring poll.
+                // A ≤128 KiB read is a single round-trip.
+                let mut tmp: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+                let mut chunk_idx = 0u64;
+                while let Some((chunk_base, chunk_sectors, off)) = blk::chunk_plan(
+                    base_sector, total_sectors, chunk_idx, blk::BOUNCE_DATA_SECTORS,
+                ) {
+                    let clen = chunk_sectors as usize * sec;
+                    tmp.resize(clen, 0);
                     if req.op == BlockOp::Write {
-                        tmp.copy_from_slice(&req.buffer[off..off + sec]);
+                        tmp.copy_from_slice(&req.buffer[off..off + clen]);
                     }
-                    self.submit(type_, base_sector + s as u64, &mut tmp)?;
+                    self.submit(type_, chunk_base, &mut tmp[..clen])?;
                     if req.op == BlockOp::Read {
-                        req.buffer[off..off + sec].copy_from_slice(&tmp);
+                        req.buffer[off..off + clen].copy_from_slice(&tmp[..clen]);
                     }
+                    chunk_idx += 1;
                 }
                 Ok(())
             }
@@ -307,18 +330,22 @@ pub fn disk_name(index: u32) -> String {
 /// 1-based registry index (0 on bounce-alloc failure).
 /// # C: O(1) + GET_ID transfer + registry O(N_disks)
 pub fn init_blk(init: BlkInit) -> u32 {
-    let bounce_pa = match pmm::setup::alloc_one_frame() {
+    // Contiguous BOUNCE_ORDER region (256 KiB) so the 128 KiB data
+    // descriptor addresses one physically-contiguous, region-aligned run.
+    let bounce_pa = match pmm::setup::alloc_contig(pmm::Order(BOUNCE_ORDER)) {
         Some(pa) => pa,
         None => return 0,
     };
-    // Zero the bounce frame for deterministic header/status state.
+    // Zero the bounce region for deterministic header/status state.
     let h = hhdm();
     if h != 0 {
         let va = h.wrapping_add(bounce_pa) as *mut u8;
-        // SAFETY: HHDM-mapped freshly-allocated frame owned here; aligned
-        // u8 stores across the full 4 KiB page we exclusively own.
+        // SAFETY: HHDM-mapped freshly-allocated contiguous region we
+        // exclusively own for this device's lifetime; aligned u8 stores
+        // span only BOUNCE_BYTES (≤ the BOUNCE_ORDER region we allocated),
+        // never past the region the buddy returned.
         unsafe {
-            for i in 0..0x1000usize { core::ptr::write_volatile(va.add(i), 0); }
+            for i in 0..BOUNCE_BYTES { core::ptr::write_volatile(va.add(i), 0); }
         }
     }
     // Validate / clamp blk_size: must be ≥512 and a multiple of 512,
