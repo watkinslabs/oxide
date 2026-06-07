@@ -25,6 +25,11 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "465_listxattrat.rs"] pub mod s465_listxattrat;
 #[path = "466_removexattrat.rs"] pub mod s466_removexattrat;
 #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
+#[path = "457_statmount.rs"]   pub mod s457_statmount;
+#[path = "458_listmount.rs"]   pub mod s458_listmount;
+#[path = "468_file_getattr.rs"] pub mod s468_file_getattr;
+#[path = "469_file_setattr.rs"] pub mod s469_file_setattr;
+#[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
@@ -889,6 +894,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_LISTXATTRAT     => s465_listxattrat::sys_listxattrat(&args),
         syscall::nrs::NR_REMOVEXATTRAT   => s466_removexattrat::sys_removexattrat(&args),
         syscall::nrs::NR_FUTEX_REQUEUE    => s456_futex_requeue::sys_futex_requeue(&args),
+        syscall::nrs::NR_STATMOUNT        => s457_statmount::sys_statmount(&args),
+        syscall::nrs::NR_LISTMOUNT        => s458_listmount::sys_listmount(&args),
+        syscall::nrs::NR_FILE_GETATTR     => s468_file_getattr::sys_file_getattr(&args),
+        syscall::nrs::NR_FILE_SETATTR     => s469_file_setattr::sys_file_setattr(&args),
+        syscall::nrs::NR_RSEQ_SLICE_YIELD => s471_rseq_slice_yield::sys_rseq_slice_yield(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),

@@ -22,6 +22,10 @@ fn now_ns() -> u64 {
 /// resolves against cwd; *at callers pass the real dirfd.
 const AT_FDCWD: i32 = -100;
 
+/// `AT_SYMLINK_NOFOLLOW` (uapi): when set in a *at `at_flags`, operate on the
+/// symlink itself rather than its target. Shared by the *at families.
+pub(crate) const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+
 /// Resolve a dirfd-relative path to its inode (shared by chmod/chown *at and
 /// the *xattrat family). `follow` controls symlink-following (AT_SYMLINK_NOFOLLOW).
 /// # C: O(N_path)
