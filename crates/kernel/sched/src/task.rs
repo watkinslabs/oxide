@@ -154,7 +154,9 @@ pub struct Task {
     /// won't migrate a task to a CPU outside this mask. Default all-ones
     /// (any CPU); inherited on fork.
     pub cpus_allowed: AtomicU64,
-    pub class:    SchedClass,
+    /// Encoded `SchedClass` (lock-free; read via `sched_class()`, mutated via
+    /// `set_sched_class()` so sched_setattr/setparam can change policy at runtime).
+    pub class_enc: AtomicU64,
 
     pub exit_status: AtomicI32,
 
@@ -817,7 +819,7 @@ impl Task {
                 _ => crate::cputime::NICE_0_WEIGHT,
             }),
             cpus_allowed: AtomicU64::new(u64::MAX),
-            class,
+            class_enc: AtomicU64::new(class.encode()),
             exit_status: AtomicI32::new(0),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
