@@ -451,6 +451,11 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("tmux", "tmux", "/usr/bin/tmux"),
         ("lazygit", "lazygit", "/usr/bin/lazygit"),
         ("yq", "yq", "/usr/bin/yq"),
+        ("delta", "delta", "/usr/bin/delta"),
+        ("choose", "choose", "/usr/bin/choose"),
+        ("hexyl", "hexyl", "/usr/bin/hexyl"),
+        ("rsync", "rsync", "/usr/bin/rsync"),
+        ("nano", "nano", "/usr/bin/nano"),
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
