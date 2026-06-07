@@ -1,47 +1,66 @@
-# Session hand-off — disk-based rootfs migration: BOTH ARCHES BOOT FROM DISK
+# Session hand-off — disk-based rootfs + fast IO; vendoring apps
 
-## Status: migration core DONE + proven on x86 AND aarch64 (branch F405-disk-rootfs-migration)
-Userspace is no longer baked into the kernel ELF — it's read from real virtio-blk
-disks at runtime, the Linux way. x86 + arm both reach `oxide login:` mounting root
-from the `oxide-root` disk. Stages:
-- **Stage 0** (e239e7f4): overlay ImageDisk, vendored enablers built (libevent, Go
-  toolchain, fzf/tmux/lazygit/yq — in vendor/, not yet staged).
-- **Stage 1+3** (0e8323c6): real `drv-virtio-blk` BlockDevice driver (read/write/flush,
-  multi-sector, GET_ID serial, vda/vdb naming, registry by_serial) + ext4
-  de-singletonized (Ext4Mount{Arc<RootfsState>}, per-mount cache/orphans, high-32 inode
-  marker, close-hook routes to owning mount). Adversarially reviewed; bugs fixed. 13+21
-  hosted tests.
-- **Stage 2** (45e318c1): xtask builds standalone root-<arch>.img (256/192 MiB) +
-  home-<arch>.img; image_qemu + run-smokes attach both as virtio-blk serial=oxide-root/
-  oxide-home on BOTH arches (arm had none — lockstep gap closed).
-- **Stage 4** (f3cc88d2): kmain resequenced (PCI enum before mount); root mounts from
-  oxide-root via by_serial + ext4::rootfs::init_from_dev; /home from oxide-home
-  (graceful); embed include_bytes! + ImageDisk DELETED → small kernel, no boot hang.
-  Both arches boot to login. x86 uses -m 1G (embed gone → 1G plenty).
+## Landed on main this session
+- **Disk-based rootfs (F405/#1612):** userspace runs from real virtio-blk disks (ext4),
+  NOT baked into the kernel. x86+arm boot to `oxide login:` from the `oxide-root` disk.
+- **virtio-blk multi-sector perf (B63/#1615):** was ~1 round-trip/sector (~0.1 MB/s,
+  boot+big binaries crawled). Now 128 KiB bounce + multi-sector submit (4 KiB read 8→1,
+  ~256× fewer round-trips). **Boot→login ~16 s.** Both keystones (driver + ext4
+  de-singletonization) were adversarially reviewed + bugs fixed before landing.
+- **rootfs is a 1 GiB virtio-blk disk** (rootfs.rs count=1024) — grows freely, zero
+  kernel cost (read on demand). home-<arch>.img is a separate /home disk.
+- **x86_64-musl-g++ C++ toolchain** (fetch-cross.sh; gitignored) — enables C++ apps.
+- **35 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
+  zoxide ncdu htop tree dos2unix curl wget fzf tmux lazygit yq delta choose hexyl rsync
+  nano tokei grex xh yazi(+ya) dialog btop dua.
 
-## Open follow-ups (not blocking)
-- **x86 PMM hang at -m 2G**: boot wedges before `pmm: ready` at 2G on x86 (arm fine at
-  2G). Latent memmap/bitmap bug exposed when the migration briefly bumped x86 to 2G;
-  reverted x86 to 1G. Fix for >1G x86 RAM (real distro needs it). Pre-existing, x86 was
-  only ever booted at 1G before.
-- **Stage 5 (optional)**: split heavy vendored tools onto a separate tools-<arch>.img
-  mounted at /usr/local (user wanted a tools volume). Today root.img = base+tools, which
-  boots fine; do this when the app backlog outgrows root.img.
+## KEY OPEN ITEM — TUI startup-hang gap (4 tools built+de-staged)
+starship, glow, micro, duf are BUILT (recipes in tools/fetch-*.sh + vendor/*/build.sh,
+committed; binaries gitignored/local) but **NOT staged** — they HANG on startup under
+oxide. Signature: persists with stdin redirected to /dev/null + stdout to a file (so
+NOT a tty-read block). **ncurses TUIs work** (htop/ncdu/nano/dialog), **fzf/yq (Go,
+non-TUI) work**, but bubbletea/tcell (Go) + crossterm/starship (Rust) HANG — so it's how
+those terminal libs probe the terminal/init, not language/tokio/threads. NEXT: boot a
+`--features debug-all` kernel, run `starship --version </dev/null`, capture the LAST
+syscalls before silence → the blocking syscall (likely a tty ioctl or a /dev/tty open).
+Fix the kernel gap, then re-add the 4 to rootfs.rs staging + allowlist their binaries.
 
-## NEXT (resume the autonomous mission)
-1. Push F405 through `make smoke` (boots both arches) → PR → merge to main (CI green via
-   stub-blobs compile-check; kernel needs no rootfs blob now). Then update state.
-2. **Resume vendoring the app backlog** onto root.img (now unbounded — disk, not kernel
-   ELF): stage the already-built fzf/tmux/lazygit/yq + libevent; then delta, choose,
-   yazi, neovim(C), mc(glib), btop/lnav(C++), man-db(gdbm), rsync, dialog. Pattern:
-   fetch-<tool>.sh + vendor/<tool>/build.sh + gitignore allowlist + rootfs.rs put().
-   Parallel sub-agents one tool each; orchestrator wires gitignore+rootfs; boot-test; commit.
+## Other follow-ups (not blocking)
+- x86 PMM hang at -m 2G (arm fine at 2G; x86 runs 1G). Fix for >1 GB x86 RAM.
 
-## Resume command
+## Backlog (continue — autonomous; prefer NON-bubbletea/tcell tools until the hang is fixed)
+- CLI/ncurses (likely work): gron, jq-clones, pv, mtr, ncdu(done), aerc?, neomutt(big),
+  man-db (needs gdbm+libpipeline — vendor first), mc (needs glib — vendor first).
+- C++ (toolchain ready): lnav (sqlite/pcre/readline).
+- Heavy: neovim (libuv/luajit/msgpack/tree-sitter/unibilium/libtermkey/libvterm).
+- Defer bubbletea/tcell/crossterm TUIs (gitui, zellij, helix, lazygit-is-already-in…)
+  until the startup-hang is fixed.
+
+## Vendoring pattern (PROVEN, parallel sub-agents)
+fetch-<tool>.sh + vendor/<tool>/build.sh (static-musl both arches) + vendor/.gitignore
+allowlist + rootfs.rs staging tuple. Rust: cargo +crt-static, onig→regex-fancy if onig C
+dep. C: --host=<arch>-linux-musl static, ncurses via vendor/ncurses/install-<arch>
+(+ -DNCURSES_ENABLE_STDBOOL_H=1; dialog needs a libtinfo=libncursesw shim). C++:
+vendor/cross/{x86_64,aarch64}-linux-musl-cross g++ + STATIC -static-libstdc++. Go:
+vendor/go/bin/go CGO_ENABLED=0. Orchestrator wires gitignore+rootfs; boot-test; commit.
+
+## Boot-test recipe (x86)
+Build: `cargo run -p xtask -- rootfs --arch x86_64 && ... kernel --arch x86_64 --features
+debug-boot && ... grub --arch x86_64 --features debug-boot --build-only`. Boot:
+qemu-system-x86_64 q35 -enable-kvm -smp 2 **-m 1G** -cdrom target/oxide-x86_64-grub.iso
+-boot d + virtio-blk drives serial=oxide-root/oxide-home + `-serial unix:/tmp/x.sock`.
+Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in even post-fix
+— allow generous settle in capture.
+
+## Gotchas
+- **Smoke push SSH idle-timeout:** the pre-push smoke holds the SSH connection ~10 min;
+  GitHub idle-closes it so the push dies AFTER the hook passes ("Connection closed by
+  remote host"). If the smoke PASSED but the branch isn't on origin, re-push the SAME
+  commit with `SKIP_SMOKE=1` (already verified). Seen on B63.
+- Branch counters: max F=407, B=63. Author Chris Watkins. CI = compile-check (stub-blobs;
+  no rootfs blob needed since the embed is gone).
+
+## Resume
 ```
-cd /home/nd/oxide2 && git checkout F405-disk-rootfs-migration && git log --oneline -8
-gh run list --limit 3
+cd /home/nd/oxide2 && git checkout main && git pull && gh run list --limit 3
 ```
-Branch counters: max F=405, B=62. alice/swordfish login. Commit author Chris Watkins.
-Already-built-not-staged: libevent(lib), Go toolchain(vendor/go, gitignored),
-fzf/tmux/lazygit/yq (vendor/, build.sh + binaries). 18 tools already staged in root.img.
