@@ -30,7 +30,7 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
     };
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
     // policy: SCHED_OTHER=0, FIFO=1, RR=2, IDLE=5; RT priority from the class.
-    let (policy, prio): (u32, u32) = match t.class {
+    let (policy, prio): (u32, u32) = match t.sched_class() {
         SchedClass::Rt { prio, policy: SchedPolicy::Fifo } => (1, prio as u32),
         SchedClass::Rt { prio, policy: SchedPolicy::Rr }   => (2, prio as u32),
         SchedClass::Idle                                   => (5, 0),

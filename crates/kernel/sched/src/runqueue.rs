@@ -33,7 +33,7 @@ pub struct RunqueueInner {
 impl RunqueueInner {
     /// # C: O(RT_PRIO_COUNT)
     pub fn new(cpu: u16, idle: Arc<Task>) -> Self {
-        debug_assert!(matches!(idle.class, SchedClass::Idle));
+        debug_assert!(matches!(idle.sched_class(), SchedClass::Idle));
         Self {
             cpu,
             rt:  RtRunqueue::new(),
@@ -64,7 +64,7 @@ impl RunqueueInner {
         // context (SP_EL0 / callee-saved regs) is corrupted. Cleared when the
         // task is picked/removed off the tree (cfs/rt `pick_*` + `remove`).
         if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
-        match task.class {
+        match task.sched_class() {
             SchedClass::Rt { .. }     => self.rt.enqueue(task),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle          => panic!("RunqueueInner::enqueue: idle"),

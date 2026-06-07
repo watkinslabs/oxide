@@ -79,7 +79,7 @@ fn now_ns() -> u64 {
 /// re-select it, starving higher-tid peers (the F144 rotation bug).
 /// Runs before pick + re-enqueue so the re-keyed insert sorts correctly.
 fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
-    if !matches!(prev.class, SchedClass::Normal { .. }) { return; } // RT/Idle: no vruntime
+    if !matches!(prev.sched_class(), SchedClass::Normal { .. }) { return; } // RT/Idle: no vruntime
     // Live, mutable weight (nice / cgroup cpu.weight rewrite it) — not the
     // SchedClass::Normal seed.
     let weight = prev.load_weight.load(Ordering::Acquire);
@@ -234,7 +234,7 @@ pub unsafe fn schedule() {
         update_curr(prev_ref, &inner, now);
         // Re-enqueue the current runnable task (unless it's idle
         // or marked done) so the picker can return to it later.
-        if !matches!(prev_ref.class, SchedClass::Idle)
+        if !matches!(prev_ref.sched_class(), SchedClass::Idle)
             && prev_ref.state() == TaskState::Runnable
         {
             // The current task isn't on the class list while it's
@@ -352,7 +352,7 @@ pub unsafe fn schedule_from_irq() {
         // `update_curr(prev)` per `13§8` so the next CFS pick rotates
         // rather than re-selecting `prev`, charging real CPU time.
         update_curr(prev_ref, &inner, tnow);
-        if !matches!(prev_ref.class, SchedClass::Idle)
+        if !matches!(prev_ref.sched_class(), SchedClass::Idle)
             && prev_ref.state() == TaskState::Runnable
         {
             let raw = rq.current.load(Ordering::Acquire);
