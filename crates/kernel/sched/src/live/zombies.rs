@@ -242,7 +242,7 @@ fn wake_task_for_signal(task: &Arc<Task>) {
 /// by `sys_wait4` to decide whether to clear the SIGCHLD pending
 /// bit after a reap (F237 — keeps a signal_dispatch SIGCHLD
 /// from firing after wait4 already drained the zombies, which
-/// would make busybox-ash's handler re-wait → ECHILD → $?=255).
+/// would make the shell's handler re-wait → ECHILD → $?=255).
 /// # C: O(N_zombies)
 pub fn has_zombies(parent: u32) -> bool {
     use core::sync::atomic::Ordering;

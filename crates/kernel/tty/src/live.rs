@@ -379,7 +379,7 @@ pub fn set_session(vt: u8, sid: u32) {
 }
 
 /// Read the controlling-session id for `vt`. Used by TIOCGSID
-/// (busybox getty's `tcgetsid()` call) and the Linux `TIOCNOTTY`
+/// (getty's `tcgetsid()` call) and the Linux `TIOCNOTTY`
 /// path. Returns 0 when no session has claimed the VT yet.
 /// # C: O(1)
 pub fn session(vt: u8) -> u32 {

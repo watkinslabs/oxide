@@ -5,7 +5,7 @@
 // oxide dispatcher table in `syscall_glue.rs` is keyed on x86_64
 // numbering, so the aarch64 entry path remaps before dispatch.
 //
-// Mapping covers the syscalls a static-PIE musl init / busybox /
+// Mapping covers the syscalls a static-PIE musl init / coreutils /
 // shell needs at v1; unknown aarch64 nrs pass through unchanged and
 // fall through to the dispatcher's ENOSYS arm (logged as such).
 
@@ -89,7 +89,7 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (46,  77),   // ftruncate
         (47,  285),  // fallocate
         (48,  269),  // faccessat (was 90 chmod — silent mode-corrupt;
-                     //   ARM busybox PATH-search hit sys_chmod, all
+                     //   the shell's PATH-search on ARM hit sys_chmod, all
                      //   `uname`/`ls` came back "Permission denied")
         (49,  80),   // chdir
         (50,  81),   // fchdir
@@ -348,7 +348,7 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (290, 331),  // pkey_free
         (291, 332),  // statx (was 257 sys_openat — statx-shaped args
                      //   wild-wrote, kernel "succeeded" with garbage,
-                     //   busybox-ash PATH probe returned "Permission
+                     //   the shell's PATH probe returned "Permission
                      //   denied")
         (292, 333),  // io_pgetevents
         (293, 334),  // rseq

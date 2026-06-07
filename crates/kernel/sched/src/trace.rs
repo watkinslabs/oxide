@@ -1,7 +1,7 @@
 // F151 per-syscall entry trace. Gated by the `debug-syscall` cargo
 // feature so call sites are absent in production builds (per
 // `04§3 R05`). Used to bisect Linux-compat gaps when bringing up
-// off-the-shelf userspace (busybox / coreutils / bash).
+// off-the-shelf userspace (coreutils / bash / util-linux).
 //
 // Format: `[SYS] pid=<tid> nr=<dec> a0=<hex> a1=<hex> a2=<hex>`
 // Three args is enough to identify the syscall; later args fall

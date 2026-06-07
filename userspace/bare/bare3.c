@@ -1,5 +1,5 @@
 // Static-musl binary with normal crt1 (NOT -nostartfiles). Same
-// startup path as busybox. Just dumps argv[0] and exits.
+// startup path as the shell. Just dumps argv[0] and exits.
 #include <unistd.h>
 #include <string.h>
 

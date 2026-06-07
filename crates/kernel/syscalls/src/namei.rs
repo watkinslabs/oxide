@@ -236,7 +236,7 @@ pub fn sys_unlinkat(args: &SyscallArgs) -> i64 {
 }
 
 /// Strip a trailing `/` (POSIX: `mkdir /var/` ≡ `mkdir /var`). Root
-/// `/` is preserved. busybox/GNU `mkdir -p` walk ancestors with a
+/// `/` is preserved. GNU `mkdir -p` walks ancestors with a
 /// trailing slash on each prefix; without this the ext4 backend
 /// resolves `/var/` to a missing child and returns ENOENT for a dir
 /// that exists.

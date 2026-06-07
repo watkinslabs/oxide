@@ -206,7 +206,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
 
     // F153-1: no embedded init blob. PID 1 lives in the rootfs as a
-    // /sbin/init busybox hardlink; the kernel reads it from ext4 at
+    // /sbin/init entry; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
     // Rootfs 16→32(F251)→128(F345): L2 lib tree (openssl etc.) overflowed 32 MiB → silent file drop → arm wedged pre-init. Rootfs is include_bytes!d into the kernel ELF; the ESP (image_qemu.rs) was bumped to 512 MiB to hold the bigger kernel.
@@ -259,60 +259,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         dbg(&format!("sif {target} mode 0100755"))  // make executable
     };
     let user = |name: &str| user_out.join(name);
-    // busybox 1.37.0 static-musl. Per-arch binary, argv[0]-dispatched.
-    let bb = if arch == "aarch64" {
-        repo.join("vendor/busybox/busybox-aarch64")
-    } else {
-        repo.join("vendor/busybox/busybox")
-    };
-    if bb.is_file() {
-        // Single copy at /bin/busybox; every applet path is a hardlink
-        // (debugfs `ln`) → one inode vs ~70 dups. busybox routes on
-        // argv[0], so /bin/sh opens /bin/busybox with argv[0]="/bin/sh".
-        put(&bb, "/bin/busybox")?;
-        let dbg_ln = |target: &str, link: &str| -> Result<(), u8> {
-            let cmd = format!("ln {} {}", target, link);
-            let mut c = Command::new("debugfs");
-            c.args(["-w", "-R", &cmd, img.to_str().unwrap()]);
-            c.stdout(std::process::Stdio::null());
-            // Don't mute stderr — debugfs `ln` exits 0 even on make_link
-            // errors; muting it silently drops applets, shipping a busted rootfs.
-            run(c)
-        };
-        // /bin applets — every user-facing tool dispatched via argv[0].
-        for applet in &[
-            "ash", "hush",
-            "ls", "cat", "echo", "cp", "mv", "rm", "mkdir", "rmdir",
-            "dmesg",
-            "grep", "egrep", "fgrep", "find", "head", "tail", "wc", "sort", "uniq",
-            "touch", "chmod", "chown", "ln", "test", "true", "false",
-            "env", "printf", "yes", "seq", "expr", "id", "whoami",
-            "tr", "cut", "sed", "awk", "date", "df", "du", "stat",
-            "sleep", "tee", "xxd", "hostname", "uname",
-            "pwd", "basename", "dirname", "which", "clear", "reset",
-            "more", "less", "vi", "tar", "gzip", "gunzip",
-            "ifconfig", "route", "ping", "nc", "wget",
-            "mknod", "stty", "tty", "mesg",
-        ] {
-            dbg_ln("/bin/busybox", &format!("/bin/{applet}"))?;
-        }
-        // /sbin applets per FHS. F259 util-linux owns login/agetty/su.
-        // mount/umount stay on busybox (util-linux mount is non-PIE, won't load yet).
-        for applet in &[
-            "init", "halt", "reboot", "poweroff", "shutdown",
-            "mdev", "ifconfig", "route", "fdisk", "swapon", "swapoff",
-            "mount", "umount", "udhcpc", "udhcpd",
-        ] {
-            dbg_ln("/bin/busybox", &format!("/sbin/{applet}"))?;
-        }
-        // /bin alias of mount/umount (no-leading-slash resolution; /bin precedes /sbin).
-        dbg_ln("/bin/busybox", "/bin/mount")?;
-        dbg_ln("/bin/busybox", "/bin/umount")?;
-        // Kernel boot path probes /sbin/init then /init.
-        dbg_ln("/bin/busybox", "/init")?;
-    }
-    // Kernel-acceptance smoke binaries. Real-musl-crt1 builds; every
-    // user-facing tool comes from busybox hardlinks above.
+    // Userspace tools come from real GNU/util-linux/etc. binaries: bash is
+    // /bin/sh + /bin/bash (below), coreutils owns the file/text applets
+    // (F218 block), GNU grep/sed/gawk/tar/gzip/findutils/less/vim own their
+    // tools (rip-to-GNU block), util-linux owns login/agetty/mount/su/etc.,
+    // shadow owns useradd/passwd/etc., and PID1 is systemd (kernel boots
+    // /lib/systemd/systemd directly).
+    // Kernel-acceptance smoke binaries (real-musl-crt1 builds).
     for b in &[
         "bare3", "sptest", "pamtest", "login_sim", "sem_smoke", "msg_smoke",
         "mq_smoke", "ptrace_smoke", "ptrace_singlestep_smoke", "mprotect_smoke",
@@ -365,7 +318,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     let bash_bin = repo.join(format!("vendor/bash/bash-{}", arch));
     if bash_bin.is_file() {
         put(&bash_bin, "/bin/bash")?;
-        // F-bash-as-sh: bash IS the shell now. busybox-ash drops out
+        // F-bash-as-sh: bash IS the shell now (no other sh provider drops
         // of /bin/sh slot (the "sh" applet is no longer hardlinked
         // above). Login / sshd / shebangs that resolve "/bin/sh"
         // now hit GNU bash 5.2.
@@ -383,7 +336,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("login",   "/bin/login"),
         ("agetty",  "/sbin/agetty"),
         // util-linux mount is non-PIE dynamic on x86 → fails to load
-        // under our kernel; busybox mount stays at /bin/mount.
+        // under our kernel; /bin/mount is the GNU/util-linux mount.
         ("mount",   "/usr/sbin/mount.util-linux"),
         ("umount",  "/usr/sbin/umount.util-linux"),
         ("su",      "/bin/su"),
@@ -473,7 +426,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     }
 
     // F217: vendored GNU sed 4.9 — static-musl. Drops in at /usr/bin/sed
-    // ahead of busybox's sed applet (PATH order /usr/bin before /bin).
+    // ahead of any other /bin sed (PATH order /usr/bin before /bin).
     // Per vendor/sed/build.sh.
     let sed_bin = repo.join(format!("vendor/sed/sed-{}", arch));
     if sed_bin.is_file() {
@@ -518,7 +471,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
 
     // F223: vendored GNU findutils 4.10.0 — static-musl /usr/bin/find +
     // /usr/bin/xargs. Real find supports -printf, -regex, -prune,
-    // -newer, -mtime, -exec ... +, etc. that busybox find doesn't.
+    // -newer, -mtime, -exec ... +, etc. (full GNU findutils).
     let find_bin = repo.join(format!("vendor/findutils/find-{}", arch));
     let xargs_bin = repo.join(format!("vendor/findutils/xargs-{}", arch));
     if find_bin.is_file() { put(&find_bin, "/usr/bin/find")?; }
@@ -565,19 +518,18 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ] {
             dbg_ln("/usr/libexec/coreutils", &format!("/usr/bin/{applet}"))?;
         }
-        // Rip busybox→coreutils for the /bin applets coreutils owns: rm the
-        // busybox hardlink + relink to coreutils. busybox-only tools
-        // (grep/find/sed/awk/tar/vi/net) stay. systemd is PID1 (not rcS).
+        // Install coreutils as the /bin file/text applets (rm any prior link
+        // first, then relink to coreutils). grep/find/sed/awk/tar/vi own their
+        // own tools (below). systemd is PID1.
         for applet in &["ls","cat","cp","mv","rm","mkdir","rmdir","ln","head","tail","wc","sort","uniq","touch","chmod","chown","env","printf","yes","seq","expr","id","whoami","tr","cut","date","df","du","stat","sleep","tee","uname","pwd","basename","dirname","mknod","tty"] {
             dbg(&format!("rm /bin/{applet}"))?;
             dbg_ln("/usr/libexec/coreutils", &format!("/bin/{applet}"))?;
         }
     }
 
-    // Rip busybox→GNU for /bin text/archive tools staged at /usr/bin above:
-    // override the busybox /bin hardlink → the GNU binary so /bin/grep etc.
-    // is unambiguously GNU regardless of PATH order. (egrep/fgrep/gunzip stay
-    // on busybox for now.) systemd is PID1 so the boot path is unaffected.
+    // Install GNU /bin text/archive tools staged at /usr/bin above: link the
+    // GNU binary into /bin so /bin/grep etc. is unambiguously GNU regardless
+    // of PATH order. systemd is PID1 so the boot path is unaffected.
     for (present, binname, target) in &[
         (grep_bin.is_file(), "grep", "/usr/bin/grep"),
         (sed_bin.is_file(),  "sed",  "/usr/bin/sed"),
@@ -659,7 +611,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     if std::env::var("OXIDE_DHCPCD_ENABLE").as_deref() == Ok("1") {
         put(&stage("oxide-dhcpcd-enable", b"1\n")?, "/etc/oxide-dhcpcd-enable")?;
     }
-    // F141: udhcpc marker — opt-in busybox DHCP client.
+    // F141: udhcpc marker — opt-in DHCP client.
     if std::env::var("OXIDE_UDHCPC_ENABLE").as_deref() == Ok("1") {
         put(&stage("oxide-udhcpc-enable", b"1\n")?, "/etc/oxide-udhcpc-enable")?;
     }
@@ -784,7 +736,7 @@ session    required   pam_unix.so
             dbg(&format!("sif {tgt} mode 0100644"))?;
         }
     }
-    // /etc/inittab — busybox init (B39: respawn login direct, no getty).
+    // /etc/inittab — legacy sysv format (systemd is PID1; kept informational).
     put(&stage("inittab",
 b"::sysinit:/etc/init.d/rcS
 ::ctrlaltdel:/sbin/reboot
@@ -819,14 +771,14 @@ mount -t tmpfs tmpfs /tmp  2>/dev/null
 mount -t tmpfs tmpfs /var/run 2>/dev/null
 mount -t tmpfs tmpfs /var/db  2>/dev/null
 mount -t devpts devpts /dev/pts 2>/dev/null
-# B18: busybox syslogd creates /dev/log socket + writes /var/log/messages.
+# syslogd creates /dev/log socket + writes /var/log/messages.
 # Captures pam_unix's pam_syslog() so we can see why auth fails.
 mkdir -p /var/log
 syslogd -O /var/log/messages -S 2>/dev/null
 hostname -F /etc/hostname 2>/dev/null
 ifconfig lo 127.0.0.1 up 2>/dev/null
 ifconfig eth0 up 2>/dev/null
-# F141: udhcpc is the v1 DHCP client (busybox applet - already in
+# F141: udhcpc is the legacy DHCP client (already in
 # the rootfs, no separate vendor binary). Real upstream dhcpcd
 # still wedges post-lease-setup; udhcpc's simpler state machine
 # hits fewer of the gap-y syscall paths. Gated behind
@@ -878,7 +830,7 @@ fi
     // the addr down. Lease fields arrive as env vars from udhcpc.
     put(&stage("udhcpc-default.script",
 b"#!/bin/sh
-# busybox udhcpc lease-event handler. Invoked by udhcpc with
+# udhcpc lease-event handler. Invoked by udhcpc with
 # $1 = event name and lease fields exported as env vars.
 RESOLV=/etc/resolv.conf
 case \"$1\" in
@@ -924,7 +876,7 @@ if [ -n \"$BASH\" ] && [ -r ~/.bashrc ]; then . ~/.bashrc; fi
 ")?,
         "/etc/profile")?;
 
-    // /etc/login.defs — busybox login reads ENV_PATH / ENV_SUPATH
+    // /etc/login.defs — login(1) (util-linux) reads ENV_PATH / ENV_SUPATH
     // and sets them as PATH in the child env before exec'ing the
     // shell, regardless of whether /etc/profile gets sourced. Keeps
     // `ls`, `cat`, etc. usable from the very first prompt.

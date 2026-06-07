@@ -452,7 +452,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     // FP context switch (the per-task FpuStateAArch64 + trap-on-
     // first-use machinery in hal_aarch64::fpu exists but is unused);
     // enable unconditionally so user binaries built with NEON
-    // intrinsics (busybox memcpy, glibc strxx, etc.) don't trap.
+    // intrinsics (memcpy, glibc strxx, etc.) don't trap.
     hal_aarch64::fpu_enable();
 
     // The self-bootstrap Image trampoline installs the HHDM; hand its

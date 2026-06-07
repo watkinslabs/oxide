@@ -6,7 +6,7 @@ Full Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. No deferrals.
 
 ## 1 Purpose
 
-Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. `/dev/fb0` is a memory-mapped linear framebuffer with `FBIOGET_FSCREENINFO`/`VSCREENINFO`/`PUT_VSCREENINFO`/`PAN_DISPLAY`/`BLANK` ioctls. Backed by a DRM dumb-buffer + scanout (`47`) bound at boot. Kept for compat with software that hasn't migrated to DRM (fbcon, busybox `fbset`, `Xorg -configure`, raw frame dumpers).
+Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. `/dev/fb0` is a memory-mapped linear framebuffer with `FBIOGET_FSCREENINFO`/`VSCREENINFO`/`PUT_VSCREENINFO`/`PAN_DISPLAY`/`BLANK` ioctls. Backed by a DRM dumb-buffer + scanout (`47`) bound at boot. Kept for compat with software that hasn't migrated to DRM (fbcon, `fbset`, `Xorg -configure`, raw frame dumpers).
 
 ## 2 Invariants (frozen)
 

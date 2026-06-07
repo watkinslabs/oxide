@@ -5,7 +5,7 @@ DRAFT (living). Dep:`00`,`15`.
 Purpose: complete inventory of stubbed / half-implemented / missing
 syscalls and kernel features so we can do a directed completeness
 sweep instead of patching one ENOSYS at a time when a real-libc
-program (bash, busybox, util-linux) chokes on it. Filename has no
+program (bash, coreutils, util-linux) chokes on it. Filename has no
 numeric prefix because it's a working-doc index, not a versioned
 spec.
 

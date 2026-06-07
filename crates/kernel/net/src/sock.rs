@@ -115,8 +115,8 @@ pub enum SockKind {
         /// F146: sock_type — SOCK_RAW (3) caller sends full L2 frame
         /// (xmit_raw); SOCK_DGRAM (2) caller sends L3 payload and the
         /// kernel prepends the ethernet header using sll_addr from
-        /// sendto's destination sockaddr_ll. busybox udhcpc opens
-        /// SOCK_DGRAM; dhcpcd 10.3.2 opens SOCK_RAW.
+        /// sendto's destination sockaddr_ll. A SOCK_DGRAM DHCP client
+        /// uses this path; dhcpcd 10.3.2 opens SOCK_RAW.
         sock_type: core::sync::atomic::AtomicU8,
         /// Pending RX frames.
         rx: sync::Spinlock<alloc::collections::VecDeque<alloc::vec::Vec<u8>>, SockLockClass>,

@@ -7,7 +7,7 @@
 #   - PAM auth → session → setcred chain
 #   - TIOCSCTTY VT foreground_pgid handover
 #   - controlling-tty + job-control on /dev/ttyS0
-#   - busybox login-shell startup
+#   - bash login-shell startup
 #
 # Usage:
 #   tools/boot-smoke-login.sh x86            # default 600s
