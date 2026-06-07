@@ -21,5 +21,5 @@ pub fn sys_open_tree_attr(args: &SyscallArgs) -> i64 {
         }
     }
     // dfd/path/flags are in a0/a1/a2 — the same positions sys_open_tree reads.
-    crate::fsmount::sys_open_tree(args)
+    crate::s428_open_tree::sys_open_tree(args)
 }
