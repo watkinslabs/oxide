@@ -21,6 +21,7 @@ net     = { path = "../net" }
 netlink = { path = "../netlink" }
 firmware = { path = "../firmware" }
 drv-virtio-net   = { path = "../../drivers/drv-virtio-net" }
+drv-virtio-blk   = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-gpu   = { path = "../../drivers/drv-virtio-gpu" }
 drv-virtio-input = { path = "../../drivers/drv-virtio-input" }
 
