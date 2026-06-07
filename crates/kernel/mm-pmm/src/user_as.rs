@@ -624,16 +624,12 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
             // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
             #[cfg(target_arch = "x86_64")]
             unsafe { hal_x86_64::flush_local_va(va_raw); }
+            // Prior no-op left a stale TLB entry on a remapped VA (heap
+            // churn); the inner-shareable tlbi is also mandatory once APs
+            // share the page tables. Use the existing ArmMmu::flush_va.
             #[cfg(target_arch = "aarch64")]
-            {
-                // arm needs a hal-side flush_va helper; reuse the
-                // walker's path. For v1 single-CPU, the dsb+isb
-                // sequence inside MmuOps::map already serializes
-                // the PTE write, so a separate invlpg-equivalent is
-                // optional. Leave a TODO for the proper invalidation
-                // primitive once flush_local_va is exposed for arm.
-                let _ = va_raw;
-            }
+            // SAFETY: tlbi vae1is invalidates the just-mapped VA so the faulting instruction's retry walks the new PTE; privileged but legal at EL1.
+            unsafe { <hal_aarch64::mmu_ops::ArmMmu as hal::MmuOps>::flush_va(hal::Va(va_raw)); }
             true
         }
         _ => false,
