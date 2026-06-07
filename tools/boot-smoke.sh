@@ -81,14 +81,13 @@ trap cleanup EXIT
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
-# SMP per arch. x86 boots -smp 2 so AP bring-up + the periodic load
-# balancer (`13§11`) are exercised every push (LAPIC IPI). arm is UP-only
-# since Limine was dropped — the GRUB EFI-stub path does no PSCI AP
-# bring-up yet, so a 2nd vCPU never starts and late-boot wedges; it also
-# ~halves single-threaded-TCG throughput by emulating an idle AP. Boot arm
-# -smp 1 until PSCI AP startup lands. Override with OXIDE_SMP=N.
+# SMP per arch, both -smp 2 to exercise the AP bring-up + per-CPU paths
+# every push. arm SMP=2 now boots → systemd → login (#1564 fixed the
+# AttrIdx-Device page-attr bug + #1552 PSCI AP bring-up). Note arm -smp 2
+# under single-threaded TCG ~halves throughput (emulated idle AP), so the
+# arm boot budget is larger. Override with OXIDE_SMP=N.
 case "$ARCH" in
-    arm) OXIDE_SMP="${OXIDE_SMP:-1}" ;;
+    arm) OXIDE_SMP="${OXIDE_SMP:-2}" ;;
     *)   OXIDE_SMP="${OXIDE_SMP:-2}" ;;
 esac
 
