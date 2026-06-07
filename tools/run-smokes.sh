@@ -43,7 +43,7 @@ run_one() {
   local qemu_args
   if [ "$arch" = "x86_64" ]; then
     qemu_args=(qemu-system-x86_64
-      -machine q35 -cpu Haswell-v4 -m 1G
+      -machine q35 -cpu Haswell-v4 -m 2G
       -cdrom "$img" -boot d
       -drive "if=none,id=hd0,format=raw,file=$repo/kernel/blobs/rootfs-x86_64.img"
       -device "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0"

@@ -1,57 +1,60 @@
-# Session hand-off
+# Session hand-off — AUTONOMOUS RUN: disk-based rootfs migration
 
-## Headline
-- **CI is GREEN again** (#1607, branch B62). It had been red 40+ runs (pre-existing,
-  from the 2026-06-06 kernel-crate refactor; boot-smoke is local-only so it never
-  surfaced). Fixed two classes: (a) host-compile of kernel-only crates in
-  `cargo test --workspace` — gated mm-pmm `kalloc_grow`, crate-gated console/devpts/
-  kmain `#![cfg(oxide-kernel)]`, dropped a stray `use crate::live::*` in procfs tests;
-  (b) build-kernel jobs needed musl-gcc/cross-toolchain → added `OXIDE_STUB_BLOBS=1`
-  compile-check mode (xtask writes empty placeholder rootfs/vDSO blobs; CI never boots).
-- **Userspace tooling backlog: 18 vendored + boot-verified** — rg, fd, bat, eza, jq,
-  tldr, hyperfine, dust, sd, btm, procs, zoxide, ncdu, htop, tree, dos2unix(+unix2dos),
-  curl, wget (#1604-1610, F399-F403). curl/wget link vendored openssl+zlib static
-  (libtool needs `-all-static` injected at make, not configure; wget needs openssl `-L`
-  in both OPENSSL_LIBS and global LDFLAGS for its separate MD5 crypto probe).
-- Earlier this session: syscalls 345→381; full one-file-per-syscall migration (224
-  `<NNN>_<name>.rs` modules, lib.rs 967→114, dispatch in dispatch.rs); console/GPU,
-  login-shell, arm SMP=2 all resolved. All merged.
+## Active mission (do not stop until done, then resume vendoring)
+Replace the embedded-in-kernel rootfs (`include_bytes!` ROOTFS, ~200 MiB baked into
+the kernel ELF → early-boot hang past ~128 MiB) with REAL DISKS read via virtio-blk +
+ext4 at runtime — the Linux way. Kernel still loaded by GRUB (unchanged). Multiple
+volumes: root (base distro + core tools), /home (user data), tools volume (heavy
+vendored backlog) at /usr/local. Buddy MAX_ORDER is already 20 (=4 GiB) — NOT the
+bottleneck; the embed itself is. Owner wants the rootfs disk image at 256 MiB
+(rootfs.rs count=256 — keep it; that sizes the DISK image now, not the embed).
 
-## Vendoring pattern (FOLLOW THIS — source build, no prebuilt binaries)
-Per tool: `tools/fetch-<tool>.sh` (fetch+sha256+extract source) + `vendor/<tool>/build.sh`
-(cross-build static-musl BOTH arches → checked-in `<bin>-{x86_64,aarch64}`) + a
-`vendor/.gitignore` allowlist block (`*` denies; add `!<tool>/ !<tool>/build.sh
-!<tool>/<bin>-x86_64 !<tool>/<bin>-aarch64` + source/tarball ignore) + a tuple in the
-rootfs.rs staging loop (`("<dir>","<bin>","/usr/bin/<name>")`).
-- Rust: `cargo build --release --target {x86_64,aarch64}-unknown-linux-musl` with
-  `RUSTFLAGS="-C target-feature=+crt-static"`; aarch64 linker/CC = vendored
-  `vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc`. Append empty
-  `[workspace]` to the crate Cargo.toml (else absorbed into the kernel workspace).
-  Template: `tools/fetch-ripgrep.sh` + `vendor/ripgrep/build.sh`.
-- C: autotools `--host=<arch>-linux-musl` static; config.cache for cross probes; UAPI
-  via `vendor/lib/uapi-stage.sh`. ncurses tools link `vendor/ncurses/install-<arch>`.
-  Template: `vendor/bash/build.sh`, `vendor/ncdu/build.sh`.
-- **Parallel sub-agents work great** — one tool per agent (create fetch+build.sh + run
-  the build + report); orchestrator wires `.gitignore`+`rootfs.rs` centrally (shared
-  files — agents must NOT touch them). Then boot-test the batch + commit.
+## Staged plan (from Plan agent audit — full detail in git log of this branch)
+- **Stage 1** (foundation, hosted-test): new crate `crates/drivers/drv-virtio-blk`;
+  promote the throwaway sector-1 probe in `crates/kernel/pci-boot/src/virtio_drv.rs`
+  (blk branch ~:371-435, q0 setup :205-251, used-ring harvest :670-704) into a
+  persistent `BlockDevice` (read T_IN + write T_OUT + flush; capacity/blk_size from
+  virtio_blk_config). Register in `crates/kernel/block/src/registry.rs` by serial
+  string. DO NOT touch kmain (Stage 4 owns boot wiring). Hosted-test the request
+  encoding vs a fake ring.
+- **Stage 3** (parallel w/ Stage 1, hosted-test): kill the ext4 singleton — make
+  `Ext4RootfsFs` instance-carrying (`mount: Arc<ext4::Mount>` field), convert the ~40
+  `MOUNT_PTR.load()` sites in `crates/kernel/ext4/src/rootfs.rs` to `self.mount`, add
+  `Ext4RootfsFs::open(dev)->Arc<Self>`, fix the global orphan-set/inode-marker
+  (0x6E54_0000) to be per-mount. Keep MOUNT_PTR as root during transition. Extend
+  `set_test_mount` hosted test to 2 fixtures, assert no cross-contamination. DO NOT
+  touch kmain.
+- **Stage 2**: `tools/xtask/src/rootfs.rs` + `image_qemu.rs` + `tools/run-smokes.sh`:
+  emit standalone `root-<arch>.img` (256 MiB) + `home-<arch>.img` + `tools-<arch>.img`
+  (move the heavy vendored tools here → /usr/local). Attach all three as virtio-blk
+  drives with serials `oxide-root`/`oxide-home`/`oxide-tools`. **ARM currently attaches
+  NO -drive (rootfs baked in Image) — ADD the -drive/-device lines for ARM (lockstep
+  risk #1).** Kernel IDs root by serial string (virtio_blk_config offset 24, 20 bytes).
+- **Stage 4** (first boot-test, both arches): in `kmain.rs` move PCI enumeration
+  (~:601) BEFORE `ext4::rootfs::init()` (~:497); look up root disk by serial →
+  `Ext4RootfsFs::open(root_dev)` → register("/"). Drop the big embed (make ROOTFS a
+  tiny stub / remove) so the kernel ELF shrinks → boots. Audit every
+  `ext4::rootfs::read_file` caller in kmain (:533,:553,:621) — all must sit AFTER the
+  new mount. Verify both arches reach `oxide login:`.
+- **Stage 5**: kernel-mount /home + /usr/local from their disks (register after root).
+- **Stage 6**: delete `const ROOTFS` + `ImageDisk` embed; keep `set_test_mount` fixture
+  path for hosted tests.
+- Then: **resume vendoring** the app backlog onto the tools volume (now unbounded):
+  delta, choose, yazi, neovim, mc(glib), btop/lnav(C++), man-db(gdbm), rsync, dialog,
+  + the lazygit/yq/fzf/tmux/libevent already built (vendor/, ready to stage).
 
-## Open — tooling backlog (continue)
-- C (autotools-musl): rsync, dialog (ncurses✓), man-db (needs gdbm). tmux needs libevent
-  (vendor first). mc needs glib (hard). C++: btop, lnav (musl+libstdc++ finicky). neovim (C).
-- Go (need Go toolchain set up first): lazygit, fzf, yq.
-- More Rust (cargo-musl, easy): delta, choose, yazi (heavy).
+## Risks (ranked): 1) ARM has no block device today — Stage 2 must add it + prove the
+driver binds over ECAM on QEMU virt (PCI mem-enable bit). 2) virtio-blk write/used-ring
+correctness. 3) ext4 singleton→instance 40-site churn. 4) Stage-4 boot reorder.
 
-## First task next session
+## Resume / first command each loop iteration
 ```
 cd /home/nd/oxide2 && git checkout main && git pull
-# continue vendoring: fan out agents for the next batch (htop, tree, dos2unix, curl, wget),
-# wire gitignore+rootfs centrally, boot-test, commit per batch. CI stays green (stub-blobs).
-gh run list --limit 3   # confirm main still green
+gh run list --limit 3   # main must stay green
+# find current stage: did Stage 1 (drv-virtio-blk) land? Stage 3 (ext4 instance)? etc.
+git log --oneline -15
 ```
-
-## Gotchas
-- CI build-kernel uses `OXIDE_STUB_BLOBS=1` (compile-check only; doesn't build the real
-  rootfs). Real build+boot is the LOCAL pre-push smoke. Don't "fix" CI to build the real
-  rootfs unless you also add musl-gcc + cross-toolchain to pr.yml.
-- Branch numbers: derive from git log every time. Max F=403, B=62.
-- alice/swordfish is a working login for boot-tests (root's password differs).
+Branch counters (derive from git log; max F=403, B=62). Commit+merge per stage, CI green.
+alice/swordfish login for boot-tests. Already built+committed: 18 tools staged in the
+(soon-removed) embed; libevent/Go-toolchain/fzf/tmux/lazygit/yq built in vendor/ (the
+F404 wave) but NOT yet staged — they go on the tools volume in Stage 2/5.
