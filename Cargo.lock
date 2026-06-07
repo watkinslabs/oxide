@@ -211,6 +211,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-virtio-blk"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "sync",
+ "virtio",
+]
+
+[[package]]
 name = "drv-virtio-gpu"
 version = "0.1.0"
 dependencies = [
@@ -741,6 +754,7 @@ name = "pci-boot"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",

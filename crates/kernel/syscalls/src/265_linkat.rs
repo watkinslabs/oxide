@@ -47,12 +47,12 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
             Ok(f)  => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
         let vfs_ino = file.inode().ino();
-        // Only ext4-resident inodes (high-half marker = 0x6E54) can
-        // be linked into the ext4 dir tree.
-        if (vfs_ino >> 32) != 0x6E54 {
+        // Only ext4-resident inodes (high-32 EXT4_INO_MARK) can be
+        // linked into the ext4 dir tree.
+        if !ext4::rootfs::is_ext4_ino(vfs_ino) {
             return -(Errno::Exdev.as_i32() as i64);
         }
-        let ino = (vfs_ino & 0xFFFF_FFFF) as u32;
+        let ino = ext4::rootfs::ext4_unwrap_ino(vfs_ino);
         return match ext4::rootfs::link_inode_at(ino, l.as_bytes()) {
             Ok(())  => 0,
             Err(e)  => errno_from_vfs(e),

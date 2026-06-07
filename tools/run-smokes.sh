@@ -42,18 +42,27 @@ run_one() {
   # in the kernel Image (no block device) + semihosting for early UART.
   local qemu_args
   if [ "$arch" = "x86_64" ]; then
+    # Stage-2: ROOT + HOME disks as virtio-blk; kernel IDs each by serial
+    # (oxide-root / oxide-home) via GET_ID.
     qemu_args=(qemu-system-x86_64
       -machine q35 -cpu Haswell-v4 -m 1G
       -cdrom "$img" -boot d
-      -drive "if=none,id=hd0,format=raw,file=$repo/kernel/blobs/rootfs-x86_64.img"
-      -device "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0"
+      -drive "if=none,id=root,format=raw,file=$repo/kernel/blobs/root-x86_64.img"
+      -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
+      -drive "if=none,id=home,format=raw,file=$repo/kernel/blobs/home-x86_64.img"
+      -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home"
       -display none -no-reboot -no-shutdown
       -serial stdio)
   else
+    # Stage-2: ROOT + HOME disks as virtio-blk on aarch64 too (lockstep).
     qemu_args=(qemu-system-aarch64
       -machine virt,gic-version=3,its=on -cpu cortex-a72 -m 2G
       -bios "$repo/vendor/firmware/ovmf-aarch64.fd"
       -cdrom "$img" -boot d
+      -drive "if=none,id=root,format=raw,file=$repo/kernel/blobs/root-aarch64.img"
+      -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
+      -drive "if=none,id=home,format=raw,file=$repo/kernel/blobs/home-aarch64.img"
+      -device "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home"
       -display none -no-reboot
       # Semihosting required: boot-aarch64 uses `hlt #0xf000`
       # for early-boot UART output before pl011 is set up;

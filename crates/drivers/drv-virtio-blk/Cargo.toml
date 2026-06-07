@@ -1,0 +1,32 @@
+[package]
+name = "drv-virtio-blk"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Modern-transport virtio-blk driver per `34§*` / `17§2`. Boot-time PCI
+# probe (in pci-boot::virtio_drv) brings up cap discovery, BAR mapping,
+# queue program, DRIVER_OK; once that finishes it hands the persistent
+# kernel-side addresses here via `modern::init_blk`, which registers a
+# `BlockDevice` so ext4 can mount a real disk. The synchronous request
+# engine (`BlkState::submit`) builds the 3-descriptor chain, kicks the
+# notify register, and polls used.idx — no IRQ needed for Stage 1.
+
+[dependencies]
+block    = { path = "../../kernel/block" }
+klog     = { path = "../../shared/klog" }
+pmm      = { path = "../../kernel/mm-pmm" }
+sync     = { path = "../../shared/sync" }
+virtio   = { path = "../virtio" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+hosted = []
+debug-boot = []

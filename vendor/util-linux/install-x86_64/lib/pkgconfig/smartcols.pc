@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/util-linux/install-x86_64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: smartcols
+Description: oxide L2 staged smartcols
+Version: 2.40
+Libs: -L${libdir} -lsmartcols
+Cflags: -I${includedir} -I${includedir}/libsmartcols

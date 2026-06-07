@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/zstd/install-x86_64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libzstd
+Description: oxide L2 staged libzstd
+Version: 1.5.6
+Libs: -L${libdir} -lzstd
+Cflags: -I${includedir}

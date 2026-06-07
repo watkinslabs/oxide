@@ -202,6 +202,8 @@ fn qemu_run_aarch64_grub(
         return Err(2);
     }
     let ovmf = repo.join("vendor/firmware/ovmf-aarch64.fd");
+    let root_img = repo.join("kernel/blobs/root-aarch64.img");
+    let home_img = repo.join("kernel/blobs/home-aarch64.img");
     let smp_str = smp.to_string();
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
     // Same OXIDE_QEMU_UART_SOCK plumbing as the x86 launcher.
@@ -213,6 +215,11 @@ fn qemu_run_aarch64_grub(
         _ => if headless { "stdio,id=ser0,signal=off".to_string() }
              else { "stdio,id=ser0,mux=on,signal=off".to_string() },
     };
+    // Stage-2: ROOT + HOME disks attached as virtio-blk on aarch64 too
+    // (lockstep with x86). The kernel identifies each by the virtio-blk
+    // serial (oxide-root / oxide-home) via GET_ID.
+    let root_drive = format!("if=none,id=root,format=raw,file={}", root_img.display());
+    let home_drive = format!("if=none,id=home,format=raw,file={}", home_img.display());
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
         "-machine", "virt,gic-version=3,its=on",
@@ -223,6 +230,10 @@ fn qemu_run_aarch64_grub(
         "-cdrom", iso.to_str().unwrap(),
         "-boot", "d",
         "-semihosting-config", "enable=on,target=native",
+        "-drive", root_drive.as_str(),
+        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root",
+        "-drive", home_drive.as_str(),
+        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // virtio-gpu scanout + keyboard for the graphical console (fbcon
@@ -274,7 +285,8 @@ fn qemu_run_grub_x86_64(
     iso: &std::path::Path,
     smp: u32,
 ) -> Result<(), u8> {
-    let rootfs = repo.join("kernel/blobs/rootfs-x86_64.img");
+    let root_img = repo.join("kernel/blobs/root-x86_64.img");
+    let home_img = repo.join("kernel/blobs/home-x86_64.img");
     let smp_str = smp.to_string();
     let accel = if std::env::var("OXIDE_QEMU_KVM").is_ok()
         && std::path::Path::new("/dev/kvm").exists()
@@ -309,8 +321,12 @@ fn qemu_run_grub_x86_64(
         "-m", "1G",
         "-cdrom", iso.to_str().unwrap(),
         "-boot", "d",
-        "-drive", &format!("if=none,id=hd0,format=raw,file={}", rootfs.display()),
-        "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
+        // Stage-2: ROOT + HOME disks. The kernel identifies each by the
+        // virtio-blk serial (oxide-root / oxide-home) via GET_ID.
+        "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
+        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root",
+        "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
+        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home",
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // -vga none: q35 otherwise adds a default std-VGA that becomes the
