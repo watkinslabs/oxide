@@ -10,6 +10,9 @@
 - **rootfs is a 1 GiB virtio-blk disk** (rootfs.rs count=1024) — grows freely, zero
   kernel cost (read on demand). home-<arch>.img is a separate /home disk.
 - **x86_64-musl-g++ C++ toolchain** (fetch-cross.sh; gitignored) — enables C++ apps.
+- **x86 HHDM 1→4 GiB (B65/#1620):** MB2 trampoline only mapped phys 0..1 GiB into HHDM;
+  PMM derefs hhdm+pfn*4096 per page → x86 hung at -m 2G. Now 4 HHDM PDs (0..4 GiB, 2 MiB
+  pages, matches arm). x86 + arm both boot at -m 2G. (>4 GiB RAM = more PDs / HHDM rebuild.)
 - **38 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
   zoxide ncdu htop tree dos2unix curl wget fzf tmux lazygit yq delta choose hexyl rsync
   nano tokei grex xh yazi(+ya) dialog btop dua gron pv entr.
@@ -26,7 +29,7 @@ syscalls before silence → the blocking syscall (likely a tty ioctl or a /dev/t
 Fix the kernel gap, then re-add the 4 to rootfs.rs staging + allowlist their binaries.
 
 ## Other follow-ups (not blocking)
-- x86 PMM hang at -m 2G (arm fine at 2G; x86 runs 1G). Fix for >1 GB x86 RAM.
+- x86 HHDM caps at 4 GiB (B65). >4 GiB RAM needs more MB2 PDs or a post-boot HHDM rebuild.
 
 ## Backlog (continue — autonomous; prefer NON-bubbletea/tcell tools until the hang is fixed)
 - CLI/ncurses (likely work): gron, jq-clones, pv, mtr, ncdu(done), aerc?, neomutt(big),
@@ -47,7 +50,7 @@ vendor/go/bin/go CGO_ENABLED=0. Orchestrator wires gitignore+rootfs; boot-test; 
 ## Boot-test recipe (x86)
 Build: `cargo run -p xtask -- rootfs --arch x86_64 && ... kernel --arch x86_64 --features
 debug-boot && ... grub --arch x86_64 --features debug-boot --build-only`. Boot:
-qemu-system-x86_64 q35 -enable-kvm -smp 2 **-m 1G** -cdrom target/oxide-x86_64-grub.iso
+qemu-system-x86_64 q35 -enable-kvm -smp 2 **-m 2G** -cdrom target/oxide-x86_64-grub.iso
 -boot d + virtio-blk drives serial=oxide-root/oxide-home + `-serial unix:/tmp/x.sock`.
 Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in even post-fix
 — allow generous settle in capture.
@@ -57,7 +60,7 @@ Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in ev
   GitHub idle-closes it so the push dies AFTER the hook passes ("Connection closed by
   remote host"). If the smoke PASSED but the branch isn't on origin, re-push the SAME
   commit with `SKIP_SMOKE=1` (already verified). Seen on B63.
-- Branch counters: max F=408, B=64. Author Chris Watkins. CI = compile-check (stub-blobs;
+- Branch counters: max F=408, B=65. Author Chris Watkins. CI = compile-check (stub-blobs;
   no rootfs blob needed since the embed is gone).
 
 ## Resume
