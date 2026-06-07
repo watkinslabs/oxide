@@ -47,6 +47,24 @@ fn is_stale(out: &str, srcs: &[&str]) -> bool {
 /// by `xtask rootfs`. (The hand-rolled smoke ELFs have no source and stay
 /// tracked.) docs/53.
 pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
+    // CI compile-check mode (`OXIDE_STUB_BLOBS=1`): the rootfs + vDSO blobs are
+    // `include_bytes!`-embedded, so the kernel needs them to exist to COMPILE —
+    // but building them for real needs musl-gcc + the aarch64 cross-toolchain +
+    // an assembler, which the CI runner doesn't have. CI never boots (boot-smoke
+    // is a local-only gate per the pr.yml comment), so an empty placeholder blob
+    // is enough for the build-kernel compile-check. Only creates a placeholder
+    // when the real blob is absent — never clobbers a locally-built one.
+    if std::env::var_os("OXIDE_STUB_BLOBS").is_some() {
+        for f in [format!("kernel/blobs/vdso-{arch}.so"),
+                  format!("kernel/blobs/rootfs-{arch}.img")] {
+            if !std::path::Path::new(&f).exists() {
+                if let Some(p) = std::path::Path::new(&f).parent() { let _ = std::fs::create_dir_all(p); }
+                std::fs::write(&f, b"").map_err(|e| { eprintln!("xtask: stub-blob write failed: {e}"); 1u8 })?;
+                eprintln!("xtask: OXIDE_STUB_BLOBS -> empty placeholder {f}");
+            }
+        }
+        return Ok(());
+    }
     let vso = format!("kernel/blobs/vdso-{arch}.so");
     let vsrc = format!("vdso/vdso-{arch}.S");
     if is_stale(&vso, &[&vsrc, "vdso/vdso.lds", "vdso/build.sh"]) {

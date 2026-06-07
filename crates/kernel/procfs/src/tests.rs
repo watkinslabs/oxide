@@ -3,7 +3,6 @@
 // tests land alongside their consumers.
 
 extern crate alloc;
-use crate::live::*;
 use crate::pseudo::*;
 
 use alloc::string::ToString;
