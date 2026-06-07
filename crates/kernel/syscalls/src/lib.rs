@@ -33,6 +33,8 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam;
 #[path = "314_sched_setattr.rs"]  pub mod s314_sched_setattr;
 #[path = "467_open_tree_attr.rs"] pub mod s467_open_tree_attr;
+#[path = "000_read.rs"]  pub mod s000_read;
+#[path = "001_write.rs"] pub mod s001_write;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
@@ -86,58 +88,6 @@ fn kernel_munmap(args: &SyscallArgs) -> i64 {
         }
     }
     pmm::user_as::glue_munmap(args.a0, args.a1)
-}
-
-/// sys_read via fd_table.
-/// # C: O(cnt) on the underlying inode read
-/// `sys_read(fd, buf, cnt)` — slot 0. Tier-3 shim per `docs/53§4`:
-/// parse → validate → fetch → call → encode. Work fn lives in
-/// `vfs::File::read` (Tier 2).
-/// # C: O(cnt) on the underlying inode read.
-pub fn sys_read(args: &SyscallArgs) -> i64 {
-    let fd  = args.a0 as i32;
-    let buf = args.a1;
-    let cnt = args.a2 as usize;
-    if cnt == 0 { return 0; }
-    if let Err(rv) = validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: we are the running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    // netlink sockets support read() (Linux): pop one datagram from the
-    // socket recv queue (same path as recvfrom, no peer addr).
-    if crate::netlink_fd::is_netlink(fd as u64) {
-        return crate::netlink_fd::read(fd as u64, buf, cnt);
-    }
-    let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf_writable; user pages mapped via active CR3; demand-paging resolves not-present pages on first kernel-side write.
-    let slice: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, cnt) };
-    match file.read(slice) {
-        Ok(n)  => n as i64,
-        Err(e) => -(e as i64),
-    }
-}
-
-/// `sys_write(fd, buf, cnt)` — slot 1. Tier-3 shim per `docs/53§4`.
-/// Work fn: `vfs::File::write` (Tier 2).
-/// # C: O(cnt) on the underlying inode write.
-pub fn sys_write(args: &SyscallArgs) -> i64 {
-    let fd  = args.a0 as i32;
-    let buf = args.a1;
-    let cnt = args.a2 as usize;
-    if cnt == 0 { return 0; }
-    if let Err(rv) = validate_user_buf(buf, cnt as u64, 1) { return rv; }
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
-    // SAFETY: range [buf, buf+cnt) validated < USER_VA_END by validate_user_buf; CPL=0 reads through caller's AS mapping.
-    let slice: &[u8] = unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) };
-    match file.write(slice) {
-        Ok(n)  => n as i64,
-        Err(e) => -(e as i64),
-    }
 }
 
 fn sys_pipe2(args: &SyscallArgs) -> i64 {
@@ -577,8 +527,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_EXIT          => sys_exit(&args),
         syscall::nrs::NR_GETPID        => s039_getpid::sys_getpid(&args),
         syscall::nrs::NR_GETPPID       => s110_getppid::sys_getppid(&args),
-        syscall::nrs::NR_READ          => sys_read(&args),
-        syscall::nrs::NR_WRITE         => sys_write(&args),
+        syscall::nrs::NR_READ          => s000_read::sys_read(&args),
+        syscall::nrs::NR_WRITE         => s001_write::sys_write(&args),
         syscall::nrs::NR_OPEN          => crate::open::sys_open(&args),
         syscall::nrs::NR_BRK           => sys_brk(&args),
         syscall::nrs::NR_PIPE2         => sys_pipe2(&args),
