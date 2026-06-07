@@ -35,10 +35,16 @@ LANG=C.UTF-8
     // /etc/motd — shown after login.
     put(&stage("motd", b"Welcome to oxide Linux.\n")?, "/etc/motd")?;
 
-    // /etc/bash.bashrc — system-wide interactive bash rc (aliases, prompt).
+    // /etc/bash.bashrc — system-wide interactive bash rc (aliases, prompt,
+    // locale). util-linux login launches the user shell non-login here, so
+    // this (sourced by ~/.bashrc) is where interactive-session env lives —
+    // pam_env.so isn't vendored and /etc/profile isn't sourced. Mirrors
+    // Debian's /etc/bash.bashrc role.
     put(&stage("bash.bashrc",
 b"# system-wide bashrc for interactive shells
 [ -z \"$PS1\" ] && return
+export LANG=C.UTF-8
+export LC_COLLATE=C
 alias ls='ls --color=auto'
 alias ll='ls -alF'
 alias la='ls -A'
