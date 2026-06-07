@@ -10,8 +10,8 @@ const FILE_ATTR_SIZE: usize = 24;
 /// `sys_file_getattr(dfd, path, ufattr, size, at_flags)` — slot 468.
 /// # C: O(N_path)
 pub fn sys_file_getattr(args: &SyscallArgs) -> i64 {
-    let follow = (args.a4 as u32 & crate::perms::AT_SYMLINK_NOFOLLOW) == 0;
-    if let Err(e) = crate::perms::resolve_path_inode(args.a0 as i32, args.a1, follow) { return e; }
+    let follow = (args.a4 as u32 & crate::perms_common::AT_SYMLINK_NOFOLLOW) == 0;
+    if let Err(e) = crate::perms_common::resolve_path_inode(args.a0 as i32, args.a1, follow) { return e; }
     let ubuf = args.a2;
     let usz  = args.a3 as usize;
     if usz < FILE_ATTR_SIZE { return -(Errno::Einval.as_i32() as i64); }
