@@ -3,13 +3,26 @@
 Living work list. See state.md for the session hand-off + boot-verify recipes.
 
 ## ACTIVE — user-reported blockers (top priority)
-- [ ] **BUG A — bash echo on serial**: typed characters do NOT display while
-      typing in bash; they appear only when readline redisplays the whole line
-      (e.g. on TAB completion). So per-char echo is lost but full-line writes
-      show. Hypothesis: serial TX single-byte flush, or readline raw-mode echo
-      vs the tty output path. Affects the serial workflow the user is forced to
-      use. Files: crates/kernel/tty/src/live.rs, the serial driver TX path,
-      termios ECHO/OPOST. (Was parked as "stale BUG A"; now confirmed live.)
+- [ ] **BUG A — bash echo on serial** (KERNEL EXONERATED; userspace/readline):
+      typed chars don't echo per-keystroke in bash; appear only on redisplay
+      (TAB/Enter). Exhaustively isolated this session — the KERNEL is correct:
+      • `os.write(1,c)` in raw mode echoes per-char immediately
+      • `cat` cooked-mode (kernel line-discipline) echoes per-char
+      • single-byte `printf` appears; idle-tty `select()` correctly = not-readable
+      • winsize = 80x24; fails identically under TERM=dumb/vt100/xterm/linux and
+        under both `sh` and `bash`.
+      By transitivity (os.write proves the write→console→serial path), bash is
+      NOT issuing per-char echo `write()`s → it's **readline not emitting the
+      incremental echo** in our env. NOT a kernel bug. Next: strace/debug-bash
+      to confirm no per-char write(), or inspect the vendored bash/readline build
+      config (vendor/bash/build.sh) — readline incremental-redisplay path. Also
+      noticed: `stty` is missing from the rootfs (coreutils applet not staged).
+      LEAD: vendor/bash/build.sh compiles with `-std=gnu89
+      -Wno-implicit-function-declaration -Wno-incompatible-pointer-types` —
+      suppressing implicit-function-declaration on a 64-bit musl cross-build is a
+      correctness hazard (a fn that really returns a pointer gets truncated to
+      int). Likely fix: re-vendor bash with -std=gnu11 + proper headers, NO
+      suppression, and resolve the real missing declarations. (userspace rebuild.)
 - [ ] **Console/GPU display dead**: the graphical console shows NOTHING — no
       login banner, no typed input; the user must do everything over serial.
       Likely virtio-gpu scanout + fbcon not rendering, AND virtio-keyboard input
