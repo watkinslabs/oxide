@@ -708,3 +708,47 @@ rsync/config.cache
 !nano/nano-aarch64
 nano/nano-8.2/
 nano/nano-8.2.tar.xz
+# tokei 12.1.2 — code stats. Rust, static-musl. /usr/bin/tokei.
+!tokei/
+!tokei/build.sh
+!tokei/tokei-x86_64
+!tokei/tokei-aarch64
+tokei/tokei-12.1.2/
+tokei/tokei-12.1.2.tar.gz
+# grex 1.4.5 — regex generator. Rust, static-musl. /usr/bin/grex.
+!grex/
+!grex/build.sh
+!grex/grex-x86_64
+!grex/grex-aarch64
+grex/grex-1.4.5/
+grex/grex-1.4.5.tar.gz
+# xh 0.23.0 — HTTP client (rustls). Rust, static-musl. /usr/bin/xh.
+!xh/
+!xh/build.sh
+!xh/xh-x86_64
+!xh/xh-aarch64
+xh/xh-0.23.0/
+xh/xh-0.23.0.tar.gz
+# yazi 0.4.2 — file manager TUI (+ya CLI). Rust, static-musl. /usr/bin/yazi,/usr/bin/ya.
+!yazi/
+!yazi/build.sh
+!yazi/yazi-x86_64
+!yazi/yazi-aarch64
+!yazi/ya-x86_64
+!yazi/ya-aarch64
+yazi/yazi-0.4.2/
+yazi/yazi-0.4.2.tar.gz
+# dialog 1.3-20240619 — curses TUI widgets. C, static-musl + vendored ncursesw. /usr/bin/dialog.
+!dialog/
+!dialog/build.sh
+!dialog/dialog-x86_64
+!dialog/dialog-aarch64
+dialog/dialog-1.3-20240619/
+dialog/dialog-1.3-20240619.tgz
+# btop 1.4.0 — resource monitor TUI. C++20, static-musl (x86_64/aarch64 musl.cc g++). /usr/bin/btop.
+!btop/
+!btop/build.sh
+!btop/btop-x86_64
+!btop/btop-aarch64
+btop/btop-1.4.0/
+btop/btop-1.4.0.tar.gz
