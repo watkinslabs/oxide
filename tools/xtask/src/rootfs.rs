@@ -209,21 +209,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init entry; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // Rootfs 16→32(F251)→128(F345)→256(F404): each bump because new content
-    // overflowed the fixed image → silent ext4 ENOSPC drop → systemd missing →
-    // PANIC "no /lib/systemd/systemd ... in rootfs". 256 MiB holds the base
-    // userspace + the vendored tooling backlog (~160 MiB). Rootfs is
-    // include_bytes!d into the kernel ELF (kept small enough for the -m 1G smoke);
-    // when the backlog outgrows 256 MiB, bump again + raise the smoke -m. (Longer
-    // term: move the extra tooling to a separate disk image so the embedded boot
-    // rootfs stays minimal.)
+    // Rootfs size: 1 GiB. Post-F405 the rootfs is a REAL virtio-blk DISK
+    // (root-<arch>.img), read on demand by the kernel — NOT include_bytes!d into
+    // the kernel ELF anymore. So the old embed-size limits are gone: this image
+    // can grow freely (the kernel never allocates its size; virtio-blk reads
+    // blocks lazily into the page cache). 1 GiB gives the full vendored app
+    // backlog ample room. (History: 16→32(F251)→128(F345)→192→1024(F407); the
+    // earlier bumps were forced by the embed overflowing → ENOSPC → systemd
+    // dropped → boot panic. No longer embed-bound.)
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=192"]);
+                "bs=1M", "count=1024"]);
         run(c)?;
     }
     {
@@ -456,6 +456,13 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("hexyl", "hexyl", "/usr/bin/hexyl"),
         ("rsync", "rsync", "/usr/bin/rsync"),
         ("nano", "nano", "/usr/bin/nano"),
+        ("tokei", "tokei", "/usr/bin/tokei"),
+        ("grex", "grex", "/usr/bin/grex"),
+        ("xh", "xh", "/usr/bin/xh"),
+        ("yazi", "yazi", "/usr/bin/yazi"),
+        ("yazi", "ya", "/usr/bin/ya"),
+        ("dialog", "dialog", "/usr/bin/dialog"),
+        ("btop", "btop", "/usr/bin/btop"),
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
