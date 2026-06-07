@@ -1,0 +1,9 @@
+prefix=/home/nd/oxide2/vendor/lz4/install-x86_64
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: liblz4
+Description: oxide L2 staged liblz4
+Version: 1.9.4
+Libs: -L${libdir} -llz4
+Cflags: -I${includedir}

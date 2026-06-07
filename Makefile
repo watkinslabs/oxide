@@ -11,6 +11,7 @@ FEATURES ?=
 # `make *-debug`         — same with `--features debug-all`.
 # `make test`            — hosted unit tests (no kernel target).
 # `make lint`            — `xtask spec-lint`.
+# `make stats`           — `xtask stats` (use `STATS_ARGS=...` for flags).
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
 # `make qemu-x86 / qemu-arm` — boot under QEMU with `--features debug-all`.
 # `make qemu-mcp`        — print the MCP tool list (interactive QEMU debug).
@@ -18,7 +19,7 @@ FEATURES ?=
 
 .PHONY: all build x86 arm \
         build-debug x86-debug arm-debug \
-        test lint ci \
+        test lint stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         vendor-rebuild vendor-x86 vendor-arm \
@@ -80,6 +81,9 @@ test:
 
 lint:
 	$(XTASK) spec-lint
+
+stats:
+	$(XTASK) stats $(STATS_ARGS)
 
 # Mirror of the PR-time gate per `docs/40§2`: spec-lint clean, hosted tests
 # green, both arches build default AND with debug-all on.

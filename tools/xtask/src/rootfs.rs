@@ -209,14 +209,21 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
     // /sbin/init entry; the kernel reads it from ext4 at
     // boot. Nothing to refresh under kernel/blobs/.
 
-    // Rootfs 16→32(F251)→128(F345): L2 lib tree (openssl etc.) overflowed 32 MiB → silent file drop → arm wedged pre-init. Rootfs is include_bytes!d into the kernel ELF; the ESP (image_qemu.rs) was bumped to 512 MiB to hold the bigger kernel.
+    // Rootfs 16→32(F251)→128(F345)→256(F404): each bump because new content
+    // overflowed the fixed image → silent ext4 ENOSPC drop → systemd missing →
+    // PANIC "no /lib/systemd/systemd ... in rootfs". 256 MiB holds the base
+    // userspace + the vendored tooling backlog (~160 MiB). Rootfs is
+    // include_bytes!d into the kernel ELF (kept small enough for the -m 1G smoke);
+    // when the backlog outgrows 256 MiB, bump again + raise the smoke -m. (Longer
+    // term: move the extra tooling to a separate disk image so the embedded boot
+    // rootfs stays minimal.)
     let img = repo.join(format!("kernel/blobs/rootfs-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", img.display());
     {
         let mut c = Command::new("dd");
         c.args(["if=/dev/zero",
                 &format!("of={}", img.display()),
-                "bs=1M", "count=128"]);
+                "bs=1M", "count=192"]);
         run(c)?;
     }
     {
@@ -440,6 +447,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("dos2unix", "unix2dos", "/usr/bin/unix2dos"),
         ("curl", "curl", "/usr/bin/curl"),
         ("wget", "wget", "/usr/bin/wget"),
+        ("fzf", "fzf", "/usr/bin/fzf"),
+        ("tmux", "tmux", "/usr/bin/tmux"),
+        ("lazygit", "lazygit", "/usr/bin/lazygit"),
+        ("yq", "yq", "/usr/bin/yq"),
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }

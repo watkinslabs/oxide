@@ -39,29 +39,46 @@ const ROOTFS: &'static [u8] = include_bytes!("../../../../kernel/blobs/rootfs.im
 #[cfg(target_os = "oxide-kernel")]
 const BLOCK_SIZE: u32 = 512;
 
-/// Read-write Vec-backed BlockDevice initialised from a static
-/// image. The kernel keeps a writable copy in heap memory; the
-/// embedded `&'static [u8]` is the cold-boot snapshot. Writes
-/// mutate the heap copy only — Phase 7b minimum (no persistent
-/// disk yet, swapping the heap copy back to a real disk is
-/// virtio-blk's job).
+/// Block device over the kernel-embedded ext4 image. Reads come
+/// straight from the `&'static [u8]` snapshot (in .rodata — no copy),
+/// so the image can be any size without a giant boot-time heap alloc.
+/// Writes are stored in a SPARSE per-block overlay (BTreeMap keyed by
+/// block index) — only modified blocks consume heap, so boot/login
+/// writes (superblock, a few inodes) cost KiB, not the whole image.
+/// (Previously this `.to_vec()`-copied the entire image into one
+/// contiguous Vec, which exceeded the buddy allocator's max block once
+/// the rootfs passed ~128 MiB → boot hang. Phase 7b minimum; a real
+/// persistent disk is virtio-blk's job.)
 #[cfg(target_os = "oxide-kernel")]
 pub struct ImageDisk {
-    bytes:    sync::Spinlock<Vec<u8>, sync::Inode>,
+    base:     &'static [u8],
+    overlay:  sync::Spinlock<alloc::collections::BTreeMap<u64, alloc::boxed::Box<[u8]>>, sync::Inode>,
     blk_size: u32,
 }
 
 #[cfg(target_os = "oxide-kernel")]
 impl ImageDisk {
-    /// Initialise from a `'static` snapshot — copy bytes into
-    /// the heap so writes can mutate them without violating
-    /// `'static`'s read-only contract.
-    /// # C: O(N) once at boot
+    /// Wrap a `'static` ext4 snapshot — no copy; writes land in the overlay.
+    /// # C: O(1)
     pub fn from_static(bytes: &'static [u8], blk_size: u32) -> Arc<Self> {
         Arc::new(Self {
-            bytes:    sync::Spinlock::new(bytes.to_vec()),
+            base:     bytes,
+            overlay:  sync::Spinlock::new(alloc::collections::BTreeMap::new()),
             blk_size,
         })
+    }
+
+    /// Read one block into `out` (= blk_size bytes): overlay if present, else base.
+    /// # C: O(log W) overlay lookup
+    fn read_block(&self, blk: u64, out: &mut [u8]) {
+        if let Some(b) = self.overlay.lock().get(&blk) { out.copy_from_slice(b); return; }
+        let bs = self.blk_size as usize;
+        let off = blk as usize * bs;
+        out.fill(0);
+        if off < self.base.len() {
+            let n = core::cmp::min(bs, self.base.len() - off);
+            out[..n].copy_from_slice(&self.base[off..off + n]);
+        }
     }
 }
 
@@ -69,24 +86,28 @@ impl ImageDisk {
 impl BlockDevice for ImageDisk {
     fn block_size(&self) -> u32 { self.blk_size }
     fn capacity_blocks(&self) -> u64 {
-        (self.bytes.lock().len() as u64) / (self.blk_size as u64)
+        (self.base.len() as u64) / (self.blk_size as u64)
     }
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
-        let start = (req.start_block * self.blk_size as u64) as usize;
-        let len   = (req.len_blocks as usize) * (self.blk_size as usize);
+        let bs  = self.blk_size as usize;
+        let len = (req.len_blocks as usize) * bs;
+        let cap = self.base.len();
+        if (req.start_block as usize * bs) + len > cap { return Err(BlockError::Eio); }
         match req.op {
             BlockOp::Read => {
-                let g = self.bytes.lock();
-                if start + len > g.len() { return Err(BlockError::Eio); }
                 if req.buffer.len() < len { req.buffer.resize(len, 0); }
-                req.buffer[..len].copy_from_slice(&g[start..start+len]);
+                for i in 0..req.len_blocks as usize {
+                    self.read_block(req.start_block + i as u64, &mut req.buffer[i * bs..(i + 1) * bs]);
+                }
                 Ok(())
             }
             BlockOp::Write => {
-                let mut g = self.bytes.lock();
-                if start + len > g.len() { return Err(BlockError::Eio); }
                 if req.buffer.len() < len { return Err(BlockError::Einval); }
-                g[start..start+len].copy_from_slice(&req.buffer[..len]);
+                let mut g = self.overlay.lock();
+                for i in 0..req.len_blocks as usize {
+                    let blk = req.start_block + i as u64;
+                    g.insert(blk, req.buffer[i * bs..(i + 1) * bs].to_vec().into_boxed_slice());
+                }
                 Ok(())
             }
             BlockOp::Flush   => Ok(()),
