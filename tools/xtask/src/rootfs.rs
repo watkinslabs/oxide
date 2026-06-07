@@ -988,5 +988,12 @@ hosts:  files
     eprintln!("xtask rootfs: built {} ({} bytes)",
         img.display(),
         std::fs::metadata(&img).map(|m| m.len()).unwrap_or(0));
+
+    // Stage-2 disk-rootfs migration: produce the standalone root + home
+    // disk images (root-<arch>.img, home-<arch>.img) alongside the embedded
+    // rootfs. The embedded rootfs build above is kept unchanged so the
+    // kernel still compiles via include_bytes!; Stage 4 mounts root from the
+    // root disk and drops the embed.
+    crate::rootfs_disks::build_disks(&blobs, &img, &arch)?;
     Ok(())
 }
