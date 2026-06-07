@@ -790,7 +790,7 @@ fn sched_lookup_policy(pid: u32) -> i32 {
     } else {
         sched::live::registry::lookup(pid)
     };
-    match task.map(|t| t.class) {
+    match task.map(|t| t.sched_class()) {
         Some(SchedClass::Rt { policy: SchedPolicy::Fifo, .. }) => 1,
         Some(SchedClass::Rt { policy: SchedPolicy::Rr,   .. }) => 2,
         Some(SchedClass::Idle) => 5,
@@ -807,7 +807,7 @@ fn sched_lookup_prio(pid: u32) -> i32 {
     } else {
         sched::live::registry::lookup(pid)
     };
-    match task.map(|t| t.class) {
+    match task.map(|t| t.sched_class()) {
         Some(SchedClass::Rt { prio, .. }) => prio as i32,
         _ => 0,
     }

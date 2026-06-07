@@ -30,6 +30,8 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "468_file_getattr.rs"] pub mod s468_file_getattr;
 #[path = "469_file_setattr.rs"] pub mod s469_file_setattr;
 #[path = "471_rseq_slice_yield.rs"] pub mod s471_rseq_slice_yield;
+#[path = "142_sched_setparam.rs"] pub mod s142_sched_setparam;
+#[path = "314_sched_setattr.rs"]  pub mod s314_sched_setattr;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
@@ -899,6 +901,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_FILE_GETATTR     => s468_file_getattr::sys_file_getattr(&args),
         syscall::nrs::NR_FILE_SETATTR     => s469_file_setattr::sys_file_setattr(&args),
         syscall::nrs::NR_RSEQ_SLICE_YIELD => s471_rseq_slice_yield::sys_rseq_slice_yield(&args),
+        syscall::nrs::NR_SCHED_SETPARAM   => s142_sched_setparam::sys_sched_setparam(&args),
+        syscall::nrs::NR_SCHED_SETATTR    => s314_sched_setattr::sys_sched_setattr(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
