@@ -149,6 +149,8 @@ pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
     let ua = match UserVirtAddr::new(addr) {
         Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
     };
+    // mseal(2): a sealed VMA in the range rejects mprotect with EPERM.
+    if mm.range_sealed(ua, len) { return -(Errno::Eperm.as_i32() as i64); }
     match mm.mprotect(ua, len, vp) {
         Ok(()) => {
             // SAFETY: caller is the running task; mm matches active AS; per-AS UP + preempt-off serialises with fault path; mprotect_pages walks PT + flushes TLB so hardware enforces the new permissions.
@@ -565,6 +567,8 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64) };
     let old_ua = match UserVirtAddr::new(old) { Some(u) => u, None => return -(Errno::Einval.as_i32() as i64) };
+    // mseal(2): a sealed source range rejects mremap with EPERM.
+    if mm.range_sealed(old_ua, old_size) { return -(Errno::Eperm.as_i32() as i64); }
     let new_ua = if new_addr != 0 { UserVirtAddr::new(new_addr) } else { None };
     let dontunmap = (flags & MREMAP_DONTUNMAP) != 0;
     match mm.mremap_full(old_ua, old_size, new_size,

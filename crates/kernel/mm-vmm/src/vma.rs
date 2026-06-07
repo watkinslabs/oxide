@@ -80,6 +80,9 @@ bitflags::bitflags! {
         const ANONYMOUS = 1 << 2;
         const GROWSDOWN = 1 << 3;
         const LOCKED    = 1 << 4;
+        /// mseal(2): the mapping is sealed — mprotect/munmap/mremap/
+        /// mmap(MAP_FIXED) over it fail with EPERM. Never cleared.
+        const SEALED    = 1 << 5;
     }
 }
 

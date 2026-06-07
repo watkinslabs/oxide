@@ -321,6 +321,59 @@ impl VmaTree {
         }
         Ok(())
     }
+
+    /// mseal(2): set `SEALED` on every VMA covering `[start, end)`,
+    /// splitting at boundaries (same split logic as `mprotect_range`).
+    /// Requires full coverage — a hole returns `Err(Inval)` (caller maps
+    /// to ENOMEM). Idempotent. Sealed VMAs reject later mprotect/munmap/
+    /// mremap (see `any_sealed`).
+    /// # C: O(N_vma in range)
+    pub fn seal_range(&mut self, start: UserVirtAddr, end: UserVirtAddr) -> Result<(), Error> {
+        if start.as_u64() >= end.as_u64() { return Err(Error::Inval); }
+        let mut cursor = start.as_u64();
+        for (_, v) in self.map.range(..end) {
+            if v.end.as_u64() <= cursor { continue; }
+            if v.start.as_u64() > cursor { return Err(Error::Inval); }
+            cursor = v.end.as_u64();
+            if cursor >= end.as_u64() { break; }
+        }
+        if cursor < end.as_u64() { return Err(Error::Inval); }
+        let mut keys: Vec<UserVirtAddr> = Vec::new();
+        for (k, v) in self.map.range(..end) {
+            if v.end.as_u64() > start.as_u64() { keys.push(*k); }
+        }
+        for k in keys {
+            let v = self.map.remove(&k).expect("collected key");
+            let (v_start, v_end) = (v.start.as_u64(), v.end.as_u64());
+            let s = start.as_u64().max(v_start);
+            let e = end.as_u64().min(v_end);
+            if v_start < s {
+                let lend = UserVirtAddr::new(s).expect("UVA in range");
+                let left = v.clone_subrange(v.start, lend);
+                self.map.insert(left.start, left);
+            }
+            let ms = UserVirtAddr::new(s).expect("UVA in range");
+            let me = UserVirtAddr::new(e).expect("UVA in range");
+            let mut mid = v.clone_subrange(ms, me);
+            mid.flags |= crate::vma::VmaFlags::SEALED;
+            self.map.insert(mid.start, mid);
+            if e < v_end {
+                let rstart = UserVirtAddr::new(e).expect("UVA in range");
+                let right = v.clone_subrange(rstart, v.end);
+                self.map.insert(right.start, right);
+            }
+        }
+        Ok(())
+    }
+
+    /// True if any VMA overlapping `[start, end)` is `SEALED`. mprotect/
+    /// munmap/mremap call this first and return EPERM when true (mseal(2)).
+    /// # C: O(N_vma in range)
+    pub fn any_sealed(&self, start: UserVirtAddr, end: UserVirtAddr) -> bool {
+        self.map.range(..end).any(|(_, v)|
+            v.end.as_u64() > start.as_u64()
+                && v.flags.contains(crate::vma::VmaFlags::SEALED))
+    }
 }
 
 impl Default for VmaTree {
