@@ -54,10 +54,13 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
       syscall set, flagging every slot that is missing, `ENOSYS`/stub/strawman,
       or semantically wrong. Then per docs/15 implement or fix EVERY flagged
       syscall to full Linux semantics (only the 17 OBSOLETE numbers keep ENOSYS).
-- [ ] **One syscall = one file** (docs/53 §0 spec): split the grouped handler
-      files (`crates/kernel/syscalls/src/{fs,net,…}.rs`) into per-syscall
-      `<NNN>_<name>.rs` files (x86_64 number + Linux name). Move existing; create
-      for missing. FILES, not crates. Fold into the syscall audit work.
+- [x] **One syscall = one file** (docs/53 §0) — DONE. All grouped handler files
+      (fs/proc/net/namei/signal/misc/time/… ) split into 224 per-file
+      `<NNN>_<name>.rs` modules via parallel sub-agents (verbatim moves). lib.rs
+      slimmed 967→114 lines (declarations only); the dispatch table is in
+      dispatch.rs; shared helpers in userbuf.rs + per-family `*_common.rs`.
+      Single-handler files renamed to the numeric convention via #[path].
+      PRs #1593-#1602. Both arches boot; spec-lint clean; 381/385 routed.
 - [ ] **Drop "Tier 1/2/3" vocabulary** from docs/53 + CLAUDE.md (user: "there are
       no tiers"). Keep the real structure (ABI types crate / subsystem work fns /
       per-syscall handler files), just remove the tier labels/jargon.
