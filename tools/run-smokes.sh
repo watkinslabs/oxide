@@ -45,7 +45,7 @@ run_one() {
     # Stage-2: ROOT + HOME disks as virtio-blk; kernel IDs each by serial
     # (oxide-root / oxide-home) via GET_ID.
     qemu_args=(qemu-system-x86_64
-      -machine q35 -cpu Haswell-v4 -m 1G
+      -machine q35 -cpu Haswell-v4 -m 2G
       -cdrom "$img" -boot d
       -drive "if=none,id=root,format=raw,file=$repo/kernel/blobs/root-x86_64.img"
       -device "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root"
