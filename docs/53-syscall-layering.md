@@ -4,6 +4,35 @@ DRAFT (living). Dep: `02`,`08`,`13`,`15`,`52`.
 
 Architecture for how syscall code is organized across crates. `15` defines the ABI; this doc defines where each piece of an `sys_X` implementation lives.
 
+## 0 One syscall = one file (HARD RULE)
+
+Each syscall's handler lives in **its own source file**, named `<NNN>_<name>.rs`,
+inside the syscall handler module (the `syscalls` crate). One syscall per FILE —
+NOT per crate; this is only a source-file split, never a crate-per-syscall.
+- `NNN` = the syscall's **x86_64** number (`15§2` / `nrs::NR_<name>`), zero-padded
+  to 3 digits (4 once any number ≥ 1000). x86_64 is the canonical numbering; the
+  aarch64 dispatch routes its own number to the **same** file (one logical
+  syscall, one file, both arches).
+- `<name>` = the Linux syscall name, lowercase (`read`, `openat`, `clock_nanosleep`).
+- Examples: `000_read.rs`, `001_write.rs`, `257_openat.rs`, `101_ptrace.rs`.
+
+Rules:
+- A syscall currently sharing a grouped file (`fs.rs`, `net.rs`, …) **MUST be
+  moved** into its own `<NNN>_<name>.rs`. Grouped multi-syscall files are abolished.
+- A syscall with no file yet (missing/`ENOSYS`/new) **gets a new** `<NNN>_<name>.rs`.
+- The file holds exactly that one syscall's handler `pub fn sys_<name>(...)` plus
+  its own imports / `SAFETY` / doc-comments — nothing else.
+- The module root (`lib.rs`/`mod.rs`) becomes pure wiring: `mod NNN_<name>;` per
+  file + the dispatch-table registration. No syscall bodies in the root.
+- The 17 OBSOLETE numbers (`15` legend) need no file — they register `sys_enosys`.
+- This makes coverage auditing trivial: one file per implemented number; a
+  missing `<NNN>_<name>.rs` = an unimplemented syscall.
+
+If the flat directory grows unwieldy, files may be grouped into range subdirs
+(`000_099/000_read.rs`, …) — the **filename** rule (`<NNN>_<name>.rs`, one
+syscall) is invariant; only the parent dir may change. Migration is per-syscall,
+folded into the audit-driven coverage work (`syscal_anal.md`).
+
 ## 1 Three tiers
 
 | Tier | Concern | Location |
