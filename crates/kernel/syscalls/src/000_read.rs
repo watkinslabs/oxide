@@ -8,7 +8,7 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     let buf = args.a1;
     let cnt = args.a2 as usize;
     if cnt == 0 { return 0; }
-    if let Err(rv) = crate::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, cnt as u64, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };

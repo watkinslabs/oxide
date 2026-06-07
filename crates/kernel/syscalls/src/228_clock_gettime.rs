@@ -3,7 +3,7 @@
 
 use syscall::SyscallArgs;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 use crate::time_common::{NS_PER_SEC, ns_for_clock};
 
 /// `sys_clock_gettime(clk_id, tp)` — slot 228. Writes

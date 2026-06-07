@@ -84,7 +84,7 @@ pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
     let ptr = args.a0;
     let len = args.a1 as usize;
     if len > HOST_NAME_MAX { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = crate::validate_user_buf(ptr, len as u64, 1) { return rv; }
+    if let Err(rv) = crate::userbuf::validate_user_buf(ptr, len as u64, 1) { return rv; }
     let mut buf = [0u8; HOST_NAME_MAX];
     // SAFETY: ptr range validated < USER_VA_END by validate_user_buf above; CPL=0 byte read through caller's AS for `len` bytes.
     unsafe {

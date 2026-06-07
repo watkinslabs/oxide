@@ -3,7 +3,7 @@
 
 use syscall::SyscallArgs;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 use crate::time_common::{NS_PER_SEC, realtime_ns};
 
 /// `sys_gettimeofday(tv, tz)` — slot 96. Writes

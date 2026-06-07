@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::validate_user_buf;
+use crate::userbuf::validate_user_buf;
 use crate::statfs_common::{magic_for_path, usage_for, write_statfs, M_TMPFS};
 
 /// `sys_fstatfs(fd, buf)` — slot 138. Reports the backing fs magic for
