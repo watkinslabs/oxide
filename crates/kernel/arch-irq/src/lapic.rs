@@ -281,6 +281,33 @@ pub unsafe fn enable_for_ap() -> (u32, u32) {
     }
 }
 
+/// This CPU's local APIC ID — LAPIC reg 0x20, bits 24-31 (xAPIC).
+/// Used by AP bring-up to identify the BSP (skip self) off the MADT.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn local_apic_id() -> u32 {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return 0; }
+    // SAFETY: LAPIC page mapped Device-attr by `enable`; reg 0x20 (APIC
+    // ID) is within the page; volatile read with no side effects.
+    let v = unsafe { core::ptr::read_volatile((va + 0x20) as *const u32) };
+    v >> 24
+}
+
+/// Rough busy-wait (~`us` µs) for the INIT→SIPI→SIPI hand-off delays
+/// (Intel SDM Vol 3 §8.4.4.1). Uncalibrated `pause` spin — QEMU is
+/// lenient on AP-startup timing and this only runs during bring-up;
+/// avoids depending on a running/calibrated timer (which could hang).
+/// # C: O(us)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn busy_wait_us(us: u64) {
+    let iters = us.saturating_mul(100);
+    for _ in 0..iters {
+        // SAFETY: `pause` is a microarchitectural hint, no side effects.
+        unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)); }
+    }
+}
+
 /// Disarm the LAPIC timer (write 0 to the Initial Count reg).
 /// # SAFETY: `enable` ran; LAPIC mapped Device-attr.
 /// # C: O(1)
