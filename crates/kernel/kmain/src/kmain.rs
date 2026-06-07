@@ -1,5 +1,6 @@
+#![cfg(target_os = "oxide-kernel")]  // kernel-entry crate; oxide-kernel-only (wires hal/sched/tty live state)
 // Kernel lib. Per-arch boot crates own _start; this lib hosts
-// kernel_main. #![no_std]; compiles on host for unit tests.
+// kernel_main. #![no_std]; oxide-kernel-only.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]

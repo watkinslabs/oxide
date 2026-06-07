@@ -1,3 +1,4 @@
+#![cfg(target_os = "oxide-kernel")]  // kernel-only crate (uses tty::live/sched::live)
 #![no_std]
 #[macro_use] extern crate kmacros;
 extern crate alloc;

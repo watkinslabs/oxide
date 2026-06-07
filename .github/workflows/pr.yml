@@ -54,6 +54,12 @@ jobs:
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
       - name: xtask kernel --arch ${{ matrix.arch }} (${{ matrix.profile.name }})
+        # Compile-check only: the rootfs/vDSO blobs are include_bytes!-embedded,
+        # but building them for real needs musl-gcc + the cross-toolchain the
+        # runner lacks. OXIDE_STUB_BLOBS makes xtask write empty placeholder
+        # blobs so the kernel compiles. CI does not boot (boot-smoke is local).
+        env:
+          OXIDE_STUB_BLOBS: "1"
         run: |
           if [ -z "${{ matrix.profile.features }}" ]; then
             cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }} --profile dev
