@@ -30,13 +30,13 @@ Living work list. See state.md for the session hand-off + boot-verify recipes.
       console glyph rendering + virtio-input(keyboard)→tty. Big driver task.
 
 ## ACTIVE — login + syscalls (user-requested)
-- [ ] **Login/profile done properly, Linux-style**: make login exec a LOGIN
-      shell (argv[0]="-bash") so /etc/profile + /etc/profile.d/*.sh apply to
-      login sessions (currently only ~/.bashrc runs — LANG was worked around in
-      bash.bashrc). Wire it through getty/agetty/login. Result: a login session
-      has the full, correct environment exactly like a real distro. Any missing
-      piece on the KERNEL side is built Linux-style; the login/profile USERSPACE
-      (login, agetty, PAM, bash) stays from real vendor sources — no custom shims.
+- [x] **Login/profile done properly** — RESOLVED (verified live): the console
+      login already execs a LOGIN shell (`$0` = `-sh`) and `/etc/profile` +
+      `/etc/profile.d/*.sh` ARE sourced (marker `OXIDE_PROFILE_RAN=1` set after
+      `alice` login). The earlier "not sourced" reading was a stale-ISO artifact
+      (rebuilt rootfs but not the ISO it embeds). Login env is correct end-to-end
+      (PATH, LANG, aliases, prompt, profile.d). util-linux login + agetty +
+      profile/skel all from vendor sources, no shims.
 - [ ] **Syscall audit + complete coverage**: drive off `syscal_anal.md` (the
       existing syscall analysis) + build a coverage checker that enumerates the
       implemented dispatch (`syscall::nrs` + per-arch dispatch) vs the full Linux
