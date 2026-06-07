@@ -217,7 +217,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_ACCESS        => crate::fs_access::sys_access(&args),
         syscall::nrs::NR_FACCESSAT     => crate::fs_access::sys_faccessat(&args),
         syscall::nrs::NR_EVENTFD | syscall::nrs::NR_EVENTFD2
-                                 => crate::anonfd::sys_eventfd2(&args),
+                                 => crate::s290_eventfd2::sys_eventfd2(&args),
         syscall::nrs::NR_GETDENTS | syscall::nrs::NR_GETDENTS64
                                  => crate::s217_getdents64::sys_getdents64(&args),
         syscall::nrs::NR_PREAD64       => crate::s017_pread64::sys_pread64(&args),
@@ -226,14 +226,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_PWRITEV => crate::s296_pwritev::sys_pwritev(&args),
         syscall::nrs::NR_PREADV2 => crate::s295_preadv::sys_preadv(&args),
         syscall::nrs::NR_PWRITEV2 => crate::s296_pwritev::sys_pwritev(&args),
-        syscall::nrs::NR_MEMFD_CREATE => crate::anonfd::sys_memfd_create(&args),
+        syscall::nrs::NR_MEMFD_CREATE => crate::s319_memfd_create::sys_memfd_create(&args),
         // memfd_secret(flags) — Linux's "hide from other tasks via
         // page-table partitioning" variant. v1 single-AS scheduler
         // doesn't enforce that hide; we route through memfd_create
         // so the fd is at least functional.
         syscall::nrs::NR_MEMFD_SECRET => {
             let mut sa = args; sa.a0 = 0; sa.a1 = args.a0;
-            crate::anonfd::sys_memfd_create(&sa)
+            crate::s319_memfd_create::sys_memfd_create(&sa)
         }
         syscall::nrs::NR_MKDIR    => crate::s083_mkdir::sys_mkdir(&args),
         syscall::nrs::NR_MKDIRAT  => crate::s258_mkdirat::sys_mkdirat(&args),
@@ -331,9 +331,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_SCHED_GET_PRIORITY_MIN
                                  => crate::s147_sched_get_priority_min::sys_sched_get_priority_min(&args),
         syscall::nrs::NR_SCHED_GETAFFINITY
-                                 => crate::affinity::sys_sched_getaffinity(&args),
+                                 => crate::s204_sched_getaffinity::sys_sched_getaffinity(&args),
         syscall::nrs::NR_SCHED_SETAFFINITY
-                                 => crate::affinity::sys_sched_setaffinity(&args),
+                                 => crate::s203_sched_setaffinity::sys_sched_setaffinity(&args),
         syscall::nrs::NR_PRCTL         => sched::prctl::sys_prctl(&args),
         syscall::nrs::NR_FUTEX         => crate::s202_futex::sys_futex(&args),
         syscall::nrs::NR_FUTEX_WAITV   => crate::futex_waitv::sys_futex_waitv(&args),
