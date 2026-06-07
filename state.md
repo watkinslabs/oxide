@@ -87,6 +87,29 @@ FIVE SMP fixes landed, all correct + UP-safe, NONE unblock SMP=2:
 SVC-frame base; #1557 on_rq dedup guard; #1560 clear SCTLR_EL1.A (firmware
 left A=1 w/ >1 vCPU → EL0 unaligned access trapped; real latent bug, Linux
 always clears A — but NOT the smp2 root).
+**x86 SMP is UNPORTED (not working):** bring_up_aps_x86 returns 0 on the MB2/GRUB
+path (BootInfo smp_info_array/smp_count/bsp_lapic_id all 0 — boot-x86_64 lib.rs
+~411-431); smp_x86.rs is Limine-only (parked APs + goto_address). x86 never
+sends INIT/SIPI → runs UP regardless of -smp. LAPIC INIT/SIPI plumbing EXISTS
+(lapic.rs icr_lo_init_assert/icr_lo_sipi/write_icr/wait_icr_idle); MISSING = a
+real-mode AP trampoline (16→32→64, GDT, identity-map the trampoline page in
+kernel CR3, per-AP stack) + a bring-up loop off cpu-topology MADT APIC IDs +
+kmain using cpu::get not BootInfo.smp_*. (Also fix bsp_lapic_id=0 vs cpu::get(0).)
+**ARM SMP=2 ROOT — refined via running-memory disasm (NOT the static binary):**
+fault = musl memcpy `ldr x6,[x1]` @0x40016f88; caller systemd 0x40063bc0
+`bl memcpy(dst=x25, src=x4=[x29,#112]=0x10004322, len=x5-x4=10)`. src is a
+VALID-looking heap ptr (heap 0x10000000-0x10035000) whose PAGE (0x10004000) is
+unmapped at -smp 2 → it's a demand-paging/MM/TLB miss, NOT a garbage pointer.
+Upstream: `cbnz x0,0x40063bb0` @0x40063b84 is a CONTROL-FLOW divergence — smp2
+x0!=0 takes the memcpy path; smp1 goes the other way and reaches openat. All
+syscall I/O + x0-x30 at readlinkat-exit are identical, so x0 derives from
+MEMORY that differs at arm-smp2. RULED OUT: AP bring-up (cap-1/no-AP still
+fail), vDSO/time (disabled, no clock syscall, still fails), AT_RANDOM (fixed
+const, still fails), preemption (tick_pick_next no-op on arm), SCTLR.A (fixed
+#1560, was masking align→translation). NEXT: trace what sets x0 at 0x40063b84
+(running disasm backward) + audit arm demand-paging/TLB (tlbi) under qemu -smp 2
+— why a valid heap page fails to map / a heap value differs only at smp2.
+[OLD note below partly superseded:]
 **ROOT (gdb-pinned):** at -smp 2 PID1(systemd) faults in EL0 right after
 readlinkat at systemd `0x40016f88: ldr x6,[x1]` — a 10-byte memcpy
 (dst=0x10034b70, src=x1=0x10004322, len=x2=10; caller x30=systemd 0x40063bc4
