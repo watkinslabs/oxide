@@ -66,7 +66,7 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
         let mut sa = *args;
         sa.a0 = rv as u64;
         sa.a1 = 0;
-        let pidfd = crate::pidfd::sys_pidfd_open(&sa);
+        let pidfd = crate::s434_pidfd_open::sys_pidfd_open(&sa);
         if pidfd >= 0 {
             // SAFETY: pidfd_uptr+4 validated < USER_VA_END; CPL=0 4-byte int write in caller AS.
             unsafe { core::ptr::write_volatile(pidfd_uptr as *mut i32, pidfd as i32); }

@@ -24,7 +24,7 @@ pub fn sys_ioprio_get(args: &SyscallArgs) -> i64 {
     let who   = args.a1 as u32;
     if !(1..=3).contains(&which) { return -(Errno::Einval.as_i32() as i64); }
     let mut best: Option<u16> = None;
-    crate::priority::for_each_target(which - 1, who, |t| {
+    crate::priority::priority_common::for_each_target(which - 1, who, |t| {
         let v = t.ioprio.load(Ordering::Acquire);
         best = Some(match best { None => v, Some(b) => higher(b, v) });
     });

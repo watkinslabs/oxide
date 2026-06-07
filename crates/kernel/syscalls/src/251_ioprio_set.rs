@@ -28,7 +28,7 @@ pub fn sys_ioprio_set(args: &SyscallArgs) -> i64 {
         if !is_root { return -(Errno::Eperm.as_i32() as i64); }
     }
     let mut hit = false;
-    crate::priority::for_each_target(which - 1, who, |t| {
+    crate::priority::priority_common::for_each_target(which - 1, who, |t| {
         t.ioprio.store(ioprio, Ordering::Release);
         hit = true;
     });

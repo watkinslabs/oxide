@@ -23,6 +23,7 @@ pub use crate::newfstatat::sys_newfstatat;
 ///
 /// `pollfd { fd: i32, events: i16, revents: i16 }` = 8 bytes
 /// each on Linux x86_64.
-pub use crate::poll::{sys_poll, sys_ppoll};
+pub use crate::poll::s007_poll::sys_poll;
+pub use crate::poll::s271_ppoll::sys_ppoll;
 
 // `sys_fallocate` lives in `syscall_glue_falloc.rs` (F69).
