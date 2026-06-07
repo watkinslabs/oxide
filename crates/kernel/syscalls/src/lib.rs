@@ -14,6 +14,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "039_getpid.rs"]    pub mod s039_getpid;
 #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set;
 #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
+#[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
 
 pub mod anonfd; pub mod chroot; pub mod clock_nanosleep; pub mod clone;  pub mod execve;  pub mod fs; pub mod fs_access; pub mod handle; pub mod futex_waitv; pub mod hwrng; pub mod ioctl; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_recv; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei;  pub mod newfstatat; pub mod open; pub mod perms;  pub mod poll; pub mod proc;  pub mod ptrace; pub mod ptrace_fpu; pub mod pvmrw;  pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time;  pub mod uname; pub mod utime;  pub mod hostname; pub mod wait; pub mod waitid; pub mod priority; pub mod pathresolve; pub mod affinity;
@@ -900,6 +901,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_MSEAL           => s462_mseal::sys_mseal(&args),
         syscall::nrs::NR_IOPRIO_SET      => s251_ioprio_set::sys_ioprio_set(&args),
         syscall::nrs::NR_IOPRIO_GET      => s252_ioprio_get::sys_ioprio_get(&args),
+        syscall::nrs::NR_SCHED_GETATTR   => s315_sched_getattr::sys_sched_getattr(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
