@@ -172,14 +172,16 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
     let pmm = unsafe { pmm::setup::init_from_boot_info(info) };
-    if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
-    // F247 (T16): wire the kalloc grow hook now that the PMM can hand
-    // out frames. Any allocation that overflows the static heap from
-    // here on routes through PMM-allocated pages mapped via HHDM.
+    // F247 (T16): wire the kalloc grow hook FIRST, so allocations that
+    // overflow the static heap route through PMM-allocated pages (HHDM).
     #[cfg(target_os = "oxide-kernel")]
     if pmm.is_ok() {
         GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
     }
+    // PageMeta slab (≈0.59% of RAM) allocates AFTER the grow hook so it
+    // can pull from PMM rather than exhausting the fixed static heap at
+    // large RAM (gap-analysis M2: 64 MiB static heap caps this ~11 GiB).
+    if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
     debug_boot! {
         match &pmm {
             Ok(_)                                       => klog::kinfo!("pmm: ready"),

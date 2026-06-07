@@ -318,7 +318,7 @@ fn qemu_run_grub_x86_64(
         "-accel", accel,
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
-        "-m", "1G",
+        "-m", "2G",
         "-cdrom", iso.to_str().unwrap(),
         "-boot", "d",
         // Stage-2: ROOT + HOME disks. The kernel identifies each by the
