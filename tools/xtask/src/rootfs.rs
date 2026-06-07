@@ -421,6 +421,9 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("dialog", "dialog", "/usr/bin/dialog"),
         ("btop", "btop", "/usr/bin/btop"),
         ("dua", "dua", "/usr/bin/dua"),
+        ("gron", "gron", "/usr/bin/gron"),
+        ("pv", "pv", "/usr/bin/pv"),
+        ("entr", "entr", "/usr/bin/entr"),
         // starship/glow/micro/duf built (recipes vendored) but NOT staged: they
         // hang on startup under oxide (not a tty-read block — persists with stdin
         // redirected). Likely an async-runtime/thread or syscall gap. Re-add here
