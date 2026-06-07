@@ -426,6 +426,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         ("bat", "bat", "/usr/bin/bat"),
         ("eza", "eza", "/usr/bin/eza"),
         ("jq", "jq", "/usr/bin/jq"),
+        ("tealdeer", "tldr", "/usr/bin/tldr"),
+        ("hyperfine", "hyperfine", "/usr/bin/hyperfine"),
+        ("dust", "dust", "/usr/bin/dust"),
+        ("sd", "sd", "/usr/bin/sd"),
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
