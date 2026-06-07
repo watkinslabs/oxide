@@ -24,6 +24,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod pidfd;
 #[path = "464_getxattrat.rs"]  pub mod s464_getxattrat;
 #[path = "465_listxattrat.rs"] pub mod s465_listxattrat;
 #[path = "466_removexattrat.rs"] pub mod s466_removexattrat;
+#[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
 #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "110_getppid.rs"]   pub mod s110_getppid;
@@ -887,6 +888,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         syscall::nrs::NR_GETXATTRAT      => s464_getxattrat::sys_getxattrat(&args),
         syscall::nrs::NR_LISTXATTRAT     => s465_listxattrat::sys_listxattrat(&args),
         syscall::nrs::NR_REMOVEXATTRAT   => s466_removexattrat::sys_removexattrat(&args),
+        syscall::nrs::NR_FUTEX_REQUEUE    => s456_futex_requeue::sys_futex_requeue(&args),
         syscall::nrs::NR_SYSLOG          => syscall::dmesg::sys_syslog(&args),
         // OBSOLETE (docs/15 §2): Linux x86_64 itself ENOSYS's these reserved numbers — deliberate enosys, not accidental fall-through.
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
