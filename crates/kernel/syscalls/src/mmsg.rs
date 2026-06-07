@@ -9,7 +9,8 @@ use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::net::{sys_sendmsg, sys_recvmsg};
+use crate::s046_sendmsg::sys_sendmsg;
+use crate::s047_recvmsg::sys_recvmsg;
 
 /// `sendmmsg(fd, mmsghdr*, vlen, flags)` — slot 307. Walks the
 /// mmsghdr array calling `sendmsg` for each entry; writes the
