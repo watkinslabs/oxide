@@ -13,8 +13,9 @@
 // loaded low (LMA KP=0x200000 via the link script's AT()); a kernel
 // symbol's physical address is therefore `sym - KB + KP`.
 //
-// Address-space layout the boot page tables install (2 MiB pages, all
-// arch-baseline — no PDPE1GB requirement):
+// Address-space layout the boot page tables install (2 MiB pages for the
+// identity + higher-half maps; 1 GiB pages for the HHDM — requires PDPE1GB,
+// universal on x86_64):
 //   - identity 0..1 GiB          : so the trampoline keeps executing at
 //                                  its ~2 MiB physical address the
 //                                  instant CR0.PG flips.
@@ -23,11 +24,14 @@
 //                                  offset is the crux — GRUB loaded us
 //                                  at KP, so VMA must map to LMA, NOT
 //                                  phys 0.
-//   - HHDM 0xFFFF8000_0000_0000.. -> phys 0..4 GiB (identity direct
-//                                  map via 4 PDs; matches BootInfo.hhdm
-//                                  and aarch64's 0..4 GiB HHDM. The PMM
-//                                  derefs hhdm+pfn*4096 for every usable
-//                                  page; 1 GiB faulted at -m 2G.).
+//   - HHDM 0xFFFF8000_0000_0000.. -> phys 0..512 GiB (identity direct
+//                                  map via 512 × 1 GiB PDPTE pages — the
+//                                  whole direct map for any standard RAM
+//                                  size). The PMM derefs hhdm+pfn*4096 for
+//                                  every usable page, so the HHDM must
+//                                  span all RAM; a 1 GiB / 4 GiB cap
+//                                  faulted at large -m. Requires PDPE1GB
+//                                  (universal on x86_64).
 
 #![allow(dead_code)]
 
@@ -84,13 +88,6 @@ mb2_pdpt_high: .skip 4096
 mb2_pdpt_hhdm: .skip 4096
 mb2_pd_low:    .skip 4096
 mb2_pd_high:   .skip 4096
-    /* HHDM page directories: 4 contiguous PDs = 4 GiB of 2 MiB identity
-       mappings (phys 0..4 GiB), matching aarch64's 0..4 GiB HHDM
-       (selfboot.rs). The PMM dereferences hhdm+pfn*4096 for EVERY usable
-       page during seed_range; a 1 GiB HHDM faulted at -m 2G. Still 2 MiB
-       pages — no PDPE1GB. >4 GiB RAM needs more PDs (or a post-boot HHDM
-       rebuild). */
-mb2_pd_hhdm:   .skip 16384
     .global mb2_saved_magic
     .global mb2_saved_info
 mb2_saved_magic: .skip 8
@@ -133,11 +130,11 @@ _mb2_entry:
     mov $0x0A, %al
     out %al, %dx
 
-    /* Zero the 10 contiguous page-table pages (not-present by default):
-       pml4, pdpt_low, pdpt_high, pdpt_hhdm, pd_low, pd_high, pd_hhdm[0..3]. */
+    /* Zero the 6 contiguous page-table pages (not-present by default):
+       pml4, pdpt_low, pdpt_high, pdpt_hhdm, pd_low, pd_high. */
     mov $(mb2_pml4 - KB + KP), %edi
     xor %eax, %eax
-    mov $(10 * 4096 / 4), %ecx
+    mov $(6 * 4096 / 4), %ecx
     rep stosl
 
     /* pd_low: identity, entry[i] = (i*2MiB) | P|W|PS. */
@@ -167,37 +164,34 @@ _mb2_entry:
     cmp $(mb2_pd_high - KB + KP + 4096), %edi
     jne 2b
 
-    /* pd_hhdm: 2048 identity 2 MiB entries = phys 0..4 GiB, entry[i] =
-       (i*2MiB) | P|W|PS. eax wraps to 0 after the last (entry 2047 =
-       0xFFE00000) write; the edi bound ends the loop before that matters. */
-    mov $(mb2_pd_hhdm - KB + KP), %edi
-    xor %eax, %eax
-3:
-    mov %eax, %edx
-    or  $0x83, %edx
-    mov %edx, (%edi)
-    movl $0, 4(%edi)
-    add $0x200000, %eax
-    add $8, %edi
-    cmp $(mb2_pd_hhdm - KB + KP + 16384), %edi
-    jne 3b
-
     /* pdpt_low[0] = pd_low | P|W (trampoline low identity, 0..1 GiB). */
     mov $(mb2_pd_low - KB + KP), %eax
     or  $3, %eax
     mov $(mb2_pdpt_low - KB + KP), %edi
     mov %eax, (%edi)
-    /* pdpt_hhdm[0..3] = pd_hhdm pages | P|W → HHDM covers phys 0..4 GiB. */
-    mov $(mb2_pd_hhdm - KB + KP), %eax
-    or  $3, %eax
+
+    /* pdpt_hhdm[0..511] = 1 GiB pages → HHDM covers phys 0..512 GiB, the
+       whole direct map for any standard RAM size. 1 GiB page = PS bit (0x80)
+       in the PDPTE; entry i maps phys i*1 GiB. Requires PDPE1GB (universal on
+       x86_64 since ~2008). phys i*1 GiB exceeds 32 bits for i>=4, so split the
+       entry across low/high dwords: eax = low (= (i mod 4)*1 GiB, wraps every
+       4th entry), esi>>2 = high (= i/4). Unmapped-but-RAM-less ranges are
+       harmless — the PMM only ever derefs HHDM for seeded RAM PFNs. */
     mov $(mb2_pdpt_hhdm - KB + KP), %edi
-    mov %eax, 0x00(%edi)
-    add $0x1000, %eax
-    mov %eax, 0x08(%edi)
-    add $0x1000, %eax
-    mov %eax, 0x10(%edi)
-    add $0x1000, %eax
-    mov %eax, 0x18(%edi)
+    xor %eax, %eax
+    xor %esi, %esi
+3:
+    mov %eax, %edx
+    or  $0x83, %edx              /* P | W | PS (1 GiB page) */
+    mov %edx, (%edi)             /* low dword: phys[31:0] | flags */
+    mov %esi, %ecx
+    shr $2, %ecx                 /* high dword: phys[51:32] = i >> 2 */
+    mov %ecx, 4(%edi)
+    add $0x40000000, %eax        /* += 1 GiB (low); wraps to 0 every 4th entry */
+    add $8, %edi
+    inc %esi
+    cmp $512, %esi
+    jne 3b
 
     /* pdpt_high[510] = pd_high | P|W  (0xFFFFFFFF80000000 >> 30 & 511 = 510). */
     mov $(mb2_pd_high - KB + KP), %eax
