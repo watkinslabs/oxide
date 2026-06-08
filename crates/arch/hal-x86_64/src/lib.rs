@@ -45,7 +45,7 @@ pub use fault::{
     FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
 };
 pub use irq::{
-    irq_stub_addr,
+    irq_stub_addr, current_irq_frame, IrqFrameX86, OXIDE_IRQ_FRAME,
     VEC_MSI, VEC_RESCHED, VEC_TIMER,
     VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN,
 };
