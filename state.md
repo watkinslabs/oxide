@@ -1,71 +1,77 @@
-# Session hand-off — disk-based rootfs + fast IO; vendoring apps
+# Session hand-off — preemptive signal delivery (full rt_sigframe buildout)
 
-## Landed on main this session
-- **Disk-based rootfs (F405/#1612):** userspace runs from real virtio-blk disks (ext4),
-  NOT baked into the kernel. x86+arm boot to `oxide login:` from the `oxide-root` disk.
-- **virtio-blk multi-sector perf (B63/#1615):** was ~1 round-trip/sector (~0.1 MB/s,
-  boot+big binaries crawled). Now 128 KiB bounce + multi-sector submit (4 KiB read 8→1,
-  ~256× fewer round-trips). **Boot→login ~16 s.** Both keystones (driver + ext4
-  de-singletonization) were adversarially reviewed + bugs fixed before landing.
-- **rootfs is a 1 GiB virtio-blk disk** (rootfs.rs count=1024) — grows freely, zero
-  kernel cost (read on demand). home-<arch>.img is a separate /home disk.
-- **x86_64-musl-g++ C++ toolchain** (fetch-cross.sh; gitignored) — enables C++ apps.
-- **x86 HHDM full direct map (B65/B66, #1620/#1622):** MB2 trampoline mapped only 1 GiB
-  into HHDM → x86 hung at -m 2G (PMM derefs hhdm+pfn*4096 per seeded page). Now 512 ×
-  1 GiB PDPTE pages = phys 0..512 GiB — any standard RAM size. Verified x86 boots to
-  login at -m 8G; both arches at -m 2G. Requires PDPE1GB (universal on x86_64).
-- **38 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
-  zoxide ncdu htop tree dos2unix curl wget fzf tmux lazygit yq delta choose hexyl rsync
-  nano tokei grex xh yazi(+ya) dialog btop dua gron pv entr.
+## Arc of this session
+TUI startup-hang → traced to REAL kernel gaps (not terminal/DSR):
+- **futex WAIT_BITSET/WAKE_BITSET (9/10)** fell to `_ => 0` (instant return) → pthread/Go
+  thread-startup spin-deadlock. **Fixed B67 (#1624, merged). starship launches.**
+- **timerfd TFD_TIMER_ABSTIME** ignored → Go netpoller timer never fired. **Fixed B68
+  (#1625, merged).** + console DSR/OSC query responder (tty/vtquery).
+- HHDM 512 GiB (B66), /proc audit confirmed built-out (task #2) — earlier/merged.
 
-## KEY OPEN ITEM — TUI startup-hang gap (4 tools built+de-staged)
-starship, glow, micro, duf are BUILT (recipes in tools/fetch-*.sh + vendor/*/build.sh,
-committed; binaries gitignored/local) but **NOT staged** — they HANG on startup under
-oxide. Signature: persists with stdin redirected to /dev/null + stdout to a file (so
-NOT a tty-read block). **ncurses TUIs work** (htop/ncdu/nano/dialog), **fzf/yq (Go,
-non-TUI) work**, but bubbletea/tcell (Go) + crossterm/starship (Rust) HANG — so it's how
-those terminal libs probe the terminal/init, not language/tokio/threads. NEXT: boot a
-`--features debug-all` kernel, run `starship --version </dev/null`, capture the LAST
-syscalls before silence → the blocking syscall (likely a tty ioctl or a /dev/tty open).
-Fix the kernel gap, then re-add the 4 to rootfs.rs staging + allowlist their binaries.
+## THE remaining blocker: Go runtime needs preemptive async signal delivery
+Go tools (duf/glow/micro/yq, even fzf hangs-on-exit) livelock. ROOT: Go async-preemption
+sends SIGURG (via tgkill) to a thread spinning in USER code; kernel must deliver it on a
+timer-IRQ return. Rust(starship)+C+C++ tools WORK; only Go needs this.
+**Surprise from gap-analysis: timer-IRQ PREEMPTION + ctx-switch ALREADY EXIST** (both
+arches, 14§R07 — the "iretq-frame gap" is closed). The ONLY missing piece is **async
+signal delivery on IRQ-return-to-user + the full rt_sigframe** (current frame is minimal
+40B rip/rsp/rflags, no siginfo/ucontext — insufficient for Go).
 
-## Other follow-ups (not blocking)
-- x86 HHDM caps at 512 GiB (one PDPT). >512 GiB RAM would need more PML4 entries.
-- 8 GiB boot is slower (seeds 2M pages + 48 MB PageMeta) — fine, just O(RAM) seed cost.
+## PLAN: full signal-ABI buildout (user chose "full, not minimal"). 8 stages A–H.
+Most infra EXISTS: sigaction storage(flags/mask/restorer task.rs:646), sigaltstack
+storage(task.rs:237), RT queue, timer preempt, ctx-switch, send_resched_ipi(lapic.rs:235),
+FXSAVE/FPSIMD(hal-*/fpu.rs). New work:
+- **A DONE (F409, pushing):** user-ABI types `crates/kernel/syscall/src/sigframe.rs`
+  (SigInfoUser 128B, x86 SigContextX86 rip@0x80, arm SigContextArm pc@0x108, ucontext,
+  fpstate, sa::/ss::/si:: consts) + 8 offset tests + docs/24§4 R02.
+- **B NEXT (CRITICAL asm):** save FULL GP set at IRQ entry. x86 `hal-x86_64/src/irq.rs`
+  10 stubs (vec 0x40,0x41,0x50-0x57) currently push scratch only (rax,rcx,rdx,rsi,rdi,
+  r8-r11); ADD rbx,rbp,r12-r15. Frame offsets shift: today vec@72, RIP@88, CS@96(RPL=ring),
+  RSP@112. Update `oxide_irq_resume_user` pops (irq.rs:236) + `new_kernel_with_irq_frame`/
+  `new_user_with_irq_frame` scaffold (context.rs:118 "17×8=136B" → grows by 6 slots) +
+  oxide_irq_dispatch frame reads (arch-irq/lapic.rs) + arm `vbar.rs` IRQ handler (add
+  x19-x28 like its SVC frame does) + arm resume epilogue. Use an asm `.macro` to avoid
+  10× copy errors. **Every timer tick traverses this — offset/align bug crashes on 1st
+  tick. Boot-gate BOTH arches to login.** Also flush FXSAVE into frame at deliver.
+- **C:** rewrite deliver_x86/arm (`fs/src/sig_dispatch.rs:148/280`) to build full
+  rt_sigframe from a frame-source (syscall frame OR IRQ frame); honor SA_SIGINFO(3-arg
+  rsi/rdx=&info/&uc; arm x1/x2), SA_ONSTACK(alt-stack), SA_NODEFER, SA_RESETHAND.
+- **D:** rewrite rt_sigreturn_x86/arm (sig_dispatch.rs:227/372) to restore FULL mcontext
+  (ALL GPRs+PC/SP/flags+FP) from the possibly-handler-EDITED on-stack ucontext (Go rewrites
+  uc.PC/SP→asyncPreempt). Single restore target = the syscall frame rt_sigreturn rides.
+- **E (CRITICAL):** async-delivery hook in IRQ epilogue (lapic.rs/vbar dispatch) AFTER
+  resched pick: only if interrupted USER (x86 CS&3==3 / arm SPSR.M==EL0t) AND current()
+  has deliverable sig → build frame from IRQ frame, redirect iretq/eret PC→handler. Target
+  post-switch current(), its IRQ frame.
+- **F:** sigaltstack/SA_ONSTACK consume (131_sigaltstack.rs fields are dead storage) +
+  SA_RESTART (rewind user PC by syscall-insn width on restartable EINTR).
+- **G:** tgkill/kill (234/062) send_resched_ipi to target on another CPU + wake Sleeping.
+- **H:** R-blocks done/todo: docs/24§4 R02 done(A); docs/54(asm), docs/14(FPU+R07),
+  docs/13§9(preempt-point) still need R-blocks as B/E land.
 
-## Backlog (continue — autonomous; prefer NON-bubbletea/tcell tools until the hang is fixed)
-- CLI/ncurses (likely work): gron, jq-clones, pv, mtr, ncdu(done), aerc?, neomutt(big),
-  man-db (needs gdbm+libpipeline — vendor first), mc (needs glib — vendor first).
-- C++ (toolchain ready): lnav (sqlite/pcre/readline).
-- Heavy: neovim (libuv/luajit/msgpack/tree-sitter/unibilium/libtermkey/libvterm).
-- Defer bubbletea/tcell/crossterm TUIs (gitui, zellij, helix, lazygit-is-already-in…)
-  until the startup-hang is fixed.
+Risks ranked: B (IRQ full-GP asm) + E (async deliver, wrong-EL→kernel-frame crash) are the
+killers — isolate, boot-gate hard. Do NOT rebuild working pieces (preempt/ctx-switch/IPI/FP).
 
-## Vendoring pattern (PROVEN, parallel sub-agents)
-fetch-<tool>.sh + vendor/<tool>/build.sh (static-musl both arches) + vendor/.gitignore
-allowlist + rootfs.rs staging tuple. Rust: cargo +crt-static, onig→regex-fancy if onig C
-dep. C: --host=<arch>-linux-musl static, ncurses via vendor/ncurses/install-<arch>
-(+ -DNCURSES_ENABLE_STDBOOL_H=1; dialog needs a libtinfo=libncursesw shim). C++:
-vendor/cross/{x86_64,aarch64}-linux-musl-cross g++ + STATIC -static-libstdc++. Go:
-vendor/go/bin/go CGO_ENABLED=0. Orchestrator wires gitignore+rootfs; boot-test; commit.
+## Verify each stage
+Hosted offset/round-trip tests where possible (verify-left). Boot gate per stage: BOTH
+arches to login. Final gate: a SIGURG smoke (spin in user, tgkill from another thread,
+handler reads/edits ucontext, runs) THEN duf/glow/micro/yq launch on x86 AND arm.
+
+## Reverted (do not resurrect as-is)
+An agent's combined epoll-poll + futex-reorder + nanosleep-EINTR attempt was net-negative
+(nanosleep-EINTR churns Go without signal-delivery; yq never worked anyway — was masked).
+Reverted to clean B68. EpollInode::poll IS a real gap (epoll.rs no poll() → nested epoll
+always-ready) — fold into the buildout if it helps, but it's not the root.
 
 ## Boot-test recipe (x86)
-Build: `cargo run -p xtask -- rootfs --arch x86_64 && ... kernel --arch x86_64 --features
-debug-boot && ... grub --arch x86_64 --features debug-boot --build-only`. Boot:
-qemu-system-x86_64 q35 -enable-kvm -smp 2 **-m 2G** -cdrom target/oxide-x86_64-grub.iso
--boot d + virtio-blk drives serial=oxide-root/oxide-home + `-serial unix:/tmp/x.sock`.
-Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in even post-fix
-— allow generous settle in capture.
+`cargo run -p xtask -- rootfs --arch x86_64 && ...kernel --arch x86_64 --features debug-boot
+&& ...grub --arch x86_64 --features debug-boot --build-only`. Boot: qemu-system-x86_64 q35
+-cpu host -enable-kvm -smp 2 -m 2G -cdrom target/oxide-x86_64-grub.iso -boot d + virtio-blk
+serial=oxide-root/oxide-home + `-serial unix:/tmp/x.sock`. Login alice/swordfish. Targeted
+syscall trace (arm-on-execve TRACE_ARMED in sched::trace + 059_execve) is the proven way to
+find a hang's exact blocking syscall — floods serial if ungated.
 
-## Gotchas
-- **Smoke push SSH idle-timeout:** the pre-push smoke holds the SSH connection ~10 min;
-  GitHub idle-closes it so the push dies AFTER the hook passes ("Connection closed by
-  remote host"). If the smoke PASSED but the branch isn't on origin, re-push the SAME
-  commit with `SKIP_SMOKE=1` (already verified). Seen on B63.
-- Branch counters: max F=408, B=66. Author Chris Watkins. CI = compile-check (stub-blobs;
-  no rootfs blob needed since the embed is gone).
-
-## Resume
-```
-cd /home/nd/oxide2 && git checkout main && git pull && gh run list --limit 3
-```
+## Counters / workflow
+max F=409 (this), B=68. Author Chris Watkins <chris@watkinslabs.com>, no Co-Authored-By.
+spec-lint clean before commit. Branch-per-stage, gh pr merge --delete-branch. Smoke push may
+SSH-idle-timeout after passing → re-push SKIP_SMOKE=1 same commit if branch not on origin.

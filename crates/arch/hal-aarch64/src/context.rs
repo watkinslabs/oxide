@@ -109,20 +109,23 @@ impl Context for ContextAArch64 {
     /// Build a kernel-thread context whose saved kernel stack
     /// carries a synthetic IRQ frame matching the layout the IRQ
     /// epilogue (`oxide_irq_resume_user`) expects. Layout pinned in
-    /// `14§R07`; total scaffold = 208 B from `Context.sp` upward:
+    /// `14§R07` + F410; total scaffold = 288 B from `Context.sp`
+    /// upward (F410 grew it from 208 by the x19..x28 block):
     ///
     ///   [sp+0x000..0x0a0]  saved x0..x18 + x29 + x30 (22 × 8 B, zero)
     ///   [sp+0x0b0]         saved ELR_EL1  = oxide_trampoline_kernel
     ///   [sp+0x0b8]         saved SPSR_EL1 = 0x145 (EL1h, DAIF.AF mask, I unmasked)
     ///   [sp+0x0c0]         saved sp_el0   = 0 (kthreads at EL1; sp_el0 unused)
     ///   [sp+0x0c8]         pad
+    ///   [sp+0x0d0..0x120]  saved x19..x28 (10 × 8 B)  ← F410
     ///
     /// `Context.lr` = `oxide_irq_resume_user` so
     /// `oxide_context_switch`'s `ret` lands in the shared IRQ
-    /// epilogue. `x19 = entry`, `x20 = arg` per the trampoline ABI;
-    /// the GP epilogue restores x0..x18 + x29 + x30 (zeros) but
-    /// leaves x19/x20 as `Context::switch` set them, so the
-    /// trampoline reads them correctly post-eret.
+    /// epilogue. `x19 = entry`, `x20 = arg` per the trampoline ABI:
+    /// since the F410 epilogue now POPS x19..x28 from the frame
+    /// (overwriting whatever context_switch loaded), entry/arg MUST be
+    /// written into the x19/x20 scaffold slots — else the trampoline
+    /// reads zeros. x21..x28 = 0.
     ///
     /// # C: O(1)
     fn new_kernel_with_irq_frame(
@@ -131,10 +134,10 @@ impl Context for ContextAArch64 {
         arg: usize,
     ) -> Self {
         // SAFETY: caller asserts `stack_top` is the high end of a
-        // writable, 16-byte-aligned kernel stack of at least 208 B.
+        // writable, 16-byte-aligned kernel stack of at least 288 B.
         // We zero offsets 0..0xb0 (GPs) and write ELR/SPSR at 0xb0/0xb8.
         let sp = unsafe {
-            let base = stack_top.cast::<u8>().sub(208) as *mut u64;
+            let base = stack_top.cast::<u8>().sub(288) as *mut u64;
             for i in 0..22 { base.add(i).write(0); }
             // ELR_EL1 = trampoline (offset 176 = idx 22)
             base.add(22).write(trampoline_kernel_addr());
@@ -143,6 +146,11 @@ impl Context for ContextAArch64 {
             // sp_el0 = 0 + pad = 0 (offsets 192/200 = idx 24/25)
             base.add(24).write(0);
             base.add(25).write(0);
+            // F410 x19..x28 (offset 0xd0 = idx 26 .. 0x118 = idx 35).
+            // x19 = entry, x20 = arg (trampoline ABI); rest zero.
+            base.add(26).write(entry as *const () as usize as u64); // x19
+            base.add(27).write(arg as u64);                          // x20
+            for i in 28..=35 { base.add(i).write(0); }               // x21..x28
             base
         };
         Self {
@@ -208,9 +216,9 @@ impl ContextAArch64 {
     /// # C: O(1)
     pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
         // SAFETY: caller asserts `stack_top` is the high end of a
-        // writable, 16-byte-aligned kernel stack of at least 208 B.
+        // writable, 16-byte-aligned kernel stack of at least 288 B.
         let sp = unsafe {
-            let base = stack_top.cast::<u8>().sub(208) as *mut u64;
+            let base = stack_top.cast::<u8>().sub(288) as *mut u64;
             for i in 0..22 { base.add(i).write(0); }
             base.add(22).write(user_ip);          // ELR_EL1 = user entry
             // SPSR_EL1 = 0: M=EL0t (0b0000), DAIF all clear so EL0
@@ -220,6 +228,8 @@ impl ContextAArch64 {
             base.add(23).write(0);
             base.add(24).write(user_sp);          // sp_el0
             base.add(25).write(0);                // pad
+            // F410 x19..x28 (idx 26..35) — fresh user task, all zero.
+            for i in 26..=35 { base.add(i).write(0); }
             base
         };
         // Snapshot the live TPIDR_EL0 so init's caller (which sets
@@ -265,9 +275,9 @@ impl ContextAArch64 {
         user_sp: u64,
         regs: &ForkRegs,
     ) -> Self {
-        // SAFETY: caller asserts `stack_top` is the high end of a writable, 16-byte-aligned kernel stack of at least 208 B; mirror of new_user_with_irq_frame's SAFETY note.
+        // SAFETY: caller asserts `stack_top` is the high end of a writable, 16-byte-aligned kernel stack of at least 288 B; mirror of new_user_with_irq_frame's SAFETY note.
         let sp = unsafe {
-            let base = stack_top.cast::<u8>().sub(208) as *mut u64;
+            let base = stack_top.cast::<u8>().sub(288) as *mut u64;
             // Frame layout per `oxide_irq_resume_user` in vbar.rs:
             //   sp+0x00 (idx 0) .. sp+0x90 (idx 18) — x0..x17 packed
             //                    in stp pairs.
@@ -305,6 +315,19 @@ impl ContextAArch64 {
             base.add(23).write(0);
             base.add(24).write(user_sp);           // sp_el0
             base.add(25).write(0);                 // pad
+            // F410: the IRQ epilogue now POPS x19..x28 from the frame
+            // (idx 26..35), so the child's user callee-saved set must
+            // be written here — context_switch's load is overwritten.
+            base.add(26).write(regs.x[19]);
+            base.add(27).write(regs.x[20]);
+            base.add(28).write(regs.x[21]);
+            base.add(29).write(regs.x[22]);
+            base.add(30).write(regs.x[23]);
+            base.add(31).write(regs.x[24]);
+            base.add(32).write(regs.x[25]);
+            base.add(33).write(regs.x[26]);
+            base.add(34).write(regs.x[27]);
+            base.add(35).write(regs.x[28]);
             base
         };
         // Capture the parent's live TPIDR_EL0 so the child resumes
@@ -321,9 +344,9 @@ impl ContextAArch64 {
         { parent_tpidr = 0; }
         Self {
             sp:    sp as u64,
-            // x19..x28 inherit parent's user state via the kernel
-            // Context — the IRQ epilogue doesn't pop them from the
-            // frame. context_switch restores these on dispatch.
+            // x19..x28: context_switch loads these from the Context on
+            // dispatch; the F410 IRQ epilogue then re-pops the same
+            // values from the scaffold slots written above. Both agree.
             x19: regs.x[19],
             x20: regs.x[20],
             x21: regs.x[21],
@@ -402,23 +425,26 @@ mod tests {
 
     #[test]
     fn new_kernel_with_irq_frame_layout() {
-        // `14§R07` pins the 208-byte on-stack scaffold (was 192
-        // pre-P2-13e; sp_el0 added at offset 0xC0 + pad at 0xC8).
-        // Walk every slot from sp upward; any reorder of the IRQ
-        // stub's expectations breaks here loud.
+        // `14§R07` + F410 pin the 288-byte on-stack scaffold (was 208;
+        // F410 added x19..x28 at 0xD0..0x120). Walk every slot from sp
+        // upward; any reorder of the IRQ stub's expectations breaks here.
         let mut stack = alloc::vec![0u8; 4096];
         let top = stack.as_mut_ptr_range().end;
         let ctx = ContextAArch64::new_kernel_with_irq_frame(top, dummy_entry, 0xC0FFEE);
         assert_eq!(ctx.x19, dummy_entry as *const () as usize as u64);
         assert_eq!(ctx.x20, 0xC0FFEE);
-        assert_eq!(ctx.sp as usize, (top as usize) - 208);
+        assert_eq!(ctx.sp as usize, (top as usize) - 288);
         assert_eq!(ctx.lr,  crate::vbar::irq_resume_user_addr());
-        // SAFETY: we own `stack`; sp..sp+208 lies inside the buffer.
+        // SAFETY: we own `stack`; sp..sp+288 lies inside the buffer.
         let read = |off: usize| -> u64 { unsafe { *((ctx.sp as usize + off) as *const u64) } };
         for i in 0..22 { assert_eq!(read(i * 8), 0, "GP slot {} non-zero", i); }
         assert_eq!(read(0xb0), super::trampoline_kernel_addr(), "saved ELR_EL1");
         assert_eq!(read(0xb8), 0x145,                            "saved SPSR_EL1");
         assert_eq!(read(0xc0), 0,                                "saved sp_el0 (kthread)");
+        // F410 x19..x28 block: x19=entry, x20=arg, rest zero.
+        assert_eq!(read(0xd0), dummy_entry as *const () as usize as u64, "x19=entry");
+        assert_eq!(read(0xd8), 0xC0FFEE, "x20=arg");
+        for i in 0..8 { assert_eq!(read(0xe0 + i * 8), 0, "x{} non-zero", 21 + i); }
     }
 
     #[test]
