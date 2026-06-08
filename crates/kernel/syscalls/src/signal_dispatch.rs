@@ -54,7 +54,9 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
     if p.sig as u8 == Signum::Sigcont as u8 {
         if p.handler != SIG_DFL && p.handler != SIG_IGN {
             // SAFETY: same dispatch-tail context as the handler arm below.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig, saved_ret) };
+            let sig_rv = unsafe {
+                ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig, p.flags, p.mask, saved_ret, p.info.as_ref())
+            };
             #[cfg(target_arch = "aarch64")]
             return sig_rv;
             #[cfg(not(target_arch = "aarch64"))]
@@ -81,8 +83,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
         }
         SIG_IGN => 0,  // explicit ignore: drop
         handler => {
+            let _ = handler;
             // SAFETY: dispatch tail; per-arch saved frame live; deliver_arm/_x86 rewrites only the saved frame and user signal stack.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver(handler, p.restorer, p.sig, saved_ret) };
+            let sig_rv = unsafe {
+                ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig, p.flags, p.mask, saved_ret, p.info.as_ref())
+            };
             #[cfg(target_arch = "aarch64")]
             return sig_rv;
             #[cfg(not(target_arch = "aarch64"))]
