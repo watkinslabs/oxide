@@ -1,6 +1,56 @@
 # 24 IPC: pipes, signals, futex, eventfd, signalfd, timerfd, AF_UNIX
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
+FROZEN 2026-06-08. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
+
+## Revision 2026-06-08 (R02)
+
+- Changed: replace the minimal 40-byte/128-byte ad-hoc signal frame
+  with the FULL Linux `rt_sigframe` ABI. Delivery builds a real
+  `siginfo_t` + `ucontext` (+ FP state) on the user stack; the handler
+  is invoked with the 3-arg `SA_SIGINFO` convention `(int, siginfo_t*,
+  void*)` when `SA_SIGINFO` is set, 1-arg otherwise; `rt_sigreturn`
+  restores the full machine context from the frame.
+- Why: Go's async-preemption signal (SIGURG) and correct POSIX
+  semantics require user space to read/modify the saved register
+  context via `ucontext` and the kernel to faithfully restore it.
+  The old frame zeroed `ucontext`, so `sigreturn` could not reconstruct
+  the interrupted register state — any handler that resumed (vs. exited)
+  ran on corrupt context. SA_SIGINFO was unhonored; SA_ONSTACK,
+  SA_RESTART, SA_NODEFER, SA_RESETHAND were not applied.
+- ABI (exact Linux uapi offsets, asserted by hosted offset tests):
+  - `siginfo_t` = 128 B: `si_signo@0/si_errno@4/si_code@8`, `_sifields`
+    union @16; SI_USER/SIGCHLD/SIGSEGV/SI_QUEUE variants.
+  - `stack_t` = 24 B (`ss_sp,ss_flags,_pad,ss_size`).
+  - x86_64 `sigcontext_64`: GP order r8..rip, `rip@0x80`, eflags/cs/
+    err/trapno/oldmask/cr2/fpstate ptr; size 0x100. `ucontext`:
+    uc_flags/uc_link/uc_stack/uc_mcontext/uc_sigmask. `rt_sigframe`:
+    `pretcode` (restorer ret addr) then uc then info. FP = 512-B FXSAVE.
+  - aarch64 `sigcontext`: fault_address@0, regs[31]@8, sp@0x100,
+    pc@0x108, pstate@0x110, `__reserved[4096]@0x118` carrying
+    `fpsimd_context` (magic 0x46508001, 528 B). `ucontext`:
+    uc_sigmask + `__unused[120]` pad to 16-align `uc_mcontext@176`.
+    `rt_sigframe`: info then uc (arm orders info first).
+  - SA_* flags: NOCLDSTOP=1, NOCLDWAIT=2, SIGINFO=4, RESTORER=0x04000000,
+    ONSTACK=0x08000000, RESTART=0x10000000, NODEFER=0x40000000,
+    RESETHAND=0x80000000. SS_ONSTACK=1, SS_DISABLE=2.
+- Staged rollout (no behavior change lands until its stage):
+  - A (this revision): define the user-ABI types at exact offsets in
+    `crates/kernel/syscall/src/sigframe.rs` + hosted offset-assertion
+    tests. No frame is built/restored yet — pure types, can't break boot.
+  - B: build-frame path (both arches) — `setup_rt_frame` writes
+    siginfo+ucontext+FP onto the (alt-)stack, sets handler args per
+    SA_SIGINFO, applies SA_ONSTACK/NODEFER/RESETHAND/mask additions.
+  - C: `rt_sigreturn` restores the full context from the frame;
+    SA_RESTART syscall re-entry.
+  - D: FP state save/restore (FXSAVE x86, fpsimd_context arm).
+- Affected code: `crates/kernel/syscall/src/sigframe.rs` (types, this
+  stage); later — `crates/kernel/mm-pmm/src/user_as/signal.rs`,
+  `crates/kernel/fs/src/sig_dispatch.rs`, the `rt_sigreturn` handler,
+  HAL frame-rewrite paths.
+- Test contract change: §12 gains a hosted offset-assertion suite
+  (`size_of`/`offset_of` vs. Linux uapi) as the type freeze gate, plus
+  later a round-trip "signal handler resumes with intact registers"
+  acceptance once Stages B–C land.
 
 ## Revision 2026-05-09 (R01)
 
