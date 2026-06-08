@@ -4,6 +4,25 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`14`. Provides: every kernel thr
 
 Pick which task runs which CPU when. Drive ctxsw via `Context`. Implement `sched_*` syscalls.
 
+## Revision 2026-06-08 (R01) — async signal as an IRQ-exit preemption action (F412 Stage E+G)
+
+- §9 IRQ-exit gains a delivery action ALONGSIDE the resched decision:
+  the per-arch IRQ dispatcher, after EOI + tick + softirq and BEFORE the
+  picker (`tick_pick_next`), calls `fs::sig_dispatch::try_deliver_async_irq`.
+  If the interrupted frame was USER mode (x86 `cs&3==3`, arm EL0t) and
+  `current()` has a deliverable handler-signal, it rewrites the live IRQ
+  frame in place to enter the handler on iretq/eret. Runs before the
+  picker so `current()` + address space still match the IRQ frame; the
+  interrupted task resumes through its own (rewritten) frame whenever it
+  next runs, switch-staged or not. Kernel-mode IRQ frame ⇒ no-op.
+- §10/§11 cross-CPU nudge: a signal sender (`kill`/`tgkill`/pgrp-fan)
+  that sets a pending bit on a task running/runnable on ANOTHER CPU now
+  sends `IPI_RESCHED` (LAPIC ICR / GICv3 SGI) to that CPU via
+  `sched::live::nudge_task` → `send_resched_ipi`, forcing the target's
+  IRQ exit so it hits the delivery action above. This is the delivery
+  point for a thread spinning in tight USER code (no syscall to ride —
+  Go async preemption). UP / same-CPU ⇒ next local tick delivers.
+
 Sched core arch-free, hosted-testable, oracle-modeled. Preempt gated by per-CPU `preempt_count`. SMP added only after UP passes its §Test contract clean (proptest randomized concurrent ops + canary). Cross-CPU migration bounded.
 
 ## 1 Inputs/outputs

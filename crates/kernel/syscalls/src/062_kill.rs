@@ -36,11 +36,12 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
                 if sig != 0 {
                     t.sigpending.fetch_or(bit, Ordering::Release);
                     if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
-                    // F168: a signal raised on a Sleeping task must
-                    // wake it so the parked helper can observe the
-                    // bit and return -EINTR (Linux semantic). No-op
-                    // for any other task state.
-                    sched::live::wake_if_sleeping(&t);
+                    // F168 + F412 Stage G: wake a parked target (so the
+                    // parked helper observes the bit → -EINTR), AND if it
+                    // is running/runnable on another CPU, send a resched
+                    // IPI so it takes an IRQ exit and hits async Stage-E
+                    // delivery promptly (no-op on UP / same CPU).
+                    sched::live::nudge_task(&t);
                 }
                 0
             }
@@ -72,11 +73,10 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
             if sig == 18 { sched::live::registry::wake_if_stopped(t); }
-            // Mirror sys_kill: a signal posted to a pgrp member that is
-            // parked (Sleeping) must wake it so its blocking helper
-            // observes the bit and returns -EINTR. Without this,
-            // kill(pgid=0, sig) cannot interrupt a parked group member.
-            sched::live::wake_if_sleeping(t);
+            // Mirror sys_kill + F412 Stage G: wake a parked member and
+            // resched-IPI a member running on another CPU so it takes an
+            // IRQ exit and hits async Stage-E delivery.
+            sched::live::nudge_task(t);
         }
         n += 1;
     }
