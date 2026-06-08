@@ -384,11 +384,19 @@ core::arch::global_asm!(
     "    b    oxide_lower_sync_restore",
     ".size oxide_lower_el_sync_handler, . - oxide_lower_el_sync_handler",
 
-    // IRQ entry per `22§5` + `14§R07`. Frame = 192 B = 22 × 8 GP +
-    // ELR_EL1 + SPSR_EL1. The ELR/SPSR pair was missing pre-R07; an
-    // `eret` after a context switch would have eret'd into whatever
-    // ELR/SPSR currently held — wrong as soon as the dispatcher
-    // swapped tasks. They sit at [sp+0xb0..0xc0] now.
+    // IRQ entry per `22§5` + `14§R07`. Frame = 288 B (F410 grew it
+    // from 208 by adding the 10 callee-saved x19..x28 — full GP set
+    // for a future signal mcontext built from a timer-interrupted
+    // user thread, mirroring the SVC save block).
+    //   [sp+0x00..0xa0] x0..x18 + x29 (10 stp pairs)
+    //   [sp+0xa0]       x30 + xzr pad
+    //   [sp+0xb0]       elr_el1 + spsr_el1
+    //   [sp+0xc0]       sp_el0
+    //   [sp+0xc8]       pad / IRQ-frame ptr stash slot (unused by asm)
+    //   [sp+0xd0..0x120] x19..x28 (5 stp pairs)  ← F410
+    // The ELR/SPSR pair was missing pre-R07; an `eret` after a context
+    // switch would have eret'd into whatever ELR/SPSR currently held —
+    // wrong as soon as the dispatcher swapped tasks.
     //
     // After the dispatcher returns, the asm reads
     // `oxide_preempt_next_ctx`. If non-null, calls
@@ -401,7 +409,7 @@ core::arch::global_asm!(
     ".globl oxide_irq_vector_handler",
     ".type  oxide_irq_vector_handler, %function",
     "oxide_irq_vector_handler:",
-    "    sub  sp, sp, #208",
+    "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
     "    stp  x4,  x5,  [sp, #32]",
@@ -418,6 +426,18 @@ core::arch::global_asm!(
     "    stp  x9,  x10, [sp, #176]",
     "    mrs  x9,  sp_el0",
     "    str  x9,       [sp, #192]",
+    // F410: save callee-saved x19..x28 (closest analog to the SVC
+    // block) so Stage C/E can read the full interrupted GP set.
+    "    stp  x19, x20, [sp, #0xd0]",
+    "    stp  x21, x22, [sp, #0xe0]",
+    "    stp  x23, x24, [sp, #0xf0]",
+    "    stp  x25, x26, [sp, #0x100]",
+    "    stp  x27, x28, [sp, #0x110]",
+    // Stash the IRQ-frame base so `current_irq_frame()` can read it.
+    "    mov  x9, sp",
+    "    adrp x10, OXIDE_IRQ_FRAME_ARM",
+    "    add  x10, x10, :lo12:OXIDE_IRQ_FRAME_ARM",
+    "    str  x9, [x10]",
     "    bl   oxide_arm_irq_dispatch",
     // -- schedule-on-exit per `14§R07`. The dispatcher staged this CPU's
     //    (cur,next) in its per-CPU area; read base-relative (SMP-safe — no
@@ -447,6 +467,12 @@ core::arch::global_asm!(
     "    ldp  x9,  x10, [sp, #176]",
     "    msr  elr_el1,  x9",
     "    msr  spsr_el1, x10",
+    // F410: restore callee-saved x19..x28 (mirror of the save block).
+    "    ldp  x19, x20, [sp, #0xd0]",
+    "    ldp  x21, x22, [sp, #0xe0]",
+    "    ldp  x23, x24, [sp, #0xf0]",
+    "    ldp  x25, x26, [sp, #0x100]",
+    "    ldp  x27, x28, [sp, #0x110]",
     "    ldp  x30, xzr, [sp, #160]",
     "    ldp  x18, x29, [sp, #144]",
     "    ldp  x16, x17, [sp, #128]",
@@ -458,7 +484,7 @@ core::arch::global_asm!(
     "    ldp  x4,  x5,  [sp, #32]",
     "    ldp  x2,  x3,  [sp, #16]",
     "    ldp  x0,  x1,  [sp, #0]",
-    "    add  sp, sp, #208",
+    "    add  sp, sp, #288",
     "    eret",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
 );
@@ -466,6 +492,44 @@ core::arch::global_asm!(
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_irq_resume_user() -> !;
+}
+
+/// Full general-purpose register set saved at IRQ entry (F410
+/// Stage B). Field order MIRRORS the IRQ handler save block exactly:
+/// the stack grows DOWN so `[sp+0]` (lowest address) = x0, and the
+/// later-offset slots hold x19..x28. Stage C/E reads the interrupted
+/// GP set + `spsr & 0xf == 0` (EL0t → from user) to build a signal
+/// mcontext from a timer-interrupted user thread.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct IrqFrameArm {
+    pub x:       [u64; 19], // +0x00  x0..x18
+    pub x29:     u64,       // +0x98
+    pub x30:     u64,       // +0xa0
+    pub _pad0:   u64,       // +0xa8  (xzr pad)
+    pub elr_el1: u64,       // +0xb0
+    pub spsr_el1:u64,       // +0xb8
+    pub sp_el0:  u64,       // +0xc0
+    pub _pad1:   u64,       // +0xc8  (frame-ptr stash slot / pad)
+    pub x19_28:  [u64; 10], // +0xd0  x19..x28
+}
+
+/// Pointer to the IRQ frame of the IRQ currently being serviced.
+/// Written by the IRQ handler asm before `bl oxide_arm_irq_dispatch`
+/// (analogous to the per-CPU SVC-frame stash). UP v1 single slot.
+#[no_mangle]
+pub static OXIDE_IRQ_FRAME_ARM: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Pointer to the GP register set saved at entry of the IRQ currently
+/// being serviced, or null if none. Analogous to `current_svc_frame()`.
+/// Stage C/E reads the interrupted GPRs + `(*f).spsr_el1 & 0xf == 0`
+/// (was at EL0 → user) from this.
+/// # SAFETY: caller runs inside the IRQ dispatch path; the pointer is
+/// stale once `oxide_irq_resume_user` pops the frame.
+/// # C: O(1)
+pub unsafe fn current_irq_frame() -> *mut IrqFrameArm {
+    OXIDE_IRQ_FRAME_ARM.load(core::sync::atomic::Ordering::Acquire) as *mut IrqFrameArm
 }
 
 /// Address of the shared IRQ epilogue (`oxide_irq_resume_user`),
