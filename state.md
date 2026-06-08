@@ -10,9 +10,10 @@
 - **rootfs is a 1 GiB virtio-blk disk** (rootfs.rs count=1024) — grows freely, zero
   kernel cost (read on demand). home-<arch>.img is a separate /home disk.
 - **x86_64-musl-g++ C++ toolchain** (fetch-cross.sh; gitignored) — enables C++ apps.
-- **x86 HHDM 1→4 GiB (B65/#1620):** MB2 trampoline only mapped phys 0..1 GiB into HHDM;
-  PMM derefs hhdm+pfn*4096 per page → x86 hung at -m 2G. Now 4 HHDM PDs (0..4 GiB, 2 MiB
-  pages, matches arm). x86 + arm both boot at -m 2G. (>4 GiB RAM = more PDs / HHDM rebuild.)
+- **x86 HHDM full direct map (B65/B66, #1620/#1622):** MB2 trampoline mapped only 1 GiB
+  into HHDM → x86 hung at -m 2G (PMM derefs hhdm+pfn*4096 per seeded page). Now 512 ×
+  1 GiB PDPTE pages = phys 0..512 GiB — any standard RAM size. Verified x86 boots to
+  login at -m 8G; both arches at -m 2G. Requires PDPE1GB (universal on x86_64).
 - **38 tools staged + boot-verified:** rg fd bat eza jq tldr hyperfine dust sd btm procs
   zoxide ncdu htop tree dos2unix curl wget fzf tmux lazygit yq delta choose hexyl rsync
   nano tokei grex xh yazi(+ya) dialog btop dua gron pv entr.
@@ -29,7 +30,8 @@ syscalls before silence → the blocking syscall (likely a tty ioctl or a /dev/t
 Fix the kernel gap, then re-add the 4 to rootfs.rs staging + allowlist their binaries.
 
 ## Other follow-ups (not blocking)
-- x86 HHDM caps at 4 GiB (B65). >4 GiB RAM needs more MB2 PDs or a post-boot HHDM rebuild.
+- x86 HHDM caps at 512 GiB (one PDPT). >512 GiB RAM would need more PML4 entries.
+- 8 GiB boot is slower (seeds 2M pages + 48 MB PageMeta) — fine, just O(RAM) seed cost.
 
 ## Backlog (continue — autonomous; prefer NON-bubbletea/tcell tools until the hang is fixed)
 - CLI/ncurses (likely work): gron, jq-clones, pv, mtr, ncdu(done), aerc?, neomutt(big),
@@ -60,7 +62,7 @@ Login alice/swordfish. BIG binaries (8–16 MB) still take a few s to page in ev
   GitHub idle-closes it so the push dies AFTER the hook passes ("Connection closed by
   remote host"). If the smoke PASSED but the branch isn't on origin, re-push the SAME
   commit with `SKIP_SMOKE=1` (already verified). Seen on B63.
-- Branch counters: max F=408, B=65. Author Chris Watkins. CI = compile-check (stub-blobs;
+- Branch counters: max F=408, B=66. Author Chris Watkins. CI = compile-check (stub-blobs;
   no rootfs blob needed since the embed is gone).
 
 ## Resume
