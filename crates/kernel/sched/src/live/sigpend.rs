@@ -99,13 +99,61 @@ pub fn deliverable_signals_self() -> u64 {
 pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
     if task.state() != crate::TaskState::Sleeping { return; }
     task.set_state(crate::TaskState::Runnable);
-    if let Some(rq) = super::runqueue::global() {
+    // Enqueue onto the task's OWNER-CPU runqueue (its last-run CPU, stamped by
+    // swap_current), not the waker's `global()` — a remote wake must not move
+    // the task onto the wrong CPU's runqueue. Fall back to local for a
+    // never-run task (cpu still u16::MAX) or an unknown owner.
+    let owner = task.cpu.load(Ordering::Acquire);
+    let rq_opt = if owner != u16::MAX {
+        // SAFETY: global_for indexes the per-CPU runqueue table by cpu id;
+        // owner was stamped from a live runqueue's cpu field.
+        unsafe { super::runqueue::global_for(owner as u32) }.or_else(super::runqueue::global)
+    } else {
+        super::runqueue::global()
+    };
+    if let Some(rq) = rq_opt {
         let mut inner = rq.inner.lock();
         // F211: sleeper credit on wake. See Task::set_vruntime_to_floor.
         task.set_vruntime_to_floor(inner.cfs.min_vruntime());
         inner.enqueue(alloc::sync::Arc::clone(task));
         rq.nr_running.store(inner.nr_running(), Ordering::Release);
         crate::preempt::set_need_resched();
+    }
+}
+
+/// F412 Stage G: cross-thread/CPU signal nudge. After a sender sets a
+/// pending bit on `task` (kill/tgkill/sigqueue), call this to make the
+/// target observe + deliver the signal PROMPTLY:
+///  - parked (Sleeping) ⇒ wake it (re-checks deliverable on resume),
+///  - running/runnable on a DIFFERENT CPU ⇒ send a resched IPI/SGI so
+///    it takes an IRQ exit and hits the Stage-E async-delivery hook.
+/// This is what makes Go's cross-thread SIGURG (async preempt) prompt:
+/// the target thread spinning in USER code has no syscall return to ride
+/// on, so the IPI-forced IRQ exit is its delivery point. On UP (or when
+/// the target is the caller's own CPU) the IPI is skipped — the next
+/// local tick delivers. No-op if the target is the running CURRENT task
+/// (it'll see the signal at its own next syscall/IRQ exit).
+/// # C: O(1) + O(log N) wake path
+pub fn nudge_task(task: &alloc::sync::Arc<crate::Task>) {
+    // Parked target: wake so it re-checks pending on resume.
+    wake_if_sleeping(task);
+    // Don't IPI ourselves — the caller delivers at its own return.
+    let self_cpu: u32 = {
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() }
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        { 0 }
+    };
+    let tgt_cpu = task.cpu.load(Ordering::Acquire) as u32;
+    if tgt_cpu == self_cpu { return; }
+    // Only IPI a target that is running/runnable on its CPU (Runnable
+    // covers both queued and currently-executing in this scheduler).
+    if task.state() == crate::TaskState::Runnable {
+        // SAFETY: send_resched_ipi is a non-blocking IPI/SGI to an
+        // online CPU; hook installed at boot (no-op if unset / UP).
+        unsafe { let _ = super::send_resched_ipi(tgt_cpu); }
     }
 }
 

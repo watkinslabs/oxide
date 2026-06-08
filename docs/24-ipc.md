@@ -2,6 +2,50 @@
 
 FROZEN 2026-06-08. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
 
+## Revision 2026-06-08 (R04)
+
+- Implemented (F412 Stage E+G): ASYNC signal delivery on
+  IRQ-return-to-user + cross-CPU nudge. Closes the last delivery hole:
+  a thread spinning in USER code with no syscall to ride (Go's
+  async-preemption M:N scheduler) now receives a handler on its next
+  timer/IPI IRQ exit.
+- Stage E hook (`fs::sig_dispatch::try_deliver_async_irq`): invoked from
+  the per-arch IRQ dispatcher (`arch-irq::lapic::oxide_irq_dispatch`
+  VEC_TIMER + VEC_RESCHED; `arch-irq::gic::oxide_arm_irq_dispatch`)
+  AFTER EOI + tick + softirq, BEFORE `tick_pick_next` (so `current()` +
+  CR3/TTBR0 still match the live IRQ frame).
+  - **GATE (crash-critical):** delivers ONLY if the interrupted frame
+    was USER mode — x86 `frame.cs & 3 == 3`; arm `frame.spsr_el1 & 0xf
+    == 0` (EL0t). Kernel-mode IRQ frame ⇒ NO-OP (rewriting a kernel
+    return frame to enter a user handler corrupts the kernel resume).
+  - Picks the lowest deliverable signal (`sigpending & !sigmask` with a
+    registered handler ≠ SIG_DFL/SIG_IGN; SIG_DFL/SIG_IGN left pending
+    for the syscall-return default-action triage), builds the full
+    `RtSigframe` via `sigbuild::build_{x86,arm}(FrameSrc::Irq, …)` with
+    GPs read from `current_irq_frame()`, writes it to the user stack
+    below `frame.rsp`−red-zone, then REWRITES THE IRQ FRAME IN PLACE
+    (x86 rip=handler/rsp=new_sp/rdi=sig[+rsi=&info,rdx=&uc]; arm
+    elr_el1=handler/sp_el0=new_sp/x0=sig[+x1/x2], x30=restorer). The IRQ
+    epilogue pops these → iretq/eret enters the handler with correct
+    args + SP. Blocks the sig (honors SA_NODEFER); rt_sigreturn (R03,
+    always rides a syscall) restores the full mcontext.
+  - At most ONE signal per IRQ, delivered to `current()` on the
+    interrupted task's own frame regardless of any staged ctx-switch.
+    The interrupted USER task holds no kernel lock, so the user-AS
+    sigframe write is lock-free.
+- Stage G cross-thread nudge (`sched::live::nudge_task`, called by
+  `sys_kill`/`sys_tgkill`/pgrp-fan after setting the pending bit): wakes
+  a parked target; if the target is running/runnable on a DIFFERENT CPU,
+  sends a resched IPI (x86 LAPIC ICR) / SGI (arm GICv3) so it takes an
+  IRQ exit and hits the Stage-E hook promptly. UP / same-CPU ⇒ no-op
+  (the next local tick delivers).
+- Test contract: `/bin/sigurg_async_smoke` — SA_SIGINFO|SA_RESTART
+  handler for SIGURG, main thread spins in a tight no-syscall
+  `for(;;) counter++` loop, a pthread `pthread_kill`s it; handler sets a
+  volatile flag → loop exits + prints `sigurg: PASS`. Both arches. This
+  is the exact Go async-preempt mechanism; the Go tools
+  (duf/glow/micro/yq/fzf) `--version` returns instead of wedging.
+
 ## Revision 2026-06-08 (R03)
 
 - Implemented (F411 Stage C+D): the full builder + full-mcontext

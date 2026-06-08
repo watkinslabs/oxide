@@ -21,6 +21,9 @@ echo post-pthread-probe rv=$?
 echo pre-socketpair-fork-probe
 timeout 10 /bin/socketpair_fork_probe
 echo post-socketpair-fork-probe rv=$?
+echo pre-sigurg-async
+timeout 15 /bin/sigurg_async_smoke
+echo post-sigurg-async rv=$?
 echo pre-hello_dyn_libc
 /bin/hello_dyn_libc
 echo post-hello_dyn_libc rv=$?
@@ -96,3 +99,15 @@ echo post-rtlink-probe rv=$?
 echo pre-python
 [ -x /usr/bin/python3 ] && /usr/bin/python3 -c 'print("py-smoke", 6*7)'
 echo post-python rv=$?
+# F412: Go-runtime tools that hung before async-signal-on-IRQ (Stage E)
+# + cross-thread SIGURG nudge (Stage G). Go's async preemption now lands
+# a handler on the next timer IRQ, so `--version` returns instead of
+# wedging the M:N scheduler. Each is timeout-guarded so a regression
+# can't wedge rcS → still reaches login.
+echo pre-gotools
+[ -x /usr/bin/duf ]   && echo "duf-version:"   && timeout 15 /usr/bin/duf --version; echo "duf rv=$?"
+[ -x /usr/bin/glow ]  && echo "glow-version:"  && timeout 15 /usr/bin/glow --version; echo "glow rv=$?"
+[ -x /usr/bin/micro ] && echo "micro-version:" && timeout 15 /usr/bin/micro -version; echo "micro rv=$?"
+[ -x /usr/bin/yq ]    && echo "yq-version:"    && timeout 15 /usr/bin/yq --version; echo "yq rv=$?"
+[ -x /usr/bin/fzf ]   && echo "fzf-version:"   && timeout 15 /usr/bin/fzf --version; echo "fzf rv=$?"
+echo post-gotools
