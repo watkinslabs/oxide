@@ -1,426 +1,589 @@
-// Signal-handler dispatch per docs/27§5. P3-65 minimal v1:
-// when a user handler is registered (sa_handler != SIG_DFL/IGN),
-// the syscall-tail signal-delivery path saves a tiny "signal
-// context" on the user stack, rewrites the per-task user_frame
-// so sysretq lands at the user's handler with `sig` in rdi and
-// the saved-rip pushed as a return address, then returns. When
-// the handler does `ret`, control flows to `sa_restorer` which
-// issues `rt_sigreturn` (slot 15) -- that handler restores the
-// saved rip/rsp/rflags from the signal context.
+// Signal-handler dispatch per docs/24§4 (R02/R03) + docs/27§5.
 //
-// v1 scope:
-//   - x86_64 only. arm sa_handler rides M2 follow-up.
-//   - SA_SIGINFO not honoured. Handler called as `void(int sig)`;
-//     no siginfo_t, no ucontext_t (full ucontext frame lands
-//     with the threading + signal-mask-on-handler-entry work).
-//   - Saved context = (saved_rip, saved_rsp, saved_rflags).
-//   - Handler RSP = old_rsp - frame_size; frame layout:
+// F411 Stage C+D: build + restore the FULL Linux rt_sigframe
+// (siginfo_t + ucontext_t + full mcontext + FP state) on the user
+// stack, replacing the old minimal 40/56-byte frame. The pure
+// build/restore math lives in `frame.rs` (host-testable, no unsafe);
+// this module is the unsafe plumbing that reads the live per-arch
+// frame, writes the computed bytes to user memory, and rewrites the
+// saved syscall frame so sysretq/eret enters the handler / resumes.
 //
-//        [old_rsp - 8]   restorer addr   ← ret target
-//        [old_rsp - 16]  saved_rip
-//        [old_rsp - 24]  saved_rsp
-//        [old_rsp - 32]  saved_rflags
-//        [old_rsp - 40]  magic 0x5A55_5A55_DEAD_BEEF
-//
-//   - rt_sigreturn reads back from new_rsp + 8..40 and restores.
+// Invariants (docs/54§3): frame at-or-above handler entry SP; x86
+// skips the 128-B red zone and lands rsp%16==8; arm sp%16==0; the
+// delivered sig is masked during the handler (unless SA_NODEFER) and
+// rt_sigreturn restores the saved mask. Go's async-preempt requires
+// the FULL GP set to round-trip and the handler to be able to edit
+// uc_mcontext.PC/SP (asyncPreempt) — restore reads back whatever the
+// handler left in the on-stack ucontext.
 
-// Arch-portable now: x86_64 path saves (rip, rflags, rsp) into the
-// per-task user_frame; aarch64 mirror saves (elr_el1, spsr_el1, sp_el0)
-// into the same SvcFrame slots that the SVC asm already writes/reads
-// for the `eret` epilogue. Same wire-frame layout on the user stack
-// (magic + saved-3 + restorer = 40 bytes) so user-side sa_restorer
-// thunks are arch-only in the syscall instruction they emit.
-
-#![cfg(target_os = "oxide-kernel")]
-
-const SIG_FRAME_MAGIC: u64 = 0x5A55_5A55_DEAD_BEEF;
-
-/// User-mode signal frame on aarch64 — laid out at handler-entry SP
-/// (`new_sp`) by `deliver_arm`, read back by `rt_sigreturn_arm`. All
-/// saved-context slots live AT OR ABOVE new_sp; the handler's own
-/// stack grows BELOW new_sp and cannot clobber the frame. The kernel
-/// overwrites `frame.x30` with the restorer addr so the handler's
-/// `ret` lands in the sigreturn trampoline — sigreturn MUST restore
-/// the original x30 from this frame, or any user `ret` after sigreturn
-/// lands back at the restorer (infinite sigreturn loop).
-#[cfg(target_arch = "aarch64")]
-#[repr(C)]
-struct SigFrameArm {
-    magic:    u64,
-    pstate:   u64,
-    sp:       u64,
-    pc:       u64,
-    sigmask:  u64,
-    x30:      u64,
-    /// Interrupted syscall's return value (user x0). Saved here so
-    /// rt_sigreturn restores it — otherwise a signal delivered at the
-    /// syscall-return boundary loses the return value (x0 ends up =
-    /// rt_sigreturn's retval), e.g. a `read()` that returned N looks
-    /// like it returned 0 after a SIGCHLD handler runs.
-    x0:       u64,
-}
-
-/// User-mode signal frame on x86_64 — laid out at new_rsp by
-/// `deliver_x86`, read back by `rt_sigreturn_x86`. Slot 0 is the
-/// restorer address — handler's terminating `ret` pops it as the
-/// return target. Magic sits at slot 1.
-#[cfg(target_arch = "x86_64")]
-#[repr(C)]
-struct SigFrameX86 {
-    restorer: u64,
-    magic:    u64,
-    rflags:   u64,
-    rsp:      u64,
-    rip:      u64,
-    sigmask:  u64,
-    /// Interrupted syscall's return value (user rax). Saved here so
-    /// rt_sigreturn restores it — otherwise a signal delivered at the
-    /// syscall-return boundary loses the return value (rax ends up =
-    /// rt_sigreturn's retval), e.g. a `read()` that returned N looks
-    /// like it returned 0 after a SIGCHLD handler runs. This is the
-    /// root cause of shell `$(cmd)` capturing empty: the comsub read
-    /// returned the data, but the SIGCHLD-on-child-exit handler ate
-    /// the return value, so the shell saw EOF.
-    rax:      u64,
-}
-
-/// Reserved bytes at `new_sp` for the SigFrame{Arm,X86} above. Sized
-/// to fit the struct plus alignment slack.
-const SIG_FRAME_BYTES: u64 = 64;
-#[cfg(target_arch = "aarch64")]
-const _: () = assert!(core::mem::size_of::<SigFrameArm>() as u64 <= SIG_FRAME_BYTES);
-#[cfg(target_arch = "x86_64")]
-const _: () = assert!(core::mem::size_of::<SigFrameX86>() as u64 <= SIG_FRAME_BYTES);
-/// x86_64 SysV ABI red zone — 128 B below RSP that callers may rely
-/// on staying intact across function calls. Signal delivery must skip
-/// past it before carving the sigframe so interrupted-frame data
-/// living in the red zone survives the handler.
-#[cfg(target_arch = "x86_64")]
-const X86_RED_ZONE: u64 = 128;
-
-/// Arch-neutral entry: route to deliver_x86 / deliver_arm.
-/// Returns `sig` on aarch64 (the caller — `oxide_syscall_dispatch` —
-/// must use it as the dispatch's `u64` return value so x0 ends up =
-/// sig at handler entry; the SVC restore asm clobbers `frame.gp[0]`
-/// with the dispatcher's return value). x86_64 ignores the return.
-/// # SAFETY: caller is the syscall dispatch tail on the running
-/// task's per-task kernel stack; the per-arch saved frame is live;
-/// active CR3/TTBR0 is the running task's user AS.
-/// # C: O(1)
-#[inline]
-pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> u64 {
+#[cfg(target_os = "oxide-kernel")]
+mod imp {
+    use syscall::sigbuild::*;
+    use sched::SigInfo;
+    use syscall::sigframe::{si, SigInfoUser};
     #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: defers to deliver_x86 whose preconditions are exactly the caller's per fn contract.
-        unsafe { deliver_x86(handler, restorer, sig, saved_ret); }
-        0
-    }
+    use syscall::sigframe::RtSigframeX86;
     #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: defers to deliver_arm whose preconditions are exactly the caller's per fn contract.
-        unsafe { deliver_arm(handler, restorer, sig, saved_ret); }
-        sig as u64
-    }
-}
+    use syscall::sigframe::RtSigframeArm;
 
-/// Arch-neutral entry: route to rt_sigreturn_x86 / rt_sigreturn_arm.
-/// # SAFETY: caller is the rt_sigreturn syscall dispatch on the
-/// running task's per-task kernel stack; per-arch saved frame is live.
-/// # C: O(1)
-#[inline]
-pub unsafe fn rt_sigreturn() -> i64 {
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: per fn contract; defers to rt_sigreturn_x86.
-    unsafe { return rt_sigreturn_x86(); }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: per fn contract; defers to rt_sigreturn_arm.
-    unsafe { return rt_sigreturn_arm(); }
-}
-
-/// Build the signal frame on the user stack and rewrite the
-/// per-task user_frame so sysretq enters `handler` with `sig`
-/// in rdi and `restorer` as the eventual return target.
-/// # SAFETY: caller is the dispatch tail on cur's per-task syscall
-/// kernel stack; current_user_frame() points at the live saved
-/// tail; user-VA writes target the active CR3 (caller's user AS).
-/// # C: O(1)
-#[cfg(target_arch = "x86_64")]
-pub unsafe fn deliver_x86(handler: u64, restorer: u64, sig: u32, saved_ret: u64) {
-    // Read the saved user context (rip, rflags, rsp).
-    // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
-    let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
-    let saved_rip    = frame[0];
-    let saved_rflags = frame[1];
-    let saved_rsp    = frame[2];
-
-    // Carve the signal frame BELOW the red zone and pick new_rsp so
-    // the saved-context slots live at addresses ABOVE the handler's
-    // entry SP (the handler's own stack grows below). SysV requires
-    // rsp % 16 == 8 at function entry (post-`call` invariant) — the
-    // restorer addr at [new_rsp+0] plays the role of the pushed
-    // return address.
-    let top = saved_rsp.saturating_sub(X86_RED_ZONE);
-    // (top - SIG_FRAME_BYTES) rounded down to 16, then -8 → %16==8.
-    let aligned = top.saturating_sub(SIG_FRAME_BYTES) & !0xfu64;
-    let new_rsp = aligned.saturating_sub(8);
-
-    // Block the delivered signal during its handler (POSIX
-    // SA_NODEFER-off). Without this, the syscall-return path
-    // re-delivers SIGCHLD nested inside the SIGCHLD handler;
-    // each nested frame writes 48 B over the outer handler's
-    // saved x19/x20 area on AArch64 and lands `SIG_FRAME_MAGIC`
-    // in a callee-saved reg. rt_sigreturn restores this old mask.
-    use core::sync::atomic::Ordering;
-    let cur = sched::live::current();
-    let old_sigmask = match cur.as_ref() {
-        Some(c) => c.sigmask.fetch_or(1u64 << (sig - 1), Ordering::AcqRel),
-        None    => 0,
-    };
-
-    let sigframe = SigFrameX86 {
-        restorer,
-        magic:   SIG_FRAME_MAGIC,
-        rflags:  saved_rflags,
-        rsp:     saved_rsp,
-        rip:     saved_rip,
-        sigmask: old_sigmask,
-        rax:     saved_ret,
-    };
-    // SAFETY: new_rsp validated < saved_rsp < USER_VA_END; CPL=0 writes through caller's AS via active CR3; user_fault_handler resolves any not-present page (caller's stack pages already faulted); SigFrameX86 is repr(C) matching rt_sigreturn_x86's read.
-    unsafe { core::ptr::write_volatile(new_rsp as *mut SigFrameX86, sigframe); }
-
-    #[cfg(feature = "debug-sched")]
-    {
-        klog::write_raw(b"[INFO]  sig: deliver sig=");
-        klog::write_dec_u64(sig as u64);
-        klog::write_raw(b" handler=");
-        klog::write_hex_u64(handler);
-        klog::write_raw(b" new_rsp=");
-        klog::write_hex_u64(new_rsp);
-        klog::write_raw(b"\n");
-    }
-
-    frame[0] = handler;          // user RIP = handler
-    frame[1] = saved_rflags;     // RFLAGS unchanged (IF kept off via FMASK)
-    frame[2] = new_rsp;          // RSP = signal frame
-
-    // Pass `sig` to the handler in rdi. After B04 added a 16th r12
-    // save slot at the top of the 16-quadword frame, rdi (slot index
-    // 1 from rsp) lives at top-0x80+0x08 = top-0x78.
-    let kstack_top = hal_x86_64::current_kstack_top();
-    if kstack_top != 0 {
-        // SAFETY: the syscall asm restore-block reads saved-rdi at offset -0x78 from top after B04's r12 save; we are running on that exact stack pre-restore; writing here makes the asm's `mov rdi, [rsp+0x08]` after restore-loop pull our `sig` into user rdi.
-        unsafe {
-            core::ptr::write_volatile((kstack_top - 0x78) as *mut u64, sig as u64);
+    /// Synthesise the siginfo_t for `sig` from an optional RT-queue
+    /// record. No record ⇒ SI_USER with pid/uid 0.
+    /// # C: O(1)
+    fn make_siginfo(sig: u32, rec: Option<&SigInfo>) -> SigInfoUser {
+        match rec {
+            Some(r) => {
+                if r.code == si::SI_QUEUE {
+                    SigInfoUser::queue(sig as i32, r.pid as i32, r.uid, r.value)
+                } else {
+                    let mut s = SigInfoUser::new(sig as i32, 0, r.code);
+                    s._sifields[0..4].copy_from_slice(&(r.pid as i32).to_ne_bytes());
+                    s._sifields[4..8].copy_from_slice(&r.uid.to_ne_bytes());
+                    s
+                }
+            }
+            None => SigInfoUser::user(sig as i32, 0, 0),
         }
     }
-}
 
-/// `sys_rt_sigreturn` body. Pops the signal frame the dispatch
-/// pushed, restores the saved rip/rflags/rsp into the per-task
-/// user_frame so sysretq returns to the original code as if no
-/// signal had fired.
-/// # SAFETY: caller is the syscall dispatch on cur's syscall stack;
-/// user_rsp + frame validated against USER_VA_END.
-/// # C: O(1)
-#[cfg(target_arch = "x86_64")]
-pub unsafe fn rt_sigreturn_x86() -> i64 {
-    use syscall::errno::Errno;
-    // SAFETY: per fn contract -- frame slot is at top-24..top of cur's syscall stack.
-    let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
-    let cur_rsp = frame[2];
-    // Handler entered with rsp = new_rsp; `ret` popped the restorer
-    // slot at [new_rsp+0] (rsp += 8) and jumped to the restorer
-    // which issues `mov rax,15; syscall` without touching rsp →
-    // cur_rsp at syscall = new_rsp + 8. frame_base = new_rsp.
-    let frame_base = cur_rsp.saturating_sub(8);
-    if frame_base == 0 || frame_base >= hal::USER_VA_END {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    // SAFETY: frame_base validated < USER_VA_END; CPL=0 reads through caller's AS; SigFrameX86 is repr(C) with the layout deliver_x86 wrote.
-    let sf = unsafe { core::ptr::read_volatile(frame_base as *const SigFrameX86) };
-    if sf.magic != SIG_FRAME_MAGIC {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    frame[0] = sf.rip;
-    frame[1] = sf.rflags;
-    frame[2] = sf.rsp;
-    if let Some(c) = sched::live::current() {
-        c.sigmask.store(sf.sigmask, core::sync::atomic::Ordering::Release);
-    }
-    #[cfg(feature = "debug-sched")]
-    {
-        klog::write_raw(b"[INFO]  sig: rt_sigreturn rip=");
-        klog::write_hex_u64(sf.rip);
-        klog::write_raw(b" rsp=");
-        klog::write_hex_u64(sf.rsp);
-        klog::write_raw(b" rax=");
-        klog::write_hex_u64(sf.rax);
-        klog::write_raw(b"\n");
-    }
-    // Restore the interrupted syscall's return value: this becomes the
-    // user rax after the dispatch's sysretq, so the original syscall
-    // (e.g. read) reports the value it actually produced rather than
-    // rt_sigreturn's own 0.
-    sf.rax as i64
-}
-
-// ---- aarch64 mirror ------------------------------------------------
-
-/// Build the signal frame on the user stack and rewrite the saved
-/// SVC frame so `eret` enters `handler` with `sig` in x0 and
-/// `restorer` as the eventual return target (sa_restorer must
-/// issue `mov x8, #139; svc #0` — Linux generic ABI rt_sigreturn).
-/// # SAFETY: caller is the syscall dispatch tail on cur's per-task
-/// kernel stack; current_svc_frame() points at the live saved frame
-/// the SVC asm wrote on entry; user-VA writes target the active
-/// TTBR0 (caller's user AS).
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub unsafe fn deliver_arm(handler: u64, restorer: u64, sig: u32, saved_ret: u64) {
-    // F206: read SVC frame from per-task slot (captured at dispatch
-    // entry; race-free across schedule()). Fall back to global only
-    // for tasks with no slot set (kthread paths don't deliver here).
-    use core::sync::atomic::Ordering as Ord_;
-    let per_task = sched::live::current()
-        .map(|c| c.svc_frame.load(Ord_::Acquire)).unwrap_or(0);
-    let frame_ptr = if per_task != 0 { per_task as *mut hal_aarch64::SvcFrame }
-                    else { hal_aarch64::current_svc_frame() };
-    // SAFETY: per fn contract — frame is the live saved SVC frame at the top of cur's syscall stack; sole writer for the lifetime of this dispatch tail per `13§5`.
-    let frame = unsafe { &mut *frame_ptr };
-    let saved_pc    = frame.elr_el1;
-    let saved_pstate = frame.spsr_el1;
-    let saved_sp    = frame.sp_el0;
-
-    // Carve the signal frame so saved-context slots live AT OR
-    // ABOVE new_sp; the handler's own stack grows below new_sp and
-    // must not be allowed to clobber the saved frame. AAPCS64
-    // requires SP % 16 == 0 at any public function entry, so
-    // new_sp = (saved_sp - SIG_FRAME_BYTES) & ~0xf.
-    let new_sp = saved_sp.saturating_sub(SIG_FRAME_BYTES) & !0xfu64;
-    // Block the delivered signal during its handler (POSIX
-    // SA_NODEFER-off). Prevents the syscall-return path from
-    // re-entering deliver_arm for SIGCHLD while init is
-    // still inside its SIGCHLD handler; each nested frame would
-    // otherwise stomp on the outer handler's saved-callee area.
-    use core::sync::atomic::Ordering;
-    let cur = sched::live::current();
-    let old_sigmask = match cur.as_ref() {
-        Some(c) => c.sigmask.fetch_or(1u64 << (sig - 1), Ordering::AcqRel),
-        None    => 0,
-    };
-    let sigframe = SigFrameArm {
-        magic:   SIG_FRAME_MAGIC,
-        pstate:  saved_pstate,
-        sp:      saved_sp,
-        pc:      saved_pc,
-        sigmask: old_sigmask,
-        x30:     frame.x30,
-        x0:      saved_ret,
-    };
-    // SAFETY: new_sp is a user-space VA below saved_sp (which came from EL0); kernel CPL=EL1 writes through TTBR0; demand-fault resolves not-present pages via classify_arm_abort + handle.
-    unsafe { core::ptr::write_volatile(new_sp as *mut SigFrameArm, sigframe); }
-
-    #[cfg(feature = "debug-sched")]
-    {
-        klog::write_raw(b"[INFO]  sig: deliver_arm sig=");
-        klog::write_dec_u64(sig as u64);
-        klog::write_raw(b" handler=");
-        klog::write_hex_u64(handler);
-        klog::write_raw(b" new_sp=");
-        klog::write_hex_u64(new_sp);
-        klog::write_raw(b"\n");
+    /// Assemble the delivery parameters for the current task.
+    /// # C: O(1)
+    fn build_params(
+        sig: u32,
+        handler: u64,
+        restorer: u64,
+        sa_flags: u64,
+        sa_mask: u64,
+        info_rec: Option<&SigInfo>,
+    ) -> BuildParams {
+        use core::sync::atomic::Ordering;
+        let cur = sched::live::current();
+        let old_sigmask = cur.as_ref().map(|c| c.sigmask.load(Ordering::Acquire)).unwrap_or(0);
+        let (alt_sp, alt_size, alt_flags) = match cur.as_ref() {
+            Some(c) => (
+                c.sigaltstack_sp.load(Ordering::Acquire),
+                c.sigaltstack_size.load(Ordering::Acquire),
+                c.sigaltstack_flags.load(Ordering::Acquire) as i32,
+            ),
+            None => (0, 0, syscall::sigframe::ss::SS_DISABLE),
+        };
+        BuildParams {
+            sig, handler, restorer, sa_flags, sa_mask, old_sigmask,
+            info: make_siginfo(sig, info_rec),
+            alt_sp, alt_size, alt_flags,
+        }
     }
 
-    frame.elr_el1 = handler;
-    frame.sp_el0  = new_sp;
-    frame.gp[0]   = sig as u64;       // x0 = sig per AAPCS64
-    // NOTE: the SVC restore asm finishes with `ldr x0, [sp, #0xc8]`
-    // — the retval slot — and the asm post-dispatch stores the
-    // dispatcher's return value into that slot, so frame.gp[0]
-    // alone is not enough to make x0 = sig at handler entry. The
-    // caller (oxide_syscall_dispatch) must instead return `sig` as
-    // its u64 retval whenever it dispatched a signal. We signal
-    // that via the deliver() return value (see below).
-    frame.x30     = restorer;         // lr — handler `ret` lands at restorer
-    // SPSR_EL1 unchanged: stays EL0t with the same DAIF bits the
-    // user had when the syscall fired.
-    let _ = saved_pstate;
-    #[cfg(feature = "debug-ssh")]
-    {
-        klog::write_raw(b"[INFO]  ssh-trace: deliver_arm sig=");
-        klog::write_dec_u64(sig as u64);
-        klog::write_raw(b" handler=");
-        klog::write_hex_u64(handler);
-        klog::write_raw(b" new_sp=");
-        klog::write_hex_u64(new_sp);
-        klog::write_raw(b" saved_pc=");
-        klog::write_hex_u64(saved_pc);
-        klog::write_raw(b"\n");
+    /// Install the new blocked mask on the current task.
+    /// # C: O(1)
+    fn install_mask(mask: u64) {
+        if let Some(c) = sched::live::current() {
+            c.sigmask.store(mask, core::sync::atomic::Ordering::Release);
+        }
     }
-    let _ = saved_pc;
-}
 
-/// `sys_rt_sigreturn` body for aarch64. Mirrors rt_sigreturn_x86 —
-/// pops the 40-byte signal frame at sp_el0 - 40 and restores
-/// (elr_el1, spsr_el1, sp_el0) into the saved SVC frame so `eret`
-/// returns to the original user state.
-/// # SAFETY: caller is the rt_sigreturn syscall dispatch on cur's
-/// per-task kernel stack; sp_el0 + frame validated against USER_VA_END.
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub unsafe fn rt_sigreturn_arm() -> i64 {
-    use syscall::errno::Errno;
-    // SAFETY: per fn contract — live saved SVC frame, sole writer per dispatch.
-    let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
-    let cur_sp = frame.sp_el0;
-    // ARM `ret` is `br lr` — does NOT pop the stack. Handler
-    // entered with SP=new_sp and LR=restorer; epilogue restores SP
-    // to new_sp before `ret`; sa_restorer's `svc #0` fires with SP
-    // unchanged → cur_sp == new_sp == frame_base. Saved-context
-    // slots all live at addresses ≥ new_sp so the handler's stack
-    // cannot clobber them.
-    let frame_base = cur_sp;
-    if frame_base == 0 || frame_base >= hal::USER_VA_END {
-        return -(Errno::Einval.as_i32() as i64);
+    /// SA_RESETHAND: reset this sigaction to SIG_DFL after build.
+    /// # C: O(1)
+    fn maybe_resethand(sig: u32, sa_flags: u64) {
+        use syscall::sigframe::sa;
+        if (sa_flags & sa::SA_RESETHAND) == 0 { return; }
+        if let Some(c) = sched::live::current() {
+            // SAFETY: running task on this CPU; preempt-off; sole mutator
+            // of the sigactions slot per the single-mutator invariant in
+            // `13§5`; index sig-1 is in-bounds for 1..=64.
+            unsafe {
+                let table = &mut *c.sigactions.get();
+                let slot = &mut table[(sig - 1) as usize];
+                slot.handler = 0;
+                slot.flags &= !sa::SA_RESETHAND;
+            }
+        }
     }
-    // SAFETY: frame_base validated < USER_VA_END; CPL=EL1 reads through caller's TTBR0; SigFrameArm is repr(C) with the layout deliver_arm wrote.
-    let sf = unsafe { core::ptr::read_volatile(frame_base as *const SigFrameArm) };
-    if sf.magic != SIG_FRAME_MAGIC {
-        return -(Errno::Einval.as_i32() as i64);
+
+    // ---- x86_64 -----------------------------------------------------
+
+    /// Read the live x86 GP set from the interrupted frame source.
+    /// # SAFETY: caller is the dispatch/IRQ tail; the corresponding
+    /// per-arch frame is live on the current task's kernel stack.
+    /// # C: O(1)
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn read_regs_x86(src: FrameSrc) -> GpRegsX86 {
+        match src {
+            FrameSrc::Syscall => {
+                // Full syscall frame base = top-0x80; u64 indices:
+                //  0 rax(nr) 1 rdi 2 rsi 3 rdx 4 r10 5 r8 6 r9
+                //  7 rcx(rip) 8 r11(rflags) 9 user rsp 10 rbx 11 rbp
+                //  12 r13 13 r14 14 r15 15 r12
+                let f = hal_x86_64::current_user_full_frame();
+                // SAFETY: per fn contract — `f` is the live 16-quad frame.
+                let g = |i: usize| unsafe { core::ptr::read(f.add(i)) };
+                let rip = g(7);
+                let rflags = g(8);
+                GpRegsX86 {
+                    rax: g(0), rdi: g(1), rsi: g(2), rdx: g(3),
+                    r10: g(4), r8: g(5), r9: g(6),
+                    rcx: rip, r11: rflags,
+                    rsp: g(9), rbx: g(10), rbp: g(11),
+                    r13: g(12), r14: g(13), r15: g(14), r12: g(15),
+                    rip, eflags: rflags,
+                    cs: 0x33, ss: 0x2b, gs: 0, fs: 0,
+                }
+            }
+            FrameSrc::Irq => {
+                // SAFETY: per fn contract — IRQ frame live during dispatch.
+                let p = unsafe { hal_x86_64::current_irq_frame() };
+                // SAFETY: `p` is the live IrqFrameX86 written at IRQ entry.
+                let i = unsafe { &*p };
+                GpRegsX86 {
+                    r8: i.r8, r9: i.r9, r10: i.r10, r11: i.r11,
+                    r12: i.r12, r13: i.r13, r14: i.r14, r15: i.r15,
+                    rdi: i.rdi, rsi: i.rsi, rbp: i.rbp, rbx: i.rbx,
+                    rdx: i.rdx, rax: i.rax, rcx: i.rcx, rsp: i.rsp,
+                    rip: i.rip, eflags: i.rflags,
+                    cs: i.cs as u16, ss: i.ss as u16, gs: 0, fs: 0,
+                }
+            }
+        }
     }
-    frame.elr_el1  = sf.pc;
-    frame.spsr_el1 = sf.pstate;
-    frame.sp_el0   = sf.sp;
-    frame.x30      = sf.x30;
-    let saved_sigmask = sf.sigmask;
-    if let Some(c) = sched::live::current() {
-        let prior = c.sigmask.swap(saved_sigmask, core::sync::atomic::Ordering::AcqRel);
-        #[cfg(feature = "debug-ssh")]
+
+    /// Save the current task's live FPU into a 512-B FXSAVE image.
+    /// # C: O(1)
+    #[cfg(target_arch = "x86_64")]
+    fn snapshot_fp_x86() -> [u8; 512] {
+        let mut img = [0u8; 512];
+        if let Some(c) = sched::live::current() {
+            hal_x86_64::fpu_enable();
+            // SAFETY: running task; preempt-off; fpu_state slot is
+            // single-mutator per `13§5`; FXSAVE writes 512 B into the
+            // 16-aligned ArchFpuBuf; FPU enabled by the clts above.
+            unsafe {
+                let buf = (*c.fpu_state.get()).0.as_mut_ptr() as *mut hal_x86_64::FpuStateX86_64;
+                hal_x86_64::fpu_save(buf);
+                core::ptr::copy_nonoverlapping(buf as *const u8, img.as_mut_ptr(), 512);
+            }
+        }
+        img
+    }
+
+    /// Build the full rt_sigframe and rewrite the saved syscall frame
+    /// so sysretq enters `handler`. `src` selects the GP source.
+    /// # SAFETY: caller is the dispatch tail on cur's syscall kstack;
+    /// current_user_frame() is the live saved tail; user writes target
+    /// the active CR3.
+    /// # C: O(1)
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn deliver_x86(
+        src: FrameSrc,
+        handler: u64,
+        restorer: u64,
+        sig: u32,
+        sa_flags: u64,
+        sa_mask: u64,
+        saved_ret: u64,
+        info_rec: Option<&SigInfo>,
+    ) {
+        // SAFETY: caller is the dispatch tail; the x86 syscall/IRQ
+        // frame selected by `src` is live on this CPU's kernel stack.
+        let mut regs = unsafe { read_regs_x86(src) };
+        // Syscall source: frame slot 0 still holds the syscall NR, not
+        // the dispatch return value. The sigcontext must carry the
+        // syscall's RETVAL in rax so rt_sigreturn restores it (the
+        // $(cmd)-empty-capture bug: a read() that returned N must not
+        // be clobbered by the SIGCHLD handler). IRQ source already has
+        // the genuine interrupted rax.
+        if src == FrameSrc::Syscall { regs.rax = saved_ret; }
+        let fp = snapshot_fp_x86();
+        let p = build_params(sig, handler, restorer, sa_flags, sa_mask, info_rec);
+        let b = build_x86(&regs, &p, &fp);
+
+        // Write the FXSAVE image then the rt_sigframe.
+        // SAFETY: fp_addr/frame_addr are user VAs below the interrupted
+        // rsp (validated by build_x86's red-zone+align math); CPL=0
+        // writes through the active CR3; demand-fault resolves
+        // not-present pages; both regions are repr(C) matching restore.
+        unsafe {
+            core::ptr::write_volatile(b.fp_addr as *mut [u8; 512], b.fpstate);
+            core::ptr::write_volatile(b.frame_addr as *mut RtSigframeX86, b.frame);
+        }
+
+        install_mask(b.new_sigmask);
+        maybe_resethand(sig, sa_flags);
+
+        // Rewrite the saved (rip, rflags, rsp) tail.
+        // SAFETY: per fn contract — frame slot at top-0x48..top-0x30.
+        let uf = unsafe { &mut *hal_x86_64::current_user_frame() };
+        uf[0] = handler;
+        uf[1] = regs.eflags;
+        uf[2] = b.new_rsp;
+
+        // Inject handler args into the saved-arg slots so the restore
+        // block's `mov rdi/rsi/rdx, [rsp+...]` loads them. After B04's
+        // 16-quad frame: rdi@top-0x78, rsi@top-0x70, rdx@top-0x68.
+        let top = hal_x86_64::current_kstack_top();
+        if top != 0 {
+            // SAFETY: writing the saved-arg slots the syscall asm
+            // restore block reloads into user rdi/rsi/rdx before sysretq.
+            unsafe {
+                core::ptr::write_volatile((top - 0x78) as *mut u64, b.arg_rdi);
+                core::ptr::write_volatile((top - 0x70) as *mut u64, b.arg_rsi);
+                core::ptr::write_volatile((top - 0x68) as *mut u64, b.arg_rdx);
+            }
+        }
+
+        #[cfg(feature = "debug-sched")]
         {
-            klog::write_raw(b"[INFO]  ssh-trace: rt_sigreturn_arm tid=");
-            klog::write_dec_u64(c.tid as u64);
-            klog::write_raw(b" mask_was=");
-            klog::write_hex_u64(prior);
-            klog::write_raw(b" mask_restored=");
-            klog::write_hex_u64(saved_sigmask);
+            klog::write_raw(b"[INFO]  sig: deliver_x86 sig=");
+            klog::write_dec_u64(sig as u64);
+            klog::write_raw(b" handler=");
+            klog::write_hex_u64(handler);
+            klog::write_raw(b" new_rsp=");
+            klog::write_hex_u64(b.new_rsp);
             klog::write_raw(b"\n");
         }
-        let _ = prior;
     }
-    #[cfg(feature = "debug-sched")]
-    {
-        klog::write_raw(b"[INFO]  sig: rt_sigreturn_arm pc=");
-        klog::write_hex_u64(sf.pc);
-        klog::write_raw(b" sp=");
-        klog::write_hex_u64(sf.sp);
-        klog::write_raw(b" x0=");
-        klog::write_hex_u64(sf.x0);
-        klog::write_raw(b"\n");
+
+    /// `sys_rt_sigreturn` body. Reads the on-stack (possibly
+    /// handler-edited) ucontext, restores the FULL mcontext + FP +
+    /// sigmask into the syscall frame, and returns the restored rax
+    /// (the interrupted syscall's value) so sysretq reports it.
+    /// # SAFETY: caller is the rt_sigreturn dispatch on cur's syscall
+    /// kstack; the syscall frame is the single restore target.
+    /// # C: O(1)
+    #[cfg(target_arch = "x86_64")]
+    pub unsafe fn rt_sigreturn_x86() -> i64 {
+        use syscall::errno::Errno;
+        // Handler entered with rsp = frame_addr (pretcode slot). `ret`
+        // popped pretcode (rsp += 8); the restorer issues `syscall`
+        // without touching rsp → user rsp at syscall = frame_addr + 8.
+        // SAFETY: per fn contract — frame tail live.
+        let uf = unsafe { &mut *hal_x86_64::current_user_frame() };
+        let frame_addr = uf[2].saturating_sub(8);
+        if frame_addr == 0 || frame_addr >= hal::USER_VA_END {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        // SAFETY: frame_addr validated < USER_VA_END; CPL=0 read through
+        // the active CR3; repr(C) matching deliver_x86's write.
+        let frame = unsafe { core::ptr::read_volatile(frame_addr as *const RtSigframeX86) };
+        // Read the FXSAVE image the handler may reference.
+        let fp_ptr = frame.uc.uc_mcontext.fpstate;
+        let mut fp = [0u8; 512];
+        if fp_ptr != 0 && fp_ptr < hal::USER_VA_END {
+            // SAFETY: fpstate ptr in-range; 512 B written by deliver_x86.
+            unsafe { core::ptr::copy_nonoverlapping(fp_ptr as *const u8, fp.as_mut_ptr(), 512); }
+        }
+        let r = restore_x86(&frame, &fp);
+
+        // Restore the FULL GP set into the syscall full frame so a Go
+        // asyncPreempt-style PC/SP edit takes effect and every other
+        // GPR is the interrupted thread's real value.
+        // SAFETY: per fn contract — full frame is the live 16-quad block.
+        let ff = unsafe { hal_x86_64::current_user_full_frame() };
+        // SAFETY: writes to the live syscall frame slots (see layout).
+        unsafe {
+            core::ptr::write(ff.add(1), r.regs.rdi);
+            core::ptr::write(ff.add(2), r.regs.rsi);
+            core::ptr::write(ff.add(3), r.regs.rdx);
+            core::ptr::write(ff.add(4), r.regs.r10);
+            core::ptr::write(ff.add(5), r.regs.r8);
+            core::ptr::write(ff.add(6), r.regs.r9);
+            core::ptr::write(ff.add(10), r.regs.rbx);
+            core::ptr::write(ff.add(11), r.regs.rbp);
+            core::ptr::write(ff.add(12), r.regs.r13);
+            core::ptr::write(ff.add(13), r.regs.r14);
+            core::ptr::write(ff.add(14), r.regs.r15);
+            core::ptr::write(ff.add(15), r.regs.r12);
+        }
+        // rip/rflags/rsp tail (drives sysretq).
+        uf[0] = r.regs.rip;
+        uf[1] = r.regs.eflags;
+        uf[2] = r.regs.rsp;
+
+        install_mask(r.sigmask);
+
+        // Reload FP live + mark dirty so resume keeps it.
+        if r.fp_addr != 0 {
+            if let Some(c) = sched::live::current() {
+                hal_x86_64::fpu_enable();
+                // SAFETY: running task; 512-B image copied into the
+                // 16-aligned fpu_state buffer then FXRSTOR'd; FPU enabled.
+                unsafe {
+                    let buf = (*c.fpu_state.get()).0.as_mut_ptr();
+                    core::ptr::copy_nonoverlapping(r.fpstate.as_ptr(), buf, 512);
+                    hal_x86_64::fpu_restore(buf as *const hal_x86_64::FpuStateX86_64);
+                }
+            }
+        }
+
+        #[cfg(feature = "debug-sched")]
+        {
+            klog::write_raw(b"[INFO]  sig: rt_sigreturn_x86 rip=");
+            klog::write_hex_u64(r.regs.rip);
+            klog::write_raw(b" rsp=");
+            klog::write_hex_u64(r.regs.rsp);
+            klog::write_raw(b" rax=");
+            klog::write_hex_u64(r.regs.rax);
+            klog::write_raw(b"\n");
+        }
+        r.regs.rax as i64
     }
-    // Restore the interrupted syscall's return value into user x0: the
-    // SVC restore seeds x0 from the dispatch's retval, so returning
-    // sf.x0 makes the original syscall report the value it produced
-    // instead of rt_sigreturn's 0 (mirror of the x86 rax restore).
-    sf.x0 as i64
+
+    // ---- aarch64 ----------------------------------------------------
+
+    /// Resolve the per-task SVC frame (race-free across schedule()).
+    /// # SAFETY: caller is the dispatch tail; returned ptr is the live
+    /// saved SVC frame.
+    /// # C: O(1)
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn svc_frame_ptr() -> *mut hal_aarch64::SvcFrame {
+        use core::sync::atomic::Ordering;
+        let per_task = sched::live::current()
+            .map(|c| c.svc_frame.load(Ordering::Acquire))
+            .unwrap_or(0);
+        if per_task != 0 {
+            per_task as *mut hal_aarch64::SvcFrame
+        } else {
+            hal_aarch64::current_svc_frame()
+        }
+    }
+
+    /// Reconstruct the full x0..x30 GP set from the SVC frame.
+    /// SvcFrame: gp[0..18]=x0..x17, x18_x29=[x18,x29], x30, x19_x28[10].
+    /// # SAFETY: `f` is the live saved SVC frame.
+    /// # C: O(1)
+    #[cfg(target_arch = "aarch64")]
+    fn regs_from_svc(f: &hal_aarch64::SvcFrame) -> GpRegsArm {
+        let mut regs = [0u64; 31];
+        regs[..18].copy_from_slice(&f.gp[..18]); // x0..x17
+        regs[18] = f.x18_x29[0];                 // x18
+        regs[19..29].copy_from_slice(&f.x19_x28[..10]); // x19..x28
+        regs[29] = f.x18_x29[1];                 // x29
+        regs[30] = f.x30;                        // x30
+        GpRegsArm { regs, sp: f.sp_el0, pc: f.elr_el1, pstate: f.spsr_el1 }
+    }
+
+    /// Read the live arm GP set from the interrupted frame source.
+    /// # SAFETY: caller is the dispatch/IRQ tail; the frame is live.
+    /// # C: O(1)
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn read_regs_arm(src: FrameSrc) -> GpRegsArm {
+        match src {
+            FrameSrc::Syscall => {
+                // SAFETY: caller is the dispatch tail; svc_frame_ptr()
+                // returns the live saved SVC frame for this task.
+                let f = unsafe { &*svc_frame_ptr() };
+                regs_from_svc(f)
+            }
+            FrameSrc::Irq => {
+                // SAFETY: per fn contract — IRQ frame live during dispatch.
+                let p = unsafe { hal_aarch64::current_irq_frame() };
+                // SAFETY: p is the live IrqFrameArm written at IRQ entry.
+                let i = unsafe { &*p };
+                let mut regs = [0u64; 31];
+                regs[..19].copy_from_slice(&i.x[..19]);   // x0..x18
+                regs[19..29].copy_from_slice(&i.x19_28[..10]); // x19..x28
+                regs[29] = i.x29;
+                regs[30] = i.x30;
+                GpRegsArm { regs, sp: i.sp_el0, pc: i.elr_el1, pstate: i.spsr_el1 }
+            }
+        }
+    }
+
+    /// Save the current task's live FP/SIMD into q/fpsr/fpcr.
+    /// # C: O(1)
+    #[cfg(target_arch = "aarch64")]
+    fn snapshot_fp_arm() -> ([[u8; 16]; 32], u32, u32) {
+        let mut q = [[0u8; 16]; 32];
+        let (mut fpsr, mut fpcr) = (0u32, 0u32);
+        if let Some(c) = sched::live::current() {
+            hal_aarch64::fpu_enable();
+            // SAFETY: running task; preempt-off; fpu_state slot single-
+            // mutator; FpuStateAArch64 layout matches ArchFpuBuf; FPEN
+            // set by fpu_enable above.
+            unsafe {
+                let buf = (*c.fpu_state.get()).0.as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64;
+                hal_aarch64::fpu_save(buf);
+                let s = &*buf;
+                q = s.q;
+                fpcr = s.fpcr;
+                fpsr = s.fpsr;
+            }
+        }
+        (q, fpsr, fpcr)
+    }
+
+    /// Build the full rt_sigframe and rewrite the saved SVC frame so
+    /// `eret` enters `handler`. The arch-neutral router returns `sig`
+    /// (the dispatcher propagates it as its u64 retval — the SVC
+    /// restore seeds x0 from the retval slot; docs/54§2.3).
+    /// # SAFETY: caller is the dispatch tail; SVC frame live; user
+    /// writes target the active TTBR0.
+    /// # C: O(1)
+    #[cfg(target_arch = "aarch64")]
+    pub unsafe fn deliver_arm(
+        src: FrameSrc,
+        handler: u64,
+        restorer: u64,
+        sig: u32,
+        sa_flags: u64,
+        sa_mask: u64,
+        saved_ret: u64,
+        info_rec: Option<&SigInfo>,
+    ) {
+        // SAFETY: caller is the dispatch tail; the arm syscall/IRQ
+        // frame selected by `src` is live on this CPU's kernel stack.
+        let mut regs = unsafe { read_regs_arm(src) };
+        // Syscall source: x0 in the SVC frame still holds the user's
+        // first syscall arg, not the retval. Restore the syscall RETVAL
+        // into x0 (mirror of the x86 rax fix above).
+        if src == FrameSrc::Syscall { regs.regs[0] = saved_ret; }
+        let (q, fpsr, fpcr) = snapshot_fp_arm();
+        let p = build_params(sig, handler, restorer, sa_flags, sa_mask, info_rec);
+        let b = build_arm(&regs, &p, &q, fpsr, fpcr);
+
+        // SAFETY: frame_addr is a user VA below the interrupted sp
+        // (build_arm's align math); CPL=EL1 write through TTBR0;
+        // demand-fault resolves not-present pages; repr(C) match.
+        unsafe { core::ptr::write_volatile(b.frame_addr as *mut RtSigframeArm, b.frame); }
+
+        install_mask(b.new_sigmask);
+        maybe_resethand(sig, sa_flags);
+
+        // SAFETY: per fn contract — live SVC frame, sole writer.
+        let f = unsafe { &mut *svc_frame_ptr() };
+        f.elr_el1 = handler;
+        f.sp_el0 = b.new_sp;
+        f.x30 = b.arg_x30;       // lr → handler `ret` lands at restorer
+        f.gp[0] = b.arg_x0;      // x0 = sig (also seeded via retval)
+        f.gp[1] = b.arg_x1;      // x1 = &info (SA_SIGINFO) else 0
+        f.gp[2] = b.arg_x2;      // x2 = &uc  (SA_SIGINFO) else 0
+
+        #[cfg(feature = "debug-sched")]
+        {
+            klog::write_raw(b"[INFO]  sig: deliver_arm sig=");
+            klog::write_dec_u64(sig as u64);
+            klog::write_raw(b" handler=");
+            klog::write_hex_u64(handler);
+            klog::write_raw(b" new_sp=");
+            klog::write_hex_u64(b.new_sp);
+            klog::write_raw(b"\n");
+        }
+    }
+
+    /// `sys_rt_sigreturn` body for aarch64. Mirrors rt_sigreturn_x86 —
+    /// restores the FULL mcontext + FP + sigmask from the on-stack
+    /// (possibly edited) ucontext into the SVC frame.
+    /// # SAFETY: caller is the rt_sigreturn dispatch on cur's syscall
+    /// kstack; SVC frame is the single restore target.
+    /// # C: O(1)
+    #[cfg(target_arch = "aarch64")]
+    pub unsafe fn rt_sigreturn_arm() -> i64 {
+        use syscall::errno::Errno;
+        // SAFETY: per fn contract — live SVC frame.
+        let f = unsafe { &mut *svc_frame_ptr() };
+        // ARM `ret` = `br lr` (no pop); handler restored sp to new_sp
+        // before `ret`; the restorer's `svc` fires with sp unchanged →
+        // frame_addr == sp_el0.
+        let frame_addr = f.sp_el0;
+        if frame_addr == 0 || frame_addr >= hal::USER_VA_END {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        // SAFETY: frame_addr validated < USER_VA_END; CPL=EL1 read
+        // through TTBR0; repr(C) match with deliver_arm's write.
+        let frame = unsafe { core::ptr::read_volatile(frame_addr as *const RtSigframeArm) };
+        let r = restore_arm(&frame);
+
+        // Restore the full x0..x30 + sp + pc + pstate into the SVC frame.
+        f.gp[..18].copy_from_slice(&r.regs.regs[..18]); // x0..x17
+        f.x18_x29[0] = r.regs.regs[18];                 // x18
+        f.x19_x28[..10].copy_from_slice(&r.regs.regs[19..29]); // x19..x28
+        f.x18_x29[1] = r.regs.regs[29];                 // x29
+        f.x30 = r.regs.regs[30];                        // x30
+        f.sp_el0 = r.regs.sp;
+        f.elr_el1 = r.regs.pc;
+        f.spsr_el1 = r.regs.pstate;
+
+        install_mask(r.sigmask);
+
+        // Reload FP live if a valid fpsimd_context was present.
+        if r.fp_valid {
+            if let Some(c) = sched::live::current() {
+                hal_aarch64::fpu_enable();
+                // SAFETY: running task; image copied into the 16-aligned
+                // fpu_state buffer then restored via the FP load asm.
+                unsafe {
+                    let buf = (*c.fpu_state.get()).0.as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64;
+                    (*buf).q = r.fp_q;
+                    (*buf).fpsr = r.fpsr;
+                    (*buf).fpcr = r.fpcr;
+                    hal_aarch64::fpu_restore(buf as *const hal_aarch64::FpuStateAArch64);
+                }
+            }
+        }
+
+        #[cfg(feature = "debug-sched")]
+        {
+            klog::write_raw(b"[INFO]  sig: rt_sigreturn_arm pc=");
+            klog::write_hex_u64(r.regs.pc);
+            klog::write_raw(b" sp=");
+            klog::write_hex_u64(r.regs.sp);
+            klog::write_raw(b" x0=");
+            klog::write_hex_u64(r.regs.regs[0]);
+            klog::write_raw(b"\n");
+        }
+        // The SVC restore seeds user x0 from the dispatch retval; return
+        // x0 so the interrupted syscall reports the value it produced.
+        r.regs.regs[0] as i64
+    }
+
+    // ---- arch-neutral routers --------------------------------------
+
+    /// Deliver a signal built from the SYSCALL frame source (the
+    /// normal syscall-return-tail path). Returns the dispatcher retval
+    /// (sig on arm so the SVC restore seeds x0; 0 on x86).
+    /// # SAFETY: caller is the syscall dispatch tail; per-arch saved
+    /// frame is live; active CR3/TTBR0 is the task's user AS.
+    /// # C: O(1)
+    #[inline]
+    pub unsafe fn deliver(
+        handler: u64,
+        restorer: u64,
+        sig: u32,
+        sa_flags: u64,
+        sa_mask: u64,
+        saved_ret: u64,
+        info_rec: Option<&SigInfo>,
+    ) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: defers to deliver_x86; preconditions = caller's.
+            unsafe { deliver_x86(FrameSrc::Syscall, handler, restorer, sig, sa_flags, sa_mask, saved_ret, info_rec); }
+            0
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: defers to deliver_arm; preconditions = caller's.
+            unsafe { deliver_arm(FrameSrc::Syscall, handler, restorer, sig, sa_flags, sa_mask, saved_ret, info_rec); }
+            sig as u64
+        }
+    }
+
+    /// `sys_rt_sigreturn` arch-neutral entry.
+    /// # SAFETY: caller is the rt_sigreturn dispatch; per-arch saved
+    /// frame is live.
+    /// # C: O(1)
+    #[inline]
+    pub unsafe fn rt_sigreturn() -> i64 {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: per fn contract; defers to rt_sigreturn_x86.
+        unsafe { return rt_sigreturn_x86(); }
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: per fn contract; defers to rt_sigreturn_arm.
+        unsafe { return rt_sigreturn_arm(); }
+    }
 }
+
+#[cfg(target_os = "oxide-kernel")]
+pub use imp::{deliver, rt_sigreturn};
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub use imp::{deliver_x86, rt_sigreturn_x86};
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub use imp::{deliver_arm, rt_sigreturn_arm};
