@@ -143,8 +143,14 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
 /// # C: O(1)
 pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
+    // TFD_TIMER_ABSTIME (bit 0): it_value is an ABSOLUTE deadline on the fd's
+    // clock, not a relative offset. The Go runtime netpoller arms its timerfd
+    // this way; treating it as relative (now + value) pushes expiry decades out
+    // so it never fires → epoll never wakes → every Go program deadlocks.
+    const TFD_TIMER_ABSTIME: u64 = 1;
     let fd = args.a0 as i32;
-    let _flags = args.a1;
+    let flags = args.a1;
+    let abstime = (flags & TFD_TIMER_ABSTIME) != 0;
     let new = args.a2;
     let old = args.a3;
     let cur = match sched::current() {
@@ -187,7 +193,16 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
         let interval = is.saturating_mul(1_000_000_000).saturating_add(ins);
         let value    = vs.saturating_mul(1_000_000_000).saturating_add(vns);
         inode.interval_ns.store(interval, Ordering::Release);
-        inode.expiry_ns.store(if value == 0 { 0 } else { now.saturating_add(value) }, Ordering::Release);
+        // ABSTIME: `value` is already an absolute deadline on the clock; store
+        // it directly. Relative: deadline = now + value. Disarm on value==0.
+        let expiry = if value == 0 {
+            0
+        } else if abstime {
+            value
+        } else {
+            now.saturating_add(value)
+        };
+        inode.expiry_ns.store(expiry, Ordering::Release);
     }
     0
 }

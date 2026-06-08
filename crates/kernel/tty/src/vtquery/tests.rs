@@ -147,3 +147,53 @@ fn semicolon_omitted_row_defaults() {
     assert_eq!(st.cursor_row, 1);
     assert_eq!(st.cursor_col, 5);
 }
+
+#[test]
+fn osc11_bg_query_bel_terminated() {
+    let mut st = TermState::new();
+    // ESC]11;? BEL  → background-color query, BEL-terminated
+    let reply = feed(&mut st, &[ESC, b']', b'1', b'1', b';', b'?', 0x07]);
+    assert_eq!(reply, b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+}
+
+#[test]
+fn osc11_bg_query_st_terminated() {
+    let mut st = TermState::new();
+    // ESC]11;? ESC\  → ST-terminated form
+    let reply = feed(&mut st, &[ESC, b']', b'1', b'1', b';', b'?', ESC, b'\\']);
+    assert_eq!(reply, b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+}
+
+#[test]
+fn osc10_fg_query() {
+    let mut st = TermState::new();
+    let reply = feed(&mut st, &[ESC, b']', b'1', b'0', b';', b'?', 0x07]);
+    assert_eq!(reply, b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\");
+}
+
+#[test]
+fn osc_title_set_no_reply() {
+    let mut st = TermState::new();
+    // ESC]0;sometitle BEL  → window-title set, not a query → no reply
+    let reply = feed(&mut st, b"\x1b]0;mytitle\x07");
+    assert!(reply.is_empty());
+}
+
+#[test]
+fn osc_then_cursor_query_both_answered() {
+    let mut st = TermState::new();
+    // bg query (OSC) followed by CPR (CSI) — both must be answered
+    let reply = feed(&mut st, &[ESC, b']', b'1', b'1', b';', b'?', 0x07, ESC, b'[', b'6', b'n']);
+    assert_eq!(reply, b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[1;1R");
+    assert_eq!((st.cursor_row, st.cursor_col), (1, 1));
+}
+
+#[test]
+fn osc_query_then_dsr_no_osc_terminator() {
+    // termenv pattern: bg query immediately followed by DSR as the
+    // fail-fast terminator, with NO BEL/ST on the OSC:  ESC]11;? ESC[6n
+    // Both must be answered (OSC reply, then CPR).
+    let mut st = TermState::new();
+    let reply = feed(&mut st, &[ESC, b']', b'1', b'1', b';', b'?', ESC, b'[', b'6', b'n']);
+    assert_eq!(reply, b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[1;1R");
+}
