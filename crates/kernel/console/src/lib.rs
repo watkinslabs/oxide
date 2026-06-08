@@ -72,6 +72,25 @@ impl Inode for ConsoleInode {
     /// "password came through as the username" symptom on B18).
     fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
+        // VMIN/VTIME (non-canonical timing, termios c_cc). VMIN==0 &&
+        // VTIME==0 is the polling mode crossterm/raw-mode TUIs request:
+        // return immediately with whatever is ready (0 allowed). VMIN>0
+        // (and the cooked-mode default VMIN==1) keep the blocking
+        // semantics PAM/agetty rely on. VMIN==0 && VTIME>0 (read-timeout)
+        // would need a timed sleep the read path can't express here —
+        // deferred; it falls through to blocking, which is safe (the DSR
+        // responder is what actually un-hangs the TUIs).
+        let (vmin, vtime) = tty::live::vmin_vtime(self.vt);
+        if vmin == 0 && vtime == 0 {
+            let mut n: usize = 0;
+            while n < buf.len() {
+                match tty::live::try_read_vt(self.vt) {
+                    Some(b) => { buf[n] = b; n += 1; }
+                    None    => break,
+                }
+            }
+            return Ok(n);
+        }
         // Block until at least one byte is available.
         let first = loop {
             if let Some(b) = tty::live::try_read_vt(self.vt) { break b; }
@@ -144,6 +163,13 @@ impl Inode for ConsoleInode {
     /// tracking which v1 doesn't keep.
     fn write(&self, _off: u64, buf: &[u8]) -> KResult<usize> {
         dtrace!(b"CW_IN", buf.len() as u64);
+        // Output-side terminal state machine: track the cursor and
+        // answer DSR/DA query escapes (ESC[6n, ESC[5n, ESC[c) by
+        // injecting the reply into this VT's input ring. Without this
+        // crossterm/tcell/bubbletea TUIs block forever on the CPR read
+        // at startup. Processes the raw buf; the ONLCR UART emit below
+        // is unchanged.
+        tty::vtquery::process_output(self.vt, buf);
         let oflag = tty::live::output_oflag(self.vt);
         dtrace!(b"CW_OFL", oflag as u64);
         let post = (oflag & tty::pty::oflag::OPOST) != 0;
