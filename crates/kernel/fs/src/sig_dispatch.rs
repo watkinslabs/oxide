@@ -208,24 +208,44 @@ mod imp {
         install_mask(b.new_sigmask);
         maybe_resethand(sig, sa_flags);
 
-        // Rewrite the saved (rip, rflags, rsp) tail.
-        // SAFETY: per fn contract — frame slot at top-0x48..top-0x30.
-        let uf = unsafe { &mut *hal_x86_64::current_user_frame() };
-        uf[0] = handler;
-        uf[1] = regs.eflags;
-        uf[2] = b.new_rsp;
+        match src {
+            FrameSrc::Syscall => {
+                // Rewrite the saved (rip, rflags, rsp) tail.
+                // SAFETY: per fn contract — frame slot at top-0x48..top-0x30.
+                let uf = unsafe { &mut *hal_x86_64::current_user_frame() };
+                uf[0] = handler;
+                uf[1] = regs.eflags;
+                uf[2] = b.new_rsp;
 
-        // Inject handler args into the saved-arg slots so the restore
-        // block's `mov rdi/rsi/rdx, [rsp+...]` loads them. After B04's
-        // 16-quad frame: rdi@top-0x78, rsi@top-0x70, rdx@top-0x68.
-        let top = hal_x86_64::current_kstack_top();
-        if top != 0 {
-            // SAFETY: writing the saved-arg slots the syscall asm
-            // restore block reloads into user rdi/rsi/rdx before sysretq.
-            unsafe {
-                core::ptr::write_volatile((top - 0x78) as *mut u64, b.arg_rdi);
-                core::ptr::write_volatile((top - 0x70) as *mut u64, b.arg_rsi);
-                core::ptr::write_volatile((top - 0x68) as *mut u64, b.arg_rdx);
+                // Inject handler args into the saved-arg slots so the
+                // restore block's `mov rdi/rsi/rdx, [rsp+...]` loads them.
+                // After B04's 16-quad frame: rdi@top-0x78, rsi@top-0x70,
+                // rdx@top-0x68.
+                let top = hal_x86_64::current_kstack_top();
+                if top != 0 {
+                    // SAFETY: writing the saved-arg slots the syscall asm
+                    // restore block reloads into user rdi/rsi/rdx before sysretq.
+                    unsafe {
+                        core::ptr::write_volatile((top - 0x78) as *mut u64, b.arg_rdi);
+                        core::ptr::write_volatile((top - 0x70) as *mut u64, b.arg_rsi);
+                        core::ptr::write_volatile((top - 0x68) as *mut u64, b.arg_rdx);
+                    }
+                }
+            }
+            FrameSrc::Irq => {
+                // F412 Stage E: rewrite the IRQ frame IN PLACE. The IRQ
+                // epilogue (`oxide_irq_resume_user`) pops these GP slots
+                // then iretq's → lands the handler with correct args+SP.
+                // SAFETY: caller gated cs&3==3 (user frame); ptr live for
+                // the in-flight IRQ; sole writer in IRQ-off dispatch.
+                let f = unsafe { &mut *hal_x86_64::current_irq_frame() };
+                f.rip = handler;
+                f.rsp = b.new_rsp;
+                f.rdi = b.arg_rdi;        // sig
+                if (sa_flags & syscall::sigframe::sa::SA_SIGINFO) != 0 {
+                    f.rsi = b.arg_rsi;    // &siginfo
+                    f.rdx = b.arg_rdx;    // &ucontext
+                }
             }
         }
 
@@ -447,14 +467,32 @@ mod imp {
         install_mask(b.new_sigmask);
         maybe_resethand(sig, sa_flags);
 
-        // SAFETY: per fn contract — live SVC frame, sole writer.
-        let f = unsafe { &mut *svc_frame_ptr() };
-        f.elr_el1 = handler;
-        f.sp_el0 = b.new_sp;
-        f.x30 = b.arg_x30;       // lr → handler `ret` lands at restorer
-        f.gp[0] = b.arg_x0;      // x0 = sig (also seeded via retval)
-        f.gp[1] = b.arg_x1;      // x1 = &info (SA_SIGINFO) else 0
-        f.gp[2] = b.arg_x2;      // x2 = &uc  (SA_SIGINFO) else 0
+        match src {
+            FrameSrc::Syscall => {
+                // SAFETY: per fn contract — live SVC frame, sole writer.
+                let f = unsafe { &mut *svc_frame_ptr() };
+                f.elr_el1 = handler;
+                f.sp_el0 = b.new_sp;
+                f.x30 = b.arg_x30;       // lr → handler `ret` lands at restorer
+                f.gp[0] = b.arg_x0;      // x0 = sig (also seeded via retval)
+                f.gp[1] = b.arg_x1;      // x1 = &info (SA_SIGINFO) else 0
+                f.gp[2] = b.arg_x2;      // x2 = &uc  (SA_SIGINFO) else 0
+            }
+            FrameSrc::Irq => {
+                // F412 Stage E: rewrite the IRQ frame IN PLACE. The IRQ
+                // epilogue restores x0..x30 + sp_el0 + elr/spsr then erets
+                // → lands the handler with correct args + SP.
+                // SAFETY: caller gated spsr&0xf==0 (EL0t user frame); ptr
+                // live for the in-flight IRQ; sole writer in IRQ-off dispatch.
+                let f = unsafe { &mut *hal_aarch64::current_irq_frame() };
+                f.elr_el1 = handler;
+                f.sp_el0 = b.new_sp;
+                f.x30 = b.arg_x30;       // lr → handler `ret` lands at restorer
+                f.x[0] = b.arg_x0;       // x0 = sig
+                f.x[1] = b.arg_x1;       // x1 = &info (SA_SIGINFO) else 0
+                f.x[2] = b.arg_x2;       // x2 = &uc  (SA_SIGINFO) else 0
+            }
+        }
 
         #[cfg(feature = "debug-sched")]
         {
@@ -534,6 +572,116 @@ mod imp {
         r.regs.regs[0] as i64
     }
 
+    // ---- async IRQ-exit delivery (F412 Stage E) ---------------------
+
+    /// `kernel-internal` SIG_DFL / SIG_IGN sentinels (Linux sa_handler
+    /// convention). Async IRQ delivery only fires for a real handler;
+    /// SIG_DFL/SIG_IGN are LEFT pending so the syscall-return path runs
+    /// the default-action triage (terminate/core/ignore).
+    const SIG_DFL: u64 = 0;
+    const SIG_IGN: u64 = 1;
+
+    /// Pick the lowest deliverable pending signal that has a registered
+    /// user handler (not SIG_DFL / SIG_IGN). Clears the pending bit (or
+    /// pops one RT-queue record) on take, mirroring
+    /// `syscalls::signal::take_lowest_pending`. Signals whose
+    /// disposition is SIG_DFL/SIG_IGN are SKIPPED (left pending) — the
+    /// syscall-return tail owns their default action; async IRQ exit
+    /// only rewrites a frame to enter a real handler.
+    /// # C: O(deliverable bits)
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn take_async_handler_signal() -> Option<(u32, u64, u64, u64, u64, Option<SigInfo>)> {
+        use core::sync::atomic::Ordering;
+        let cur = sched::live::current()?;
+        let masked = cur.sigmask.load(Ordering::Acquire);
+        let mut remaining = cur.sigpending.load(Ordering::Acquire) & !masked;
+        while remaining != 0 {
+            let sig = remaining.trailing_zeros() + 1;
+            remaining &= remaining - 1; // clear lowest set bit for the scan
+            // SAFETY: running task on this CPU in IRQ-dispatch (preempt-off,
+            // single mutator of sigactions per `13§5`); idx sig-1 in 1..=64.
+            let h = unsafe { (&*cur.sigactions.get())[(sig - 1) as usize] };
+            if h.handler == SIG_DFL || h.handler == SIG_IGN {
+                continue; // leave pending for the syscall-return default path
+            }
+            // Commit the take: pop RT record / clear the bitmap bit.
+            let mut info = None;
+            if (33..=64).contains(&sig) {
+                let (rec, empty) = cur.rt_pop(sig);
+                info = rec;
+                if empty {
+                    cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+                }
+            } else {
+                cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
+            }
+            return Some((sig, h.handler, h.flags, h.restorer, h.mask, info));
+        }
+        None
+    }
+
+    /// F412 Stage E — async signal delivery on IRQ-return-to-user.
+    ///
+    /// Invoked from the per-arch IRQ dispatcher AFTER EOI + tick +
+    /// resched decision. GATE: only proceeds if the interrupted frame
+    /// was at USER level (x86 `cs & 3 == 3`; arm `spsr_el1 & 0xf == 0`
+    /// = EL0t). On a kernel-mode IRQ frame this is a NO-OP — rewriting
+    /// a kernel return frame to enter a user handler would corrupt the
+    /// kernel resume = instant crash.
+    ///
+    /// On a deliverable handler-signal, builds the rt_sigframe FROM the
+    /// IRQ frame (`FrameSrc::Irq`) and rewrites the IRQ frame IN PLACE
+    /// (rip/elr→handler, rsp/sp_el0→new_sp, arg regs→sig/&info/&uc) so
+    /// the IRQ epilogue eret/iretq's straight into the handler. Delivers
+    /// at most ONE signal per IRQ, to `current()` on the interrupted
+    /// frame (correct whether or not a ctx-switch was staged this tick).
+    ///
+    /// # SAFETY: caller is the IRQ dispatcher; the per-arch IRQ frame is
+    /// live (OXIDE_IRQ_FRAME{,_ARM} just stored); the interrupted USER
+    /// task holds no kernel lock, so the user-AS sigframe write is safe.
+    /// # C: O(1)
+    /// # Ctx: IRQ
+    pub unsafe fn try_deliver_async_irq() {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: caller is the IRQ dispatch tail; frame ptr live.
+            let p = unsafe { hal_x86_64::current_irq_frame() };
+            if p.is_null() { return; }
+            // SAFETY: p is the live IrqFrameX86 stored at IRQ entry.
+            let from_user = unsafe { (*p).cs & 3 } == 3;
+            if !from_user { return; } // kernel-mode IRQ: never deliver
+            if let Some((sig, handler, flags, restorer, mask, info)) =
+                take_async_handler_signal()
+            {
+                // saved_ret unused for FrameSrc::Irq (the IRQ frame
+                // already carries the genuine interrupted rax).
+                // SAFETY: USER frame (gated above); cur holds no kernel
+                // lock; deliver_x86 rewrites the IRQ frame + user sigstack.
+                unsafe {
+                    deliver_x86(FrameSrc::Irq, handler, restorer, sig, flags, mask, 0, info.as_ref());
+                }
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: caller is the IRQ dispatch tail; frame ptr live.
+            let p = unsafe { hal_aarch64::current_irq_frame() };
+            if p.is_null() { return; }
+            // SAFETY: p is the live IrqFrameArm stored at IRQ entry.
+            let from_user = unsafe { (*p).spsr_el1 & 0xf } == 0; // EL0t
+            if !from_user { return; }
+            if let Some((sig, handler, flags, restorer, mask, info)) =
+                take_async_handler_signal()
+            {
+                // SAFETY: USER frame (gated above); cur holds no kernel
+                // lock; deliver_arm rewrites the IRQ frame + user sigstack.
+                unsafe {
+                    deliver_arm(FrameSrc::Irq, handler, restorer, sig, flags, mask, 0, info.as_ref());
+                }
+            }
+        }
+    }
+
     // ---- arch-neutral routers --------------------------------------
 
     /// Deliver a signal built from the SYSCALL frame source (the
@@ -582,7 +730,7 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{deliver, rt_sigreturn};
+pub use imp::{deliver, rt_sigreturn, try_deliver_async_irq};
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 pub use imp::{deliver_x86, rt_sigreturn_x86};
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]

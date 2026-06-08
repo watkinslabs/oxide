@@ -35,6 +35,10 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
             if sig != 0 {
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
                 if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+                // F412 Stage G: nudge the target so a thread spinning in
+                // USER code (no syscall to ride) takes an IRQ exit and
+                // hits the async Stage-E delivery — Go's SIGURG path.
+                sched::live::nudge_task(&t);
             }
             0
         }
