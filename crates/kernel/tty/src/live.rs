@@ -146,6 +146,41 @@ fn vt_index(vt: u8) -> usize {
     n
 }
 
+/// Public wrapper over `vt_index` for sibling modules (`vtquery`)
+/// that mirror the per-VT array indexing. `vt == 0` → foreground.
+/// # C: O(1)
+pub fn vt_index_pub(vt: u8) -> usize { vt_index(vt) }
+
+/// Inject `bytes` into `vt`'s RX ringbuffer AND wake parked readers,
+/// so a blocked `ConsoleInode::read` unblocks. Used by `vtquery` to
+/// deliver synthesized query replies (DSR-CPR / DA1 / DSR-OK) the way
+/// a real terminal would feed them back on the input stream. Unlike
+/// `inject_for_smoke_vt`, this wakes — a TUI parked reading the reply
+/// must be scheduled, not left asleep.
+/// # C: O(N + W) — N bytes pushed, W readers woken
+pub fn inject_and_wake(vt: u8, bytes: &[u8]) {
+    let idx = vt_index(vt);
+    {
+        let mut g = VT_RINGS[idx].lock();
+        for &b in bytes {
+            if !g.push(b) { break; }
+        }
+    }
+    wake_waiters(idx);
+}
+
+/// Read this VT's c_cc[VMIN] / c_cc[VTIME] (bytes). Backs the
+/// `ConsoleInode::read` non-canonical timing decision. `vt == 0`
+/// resolves to foreground.
+/// # C: O(1)
+pub fn vmin_vtime(vt: u8) -> (u8, u8) {
+    let t = *VT_TERMIOS[vt_index(vt)].lock();
+    (
+        t[crate::pty::TERMIOS_OFF_CC + crate::pty::cc::VMIN],
+        t[crate::pty::TERMIOS_OFF_CC + crate::pty::cc::VTIME],
+    )
+}
+
 /// Push `b` through the foreground VT's line discipline. Called
 /// from each arch's timer-tick poller. The discipline consults the
 /// VT's per-fd termios image to decide:

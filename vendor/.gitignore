@@ -755,6 +755,8 @@ btop/btop-1.4.0.tar.gz
 # starship 1.21.1 — shell prompt. Rust, static-musl. /usr/bin/starship.
 !starship/
 !starship/build.sh
+!starship/starship-x86_64
+!starship/starship-aarch64
 starship/starship-1.21.1/
 starship/starship-1.21.1.tar.gz
 # dua-cli 2.30.1 — disk usage. Rust, static-musl. /usr/bin/dua.
@@ -767,16 +769,22 @@ dua/dua-cli-2.30.1.tar.gz
 # glow 2.0.0 — markdown renderer. Go, static. /usr/bin/glow.
 !glow/
 !glow/build.sh
+!glow/glow-x86_64
+!glow/glow-aarch64
 glow/glow-2.0.0/
 glow/glow-2.0.0.tar.gz
 # micro 2.0.14 — terminal editor. Go, static. /usr/bin/micro.
 !micro/
 !micro/build.sh
+!micro/micro-x86_64
+!micro/micro-aarch64
 micro/micro-2.0.14/
 micro/micro-2.0.14.tar.gz
 # duf 0.8.1 — df alternative. Go, static. /usr/bin/duf.
 !duf/
 !duf/build.sh
+!duf/duf-x86_64
+!duf/duf-aarch64
 duf/duf-0.8.1/
 duf/duf-0.8.1.tar.gz
 # gron 0.7.1 — JSON greppable. Go, static. /usr/bin/gron.
