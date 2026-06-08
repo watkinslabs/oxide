@@ -46,7 +46,7 @@ pub use timer_driver::spawn_timer_driver;
 pub use wait_list::WaitList;
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, send_signal_self,
-    wake_if_sleeping, freeze_task, unfreeze_task, Signum,
+    wake_if_sleeping, nudge_task, freeze_task, unfreeze_task, Signum,
 };
 pub use tick_deadline::tick_wake_expired;
 pub use zombies::{enqueue_zombie, has_zombies, park_for_wait4, park_zombie, peek_one, reap_one, reparent_children, signal_child_exit, unpark_self_from_wait4};
