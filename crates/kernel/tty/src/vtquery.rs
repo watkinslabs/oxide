@@ -36,15 +36,24 @@ enum Phase {
     Esc,
     /// Saw `ESC[`; accumulating CSI params until a final byte.
     Csi,
+    /// Saw `ESC]` (OSC); accumulating the string until BEL or ST (`ESC\`).
+    Osc,
+    /// Inside OSC, saw `ESC`; awaiting `\` (the ST terminator).
+    OscEsc,
 }
 
 /// Max numeric params we retain from a CSI sequence (`row;col` needs 2;
 /// keep 3 for headroom). Extra params past this are parsed but dropped.
 const MAX_PARAMS: usize = 3;
 
-/// Capacity of a single emitted reply. Longest reply is the CPR form
-/// `ESC[24;80R` (8 bytes); 16 leaves headroom for 3-digit coords.
-const REPLY_CAP: usize = 16;
+/// Capacity of a single emitted reply. Longest reply is the OSC color
+/// report `ESC]11;rgb:0000/0000/0000ESC\` (25 bytes); 32 leaves headroom.
+const REPLY_CAP: usize = 32;
+
+/// Max OSC string bytes we retain. We only match the short color QUERIES
+/// `10;?` / `11;?` (4 bytes); longer OSC (title sets, etc.) accumulate up
+/// to this then are dropped unmatched (they need no reply).
+const OSC_CAP: usize = 8;
 
 /// A fixed-size reply byte string built without alloc. `process_output`
 /// injects `as_bytes()` into the VT input ring.
@@ -104,6 +113,10 @@ pub struct TermState {
     seen: u8,
     /// CSI private marker `?` (e.g. `ESC[?6n`) — suppresses the reply.
     private: bool,
+    /// OSC string accumulator (e.g. `11;?`), filled in `Phase::Osc`.
+    osc_buf: [u8; OSC_CAP],
+    /// Bytes accumulated into `osc_buf`.
+    osc_len: usize,
 }
 
 impl TermState {
@@ -118,6 +131,8 @@ impl TermState {
             cur: 0,
             seen: 0,
             private: false,
+            osc_buf: [0; OSC_CAP],
+            osc_len: 0,
         }
     }
 
@@ -151,6 +166,25 @@ impl TermState {
             Phase::Normal => { self.step_normal(b); None }
             Phase::Esc => { self.step_esc(b); None }
             Phase::Csi => self.step_csi(b),
+            Phase::Osc => self.step_osc(b),
+            Phase::OscEsc => {
+                if b == b'\\' {
+                    // ST terminator (`ESC\`) — OSC complete.
+                    self.phase = Phase::Normal;
+                    self.finish_osc()
+                } else {
+                    // The ESC was NOT an ST terminator — it begins a NEW
+                    // escape, implicitly ending the OSC. termenv emits
+                    // `ESC]11;? ESC[6n` exactly this way (DSR fallback right
+                    // after the color query with no OSC terminator). Answer
+                    // the OSC now, then re-enter escape handling for `b` so
+                    // the following CSI (`[6n`) is still parsed + answered.
+                    let osc_reply = self.finish_osc();
+                    self.phase = Phase::Esc;
+                    self.step_esc(b);
+                    osc_reply
+                }
+            }
         }
     }
 
@@ -175,6 +209,11 @@ impl TermState {
         if b == b'[' {
             self.reset_csi();
             self.phase = Phase::Csi;
+        } else if b == b']' {
+            // OSC introducer. termenv/bubbletea/duf query fg/bg color via
+            // `ESC]10;?`/`ESC]11;?` and BLOCK on the reply.
+            self.osc_len = 0;
+            self.phase = Phase::Osc;
         } else {
             // Two-byte / unsupported escapes (e.g. ESC c, ESC M) — drop
             // the intermediate and return to Normal. Good enough for
@@ -278,6 +317,45 @@ impl TermState {
             // no cursor change, no reply.
             _ => None,
         }
+    }
+
+    /// OSC body byte. Terminator is BEL (0x07) or ST (`ESC\`); otherwise
+    /// accumulate into `osc_buf` (truncating past `OSC_CAP`).
+    fn step_osc(&mut self, b: u8) -> Option<Reply> {
+        match b {
+            0x07 => { self.phase = Phase::Normal; self.finish_osc() }
+            0x1b => { self.phase = Phase::OscEsc; None }
+            _ => {
+                if self.osc_len < OSC_CAP { self.osc_buf[self.osc_len] = b; self.osc_len += 1; }
+                None
+            }
+        }
+    }
+
+    /// Answer the OSC fg/bg color QUERY (`10;?` / `11;?`) with a synthetic
+    /// color report so termenv/bubbletea/duf's blocking read returns.
+    /// Reply form: `ESC]<n>;rgb:RRRR/GGGG/BBBB ST`. We report a dark
+    /// background (→ HasDarkBackground=true, the common default) and a
+    /// light foreground. Unmatched OSC (title sets, etc.) get no reply.
+    /// # C: O(1)
+    fn finish_osc(&mut self) -> Option<Reply> {
+        let q = &self.osc_buf[..self.osc_len];
+        // (osc number, rgb color body)
+        let (num, rgb): (&[u8], &[u8]) = if q == b"11;?" {
+            (b"11", b"0000/0000/0000")   // background = black → dark
+        } else if q == b"10;?" {
+            (b"10", b"ffff/ffff/ffff")   // foreground = white
+        } else {
+            return None;
+        };
+        let mut r = Reply::new();
+        r.push(0x1b); r.push(b']');
+        for &c in num { r.push(c); }
+        r.push(b';');
+        for &c in b"rgb:" { r.push(c); }
+        for &c in rgb { r.push(c); }
+        r.push(0x1b); r.push(b'\\');     // ST terminator
+        Some(r)
     }
 }
 

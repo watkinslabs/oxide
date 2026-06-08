@@ -429,6 +429,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         // launching. glow/micro/duf still hang on SEPARATE gaps (tcell/bubbletea
         // init + /proc mounts for duf) — staged back as each is traced + fixed.
         ("starship", "starship", "/usr/bin/starship"),
+        // glow/micro/duf (Go) still hang at a deeper layer: main goroutine
+        // parks on futex + is never handed a CPU (Go M:N scheduler / futex-wake
+        // gap), even with the timerfd ABSTIME + epoll fixes. Re-staged once the
+        // Go-scheduler hang is closed.
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
