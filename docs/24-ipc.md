@@ -2,6 +2,56 @@
 
 FROZEN 2026-06-08. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`23`. Provides:`15` syscalls (signal, futex, pipe2, eventfd2, signalfd4, timerfd_create, AF_UNIX in `25`).
 
+## Revision 2026-06-08 (R03)
+
+- Implemented (F411 Stage C+D): the full builder + full-mcontext
+  restore. Replaces the minimal 40/56-byte ad-hoc frame everywhere.
+- Builder (`syscall::sigbuild::build_{x86,arm}`, pure/host-tested;
+  unsafe plumbing in `fs::sig_dispatch`): writes the real
+  `RtSigframe{X86,Arm}` (siginfo_t + ucontext + FP) on the user stack.
+  - **Frame source** (`FrameSrc::{Syscall,Irq}`): Syscall reads the GP
+    set from the 16-quad syscall full-frame (`current_user_full_frame`)
+    / SvcFrame; Irq reads from `current_irq_frame()` (Stage B). Both
+    populate the FULL mcontext. Syscall is wired through the
+    syscall-tail caller now; Irq is built + hosted-tested, consumed by
+    the timer-preempt path (Stage E).
+  - **GP→sigcontext map.** x86 syscall full-frame indices (base
+    top-0x80): 0 rax(nr) 1 rdi 2 rsi 3 rdx 4 r10 5 r8 6 r9 7 rcx(rip)
+    8 r11(rflags) 9 rsp 10 rbx 11 rbp 12 r13 13 r14 14 r15 15 r12 →
+    sigcontext r8..rip/eflags; sigcontext.rax = syscall RETVAL (not the
+    saved nr) so rt_sigreturn restores the interrupted syscall's value
+    (the `$(cmd)`-empty-capture fix). arm SvcFrame: gp[0..17]=x0..x17,
+    x18_x29=[x18,x29], x30, x19_x28=x19..x28, sp_el0/elr_el1/spsr_el1 →
+    sigcontext regs[0..30]/sp/pc/pstate; regs[0] = syscall RETVAL.
+  - **FP.** x86: `fpu_save` → 512-B FXSAVE copied into a 16-aligned
+    region below the frame; `uc_mcontext.fpstate` points at it. arm:
+    q0-q31/fpsr/fpcr → `fpsimd_context` (magic 0x46508001) at the head
+    of `__reserved`.
+  - **siginfo_t.** RT-queue record (if present) → its si_code +
+    pid/uid/value (SI_QUEUE carries sigval); else SI_USER pid/uid 0.
+    Synchronous SIGSEGV → SEGV_MAPERR + si_addr=cr2.
+  - **sa_flags honored.** SA_SIGINFO → 3-arg handler (x86 rsi=&info,
+    rdx=&uc via the saved-arg slots; arm x1=&info, x2=&uc). SA_ONSTACK
+    + alt-stack enabled → frame carved on the alt stack. SA_NODEFER →
+    no self-mask (default masks `sa_mask | signo`). SA_RESETHAND →
+    sigaction reset to SIG_DFL after build.
+  - Invariants kept (docs/54§3): frame at/above handler SP; x86 red-
+    zone skip + rsp%16==8; arm sp%16==0; restorer = handler ret target.
+- Restore (`restore_{x86,arm}` + `rt_sigreturn_{x86,arm}`): reads the
+  on-stack ucontext (which the handler MAY have edited — Go's
+  asyncPreempt rewrites uc_mcontext.PC/SP) and restores the FULL GP set
+  + PC/SP/flags + FP + sigmask into the syscall frame (the single
+  restore target, since rt_sigreturn always rides a syscall). Reloads
+  FP from the frame's fpstate. Restores the saved syscall retval.
+- The synchronous-fault SIGSEGV path
+  (`mm-pmm::user_as::signal::try_deliver_sigsegv_via_handler_x86`) now
+  builds the SAME full RtSigframe (fault-frame GP source) so its
+  handler's rt_sigreturn restores correctly.
+- Test contract: hosted round-trip suite in `syscall::sigbuild` —
+  build then EDIT the on-stack ucontext PC/SP/callee-saved reg
+  (simulate Go) then restore, asserting the edit propagates and every
+  other GPR round-trips; both arches' layouts checked on the x86 host.
+
 ## Revision 2026-06-08 (R02)
 
 - Changed: replace the minimal 40-byte/128-byte ad-hoc signal frame

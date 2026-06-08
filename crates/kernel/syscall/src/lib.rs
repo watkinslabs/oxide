@@ -24,6 +24,7 @@ pub mod dispatch;
 pub mod errno;
 pub mod nrs;
 pub mod sigframe;
+pub mod sigbuild;
 pub mod userptr;
 
 pub use dispatch::{
