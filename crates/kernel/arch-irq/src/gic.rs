@@ -644,19 +644,6 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
                 core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
             }
         }
-        // F412 Stage E: async signal delivery on IRQ-return-to-user.
-        // MUST run BEFORE tick_pick_next — that may swap `current()` +
-        // TTBR0 to the NEXT task and resume IT via the asm tail (not
-        // through this IRQ frame). Here `current()` is still the
-        // interrupted task, TTBR0 is its AS, and the IRQ frame matches:
-        // we rewrite that frame in place so the task enters the handler
-        // whenever it next resumes (this eret if no switch, or its saved
-        // IRQ frame after a later context switch). Gated on EL0t inside
-        // the helper. The cross-thread SIGURG nudge (Stage G) sends an
-        // SGI that lands here on the target's CPU.
-        // SAFETY: dispatch context; OXIDE_IRQ_FRAME_ARM live + matches
-        // current(); interrupted user task holds no kernel lock.
-        unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked; per-CPU SCHED state is single-CPU at this point in v1.
         unsafe { sched::live::preempt::tick_pick_next(); }
     }
