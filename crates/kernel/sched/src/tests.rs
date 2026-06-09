@@ -744,6 +744,44 @@ fn preempt_enable_no_check_does_not_fire_hook() {
     assert!(crate::preempt::need_resched());
 }
 
+#[test]
+fn should_resched_only_when_requested_and_safe() {
+    // The single resched decision the return-to-user slow path consults
+    // (smp-arch.md Phase A): true iff a reschedule was requested AND
+    // preempt_count is zero. It is a pure read — never clears the flag.
+    crate::preempt::_test_reset();
+    assert!(!crate::preempt::should_resched(), "no request ⇒ false");
+    crate::preempt::set_need_resched();
+    assert!(crate::preempt::should_resched(), "requested + count 0 ⇒ true");
+    crate::preempt::preempt_disable();
+    assert!(!crate::preempt::should_resched(), "preempt-disabled ⇒ unsafe ⇒ false");
+    crate::preempt::preempt_enable_no_check();
+    assert!(crate::preempt::should_resched(), "re-enabled ⇒ true again");
+    // Pure read: the flag must survive the query.
+    assert!(crate::preempt::need_resched(), "should_resched must not clear the flag");
+    crate::preempt::_test_reset();
+}
+
+#[test]
+fn cfs_rotation_is_round_robin_for_equal_weight() {
+    // Simulates the schedule() cycle the engine-collapse must preserve:
+    // pick leftmost → charge a fixed slice to its vruntime (equal weight ⇒
+    // equal charge) → re-enqueue. Equal-weight tasks must rotate fairly.
+    let mut q = CfsRunqueue::new();
+    let tasks = [normal(1, 0, 1024), normal(2, 0, 1024), normal(3, 0, 1024)];
+    for t in tasks.iter() { q.enqueue(Arc::clone(t)); }
+    const SLICE: u64 = 1000;
+    let mut order = alloc::vec::Vec::new();
+    for _ in 0..9 {
+        let t = q.pick_leftmost().unwrap();
+        order.push(t.tid);
+        t.vruntime.fetch_add(SLICE, Ordering::AcqRel);
+        q.enqueue(t);
+    }
+    assert_eq!(order, alloc::vec![1u32, 2, 3, 1, 2, 3, 1, 2, 3],
+        "equal-weight tasks must round-robin in stable order");
+}
+
 // ---------------------------------------------------------------------------
 // procfs PID display: namespace vpid (vtgid), not internal tid (F351)
 // ---------------------------------------------------------------------------
