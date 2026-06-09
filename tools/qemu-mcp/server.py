@@ -255,16 +255,22 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
             # ran, so qemu_screen never captured the virtio-gpu fbcon scanout.
             # `img` is the GRUB ISO (-cdrom + -boot d); the rootfs is a
             # separate modern virtio-blk-pci drive (lockstep with aarch64).
-            rootfs = REPO_ROOT / "kernel/blobs/rootfs-x86_64.img"
             qemu_cmd = [
                 qemu_bin,
                 "-machine", "q35",
-                "-cpu", "Haswell-v4",
-                "-m", "1G",
+                "-cpu", "host",
+                "-enable-kvm",
+                "-m", "2G",
                 "-cdrom", str(img),
                 "-boot", "d",
-                "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
-                "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,disable-legacy=on",
+                # Disk-based rootfs (F405): root + home virtio-blk drives with
+                # the serials kmain's root-mount looks up (oxide-root/oxide-home).
+                # Was a single stale rootfs-x86_64.img/oxide-virt-blk-0 → the
+                # kmain.rs:512 "root disk serial=oxide-root not found" panic.
+                "-drive", f"if=none,id=root,format=raw,file={REPO_ROOT}/kernel/blobs/root-x86_64.img",
+                "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
+                "-drive", f"if=none,id=home,format=raw,file={REPO_ROOT}/kernel/blobs/home-x86_64.img",
+                "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
                 # Phase 8 prep: explicit modern virtio-net so the
                 # kernel sees device 0x1041 (not the QEMU-default
                 # transitional 0x1000) and can DHCP/ARP through
@@ -305,10 +311,15 @@ def qemu_start(arch: str, features: str = "debug-boot") -> str:
                 "-m", "2G",
                 "-bios", str(ovmf),
                 # Limine-free: `img` is the GRUB EFI-stub ISO. OVMF→GRUB→
-                # `linux` boots our arm64 Image; the ext4 rootfs is embedded
-                # in the kernel (include_bytes!), so no virtio-blk drive.
+                # `linux` boots our arm64 Image. Disk-based rootfs (F405):
+                # root + home virtio-blk with the serials kmain looks up
+                # (was "embedded in kernel" — stale pre-F405).
                 "-cdrom", str(img),
                 "-boot", "d",
+                "-drive", f"if=none,id=root,format=raw,file={REPO_ROOT}/kernel/blobs/root-aarch64.img",
+                "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
+                "-drive", f"if=none,id=home,format=raw,file={REPO_ROOT}/kernel/blobs/home-aarch64.img",
+                "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
                 # Phase 8 prep: explicit modern virtio-net (0x1041)
                 # symmetric with x86; aarch64 virt has no
                 # default-NIC so `-nic none` is unnecessary.
