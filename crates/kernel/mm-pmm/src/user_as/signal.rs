@@ -59,69 +59,45 @@ pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     }
     // SAFETY: frame_ptr is the live FaultFrame for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
     let frame = unsafe { &mut *frame_ptr };
-
-    // F411: build the FULL Linux rt_sigframe (siginfo + ucontext + FP)
-    // via the shared pure builder so rt_sigreturn (which now expects
-    // the full frame) restores it correctly. The fault frame is a
-    // distinct GP source (analogous to the IRQ source): reconstruct the
-    // interrupted GP set from the FaultGprs block + FaultFrame.
-    use syscall::sigbuild::{build_x86, BuildParams, GpRegsX86};
-    use syscall::sigframe::SigInfoUser;
-    let gp_ptr = hal_x86_64::current_fault_gprs();
-    let regs = if gp_ptr.is_null() {
-        GpRegsX86 {
-            rsp: frame.rsp, rip: frame.rip, eflags: frame.rflags,
-            cs: frame.cs as u16, ss: frame.ss as u16, ..Default::default()
-        }
-    } else {
-        // SAFETY: stub-built GPR block live on the kernel stack through this fault dispatch (the stub doesn't pop until after we return; we rewrite the frame and resume via iretq).
-        let g = unsafe { &*gp_ptr };
-        GpRegsX86 {
-            r8: g.r8, r9: g.r9, r10: g.r10, r11: g.r11,
-            r12: g.r12, r13: g.r13, r14: g.r14, r15: g.r15,
-            rdi: g.rdi, rsi: g.rsi, rbp: g.rbp, rbx: g.rbx,
-            rdx: g.rdx, rax: g.rax, rcx: g.rcx,
-            rsp: frame.rsp, rip: frame.rip, eflags: frame.rflags,
-            cs: frame.cs as u16, ss: frame.ss as u16, gs: 0, fs: 0,
-        }
-    };
-    use core::sync::atomic::Ordering;
-    let old_sigmask = cur.sigmask.load(Ordering::Acquire);
-    let p = BuildParams {
-        sig: 11, handler: sa.handler, restorer: sa.restorer,
-        sa_flags: sa.flags, sa_mask: sa.mask, old_sigmask,
-        info: SigInfoUser::fault(11, syscall::sigframe::si::SEGV_MAPERR, cr2),
-        alt_sp: cur.sigaltstack_sp.load(Ordering::Acquire),
-        alt_size: cur.sigaltstack_size.load(Ordering::Acquire),
-        alt_flags: cur.sigaltstack_flags.load(Ordering::Acquire) as i32,
-    };
-    let fp = [0u8; 512];
-    let b = build_x86(&regs, &p, &fp);
-    if b.frame_addr == 0 || b.frame_addr >= hal::USER_VA_END { return false; }
-    // SAFETY: fp_addr/frame_addr are user VAs below the faulting rsp (build_x86's red-zone+align math); CPL=0 writes through the active CR3; both regions are repr(C) matching rt_sigreturn's read.
+    // User stack layout (top → bottom):
+    //   [old_rsp - 0x10]  restorer    ← ret addr from handler
+    //   [old_rsp - 0x88]  ucontext stub (zeroed, 128 B)
+    //   [old_rsp - 0x108] siginfo_t   (128 B; si_signo/si_addr/si_code)
+    let new_sp = frame.rsp.saturating_sub(0x108);
+    if new_sp == 0 || new_sp >= hal::USER_VA_END { return false; }
+    let si  = new_sp;                   // siginfo at base
+    let uc  = new_sp + 0x80;            // ucontext above
+    let ret = new_sp + 0x100;           // restorer addr above ucontext
+    // SAFETY: user stack pages faulted in by user code; CPL=0 writes through active CR3.
     unsafe {
-        core::ptr::write_volatile(b.fp_addr as *mut [u8; 512], b.fpstate);
-        core::ptr::write_volatile(b.frame_addr as *mut syscall::sigframe::RtSigframeX86, b.frame);
-    }
-    cur.sigmask.store(b.new_sigmask, Ordering::Release);
-    if (sa.flags & syscall::sigframe::sa::SA_RESETHAND) != 0 {
-        // SAFETY: sigactions slot single-mutator per `13§5`; idx 10 = SIGSEGV.
-        unsafe { (*cur.sigactions.get())[10].handler = 0; }
+        core::ptr::write_volatile( si        as *mut i32, 11);
+        core::ptr::write_volatile((si +  4)  as *mut i32, 0);
+        core::ptr::write_volatile((si +  8)  as *mut i32, 1);    // SEGV_MAPERR
+        core::ptr::write_volatile((si + 16)  as *mut u64, cr2);
+        core::ptr::write_bytes((si + 24) as *mut u8, 0, 0x80 - 24);
+        core::ptr::write_bytes(uc as *mut u8, 0, 0x80);
+        core::ptr::write_volatile(ret as *mut u64, sa.restorer);
     }
     frame.rip    = sa.handler;
-    frame.rsp    = b.new_rsp;
+    frame.rsp    = ret;
     frame.rflags = 0x202;
-    // F158/F411: rewrite the saved-scratch slots that oxide_fault_common
-    // pops back into rdi/rsi/rdx before iretq → Linux ABI handler args
-    // (rdi=sig, rsi=&siginfo, rdx=&ucontext per SA_SIGINFO). Slots at
-    // frame_ptr -0x28 (rdi), -0x20 (rsi), -0x18 (rdx) per fault.rs B45.
+    // F158: rewrite the saved-scratch slots that oxide_fault_common
+    // pops back into rdi/rsi/rdx before iretq, so the user handler
+    // sees Linux ABI args:
+    //   rdi = sig num (11)
+    //   rsi = ptr to siginfo_t (only meaningful with SA_SIGINFO)
+    //   rdx = ptr to ucontext_t (only meaningful with SA_SIGINFO)
+    // Per fault.rs stack diagram (B45 layout — callee-saved pushes
+    // added), the slots are at frame_ptr - 0x28 (rdi), -0x20 (rsi),
+    // -0x18 (rdx).
     let frame_addr = frame_ptr as u64;
-    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x28/-0x20/-0x18 are within the per-task fault stack and only oxide_fault_common (after we return) reads them.
+    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x28/-0x20/-0x18 are within the per-task syscall/fault stack and only oxide_fault_common (which runs after we return) reads them.
     unsafe {
-        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, b.arg_rdi);
-        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, b.arg_rsi);
-        core::ptr::write_volatile((frame_addr - 0x18) as *mut u64, b.arg_rdx);
+        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, 11);
+        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, si);
+        core::ptr::write_volatile((frame_addr - 0x18) as *mut u64, uc);
     }
+    let _ = sa.flags;
     true
 }
 

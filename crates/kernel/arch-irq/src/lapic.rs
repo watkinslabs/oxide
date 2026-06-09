@@ -83,18 +83,12 @@ pub unsafe fn eoi() {
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
-    // Frame layout (F410 Stage B push order in `.macro oxide_irq_stub`):
-    //   `mov rdi,rsp` runs AFTER 9 scratch + 6 callee-saved pushes, so
-    //   frame[0..8] = r15 ... frame[40..48] = rbx, frame[48..120] =
-    //   r11..rax, frame[120..128] = vec, frame[128..136] = err. The vec
-    //   tag thus lives at +120 (was +72 pre-F410 before the 6 callee-
-    //   saved slots were added closest to rsp). Mirrors `IrqFrameX86`.
-    // Stash the frame pointer so `current_irq_frame()` can read the
-    // interrupted GP set (Stage C/E). Set every IRQ; nobody reads it yet.
-    hal_x86_64::OXIDE_IRQ_FRAME.store(frame as u64, Ordering::Release);
-    // SAFETY: caller is the per-vector IRQ asm stub which always pushes the same scaffold; offset 120 lies within the saved frame.
+    // Frame layout (push order in oxide_irq_vec_NN):
+    //   err(0) vec(8) r11..rax -- `mov rdi,rsp` happens AFTER the
+    //   9 reg pushes, so frame[0..8] = r11 ... frame[72..80] = vec.
+    // SAFETY: caller is the per-vector IRQ asm stub which always pushes the same scaffold; offset 72 lies within.
     let vec_tag = unsafe {
-        core::ptr::read_volatile(frame.add(120) as *const u64)
+        core::ptr::read_volatile(frame.add(72) as *const u64)
     } as u8;
 
     // EOI on every IRQ vector -- both timer and IPIs need it.
