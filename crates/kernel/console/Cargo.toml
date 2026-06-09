@@ -8,12 +8,14 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-klog    = { path = "../../shared/klog" }
-kmacros = { path = "../../shared/kmacros" }
-vfs     = { path = "../vfs" }
-tty     = { path = "../tty" }
-devfs   = { path = "../devfs" }
-sched   = { path = "../sched" }
+klog       = { path = "../../shared/klog" }
+kmacros    = { path = "../../shared/kmacros" }
+vfs        = { path = "../vfs" }
+tty        = { path = "../tty" }
+devfs      = { path = "../devfs" }
+sched      = { path = "../sched" }
+serialtty  = { path = "../serialtty" }
+drv-serial = { path = "../../drivers/drv-serial" }
 
 [features]
 debug-trace = ["kmacros/debug-trace"]

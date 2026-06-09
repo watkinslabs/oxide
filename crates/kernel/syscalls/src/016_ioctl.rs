@@ -157,7 +157,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 Some(pair) => pair.with_pair(|p| p.termios),
                 None       => {
                     let vt = (ino & 0xff) as u8;
-                    tty::live::termios_get(vt)
+                    // T7: the serial system console (vt=0 alias, ino<=1)
+                    // owns its termios on the new TtyStruct; numbered VTs
+                    // keep the per-VT image.
+                    if vt <= 1 { console::static_console::termios_get() }
+                    else       { tty::live::termios_get(vt) }
                 }
             };
             // SAFETY: arg validated 60-byte aligned; CPL=0 writes through caller's AS.
@@ -181,7 +185,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 pair.with_pair(|p| p.termios = buf);
             } else {
                 let vt = (ino & 0xff) as u8;
-                tty::live::termios_set(vt, &buf);
+                // T7: login ECHO-off + bash raw mode must reach the
+                // serial console's N_TTY ldisc, not a dead side table.
+                if vt <= 1 { console::static_console::termios_set(&buf); }
+                else       { tty::live::termios_set(vt, &buf); }
             }
             0
         }
@@ -212,14 +219,19 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                 }
             } else {
                 let vt = (ino & 0xff) as u8;
+                let is_console = vt <= 1;
                 if req == TIOCGPGRP {
-                    let pgid = tty::live::foreground_pgid(vt);
+                    let pgid = if is_console { console::static_console::foreground_pgid() }
+                               else          { tty::live::foreground_pgid(vt) };
                     // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
                     unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
                 } else {
                     // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
                     let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
-                    tty::live::set_foreground_pgid(vt, pgid);
+                    // T7: on the console, set the fg pgrp on the TtyStruct
+                    // (+ driver shadow) so ISIG (^C) targets the live fg.
+                    if is_console { console::static_console::set_foreground_pgid(pgid); }
+                    else          { tty::live::set_foreground_pgid(vt, pgid); }
                 }
             }
             0
@@ -255,19 +267,21 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             }
             let vt = (ino & 0xff) as u8;
             use core::sync::atomic::Ordering;
-            tty::live::set_session(vt, cur.sid.load(Ordering::Acquire));
-            // B18: mirror the PTY branch above — when a session
-            // leader acquires a VT as its controlling terminal,
-            // the foreground process group MUST be seeded with
-            // the leader's pgrp. Without this, tcgetpgrp(0) on
-            // the freshly-controlled VT returns 0, the shell's
-            // job-control logic decides it's running in the
-            // background, every read of stdin trips SIGTTIN,
-            // and the shell stops itself the moment login's
-            // post-fork_session execvp hands off. Symptom:
-            // console login passes PAM and immediately respawns
-            // getty — never reaches a usable shell prompt.
-            tty::live::set_foreground_pgid(vt, cur.pgid.load(Ordering::Acquire));
+            let sid  = cur.sid.load(Ordering::Acquire);
+            let pgid = cur.pgid.load(Ordering::Acquire);
+            // B18: when a session leader acquires its controlling
+            // terminal, the foreground process group MUST be seeded with
+            // the leader's pgrp. Without this, tcgetpgrp(0) returns 0, the
+            // shell decides it's a background job, every stdin read trips
+            // SIGTTIN, and the shell stops itself right after login's
+            // execvp — login passes PAM then respawns getty forever.
+            // T7: on the console, sid + fg pgrp live on the TtyStruct.
+            if vt <= 1 {
+                console::static_console::set_session_and_fg(sid, pgid);
+            } else {
+                tty::live::set_session(vt, sid);
+                tty::live::set_foreground_pgid(vt, pgid);
+            }
             0
         }
         TIOCGSID => {
@@ -282,7 +296,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             let sid: u32 = if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.session_pid)
             } else {
-                tty::live::session((ino & 0xff) as u8)
+                let vt = (ino & 0xff) as u8;
+                if vt <= 1 { console::static_console::session() }
+                else       { tty::live::session(vt) }
             };
             if sid == 0 { return -(Errno::Enotty.as_i32() as i64); }
             // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
@@ -302,7 +318,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             };
             use core::sync::atomic::Ordering;
             let my_sid = cur.sid.load(Ordering::Acquire);
-            if my_sid != 0 && tty::live::session(vt) == my_sid {
+            if vt <= 1 {
+                if my_sid != 0 && console::static_console::session() == my_sid {
+                    console::static_console::notty();
+                }
+            } else if my_sid != 0 && tty::live::session(vt) == my_sid {
                 tty::live::set_session(vt, 0);
             }
             0
