@@ -13,6 +13,9 @@ extern crate std;
 pub mod pty;
 pub use pty::{Pair, Ring, PTY_BUF_BYTES};
 
+pub mod ldisc;
+pub use ldisc::{LdiscOps, NTty, Sig, TtyDriverHooks};
+
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
