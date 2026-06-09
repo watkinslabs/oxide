@@ -1,67 +1,56 @@
-# Session hand-off — flaky-login ROOT CAUSE found + diagnostics landed (B75)
+# Session hand-off — flaky x86 login ROOT-CAUSED + FIXED; diag suite landed (B75)
 
-## Branch: B75-login-hang-diag (3 commits, pushing)
-Built the diagnostics the flaky login was missing, then USED them to
-find the root cause. PR open.
+## Branch B75-login-hang-diag → PR #1658 (pushed). Diagnostics + the fix.
 
-## ROOT CAUSE of the flaky login hang (confirmed via the new sysrq dump)
-Under **SMP=2**, ~25% of boots, **PID 1 (systemd/init) exits via
-`exit_group` (syscall 231) right after `keymap loaded: US QWERTY`**
-instead of spawning getty. With no init, nothing is runnable → the idle
-task loops forever → no `login:`. The captured dump showed:
-`PID 1  init  Z(ombie)  last-sysc nr#231 (exit_group)  nsysc=738`.
-NOT a page fault, NOT a kernel crash/panic, NOT a scheduler spin —
-PID-1 death, previously swallowed silently (Linux panics here).
-SMP=1 boots are reliable (verified login both arches). Next: find WHY
-systemd exits — almost certainly a racy syscall result fed to systemd
-early in boot under SMP=2 (the keymap-load timing is the lead).
+## THE FIX (dominant bug, verified)
+Flaky x86 SMP=2 login = **PID 1 (systemd/ld-musl) exited 127** because its
+stdout/stderr fds were EBADF. Cause: `run_as_task` (smoke/elf.rs) did `sti`
+*before* spawning PID 1; the spawn enqueues the task Runnable + sets
+need_resched BEFORE the caller installs the console fd table — a timer tick
+in that window ran PID 1 fd-less → `writev`=-9 (EBADF) → exit_group(127) →
+silent hang. 2-vCPU QEMU timing hit the window ~25%; SMP=1 ~never. arm was
+immune (keeps IRQs masked until its idle loop, after fd-setup).
+FIX (618ee718): move `sti` to AFTER the init spawn so PID 1 is fully formed
+before first schedule. **Verified: 18× SMP=2 boots, 0 INIT-DEATH** (was ~25%).
 
-## What landed (all built both arches, lint clean, 16 host tests pass)
-- ef73b4c1 feat(sched): liveness watchdog + serial-sysrq + per-task last-syscall
-  - sched::diag: watchdog_tick (pure host-tested stall SM; fires on a
-    Runnable spin >10s), dump_tasks (sysrq show-state table), note_switch,
-    Task::note_syscall. Serial sysrq via drv-serial RX prefilter:
-    `<NUL>t`=task dump, `<NUL>w`=summary. registry::try_snapshot (deadlock-safe).
-  - Emits gated under `debug-watchdog`, **default-ON in boot crates** so
-    every build is armed; silent on healthy boot (R06 zero-bytes holds).
-- b9916475 test(smoke): boot-smoke injects `<NUL>t,<NUL>w` on timeout via a
-  held-open stdin FIFO → every CI wedge self-reports a task dump.
-- f74f088a build(qemu): SSH hostfwd (tcp::2222) now behind OXIDE_QEMU_SSH_FWD
-  (default OFF) — removes the stale-qemu port-2222 collision; net smoke still runs.
-- + 060_exit.rs: PID 1 exit now triggers `diag::note_init_exit` →
-  loud `[INIT-DEATH] PID 1 exited code=N` + dump (so this failure is never
-  silent again). Confirmed it builds; fires at the exit_group call.
+## RESIDUAL (separate, rarer ~5% — under investigation at hand-off)
+1/18 boots: systemd STARTS (banner + "Applying preset policy") then HANGS —
+no exit, no fault, never reaches "Reached target"/login. Different from the
+127 bug (that was pre-banner). `/tmp/vf-wedge-1.log`. hunt4 (/tmp/hunt4.sh,
+25 rounds w/ boot-smoke sysrq-on-timeout) running to catch it WITH a task
+dump (what is systemd parked on?). Next: read /tmp/r2-*.log + /tmp/bs4-*.out.
 
-## HARD-FREEZE OBSERVABILITY (built + verified this session, PR #1658)
-The BSP-tick watchdog + sysrq go silent on a BSP-side hard freeze. Closed
-that blind spot:
-- sched::diag::percpu — per-CPU heartbeat each timer tick (both arches);
-  any still-ticking CPU scans the others, one-shot [CPU-STALL] names a
-  wedged CPU + its last task/syscall. arm APs tick → real cross-CPU
-  coverage; x86 APs still park (P4 gated) so no 2nd observer yet there.
-- sched::diag::nmi + hal-x86_64 vec-2 handler — NMI IPI (ICR delivery
-  0b100) lands through IF=0; handler prints [NMI-BT] rip/regs then
-  iretq-RESUMES. Auto-poked on stall; sysrq <NUL>b pokes all.
-- sysrq: <NUL>t tasks, <NUL>w summary, <NUL>c per-cpu heartbeats,
-  <NUL>b backtrace-all.
-- VERIFIED live (MCP SMP=1): healthy dump = init S epoll_pwt (vs wedge
-  init Z exit_group); self-NMI dumped rip/regs + resumed; boot healthy.
-REMAINING GAPS: x86 AP is a parked observer (wake it as a watchdog-only
-AP → x86 cross-CPU coverage); arm FIQ register-dump poke not wired
-(needs vbar 0x300/0x500 print+eret + Group-0 SGI; cross-CPU heartbeat is
-arm's visibility for now). Both documented in gic::install_diag_hooks.
+## DIAGNOSTICS SUITE (all built+verified this session, default-ON, R06-clean)
+- `[INIT-DEATH]` — PID 1 exit announced loudly + task dump (060_exit.rs).
+- Recent-syscall ring (sched::diag) — last 512 (tid,nr,ret); dumped on
+  INIT-DEATH. This is what revealed writev=-9. Recorded at dispatch return.
+- Liveness watchdog (Runnable spin >10s), per-task last-syscall.
+- Default-ON fault/oops printer both arches (was debug-irq-gated → silent
+  halt). any(debug-irq,debug-watchdog); zero bytes on healthy boot.
+- Per-CPU heartbeat + cross-CPU hard-lockup detector (works on arm: APs run;
+  x86 AP never starts so no 2nd observer there).
+- NMI backtrace (x86): send_nmi_ipi + vec-2 print+iretq handler; sysrq.
+- sysrq over serial: `<NUL>t` tasks `<NUL>w` summary `<NUL>c` per-cpu
+  `<NUL>b` backtrace-all. boot-smoke injects on timeout (held-open FIFO).
+- SSH hostfwd gated behind OXIDE_QEMU_SSH_FWD (default off; killed port-2222
+  collisions).
 
-## NOTE
-- Local `make smoke` couldn't run in this session (agent bash sandbox
-  kills background qemu); verified SMP=1 login via the qemu MCP instead.
-  Pushed with SKIP_SMOKE=1 — the SMP=2 flake is the pre-existing bug under
-  investigation, changes are additive diag + a host-tool flag.
-- `sched-anal.md` / `tty-anal.md` in the tree are STALE (pre-rebuild); ignore.
+## TEST RESULTS
+- arm SMP=2: 10/10 login (immune — real APs run, masked-IRQ spawn ordering).
+- x86 SMP=2 pre-fix: ~25% INIT-DEATH 127. post-fix: 0/18 (+ 1 residual hang).
 
-## Counters now: F=423, B=75, C=10, D=95.
+## KNOWN GAPS (documented, not bolt-on'd)
+- x86 cross-CPU observer: blocked — bring_up_aps_x86 returns 0 (AP never
+  starts; TRAMP_PA RAM-corruption bug + gated P4 sched). Out of phase.
+- arm FIQ register-dump poke: not wired (cross-CPU heartbeat covers arm).
+
+## ENV NOTE
+Agent bash sandbox kills background qemu unless dangerouslyDisableSandbox;
+multi-line heredocs get newline-collapsed → write scripts via Write tool,
+run as one line. SMP=2 verified via these /tmp/hunt*.sh loops; MCP is SMP=1.
+
+## Counters: F=423, B=75, C=10, D=95. Author Chris Watkins <chris@watkinslabs.com>.
 
 ## First task next session
-Reproduce the SMP=2 wedge (loop `make SMP=2 qemu-x86`, ~25%), read the
-`[INIT-DEATH]`/sysrq dump, then trace WHY systemd exit_groups — strace
-systemd's last syscalls before 231 under SMP=2 (suspect a racy return
-value). Counters: F=422, B=75, C=10, D=95.
+Read hunt4's captured residual dump (/tmp/r2-*.log) → identify what systemd
+is parked on after "Applying preset policy" (~5%). Then fix that, re-verify.
