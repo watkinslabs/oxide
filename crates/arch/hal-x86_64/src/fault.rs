@@ -463,7 +463,13 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
     // halt (handler returned false → unrecoverable).
     let handled = (current_handler())(f.vector, f.error, f.rip, cr2);
     if !handled {
-        debug_irq! {
+        // Default-ON oops: an unrecoverable fault must never halt the CPU
+        // silently (that reads as a mysterious freeze). Gated under
+        // debug-watchdog (default-on via the boot crates) OR debug-irq, so
+        // every build prints vec/rip/cr2/GPRs before halting — zero bytes
+        // on a healthy boot since this only runs when handled==false.
+        #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+        {
             klog::write_raw(b"[FAULT] vec=");
             klog::write_hex_u64(f.vector);
             klog::write_raw(b" (");
@@ -509,7 +515,7 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
                 klog::write_raw(b"\n");
             }
         }
-        #[cfg(not(feature = "debug-irq"))]
+        #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
         { let _ = (f, gprs_ptr); }
     }
     handled
