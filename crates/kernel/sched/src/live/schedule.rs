@@ -302,6 +302,7 @@ pub unsafe fn schedule() {
         super::zombies::enqueue_zombie(prev_arc_opt.take().expect("just set"));
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
+    crate::diag::note_switch();
 
     // Update the per-CPU TSS so future ring-3→ring-0 transitions
     // for the next kthread/user task land on its kernel stack.
@@ -401,6 +402,7 @@ pub unsafe fn schedule_from_irq() {
     unsafe { rq.current_ref() }.exec_start_ns.store(tnow, Ordering::Release);
     drop(prev_arc);
     IRQ_SW.fetch_add(1, Ordering::Relaxed);
+    crate::diag::note_switch();
 
     // Update TSS RSP0 for the new task so future ring-3 traps
     // land on its kernel stack.
