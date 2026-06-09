@@ -33,6 +33,11 @@ pub struct NTty {
     readq: VecDeque<u8>,
     out_col: u16,
     eof_pending: bool,
+    /// Set when the most recent `read` returned 0 because it consumed a
+    /// pending EOF (^D at line start), cleared whenever `read` returns
+    /// data or finds the queue genuinely empty. Lets the tty core (T4)
+    /// distinguish "EOF → return 0 to user" from "nothing ready → park".
+    eof_consumed: bool,
 }
 
 impl Default for NTty {
@@ -52,7 +57,16 @@ impl NTty {
             readq: VecDeque::new(),
             out_col: 0,
             eof_pending: false,
+            eof_consumed: false,
         }
+    }
+
+    /// True when the most recent `read` returned 0 specifically because it
+    /// consumed a pending EOF (vs the queue being empty). The tty core
+    /// returns 0 to the user on EOF but parks on empty.
+    /// # C: O(1)
+    pub fn eof_consumed(&self) -> bool {
+        self.eof_consumed
     }
 
     /// Build with a caller-supplied termios image (raw-mode ptys etc.).
@@ -348,6 +362,7 @@ impl LdiscOps for NTty {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> usize {
+        self.eof_consumed = false;
         if buf.is_empty() {
             return 0;
         }
@@ -359,6 +374,7 @@ impl LdiscOps for NTty {
                 // EOF: ^D at line start with nothing queued → 0.
                 if self.eof_pending {
                     self.eof_pending = false;
+                    self.eof_consumed = true;
                 }
                 return 0;
             }
