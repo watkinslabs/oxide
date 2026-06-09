@@ -117,6 +117,52 @@ fn switch_repaints_all_rows_via_con_switch() {
     assert_eq!(cw.putcs.len(), before);
 }
 
+// Models fbcon::kernel's per-VT routing: two VCs A (fg) + B (offscreen)
+// share ONE renderer; a write to the offscreen VT must update its Vc but
+// NOT touch the shared renderer, and switch_vt(B) must full-repaint B's
+// content onto the renderer. (The kernel module that does this is
+// cfg(oxide-kernel) and can't be host-compiled, so the routing invariant
+// is proven here against the same `render`/`switch` primitives it uses.)
+#[test]
+fn offscreen_write_does_not_blit_until_switch() {
+    let mut a = Vc::new(10, 3);
+    let mut b = Vc::new(10, 3);
+    let mut em_a = Emulator::new();
+    let mut em_b = Emulator::new();
+    let mut shared = RecordingConsw::default();
+    // fg = A: prime A onto the shared renderer.
+    switch(&mut a, &mut shared);
+    let after_a_switch = shared.putcs.len();
+
+    // Write to B (offscreen): update B's Vc only; the renderer is the
+    // foreground (A) surface, so we must NOT render B into it.
+    em_b.feed_bytes(&mut b, b"FROM_B");
+    // (no render(&mut b, &mut shared) — B is not fg)
+    assert_eq!(
+        shared.putcs.len(),
+        after_a_switch,
+        "offscreen write leaked a blit to the shared renderer"
+    );
+
+    // Meanwhile A keeps blitting on fg writes.
+    em_a.feed_bytes(&mut a, b"a");
+    render(&mut a, &mut shared);
+    assert!(shared.putcs.len() > after_a_switch, "fg write must blit");
+    let after_a_write = shared.putcs.len();
+
+    // switch_vt(B): full repaint of B's content onto the shared renderer
+    // (RecordingConsw::con_switch records the paint as a switch_call).
+    switch(&mut b, &mut shared);
+    assert_eq!(shared.switch_calls, 2, "second switch (to B) must paint");
+    let _ = after_a_write;
+    // B's first row holds "FROM_B" — the content brought to fg.
+    assert_eq!(&b.row_string(0)[..6], "FROM_B");
+    // After the switch, B's dirty marks are cleared (no stale repaint).
+    let before = shared.putcs.len();
+    render(&mut b, &mut shared);
+    assert_eq!(shared.putcs.len(), before, "switch must clear B's dirty");
+}
+
 #[test]
 fn default_con_switch_putcs_every_row() {
     // A renderer that doesn't override con_switch falls back to per-row
