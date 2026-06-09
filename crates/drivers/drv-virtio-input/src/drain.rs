@@ -45,6 +45,45 @@ const KEY_RIGHTALT:    u16 = 100;     // a.k.a. AltGr
 const KEY_LEFTMETA:    u16 = 125;     // Super / Win
 const KEY_RIGHTMETA:   u16 = 126;
 
+/// Linux KEY_F1 (first VT-switch key). F1..F12 = 59..=88 (non-contiguous
+/// after F10); only F1..F12's leading run is contiguous 59..=70.
+const KEY_F1:          u16 = 59;
+/// Highest VT-switch key we map (Ctrl-Alt-F12 → VT 12).
+const KEY_F12:         u16 = 88;
+
+/// If `keycode` is a function key while Ctrl+Alt are held, switch the
+/// foreground VT to F<n> (Linux Ctrl-Alt-F<n>) and return `true` so the
+/// key is not translated to a byte. F1..F10 = 59..=68, F11=87, F12=88.
+/// Routes both the fb console (`fbcon::kernel::switch_vt`) and the input
+/// RX path (`tty::live::set_foreground`) to the target VT.
+/// # C: O(cols*rows) on switch (full repaint), else O(1).
+fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
+    if !pressed {
+        // Swallow the F-key RELEASE too when Ctrl-Alt are (still) held,
+        // so a chord release doesn't leak a byte.
+        return is_fkey(keycode) && keymap::mods().contains(Mods::CTRL | Mods::ALT);
+    }
+    let m = keymap::mods();
+    if !m.contains(Mods::CTRL) || !m.contains(Mods::ALT) {
+        return false;
+    }
+    let vt = match keycode {
+        KEY_F1..=68 => (keycode - KEY_F1 + 1) as u8, // F1..F10 → VT 1..10
+        87 => 11u8,                                   // F11 → VT 11
+        KEY_F12 => 12u8,                              // F12 → VT 12
+        _ => return false,
+    };
+    tty::live::set_foreground(vt);
+    fbcon::kernel::switch_vt(vt);
+    true
+}
+
+/// Is `keycode` one of the F1..F12 keys we treat as a VT-switch trigger?
+/// # C: O(1).
+fn is_fkey(keycode: u16) -> bool {
+    matches!(keycode, KEY_F1..=68 | 87 | KEY_F12)
+}
+
 /// Update the keymap modifier state for `keycode`. Returns `true`
 /// iff the keycode was a modifier and should not be translated as
 /// a printable key.
@@ -220,7 +259,11 @@ fn drain_one(ctx: &mut QueueCtx) {
             let pressed = evt.value == 1 || evt.value == 2;
             // Modifier keys feed the keymap state machine and never
             // produce input bytes themselves.
-            if !handle_modifier(evt.code, pressed) && pressed {
+            if handle_modifier(evt.code, pressed) {
+                // consumed by the modifier state machine
+            } else if handle_vt_switch(evt.code, pressed) {
+                // Ctrl-Alt-F<n>: switched the foreground VT, no byte.
+            } else if pressed {
                 let out = keymap::translate(evt.code);
                 out.for_each(|b| {
                     tty::live::input_push_byte(b);
