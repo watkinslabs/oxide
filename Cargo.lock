@@ -120,9 +120,12 @@ name = "console"
 version = "0.1.0"
 dependencies = [
  "devfs",
+ "drv-serial",
+ "fbcon",
  "klog",
  "kmacros",
  "sched",
+ "serialtty",
  "tty",
  "vfs",
 ]
@@ -215,10 +218,12 @@ name = "drv-virtio-blk"
 version = "0.1.0"
 dependencies = [
  "block",
+ "hal",
  "hal-aarch64",
  "hal-x86_64",
  "klog",
  "pmm",
+ "sched",
  "sync",
  "virtio",
 ]
@@ -245,6 +250,7 @@ version = "0.1.0"
 dependencies = [
  "devfs",
  "drv",
+ "fbcon",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -343,6 +349,7 @@ dependencies = [
  "klog",
  "softirq",
  "sync",
+ "vtdata",
 ]
 
 [[package]]
@@ -569,6 +576,7 @@ dependencies = [
  "drm",
  "drv",
  "drv-serial",
+ "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
@@ -1054,6 +1062,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serialtty"
+version = "0.1.0"
+dependencies = [
+ "drv-serial",
+ "fbcon",
+ "proptest",
+ "tty",
+]
+
+[[package]]
 name = "slab"
 version = "0.1.0"
 dependencies = [
@@ -1224,9 +1242,20 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "klog",
+ "proptest",
  "sched",
  "sync",
  "vfs",
+]
+
+[[package]]
+name = "tty-integration"
+version = "0.1.0"
+dependencies = [
+ "serialtty",
+ "tty",
+ "vtconsole",
+ "vtdata",
 ]
 
 [[package]]
@@ -1282,6 +1311,23 @@ dependencies = [
  "hal",
  "klog",
  "sync",
+]
+
+[[package]]
+name = "vtconsole"
+version = "0.1.0"
+dependencies = [
+ "fbcon",
+ "proptest",
+ "tty",
+ "vtdata",
+]
+
+[[package]]
+name = "vtdata"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
