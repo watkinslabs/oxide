@@ -145,6 +145,8 @@ pub struct Task {
     /// Total CPU time (ns) this task has consumed — feeds
     /// /proc/<pid>/stat utime + the cgroup cpu controller (`13§3`).
     pub sum_exec_runtime_ns: AtomicU64,
+    pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
+    pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
     /// Live CFS load weight (mutable, unlike the `SchedClass::Normal`
     /// seed). `update_curr` divides by this; `setpriority`/nice and
     /// cgroup `cpu.weight` rewrite it. Seeded from `class` at creation.
@@ -814,6 +816,8 @@ impl Task {
             vruntime: AtomicU64::new(0),
             exec_start_ns: AtomicU64::new(0),
             sum_exec_runtime_ns: AtomicU64::new(0),
+            last_syscall_nr: AtomicU32::new(u32::MAX),
+            nsyscalls: AtomicU64::new(0),
             load_weight: AtomicU32::new(match class {
                 SchedClass::Normal { weight } => weight,
                 _ => crate::cputime::NICE_0_WEIGHT,

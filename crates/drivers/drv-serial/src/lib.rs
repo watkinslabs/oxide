@@ -18,6 +18,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// RX byte sink — the tty line discipline (`push_and_wake_fg`). Wired by
 /// the kernel; keeps this crate free of any tty dependency.
 static RX_SINK: AtomicU64 = AtomicU64::new(0);
+/// Optional RX pre-filter (sysrq). Returns true if it consumed the byte
+/// (don't forward to the tty sink). Lets the kernel snoop a magic
+/// sequence on the console for an on-demand diagnostic dump (`27`
+/// `kernel.sysrq`) without the tty/sched layers reaching into drv-serial.
+static RX_PREFILTER: AtomicU64 = AtomicU64::new(0);
 /// Detected UART base: x86 I/O port (addr_space=IO) or MMIO VA (PL011).
 static BASE: AtomicU64 = AtomicU64::new(0);
 static PRESENT: AtomicBool = AtomicBool::new(false);
@@ -26,8 +31,19 @@ static PRESENT: AtomicBool = AtomicBool::new(false);
 /// # C: O(1)
 pub fn set_rx_sink(f: fn(u8)) { RX_SINK.store(f as usize as u64, Ordering::Release); }
 
+/// Install the RX pre-filter (sysrq snoop). Checked before the sink on
+/// every received byte; a `true` return drops the byte from the tty.
+/// # C: O(1)
+pub fn set_rx_prefilter(f: fn(u8) -> bool) { RX_PREFILTER.store(f as usize as u64, Ordering::Release); }
+
 #[inline]
 fn deliver(b: u8) {
+    let pf = RX_PREFILTER.load(Ordering::Acquire);
+    if pf != 0 {
+        // SAFETY: pf was stored from a `fn(u8) -> bool` by set_rx_prefilter; transmute back to that type.
+        let f: fn(u8) -> bool = unsafe { core::mem::transmute(pf as usize) };
+        if f(b) { return; }
+    }
     let p = RX_SINK.load(Ordering::Acquire);
     if p == 0 { return; }
     // SAFETY: p was stored from a `fn(u8)` by set_rx_sink; transmute back to that type.

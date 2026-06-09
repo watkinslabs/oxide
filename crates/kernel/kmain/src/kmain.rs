@@ -357,6 +357,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // UART sink below + fbcon aux sink); a tty write goes TtyStruct → UART
     // and NOT into the kmsg ring (dmesg/shell split).
     console::static_console::install();
+    // Serial sysrq: snoop a magic console sequence (`<NUL> t` = task
+    // dump) for on-demand liveness diagnostics, before bytes reach the
+    // tty. Pairs with the per-tick liveness watchdog (`05`, `27`).
+    drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
     // SAFETY: post-ACPI/LAPIC + MmuOps live; single-CPU, IRQs masked. init probes the UART; on detection serial becomes the primary console (klog sink + RX IRQ). No serial → the fb/VT console (set_aux_sink below) is the default active console.
     if unsafe { drv_serial::init(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE) } { klog::set_byte_sink(drv_serial::emit); }
 
@@ -733,7 +737,12 @@ unsafe fn tick_poll_combined() {
     sched::live::zombies::reap_orphans();
     // F169/B20: wake tasks past wakeup_deadline_ns (SO_*TIMEO) or
     // alarm_ns (alarm/itimer). Dead since F152 retired the rx kthread.
-    sched::live::tick_wake_expired(syscalls::vvar::monotonic_now_ns());
+    let now_ns = syscalls::vvar::monotonic_now_ns();
+    sched::live::tick_wake_expired(now_ns);
+    // Liveness watchdog (`05`): fire a one-shot soft-lockup banner +
+    // task dump if a Runnable task monopolises the CPU with no
+    // reschedule past the stall threshold. Silent on a healthy boot.
+    sched::diag::watchdog_tick(now_ns);
     // Refresh the vDSO vvar page with the live monotonic clock so
     // userspace __vdso_clock_gettime returns current time without
     // a syscall. Cheap (one TimerOps read + 4 atomic stores).
