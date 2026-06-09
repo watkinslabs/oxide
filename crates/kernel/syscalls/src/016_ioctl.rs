@@ -102,11 +102,13 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     match req {
         TIOCGWINSZ => {
             if let Err(rv) = validate_user_buf(arg, 8, 2) { return rv; }
-            // PTY fds: read from the pair's stored winsize. Other
-            // CharDev fds: report the default 24×80 (matches the
-            // prior fixed return).
+            // PTY fds: read from the pair's stored winsize. The serial
+            // system console (vt<=1) owns its winsize on the TtyStruct
+            // (T8 — was the dead fixed default). Numbered VTs report the
+            // 24×80 default until the per-VT screen buffers land.
             let ws = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.winsize),
+                None if (ino & 0xff) as u8 <= 1 => console::static_console::winsize_get(),
                 None       => tty::pty::Winsize::default_pty(),
             };
             let bytes = ws.to_le_bytes();
@@ -135,6 +137,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
                     if fired { p.pending_sigwinch = false; }
                     (fired, p.foreground_pgid)
                 }),
+                // Serial system console (vt<=1): store on the TtyStruct and
+                // raise SIGWINCH on the live fg pgrp when it changed (T8).
+                None if (ino & 0xff) as u8 <= 1 => {
+                    let ch = console::static_console::winsize_set(ws);
+                    (ch, console::static_console::foreground_pgid())
+                }
                 None => (false, 0),
             };
             if changed && fg != 0 {
