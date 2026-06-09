@@ -1,0 +1,30 @@
+# VT console tty driver (T5 of tty-rebuild-plan). Assembles the whole VT
+# stack: N_TTY ldisc (tty core) → VtConsoleDriver → emulator → Vc → consw
+# (fbcon). This is a SEPARATE crate from `tty` because the driver pulls in
+# `vtdata` + `fbcon`, while the tty core must stay generic (Linux: tty core
+# is class-agnostic; the VT console driver is its own module). `tty` does
+# NOT depend on vtdata/fbcon — so this crate is the only place all three
+# meet. No dep cycle: vtconsole → {tty, vtdata, fbcon}; fbcon → vtdata;
+# tty → none of these.
+[package]
+name = "vtconsole"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tty    = { path = "../tty" }
+vtdata = { path = "../vt" }
+fbcon  = { path = "../../drivers/fbcon" }
+
+[dev-dependencies]
+tty = { path = "../tty", features = ["hosted"] }
+proptest = "1"
+
+[features]
+default = []
+# Expose host-only assembly helpers to downstream crates' tests.
+hosted = ["tty/hosted"]

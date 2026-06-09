@@ -17,5 +17,11 @@ vfs   = { path = "../vfs" }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
+[features]
+default = []
+# Expose host-only test helpers (e.g. `wait::host::HostWait`) to
+# downstream crates' tests (vtconsole T5 integration harness).
+hosted = []
+
 [dev-dependencies]
 proptest = "1"
