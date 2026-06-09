@@ -276,9 +276,10 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
     //      firmware that publishes an FDT) — one contiguous block.
     //   2. EFI `EfiConventionalMemory` regions captured by `efi_stub_setup`
     //      (QEMU EDK2 in ACPI mode exposes NO FDT, so the DTB read fails).
-    //      Type-7 memory is genuinely-free DRAM — it already excludes the
-    //      kernel image, ACPI tables, reserved + MMIO — so no carve-out is
-    //      needed and ACPI pages are never marked usable.
+    //      Type-7 is genuinely-free DRAM — it excludes the kernel image, ACPI
+    //      tables (this EDK2 keeps them in BootServicesData), runtime,
+    //      reserved + MMIO — so no carve-out is needed and nothing the kernel
+    //      still reads post-boot is ever marked usable.
     //   3. Last resort: a conservative 1 GiB at the QEMU virt base.
     let mut regions: [(u64, u64); selfboot::EFI_RAM_MAX] = [(0, 0); selfboot::EFI_RAM_MAX];
     let mut nregions = 0usize;
@@ -345,6 +346,25 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
             cur = cur.max(be);
         }
         if cur < ram_end { push(cur, ram_end, boot_info::BootMemKind::Usable, &mut n); }
+    }
+
+    // Diagnostic: per-EFI-type RAM tally (MiB), so the free-vs-reserved
+    // split is visible rather than inferred. Empty on the DTB path (the
+    // tallies are only filled by efi_stub on the UEFI path).
+    #[cfg(feature = "debug-boot")]
+    {
+        let mut t = 0usize;
+        while t < 16 {
+            let pages = selfboot::EFI_TYPE_PAGES[t].load(core::sync::atomic::Ordering::Acquire);
+            if pages != 0 {
+                klog::write_raw(b"[INFO]  efi-mem type");
+                klog::write_dec_u64(t as u64);
+                klog::write_raw(b" = ");
+                klog::write_dec_u64(pages / 256); // pages * 4096 / (1024*1024)
+                klog::write_raw(b" MiB\n");
+            }
+            t += 1;
+        }
     }
 
     info.memmap_count = n as u32;
