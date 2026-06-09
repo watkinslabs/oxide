@@ -341,6 +341,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     arch_irq::set_tick_poll_hook(tick_poll_combined);
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     arch_irq::set_tick_poll_hook(tick_poll_combined);
+    // Cross-CPU backtrace poke (NMI on x86): lets the hard-lockup detector
+    // + sysrq `<NUL>b` make a wedged CPU dump its own RIP/regs.
+    #[cfg(target_os = "oxide-kernel")]
+    arch_irq::install_diag_nmi_hook();
 
     // Wire the UART RX sink (tty line discipline), then probe + bring up
     // the serial console. drv_serial::init detects the UART (ACPI SPCR,
@@ -730,6 +734,10 @@ unsafe fn tick_poll_combined() {
     // delivered even if the device's interrupt-coalesce or our MSI
     // routing dropped the edge.
     drv_virtio_net::modern::rx_drain_softirq();
+    // Wake any virtio-blk task sleeping for an I/O completion so it
+    // re-checks used.idx — the timer-tick backstop for the adaptive
+    // spin-then-sleep wait (the completion MSI is the fast path).
+    drv_virtio_blk::modern::wake_completions();
     // B14: subreap orphan/abandoned zombies. Without this, sshd-
     // session children whose parent doesn't wait4 within 5s pile
     // up in ZOMBIES at ~340 KB each (Task struct + 16KB kernel

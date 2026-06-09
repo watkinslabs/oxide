@@ -15,8 +15,10 @@ license = "MPL-2.0"
 
 [dependencies]
 block    = { path = "../../kernel/block" }
+hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 pmm      = { path = "../../kernel/mm-pmm" }
+sched    = { path = "../../kernel/sched" }
 sync     = { path = "../../shared/sync" }
 virtio   = { path = "../virtio" }
 

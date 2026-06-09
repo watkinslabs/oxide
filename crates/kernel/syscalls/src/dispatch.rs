@@ -448,6 +448,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
         klog::write_raw(b"\n");
     }
     debug_ssh! { crate::signal_trace::syscall_nr_rv(nr, rv); }
+    // Recent-syscall ring (diag): record (tid, nr, ret) so an INIT-DEATH
+    // dump shows what PID 1 did right before exiting (e.g. execve=-errno).
+    sched::diag::record_syscall(nr as u32, rv);
     // POSIX timers + rseq cpu_id writeback at syscall-return tail.
     sched::timers::fire_due_timers();
     crate::proc::rseq_writeback();
