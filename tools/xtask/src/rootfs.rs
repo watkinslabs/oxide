@@ -54,10 +54,6 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
          "userspace/pthread_socketpair_probe/pthread_socketpair_probe.c"),
         ("userspace/mtmalloc_smoke/mtmalloc_smoke",
          "userspace/mtmalloc_smoke/mtmalloc_smoke.c"),
-        // F412 Stage E: async SIGURG delivery to a thread spinning in
-        // tight user code (Go async-preempt mechanism).
-        ("userspace/sigurg_async_smoke/sigurg_async_smoke",
-         "userspace/sigurg_async_smoke/sigurg_async_smoke.c"),
     ];
     for (out_rel, src_rel) in pthread_bins {
         let basename = out_rel.rsplit('/').next().unwrap();
@@ -245,7 +241,7 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         "mtmalloc_smoke", "sigmalloc_smoke", "mremap_alias_smoke", "rawecho_smoke", "termios_rt_smoke", "isatty_smoke", "pollecho_smoke",
         "usleep_smoke", "af_packet_smoke", "online_smoke",
         "tcp_smoke", "exit_test", "pthread_socketpair_probe",
-        "socketpair_fork_probe", "tty_reset_probe", "sigurg_async_smoke",
+        "socketpair_fork_probe", "tty_reset_probe",
     ] {
         put(&user(b), &format!("/bin/{b}"))?;
     }
@@ -433,14 +429,10 @@ pub(crate) fn cmd_rootfs(rest: &[String]) -> Result<(), u8> {
         // launching. glow/micro/duf still hang on SEPARATE gaps (tcell/bubbletea
         // init + /proc mounts for duf) — staged back as each is traced + fixed.
         ("starship", "starship", "/usr/bin/starship"),
-        // F412: glow/micro/duf (Go) re-staged with async-signal delivery on
-        // IRQ-return-to-user (Stage E) + cross-thread SIGURG nudge (Stage G):
-        // Go's async preemption (sysmon tgkill SIGURG to a goroutine-thread
-        // spinning in user code) now lands a handler on the next timer IRQ,
-        // unblocking the M:N scheduler's runtime.usleep/preempt path.
-        ("duf", "duf", "/usr/bin/duf"),
-        ("glow", "glow", "/usr/bin/glow"),
-        ("micro", "micro", "/usr/bin/micro"),
+        // glow/micro/duf (Go) still hang at a deeper layer: main goroutine
+        // parks on futex + is never handed a CPU (Go M:N scheduler / futex-wake
+        // gap), even with the timerfd ABSTIME + epoll fixes. Re-staged once the
+        // Go-scheduler hang is closed.
     ] {
         let b = repo.join(format!("vendor/{}/{}-{}", dir, file, arch));
         if b.is_file() { put(&b, dest)?; }
