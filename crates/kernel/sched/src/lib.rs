@@ -16,6 +16,7 @@ pub mod cfs;
 pub mod clock;
 pub mod cmdline;
 pub mod cputime;
+pub mod diag;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
 pub mod preempt;

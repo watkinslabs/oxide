@@ -17,7 +17,10 @@ hal-aarch64  = { path = "../../arch/hal-aarch64" }
 sync         = { path = "../../shared/sync" }
 
 [features]
-default    = []
+# `debug-watchdog` default-ON — see boot-x86_64's note. Armed in every
+# build so a flaky hang is caught the first time; silent until a stall
+# fires or sysrq is triggered (R06 zero-bytes-when-healthy preserved).
+default    = ["debug-watchdog"]
 hosted     = []
 # Per `04§4.0` (R06): gates this crate's klog call sites
 # (UART sink install + CPU/MMU dump + pl011 sink swap) so
@@ -31,4 +34,6 @@ debug-boot = []
 # kernel + boot-aarch64 + kernel-bin-aarch64, so hal-aarch64's
 # debug-irq has to ride through this chain to take effect.
 debug-irq  = ["hal-aarch64/debug-irq"]
-debug-all  = ["debug-boot", "debug-irq"]
+# Liveness watchdog + serial-sysrq task dump (`05`/`27`); rides kmain.
+debug-watchdog = ["kmain/debug-watchdog"]
+debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]

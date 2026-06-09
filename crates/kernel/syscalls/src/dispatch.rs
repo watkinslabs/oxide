@@ -60,6 +60,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     let a5 = unsafe { crate::syscall_a5::read() };
 
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
+    // Always-on liveness datum: record where this task last entered the
+    // kernel so the sysrq / watchdog task dump can tell a read(0) park
+    // from a spin from a fault loop. Two relaxed stores (`13` diag).
+    if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2); }
     // seccomp KILL/TRAP/ERRNO/ALLOW filter check.
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, 0]) { return rv as u64; }

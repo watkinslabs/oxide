@@ -12,6 +12,21 @@ use crate::{parse_arg, run};
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// QEMU user-net `-netdev` arg. The host→guest SSH port-forward
+/// (`hostfwd=tcp::2222-:22`) is OFF by default — we no longer test ssh,
+/// and the fixed host-port binding made overlapping/stale qemus collide
+/// ("Could not set up host forwarding"), which silently failed boot
+/// smokes. User networking itself stays on (the net udp/iface smoke
+/// still runs). Re-enable the forward with `OXIDE_QEMU_SSH_FWD=1`.
+/// # C: O(1)
+fn ssh_fwd_netdev() -> String {
+    match std::env::var("OXIDE_QEMU_SSH_FWD") {
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true") =>
+            "user,id=net0,hostfwd=tcp::2222-:22".to_string(),
+        _ => "user,id=net0".to_string(),
+    }
+}
+
 /// `xtask image --arch <arch>` — build the bootable artifact
 /// (`target/oxide-<arch>-grub.iso`) without launching qemu. Limine is
 /// gone, so this is a thin alias for `grub --arch <arch> --build-only`:
@@ -220,6 +235,7 @@ fn qemu_run_aarch64_grub(
     // serial (oxide-root / oxide-home) via GET_ID.
     let root_drive = format!("if=none,id=root,format=raw,file={}", root_img.display());
     let home_drive = format!("if=none,id=home,format=raw,file={}", home_img.display());
+    let netdev = ssh_fwd_netdev();
     let mut c = Command::new("qemu-system-aarch64");
     c.args([
         "-machine", "virt,gic-version=3,its=on",
@@ -234,7 +250,7 @@ fn qemu_run_aarch64_grub(
         "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root",
         "-drive", home_drive.as_str(),
         "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home",
-        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // virtio-gpu scanout + keyboard for the graphical console (fbcon
         // paints here; no GOP on this path). Without them only serial gets
@@ -302,6 +318,7 @@ fn qemu_run_grub_x86_64(
     } else {
         "stdio,id=ser0,mux=on,signal=off"
     };
+    let netdev = ssh_fwd_netdev();
     let mut c = Command::new("qemu-system-x86_64");
     // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
     // `-d int,guest_errors -D <file>` so a boot fault's exception
@@ -327,7 +344,7 @@ fn qemu_run_grub_x86_64(
         "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root",
         "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
         "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home",
-        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // -vga none: q35 otherwise adds a default std-VGA that becomes the
         // PRIMARY display, so the GTK window shows that (blank — we never

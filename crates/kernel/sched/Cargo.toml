@@ -36,6 +36,10 @@ hosted  = []
 # forwards via `--features debug-sched`.
 debug-sched = []
 debug-syscall = []
+# Liveness diagnostics (`05`/`27`): one-shot soft-lockup watchdog banner +
+# serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is
+# triggered — no steady-state trace noise, so timing is unperturbed.
+debug-watchdog = []
 # F205 SSH-relay diagnostic — toggled from kernel/Cargo.toml's
 # `debug-ssh` feature which forwards via `--features debug-ssh`.
 debug-ssh = []
