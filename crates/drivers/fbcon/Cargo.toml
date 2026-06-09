@@ -13,3 +13,4 @@ klog    = { path = "../../shared/klog" }
 sync    = { path = "../../shared/sync" }
 fbdev   = { path = "../../drivers/fbdev" }
 softirq = { path = "../../kernel/softirq" }
+vtdata  = { path = "../../kernel/vt" }
