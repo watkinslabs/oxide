@@ -656,10 +656,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         // SGI that lands here on the target's CPU.
         // SAFETY: dispatch context; OXIDE_IRQ_FRAME_ARM live + matches
         // current(); interrupted user task holds no kernel lock.
-        // DISABLED (B69): async IRQ-exit delivery corrupts a user frame during
-        // login → crash back to getty. Re-enable once the rt_sigframe-from-IRQ
-        // build/restore is verified not to clobber the interrupted user context.
-        // unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
+        unsafe { fs::sig_dispatch::try_deliver_async_irq(); }
         // SAFETY: tick_pick_next runs in IRQ context with IRQs masked; per-CPU SCHED state is single-CPU at this point in v1.
         unsafe { sched::live::preempt::tick_pick_next(); }
     }
