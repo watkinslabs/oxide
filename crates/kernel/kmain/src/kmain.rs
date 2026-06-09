@@ -734,6 +734,10 @@ unsafe fn tick_poll_combined() {
     // delivered even if the device's interrupt-coalesce or our MSI
     // routing dropped the edge.
     drv_virtio_net::modern::rx_drain_softirq();
+    // Wake any virtio-blk task sleeping for an I/O completion so it
+    // re-checks used.idx — the tick-driven backstop for the adaptive
+    // spin-then-sleep wait (no per-queue completion MSI yet).
+    drv_virtio_blk::modern::tick_wake_completions();
     // B14: subreap orphan/abandoned zombies. Without this, sshd-
     // session children whose parent doesn't wait4 within 5s pile
     // up in ZOMBIES at ~340 KB each (Task struct + 16KB kernel
