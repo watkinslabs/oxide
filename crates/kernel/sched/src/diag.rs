@@ -29,6 +29,13 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::{Task, TaskState};
 
+/// Per-CPU heartbeat + cross-CPU hard-lockup detector (sees a frozen
+/// CPU from a different CPU, which the BSP-tick watchdog cannot).
+pub mod percpu;
+/// NMI/FIQ backtrace: poke a (possibly IRQ-masked) CPU into dumping its
+/// own register state.
+pub mod nmi;
+
 /// Borrow the running task. Kernel-only (`live` is gated to the kernel
 /// target); on the hosted test target there is no live runqueue, so it
 /// is `None` — the pure watchdog/formatting logic is exercised through
@@ -267,6 +274,25 @@ fn dump_tasks_emit() {
     }
 }
 
+/// Announce that PID 1 (init) has exited. This is fatal: with no init
+/// there is nothing left to run, so the box idles forever and presents
+/// as a silent hang (the flaky-login failure mode — systemd exits ~25%
+/// of SMP=2 boots right after keymap load instead of spawning getty).
+/// Linux panics here ("Attempted to kill init!"); we at minimum make it
+/// loud + dump the final task table so the cause is never again silent.
+/// # C: O(N_tasks)
+pub fn note_init_exit(code: i32) {
+    #[cfg(feature = "debug-watchdog")]
+    {
+        klog::write_raw(b"\n[INIT-DEATH] PID 1 (init) exited code=");
+        klog::write_dec_u64(code as u64);
+        klog::write_raw(b" - no init, system will hang (Linux would panic)\n");
+        dump_tasks();
+    }
+    #[cfg(not(feature = "debug-watchdog"))]
+    let _ = code;
+}
+
 // ---- serial sysrq ----
 
 /// Magic prefix byte that arms sysrq. NUL is never produced by a
@@ -318,7 +344,9 @@ fn sysrq_cmd(b: u8) {
             }
             klog::write_raw(b"\n");
         }
-        _ => klog::write_raw(b"[sysrq] keys: t=tasks w=watchdog\n"),
+        b'c' => percpu::dump_cpus(),
+        b'b' => nmi::backtrace_all(),
+        _ => klog::write_raw(b"[sysrq] keys: t=tasks w=watchdog c=per-cpu b=backtrace-all\n"),
     }
 }
 

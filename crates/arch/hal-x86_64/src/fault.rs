@@ -385,6 +385,37 @@ pub fn current_fault_gprs() -> *const FaultGprs {
     CUR_FAULT_GPRS.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// NMI backtrace: dump this CPU's id + RIP/RSP/RFLAGS + GPRs. Called from
+/// the vector-2 path on a cross-CPU backtrace poke. Print-only (caller
+/// resumes). hal-x86_64 can't read the sched task (would be a dep cycle),
+/// so the cross-CPU detector prints the task; this adds the exact RIP.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-watchdog"))]
+fn nmi_backtrace(f: &FaultFrame, gprs_ptr: *const FaultGprs) {
+    use hal::CpuOps;
+    klog::write_raw(b"[NMI-BT] cpu=");
+    klog::write_hex_u64(crate::X86CpuOps::current_cpu() as u64);
+    klog::write_raw(b" rip=");
+    klog::write_hex_u64(f.rip);
+    klog::write_raw(b" rsp=");
+    klog::write_hex_u64(f.rsp);
+    klog::write_raw(b" rflags=");
+    klog::write_hex_u64(f.rflags);
+    klog::write_raw(b" cs=");
+    klog::write_hex_u64(f.cs);
+    if !gprs_ptr.is_null() {
+        // SAFETY: gprs_ptr is the stub-built GPR block on the kernel stack, valid for read while the vector-2 stub frame is live.
+        let g = unsafe { &*gprs_ptr };
+        klog::write_raw(b"\n[NMI-BT] rbp="); klog::write_hex_u64(g.rbp);
+        klog::write_raw(b" rbx=");           klog::write_hex_u64(g.rbx);
+        klog::write_raw(b" r12=");           klog::write_hex_u64(g.r12);
+        klog::write_raw(b" r13=");           klog::write_hex_u64(g.r13);
+        klog::write_raw(b" r14=");           klog::write_hex_u64(g.r14);
+        klog::write_raw(b" r15=");           klog::write_hex_u64(g.r15);
+    }
+    klog::write_raw(b"\n");
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr: *const FaultGprs) -> bool {
@@ -402,6 +433,16 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
         }
     }
     let _guard = ClearOnDrop;
+    // NMI (vector 2): cross-CPU backtrace poke from the hard-lockup
+    // detector / sysrq. NMI is delivered through IF=0, so this lands even
+    // on a CPU spinning in a spinlock deadlock with interrupts masked.
+    // Print this CPU's RIP/regs then RESUME (return true → iretq): a poke
+    // at a CPU that wasn't actually wedged must be non-destructive.
+    if f.vector == 2 {
+        #[cfg(feature = "debug-watchdog")]
+        nmi_backtrace(f, gprs_ptr);
+        return true;
+    }
     // Early-handle user-mode software-debug traps (#DB, #BP) via the
     // installed UserTrapHook. The hook consumes the trap (returns true)
     // and may mutate the frame (clear RFLAGS.TF) before iretq resumes
