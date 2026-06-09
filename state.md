@@ -7,7 +7,15 @@
 ## completion is no longer a 50M busy-poll that pegs a core; it now spins
 ## briefly then SLEEPS, woken from the timer tick. Verified BOTH arches.
 
-## What landed this session (UNCOMMITTED — not yet committed/pushed)
+## COMMITTED + PUSHED this session (branch B75, pre-push smoke PASS both arches)
+- f462f485 fix(blk): adaptive spin-then-sleep virtio-blk completion
+- 991c4201 doc(state): hand-off + blk-poll-anal.md
+- 101f8340 feat(blk): real per-queue MSI-X completion IRQ wakes blk sleepers
+PR #1658 open — ready to merge once CI green (user decision; don't auto-merge).
+Still-uncommitted (NOT mine, pre-session): 060_exit.rs, server.py, sched-anal.md,
+tty-anal.md — left untouched.
+
+## What the fix does (see commits above for detail)
 - `crates/drivers/drv-virtio-blk/src/modern.rs` (+ Cargo.toml: +hal +sched):
   `submit` restructured → busy-gate (RingShadow.busy) + `do_request` +
   adaptive `wait_for_completion`. Spin `IO_SPIN_BUDGET`=200k (catches the
@@ -48,11 +56,12 @@
   memtest.rs + debug-memtest feature. Not started.
 
 ## FIRST TASK next session
-1. Decide with user: commit this fix? (nothing committed yet this session).
-   `make smoke` already effectively passed (both arches boot to login).
-2. If committing: small focused commits — (a) drv-virtio-blk adaptive sleep,
-   (b) kmain tick waker. Author Chris Watkins. spec-lint clean already.
-3. Then optionally the real MSI-X completion IRQ (latency) as a follow-up.
+1. Core blk freeze fix is DONE + committed + pushed (3 commits above), both
+   arches verified, PR #1658. If CI green → merge (gh pr merge --merge
+   --delete-branch). Don't auto-merge without user.
+2. Optional follow-ups (own branches): x86 AP bring-up (aps_started=0, so the
+   cross-CPU hard-lockup detector has a peer); in-guest full-RAM memtest
+   (crates/kernel/smoke/src/memtest.rs + debug-memtest). Both noted below.
 
 ## ENV QUIRKS (this agent sandbox)
 - Foreground qemu / long builds: Bash run_in_background:true + Monitor
