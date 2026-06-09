@@ -6,8 +6,11 @@
 
 extern crate alloc;
 
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
+
+use crate::palette::{xterm_256_rgb, VGA_PALETTE};
 
 /// Number of virtual terminals (Linux `MAX_NR_CONSOLES` default).
 /// # C: const.
@@ -21,26 +24,46 @@ pub const DEFAULT_FG: u8 = 7;
 /// Default background SGR color index (black, VGA 0).
 pub const DEFAULT_BG: u8 = 0;
 
-// Cell.attr is a u32 packing the FULL per-cell attribute (Linux cells
-// carry per-cell intensity/underline/reverse, not just color): bits
-// 0..7 = fg index, bits 8..15 = bg index (both xterm-256 space), bits
-// 16..23 = flags (bold/underline/reverse). `attr_at` round-trips the
-// u32 back to an `Attr` losslessly, so the renderer reads complete
-// per-cell attributes — no reliance on the live `Vc.attr` for flags.
+/// Default foreground as resolved 0x00RRGGBB (light grey, VGA 7).
+/// # C: const.
+pub const DEFAULT_FG_RGB: u32 =
+    ((VGA_PALETTE[DEFAULT_FG as usize][0] as u32) << 16)
+        | ((VGA_PALETTE[DEFAULT_FG as usize][1] as u32) << 8)
+        | (VGA_PALETTE[DEFAULT_FG as usize][2] as u32);
+/// Default background as resolved 0x00RRGGBB (black, VGA 0).
+/// # C: const.
+pub const DEFAULT_BG_RGB: u32 =
+    ((VGA_PALETTE[DEFAULT_BG as usize][0] as u32) << 16)
+        | ((VGA_PALETTE[DEFAULT_BG as usize][1] as u32) << 8)
+        | (VGA_PALETTE[DEFAULT_BG as usize][2] as u32);
+
+/// Bound on scrolled-off history rows kept per `Vc`. At up-to-`cols`
+/// cells/row this is the dominant `Vc` allocation; fine for one active
+/// VT (per-VT lazy alloc is a later task).
+pub const SCROLLBACK_LINES: usize = 1000;
+
+// Cells now carry FULLY-RESOLVED 24-bit RGB (Linux per-cell attributes,
+// but truecolor-faithful): SGR 16/256-color indices are resolved to RGB
+// at set-time via the canonical `palette`; SGR 38;2/48;2 truecolor is
+// stored verbatim. The renderer reads `cell.fg`/`cell.bg` directly and
+// no longer does a palette lookup. `flags` keeps bold/underline/reverse.
 
 /// Flag bit: bold/bright intensity (SGR 1).
-pub const ATTR_BOLD: u32 = 1;
+pub const ATTR_BOLD: u16 = 1;
 /// Flag bit: underline (SGR 4).
-pub const ATTR_UNDERLINE: u32 = 2;
+pub const ATTR_UNDERLINE: u16 = 2;
 /// Flag bit: reverse video (SGR 7).
-pub const ATTR_REVERSE: u32 = 4;
+pub const ATTR_REVERSE: u16 = 4;
 
-/// Cell/cursor attribute: fg/bg color indices (0..255) + bold/underline/
-/// reverse flags. Packs losslessly to a u32 for per-cell storage.
+/// Cell/cursor attribute: fg/bg as resolved 0x00RRGGBB RGB + bold/
+/// underline/reverse flags. SGR index colors are resolved to RGB at
+/// set-time (see `set_fg_index`/`set_bg_index`); truecolor SGR stores
+/// RGB directly. `bold` brightens a basic 0..7 index to 8..15 at resolve
+/// time, so the cell holds the bright RGB (VGA bright convention).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Attr {
-    pub fg: u8,
-    pub bg: u8,
+    pub fg: u32,
+    pub bg: u32,
     pub bold: bool,
     pub underline: bool,
     pub reverse: bool,
@@ -48,40 +71,57 @@ pub struct Attr {
 
 impl Default for Attr {
     fn default() -> Self {
-        Attr { fg: DEFAULT_FG, bg: DEFAULT_BG, bold: false, underline: false, reverse: false }
+        Attr {
+            fg: DEFAULT_FG_RGB,
+            bg: DEFAULT_BG_RGB,
+            bold: false,
+            underline: false,
+            reverse: false,
+        }
     }
 }
 
 impl Attr {
-    /// Pack into the u32 stored on each `Cell`. Layout: bits 0..7 = fg,
-    /// bits 8..15 = bg, bits 16..23 = flags (`ATTR_BOLD|UNDERLINE|
-    /// REVERSE`). Lossless: `unpack` reverses it exactly.
+    /// Pack the bold/underline/reverse flags into a u16 (`ATTR_*`).
     /// # C: O(1).
-    pub fn pack(self) -> u32 {
-        let mut flags = 0u32;
+    pub fn flags(self) -> u16 {
+        let mut f = 0u16;
         if self.bold {
-            flags |= ATTR_BOLD;
+            f |= ATTR_BOLD;
         }
         if self.underline {
-            flags |= ATTR_UNDERLINE;
+            f |= ATTR_UNDERLINE;
         }
         if self.reverse {
-            flags |= ATTR_REVERSE;
+            f |= ATTR_REVERSE;
         }
-        (self.fg as u32) | ((self.bg as u32) << 8) | (flags << 16)
+        f
     }
 
-    /// Decode a packed u32 (see `pack`) back to an `Attr`.
+    /// Build an `Attr` from a `Cell`'s fg/bg RGB + packed flags.
     /// # C: O(1).
-    pub fn unpack(v: u32) -> Self {
-        let flags = (v >> 16) & 0xff;
+    pub fn from_cell(c: Cell) -> Self {
         Attr {
-            fg: (v & 0xff) as u8,
-            bg: ((v >> 8) & 0xff) as u8,
-            bold: flags & ATTR_BOLD != 0,
-            underline: flags & ATTR_UNDERLINE != 0,
-            reverse: flags & ATTR_REVERSE != 0,
+            fg: c.fg,
+            bg: c.bg,
+            bold: c.flags & ATTR_BOLD != 0,
+            underline: c.flags & ATTR_UNDERLINE != 0,
+            reverse: c.flags & ATTR_REVERSE != 0,
         }
+    }
+
+    /// Set fg from an SGR 16/256-color index, resolving to RGB now. A
+    /// basic 0..7 index brightens to 8..15 when `bold` (VGA convention).
+    /// # C: O(1).
+    pub fn set_fg_index(&mut self, idx: u32) {
+        let i = if self.bold && idx < 8 { idx + 8 } else { idx };
+        self.fg = xterm_256_rgb(i);
+    }
+
+    /// Set bg from an SGR 16/256-color index, resolving to RGB now.
+    /// # C: O(1).
+    pub fn set_bg_index(&mut self, idx: u32) {
+        self.bg = xterm_256_rgb(idx);
     }
 
     /// Reset to SGR defaults (SGR 0).
@@ -91,17 +131,20 @@ impl Attr {
     }
 }
 
-/// One screen cell: a glyph codepoint and a packed full attr (fg/bg +
-/// flags). A blank cell is `glyph == ' '` with the prevailing attr.
+/// One screen cell: a glyph codepoint, fully-resolved fg/bg 0x00RRGGBB,
+/// and packed `ATTR_*` flags. A blank cell is `glyph == ' '` with the
+/// prevailing attr.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
     pub glyph: u32,
-    pub attr: u32,
+    pub fg: u32,
+    pub bg: u32,
+    pub flags: u16,
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { glyph: ' ' as u32, attr: Attr::default().pack() }
+        Cell::blank(Attr::default())
     }
 }
 
@@ -109,7 +152,13 @@ impl Cell {
     /// Blank cell carrying `attr` (used for erase/scroll fill).
     /// # C: O(1).
     pub fn blank(attr: Attr) -> Self {
-        Cell { glyph: ' ' as u32, attr: attr.pack() }
+        Cell { glyph: ' ' as u32, fg: attr.fg, bg: attr.bg, flags: attr.flags() }
+    }
+
+    /// Cell with `glyph` and `attr` applied.
+    /// # C: O(1).
+    pub fn glyph(glyph: u32, attr: Attr) -> Self {
+        Cell { glyph, fg: attr.fg, bg: attr.bg, flags: attr.flags() }
     }
 }
 
@@ -147,6 +196,12 @@ pub struct Vc {
     /// Set when the cursor moves or its row changes; the renderer
     /// repaints the cursor cell and clears it.
     cursor_dirty: bool,
+    /// Scrolled-off rows, oldest at the front. Each entry is a full row
+    /// of `cols` cells. Bounded by `SCROLLBACK_LINES` (evict oldest).
+    history: VecDeque<Vec<Cell>>,
+    /// Lines scrolled back: 0 = live bottom, N = N lines into history.
+    /// Clamped to `[0, history.len()]`. Output/echo snaps it to 0.
+    view_offset: usize,
 }
 
 impl Vc {
@@ -171,6 +226,86 @@ impl Vc {
             scroll_bot: rows - 1,
             dirty: vec![true; rows as usize],
             cursor_dirty: true,
+            history: VecDeque::new(),
+            view_offset: 0,
+        }
+    }
+
+    /// Number of scrolled-off rows held in history. # C: O(1).
+    #[inline]
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Current scrollback view offset (0 = live bottom). # C: O(1).
+    #[inline]
+    pub fn view_offset(&self) -> usize {
+        self.view_offset
+    }
+
+    /// Push a scrolled-off top row into history, evicting the oldest when
+    /// the ring is full. # C: O(cols) (one row copy).
+    fn push_history(&mut self, row: Vec<Cell>) {
+        if self.history.len() >= SCROLLBACK_LINES {
+            self.history.pop_front();
+        }
+        self.history.push_back(row);
+    }
+
+    /// Snap the view to the live bottom (Linux: any new output/input echo
+    /// returns from scrollback). Marks all rows dirty if it moved.
+    /// # C: O(rows) when it moves, else O(1).
+    pub fn snap_to_bottom(&mut self) {
+        if self.view_offset != 0 {
+            self.view_offset = 0;
+            self.mark_all_dirty();
+        }
+    }
+
+    /// Scroll the view up (back into history) by `n`, clamped to
+    /// `history_len`. Marks all rows dirty on change. # C: O(rows).
+    pub fn scroll_view_up(&mut self, n: usize) {
+        let next = (self.view_offset + n).min(self.history.len());
+        if next != self.view_offset {
+            self.view_offset = next;
+            self.mark_all_dirty();
+        }
+    }
+
+    /// Scroll the view down (toward the live bottom) by `n`, clamped to 0.
+    /// Marks all rows dirty on change. # C: O(rows).
+    pub fn scroll_view_down(&mut self, n: usize) {
+        let next = self.view_offset.saturating_sub(n);
+        if next != self.view_offset {
+            self.view_offset = next;
+            self.mark_all_dirty();
+        }
+    }
+
+    /// Cell visible at screen position (col,row) given `view_offset`. With
+    /// offset>0 the top `view_offset` screen rows come from history (with
+    /// the live screen shifted down underneath), the rest from the live
+    /// grid. `None` if out of bounds. # C: O(1).
+    pub fn visible_cell_at(&self, col: u16, row: u16) -> Option<Cell> {
+        if col >= self.cols || row >= self.rows {
+            return None;
+        }
+        let off = self.view_offset;
+        if off == 0 {
+            return self.cell_at(col, row);
+        }
+        // Screen rows [0, rows) map onto a window ending `off` lines above
+        // the live bottom. `rel` is the row index counting from the top of
+        // the (history ++ live) stream's visible window.
+        let hist = self.history.len();
+        // Index into the virtual stream: history rows then live rows.
+        let stream_top = (hist + self.rows as usize).saturating_sub(off + self.rows as usize);
+        let si = stream_top + row as usize;
+        if si < hist {
+            self.history.get(si).and_then(|r| r.get(col as usize).copied())
+        } else {
+            let lr = (si - hist) as u16;
+            self.cell_at(col, lr)
         }
     }
 
@@ -243,11 +378,22 @@ impl Vc {
         self.cell_at(col, row).map(|c| c.glyph).unwrap_or(' ' as u32)
     }
 
-    /// Full decoded `Attr` at (col,row) including bold/underline/reverse
-    /// flags. `None` if out of bounds.
-    /// # C: O(1).
+    /// Glyph at visible screen (col,row) honoring `view_offset` (history
+    /// when scrolled back). `' '` if out of bounds. # C: O(1).
+    pub fn visible_glyph_at(&self, col: u16, row: u16) -> u32 {
+        self.visible_cell_at(col, row).map(|c| c.glyph).unwrap_or(' ' as u32)
+    }
+
+    /// `Attr` at visible screen (col,row) honoring `view_offset`. `None`
+    /// if out of bounds. # C: O(1).
+    pub fn visible_attr_at(&self, col: u16, row: u16) -> Option<Attr> {
+        self.visible_cell_at(col, row).map(Attr::from_cell)
+    }
+
+    /// Full decoded `Attr` at (col,row) (fg/bg RGB + flags). `None` if
+    /// out of bounds. # C: O(1).
     pub fn attr_at(&self, col: u16, row: u16) -> Option<Attr> {
-        self.cell_at(col, row).map(|c| Attr::unpack(c.attr))
+        self.cell_at(col, row).map(Attr::from_cell)
     }
 
     /// Row `row` as a String (glyphs decoded to chars; trailing blanks
@@ -269,8 +415,9 @@ impl Vc {
     /// Write a glyph at the cursor with the current attr (no advance).
     /// # C: O(1).
     pub fn put_glyph(&mut self, cp: u32) {
+        self.snap_to_bottom();
         let i = self.idx(self.x, self.y);
-        self.cells[i] = Cell { glyph: cp, attr: self.attr.pack() };
+        self.cells[i] = Cell::glyph(cp, self.attr);
         self.mark_row_dirty(self.y);
     }
 
@@ -360,6 +507,17 @@ impl Vc {
         let region_rows = bot - top + 1;
         let n = (n as usize).min(region_rows);
         let cols = self.cols as usize;
+        // Lines scrolling off the *screen top* (region anchored at row 0)
+        // go into scrollback history, oldest first. Region scrolls that
+        // don't touch the top (DECSTBM sub-regions) don't feed history —
+        // matching Linux, which only keeps the main-screen scrollback.
+        if top == 0 {
+            for r in 0..n {
+                let base = r * cols;
+                let row: Vec<Cell> = self.cells[base..base + cols].to_vec();
+                self.push_history(row);
+            }
+        }
         // Move rows top+n..=bot up to top..
         for r in 0..(region_rows - n) {
             let dst = (top + r) * cols;
@@ -436,6 +594,9 @@ impl Vc {
         self.wrap_pending = false;
         self.dirty = vec![true; rows as usize];
         self.cursor_dirty = true;
+        // History rows hold the old column count; snap to live bottom so
+        // the renderer never blits a mismatched-width history row.
+        self.view_offset = 0;
     }
 
     /// Save cursor + attr (DECSC / ESC 7). # C: O(1).
