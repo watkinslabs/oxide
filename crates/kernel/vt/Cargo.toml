@@ -1,0 +1,19 @@
+# VT data layer per docs/50 (T1 of tty-rebuild-plan). Package name
+# `vtdata` — the existing `crates/drivers/vt` already owns package `vt`
+# (the input-only VT layer being superseded). Directory stays `vt`.
+[package]
+name = "vtdata"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = []
