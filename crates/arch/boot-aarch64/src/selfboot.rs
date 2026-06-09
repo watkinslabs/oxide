@@ -70,6 +70,11 @@ pub static EFI_RAM_BASE: [AtomicU64; EFI_RAM_MAX] =
 /// Per-region page count (4 KiB) of each captured block.
 pub static EFI_RAM_PAGES: [AtomicU64; EFI_RAM_MAX] =
     [const { AtomicU64::new(0) }; EFI_RAM_MAX];
+/// Total pages per EFI memory type (0..=14), summed across the EFI memory
+/// map by `efi_stub_setup`. Diagnostic: shows exactly where guest RAM goes
+/// (firmware-reserved vs boot-services vs ACPI vs free conventional).
+pub static EFI_TYPE_PAGES: [AtomicU64; 16] =
+    [const { AtomicU64::new(0) }; 16];
 
 /// True when we entered via the self-bootstrap Image trampoline.
 /// # C: O(1)
@@ -172,12 +177,27 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
             if desc_size >= 40 {
                 let mut n = 0usize;
                 let mut off: u64 = 0;
-                while off + desc_size <= map_size && n < EFI_RAM_MAX {
+                // Reset per-type tallies (loop may re-run on a stale map_key).
+                let mut k = 0usize;
+                while k < 16 { EFI_TYPE_PAGES[k].store(0, core::sync::atomic::Ordering::Release); k += 1; }
+                while off + desc_size <= map_size {
                     let d = buf.as_ptr().add(off as usize);
                     let ty = *(d as *const u32);
                     let phys = *(d.add(8) as *const u64);
                     let pages = *(d.add(24) as *const u64);
-                    if ty == 7 && pages != 0 {
+                    if (ty as usize) < 16 {
+                        EFI_TYPE_PAGES[ty as usize]
+                            .fetch_add(pages, core::sync::atomic::Ordering::Release);
+                    }
+                    // Usable DRAM: EfiConventionalMemory (7) ONLY. NOT the
+                    // BootServices types (3/4): this EDK2 keeps the live ACPI
+                    // tables (XSDT/MCFG/MADT) in EfiBootServicesData (type9
+                    // EfiACPIReclaim is empty here), and the kernel reads them
+                    // post-ExitBootServices to enumerate PCI — reclaiming type4
+                    // corrupted them (pci devices=0, no disk). LoaderCode/Data
+                    // (1/2 = kernel image), runtime (5/6), reserved (0) and
+                    // MMIO (11/12) are likewise excluded.
+                    if ty == 7 && pages != 0 && n < EFI_RAM_MAX {
                         EFI_RAM_BASE[n].store(phys, core::sync::atomic::Ordering::Release);
                         EFI_RAM_PAGES[n].store(pages, core::sync::atomic::Ordering::Release);
                         n += 1;
