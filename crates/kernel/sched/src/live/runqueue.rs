@@ -92,12 +92,6 @@ impl Runqueue {
     /// # SAFETY: caller holds the runqueue invariant for this CPU.
     /// # C: O(1)
     pub unsafe fn swap_current(&self, next: Arc<Task>) -> Arc<Task> {
-        // Stamp the incoming task's owner CPU = this runqueue's CPU. This is
-        // the single chokepoint where a task becomes `current`, so it keeps
-        // `Task.cpu` accurate for cross-CPU signal nudges (`nudge_task` reads
-        // it to target the resched IPI) and owner-CPU wake routing. Without
-        // this `Task.cpu` stays at its u16::MAX init and nudges miss.
-        next.cpu.store(self.cpu, Ordering::Release);
         let next_raw = Arc::into_raw(next) as *mut Task;
         let prev_raw = self.current.swap(next_raw, Ordering::AcqRel);
         // SAFETY: `prev_raw` was previously installed via
