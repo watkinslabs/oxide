@@ -123,6 +123,53 @@ fn lexical_normalize_rejects_dotdot_above_absolute_root() {
 }
 
 // ---------------------------------------------------------------------------
+// fd-link / dup-fd parsing (T8 — /dev/std*, /dev/fd/N, /proc/<pid>/fd/N).
+// The Linux magic-fd-link open/readlink/reopen contract: these paths
+// resolve by duplicating an existing open file description, NOT by a
+// normal path walk. Locks the parsing so the console/serial fd plumbing
+// can't silently regress (the `/dev/stdout`→fd 1 reopen path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dup_fd_target_std_streams() {
+    use crate::path::dup_fd_target;
+    assert_eq!(dup_fd_target("/dev/stdin"),  Some((None, 0)));
+    assert_eq!(dup_fd_target("/dev/stdout"), Some((None, 1)));
+    assert_eq!(dup_fd_target("/dev/stderr"), Some((None, 2)));
+}
+
+#[test]
+fn dup_fd_target_dev_fd_n() {
+    use crate::path::dup_fd_target;
+    assert_eq!(dup_fd_target("/dev/fd/0"),  Some((None, 0)));
+    assert_eq!(dup_fd_target("/dev/fd/1"),  Some((None, 1)));
+    assert_eq!(dup_fd_target("/dev/fd/42"), Some((None, 42)));
+    // Not a valid fd number → not an fd-link (resolve normally).
+    assert_eq!(dup_fd_target("/dev/fd/abc"), None);
+}
+
+#[test]
+fn dup_fd_target_proc_self_and_pid_fd() {
+    use crate::path::{dup_fd_target, parse_proc_fd};
+    assert_eq!(dup_fd_target("/proc/self/fd/0"), Some((None, 0)));
+    assert_eq!(dup_fd_target("/proc/self/fd/2"), Some((None, 2)));
+    assert_eq!(dup_fd_target("/proc/1/fd/1"),    Some((Some(1), 1)));
+    assert_eq!(parse_proc_fd("/proc/123/fd/7"),  Some((Some(123), 7)));
+    // The /proc/self/fd dir itself (no <n>) is not an fd-link target.
+    assert_eq!(parse_proc_fd("/proc/self/fd"), None);
+}
+
+#[test]
+fn dup_fd_target_rejects_non_fd_links() {
+    use crate::path::dup_fd_target;
+    // Real device + regular paths must resolve via the normal walk.
+    assert_eq!(dup_fd_target("/dev/console"), None);
+    assert_eq!(dup_fd_target("/dev/tty"),     None);
+    assert_eq!(dup_fd_target("/etc/passwd"),  None);
+    assert_eq!(dup_fd_target("/proc/self/status"), None);
+}
+
+// ---------------------------------------------------------------------------
 // Dentry
 // ---------------------------------------------------------------------------
 
