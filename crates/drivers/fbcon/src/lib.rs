@@ -11,8 +11,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 // Cell-based `consw` renderer (T2): blits a `vtdata::Vc` to a
-// framebuffer. Additive — the legacy `Console` byte path above is
-// unchanged and still serves the live boot console until T7.
+// framebuffer. As of T7b this is THE kernel printk/VT console renderer
+// (see the `kernel` module below). The legacy `Console` byte-stream
+// struct remains only for the one-shot virtio-gpu boot splash.
 pub mod vcrender;
 
 // ============================================================
@@ -745,62 +746,43 @@ mod tests {
 }
 
 
-// ---- Kernel-side klog → framebuffer driver (B07) -----------------
+// ---- Kernel-side printk VT console (tty-rebuild-plan §3-T7b) -----
 //
 // `kernel_init` is called once after virtio-gpu sets up its scanout.
-// Caller passes the framebuffer base VA (HHDM-mapped), dimensions,
-// and a flush thunk that copies fbcon's Vec<u8> backing into the
-// HHDM-mapped fb + triggers virtio-gpu transfer+flush.
+// Caller passes dimensions + a flush thunk that copies fbcon's pixel
+// buffer into the HHDM-mapped framebuffer + triggers virtio-gpu
+// transfer+flush.
 //
-// After `kernel_init`, every klog event also lands on the GPU display
-// via the `klog::set_aux_sink(fbcon::klog_sink)` hookup.
+// The fbcon printk console is now the **real consw path**: it owns a
+// `Vc` (screen buffer) + `Emulator` (ECMA-48 state machine) + a cell
+// `VcRenderer`. On each printk byte-run it feeds the emulator → renders
+// the dirtied cells via `vtdata::render(vc, VcRenderer)` (lossless cell
+// blit with a REAL lock), then defers the GPU flush to a softirq. This
+// replaces the lossy byte-stream `Console`/`klog_sink` `try_lock`→drop
+// path. Registered with klog via `set_aux_sink(vt_console_sink)` so the
+// SERIAL console (`drv_serial::emit`, SLOT_BYTE) keeps its durable copy
+// — re-entrancy on the fbcon lock only ever skips the fbcon blit, never
+// the serial copy (separate console slots).
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod kernel {
     extern crate alloc;
-    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
     use sync::{Spinlock, Tty as TtyClass};
-    use super::Console;
+    use super::vcrender::{VcRenderer, CELL_W, CELL_H};
+    use vtdata::{Consw, Emulator, Vc};
 
-    static CONSOLE: Spinlock<Option<Console>, TtyClass> = Spinlock::new(None);
-
-    // ---- T2 cell-based renderer (additive; not yet wired to boot) ----
-    //
-    // The new consw renderer state. Uses a REAL `lock()` (never
-    // `try_lock`→drop) so VT cell output is never silently lost — that
-    // is the bug T2 removes from the byte path. Not yet driven by the
-    // live console; T7 flips boot from `CONSOLE`/`klog_sink` onto this.
-    use super::vcrender::VcRenderer;
-    use vtdata::Vc;
-
-    static VC_RENDER: Spinlock<Option<VcRenderer>, TtyClass> = Spinlock::new(None);
-
-    /// Bind the cell renderer to a `cols`×`rows` text grid.
-    /// # C: O(cols*rows*cell) — allocates + clears the surface.
-    pub fn vc_init(cols: u32, rows: u32) {
-        let mut r = VcRenderer::new();
-        use vtdata::Consw;
-        r.con_init(cols, rows);
-        *VC_RENDER.lock() = Some(r);
+    /// The fbcon printk VT console: screen buffer (`Vc`) + emulator +
+    /// cell renderer. Linux `vt_console_driver` over `fg_console`'s
+    /// `vc_data` rendered by fbcon's `consw`.
+    struct VcConsole {
+        vc: Vc,
+        em: Emulator,
+        renderer: VcRenderer,
     }
 
-    /// Render `vc` (its dirty rows + cursor) onto the cell renderer via
-    /// `consw`, then push the pixels through the installed flush thunk.
-    /// Real lock: blocks rather than dropping output.
-    /// # C: O(dirty_rows*cols*cell) + O(pixels) flush.
-    pub fn render_vc(vc: &mut Vc) {
-        let mut guard = VC_RENDER.lock();
-        let Some(r) = guard.as_mut() else { return };
-        vtdata::render(vc, r);
-        let raw = FLUSH_FN.load(Ordering::Acquire);
-        if raw.is_null() {
-            return;
-        }
-        // SAFETY: FLUSH_FN is only populated via kernel_init with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the original signature.
-        let f: FlushFn = unsafe { core::mem::transmute(raw) };
-        f(pixels_as_bytes(r.pixels()));
-    }
+    static VC_CONSOLE: Spinlock<Option<VcConsole>, TtyClass>
+        = Spinlock::new(None);
 
     /// Reinterpret a 0x00RRGGBB pixel slice as a BGRA32 byte slice for
     /// the flush thunk. The renderer stores RRGGBB in native u32; on a
@@ -817,88 +799,112 @@ pub mod kernel {
     pub type FlushFn = fn(pixels: &[u8]);
     static FLUSH_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-    /// True once `kernel_init` has finished. Klog sink no-ops before.
+    /// True once `kernel_init` has finished. Console sink no-ops before.
     static READY: AtomicBool = AtomicBool::new(false);
 
-    /// Set by `klog_sink` when the console backing has changed. Drained
-    /// by `tick_drain()` which the kernel calls from the timer ISR.
-    /// Deferring the GPU flush off the klog hot path is essential — a
-    /// full 4 MiB transfer + virtio flush per klog line is too slow.
+    /// Set when the screen has changed since the last flush. Drained by
+    /// the softirq — deferring the GPU flush off the printk hot path is
+    /// essential (a full 4 MiB transfer + virtio flush per line is slow).
     static DIRTY: AtomicBool = AtomicBool::new(false);
 
-    /// Initialize the kernel-side fbcon driver. Called once by the
-    /// virtio-gpu boot probe after the scanout is active.
-    /// # C: O(xres * yres) — Console::new zero-fills its backing.
-    /// Softirq handler installed at `kernel_init`. Runs in
-    /// process-level context with IRQs unmasked (per softirq runner
-    /// contract), so virtio-gpu submit_one can wait on the device's
-    /// MSI-X used-idx ack without deadlocking the way it would in
-    /// a raw ISR context.
+    /// Softirq handler installed at `kernel_init`. Runs in process-level
+    /// context with IRQs unmasked (per softirq runner contract), so
+    /// virtio-gpu submit_one can wait on the device's MSI-X used-idx ack
+    /// without deadlocking the way it would in a raw ISR context.
     fn flush_softirq() {
         if !DIRTY.swap(false, Ordering::AcqRel) { return; }
         repaint();
     }
 
-    /// Initialize the kernel-side fbcon driver. Called once by the
-    /// virtio-gpu boot probe after the scanout is active.
-    /// # C: O(xres * yres) — Console::new + bg-fill backing.
+    /// Initialize the kernel-side fbcon VT console. Called once by the
+    /// virtio-gpu boot probe after the scanout is active. Builds the
+    /// `Vc`+emulator+renderer sized to the framebuffer's cell grid,
+    /// registers the softirq flush handler + flush thunk, and paints the
+    /// (blank) screen once.
+    /// # C: O(cols * rows * cell) — renderer surface alloc + clear.
     pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
         softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
-        let mut c = Console::new(xres, yres);
-        c.fg = [0xff, 0xff, 0xff];
-        c.bg = [0x10, 0x30, 0x80];
-        // EraseDisplay zeros the backing — we want the bg color
-        // covering the whole frame instead so glyphs read against
-        // a visible navy field rather than solid black.
-        let pitch = (xres * 4) as usize;
-        for y in 0..(yres as usize) {
-            let off = y * pitch;
-            for x in 0..(xres as usize) {
-                c.fb[off + x*4]     = c.bg[2];
-                c.fb[off + x*4 + 1] = c.bg[1];
-                c.fb[off + x*4 + 2] = c.bg[0];
-                c.fb[off + x*4 + 3] = 0xff;
-            }
-        }
-        *CONSOLE.lock() = Some(c);
+        let cols = (xres / CELL_W).max(1) as u16;
+        let rows = (yres / CELL_H).max(1) as u16;
+        let mut renderer = VcRenderer::new();
+        renderer.con_init(cols as u32, rows as u32);
+        let mut vc = Vc::new(cols, rows);
+        // Paint the blank screen once (full repaint).
+        vtdata::switch(&mut vc, &mut renderer);
+        *VC_CONSOLE.lock() = Some(VcConsole {
+            vc,
+            em: Emulator::new(),
+            renderer,
+        });
         FLUSH_FN.store(flush as *mut (), Ordering::Release);
         READY.store(true, Ordering::Release);
+        DIRTY.store(true, Ordering::Release);
         repaint();
     }
 
-    /// `klog::LogSink` impl. Routes klog bytes through the ANSI
-    /// parser and marks the backing dirty. The actual GPU flush is
-    /// deferred to `tick_drain`, called from the timer ISR — a
-    /// synchronous flush per klog line is too slow (4 MiB transfer).
-    /// # C: O(N_bytes * cell_blit)
-    pub fn klog_sink(bytes: &[u8]) {
+    /// `klog::ConsoleSink` registered as the fbcon printk console. Feeds
+    /// `bytes` through the emulator into the screen `Vc`, renders the
+    /// dirtied cells via `consw` (lossless cell blit), and raises the
+    /// flush softirq.
+    ///
+    /// Re-entrancy: this can run from the printk path in any context
+    /// (early boot, IRQ). It is a BEST-EFFORT render — if the fbcon lock
+    /// is already held (re-entrant printk), it skips THIS blit and
+    /// returns. The serial console copy is a SEPARATE klog console slot
+    /// (`drv_serial::emit`), so the durable serial output is never
+    /// affected by a skipped fbcon blit.
+    /// # C: O(N_bytes + dirty_rows*cols*cell)
+    pub fn vt_console_sink(bytes: &[u8]) {
         if !READY.load(Ordering::Acquire) { return; }
-        if let Some(mut g) = CONSOLE.try_lock() {
-            if let Some(c) = g.as_mut() { c.put(bytes); }
-            DIRTY.store(true, Ordering::Release);
+        if let Some(mut g) = VC_CONSOLE.try_lock() {
+            if let Some(c) = g.as_mut() {
+                c.em.feed_bytes(&mut c.vc, bytes);
+                let VcConsole { vc, renderer, .. } = c;
+                vtdata::render(vc, renderer);
+                DIRTY.store(true, Ordering::Release);
+            }
         }
-        // Always raise — even if we dropped the byte: the next
-        // klog will mark dirty and this slot dedupes naturally.
+        // Always raise — even if we skipped the blit under contention,
+        // the next emit marks dirty and this slot dedupes naturally.
         softirq::raise(softirq::Slot::FbconFlush);
     }
 
-    /// Legacy no-op kept for API stability — the softirq mechanism
-    /// in `flush_softirq` is now the only drain path. Will be
-    /// removed once no callers remain.
+    /// Legacy no-op kept for API stability — the softirq mechanism in
+    /// `flush_softirq` is the only drain path.
     /// # C: O(1)
     pub fn tick_drain() { /* superseded by softirq::Slot::FbconFlush */ }
 
-    /// Push the current fbcon backing to the GPU via the installed
+    /// Push the current rendered pixels to the GPU via the installed
     /// flush thunk. No-op if the thunk isn't installed.
     /// # C: O(xres * yres) — full-frame transfer.
     fn repaint() {
         let raw = FLUSH_FN.load(Ordering::Acquire);
         if raw.is_null() { return; }
-        // SAFETY: FLUSH_FN is only populated via kernel_init with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the original.
-        let f: FlushFn = unsafe { core::mem::transmute(raw) };
-        let guard = CONSOLE.lock();
+        // SAFETY: FLUSH_FN is only populated via kernel_init with a non-null FlushFn cast through `as *mut ()`; reverse-cast restores the identical fn signature, and the flush thunk reads its &[u8] argument by length.
+        let f: FlushFn = unsafe { core::mem::transmute::<*mut (), FlushFn>(raw) };
+        let guard = VC_CONSOLE.lock();
         if let Some(c) = guard.as_ref() {
-            f(&c.fb);
+            f(pixels_as_bytes(c.renderer.pixels()));
         }
+    }
+
+    /// Write `bytes` to the fbcon VT console screen (numbered-VT / device
+    /// write path, tty-rebuild-plan §3-T7b Piece 3). Same emulator →
+    /// `vc_data` → consw path as the printk console, but a REAL lock
+    /// (device writes must not be silently dropped). Renders the dirtied
+    /// cells and raises the flush softirq.
+    /// # C: O(N_bytes + dirty_rows*cols*cell)
+    pub fn vt_write(bytes: &[u8]) {
+        if !READY.load(Ordering::Acquire) { return; }
+        {
+            let mut guard = VC_CONSOLE.lock();
+            if let Some(c) = guard.as_mut() {
+                c.em.feed_bytes(&mut c.vc, bytes);
+                let VcConsole { vc, renderer, .. } = c;
+                vtdata::render(vc, renderer);
+                DIRTY.store(true, Ordering::Release);
+            }
+        }
+        softirq::raise(softirq::Slot::FbconFlush);
     }
 }
