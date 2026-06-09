@@ -158,17 +158,25 @@ tty-core+drivers → printk-console-split → /dev-node correctness → acceptan
   raw passthrough, ERASE/KILL/WERASE, EOF (^D) → 0-length read, ONLCR on output,
   10M-op proptest on the cook/uncook round-trip where applicable.
 
-- **T4 ☐ TTY core (tty_struct/tty_driver/registry).** `core.rs`: `TtyDriver`
+- **T4 ☑ TTY core (tty_struct/tty_driver/registry).** `core.rs`: `TtyDriver`
   trait (`write`, `flush`, `ioctl`, `set_termios`, `install`/`open`/`close`),
   `TtyStruct` (termios, ldisc=N_TTY, port, fg_pgrp, sid, winsize, ctrl-tty link),
   `TtyPort` (flip buffer in→ldisc), driver registry keyed by (major,minor). Tests:
   open/close lifetime, termios get/set, winsize, flip-buffer→ldisc receive,
   pgrp/sid plumbing, TIOC* ioctls.
 
-- **T5 ☐ VT console driver onto tty core.** `console_driver.rs`: a `TtyDriver`
-  whose `write` runs N_TTY output then feeds the emulator (→vc_data→consw); whose
-  RX (kbd/input) pushes to the port flip buffer. Wire `/dev/ttyN` to it. Tests:
-  write→cells, input→read, echo round-trip, ctrl-C→SIGINT to fg pgrp.
+- **T5 ☑ VT console driver onto tty core.** New crate `crates/kernel/vtconsole`
+  (`tty`+`vtdata`+`fbcon`; `tty` stays free of vtdata/fbcon — no cycle).
+  `VtConsoleDriver<R: Consw, S: FgSignal>`: `vc_cons[N_VT]` + `fg`, one `Emulator`,
+  renderer `R`, signal sink `S`. `TtyDriver::write` → `emulator.feed_bytes(vc)` →
+  `vtdata::render(vc, renderer)` (shared by program writes + ldisc echo). `assemble`
+  factory builds `TtyStruct<VtConsoleDriver<R,S>, W>`. Host-tested END-TO-END
+  through the real N_TTY+core+emulator+Vc+consw: program-write→cells+cursor,
+  input→read+echo→screen, password ECHO-off (read line, blank screen),
+  ctrl-C→SIGINT to fg pgrp, CSI SGR red attr through the stack, backspace editing,
+  256-case proptest (interleaved write/recv/read, in-bounds, never panics). 8/8
+  green; both kernel-target builds + spec-lint clean. NOT yet wired to `/dev/ttyN`
+  (boot cutover is T7).
 
 - **T6 ☐ serial tty driver + RX flip.** `serialtty`: `ttyS0` `TtyDriver` (TX →
   `drv_serial` UART; RX → flip buffer → ldisc). Replace the timer-poll-direct-to-
