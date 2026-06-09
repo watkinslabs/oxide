@@ -202,7 +202,6 @@
       "Bash(git reset --hard*)",
       "Bash(git clean -fdx*)",
       "Bash(git checkout --)",
-      "Bash(git branch -D*)",
       "Bash(gh repo create:*)",
       "Bash(gh release create:*)",
       "Bash(docker push:*)",
