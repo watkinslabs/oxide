@@ -34,6 +34,7 @@ debug-boot   = ["kmacros/debug-boot"]
 debug-trace  = ["kmacros/debug-trace"]
 debug-sched  = ["kmacros/debug-sched"]
 debug-pmm    = ["kmacros/debug-pmm"]
+debug-memtest = []  # in-guest full-RAM memtest pass (memtest.rs); klog-only, no kmacros macro
 debug-vmm    = ["kmacros/debug-vmm"]
 debug-irq    = ["kmacros/debug-irq"]
 debug-acpi   = ["kmacros/debug-acpi"]
