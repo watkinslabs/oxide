@@ -63,9 +63,15 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
     // userspace (else login parks on read(0) forever).
     // SAFETY: LAPIC enabled by smoke_device_map_x86; same period as boot.
     unsafe { let _ = arch_irq::lapic::timer_periodic(1_000_000); }
-    // SAFETY: STI legal at CPL=0; the spawn's first schedule() drops to ring 3
-    // with IF=1, so both kernel idle and user mode see timer IRQs.
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    // NB: IRQs stay MASKED across the init spawn below. `spawn_user_blob_
+    // with_vpid` enqueues PID 1 Runnable + sets need_resched BEFORE it
+    // installs PID 1's console fd table (stdin/out/err). If a timer tick
+    // fired in that window it could schedule PID 1 into ring 3 with NO fd
+    // table → its first writev(1/2) returns EBADF → systemd/ld-musl exits
+    // 127 → silent login hang. This was the flaky x86 SMP=2 login failure
+    // (2-vCPU QEMU timing hit the window ~25%; B75 diag pinned it via the
+    // recent-syscall ring: writev=-9 before exit_group(127)). `sti` moves
+    // to AFTER the spawn so PID 1 is fully formed before its first schedule.
 
     // PID 1 = systemd (oxide distro init), loaded from the rootfs; falls back
     // to /sbin/init then /init. Dynamically linked — load_static_blob
@@ -86,6 +92,12 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
             &[b"/lib/systemd/systemd" as &[u8]],
         );
     }
+    // PID 1 is now fully formed (fd table installed). Enable IRQs: the
+    // idle anchor's first schedule() drops into ring 3 with IF=1, and the
+    // periodic timer drives preemption + UART poll from here on.
+    // SAFETY: STI legal at CPL=0; runqueue + PID 1 fully set up above.
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+
     // Idle anchor. schedule() runs any runnable task (diverging into it); it
     // returns here only when nothing is runnable — then sti+hlt parks the CPU
     // with IRQs ENABLED so the periodic timer keeps firing. The tick drains
