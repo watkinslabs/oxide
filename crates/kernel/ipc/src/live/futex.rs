@@ -24,17 +24,6 @@ use syscall::errno::Errno;
 
 const FUTEX_WAIT: u32 = 0;
 const FUTEX_WAKE: u32 = 1;
-// FUTEX_WAIT_BITSET (9) / FUTEX_WAKE_BITSET (10): pthread/musl/glibc use these
-// (with bitset = FUTEX_BITSET_MATCH_ANY = 0xffffffff) for the common
-// thread-handshake wait/wake. For MATCH_ANY they are semantically identical to
-// plain WAIT/WAKE; the only delta is WAIT_BITSET's absolute timeout, which we
-// don't honor anyway (we park until WAKE). Before this they fell through the
-// `_ => 0` arm and returned success INSTANTLY — so a futex-wait never parked,
-// the caller spun, and on the cooperative scheduler the thread it was waiting
-// on never got the CPU (pthread/Go-runtime startup deadlock → every multithreaded
-// program hung).
-const FUTEX_WAIT_BITSET: u32 = 9;
-const FUTEX_WAKE_BITSET: u32 = 10;
 const FUTEX_OP_MASK:    u32 = 0x7f;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -91,7 +80,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     match op_full & FUTEX_OP_MASK {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+        FUTEX_WAIT => {
             // SAFETY: bounded user VA validated above; CR3 is current's.
             let cur_val = unsafe { load_user_u32(uaddr) };
             if cur_val != val { return -(Errno::Eagain.as_i32() as i64); }
@@ -117,7 +106,7 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
             // Resume — woken by FUTEX_WAKE (or spurious; caller rechecks).
             0
         }
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+        FUTEX_WAKE => {
             let key = match current_key(uaddr) {
                 Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
             };

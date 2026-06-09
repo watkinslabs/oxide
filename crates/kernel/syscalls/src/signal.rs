@@ -20,11 +20,6 @@ pub struct PendingSignal {
     pub handler:  u64,
     pub flags:    u64,
     pub restorer: u64,
-    /// sa_mask — additional signals blocked during the handler.
-    pub mask:     u64,
-    /// RT-queue siginfo record (RT signals 33..=64); `None` for
-    /// standard signals (synthesised SI_USER at delivery).
-    pub info:     Option<sched::SigInfo>,
 }
 
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
@@ -41,10 +36,8 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     let deliver = pending & !masked;
     if deliver == 0 { return None; }
     let sig = deliver.trailing_zeros() + 1;
-    let mut info = None;
     if sig >= 33 && sig <= 64 {
-        let (rec, empty) = cur.rt_pop(sig);
-        info = rec;
+        let (_info, empty) = cur.rt_pop(sig);
         if empty {
             cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
         }
@@ -54,5 +47,5 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     // SAFETY: running task on this CPU; preempt-off; sole reader of sigactions slot per single-mutator invariant in `13§5`.
     let table = unsafe { &*cur.sigactions.get() };
     let h = table[(sig - 1) as usize];
-    Some(PendingSignal { sig, handler: h.handler, flags: h.flags, restorer: h.restorer, mask: h.mask, info })
+    Some(PendingSignal { sig, handler: h.handler, flags: h.flags, restorer: h.restorer })
 }
