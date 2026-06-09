@@ -1,53 +1,40 @@
-# Session hand-off — signal-delivery / Go-async-preemption
+# Session hand-off — RESET to F411 (login known-good); Go-async reverted
 
-## What works NOW (on main, both arches boot)
-- **Login works again** (B69 #1630). Boots GRUB→systemd→getty→login→shell.
-- Merged this session: futex WAIT_BITSET (B67, starship launches), timerfd ABSTIME (B68),
-  full rt_sigframe ABI types+IRQ-GP-save+build/restore on the SYSCALL path (F409/F410/F411),
-  Task.cpu stamping in swap_current + owner-CPU wake routing (F412, the safe part).
+## State of main NOW
+- **Reverted F412 (async signal delivery) + B69** (B70 #1633) → back to the F411 code where
+  login was VERIFIED working (shell + commands, by me + an agent). Kept: futex WAIT_BITSET
+  (B67), timerfd ABSTIME (B68), full rt_sigframe build/restore on the SYSCALL path (F409-411).
+- Why: F412's `try_deliver_async_irq` (async IRQ-exit signal delivery) corrupted the
+  interrupted user frame → login crash; B69 disabled it but login still didn't complete;
+  cleanest fix = revert to F411 known-good. Go async-preemption (duf/glow/micro) is NOT
+  solved — redo it in an env where the boot can be observed/driven.
 
-## THE remaining broken thing: Go tools (duf/glow/micro) don't run
-They need ASYNC signal delivery (SIGURG to a userspace-spinning thread on timer-IRQ exit).
-F412 added `try_deliver_async_irq` (lapic.rs timer+resched arms, gic.rs) — but it CORRUPTS
-the interrupted user frame → **login crashed back to getty**. DISABLED in B69 (the 3 call
-sites are commented; search `DISABLED (B69)`). The syscall-tail delivery (F411) is unaffected.
+## Known separate bug: intermittent keymap boot-wedge
+Boot sometimes stalls right after the KERNEL prints `keymap loaded: US QWERTY`
+(kmain.rs:649 — early kernel init, BEFORE userspace). Pre-existing + intermittent (F411 too).
+Next kmain steps: virtio-net legacy init, ptrace install, `smoke::elf::run_as_task` (first
+user ELF), spawn_timer_driver, halt_forever. Likely the tty-write yield-point / CAT-smoke
+wedge class. Retry boot usually gets past it. Real fix = the tty ONLCR yield-point gap.
 
-### The bug to fix before re-enabling async delivery
-`try_deliver_async_irq` (crates/kernel/fs/src/sig_dispatch.rs ~:644) builds the rt_sigframe
-from the live IRQ frame (FrameSrc::Irq) and rewrites that IRQ frame IN PLACE (rip/rsp/rdi/
-rsi/rdx). Something in the build-from-IRQ-frame OR the in-place rewrite clobbers the resumed
-user context → crash. Suspects: (a) read_regs_x86 FrameSrc::Irq mapping (IrqFrameX86→sigcontext,
-sig_dispatch.rs ~:131); (b) the new_sp/red-zone math writing over live user stack; (c) rewriting
-the IRQ frame's GP slots that the epilogue pops vs the iretq frame. Debug with a TARGETED trace
-(only the spinning binary), NOT the global klog traces — those FLOOD the serial and WEDGE boot
-(that wasted hours; the "0 switches / killer never ran" readings were trace-flood artifacts).
+## HARD-LEARNED: this sandbox cannot drive/observe QEMU (do not relearn)
+- QEMU works ONLY: foreground, short (<~30s), direct, NO stdin redirect:
+  `timeout 30 qemu ... -serial stdio > /tmp/x.log 2>&1` then read the file SEPARATELY.
+- FAILS here: backgrounded qemu (reaped → empty), stdin pipe/`<file`/unix-socket/python-
+  subprocess (all empty/fail), commands >~120s (tool kills + discards output).
+- So I CANNOT drive interactive login/commands. AGENTS can (different harness) — delegate
+  boot+input verification, OR have the USER run `make qemu-x86` + login + paste.
+- Debug traces via klog FLOOD the serial + WEDGE boot — the "0 switches / killer never ran"
+  readings earlier were flood artifacts. Use TARGETED (arm-on-execve) traces only.
+- Bash tool: foreground `sleep` BLOCKED; `set -e` aborts on any non-zero (guard `|| true`).
+- pre-push smoke is the only reliable boot gate; SKIP_SMOKE=1 when env can't run it + change
+  is logically boot-safe (e.g. reverting to prior smoke-passed code).
 
-## CRITICAL: test-harness reality in THIS sandbox (do not relearn the hard way)
-- QEMU ONLY works run DIRECTLY in the foreground, short (<~30s), NO stdin redirect/pipe/socket.
-  `timeout 30 qemu ... -serial stdio > /tmp/x.log 2>&1` then read the file in a SEPARATE call.
-- Backgrounded qemu (`&` / run_in_background) gets REAPED → empty output. stdin pipe/`<file`/
-  unix-socket/python-subprocess ALL fail here (sandbox). So I CANNOT drive interactive login/
-  commands. AGENTS can (different harness) — delegate boot+input verification to an agent, OR
-  ask the USER to run `make qemu-x86` + login + paste (they have a working interactive QEMU).
-- Boot-time smokes (oxide-smokes.sh: sigurg_async_smoke + duf, gated on /etc/oxide-init-smokes)
-  run via the rc script (rootfs.rs ~818-830) AFTER systemd+network — later than a 30s capture.
-- The pre-push hook smoke works (boots both arches) but is the only reliable boot gate I have.
-  SKIP_SMOKE=1 git push when the env can't run it + the change is logically boot-safe.
-- The Bash tool: foreground `sleep` is BLOCKED; long (>~120s) commands get killed + output
-  discarded; `set -e` aborts on any non-zero (guard every fallible cmd with `|| true`).
+## NEXT
+1. Confirm login works on main (user/agent boot — I can't). 
+2. Go-async-preemption REDO (in verifiable env): the bug was `try_deliver_async_irq` rewriting
+   the live IRQ iretq/eret frame (FrameSrc::Irq path in sig_dispatch.rs) clobbering the
+   resumed user context. Needs careful frame-source handling + a USER test (login must not
+   crash while a signal is delivered) before re-landing.
+3. keymap boot-wedge (tty yield); /etc/machine-id EIO; merged-/usr layout (cosmetic taint).
 
-## Minor real issues seen at boot (not the crash)
-- `Failed to truncate /etc/machine-id: I/O error` — systemd write to ext4 file returns EIO.
-- `System is tainted: unmerged-usr:unmerged-bin:var-run-bad` — cosmetic (rootfs not merged-/usr,
-  /var/run not a symlink to /run). Harmless.
-
-## NEXT (in order)
-1. Fix the async-delivery IRQ-frame bug (verify via a targeted trace + a USER test of login NOT
-   crashing while a signal is delivered). Re-enable the 3 calls. Then verify sigurg_async_smoke
-   PASSES + duf/glow/micro launch.
-2. (later) /etc/machine-id EIO; merged-/usr layout; futex/wait_list owner-CPU routing matters
-   once x86 AP scheduling is live (smp_x86.rs APs currently park in cli;hlt).
-
-## Counters / workflow
-max F=412, B=69, C=09. Author Chris Watkins <chris@watkinslabs.com>, no Co-Authored-By.
-spec-lint clean before commit. Branch-per-change, gh pr merge --delete-branch.
+## Counters: F=412, B=70, C=09, D=91. Author Chris Watkins <chris@watkinslabs.com>.
