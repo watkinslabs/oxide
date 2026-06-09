@@ -285,6 +285,39 @@ fn full_reset_clears() {
 }
 
 #[test]
+fn per_cell_flags_survive_bold_underline_reverse() {
+    // SGR 1;4;7;33;44 → bold+underline+reverse, yellow fg, blue bg on 'A'.
+    // SGR 0 reset then 'B' carries no flags and default colors.
+    let vc = run(20, 2, b"\x1b[1;4;7;33;44mA\x1b[0mB");
+    let a = vc.attr_at(0, 0).unwrap();
+    assert!(a.bold, "bold must round-trip into the cell");
+    assert!(a.underline, "underline must round-trip into the cell");
+    assert!(a.reverse, "reverse must round-trip into the cell");
+    assert_eq!(a.fg, 3); // yellow
+    assert_eq!(a.bg, 4); // blue
+    let b = vc.attr_at(1, 0).unwrap();
+    assert!(!b.bold && !b.underline && !b.reverse);
+    assert_eq!(b.fg, DEFAULT_FG);
+    assert_eq!(b.bg, DEFAULT_BG);
+}
+
+#[test]
+fn per_cell_flags_toggle_off_midline() {
+    // Underline on for 'X', off (SGR 24) for 'Y'; reverse stays off both.
+    let vc = run(20, 2, b"\x1b[4mX\x1b[24mY");
+    let x = vc.attr_at(0, 0).unwrap();
+    let y = vc.attr_at(1, 0).unwrap();
+    assert!(x.underline && !x.reverse);
+    assert!(!y.underline && !y.reverse);
+}
+
+#[test]
+fn attr_pack_unpack_lossless_with_flags() {
+    let a = Attr { fg: 200, bg: 17, bold: true, underline: false, reverse: true };
+    assert_eq!(Attr::unpack(a.pack()), a);
+}
+
+#[test]
 fn default_attr_pack_roundtrip() {
     let a = Attr::default();
     assert_eq!(a.fg, DEFAULT_FG);

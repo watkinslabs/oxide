@@ -91,6 +91,10 @@ impl Emulator {
     /// panics and never indexes the grid out of bounds.
     /// # C: O(1) amortized; O(cols*rows) on a scroll/erase byte.
     pub fn feed(&mut self, vc: &mut Vc, byte: u8) {
+        // Any byte can move the cursor (print advance, CR, CSI move);
+        // flag it so `consw::render` repaints the cursor cell. Cheap
+        // and correct — over-marking only costs one extra cell blit.
+        vc.mark_cursor_dirty();
         match self.state {
             CsiState::Ground => self.ground(vc, byte),
             CsiState::Esc => self.esc(vc, byte),

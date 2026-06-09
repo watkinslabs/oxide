@@ -17,9 +17,13 @@ extern crate std;
 
 pub mod vc;
 pub mod emulator;
+pub mod consw;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod consw_tests;
 
+pub use consw::{render, switch, Consw, ScrollDir};
 pub use emulator::{CsiState, Emulator};
-pub use vc::{Attr, Cell, Vc, N_VT};
+pub use vc::{Attr, Cell, Vc, ATTR_BOLD, ATTR_REVERSE, ATTR_UNDERLINE, N_VT};
