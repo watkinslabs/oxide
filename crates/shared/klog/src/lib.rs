@@ -13,6 +13,11 @@ extern crate std;
 pub mod ring;
 pub use ring::{Full, Record, Ring, MAIN_RING_CAP, NMI_RING_CAP};
 
+pub mod console;
+pub use console::{
+    register_console, unregister_console, ConsoleSink, CON_ENABLED, MAX_CONSOLES,
+};
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Level {
@@ -54,39 +59,36 @@ pub struct InternedFormat {
 /// `fn(&[u8])` without a `dyn` trait object (`07§5` bans `dyn HAL`).
 pub type LogSink = fn(&[u8]);
 
-static BYTE_SINK: core::sync::atomic::AtomicPtr<()>
-    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// Install a UART-style byte sink. `f` is called with prefix +
-/// message + `\n` for every klog event whose level isn't suppressed.
+/// Install the primary byte sink (the serial console). Thin shim over the
+/// `console` registry's reserved `SLOT_BYTE` so historical callers + the
+/// ring→serial→fbcon ordering are preserved (Linux: a UART registering its
+/// `struct console`). `f` is called with prefix + message + `\n` for every
+/// klog event whose level isn't suppressed.
 /// # C: O(1)
 pub fn set_byte_sink(f: LogSink) {
-    BYTE_SINK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+    console::install_slot(console::SLOT_BYTE, f);
 }
 
-/// Install a secondary byte sink (in addition to the UART). Used to
-/// route klog text to a framebuffer console, network log target, or
-/// any other downstream consumer. `f` is called after the primary
-/// sink for every emitted record.
+/// Install the secondary sink (the fbcon VT console). Thin shim over the
+/// `console` registry's reserved `SLOT_AUX`; fires after the byte sink for
+/// every emitted record. Used to route klog text to a framebuffer console,
+/// network log target, or any other downstream consumer.
 /// # C: O(1)
 pub fn set_aux_sink(f: LogSink) {
-    AUX_SINK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+    console::install_slot(console::SLOT_AUX, f);
 }
 
-/// Detach the aux sink.
+/// Detach the aux sink (clears reserved `SLOT_AUX`).
 /// # C: O(1)
 pub fn clear_aux_sink() {
-    AUX_SINK.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+    console::clear_slot(console::SLOT_AUX);
 }
 
-static AUX_SINK: core::sync::atomic::AtomicPtr<()>
-    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// Detach the sink. Subsequent `__klog_emit` calls become no-ops
-/// until `set_byte_sink` is called again.
+/// Detach the primary byte sink (clears reserved `SLOT_BYTE`). Subsequent
+/// `__klog_emit` calls skip it until `set_byte_sink` is called again.
 /// # C: O(1)
 pub fn clear_byte_sink() {
-    BYTE_SINK.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
+    console::clear_slot(console::SLOT_BYTE);
 }
 
 /// Optional clock thunk: returns "ns since boot" for record
@@ -177,18 +179,11 @@ fn emit_timestamp(ns: u64) {
 #[inline]
 fn invoke_sink(bytes: &[u8]) {
     ring_push(bytes);
-    let raw = BYTE_SINK.load(core::sync::atomic::Ordering::Acquire);
-    if !raw.is_null() {
-        // SAFETY: BYTE_SINK is only ever populated via set_byte_sink, which casts a non-null LogSink fn-pointer into the *mut () slot; reverse-cast restores the original; LogSink has no unsafe contract beyond &[u8] validity, which we hold.
-        let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw) };
-        f(bytes);
-    }
-    let raw2 = AUX_SINK.load(core::sync::atomic::Ordering::Acquire);
-    if !raw2.is_null() {
-        // SAFETY: same ABI contract as BYTE_SINK; populated only via set_aux_sink with a LogSink fn-pointer.
-        let f: LogSink = unsafe { core::mem::transmute::<*mut (), LogSink>(raw2) };
-        f(bytes);
-    }
+    // printk fan-out (Linux `console_unlock`): the dmesg ring first, then
+    // every registered console (reserved BYTE=serial, AUX=fbcon, then any
+    // `register_console` slots) in order. The transmute safety lives in
+    // `console::fan_out`.
+    console::fan_out(bytes);
 }
 
 // ---------------------------------------------------------------

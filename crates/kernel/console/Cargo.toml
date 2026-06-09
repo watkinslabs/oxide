@@ -16,6 +16,7 @@ devfs      = { path = "../devfs" }
 sched      = { path = "../sched" }
 serialtty  = { path = "../serialtty" }
 drv-serial = { path = "../../drivers/drv-serial" }
+fbcon      = { path = "../../drivers/fbcon" }
 
 [features]
 debug-trace = ["kmacros/debug-trace"]

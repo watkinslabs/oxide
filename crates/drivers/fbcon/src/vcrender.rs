@@ -265,4 +265,34 @@ mod tests {
         // Some non-zero pixels were written for 'H'/'i'.
         assert!(r.pixels().iter().any(|&p| p != 0));
     }
+
+    // T7b Piece 2: the fbcon VT printk console flow — emulator feeds a
+    // byte-run into the screen `Vc`, the Vc cells reflect the text, and
+    // the consw blit runs. This mirrors `kernel::vt_console_sink` /
+    // `vt_write` (kernel-only, cfg-gated) end-to-end on the host.
+    #[test]
+    fn vt_console_flow_cells_and_blit() {
+        let mut vc = Vc::new(10, 2);
+        let mut em = Emulator::new();
+        let mut r = VcRenderer::new();
+        r.con_init(vc.cols as u32, vc.rows as u32);
+
+        // Emit "[INFO]" then a raw \n (emulator linefeed) + "x".
+        em.feed_bytes(&mut vc, b"[INFO]");
+        em.feed_bytes(&mut vc, b"\n");
+        em.feed_bytes(&mut vc, b"x");
+        vtdata::render(&mut vc, &mut r);
+
+        // The Vc cells reflect the fed bytes.
+        let row0: alloc::string::String = (0..6)
+            .map(|c| char::from_u32(vc.glyph_at(c, 0)).unwrap())
+            .collect();
+        assert_eq!(row0, "[INFO]");
+        // raw \n advances the row without column reset → 'x' lands at
+        // col 6, row 1.
+        assert_eq!(vc.glyph_at(6, 1), 'x' as u32);
+
+        // The consw blit ran: pixels for the glyphs are non-zero.
+        assert!(r.pixels().iter().any(|&p| p != 0), "blit produced no pixels");
+    }
 }
