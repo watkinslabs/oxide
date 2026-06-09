@@ -44,12 +44,13 @@ use virtio::blk;
 #[cfg(target_os = "oxide-kernel")]
 static BLK_COMPL: WaitList = WaitList::new();
 
-/// Wake every parked blk waiter. Called once per timer tick from kmain's
-/// `tick_poll_combined` so a sleeper re-checks used.idx without needing a
-/// per-queue completion IRQ. Cheap when no one is parked.
+/// Wake every parked blk waiter so it re-checks used.idx. Driven by BOTH
+/// the per-queue completion MSI (registered in pci-boot — immediate wake)
+/// AND the timer tick (kmain `tick_poll_combined` — backstop if an MSI
+/// edge is missed/coalesced). Cheap when no one is parked.
 /// # C: O(N_waiters)
 #[cfg(target_os = "oxide-kernel")]
-pub fn tick_wake_completions() {
+pub fn wake_completions() {
     BLK_COMPL.wake_all();
 }
 
